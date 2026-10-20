@@ -336,9 +336,9 @@ class Visualization:
         self._stop_requested = False
         stop = self._server.gui.add_button("Stop all (Esc)", color="red", icon=viser.Icon.HAND_STOP,
                                            hint="Soft stop: stop every arm's program, switch every base "
-                                                "controller off, stop every tool, drop clicks not yet run, cancel "
-                                                "every plugin task. Resume in the health panel. Not an emergency "
-                                                "stop.")
+                                                "controller off, stop every tool, cancel the plugin tasks that may "
+                                                "move a robot. The robots refuse motion commands until Resume in "
+                                                "the health panel. Not an emergency stop.")
         stop.on_click(self._request_stop)
         self._server.gui.add_command("Stop all robots", description="Soft stop of every robot",
                                      hotkey="escape", icon=viser.Icon.HAND_STOP).on_trigger(self._request_stop)

@@ -5,11 +5,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from action_msgs.msg import GoalStatus
 from robot_fakes import Client, Future, Node, Publisher
 from ur_msgs.srv import SetIO
 
 from husky_assembly_teleop.robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV1,
                                                                  ScaffoldingV1State, ScaffoldingV3, ScaffoldingV3State)
+from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped, SoftStopLatch
 
 pytestmark = pytest.mark.safety
 
@@ -32,15 +34,28 @@ class ActionClient:
 
 
 def accept(goal: Future) -> Future:
-    """Accept `goal` and return the future of its result."""
+    """Accept `goal` and return the future of its result; the result future's `cancels` counts cancel requests."""
     result = Future(None)
-    goal.answer(SimpleNamespace(accepted=True, get_result_async=lambda: result))
+    result.cancels = 0
+
+    def cancel() -> Future:
+        result.cancels += 1
+        return Future(None)
+
+    goal.answer(SimpleNamespace(accepted=True, get_result_async=lambda: result, cancel_goal_async=cancel))
     return result
 
 
 def finish(result: Future, reached: bool = False, stalled: bool = False) -> None:
     """End a goal at 0.4 rad."""
-    result.answer(SimpleNamespace(result=SimpleNamespace(reached_goal=reached, stalled=stalled, position=0.4)))
+    result.answer(SimpleNamespace(status=GoalStatus.STATUS_SUCCEEDED,
+                                  result=SimpleNamespace(reached_goal=reached, stalled=stalled, position=0.4)))
+
+
+def cancelled(result: Future) -> None:
+    """End a goal as cancelled, with the empty result the controller sends."""
+    result.answer(SimpleNamespace(status=GoalStatus.STATUS_CANCELED,
+                                  result=SimpleNamespace(reached_goal=False, stalled=False, position=0.0)))
 
 
 def robotiq(ready: bool = True) -> RobotiqGripper:
@@ -48,6 +63,10 @@ def robotiq(ready: bool = True) -> RobotiqGripper:
     gripper = RobotiqGripper.__new__(RobotiqGripper)
     gripper._node, gripper.namespace, gripper.state, gripper._action = Node(), "/a200/gripper", RobotiqState(), \
         ActionClient(ready)
+    gripper._latch = SoftStopLatch("0804")
+    gripper._goal, gripper._cancel_on_accept = None, False
+    gripper._answer_due = gripper._nudged_at = None
+    gripper._list_controllers = Client()
     return gripper
 
 
@@ -55,6 +74,7 @@ def v3() -> ScaffoldingV3:
     """A scaffolding v3 tool with both motors idle."""
     tool = ScaffoldingV3.__new__(ScaffoldingV3)
     tool._node, tool.namespace, tool.state, tool._command = Node(), "/a200/tool", ScaffoldingV3State(), Publisher()
+    tool._latch = SoftStopLatch("0804")
     tool.state.gripper_motor = tool.state.joint_motor = ScaffoldingV3.IDLE
     return tool
 
@@ -63,7 +83,7 @@ def v1(ready: bool = True) -> ScaffoldingV1:
     """A scaffolding v1 tool whose arm's set_io service is up if `ready`."""
     tool = ScaffoldingV1.__new__(ScaffoldingV1)
     tool._node, tool.namespace, tool.arm_namespace = Node(), "/a200/tool", "/a200/ur5e"
-    tool.state, tool._set_io = ScaffoldingV1State(), Client(ready)
+    tool.state, tool._set_io, tool._latch = ScaffoldingV1State(), Client(ready), SoftStopLatch("0804")
     return tool
 
 
@@ -84,17 +104,54 @@ def test_robotiq_goals_are_clipped_to_the_gripper(position, effort, sent_positio
     assert gripper.state.moving and gripper.state.commanded_position == pytest.approx(sent_position)
 
 
-def test_robotiq_open_close_and_stop():
-    """Open and close go to the ends; stop holds at the measured position with the last effort."""
+def test_robotiq_open_and_close_go_to_the_ends():
+    """Open and close send one goal each, to the ends."""
     gripper = robotiq()
     gripper.open()
     gripper.close()
-    gripper.state.position = 0.3
+    assert [goal.request.command.position for goal in gripper._action.goals] == pytest.approx(
+        [RobotiqGripper.OPEN_POSITION, RobotiqGripper.CLOSED_POSITION])
+
+
+def test_robotiq_stop_cancels_the_running_goal():
+    """Stop cancels the goal instead of sending a new one; its cancelled result ends the move without a failure."""
+    gripper = robotiq()
+    gripper.close()
+    result = accept(gripper._action.goals[0])
     gripper.stop()
-    sent = [goal.request.command for goal in gripper._action.goals]
-    assert [command.position for command in sent] == pytest.approx(
-        [RobotiqGripper.OPEN_POSITION, RobotiqGripper.CLOSED_POSITION, 0.3])
-    assert sent[2].max_effort == pytest.approx(sent[1].max_effort)
+    assert result.cancels == 1 and len(gripper._action.goals) == 1
+    cancelled(result)
+    assert not gripper.state.moving and gripper.state.last_result_ok is None
+    assert "gripper goal cancelled" in gripper._node.log.text("info")
+
+
+def test_robotiq_stop_before_acceptance_cancels_once_accepted():
+    """Stop while the goal is still on its way: it is cancelled as soon as the server accepts it."""
+    gripper = robotiq()
+    gripper.close()
+    gripper.stop()
+    assert accept(gripper._action.goals[0]).cancels == 1
+
+
+def test_robotiq_stop_when_idle_sends_nothing():
+    """No goal running: nothing to cancel, no goal sent."""
+    gripper = robotiq()
+    gripper.close()
+    finish(accept(gripper._action.goals[0]), reached=True)
+    gripper.stop()
+    assert len(gripper._action.goals) == 1
+
+
+def test_robotiq_replaced_goal_is_not_a_failure():
+    """A goal replaced by a newer one ends cancelled: logged as replaced, health untouched, newer goal still moving."""
+    gripper = robotiq()
+    gripper.close()
+    close_result = accept(gripper._action.goals[0])
+    gripper.open()
+    accept(gripper._action.goals[1])
+    cancelled(close_result)
+    assert gripper.state.moving and gripper.state.last_result_ok is None
+    assert "gripper goal replaced" in gripper._node.log.text("info")
 
 
 def test_robotiq_without_its_server_sends_nothing():
@@ -124,7 +181,44 @@ def test_robotiq_rejected_goal_stops_moving(answer):
     assert not gripper.state.moving and gripper.state.last_result_ok is False
 
 
-@pytest.mark.xfail(strict=True, reason="a preempted goal's result clears `moving` of the newer goal (review)")
+def test_robotiq_watchdog_nudges_a_silent_driver_until_it_answers():
+    """An unanswered goal gets a list_controllers nudge after ANSWER_TIMEOUT, then one every NUDGE_PERIOD.
+
+    The late answer is logged with how long after the first nudge it came; then the watchdog waits for the result.
+    """
+    gripper = robotiq()
+    gripper.close()
+    gripper._node.now += RobotiqGripper.ANSWER_TIMEOUT - 0.1
+    gripper._watch()
+    assert not gripper._list_controllers.calls
+    gripper._node.now += 0.2
+    gripper._watch()
+    gripper._watch()
+    assert len(gripper._list_controllers.calls) == 1
+    gripper._node.now += RobotiqGripper.NUDGE_PERIOD
+    gripper._watch()
+    assert len(gripper._list_controllers.calls) == 2
+    result = accept(gripper._action.goals[0])
+    assert "answered 2.0 s after the first nudge" in gripper._node.log.text("warning")
+    gripper._node.now += RobotiqGripper.RESULT_TIMEOUT - 0.1
+    gripper._watch()
+    finish(result, reached=True)
+    gripper._node.now += 10.0
+    gripper._watch()
+    assert len(gripper._list_controllers.calls) == 2
+
+
+def test_robotiq_watchdog_waits_for_the_cancel_and_its_result():
+    """Stop: the cancel must be answered within ANSWER_TIMEOUT, else a nudge."""
+    gripper = robotiq()
+    gripper.close()
+    accept(gripper._action.goals[0])
+    gripper.stop()
+    gripper._node.now += RobotiqGripper.ANSWER_TIMEOUT + 0.1
+    gripper._watch()
+    assert len(gripper._list_controllers.calls) == 1
+
+
 def test_robotiq_preempted_goal_does_not_end_the_newer_one():
     """Close, then open before the close finished: the close's result must not say the gripper stopped."""
     gripper = robotiq()
@@ -184,3 +278,22 @@ def test_v1_failed_switch_is_reported(ready, answer):
         tool._set_io.calls[0].answer(answer)
         assert tool.state.last_request_ok is False
     assert tool._node.log.text("warning")
+
+
+# --- --- --- --- --- soft stop --- --- --- --- ---
+
+def test_a_soft_stopped_tool_refuses_every_command_but_stop():
+    """Robotiq, v3 and v1: every command that moves the tool raises RobotStopped, sending nothing; stop goes out."""
+    gripper, screw, switched = robotiq(), v3(), v1()
+    gripper.close()
+    closing = accept(gripper._action.goals[0])
+    gripper._latch.stopped = screw._latch.stopped = switched._latch.stopped = True
+    for command in (gripper.open, gripper.close, lambda: gripper.move(0.4), gripper.reactivate,
+                    screw.open, screw.close, lambda: screw.drive_screw(1), switched.open, switched.close):
+        with pytest.raises(RobotStopped, match="soft stopped"):
+            command()
+    assert len(gripper._action.goals) == 1 and not screw._command.sent and not switched._set_io.calls
+    gripper.stop()
+    screw.drive_screw(0)
+    assert closing.cancels == 1
+    assert [(message.motor, message.direction) for message in screw._command.sent] == [(0, 0)]

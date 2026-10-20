@@ -27,6 +27,7 @@ from .event import MESSAGE_QUEUE, Event
 from .mocap import subscribe_mocap
 from .mocap_state import RawMarkers, pose_lost
 from .simulated_parts import SimulatedPart
+from .soft_stop import SoftStopLatch
 from .stream_stats import StreamStats
 
 #: The base's only controller for now. cmd_vel goes through it.
@@ -206,17 +207,19 @@ class BaseInterface:
     """
 
     def __init__(self, node: Node, config: RobotConfig,
-                 simulated: Callable[[], SimulatedPart | None] = lambda: None):
+                 simulated: Callable[[], SimulatedPart | None] = lambda: None, latch: SoftStopLatch | None = None):
         """Subscribe to mocap and create the velocity publisher.
 
         Args:
             node: The monitor node.
             config: The robot this base belongs to.
             simulated: The base's simulator announcement while it is simulated, else None (`SimulatedParts.get`).
+            latch: The robot's soft-stop latch; a new one by default.
         """
         self._node = node
         self._config = config
         self._simulated = simulated
+        self._latch = latch or SoftStopLatch(config.serial)
         self.state = BaseState()
         self._ros = RosConnections(node)
         # * Path ids start somewhere new each run, so a report on an earlier run's path never matches a new one.
@@ -230,7 +233,8 @@ class BaseInterface:
         self.twists_sent = Event(f"{config.serial}_twist")
         self.paths_sent = Event(f"{config.serial}_path")
         self.controllers = ControllerManagerInterface(
-            node, f"/{config.ros_namespace}", (PLATFORM_VELOCITY_CONTROLLER,), self.state.controllers)
+            node, f"/{config.ros_namespace}", (PLATFORM_VELOCITY_CONTROLLER,), self.state.controllers,
+            guard=self._switch_refusal)
         if config.mocap_id is None:
             node.get_logger().warning(f"robot {config.serial} has no mocap id; its base "
                                       f"pose will never be tracked")
@@ -270,6 +274,15 @@ class BaseInterface:
         self._connect()
         self.controllers.reconnect()
 
+    def _switch_refusal(self, _controller: str) -> str | None:
+        """Why the velocity controller may not be started now: only `resume` starts it after a soft stop; else None."""
+        return self._latch.problem()
+
+    @property
+    def soft_stopped(self) -> bool:
+        """bool: Whether the robot is soft stopped: twists and paths raise RobotStopped until it is resumed."""
+        return self._latch.stopped
+
     @property
     def simulation(self) -> SimulatedPart | None:
         """The base simulator's announcement (`SimulatedPart`) while this base is simulated, else None: a real base."""
@@ -301,11 +314,16 @@ class BaseInterface:
         Returns:
             bool: True if sent. False if a speed is not finite, or (with `require_controller`) the velocity controller
                 is not running or its manager has not answered lately.
+
+        Raises:
+            RobotStopped: If the robot is soft stopped and the twist is not zero; a zero twist always goes out.
         """
         if not (math.isfinite(linear_x) and math.isfinite(angular_z)):
             self._node.get_logger().error(f"{self.controllers.namespace}: not driving, the twist is not finite "
                                           f"({linear_x}, {angular_z})")
             return False
+        if linear_x or angular_z:
+            self._latch.check("a twist")
         problem = self.controllers.running_problem(PLATFORM_VELOCITY_CONTROLLER) if require_controller else None
         if problem is not None:
             self._node.get_logger().warning(f"{self.controllers.namespace}: not driving, {problem}",
@@ -343,7 +361,9 @@ class BaseInterface:
         Raises:
             ValueError: If x, y, yaw (and t) differ in length or hold a value that is not finite, or the follower may
                 not take a path now (`follow_problem`); nothing is sent.
+            RobotStopped: If the robot is soft stopped.
         """
+        self._latch.check("a path")
         columns = [[float(v) for v in values] for values in (x, y, yaw) + (() if t is None else (t,))]
         caps = [float(max_linear_speed), float(max_angular_speed)]
         if len({len(column) for column in columns}) != 1:

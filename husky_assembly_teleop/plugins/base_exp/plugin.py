@@ -494,7 +494,7 @@ class BaseExperimentPlugin(HuskyPlugin):
             return
         self._outcome += f" → {saved.parent.name}"
         try:
-            ctx.spawn("report run", self._report(ctx, saved))
+            ctx.spawn("report run", self._report(ctx, saved), survives_soft_stop=True)
         except RuntimeError:
             ctx.log_info(f"base experiment: no report while stopping; make it with report.py {saved.parent}")
 
@@ -680,7 +680,7 @@ class BaseExperimentPlugin(HuskyPlugin):
             if hit is not None:
                 robot.soft_stop()
                 self._alert = (f"{serial} came within {STOP_DISTANCE * 100:.0f} cm of {hit}: soft stopped. "
-                               f"Switch its velocity controller back on, drive it clear, then start again")
+                               f"Resume it in the health panel, drive it clear, then start again")
                 ctx.log_error(f"base experiment: {self._alert}")
                 return
             await ctx.next_tick()

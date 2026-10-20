@@ -59,8 +59,8 @@ From top to bottom:
 
 - **Husky Phone** (top left): a green cloud means the page is linked to the monitor. Red dots mean the link is lost:
   nothing you press reaches the robots then, and the page reconnects by itself.
-- **Stop all**: stops every arm's program, switches every base controller off and cancels every plugin task, as the
-  laptop's Stop all and Esc do.
+- **Stop all**: stops every arm's program, every tool and every base, and cancels the plugin tasks that may move a
+  robot, as the laptop's Stop all and Esc do. The robots refuse every motion command until Resume.
 - **Health banner**: "ALL GREEN", or how many problems there are; shown on every tab.
 - **Tabs**: one per plugin, below.
 
@@ -102,8 +102,9 @@ For recording points with the mocap probe (`mocap_probe`); choose its rigid body
 
 ## 5. After a stop
 
-- **Stop all**: the arms' programs are stopped and the base controllers are off. **Resume** in the laptop's health
-  panel starts both again; the phone cannot. Letting go of a hold button after Stop all starts nothing again.
+- **Stop all**: the arms' programs are stopped, the base controllers are off, and the robots refuse every motion
+  command. **Resume** in the laptop's health panel starts both again; the phone cannot. Letting go of a hold button
+  after Stop all starts nothing again.
 - **E-stop**: the same, and the Robotiq gripper may stay dead even after the arm runs again (crl-husky README,
   "Restart"). Wait until the arm runs, press Reactivate on the laptop, and only then use Open and Close: presses while
   the gripper is dead are queued on the robot and may all run at once when it comes back.

@@ -173,7 +173,7 @@ class MocapBarsPlugin(HuskyPlugin):
         elif self._bar_id is None or self._object is None:
             self._message = "choose a bar and track its rigid body first"
         else:
-            self._take = ctx.spawn("record take", self._record_take(ctx))
+            self._take = ctx.spawn("record take", self._record_take(ctx), survives_soft_stop=True)
 
     async def _record_take(self, ctx: PluginContext) -> None:
         """Record the fit for the chosen seconds, then save it with the bar's layout and the plan's context."""

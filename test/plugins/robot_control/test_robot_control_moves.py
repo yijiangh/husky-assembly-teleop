@@ -191,7 +191,7 @@ def _driven_base():
     """A plugin with one base whose velocity controller runs, recording its twists."""
     sent, controller = [], [PLATFORM_VELOCITY_CONTROLLER]
     base = SimpleNamespace(controllers=SimpleNamespace(is_active=lambda name: name == controller[0]),
-                           send_twist=lambda linear, angular: sent.append((linear, angular)))
+                           send_twist=lambda linear, angular: sent.append((linear, angular)), soft_stopped=False)
     plugin = RobotControlPlugin()
     plugin._bases = [_BaseWidgets(serial="0804", base=base, panel=None, status=None,
                                   speed=SimpleNamespace(value=1.0), phone_speed=SimpleNamespace(value=1.0))]

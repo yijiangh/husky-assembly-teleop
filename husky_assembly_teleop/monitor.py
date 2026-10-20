@@ -33,6 +33,7 @@ from .plugin_api.plugin import HuskyPlugin, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
+from .robot_interface.soft_stop import RobotStopped
 from scaffolding_assembly_core.ids import tracked_id
 from scaffolding_assembly_core.scene import Scene
 from .world.scene import PluginScene, take_snapshot, tracked_body
@@ -301,7 +302,7 @@ class HuskyMonitor(Node):
             count = self._pump_ros()
         self._timer.note("ROS callbacks", f"{count} callbacks")
 
-        # 2. Soft stop before any plugin can command new actions.
+        # 2. Soft stop before any plugin can command new actions: from here on, the robots refuse them.
         if self._viz.take_stop_request():
             self._soft_stop()
 
@@ -403,24 +404,23 @@ class HuskyMonitor(Node):
         return taken
 
     def _soft_stop(self) -> None:
-        """Stop every robot, drop every plugin's queued intents and cancel every plugin task.
+        """Stop every robot, and cancel every plugin task but those spawned with `survives_soft_stop`.
 
         - In the core so it works whichever plugins are loaded.
-        - Intents are dropped: a Start clicked just before Stop would otherwise run after it, in this tick's step 5.
+        - Each robot refuses motion commands until Resume, so queued intents still run: a Start clicked just before
+          Stop gets RobotStopped, a Load just loads.
         - ! A robot that raises is logged; the other robots are still stopped, and the tick goes on.
         """
-        self.log_warn("SOFT STOP: stopping every robot and cancelling every plugin task")
+        self.log_warn("SOFT STOP: stopping every robot and cancelling the plugin tasks that may move one")
         for serial, robot in self._world.robots.items():
             try:
                 robot.soft_stop()
             except Exception:
                 self.log_error(f"SOFT STOP: stopping {serial} failed:\n{traceback.format_exc()}")
         for loaded in self._loaded.values():
-            dropped = loaded.ctx._drop_intents()
-            if dropped:
-                queued = ", ".join(repr(label) for label in dropped)
-                self.log_warn(f"SOFT STOP: dropped {loaded.name}'s queued {queued}")
-            loaded.ctx._cancel_all_tasks()
+            cancelled = loaded.ctx._cancel_for_soft_stop()
+            if cancelled:
+                self.log_warn(f"SOFT STOP: cancelled {', '.join(repr(name) for name in cancelled)}")
 
     def _step_plugin(self, loaded: _LoadedPlugin) -> None:
         """Give one plugin its turn: count failed tasks and message signals, run intents, then update.
@@ -440,6 +440,9 @@ class HuskyMonitor(Node):
         if not loaded.stopped:
             try:
                 loaded.plugin.update(loaded.ctx)
+            except RobotStopped as stopped:
+                # ! No failure, but the rest of this update was skipped: check `soft_stopped` before commanding.
+                self.log_warn(f"plugin {loaded.name!r} update ended: {stopped}")
             except Exception:
                 self._plugin_failed(loaded, "update")
 

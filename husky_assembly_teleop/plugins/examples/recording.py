@@ -78,7 +78,8 @@ class ExampleRecordingPlugin(HuskyPlugin):
     def _start(self, ctx: PluginContext) -> None:
         """Start a recording unless one is running (intent)."""
         if self._task is None or self._task.done():
-            self._task = ctx.spawn("record", self._record(ctx))
+            # * Only records, never commands: a soft stop leaves it running, so the stop is recorded too.
+            self._task = ctx.spawn("record", self._record(ctx), survives_soft_stop=True)
 
     async def _record(self, ctx: PluginContext) -> None:
         """Record for RECORD_SECONDS, then save the run."""

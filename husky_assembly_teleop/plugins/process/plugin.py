@@ -228,7 +228,7 @@ class ProcessPlugin(HuskyPlugin):
         except FileNotFoundError as error:
             self._error = str(error)
             return
-        self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder))
+        self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder), survives_soft_stop=True)
 
     def select(self, index: int) -> None:
         """Select a movement by index into `_movements`, clamped; ignored before a process is loaded."""
@@ -370,7 +370,7 @@ class ProcessPlugin(HuskyPlugin):
         if self.process is None:
             return
         if self._build_task is None or self._build_task.done():
-            self._build_task = ctx.spawn("draw the process", self._build(ctx))
+            self._build_task = ctx.spawn("draw the process", self._build(ctx), survives_soft_stop=True)
 
     def _put_obstacles(self, ctx: PluginContext) -> None:
         """Replace this plugin's scene bodies with the selected movement's process scene; held bodies follow the real robot.

@@ -18,6 +18,7 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        UR_JOINT_LIMITS, joint_move, joint_path_move)
 from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
 from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
+from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
 
 pytestmark = pytest.mark.safety
 
@@ -175,9 +176,10 @@ def test_fake_hardware_moves_without_a_dashboard_but_not_without_the_sync():
     lambda arm: setattr(arm.state, "status_update_time", arm.state.status_update_time - SYNC_STATUS_MAX_AGE - 0.1),
     lambda arm: setattr(arm.state, "operational", False),
     lambda arm: setattr(arm.state, "program_playing", False),
+    lambda arm: setattr(arm._latch, "stopped", True),
 ])
 def test_free_drive_needs_the_safety_sync(unsafe):
-    """Not started, and its heartbeat stops (free drive ends within 1 s), while the sync does not vouch for the arm."""
+    """Not started, and its heartbeat stops (free drive ends in 1 s), while unsafe for the sync or soft stopped."""
     arm = fake_arm(FREE_DRIVE_CONTROLLER)
     arm.state.controllers.requested, arm._free_drive = FREE_DRIVE_CONTROLLER, Publisher()
     arm.request_free_drive()
@@ -441,3 +443,16 @@ def test_test_mode_never_sends_a_wrench():
     arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER, cartesian_test_mode=True)
     assert not arm.send_target_wrench([0.0, 0.0, 5.0])
     assert not arm._target_wrench.sent
+
+
+def test_a_soft_stopped_arm_refuses_every_motion_but_a_hold():
+    """Trajectories, joint moves, Cartesian targets and wrenches raise RobotStopped, sending nothing; holds go out."""
+    arm, compliance = fake_arm(), fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
+    arm._latch.stopped = compliance._latch.stopped = True
+    for command in (lambda: arm.send_joint_trajectory(*line(arm)), lambda: arm.send_joint_move(np.full(6, 0.1)),
+                    lambda: compliance.send_cartesian_target(TCP_POSITION, TCP_ORIENTATION),
+                    lambda: compliance.send_target_wrench([0.0, 0.0, 5.0])):
+        with pytest.raises(RobotStopped, match="soft stopped"):
+            command()
+    assert not arm._trajectory.sent and not compliance._target_frame.sent and not compliance._target_wrench.sent
+    assert arm.hold() and len(arm._trajectory.sent) == 1

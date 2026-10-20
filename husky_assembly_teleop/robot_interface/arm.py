@@ -31,6 +31,7 @@ from .event import Event
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 from .simulated_parts import SimulatedPart
+from .soft_stop import SoftStopLatch
 from .ur_frames import BASE_LINK_FROM_UR_BASE
 
 # ? qos_profile_sensor_data but deeper, to hold one tick of samples: 100 covers 500 Hz for 200 ms.
@@ -385,10 +386,13 @@ class ArmInterface:
         trajectories_sent: Fired with each `SentTrajectory`, holds included.
         targets_sent: Fired with each `SentTarget`, holds included; none in test mode, where nothing is sent.
         wrenches_sent: Fired with each `SentWrench`, the zero wrench of a hold included.
+
+    ! While the robot is soft stopped, every motion command but `hold` raises RobotStopped (`soft_stop.py`).
     """
 
     def __init__(self, node: Node, robot_namespace: str, config: ArmConfig, base_in_husky: Pose,
-                 urdf_problem: str | None = None, simulated: Callable[[], SimulatedPart | None] = lambda: None):
+                 urdf_problem: str | None = None, simulated: Callable[[], SimulatedPart | None] = lambda: None,
+                 latch: SoftStopLatch | None = None):
         """Create every subscription, publisher and client of one arm.
 
         Args:
@@ -398,10 +402,12 @@ class ArmInterface:
             base_in_husky: This arm's base_link in the husky frame.
             urdf_problem: Why the URDF breaks the stock UR frames, or None. If set, Cartesian targets are refused.
             simulated: The arm's fake hardware announcement while it runs on it, else None (`SimulatedParts.get`).
+            latch: The robot's soft-stop latch, shared with the tool; a new one by default.
         """
         self._node = node
         self.config = config
         self._simulated = simulated
+        self._latch = latch or SoftStopLatch(robot_namespace)
         #: This arm's base_link (the controller's target frame) in the husky frame.
         self.base_in_husky = base_in_husky
         #: The TCP set on the pendant, in tool0: what the reported TCP includes (not the tool's own `Tool.tcp`).
@@ -424,7 +430,7 @@ class ArmInterface:
 
         self.controllers = ControllerManagerInterface(
             node, self._namespace, ARM_CONTROLLERS, self.state.controllers, guard=self._switch_refusal)
-        self.end_effector: EndEffector | None = make_end_effector(node, robot_namespace, config)
+        self.end_effector: EndEffector | None = make_end_effector(node, robot_namespace, config, self._latch)
         self.state.end_effector = self.end_effector.state if self.end_effector else None
         self._connect()
 
@@ -573,19 +579,28 @@ class ArmInterface:
         return None
 
     def _motion_refusal(self, controller: str) -> str | None:
-        """Run the checks every motion command shares: `controller` runs, and `safety_problem`.
+        """Run the checks every motion command shares: no soft stop, `controller` runs, and `safety_problem`.
 
         Args:
             controller: The controller the command is for.
 
         Returns:
             str | None: Why it is refused, or None if it may go ahead.
+
+        Raises:
+            RobotStopped: If the robot is soft stopped.
         """
+        self._latch.check(f"a {controller} command to arm {self.config.name}")
         return self.controllers.running_problem(controller) or self.safety_problem()
 
     def _switch_refusal(self, controller: str) -> str | None:
-        """Why `controller` may not be started now: free drive needs `safety_problem` to be None; else None."""
-        return self.safety_problem() if controller == FREE_DRIVE_CONTROLLER else None
+        """Why `controller` may not be started now: free drive needs no soft stop and no `safety_problem`; else None."""
+        return (self._latch.problem() or self.safety_problem()) if controller == FREE_DRIVE_CONTROLLER else None
+
+    @property
+    def soft_stopped(self) -> bool:
+        """bool: Whether the robot is soft stopped: motion commands raise RobotStopped until it is resumed."""
+        return self._latch.stopped
 
     def safety_problem(self) -> str | None:
         """Why the safety sync does not vouch for this arm moving now, or None.
@@ -931,7 +946,7 @@ class ArmInterface:
         state = self.controllers.state
         on = (self.controllers.is_active(FREE_DRIVE_CONTROLLER) and state.requested == FREE_DRIVE_CONTROLLER
               and self._now() <= self._free_drive_until)
-        problem = self.safety_problem() if on else None
+        problem = (self._latch.problem() or self.safety_problem()) if on else None
         if problem is not None:
             # * Without the heartbeat the controller ends free drive within 1 s.
             if self._free_drive_on:

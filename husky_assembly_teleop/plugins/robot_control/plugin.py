@@ -291,8 +291,8 @@ class RobotControlPlugin(HuskyPlugin):
         now = ctx.now()
         for widgets in self._bases:
             held = self._held.get(widgets.serial)
-            # Drop the hold if it timed out or the controller is no longer running.
-            if held is not None and (now - held[2] > HOLD_TIMEOUT
+            # Drop the hold if it timed out, the robot was soft stopped or the controller is no longer running.
+            if held is not None and (now - held[2] > HOLD_TIMEOUT or widgets.base.soft_stopped
                                      or not widgets.base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER)):
                 del self._held[widgets.serial]
                 held = None
@@ -337,7 +337,7 @@ class RobotControlPlugin(HuskyPlugin):
             if held or (keep is not None and keep.value):
                 widgets.arm.request_free_drive()
             # Switch for the phone only once a pending switch is answered, and not straight after a refused one.
-            phone_held = held and last[1]
+            phone_held = held and last[1] and not widgets.arm.soft_stopped
             if controllers.state.switch_in_flight is not None or now < self._free_drive_retry.get(key, now):
                 continue
             if phone_held and key not in self._free_driving:

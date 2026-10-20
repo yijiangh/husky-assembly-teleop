@@ -3,8 +3,8 @@ The plugin contract: what a plugin is handed, and what it is allowed to touch.
 
 Each plugin gets its own PluginContext, so its queue, tasks and UI are disposed of with it.
 
-! Import only `concurrency` and `trace` at runtime, the rest under TYPE_CHECKING: `plugin` and `monitor` import this
-  module.
+! Import only `concurrency`, `trace` and `robot_interface.soft_stop` at runtime, the rest under TYPE_CHECKING: `plugin`
+  and `monitor` import this module.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Iterator, TypeVar
 
+from ..robot_interface.soft_stop import RobotStopped
 from .concurrency import WaitTimeout, describe_exception, ros_future
 from .trace import MAX_SAMPLES, Signal, Trace
 
@@ -85,6 +86,8 @@ class PluginContext:
 
         # Running tasks. ! Also keeps them alive: asyncio holds only a weak reference.
         self._tasks: set[asyncio.Task] = set()
+        # The running tasks a soft stop leaves alone (`spawn(..., survives_soft_stop=True)`).
+        self._survivors: set[asyncio.Task] = set()
         # Tasks that raised since the monitor last asked; see _take_task_failures.
         self._task_failures = 0
         # Futures of the tasks waiting for the next tick; see next_tick.
@@ -258,14 +261,17 @@ class PluginContext:
 
         return _callback
 
-    def spawn(self, label: str, work: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
+    def spawn(self, label: str, work: Coroutine[Any, Any, T], survives_soft_stop: bool = False) -> asyncio.Task[T]:
         """Start `work` as a task owned by this plugin.
 
-        Cancelled on soft stop, plugin stop and shutdown; raising counts as a failure of this plugin.
+        - Cancelled on soft stop (unless `survives_soft_stop`), plugin stop and shutdown.
+        - Raising counts as a failure of this plugin; RobotStopped (a command to a soft-stopped robot) does not.
 
         Args:
             label: Human-readable name, for logs.
             work: The coroutine, e.g. `self._execute_move(ctx, arm, target)`.
+            survives_soft_stop: Keep running through a soft stop, e.g. loading, drawing or writing a report.
+                ! Only for work that never commands a robot: it would raise RobotStopped, or move it after Resume.
 
         Returns:
             asyncio.Task: Handle to cancel, check or await.
@@ -279,6 +285,8 @@ class PluginContext:
         name = f"{self.name}: {label}"
         task = asyncio.get_running_loop().create_task(self._monitor.timer.timed_task(name, work), name=name)
         self._tasks.add(task)
+        if survives_soft_stop:
+            self._survivors.add(task)
         task.add_done_callback(self._task_finished)
         return task
 
@@ -352,10 +360,13 @@ class PluginContext:
     def _task_finished(self, task: asyncio.Task) -> None:
         """Forget a finished task, and log it if it raised. Runs on the loop."""
         self._tasks.discard(task)
+        self._survivors.discard(task)
         if task.cancelled():
             return
         error = task.exception()
-        if error is not None:
+        if isinstance(error, RobotStopped):
+            self.log_warn(f"task {task.get_name()!r} ended: {error}")
+        elif error is not None:
             self._task_failures += 1
             self.log_error(f"task {task.get_name()!r} failed:\n{describe_exception(error)}")
 
@@ -365,7 +376,7 @@ class PluginContext:
     def _drain_intents(self) -> None:
         """Run the intents queued when the drain starts; later ones wait a tick.
 
-        - Every intent runs, even if an earlier one raised.
+        - Every intent runs, even if an earlier one raised. RobotStopped is logged, and counts as no failure.
         - Running tasks are not paused. An intent that invalidates one must cancel it.
 
         Raises:
@@ -381,6 +392,8 @@ class PluginContext:
                 result = intent.run()
                 if asyncio.iscoroutine(result):
                     self.spawn(intent.label, result)
+            except RobotStopped as stopped:
+                self.log_warn(f"intent {intent.label!r} ended: {stopped}")
             except Exception:
                 failed = True
                 self.log_error(f"intent {intent.label!r} failed:\n{traceback.format_exc()}")
@@ -426,14 +439,12 @@ class PluginContext:
         failures, self._task_failures = self._task_failures, 0
         return failures
 
-    def _drop_intents(self) -> list[str]:
-        """Forget every queued intent without running it, and return their labels. For soft stop."""
-        labels = []
-        while True:
-            try:
-                labels.append(self._intents.get_nowait().label)
-            except queue.Empty:
-                return labels
+    def _cancel_for_soft_stop(self) -> list[str]:
+        """Cancel every running task but those spawned with `survives_soft_stop`, and return their names."""
+        tasks = [task for task in self._tasks if task not in self._survivors]
+        for task in tasks:
+            task.cancel()
+        return [task.get_name() for task in tasks]
 
     def _cancel_all_tasks(self) -> list[asyncio.Task]:
         """Cancel every running task, and return them so the caller can wait for their cleanup."""

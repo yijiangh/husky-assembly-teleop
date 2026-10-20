@@ -76,7 +76,7 @@ def test_phone_hold_drives_at_the_phone_speed():
     """A hold drives at the speed slider of the page it came from, and stops once after the timeout."""
     sent = []
     base = SimpleNamespace(controllers=SimpleNamespace(is_active=lambda _name: True),
-                           send_twist=lambda linear, angular: sent.append((linear, angular)))
+                           send_twist=lambda linear, angular: sent.append((linear, angular)), soft_stopped=False)
     ctx = SimpleNamespace(now=lambda: clock[0])
     clock = [0.0]
     plugin = RobotControlPlugin()
@@ -125,7 +125,8 @@ def _free_drive_plugin():
     clock = [0.0]
     ctx = SimpleNamespace(now=lambda: clock[0])
     plugin = RobotControlPlugin()
-    arm = SimpleNamespace(controllers=controllers, config=SimpleNamespace(name="ur_arm"), requests=[])
+    arm = SimpleNamespace(controllers=controllers, config=SimpleNamespace(name="ur_arm"), requests=[],
+                          soft_stopped=False)
     arm.request_free_drive = lambda: arm.requests.append(clock[0])
     plugin._arms = [SimpleNamespace(serial=SERIAL, arm=arm, free_drive_keep=SimpleNamespace(value=False))]
     return plugin, ctx, clock, controllers

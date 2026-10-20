@@ -14,6 +14,7 @@ from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import PlannerContract
 from husky_assembly_teleop.shared.planner.planner_search import Search
+from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
 from husky_assembly_teleop.shared.planner.planner_service import PlannerService
 
 PATH = TimedPath(times=np.array([0.0, 1.0]), points=np.array([[0.0], [1.0]]))
@@ -197,6 +198,23 @@ def test_commit_sends_only_the_latest_ready_plan():
     assert refused_old == (False, "nothing sent: that plan was replaced or cleared")
     assert not refused_stale[0] and "stale" in refused_stale[1] and stale.state == "stale"
     assert sent == (True, "sent") and latest.state == "sent" and planner.sent == [latest.id]
+
+
+@pytest.mark.safety
+def test_a_commit_to_a_soft_stopped_robot_answers_nothing_sent():
+    """A send the stopped robot refuses still resolves the commit, and the plan stays ready for after Resume."""
+    async def scenario(planner, ctx):
+        plan = await planner.request_plan(Request("alice"))
+        return await planner.commit(plan.id), planner.plan
+
+    def refused(ctx, plan):
+        raise RobotStopped("robot alice is soft stopped, a path not sent; press Resume first")
+
+    planner = Planner()
+    planner.send = refused
+    committed, latest = run(planner, scenario)
+    assert committed == (False, "nothing sent: robot alice is soft stopped, a path not sent; press Resume first")
+    assert latest.state == "ready"
 
 
 def test_clear_forgets_the_plan():

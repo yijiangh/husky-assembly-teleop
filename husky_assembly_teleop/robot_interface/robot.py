@@ -25,6 +25,7 @@ from .ur_frames import stock_frame_problem
 from .connections import RosConnections
 from .simulated_parts import TOPIC as SIMULATED_TOPIC
 from .simulated_parts import SimulatedParts
+from .soft_stop import SoftStopLatch
 
 #: On-board node that runs or stops all arms together.
 SAFETY_SYNC = "MultiArmSafetySync"
@@ -67,6 +68,7 @@ class HuskyRobotInterface:
         base: The mobile base.
         arms: The arms, keyed by ArmConfig.name, in configuration order.
         state: Everything measured, for the scene and viewer.
+        soft_stop_latch: Set from `soft_stop` until `resume`; while set, every part refuses commands that could move.
     """
 
     def __init__(self, node: Node, config: RobotConfig):
@@ -78,9 +80,11 @@ class HuskyRobotInterface:
         """
         self._node = node
         self.config = config
+        self.soft_stop_latch = SoftStopLatch(config.serial)
         #: The parts of this robot announced as simulated (`simulated_parts.py`).
         self.simulated = SimulatedParts(lambda: node.get_clock().now().nanoseconds * 1e-9)
-        self.base = BaseInterface(node, config, simulated=partial(self.simulated.get, "base"))
+        self.base = BaseInterface(node, config, simulated=partial(self.simulated.get, "base"),
+                                  latch=self.soft_stop_latch)
         # * The model already has each arm's UR calibration applied; an out-of-date URDF file is loud, not fatal.
         for check in config.ur_calibration:
             if check.out_of_date:
@@ -98,7 +102,7 @@ class HuskyRobotInterface:
             self.arms[arm.name] = ArmInterface(
                 node, config.ros_namespace, arm,
                 fixed_transform(config.model.urdf, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem,
-                simulated=partial(self.simulated.get, arm.ros_namespace))
+                simulated=partial(self.simulated.get, arm.ros_namespace), latch=self.soft_stop_latch)
         #: The husky frame in the mocap-tracked frame (fixed, from the URDF).
         self._husky_in_mocap_frame = fixed_transform(config.model.urdf, MOCAP_FRAME, HUSKY_FRAME)
         self.state = RobotState(serial=config.serial, base=self.base.state,
@@ -178,16 +182,23 @@ class HuskyRobotInterface:
         """
         return self._call_sync(self._unlock, "unlock protective stop")
 
+    @property
+    def soft_stopped(self) -> bool:
+        """bool: Whether the robot is soft stopped: its motion commands raise RobotStopped until `resume`."""
+        return self.soft_stop_latch.stopped
+
     def soft_stop(self) -> None:
-        """Stop the whole robot until an operator resumes it.
+        """Stop the whole robot, and refuse every command that could move it, until an operator resumes it.
 
         - Arms: stay stopped until `resume`.
         - Base: see BaseInterface.stop; `resume` switches its velocity controller on again.
         - Tools: every motor stops (`EndEffector.stop`); nothing restarts them.
+        - Commands that could move any part raise RobotStopped until `resume` (`soft_stop.py`).
 
         ! Not an emergency stop: it needs wifi and the on-board nodes. Use the pendant or platform e-stop.
         ! Each part is stopped even if another raises; the error is logged.
         """
+        self.soft_stop_latch.stopped = True
         log = self._node.get_logger()
         log.warning(f"robot {self.config.serial}: SOFT STOP")
         try:
@@ -207,13 +218,14 @@ class HuskyRobotInterface:
                     log.error(f"robot {self.config.serial}: SOFT STOP of {arm.config.name}'s tool failed: {error!r}")
 
     def resume(self) -> bool:
-        """Undo a soft stop: switch the base's velocity controller on, and lift the arms' stop.
+        """Undo a soft stop: accept commands again, switch the base's velocity controller on, and lift the arms' stop.
 
         The arms restart once all are operational; the base moves again only when sent a twist or a path.
 
         Returns:
             bool: True if every request went out. False if the controller manager or the sync is not reachable.
         """
+        self.soft_stop_latch.stopped = False
         base = self.base.controllers.switch(PLATFORM_VELOCITY_CONTROLLER)
         arms = self._call_sync(self._resume_arms, "resume arms") if self.arms else True
         return base and arms
@@ -262,7 +274,11 @@ class HuskyRobotInterface:
 
         Returns:
             bool: True if sent. False (reason logged) if the robot lacks two arms or a trajectory is refused.
+
+        Raises:
+            RobotStopped: If the robot is soft stopped.
         """
+        self.soft_stop_latch.check("a multi-arm trajectory")
         if self._multi_arm is None:
             self._node.get_logger().error(f"robot {self.config.serial}: multi-arm trajectory "
                                           f"needs two arms, it has {len(self.arms)}")

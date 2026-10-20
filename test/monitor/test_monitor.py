@@ -12,6 +12,7 @@ from robot_fakes import Log
 import husky_assembly_teleop.monitor as monitor_module
 from husky_assembly_teleop.monitor import HuskyMonitor
 from husky_assembly_teleop.plugin_api.plugin import HuskyPlugin
+from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
 from husky_assembly_teleop.world.measured import WorldState
 from scaffolding_assembly_core.scene import Scene
 
@@ -208,37 +209,69 @@ def test_a_plugin_failing_setup_stops_and_its_dependents_are_never_set_up(monkey
 
 @pytest.mark.safety
 def test_soft_stop_stops_every_robot_before_plugins_act_and_cancels_their_tasks(monkeypatch):
-    """Stop all: each robot's soft stop runs before any plugin update, and every plugin task is cancelled."""
+    """Stop all: each robot's soft stop runs before any plugin update; every task but the survivors is cancelled."""
     calls = []
     robots = [SimpleNamespace(soft_stop=lambda index=index: calls.append((f"robot {index}", "soft stop")))
               for index in range(2)]
     monitor = build(monkeypatch, Recorder("a", calls), robots=robots)
 
     async def run():
-        task = monitor._loaded["a"].ctx.spawn("move", asyncio.sleep(60.0))
+        ctx = monitor._loaded["a"].ctx
+        move = ctx.spawn("move", asyncio.sleep(60.0))
+        load = ctx.spawn("load", asyncio.sleep(60.0), survives_soft_stop=True)
         monitor._viz.stop_requested = True
         await monitor._tick()
         await asyncio.sleep(0)
-        return task
+        return move, not load.done()
 
-    task = asyncio.run(run())
+    move, survived = asyncio.run(run())
     assert calls[1:4] == [("robot 0", "soft stop"), ("robot 1", "soft stop"), ("a", "update")]
-    assert task.cancelled()
+    assert move.cancelled() and survived
+    assert "cancelled 'a: move'" in monitor.get_logger().text("warning")
 
 
 @pytest.mark.safety
-def test_soft_stop_drops_what_was_clicked_before_it(monkeypatch):
-    """A Start queued before Stop all never runs (it would run after the stop, in the same tick); later ones do."""
+def test_clicks_queued_before_stop_all_still_run_and_a_refused_one_is_no_failure(monkeypatch):
+    """A click queued before Stop all runs after it; one whose command the stopped robot refuses ends with a warning."""
     calls = []
     monitor = build(monkeypatch, Recorder("a", calls))
     ctx = monitor._loaded["a"].ctx
-    ctx.submit("start run", lambda: calls.append(("a", "start run")))
+
+    def start() -> None:
+        raise RobotStopped("robot r0 is soft stopped, a path not sent; press Resume first")
+
+    ctx.submit("start run", start)
+    ctx.submit("load", lambda: calls.append(("a", "load")))
     monitor._viz.stop_requested = True
     ticks(monitor)
-    assert ("a", "start run") not in calls and "'start run'" in monitor.get_logger().text("warning")
-    ctx.submit("start run", lambda: calls.append(("a", "start run")))
-    ticks(monitor)
-    assert ("a", "start run") in calls
+    assert ("a", "load") in calls and monitor._loaded["a"].errors == 0
+    assert "intent 'start run' ended: robot r0 is soft stopped" in monitor.get_logger().text("warning")
+
+
+@pytest.mark.safety
+def test_a_refused_command_in_an_update_or_a_task_never_stops_the_plugin(monkeypatch):
+    """A RobotStopped raised by update tick after tick, or ending a task, is a warning, not a failure."""
+
+    class Refused(Recorder):
+        def update(self, ctx) -> None:
+            """Command a stopped robot."""
+            super().update(ctx)
+            raise RobotStopped("robot r0 is soft stopped, a twist not sent; press Resume first")
+
+    async def follow() -> None:
+        raise RobotStopped("robot r0 is soft stopped, a path not sent; press Resume first")
+
+    monitor = build(monkeypatch, Refused("a", []))
+
+    async def run():
+        monitor._loaded["a"].ctx.spawn("follow", follow())
+        for _ in range(MAX_ERRORS + 1):
+            await monitor._tick()
+
+    asyncio.run(run())
+    warnings = monitor.get_logger().text("warning")
+    assert not monitor._loaded["a"].stopped and monitor._loaded["a"].errors == 0
+    assert "plugin 'a' update ended" in warnings and "task 'a: follow' ended" in warnings
 
 
 @pytest.mark.safety

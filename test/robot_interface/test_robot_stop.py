@@ -9,6 +9,7 @@ from robot_fakes import Client, Node
 
 from husky_assembly_teleop.robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 from husky_assembly_teleop.robot_interface.robot import HuskyRobotInterface
+from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped, SoftStopLatch
 
 pytestmark = pytest.mark.safety
 
@@ -17,6 +18,7 @@ def robot(arms: int = 1, ready: bool = True):
     """A robot with `arms` arms whose sync services are up if `ready`; its base records stops."""
     interface = HuskyRobotInterface.__new__(HuskyRobotInterface)
     interface._node, interface.config = Node(), SimpleNamespace(serial="0804")
+    interface.soft_stop_latch = SoftStopLatch("0804")
     interface.base = SimpleNamespace(stops=0, switched=[])
     interface.base.stop = lambda: setattr(interface.base, "stops", interface.base.stops + 1)
     interface.base.controllers = SimpleNamespace(switch=lambda name: interface.base.switched.append(name) or ready)
@@ -66,6 +68,7 @@ def test_a_base_that_raises_does_not_keep_the_arms_from_stopping():
     interface.base.stop = broken
     interface.soft_stop()
     assert len(interface._stop_arms.calls) == 1 and "publisher destroyed" in interface._node.log.text("error")
+    assert interface.soft_stopped
 
 
 def test_soft_stop_with_the_sync_down_still_stops_the_base_and_says_so():
@@ -74,6 +77,19 @@ def test_soft_stop_with_the_sync_down_still_stops_the_base_and_says_so():
     interface.soft_stop()
     assert interface.base.stops == 1 and not interface._stop_arms.calls
     assert "cannot stop arms" in interface._node.log.text("error")
+
+
+def test_soft_stop_latches_the_robot_until_resume():
+    """From the soft stop the robot refuses motion; resume accepts commands again before it switches the base on."""
+    interface = robot(arms=2)
+    assert not interface.soft_stopped
+    interface.soft_stop()
+    assert interface.soft_stopped
+    with pytest.raises(RobotStopped, match="robot 0804 is soft stopped"):
+        interface.send_multi_arm_trajectory({}, 1.0)
+    seen = []
+    interface.base.controllers.switch = lambda _name: seen.append(interface.soft_stopped) or True
+    assert interface.resume() and seen == [False] and not interface.soft_stopped
 
 
 def test_resume_switches_the_base_controller_on_and_asks_the_sync_to_resume_the_arms():

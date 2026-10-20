@@ -128,8 +128,8 @@ class HealthPlugin(HuskyPlugin):
                 actions = gui.add_button_group(
                     "Robot", list(ROBOT_ACTIONS),
                     hint="Unlock: like 'Enable robot' on the teach pendant; clear the cause first. "
-                         "Resume: undo 'Stop all' for this robot: its arms' programs play again and its "
-                         "base's velocity controller is switched on. "
+                         "Resume: undo 'Stop all' for this robot: it takes motion commands again, its arms' "
+                         "programs play again and its base's velocity controller is switched on. "
                          "Reconnect: rebuild every topic, service and action of this robot.")
                 # ! Bind this loop's serial as a default argument.
                 actions.on_click(ctx.defer_value(

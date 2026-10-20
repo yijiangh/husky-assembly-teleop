@@ -216,9 +216,10 @@ The UI is served at http://localhost:8080; other PCs on the network reach it at 
 
 **Quit:** press Ctrl-C once and wait. During shutdown the plugins send their final hold commands; a second Ctrl-C skips them.
 
-**Stop all (Esc):** stops every robot (bases, arms through their safety sync, tools), drops clicks queued before
-it and cancels every plugin task. **Resume** in the health panel starts the arms and the base controller again. The
-monitor keeps running. Not an emergency stop.
+**Stop all (Esc):** stops every robot (bases, arms through their safety sync, tools) and cancels the plugin tasks that
+may move one; loading, drawing and reports go on. Until **Resume** in the health panel, each robot refuses every
+command that could move it (clicks included); Resume starts the arms and the base controller again. The monitor keeps
+running. Not an emergency stop.
 
 **Arms need the safety sync.** Arm moves and free drive go out only while the robot's `multi_arm_safety_sync` (crl-husky's
 onboard arm launch) reports the arm operational with its program playing; otherwise they are refused and the log says

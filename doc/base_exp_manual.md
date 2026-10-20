@@ -257,7 +257,7 @@ The reports hold numbers only; how they are built: `doc/experiment_report_guide.
 | "not tracked" | No mocap pose: simulator or relay not running, or wrong mocap id (Alice 1840, Belle 1850, Cindy 1860). |
 | The robot jumps between two places | Two simulators publish the same mocap topic: `pgrep -af husky_sim`, stop the old one. |
 | "auto not started: no lab border" | Add `obstacles` to the monitor's plugins. |
-| The real robot does not move, or a run ends "not driven" | The velocity controller is off: switch it on in `robot_control`, also after every soft stop. |
+| The real robot does not move, or a run ends "not driven" | The velocity controller is off: switch it on in `robot_control`; after a soft stop, press Resume in the health panel. |
 | The monitor logs "cannot decode messages" | A follower with an older message definition still runs somewhere: rebuild and restart it. |
 | A report leaves path runs out "under other conditions" | The experiment holds path runs recorded under different `CONDITIONS`; the path reports use the ones most have. Use one experiment name per condition for A and C. Constant commands are compared across conditions instead. |
 | `constant_commands.md` counts runs with a stall | The robot briefly stopped during a constant command (seen with commands sent over Wi-Fi). Only the part without it is used; nothing to do unless most runs stall. `commands_stalls.csv` lists them. |

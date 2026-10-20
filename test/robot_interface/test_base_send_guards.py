@@ -14,6 +14,7 @@ from husky_assembly_teleop.robot_interface.base import (FOLLOWER_SILENT_AFTER, P
 from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
 from husky_assembly_teleop.robot_interface.event import Event
 from husky_assembly_teleop.robot_interface.mocap_state import POSE_TIMEOUT
+from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped, SoftStopLatch
 
 pytestmark = pytest.mark.safety
 
@@ -25,7 +26,7 @@ PATH = ([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 2.0], 0.3, 0.5)
 def _base() -> BaseInterface:
     """A base ready to follow at ROS time NOW: a live mocap pose, a live follower, the velocity controller running."""
     base = BaseInterface.__new__(BaseInterface)
-    base._node, base._config = Node(NOW), SimpleNamespace(mocap_id=1)
+    base._node, base._config, base._latch = Node(NOW), SimpleNamespace(mocap_id=1), SoftStopLatch("0804")
     base.state = BaseState(tracked=True, tracking_valid=True, marker_errors=deque([(NOW, 0.0)]),
                            last_update_time=NOW, last_fix_time=NOW, estopped=False)
     base.state.follower = FollowerState(
@@ -115,3 +116,20 @@ def test_finite_commands_go_out():
     sent, stopped = paths
     assert (sent.path_id, sent.waypoints, sent.timed, sent.speed_caps.tolist()) == (1, 2, 1, [0.3, 0.5])
     assert (stopped.path_id, stopped.waypoints) == (1, 0)
+
+
+def test_a_soft_stopped_base_refuses_to_drive_but_still_stops():
+    """Twist and path raise RobotStopped and send nothing, the velocity controller may not start; stops still go out."""
+    base = _base()
+    base._latch.stopped, base._path_id = True, 0
+    with pytest.raises(RobotStopped, match="soft stopped, a twist not sent"):
+        base.send_twist(0.2, 0.0)
+    with pytest.raises(RobotStopped, match="a path not sent"):
+        base.send_path(*PATH)
+    assert not base._cmd_vel.sent and not base._base_path.sent
+    assert "soft stopped" in base._switch_refusal(PLATFORM_VELOCITY_CONTROLLER)
+    assert base.send_twist(0.0, 0.0)
+    base.stop_path()
+    assert len(base._cmd_vel.sent) == 1 and len(base._base_path.sent) == 1
+    base._latch.stopped = False
+    assert base._switch_refusal(PLATFORM_VELOCITY_CONTROLLER) is None and base.send_twist(0.2, 0.0)
