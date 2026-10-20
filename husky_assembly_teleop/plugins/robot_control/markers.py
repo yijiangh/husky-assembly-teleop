@@ -1,12 +1,14 @@
-"""The 3D markers drawn while an arm's Cartesian controller runs: target and TCP frames, and force arrows."""
+"""The 3D markers shown while an arm's Cartesian controller runs: target and TCP frames, force arrows, a gizmo."""
 
 from __future__ import annotations
+
+from typing import Callable
 
 import numpy as np
 import viser
 from scipy.spatial.transform import Rotation
 
-from scaffolding_assembly_core.geometry import Pose, compose
+from scaffolding_assembly_core.geometry import Pose, compose, invert
 from ...plugin_api.context import PluginContext
 from ...robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER, ArmInterface
 from ...robot_interface.ur_frames import STOCK_YAW
@@ -15,7 +17,7 @@ from ...ui.style import block
 
 #: Poses drawn in 3D while the Cartesian controller runs: kind, label, origin colour (r, g, b), axis length (m).
 FRAME_MARKERS = (
-    ("target", "target (sliders)", (255, 200, 0), 0.12),
+    ("target", "target (sliders, gizmo)", (255, 200, 0), 0.12),
     ("tcp", "TCP reported", (40, 170, 60), 0.08),
 )
 #: Force arrows drawn from the reported TCP: kind, label, colour.
@@ -24,6 +26,9 @@ FORCE_ARROWS = (
     ("force_applied", "force applied", (255, 110, 0)),
 )
 FORCE_ARROW_SCALE = 0.01  # metres per newton: 20 N draws 20 cm
+#: The gizmo is moved to the sliders' target only when this far from it, metres and radians: closer, the slider
+#: rounding (1 mm, 0.1°) would fight a drag.
+GIZMO_TOLERANCE = 0.002, np.radians(0.5)
 
 
 def _marker_path(ctx: PluginContext, kind: str, serial: str, arm: ArmInterface) -> str:
@@ -71,6 +76,47 @@ def add_force_arrows(ctx: PluginContext, serial: str, arm: ArmInterface) -> dict
             for name, _, color in FORCE_ARROWS}
 
 
+def add_target_gizmo(ctx: PluginContext, serial: str, arm: ArmInterface,
+                     on_drag: Callable[[Pose], None]) -> viser.TransformControlsHandle:
+    """Create one arm's gizmo for dragging its Cartesian target, hidden until the Cartesian controller runs.
+
+    Args:
+        ctx: The plugin's context.
+        serial: The robot's serial.
+        arm: The arm.
+        on_drag: Called on the main thread with the dragged world pose.
+
+    Returns:
+        viser.TransformControlsHandle: The gizmo; `draw_markers` places it.
+    """
+    gizmo = ctx.view.scene.add_transform_controls(_marker_path(ctx, "gizmo", serial, arm), scale=0.2,
+                                                  depth_test=False, visible=False)
+
+    async def dragged(event: viser.TransformControlsEvent) -> None:
+        # * Read here: by the time the intent runs the gizmo may have moved on.
+        (w, x, y, z), position = tuple(event.target.wxyz), tuple(event.target.position)
+        ctx.submit(f"drag target {serial} {arm.config.name}", lambda: on_drag(Pose(position, (x, y, z, w))))
+
+    gizmo.on_update(dragged)
+    return gizmo
+
+
+def controller_base(ctx: PluginContext, serial: str, arm: ArmInterface) -> Pose:
+    """The world pose of the compliance controller's own `base_link`: `base_link_inertia` turned by STOCK_YAW.
+
+    ? Markers are placed in it, so they show where the controller will go. See doc/ur_frames.md.
+    """
+    inertia = ctx.kinematics.link_pose(serial, f"{arm.config.name}_base_link_inertia")
+    return compose(inertia, Pose(orientation=tuple(Rotation.from_euler("z", -STOCK_YAW).as_quat())))
+
+
+def target_from_world(ctx: PluginContext, serial: str, arm: ArmInterface,
+                      pose: Pose) -> tuple[np.ndarray, np.ndarray]:
+    """A world pose as a TCP target in the husky's base_link, as the pose sliders take it: position and quaternion."""
+    local = compose(invert(controller_base(ctx, serial, arm)), pose)
+    return arm.to_husky(local.position, local.orientation)
+
+
 def marker_legend() -> str:
     """HTML legend of the 3D markers, for the arm's panel."""
     style = "font-size:11px;margin-right:8px;white-space:nowrap"
@@ -82,10 +128,7 @@ def marker_legend() -> str:
 
 def place_markers(ctx: PluginContext, serial: str, arm: ArmInterface, target: tuple[np.ndarray, np.ndarray],
                   force_target: np.ndarray, force_applied: np.ndarray | None) -> dict[str, tuple] | None:
-    """Where one arm's markers go this tick, in the world.
-
-    ? Placed in the controller's own `base_link` (`base_link_inertia` turned by STOCK_YAW),
-      so they show where the controller will go. See doc/ur_frames.md.
+    """Where one arm's markers go this tick, in the world, placed in `controller_base`.
 
     Args:
         ctx: The plugin's context.
@@ -104,8 +147,7 @@ def place_markers(ctx: PluginContext, serial: str, arm: ArmInterface, target: tu
     if not known or not arm.controllers.is_active(CARTESIAN_COMPLIANCE_CONTROLLER):
         return None
     state = arm.state
-    inertia = ctx.kinematics.link_pose(serial, f"{arm.config.name}_base_link_inertia")
-    base = compose(inertia, Pose(orientation=tuple(Rotation.from_euler("z", -STOCK_YAW).as_quat())))
+    base = controller_base(ctx, serial, arm)
     markers: dict[str, tuple] = {}
     local_poses = {"target": target}
     if state.tcp_position is not None:
@@ -123,8 +165,15 @@ def place_markers(ctx: PluginContext, serial: str, arm: ArmInterface, target: tu
 
 
 def draw_markers(frames: dict[str, viser.FrameHandle], arrows: dict[str, viser.ArrowsHandle],
-                 markers: dict[str, tuple]) -> None:
-    """Move one arm's markers to `markers` (from `place_markers`) and hide those absent from it."""
+                 gizmo: viser.TransformControlsHandle, markers: dict[str, tuple]) -> None:
+    """Move one arm's markers and gizmo to `markers` (from `place_markers`) and hide those absent from it."""
+    target = markers.get("target_world")
+    gizmo.visible = target is not None
+    if target is not None:
+        wxyz = quaternion_to_wxyz(np.array(target[1]))
+        turn = 2 * np.arccos(min(1.0, abs(float(np.dot(wxyz, gizmo.wxyz)))))
+        if np.linalg.norm(np.array(target[0]) - gizmo.position) > GIZMO_TOLERANCE[0] or turn > GIZMO_TOLERANCE[1]:
+            gizmo.position, gizmo.wxyz = target[0], wxyz
     for name, frame in frames.items():
         pose = markers.get(f"{name}_world")
         frame.visible = pose is not None

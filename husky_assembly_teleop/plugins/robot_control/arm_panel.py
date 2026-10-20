@@ -112,7 +112,7 @@ def build_compliance_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, a
     if arm.config.cartesian_test_mode:
         gui.add_html(warning("test mode · checks run, nothing is sent", color=FAIL))
     gui.add_html(warning("no collision checking · straight TCP line, joints unchecked"))
-    gui.add_html(note("target: TCP in the husky's base_link"))
+    gui.add_html(note("target: TCP in the husky's base_link; set the sliders or drag the gizmo"))
     pose = [gui.add_slider(name, min=-POSITION_RANGE, max=POSITION_RANGE, step=POSITION_STEP, initial_value=0.0)
             if kind == "p" else gui.add_slider(name, min=-180.0, max=180.0, step=0.1, initial_value=0.0)
             for name, kind in POSE_SLIDERS]

@@ -32,11 +32,13 @@ from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import SECTION_SENSOR, block, numbers, section, values
+from scaffolding_assembly_core.geometry import Pose
 from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, build_compliance_inputs, build_free_drive_inputs,
                         build_jog_inputs, build_phone_arm_inputs, build_tool_inputs, pose_from_sliders,
                         pose_plan_line)
 from .dpad import HOLD_TIMEOUT, MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, PHONE_DPAD_STYLE, build_velocity_inputs
-from .markers import add_force_arrows, add_frame_markers, draw_markers, place_markers
+from .markers import (add_force_arrows, add_frame_markers, add_target_gizmo, draw_markers, place_markers,
+                      target_from_world)
 from .status import (ControllerPanel, arm_status, base_status, build_controller_panel, phone_arm_status,
                      phone_base_status, show_only_running, tool_status)
 
@@ -74,6 +76,7 @@ class _ArmWidgets:
     compliance: ComplianceInputs
     frames: dict[str, viser.FrameHandle]
     arrows: dict[str, viser.ArrowsHandle]
+    gizmo: viser.TransformControlsHandle
     #: Keep on, in the free drive controller's folder.
     free_drive_keep: viser.GuiCheckboxHandle | None = None
     #: The arm's status line on the phone's Control tab, set once that tab is built.
@@ -114,6 +117,8 @@ class RobotControlPlugin(HuskyPlugin):
 
         #: Arms whose pose sliders are set to the measured TCP on the next update.
         self._load_pose: set[tuple[str, str]] = set()
+        #: Per arm, the gizmo's last dragged world pose, applied to the pose sliders on the next update.
+        self._dragged: dict[tuple[str, str], Pose] = {}
 
         #: Target force last sent to each arm, N; the controller keeps applying it.
         self._applied_force: dict[tuple[str, str], np.ndarray] = {}
@@ -219,7 +224,8 @@ class RobotControlPlugin(HuskyPlugin):
                            jog_speed=built[SCALED_JOINT_TRAJECTORY_CONTROLLER],
                            compliance=built[CARTESIAN_COMPLIANCE_CONTROLLER],
                            free_drive_keep=built[FREE_DRIVE_CONTROLLER],
-                           frames=add_frame_markers(ctx, serial, arm), arrows=add_force_arrows(ctx, serial, arm))
+                           frames=add_frame_markers(ctx, serial, arm), arrows=add_force_arrows(ctx, serial, arm),
+                           gizmo=add_target_gizmo(ctx, serial, arm, partial(self._dragged.__setitem__, key)))
 
     def teardown(self, ctx: PluginContext) -> None:
         """At shutdown, stop any base this plugin was driving, and hold any arm it jogs or left a force on.
@@ -293,6 +299,9 @@ class RobotControlPlugin(HuskyPlugin):
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             self._load_pose_sliders(widgets)
+            dragged = self._dragged.pop(key, None)
+            if dragged is not None:
+                self._set_pose_sliders(widgets, *target_from_world(ctx, widgets.serial, widgets.arm, dragged))
             target = widgets.arm.from_husky(*pose_from_sliders(widgets.compliance.pose))
             force = np.array([slider.value for slider in widgets.compliance.force])
             self._markers[key] = place_markers(ctx, widgets.serial, widgets.arm, target, force,
@@ -398,7 +407,7 @@ class RobotControlPlugin(HuskyPlugin):
             show_only_running(widgets.panel)
             widgets.status.content = arm_status(widgets.arm, now)
             widgets.compliance.pose_plan.content = pose_plan_line(widgets.arm, widgets.compliance.pose)
-            draw_markers(widgets.frames, widgets.arrows, self._markers.get(key) or {})
+            draw_markers(widgets.frames, widgets.arrows, widgets.gizmo, self._markers.get(key) or {})
             applied = self._applied_force.get(key)
             widgets.compliance.wrench_line.content = block(values(
                 f"applied {numbers(applied, 3, 6, 1)} N ({TARGET_WRENCH_FRAME})"))
@@ -417,11 +426,15 @@ class RobotControlPlugin(HuskyPlugin):
         state = widgets.arm.state
         if key not in self._load_pose or state.tcp_position is None:
             return  # not asked, or no TCP yet
-        position, orientation = widgets.arm.to_husky(state.tcp_position, state.tcp_orientation)
+        self._set_pose_sliders(widgets, *widgets.arm.to_husky(state.tcp_position, state.tcp_orientation))
+        self._load_pose.discard(key)
+
+    @staticmethod
+    def _set_pose_sliders(widgets: _ArmWidgets, position: np.ndarray, orientation: np.ndarray) -> None:
+        """Set one arm's pose sliders to a TCP target in the husky's base_link, rounded to the sliders' steps."""
         angles = Rotation.from_quat(orientation).as_euler("xyz", degrees=True)
         for slider, value in zip(widgets.compliance.pose, [*position, *angles]):
             slider.value = round(float(value) / slider.step) * slider.step
-        self._load_pose.discard(key)
 
     # --- --- --- --- --- MOVE TASKS --- --- --- --- ---
 

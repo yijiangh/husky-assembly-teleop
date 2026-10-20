@@ -8,13 +8,16 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from robot_fakes import TCP_ORIENTATION, TCP_POSITION, fake_arm
+from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugins.robot_control.dpad import HOLD_TIMEOUT
+from husky_assembly_teleop.plugins.robot_control.markers import place_markers, target_from_world
 from husky_assembly_teleop.plugins.robot_control.plugin import RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, MOVING_WITHIN,
                                                        SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_LIMITS)
 from husky_assembly_teleop.robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
+from scaffolding_assembly_core.geometry import Pose
 
 pytestmark = pytest.mark.safety
 
@@ -221,6 +224,20 @@ def test_a_jog_at_the_joint_limit_is_refused_once_per_press():
     arm, plugin, ctx = _jogged_arm(joints=[UR_JOINT_LIMITS[0], 0.0, 0.0, 0.0, 0.0, 0.0])
     _jog_ticks(arm, plugin, ctx, 5, press=(0, 1.0))
     assert not arm._trajectory.sent and ctx.text().count("at its limit") == 1
+
+
+def test_the_gizmo_and_the_sliders_name_the_same_target():
+    """A target in the husky's base_link, drawn in the world, comes back the same from a gizmo at that pose."""
+    arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
+    arm.base_in_husky = Pose((0.2, -0.1, 0.4), tuple(Rotation.from_euler("xyz", [0.3, -0.2, 1.0]).as_quat()))
+    inertia = Pose((1.0, 2.0, 0.5), tuple(Rotation.from_euler("z", 0.7).as_quat()))
+    ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial="0804")]),
+                          kinematics=SimpleNamespace(link_pose=lambda serial, link: inertia))
+    position, orientation = np.array([0.5, 0.1, 0.6]), Rotation.from_euler("xyz", [10, 20, 30], degrees=True).as_quat()
+    world = place_markers(ctx, "0804", arm, arm.from_husky(position, orientation), np.zeros(3), None)["target_world"]
+    back = target_from_world(ctx, "0804", arm, Pose(tuple(world[0]), tuple(world[1])))
+    np.testing.assert_allclose(back[0], position, atol=1e-9)
+    assert (Rotation.from_quat(back[1]).inv() * Rotation.from_quat(orientation)).magnitude() < 1e-9
 
 
 def _driven_base():
