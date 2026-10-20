@@ -54,7 +54,7 @@ class DebugGizmoPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        with ctx.view.ui() as gui:
+        with ctx.view.ui(expanded=False) as gui:
             gui.add_html(section("move body", SECTION_CTRL))
             self._edit = gui.add_checkbox("Edit", False, hint="Show the gizmo and pick bodies by clicking in 3D.")
             self._select = gui.add_dropdown("Body", [NONE_ENTRY])

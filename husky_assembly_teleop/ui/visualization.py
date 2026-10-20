@@ -601,14 +601,17 @@ class PluginView:
         return self._server.gui
 
     @contextmanager
-    def ui(self) -> Iterator[viser.GuiApi]:
+    def ui(self, expanded: bool = True) -> Iterator[viser.GuiApi]:
         """Add GUI widgets inside this plugin's folder; only widgets created inside the block land there.
+
+        Args:
+            expanded: Whether the folder starts open; only the call that makes it counts.
 
         Yields:
             viser.GuiApi: The GUI api, with this plugin's folder as parent.
         """
         if self._folder is None:
-            self._folder = self._server.gui.add_folder(self._name)
+            self._folder = self._server.gui.add_folder(self._name, expand_by_default=expanded)
         with self._folder:
             yield self._server.gui
 

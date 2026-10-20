@@ -72,7 +72,7 @@ class ObstaclesPlugin(HuskyPlugin):
         """
         self.load(ctx)
         self._put_all(ctx)
-        with ctx.view.ui() as gui:
+        with ctx.view.ui(expanded=False) as gui:
             gui.add_html(section("lab", SECTION_CTRL))
             self._lab_status: viser.GuiHtmlHandle = gui.add_html("")
             lab_actions = gui.add_button_group("Lab", ["Save", "Revert"])
