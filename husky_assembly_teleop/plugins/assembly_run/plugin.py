@@ -1,7 +1,7 @@
 """
 Remember how far an assembly got: which actions are done, where each robot was left, and the run's settings.
 
-When the process plugin loads a process, this reads the runs in its folder (`shared/runs.py`). It continues the run
+When the process plugin loads a process, this reads the runs in its folder (`shared/runs/runs.py`). It continues the run
 used last when that run was made on exactly these process files (and no newer run folder is unreadable). Otherwise the
 operator chooses: Continue the run used last (in a new run, carried over by action id), Continue an older run made on
 these files, or start a New run; with no run yet, the first write starts one. Then the first pending action becomes
@@ -10,7 +10,7 @@ unless the operator picks a step first; at once after a soft stop); never while 
 
 Mark done records every live robot where it is. When the action's own robot is not live, the operator confirms and
 its end is the export's, marked assumed. Reopen puts a done action back to pending. Other plugins read `view` and send
-requests (`shared.assembly_run.AssemblyRunPluginApi`).
+requests (`shared.assembly_run_contract.AssemblyRunContract`).
 
 - ! Nothing is written until the runs were read: an open that fails or is stopped is tried again.
 - ! Runs are written into the process folder (`runs/`), in order on a writer thread; the state here changes first.
@@ -28,10 +28,10 @@ from typing import TYPE_CHECKING, Any, Mapping
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...shared.assembly_run import RunView, beliefs_of, first_pending, is_live
-from ...shared.process import LoadedProcess
-from ...shared.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, RunError, RunSettings, continue_run,
-                            file_hashes, find_runs, made_after, record_event, reopen, save_progress, with_current)
+from ...shared.assembly_run_contract import RunView, beliefs_of, first_pending, is_live
+from ...shared.assembly_planning.process_steps import LoadedProcess, loaded_process
+from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, RunError, RunSettings, continue_run,
+                                 file_hashes, find_runs, made_after, record_event, reopen, save_progress, with_current)
 from .panel import PanelStatus, RunPanel
 from .writes import NO_PROCESS, NOT_OPENED, OPEN, OPENING, RunWrites
 
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
     from scaffolding_assembly_core.process import Process
 
-    from ...shared.process import ProcessPluginApi
+    from ...shared.process_contract import ProcessContract
 
 #: Seconds to wait for the current action's robot to be live before selecting its step anyway.
 LIVE_WAIT = 15.0
@@ -78,6 +78,10 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._panel: RunPanel | None = None
         #: The process the run is for, as the process plugin loaded it, and its process ids -> live ids.
         self._loaded: LoadedProcess | None = None
+        #: The process plugin's `Process` that `_loaded` wraps.
+        #: ! Wrapped once per process: plans and requests compare `_loaded` by identity, so a new wrapper would make
+        #:   every plan stale and reset the run.
+        self._source: Process | None = None
         self._ids: IdMap | None = None
         #: How far its runs were read (NO_PROCESS, OPENING, OPEN, NOT_OPENED), and when to read them again.
         self._state, self._retry_at = NO_PROCESS, 0.0
@@ -110,7 +114,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._auto_from: int | None = None
         self._go_task: asyncio.Task | None = None
 
-    # --- --- --- --- --- WHAT OTHER PLUGINS READ AND ASK (AssemblyRunPluginApi) --- --- --- --- ---
+    # --- --- --- --- --- WHAT OTHER PLUGINS READ AND ASK (AssemblyRunContract) --- --- --- --- ---
 
     @property
     def view(self) -> RunView:
@@ -227,16 +231,18 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
 
     def update(self, ctx: PluginContext) -> None:
         """Open the run of a newly loaded process; open it again if that failed; notice a step picked meanwhile."""
-        process: ProcessPluginApi = ctx.require("process")
+        process: ProcessContract = ctx.require("process")
         selection = process.selection
-        loaded = selection.loaded if selection is not None else None
-        if loaded is not self._loaded:
+        source = selection.process if selection is not None else None
+        if source is not self._source:
+            self._source = source
+            loaded = loaded_process(source) if source is not None else None
             self._reset(loaded)
             if loaded is not None:
                 self._auto_from = selection.index
                 self._open_now(ctx)
             return
-        if loaded is None:
+        if source is None:
             return
         if self._auto_from is not None and selection.index != self._auto_from:
             self._stop_auto()

@@ -18,14 +18,13 @@ from ...plugin_api.context import PluginContext
 from ...robot_interface.arm import (CARTESIAN_MOVE_MAX_ROTATION_SPEED, CARTESIAN_MOVE_MAX_SPEED,
                                     CARTESIAN_MOVE_MIN_DURATION, JOINT_MOVE_MAX_SPEED, JOINT_MOVE_MIN_DURATION,
                                     MAX_TARGET_FORCE, TARGET_WRENCH_FRAME, ArmInterface, cartesian_move, joint_move)
-from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV1, ScaffoldingV3
+from ...robot_interface.end_effectors import EndEffector, RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ...ui.ghost import RecentUse
+from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles
 from ...ui.style import FAIL, SECTION_CTRL, SECTION_TOOL, block, note, section, values, warning
 from .dpad import HOLD_CALLBACK_HZ
 from .markers import marker_legend
 
-#: Slider label and range (degrees) per UR joint, in UR_JOINT_NAMES order.
-JOINT_SLIDERS = (("pan", 360), ("lift", 360), ("elbow", 180), ("w1", 360), ("w2", 360), ("w3", 360))
 #: TCP position slider range (metres, around the arm's base) and step.
 POSITION_RANGE, POSITION_STEP = 1.5, 0.001
 POSE_SLIDERS = (("x m", "p"), ("y m", "p"), ("z m", "p"), ("roll °", "a"), ("pitch °", "a"), ("yaw °", "a"))
@@ -33,7 +32,7 @@ POSE_SLIDERS = (("x m", "p"), ("y m", "p"), ("z m", "p"), ("roll °", "a"), ("pi
 FORCE_STEP = 0.5
 #: Short names for end effector kinds, shown next to the TOOL section label.
 TOOL_LABELS = {"robotiq": "robotiq", "scaffolding_v1": "v1", "scaffolding_v3": "v3"}
-#: Icon of the phone's free drive button; the phone CSS finds the button by it.
+#: Icon of the free drive button; the phone CSS finds the button by it.
 FREE_DRIVE_ICON = viser.Icon.HAND_GRAB
 #: Hint on the Grip buttons, per end effector kind.
 GRIP_HINTS = {"robotiq": "Stop holds the fingers where they are.",
@@ -63,7 +62,6 @@ class ComplianceInputs:
 # --- --- --- --- --- BUILDERS --- --- --- --- ---
 
 def build_joint_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface, used: RecentUse,
-                       written: Callable[[], tuple[float, ...] | None],
                        load: Callable[[np.ndarray | None], None],
                        start: Callable[[np.ndarray], None], hold: Callable[[], None]) -> JointInputs:
     """Add the inputs for the joint trajectory controller: a target per joint, Load and Move.
@@ -74,7 +72,6 @@ def build_joint_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: A
         label: "<serial> <arm name>", for intent names.
         arm: The arm.
         used: Touched whenever the operator works these inputs; the target ghost shows while recent.
-        written: The slider values the plugin wrote last, so their callbacks are not taken for the operator's.
         load: Asks to set the sliders to these angles (radians), or to the measured joints for None.
         start: Starts a move to these joint angles (radians).
         hold: Holds the arm where it is.
@@ -84,19 +81,13 @@ def build_joint_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: A
     """
     gui.add_html(warning("no collision checking · raw joint trajectories"))
     gui.add_html(note("yellow ghost: the arm at the sliders"))
-    joints = [gui.add_slider(f"{name} °", min=-limit, max=limit, step=0.5, initial_value=0.0)
-              for name, limit in JOINT_SLIDERS]
+    joints = add_joint_sliders(gui)
     plan = gui.add_html("")
     load_group = gui.add_button_group("Load", ["Current", "Stow"],
                                       hint="Set the sliders to where the arm is, or to its stow pose.")
     move_group = gui.add_button_group("Move", ["Start", "Hold"],
                                       hint="Start: move to the sliders, smoothly, in 5 s or more. "
                                            "Hold: brake to a standstill where the arm is.")
-
-    def on_slider(_value: object) -> None:
-        """Mark the joints as used, unless the values are the ones the plugin just wrote (intent)."""
-        if tuple(slider.value for slider in joints) != written():
-            used.touch()
 
     def on_load(clicked: str) -> None:
         """Load the sliders from the arm or its stow pose (intent)."""
@@ -115,10 +106,10 @@ def build_joint_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: A
             hold()
         else:
             # ! Read sliders here, when the intent runs: the operator commits on Start.
-            start(np.radians([slider.value for slider in joints]))
+            start(joint_slider_angles(joints))
 
     for slider in joints:
-        slider.on_update(ctx.defer_value(f"joint slider {label}", on_slider))
+        slider.on_update(ctx.defer(f"joint slider {label}", used.touch, operator_only=True))
     load_group.on_click(ctx.defer_value(f"load sliders {label}", on_load))
     move_group.on_click(ctx.defer_value(f"move {label}", on_move))
     return JointInputs(joints=joints, plan=plan)
@@ -192,14 +183,36 @@ def build_compliance_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, a
     return ComplianceInputs(pose=pose, pose_plan=pose_plan, force=force, wrench_line=wrench_line)
 
 
-def build_free_drive_inputs(gui: viser.GuiApi) -> None:
-    """Add the free drive controller's folder: no inputs, only how to use it.
+def build_free_drive_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str,
+                            on_hold: Callable[[], None]) -> viser.GuiCheckboxHandle:
+    """Add the free drive controller's inputs: the arm is free while the button is held, or while Keep on is ticked.
 
     Args:
+        ctx: The plugin's context.
         gui: The GUI api, inside the controller's folder.
+        label: "<serial> <arm name>", for intent names.
+        on_hold: Called on the main thread at every report of the held button.
+
+    Returns:
+        viser.GuiCheckboxHandle: Keep on; robot_control unticks it once another controller is chosen.
     """
-    gui.add_html(note("The arm can be pushed by hand. Switch to Joint to hold it where it is. "
-                      "Check the payload on the pendant first: a wrong one makes the arm sag or rise."))
+    gui.add_html(note("Running this controller keeps the arm stiff until you hold the button or tick Keep on; then "
+                      "it can be pushed by hand. Check the payload on the pendant first: a wrong one makes the arm "
+                      "sag or rise."))
+    free = gui.add_button("Free drive (hold)", icon=FREE_DRIVE_ICON,
+                          hint="The arm can be pushed by hand while you hold this.")
+    free.on_hold(ctx.defer(f"free drive {label}", on_hold), callback_hz=HOLD_CALLBACK_HZ)
+    return gui.add_checkbox("Keep on", initial_value=False,
+                            hint="Free drive without holding the button, until unticked or another controller runs. "
+                                 "Only with someone at the arm.")
+
+
+def tool_commands(tool: EndEffector) -> dict[str, Callable[[], None]]:
+    """The gripper buttons, the same on the laptop and the phone: Open, Close, and Stop where the tool can stop."""
+    commands = {"Open": tool.open, "Close": tool.close}
+    if not isinstance(tool, ScaffoldingV1):  # its gripper cannot stop halfway
+        commands["Stop"] = tool.stop
+    return commands
 
 
 def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,
@@ -220,9 +233,7 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
     gui.add_html(section("tool", SECTION_TOOL, TOOL_LABELS.get(kind, kind)))
     status = gui.add_html("")
     tool = arm.end_effector
-    commands = {"Open": tool.open, "Close": tool.close}
-    if not isinstance(tool, ScaffoldingV1):  # its gripper cannot stop halfway
-        commands["Stop"] = tool.stop
+    commands = tool_commands(tool)
     grip = gui.add_button_group("Grip", list(commands), hint=GRIP_HINTS.get(kind))
     grip.on_click(ctx.defer_value(f"grip {label}", partial(_unless_refused, commands, allowed, "tool")))
     if isinstance(tool, RobotiqGripper):
@@ -254,15 +265,16 @@ def _unless_refused(commands: dict[str, Callable[[], None]], allowed: Callable[[
 
 def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,
                            on_free_drive: Callable[[], None], allowed: Callable[[str], bool]) -> viser.GuiHtmlHandle:
-    """Add an arm's inputs on the phone: its status line, Open and Close for its tool, and free drive while held.
+    """Add an arm's inputs on the phone: its status line, the gripper buttons, and free drive while held.
 
     Args:
         ctx: The plugin's context.
         gui: The phone's GUI api, inside the robot's tab.
         label: "<serial> <arm name>", for intent names.
         arm: The arm.
-        on_free_drive: Called on the main thread at every report of the held free drive button.
-        allowed: Whether a command may go to the robot now, by name (it logs a refusal).
+        on_free_drive: Called on the main thread at every report of the held free drive button; it switches to
+            the free drive controller and keeps free drive on.
+        allowed: Whether a command may go to the robot now, by name (it logs a refusal); Stop always may.
 
     Returns:
         viser.GuiHtmlHandle: The arm's status line.
@@ -270,7 +282,7 @@ def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, ar
     status = gui.add_html("")
     tool = arm.end_effector
     if tool is not None:
-        commands = {"Open": tool.open, "Close": tool.close}
+        commands = tool_commands(tool)
         grip = gui.add_button_group("Gripper", list(commands))
         grip.on_click(ctx.defer_value(f"grip {label}", partial(_unless_refused, commands, allowed, "tool")))
     free = gui.add_button("Free drive (hold)", icon=FREE_DRIVE_ICON,
@@ -326,7 +338,7 @@ def joint_plan_line(arm: ArmInterface, joints: list[viser.GuiSliderHandle]) -> s
     here = arm.joint_vector()
     if here is None:
         return note("no joint state yet")
-    target = np.radians([slider.value for slider in joints])
+    target = joint_slider_angles(joints)
     _, _, duration = joint_move(here, target)
     largest = float(np.degrees(np.max(np.abs(target - here))))
     return block(values(f"Δmax {largest:6.1f} °   T {duration:5.1f} s   "

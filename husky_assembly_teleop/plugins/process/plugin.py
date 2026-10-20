@@ -1,12 +1,12 @@
 """
 The process plugin: loads an authored process and draws the state at one movement at a time.
 
-It serves the selected step, and the maps between process ids and live scene ids, to plugins that declare
-`requires = ("process",)`: they read `selection` and may select a step with `request_select`
-(`shared.process.ProcessPluginApi`).
+It serves the selected movement, and the maps between process ids and live scene ids, to plugins that declare
+`requires = ("process",)`: they read `selection` and may select a movement with `request_select`
+(`shared.process_contract.ProcessContract`).
 
 Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "process/<body id>"
-(`steps.scene_bodies`): the core draws it and planners avoid it. A body the plan holds follows the configured real
+(`scene_bodies.py`): the core draws it and planners avoid it. A body the plan holds follows the configured real
 robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.ProcessDrawing`), with the other
 bodies on request. The plugin only reads processes: it never edits one.
 
@@ -38,10 +38,13 @@ from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, s
 from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
+from scaffolding_assembly_core.process import Action, Movement, Process, assumed_start_all, joints_at
 from scaffolding_assembly_core.process.scenes import process_model
-from ...shared.process import (ACTION_ROWS, LoadedProcess, Selection, Step, action_window, displayed_joints, live_ids,
-                               load_process, scene_bodies)
+from ...shared.process_contract import Selection
+from ...shared.process_scene.scene_bodies import live_ids, scene_bodies
+from ...ui.checklist import ACTION_ROWS, action_window
 from .drawing import ProcessDrawing, load_robot_models
+from .loading import load_process
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -54,7 +57,7 @@ LOAD_TIMEOUT = 300.0
 BY_HAND_LABEL = "by hand"
 
 
-def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[LoadedProcess, dict, Stopwatch]:
+def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[Process, dict, Stopwatch]:
     """Load a process, converting an old export first, and read its robots' URDFs with their meshes.
 
     Runs on the worker thread.
@@ -68,11 +71,11 @@ def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[Loa
         tuple: The process, each robot's yourdfpy model by robot id, and the stopwatch.
     """
     watch = Stopwatch()
-    loaded = load_process(folder, data_directory, report, watch)
+    process = load_process(folder, data_directory, report, watch)
     report("reading the robots' URDFs and meshes")
-    models = load_robot_models(loaded.process)
+    models = load_robot_models(process)
     watch.lap("robot URDFs and meshes")
-    return loaded, models, watch
+    return process, models, watch
 
 
 @register
@@ -85,15 +88,22 @@ class ProcessPlugin(HuskyPlugin):
     def __init__(self):
         """Start with nothing loaded."""
         #: The loaded process, or None. Replaced on load, never edited.
-        self.loaded: LoadedProcess | None = None
+        self.process: Process | None = None
+        #: Every (action, movement) of the schedule, in order (`Process.movements`); `index` points into it.
+        self._movements: tuple[tuple[Action, Movement], ...] = ()
+        #: Schedule index of each movement's action, and the first movement of each action with any.
+        self._action_of: tuple[int, ...] = ()
+        self._first_of: dict[int, int] = {}
+        #: The assumed start joints of every movement (`assumed_start_all`), for drawing and the panel.
+        self._assumed: dict = {}
 
-        #: Index of the selected step in `loaded.steps`.
+        #: Index of the selected movement in `_movements`.
         self.index = 0
 
         #: Show the robot at the movement's target instead of its start.
         self.at_target = False
 
-        #: Goes up whenever the process or selected step changes, so dependents can poll it.
+        #: Goes up whenever the process or selected movement changes; the scene bodies are put again then.
         self.revision = 0
 
         #: Process id -> live scene id ("bars/B1" -> "process/bars/B1", planned robot -> real robot), as the scene
@@ -131,22 +141,20 @@ class ProcessPlugin(HuskyPlugin):
 
     @property
     def selection(self) -> Selection | None:
-        """Selection | None: The selected step (`shared.process.ProcessPluginApi`); a new object whenever it changes."""
-        if self.loaded is None or not self.loaded.steps:
+        """Selection | None: The selected movement (`ProcessContract`); a new object whenever it changes."""
+        selected = self.selected
+        if selected is None:
             return None
         last = self._selection
-        if (last is None or last.loaded is not self.loaded or last.index != self.index or last.ids is not self.ids
+        if (last is None or last.process is not self.process or last.index != self.index or last.ids is not self.ids
                 or last.process_ids is not self.process_ids):
-            self._selection = Selection(self.loaded, self.index, self.loaded.steps[self.index], self.ids,
-                                        self.process_ids)
+            self._selection = Selection(self.process, self.index, *selected, self.ids, self.process_ids)
         return self._selection
 
     @property
-    def step(self) -> Step | None:
-        """Step | None: The selected movement, or None before a process is loaded. ! Copy before modifying."""
-        if self.loaded is None or not self.loaded.steps:
-            return None
-        return self.loaded.steps[self.index]
+    def selected(self) -> tuple[Action, Movement] | None:
+        """tuple[Action, Movement] | None: The selected movement and its action, or None before a process is loaded."""
+        return self._movements[self.index] if self._movements else None
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -208,14 +216,14 @@ class ProcessPlugin(HuskyPlugin):
         self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder))
 
     def request_select(self, index: int) -> None:
-        """Select a step for another plugin (`shared.process.ProcessPluginApi`): `select`."""
+        """Select a movement for another plugin (`ProcessContract.request_select`): `select`."""
         self.select(index)
 
     def select(self, index: int) -> None:
-        """Select a step by index into `loaded.steps`, clamped; ignored before a process is loaded."""
-        if self.loaded is None or not self.loaded.steps:
+        """Select a movement by index into `_movements`, clamped; ignored before a process is loaded."""
+        if not self._movements:
             return
-        index = max(0, min(int(index), len(self.loaded.steps) - 1))
+        index = max(0, min(int(index), len(self._movements) - 1))
         # ! Keep this check: draw writes the slider back, which would otherwise loop.
         if index == self.index:
             return
@@ -229,28 +237,28 @@ class ProcessPlugin(HuskyPlugin):
             self._stale = True
 
     def _on_go(self, label: str) -> None:
-        """Step to the previous or next movement or action."""
-        step = self.step
-        if step is None:
+        """Go to the previous or next movement or action."""
+        if not self._movements:
             return
+        current = self._action_of[self.index]
         if label == "◀":
             self.select(self.index - 1)
         elif label == "▶":
             self.select(self.index + 1)
         elif label == "◀ action":
-            # First movement of this action, or of the previous one if already there.
-            action = step.action_index - (1 if step.movement_index == 0 else 0)
-            self.select(self.loaded.first_step_of(max(action, 0)))
-        elif label == "action ▶" and step.action_index + 1 < self.loaded.action_count:
-            self.select(self.loaded.first_step_of(step.action_index + 1))
+            # First movement of this action, or of the previous action with movements if already there.
+            earlier = [first for action, first in self._first_of.items() if first < self.index and action <= current]
+            self.select(max(earlier) if earlier else 0)
+        elif label == "action ▶":
+            later = [first for first in self._first_of.values() if first > self.index]
+            if later:
+                self.select(min(later))
 
     def _on_action_row(self, row: int) -> None:
-        """Jump to the first movement of the action shown in a row of the list; empty rows do nothing."""
-        if self.loaded is None:
-            return
-        action = self._window_start + row
-        if action < self.loaded.action_count:
-            self.select(self.loaded.first_step_of(action))
+        """Jump to the first movement of the action shown in a row of the list; empty rows and actions do nothing."""
+        first = self._first_of.get(self._window_start + row)
+        if first is not None:
+            self.select(first)
 
     def _on_view(self, label: str) -> None:
         """Toggle hiding or ghosting the overlay, or overlaying every body."""
@@ -275,10 +283,10 @@ class ProcessPlugin(HuskyPlugin):
         self._error, self._progress = "", f"loading {folder}"
         try:
             async with timeout(LOAD_TIMEOUT):
-                loaded, models, watch = await ctx.run_in_thread(
+                process, models, watch = await ctx.run_in_thread(
                     _load_in_background, folder, ctx.config.data_directory,
                     lambda text: setattr(self, "_progress", text))
-                differences = await ctx.run_in_thread(robot_differences, loaded, ctx.config.robots)
+                differences = await ctx.run_in_thread(robot_differences, process, ctx.config.robots)
         except asyncio.TimeoutError:
             self._error = f"timed out after {LOAD_TIMEOUT}s waiting for the process to load"
             ctx.log_error(self._error)
@@ -296,23 +304,35 @@ class ProcessPlugin(HuskyPlugin):
         if self._drawing is not None:
             self._drawing.remove()
             self._drawing = None
-        self.loaded, self._models, self.index = loaded, models, 0
+        self._take(process)
+        self._models = models
         # The converted copy, for an old export.
         root = ctx.config.drive_root
-        self._folder.value = str(loaded.source.relative_to(root) if root and loaded.source.is_relative_to(root)
-                                 else loaded.source)
+        source = process.folder
+        self._folder.value = str(source.relative_to(root) if root and source.is_relative_to(root) else source)
         self._changed()
-        ctx.log_info(f"loaded {loaded.source} in {watch.summary()}; "
-                     f"{loaded.action_count} actions, {len(loaded.steps)} movements")
+        ctx.log_info(f"loaded {source} in {watch.summary()}; "
+                     f"{len(process.schedule)} actions, {len(self._movements)} movements")
         self._robot_differences = differences
         for line in differences:
             ctx.log_warn(f"a process robot differs from the configured one: {line}")
+
+    def _take(self, process: Process) -> None:
+        """Make `process` the loaded one, with its movement list and assumed starts, and select its first movement."""
+        schedule_index = {action_id: index for index, action_id in enumerate(process.schedule)}
+        self.process, self.index = process, 0
+        self._movements = tuple(process.movements())
+        self._action_of = tuple(schedule_index[action.id] for action, _ in self._movements)
+        self._first_of = {}
+        for index, action in enumerate(self._action_of):
+            self._first_of.setdefault(action, index)
+        self._assumed = assumed_start_all(process)
 
     async def _build(self, ctx: PluginContext) -> None:
         """Add the process's viser nodes, spread over ticks."""
         self._progress = "drawing the process"
         watch = Stopwatch()
-        drawing = ProcessDrawing(ctx.view, f"{ctx.view.scene_root}/overlay", self.loaded.process, self._models)
+        drawing = ProcessDrawing(ctx.view, f"{ctx.view.scene_root}/overlay", self.process, self._models)
         drawing.set_ghost(self._ghost)
         try:
             for _ in drawing.build():
@@ -329,54 +349,56 @@ class ProcessPlugin(HuskyPlugin):
     # --- --- --- --- --- TICK --- --- --- --- ---
 
     def update(self, ctx: PluginContext) -> None:
-        """Put the selected step's obstacles into the scene, and start building the process's viser nodes."""
+        """Put the selected movement's obstacles into the scene, and start building the process's viser nodes."""
         if self._scene_revision != self.revision:
             self._scene_revision = self.revision
             self._put_obstacles(ctx)
         if self._drawing is not None:
             self._drawing.set_ghost(self._ghost)
             return
-        if self.loaded is None:
+        if self.process is None:
             return
         if self._build_task is None or self._build_task.done():
             self._build_task = ctx.spawn("draw the process", self._build(ctx))
 
     def _put_obstacles(self, ctx: PluginContext) -> None:
-        """Replace this plugin's scene bodies with the selected step's process scene; held bodies follow the real robot.
+        """Replace this plugin's scene bodies with the selected movement's process scene; held bodies follow the real robot.
 
         ! Runs only when `revision` changes: `scene_at` is too slow for every tick.
         """
         prefix = f"{self.name}/"
         ctx.scene.remove_prefix(prefix)
         self.ids = self.process_ids = None
-        step = self.step
-        if step is None:
+        selected = self.selected
+        if selected is None:
             return
-        # ? Same ids and geometry objects every step: mirrors only move and switch bodies, never rebuild.
+        movement = selected[1]
+        # ? Same ids and geometry objects every movement: mirrors only move and switch bodies, never rebuild.
         robots = ctx.config.robots
         try:
-            bodies = scene_bodies(self.loaded, step, robots, prefix)
+            bodies = scene_bodies(self.process, movement, robots, prefix)
         except ValueError as refused:
             # ! A grasp the real robot can't take is a data problem: report it, put the bodies without the robots.
             self._error = f"held bodies left where planned: {refused}"
             ctx.log_error(self._error)
             robots = ()
-            bodies = scene_bodies(self.loaded, step, robots, prefix)
+            bodies = scene_bodies(self.process, movement, robots, prefix)
         ctx.scene.put_many(bodies)
-        self.ids, self.process_ids = live_ids(self.loaded.process, robots, prefix)
+        self.ids, self.process_ids = live_ids(self.process, robots, prefix)
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the overlay from the selected state, and fill the panel."""
         self._status.content = self._status_html()
-        step = self.step
+        selected = self.selected
         self._error_text.content = block(values(escape(self._error))) if self._error else ""
-        self._draw_action_list(step)
-        if step is None:
+        self._draw_action_list()
+        if selected is None:
             self._details.content = note("no process loaded")
             return
-        self._slider.max = max(len(self.loaded.steps) - 1, 1)
+        action, movement = selected
+        self._slider.max = max(len(self._movements) - 1, 1)
         self._slider.value = self.index
-        self._details.content = self._details_html(step)
+        self._details.content = self._details_html(action, movement)
 
         drawing = self._drawing
         if not self._stale or drawing is None:
@@ -386,23 +408,24 @@ class ProcessPlugin(HuskyPlugin):
         if not self._visible:
             return
         try:
-            drawing.show(step.movement.start, displayed_joints(step, self.at_target), self._everything)
+            joints = joints_at(self.process, action.id, movement.id, self.at_target, self._assumed)
+            drawing.show(movement.start, joints, self._everything)
         except Exception as failure:
             # ! A state that does not fit its process is a data problem: report it, do not raise.
-            self._error = f"cannot draw {step.label}: {type(failure).__name__}: {failure}"
+            self._error = f"cannot draw {movement.id}: {type(failure).__name__}: {failure}"
             ctx.log_error(f"{self._error}\n{traceback.format_exc()}")
         else:
             self._error = ""
 
     # --- --- --- --- --- PANEL --- --- --- --- ---
 
-    def _draw_action_list(self, step: Step | None) -> None:
+    def _draw_action_list(self) -> None:
         """Label the action rows from the window around the selected action, and highlight the selected one.
 
         ? viser sends only props that changed, so assigning every row each draw is cheap.
         """
-        count = self.loaded.action_count if self.loaded is not None else 0
-        current = step.action_index if step is not None else 0
+        count = len(self.process.schedule) if self.process is not None else 0
+        current = self._action_of[self.index] if self._movements else 0
         self._window_start = action_window(current, count)
         self._actions_title.content = section("actions", SECTION_CTRL, f"{current + 1}/{count}" if count else "")
         for row, button in enumerate(self._action_rows):
@@ -411,8 +434,8 @@ class ProcessPlugin(HuskyPlugin):
                 # ! Never hide a row: that would shift the buttons below it.
                 button.label, button.color = "·", "gray"
                 continue
-            action = self.loaded.process.actions[self.loaded.process.schedule[index]]
-            robot = self.loaded.process.robots[action.robot].name if action.robot else BY_HAND_LABEL
+            action = self.process.actions[self.process.schedule[index]]
+            robot = self.process.robots[action.robot].name if action.robot else BY_HAND_LABEL
             button.label = f"{index + 1}. {action.id} · {robot} · {len(action.movements)} mv"
             button.color = "blue" if index == current else "gray"
     # ! Keep every row one line tall (`_one_line`) and the chip set fixed, so nothing shifts between steps.
@@ -421,9 +444,9 @@ class ProcessPlugin(HuskyPlugin):
         """One line of chips: load progress or process, plus any error."""
         if self._progress:
             chips = chip(escape(self._progress), BUSY)
-        elif self.loaded is not None:
-            chips = chip(escape(self.loaded.source.name), OK, str(self.loaded.source))
-            chips += chip(f"{self.loaded.action_count} actions · {len(self.loaded.steps)} movements", NONE)
+        elif self.process is not None:
+            chips = chip(escape(self.process.folder.name), OK, str(self.process.folder))
+            chips += chip(f"{len(self.process.schedule)} actions · {len(self._movements)} movements", NONE)
             if self._robot_differences:
                 chips += chip("robots differ", BUSY, "; ".join(self._robot_differences))
         else:
@@ -432,12 +455,11 @@ class ProcessPlugin(HuskyPlugin):
             chips += chip("error", FAIL, self._error)
         return block(_one_line(chips))
 
-    def _details_html(self, step: Step) -> str:
-        """Two rows of chips and three of text describing the selected step."""
-        movement, action = step.movement, step.action
-        which = chip(f"{self.index + 1}/{len(self.loaded.steps)}", OK)
+    def _details_html(self, action: Action, movement: Movement) -> str:
+        """Two rows of chips and three of text describing the selected movement."""
+        which = chip(f"{self.index + 1}/{len(self._movements)}", OK)
         if action.robot:
-            which += chip(escape(self.loaded.process.robots[action.robot].name), SECTION_CTRL, action.robot)
+            which += chip(escape(self.process.robots[action.robot].name), SECTION_CTRL, action.robot)
         else:
             which += chip(BY_HAND_LABEL, SECTION_CTRL, "a bar_placing action: the operator places the bar")
         which += chip(escape(movement_kind(movement)), NONE, movement.label)
@@ -449,8 +471,8 @@ class ProcessPlugin(HuskyPlugin):
             carries = chip("no robot acts", NONE)
         elif start is not None and start.joints is not None:
             carries = chip("start conf", OK)
-        elif step.assumed_start is not None:
-            carries = chip(f"start conf from {escape(step.assumed_from)}", BUSY,
+        elif self._assumed.get((action.id, movement.id), (None, ""))[0] is not None:
+            carries = chip(f"start conf from {escape(self._assumed[(action.id, movement.id)][1])}", BUSY,
                            "not authored: assumed from where the robot last was")
         else:
             carries = chip("no start conf: zero", FAIL)
@@ -464,8 +486,8 @@ class ProcessPlugin(HuskyPlugin):
         moves = [arm.split("/")[-1] for arm in movement.arms] + [
             f"{tool.split('/')[-1]} grip {grip}" for tool, grip in movement.grip_change.items()] + [
             f"{tool.split('/')[-1]} {direction}" for tool, direction in movement.drives.items()]
-        lines = [f"action   {step.action_index + 1}/{self.loaded.action_count}  {action.id}",
-                 f"movement {step.movement_index + 1}/{len(action.movements)}  {movement.id}",
+        lines = [f"action   {self._action_of[self.index] + 1}/{len(self.process.schedule)}  {action.id}",
+                 f"movement {action.movements.index(movement) + 1}/{len(action.movements)}  {movement.id}",
                  f"moves    {', '.join(moves) or '-'}"]
         text = values(*(_one_line(escape(line)) for line in lines))
         return block(_one_line(which) + _one_line(carries) + text)
@@ -480,18 +502,17 @@ def movement_kind(movement) -> str:
     return " + ".join(part for part in (arms, tools) if part)
 
 
-def robot_differences(loaded: LoadedProcess, robots: tuple[RobotConfig, ...]) -> list[str]:
+def robot_differences(process: Process, robots: tuple[RobotConfig, ...]) -> list[str]:
     """Where each process robot differs from the configured real robot it stands for (`live_ids`). Any thread.
 
     Args:
-        loaded: The loaded process.
+        process: The loaded process.
         robots: The configured robots, `ctx.config.robots`.
 
     Returns:
         list[str]: One line per robot that differs, e.g. "robots/cindy (a200-0806): left_ur_arm_tool0:
             scaffolding_v3 in the process, robotiq configured".
     """
-    process = loaded.process
     ids, _ = live_ids(process, robots, "")
     configured = {robot_id(config.serial): config for config in robots}
     lines = []

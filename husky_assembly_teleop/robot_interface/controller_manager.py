@@ -7,6 +7,7 @@ One ros2_control controller manager (of the base or an arm), and which of its co
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 from controller_manager_msgs.srv import ListControllers, SwitchController
 from rclpy.node import Node
@@ -15,6 +16,8 @@ from .connections import RosConnections
 
 #: Seconds between list_controllers polls.
 REFRESH_PERIOD = 1.0
+#: Controller state older than this, seconds, is too old to trust "active".
+CONTROLLER_STATE_MAX_AGE = 3.0
 
 
 @dataclass
@@ -46,7 +49,7 @@ class ControllerManagerInterface:
     """
 
     def __init__(self, node: Node, namespace: str, switchable: tuple[str, ...],
-                 state: ControllerManagerState):
+                 state: ControllerManagerState, guard: Callable[[str], str | None] | None = None):
         """Create the service clients and start polling the controller list.
 
         Args:
@@ -54,11 +57,13 @@ class ControllerManagerInterface:
             namespace: Namespace of the controller manager, e.g. "/a200_0806/left_ur5e".
             switchable: Controllers this part may run, one at a time.
             state: Where answers are written.
+            guard: Why a controller may not be started now, or None; `switch` refuses while it gives a reason.
         """
         self._node = node
         self.namespace = namespace
         self.switchable = switchable
         self.state = state
+        self._guard = guard
         self._ros = RosConnections(node)
         # Set once the missing service is logged, so it is not logged every poll.
         self._reported_unavailable = False
@@ -86,6 +91,18 @@ class ControllerManagerInterface:
     def is_active(self, controller: str) -> bool:
         """Whether `controller` is the one running right now, as last reported."""
         return self.state.active == controller
+
+    def running_problem(self, controller: str) -> str | None:
+        """Why a command for `controller` must not go out: it is not active, or the last answer is too old; else None.
+
+        ! Check this, not `is_active`, before a motion command: a silent controller manager keeps its last answer.
+        """
+        if not self.is_active(controller):
+            return f"{controller} is not active (active: {self.state.active!r})"
+        now = self._node.get_clock().now().nanoseconds * 1e-9
+        if self.state.last_update_time is None or now - self.state.last_update_time > CONTROLLER_STATE_MAX_AGE:
+            return "the controller manager has not answered for a while, so which controller runs is not known"
+        return None
 
     def refresh(self) -> bool:
         """Ask the controller manager which controllers are running.
@@ -119,6 +136,10 @@ class ControllerManagerInterface:
         if controller not in self.switchable:
             self.state.switch_error = (f"{controller!r} is not one of {self.switchable} "
                                        f"on {self.namespace}")
+            self._node.get_logger().error(self.state.switch_error)
+            return False
+        if self._guard is not None and (problem := self._guard(controller)):
+            self.state.switch_error = f"{self.namespace}: not starting {controller}: {problem}"
             self._node.get_logger().error(self.state.switch_error)
             return False
         if self.state.active == controller:

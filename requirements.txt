@@ -11,14 +11,14 @@ viser==1.1.1  # web UI; pinned because its scene/gui API moves between releases
 yourdfpy==0.0.60  # URDF parsing for viser.extras.ViserUrdf (robot meshes in the browser)
 # * Imported directly by the monitor or its plugins; listed even when another
 #   package here already pulls them in, so removing that one cannot break us.
-async-timeout>=4.0  # concurrency.timeout, the asyncio.timeout backport for Python 3.10
+async-timeout>=4.0  # the asyncio.timeout backport for Python 3.10 (process plugin, planner service)
 scipy>=1.8  # rotations in robot_interface and robot_control
 trimesh==4.12.2  # ! design_io must run in Rhino 8 (Python 3.9): 4.12.2 is the newest release for 3.9
-pybullet>=3.2  # raw client calls in base_planner/planner.py
-compas>=2.0  # cell plugin; compas_fab above needs it too
-compas_robots>=0.6  # cell plugin
+pybullet>=3.2  # raw client calls in shared/base_collision and plugins/base_planner/world.py
+compas>=2.0  # the core's compas mirrors (arm planner); compas_fab above needs it too
+compas_robots>=0.6  # robot models in the core's mirrors and URDF loading
 matplotlib==3.10.3  # base_exp recording plots; also the old monitor
-pandas>=2.0  # scripts/analyze_base_exp.py
+pandas>=2.0  # the analysis scripts (experiments/)
 
 # ! Potentially obsolete: only the old monitor (husky_assembly_teleop/old/) imports these.
 #   Kept until its remaining features are ported; drop each one once nothing needs it.

@@ -77,13 +77,8 @@ already in this frame. Calibration files (`base_mocap_from_base_footprint`) must
 expressed in the same convention, i.e. computed by the calibration pipeline that
 writes `calibrated_transformation_<robot>_rhino.json`.
 
-! Before this, the relay used the legacy 'rotated' convention `(z, x, y)`. That frame
-is the rhino frame yawed -90 deg about Z (its +x points along rhino -y). Data authored in the legacy frame
-converts to rhino with `(x, y) -> (y, -x)` and `yaw -> yaw - 90 deg`. This was
-applied once to `config/world/robotx_obstacles.json`. The legacy calibration files were
-replaced by the newest rhino calibrations from husky-assembly-teleop
-(`data/calibration_data/<date>/calibrated_transformation_<robot>_rhino.json`); each file
-records its `source`.
+! Data recorded in the old 'rotated' convention `(z, x, y)` is in the rhino frame yawed -90 deg about Z (its +x
+points along rhino -y); it converts to rhino with `(x, y) -> (y, -x)` and `yaw -> yaw - 90 deg`.
 
 ## Topics And Service Contract
 
@@ -93,7 +88,8 @@ Per rigid body pose topic pattern:
 - Message: `crl_husky_msgs/msg/MocapRigidBodyPose`
 
 Message content:
-- `header.stamp`: relay publish timestamp.
+- `header.stamp`: when the cameras captured the frame, on the relay PC's clock; a pose republished without a new
+  frame keeps its stamp.
 - `header.frame_id`: configured frame name (default `mocap_world`).
 - `pose`: calibrated rigid body pose.
 - `pose_valid`: true when all checks pass.
@@ -163,20 +159,6 @@ Calibration is relay-side, not consumer-side.
 4. Check active IDs service:
    - `ros2 service call /mocap/get_streaming_ids crl_husky_msgs/srv/GetStreamingMocapIds {}`
 
-## Migration Guide (Not Executed Yet)
-
-Use this checklist when migrating older direct-NatNet code.
-
-1. Stop creating `NatNetClient` in consumer apps (for example HuskyMonitor).
-2. Replace direct NatNet callback wiring with ROS subscribers to relay topics.
-3. Use `MocapRigidBodyPose.pose` as the base pose input for your state update path.
-4. Respect `pose_valid` and `tracking_valid` in control/safety logic.
-5. Remove duplicate consumer-side calibration multiplication to avoid double transforms.
-6. Keep any velocity filtering logic in the consumer if still needed.
-7. If runtime ID discovery is needed, call `/mocap/get_streaming_ids`.
-8. Update launch/startup docs so relay starts before consumers.
-9. Validate parity against one known rigid body in a short A/B test.
-
 ## Known Differences And Gaps vs Old Direct NatNet
 
 - Relay publishes rigid body poses with their labeled markers. Unlabeled markers, model descriptions (marker names, Motive's marker offsets) and camera metadata are not relayed.
@@ -186,7 +168,7 @@ Use this checklist when migrating older direct-NatNet code.
 
 - Relay node: `husky_assembly_teleop/mocap_relay/node.py`, calibration choice in `calibration.py`
 - Relay launch: `launch/mocap.launch.py`
-- Tests: `test/test_mocap_relay_calibration.py`
+- Tests: `test/mocap_relay/test_mocap_relay_node.py`, `test/mocap_relay/test_mocap_relay_calibration.py`
 - Pose message: crl-husky `crl_husky_msgs/msg/MocapRigidBodyPose.msg`
 - Streaming IDs service: crl-husky `crl_husky_msgs/srv/GetStreamingMocapIds.srv`
 - Robot config, default calibrations: crl-husky `crl_husky/config/robots/README.md`

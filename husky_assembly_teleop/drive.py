@@ -7,11 +7,15 @@ The project's Google Drive folder, where experiment data lives, synced to this m
   through unchanged, for data elsewhere.
 - ! Folders under the root are never created here: a folder made locally that exists unsynced in Drive is uploaded as
   a second folder of the same name. Create it in Drive, or sync it, instead.
+- Saved runs and takes are named the same everywhere: `folder_name` for a name typed in the panel, `stamped_name` for
+  a run, `started_at` for the time written into one.
 """
 
 from __future__ import annotations
 
 import os
+import re
+import time
 from pathlib import Path
 
 #: The environment variable holding the local path of the project's Drive folder.
@@ -46,3 +50,18 @@ def drive_folder(root: Path | None, path: Path) -> Path:
         raise FileNotFoundError(f"{path} is missing under the Drive root {root}: create it in Google Drive, "
                                 f"or sync it to this machine")
     return folder
+
+
+def folder_name(text: str, default: str = "default") -> str:
+    """A typed name made safe for a file or folder: letters, digits, "-" and "_", the rest "_"; `default` if empty."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(text).strip()) or default
+
+
+def stamped_name(*parts: str) -> str:
+    """A name for a run or take that sorts by time: "<date>_<time>_<part>_<part>", e.g. "20261019_204500_alice_sim"."""
+    return "_".join((time.strftime("%Y%m%d_%H%M%S"),) + parts)
+
+
+def started_at() -> str:
+    """The local time now with its UTC offset, as written into a run's description, e.g. "2026-10-19T20:45:00+0200"."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z")

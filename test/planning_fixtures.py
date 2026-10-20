@@ -1,4 +1,4 @@
-"""Shared data for the shared.planning tests: the purged two-module process from the Drive, and the robot configs.
+"""Shared data for the assembly_planning tests: the purged two-module process from the Drive, and the robot configs.
 
 The process needs HUSKY_DRIVE_ROOT (the local "2025-03 Husky Assembly" folder); tests using it are skipped without.
 Both are loaded once per test run; treat them as read-only.
@@ -13,7 +13,8 @@ import pytest
 
 from husky_assembly_teleop.config import RobotConfig, robot_config_from_serial
 from husky_assembly_teleop.drive import drive_root
-from husky_assembly_teleop.shared.process import LoadedProcess, Step, load_process
+from husky_assembly_teleop.plugins.process.loading import load_process
+from husky_assembly_teleop.shared.assembly_planning.process_steps import LoadedProcess, Step, loaded_process
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.process import Action, Movement
 from scaffolding_assembly_core.robot import RobotObject
@@ -28,7 +29,7 @@ ALICE, BELLE, CINDY = "0804", "0805", "0806"
 @lru_cache(maxsize=1)
 def _load_purged(folder: Path) -> LoadedProcess:
     """The purged process, read once."""
-    return load_process(folder, DATA)
+    return loaded_process(load_process(folder, DATA))
 
 
 def purged_process() -> LoadedProcess:

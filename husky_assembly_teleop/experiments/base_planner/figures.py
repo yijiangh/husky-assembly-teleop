@@ -41,7 +41,7 @@ GROUP_GAP = 0.8
 OFFSET = 0.17
 #: Lab shown around the runs in `draw_lab`, metres.
 LAB_MARGIN = 1.0
-#: The planners' planning budget, seconds (planning.search.TIME_LIMIT).
+#: The planners' planning budget, seconds (shared.planner.planner_search.TIME_LIMIT).
 BUDGET = 10.0
 
 

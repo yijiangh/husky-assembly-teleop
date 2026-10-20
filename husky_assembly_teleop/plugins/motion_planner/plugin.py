@@ -1,10 +1,10 @@
 """
-Plan process movements for other plugins: a request in (`PlanRequest`), an asyncio future out, one at a time.
+Plan process movements for other plugins: a request in (`MotionPlanRequest`), an asyncio future out, one at a time.
 
-Other plugins declare `requires = ("motion_planner",)` and type it as `shared.planning.service.MotionPlannerPluginApi`.
-Every request runs on one worker thread, which owns a compas_fab mirror per robot (`MirrorPool`, made on its first
-request: loading the models takes up to a minute). The panel shows what runs and the last answer, cancels everything,
-and opens PyBullet's own window on a robot's planning world.
+Other plugins declare `requires = ("motion_planner",)` and type it as `MotionPlannerContract`
+(`shared/motion_planner_contract.py`). Every request runs on one worker thread (`work.py`), which owns a compas_fab
+mirror per robot (`MirrorPool`, made on its first request: loading the models takes up to a minute). The panel shows
+what runs and the last answer, cancels everything, and opens PyBullet's own window on a robot's planning world.
 
 ! EXPERIMENTAL: requests and answers may still change.
 ! The worker is the only thread that touches the mirrors, the PyBullet window's included.
@@ -23,15 +23,16 @@ from scaffolding_assembly_core.scene import Scene
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...shared.planning.mirrors import MirrorPool
-from ...shared.planning.panel import with_guesses
-from ...shared.planning.route_result import GoalCheck, RouteResult
-from ...shared.planning.service import CollisionReport, PlanRequest, run_collisions, run_ik, run_plan
+from ...shared.assembly_planning.mirrors import MirrorPool
+from ...shared.assembly_planning.route_result import GoalCheck, RouteResult
+from ...shared.motion_planner_contract import CollisionReport, MotionPlanRequest
+from ...shared.planner.planner_search import with_guesses
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, values
+from .work import run_collisions, run_ik, run_plan
 
 #: The work a request runs on the worker: (pool, request, abort, log) -> its answer.
-Work = Callable[[MirrorPool, PlanRequest, threading.Event, Callable[[str], None]], Any]
+Work = Callable[[MirrorPool, MotionPlanRequest, threading.Event, Callable[[str], None]], Any]
 
 
 def describe(answer: RouteResult | GoalCheck | CollisionReport) -> tuple[str, bool]:
@@ -85,7 +86,7 @@ class MotionPlannerPlugin(HuskyPlugin):
         # The robot whose world the PyBullet window shows when it opens.
         self._serial: str | None = None
 
-    # --- --- --- --- --- WHAT OTHER PLUGINS CALL (MotionPlannerPluginApi) --- --- --- --- ---
+    # --- --- --- --- --- WHAT OTHER PLUGINS CALL (MotionPlannerContract) --- --- --- --- ---
 
     @property
     def busy(self) -> bool:
@@ -97,15 +98,15 @@ class MotionPlannerPlugin(HuskyPlugin):
         """str: The label of the request running now, or ""."""
         return self._running
 
-    def request_plan(self, request: PlanRequest) -> asyncio.Future[RouteResult]:
+    def request_plan(self, request: MotionPlanRequest) -> asyncio.Future[RouteResult]:
         """Plan the movement from the snapshot's start (`plan_movement`). Main thread."""
         return self._submit(run_plan, request, "plan")
 
-    def request_ik(self, request: PlanRequest) -> asyncio.Future[GoalCheck]:
+    def request_ik(self, request: MotionPlanRequest) -> asyncio.Future[GoalCheck]:
         """Solve the movement's goal by IK at the live base (`check_goal`). Main thread."""
         return self._submit(run_ik, request, "goal of")
 
-    def request_collisions(self, request: PlanRequest) -> asyncio.Future[CollisionReport]:
+    def request_collisions(self, request: MotionPlanRequest) -> asyncio.Future[CollisionReport]:
         """Check what the acting robot collides with in the movement's planning scene. Main thread."""
         return self._submit(run_collisions, request, "collisions of")
 
@@ -116,7 +117,7 @@ class MotionPlannerPlugin(HuskyPlugin):
 
     # --- --- --- --- --- QUEUE --- --- --- --- ---
 
-    def _submit(self, work: Work, request: PlanRequest, what: str) -> asyncio.Future:
+    def _submit(self, work: Work, request: MotionPlanRequest, what: str) -> asyncio.Future:
         """Queue a request on the worker; cancelling its future (a caller's timeout) stops it.
 
         Args:
@@ -135,7 +136,7 @@ class MotionPlannerPlugin(HuskyPlugin):
         answer.add_done_callback(lambda done: abort.set() if done.cancelled() else self._finished(label, done))
         return answer
 
-    def _work(self, work: Work, request: PlanRequest, abort: threading.Event, label: str) -> Any:
+    def _work(self, work: Work, request: MotionPlanRequest, abort: threading.Event, label: str) -> Any:
         """Run one request on the worker, its label shown while it runs."""
         self._running = label
         try:

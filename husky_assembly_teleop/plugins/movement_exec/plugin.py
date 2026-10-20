@@ -1,10 +1,10 @@
 """
 Run one step of the assembly on the real robot: its motion along the plan, its tool steps, its steps done by hand.
 
-Another plugin asks (`request_execute`, `shared.movement_exec.MovementExecPluginApi`); each part asks the operator to
-Confirm first, on the laptop or the phone, and is recorded in the run (`assembly_run`). The robot is held from the
-request to its end (`shared/execution/interlock.py`), so other plugins' commands to it are refused; Cancel here, Hold in
-robot_control, or Stop all ends it, every arm held.
+Another plugin asks (`request_execute`, `MovementExecContract`); each part asks the operator to Confirm first, on the
+laptop or the phone, and is recorded in the run (`assembly_run`). The robot is held from the request to its end
+(`shared/execution/interlock.py`), so other plugins' commands to it are refused; Cancel here, Hold in robot_control,
+or Stop all ends it, every arm held.
 
 - Refused at once: while another request runs, a refused part (a later milestone's routine), a request for another
   robot, a plan for another robot, movement or base.
@@ -29,9 +29,9 @@ from ...shared.execution.basis import STALE_BASE
 from ...shared.execution.interlock import Busy, give_back, take
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import motion_command
-from ...shared.movement_exec import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT, MAX_TRAJ_TIME, MOTION_PART,
-                                     REFUSED, REFUSED_PART, ExecRequest, ExecResult, serial_of)
-from ...shared.planning.route_result import pose_error
+from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT, MAX_TRAJ_TIME,
+                                              MOTION_PART, REFUSED, REFUSED_PART, ExecRequest, ExecResult, serial_of)
+from ...shared.assembly_planning.route_result import pose_error
 from .panel import ExecPanel
 from .sequences import Job, PartRun, run_part
 
@@ -71,7 +71,7 @@ class MovementExecPlugin(HuskyPlugin):
         self._last, self._last_failed = "", False
         self._dry_run_refused = 0
 
-    # --- --- --- --- --- WHAT OTHER PLUGINS CALL (MovementExecPluginApi) --- --- --- --- ---
+    # --- --- --- --- --- WHAT OTHER PLUGINS CALL (MovementExecContract) --- --- --- --- ---
 
     @property
     def active(self) -> str:

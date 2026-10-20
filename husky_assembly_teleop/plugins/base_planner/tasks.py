@@ -25,7 +25,7 @@ from scaffolding_assembly_core.scene import Body
 TASK_ORIGIN = (0.4, -0.8, math.pi)
 #: The passages run along PASSAGE_ANGLE in the task frame.
 PASSAGE_ANGLE = math.radians(17.0)
-#: Alice's width, the same at every height with her arm stowed (as she is planned), and the planners' default
+#: Alice's width, the same at every height with her arm stowed (as the experiments hold it), and the planners' default
 #: margin, metres: the passages are sized from them.
 WHEELS = 0.70
 MARGIN = 0.05

@@ -11,8 +11,8 @@ Furniture and floor border come from the lab file; temporary obstacles are for a
   with the corner gizmo, or type position, yaw and size.
 
 Ids: "obstacles/boxes/<name>", "obstacles/cylinders/<name>", "obstacles/trusses/<name>", and the border walls
-"obstacles/boxes/border_x_min" and so on. Planners see them in `ctx.scene.snapshot`; `base_exp` finds the border by the
-"obstacles/" prefix.
+"obstacles/boxes/border_x_min" and so on. Planners see them in `ctx.scene.snapshot`. Other plugins read the lab through
+`shared.obstacles_contract.ObstaclesContract` (`lab`).
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ class ObstaclesPlugin(HuskyPlugin):
 
     def __init__(self):
         """Start with an empty lab; setup reads the files."""
-        #: The lab file, the lab as saved in it, and the lab as edited.
+        #: The lab file, the lab as saved in it, and the lab as edited (`ObstaclesContract.lab`: replace, never edit).
         self.path: Path | None = None
         self.saved = Lab()
         self.lab = Lab()

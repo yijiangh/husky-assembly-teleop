@@ -217,8 +217,10 @@ class PluginContext:
         """
         self._intents.put(Intent(label=label, run=run))
 
-    def defer(self, label: str, run: Callable[[], Any]) -> Callable[..., Awaitable[None]]:
+    def defer(self, label: str, run: Callable[[], Any], operator_only: bool = False) -> Callable[..., Awaitable[None]]:
         """Wrap `run` as a thread-safe viser callback, for widgets whose value it does not need.
+
+        `operator_only` as in `defer_value`.
 
         Returns:
             Callable[..., Awaitable[None]]: A callback that submits `run`.
@@ -228,12 +230,15 @@ class PluginContext:
             ...     button = gui.add_button("Plan movement")
             >>> button.on_click(ctx.defer("plan movement", self.start_planning))
         """
-        return self.defer_value(label, lambda _value: run())
+        return self.defer_value(label, lambda _value: run(), operator_only)
 
-    def defer_value(self, label: str, run: Callable[[object], Any]) -> Callable[..., Awaitable[None]]:
+    def defer_value(self, label: str, run: Callable[[object], Any],
+                    operator_only: bool = False) -> Callable[..., Awaitable[None]]:
         """Wrap `run` as a thread-safe viser callback that is handed the widget's new value.
 
         ! Use this value, not `widget.value` inside `run`, which could see a later change.
+        * `operator_only`: skip changes the plugin made itself (`widget.value = ...`), which viser also calls back for,
+          without a client; only an operator's change submits `run`.
 
         ? `async` so viser calls it in order on its own loop, not from its thread pool.
 
@@ -246,6 +251,8 @@ class PluginContext:
         """
 
         async def _callback(event: viser.GuiEvent) -> None:
+            if operator_only and event.client is None:
+                return
             value = event.target.value
             self.submit(label, lambda: run(value))
 
@@ -403,6 +410,15 @@ class PluginContext:
         """How many tasks raised since the last call."""
         failures, self._task_failures = self._task_failures, 0
         return failures
+
+    def _drop_intents(self) -> list[str]:
+        """Forget every queued intent without running it, and return their labels. For soft stop."""
+        labels = []
+        while True:
+            try:
+                labels.append(self._intents.get_nowait().label)
+            except queue.Empty:
+                return labels
 
     def _cancel_all_tasks(self) -> list[asyncio.Task]:
         """Cancel every running task, and return them so the caller can wait for their cleanup."""

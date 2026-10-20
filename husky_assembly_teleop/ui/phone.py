@@ -111,7 +111,7 @@ class PhonePage:
         gui.add_html(f'<title>{PHONE_TITLE}</title><div id="{MARKER}"></div><style>{PHONE_STYLE}</style>')
         self.stop = gui.add_button("Stop all", color="red", icon=viser.Icon.HAND_STOP,
                                    hint="Soft stop: stop every arm's program, switch every base controller off, "
-                                        "cancel every plugin task. Not an emergency stop.")
+                                        "stop every tool, cancel every plugin task. Not an emergency stop.")
         self.stop.on_click(on_stop)
         #: Each plugin's header folder goes in here, above the tabs. Unlabelled folders draw only their children.
         self.header = gui.add_folder(None)

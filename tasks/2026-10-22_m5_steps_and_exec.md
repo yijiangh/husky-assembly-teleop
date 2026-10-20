@@ -324,6 +324,10 @@ Confirm buttons (assembly_run's and movement_exec's prompts each answer only the
 
 ## Status (2026-10-20)
 
+Later: merged with Jakob's `jg/viser-cleanup` 60d011a on `yh/core-port-jg-sync`; the paths cited here moved
+(`shared/planning/` → `shared/assembly_planning/`, the contracts, the planner split):
+[2026-10-25_jg_sync_60d011a.md](2026-10-25_jg_sync_60d011a.md).
+
 Tasks A–I done on `yh/core-port`: ab5d21c runtime edits E1–E4 (A), 8ec5934 retime (B), 298c74a operator, interlock,
 basis (C), d7ee939 send (D), c2669a4 tools (E), db2afe0 lock checks in other plugins (F), ed87c3c movement_exec (G),
 07c9065 assembly_steps, goal_check removed (H); ce2fbce more executor guard tests, d8ec86f a refused or dry-run Exec

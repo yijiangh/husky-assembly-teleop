@@ -14,13 +14,13 @@ from typing import TYPE_CHECKING
 from async_timeout import timeout
 
 from ...shared.execution.basis import STALE_BASE
-from ...shared.planning.route_result import GoalCheck, goal_line, pose_error
+from ...shared.assembly_planning.route_result import GoalCheck, goal_line, pose_error
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.geometry import Pose
 
     from ...plugin_api.context import PluginContext
-    from ...shared.planning.service import MotionPlannerPluginApi, PlanRequest
+    from ...shared.motion_planner_contract import MotionPlannerContract, MotionPlanRequest
 
 #: Seconds to wait for a goal check; the first of a robot loads its models.
 GOAL_TIMEOUT = 120.0
@@ -69,7 +69,7 @@ class StepGoal:
         distance, turn = pose_error(base, check.base)
         return dict(check.goal_joints) if distance <= STALE_BASE[0] and turn <= STALE_BASE[1] else None
 
-    async def solve(self, ctx: PluginContext, step: tuple, request: PlanRequest) -> GoalCheck | None:
+    async def solve(self, ctx: PluginContext, step: tuple, request: MotionPlanRequest) -> GoalCheck | None:
         """Ask the motion planner for the goal, keep the answer for `step`, and log it.
 
         Args:
@@ -80,7 +80,7 @@ class StepGoal:
         Returns:
             GoalCheck | None: The answer, or None without one within GOAL_TIMEOUT (logged).
         """
-        planner: MotionPlannerPluginApi = ctx.require("motion_planner")
+        planner: MotionPlannerContract = ctx.require("motion_planner")
         try:
             async with timeout(GOAL_TIMEOUT):
                 check = await planner.request_ik(request)

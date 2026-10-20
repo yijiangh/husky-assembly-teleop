@@ -20,7 +20,8 @@ from pathlib import Path
 
 import numpy as np
 
-from ...shared.planning.search import PlanResult
+from ...drive import stamped_name
+from ...shared.planner.planner_search import PlanResult
 from .path import densify
 from .world import FLOOR_BOTTOM, PlanningWorld
 
@@ -38,7 +39,7 @@ DESCRIPTION = "experiment.json"
 
 def attempt_folder(recordings: Path, experiment: str, serial: str, task: str | None, environment: str) -> Path:
     """A new folder for an attempt (not yet created): under the experiment, named by time, robot, task and where."""
-    name = f"{time.strftime('%Y%m%d_%H%M%S')}_{serial}_{task or 'free'}_{environment}"
+    name = stamped_name(serial, task or "free", environment)
     folder, count = recordings / experiment / name, 2
     while folder.exists():
         folder, count = recordings / experiment / f"{name}_{count}", count + 1

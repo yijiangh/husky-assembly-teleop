@@ -11,8 +11,8 @@ from html import escape
 from typing import TYPE_CHECKING
 
 from ...plugin_api.context import PluginContext
-from ...shared.movement_exec import (BASE_PART, BY_HAND_PART, CLOSE_PART, GRASP_PART, MAX_TRAJ_TIME, MOTION_PART,
-                                     OPEN_PART, PartPlan)
+from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CLOSE_PART, GRASP_PART, MAX_TRAJ_TIME,
+                                              MOTION_PART, OPEN_PART, PartPlan)
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values
 
 if TYPE_CHECKING:

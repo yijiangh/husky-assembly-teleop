@@ -5,8 +5,8 @@ Run the plugin's tasks inside `asyncio.run`; `step(t)` changes the world each ti
 
 Robots: `fake_arm` and `fake_robot` are the real `ArmInterface` and `HuskyRobotInterface` without ROS, so every check
 they run is the real one; their publishers keep what is sent (`Published`), and an `ArmDriver` moves an arm along what
-it was sent, feeding its joint states as the robot would. `fake_robotiq` and `fake_scaffolding` are the real tool
-interfaces, answered by a `RobotiqDriver` and a `ScaffoldingDriver`.
+it was sent, feeding its joint states and the safety sync's status as the robot would. `fake_robotiq` and
+`fake_scaffolding` are the real tool interfaces, answered by a `RobotiqDriver` and a `ScaffoldingDriver`.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Sequence
 
 import numpy as np
+from robot_fakes import Controllers
 from sensor_msgs.msg import JointState
 
 from husky_assembly_teleop.config import ArmConfig
@@ -109,13 +110,17 @@ class FakeContext:
         """Another plugin, by name."""
         return self.plugins[name]
 
-    def defer(self, label: str, run: Callable[[], Any]) -> Callable[..., Any]:
-        """A widget callback that runs `run` at once (no viser thread here)."""
+    def defer(self, label: str, run: Callable[[], Any], operator_only: bool = False) -> Callable[..., Any]:
+        """A widget callback that runs `run` at once (no viser thread here); every call counts as the operator's."""
         return lambda *_event: run()
 
-    def defer_value(self, label: str, run: Callable[[Any], Any]) -> Callable[[Any], Any]:
-        """A widget callback handed the new value, run at once."""
+    def defer_value(self, label: str, run: Callable[[Any], Any], operator_only: bool = False) -> Callable[[Any], Any]:
+        """A widget callback handed the new value, run at once; every call counts as the operator's."""
         return run
+
+    def submit(self, label: str, run: Callable[[], Any]) -> None:
+        """A queued intent, run at once (no tick here)."""
+        run()
 
     def spawn(self, label: str, work) -> asyncio.Task:
         """Start a task on the running loop."""
@@ -196,6 +201,9 @@ def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
              active: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, end_effector=None) -> ArmInterface:
     """A real `ArmInterface` without ROS: measured now at `joints`, `active` running, publishers kept.
 
+    The safety sync vouches for it (a recent, operational status with a dashboard, its program playing), and the
+    controller manager answered now; a controller switch takes effect at once and is kept in `controllers.switches`.
+
     Args:
         node: `fake_node`.
         name: The arm's name, e.g. "left_ur_arm".
@@ -208,9 +216,19 @@ def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
     now = arm._now()
     measured = {f"{name}_{joint}": float(value) for joint, value in zip(UR_JOINT_NAMES, joints)}
     arm.state = ArmState(joint_positions=measured, last_update_time=now,
-                         controllers=ControllerManagerState(active=active, last_update_time=now))
-    arm.controllers = SimpleNamespace(state=arm.state.controllers,
-                                      is_active=lambda controller: arm.state.controllers.active == controller)
+                         controllers=ControllerManagerState(active=active, last_update_time=now),
+                         status_update_time=now, dashboard_up=True, operational=True, program_playing=True)
+    arm.controllers = Controllers(arm.state.controllers, f"/{name}", node)
+    arm.controllers.switches = []
+
+    def switch(controller: str) -> bool:
+        """Start `controller` at once, as an answered switch request would."""
+        arm.controllers.switches.append(controller)
+        arm.state.controllers.active = arm.state.controllers.requested = controller
+        return True
+
+    arm.controllers.switch = switch
+    arm._simulated, arm._free_drive_until = lambda: None, float("-inf")
     arm.urdf_problem, arm.pendant_tcp, arm.base_in_husky = None, Pose(), Pose()
     arm._test_mode_logged, arm._motion_reference, arm._slight_reference, arm._free_drive_on = {}, {}, {}, False
     arm._trajectory, arm._target_frame, arm._target_wrench = Published(), Published(), Published()
@@ -254,9 +272,11 @@ class ArmDriver:
     def tick(self, t: float) -> None:
         """Take a newly sent trajectory, move along it, and feed the joint state at time `t`.
 
-        The controller manager answers too, as its poll would (`ControllerManagerInterface.refresh`).
+        The controller manager and the safety sync answer too, as their polls would
+        (`ControllerManagerInterface.refresh`, `ArmInterface.on_sync_status`).
         """
         self.arm.state.controllers.last_update_time = t
+        self.arm.state.status_update_time = t
         single = self.arm._trajectory.messages
         multi = self.robot._multi_arm.messages if self.robot is not None and self.robot._multi_arm else []
         if (len(single), len(multi)) != self._seen:

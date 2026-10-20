@@ -22,14 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from html import escape
 from typing import TYPE_CHECKING
 
 import numpy as np
 import viser
 
-from ..drive import drive_folder
+from ..drive import drive_folder, folder_name, stamped_name
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..plugin_api.trace import Signal
@@ -42,7 +41,7 @@ from ..world.mocap import mocap_check
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 
 if TYPE_CHECKING:
-    from ..shared.process import ProcessPluginApi
+    from ..shared.process_contract import ProcessContract
 
 #: Name of the tracked rigid body in `world.tracked_objects` and on the health panel.
 TRACKED_NAME = "fitted_bar"
@@ -178,18 +177,18 @@ class MocapBarsPlugin(HuskyPlugin):
         """Record the fit for the chosen seconds, then save it with the bar's layout and the plan's context."""
         bar_id, seconds = self._bar_id, float(self._seconds.value)
         names, model = self._layouts[bar_id]
-        experiment = "".join(c if c.isalnum() or c in "-_" else "_" for c in self._experiment.value.strip()) or "take"
+        experiment = folder_name(self._experiment.value, "take")
         self._message = f"recording {bar_id} for {seconds:g} s"
         with ctx.record(*self._signals(model)) as take:
             await ctx.sleep(seconds)
-        process: ProcessPluginApi = ctx.require("process")
+        process: ProcessContract = ctx.require("process")
         selection = process.selection
         description = {"bar": bar_id, "mocap_id": self._object.mocap_id if self._object else None,
-                       "process": str(selection.loaded.source) if selection is not None else None,
-                       "step": selection.step.movement.id if selection is not None else None, "seconds": seconds,
+                       "process": str(selection.process.folder) if selection is not None else None,
+                       "step": selection.movement.id if selection is not None else None, "seconds": seconds,
                        "frame": "world (mocap, Z-up), metres; quaternions (x, y, z, w); deviation in the planned "
                                 "bar's frame, its axis z"}
-        path = self._folder / experiment / f"{time.strftime('%Y%m%d_%H%M%S')}_{bar_id.split('/')[-1]}.npz"
+        path = self._folder / experiment / f"{stamped_name(bar_id.split('/')[-1])}.npz"
         extra = {"model_markers": model, "model_marker_names": np.array(names),
                  "description": np.array(json.dumps(description))}
         await ctx.run_in_thread(take.save, path, extra)
@@ -241,9 +240,9 @@ class MocapBarsPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        process: ProcessPluginApi = ctx.require("process")
+        process: ProcessContract = ctx.require("process")
         selection = process.selection
-        loaded = selection.loaded.process if selection is not None else None
+        loaded = selection.process if selection is not None else None
         if loaded is not self._layouts_of:
             self._layouts_of = loaded
             self._layouts = bar_markers(loaded) if loaded is not None else {}

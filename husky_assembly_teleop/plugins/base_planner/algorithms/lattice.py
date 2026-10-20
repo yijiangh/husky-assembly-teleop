@@ -29,13 +29,13 @@ from scipy.signal import fftconvolve
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
 
-from ....shared.planning.search import TIME_LIMIT, PlanResult
+from ....shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ..follow import XICR_RANGE, followed, thinned
 from ..path import (MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE, BasePath, densify, driven, steer,
                     timed_path)
 from ..world import CLEARANCE_LIMIT, CLEARANCE_STEP, COLLISION_MARGIN, FLOOR_BOTTOM, PlanningWorld
-from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, YAW_STEP, Algorithm, Debug, add_follower_settings,
-                   add_margin_setting)
+from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, Algorithm, Debug, add_follower_settings,
+                   add_margin_setting, yaw_step)
 
 #: Search grid: the first pose to reach a cell and heading bin keeps it. Cell size, metres (also of the guide's fine
 #: maps), and heading bin, radians.
@@ -254,6 +254,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     # How far the true turning centre may be from the follower's: a turn may leave the base this far off the path per
     # unit of chord turned.
     swing = max(abs(x_model - low_icr), abs(x_model - high_icr))
+    turn_step = yaw_step(world, own, (low_icr, high_icr, x_model))
     # The last check that failed: where, with which xICR, and what happened.
     failure: list = []
 
@@ -266,7 +267,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
         turns = any(abs(b[2] - a[2]) > 1e-9 for a, b in zip(poses[:-1], poses[1:]))
         poses = [_to_base(pose, ahead) for pose in poses]
         for icr in xicrs if turns else xicrs[:1]:
-            points = driven(poses, icr, x_model, POSITION_STEP, YAW_STEP)
+            points = driven(poses, icr, x_model, POSITION_STEP, turn_step)
             # * The end first: most moves into something end in it, and it costs one check.
             for pose in points[-1:] + points[:-1]:
                 if abort.is_set():
@@ -300,7 +301,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
             if why:
                 failure[:] = [tuple(trace[-1]), icr, f"does not finish ({why})", None]
                 return False
-            for pose in thinned(trace, POSITION_STEP, YAW_STEP):
+            for pose in thinned(trace, POSITION_STEP, turn_step):
                 if abort.is_set():
                     return False
                 other = hit_by(tuple(pose), margin)

@@ -41,11 +41,12 @@ from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Body, Scene
 
 from ..config import RobotConfig, robot_config_from_serial
-from ..shared.planning.movement import MovementSpec, Routine, classify_action
-from ..shared.planning.route_result import RouteResult
-from ..shared.planning.steps import operator_steps
-from ..shared.planning.tamp_route import plan_movement
-from ..shared.process import LoadedProcess, Step, load_process
+from ..plugins.process.loading import load_process
+from ..shared.assembly_planning.movement import MovementSpec, Routine, classify_action
+from ..shared.assembly_planning.route_result import RouteResult
+from ..shared.assembly_planning.steps import operator_steps
+from ..shared.assembly_planning.tamp_route import plan_movement
+from ..shared.assembly_planning.process_steps import LoadedProcess, Step, loaded_process
 from ..world.kinematics import stow_joints
 
 #: The repository's data folder: robot URDFs and tools.
@@ -446,7 +447,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         perturb = tuple(float(value) for value in options.perturb_base.split(",")) if options.perturb_base else None
         if perturb is not None and len(perturb) != 2:
             raise ValueError("--perturb-base takes metres and degrees, e.g. 0.02,2")
-        loaded = load_process(options.process, options.data)
+        loaded = loaded_process(load_process(options.process, options.data))
         actions = select_actions(loaded, options.actions)
         only = [name.strip() for name in options.only.split(",")] if options.only else None
         known = {movement.id for action_id in actions for movement in loaded.process.actions[action_id].movements}

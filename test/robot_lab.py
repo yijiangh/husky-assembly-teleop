@@ -12,8 +12,8 @@ from planning_fixtures import ALICE, BELLE, CINDY, robot_config
 from plugin_fakes import (ArmDriver, FakeContext, RobotiqDriver, ScaffoldingDriver, fake_arm, fake_node, fake_robot,
                           fake_robotiq, fake_scaffolding)
 
-from husky_assembly_teleop.shared.planning.joints import arm_joint_names
-from husky_assembly_teleop.shared.runs import RunSettings
+from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
+from husky_assembly_teleop.shared.runs.runs import RunSettings
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject

@@ -10,12 +10,12 @@ from html import escape
 from typing import TYPE_CHECKING, NamedTuple
 
 from ...plugin_api.context import PluginContext
-from ...shared.process import ACTION_ROWS, action_window
-from ...shared.runs import DONE, RunSettings
+from ...shared.runs.runs import DONE, RunSettings
+from ...ui.checklist import ACTION_ROWS, action_window
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values
 
 if TYPE_CHECKING:
-    from ...shared.assembly_run import RunView
+    from ...shared.assembly_run_contract import RunView
     from .plugin import AssemblyRunPlugin
 
 #: Shown in place of the robot for an action no robot acts in.

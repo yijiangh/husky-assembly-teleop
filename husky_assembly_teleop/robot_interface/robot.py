@@ -7,21 +7,24 @@ Only what concerns all arms at once lives here: the multi-arm trajectory and the
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Callable, Sequence
 
 import numpy as np
-from crl_husky_msgs.msg import MultiArmTrajectory, SafetySyncStatus
+from crl_husky_msgs.msg import MultiArmTrajectory, SafetySyncStatus, SimulatedPart
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_srvs.srv import Trigger
 
 from ..config import RobotConfig
 from .arm import ArmInterface, ArmState
-from .base import BaseInterface, BaseState
+from .base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface, BaseState
 from .frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from .ur_frames import stock_frame_problem
 from .connections import RosConnections
+from .simulated_parts import TOPIC as SIMULATED_TOPIC
+from .simulated_parts import SimulatedParts
 
 #: On-board node that runs or stops all arms together.
 SAFETY_SYNC = "MultiArmSafetySync"
@@ -98,13 +101,14 @@ class HuskyRobotInterface:
         """
         self._node = node
         self.config = config
-        self.base = BaseInterface(node, config)
+        #: The parts of this robot announced as simulated (`simulated_parts.py`).
+        self.simulated = SimulatedParts(lambda: node.get_clock().now().nanoseconds * 1e-9)
+        self.base = BaseInterface(node, config, simulated=partial(self.simulated.get, "base"))
         # * The model already has each arm's UR calibration applied; an out-of-date URDF file is loud, not fatal.
         for check in config.ur_calibration:
             if check.out_of_date:
                 node.get_logger().error(f"!!! robot {config.serial} {check.describe()}")
             elif check.file is None:
-                # TODO: copy each arm's calibration.yaml from the robot into crl-husky config/robots/<serial>/.
                 node.get_logger().warning(f"robot {config.serial} {check.describe()}")
             else:
                 node.get_logger().info(f"robot {config.serial} {check.describe()}")
@@ -116,7 +120,8 @@ class HuskyRobotInterface:
                 node.get_logger().error(problem)
             self.arms[arm.name] = ArmInterface(
                 node, config.ros_namespace, arm,
-                fixed_transform(config.model.urdf, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem)
+                fixed_transform(config.model.urdf, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem,
+                simulated=partial(self.simulated.get, arm.ros_namespace))
         #: The husky frame in the mocap-tracked frame (fixed, from the URDF).
         self._husky_in_mocap_frame = fixed_transform(config.model.urdf, MOCAP_FRAME, HUSKY_FRAME)
         self.state = RobotState(serial=config.serial, base=self.base.state,
@@ -131,6 +136,7 @@ class HuskyRobotInterface:
         status_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                 durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._ros.subscription(SafetySyncStatus, f"{sync}/status", self._on_sync_status, status_qos)
+        self._ros.subscription(SimulatedPart, f"/{self.config.ros_namespace}/{SIMULATED_TOPIC}", self.simulated.heard)
         self._unlock = self._ros.client(Trigger, f"{sync}/unlock_protective_stop")
         self._stop_arms = self._ros.client(Trigger, f"{sync}/stop")
         self._resume_arms = self._ros.client(Trigger, f"{sync}/resume")
@@ -198,23 +204,42 @@ class HuskyRobotInterface:
     def soft_stop(self) -> None:
         """Stop the whole robot until an operator resumes it.
 
-        - Arms: stay stopped until `resume_arms`.
-        - Base: see BaseInterface.stop; resume by switching its controller on.
+        - Arms: stay stopped until `resume`.
+        - Base: see BaseInterface.stop; `resume` switches its velocity controller on again.
+        - Tools: every motor stops (`EndEffector.stop`); nothing restarts them.
 
         ! Not an emergency stop: it needs wifi and the on-board nodes. Use the pendant or platform e-stop.
+        ! Each part is stopped even if another raises; the error is logged.
         """
-        self._node.get_logger().warning(f"robot {self.config.serial}: SOFT STOP")
-        self.base.stop()
+        log = self._node.get_logger()
+        log.warning(f"robot {self.config.serial}: SOFT STOP")
+        try:
+            self.base.stop()
+        except Exception as error:
+            log.error(f"robot {self.config.serial}: SOFT STOP of the base failed: {error!r}")
         if self.arms:
-            self._call_sync(self._stop_arms, "stop arms")
+            try:
+                self._call_sync(self._stop_arms, "stop arms")
+            except Exception as error:
+                log.error(f"robot {self.config.serial}: SOFT STOP of the arms failed: {error!r}")
+        for arm in self.arms.values():
+            if arm.end_effector is not None:
+                try:
+                    arm.end_effector.stop()
+                except Exception as error:
+                    log.error(f"robot {self.config.serial}: SOFT STOP of {arm.config.name}'s tool failed: {error!r}")
 
-    def resume_arms(self) -> bool:
-        """Lift the arms' soft stop; they restart once all are operational.
+    def resume(self) -> bool:
+        """Undo a soft stop: switch the base's velocity controller on, and lift the arms' stop.
+
+        The arms restart once all are operational; the base moves again only when sent a twist or a path.
 
         Returns:
-            bool: True if the request went out. False if the sync is not reachable.
+            bool: True if every request went out. False if the controller manager or the sync is not reachable.
         """
-        return self._call_sync(self._resume_arms, "resume arms")
+        base = self.base.controllers.switch(PLATFORM_VELOCITY_CONTROLLER)
+        arms = self._call_sync(self._resume_arms, "resume arms") if self.arms else True
+        return base and arms
 
     def _call_sync(self, client, what: str) -> bool:
         """Call a multi_arm_safety_sync service and log its answer.

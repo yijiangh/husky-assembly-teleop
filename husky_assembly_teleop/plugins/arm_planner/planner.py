@@ -1,5 +1,5 @@
 """
-The arm planner plugin's planning worlds (`shared.planning.mirrors.MirrorPool`) and the search (`shared.planning.arm`).
+The arm planner's planning worlds (`assembly_planning.mirrors.MirrorPool`) and its search (`assembly_planning.arm`).
 
 ! Worker thread only: sync, search and close on the worker.
 """
@@ -9,11 +9,11 @@ from __future__ import annotations
 import threading
 from typing import Sequence
 
-from ...shared.planning.arm import ArmPath, _extend
-from ...shared.planning.arm import plan_arm as search_arm
-from ...shared.planning.joints import arm_joint_names
-from ...shared.planning.mirrors import MirrorPool
-from ...shared.planning.search import PlanResult
+from ...shared.assembly_planning.arm import ArmPath, _extend
+from ...shared.assembly_planning.arm import plan_arm as search_arm
+from ...shared.assembly_planning.joints import arm_joint_names
+from ...shared.assembly_planning.mirrors import MirrorPool
+from ...shared.planner.planner_search import PlanResult
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 
 __all__ = ["ArmPath", "ArmPlanningWorld", "_extend", "arm_joint_names", "plan_arm"]
@@ -24,7 +24,7 @@ ArmPlanningWorld = MirrorPool
 
 def plan_arm(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, goal: Sequence[float],
              abort: threading.Event) -> PlanResult[ArmPath]:
-    """Plan a collision-free joint path for one arm (`shared.planning.arm.plan_arm`), named with the world's labels.
+    """Plan a collision-free joint path for one arm (`assembly_planning.arm.plan_arm`), named with the world's labels.
 
     Args:
         world: The planning world, for labels.

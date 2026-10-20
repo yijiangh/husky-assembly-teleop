@@ -12,7 +12,8 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
 ! While another plugin holds any robot for an automatic motion (a lease, `shared/execution/interlock.py`), every
   motion command here, to any robot, is refused with a log line; never Hold, the tools' Stop or a zero force. Hold
   on the held robot also cancels that motion. What sends every tick checks before every send: a lease taken
-  meanwhile ends the Cartesian stream (hold), the D-pad (one stop) and free drive (back to the joint controller).
+  meanwhile ends the Cartesian stream (hold), the D-pad (one stop) and free drive (no requests, Keep on unticked,
+  back to the joint controller).
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...shared.execution.interlock import held, lease_of, refuse_while_held
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
+from ...ui.joint_sliders import joint_slider_angles, set_joint_sliders
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import SECTION_SENSOR, block, numbers, section, values
 from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, JointInputs, build_compliance_inputs,
@@ -53,8 +55,6 @@ ARRIVE_TIMEOUT_MARGIN = 5.0
 PANEL_WIDTH = 420
 #: Seconds to wait before asking again after a refused free drive switch, so a dead service is not asked every tick.
 FREE_DRIVE_RETRY = 1.0
-#: Tab labels for arms, by ArmConfig.name.
-ARM_LABELS = {"ur_arm": "Arm", "left_ur_arm": "Left", "right_ur_arm": "Right"}
 
 
 @dataclass
@@ -84,6 +84,8 @@ class _ArmWidgets:
     compliance: ComplianceInputs
     frames: dict[str, viser.FrameHandle]
     arrows: dict[str, viser.ArrowsHandle]
+    #: Keep on, in the free drive controller's folder.
+    free_drive_keep: viser.GuiCheckboxHandle | None = None
     #: The arm's status line on the phone's Control tab, set once that tab is built.
     phone_status: viser.GuiHtmlHandle | None = None
 
@@ -106,11 +108,12 @@ class RobotControlPlugin(HuskyPlugin):
         #: Last hold report per base serial: (linear sign, angular sign, arrival time, from the phone).
         self._held: dict[str, tuple[float, float, float, bool]] = {}
 
-        #: Last report of each arm's held free drive button on the phone, by (serial, arm name).
-        self._free_drive_held: dict[tuple[str, str], float] = {}
-        #: Arms this plugin switched to free drive for a held button, so a release switches them back.
+        #: Last report of each arm's held free drive button, by (serial, arm name): (arrival time, from the phone).
+        self._free_drive_held: dict[tuple[str, str], tuple[float, bool]] = {}
+        #: Arms this plugin switched to free drive for a held phone button, so a release switches them back.
         self._free_driving: set[tuple[str, str]] = set()
-        #: Per arm, the time before which a refused free drive switch is not asked again.
+        #: Per arm, the time before which a refused free drive switch, or a switch back under a lease, is not asked
+        #: again.
         self._free_drive_retry: dict[tuple[str, str], float] = {}
 
         #: Running move task per arm, keyed by (serial, arm name).
@@ -132,9 +135,6 @@ class RobotControlPlugin(HuskyPlugin):
         self._target_ghosts: dict[str, RobotGhost] = {}
         #: Per arm, when the operator last used its joint inputs; the ghost shows only while recent.
         self._joints_used: dict[tuple[str, str], RecentUse] = {}
-        #: Per arm, the joint slider values we wrote last. ! Writing a slider fires its callback
-        #: too; a callback that finds these values was ours, not the operator's.
-        self._written: dict[tuple[str, str], tuple[float, ...]] = {}
         #: Per (serial, command) refused every tick while a robot is held (the D-pad, free drive), the lease logged.
         self._refusals_said: dict[tuple[str, str], object] = {}
 
@@ -156,8 +156,8 @@ class RobotControlPlugin(HuskyPlugin):
                 parts = gui.add_tab_group()
                 with parts.add_tab("Base", icon=viser.Icon.CAR):
                     self._bases.append(self._build_base(ctx, gui, serial, robot.base))
-                for arm_name, arm in robot.arms.items():
-                    with parts.add_tab(ARM_LABELS.get(arm_name, arm_name), icon=viser.Icon.ROBOT):
+                for arm in robot.arms.values():
+                    with parts.add_tab(arm.config.label, icon=viser.Icon.ROBOT):
                         self._arms.append(self._build_arm(ctx, gui, serial, arm))
         panel.dock_right()
         panel.set_width(PANEL_WIDTH)
@@ -173,10 +173,10 @@ class RobotControlPlugin(HuskyPlugin):
                         ctx, phone, widgets.serial, partial(self._on_hold, ctx, widgets.serial, True))
                     for arm_widgets in (arm for arm in self._arms if arm.serial == widgets.serial):
                         name = arm_widgets.arm.config.name
-                        with phone.add_folder(ARM_LABELS.get(name, name)):
+                        with phone.add_folder(arm_widgets.arm.config.label):
                             arm_widgets.phone_status = build_phone_arm_inputs(
                                 ctx, phone, f"{widgets.serial} {name}", arm_widgets.arm,
-                                partial(self._on_free_drive_hold, ctx, (widgets.serial, name)),
+                                partial(self._on_free_drive_hold, ctx, (widgets.serial, name), True),
                                 partial(self._allowed, widgets.serial))
         # ? Built here: loading meshes is too slow for a tick.
         self._target_ghosts = robot_ghosts(ctx, ctx.config.robots, "target")
@@ -224,7 +224,6 @@ class RobotControlPlugin(HuskyPlugin):
         status = gui.add_html("")
         hold = partial(self._hold_arm, serial, arm)
         joint_inputs = partial(build_joint_inputs, ctx, gui, label, arm, used=self._joints_used[key],
-                               written=partial(self._written.get, key),
                                load=partial(self._request_joint_load, key),
                                start=partial(self._start_move, ctx, serial, arm, "move", self._execute_move),
                                hold=hold)
@@ -236,7 +235,8 @@ class RobotControlPlugin(HuskyPlugin):
         panel, built = build_controller_panel(ctx, gui, arm.controllers, {
             SCALED_JOINT_TRAJECTORY_CONTROLLER: joint_inputs,
             CARTESIAN_COMPLIANCE_CONTROLLER: compliance_inputs,
-            FREE_DRIVE_CONTROLLER: partial(build_free_drive_inputs, gui),
+            FREE_DRIVE_CONTROLLER: partial(build_free_drive_inputs, ctx, gui, label,
+                                           partial(self._on_free_drive_hold, ctx, key, False)),
         }, partial(self._allowed, serial))
 
         # Independent of the running controller.
@@ -250,10 +250,13 @@ class RobotControlPlugin(HuskyPlugin):
         return _ArmWidgets(serial=serial, arm=arm, panel=panel, status=status, tool_status=tool,
                            joint=built[SCALED_JOINT_TRAJECTORY_CONTROLLER],
                            compliance=built[CARTESIAN_COMPLIANCE_CONTROLLER],
+                           free_drive_keep=built[FREE_DRIVE_CONTROLLER],
                            frames=add_frame_markers(ctx, serial, arm), arrows=add_force_arrows(ctx, serial, arm))
 
     def teardown(self, ctx: PluginContext) -> None:
-        """At shutdown, stop any base this plugin was driving.
+        """At shutdown, stop any base this plugin was driving, and hold any arm it left a force on.
+
+        Moves still running hold their arm as they are cancelled.
 
         Args:
             ctx: This plugin's context.
@@ -261,6 +264,9 @@ class RobotControlPlugin(HuskyPlugin):
         for widgets in self._bases:
             if widgets.serial in self._driving:
                 widgets.base.send_twist(0.0, 0.0)
+        for widgets in self._arms:
+            if (widgets.serial, widgets.arm.config.name) in self._applied_force:
+                self._hold_arm(widgets.serial, widgets.arm)
 
     # --- --- --- --- --- INTENTS (widget callbacks, run on the main thread) --- --- --- --- ---
 
@@ -276,9 +282,9 @@ class RobotControlPlugin(HuskyPlugin):
         """
         self._held[serial] = (linear, angular, ctx.now(), phone)
 
-    def _on_free_drive_hold(self, ctx: PluginContext, key: tuple[str, str]) -> None:
-        """Record that an arm's free drive button on the phone is still held."""
-        self._free_drive_held[key] = ctx.now()
+    def _on_free_drive_hold(self, ctx: PluginContext, key: tuple[str, str], phone: bool) -> None:
+        """Record that an arm's free drive button is still held; on the phone it also switches the controller."""
+        self._free_drive_held[key] = (ctx.now(), phone)
 
     def _request_joint_load(self, key: tuple[str, str], angles: np.ndarray | None) -> None:
         """Ask update to set one arm's joint sliders to `angles` (radians), or to the measured joints for None."""
@@ -350,11 +356,15 @@ class RobotControlPlugin(HuskyPlugin):
                                                self._applied_force.get(key))
 
     def _update_free_drive(self, now: float) -> None:
-        """Free drive each arm while its phone button is held; on release the joint controller holds the arm.
+        """Keep free drive on while a free drive button is held or Keep on is ticked; the phone's button also switches.
 
+        - Laptop: the Free controller button switches; holding its button, or Keep on, frees the arm.
+        - Phone: holding switches to free drive and frees the arm; on release the joint controller holds it.
         ! On release, switch back only while free drive still runs: after Stop all or a switch on the laptop, a
           release must not start a controller. If the switch back fails, free drive still ends within 1 s, since
-          its heartbeat stops (`ArmInterface._keep_free_drive`).
+          the requests stop (`ArmInterface.request_free_drive`).
+        ! While any robot is held for an automatic motion: no requests, Keep on unticked, and every arm in free drive
+          switched back to the joint controller; logged once per lease.
 
         Args:
             now: This tick's time, as the hold reports use.
@@ -362,19 +372,29 @@ class RobotControlPlugin(HuskyPlugin):
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             controllers = widgets.arm.controllers
-            # Decide only once a pending switch is answered, and not straight after a refused one.
+            last = self._free_drive_held.get(key)
+            held = last is not None and now - last[0] <= HOLD_TIMEOUT
+            keep = widgets.free_drive_keep
+            if keep is not None and keep.value and controllers.state.requested != FREE_DRIVE_CONTROLLER:
+                keep.value = False  # another controller was chosen: Keep on must be ticked again
+            wanted = held or (keep is not None and keep.value)
+            # ! While any robot is held for an automatic motion, no arm is freed: no requests, Keep on unticked (it
+            #   would free the arm again the moment the motion ends), and the joint controller holds the arm.
+            taken = (wanted or key in self._free_driving or controllers.is_active(FREE_DRIVE_CONTROLLER)) and \
+                self._held_by_other(widgets.serial, f"{widgets.arm.config.name} free drive")
+            if taken and keep is not None and keep.value:
+                keep.value = False
+            if wanted and not taken:
+                widgets.arm.request_free_drive()
+            # Switch for the phone only once a pending switch is answered, and not straight after a refused one.
+            phone_held = held and last[1] and not taken
             if controllers.state.switch_in_flight is not None or now < self._free_drive_retry.get(key, now):
                 continue
-            last = self._free_drive_held.get(key)
-            held = last is not None and now - last <= HOLD_TIMEOUT
-            if held and key not in self._free_driving:
-                if self._held_by_other(widgets.serial, f"{widgets.arm.config.name} free drive"):
-                    continue
+            if phone_held and key not in self._free_driving:
                 switched = controllers.switch(FREE_DRIVE_CONTROLLER)
                 if switched:
                     self._free_driving.add(key)
-            elif key in self._free_driving and (
-                    not held or self._held_by_other(widgets.serial, f"{widgets.arm.config.name} free drive")):
+            elif not phone_held and (key in self._free_driving or taken):
                 # Released, or a robot was taken for an automatic motion: the joint controller holds the arm.
                 switched = (not controllers.is_active(FREE_DRIVE_CONTROLLER)
                             or controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER))
@@ -382,7 +402,8 @@ class RobotControlPlugin(HuskyPlugin):
                     self._free_driving.discard(key)
             else:
                 continue
-            if not switched:
+            # ? Under a lease the switch back is asked again only after a while: a failed one leaves free drive running.
+            if not switched or (taken and controllers.is_active(FREE_DRIVE_CONTROLLER)):
                 self._free_drive_retry[key] = now + FREE_DRIVE_RETRY
 
     def draw(self, ctx: PluginContext) -> None:
@@ -427,7 +448,7 @@ class RobotControlPlugin(HuskyPlugin):
                 if widgets.serial != serial or not self._joints_used[(serial, name)].active:
                     continue  # another robot's arm, or sliders not in use
                 parts.append(f"{name}_")
-                target = np.radians([slider.value for slider in widgets.joint.joints])
+                target = joint_slider_angles(widgets.joint.joints)
                 joints.update(zip((f"{name}_{joint}" for joint in UR_JOINT_NAMES), target))
             if parts:
                 ghost.show(ctx.kinematics.base_pose(serial), joints, parts=tuple(parts))
@@ -464,9 +485,7 @@ class RobotControlPlugin(HuskyPlugin):
         # None means the measured joints, which need joint data first.
         angles = widgets.arm.joint_vector() if self._load_sliders[key] is None else self._load_sliders[key]
         if angles is not None:
-            for slider, value in zip(widgets.joint.joints, np.degrees(angles)):
-                slider.value = round(float(value) * 2) / 2  # the sliders' 0.5 deg step
-            self._written[key] = tuple(slider.value for slider in widgets.joint.joints)
+            set_joint_sliders(widgets.joint.joints, angles)
             del self._load_sliders[key]
 
     # --- --- --- --- --- MOVE TASKS --- --- --- --- ---
@@ -504,6 +523,7 @@ class RobotControlPlugin(HuskyPlugin):
             arm: The arm to hold.
         """
         arm.hold()
+        self._applied_force.pop((serial, arm.config.name), None)  # hold zeroes the target wrench
         running = self._trajectory_tasks.get((serial, arm.config.name))
         if running is not None and not running.done():
             running.cancel()
@@ -515,6 +535,8 @@ class RobotControlPlugin(HuskyPlugin):
 
     async def _execute_move(self, ctx: PluginContext, serial: str, arm: ArmInterface, target: np.ndarray) -> None:
         """Send a smooth joint move and wait until the time is up and every joint is within ARRIVED_TOLERANCE.
+
+        ! Cancelled (Hold, Stop all, the plugin stopping, shutdown), it holds the arm: the trajectory would run on.
 
         Args:
             ctx: This plugin's context.
@@ -541,6 +563,9 @@ class RobotControlPlugin(HuskyPlugin):
         except WaitTimeout as timeout:
             # Logged, not raised: a raising task counts as a plugin failure.
             ctx.log_warn(str(timeout))
+        except asyncio.CancelledError:
+            arm.hold()
+            raise
         # ! Sliders are never touched here: only Current or Stow change them.
 
     async def _stream_cartesian_move(self, ctx: PluginContext, serial: str, arm: ArmInterface,
@@ -548,6 +573,7 @@ class RobotControlPlugin(HuskyPlugin):
         """Move the TCP by sending the next point of a smooth `cartesian_move` each tick.
 
         ? Streamed because the compliance controller jumps straight to its target.
+        ! Cancelled, it holds the arm at its TCP.
 
         Args:
             ctx: This plugin's context.
@@ -570,21 +596,25 @@ class RobotControlPlugin(HuskyPlugin):
             return
         ctx.log_info(f"{name}: cartesian move, {duration:.1f} s")
         start = ctx.now()
-        while True:
-            elapsed = ctx.now() - start
-            found = held(ctx.world)
-            if found is not None:
-                # ! A robot was taken for an automatic motion mid-stream: one motion at a time, so stop here.
-                arm.hold()
-                ctx.log_warn(f"{name}: cartesian move stopped and held: {found[0]} is held by {found[1].holder} "
-                             f"({found[1].label}), one motion at a time")
-                return
-            if not arm.send_cartesian_target(*sample(elapsed)):
-                # The arm logged why; hold so it settles where it is.
-                ctx.log_warn(f"{name}: cartesian move stopped early")
-                arm.hold()
-                return
-            if elapsed >= duration:
-                break
-            await ctx.next_tick()
+        try:
+            while True:
+                elapsed = ctx.now() - start
+                found = held(ctx.world)
+                if found is not None:
+                    # ! A robot was taken for an automatic motion mid-stream: one motion at a time, so stop here.
+                    arm.hold()
+                    ctx.log_warn(f"{name}: cartesian move stopped and held: {found[0]} is held by "
+                                 f"{found[1].holder} ({found[1].label}), one motion at a time")
+                    return
+                if not arm.send_cartesian_target(*sample(elapsed)):
+                    # The arm logged why; hold so it settles where it is.
+                    ctx.log_warn(f"{name}: cartesian move stopped early")
+                    arm.hold()
+                    return
+                if elapsed >= duration:
+                    break
+                await ctx.next_tick()
+        except asyncio.CancelledError:
+            arm.hold()
+            raise
         ctx.log_info(f"{name}: cartesian move done")

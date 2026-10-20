@@ -17,13 +17,13 @@ from typing import TYPE_CHECKING, Mapping
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 
-from ..planning.route_result import pose_error
+from ..assembly_planning.route_result import pose_error
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.scene import Scene
 
-    from ..process import LoadedProcess, Step
-    from ..runs import RunSettings
+    from ..assembly_planning.process_steps import LoadedProcess, Step
+    from ..runs.runs import RunSettings
 
 #: The acting arm may move this far, radians, before a plan is stale.
 STALE_ARM = math.radians(2.0)

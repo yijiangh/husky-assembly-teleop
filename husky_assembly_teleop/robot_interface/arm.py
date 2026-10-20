@@ -7,7 +7,7 @@ Each command checks the running controller and its inputs itself before sending.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 from builtin_interfaces.msg import Duration
@@ -29,6 +29,7 @@ from .controller_manager import ControllerManagerInterface, ControllerManagerSta
 from .end_effectors import EndEffector, EndEffectorState, make_end_effector
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
+from .simulated_parts import SimulatedPart
 from .ur_frames import BASE_LINK_FROM_UR_BASE
 
 # ? qos_profile_sensor_data but deeper, to hold one tick of samples: 100 covers 500 Hz for 200 ms.
@@ -46,15 +47,18 @@ CARTESIAN_COMPLIANCE_CONTROLLER = "cartesian_compliance_controller"
 FREE_DRIVE_CONTROLLER = "free_drive_controller"
 #: The controllers an arm switches between, only one at a time.
 ARM_CONTROLLERS = (SCALED_JOINT_TRAJECTORY_CONTROLLER, CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER)
-#: Seconds between "keep free drive on" messages while the free drive controller runs. It ends free drive
+#: Seconds between "keep free drive on" messages while free drive is requested. The controller ends free drive
 #: after 1 s without one (inactive_timeout in crl_husky ur_controllers.yaml), so a lost link or a dead
 #: monitor ends it too.
 FREE_DRIVE_HEARTBEAT = 0.2
+#: How long one `request_free_drive` keeps free drive on, seconds: a held button reports at 20 Hz.
+FREE_DRIVE_REQUEST_TTL = 0.25
 #: multi_arm_safety_sync status older than this, seconds, counts as unknown.
 SYNC_STATUS_MAX_AGE = 3.0
 
-#: Largest gap, radians per joint, between the arm and a trajectory's first waypoint (it runs at time 0).
-START_TOLERANCE = 0.1
+#: Largest gap, radians per joint, between the arm and a trajectory's first waypoint: it runs at time 0, so any gap
+#: is a jump. Start from `joint_vector()`, as `send_joint_move` does.
+START_TOLERANCE = 0.01
 #: Largest gap, metres, between the TCP and a cartesian target.
 CARTESIAN_START_TOLERANCE = 0.05
 #: Largest turn, radians, between the TCP and a cartesian target; more means a wrong frame.
@@ -74,8 +78,6 @@ TRAJECTORY_MAX_DURATION = 300.0
 TRAJECTORY_MAX_WAYPOINTS = 10_000
 #: A trajectory is refused if the arm moved within this many seconds (it would jump in velocity).
 MOVING_WITHIN = 0.5
-#: Controller state older than this, seconds, is too old to trust "active".
-CONTROLLER_STATE_MAX_AGE = 3.0
 #: Largest step, metres and radians, between Cartesian targets sent within CARTESIAN_STEP_WINDOW seconds.
 CARTESIAN_MAX_STEP = 0.01
 CARTESIAN_MAX_STEP_ANGLE = np.radians(3.0)
@@ -88,8 +90,9 @@ TARGET_WRENCH_FRAME = "tool0"
 #: Largest target force (N) and torque (N m) `send_target_wrench` sends.
 MAX_TARGET_FORCE = 50.0
 MAX_TARGET_TORQUE = 5.0
-#: How long `hold` takes to brake to a standstill, seconds.
-HOLD_DURATION = 0.5
+#: Shortest time `hold` takes to brake to a standstill, seconds; faster joints brake longer, at
+#: TRAJECTORY_MAX_JOINT_ACCELERATION.
+HOLD_DURATION = 0.2
 #: A joint that moved further than this, radians, since motion was last seen counts as motion.
 MOTION_THRESHOLD = 1e-2
 #: Seconds without motion after which the arm counts as done executing.
@@ -250,6 +253,7 @@ class ArmState:
 
     Attributes:
         joint_positions: URDF joint name to position, radians. Empty until the first message.
+        joint_velocities: URDF joint name to velocity, rad/s, where joint_states carry one.
         tcp_position: Position of tool0, the link the compliance controller moves, metres, in its `base_link`:
             the reported TCP with the pendant's TCP taken off (`flange_from_reported`). Commands use it.
         tcp_orientation: Its quaternion (x, y, z, w), same frame.
@@ -289,6 +293,7 @@ class ArmState:
     """
 
     joint_positions: dict[str, float] = field(default_factory=dict)
+    joint_velocities: dict[str, float] = field(default_factory=dict)
     tcp_position: np.ndarray | None = None
     tcp_orientation: np.ndarray | None = None
     tcp_raw_position: np.ndarray | None = None
@@ -329,7 +334,7 @@ class ArmInterface:
     """
 
     def __init__(self, node: Node, robot_namespace: str, config: ArmConfig, base_in_husky: Pose,
-                 urdf_problem: str | None = None):
+                 urdf_problem: str | None = None, simulated: Callable[[], SimulatedPart | None] = lambda: None):
         """Create every subscription, publisher and client of one arm.
 
         Args:
@@ -338,9 +343,11 @@ class ArmInterface:
             config: This arm.
             base_in_husky: This arm's base_link in the husky frame.
             urdf_problem: Why the URDF breaks the stock UR frames, or None. If set, Cartesian targets are refused.
+            simulated: The arm's fake hardware announcement while it runs on it, else None (`SimulatedParts.get`).
         """
         self._node = node
         self.config = config
+        self._simulated = simulated
         #: This arm's base_link (the controller's target frame) in the husky frame.
         self.base_in_husky = base_in_husky
         #: The TCP set on the pendant, in tool0: what the reported TCP includes (not the tool's own `Tool.tcp`).
@@ -354,11 +361,13 @@ class ArmInterface:
         self._slight_reference: dict[str, float] = {}
         #: Whether free drive was being kept on at the last heartbeat, to log the change.
         self._free_drive_on = False
+        #: ROS time until which free drive is requested (`request_free_drive`).
+        self._free_drive_until = float("-inf")
         self._namespace = f"/{robot_namespace}/{config.ros_namespace}"
         self._ros = RosConnections(node)
 
         self.controllers = ControllerManagerInterface(
-            node, self._namespace, ARM_CONTROLLERS, self.state.controllers)
+            node, self._namespace, ARM_CONTROLLERS, self.state.controllers, guard=self._switch_refusal)
         self.end_effector: EndEffector | None = make_end_effector(node, robot_namespace, config)
         self.state.end_effector = self.end_effector.state if self.end_effector else None
         self._connect()
@@ -508,7 +517,7 @@ class ArmInterface:
         return None
 
     def _motion_refusal(self, controller: str) -> str | None:
-        """Run the checks every motion command shares.
+        """Run the checks every motion command shares: `controller` runs, and `safety_problem`.
 
         Args:
             controller: The controller the command is for.
@@ -516,34 +525,52 @@ class ArmInterface:
         Returns:
             str | None: Why it is refused, or None if it may go ahead.
         """
-        state = self.state.controllers
-        if not self.controllers.is_active(controller):
-            return f"{controller} is not active (active: {state.active!r})"
-        if state.last_update_time is None or self._now() - state.last_update_time > CONTROLLER_STATE_MAX_AGE:
-            return ("the controller manager has not answered for a while, so which controller "
-                    "runs is not known")
+        return self.controllers.running_problem(controller) or self.safety_problem()
+
+    def _switch_refusal(self, controller: str) -> str | None:
+        """Why `controller` may not be started now: free drive needs `safety_problem` to be None; else None."""
+        return self.safety_problem() if controller == FREE_DRIVE_CONTROLLER else None
+
+    def safety_problem(self) -> str | None:
+        """Why the safety sync does not vouch for this arm moving now, or None.
+
+        No recent sync status, no dashboard on a real arm, not operational, or its program stopped.
+        """
         updated = self.state.status_update_time
-        if updated is None or self._now() - updated > SYNC_STATUS_MAX_AGE or not self.state.dashboard_up:
-            # ? Not refused: fake hardware has no dashboard and the robot enforces safety itself.
-            self._node.get_logger().warning(
-                f"arm {self.config.name}: no dashboard state from multi_arm_safety_sync, safety not checked",
-                throttle_duration_sec=5.0)
-            return None
+        if updated is None or self._now() - updated > SYNC_STATUS_MAX_AGE:
+            return "its safety is not known: no recent status from multi_arm_safety_sync; start it on the robot"
+        # * Only fake hardware runs without a dashboard; the sync announces such an arm (`simulation`).
+        if not self.state.dashboard_up and self.simulation is None:
+            return "its safety is not known: the sync reaches no dashboard for this arm; is the driver running?"
         if not self.state.operational:
             return f"the arm is not operational: {self.state.problem}"
+        # * Stopped, the driver switches the controllers off (and drops what they get); the poll may not show it yet.
+        if not self.state.program_playing:
+            return "its program is stopped (Stop all, or the sync stopped it); press Resume"
         return None
 
-    def hold(self) -> bool:
-        """Stop the arm at its measured joints or TCP, under whichever controller is running.
+    @property
+    def simulation(self) -> SimulatedPart | None:
+        """The fake hardware's announcement (`SimulatedPart`) while this arm runs on it, else None: a real arm."""
+        return self._simulated()
 
-        - Under Cartesian compliance, the caller must stop sending new targets.
-        - Refused on stale measurements (an old position could mean a jump); use the teach pendant then.
-        ! A target wrench stays applied; zero it separately.
+    def hold(self) -> bool:
+        """Stop the arm where it is and keep it there, under whichever controller runs; zero the target wrench.
+
+        - Trajectory controller: a smooth stop from the measured joint speeds, braking at
+          TRAJECTORY_MAX_JOINT_ACCELERATION. Also sent while the controller state is unknown: an inactive
+          controller drops it.
+        - Cartesian compliance: a target at the measured TCP. The caller must stop sending new targets.
+        - Free drive: switch to the trajectory controller, which holds the arm where it is.
+        - ! Never refused for the safety sync, the program or the last target: stopping is always allowed. Only a
+          missing or stale measurement refuses it, since the target could be far from the arm; use the pendant then.
 
         Returns:
-            bool: True if sent. False (reason logged) if neither controller runs or the measurement is stale.
+            bool: True if sent. False (reason logged) if the measurement is missing or stale.
         """
         log = self._node.get_logger()
+        if not self.config.cartesian_test_mode:
+            self._publish_wrench(np.zeros(3), np.zeros(3))
         if self.controllers.is_active(CARTESIAN_COMPLIANCE_CONTROLLER):
             if self.state.tcp_position is None or \
                     self._now() - self.state.tcp_update_time > JOINT_STATE_MAX_AGE:
@@ -551,25 +578,43 @@ class ArmInterface:
                           f"stop the arm from the teach pendant")
                 return False
             sent = self.send_cartesian_target(self.state.tcp_position, self.state.tcp_orientation, hold=True)
-            if sent:
-                log.info(f"arm {self.config.name}: hold sent")
-            return sent
-        if not self.controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER):
-            log.warning(f"arm {self.config.name}: hold not sent, neither motion controller is active")
-            return False
+        elif self.controllers.is_active(FREE_DRIVE_CONTROLLER):
+            sent = self.controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER)
+        else:
+            stop = self._stop_point()
+            if stop is None:
+                log.error(f"arm {self.config.name}: HOLD NOT SENT, joint state missing, stale or not finite; "
+                          f"stop the arm from the teach pendant")
+                return False
+            positions, duration = stop
+            point = JointTrajectoryPoint()
+            point.positions = [float(value) for value in positions]
+            point.velocities = [0.0] * len(UR_JOINT_NAMES)
+            point.time_from_start = Duration(sec=int(duration), nanosec=int((duration % 1.0) * 1e9))
+            self._trajectory.publish(JointTrajectory(joint_names=list(UR_JOINT_NAMES), points=[point]))
+            sent = True
+        if sent:
+            log.info(f"arm {self.config.name}: hold sent")
+        return sent
+
+    def _stop_point(self) -> tuple[np.ndarray, float] | None:
+        """Where the arm comes to rest braking evenly from its measured speed, and how long that takes, seconds.
+
+        The controller starts the stop from where the arm is now, so from the measurement it is extrapolated by the
+        measurement's age. Braking evenly from speed v over T seconds covers v T / 2. None if the joint state is
+        missing, stale or not finite.
+        """
         here = self.joint_vector()
-        if here is None or self._now() - self.state.last_update_time > JOINT_STATE_MAX_AGE:
-            log.error(f"arm {self.config.name}: HOLD NOT SENT, joint state missing or stale; "
-                      f"stop the arm from the teach pendant")
-            return False
-        point = JointTrajectoryPoint()
-        point.positions = [float(value) for value in here]
-        point.velocities = [0.0] * len(UR_JOINT_NAMES)
-        point.time_from_start = Duration(sec=int(HOLD_DURATION), nanosec=int((HOLD_DURATION % 1.0) * 1e9))
-        trajectory = JointTrajectory(joint_names=list(UR_JOINT_NAMES), points=[point])
-        self._trajectory.publish(trajectory)
-        log.info(f"arm {self.config.name}: hold sent")
-        return True
+        if here is None or not np.all(np.isfinite(here)):
+            return None
+        age = self._now() - self.state.last_update_time
+        if age > JOINT_STATE_MAX_AGE:
+            return None
+        prefix = f"{self.config.name}_"
+        speed = np.array([self.state.joint_velocities.get(prefix + name, 0.0) for name in UR_JOINT_NAMES])
+        speed = np.where(np.isfinite(speed), speed, 0.0)
+        duration = max(HOLD_DURATION, float(np.max(np.abs(speed))) / TRAJECTORY_MAX_JOINT_ACCELERATION)
+        return np.clip(here + speed * (age + duration / 2), -UR_JOINT_LIMITS, UR_JOINT_LIMITS), duration
 
     def send_joint_trajectory(self, positions: Sequence[Sequence[float]], duration: float,
                               velocities: Sequence[Sequence[float]] | None = None) -> bool:
@@ -613,7 +658,8 @@ class ArmInterface:
         Args:
             position: Target position in the arm's base_link frame, metres.
             orientation: Target orientation, quaternion (x, y, z, w).
-            hold: True only from `hold`; its target is the reported TCP, so a URDF problem does not stop it.
+            hold: True only from `hold`; its target is the reported TCP, so neither a URDF problem, the safety sync,
+                the program nor the start, reach and step checks stop it.
 
         ! The controller does not interpolate: send bigger moves as many close targets, one per tick
           (`cartesian_move`).
@@ -624,7 +670,7 @@ class ArmInterface:
         log = self._node.get_logger()
         position = np.asarray(position, dtype=float)
         orientation = np.asarray(orientation, dtype=float)
-        refusal = self._motion_refusal(CARTESIAN_COMPLIANCE_CONTROLLER)
+        refusal = None if hold else self._motion_refusal(CARTESIAN_COMPLIANCE_CONTROLLER)
         if refusal is not None:
             pass
         elif self.urdf_problem is not None and not hold:
@@ -638,6 +684,8 @@ class ArmInterface:
             refusal = "no TCP pose yet"
         elif self._now() - self.state.tcp_update_time > JOINT_STATE_MAX_AGE:
             refusal = f"TCP pose is {self._now() - self.state.tcp_update_time:.1f} s old"
+        elif hold:
+            pass  # the target is where the TCP is
         elif not np.allclose(self.state.tcp_position, position, atol=CARTESIAN_START_TOLERANCE):
             refusal = (f"target too far from the TCP: {np.round(self.state.tcp_position, 3)} "
                        f"vs {np.round(position, 3)}")
@@ -647,9 +695,7 @@ class ArmInterface:
                        f"{np.degrees(CARTESIAN_START_ANGLE_TOLERANCE):.0f} deg")
         elif np.linalg.norm(position - [0.0, 0.0, UR5E_SHOULDER_HEIGHT]) > UR5E_REACH:
             refusal = f"target is out of reach ({UR5E_REACH} m from the shoulder)"
-        elif not hold:
-            # ? Not for a hold: it targets the measured TCP, which under compliance can lag the last streamed target
-            #   by more than one step.
+        else:
             refusal = self._cartesian_step_refusal(position, orientation)
         if refusal is not None:
             log.error(f"arm {self.config.name}: not sending a cartesian target: {refusal}")
@@ -751,7 +797,7 @@ class ArmInterface:
         """Send a target wrench to the compliance controller.
 
         ! In the tool frame (tool0), not the arm's base, so it turns with the tool.
-        ! Stays applied until another wrench is sent, even through a hold. Send zeros to remove it.
+        ! Stays applied until another wrench is sent or `hold` zeroes it.
 
         Args:
             force: Force in tool0, newtons.
@@ -776,12 +822,16 @@ class ArmInterface:
         if self.config.cartesian_test_mode:
             self._log_test_mode("target force", f"F {np.round(force, 2)} N  T {np.round(torque, 3)} N m (tool0)")
             return False
+        self._publish_wrench(force, torque)
+        return True
+
+    def _publish_wrench(self, force: np.ndarray, torque: np.ndarray) -> None:
+        """Publish a target wrench in tool0, unchecked."""
         message = WrenchStamped()
         message.header.frame_id = TARGET_WRENCH_FRAME
         message.wrench.force.x, message.wrench.force.y, message.wrench.force.z = map(float, force)
         message.wrench.torque.x, message.wrench.torque.y, message.wrench.torque.z = map(float, torque)
         self._target_wrench.publish(message)
-        return True
 
     def zero_ft_sensor(self) -> bool:
         """Re-zero the force/torque sensor, taring the current reading.
@@ -797,14 +847,30 @@ class ArmInterface:
         self._zero_ft.call_async(Trigger.Request())
         return True
 
+    def request_free_drive(self) -> None:
+        """Keep free drive on for FREE_DRIVE_REQUEST_TTL more, if the free drive controller runs.
+
+        ! Call it at every report of a held button, or every tick while free drive should stay on. Running the
+          controller alone does not free the arm: without requests it stays stiff.
+        """
+        self._free_drive_until = self._now() + FREE_DRIVE_REQUEST_TTL
+
     def _keep_free_drive(self) -> None:
-        """While the free drive controller runs because we switched to it, keep free drive on; log on and off.
+        """While free drive is requested and its controller runs because we switched to it, keep it on; log on and off.
 
         ! Only after our own switch: a controller left active by another tool or an earlier monitor run must not
-          start free drive by itself. Switching away, the soft stop or a switch from outside ends it.
+          start free drive by itself. No request, switching away, the soft stop, a switch from outside or a
+          `safety_problem` ends it.
         """
         state = self.controllers.state
-        on = self.controllers.is_active(FREE_DRIVE_CONTROLLER) and state.requested == FREE_DRIVE_CONTROLLER
+        on = (self.controllers.is_active(FREE_DRIVE_CONTROLLER) and state.requested == FREE_DRIVE_CONTROLLER
+              and self._now() <= self._free_drive_until)
+        problem = self.safety_problem() if on else None
+        if problem is not None:
+            # * Without the heartbeat the controller ends free drive within 1 s.
+            if self._free_drive_on:
+                self._node.get_logger().error(f"arm {self.config.name}: ending free drive: {problem}")
+            on = False
         if on != self._free_drive_on:
             self._node.get_logger().info(f"arm {self.config.name}: free drive {'on' if on else 'off'}")
             self._free_drive_on = on
@@ -833,6 +899,8 @@ class ArmInterface:
         prefix = f"{self.config.name}_"
         moved = False
         slight = any(abs(speed) > SLIGHT_SPEED for speed in message.velocity)
+        for name, velocity in zip(message.name, message.velocity):
+            self.state.joint_velocities[prefix + name] = float(velocity)
         for name, position in zip(message.name, message.position):
             key = prefix + name
             self.state.joint_positions[key] = float(position)

@@ -8,7 +8,7 @@ Base experiment: drive test paths from where the robot stands with the onboard p
     the same setup), or random paths from the grid; geometric at one fixed speed (`auto.py`).
   - Robot: constant commands, one cell (v, ω) of the command grid per run, sent from here open loop (`twist.py`);
     for how the robot's response changes with speed and turn rate.
-  Each run is checked against the other robots and every scene body (load `obstacles` for the lab's border) first.
+  Each run is checked against the other robots and every scene body (`obstacles` loads with it: the lab's border).
 - Guard: during every run the robot is soft-stopped, and automation paused, once it comes within STOP_DISTANCE of
   anything; the operator switches the velocity controller back on, drives it clear and starts again.
 - Errors are measured here, the same for every controller (`tracking.py`): each new mocap pose against the path
@@ -34,22 +34,22 @@ import numpy as np
 import viser
 from crl_husky.follower_path import FollowerPath, wrap
 
-from ...drive import drive_folder
+from ...drive import drive_folder, folder_name
 from ...plugin_api import signals
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.trace import Signal, Trace
-from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState
+from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState, live_report
+from ...robot_interface.mocap_state import pose_lost
 from ...shared.execution.interlock import held
-from ...shared.planning.path import timing
+from ...shared.obstacles_contract import ObstaclesContract
+from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values, warning
 from ...ui.trace_plot import TracePlot
 from ...world.checks import STALE_AFTER
-from ...world.follower import live_report
-from ...world.mocap import pose_lost
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, STOP_DISTANCE, Clearance, Sampler, StandardSet
 from .plan import Plan, plan_from
@@ -94,8 +94,6 @@ RETURN_SPEED = (0.2, math.radians(30.0))
 #: Clearance the way back must keep, metres; less than PATH_CLEARANCE, so a robot that ended a run near a wall can
 #: still get away from it.
 RETURN_CLEARANCE = 0.2
-#: Scene ids of the obstacles plugin's bodies; automation needs them for the lab's border.
-OBSTACLES_PREFIX = "obstacles/"
 #: Settling: the robot counts as standing once it stayed within SETTLE_POSITION and SETTLE_YAW for SETTLE_FOR
 #: seconds; recording gives up waiting after SETTLE_TIMEOUT.
 SETTLE_POSITION, SETTLE_YAW, SETTLE_FOR, SETTLE_TIMEOUT = 0.01, math.radians(1.0), 0.5, 3.0
@@ -113,6 +111,8 @@ class BaseExperimentPlugin(HuskyPlugin):
 
     name = "base_exp"
     experimental = True
+    #: Automation needs the lab's border (`ObstaclesContract.lab`).
+    requires = ("obstacles",)
 
     def __init__(self):
         """Start with no robot, no preview and no run."""
@@ -311,8 +311,9 @@ class BaseExperimentPlugin(HuskyPlugin):
     def _on_auto(self, ctx: PluginContext) -> None:
         """Start automated runs, unless something keeps them from starting."""
         problem = self._start_problem(ctx)
-        if not problem and not any(key.startswith(OBSTACLES_PREFIX) for key in ctx.scene.snapshot.bodies):
-            problem = "no lab border: load the obstacles plugin"
+        obstacles: ObstaclesContract = ctx.require("obstacles")
+        if not problem and obstacles.lab.border is None:
+            problem = "no lab border: set one in the obstacles plugin"
         if problem:
             self._auto_note = f"auto not started: {problem}"
             return
@@ -327,13 +328,8 @@ class BaseExperimentPlugin(HuskyPlugin):
             return "a run is going on"
         if found := held(ctx.world):
             return f"{found[0]} is held by {found[1].holder} ({found[1].label}): one motion at a time"
-        if lost := pose_lost(base.mocap_id, base.state, ctx.now()):
-            return f"{self.serial} has no mocap pose: {lost}"
-        if self._follower(ctx) is None:
-            return f"no follower on {self.serial}: start crl_husky pure_pursuit"
-        if base.state.estopped:
-            return f"{self.serial} is e-stopped"
-        return ""
+        problem = base.follow_problem()
+        return f"{self.serial}: {problem}" if problem else ""
 
     # --- --- --- --- --- RUNS (tasks) --- --- --- --- ---
 
@@ -369,8 +365,8 @@ class BaseExperimentPlugin(HuskyPlugin):
                     or follower.state != "following" or ctx.now() - follower.update_time > 2 * STALE_AFTER)
 
         try:
-            more = {"experiment_name": _slug(self._experiment.value), "clearance": {"path": PATH_CLEARANCE,
-                                                                                    "stop": STOP_DISTANCE}}
+            more = {"experiment_name": folder_name(self._experiment.value),
+                    "clearance": {"path": PATH_CLEARANCE, "stop": STOP_DISTANCE}}
             if automation is not None:
                 more["automation"] = automation
             if recorded:
@@ -460,7 +456,7 @@ class BaseExperimentPlugin(HuskyPlugin):
 
         try:
             experiment = await record.describe(
-                ctx, base, plan, experiment_name=_slug(self._experiment.value),
+                ctx, base, plan, experiment_name=folder_name(self._experiment.value),
                 clearance={"path": PATH_CLEARANCE, "stop": STOP_DISTANCE}, automation=automation,
                 # ? Sent from the monitor over the network: the delay includes it; its stamps are the monitor's clock.
                 command_source="monitor")
@@ -565,7 +561,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         """
         done, failures, started, before = 0, 0, ctx.now(), 0
         home = self._robot_pose(ctx, serial)
-        name = _slug(self._experiment.value)
+        name = folder_name(self._experiment.value)
         if paths in (STANDARD, TWIST_GRID):
             # * Resumed from this experiment's earlier attempts with the same setup, so every path gets as many.
             key = record.current_key(await record.setup(ctx, ctx.world.robots[serial].base))
@@ -928,12 +924,6 @@ def _minutes(seconds: float) -> str:
     """A duration as minutes and seconds, e.g. "4 min 05 s"."""
     minutes, seconds = divmod(int(round(seconds)), 60)
     return f"{minutes} min {seconds:02d} s"
-
-
-def _slug(name: str) -> str:
-    """A name for a folder: letters, digits, dashes and underscores; "default" if empty."""
-    slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in name.strip())
-    return slug or "default"
 
 
 def _moved(pose, anchor) -> bool:

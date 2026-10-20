@@ -1,9 +1,9 @@
 # Scene refactor plan: one backend-free scene, copied once per tick, mirrored into each planner
 
-Status: **phases 0–5 implemented** (see §9); phase 6 open. The scene types, forward kinematics and the mirrors now live
-in the shared core `scaffolding_assembly_core` (`tasks/2026-10-08_shared_core.md`); the monitor keeps the live `Scene`, the tick
-and the drawing. It replaces the shared PyBullet scene
-(`robot_scene.py`); the reasons are in `refactor_rationale.md` ("Why the scene is backend-free, and copied once per tick").
+Status: **built up to published copies** (§9). The scene types, forward kinematics and the mirrors live in the shared
+core `scaffolding_assembly_core` (`tasks/2026-10-08_shared_core.md`); the monitor keeps the live `Scene`, the tick and the
+drawing. The old monitor shared one PyBullet scene instead; the reasons are in `refactor_rationale.md` ("Why the scene
+is backend-free, and copied once per tick").
 
 Read this first if you are picking it up:
 - `scaffolding_assembly_core/`: `geometry.py` (poses, shapes), `ids.py`, `robot.py`, `scene.py`, `kinematics.py`, `mirrors/pybullet.py`, `mirrors/compas_fab.py`
@@ -180,22 +180,44 @@ Rules shared by every mirror:
 - To plan: take `ctx.scene.snapshot` on the main thread, sync your own mirror on your own worker thread, report results with our ids.
 - Measured objects are never put in the scene. Track them with `ctx.track_object(name, mocap_id, geometry=..., touches=...)`.
 
-## 9. Phases
+## 9. What is built
 
-0. ✅ **compas_fab spike.** Other robots as `ToolModel`s work (the design uses them too). `set_robot_cell`: ~2.3 s (robot + 2 tools ~1.9 s, 92 bodies ~0.4 s); loading 3 models ~8 s. Findings in §6.2.
-1. ✅ **Kinematics.** `kinematics.py`, `ctx.kinematics`; `robot_control` and `base_planner` stop reading PyBullet.
-2. ✅ **Scene and drawing.** `geometry.py`, `scene.py`, `ctx.scene`, `take_snapshot` in the tick, core drawing; `mocap_probe` tracks without drawing its own frame.
-3. ✅ **`PyBulletMirror` and the switch.** `obstacles` and `base_planner` move to the scene together; `example_pybullet` rewritten; `robot_scene.py` deleted.
-4. ✅ **Process objects.** The process plugin puts the selected movement's process scene (`Process.scene_at`, `process/steps.scene_bodies`): process ids prefixed (`bars/B1` → `process/bars/B1`) through an explicit `IdMap`; bodies held in the plan follow the configured real robot (`ids.retarget`, `robots/cindy` → `robots/a200-0806` by the design's `serial`), and touches name the real robots and their tools. Planned robots stay an overlay.
-5. ✅ **`CompasFabMirror`.** Same collision pairs as the design's `RobotCell` on 10 authored Cindy states and 5 with the held bar pushed into the robot (`test/test_compas_fab_mirror.py`, needs `HUSKY_DESIGN_DIRECTORY` pointing to an old-format export with `RobotCell.json`; ! update it to schema 1 later). First user: the `arm_planner` plugin (joint-space RRT-Connect, `shared.planning.search.connect`; commit sends a joint trajectory).
-6. **Published copies.** A planner publishes a modified snapshot for the view (`/worlds/<name>/…`, see-through robots); `base_planner` publishes instead of drawing its own ghost.
+- **compas_fab cells.** Other robots are `ToolModel`s (the design uses them too). `set_robot_cell` takes about 2.3 s
+  (robot and 2 tools about 1.9 s, 92 bodies about 0.4 s); loading 3 models about 8 s. Details in §6.2.
+- **Kinematics.** `kinematics.py`, `ctx.kinematics`; nothing reads link poses from PyBullet.
+- **Scene and drawing.** `geometry.py`, `scene.py`, `ctx.scene`, `take_snapshot` in the tick, core drawing; tracked
+  objects (`ctx.track_object`) draw no frame of their own.
+- **`PyBulletMirror`.** `obstacles` and the base collision checks (`shared/base_collision/`) use the scene;
+  `example_pybullet` shows the pattern.
+- **Process objects.** The process plugin puts the selected movement's process scene (`Process.scene_at`,
+  `plugins/process/scene_bodies.py`) into the live scene: process ids prefixed (`bars/B1` → `process/bars/B1`) through
+  an explicit `IdMap`; bodies held in the plan follow the configured real robot (`ids.retarget`, `robots/cindy` →
+  `robots/a200-0806` by the design's `serial`), and touches name the real robots and their tools. Planned robots stay
+  an overlay.
+- **`CompasFabMirror`.** Same collision pairs as the design's `RobotCell` on 10 authored Cindy states and 5 with the
+  held bar pushed into the robot (`test/core/test_compas_fab_mirror.py`, needs `HUSKY_DESIGN_DIRECTORY` pointing to an
+  old-format export with `RobotCell.json`; ? it should use schema 2.1). Its user is the `arm_planner` plugin
+  (joint-space RRT-Connect, `shared/planner/rrt_connect.py`; Commit sends a joint trajectory).
+- **To build: published copies.** A planner publishes a modified snapshot for the view (`/worlds/<name>/…`,
+  see-through robots); `base_planner` publishes instead of drawing its own ghost.
 
-## 10. Open questions
+## 10. Questions
 
-1. ✅ **Design naming.** Answered by `design_format.md`: `legacy/export.py` converts `env_` / `bar_` / `joint_` names to path ids (`bars/B1`), and each design robot has a `serial` field. Measured robots' ids use serials (`robots/a200-0806`): serials for all machine use, names only for humans; user-facing inputs accept both.
-2. ✅ **Tool mapping.** Tools are separate objects in every planning cell; a design tool maps to the configured robot's tool on the same flange (`process/steps.scene_bodies`).
-3. **Attachments.** Static and set by `process` for now. Decide later whether planners take over while they plan.
-4. **pinocchio layout.** One model per robot, or all appended into one.
-5. **Drawing budget.** N meshes per tick (start at 50); simplified visual meshes for very large cells?
-6. ✅ **Snapshot freshness.** Mirrors and planners refuse an acting robot with `base_tracked=False` or `unmeasured` movable joints. The monitor's base and arm planners plan anyway from the guessed values, with a warning (`planning.panel.with_guesses`). ? A limit on the base/joint time skew is still open.
-7. ✅ **`pp.CLIENT`.** pybullet_planning's modules copy the client at import, so `pp.set_client` alone does not move them; `mirrors/pp_client.pp_client` sets it in every module (`PyBulletMirror.active()`, `CompasFabMirror.lend()`). Still one `pp` user at a time in the process.
+Settled:
+- **Design naming.** The core's `doc/process_format.md`: `legacy/export.py` converts `env_` / `bar_` / `joint_` names
+  to path ids (`bars/B1`), and each design robot has a `serial` field. Measured robots' ids use serials
+  (`robots/a200-0806`): serials for all machine use, names only for humans; user-facing inputs accept both.
+- **Tool mapping.** Tools are separate objects in every planning cell; a design tool maps to the configured robot's
+  tool on the same flange (`plugins/process/scene_bodies.py`).
+- **Snapshot freshness.** Mirrors and planners refuse an acting robot with `base_tracked=False` or `unmeasured`
+  movable joints. The monitor's base and arm planners plan anyway from the guessed values, with a warning
+  (`shared/planner/planner_search.with_guesses`).
+- **`pp.CLIENT`.** pybullet_planning's modules copy the client at import, so `pp.set_client` alone does not move them;
+  `mirrors/pp_client.pp_client` sets it in every module (`PyBulletMirror.active()`, `CompasFabMirror.lend()`). Still
+  one `pp` user at a time in the process.
+
+Open:
+- **Attachments.** Static and set by `process` for now. Do planners take over while they plan?
+- **pinocchio layout.** One model per robot, or all appended into one.
+- **Drawing budget.** N meshes per tick (start at 50); simplified visual meshes for very large cells?
+- **Time skew.** A limit on how far apart a robot's base and joint measurements may be.

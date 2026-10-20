@@ -29,10 +29,15 @@ Spec: `doc/base_planner_manual.md`. Code: `plugins/base_planner/{tasks,recording
   "short" in the first benchmark was the simulation cutting the commands still in flight; runs and simulation now
   go 2 s past done, and the report shows the drift after done.
 
-- **Arm stowed** (user): every plan, live and offline, is made with the planned robot's arms at their stow pose;
-  the panel warns when the live arm is more than 5° from it, and the ghosts show it stowed. Stowed, Alice is 0.68 m
-  wide at every height, so `tall_walls` is sized from that. The planner unit tests keep the arm out (joints 0): the
+- **Arm stowed** (user): the experiments hold Alice's arm at its stow pose: the benchmark plans it stowed, and a
+  recorded live attempt warns when the arm is more than 5° from it. Stowed, Alice is 0.68 m wide at every height,
+  so `tall_walls` is sized from that. The planner unit tests keep the arm out (joints 0): the
   harder, lopsided case.
+- **Arm as it is** (user, 19 Oct): live plans are made with the robot as it is: its arms, and every body it holds,
+  which moves with the base in every check (`BaseCollisionWorld`; contact between robot and held body is left out).
+  The benchmark script still stows the arm (`stowed`), and recorded attempts warn when the live arm is not stowed. A
+  plan goes stale once an arm joint moves 2°. Checks turn in steps that move no part more than 5 cm
+  (`algorithms.base.yaw_step`): 0.05 rad stowed, less with the arm out or a long body held.
 - **Step 110 target** (user, 15 Oct): (0.43, −2.785, 0°), inside the bar structure; the first target was outside.
   Re-run as `benchmark_1016`.
 - **Task origin** (user, 15 Oct): (0.4, −0.8, 180°), fitted so the benchmark's paths clear the lab (10 cm

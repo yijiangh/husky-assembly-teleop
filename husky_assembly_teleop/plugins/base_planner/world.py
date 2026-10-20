@@ -1,5 +1,8 @@
 """
-The planning world: a private PyBullet copy of the scene, for the base planner's collision checks.
+The planning world: the shared base collision world (`BaseCollisionWorld`) plus the base planner's own checks.
+
+The planner plans the robot as it is, arms and what it holds included; `stowed` is for the experiments, which hold the
+arms stowed.
 
 ! Worker thread only: construct `PlanningWorld` anywhere, but sync, check and close on the worker.
 ! Use raw `p` calls with `physicsClientId`: `pp.CLIENT` is one global shared by the whole process.
@@ -13,10 +16,13 @@ from dataclasses import replace
 import numpy as np
 import pybullet as p
 
+from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.mirrors.pybullet import PyBulletMirror
-from scaffolding_assembly_core.scene import Scene
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Scene, world_poses
 
 from ...config import RobotConfig
+from ...shared.base_collision.base_collision_world import BaseCollisionWorld, held_bodies
 from ...world.kinematics import stow_joints
 
 #: Keep at least this far from every other robot and body, metres.
@@ -35,97 +41,36 @@ RAY_BATCH = 8192
 PARK = -1000.0
 
 
+def from_stow(robot: RobotObject, config: RobotConfig) -> float:
+    """How far a robot's arms are from their stow pose: the largest measured joint's distance from it, radians."""
+    stow = stow_joints(config, robot.model.movable_joints)
+    return max((abs(math.remainder(robot.joints.get(name, 0.0) - value, math.tau)) for name, value in stow.items()
+                if name not in robot.unmeasured), default=0.0)
+
+
 def stowed(snapshot: Scene, object_id: str, config: RobotConfig) -> tuple[Scene, float]:
-    """The snapshot with the robot's arms at their stow pose, as the base drives; and how far the arms are from it.
+    """The snapshot with the robot's arms at their stow pose, and what it holds moved with them; and how far they are.
 
     Returns:
-        tuple[Scene, float]: The snapshot, a copy; the largest joint's distance from its stow angle, radians, or 0 for
-        joints not measured.
+        tuple[Scene, float]: The snapshot, a copy; and `from_stow` before stowing.
     """
     robot = snapshot.robots[object_id]
+    away = from_stow(robot, config)
     stow = stow_joints(config, robot.model.movable_joints)
-    away = max((abs(math.remainder(robot.joints.get(name, 0.0) - value, math.tau)) for name, value in stow.items()
-                if name not in robot.unmeasured), default=0.0)
     robot = replace(robot, joints={**robot.joints, **stow}, unmeasured=robot.unmeasured.difference(stow))
-    return replace(snapshot, robots={**snapshot.robots, object_id: robot}), away
+    poses = world_poses(snapshot.bodies, {object_id: robot},
+                        lambda held_by, link: link_pose(held_by.model.urdf, held_by.base, held_by.joints, link))
+    held = {body_id: poses[body_id] for body_id in held_bodies(snapshot, object_id) if body_id in poses}
+    return replace(snapshot, robots={**snapshot.robots, object_id: robot},
+                   world_poses={**snapshot.world_poses, **held}), away
 
 
-class PlanningWorld:
-    """A scene mirror for collision checks, plus a cheap floor-footprint pre-check. Worker thread only."""
-
-    def __init__(self):
-        """Start empty; the first `sync` loads the robots and bodies (slow, on the worker)."""
-        self.mirror: PyBulletMirror | None = None
-        # Display text for our ids, from the last synced snapshot.
-        self._label = Scene().label
-        # ? Cheap pre-check for `hit_by`: floor footprints (min x, min y, max x, max y) by id, and robot reach.
-        self._footprints: dict[str, tuple[float, float, float, float]] = {}
-        self._reach: dict[str, float] = {}
-
-    def sync(self, snapshot: Scene) -> None:
-        """Make the world match a snapshot, and refresh footprints and reach.
-
-        Args:
-            snapshot: The tick's copy of the world, taken on the main thread.
-        """
-        if self.mirror is None:
-            self.mirror = PyBulletMirror()  # here, on the worker: a mirror lives on one thread
-        self.mirror.sync(snapshot)
-        self._label = snapshot.label
-        # Footprint and reach depend on arm pose, so refresh them every sync.
-        ids = list(self.mirror.robots) + self.mirror.obstacle_ids()
-        self._footprints = {object_id: self._footprint(self.mirror.body_ids(object_id)) for object_id in ids}
-        self._reach = {}
-        for object_id, body in self.mirror.robots.items():
-            footprint = self._footprints[object_id]
-            position = p.getBasePositionAndOrientation(body, physicsClientId=self.mirror.client_id)[0]
-            corners = np.array([(footprint[i], footprint[j]) for i in (0, 2) for j in (1, 3)])
-            self._reach[object_id] = float(np.max(np.linalg.norm(corners - np.array(position[:2]), axis=1)))
-
-    def _footprint(self, bodies: list[int]) -> tuple[float, float, float, float]:
-        """The floor footprint of some PyBullet bodies: their bounding box over every link, in x and y.
-
-        Args:
-            bodies: Body ids in the mirror's world.
-
-        Returns:
-            tuple[float, float, float, float]: (min x, min y, max x, max y), metres.
-        """
-        client = self.mirror.client_id
-        boxes = [p.getAABB(body, link, physicsClientId=client)
-                 for body in bodies for link in range(-1, p.getNumJoints(body, physicsClientId=client))]
-        low = np.min([lo for lo, _ in boxes], axis=0)
-        high = np.max([hi for _, hi in boxes], axis=0)
-        return float(low[0]), float(low[1]), float(high[0]), float(high[1])
+class PlanningWorld(BaseCollisionWorld):
+    """The base collision world, plus what the base planner measures: clearance, contact points and floor maps."""
 
     def hit_by(self, own: str, pose, margin: float = COLLISION_MARGIN) -> str | None:
-        """Place a robot at a floor pose and say what it hits, if anything.
-
-        Args:
-            own: The robot being planned for, by id.
-            pose: (x, y, yaw).
-            margin: Keep at least this far from everything else, metres.
-
-        Returns:
-            str | None: Label of the first robot or body within `margin`; None if clear.
-        """
-        body = self.mirror.robot(own)
-        client = self.mirror.client_id
-        z = p.getBasePositionAndOrientation(body, physicsClientId=client)[0][2]
-        x, y, yaw = pose
-        # ? Moving the robot here is fine: the mirror re-poses robots on every sync.
-        p.resetBasePositionAndOrientation(body, (x, y, z), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)),
-                                          physicsClientId=client)
-        reach = self._reach.get(own, math.inf) + margin
-        candidates = []
-        for object_id, footprint in self._footprints.items():
-            # Distance from the robot's base origin to the footprint rectangle.
-            dx = max(footprint[0] - x, 0.0, x - footprint[2])
-            dy = max(footprint[1] - y, 0.0, y - footprint[3])
-            if object_id != own and math.hypot(dx, dy) <= reach:
-                candidates.append(object_id)
-        hits = self.mirror.collisions(own, margin, candidates)
-        return self._label(hits[0]) if hits else None
+        """Like `BaseCollisionWorld.hit_by`, keeping the planner's own COLLISION_MARGIN by default."""
+        return super().hit_by(own, pose, margin)
 
     def touch(self, own: str, pose, margin: float = COLLISION_MARGIN) -> tuple[str, tuple[float, float, float]] | None:
         """What a robot at a floor pose hits first, and the point on it nearest the robot, for drawing.
@@ -138,13 +83,14 @@ class PlanningWorld:
         Returns:
             tuple[str, tuple[float, float, float]] | None: The label and the point, metres; None if clear.
         """
-        if self.hit_by(own, pose, margin) is None:
+        hit = self._hit(own, pose, margin)
+        if hit is None:
             return None
-        other = self.mirror.collisions(own, margin)[0]
+        part, other = hit
         client = self.mirror.client_id
         # ? Nearest over all links: a link pair allowed to touch may be the nearest, which only moves the dot.
-        nearest = min((contact for body in self.mirror.body_ids(other)
-                       for contact in p.getClosestPoints(self.mirror.robot(own), body, margin, physicsClientId=client)),
+        nearest = min((contact for own_body in self.mirror.body_ids(part) for body in self.mirror.body_ids(other)
+                       for contact in p.getClosestPoints(own_body, body, margin, physicsClientId=client)),
                       key=lambda contact: contact[8])
         return self._label(other), tuple(nearest[6])
 
@@ -182,7 +128,7 @@ class PlanningWorld:
 
         FLOOR_SAMPLES by FLOOR_SAMPLES rays per cell, from above everything down, and the cell takes the highest hit:
         anything over part of a cell counts for all of it. Only the topmost surface counts: something above the robot
-        hides what is under it. Bodies `own` may touch are left out, and `own` is moved out of the way.
+        hides what is under it. Bodies `own` may touch or holds are left out, and `own` is moved out of the way.
 
         Args:
             own: The robot being planned for, by id.
@@ -195,7 +141,8 @@ class PlanningWorld:
             np.ndarray: Heights, metres, of `shape`; -inf where nothing is.
         """
         self._park(own)
-        others = {other for object_id in self._footprints if object_id != own
+        parts = self._parts(own)
+        others = {other for object_id in self._footprints if object_id not in parts
                   and not self.mirror.allowed(own, object_id) for other in self.mirror.body_ids(object_id)}
         # * Start above every body: a ray that starts inside one does not see it.
         client = self.mirror.client_id
@@ -211,10 +158,10 @@ class PlanningWorld:
         return heights
 
     def robot_heights(self, own: str, cell: float, bottom: float) -> tuple[np.ndarray, np.ndarray]:
-        """How high and how low robot `own`, as it stands now, reaches above each cell around its base, at yaw 0.
+        """How high and how low robot `own` and what it holds reach above each cell around its base, at yaw 0.
 
         Args:
-            own: The robot, by id; moved out of the way of everything else.
+            own: The robot, by id, its arms as they stand; moved out of the way of everything else.
             cell: Cell size, metres.
             bottom: Lowest height that counts, metres.
 
@@ -228,18 +175,17 @@ class PlanningWorld:
         n = int(math.ceil(self._reach.get(own, 0.0) / cell)) + 1
         dx, dy = np.meshgrid(cell * np.arange(-n, n + 1), cell * np.arange(-n, n + 1), indexing="ij")
         xy = np.column_stack([x + dx.ravel(), y + dy.ravel()])
-        bodies = set(self.mirror.body_ids(own))
+        bodies = {body for part in self._parts(own) for body in self.mirror.body_ids(part)}
         highest, lowest = self._rays(xy, top, bottom, bodies), self._rays(xy, bottom, top, bodies)
         return (np.where(np.isnan(highest), -np.inf, highest).reshape(dx.shape),
                 np.where(np.isnan(lowest), np.inf, lowest).reshape(dx.shape))
 
     def _park(self, own: str) -> float:
-        """Move robot `own` far from everything, at yaw 0, and return the height of its top, metres."""
+        """Move robot `own` and what it holds far from everything, at yaw 0; the height of their top, metres."""
         client = self.mirror.client_id
-        body = self.mirror.robot(own)
-        z = p.getBasePositionAndOrientation(body, physicsClientId=client)[0][2]
-        p.resetBasePositionAndOrientation(body, (PARK, PARK, z), (0.0, 0.0, 0.0, 1.0), physicsClientId=client)
+        self._place(own, (PARK, PARK, 0.0))
         return max(p.getAABB(body, link, physicsClientId=client)[1][2]
+                   for part in self._parts(own) for body in self.mirror.body_ids(part)
                    for link in range(-1, p.getNumJoints(body, physicsClientId=client)))
 
     def _rays(self, xy: np.ndarray, start: float, end: float, bodies: set[int]) -> np.ndarray:
@@ -271,9 +217,3 @@ class PlanningWorld:
             self.mirror = PyBulletMirror()
         self.mirror.set_gui(gui)
         self.sync(snapshot)
-
-    def close(self) -> None:
-        """Disconnect the world. On the worker, once no search is running."""
-        if self.mirror is not None:
-            self.mirror.close()
-            self.mirror = None

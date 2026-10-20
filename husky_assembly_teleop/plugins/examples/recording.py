@@ -15,12 +15,12 @@ Run with:  -p plugins:="['example_recording']" -p robots:="['0806']"
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import numpy as np
 import viser
 
+from ...drive import stamped_name
 from ...plugin_api import signals
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
@@ -94,7 +94,7 @@ class ExampleRecordingPlugin(HuskyPlugin):
         if np.isnan(joints).all():
             self._result = "no joint states: is the arm connected?"
             return
-        path = rec.save(RECORDING_FOLDER / f"arm_{time.strftime('%Y%m%d_%H%M%S')}.npz")
+        path = rec.save(RECORDING_FOLDER / f"arm_{stamped_name()}.npz")
         self._result = f"{len(rec)} samples -> {path}"
         ctx.log_info(f"recording saved: {self._result}")
 

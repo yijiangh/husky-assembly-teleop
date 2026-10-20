@@ -21,7 +21,7 @@ import numpy as np
 
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.arm import JOINT_STATE_MAX_AGE
-from ..planning.joints import arm_joint_names
+from ..assembly_planning.joints import arm_joint_names
 from .retime import retime
 
 if TYPE_CHECKING:

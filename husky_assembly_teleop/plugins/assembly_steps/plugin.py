@@ -25,29 +25,30 @@ from scaffolding_assembly_core.ids import robot_id
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
-from ...shared.assembly_run import is_live
+from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
 from ...shared.execution.retime import RetimeError, retime
-from ...shared.movement_exec import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_PART, REFUSED, ExecRequest,
-                                     ExecResult, PartPlan, current_primary, current_step, serial_of, step_parts)
-from ...shared.planning.movement import Routine, UnknownMovement, classify
-from ...shared.planning.panel import WAIT_MARGIN, PlannerPlugin, Search
-from ...shared.planning.path import TimedPath
-from ...shared.planning.route_result import GoalCheck, RouteResult, goal_line
-from ...shared.planning.route_search import ATTEMPTS
-from ...shared.planning.search import PlanResult
-from ...shared.planning.service import PlanRequest
-from ...shared.planning.tamp_route import FAR, IK_GOALS
+from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_PART, REFUSED,
+                                              ExecRequest, ExecResult, PartPlan, current_primary, current_step,
+                                              serial_of, step_parts)
+from ...shared.assembly_planning.movement import Routine, UnknownMovement, classify
+from ...shared.planner.timed_path import TimedPath
+from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
+from ...shared.assembly_planning.route_search import ATTEMPTS
+from ...shared.planner.planner_search import WAIT_MARGIN, PlanResult
+from ...shared.motion_planner_contract import MotionPlanRequest
+from ...shared.assembly_planning.tamp_route import FAR, IK_GOALS
 from ...ui.ghost import RobotGhost
 from .goal import StepGoal, same_step
 from .panel import StepsPanel
+from .step_panel_base import PlannerPlugin, Search
 
 if TYPE_CHECKING:
-    from ...shared.assembly_run import AssemblyRunPluginApi, RunView
-    from ...shared.movement_exec import MovementExecPluginApi
-    from ...shared.planning.service import MotionPlannerPluginApi
-    from ...shared.planning.steps import OperatorStep
-    from ...shared.process import Step
+    from ...shared.assembly_run_contract import AssemblyRunContract, RunView
+    from ...shared.movement_exec_contract import MovementExecContract
+    from ...shared.motion_planner_contract import MotionPlannerContract
+    from ...shared.assembly_planning.steps import OperatorStep
+    from ...shared.assembly_planning.process_steps import Step
 
 #: Seconds to wait for a plan: every try of tamp's longest search, the first plan's model loading, and a margin.
 PLAN_TIME_LIMIT = ATTEMPTS * FAR["max_time"] + 60.0 + WAIT_MARGIN
@@ -263,9 +264,9 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return None
         view, action, _step, step = current
         # * The snapshot is taken here, on the main thread; the planner's worker makes the scene from it.
-        request = PlanRequest(view.process, step, ctx.scene.snapshot, ctx.config.robots, beliefs=view.beliefs,
-                              transfer_as_free=view.settings.transfer_as_free, ignore_built=self.ignore_built,
-                              label=f"check goal {step.label}")
+        request = MotionPlanRequest(view.process, step, ctx.scene.snapshot, ctx.config.robots, beliefs=view.beliefs,
+                                    transfer_as_free=view.settings.transfer_as_free, ignore_built=self.ignore_built,
+                                    label=f"check goal {step.label}")
         self._say(f"solving the goal of {step.label}…")
         check = await self._goal.solve(ctx, self._key_of_goal(), request)
         if check is None:
@@ -293,15 +294,16 @@ class AssemblyStepsPlugin(PlannerPlugin):
             else:
                 goal_joints = self._goal.joints_near(self._key_of_goal(), live.base)
                 goal_base = self._goal.of(self._key_of_goal()).base if goal_joints is not None else None
-                request = PlanRequest(view.process, step, snapshot, ctx.config.robots, beliefs=view.beliefs,
-                                      transfer_as_free=view.settings.transfer_as_free, ignore_built=self.ignore_built,
-                                      goal_joints=goal_joints, label=f"plan {step.label}")
+                request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots, beliefs=view.beliefs,
+                                            transfer_as_free=view.settings.transfer_as_free,
+                                            ignore_built=self.ignore_built, goal_joints=goal_joints,
+                                            label=f"plan {step.label}")
         found: dict[str, RouteResult] = {}
 
         async def run() -> PlanResult:
             if request is None:
                 return PlanResult(None, refusal)
-            planner: MotionPlannerPluginApi = ctx.require("motion_planner")
+            planner: MotionPlannerContract = ctx.require("motion_planner")
             route = await planner.request_plan(request)
             if not route.ok:
                 return PlanResult(None, f"{route.result.status}: {route.result.reason}", route.seconds)
@@ -397,7 +399,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
                               ignore_built=lambda: self.ignore_built)
         if motion:
             self.plan_state = "sent"  # ! used once: never sent again
-        executor: MovementExecPluginApi = ctx.require("movement_exec")
+        executor: MovementExecContract = ctx.require("movement_exec")
         key = self._executing = self._key
         self._say(f"Exec {step.label}: confirm each part on the movement_exec panel or the phone")
         executor.request_execute(request).add_done_callback(
@@ -429,13 +431,13 @@ class AssemblyStepsPlugin(PlannerPlugin):
 
     # --- --- --- --- --- HELPERS --- --- --- --- ---
 
-    def _assembly_run(self, ctx: PluginContext) -> AssemblyRunPluginApi:
+    def _assembly_run(self, ctx: PluginContext) -> AssemblyRunContract:
         """The assembly_run plugin."""
         return ctx.require("assembly_run")
 
     def _busy(self, ctx: PluginContext) -> str:
         """Why the step may not change or run now: an Exec or a plan runs; else ""."""
-        executor: MovementExecPluginApi = ctx.require("movement_exec")
+        executor: MovementExecContract = ctx.require("movement_exec")
         if executor.active or self._executing is not None:
             return f"{executor.active or 'an Exec'} runs: wait for it, or Cancel it"
         if self.plan_state == "planning":

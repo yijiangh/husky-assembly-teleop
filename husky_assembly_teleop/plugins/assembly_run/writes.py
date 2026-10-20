@@ -14,17 +14,18 @@ from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping
 
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
-from ...shared.assembly_run import exported_end, first_pending, is_live, live_record
+from ...shared.assembly_run_contract import exported_end, first_pending, is_live, live_record
 from ...shared.execution.interlock import held
-from ...shared.planning.steps import first_step
-from ...shared.process import live_ids
-from ...shared.runs import (DONE, Progress, RobotRecord, Run, RunError, RunSettings, mark_done, new_run, record_event,
-                            record_movement, save_info, save_progress, stamp, with_current)
+from ...shared.assembly_planning.steps import first_step
+from ...shared.process_scene.scene_bodies import live_ids
+from ...shared.runs.runs import (DONE, Progress, RobotRecord, Run, RunError, RunSettings, mark_done, new_run,
+                                 record_event, record_movement, save_info, save_progress, stamp, with_current)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
 
-    from ...shared.process import LoadedProcess, ProcessPluginApi
+    from ...shared.assembly_planning.process_steps import LoadedProcess
+    from ...shared.process_contract import ProcessContract
 
 #: Seconds the operator has to answer a prompt.
 CONFIRM_TIMEOUT = 120.0
@@ -223,7 +224,7 @@ class RunWrites:
         """Make an action's movement current (its first step if None or one it lacks), save it, and select it."""
         movement = self._movement(ctx, action_id, movement_index)
         self._save_current(ctx, (action_id, movement))
-        selector: ProcessPluginApi = ctx.require("process")
+        selector: ProcessContract = ctx.require("process")
         selector.request_select(self._loaded.index_of(action_id, movement))
 
     def _movement(self, ctx: PluginContext, action_id: str, movement_index: int | None) -> int:

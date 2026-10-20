@@ -1,7 +1,8 @@
 """
 What a run is recorded with: its setup, read from ROS at Start, and its own folder for the recording.
 
-- Sim or real: real unless a SIM_NODE runs in the robot's namespace; then its parameters are the sim model.
+- Sim or real: real unless the base's simulator announces itself (`BaseInterface.simulation`); then its node's
+  parameters are the sim model.
 - Controller: the follower's node, as it names itself in BaseFollowerState, with all its parameters.
 - Folder: <Drive root>/RECORDING_FOLDER/<experiment name>/<date>_<time>_<robot>_<template>_<sim|real>/
   recording.npz; `report.py` adds experiment.json and overview.png beside it.
@@ -14,11 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from pathlib import Path
 
 import numpy as np
 
+from ...drive import stamped_name, started_at
 from ...plugin_api.context import PluginContext
 from ...plugin_api.trace import Trace
 from ...robot_interface.base import BaseInterface, parameter_value
@@ -26,8 +27,6 @@ from .plan import Plan
 
 #: Recordings, under the Drive root (`drive.py`); ! create it in Drive, it is never created here.
 RECORDING_FOLDER = Path("data_experiment/base_exp")
-#: The simulator's node; running in the robot's namespace means the run is simulated.
-SIM_NODE = "husky_sim"
 #: Seconds to wait for a node's parameters.
 PARAMETER_TIMEOUT = 1.0
 #: The simulator parameters that make its model, with their ideal values; the rest (topics, start pose) do not
@@ -42,14 +41,14 @@ NOT_TUNING = ("use_sim_time", "cmd_topic", "mocap_topic", "path_topic", "state_t
 
 async def setup(ctx: PluginContext, base: BaseInterface) -> dict:
     """Where and with what the robot drives now: sim or real (and the sim model), controller and its parameters."""
-    nodes = base.node_names()
     follower = base.state.follower
     controller = follower.controller if follower is not None and follower.controller else "unknown"
-    result = {"environment": "sim" if SIM_NODE in nodes else "real",
+    simulation = base.simulation
+    result = {"environment": "sim" if simulation is not None else "real",
               "controller": {"name": controller, "parameters": await parameters(ctx, base, controller)},
-              "nodes": nodes}
-    if SIM_NODE in nodes:
-        result["sim_model"] = await parameters(ctx, base, SIM_NODE)
+              "nodes": base.node_names()}
+    if simulation is not None:
+        result["sim_model"] = await parameters(ctx, base, simulation.node)
     return result
 
 
@@ -67,7 +66,7 @@ async def describe(ctx: PluginContext, base: BaseInterface, plan: Plan, **more) 
     """
     linear, angular = plan.speed_caps
     battery = {"percentage": base.state.battery_percentage, "voltage": base.state.battery_voltage}
-    return {"started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "robot": plan.serial, "conditions": dict(CONDITIONS),
+    return {"started": started_at(), "robot": plan.serial, "conditions": dict(CONDITIONS),
             "battery": battery,
             **await setup(ctx, base),
             "template": plan.settings, "speed_caps": {"linear": linear, "angular": angular},
@@ -149,7 +148,7 @@ def save(recordings: Path, rec: Trace, plan: Plan, experiment: dict, outcome: st
         OSError: If it cannot be written.
     """
     folder = (recordings / experiment.get("experiment_name", "default")
-              / f"{time.strftime('%Y%m%d_%H%M%S')}_{plan.serial}_{plan.slug}_{experiment['environment']}")
+              / stamped_name(plan.serial, plan.slug, experiment['environment']))
     extra = {"path_poses": plan.poses, "path_t": np.array([]) if plan.t is None else plan.t,
              "path_label": np.array(plan.label), "outcome": np.array(outcome),
              "speed_caps": np.array(plan.speed_caps), "expected_duration": np.array(plan.expected),

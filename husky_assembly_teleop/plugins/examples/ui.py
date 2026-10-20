@@ -5,7 +5,7 @@ A counter showing the three steps of every panel:
 
   1. setup    build the widgets once and keep the handles on `self`
   2. click    viser calls back on its own thread; `ctx.defer` / `ctx.defer_value`
-              turn that into an intent run on the ROS thread
+              turn that into an intent run on the main thread
   3. draw     copy the plugin's state into the widgets, once per tick
 
 ! Keep state on `self` (here `self.count`); widgets only display it. Operator
@@ -56,7 +56,7 @@ class ExampleUiPlugin(HuskyPlugin):
         self._allow_negative.on_update(ctx.defer("below zero", self._apply_limits))
 
     def _on_button(self, clicked: str) -> None:
-        """Apply one button press (intent, on the ROS thread).
+        """Apply one button press (intent, on the main thread).
 
         Args:
             clicked: The label of the button that was pressed.

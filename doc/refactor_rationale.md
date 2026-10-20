@@ -215,16 +215,16 @@ The core is grouped by what a module is about, not by who calls it:
   and the run configuration everything else is built from.
 - `plugin_api/`: what a plugin is (`plugin.py`) and what it is handed (`context.py`, `concurrency.py`).
 - `plugins/`: one module or package per feature; plugins never import each other.
-- `shared/`: for plugins to share code, data and services, e.g. `shared/planning/`, the
-  planner plugins' base, which registers no plugin itself.
-- `world/`: what is in the world and where. `measured.py` (formerly `world_state.py`)
-  holds what sensors report; `scene.py` what we put there; `kinematics.py` the
-  link poses; `mirrors/` the planners' private copies; `checks.py`, `mocap.py` and `follower.py`
-  verdicts on a sensor, a mocap fix or the base's path follower, as data.
+- `shared/`: for plugins to share code, data and services. Each plugin that offers something has one
+  `<name>_contract.py` there; subfolders hold base classes and helpers, e.g. `shared/planner/`, the planner
+  plugins' base, which registers no plugin itself.
+- `world/`: what is in the world and where. `measured.py` holds what sensors report; `scene.py` what we put there;
+  `kinematics.py` the link poses; `checks.py`, `mocap.py` and `follower.py` verdicts on a sensor, a mocap fix or the
+  base's path follower, as data. The planners' private copies (mirrors) are in the core.
 - `robot_interface/`: the only package that talks to a robot.
 - `ui/`: the viser server (`visualization.py`), the 3D view (`scene_view.py`) and
-  the panel widgets (`style.py`, formerly `ui_style.py`; `ghost.py`,
-  `pose_input.py`, `checklist.py`, `pybullet_window.py`, `trace_plot.py`), and drawings of a robot
+  the panel widgets (`style.py`, `ghost.py`, `pose_input.py`, `checklist.py`, `joint_sliders.py`,
+  `pybullet_window.py`, `trace_plot.py`), the phone page (`phone.py`, `top_down.py`), and drawings of a robot
   feature that more than one plugin shows (`base_markers.py`: the base follower's path and trail);
   `quaternion.py` holds the quaternion order at the viser boundary.
 - `external/scaffolding_assembly_core/` (a submodule): the core shared with the Rhino plugin

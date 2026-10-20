@@ -6,7 +6,7 @@ Automated base experiments: which test paths to drive, and clearance checks agai
   so scenarios compare path by path.
 - `Sampler` draws from the whole grid, balanced within one collection run: the template with the fewest successful
   runs first; within it the least covered cell, and among those the one whose numbers were used least; ties at random.
-- `Clearance` checks a path, or the robot where it stands, in a private PyBullet mirror of the scene: the whole robot
+- `Clearance` checks a path, or the robot where it stands, in the shared `BaseCollisionWorld`: the whole robot
   (arms included) against other robots and scene bodies, e.g. the obstacles plugin's furniture and border walls.
 
 ! `Clearance` runs every check on its own worker thread: a mirror belongs to one thread.
@@ -23,11 +23,11 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable, Iterator
 
 import numpy as np
-import pybullet as p
 
 from scaffolding_assembly_core.ids import robot_id
-from scaffolding_assembly_core.mirrors.pybullet import PyBulletMirror
 from scaffolding_assembly_core.scene import Scene
+
+from ...shared.base_collision.base_collision_world import BaseCollisionWorld
 
 #: A path must keep this far from everything, metres: tracking error plus a safety margin.
 PATH_CLEARANCE = 0.3
@@ -201,7 +201,8 @@ class Clearance:
     def __init__(self):
         """Start the worker; the mirror is made on the worker at the first check."""
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="base-exp-clearance")
-        self._mirror: PyBulletMirror | None = None
+        #: ! Worker thread only.
+        self._world = BaseCollisionWorld()
 
     async def path_hit(self, snapshot: Scene, serial: str, poses: np.ndarray,
                        margin: float = PATH_CLEARANCE) -> str | None:
@@ -214,7 +215,7 @@ class Clearance:
 
     def close(self) -> None:
         """Close the mirror and stop the worker."""
-        self._executor.submit(self._close_mirror)
+        self._executor.submit(self._world.close)
         self._executor.shutdown(wait=True)
 
     async def _run(self, function, *args):
@@ -222,23 +223,6 @@ class Clearance:
         return await asyncio.get_running_loop().run_in_executor(self._executor, function, *args)
 
     def _path_hit(self, snapshot: Scene, serial: str, poses: np.ndarray, margin: float) -> str | None:
-        """Worker: sync the mirror to the snapshot, put the robot at each pose, and name the first thing it hits."""
-        if self._mirror is None:
-            self._mirror = PyBulletMirror()
-        self._mirror.sync(snapshot)
-        body, client = self._mirror.robot(robot_id(serial)), self._mirror.client_id
-        z = p.getBasePositionAndOrientation(body, physicsClientId=client)[0][2]
-        for x, y, yaw in poses:
-            # ? Moving a robot is fine: the mirror re-poses robots on every sync.
-            p.resetBasePositionAndOrientation(body, (x, y, z), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)),
-                                              physicsClientId=client)
-            hits = self._mirror.collisions(robot_id(serial), margin)
-            if hits:
-                return snapshot.label(hits[0])
-        return None
-
-    def _close_mirror(self) -> None:
-        """Worker: close the mirror, if one was made."""
-        if self._mirror is not None:
-            self._mirror.close()
-            self._mirror = None
+        """Worker: sync the world to the snapshot and name the first thing the robot hits along the poses."""
+        self._world.sync(snapshot)
+        return self._world.path_hit(robot_id(serial), poses, margin)

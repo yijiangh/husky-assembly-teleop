@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 import re
-import shutil
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -36,8 +35,10 @@ END_EFFECTOR_KINDS: tuple[str, ...] = get_args(EndEffectorKind)
 #: Extra names the `tools` parameter accepts: crl_husky's "robotiq_2F_85", and "none" for a bare arm.
 _TOOL_ALIASES: dict[str, str | None] = {"robotiq_2F_85": "robotiq", "none": None}
 
-#: Robot URDFs with absolute mesh paths (`RobotModel.urdf`); wiped and rewritten on every start.
-ROBOT_URDF_DIRECTORY = Path(tempfile.gettempdir()) / "husky_robot_urdf"
+#: Robot URDFs with absolute mesh paths (`RobotModel.urdf`), in a folder of this process's own, removed when it exits.
+#: ? Per process: two monitors, or a monitor and the tests, must not delete each other's copies.
+_ROBOT_URDF_FOLDER = tempfile.TemporaryDirectory(prefix="husky_robot_urdf_")
+ROBOT_URDF_DIRECTORY = Path(_ROBOT_URDF_FOLDER.name)
 
 #: Plugins loaded before the requested ones; `-p no_default_plugins:=true` skips them.
 DEFAULT_PLUGINS: tuple[str, ...] = ("health",)
@@ -50,6 +51,7 @@ class ArmConfig:
     Attributes:
         name: URDF joint-name prefix without the trailing underscore, e.g. "ur_arm"; the arm's key everywhere.
         ros_namespace: The arm's namespace under the robot's, e.g. "ur5e".
+        label: Short name for tabs and health rows, e.g. "Left".
         end_effector: What is mounted on the flange, or None for a bare arm.
         end_effector_namespace: The tool driver's namespace under the robot's, e.g. "gripper".
         cartesian_test_mode: Cartesian commands run every check and show in the 3D view, but are not sent.
@@ -64,6 +66,7 @@ class ArmConfig:
 
     name: str
     ros_namespace: str
+    label: str = "Arm"
     end_effector: EndEffectorKind | None = None
     end_effector_namespace: str = ""
     stow_joints: tuple[float, ...] | None = None
@@ -215,9 +218,9 @@ _SINGLE_ARM_WITH_ROBOTIQ = (
               end_effector="robotiq", end_effector_namespace="gripper", stow_joints=_SINGLE_ARM_STOW),
 )
 _DUAL_ARM_WITH_SCAFFOLDING_V3 = (
-    ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e",
+    ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e", label="Left",
               end_effector="scaffolding_v3", end_effector_namespace="left_gripper", stow_joints=_LEFT_ARM_STOW),
-    ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e",
+    ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e", label="Right",
               end_effector="scaffolding_v3", end_effector_namespace="right_gripper", stow_joints=_RIGHT_ARM_STOW),
 )
 
@@ -362,8 +365,6 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("viser_port", MonitorConfig.viser_port)
     # * 0: the port after viser_port, so a second monitor needs only -p viser_port:=8095.
     node.declare_parameter("phone_port", 0)
-
-    shutil.rmtree(ROBOT_URDF_DIRECTORY, ignore_errors=True)
 
     def string_list(name: str) -> tuple[str, ...]:
         """Read a string-array parameter, dropping the empty-string default.

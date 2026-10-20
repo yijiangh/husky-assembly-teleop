@@ -3,6 +3,8 @@ A selectable list: one checkbox per item in a collapsible folder, "Select all" o
 
 viser 1.1 has no multi-select widget. Build one in `setup`, `add` / `remove` items from intents, read
 `selected()` when acting, and call `sync()` from `draw`. Item checkboxes have no callbacks.
+
+`action_window` is the window of a schedule that a panel's list of action rows shows (process, assembly_run).
 """
 
 from __future__ import annotations
@@ -15,6 +17,23 @@ from .style import note
 
 if TYPE_CHECKING:
     from ..plugin_api.context import PluginContext
+
+#: Rows in a panel's action list: a window of the schedule, the selected action in the middle row.
+ACTION_ROWS = 7
+
+
+def action_window(current: int, count: int, rows: int = ACTION_ROWS) -> int:
+    """The first action shown in an action list: `current` in the middle row, except near either end of the schedule.
+
+    Args:
+        current: Index of the selected action in the schedule.
+        count: How many actions the schedule has.
+        rows: How many rows the list has.
+
+    Returns:
+        int: Schedule index of the top row.
+    """
+    return max(0, min(current - rows // 2, count - rows))
 
 
 class CheckList:
@@ -42,7 +61,9 @@ class CheckList:
         style.content = _tight_style(self._all._impl.uuid)
         #: Item checkboxes, in the order they were added.
         self._boxes: dict[Hashable, viser.GuiCheckboxHandle] = {}
-        self._all.on_update(self._on_select_all)
+        # ! Operator clicks only: `sync` also writes this box, and acting on that would untick the list.
+        self._all.on_update(self._ctx.defer_value("select all", lambda value: self._set_all(bool(value)),
+                                                  operator_only=True))
 
     def add(self, key: Hashable, label: str, hint: str = "", selected: bool = False) -> None:
         """Append an item at the bottom of the list. Call on the main thread.
@@ -81,13 +102,6 @@ class CheckList:
         # * Assigning an unchanged value sends nothing and runs no callback.
         self._all.value = bool(self._boxes) and all(box.value for box in self._boxes.values())
         self._empty.visible = not self._boxes
-
-    async def _on_select_all(self, event: viser.GuiEvent) -> None:
-        """Tick or untick every item when the operator clicks "Select all". Runs on a viser thread."""
-        if event.client is None:
-            return  # ! viser also fires on our own assignment in `sync`; acting on it would untick the list
-        value = bool(event.target.value)
-        self._ctx.submit("select all" if value else "select none", lambda: self._set_all(value))
 
     def _set_all(self, value: bool) -> None:
         """Set every item checkbox to `value`. Runs as an intent."""

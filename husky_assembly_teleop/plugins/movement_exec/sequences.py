@@ -18,7 +18,7 @@ import numpy as np
 from scaffolding_assembly_core.ids import robot_id
 
 from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV3
-from ...shared.assembly_run import is_live
+from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import STALE_ARM, stale_reason
 from ...shared.execution.interlock import base_moving, busy_reason
 from ...shared.execution.send import ARRIVED, LARGE_TRAVEL, SendProgress, motion_command, send_motion
@@ -26,22 +26,22 @@ from ...shared.execution.send import DRY_RUN as SENT_DRY, HOLD_NOT_SENT as SENT_
 from ...shared.execution.tools import (FELL_SHORT, GRASP_TIMEOUT, REACHED, ROBOTIQ_CLOSE, ROBOTIQ_EFFORT, ROBOTIQ_OPEN,
                                        STALLED, robotiq_move, scaffolding_grasp)
 from ...shared.execution.tools import DRY_RUN as TOOL_DRY, REFUSED as TOOL_REFUSED
-from ...shared.movement_exec import (BASE_PART, BY_HAND_PART, CANCELLED, CLOSE_PART, DONE, DRY_RUN, FAILED,
-                                     GRASP_PART, HOLD_NOT_SENT, MOTION_PART, OPEN_PART, REFUSED, REFUSED_PART,
-                                     current_primary)
-from ...shared.planning.joints import arm_joint_names
-from ...shared.planning.movement import Routine
+from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, CLOSE_PART, DONE, DRY_RUN, FAILED,
+                                              GRASP_PART, HOLD_NOT_SENT, MOTION_PART, OPEN_PART, REFUSED, REFUSED_PART,
+                                              current_primary)
+from ...shared.assembly_planning.joints import arm_joint_names
+from ...shared.assembly_planning.movement import Routine
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.geometry import Pose
 
     from ...plugin_api.context import PluginContext
     from ...robot_interface.robot import HuskyRobotInterface
-    from ...shared.assembly_run import AssemblyRunPluginApi
+    from ...shared.assembly_run_contract import AssemblyRunContract
     from ...shared.execution.operator import PromptBox
     from ...shared.execution.send import MotionCommand
     from ...shared.execution.tools import ToolOutcome
-    from ...shared.movement_exec import ExecRequest, PartPlan
+    from ...shared.movement_exec_contract import ExecRequest, PartPlan
 
 #: Seconds the arms stand still after the travel to load before the force sensors are zeroed (old W:5781).
 FT_ZERO_SETTLE = 2.0
@@ -64,7 +64,7 @@ class Job:
     ctx: PluginContext
     request: ExecRequest
     robot: HuskyRobotInterface
-    run: AssemblyRunPluginApi
+    run: AssemblyRunContract
     prompts: PromptBox
     dry_run: bool
     event: Callable[[str, str, Mapping[str, Any]], None]

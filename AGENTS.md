@@ -40,7 +40,7 @@ When briefing a subagent to write or edit comments, paste this section into its 
 - `external/scaffolding_assembly_core/`: the core shared with the Rhino plugin and the planners: the process format (`process/`, schema 2.1), robots, scenes and their mirrors; layers in its `scaffolding_assembly_core/__init__.py`, the process format in its `doc/process_format.md`. A submodule of `yijiangh/scaffolding_assembly_core`, installed editable in the venv.
   - ! It imports nothing from `husky_assembly_teleop`, ROS or viser, and runs on Python 3.9: change it in the submodule following its own `AGENTS.md`, run its own tests there (`cd external/scaffolding_assembly_core && python3 -m pytest`), commit and push it, then commit the new submodule pointer here.
 - `husky_assembly_teleop/plugins/__init__.py`: the rules every plugin follows. `plugins/robot_control/` is the reference plugin, `plugins/examples/` the templates.
-- `husky_assembly_teleop/shared/`: for plugins to share code, data and services; plugins never import each other. `test/test_layers.py` checks that imports only go down the layers.
+- `husky_assembly_teleop/shared/`: for plugins to share code, data and services; plugins never import each other. What plugin `<name>` offers is `<Name>Contract` in `shared/<name>_contract.py`; subfolders (`shared/planner/`) hold base classes and helpers. `test/structure/test_layers.py` checks that imports only go down the layers.
 - `doc/refactor_rationale.md`: why the core is built the way it is. `doc/plugin_roadmap.md`: which old features are still to be ported. `doc/scene_refactor_plan.md`: the scene.
 - `doc/experiment_design_guide.md` and `doc/experiment_report_guide.md`: JG's Experiment Design Guide: how to plan, build and analyse an experiment, and how its generated reports are written.
 - `husky_assembly_teleop/old/`: the old monitor, reference only. It does not run; never import it from new code.
@@ -58,10 +58,16 @@ python3 -m colcon build --symlink-install --packages-select husky_assembly_teleo
 source install/setup.bash
 
 cd src/husky-assembly-teleop
-python3 -m pytest            # quick set (~10 s)
-python3 -m pytest -m slow    # compas_fab comparisons and planner searches
-python3 -m pytest -m ""      # everything, including the flake8 / pep257 linters
+python3 -m pytest test/plugins/base_planner   # while iterating: only the area you change (seconds)
+python3 -m pytest                             # quick set (~15 s): no slow tests, no linters
+python3 -m pytest -m safety                   # before every lab session: command guards, frames, layers, linters
+python3 -m pytest -m ""                       # everything (~1 min), before every commit
 ```
+
+- ! Run everything (`-m ""`) before every commit, and commit only when it passes.
+- `test/` mirrors the package: `test/<area>/` for `monitor`, `robot_interface`, `world`, `ui`, `plugin_api`, `shared`, `config`, `mocap_relay`, `core` (the core's mirrors as used here), `experiments`, and `test/plugins/<plugin>/`. `test/structure/` holds the layer test and the linters.
+- Mark a test `safety` when it guards a command to a real robot, or the frames and models commands rely on. Mark it `slow` when it takes over a second or checks offline analysis; every test under `test/experiments/` is slow.
+- Helpers for several folders sit in `test/` itself and import by name: `repo_paths.py`, `*_fixtures.py`, and `robot_fakes.py` (a node with a settable clock, service clients and publishers that keep what they get, an arm with its real checks, all without ROS).
 
 ## Task notes
 
