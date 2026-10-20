@@ -3,8 +3,8 @@ The plugin contract: what a plugin is handed, and what it is allowed to touch.
 
 Each plugin gets its own PluginContext, so its queue, tasks and UI are disposed of with it.
 
-! Import only `concurrency`, `trace` and `robot_interface.soft_stop` at runtime, the rest under TYPE_CHECKING: `plugin`
-  and `monitor` import this module.
+! Import only `concurrency`, `trace`, `robot_interface.soft_stop`, `robot_interface.robot_lease`, `world.freeze` and
+  `world.clearance` at runtime, the rest under TYPE_CHECKING: `plugin` and `monitor` import this module.
 """
 
 from __future__ import annotations
@@ -15,9 +15,12 @@ import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Iterator, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Iterable, Iterator, TypeVar
 
-from ..robot_interface.soft_stop import RobotStopped
+from ..robot_interface.robot_lease import Lease, LeaseSlot, leased, take_lease
+from ..robot_interface.soft_stop import MotionRefused
+from ..world.clearance import STOP_DISTANCE, Clearance
+from ..world.freeze import Basis, Freeze, Tolerance, WorldMoved, basis_problem
 from .concurrency import WaitTimeout, describe_exception, ros_future
 from .trace import MAX_SAMPLES, Signal, Trace
 
@@ -94,6 +97,12 @@ class PluginContext:
         self._tick_waiters: list[asyncio.Future] = []
         # Set once the plugin is stopped or torn down; no new tasks after that.
         self._closed = False
+        # The freezes being watched, each with the task it cancels; see freeze.
+        self._freezes: dict[Freeze, asyncio.Task] = {}
+        # The clearances being checked, each with the task it cancels; see clearance.
+        self._clearances: dict[Clearance, asyncio.Task] = {}
+        # Leases taken with take_lease, given back when this plugin stops.
+        self._leases: set[Lease] = set()
         # Traces being filled, each with the (event, listener) pairs of its message signals; see trace.
         self._traces: dict[Trace, list[tuple[Any, Callable[[Any], None]]]] = {}
         # Message signals that raised since the monitor last asked, and the last traceback; see _take_signal_failures.
@@ -164,6 +173,125 @@ class PluginContext:
     def untrack_object(self, name: str) -> None:
         """Stop tracking `name` and remove it from `world.tracked_objects`. Unknown names are ignored."""
         self._monitor.untrack_object(name)
+
+    # --- --- --- --- --- LEASES AND FREEZES --- --- --- --- ---
+
+    @contextmanager
+    def lease_robots(self, serials: Iterable[str], label: str) -> Iterator[Lease]:
+        """Lease robots while the `with` block runs: this block, and tasks spawned in it, may command them.
+
+        - ! Every motion command and controller switch needs the robot's lease; stopping and holding do not.
+        - Commands from anywhere else raise NotLeased. Giving the lease back sends nothing: hold what still moves.
+        - Hold the lease as long as the motion runs, not only while sending: wait for it inside the block.
+
+        Args:
+            serials: The robots to lease, all or none.
+            label: What the lease is for, after this plugin's name in messages, e.g. "wiggle 0804 left".
+
+        Raises:
+            NotLeased: If any of them is leased already; none is leased then.
+            KeyError: If a serial is not a connected robot.
+
+        Example:
+            >>> with ctx.lease_robots(["0804"], "wiggle"):
+            ...     arm.send_joint_move(target)
+            ...     await ctx.wait_until(lambda: not arm.state.is_executing, timeout_s=10.0)
+        """
+        with leased(self._lease_slots(serials), f"{self.name}: {label}") as lease:
+            yield lease
+
+    def take_lease(self, serials: Iterable[str], label: str) -> Lease:
+        """Lease robots across ticks, until `lease.release()` or this plugin stops; send under `with lease.use():`.
+
+        For leases no single task spans, e.g. teleop that holds a robot while its buttons are in use.
+
+        Args:
+            serials: The robots to lease, all or none.
+            label: What the lease is for, after this plugin's name in messages.
+
+        Raises:
+            NotLeased: If any of them is leased already; none is leased then.
+            KeyError: If a serial is not a connected robot.
+        """
+        lease = take_lease(self._lease_slots(serials), f"{self.name}: {label}")
+        self._leases = {kept for kept in self._leases if kept.active} | {lease}
+        return lease
+
+    def _lease_slots(self, serials: Iterable[str]) -> list[LeaseSlot]:
+        """The lease slots of robots `serials`; KeyError for an unknown one."""
+        return [self.world.robots[serial].lease_slot for serial in serials]
+
+    @contextmanager
+    def freeze(self, basis: Basis, tolerance: Tolerance = Tolerance()) -> Iterator[Freeze]:
+        """Watch `basis` while the `with` block runs; once it no longer holds, cancel the running task. Optional.
+
+        - For a task that assumes other robots or objects stand still; leases cannot see what else moves them.
+        - Checked every tick, after the plugins' updates; the reason is logged and kept in the freeze's `problem`.
+        - ! Only inside a task of this plugin (`spawn`): that task is cancelled. Stopping what moves is its job.
+
+        Args:
+            basis: What must stand still, from `world.freeze.take_basis`.
+            tolerance: How far each thing may drift.
+
+        Raises:
+            WorldMoved: At once, if the basis no longer holds; e.g. something moved while the plan was made.
+            RuntimeError: Outside a task of this plugin.
+
+        Example:
+            >>> basis = take_basis(ctx.world, ctx.now(), robots=others, bases=[serial])
+            >>> with ctx.freeze(basis) as freeze:
+            ...     await move()
+        """
+        task = self._own_task("freeze")
+        freeze = Freeze(basis, tolerance)
+        problem = basis_problem(basis, self.world, self.now(), tolerance)
+        if problem is not None:
+            freeze.problem = problem
+            raise WorldMoved(problem)
+        self._freezes[freeze] = task
+        try:
+            yield freeze
+        finally:
+            self._freezes.pop(freeze, None)
+
+    @contextmanager
+    def clearance(self, serials: Iterable[str], margin: float = STOP_DISTANCE) -> Iterator[Clearance]:
+        """While the `with` block runs, stop robots that come too close to anything in the scene. Optional.
+
+        - Checked against the whole scene: obstacles, process bodies, tracked objects and the other robots. Allowed
+          contacts (`Body.touches`, what the robot holds) are skipped. A lost base pose trips it too.
+        - A trip soft stops that robot (Resume needed), cancels the running task, and is kept in `problem`.
+        - Checked on a worker, a tick or two behind: keep `margin` above what the robot covers meanwhile.
+        - ! Only inside a task of this plugin (`spawn`). Not an emergency stop.
+
+        Args:
+            serials: The robots to keep clear, e.g. the one this task drives.
+            margin: Distance below which it trips, metres.
+
+        Raises:
+            RuntimeError: Outside a task of this plugin.
+
+        Example:
+            >>> with ctx.clearance([serial]) as clearance:
+            ...     await follow(path)
+        """
+        task = self._own_task("clearance")
+        clearance = Clearance(tuple(serials), margin)
+        self._clearances[clearance] = task
+        try:
+            yield clearance
+        finally:
+            self._clearances.pop(clearance, None)
+
+    def _own_task(self, what: str) -> asyncio.Task:
+        """The running task, which must be one of this plugin's; RuntimeError otherwise."""
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:  # no event loop runs
+            task = None
+        if task not in self._tasks:
+            raise RuntimeError(f"plugin {self.name!r}: {what}() runs only inside a task of this plugin")
+        return task
 
     # --- --- --- --- --- TRACES --- --- --- --- ---
 
@@ -265,7 +393,7 @@ class PluginContext:
         """Start `work` as a task owned by this plugin.
 
         - Cancelled on soft stop (unless `survives_soft_stop`), plugin stop and shutdown.
-        - Raising counts as a failure of this plugin; RobotStopped (a command to a soft-stopped robot) does not.
+        - Raising counts as a failure of this plugin; MotionRefused (soft stop, no lease, a broken freeze) does not.
 
         Args:
             label: Human-readable name, for logs.
@@ -364,7 +492,7 @@ class PluginContext:
         if task.cancelled():
             return
         error = task.exception()
-        if isinstance(error, RobotStopped):
+        if isinstance(error, MotionRefused):
             self.log_warn(f"task {task.get_name()!r} ended: {error}")
         elif error is not None:
             self._task_failures += 1
@@ -376,7 +504,7 @@ class PluginContext:
     def _drain_intents(self) -> None:
         """Run the intents queued when the drain starts; later ones wait a tick.
 
-        - Every intent runs, even if an earlier one raised. RobotStopped is logged, and counts as no failure.
+        - Every intent runs, even if an earlier one raised. MotionRefused is logged, and counts as no failure.
         - Running tasks are not paused. An intent that invalidates one must cancel it.
 
         Raises:
@@ -392,13 +520,34 @@ class PluginContext:
                 result = intent.run()
                 if asyncio.iscoroutine(result):
                     self.spawn(intent.label, result)
-            except RobotStopped as stopped:
-                self.log_warn(f"intent {intent.label!r} ended: {stopped}")
+            except MotionRefused as refused:
+                self.log_warn(f"intent {intent.label!r} ended: {refused}")
             except Exception:
                 failed = True
                 self.log_error(f"intent {intent.label!r} failed:\n{traceback.format_exc()}")
         if failed:
             raise RuntimeError("one or more intents failed")
+
+    def _check_freezes(self) -> None:
+        """Cancel the task of every freeze whose basis no longer holds, logging why."""
+        now = self.now()
+        for freeze, task in list(self._freezes.items()):
+            problem = basis_problem(freeze.basis, self.world, now, freeze.tolerance)
+            if problem is not None:
+                freeze.problem = problem
+                del self._freezes[freeze]
+                self.log_warn(f"task {task.get_name()!r}: {problem}; cancelling it")
+                task.cancel(f"freeze broken: {problem}")
+
+    def _trip_clearance(self, clearance: Clearance, serial: str, why: str) -> None:
+        """Soft stop robot `serial` and cancel the clearance's task, unless it ended meanwhile."""
+        task = self._clearances.pop(clearance, None)
+        if task is None:
+            return
+        clearance.problem = f"robot {serial} {why}"
+        self.world.robots[serial].soft_stop()
+        self.log_error(f"task {task.get_name()!r}: {clearance.problem}; soft stopped it and cancelling the task")
+        task.cancel(f"clearance: {clearance.problem}")
 
     def _wake_tick_waiters(self) -> None:
         """Resume the tasks waiting in `next_tick`. They run once the tick yields."""
@@ -454,8 +603,15 @@ class PluginContext:
         return tasks
 
     def _close(self) -> list[asyncio.Task]:
-        """Refuse new tasks from now on, stop recording traces and cancel the running tasks. Returns them."""
+        """Refuse new tasks from now on, stop recording traces, give back `take_lease` leases, cancel the tasks.
+
+        Returns:
+            list[asyncio.Task]: The cancelled tasks, which may still be cleaning up.
+        """
         self._closed = True
         for trace in list(self._traces):
             self.untrace(trace)
+        for lease in self._leases:
+            lease.release()
+        self._leases.clear()
         return self._cancel_all_tasks()

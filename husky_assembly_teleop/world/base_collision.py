@@ -1,8 +1,8 @@
 """
 BaseCollisionWorld: what a robot base at a floor pose comes near, in a private PyBullet mirror of the scene.
 
-* Used by every plugin that drives a base: planners check their moves, experiments their paths and the robot as it
-  drives. Each keeps its own world on its own worker thread; a planner may subclass it for more checks.
+* Used by every plugin that drives a base: planners check their moves, experiments their paths. Each keeps its own
+  world on its own worker thread; a planner may subclass it for more checks. Clearances (`clearance.py`) use one too.
 * What a robot holds (`held_bodies`) moves with it and is checked with it; contact between the two is left out, as
   driving never changes it.
 ! Worker thread only: construct it anywhere, but sync, check and close on one worker. A mirror belongs to one thread.
@@ -115,6 +115,20 @@ class BaseCollisionWorld:
         """
         hit = self._hit(own, pose, margin)
         return self._label(hit[1]) if hit is not None else None
+
+    def hit_where_synced(self, own: str, margin: float) -> str | None:
+        """What robot `own`, or what it holds, comes within `margin` of where the last `sync` put them; None if clear.
+
+        Raises:
+            ValueError: If the robot cannot be checked, e.g. a joint is not measured (`RobotObject.acting_problems`).
+        """
+        parts = self._parts(own)
+        candidates = [object_id for object_id in self._footprints if object_id not in parts]
+        for part in parts:
+            hits = self.mirror.collisions(part, margin, candidates)
+            if hits:
+                return self._label(hits[0])
+        return None
 
     def reach(self, own: str) -> float:
         """How far robot `own` and what it holds reach across the floor from base_footprint, as last synced, metres."""

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Iterable
 
 import numpy as np
 import viser
@@ -16,10 +16,11 @@ from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...robot_interface.controller_manager import ControllerManagerInterface
 from ...robot_interface.stream_stats import WINDOW, StreamQuality
 from ...robot_interface.mocap_state import MocapBody
+from ...robot_interface.refusal import Refusal
 from ...robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV1State, ScaffoldingV3,
                                               ScaffoldingV3State)
-from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, check_chip, chip, freshness_chip, note,
-                         numbers, section, values)
+from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, REFUSAL_SHOWN, SECTION_CTRL, block, check_chip, chip,
+                         freshness_chip, note, numbers, section, values)
 from ...world.checks import STALE_AFTER
 from ...world.mocap import MARKER_ERROR_WARN, mocap_check
 
@@ -48,7 +49,7 @@ class ControllerPanel:
 
 
 def build_controller_panel(ctx: PluginContext, gui: viser.GuiApi, controllers: ControllerManagerInterface,
-                           input_builders: dict[str, Callable[[], object]],
+                           input_builders: dict[str, Callable[[], object]], leased: Callable[[Callable], object],
                            ) -> tuple[ControllerPanel, dict[str, object]]:
     """Build the CTRL section: one button per switchable controller, and a folder of inputs for each.
 
@@ -57,6 +58,7 @@ def build_controller_panel(ctx: PluginContext, gui: viser.GuiApi, controllers: C
         gui: The GUI api, inside the tab the panel goes in.
         controllers: The controller manager to show and switch.
         input_builders: Per controller, a function that adds its inputs; missing ones get a placeholder.
+        leased: Runs a command under the robot's lease, which a switch needs.
 
     Returns:
         tuple[ControllerPanel, dict[str, object]]: The handles, and what each input builder returned.
@@ -65,7 +67,7 @@ def build_controller_panel(ctx: PluginContext, gui: viser.GuiApi, controllers: C
     by_label = {CONTROLLER_LABELS.get(name, name): name for name in controllers.switchable}
     switch = gui.add_button_group("Run", list(by_label))
     switch.on_click(ctx.defer_value(f"switch controller {controllers.namespace}",
-                                    lambda clicked: controllers.switch(by_label[clicked])))
+                                    lambda clicked: leased(lambda: controllers.switch(by_label[clicked]))))
 
     panel = ControllerPanel(controllers=controllers)
     built: dict[str, object] = {}
@@ -101,22 +103,31 @@ def _controller_chip(controllers: ControllerManagerInterface) -> str:
     return chip(CONTROLLER_LABELS.get(state.active, state.active), OK)
 
 
-def phone_base_status(base: BaseInterface) -> str:
-    """The phone's line for a base: whether its D-pad drives; if not, switching is done on the laptop."""
+def refusal_chip(refusals: Iterable[Refusal | None], now: float) -> str:
+    """A chip for the newest of `refusals` up to REFUSAL_SHOWN old, its reason on hover; "" without one."""
+    recent = [refusal for refusal in refusals if refusal is not None and now - refusal.time <= REFUSAL_SHOWN]
+    if not recent:
+        return ""
+    newest = max(recent, key=lambda refusal: refusal.time)
+    return chip(newest.label, FAIL, newest.reason)
+
+
+def phone_base_status(base: BaseInterface, refused: str = "") -> str:
+    """The phone's line for a base: whether its D-pad drives (else switch on the laptop), and `refused`."""
     if base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
-        return block(chip("D-pad drives", OK))
-    return block(_controller_chip(base.controllers) + chip("D-pad off: switch on the laptop", BUSY))
+        return block(chip("D-pad drives", OK) + refused)
+    return block(_controller_chip(base.controllers) + chip("D-pad off: switch on the laptop", BUSY) + refused)
 
 
-def phone_arm_status(arm: ArmInterface) -> str:
-    """The phone's line for an arm: its running controller ("Free" while free driving)."""
-    return block(_controller_chip(arm.controllers))
+def phone_arm_status(arm: ArmInterface, refused: str = "") -> str:
+    """The phone's line for an arm: its running controller ("Free" while free driving), and `refused`."""
+    return block(_controller_chip(arm.controllers) + refused)
 
 
-def base_status(base: BaseInterface, now: float) -> str:
-    """Status HTML for a base: chips, then its pose (placeholders before the first fix) and wifi."""
+def base_status(base: BaseInterface, now: float, refused: str = "") -> str:
+    """Status HTML for a base: chips with `refused` last, then its pose (placeholders before the first fix) and wifi."""
     state = base.state
-    chips = _controller_chip(base.controllers) + check_chip(mocap_check("mocap", base.mocap_id, state, now))
+    chips = _controller_chip(base.controllers) + check_chip(mocap_check("mocap", base.mocap_id, state, now)) + refused
     yaw = None if state.orientation is None else Rotation.from_quat(state.orientation).as_euler(
         "xyz", degrees=True)[2:]
     stale = not state.tracked or now - state.last_fix_time >= STALE_AFTER
@@ -141,12 +152,13 @@ def _mocap_line(body: MocapBody, now: float) -> str:
                   dim=body.last_update_time is None)
 
 
-def arm_status(arm: ArmInterface, now: float) -> str:
-    """Status HTML for an arm: chips, then joints, TCP, force and wifi (placeholders when missing)."""
+def arm_status(arm: ArmInterface, now: float, refused: str = "") -> str:
+    """Status HTML for an arm: chips with `refused` last, then joints, TCP, force and wifi (placeholders if missing)."""
     state = arm.state
     chips = _controller_chip(arm.controllers) + freshness_chip("joints", state.last_update_time, now)
     if state.is_executing:
         chips += chip("moving", BUSY)
+    chips += refused
     joints = arm.joint_vector()
     stale = state.last_update_time is None or now - state.last_update_time >= STALE_AFTER
     return block(chips + values(

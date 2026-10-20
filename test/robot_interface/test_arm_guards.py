@@ -19,6 +19,7 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        JOG_MAX_SPEED, joint_jog, joint_move, joint_path_move)
 from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
 from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
+from husky_assembly_teleop.robot_interface.robot_lease import Lease, NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
 
 pytestmark = pytest.mark.safety
@@ -297,7 +298,7 @@ def test_hold_in_free_drive_switches_to_the_trajectory_controller():
     """The trajectory controller holds the arm where it is once it runs."""
     arm = fake_arm(FREE_DRIVE_CONTROLLER)
     switched = []
-    arm.controllers.switch = lambda name: switched.append(name) or True
+    arm.controllers.switch = lambda name, unguarded=False: switched.append(name) or True
     assert arm.hold() and switched == [SCALED_JOINT_TRAJECTORY_CONTROLLER] and not arm._trajectory.sent
 
 
@@ -478,3 +479,40 @@ def test_a_soft_stopped_arm_refuses_every_motion_but_a_hold():
             command()
     assert not arm._trajectory.sent and not compliance._target_frame.sent and not compliance._target_wrench.sent
     assert arm.hold() and len(arm._trajectory.sent) == 1
+
+
+@pytest.mark.parametrize("holder", [None, "a planner"])
+def test_without_its_lease_an_arm_refuses_every_motion_and_switch_but_a_hold(holder):
+    """Free or leased to another, every motion and controller switch raises or is refused; a hold goes out."""
+    arm, compliance = fake_arm(), fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
+    arm._lease_slot.lease = compliance._lease_slot.lease = None
+    lease = None if holder is None else Lease(holder, (arm._lease_slot, compliance._lease_slot))
+    why = "robot 0804 is not leased" if holder is None else "robot 0804 is leased by a planner"
+    for command in (lambda: arm.send_joint_trajectory(*line(arm)), lambda: arm.send_joint_move(np.full(6, 0.1)),
+                    lambda: compliance.send_cartesian_target(TCP_POSITION, TCP_ORIENTATION),
+                    lambda: compliance.send_target_wrench([0.0, 0.0, 5.0])):
+        with pytest.raises(NotLeased, match=why):
+            command()
+    assert not arm._trajectory.sent and not compliance._target_frame.sent and not compliance._target_wrench.sent
+    assert why in arm._switch_refusal(FREE_DRIVE_CONTROLLER)
+    assert why in arm._switch_refusal(SCALED_JOINT_TRAJECTORY_CONTROLLER)
+    if lease is not None:
+        with lease.use():
+            assert arm._switch_refusal(FREE_DRIVE_CONTROLLER) is None
+            assert arm.send_joint_trajectory(*line(arm)) and compliance.send_target_wrench([0.0, 0.0, 5.0])
+    arm.state.last_motion_time = None
+    assert arm.hold() and len(arm._trajectory.sent) == (1 if lease is None else 2)
+
+
+def test_free_drive_stays_on_only_while_requested_under_the_lease():
+    """Requested under the robot's lease, free drive stays on; requested without it, it ends."""
+    arm = fake_arm(FREE_DRIVE_CONTROLLER)
+    arm.state.controllers.requested, arm._free_drive = FREE_DRIVE_CONTROLLER, Publisher()
+    lease = Lease("calibration", (arm._lease_slot,))
+    with lease.use():
+        arm.request_free_drive()
+    arm._keep_free_drive()
+    assert len(arm._free_drive.sent) == 1
+    arm.request_free_drive()
+    arm._keep_free_drive()
+    assert len(arm._free_drive.sent) == 1 and "leased by calibration" in arm._node.log.text("error")

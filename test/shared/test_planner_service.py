@@ -8,12 +8,14 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from robot_fakes import lease_test_robots, wait_ticks_until
 
 from husky_assembly_teleop.shared.planner.planner_panel import PlannerPanel
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import PlannerContract
 from husky_assembly_teleop.shared.planner.planner_search import Search
+from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, leased
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
 from husky_assembly_teleop.shared.planner.planner_service import PlannerService
 
@@ -43,6 +45,8 @@ class Ctx:
         """Start the task."""
         return asyncio.get_running_loop().create_task(work)
 
+    lease_robots = staticmethod(lease_test_robots)
+
     def log_info(self, text):
         """Keep the line."""
         self.log.append(text)
@@ -68,10 +72,10 @@ class Planner(PlannerService):
         """The test's stale reason."""
         return self.stale
 
-    def send(self, ctx, plan):
-        """Keep the plan; taken as the test says."""
+    async def execute(self, ctx, plan, answer):
+        """Keep the plan and answer as the test says; the motion is over at once."""
         self.sent.append(plan.id)
-        return self.taken, "sent" if self.taken else "refused"
+        answer(self.taken, "sent" if self.taken else "refused")
 
     def forget(self, plan):
         """Keep what was forgotten."""
@@ -207,14 +211,87 @@ def test_a_commit_to_a_soft_stopped_robot_answers_nothing_sent():
         plan = await planner.request_plan(Request("alice"))
         return await planner.commit(plan.id), planner.plan
 
-    def refused(ctx, plan):
+    async def refused(ctx, plan, answer):
         raise RobotStopped("robot alice is soft stopped, a path not sent; press Resume first")
 
     planner = Planner()
-    planner.send = refused
+    planner.execute = refused
     committed, latest = run(planner, scenario)
     assert committed == (False, "nothing sent: robot alice is soft stopped, a path not sent; press Resume first")
     assert latest.state == "ready"
+
+
+@pytest.mark.safety
+def test_a_commit_holds_the_robots_lease_from_the_send_until_the_motion_ends():
+    """The commit answers once sent; the lease is held around the send and while the motion runs, then given back."""
+    guard, running, seen = LeaseSlot("alice"), [True], []
+
+    async def execute(ctx, plan, answer):
+        seen.append(guard.problem())
+        answer(True, "sent")
+        await wait_ticks_until(lambda: not running[0])
+
+    async def scenario(planner, ctx):
+        ctx.lease_robots = lambda _serials, label: leased([guard], label)
+        plan = await planner.request_plan(Request("alice"))
+        committed = await planner.commit(plan.id)
+        held = guard.lease.holder if guard.lease else None
+        running[0] = False
+        for _ in range(3):
+            await asyncio.sleep(0)
+        return plan, committed, held
+
+    planner = Planner()
+    planner.execute = execute
+    plan, committed, held = run(planner, scenario)
+    assert committed == (True, "sent") and seen == [None] and planner.plan.state == "sent"
+    assert held == f"commit plan {plan.id}" and guard.lease is None
+
+
+@pytest.mark.safety
+def test_a_commit_to_a_robot_leased_elsewhere_sends_nothing():
+    """Another plugin holds the robot: nothing is sent, the answer names the holder, and the plan stays ready."""
+    guard = LeaseSlot("alice")
+    Lease("robot_control: teleop", (guard,))
+
+    async def scenario(planner, ctx):
+        ctx.lease_robots = lambda _serials, label: leased([guard], label)
+        plan = await planner.request_plan(Request("alice"))
+        return await planner.commit(plan.id), planner.plan
+
+    planner = Planner()
+    committed, latest = run(planner, scenario)
+    assert not committed[0] and "robot alice is leased by robot_control: teleop" in committed[1]
+    assert planner.sent == [] and latest.state == "ready" and guard.lease.holder == "robot_control: teleop"
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("replaces", [False, True])
+def test_a_commit_to_a_robot_still_moving_is_refused_or_replaces_the_motion(replaces):
+    """Refused while the earlier commit still moves the robot, or that commit is cancelled as replaced."""
+    ended = []
+
+    async def execute(ctx, plan, answer):
+        answer(True, f"sent {plan.id}")
+        try:
+            await wait_ticks_until(lambda: False)
+        except asyncio.CancelledError:
+            ended.append((plan.id, planner.replaced()))
+            raise
+
+    async def scenario(planner, ctx):
+        first = await planner.request_plan(Request("alice"))
+        await planner.commit(first.id)
+        second = await planner.request_plan(Request("alice", goal=2.0))
+        return await planner.commit(second.id)
+
+    planner = Planner()
+    planner.replaces_running, planner.execute = replaces, execute
+    committed = run(planner, scenario)
+    if replaces:
+        assert committed == (True, "sent 2") and ended[0] == (1, True)
+    else:
+        assert committed == (False, "nothing sent: an earlier commit still moves alice; wait, or Hold it")
 
 
 def test_clear_forgets_the_plan():

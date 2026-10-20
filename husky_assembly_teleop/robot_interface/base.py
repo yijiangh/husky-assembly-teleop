@@ -27,6 +27,8 @@ from .event import MESSAGE_QUEUE, Event
 from .mocap import subscribe_mocap
 from .mocap_state import RawMarkers, pose_lost
 from .simulated_parts import SimulatedPart
+from .refusal import Refusal
+from .robot_lease import LeaseSlot
 from .soft_stop import SoftStopLatch
 from .stream_stats import StreamStats
 
@@ -204,10 +206,15 @@ class BaseInterface:
         paths_sent: Fired with each `SentPath`, the empty path of a stop included.
 
     ! Mocap is the only source of the base pose; do not add a second one.
+    * A twist refused without raising leaves its reason in `last_refusal`, for panels.
     """
 
+    #: The last command refused without raising, or None.
+    last_refusal: Refusal | None = None
+
     def __init__(self, node: Node, config: RobotConfig,
-                 simulated: Callable[[], SimulatedPart | None] = lambda: None, latch: SoftStopLatch | None = None):
+                 simulated: Callable[[], SimulatedPart | None] = lambda: None, latch: SoftStopLatch | None = None,
+                 lease_slot: LeaseSlot | None = None):
         """Subscribe to mocap and create the velocity publisher.
 
         Args:
@@ -215,11 +222,13 @@ class BaseInterface:
             config: The robot this base belongs to.
             simulated: The base's simulator announcement while it is simulated, else None (`SimulatedParts.get`).
             latch: The robot's soft-stop latch; a new one by default.
+            lease_slot: The robot's lease slot; a new one by default.
         """
         self._node = node
         self._config = config
         self._simulated = simulated
         self._latch = latch or SoftStopLatch(config.serial)
+        self._lease_slot = lease_slot or LeaseSlot(config.serial)
         self.state = BaseState()
         self._ros = RosConnections(node)
         # * Path ids start somewhere new each run, so a report on an earlier run's path never matches a new one.
@@ -275,8 +284,8 @@ class BaseInterface:
         self.controllers.reconnect()
 
     def _switch_refusal(self, _controller: str) -> str | None:
-        """Why the velocity controller may not be started now: only `resume` starts it after a soft stop; else None."""
-        return self._latch.problem()
+        """Why the velocity controller may not be started now: no lease, or a soft stop (only `resume` starts it)."""
+        return self._latch.problem() or self._lease_slot.problem()
 
     @property
     def soft_stopped(self) -> bool:
@@ -317,17 +326,22 @@ class BaseInterface:
 
         Raises:
             RobotStopped: If the robot is soft stopped and the twist is not zero; a zero twist always goes out.
+            NotLeased: If the twist is not zero and the running code does not hold the robot's lease.
         """
+        now = self._node.get_clock().now().nanoseconds * 1e-9
         if not (math.isfinite(linear_x) and math.isfinite(angular_z)):
             self._node.get_logger().error(f"{self.controllers.namespace}: not driving, the twist is not finite "
                                           f"({linear_x}, {angular_z})")
+            self.last_refusal = Refusal("drive refused", f"the twist is not finite ({linear_x}, {angular_z})", now)
             return False
         if linear_x or angular_z:
             self._latch.check("a twist")
+            self._lease_slot.check("a twist")
         problem = self.controllers.running_problem(PLATFORM_VELOCITY_CONTROLLER) if require_controller else None
         if problem is not None:
             self._node.get_logger().warning(f"{self.controllers.namespace}: not driving, {problem}",
                                             throttle_duration_sec=2.0)
+            self.last_refusal = Refusal("drive refused", f"not driving, {problem}", now)
             return False
         self._publish_twist(float(linear_x), float(angular_z))
         return True
@@ -362,8 +376,10 @@ class BaseInterface:
             ValueError: If x, y, yaw (and t) differ in length or hold a value that is not finite, or the follower may
                 not take a path now (`follow_problem`); nothing is sent.
             RobotStopped: If the robot is soft stopped.
+            NotLeased: If the running code does not hold the robot's lease.
         """
         self._latch.check("a path")
+        self._lease_slot.check("a path")
         columns = [[float(v) for v in values] for values in (x, y, yaw) + (() if t is None else (t,))]
         caps = [float(max_linear_speed), float(max_angular_speed)]
         if len({len(column) for column in columns}) != 1:

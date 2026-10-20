@@ -5,7 +5,8 @@ Chips are green = ok, blue = an expected end state (e.g. a stalled screw), amber
 red = failed, gray = no data. Every helper returns
 HTML for viser's `add_html`; assigning it in every `draw` is cheap (viser only sends changes).
 
-! Never hide or grey out buttons, since that shifts the layout: ignore and log inapplicable actions instead.
+! Never hide or grey out buttons, since that shifts the layout: ignore and log inapplicable actions instead, with
+  a red chip saying why that goes after REFUSAL_SHOWN.
 """
 
 from __future__ import annotations
@@ -21,6 +22,9 @@ SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL = "#4263eb", "#1098ad", "#f08c00"
 
 #: Chip colour for each severity.
 LEVEL_COLORS = {GOOD: OK, WARN: BUSY, BAD: FAIL}
+
+#: Seconds the chip saying why a button did nothing stays up.
+REFUSAL_SHOWN = 3.0
 
 
 def chip(text: str, color: str, title: str = "") -> str:

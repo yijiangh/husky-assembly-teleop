@@ -7,13 +7,14 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from robot_fakes import Controllers, Node, Publisher
+from robot_fakes import Controllers, Node, Publisher, leased_slot
 
 from husky_assembly_teleop.robot_interface.base import (FOLLOWER_SILENT_AFTER, PLATFORM_VELOCITY_CONTROLLER,
                                                         BaseInterface, BaseState, FollowerState)
 from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
 from husky_assembly_teleop.robot_interface.event import Event
 from husky_assembly_teleop.robot_interface.mocap_state import POSE_TIMEOUT
+from husky_assembly_teleop.robot_interface.robot_lease import Lease, NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped, SoftStopLatch
 
 pytestmark = pytest.mark.safety
@@ -27,6 +28,7 @@ def _base() -> BaseInterface:
     """A base ready to follow at ROS time NOW: a live mocap pose, a live follower, the velocity controller running."""
     base = BaseInterface.__new__(BaseInterface)
     base._node, base._config, base._latch = Node(NOW), SimpleNamespace(mocap_id=1), SoftStopLatch("0804")
+    base._lease_slot = leased_slot("0804")
     base.state = BaseState(tracked=True, tracking_valid=True, marker_errors=deque([(NOW, 0.0)]),
                            last_update_time=NOW, last_fix_time=NOW, estopped=False)
     base.state.follower = FollowerState(
@@ -133,3 +135,25 @@ def test_a_soft_stopped_base_refuses_to_drive_but_still_stops():
     assert len(base._cmd_vel.sent) == 1 and len(base._base_path.sent) == 1
     base._latch.stopped = False
     assert base._switch_refusal(PLATFORM_VELOCITY_CONTROLLER) is None and base.send_twist(0.2, 0.0)
+
+
+@pytest.mark.parametrize("holder", [None, "base_planner: commit"])
+def test_without_its_lease_a_base_refuses_to_drive_or_switch_but_always_stops(holder):
+    """Free or leased to another: twist, path and controller start refused, nothing sent; stops go out."""
+    base = _base()
+    base._path_id, base._lease_slot.lease = 0, None
+    lease = None if holder is None else Lease(holder, (base._lease_slot,))
+    why = "is not leased" if holder is None else "is leased by base_planner: commit"
+    with pytest.raises(NotLeased, match=f"{why}.*, a twist not sent"):
+        base.send_twist(0.2, 0.0)
+    with pytest.raises(NotLeased, match="a path not sent"):
+        base.send_path(*PATH)
+    assert why in base._switch_refusal(PLATFORM_VELOCITY_CONTROLLER)
+    assert not base._cmd_vel.sent and not base._base_path.sent
+    assert base.send_twist(0.0, 0.0)
+    base.stop_path()
+    if lease is not None:
+        with lease.use():
+            assert base.send_twist(0.2, 0.0)
+            base.send_path(*PATH)
+        assert len(base._cmd_vel.sent) == 2 and len(base._base_path.sent) == 2

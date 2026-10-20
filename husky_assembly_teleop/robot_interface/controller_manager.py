@@ -124,11 +124,12 @@ class ControllerManagerInterface:
         future.add_done_callback(self._on_list_answer)
         return True
 
-    def switch(self, controller: str) -> bool:
+    def switch(self, controller: str, unguarded: bool = False) -> bool:
         """Start `controller`, stopping whichever switchable one is running; the outcome lands in `state`.
 
         Args:
             controller: One of `switchable`.
+            unguarded: Skip the guard. ! Only for `hold` and `resume`: stopping and recovering need no lease.
 
         Returns:
             bool: True if the request went out or it already runs. False otherwise; `state.switch_error` says why.
@@ -138,7 +139,7 @@ class ControllerManagerInterface:
                                        f"on {self.namespace}")
             self._node.get_logger().error(self.state.switch_error)
             return False
-        if self._guard is not None and (problem := self._guard(controller)):
+        if not unguarded and self._guard is not None and (problem := self._guard(controller)):
             self.state.switch_error = f"{self.namespace}: not starting {controller}: {problem}"
             self._node.get_logger().error(self.state.switch_error)
             return False

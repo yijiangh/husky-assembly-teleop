@@ -6,11 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 from action_msgs.msg import GoalStatus
-from robot_fakes import Client, Future, Node, Publisher
+from robot_fakes import Client, Future, Node, Publisher, leased_slot
 from ur_msgs.srv import SetIO
 
 from husky_assembly_teleop.robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV1,
                                                                  ScaffoldingV1State, ScaffoldingV3, ScaffoldingV3State)
+from husky_assembly_teleop.robot_interface.robot_lease import Lease, NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped, SoftStopLatch
 
 pytestmark = pytest.mark.safety
@@ -63,7 +64,7 @@ def robotiq(ready: bool = True) -> RobotiqGripper:
     gripper = RobotiqGripper.__new__(RobotiqGripper)
     gripper._node, gripper.namespace, gripper.state, gripper._action = Node(), "/a200/gripper", RobotiqState(), \
         ActionClient(ready)
-    gripper._latch = SoftStopLatch("0804")
+    gripper._latch, gripper._lease_slot = SoftStopLatch("0804"), leased_slot("0804")
     gripper._goal, gripper._cancel_on_accept = None, False
     return gripper
 
@@ -72,7 +73,7 @@ def v3() -> ScaffoldingV3:
     """A scaffolding v3 tool with both motors idle."""
     tool = ScaffoldingV3.__new__(ScaffoldingV3)
     tool._node, tool.namespace, tool.state, tool._command = Node(), "/a200/tool", ScaffoldingV3State(), Publisher()
-    tool._latch = SoftStopLatch("0804")
+    tool._latch, tool._lease_slot = SoftStopLatch("0804"), leased_slot("0804")
     tool.state.gripper_motor = tool.state.joint_motor = ScaffoldingV3.IDLE
     return tool
 
@@ -82,6 +83,7 @@ def v1(ready: bool = True) -> ScaffoldingV1:
     tool = ScaffoldingV1.__new__(ScaffoldingV1)
     tool._node, tool.namespace, tool.arm_namespace = Node(), "/a200/tool", "/a200/ur5e"
     tool.state, tool._set_io, tool._latch = ScaffoldingV1State(), Client(ready), SoftStopLatch("0804")
+    tool._lease_slot = leased_slot("0804")
     return tool
 
 
@@ -257,3 +259,21 @@ def test_a_soft_stopped_tool_refuses_every_command_but_stop():
     screw.drive_screw(0)
     assert closing.cancels == 1
     assert [(message.motor, message.direction) for message in screw._command.sent] == [(0, 0)]
+
+
+def test_without_its_lease_a_tool_refuses_every_command_but_stop():
+    """Robotiq, v3 and v1: leased to another, every moving command raises NotLeased, sending nothing; stop goes out."""
+    gripper, screw, switched = robotiq(), v3(), v1()
+    lease = Lease("movement_exec", (gripper._lease_slot, screw._lease_slot, switched._lease_slot))
+    for command in (gripper.open, gripper.close, lambda: gripper.move(0.4), gripper.reactivate,
+                    screw.open, screw.close, lambda: screw.drive_screw(1), switched.open, switched.close):
+        with pytest.raises(NotLeased, match="leased by movement_exec"):
+            command()
+    assert not gripper._action.goals and not screw._command.sent and not switched._set_io.calls
+    screw.drive_screw(0)
+    assert [(message.motor, message.direction) for message in screw._command.sent] == [(0, 0)]
+    with lease.use():
+        gripper.close()
+        screw.close()
+        switched.close()
+    assert len(gripper._action.goals) == 1 and len(screw._command.sent) == 2 and len(switched._set_io.calls) == 1

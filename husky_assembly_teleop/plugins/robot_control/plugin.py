@@ -11,6 +11,8 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
     on its own threads, where touching robots or the scene is not safe.
   - `update` does per-tick work; anything longer than a tick is a `ctx.spawn` task.
 * Robots are commanded and read only through their interfaces; no topic names here.
+* A robot is leased while in use (`teleop_lease.py`): a jog or drive is refused while another plugin holds it.
+* ! Every button that does nothing says why: a refusal chip on its part's status line (`_refuse`, `refusal_chip`).
 """
 
 from __future__ import annotations
@@ -30,8 +32,11 @@ from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_
                                     MOVING_WITHIN, SCALED_JOINT_TRAJECTORY_CONTROLLER, TARGET_WRENCH_FRAME,
                                     ArmInterface, cartesian_move, joint_jog)
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
+from ...robot_interface.end_effectors import EndEffectorState, RobotiqState, ScaffoldingV3, ScaffoldingV3State
+from ...robot_interface.refusal import Refusal
+from ...robot_interface.soft_stop import MotionRefused
 from ...ui.phone import big_buttons, phone_text
-from ...ui.style import SECTION_SENSOR, block, numbers, section, values
+from ...ui.style import REFUSAL_SHOWN, SECTION_SENSOR, block, numbers, section, values
 from scaffolding_assembly_core.geometry import Pose
 from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, build_compliance_inputs, build_free_drive_inputs,
                         build_jog_inputs, build_phone_arm_inputs, build_tool_inputs, pose_from_sliders,
@@ -40,12 +45,15 @@ from .dpad import HOLD_TIMEOUT, MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, PHONE_DPAD_
 from .markers import (add_force_arrows, add_frame_markers, add_target_gizmo, draw_markers, place_markers,
                       target_from_world)
 from .status import (ControllerPanel, arm_status, base_status, build_controller_panel, phone_arm_status,
-                     phone_base_status, show_only_running, tool_status)
+                     phone_base_status, refusal_chip, show_only_running, tool_status)
+from .teleop_lease import TeleopLeases
 
 #: The side panel tab this plugin fills.
 CONTROL_TAB = ("Control", viser.Icon.DEVICE_GAMEPAD_2)
 #: Seconds to wait before asking again after a refused free drive switch, so a dead service is not asked every tick.
 FREE_DRIVE_RETRY = 1.0
+#: The part name of a robot's base in refusal keys; arms use their own names.
+BASE = "base"
 
 
 @dataclass
@@ -126,6 +134,11 @@ class RobotControlPlugin(HuskyPlugin):
         #: This tick's 3D marker poses and force-arrow segments per arm; None without the compliance controller.
         self._markers: dict[tuple[str, str], dict[str, tuple] | None] = {}
 
+        #: The robots this plugin holds the lease of while the operator uses them.
+        self._leases = TeleopLeases()
+        #: Per (serial, part), the last of this plugin's commands that did nothing, and why; part is BASE or an arm.
+        self._refusals: dict[tuple[str, str], Refusal] = {}
+
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
@@ -160,7 +173,8 @@ class RobotControlPlugin(HuskyPlugin):
                         with phone.add_folder(arm_widgets.arm.config.label):
                             arm_widgets.phone_status = build_phone_arm_inputs(
                                 ctx, phone, f"{widgets.serial} {name}", arm_widgets.arm,
-                                partial(self._on_free_drive_hold, ctx, (widgets.serial, name), True))
+                                partial(self._on_free_drive_hold, ctx, (widgets.serial, name), True),
+                                partial(self._leased, ctx, (widgets.serial, name)))
 
     def _build_base(self, ctx: PluginContext, gui: viser.GuiApi, serial: str,
                     base: BaseInterface) -> _BaseWidgets:
@@ -178,7 +192,8 @@ class RobotControlPlugin(HuskyPlugin):
         status = gui.add_html("")
         velocity_inputs = partial(build_velocity_inputs, ctx, gui, serial, partial(self._on_hold, ctx, serial, False))
         panel, built = build_controller_panel(ctx, gui, base.controllers,
-                                              {PLATFORM_VELOCITY_CONTROLLER: velocity_inputs})
+                                              {PLATFORM_VELOCITY_CONTROLLER: velocity_inputs},
+                                              partial(self._leased, ctx, (serial, BASE)))
         return _BaseWidgets(serial=serial, base=base, panel=panel, status=status,
                             speed=built[PLATFORM_VELOCITY_CONTROLLER])
 
@@ -206,20 +221,21 @@ class RobotControlPlugin(HuskyPlugin):
                                     load=partial(self._load_pose.add, key),
                                     start=partial(self._start_move, ctx, serial, arm, "cartesian move",
                                                   self._stream_cartesian_move),
-                                    hold=hold, apply_force=partial(self._apply_force, key, arm))
+                                    hold=hold, apply_force=partial(self._apply_force, ctx, key, arm))
         panel, built = build_controller_panel(ctx, gui, arm.controllers, {
             SCALED_JOINT_TRAJECTORY_CONTROLLER: jog_inputs,
             CARTESIAN_COMPLIANCE_CONTROLLER: compliance_inputs,
             FREE_DRIVE_CONTROLLER: partial(build_free_drive_inputs, ctx, gui, label,
                                            partial(self._on_free_drive_hold, ctx, key, False)),
-        })
+        }, partial(self._leased, ctx, key))
 
         # Independent of the running controller.
         gui.add_html(section("sensor", SECTION_SENSOR))
         zero = gui.add_button_group("FT", ["Zero"], hint="Tares the current load. Only with nothing gripped.")
         zero.on_click(ctx.defer(f"zero FT {label}", arm.zero_ft_sensor))
 
-        tool = None if arm.end_effector is None else build_tool_inputs(ctx, gui, label, arm)
+        tool = None if arm.end_effector is None else build_tool_inputs(ctx, gui, label, arm,
+                                                                       partial(self._leased, ctx, key))
         return _ArmWidgets(serial=serial, arm=arm, panel=panel, status=status, tool_status=tool,
                            jog_speed=built[SCALED_JOINT_TRAJECTORY_CONTROLLER],
                            compliance=built[CARTESIAN_COMPLIANCE_CONTROLLER],
@@ -265,10 +281,44 @@ class RobotControlPlugin(HuskyPlugin):
         """Record that an arm's jog button is still held."""
         self._jog_held[key] = (joint, direction, ctx.now())
 
-    def _apply_force(self, key: tuple[str, str], arm: ArmInterface, force: np.ndarray) -> None:
+    def _apply_force(self, ctx: PluginContext, key: tuple[str, str], arm: ArmInterface, force: np.ndarray) -> None:
         """Send a target force (N, tool frame) to the arm and remember it if accepted."""
-        if arm.send_target_wrench(force):
+        if self._leased(ctx, key, lambda: arm.send_target_wrench(force)):
             self._applied_force[key] = force
+
+    def _leased(self, ctx: PluginContext, key: tuple[str, str], command: Callable[[], Any]) -> Any:
+        """Run `command` under this plugin's lease of robot `key[0]`, leasing it first if free.
+
+        Returns:
+            Any: What `command` returned; None if refused (no lease, soft stop), which `_refuse` then shows.
+        """
+        try:
+            with self._leases.use(ctx, key[0]):
+                return command()
+        except MotionRefused as refused:
+            self._refuse(ctx, key, refused.label, str(refused))
+            return None
+
+    def _refuse(self, ctx: PluginContext, key: tuple[str, str], label: str, reason: str) -> None:
+        """Show on part `key`'s status line that a button did nothing, and why; also log it.
+
+        Args:
+            ctx: This plugin's context.
+            key: (serial, part): BASE or an arm's name.
+            label: Short chip text, e.g. "jog refused".
+            reason: The whole reason, shown on hover.
+        """
+        last = self._refusals.get(key)
+        if last is None or last.reason != reason or ctx.now() - last.time > REFUSAL_SHOWN:
+            ctx.log_warn(f"{key[0]} {key[1]}: {reason}")  # once, not every tick while a button stays held
+        self._refusals[key] = Refusal(label, reason, ctx.now())
+
+    def _drop_reason(self, ctx: PluginContext, serial: str, soft_stopped: bool) -> tuple[str, str] | None:
+        """Why a held button on robot `serial` does nothing now, as (label, reason): soft stop or another's lease."""
+        if soft_stopped:
+            return "soft stopped", f"robot {serial} is soft stopped; press Resume first"
+        taken = self._leases.taken(ctx, serial)
+        return None if taken is None else ("lease refused", taken)
 
     # --- --- --- --- --- EVERY TICK --- --- --- --- ---
 
@@ -281,20 +331,26 @@ class RobotControlPlugin(HuskyPlugin):
         now = ctx.now()
         for widgets in self._bases:
             held = self._held.get(widgets.serial)
-            # Drop the hold if it timed out, the robot was soft stopped or the controller is no longer running.
-            if held is not None and (now - held[2] > HOLD_TIMEOUT or widgets.base.soft_stopped
-                                     or not widgets.base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER)):
+            # Drop the hold if it timed out, the robot was soft stopped or leased, or the controller no longer runs.
+            dropped = None if held is None else self._drop_reason(ctx, widgets.serial, widgets.base.soft_stopped)
+            if dropped is None and held is not None \
+                    and not widgets.base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
+                dropped = "drive refused", "the velocity controller is not running; switch to Vel"
+            if held is not None and (now - held[2] > HOLD_TIMEOUT or dropped is not None):
+                if dropped is not None:
+                    self._refuse(ctx, (widgets.serial, BASE), *dropped)
                 del self._held[widgets.serial]
                 held = None
             if held is not None:
                 speed = (widgets.phone_speed if held[3] else widgets.speed).value
-                widgets.base.send_twist(held[0] * speed * MAX_LINEAR_SPEED, held[1] * speed * MAX_ANGULAR_SPEED)
+                self._leased(ctx, (widgets.serial, BASE), lambda: widgets.base.send_twist(
+                    held[0] * speed * MAX_LINEAR_SPEED, held[1] * speed * MAX_ANGULAR_SPEED))
                 self._driving.add(widgets.serial)
             elif widgets.serial in self._driving:
                 # Just released: send one stop now.
                 widgets.base.send_twist(0.0, 0.0)
                 self._driving.discard(widgets.serial)
-        self._update_free_drive(now)
+        self._update_free_drive(ctx, now)
         self._update_jogs(ctx, now)
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
@@ -306,8 +362,28 @@ class RobotControlPlugin(HuskyPlugin):
             force = np.array([slider.value for slider in widgets.compliance.force])
             self._markers[key] = place_markers(ctx, widgets.serial, widgets.arm, target, force,
                                                self._applied_force.get(key))
+        self._leases.release_idle(ctx, partial(self._busy, now))
 
-    def _update_free_drive(self, now: float) -> None:
+    def _busy(self, now: float, serial: str) -> bool:
+        """Whether this plugin still uses robot `serial`: an input held, its own move or force, or a part moving."""
+        if serial in self._held or serial in self._driving:
+            return True
+        for widgets in self._arms:
+            key = (widgets.serial, widgets.arm.config.name)
+            if widgets.serial != serial:
+                continue
+            task, force = self._trajectory_tasks.get(key), self._applied_force.get(key)
+            free_drive = self._free_drive_held.get(key)
+            keep = widgets.free_drive_keep
+            if (key in self._jog_held or key in self._jogging or key in self._free_driving
+                    or (free_drive is not None and now - free_drive[0] <= HOLD_TIMEOUT)
+                    or (keep is not None and keep.value) or (task is not None and not task.done())
+                    or (force is not None and np.any(force)) or widgets.arm.state.is_executing
+                    or _tool_moving(widgets.arm.state.end_effector)):
+                return True
+        return False
+
+    def _update_free_drive(self, ctx: PluginContext, now: float) -> None:
         """Keep free drive on while a free drive button is held or Keep on is ticked; the phone's button also switches.
 
         - Laptop: the Free controller button switches; holding its button, or Keep on, frees the arm.
@@ -317,29 +393,37 @@ class RobotControlPlugin(HuskyPlugin):
           the requests stop (`ArmInterface.request_free_drive`).
 
         Args:
+            ctx: This plugin's context.
             now: This tick's time, as the hold reports use.
         """
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             controllers = widgets.arm.controllers
             last = self._free_drive_held.get(key)
-            held = last is not None and now - last[0] <= HOLD_TIMEOUT
+            # * While another plugin holds the robot or it is soft stopped, held buttons and Keep on do nothing.
+            dropped = self._drop_reason(ctx, widgets.serial, widgets.arm.soft_stopped)
+            pressed = last is not None and now - last[0] <= HOLD_TIMEOUT
             keep = widgets.free_drive_keep
             if keep is not None and keep.value and controllers.state.requested != FREE_DRIVE_CONTROLLER:
                 keep.value = False  # another controller was chosen: Keep on must be ticked again
-            if held or (keep is not None and keep.value):
-                widgets.arm.request_free_drive()
+            kept = keep is not None and keep.value
+            if dropped is not None and (pressed or kept):
+                self._refuse(ctx, key, *dropped)
+            held = pressed and dropped is None
+            if held or (kept and dropped is None):
+                self._leased(ctx, key, widgets.arm.request_free_drive)
             # Switch for the phone only once a pending switch is answered, and not straight after a refused one.
-            phone_held = held and last[1] and not widgets.arm.soft_stopped
+            phone_held = held and last[1]
             if controllers.state.switch_in_flight is not None or now < self._free_drive_retry.get(key, now):
                 continue
             if phone_held and key not in self._free_driving:
-                switched = controllers.switch(FREE_DRIVE_CONTROLLER)
+                switched = self._leased(ctx, key, lambda: controllers.switch(FREE_DRIVE_CONTROLLER))
                 if switched:
                     self._free_driving.add(key)
             elif not phone_held and key in self._free_driving:
+                # * Switching back holds the arm, which needs no lease.
                 switched = (not controllers.is_active(FREE_DRIVE_CONTROLLER)
-                            or controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER))
+                            or controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER, unguarded=True))
                 if switched:
                     self._free_driving.discard(key)
             else:
@@ -360,9 +444,14 @@ class RobotControlPlugin(HuskyPlugin):
         for widgets in self._arms:
             key, arm = (widgets.serial, widgets.arm.config.name), widgets.arm
             held = self._jog_held.get(key)
-            # Drop the press if it timed out, the robot was soft stopped or the controller is no longer running.
-            if held is not None and (now - held[2] > HOLD_TIMEOUT or arm.soft_stopped
-                                     or not arm.controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER)):
+            # Drop the press if it timed out, the robot was soft stopped or leased, or the controller no longer runs.
+            dropped = None if held is None else self._drop_reason(ctx, widgets.serial, arm.soft_stopped)
+            if dropped is None and held is not None \
+                    and not arm.controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER):
+                dropped = "jog refused", "the joint controller is not running; switch to Joint"
+            if held is not None and (now - held[2] > HOLD_TIMEOUT or dropped is not None):
+                if dropped is not None:
+                    self._refuse(ctx, key, *dropped)
                 del self._jog_held[key]
                 held = None
             press = None if held is None else held[:2]
@@ -377,18 +466,21 @@ class RobotControlPlugin(HuskyPlugin):
                 self._jogging[key] = (*press, self._send_jog(ctx, widgets, *press))
 
     def _send_jog(self, ctx: PluginContext, widgets: _ArmWidgets, joint: int, direction: float) -> bool:
-        """Send a jog of one joint at the speed slider's speed; whether the arm took it (if not, the log says why)."""
+        """Send a jog of one joint at the speed slider's speed; whether the arm took it (if not, a chip says why)."""
+        key = (widgets.serial, widgets.arm.config.name)
         here = widgets.arm.joint_vector()
         if here is None:
-            ctx.log_warn(f"{widgets.serial} {widgets.arm.config.name}: no joint state yet, not jogging")
+            self._refuse(ctx, key, "jog refused", "no joint state yet, not jogging")
             return False
         try:
             positions, velocities, duration = joint_jog(here, joint, direction,
                                                         widgets.jog_speed.value * JOG_MAX_SPEED)
         except ValueError as error:
-            ctx.log_warn(f"{widgets.serial} {widgets.arm.config.name}: not jogging: {error}")
+            self._refuse(ctx, key, "jog refused", f"not jogging: {error}")
             return False
-        return widgets.arm.send_joint_trajectory(positions, duration, velocities)
+        # * A refusal by the arm's own checks shows through `arm.last_refusal`.
+        sent = self._leased(ctx, key, lambda: widgets.arm.send_joint_trajectory(positions, duration, velocities))
+        return bool(sent)
 
     def draw(self, ctx: PluginContext) -> None:
         """Copy every robot's state into the widgets.
@@ -399,13 +491,17 @@ class RobotControlPlugin(HuskyPlugin):
         now = ctx.now()
         for widgets in self._bases:
             show_only_running(widgets.panel)
-            widgets.status.content = base_status(widgets.base, now)
+            refused = refusal_chip((self._refusals.get((widgets.serial, BASE)), widgets.base.last_refusal), now)
+            widgets.status.content = base_status(widgets.base, now, refused)
             if widgets.phone_status is not None:
-                widgets.phone_status.content = phone_text(phone_base_status(widgets.base))
+                widgets.phone_status.content = phone_text(phone_base_status(widgets.base, refused))
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             show_only_running(widgets.panel)
-            widgets.status.content = arm_status(widgets.arm, now)
+            tool = widgets.arm.end_effector
+            refused = refusal_chip((self._refusals.get(key), widgets.arm.last_refusal,
+                                    None if tool is None else tool.last_refusal), now)
+            widgets.status.content = arm_status(widgets.arm, now, refused)
             widgets.compliance.pose_plan.content = pose_plan_line(widgets.arm, widgets.compliance.pose)
             draw_markers(widgets.frames, widgets.arrows, widgets.gizmo, self._markers.get(key) or {})
             applied = self._applied_force.get(key)
@@ -414,7 +510,7 @@ class RobotControlPlugin(HuskyPlugin):
             if widgets.tool_status is not None:
                 widgets.tool_status.content = tool_status(widgets.arm.state.end_effector, now)
             if widgets.phone_status is not None:
-                widgets.phone_status.content = phone_text(phone_arm_status(widgets.arm))
+                widgets.phone_status.content = phone_text(phone_arm_status(widgets.arm, refused))
 
     def _load_pose_sliders(self, widgets: _ArmWidgets) -> None:
         """Set one arm's pose sliders to its TCP, if asked.
@@ -453,7 +549,7 @@ class RobotControlPlugin(HuskyPlugin):
         key = (serial, arm.config.name)
         running = self._trajectory_tasks.get(key)
         if running is not None and not running.done():
-            ctx.log_warn(f"{serial} {arm.config.name}: a move is already running; Start ignored")
+            self._refuse(ctx, key, "start refused", "a move is already running; Start ignored")
             return
         self._trajectory_tasks[key] = ctx.spawn(f"{kind} {serial} {arm.config.name}", move(ctx, serial, arm, *args))
 
@@ -486,9 +582,18 @@ class RobotControlPlugin(HuskyPlugin):
             position: TCP target position, metres, arm base frame.
             orientation: TCP target orientation, quaternion (x, y, z, w).
         """
+        try:
+            with self._leases.use(ctx, serial):
+                await self._cartesian_move(ctx, serial, arm, position, orientation)
+        except MotionRefused as refused:
+            self._refuse(ctx, (serial, arm.config.name), refused.label, str(refused))
+
+    async def _cartesian_move(self, ctx: PluginContext, serial: str, arm: ArmInterface,
+                              position: np.ndarray, orientation: np.ndarray) -> None:
+        """The body of `_stream_cartesian_move`, run under the robot's lease."""
         name = f"{serial} {arm.config.name}"
         if arm.state.tcp_position is None:
-            ctx.log_warn(f"{name}: no TCP pose yet, nothing sent")
+            self._refuse(ctx, (serial, arm.config.name), "start refused", "no TCP pose yet, nothing sent")
             return
         duration, sample = cartesian_move(arm.state.tcp_position, arm.state.tcp_orientation,
                                           position, orientation)
@@ -515,3 +620,13 @@ class RobotControlPlugin(HuskyPlugin):
             arm.hold()
             raise
         ctx.log_info(f"{name}: cartesian move done")
+
+
+def _tool_moving(state: EndEffectorState | None) -> bool:
+    """Whether a tool still runs a command: a Robotiq goal, or a scaffolding v3 motor."""
+    if isinstance(state, RobotiqState):
+        return state.moving
+    if isinstance(state, ScaffoldingV3State):
+        return ScaffoldingV3.TIGHTENING in (state.gripper_motor, state.joint_motor) or \
+            ScaffoldingV3.LOOSENING in (state.gripper_motor, state.joint_motor)
+    return False

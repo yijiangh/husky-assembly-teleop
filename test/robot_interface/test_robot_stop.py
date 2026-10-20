@@ -21,7 +21,8 @@ def robot(arms: int = 1, ready: bool = True):
     interface.soft_stop_latch = SoftStopLatch("0804")
     interface.base = SimpleNamespace(stops=0, switched=[])
     interface.base.stop = lambda: setattr(interface.base, "stops", interface.base.stops + 1)
-    interface.base.controllers = SimpleNamespace(switch=lambda name: interface.base.switched.append(name) or ready)
+    interface.base.controllers = SimpleNamespace(
+        switch=lambda name, unguarded=False: interface.base.switched.append(name) or ready)
     interface.arms = {f"arm{index}": SimpleNamespace(config=SimpleNamespace(name=f"arm{index}"),
                                                      end_effector=SimpleNamespace(stops=0))
                       for index in range(arms)}
@@ -88,7 +89,7 @@ def test_soft_stop_latches_the_robot_until_resume():
     with pytest.raises(RobotStopped, match="robot 0804 is soft stopped"):
         interface.send_multi_arm_trajectory({}, 1.0)
     seen = []
-    interface.base.controllers.switch = lambda _name: seen.append(interface.soft_stopped) or True
+    interface.base.controllers.switch = lambda _name, unguarded=False: seen.append(interface.soft_stopped) or True
     assert interface.resume() and seen == [False] and not interface.soft_stopped
 
 

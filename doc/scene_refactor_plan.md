@@ -187,7 +187,7 @@ Rules shared by every mirror:
 - **Kinematics.** `kinematics.py`, `ctx.kinematics`; nothing reads link poses from PyBullet.
 - **Scene and drawing.** `geometry.py`, `scene.py`, `ctx.scene`, `take_snapshot` in the tick, core drawing; tracked
   objects (`ctx.track_object`) draw no frame of their own.
-- **`PyBulletMirror`.** `obstacles` and the base collision checks (`shared/base_collision/`) use the scene;
+- **`PyBulletMirror`.** `obstacles` and the base collision checks (`world/base_collision.py`) use the scene;
   `example_pybullet` shows the pattern.
 - **Process objects.** The process plugin puts the selected movement's process scene (`Process.scene_at`,
   `plugins/process/scene_bodies.py`) into the live scene: process ids prefixed (`bars/B1` → `process/bars/B1`) through

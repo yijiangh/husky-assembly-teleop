@@ -7,11 +7,20 @@ Stopping (`hold`, `stop`, `stop_path`, a zero twist, a tool's `stop`) always goe
 from __future__ import annotations
 
 
-class RobotStopped(Exception):
-    """A command to a soft-stopped robot: nothing was sent. The operator must press Resume for that robot first.
+class MotionRefused(Exception):
+    """A motion refused for an operator's reason, not a bug: soft stop, no lease, or a broken freeze.
 
     The monitor logs it as a normal end of a task, intent or hook, not as a plugin failure.
     """
+
+    #: Short enough for a chip; the message says the rest.
+    label = "refused"
+
+
+class RobotStopped(MotionRefused):
+    """A command to a soft-stopped robot: nothing was sent. The operator must press Resume for that robot first."""
+
+    label = "soft stopped"
 
 
 class SoftStopLatch:

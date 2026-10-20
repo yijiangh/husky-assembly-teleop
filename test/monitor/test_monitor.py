@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -13,7 +14,9 @@ import husky_assembly_teleop.monitor as monitor_module
 from husky_assembly_teleop.monitor import HuskyMonitor
 from husky_assembly_teleop.plugin_api.plugin import HuskyPlugin
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
+from husky_assembly_teleop.world.clearance import STOP_DISTANCE
 from husky_assembly_teleop.world.measured import WorldState
+from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.scene import Scene
 
 #: Consecutive failing ticks after which a plugin is stopped.
@@ -115,6 +118,27 @@ class FakeTimer:
         """Nothing to stop."""
 
 
+class FakeClearances:
+    """Stands in for ClearanceChecker: keeps what it is asked, and hands out `found` once as the finished check."""
+
+    def __init__(self):
+        """Nothing asked or found."""
+        self.asked, self.found = [], None
+
+    def check(self, _snapshot, asked) -> bool:
+        """Keep what is asked."""
+        self.asked.append(asked)
+        return True
+
+    def finished(self):
+        """`found`, once."""
+        found, self.found = self.found, None
+        return found
+
+    def close(self) -> None:
+        """Nothing to close."""
+
+
 def build(monkeypatch, *plugins: HuskyPlugin, robots=()) -> HuskyMonitor:
     """A monitor with these plugins (dependency order), built by its own `_build` without ROS or viser.
 
@@ -135,6 +159,7 @@ def build(monkeypatch, *plugins: HuskyPlugin, robots=()) -> HuskyMonitor:
     monitor._timer, monitor._stop_reasons, monitor._undecodable, monitor._shut_down = FakeTimer(), {}, set(), False
     monitor._pump_ros = lambda: 0
     monitor._startup_started, monitor._startup_times = 0.0, {}
+    monitor._clearances = FakeClearances()
     for index, robot in enumerate(robots):
         monitor._world.robots[f"r{index}"] = robot
     monitor._build()
@@ -326,3 +351,41 @@ def test_a_teardown_that_raises_does_not_stop_the_others(monkeypatch):
     monitor = build(monkeypatch, Recorder("a", calls), Recorder("b", calls, raises=("teardown",)))
     asyncio.run(monitor.shutdown())
     assert ("a", "teardown") in calls and "failed in teardown" in monitor.get_logger().text("error")
+
+
+def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost_pose(monkeypatch):
+    """Each tick asks about driven robots; a found hit or a lost base pose soft stops the robot and cancels the task."""
+    calls, stops = [], []
+    tracked = SimpleNamespace(mocap_id=1, state=SimpleNamespace(marker_errors=deque([(100.0, 0.0)]),
+                                                                last_fix_time=100.0))
+    robots = [SimpleNamespace(base=tracked, soft_stop=lambda serial=serial: stops.append(serial))
+              for serial in ("r0", "r1")]
+    plugin = Recorder("a", calls)
+    monitor = build(monkeypatch, plugin, robots=robots)
+    ctx = monitor._loaded["a"].ctx
+
+    async def drive(serial):
+        with ctx.clearance([serial]) as clearance:
+            await ctx.wait_until(lambda: False)
+        return clearance
+
+    async def run():
+        found = ctx.spawn("drive r0", drive("r0"))
+        await asyncio.sleep(0)
+        await monitor._tick()
+        (key, own, margin), = monitor._clearances.asked[-1]
+        assert own == robot_id("r0") and margin == STOP_DISTANCE
+        monitor._clearances.found = [(key, "came within 10 cm of wall")]
+        await monitor._tick()
+        lost = ctx.spawn("drive r1", drive("r1"))
+        await asyncio.sleep(0)
+        lost_state = SimpleNamespace(marker_errors=deque(), tracked=False, tracking_valid=False, last_update_time=None)
+        robots[1].base = SimpleNamespace(mocap_id=1, state=lost_state)
+        await monitor._tick()
+        return await asyncio.gather(found, lost, return_exceptions=True)
+
+    found, lost = asyncio.run(run())
+    assert isinstance(found, asyncio.CancelledError) and isinstance(lost, asyncio.CancelledError)
+    assert stops == ["r0", "r1"]
+    errors = monitor.get_logger().text("error")
+    assert "robot r0 came within 10 cm of wall" in errors and "robot r1 cannot be checked" in errors

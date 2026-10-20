@@ -25,6 +25,7 @@ from .ur_frames import stock_frame_problem
 from .connections import RosConnections
 from .simulated_parts import TOPIC as SIMULATED_TOPIC
 from .simulated_parts import SimulatedParts
+from .robot_lease import LeaseSlot
 from .soft_stop import SoftStopLatch
 
 #: On-board node that runs or stops all arms together.
@@ -69,6 +70,8 @@ class HuskyRobotInterface:
         arms: The arms, keyed by ArmConfig.name, in configuration order.
         state: Everything measured, for the scene and viewer.
         soft_stop_latch: Set from `soft_stop` until `resume`; while set, every part refuses commands that could move.
+        lease_slot: Who holds the robot's lease (`robot_lease.py`); every part refuses motion and controller switches
+            sent without it.
     """
 
     def __init__(self, node: Node, config: RobotConfig):
@@ -81,10 +84,11 @@ class HuskyRobotInterface:
         self._node = node
         self.config = config
         self.soft_stop_latch = SoftStopLatch(config.serial)
+        self.lease_slot = LeaseSlot(config.serial)
         #: The parts of this robot announced as simulated (`simulated_parts.py`).
         self.simulated = SimulatedParts(lambda: node.get_clock().now().nanoseconds * 1e-9)
         self.base = BaseInterface(node, config, simulated=partial(self.simulated.get, "base"),
-                                  latch=self.soft_stop_latch)
+                                  latch=self.soft_stop_latch, lease_slot=self.lease_slot)
         # * The model already has each arm's UR calibration applied; an out-of-date URDF file is loud, not fatal.
         for check in config.ur_calibration:
             if check.out_of_date:
@@ -102,7 +106,8 @@ class HuskyRobotInterface:
             self.arms[arm.name] = ArmInterface(
                 node, config.ros_namespace, arm,
                 fixed_transform(config.model.urdf, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem,
-                simulated=partial(self.simulated.get, arm.ros_namespace), latch=self.soft_stop_latch)
+                simulated=partial(self.simulated.get, arm.ros_namespace), latch=self.soft_stop_latch,
+                lease_slot=self.lease_slot)
         #: The husky frame in the mocap-tracked frame (fixed, from the URDF).
         self._husky_in_mocap_frame = fixed_transform(config.model.urdf, MOCAP_FRAME, HUSKY_FRAME)
         self.state = RobotState(serial=config.serial, base=self.base.state,
@@ -226,7 +231,7 @@ class HuskyRobotInterface:
             bool: True if every request went out. False if the controller manager or the sync is not reachable.
         """
         self.soft_stop_latch.stopped = False
-        base = self.base.controllers.switch(PLATFORM_VELOCITY_CONTROLLER)
+        base = self.base.controllers.switch(PLATFORM_VELOCITY_CONTROLLER, unguarded=True)
         arms = self._call_sync(self._resume_arms, "resume arms") if self.arms else True
         return base and arms
 
@@ -277,8 +282,10 @@ class HuskyRobotInterface:
 
         Raises:
             RobotStopped: If the robot is soft stopped.
+            NotLeased: If the running code does not hold the robot's lease.
         """
         self.soft_stop_latch.check("a multi-arm trajectory")
+        self.lease_slot.check("a multi-arm trajectory")
         if self._multi_arm is None:
             self._node.get_logger().error(f"robot {self.config.serial}: multi-arm trajectory "
                                           f"needs two arms, it has {len(self.arms)}")

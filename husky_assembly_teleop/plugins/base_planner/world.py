@@ -22,7 +22,7 @@ from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene, world_poses
 
 from ...config import RobotConfig
-from ...shared.base_collision.base_collision_world import BaseCollisionWorld, held_bodies
+from ...world.base_collision import BaseCollisionWorld, held_bodies
 from ...world.kinematics import stow_joints
 
 #: Keep at least this far from every other robot and body, metres.

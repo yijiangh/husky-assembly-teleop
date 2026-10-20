@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from crl_husky.follower_path import FollowerPath
-from robot_fakes import Node
+from robot_fakes import Node, lease_test_robots, wait_ticks_until
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugin_api.trace import Signal, Trace
@@ -24,6 +24,7 @@ from husky_assembly_teleop.plugins.base_planner.tasks import BY_NAME
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from husky_assembly_teleop.world.checks import WARN
+from husky_assembly_teleop.world.clearance import STOP_DISTANCE, Clearance
 
 SERIAL = "alice"
 
@@ -74,7 +75,9 @@ class FakeBase:
                                      estopped=estopped, follower=follower)
         self._node = Node(10.0)
         self.refuses = refuses
-        self.sent = []
+        self.sent, self.stops = [], 0
+        self.follower_reports, self.odometry_messages = Event(f"{SERIAL}_follower"), Event(f"{SERIAL}_odometry")
+        self.mocap_messages = Event(f"{SERIAL}_mocap")
 
     #: The base's own gate, as the real base has it.
     follow_problem = BaseInterface.follow_problem
@@ -86,6 +89,49 @@ class FakeBase:
         self.sent.append(args)
         return 7
 
+    def stop_path(self):
+        """Count the stop."""
+        self.stops += 1
+
+
+class CommitCtx:
+    """A plugin context for a commit: real tasks, the test lease, a recording that keeps nothing, a run never done."""
+
+    def __init__(self, base: FakeBase):
+        """SERIAL is `base`, at ROS time 10 s."""
+        self.world = SimpleNamespace(robots={SERIAL: SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL))})
+        self.config = SimpleNamespace(drive_root=None)
+
+    lease_robots = staticmethod(lease_test_robots)
+    wait_until = staticmethod(wait_ticks_until)
+
+    def now(self) -> float:
+        """ROS time, seconds."""
+        return 10.0
+
+    def log_info(self, _message):
+        """Drop it."""
+
+    log_warn = log_info
+
+    def submit(self, _label, run):
+        """Run the intent now."""
+        run()
+
+    def spawn(self, _label, work):
+        """Start the task."""
+        return asyncio.get_running_loop().create_task(work)
+
+    @contextmanager
+    def record(self, *_signals):
+        """Keep nothing."""
+        yield []
+
+    @contextmanager
+    def clearance(self, serials, margin=STOP_DISTANCE):
+        """Never trip."""
+        yield Clearance(tuple(serials), margin)
+
 
 def test_the_planner_offers_the_planner_api():
     """Other plugins can drive the base planner as a PlannerContract."""
@@ -95,13 +141,11 @@ def test_the_planner_offers_the_planner_api():
 def commit(base: FakeBase):
     """Commit a ready plan for SERIAL on `base` through the planner's API; returns (sent, message) and the planner.
 
-    The run is not started.
+    The run follows the path until the test ends, which cancels it.
     """
     planner = BasePlannerPlugin()
-    ctx = SimpleNamespace(world=SimpleNamespace(robots={SERIAL: SimpleNamespace(base=base)}),
-                          config=SimpleNamespace(drive_root=None), now=lambda: 10.0, log_info=lambda _message: None,
-                          log_warn=lambda _message: None, spawn=lambda _label, work: work.close(),
-                          submit=lambda _label, run: run())
+    ctx = CommitCtx(base)
+    planner._path_check = lambda *_args: SimpleNamespace(level=WARN, label="following", detail="")
     planner.setup(ctx)
     path = planned((0.0, 0.0, 0.0), (1.0, 1.0, 0.0))
     planner._plan = Plan(1, BasePlanRequest(SERIAL, tuple(path.goal)), "ready", path)
@@ -242,7 +286,7 @@ class FakeClock:
 
     def __init__(self, robot, step):
         """Start at ROS time 10 s, with SERIAL being `robot`."""
-        self.t, self.robot, self.step, self.traces, self.logs = 10.0, robot, step, [], []
+        self.t, self.robot, self.step, self.traces, self.logs, self.clearances = 10.0, robot, step, [], [], []
         self.world = SimpleNamespace(robots={SERIAL: robot})
         self.config = SimpleNamespace(recording_format="npz")
 
@@ -264,6 +308,12 @@ class FakeClock:
             self.traces.remove(trace)
             for event, listener in listeners:
                 event.detach(listener)
+
+    @contextmanager
+    def clearance(self, serials, margin=STOP_DISTANCE):
+        """Keep the clearance asked for; the test trips it by setting its problem and cancelling the run."""
+        self.clearances.append(Clearance(tuple(serials), margin))
+        yield self.clearances[-1]
 
     async def wait_until(self, predicate, timeout_s=None, description=""):
         """Tick until `predicate` holds."""
@@ -313,11 +363,13 @@ def test_run_is_recorded_until_the_follower_is_done(tmp_path):
             base.follower_reports.fire(replace(follower, update_time=t - late, stamp=t - late - 0.01,
                                                command=np.array([0.2, 0.0])))
 
+    base.follow_problem, base.send_path = (lambda: ""), (lambda *_args: 7)
     ctx = FakeClock(robot, step)
     plugin = BasePlannerPlugin()
     plugin._recordings = tmp_path
-    plugin._sent_id, plugin._sent_at = 7, ctx.now()
-    asyncio.run(plugin._follow(ctx, REQUEST, path, None))
+    answers = []
+    asyncio.run(plugin.execute(ctx, Plan(1, REQUEST, "ready", path), lambda *answer: answers.append(answer)))
+    assert answers == [(True, f"sent to {SERIAL}'s follower (path 7)")] and plugin._sent_id == 7
 
     folder, = (tmp_path / "trial").iterdir()
     data = np.load(folder / "recording.npz")
@@ -335,11 +387,11 @@ def test_run_is_recorded_until_the_follower_is_done(tmp_path):
 
 
 @pytest.mark.safety
-@pytest.mark.parametrize("how", ["timeout", "cancel", "replaced", "other robot"])
+@pytest.mark.parametrize("how", ["timeout", "cancel", "clearance", "replaced"])
 def test_a_run_that_ends_before_the_follower_stops_the_path(how):
-    """Timed out, or cancelled (Stop all, shutdown): the follower is stopped.
+    """Timed out, cancelled (Stop all, shutdown) or too close to something (clearance): the follower is stopped.
 
-    A new commit, to this robot or another, only ends the old run's recording; the old path is left alone.
+    A new commit to this robot only ends the old run: its own path replaces the old one on the follower.
     """
     path = planned((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
     follower = FollowerState(controller="pure_pursuit", state="following", reason="", path_id=7, timed=False,
@@ -349,7 +401,8 @@ def test_a_run_that_ends_before_the_follower_stops_the_path(how):
     stops = []
     base = SimpleNamespace(state=SimpleNamespace(position=np.zeros(3), orientation=np.array([0.0, 0.0, 0.0, 1.0]),
                                                  follower=follower),
-                           stop_path=lambda: stops.append(how),
+                           stop_path=lambda: stops.append(how), follow_problem=lambda: "",
+                           send_path=lambda *_args: 7,
                            follower_reports=Event(f"{SERIAL}_follower"), odometry_messages=Event(f"{SERIAL}_odometry"),
                            mocap_messages=Event(f"{SERIAL}_mocap"))
     robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL))
@@ -359,23 +412,28 @@ def test_a_run_that_ends_before_the_follower_stops_the_path(how):
 
     ctx = FakeClock(robot, step)
     plugin = BasePlannerPlugin()
-    plugin._recordings, plugin._sent_serial, plugin._sent_id, plugin._sent_at = None, SERIAL, 7, ctx.now()
+    plugin._recordings = None
     plugin._path_check = lambda *_args: SimpleNamespace(level=WARN, label="following", detail="")
 
     async def scenario():
-        task = asyncio.create_task(plugin._follow(ctx, REQUEST, path, None))
+        task = asyncio.create_task(plugin.execute(ctx, Plan(1, REQUEST, "ready", path), lambda *_answer: None))
         if how == "timeout":
             await task
             return
         await asyncio.sleep(0)
-        if how != "cancel":
-            plugin._sent_serial, plugin._sent_id = (SERIAL, 8) if how == "replaced" else ("bob", 8)
+        if how == "clearance":
+            ctx.clearances[0].problem = f"robot {SERIAL} came within 10 cm of wall"
+        elif how == "replaced":
+            plugin._replaced.add(task)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
     asyncio.run(scenario())
-    assert stops == ([] if how in ("replaced", "other robot") else [how])
+    assert stops == ([] if how == "replaced" else [how])
+    assert [clearance.serials for clearance in ctx.clearances] == [(SERIAL,)]
+    if how == "clearance":
+        assert ctx.logs[-1].endswith(f"soft stopped: robot {SERIAL} came within 10 cm of wall")
 
 
 def test_attempt_counts_for_its_task_only_from_its_start_to_its_target():

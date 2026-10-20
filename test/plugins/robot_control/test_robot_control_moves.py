@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from robot_fakes import TCP_ORIENTATION, TCP_POSITION, fake_arm
+from robot_fakes import TCP_ORIENTATION, TCP_POSITION, FreeRobots, fake_arm, lease_context
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugins.robot_control.dpad import HOLD_TIMEOUT
 from husky_assembly_teleop.plugins.robot_control.markers import place_markers, target_from_world
 from husky_assembly_teleop.plugins.robot_control.plugin import RobotControlPlugin, _BaseWidgets
+from husky_assembly_teleop.plugins.robot_control.status import refusal_chip
+from husky_assembly_teleop.plugins.robot_control.teleop_lease import IDLE_AFTER
 from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, MOVING_WITHIN,
                                                        SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_LIMITS)
 from husky_assembly_teleop.robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
+from husky_assembly_teleop.robot_interface.robot_lease import Lease, take_lease
 from scaffolding_assembly_core.geometry import Pose
 
 pytestmark = pytest.mark.safety
@@ -32,8 +36,13 @@ class Context:
     """
 
     def __init__(self, arm, follow=lambda: None):
-        """Share `arm`'s clock."""
+        """Share `arm`'s clock; every robot's lease is free."""
         self.arm, self.follow, self.lines = arm, follow, []
+        self.world = SimpleNamespace(robots=FreeRobots())
+
+    def take_lease(self, serials, label):
+        """Lease robots of the fake world, as the monitor does."""
+        return take_lease([self.world.robots[serial].lease_slot for serial in serials], f"robot_control: {label}")
 
     def now(self) -> float:
         """The arm's ROS time."""
@@ -164,7 +173,7 @@ def test_one_move_per_arm_at_a_time_and_hold_cancels_it():
 def test_hold_also_removes_an_applied_force():
     """After Hold the compliance controller must no longer push with the force set before."""
     arm, plugin = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER), RobotControlPlugin()
-    plugin._apply_force(("0804", "ur_arm"), arm, np.array([0.0, 0.0, 10.0]))
+    plugin._apply_force(Context(arm), ("0804", "ur_arm"), arm, np.array([0.0, 0.0, 10.0]))
     plugin._hold_arm("0804", arm)
     assert arm._target_wrench.sent[-1].wrench.force.z == 0.0 and not plugin._applied_force
 
@@ -172,7 +181,7 @@ def test_hold_also_removes_an_applied_force():
 def _jogged_arm(joints=None):
     """A plugin with one arm under the joint controller, at full jog speed, and a context sharing its clock."""
     arm, plugin = fake_arm(joints=joints), RobotControlPlugin()
-    plugin._arms = [SimpleNamespace(serial="0804", arm=arm, jog_speed=SimpleNamespace(value=1.0))]
+    plugin._arms = [SimpleNamespace(serial="0804", arm=arm, jog_speed=SimpleNamespace(value=1.0), free_drive_keep=None)]
     return arm, plugin, Context(arm)
 
 
@@ -219,6 +228,50 @@ def test_a_jog_is_held_when_the_robot_stops_or_the_controller_changes(stop):
     assert len(arm._trajectory.sent) == 2 and "hold sent" in arm._node.log.text("info")
 
 
+def test_a_jog_leases_the_robot_until_it_is_idle():
+    """The jog goes out under robot_control's lease; once released and still for IDLE_AFTER, the lease is given back."""
+    arm, plugin, ctx = _jogged_arm()
+    _jog_ticks(arm, plugin, ctx, 2, press=(0, 1.0))
+    assert plugin._leases.held("0804") and len(arm._trajectory.sent) == 1
+    arm.state.is_executing = False
+    for _ in range(int((2 * HOLD_TIMEOUT + IDLE_AFTER) / TICK) + 2):
+        _jog_ticks(arm, plugin, ctx, 1)
+        arm.state.is_executing = False
+        plugin._leases.release_idle(ctx, partial(plugin._busy, ctx.now()))
+    assert not plugin._leases.held("0804")
+
+
+def test_a_jog_on_a_robot_another_plugin_holds_is_dropped_and_says_why():
+    """Leased to the arm planner: nothing is sent, nothing raises, and a "lease refused" chip names the holder."""
+    arm, plugin, ctx = _jogged_arm()
+    Lease("arm_planner: commit plan 2", (ctx.world.robots["0804"].lease_slot,))
+    _jog_ticks(arm, plugin, ctx, 5, press=(0, 1.0))
+    assert not arm._trajectory.sent and not plugin._leases.held("0804")
+    refused = plugin._refusals[("0804", "ur_arm")]
+    assert refused.label == "lease refused" and "leased by arm_planner: commit plan 2" in refused.reason
+    chip = refusal_chip([refused], ctx.now())
+    assert ">lease refused<" in chip and "arm_planner: commit plan 2" in chip
+    assert ctx.text().count("leased by arm_planner") == 1, "logged once, not every tick"
+
+
+def test_a_jog_the_arm_refuses_shows_the_arms_reason():
+    """The arm's own checks refuse the jog: its `last_refusal` carries the reason for the chip."""
+    arm, plugin, ctx = _jogged_arm()
+    arm.state.operational, arm.state.problem = False, "protective stop"
+    _jog_ticks(arm, plugin, ctx, 2, press=(0, 1.0))
+    assert not arm._trajectory.sent
+    assert arm.last_refusal.label == "move refused" and "protective stop" in arm.last_refusal.reason
+    assert ">move refused<" in refusal_chip([plugin._refusals.get(("0804", "ur_arm")), arm.last_refusal], ctx.now())
+
+
+def test_a_tool_button_on_a_leased_robot_says_why():
+    """A one-shot command refused for the lease returns None and leaves a chip instead of raising."""
+    arm, plugin, ctx = _jogged_arm()
+    Lease("movement_exec", (ctx.world.robots["0804"].lease_slot,))
+    assert plugin._leased(ctx, ("0804", "ur_arm"), lambda: arm.send_target_wrench([0.0, 0.0, 1.0])) is None
+    assert plugin._refusals[("0804", "ur_arm")].label == "lease refused"
+
+
 def test_a_jog_at_the_joint_limit_is_refused_once_per_press():
     """At the limit nothing is sent, and a held button warns once, not every tick."""
     arm, plugin, ctx = _jogged_arm(joints=[UR_JOINT_LIMITS[0], 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -254,7 +307,7 @@ def _driven_base():
 def test_a_held_base_stops_when_its_controller_goes_off():
     """The hold is dropped as soon as the velocity controller stops, and one stop goes out."""
     plugin, sent, controller = _driven_base()
-    ctx = SimpleNamespace(now=lambda: 0.0)
+    ctx = lease_context(now=lambda: 0.0, log_warn=lambda _text: None)
     plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
     plugin.update(ctx)
     controller[0] = None
@@ -266,7 +319,7 @@ def test_a_held_base_stops_when_its_controller_goes_off():
 def test_teardown_stops_a_base_that_is_being_driven():
     """Shutting down mid-drive sends a stop."""
     plugin, sent, _controller = _driven_base()
-    ctx = SimpleNamespace(now=lambda: 0.0)
+    ctx = lease_context(now=lambda: 0.0, log_warn=lambda _text: None)
     plugin._on_hold(ctx, "0804", False, 0.0, 1.0)
     plugin.update(ctx)
     plugin.teardown(ctx)
