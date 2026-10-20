@@ -391,24 +391,21 @@ This is the main calibration data collection procedure. You will collect data fo
 
 Before collecting data, verify these settings in the code match your setup.
 
-> **Current settings (2026-10-16): calibration mode (validation batch), Cindy (0806) left arm.** The
-> mode flags below are at their calibration values (`CALIBRATION = 1`,
-> `PUNCH_CALIB_VALIDATION = 0`, both `BAR_ACTION_*` = `0`, `CONNECT_COMPLIANT_CONTROLLER = 0`);
-> the punch test ran before this with `PUNCH_CALIB_VALIDATION = 1`. Cindy's new
-> left punch TCP (4-point, 2026-10-16) is `[-0.93, -4.05, 110.5]` mm →
-> `punch_tool.left.offset_xyz: [-0.00093, -0.00405, 0.1105]` in `20261016/config.yaml`.
-> * The calib tool was taken off after j0/j1 and put back without knowing its old
-> direction. That is fine: the base calibration only uses the circles the tool traces,
-> and `3_verify_calibration.py` only checks that `tool0_from_flange_mocap` stays the same
-> *within* the validation batch. ! Do not take the tool off during the validation batch.
-> Both dates point at `20261016` (its `config.yaml` was copied from Cindy's `20260916`:
-> `robot_name "0806"`, `arm "left"`). Cindy's left calib tool is now Motive ID `1866`;
-> launch the monitor with `ROS_DOMAIN_ID=86` ([§3.1](#31-launch-the-monitor-node)) and keep
-> `arm id` = `0`, which loads Cindy's own `260108_extrinsic_calib_trajs` (`ext_calib_0806_*`;
-> j0 traj0 was recorded with Alice's set before the switch, which is fine for the circle fit). `BASE_CALIBRATION_DATE_BY_ROBOT['Cindy']` now points at `20261016`
-> (validated: 1.6 mm RMS on 15 validation points, punch 0.7 mm RMS); the old `20260916`
-> (a copy of the June `20260622` result) agrees within 0.8 mm / 0.02° and is the fallback. Belle again: calib tool `1866`, `ROS_DOMAIN_ID=85`,
-> same `260630_calib_trajs_Alice` set.
+> **Current settings (2026-10-16): assembly mode.** Cindy's (0806) left-arm calibration is
+> done (folder `20261016`) and in use: `BASE_CALIBRATION_DATE_BY_ROBOT['Cindy']` = `20261016`
+> (validation 1.6 mm RMS over 15 poses, punch 0.7 mm RMS). The old `20260916` (a copy of the
+> June `20260622` result) agrees within 0.8 mm / 0.02° and is the fallback. The mode flags
+> below are back at their assembly values (`CALIBRATION = 0`, `PUNCH_CALIB_VALIDATION = 0`,
+> both `BAR_ACTION_*` = `1`, `CONNECT_COMPLIANT_CONTROLLER = 1`, as in the three-robot manual);
+> both dates still point at `20261016`. For the next session set the flags and both dates as below.
+> * Cindy's left arm: calib tool Motive ID `1866`, `ROS_DOMAIN_ID=86`, `arm id` = `0`, which loads
+> her own `260108_extrinsic_calib_trajs` (`ext_calib_0806_*`). Her left punch TCP (4-point,
+> 2026-10-16) is `[-0.93, -4.05, 110.5]` mm → `punch_tool.left.offset_xyz: [-0.00093, -0.00405, 0.1105]`.
+> * The calib tool may be put back turned (it was, by 90°, before the 2026-10-16 validation):
+> the base calibration only uses the circles the tool traces, and `3_verify_calibration.py`
+> only checks that `tool0_from_flange_mocap` stays the same *within* one batch.
+> ! Do not take the tool off in the middle of a batch.
+> * Belle again: calib tool `1866`, `ROS_DOMAIN_ID=85`, same `260630_calib_trajs_Alice` set.
 
 **Values, IDs & IPs** — set to match your robot / network / session:
 

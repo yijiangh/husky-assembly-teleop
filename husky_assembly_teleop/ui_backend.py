@@ -521,7 +521,7 @@ class DearPyGuiBackend(UIBackend):
         try:
             # DPG requires fonts to be created inside a font_registry context
             with dpg.font_registry():
-                self._font_sep = dpg.add_font(path, 20)  # separator header size
+                self._font_sep = dpg.add_font(path, 30)  # separator header size
         except Exception as e:
             logger.debug(f"separator font load failed {path}: {e}")
 
