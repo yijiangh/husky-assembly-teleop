@@ -16,6 +16,8 @@ from husky_assembly_teleop.plugins.assembly_steps.step_panel_base import Planner
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 
+pytestmark = pytest.mark.safety
+
 HOME = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0]
 
 

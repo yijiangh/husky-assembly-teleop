@@ -259,12 +259,14 @@ class ArmDriver:
         follow: The fraction of each trajectory it runs before it stops dead (1: all of it).
         silent_from: ROS time from which no joint state is fed any more, or None.
         speed: How fast it runs a trajectory, 1 as timed.
+        synced: Whether the safety sync reports on the arm every tick (False: its last status grows old).
     """
 
     def __init__(self, arm: ArmInterface, robot: HuskyRobotInterface | None = None, follow: float = 1.0,
                  silent_from: float | None = None, speed: float = 1.0):
         """Drive `arm`; `robot` is its robot, whose multi-arm messages it reads too."""
         self.arm, self.robot, self.follow, self.silent_from, self.speed = arm, robot, follow, silent_from, speed
+        self.synced = True
         self._seen = (0, 0)
         self._times = self._points = None
         self._started = 0.0
@@ -276,7 +278,8 @@ class ArmDriver:
         (`ControllerManagerInterface.refresh`, `ArmInterface.on_sync_status`).
         """
         self.arm.state.controllers.last_update_time = t
-        self.arm.state.status_update_time = t
+        if self.synced:
+            self.arm.state.status_update_time = t
         single = self.arm._trajectory.messages
         multi = self.robot._multi_arm.messages if self.robot is not None and self.robot._multi_arm else []
         if (len(single), len(multi)) != self._seen:

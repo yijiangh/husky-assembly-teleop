@@ -18,6 +18,8 @@ import numpy as np
 from scaffolding_assembly_core.ids import robot_id
 
 from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV3
+from ...shared.assembly_planning.joints import arm_joint_names
+from ...shared.assembly_planning.movement import Routine
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import STALE_ARM, stale_reason
 from ...shared.execution.interlock import base_moving, busy_reason
@@ -29,8 +31,6 @@ from ...shared.execution.tools import DRY_RUN as TOOL_DRY, REFUSED as TOOL_REFUS
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, CLOSE_PART, DONE, DRY_RUN, FAILED,
                                               GRASP_PART, HOLD_NOT_SENT, MOTION_PART, OPEN_PART, REFUSED, REFUSED_PART,
                                               current_primary)
-from ...shared.assembly_planning.joints import arm_joint_names
-from ...shared.assembly_planning.movement import Routine
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.geometry import Pose
@@ -133,7 +133,8 @@ def world_problem(job: Job, motion: bool) -> str:
     """Why a part may not run now; "" if it may.
 
     Every part: the process and the current action are still the request's, and nothing else moves (`others_moving`).
-    A motion also: the robot is live and the plan is not stale (`stale_reason`).
+    A motion also: the robot is live, the safety sync vouches for each of its arms (`ArmInterface.safety_problem`:
+    else the arm refuses the trajectory anyway), and the plan is not stale (`stale_reason`).
 
     Args:
         job: The request being run.
@@ -151,6 +152,9 @@ def world_problem(job: Job, motion: bool) -> str:
     robot = snapshot.robots.get(robot_id(request.serial))
     if robot is None or not is_live(robot, ctx.now()):
         return f"{job.who} is not live (base tracked and fresh within 1 s, joints within 0.5 s)"
+    for name, arm in job.robot.arms.items():
+        if problem := arm.safety_problem():
+            return f"{job.who} {name}: {problem}"
     if request.basis is None:
         return "the plan has no basis to check it against"
     return stale_reason(request.basis, snapshot, loaded=view.process, current=current_primary(view),
@@ -333,8 +337,8 @@ async def _by_hand(job: Job, run: PartRun) -> None:
         text = (f"{part.movement} — drive {job.who}'s base there with its joystick or the command line (the D-pad and "
                 f"the base planner are locked while this step runs; Cancel to use them), then Confirm.")
     else:
-        text = (f"{part.movement} — {part.text}, then Confirm (the robot panels are locked until this step ends; "
-                f"Cancel to use them).")
+        text = (f"{part.movement} — {part.text}, then Confirm (the robot panels and free drive, also from the "
+                f"tool's buttons, are locked until this step ends; Cancel to use them).")
     if await confirmed(job, run, text):
         run.ended(DRY_RUN if job.dry_run else DONE, "confirmed", "done by hand, confirmed by the operator")
 

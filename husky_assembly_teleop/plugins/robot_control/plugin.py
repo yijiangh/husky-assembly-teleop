@@ -330,16 +330,16 @@ class RobotControlPlugin(HuskyPlugin):
         """
         now = ctx.now()
         for widgets in self._bases:
-            held = self._held.get(widgets.serial)
+            dpad = self._held.get(widgets.serial)
             # Drop the hold if it timed out, the controller is no longer running, or another plugin holds the robot.
-            if held is not None and (now - held[2] > HOLD_TIMEOUT
+            if dpad is not None and (now - dpad[2] > HOLD_TIMEOUT
                                      or not widgets.base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER)
                                      or self._held_by_other(widgets.serial, "D-pad")):
                 del self._held[widgets.serial]
-                held = None
-            if held is not None:
-                speed = (widgets.phone_speed if held[3] else widgets.speed).value
-                widgets.base.send_twist(held[0] * speed * MAX_LINEAR_SPEED, held[1] * speed * MAX_ANGULAR_SPEED)
+                dpad = None
+            if dpad is not None:
+                speed = (widgets.phone_speed if dpad[3] else widgets.speed).value
+                widgets.base.send_twist(dpad[0] * speed * MAX_LINEAR_SPEED, dpad[1] * speed * MAX_ANGULAR_SPEED)
                 self._driving.add(widgets.serial)
             elif widgets.serial in self._driving:
                 # Just released: send one stop now.
@@ -364,7 +364,11 @@ class RobotControlPlugin(HuskyPlugin):
           release must not start a controller. If the switch back fails, free drive still ends within 1 s, since
           the requests stop (`ArmInterface.request_free_drive`).
         ! While any robot is held for an automatic motion: no requests, Keep on unticked, and every arm in free drive
-          switched back to the joint controller; logged once per lease.
+          switched back to the joint controller; logged once per lease. "Every arm in free drive" includes free drive
+          started on the robot by the tool's button chord (crl_husky onboard/free_drive_buttons.py), the held
+          robot's too: it is switched back each time, until the lease ends (the by-hand prompt says so). An arm
+          whose controller manager has gone quiet is not asked meanwhile; it is switched back once a fresh answer
+          still shows Free.
 
         Args:
             now: This tick's time, as the hold reports use.
@@ -373,11 +377,11 @@ class RobotControlPlugin(HuskyPlugin):
             key = (widgets.serial, widgets.arm.config.name)
             controllers = widgets.arm.controllers
             last = self._free_drive_held.get(key)
-            held = last is not None and now - last[0] <= HOLD_TIMEOUT
+            pressed = last is not None and now - last[0] <= HOLD_TIMEOUT
             keep = widgets.free_drive_keep
             if keep is not None and keep.value and controllers.state.requested != FREE_DRIVE_CONTROLLER:
                 keep.value = False  # another controller was chosen: Keep on must be ticked again
-            wanted = held or (keep is not None and keep.value)
+            wanted = pressed or (keep is not None and keep.value)
             # ! While any robot is held for an automatic motion, no arm is freed: no requests, Keep on unticked (it
             #   would free the arm again the moment the motion ends), and the joint controller holds the arm.
             taken = (wanted or key in self._free_driving or controllers.is_active(FREE_DRIVE_CONTROLLER)) and \
@@ -387,7 +391,7 @@ class RobotControlPlugin(HuskyPlugin):
             if wanted and not taken:
                 widgets.arm.request_free_drive()
             # Switch for the phone only once a pending switch is answered, and not straight after a refused one.
-            phone_held = held and last[1] and not taken
+            phone_held = pressed and last[1] and not taken
             if controllers.state.switch_in_flight is not None or now < self._free_drive_retry.get(key, now):
                 continue
             if phone_held and key not in self._free_driving:
@@ -396,6 +400,12 @@ class RobotControlPlugin(HuskyPlugin):
                     self._free_driving.add(key)
             elif not phone_held and (key in self._free_driving or taken):
                 # Released, or a robot was taken for an automatic motion: the joint controller holds the arm.
+                if taken and controllers.is_active(FREE_DRIVE_CONTROLLER) and \
+                        controllers.running_problem(FREE_DRIVE_CONTROLLER):
+                    # ? Under a lease, an arm whose controller manager has gone quiet is not asked to switch back
+                    #   until it answers again: it could not switch anyway (an error line every second otherwise),
+                    #   and free drive already ends within 1 s, since no requests go out.
+                    continue
                 switched = (not controllers.is_active(FREE_DRIVE_CONTROLLER)
                             or controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER))
                 if switched:

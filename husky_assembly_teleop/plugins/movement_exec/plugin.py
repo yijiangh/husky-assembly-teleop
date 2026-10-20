@@ -8,8 +8,9 @@ or Stop all ends it, every arm held.
 
 - Refused at once: while another request runs, a refused part (a later milestone's routine), a request for another
   robot, a plan for another robot, movement or base.
-- Before every motion, and again after Confirm: the robot is live, the plan is not stale, the process and the current
-  action are the request's; then the command is rebuilt from the live joints and sent in the same tick.
+- Before every motion, and again after Confirm: the robot is live, the safety sync vouches for each of its arms, the
+  plan is not stale, the process and the current action are the request's; then the command is rebuilt from the
+  live joints and sent in the same tick.
 - Dry run: every check, every trajectory built, nothing sent; nothing is ever done by it.
 - ! EXPERIMENTAL, the first plugin that moves robots: keep the e-stops in hand.
 """
@@ -25,13 +26,13 @@ from scaffolding_assembly_core.ids import robot_id
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
+from ...shared.assembly_planning.route_result import pose_error
 from ...shared.execution.basis import STALE_BASE
 from ...shared.execution.interlock import Busy, give_back, take
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import motion_command
 from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT, MAX_TRAJ_TIME,
                                               MOTION_PART, REFUSED, REFUSED_PART, ExecRequest, ExecResult, serial_of)
-from ...shared.assembly_planning.route_result import pose_error
 from .panel import ExecPanel
 from .sequences import Job, PartRun, run_part
 

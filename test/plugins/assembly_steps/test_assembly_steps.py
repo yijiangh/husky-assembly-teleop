@@ -187,6 +187,7 @@ def test_a_plan_request_carries_the_run_and_the_checked_goal():
     assert [event for event, _fields in lab.run.records] == ["check_goal", "plan", "plan"]
 
 
+@pytest.mark.safety
 def test_no_plan_is_asked_while_the_robot_is_not_live():
     """Cindy's joints not fresh: Plan asks nothing and says why."""
     lab = Steps(("B20_R", 2))
@@ -196,6 +197,7 @@ def test_no_plan_is_asked_while_the_robot_is_not_live():
     assert lab.planner.plans == [] and lab.plugin.plan_state == "none" and "is not live" in lab.plugin._message
 
 
+@pytest.mark.safety
 def test_a_plan_goes_stale_on_the_panel():
     """Cindy's base moving 3 mm after planning makes the plan stale, the reason on the panel."""
     lab = Steps(("B20_R", 2))
@@ -239,6 +241,7 @@ def test_the_last_step_offers_mark_done():
     assert lab.run.marked == ["B35_H"]
 
 
+@pytest.mark.safety
 def test_exec_needs_a_ready_plan_and_uses_it_once():
     """No plan: nothing to Exec. A plan goes with Exec once; a dry run gives it back, a real run clears it."""
     lab = Steps(("B20_R", 2))
@@ -473,6 +476,7 @@ class Executed(Steps):
             await self.ctx.next_tick()
 
 
+@pytest.mark.safety
 def test_unticking_ignore_built_bars_with_exec_sends_nothing():
     """Unticked in the same tick as Exec (both intents before the update): the plan made ignoring them is not sent."""
     lab = Executed(("B20_R", 2))
@@ -488,6 +492,7 @@ def test_unticking_ignore_built_bars_with_exec_sends_nothing():
     assert lab.plugin.plan_state == "stale"
 
 
+@pytest.mark.safety
 def test_unticking_ignore_built_bars_at_the_prompt_is_refused_after_confirm():
     """The prompt says the built bars are ignored; unticked while it waits: refused after Confirm, nothing sent."""
     lab = Executed(("B20_R", 2))
@@ -509,6 +514,7 @@ def test_unticking_ignore_built_bars_at_the_prompt_is_refused_after_confirm():
 
 # --- --- --- --- --- the reused goal's base, and a plan given back stale (review L4, L5) --- --- --- --- ---
 
+@pytest.mark.safety
 def test_a_plan_on_a_reused_goal_goes_stale_once_the_base_leaves_where_the_goal_was_solved():
     """A plan reusing a checked goal goes stale 2 mm from where the goal was solved, though 1.5 mm from the plan's base.
 
@@ -535,6 +541,7 @@ def test_a_plan_on_a_reused_goal_goes_stale_once_the_base_leaves_where_the_goal_
     assert "from where its goal was solved" in lab.plugin._message
 
 
+@pytest.mark.safety
 def test_a_plan_given_back_is_checked_for_staleness_first():
     """A dry run's plan comes back stale, not ready, when the base moved meanwhile."""
     lab = Steps(("B20_R", 2))

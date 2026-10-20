@@ -19,6 +19,8 @@ from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
 
+pytestmark = pytest.mark.safety
+
 CINDY, ALICE = "robots/a200-0806", "robots/a200-0804"
 NAMES = ("left_ur_arm_shoulder_pan_joint", "left_ur_arm_elbow_joint")
 STATUSES = {"B20_J": "pending", "B20_R": "pending"}

@@ -25,30 +25,30 @@ from scaffolding_assembly_core.ids import robot_id
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
+from ...shared.assembly_planning.movement import Routine, UnknownMovement, classify
+from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
+from ...shared.assembly_planning.route_search import ATTEMPTS
+from ...shared.assembly_planning.tamp_route import FAR, IK_GOALS
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
 from ...shared.execution.retime import RetimeError, retime
+from ...shared.motion_planner_contract import MotionPlanRequest
 from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_PART, REFUSED,
                                               ExecRequest, ExecResult, PartPlan, current_primary, current_step,
                                               serial_of, step_parts)
-from ...shared.assembly_planning.movement import Routine, UnknownMovement, classify
-from ...shared.planner.timed_path import TimedPath
-from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
-from ...shared.assembly_planning.route_search import ATTEMPTS
 from ...shared.planner.planner_search import WAIT_MARGIN, PlanResult
-from ...shared.motion_planner_contract import MotionPlanRequest
-from ...shared.assembly_planning.tamp_route import FAR, IK_GOALS
+from ...shared.planner.timed_path import TimedPath
 from ...ui.ghost import RobotGhost
 from .goal import StepGoal, same_step
 from .panel import StepsPanel
 from .step_panel_base import PlannerPlugin, Search
 
 if TYPE_CHECKING:
-    from ...shared.assembly_run_contract import AssemblyRunContract, RunView
-    from ...shared.movement_exec_contract import MovementExecContract
-    from ...shared.motion_planner_contract import MotionPlannerContract
-    from ...shared.assembly_planning.steps import OperatorStep
     from ...shared.assembly_planning.process_steps import Step
+    from ...shared.assembly_planning.steps import OperatorStep
+    from ...shared.assembly_run_contract import AssemblyRunContract, RunView
+    from ...shared.motion_planner_contract import MotionPlannerContract
+    from ...shared.movement_exec_contract import MovementExecContract
 
 #: Seconds to wait for a plan: every try of tamp's longest search, the first plan's model loading, and a margin.
 PLAN_TIME_LIMIT = ATTEMPTS * FAR["max_time"] + 60.0 + WAIT_MARGIN

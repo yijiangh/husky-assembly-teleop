@@ -12,6 +12,8 @@ from husky_assembly_teleop.shared.execution.send import (ARRIVED, ARRIVE_MARGIN,
                                                          STOPPED, TIMEOUT, motion_command, send_motion)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 
+pytestmark = pytest.mark.safety
+
 START = np.array([0.0, -1.5, 1.5, 0.0, 0.5, 0.0])
 CINDY_ARMS = ("left_ur_arm", "right_ur_arm")
 

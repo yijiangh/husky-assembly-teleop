@@ -66,6 +66,7 @@ def off_polyline(points: np.ndarray, path: np.ndarray) -> np.ndarray:
 
 @pytest.mark.parametrize("dimensions", [6, 12])
 @pytest.mark.parametrize("dense", [False, True])
+@pytest.mark.safety
 def test_random_paths_pass_the_arms_own_checks(dimensions, dense):
     """Every arm accepts its columns; samples on the polyline, exact ends, rest at the end, the time asked or more."""
     ctx = FakeContext()

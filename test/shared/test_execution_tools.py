@@ -13,6 +13,8 @@ from husky_assembly_teleop.shared.execution.tools import (DRY_RUN, FELL_SHORT, R
                                                           ROBOTIQ_OPEN, STALLED, TIMEOUT, robotiq_move,
                                                           scaffolding_grasp)
 
+pytestmark = pytest.mark.safety
+
 
 def run(ctx: FakeContext, work) -> object:
     """Run one tool step to its end."""

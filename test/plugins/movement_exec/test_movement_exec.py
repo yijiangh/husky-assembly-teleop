@@ -15,6 +15,8 @@ import pytest
 from planning_fixtures import purged_process, step
 from robot_lab import LEFT, FakeRun, RobotLab
 
+from husky_assembly_teleop.monitor import HuskyMonitor
+from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.plugins.movement_exec import plugin as exec_module
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
 from husky_assembly_teleop.robot_interface.base import FollowerState
@@ -118,6 +120,7 @@ def execute(lab: Lab, request: ExecRequest, *answers: bool, during=None):
     return run_guarded(scenario())
 
 
+@pytest.mark.safety
 def test_a_motion_is_confirmed_sent_arrives_and_is_recorded():
     """B20_R_home: prompt, Confirm, one multi-arm message, arrived; done, the lease held during and given back."""
     lab = Lab()
@@ -135,6 +138,7 @@ def test_a_motion_is_confirmed_sent_arrives_and_is_recorded():
     assert np.allclose(result.end["left_ur_arm_shoulder_pan_joint"], LEFT[0] + 0.2, atol=1e-3)
 
 
+@pytest.mark.safety
 def test_a_second_request_is_busy():
     """While one request runs, another is refused at once."""
     lab = Lab()
@@ -155,6 +159,7 @@ def test_a_second_request_is_busy():
     (dict(route_movement=1), "the plan is for movement 1"),
     (dict(route=None), "no plan"),
 ])
+@pytest.mark.safety
 def test_a_request_for_another_robot_or_movement_is_refused(changes, words):
     """The wrong robot, a plan for another movement, or no plan: refused, nothing sent, no lease."""
     lab = Lab()
@@ -163,6 +168,7 @@ def test_a_request_for_another_robot_or_movement_is_refused(changes, words):
     assert held is None and lab.published() == 0 and lab.run.records == []
 
 
+@pytest.mark.safety
 def test_a_base_moved_3_mm_since_planning_is_refused_at_the_request():
     """The base 3 mm from where the plan was made: refused by the request's own check, before any prompt."""
     lab = Lab()
@@ -174,6 +180,7 @@ def test_a_base_moved_3_mm_since_planning_is_refused_at_the_request():
     assert "a200-0806's base is 3.0 mm" in result.reason and "from where the plan was made" in result.reason
 
 
+@pytest.mark.safety
 def test_a_base_moved_3_mm_at_the_prompt_is_refused_after_confirm():
     """The base moves 3 mm while the prompt waits: refused by the check after Confirm (its wording), nothing sent."""
     lab = Lab()
@@ -191,6 +198,7 @@ def test_a_base_moved_3_mm_at_the_prompt_is_refused_after_confirm():
     assert "since planning" in result.reason and lab.published() == 0
 
 
+@pytest.mark.safety
 def test_a_plan_gone_stale_at_the_prompt_is_refused_after_confirm():
     """Belle moves 1.1 cm while the prompt waits: refused after Confirm, nothing sent."""
     lab = Lab()
@@ -207,6 +215,7 @@ def test_a_plan_gone_stale_at_the_prompt_is_refused_after_confirm():
     assert result.status == REFUSED and "a200-0805 moved since planning" in result.reason and lab.published() == 0
 
 
+@pytest.mark.safety
 def test_a_cancel_at_the_prompt_sends_nothing():
     """Cancel at the prompt: cancelled, nothing sent, a cancel event and the part's record."""
     lab = Lab()
@@ -216,6 +225,7 @@ def test_a_cancel_at_the_prompt_sends_nothing():
     assert lab.cindy.lease is None
 
 
+@pytest.mark.safety
 def test_a_cancel_during_the_motion_holds_every_arm():
     """Cancel while the arms move: every arm held, cancelled by the operator, the lease given back."""
     lab = Lab()
@@ -233,6 +243,7 @@ def test_a_cancel_during_the_motion_holds_every_arm():
     assert (event, last, fields["data"]["reason"]) == ("cancel", "exec", "operator")
 
 
+@pytest.mark.safety
 def test_a_request_cancelled_before_it_starts_gives_the_robot_back():
     """A task cancelled before its first step (a soft stop in the same tick): cancelled, the lease given back."""
     lab = Lab()
@@ -246,6 +257,7 @@ def test_a_request_cancelled_before_it_starts_gives_the_robot_back():
     assert result.status == CANCELLED and lab.cindy.lease is None and lab.plugin.prompt is None
 
 
+@pytest.mark.safety
 def test_an_error_inside_holds_and_gives_the_robot_back(monkeypatch):
     """A part that raises: failed, every arm held, the lease given back; the part recorded with the error."""
     lab = Lab()
@@ -287,6 +299,7 @@ def test_the_whole_transfer_step_ends_with_the_grasp():
     assert lab.run.files()[-1]["outcome"]["status"] == "stalled"
 
 
+@pytest.mark.safety
 def test_a_dry_run_never_gives_done_and_sends_nothing():
     """Dry run: every check and prompt, nothing sent, no part done; turning it off while one runs is refused."""
     lab = Lab()
@@ -308,6 +321,7 @@ def test_a_dry_run_never_gives_done_and_sends_nothing():
     assert lab.run.files()[0]["outcome"]["dry_run"] is True
 
 
+@pytest.mark.safety
 def test_robotiq_and_refused_parts():
     """Belle's open is a Robotiq part that reaches 0.426; Cindy's retreat step (M6) is refused, nothing sent."""
     lab = Lab(current=("B35_H", 1))
@@ -321,6 +335,7 @@ def test_robotiq_and_refused_parts():
     assert result.status == REFUSED and "runs in M6" in result.reason and lab.published() == 0
 
 
+@pytest.mark.safety
 def test_the_first_row_sent_is_where_the_arms_are():
     """Arms 1° off the plan's start: the trajectory starts at the live joints; 3° off: refused, nothing sent."""
     lab = Lab()
@@ -341,6 +356,7 @@ def test_the_first_row_sent_is_where_the_arms_are():
     assert result.status == REFUSED and "arm moved 3.0°" in result.reason and lab.published() == 0
 
 
+@pytest.mark.safety
 def test_a_plan_for_another_robot_is_refused():
     """A route whose trajectory is Alice's, asked for Cindy's step: refused, nothing sent."""
     lab = Lab()
@@ -351,6 +367,7 @@ def test_a_plan_for_another_robot_is_refused():
     assert result.status == REFUSED and "the plan is for robots/alice" in result.reason and lab.published() == 0
 
 
+@pytest.mark.safety
 def test_stop_all_mid_motion_holds_every_arm_and_is_recorded_as_a_soft_stop():
     """Stop all mid-motion: every arm held, recorded where the arms stopped and when, and a soft_stop event.
 
@@ -387,6 +404,41 @@ def test_stop_all_mid_motion_holds_every_arm_and_is_recorded_as_a_soft_stop():
     assert "plugin stop or shutdown" in result.reason and "soft_stop" not in [e for e, _f in lab.run.records]
 
 
+@pytest.mark.safety
+def test_stop_all_drops_a_confirm_clicked_in_the_same_tick_and_nothing_moves():
+    """Confirm and Stop all in one tick: the monitor's soft stop drops the queued Confirm and the step is cancelled.
+
+    Only holds go out, and the run records the soft stop.
+    """
+    lab = Lab()
+    # * The plugin's intent queue as the monitor keeps it, and the monitor's own soft stop working on it.
+    queued = PluginContext("movement_exec", SimpleNamespace(), view=None, scene=None, kinematics=None)
+    monitor = SimpleNamespace(_world=SimpleNamespace(robots={}), log_warn=lab.ctx.log_warn,
+                              log_error=lab.ctx.log_error,
+                              _loaded={"movement_exec": SimpleNamespace(name="movement_exec", ctx=queued)})
+
+    async def scenario():
+        future = lab.plugin.request_execute(lab.request())
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        prompt = lab.plugin.prompt
+        while lab.ctx.t - prompt.opened_at < 0.6:
+            await lab.ctx.next_tick()
+        queued.submit("exec confirm", lab.plugin.request_confirm)  # clicked; it would run at the plugin's next step
+        HuskyMonitor._soft_stop(monitor)  # Stop all, first in the same tick
+        lab.plugin._task.cancel()  # as the soft stop cancels the plugin's tasks
+        queued._drain_intents()  # the plugin's step later in the tick: nothing is left to run
+        return await future
+
+    result = run_guarded(scenario())
+    assert queued._intents.empty()
+    assert "SOFT STOP: dropped movement_exec's queued 'exec confirm'" in lab.ctx.lines("warn")
+    assert result.status == CANCELLED and "Stop all" in result.reason and lab.cindy.lease is None
+    assert "confirm" not in [event for event, _fields in lab.run.records] and not lab.cindy._multi_arm.messages
+    assert all(len(message.points) == 1 for arm in lab.cindy.arms.values() for message in arm._trajectory.messages)
+
+
+@pytest.mark.safety
 def test_a_hold_not_sent_on_cancel_is_the_result_record_and_panel_line():
     """Cindy's joint states stop mid-motion, then Cancel: the result, record and panel say HOLD NOT SENT.
 
@@ -413,6 +465,7 @@ def test_a_hold_not_sent_on_cancel_is_the_result_record_and_panel_line():
     assert any("HOLD NOT SENT" in widget.content for widget in lab.ctx.gui.of_kind("html"))
 
 
+@pytest.mark.safety
 def test_a_robot_not_live_or_another_current_action_is_refused():
     """Cindy not live: refused before any prompt; the current action changed at the prompt: refused after Confirm.
 
@@ -441,6 +494,7 @@ def test_a_robot_not_live_or_another_current_action_is_refused():
 
 # --- --- --- --- --- one motion at a time across every robot (review H1) --- --- --- --- ---
 
+@pytest.mark.safety
 def test_robot_control_cannot_move_another_robot_while_one_is_held():
     """Cindy's prompt open: robot_control's Start on Belle is refused; Confirm then moves Cindy alone."""
     from husky_assembly_teleop.plugins.robot_control.plugin import RobotControlPlugin
@@ -463,6 +517,7 @@ def test_robot_control_cannot_move_another_robot_while_one_is_held():
     assert any("a200-0805 ur_arm move refused: a200-0806 is held" in line for line in lab.ctx.lines("warn"))
 
 
+@pytest.mark.safety
 def test_another_robot_moving_by_other_means_at_the_prompt_is_refused_after_confirm():
     """Belle starts a trajectory from outside the plugins while Cindy's prompt waits: refused, nothing sent."""
     lab = Lab()
@@ -481,6 +536,7 @@ def test_another_robot_moving_by_other_means_at_the_prompt_is_refused_after_conf
     assert not lab.cindy._multi_arm.messages
 
 
+@pytest.mark.safety
 def test_another_robot_starting_to_move_during_the_motion_holds_the_held_robot():
     """Belle starts moving while Cindy's arms move: Cindy is held, the part fails naming Belle."""
     lab = Lab()
@@ -499,6 +555,7 @@ def test_another_robot_starting_to_move_during_the_motion_holds_the_held_robot()
     assert holds == [1, 1] and lab.run.files()[-1]["outcome"]["status"] == "INTERRUPTED"
 
 
+@pytest.mark.safety
 def test_a_robot_whose_link_dropped_while_moving_refuses_the_request():
     """Belle's joint states stop while she moves: Cindy's Exec is refused at once, "can't tell"."""
     lab = Lab()
@@ -559,6 +616,7 @@ def test_exec_says_the_pendant_speed_slider_must_be_at_100():
 
 # --- --- --- --- --- the watch's timing, and the tool parts' re-check (re-review F1, F3) --- --- --- --- ---
 
+@pytest.mark.safety
 def test_the_held_robot_is_held_in_the_tick_another_robot_starts_and_moves_no_further():
     """Belle starts moving mid-motion: Cindy's hold goes out within a tick, and her arm makes no progress after it."""
     lab = Lab()
@@ -588,6 +646,7 @@ def test_the_held_robot_is_held_in_the_tick_another_robot_starts_and_moves_no_fu
     assert np.max(np.abs(where - started["at"])) < np.radians(5.0)
 
 
+@pytest.mark.safety
 def test_another_robot_moving_at_a_robotiq_prompt_refuses_it_after_confirm():
     """Alice starts moving while Belle's open waits for Confirm: refused after Confirm, no gripper goal."""
     lab = Lab(current=("B35_H", 1))
@@ -606,6 +665,7 @@ def test_another_robot_moving_at_a_robotiq_prompt_refuses_it_after_confirm():
     assert lab.belle.arms["ur_arm"].end_effector._action.goals == []
 
 
+@pytest.mark.safety
 def test_another_robot_moving_at_a_grasp_prompt_refuses_it_after_confirm():
     """Alice starts moving while Cindy's grasp waits for Confirm: refused after Confirm, nothing sent to the tools."""
     lab = Lab(current=("B20_J", 3))
@@ -627,6 +687,7 @@ def test_another_robot_moving_at_a_grasp_prompt_refuses_it_after_confirm():
     assert all(not tool._command.messages for tool in lab.tools.values())
 
 
+@pytest.mark.safety
 def test_the_held_robots_own_base_driving_during_its_motion_holds_it():
     """Cindy's own wheels start turning while her arms move: her arms are held, the part fails naming her base."""
     lab = Lab()
@@ -642,6 +703,7 @@ def test_the_held_robots_own_base_driving_during_its_motion_holds_it():
     assert lab.run.files()[-1]["outcome"]["status"] == "INTERRUPTED"
 
 
+@pytest.mark.safety
 def test_a_base_path_sent_just_before_the_lease_holds_the_held_robot_once_the_follower_reports_it():
     """Belle's base got a path just before Cindy was taken; her follower reports "following": Cindy is held.
 
@@ -662,6 +724,7 @@ def test_a_base_path_sent_just_before_the_lease_holds_the_held_robot_once_the_fo
     assert lab.run.files()[-1]["outcome"]["status"] == "INTERRUPTED"
 
 
+@pytest.mark.safety
 def test_another_robot_moving_while_the_grasp_clears_its_stall_tightens_nothing():
     """Alice starts moving after Cindy's grasp is confirmed, while its STOP clears the stall: nothing tightened."""
     lab = Lab(current=("B20_J", 3))
@@ -681,3 +744,39 @@ def test_another_robot_moving_while_the_grasp_clears_its_stall_tightens_nothing(
     assert result.status == REFUSED and "a200-0804 ur_arm is running a trajectory; nothing tightened" in result.reason
     for tool in lab.tools.values():
         assert [(command.motor, command.direction) for command in tool._command.messages] == [(0, 0), (0, 0)]
+
+
+# --- --- --- --- --- the safety sync (multi_arm_safety_sync) --- --- --- --- ---
+
+@pytest.mark.safety
+def test_an_arm_the_safety_sync_does_not_vouch_for_is_refused_before_the_prompt():
+    """Cindy's right arm without a recent sync status: refused before any prompt, the line names the arm and why."""
+    lab = Lab()
+    request = lab.request()
+    arm = lab.cindy.arms["right_ur_arm"]
+    next(driver for driver in lab.drivers if getattr(driver, "arm", None) is arm).synced = False
+    arm.state.status_update_time = lab.ctx.t - 5.0
+    result, held = execute(lab, request, True)
+    assert result.status == REFUSED and lab.published() == 0 and lab.run.records[0][0] == "exec"
+    assert result.reason == ("B20_R_home: cindy (a200-0806) right_ur_arm: its safety is not known: no recent status "
+                             "from multi_arm_safety_sync; start it on the robot")
+
+
+@pytest.mark.safety
+def test_a_program_stopped_at_the_prompt_is_refused_after_confirm():
+    """Stop all stops Cindy's programs while the prompt waits: refused after Confirm, saying Resume; nothing sent."""
+    lab = Lab()
+
+    async def scenario():
+        future = lab.plugin.request_execute(lab.request())
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        for arm in lab.cindy.arms.values():
+            arm.state.program_playing = False
+        await answer(lab, True)
+        return await future
+
+    result = run_guarded(scenario())
+    assert result.status == REFUSED and lab.published() == 0
+    assert result.reason == ("B20_R_home: cindy (a200-0806) left_ur_arm: its program is stopped (Stop all, or the sync "
+                             "stopped it); press Resume")

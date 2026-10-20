@@ -101,6 +101,13 @@ class _Refused(Exception):
 def _acting(request: MotionPlanRequest, abort: threading.Event) -> str:
     """The serial of the robot the request plans for, once it may start.
 
+    Args:
+        request: The question; its movement's action names the acting robot.
+        abort: Set to refuse with "cancelled" before anything else is looked at.
+
+    Returns:
+        str: The acting robot's serial, e.g. "a200-0806".
+
     Raises:
         _Refused: If cancelled, no configured robot acts in the movement, or the acting robot can't be planned for.
     """

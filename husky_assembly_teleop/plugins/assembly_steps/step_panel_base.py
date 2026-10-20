@@ -21,8 +21,8 @@ from html import escape
 from typing import TYPE_CHECKING, Awaitable, Callable, Iterable
 
 import viser
-
 from async_timeout import timeout
+
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...shared.planner.planner_search import PlanningWorld

@@ -160,6 +160,7 @@ def test_selects_anyway_after_15_s_with_a_warning(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.safety
 def test_the_process_is_wrapped_once_so_a_plan_stays_ready_until_a_reload(tmp_path):
     """The run's process is one object while the process plugin serves the same `Process`; a reload makes a new one.
 

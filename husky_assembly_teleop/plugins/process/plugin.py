@@ -216,7 +216,11 @@ class ProcessPlugin(HuskyPlugin):
         self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder))
 
     def request_select(self, index: int) -> None:
-        """Select a movement for another plugin (`ProcessContract.request_select`): `select`."""
+        """Select a movement for another plugin (`ProcessContract.request_select`): `select`.
+
+        Args:
+            index: The movement's index into `process.movements()`; clamped, ignored while no process is loaded.
+        """
         self.select(index)
 
     def select(self, index: int) -> None:

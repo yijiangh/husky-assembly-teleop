@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import asyncio
 
 import numpy as np
+import pytest
 from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, fake_robotiq
 
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath
@@ -17,16 +18,19 @@ from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlanne
 from husky_assembly_teleop.plugins.health import robot_action
 from husky_assembly_teleop.plugins.robot_control.arm_panel import build_phone_arm_inputs, build_tool_inputs
 from husky_assembly_teleop.plugins.robot_control.dpad import MAX_LINEAR_SPEED
-from husky_assembly_teleop.plugins.robot_control.plugin import RobotControlPlugin, _BaseWidgets
+from husky_assembly_teleop.plugins.robot_control.plugin import FREE_DRIVE_RETRY, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.plugins.robot_control.status import build_controller_panel
 from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER,
                                                        SCALED_JOINT_TRAJECTORY_CONTROLLER)
 from husky_assembly_teleop.robot_interface.base import BaseState
+from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
 from husky_assembly_teleop.shared.arm_planner_contract import ArmPlanRequest
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.shared.execution.interlock import give_back, take
 from husky_assembly_teleop.shared.planner.plan import Plan
+
+pytestmark = pytest.mark.safety
 
 SERIAL = "a200-0804"
 START = [0.0, -1.5, 1.5, 0.0, 0.5, 0.0]
@@ -293,6 +297,59 @@ def test_free_drive_ends_when_another_robot_is_taken():
     assert switches == [FREE_DRIVE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER]
     assert lab.refusals() == ["a200-0804 ur_arm free drive refused: a200-0806 is held by movement_exec "
                               "(B21_H_approach), one motion at a time; Cancel it first"]
+
+
+def test_free_drive_started_outside_the_monitor_ends_when_another_robot_is_taken():
+    """Alice runs the Free controller, started outside the monitor; Cindy is taken: back to the joint controller, once.
+
+    ! No button held, Keep on unticked, and not freed by this monitor: only the running Free controller says Alice is
+      in free drive (chosen on the laptop with no button held, or started by the tool's buttons on the robot).
+    """
+    lab = Lab()
+    switches = []
+    lab.arm.controllers.switch = lambda controller: switches.append(controller) or True
+    lab.arm.controllers.state.switch_in_flight = None
+    lab.free_drive_arm()
+    lab.arm.state.controllers.active = FREE_DRIVE_CONTROLLER
+    lab.hold_robot("a200-0806")
+    lab.plugin._update_free_drive(lab.ctx.t)
+    assert switches == [SCALED_JOINT_TRAJECTORY_CONTROLLER] and lab.arm._free_drive_until == float("-inf")
+    # * The arm still reports Free: the switch back is not asked again within FREE_DRIVE_RETRY.
+    lab.ctx.t += FREE_DRIVE_RETRY / 2
+    lab.plugin._update_free_drive(lab.ctx.t)
+    assert switches == [SCALED_JOINT_TRAJECTORY_CONTROLLER] and lab.arm._free_drive_until == float("-inf")
+
+
+def test_a_quiet_controller_manager_is_not_asked_to_switch_back_during_a_lease():
+    """Alice's controller manager last said Free runs, then went quiet; Cindy is taken: no switch back, no error line.
+
+    It could not switch anyway, and free drive ends within 1 s with no requests. Once it answers again, still in Free,
+    the switch back goes out, once.
+    """
+    lab = Lab()
+    lab.free_drive_arm()
+    state = lab.arm.state.controllers
+    state.active, state.last_update_time = FREE_DRIVE_CONTROLLER, lab.ctx.t - CONTROLLER_STATE_MAX_AGE - 1.0
+    switches = []
+
+    def switch(controller: str) -> bool:
+        """Like the real switch: while its manager is quiet the service is gone, so an error line and nothing sent."""
+        switches.append(controller)
+        if lab.ctx.t - state.last_update_time > CONTROLLER_STATE_MAX_AGE:
+            lab.arm._node.get_logger().error("/ur_arm: switch_controller is not available")
+            return False
+        return True
+
+    lab.arm.controllers.switch = switch
+    lab.hold_robot("a200-0806")
+    for _ in range(100):  # 10 s of ticks
+        lab.ctx.t += 0.1
+        lab.plugin._update_free_drive(lab.ctx.t)
+    assert switches == [] and lab.ctx.lines("error") == [] and lab.arm._free_drive_until == float("-inf")
+    state.last_update_time = lab.ctx.t
+    for _ in range(3):
+        lab.plugin._update_free_drive(lab.ctx.t)
+    assert switches == [SCALED_JOINT_TRAJECTORY_CONTROLLER] and lab.ctx.lines("error") == []
 
 
 def test_free_drive_is_not_requested_while_another_robot_is_held():
