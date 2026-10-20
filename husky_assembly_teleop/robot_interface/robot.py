@@ -231,7 +231,8 @@ class HuskyRobotInterface:
             bool: True if every request went out. False if the controller manager or the sync is not reachable.
         """
         self.soft_stop_latch.stopped = False
-        base = self.base.controllers.switch(PLATFORM_VELOCITY_CONTROLLER, unguarded=True)
+        # * Afresh: started as it was, the velocity controller brakes from its speed at the stop, so the base creeps.
+        base = self.base.controllers.restart(PLATFORM_VELOCITY_CONTROLLER)
         arms = self._call_sync(self._resume_arms, "resume arms") if self.arms else True
         return base and arms
 
