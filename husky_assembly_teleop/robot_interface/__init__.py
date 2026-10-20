@@ -13,6 +13,7 @@ The only package that talks to a robot; callers read state and call commands, ne
   ur_frames.py           the UR frame convention the arms' Cartesian commands rely on
   stream_stats.py        how well a high-rate stream gets through: rate, gaps, delay
   connections.py         the ROS entities one interface created, so a reconnect can recreate them
+  event.py               Event: an interface's messages and sent commands, handed to listeners such as recordings
 
 ! A measured value is None until measured, then keeps the last value. Never use stand-ins (zero
   position, identity quaternion), so a forgotten check fails with TypeError instead of using made-up data.
