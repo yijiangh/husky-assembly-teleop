@@ -278,8 +278,10 @@ def robot_config_from_serial(token: str, data_directory: Path,
     park = park["base"]
     if tools is not None:
         if len(tools) != len(arms):
+            example = ",".join(tool or "none" for tool in (*tools, *(None,) * len(arms))[:len(arms)])
             raise ValueError(f"robot {number!r} has {len(arms)} arm(s) ({', '.join(a.name for a in arms)}), "
-                             f"but {len(tools)} tool(s) were given")
+                             f"but {len(tools)} tool(s) were given; list one tool per arm in that order, "
+                             f"\"none\" for a bare arm, e.g. -p tools:=\"['{number}:{example}']\"")
         arms = tuple(replace(arm, end_effector=tool) for arm, tool in zip(arms, tools))
     urdf = absolute_mesh_urdf(urdf_file, ROBOT_URDF_DIRECTORY / f"a200_{number}.urdf")
     checks = _apply_ur_calibrations(urdf, number, arms)
