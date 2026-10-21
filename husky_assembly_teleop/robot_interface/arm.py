@@ -27,9 +27,13 @@ from .stream_stats import StreamStats
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 from .end_effectors import EndEffector, EndEffectorState, make_end_effector
+from .event import Event
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 from .simulated_parts import SimulatedPart
+from .refusal import Refusal
+from .robot_lease import LeaseSlot, held_leases
+from .soft_stop import SoftStopLatch
 from .ur_frames import BASE_LINK_FROM_UR_BASE
 
 # ? qos_profile_sensor_data but deeper, to hold one tick of samples: 100 covers 500 Hz for 200 ms.
@@ -108,6 +112,13 @@ JOINT_MOVE_MAX_SPEED = np.radians(20.0)
 JOINT_MOVE_MIN_DURATION = 5.0
 #: Seconds between waypoints of a joint move.
 JOINT_MOVE_WAYPOINT_SPACING = 0.2
+#: Defaults for `joint_jog`: fastest speed, rad/s, and the time to reach it from rest, seconds.
+JOG_MAX_SPEED = JOINT_MOVE_MAX_SPEED
+JOG_RAMP = 0.5
+#: Farthest one jog moves its joint, radians. ! Also how far it runs on if the monitor dies mid-press.
+JOG_DISTANCE = np.radians(30.0)
+#: A jog stops this short of its joint's limit, radians.
+JOG_LIMIT_MARGIN = np.radians(2.0)
 #: Default peak acceleration of `joint_path_move` on any joint, rad/s^2: half the trajectory limit, for margin.
 JOINT_PATH_MAX_ACCELERATION = TRAJECTORY_MAX_JOINT_ACCELERATION / 2
 
@@ -185,6 +196,46 @@ def joint_move(start: Sequence[float], target: Sequence[float],
     positions = start + (1.0 - np.cos(phase)) / 2.0 * delta
     velocities = np.pi / (2.0 * duration) * np.sin(phase) * delta
     return positions, velocities, duration
+
+
+def joint_jog(start: Sequence[float], joint: int, direction: float,
+              speed: float = JOG_MAX_SPEED) -> tuple[np.ndarray, np.ndarray, float]:
+    """A move of one joint that speeds up to `speed` in JOG_RAMP and comes to rest JOG_DISTANCE on; `hold` ends it early.
+
+    ! No collision checking. For held buttons only: release must hold the arm.
+
+    Args:
+        start: Joint angles now, radians, UR_JOINT_NAMES order.
+        joint: Index of the joint to move.
+        direction: +1 or -1.
+        speed: Top speed, rad/s.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, float]: Waypoint positions (N x 6) evenly spaced in time, their velocities
+            (N x 6), and the duration in seconds.
+
+    Raises:
+        ValueError: If the joint is already at its limit (less JOG_LIMIT_MARGIN) that way.
+    """
+    start = np.asarray(start, dtype=float)
+    distance = min(JOG_DISTANCE, UR_JOINT_LIMITS[joint] - JOG_LIMIT_MARGIN - direction * start[joint])
+    if distance <= 0.0:
+        raise ValueError(f"{UR_JOINT_NAMES[joint]} is at its limit")
+    acceleration = speed / JOG_RAMP
+    # * Too short to reach `speed`: speed up and slow down straight away.
+    speed = min(speed, float(np.sqrt(distance * acceleration)))
+    ramp = speed / acceleration
+    duration = distance / speed + ramp
+    t = np.linspace(0.0, duration, max(2, int(np.ceil(duration / JOINT_MOVE_WAYPOINT_SPACING)) + 1))
+    travelled = np.where(t < ramp, acceleration * t ** 2 / 2,
+                         np.where(t < duration - ramp, speed * (t - ramp / 2),
+                                  distance - acceleration * (duration - t) ** 2 / 2))
+    positions = np.tile(start, (len(t), 1))
+    positions[:, joint] += direction * travelled
+    velocities = np.zeros_like(positions)
+    velocities[:, joint] = direction * np.minimum.reduce([acceleration * t, np.full_like(t, speed),
+                                                          acceleration * (duration - t)])
+    return positions, velocities, float(duration)
 
 
 def joint_path_move(waypoints: Sequence[Sequence[float]], max_speed: float = JOINT_MOVE_MAX_SPEED,
@@ -323,6 +374,63 @@ class ArmState:
     joint_states_stats: StreamStats = field(default_factory=StreamStats)
 
 
+@dataclass(frozen=True)
+class SentTrajectory:
+    """A joint trajectory the monitor sent: the record of `ArmInterface.trajectories_sent`.
+
+    Attributes:
+        target: Joint angles it ends at, radians, UR_JOINT_NAMES order.
+        duration: Seconds it takes.
+        waypoints: Points in it.
+        hold: 1 for the braking trajectory of `hold`, else 0.
+        update_time: ROS time it was sent, seconds.
+        stamp: The same; the monitor's clock.
+    """
+
+    target: np.ndarray
+    duration: float
+    waypoints: int
+    hold: int
+    update_time: float
+    stamp: float
+
+
+@dataclass(frozen=True)
+class SentTarget:
+    """A TCP target the monitor sent the compliance controller: the record of `ArmInterface.targets_sent`.
+
+    Attributes:
+        position: In the arm's base_link, metres.
+        orientation: Quaternion (x, y, z, w).
+        hold: 1 for the target of `hold` (the measured TCP), else 0.
+        update_time: ROS time it was sent, seconds.
+        stamp: The same; the monitor's clock.
+    """
+
+    position: np.ndarray
+    orientation: np.ndarray
+    hold: int
+    update_time: float
+    stamp: float
+
+
+@dataclass(frozen=True)
+class SentWrench:
+    """A target wrench the monitor sent, in tool0: the record of `ArmInterface.wrenches_sent`.
+
+    Attributes:
+        force: Newtons.
+        torque: Newton-metres.
+        update_time: ROS time it was sent, seconds.
+        stamp: The same; the monitor's clock.
+    """
+
+    force: np.ndarray
+    torque: np.ndarray
+    update_time: float
+    stamp: float
+
+
 class ArmInterface:
     """ROS2 interface to one UR arm and the tool mounted on it.
 
@@ -331,10 +439,21 @@ class ArmInterface:
         state: Measured state, written only by callbacks.
         controllers: Tracks and switches this arm's controllers.
         end_effector: The mounted tool, or None for a bare arm.
+        trajectories_sent: Fired with each `SentTrajectory`, holds included.
+        targets_sent: Fired with each `SentTarget`, holds included; none in test mode, where nothing is sent.
+        wrenches_sent: Fired with each `SentWrench`, the zero wrench of a hold included.
+
+    ! Every motion command and controller switch but `hold` needs the robot's lease, else raises NotLeased
+      (`robot_lease.py`); while the robot is soft stopped, they raise RobotStopped (`soft_stop.py`).
+    * A command refused without raising leaves its reason in `last_refusal`, for panels.
     """
 
+    #: The last command refused without raising, or None.
+    last_refusal: Refusal | None = None
+
     def __init__(self, node: Node, robot_namespace: str, config: ArmConfig, base_in_husky: Pose,
-                 urdf_problem: str | None = None, simulated: Callable[[], SimulatedPart | None] = lambda: None):
+                 urdf_problem: str | None = None, simulated: Callable[[], SimulatedPart | None] = lambda: None,
+                 latch: SoftStopLatch | None = None, lease_slot: LeaseSlot | None = None):
         """Create every subscription, publisher and client of one arm.
 
         Args:
@@ -344,10 +463,14 @@ class ArmInterface:
             base_in_husky: This arm's base_link in the husky frame.
             urdf_problem: Why the URDF breaks the stock UR frames, or None. If set, Cartesian targets are refused.
             simulated: The arm's fake hardware announcement while it runs on it, else None (`SimulatedParts.get`).
+            latch: The robot's soft-stop latch, shared with the tool; a new one by default.
+            lease_slot: The robot's lease slot, shared with the tool; a new one by default.
         """
         self._node = node
         self.config = config
         self._simulated = simulated
+        self._latch = latch or SoftStopLatch(robot_namespace)
+        self._lease_slot = lease_slot or LeaseSlot(robot_namespace)
         #: This arm's base_link (the controller's target frame) in the husky frame.
         self.base_in_husky = base_in_husky
         #: The TCP set on the pendant, in tool0: what the reported TCP includes (not the tool's own `Tool.tcp`).
@@ -361,14 +484,19 @@ class ArmInterface:
         self._slight_reference: dict[str, float] = {}
         #: Whether free drive was being kept on at the last heartbeat, to log the change.
         self._free_drive_on = False
-        #: ROS time until which free drive is requested (`request_free_drive`).
+        #: ROS time until which free drive is requested (`request_free_drive`), and the leases its requester held.
         self._free_drive_until = float("-inf")
+        self._free_drive_leases: frozenset = frozenset()
         self._namespace = f"/{robot_namespace}/{config.ros_namespace}"
         self._ros = RosConnections(node)
+        self.trajectories_sent = Event(f"{config.name}_trajectory")
+        self.targets_sent = Event(f"{config.name}_target")
+        self.wrenches_sent = Event(f"{config.name}_wrench")
 
         self.controllers = ControllerManagerInterface(
             node, self._namespace, ARM_CONTROLLERS, self.state.controllers, guard=self._switch_refusal)
-        self.end_effector: EndEffector | None = make_end_effector(node, robot_namespace, config)
+        self.end_effector: EndEffector | None = make_end_effector(node, robot_namespace, config, self._latch,
+                                                                  self._lease_slot)
         self.state.end_effector = self.end_effector.state if self.end_effector else None
         self._connect()
 
@@ -423,7 +551,7 @@ class ArmInterface:
         """
         refusal = self._check_trajectory(positions, duration, velocities)
         if refusal is not None:
-            self._node.get_logger().error(f"arm {self.config.name}: not sending a trajectory: {refusal}")
+            self._refused("move refused", f"not sending a trajectory: {refusal}")
             return None
 
         step = duration / (len(positions) - 1)
@@ -517,19 +645,32 @@ class ArmInterface:
         return None
 
     def _motion_refusal(self, controller: str) -> str | None:
-        """Run the checks every motion command shares: `controller` runs, and `safety_problem`.
+        """Run the checks every motion command shares: no soft stop, its lease, `controller` runs, `safety_problem`.
 
         Args:
             controller: The controller the command is for.
 
         Returns:
             str | None: Why it is refused, or None if it may go ahead.
+
+        Raises:
+            RobotStopped: If the robot is soft stopped.
+            NotLeased: If the running code does not hold the robot's lease.
         """
+        self._latch.check(f"a {controller} command to arm {self.config.name}")
+        self._lease_slot.check(f"a {controller} command to arm {self.config.name}")
         return self.controllers.running_problem(controller) or self.safety_problem()
 
     def _switch_refusal(self, controller: str) -> str | None:
-        """Why `controller` may not be started now: free drive needs `safety_problem` to be None; else None."""
-        return self.safety_problem() if controller == FREE_DRIVE_CONTROLLER else None
+        """Why `controller` may not be started now: no lease; for free drive also the soft stop or `safety_problem`."""
+        if controller != FREE_DRIVE_CONTROLLER:
+            return self._lease_slot.problem()
+        return self._latch.problem() or self._lease_slot.problem() or self.safety_problem()
+
+    @property
+    def soft_stopped(self) -> bool:
+        """bool: Whether the robot is soft stopped: motion commands raise RobotStopped until it is resumed."""
+        return self._latch.stopped
 
     def safety_problem(self) -> str | None:
         """Why the safety sync does not vouch for this arm moving now, or None.
@@ -574,24 +715,24 @@ class ArmInterface:
         if self.controllers.is_active(CARTESIAN_COMPLIANCE_CONTROLLER):
             if self.state.tcp_position is None or \
                     self._now() - self.state.tcp_update_time > JOINT_STATE_MAX_AGE:
-                log.error(f"arm {self.config.name}: HOLD NOT SENT, TCP pose missing or stale; "
-                          f"stop the arm from the teach pendant")
+                self._refused("HOLD NOT SENT", "HOLD NOT SENT, TCP pose missing or stale; "
+                                               "stop the arm from the teach pendant")
                 return False
             sent = self.send_cartesian_target(self.state.tcp_position, self.state.tcp_orientation, hold=True)
         elif self.controllers.is_active(FREE_DRIVE_CONTROLLER):
-            sent = self.controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER)
+            sent = self.controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER, unguarded=True)
         else:
             stop = self._stop_point()
             if stop is None:
-                log.error(f"arm {self.config.name}: HOLD NOT SENT, joint state missing, stale or not finite; "
-                          f"stop the arm from the teach pendant")
+                self._refused("HOLD NOT SENT", "HOLD NOT SENT, joint state missing, stale or not finite; "
+                                               "stop the arm from the teach pendant")
                 return False
             positions, duration = stop
             point = JointTrajectoryPoint()
             point.positions = [float(value) for value in positions]
             point.velocities = [0.0] * len(UR_JOINT_NAMES)
             point.time_from_start = Duration(sec=int(duration), nanosec=int((duration % 1.0) * 1e9))
-            self._trajectory.publish(JointTrajectory(joint_names=list(UR_JOINT_NAMES), points=[point]))
+            self._publish_trajectory(JointTrajectory(joint_names=list(UR_JOINT_NAMES), points=[point]), duration, True)
             sent = True
         if sent:
             log.info(f"arm {self.config.name}: hold sent")
@@ -626,9 +767,16 @@ class ArmInterface:
         trajectory = self.build_trajectory(positions, duration, velocities)
         if trajectory is None:
             return False
-        self._trajectory.publish(trajectory)
+        self._publish_trajectory(trajectory, duration, False)
         self.mark_executing()
         return True
+
+    def _publish_trajectory(self, trajectory: JointTrajectory, duration: float, hold: bool) -> None:
+        """Publish a joint trajectory, unchecked, then fire `trajectories_sent`."""
+        self._trajectory.publish(trajectory)
+        now = self._now()
+        self.trajectories_sent.fire(SentTrajectory(np.array(trajectory.points[-1].positions, dtype=float),
+                                                   float(duration), len(trajectory.points), int(hold), now, now))
 
     def send_joint_move(self, target: Sequence[float], max_speed: float = JOINT_MOVE_MAX_SPEED,
                         min_duration: float = JOINT_MOVE_MIN_DURATION) -> float | None:
@@ -644,7 +792,7 @@ class ArmInterface:
         """
         here = self.joint_vector()
         if here is None:
-            self._node.get_logger().error(f"arm {self.config.name}: not moving, no joint state yet")
+            self._refused("move refused", "not moving, no joint state yet")
             return None
         positions, velocities, duration = joint_move(here, target, max_speed, min_duration)
         if not self.send_joint_trajectory(positions, duration, velocities):
@@ -698,7 +846,7 @@ class ArmInterface:
         else:
             refusal = self._cartesian_step_refusal(position, orientation)
         if refusal is not None:
-            log.error(f"arm {self.config.name}: not sending a cartesian target: {refusal}")
+            self._refused("target refused", f"not sending a cartesian target: {refusal}")
             return False
         if self.state.sent_target_time is None or self._now() - self.state.sent_target_time > CARTESIAN_STEP_WINDOW:
             # First target of a move: log how it compares with the driver's TCP.
@@ -716,7 +864,8 @@ class ArmInterface:
          message.pose.orientation.z, message.pose.orientation.w) = map(float, orientation)
         self._target_frame.publish(message)
         self.state.sent_target_position, self.state.sent_target_orientation = position, orientation
-        self.state.sent_target_time = self._now()
+        self.state.sent_target_time = now = self._now()
+        self.targets_sent.fire(SentTarget(position, orientation, int(hold), now, now))
         return True
 
     def to_husky(self, position: Sequence[float], orientation: Sequence[float]) -> tuple[np.ndarray, np.ndarray]:
@@ -817,7 +966,7 @@ class ArmInterface:
         elif np.linalg.norm(force) > MAX_TARGET_FORCE or np.linalg.norm(torque) > MAX_TARGET_TORQUE:
             refusal = f"over the limit of {MAX_TARGET_FORCE:.0f} N / {MAX_TARGET_TORQUE:.0f} N m"
         if refusal is not None:
-            self._node.get_logger().error(f"arm {self.config.name}: not sending a wrench: {refusal}")
+            self._refused("force refused", f"not sending a wrench: {refusal}")
             return False
         if self.config.cartesian_test_mode:
             self._log_test_mode("target force", f"F {np.round(force, 2)} N  T {np.round(torque, 3)} N m (tool0)")
@@ -825,13 +974,30 @@ class ArmInterface:
         self._publish_wrench(force, torque)
         return True
 
+    def clear_target_wrench(self) -> bool:
+        """Zero the target wrench, as `hold` does: removing a force is stopping, so it needs no lease and no checks.
+
+        ! Never refused for the lease, the soft stop or the controller: robot_control's zero force must always go
+          out (one motion at a time, `shared/execution/interlock.py`).
+
+        Returns:
+            bool: True if sent. False in test mode (logged), where nothing is sent.
+        """
+        if self.config.cartesian_test_mode:
+            self._log_test_mode("target force", "F [0. 0. 0.] N  T [0. 0. 0.] N m (tool0)")
+            return False
+        self._publish_wrench(np.zeros(3), np.zeros(3))
+        return True
+
     def _publish_wrench(self, force: np.ndarray, torque: np.ndarray) -> None:
-        """Publish a target wrench in tool0, unchecked."""
+        """Publish a target wrench in tool0, unchecked, then fire `wrenches_sent`."""
         message = WrenchStamped()
         message.header.frame_id = TARGET_WRENCH_FRAME
         message.wrench.force.x, message.wrench.force.y, message.wrench.force.z = map(float, force)
         message.wrench.torque.x, message.wrench.torque.y, message.wrench.torque.z = map(float, torque)
         self._target_wrench.publish(message)
+        now = self._now()
+        self.wrenches_sent.fire(SentWrench(np.asarray(force, dtype=float), np.asarray(torque, dtype=float), now, now))
 
     def zero_ft_sensor(self) -> bool:
         """Re-zero the force/torque sensor, taring the current reading.
@@ -852,24 +1018,29 @@ class ArmInterface:
 
         ! Call it at every report of a held button, or every tick while free drive should stay on. Running the
           controller alone does not free the arm: without requests it stays stiff.
+        ! Only requests sent under the robot's lease count: without it, free drive ends.
         """
         self._free_drive_until = self._now() + FREE_DRIVE_REQUEST_TTL
+        self._free_drive_leases = held_leases()
 
     def _keep_free_drive(self) -> None:
         """While free drive is requested and its controller runs because we switched to it, keep it on; log on and off.
 
         ! Only after our own switch: a controller left active by another tool or an earlier monitor run must not
-          start free drive by itself. No request, switching away, the soft stop, a switch from outside or a
-          `safety_problem` ends it.
+          start free drive by itself. No request, switching away, the soft stop, a requester without the lease,
+          a switch from outside or a `safety_problem` ends it.
         """
         state = self.controllers.state
         on = (self.controllers.is_active(FREE_DRIVE_CONTROLLER) and state.requested == FREE_DRIVE_CONTROLLER
               and self._now() <= self._free_drive_until)
-        problem = self.safety_problem() if on else None
+        problem = None
+        if on:
+            problem = (self._latch.problem() or self._lease_slot.problem(self._free_drive_leases)
+                       or self.safety_problem())
         if problem is not None:
             # * Without the heartbeat the controller ends free drive within 1 s.
             if self._free_drive_on:
-                self._node.get_logger().error(f"arm {self.config.name}: ending free drive: {problem}")
+                self._refused("free drive ended", f"ending free drive: {problem}")
             on = False
         if on != self._free_drive_on:
             self._node.get_logger().info(f"arm {self.config.name}: free drive {'on' if on else 'off'}")
@@ -967,6 +1138,11 @@ class ArmInterface:
         """Store the force/torque reading."""
         f, t = message.wrench.force, message.wrench.torque
         self.state.wrench = np.array([f.x, f.y, f.z, t.x, t.y, t.z])
+
+    def _refused(self, label: str, message: str) -> None:
+        """Log why a command was not sent, and keep it as `last_refusal`."""
+        self._node.get_logger().error(f"arm {self.config.name}: {message}")
+        self.last_refusal = Refusal(label, message, self._now())
 
     def _now(self) -> float:
         """ROS time in seconds (follows bag playback)."""

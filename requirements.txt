@@ -19,6 +19,8 @@ compas>=2.0  # the core's compas mirrors (arm planner); compas_fab above needs i
 compas_robots>=0.6  # robot models in the core's mirrors and URDF loading
 matplotlib==3.10.3  # base_exp recording plots; also the old monitor
 pandas>=2.0  # the analysis scripts (experiments/)
+pytest-xdist==2.5.0  # parallel tests; ! both plugins must work with the system pytest 6.2.5
+pytest-timeout==2.2.0  # hung tests fail instead of stalling; the newest release for pytest 6.2.5
 
 # ! Potentially obsolete: only the old monitor (husky_assembly_teleop/old/) imports these.
 #   Kept until its remaining features are ported; drop each one once nothing needs it.

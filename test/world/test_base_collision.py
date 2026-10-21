@@ -6,7 +6,7 @@ import pytest
 
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.shared.base_collision.base_collision_world import BaseCollisionWorld, held_bodies
+from husky_assembly_teleop.world.base_collision import BaseCollisionWorld, held_bodies
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.kinematics import link_pose

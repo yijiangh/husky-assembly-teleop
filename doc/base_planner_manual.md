@@ -88,7 +88,8 @@ furniture, the tripods and Belle parked at (1.7, 1.3). ! Keep that area clear; i
   from stow, speed caps), planner and settings, start, target; the plan (found or why not, time, length, clearance,
   notes); the run (outcome, controller) once committed; offline, the simulated drives (model group, true xICR,
   finished or why not).
-- `plan.npz`: the path and the floor around it. `recording.npz`: the run's samples. `simulated.npz`: offline
+- `plan.npz`: the path and the floor around it. `recording.npz`: the run's samples, per tick and per follower report,
+  wheel odometry message and mocap sample (`follower.*`, `odometry.*`, `mocap.*`). `simulated.npz`: offline
   follower traces.
 - The report writes `plan.png` per attempt, `overview.png` and `report.json` per run, and `_analysis/`.
 
@@ -147,7 +148,7 @@ Switch Alice's `platform_velocity_controller` on in `robot_control`.
 
 ## Collecting attempts (the panel)
 
-1. Type the experiment name into **Experiment**, tick **Record**. Stow Alice's arm (**Stow** in `robot_control`):
+1. Type the experiment name into **Experiment**, tick **Record**. Stow Alice's arm (**Plan › Arm**: Load **Stow**, Plan, Commit):
    the planners plan the arm as it is, so the experiments hold it stowed, and the panel warns when a recorded attempt's
    arm is not.
 2. Choose a **Task**: its virtual obstacles appear, the target is set. For `step_110`, select step 110 in the process

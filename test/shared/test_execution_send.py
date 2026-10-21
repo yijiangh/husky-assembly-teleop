@@ -6,8 +6,9 @@ import asyncio
 
 import numpy as np
 import pytest
-from plugin_fakes import ArmDriver, FakeContext, fake_arm, fake_node, fake_robot
+from plugin_fakes import ArmDriver, FakeContext, fake_arm, fake_node, fake_robot, lease_to_test
 
+from husky_assembly_teleop.robot_interface.robot_lease import take_lease
 from husky_assembly_teleop.shared.execution.send import (ARRIVED, ARRIVE_MARGIN, DRY_RUN, HOLD_NOT_SENT, REFUSED,
                                                          STOPPED, TIMEOUT, motion_command, send_motion)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
@@ -25,8 +26,9 @@ class Lab:
         """Build the robots; `driver` options go to every arm's driver (follow, silent_from, speed)."""
         self.ctx = FakeContext(step=self.tick)
         node = fake_node(self.ctx.now, self.ctx.logs)
-        self.cindy = fake_robot(node, "a200-0806", [fake_arm(node, name, START) for name in CINDY_ARMS])
-        self.alice = fake_robot(node, "a200-0804", [fake_arm(node, "ur_arm", START)])
+        # * Leased to the test, as a plugin's task holds the robot's lease while it sends.
+        self.cindy = lease_to_test(fake_robot(node, "a200-0806", [fake_arm(node, name, START) for name in CINDY_ARMS]))
+        self.alice = lease_to_test(fake_robot(node, "a200-0804", [fake_arm(node, "ur_arm", START)]))
         self.drivers = [ArmDriver(arm, robot, **driver) for robot in (self.cindy, self.alice)
                         for arm in robot.arms.values()]
 
@@ -104,6 +106,30 @@ def test_a_refused_trajectory_sends_nothing():
     outcome = lab.run(lab.cindy, motion_command("a200-0806", CINDY_ARMS, names, rows, 1.0))
     assert outcome.status == REFUSED and not outcome.ok and outcome.end is None
     assert not lab.cindy._multi_arm.messages and lab.holds(lab.cindy) == [0, 0]
+
+
+def test_a_soft_stopped_or_unleased_robot_refuses_and_nothing_goes_out():
+    """Soft stopped (until Resume), or leased to another plugin: REFUSED, saying why; nothing published or held.
+
+    Cindy's two arms together and Alice's one arm, for real and in a dry run (`MotionRefused`, raised by the robot).
+    """
+    names, rows = cindy_path()
+    for serial, why in (("a200-0806", "soft stopped"), ("a200-0804", "soft stopped"),
+                        ("a200-0806", "is leased by another plugin: teleop")):
+        lab = Lab()
+        robot = lab.cindy if serial == "a200-0806" else lab.alice
+        if why == "soft stopped":
+            robot.soft_stop_latch.stopped = True
+        else:
+            robot.lease_slot.lease = None
+            take_lease([robot.lease_slot], "another plugin: teleop")
+        command = (motion_command(serial, CINDY_ARMS, names, rows, 1.0) if robot is lab.cindy else
+                   motion_command(serial, ("ur_arm",), arm_joint_names("ur_arm"), rows[:, :6], 1.0))
+        for dry_run in (False, True):
+            outcome = lab.run(robot, command, dry_run=dry_run)
+            assert outcome.status == REFUSED and why in outcome.reason and "nothing sent" in outcome.reason
+        sent = sum(len(arm._trajectory.messages) for arm in robot.arms.values())
+        assert sent == 0 and (robot._multi_arm is None or not robot._multi_arm.messages)
 
 
 def test_a_command_for_another_robot_is_refused():

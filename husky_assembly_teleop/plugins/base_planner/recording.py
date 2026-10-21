@@ -1,27 +1,26 @@
 """
-Recorded plan attempts and runs of the base planner: one folder per attempt, under its experiment.
+Recorded plan attempts and runs of the base planner: one run folder per attempt (`shared/recordings/runs.py`).
 
 - Folder: <Drive root>/RECORDING_FOLDER/<experiment>/<date>_<time>_<robot>_<task or free>_<real|sim|offline>/
 - experiment.json: the attempt's setup (experiment, task, robot, environment, conditions, algorithm and settings,
   start, target), its plan (found or not, why, time, length, clearance, notes) and its run once committed (outcome,
   controller), or null.
-- plan.npz: the path and the floor around it; recording.npz: the run's samples (the plugin); simulated.npz: an
-  offline attempt's follower traces, with the exact and deviated models (`save_simulated`).
+- plan.npz: the path and the floor around it; recording.npz: the run's samples, per tick and per message (the
+  plugin); simulated.npz: an offline attempt's follower traces, with the exact and deviated models (`save_simulated`).
 
 ! Record raw, decide later: the analysis recomputes every metric from these files.
 """
 
 from __future__ import annotations
 
-import json
 import math
 import time
 from pathlib import Path
 
 import numpy as np
 
-from ...drive import stamped_name
 from ...shared.planner.planner_search import PlanResult
+from ...shared.recordings.runs import load_description, run_folder, write_description
 from .path import densify
 from .world import FLOOR_BOTTOM, PlanningWorld
 
@@ -33,17 +32,15 @@ FLOOR_PADDING = 1.5
 FLOOR_CELL = 0.05
 #: The path's clearance is measured at poses this far apart, metres and radians.
 CLEARANCE_SPACING = 0.05
-#: The description file of an attempt.
-DESCRIPTION = "experiment.json"
 
 
 def attempt_folder(recordings: Path, experiment: str, serial: str, task: str | None, environment: str) -> Path:
-    """A new folder for an attempt (not yet created): under the experiment, named by time, robot, task and where."""
-    name = stamped_name(serial, task or "free", environment)
-    folder, count = recordings / experiment / name, 2
-    while folder.exists():
-        folder, count = recordings / experiment / f"{name}_{count}", count + 1
-    return folder
+    """Make a new attempt's folder under the experiment, named by time, robot, task and where.
+
+    Raises:
+        OSError: If the recordings folder is missing or the folder cannot be made.
+    """
+    return run_folder(recordings, experiment, serial, task or "free", environment)
 
 
 def save_plan(folder: Path, world: PlanningWorld | None, own: str, setup: dict, result: PlanResult,
@@ -51,7 +48,7 @@ def save_plan(folder: Path, world: PlanningWorld | None, own: str, setup: dict, 
     """Measure the path's clearance and the floor around it, and write experiment.json and plan.npz. Worker thread.
 
     Args:
-        folder: The attempt's folder, created here.
+        folder: The attempt's folder (`attempt_folder`).
         world: The planning world as the search left it; None if the search never synced it (nothing measured).
         own: The robot planned for, by id.
         setup: What the main thread knew: experiment, task, robot, environment, conditions, algorithm, settings,
@@ -79,7 +76,6 @@ def save_plan(folder: Path, world: PlanningWorld | None, own: str, setup: dict, 
         shape = tuple(int(math.ceil(size / FLOOR_CELL)) + 1 for size in corners.max(axis=0) + FLOOR_PADDING - low)
         arrays.update(floor_heights=world.floor_heights(own, low, FLOOR_CELL, shape, FLOOR_BOTTOM).astype(np.float32),
                       floor_low=low, floor_cell=np.float64(FLOOR_CELL))
-    folder.mkdir(parents=True)
     np.savez_compressed(folder / "plan.npz", **arrays)
     write_description(folder, {**setup, "plan": plan, "run": None})
 
@@ -100,25 +96,9 @@ def save_simulated(folder: Path, follower_model: str, drives: list) -> None:
     write_description(folder, description)
 
 
-def write_description(folder: Path, description: dict) -> None:
-    """Write an attempt's experiment.json."""
-    (folder / DESCRIPTION).write_text(json.dumps(description, indent=2, default=_plain) + "\n")
-
-
-def load_description(folder: Path) -> dict | None:
-    """An attempt's experiment.json; None if the folder has none."""
-    path = folder / DESCRIPTION
-    return json.loads(path.read_text()) if path.is_file() else None
-
-
 def load_plan_arrays(folder: Path) -> dict | None:
     """An attempt's plan.npz arrays; None if it has none."""
     if not (folder / "plan.npz").is_file():
         return None
     with np.load(folder / "plan.npz") as data:
         return {key: data[key] for key in data.files}
-
-
-def _plain(value):
-    """JSON fallback: numpy numbers and arrays as plain Python."""
-    return value.item() if isinstance(value, np.generic) else np.asarray(value).tolist()

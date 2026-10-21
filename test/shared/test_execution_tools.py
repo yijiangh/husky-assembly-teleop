@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from plugin_fakes import (FakeContext, RobotiqDriver, ScaffoldingDriver, fake_node, fake_robotiq,
-                          fake_scaffolding)
+from plugin_fakes import (FakeContext, RobotiqDriver, ScaffoldingDriver, fake_node, fake_robotiq, fake_scaffolding,
+                          lease_to_test)
 
 from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.shared.execution.tools import (DRY_RUN, FELL_SHORT, REACHED, REFUSED, ROBOTIQ_CLOSE,
@@ -29,7 +29,7 @@ class Gripper:
     def __init__(self, **driver):
         """Build them; `driver` options go to the RobotiqDriver."""
         self.ctx = FakeContext(step=lambda t: self.driver.tick(t))
-        self.gripper = fake_robotiq(fake_node(self.ctx.now, self.ctx.logs))
+        self.gripper = lease_to_test(fake_robotiq(fake_node(self.ctx.now, self.ctx.logs)))
         self.driver = RobotiqDriver(self.gripper, **driver)
 
     def goals(self) -> list[float]:
@@ -66,15 +66,15 @@ def test_a_robotiq_not_ready_or_busy_is_refused():
 
 
 def test_a_robotiq_that_never_answers_times_out_and_is_stopped():
-    """No answer in 5 s: TIMEOUT, then a stop (a move to where the fingers are)."""
+    """No answer in 5 s: TIMEOUT, then a stop: the goal is cancelled once accepted (`RobotiqGripper.stop`)."""
     lab = Gripper(answer=False)
     outcome = run(lab.ctx, robotiq_move(lab.ctx, lab.gripper, ROBOTIQ_CLOSE))
-    assert outcome.status == TIMEOUT and lab.goals() == [ROBOTIQ_CLOSE, 0.0]
+    assert outcome.status == TIMEOUT and lab.goals() == [ROBOTIQ_CLOSE] and lab.gripper._cancel_on_accept
 
 
 def test_a_cancelled_robotiq_move_is_stopped():
-    """Cancelling the wait stops the fingers, then raises."""
-    lab = Gripper(answer=False)
+    """Cancelling the wait stops the fingers (the running goal cancelled, no new goal), then raises."""
+    lab = Gripper(delay=10.0)
 
     async def scenario():
         task = asyncio.ensure_future(robotiq_move(lab.ctx, lab.gripper, ROBOTIQ_CLOSE))
@@ -85,7 +85,7 @@ def test_a_cancelled_robotiq_move_is_stopped():
             await task
 
     asyncio.run(scenario())
-    assert lab.goals() == [ROBOTIQ_CLOSE, 0.0]
+    assert lab.goals() == [ROBOTIQ_CLOSE] and lab.gripper._action.goals[0].cancelled
 
 
 class Tools:
@@ -95,8 +95,8 @@ class Tools:
         """Build them; each dict goes to that tool's ScaffoldingDriver."""
         self.ctx = FakeContext(step=self.tick)
         node = fake_node(self.ctx.now, self.ctx.logs)
-        self.tools = {"left_ur_arm": fake_scaffolding(node, "/a200_0806/left_gripper"),
-                      "right_ur_arm": fake_scaffolding(node, "/a200_0806/right_gripper")}
+        self.tools = {"left_ur_arm": lease_to_test(fake_scaffolding(node, "/a200_0806/left_gripper")),
+                      "right_ur_arm": lease_to_test(fake_scaffolding(node, "/a200_0806/right_gripper"))}
         self.drivers = [ScaffoldingDriver(self.tools["left_ur_arm"], **(left or {})),
                         ScaffoldingDriver(self.tools["right_ur_arm"], **(right or {}))]
         self.tick(self.ctx.t)
@@ -175,6 +175,21 @@ def test_a_cancelled_grasp_stops_every_tool():
     asyncio.run(scenario())
     for arm in lab.tools:
         assert lab.commands(arm) == [STOP, CLOSE, STOP]
+
+
+def test_a_soft_stopped_robot_moves_no_tool():
+    """Soft stopped (until Resume): a Robotiq move and a grasp are REFUSED, nothing moves; the screws are stopped."""
+    lab = Gripper()
+    lab.gripper._latch.stopped = True
+    outcome = run(lab.ctx, robotiq_move(lab.ctx, lab.gripper, ROBOTIQ_CLOSE))
+    assert outcome.status == REFUSED and "soft stopped" in outcome.reason and lab.goals() == []
+    lab = Tools()
+    for tool in lab.tools.values():
+        tool._latch.stopped = True
+    outcome = run(lab.ctx, scaffolding_grasp(lab.ctx, lab.tools))
+    assert outcome.status == REFUSED and "soft stopped" in outcome.reason and "nothing tightened" in outcome.reason
+    for arm in lab.tools:
+        assert lab.commands(arm) == [STOP, STOP]
 
 
 def test_a_silent_driver_is_refused():

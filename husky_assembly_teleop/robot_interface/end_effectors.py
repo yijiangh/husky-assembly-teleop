@@ -13,6 +13,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from action_msgs.msg import GoalStatus
 from control_msgs.action import GripperCommand
 from crl_husky_msgs.msg import ScaffoldingToolCmd, ScaffoldingToolStatus
 from rclpy.node import Node
@@ -24,6 +25,9 @@ from ur_msgs.srv import SetIO
 
 from ..config import ArmConfig
 from .connections import RosConnections
+from .refusal import Refusal
+from .robot_lease import LeaseSlot
+from .soft_stop import SoftStopLatch
 
 
 # --- --- --- --- --- STATE --- --- --- --- ---
@@ -100,22 +104,33 @@ EndEffectorState = RobotiqState | ScaffoldingV3State | ScaffoldingV1State
 class EndEffector(ABC):
     """What every mounted tool can do.
 
+    ! Every command but `stop` needs the robot's lease, else raises NotLeased (`robot_lease.py`); while the robot is
+      soft stopped, it raises RobotStopped (`soft_stop.py`).
+    * A command refused without raising leaves its reason in `last_refusal`, for panels.
+
     Attributes:
         state: The tool's state; the same object is in ArmState.
     """
 
     state: EndEffectorState
+    #: The last command refused without raising, or None.
+    last_refusal: Refusal | None = None
 
-    def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig):
+    def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig, latch: SoftStopLatch | None = None,
+                 lease_slot: LeaseSlot | None = None):
         """Remember where the tool's driver lives; subclasses create the ROS entities in `_connect`.
 
         Args:
             node: The monitor node.
             robot_namespace: The robot's namespace, e.g. "a200_0806".
             arm: The arm the tool is mounted on.
+            latch: The robot's soft-stop latch; a new one by default.
+            lease_slot: The robot's lease slot; a new one by default.
         """
         self._node = node
         self._arm = arm
+        self._latch = latch or SoftStopLatch(robot_namespace)
+        self._lease_slot = lease_slot or LeaseSlot(robot_namespace)
         #: The arm's own driver, for tools switched through the arm.
         self.arm_namespace = f"/{robot_namespace}/{arm.ros_namespace}"
         self.namespace = f"/{robot_namespace}/{arm.end_effector_namespace}"
@@ -123,6 +138,16 @@ class EndEffector(ABC):
 
     def _connect(self) -> None:
         """Create this tool's topics, services and actions. None by default."""
+
+    def _refused(self, label: str, message: str) -> None:
+        """Log why a command was not sent, as a warning, and keep it as `last_refusal`."""
+        self._node.get_logger().warning(message)
+        self.last_refusal = Refusal(label, message, self._node.get_clock().now().nanoseconds * 1e-9)
+
+    def _check(self, command: str) -> None:
+        """Raise RobotStopped if the robot is soft stopped, NotLeased if the running code does not hold its lease."""
+        self._latch.check(command)
+        self._lease_slot.check(command)
 
     def _log(self, message: str) -> None:
         """Log `message` at info level, prefixed with the tool's namespace."""
@@ -158,10 +183,13 @@ class RobotiqGripper(EndEffector):
     #: The joint the driver moves and reports; the other finger joints follow it.
     KNUCKLE_JOINT = "robotiq_85_left_knuckle_joint"
 
-    def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig):
+    def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig, latch: SoftStopLatch | None = None,
+                 lease_slot: LeaseSlot | None = None):
         """Create the action client, joint state subscription and reactivate client."""
-        super().__init__(node, robot_namespace, arm)
+        super().__init__(node, robot_namespace, arm, latch, lease_slot)
         self.state = RobotiqState()
+        #: The newest accepted goal, and whether `stop` came before the newest goal was accepted.
+        self._goal, self._cancel_on_accept = None, False
         self._connect()
 
     def _connect(self) -> None:
@@ -182,6 +210,7 @@ class RobotiqGripper(EndEffector):
         super().reconnect()
         self.state.moving = False
         self.state.reactivating = False
+        self._goal, self._cancel_on_accept = None, False
 
     def open(self) -> None:
         """Open fully."""
@@ -192,10 +221,19 @@ class RobotiqGripper(EndEffector):
         self.move(self.CLOSED_POSITION)
 
     def stop(self) -> None:
-        """Hold the fingers where they are by commanding the measured (or else last commanded) position."""
-        position = self.state.position if self.state.position is not None else self.state.commanded_position
-        if position is not None:
-            self.move(position, self.state.commanded_effort or self.DEFAULT_EFFORT)
+        """Cancel the running goal; the controller then holds the fingers where it measures them.
+
+        A goal not yet accepted is cancelled once it is.
+
+        ! Never stop with a hold goal instead: replacing a running goal can leave the driver unresponsive.
+        """
+        if not self.state.moving:
+            return
+        if self._goal is None:
+            self._cancel_on_accept = True
+            return
+        self._log("gripper stop: cancelling the goal")
+        self._goal.cancel_goal_async()
 
     def server_is_ready(self) -> bool:
         """Whether the gripper's action server is discovered and reachable."""
@@ -207,9 +245,17 @@ class RobotiqGripper(EndEffector):
         Args:
             position: Knuckle angle in radians, clipped to OPEN_POSITION..CLOSED_POSITION.
             effort: Force limit, clipped to 0.0..MAX_EFFORT.
+
+        Raises:
+            RobotStopped: If the robot is soft stopped.
         """
+        self._check(f"a gripper move on {self.namespace}")
+        self._move(position, effort)
+
+    def _move(self, position: float, effort: float) -> None:
+        """Send the move to `position`; it replaces the running goal."""
         if not self.server_is_ready():
-            self._node.get_logger().warning(f"{self.namespace}: gripper action server is not available")
+            self._refused("gripper refused", f"{self.namespace}: gripper action server is not available")
             return
         position = min(max(float(position), self.OPEN_POSITION), self.CLOSED_POSITION)
         effort = min(max(float(effort), 0.0), self.MAX_EFFORT)
@@ -220,15 +266,20 @@ class RobotiqGripper(EndEffector):
         self.state.commanded_position = position
         self.state.commanded_effort = effort
         self.state.moving = True
+        self._goal, self._cancel_on_accept = None, False
         self._action.send_goal_async(goal).add_done_callback(self._on_goal_answer)
 
     def reactivate(self) -> None:
         """Ask the activation controller to reactivate the gripper.
 
         ! Needed after a fault or power loss. The gripper opens and closes once, so keep its fingers clear.
+
+        Raises:
+            RobotStopped: If the robot is soft stopped.
         """
+        self._check(f"a gripper reactivation on {self.namespace}")
         if not self._reactivate.service_is_ready():
-            self._node.get_logger().warning(f"{self.namespace}: reactivate_gripper service is not available")
+            self._refused("reactivate refused", f"{self.namespace}: reactivate_gripper service is not available")
             return
         self._log("gripper reactivating")
         self.state.reactivating = True
@@ -271,17 +322,32 @@ class RobotiqGripper(EndEffector):
             self.state.last_result_ok = False
             self._node.get_logger().warning(f"{self.namespace}: gripper goal rejected")
             return
-        handle.get_result_async().add_done_callback(self._on_result)
+        self._goal = handle
+        handle.get_result_async().add_done_callback(lambda result: self._on_result(handle, result))
+        if self._cancel_on_accept:
+            self._cancel_on_accept = False
+            self.stop()
 
-    def _on_result(self, future) -> None:
-        """Record that the command finished and whether it got there."""
-        self.state.moving = False
+    def _on_result(self, handle, future) -> None:
+        """Record that the newest goal finished and whether it got there; older goals are only logged."""
         try:
-            result = future.result().result
+            response = future.result()
         except Exception as error:
-            self.state.last_result_ok = False
+            response = None
             self._node.get_logger().warning(f"{self.namespace}: gripper result failed: {error}")
+        newest = handle is self._goal
+        if response is not None and response.status == GoalStatus.STATUS_CANCELED:
+            self._log("gripper goal cancelled" if newest else "gripper goal replaced")
+            if newest:
+                self.state.moving = False
             return
+        if not newest:
+            return
+        self.state.moving = False
+        if response is None:
+            self.state.last_result_ok = False
+            return
+        result = response.result
         self.state.last_result_ok = bool(result.reached_goal or result.stalled)
         outcome = "reached goal" if result.reached_goal else "stalled" if result.stalled else "fell short"
         self._log(f"gripper {outcome} at {result.position:.3f} rad")
@@ -305,9 +371,10 @@ class ScaffoldingV3(EndEffector):
     #: C12 and C34 are chords (both buttons of a pair together), which run no motor (crl_husky protocol.md).
     BUTTONS = ("B1", "B2", "B3", "B4", "C12", "C34")
 
-    def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig):
+    def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig, latch: SoftStopLatch | None = None,
+                 lease_slot: LeaseSlot | None = None):
         """Create the command publisher and the status subscription."""
-        super().__init__(node, robot_namespace, arm)
+        super().__init__(node, robot_namespace, arm, latch, lease_slot)
         self.state = ScaffoldingV3State()
         self._connect()
 
@@ -341,13 +408,14 @@ class ScaffoldingV3(EndEffector):
             self._drive(self.JOINT_MOTOR, direction)
 
     def _drive(self, motor: int, direction: int) -> None:
-        """Start `motor` tightening (1) or loosening (-1), unless it is stalled."""
+        """Start `motor` tightening (1) or loosening (-1), unless it is stalled; RobotStopped while soft stopped."""
         name = "gripper" if motor == self.GRIPPER_MOTOR else "joint screw"
         verb = "tighten" if direction > 0 else "loosen"
+        self._check(f"{name} {verb} on {self.namespace}")
         stalled = self.state.gripper_motor if motor == self.GRIPPER_MOTOR else self.state.joint_motor
         if stalled == self.STALLED:
-            self._node.get_logger().warning(f"{self.namespace}: {name} is stalled, Stop it before it can "
-                                            f"{verb}; nothing sent")
+            self._refused(f"{name} stalled", f"{self.namespace}: {name} is stalled, Stop it before it can "
+                                             f"{verb}; nothing sent")
             return
         self._log(f"{name}: {verb}")
         self._publish(motor, direction)
@@ -396,9 +464,10 @@ class ScaffoldingV1(EndEffector):
     GRIPPER_PIN = SetIO.Request.PIN_TOOL_DOUT1
     GRIPPER_CLOSED_WHEN_ON = True
 
-    def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig):
+    def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig, latch: SoftStopLatch | None = None,
+                 lease_slot: LeaseSlot | None = None):
         """Create the set_io client and the io_states subscription."""
-        super().__init__(node, robot_namespace, arm)
+        super().__init__(node, robot_namespace, arm, latch, lease_slot)
         self.state = ScaffoldingV1State()
         self._connect()
 
@@ -415,11 +484,13 @@ class ScaffoldingV1(EndEffector):
 
     def open(self) -> None:
         """Switch the gripper output to open."""
+        self._check(f"a gripper open on {self.namespace}")
         self._log("gripper open")
         self._set(self.GRIPPER_PIN, not self.GRIPPER_CLOSED_WHEN_ON)
 
     def close(self) -> None:
         """Switch the gripper output to closed."""
+        self._check(f"a gripper close on {self.namespace}")
         self._log("gripper close")
         self._set(self.GRIPPER_PIN, self.GRIPPER_CLOSED_WHEN_ON)
 
@@ -429,7 +500,7 @@ class ScaffoldingV1(EndEffector):
     def _set(self, pin: int, on: bool) -> None:
         """Ask the arm to switch one tool output."""
         if not self.service_is_ready():
-            self._node.get_logger().warning(f"{self.arm_namespace}: set_io service is not available")
+            self._refused("gripper refused", f"{self.arm_namespace}: set_io service is not available")
             return
         request = SetIO.Request()
         request.fun = SetIO.Request.FUN_SET_DIGITAL_OUT
@@ -468,17 +539,21 @@ _CLASS_BY_KIND: dict[str, type[EndEffector]] = {
 }
 
 
-def make_end_effector(node: Node, robot_namespace: str, arm: ArmConfig) -> EndEffector | None:
+def make_end_effector(node: Node, robot_namespace: str, arm: ArmConfig,
+                      latch: SoftStopLatch | None = None,
+                      lease_slot: LeaseSlot | None = None) -> EndEffector | None:
     """Build the interface for whatever `arm` has mounted.
 
     Args:
         node: The monitor node.
         robot_namespace: The robot's namespace, e.g. "a200_0806".
         arm: The arm, whose `end_effector` picks the class.
+        latch: The robot's soft-stop latch; a new one by default.
+        lease_slot: The robot's lease slot; a new one by default.
 
     Returns:
         EndEffector | None: The tool's interface, or None for a bare arm.
     """
     if arm.end_effector is None:
         return None
-    return _CLASS_BY_KIND[arm.end_effector](node, robot_namespace, arm)
+    return _CLASS_BY_KIND[arm.end_effector](node, robot_namespace, arm, latch, lease_slot)

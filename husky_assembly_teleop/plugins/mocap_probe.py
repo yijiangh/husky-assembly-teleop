@@ -747,7 +747,7 @@ class MocapProbePlugin(HuskyPlugin):
         self._phone_result.content = phone_text(note(escape(self._message))) if self._message else ""
         if self._mapping.value and self._map_task is None and ctx.now() - self._map_time >= MAP_PERIOD:
             self._map_time = ctx.now()
-            self._map_task = ctx.spawn("phone map", self._draw_map(ctx))
+            self._map_task = ctx.spawn("phone map", self._draw_map(ctx), survives_soft_stop=True)
         recent = self.samples[-PHONE_POINTS:]
         self._phone_points.content = (section("points", SECTION_CTRL, f"{len(self.samples)} recorded")
                                       + block(values(*(f"{sample.name:<10} {numbers(sample.position, 3, 7, 3)}"

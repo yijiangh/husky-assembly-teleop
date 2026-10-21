@@ -27,12 +27,10 @@ import numpy as np
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.scene import Scene
 
-from ...shared.base_collision.base_collision_world import BaseCollisionWorld
+from ...world.base_collision import BaseCollisionWorld
 
 #: A path must keep this far from everything, metres: tracking error plus a safety margin.
 PATH_CLEARANCE = 0.3
-#: During a run the robot is stopped when it comes this close to anything, metres.
-STOP_DISTANCE = 0.1
 #: Checking resolution along a path: metres driven, radians turned.
 CHECK_STEP, CHECK_TURN = 0.05, math.radians(5.0)
 
@@ -195,8 +193,8 @@ def check_poses(polyline: np.ndarray) -> np.ndarray:
     return np.array(picked)
 
 
-class Clearance:
-    """Collision checks of one robot against the rest of the world, in its own mirror on its own worker thread."""
+class PathClearance:
+    """Checks a robot's planned path against the rest of the world, in its own mirror on its own worker thread."""
 
     def __init__(self):
         """Start the worker; the mirror is made on the worker at the first check."""
@@ -208,10 +206,6 @@ class Clearance:
                        margin: float = PATH_CLEARANCE) -> str | None:
         """What the robot would come within `margin` of along `poses` (n x 3), or None if the path is clear."""
         return await self._run(self._path_hit, snapshot, serial, check_poses(poses), margin)
-
-    async def pose_hit(self, snapshot: Scene, serial: str, pose, margin: float = STOP_DISTANCE) -> str | None:
-        """What the robot at floor `pose` is within `margin` of, or None."""
-        return await self._run(self._path_hit, snapshot, serial, np.array([pose]), margin)
 
     def close(self) -> None:
         """Close the mirror and stop the worker."""

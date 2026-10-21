@@ -9,7 +9,9 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from robot_fakes import lease_test_robots, wait_ticks_until
 
+from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugins.arm_planner import planner_plugin as arm_plugin
 from husky_assembly_teleop.plugins.arm_planner.panel_plugin import ArmPlannerPanel
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath, arm_joint_names
@@ -42,7 +44,7 @@ class FakeCtx:
         """The arm at START, the base at the origin with a live mocap pose, and an arm that accepts."""
         self.joints, self.base, self.sent, self.clock = dict(zip(NAMES, START)), (0.0, 0.0, 0.0), [], 0.0
         arm = SimpleNamespace(send_joint_trajectory=lambda positions, duration, velocities: self.sent.append(positions)
-                              or True)
+                              or True, state=SimpleNamespace(is_executing=False))
         mocap = SimpleNamespace(marker_errors=deque([(0.0, 0.001)]), last_update_time=0.0, last_fix_time=0.0,
                                 tracking_valid=True, tracked=True)
         self.world = SimpleNamespace(robots={SERIAL: SimpleNamespace(
@@ -63,6 +65,9 @@ class FakeCtx:
     def now(self):
         """The clock, set by the test."""
         return self.clock
+
+    lease_robots = staticmethod(lease_test_robots)
+    wait_until = staticmethod(wait_ticks_until)
 
     def log_info(self, _text):
         """Ignore the line."""
@@ -167,15 +172,56 @@ def test_the_start_base_belongs_to_the_plan_it_was_made_for(found_path):
 
 
 @pytest.mark.safety
-def test_send_gives_the_path_to_the_arm():
-    """Send puts the plan's path onto the request's arm; an arm that refuses is reported."""
-    ctx = FakeCtx()
-    planner = ArmPlannerPlugin()
-    assert planner.send(ctx, ready_plan()) == (True, f"sent to {SERIAL} {ARM}")
+def test_execute_sends_the_path_and_waits_until_the_arm_stands_still():
+    """The plan's path goes to the request's arm, the commit is answered, and the motion is watched to its end."""
+    ctx, planner, answers = FakeCtx(), ArmPlannerPlugin(), []
+    arm = ctx.world.robots[SERIAL].arms[ARM]
+    arm.state.is_executing = True
+
+    async def scenario():
+        task = asyncio.create_task(planner.execute(ctx, ready_plan(), lambda *answer: answers.append(answer)))
+        await asyncio.sleep(0)
+        moving = not task.done()
+        arm.state.is_executing = False
+        await task
+        return moving
+
+    assert asyncio.run(scenario()) and answers == [(True, f"sent to {SERIAL} {ARM}")]
     assert np.allclose(ctx.sent[0][0], START) and np.allclose(ctx.sent[0][-1], GOAL)
+
+
+@pytest.mark.safety
+def test_execute_reports_an_arm_that_refuses_the_path():
+    """An arm that refuses the trajectory answers the commit that nothing was sent."""
+    ctx, planner, answers = FakeCtx(), ArmPlannerPlugin(), []
     ctx.world.robots[SERIAL].arms[ARM].send_joint_trajectory = lambda *args: False
-    sent, message = planner.send(ctx, ready_plan())
+    asyncio.run(planner.execute(ctx, ready_plan(), lambda *answer: answers.append(answer)))
+    (sent, message), = answers
     assert not sent and "refused" in message
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("how", ["cancel", "late"])
+def test_an_arm_path_cancelled_or_late_is_held(how):
+    """Cancelled (Stop all, plugin stop) or still moving past its duration: the arm is held."""
+    ctx, planner, held = FakeCtx(), ArmPlannerPlugin(), []
+    arm = ctx.world.robots[SERIAL].arms[ARM]
+    arm.state.is_executing, arm.hold = True, lambda: held.append(how)
+
+    async def late(*_args, description="", **_kwargs):
+        raise WaitTimeout(f"timed out waiting for {description}")
+
+    if how == "late":
+        ctx.wait_until = late
+
+    async def scenario():
+        task = asyncio.create_task(planner.execute(ctx, ready_plan(), lambda *_answer: None))
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert held == [how]
 
 
 def make_panel(planner: ArmPlannerPlugin) -> ArmPlannerPanel:
@@ -185,7 +231,24 @@ def make_panel(planner: ArmPlannerPlugin) -> ArmPlannerPanel:
     panel.serial, panel.arm, panel._has_target, panel._load_now = SERIAL, ARM, True, False
     panel._sliders = [SimpleNamespace(value=math.degrees(value)) for value in GOAL]
     panel._used = SimpleNamespace(touch=lambda: None, active=True)
+    panel._collisions = FakeCollisions()
     return panel
+
+
+class FakeCollisions:
+    """The collisions panel: keeps what each source shows, and which labels are ticked."""
+
+    def __init__(self):
+        """Nothing shown."""
+        self.shown = {}
+
+    def replace(self, source, hits, shown=()):
+        """Keep the source's hits and ticked labels."""
+        self.shown[source] = (dict(hits), tuple(shown))
+
+    def clear(self, source):
+        """Drop the source."""
+        self.shown.pop(source, None)
 
 
 def test_target_change_compares_the_sliders_and_arm_with_the_plan():
@@ -229,3 +292,27 @@ def test_the_panel_plans_and_commits_through_the_api(found_path):
     assert found.startswith("RRT: 2 waypoints") and "target changed" in refused
     assert committed == f"sent to {SERIAL} {ARM}" and planner.plan.state == "sent"
     assert planner.plan.request == ArmPlanRequest(SERIAL, ARM, pytest.approx(tuple(GOAL))) and len(ctx.sent) == 1
+
+
+def test_a_plan_refused_for_a_collision_shows_its_hit_until_the_next_plan(monkeypatch):
+    """A target in collision lists its hit in the collisions panel, ticked; the next plan found removes it."""
+    hit = SimpleNamespace(where="target", message="target is in collision: a with b")
+    results = iter([PlanResult(None, hit.message, hit=hit), PlanResult(PATH, seconds=0.1)])
+    monkeypatch.setattr(arm_plugin, "plan_arm", lambda world, mirror, arm, goal, abort: next(results))
+    ctx = FakeCtx()
+    planner = make_planner(ctx)
+    panel = make_panel(planner)
+
+    async def scenario():
+        shown = []
+        for _ in range(2):
+            panel._on_path(ctx, "Plan")
+            await asyncio.sleep(0.05)
+            panel.update(ctx)
+            shown.append(dict(panel._collisions.shown))
+        return shown
+
+    refused, found = run(planner, ctx, scenario)
+    label = f"{SERIAL} {ARM} target"
+    assert planner.plan.state == "ready" and refused == {"arm_planner_panel": ({label: hit}, (label,))}
+    assert found == {}

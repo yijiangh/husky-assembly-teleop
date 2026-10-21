@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from planning_fixtures import purged_process, step
+from plugin_fakes import FakeContext, from_outside
 from robot_lab import LEFT, FakeRun, RobotLab
 
 from husky_assembly_teleop.monitor import HuskyMonitor
@@ -20,6 +21,7 @@ from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.plugins.movement_exec import plugin as exec_module
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
 from husky_assembly_teleop.robot_interface.base import FollowerState
+from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
 from husky_assembly_teleop.shared.execution.basis import basis_of
 from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT,
                                                                  REFUSED, ExecRequest, step_parts)
@@ -51,6 +53,10 @@ class Lab(RobotLab):
         self.ctx.plugins = {"assembly_run": self.run, "motion_planner": SimpleNamespace()}
         self.plugin = MovementExecPlugin()
         self.plugin.setup(self.ctx)
+
+    def free(self) -> bool:
+        """Whether Cindy is given back: neither held for an automatic motion (the lock) nor leased (her robot lease)."""
+        return self.cindy.lease is None and self.cindy.lease_slot.lease is None
 
     def request(self, movement: str = "B20_R_home", serial: str = "a200-0806", delta: float = 0.2,
                 route_movement: int | None = None, **changes) -> ExecRequest:
@@ -110,6 +116,7 @@ def execute(lab: Lab, request: ExecRequest, *answers: bool, during=None):
     async def scenario():
         future = lab.plugin.request_execute(request)
         held = lab.cindy.lease
+        lab.robot_lease = lab.cindy.lease_slot.lease
         for ok in answers:
             await answer(lab, ok)
         if during is not None:
@@ -126,7 +133,8 @@ def test_a_motion_is_confirmed_sent_arrives_and_is_recorded():
     lab = Lab()
     result, held = execute(lab, lab.request(), True)
     assert result.status == DONE and result.done == (2,), result.reason
-    assert held is not None and held.label == "B20_R_home" and lab.cindy.lease is None
+    assert held is not None and held.label == "B20_R_home" and lab.free()
+    assert lab.robot_lease.holder == "movement_exec: exec B20_R_home" and not lab.robot_lease.active
     assert len(lab.cindy._multi_arm.messages) == 1
     events = [event for event, _fields in lab.run.records]
     assert events == ["prompt", "confirm", "exec"]
@@ -136,6 +144,35 @@ def test_a_motion_is_confirmed_sent_arrives_and_is_recorded():
     assert json.loads(json.dumps(record))["outcome"]["status"] == "ARRIVED"
     assert record["basis"]["serial"] == "a200-0806" and record["plan"]["planner"] == "fake"
     assert np.allclose(result.end["left_ur_arm_shoulder_pan_joint"], LEFT[0] + 0.2, atol=1e-3)
+
+
+@pytest.mark.safety
+def test_both_leases_are_back_when_the_result_arrives():
+    """The result resolves with Cindy given back already, so its caller may start the next step at once."""
+    lab = Lab()
+
+    async def scenario():
+        future = lab.plugin.request_execute(lab.request())
+        await answer(lab, True)
+        result = await future
+        return result, lab.free()
+
+    result, free = run_guarded(scenario())
+    assert result.status == DONE and free
+
+
+@pytest.mark.safety
+def test_a_robot_lease_refused_after_the_lock_gives_the_lock_back(monkeypatch):
+    """The lock taken, then the robot lease refused (a lease `busy_reason` could not see): busy, the lock given back."""
+    lab = Lab()
+
+    def refused(_serials, _label):
+        raise NotLeased("robot a200-0806 is leased by a plugin: teleop")
+
+    monkeypatch.setattr(lab.ctx, "take_lease", refused)
+    result, held = execute(lab, lab.request())
+    assert result.status == REFUSED and result.reason == "busy: robot a200-0806 is leased by a plugin: teleop"
+    assert held is None and lab.free() and lab.published() == 0
 
 
 @pytest.mark.safety
@@ -151,7 +188,7 @@ def test_a_second_request_is_busy():
 
     second, first = run_guarded(scenario())
     assert second.status == REFUSED and "busy" in second.reason and first.status == CANCELLED
-    assert lab.published() == 0 and lab.cindy.lease is None
+    assert lab.published() == 0 and lab.free()
 
 
 @pytest.mark.parametrize("changes, words", [
@@ -222,7 +259,7 @@ def test_a_cancel_at_the_prompt_sends_nothing():
     result, _held = execute(lab, lab.request(), False)
     assert result.status == CANCELLED and result.done == () and lab.published() == 0
     assert [event for event, _fields in lab.run.records] == ["prompt", "cancel", "exec"]
-    assert lab.cindy.lease is None
+    assert lab.free()
 
 
 @pytest.mark.safety
@@ -238,7 +275,7 @@ def test_a_cancel_during_the_motion_holds_every_arm():
     result, _held = execute(lab, lab.request(), True, during=cancel_soon)
     assert result.status == CANCELLED and "operator" in result.reason
     holds = [sum(len(message.points) == 1 for message in arm._trajectory.messages) for arm in lab.cindy.arms.values()]
-    assert holds == [1, 1] and lab.cindy.lease is None
+    assert holds == [1, 1] and lab.free()
     (event, fields), (last, _fields) = lab.run.records[-2:]
     assert (event, last, fields["data"]["reason"]) == ("cancel", "exec", "operator")
 
@@ -254,7 +291,7 @@ def test_a_request_cancelled_before_it_starts_gives_the_robot_back():
         return await future
 
     result = run_guarded(scenario())
-    assert result.status == CANCELLED and lab.cindy.lease is None and lab.plugin.prompt is None
+    assert result.status == CANCELLED and lab.free() and lab.plugin.prompt is None
 
 
 @pytest.mark.safety
@@ -274,7 +311,7 @@ def test_an_error_inside_holds_and_gives_the_robot_back(monkeypatch):
         return result
 
     result = run_guarded(scenario())
-    assert result.status == FAILED and "a bug" in result.reason and lab.cindy.lease is None
+    assert result.status == FAILED and "a bug" in result.reason and lab.free()
     assert all(len(arm._trajectory.messages) == 1 for arm in lab.cindy.arms.values())
     record, = lab.run.files()
     assert record["outcome"]["result"] == "failed" and "RuntimeError('a bug')" in record["outcome"]["reason"]
@@ -383,7 +420,7 @@ def test_stop_all_mid_motion_holds_every_arm_and_is_recorded_as_a_soft_stop():
         lab.plugin._task.cancel()
 
     result, _held = execute(lab, lab.request(), True, during=stop_all_soon)
-    assert result.status == CANCELLED and "Stop all" in result.reason and lab.cindy.lease is None
+    assert result.status == CANCELLED and "Stop all" in result.reason and lab.free()
     holds = [sum(len(message.points) == 1 for message in arm._trajectory.messages) for arm in lab.cindy.arms.values()]
     assert holds == [1, 1]
     events = [event for event, _fields in lab.run.records]
@@ -402,18 +439,28 @@ def test_stop_all_mid_motion_holds_every_arm_and_is_recorded_as_a_soft_stop():
 
     result, _held = execute(lab, lab.request(), True, during=plugin_stopped)
     assert "plugin stop or shutdown" in result.reason and "soft_stop" not in [e for e, _f in lab.run.records]
+    assert lab.free()
 
 
 @pytest.mark.safety
-def test_stop_all_drops_a_confirm_clicked_in_the_same_tick_and_nothing_moves():
-    """Confirm and Stop all in one tick: the monitor's soft stop drops the queued Confirm and the step is cancelled.
+def test_a_confirm_clicked_in_the_tick_of_stop_all_runs_after_it_and_moves_nothing():
+    """Confirm and Stop all in one tick: Cindy latched and the step cancelled first; the Confirm runs after, moves nothing.
 
-    Only holds go out, and the run records the soft stop.
+    Stop all no longer drops queued clicks. The step is recorded as cancelled by the soft stop, no trajectory goes
+    out, and both leases are given back.
     """
     lab = Lab()
-    # * The plugin's intent queue as the monitor keeps it, and the monitor's own soft stop working on it.
+    # * The plugin's intent queue as the monitor keeps it, and the monitor's own soft stop working on it: it latches
+    #   every robot (`HuskyRobotInterface.soft_stop`) and cancels the plugin's tasks but its survivors.
     queued = PluginContext("movement_exec", SimpleNamespace(), view=None, scene=None, kinematics=None)
-    monitor = SimpleNamespace(_world=SimpleNamespace(robots={}), log_warn=lab.ctx.log_warn,
+    latch = lab.cindy.soft_stop_latch
+
+    def soft_stop(reason: str = "") -> None:
+        """As `HuskyRobotInterface.soft_stop`: latch Cindy, keeping the reason."""
+        latch.stopped, latch.reason = True, reason
+
+    cindy = SimpleNamespace(soft_stop=soft_stop)
+    monitor = SimpleNamespace(_world=SimpleNamespace(robots={"a200-0806": cindy}), log_warn=lab.ctx.log_warn,
                               log_error=lab.ctx.log_error,
                               _loaded={"movement_exec": SimpleNamespace(name="movement_exec", ctx=queued)})
 
@@ -424,18 +471,41 @@ def test_stop_all_drops_a_confirm_clicked_in_the_same_tick_and_nothing_moves():
         prompt = lab.plugin.prompt
         while lab.ctx.t - prompt.opened_at < 0.6:
             await lab.ctx.next_tick()
-        queued.submit("exec confirm", lab.plugin.request_confirm)  # clicked; it would run at the plugin's next step
+        queued._tasks.add(lab.plugin._task)  # * the step's task, as the plugin's context keeps it
+        queued._survivors |= lab.ctx.survivors
+        queued.submit("exec confirm", lab.plugin.request_confirm)  # clicked; it runs at the plugin's next step
         HuskyMonitor._soft_stop(monitor)  # Stop all, first in the same tick
-        lab.plugin._task.cancel()  # as the soft stop cancels the plugin's tasks
-        queued._drain_intents()  # the plugin's step later in the tick: nothing is left to run
+        queued._drain_intents()  # the plugin's step later in the tick: the Confirm runs, after the stop
         return await future
 
     result = run_guarded(scenario())
-    assert queued._intents.empty()
-    assert "SOFT STOP: dropped movement_exec's queued 'exec confirm'" in lab.ctx.lines("warn")
-    assert result.status == CANCELLED and "Stop all" in result.reason and lab.cindy.lease is None
-    assert "confirm" not in [event for event, _fields in lab.run.records] and not lab.cindy._multi_arm.messages
+    assert queued._intents.empty() and lab.cindy.soft_stopped and latch.reason == "Stop all"
+    assert result.status == CANCELLED and "Stop all" in result.reason and lab.free()
+    events = [event for event, _fields in lab.run.records]
+    assert "confirm" not in events and events[-1] == "soft_stop" and not lab.cindy._multi_arm.messages
     assert all(len(message.points) == 1 for arm in lab.cindy.arms.values() for message in arm._trajectory.messages)
+
+
+@pytest.mark.safety
+def test_a_confirm_reaching_a_step_the_soft_stop_did_not_cancel_sends_nothing():
+    """Cindy soft stopped at her prompt, the step not cancelled: Confirm is refused after it, saying Resume.
+
+    As after a clearance trip, or for a task that survived the stop. Nothing is sent, both leases are given back.
+    """
+    lab = Lab()
+
+    async def scenario():
+        future = lab.plugin.request_execute(lab.request())
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        lab.cindy.soft_stop_latch.stopped = True
+        await answer(lab, True)
+        return await future
+
+    result = run_guarded(scenario())
+    assert result.status == REFUSED and result.reason == ("B20_R_home: cindy (a200-0806) is soft stopped; press "
+                                                          "Resume first")
+    assert lab.published() == 0 and lab.free()
 
 
 @pytest.mark.safety
@@ -496,7 +566,7 @@ def test_a_robot_not_live_or_another_current_action_is_refused():
 
 @pytest.mark.safety
 def test_robot_control_cannot_move_another_robot_while_one_is_held():
-    """Cindy's prompt open: robot_control's Start on Belle is refused; Confirm then moves Cindy alone."""
+    """Cindy's prompt open: robot_control's Cartesian Start on Belle is refused, no lease taken; Confirm moves Cindy."""
     from husky_assembly_teleop.plugins.robot_control.plugin import RobotControlPlugin
     lab = Lab()
     control = RobotControlPlugin()
@@ -507,14 +577,94 @@ def test_robot_control_cannot_move_another_robot_while_one_is_held():
         future = lab.plugin.request_execute(lab.request())
         while lab.plugin.prompt is None:
             await asyncio.sleep(0)
-        control._start_move(lab.ctx, "a200-0805", belle, "move", control._execute_move,
-                            belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
+        control._start_move(lab.ctx, "a200-0805", belle, "cartesian move", control._stream_cartesian_move,
+                            belle.state.tcp_position, belle.state.tcp_orientation)
         await answer(lab, True)
         return await future
 
     result = run_guarded(scenario())
     assert result.status == DONE and not belle._trajectory.messages and len(lab.cindy._multi_arm.messages) == 1
-    assert any("a200-0805 ur_arm move refused: a200-0806 is held" in line for line in lab.ctx.lines("warn"))
+    assert any("a200-0805 ur_arm: refused: a200-0806 is held" in line for line in lab.ctx.lines("warn"))
+    assert not control._trajectory_tasks and lab.belle.lease_slot.lease is None
+
+
+@pytest.mark.safety
+def test_exec_is_busy_while_another_plugin_leases_any_robot():
+    """robot_control's teleop lease on Belle, or a planner's commit lease on Cindy herself: Exec is refused at once.
+
+    Nothing is sent, Cindy is neither held nor leased by movement_exec, and the reason names the lease.
+    """
+    for serial, holder in (("a200-0805", "robot_control"), ("a200-0806", "base_planner")):
+        lab = Lab()
+        other = FakeContext(name=holder)
+        other.world = lab.ctx.world
+        lease = other.take_lease([serial], "teleop" if holder == "robot_control" else "commit plan 1")
+        result, held = execute(lab, lab.request())
+        assert result.status == REFUSED and result.reason == f"busy: {serial} is leased by {lease.holder}"
+        assert held is None and lab.cindy.lease is None and lab.ctx.world.robots[serial].lease_slot.lease is lease
+        assert lab.published() == 0 and lab.run.records == []
+
+
+@pytest.mark.safety
+def test_no_other_plugin_gets_a_lease_while_a_step_runs():
+    """Cindy's prompt open (her step holds her): robot_control gets no lease on Belle, nor on Cindy; Confirm moves Cindy.
+
+    movement_exec holds Cindy's robot lease the whole step, the prompt included.
+    """
+    lab = Lab()
+    control = FakeContext(name="robot_control")
+    control.world = lab.ctx.world
+    refusals = []
+
+    async def scenario():
+        future = lab.plugin.request_execute(lab.request())
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        assert lab.cindy.lease_slot.lease.holder == "movement_exec: exec B20_R_home"
+        for serial in ("a200-0805", "a200-0806"):
+            try:
+                control.take_lease([serial], "teleop")
+            except NotLeased as refused:
+                refusals.append(str(refused))
+        await answer(lab, True)
+        return await future
+
+    result = run_guarded(scenario())
+    assert result.status == DONE and lab.free() and lab.belle.lease_slot.lease is None
+    assert refusals == ["robot a200-0806 is held by movement_exec (B20_R_home) for an automatic motion, one motion at "
+                        "a time; Cancel it first"] * 2
+
+
+@pytest.mark.safety
+def test_a_path_check_during_a_step_moves_nothing_and_leases_nothing(monkeypatch):
+    """The arm planner checks a joint path for Belle while Cindy's step waits at its prompt.
+
+    It answers, sends nothing and leases nothing; Cindy stays held and leased until her step ends.
+    """
+    from husky_assembly_teleop.plugins.arm_planner import planner_plugin as arm_plugin
+    lab = Lab()
+    planner = arm_plugin.ArmPlannerPlugin()
+    planner.setup(lab.ctx)
+    checked = []
+    planner._world = SimpleNamespace(sync=lambda _snapshot, _serial: "mirror", close=lambda: None)
+    monkeypatch.setattr(arm_plugin, "path_hit",
+                        lambda _world, _mirror, arm, waypoints: checked.append((arm, waypoints.shape)))
+
+    async def scenario():
+        future = lab.plugin.request_execute(lab.request())
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        belle = lab.belle.arms["ur_arm"].joint_vector()
+        found = await planner.check_path("a200-0805", "ur_arm", [belle, belle + 0.1])
+        during = (lab.cindy.lease, lab.cindy.lease_slot.lease, lab.belle.lease_slot.lease, lab.published())
+        lab.plugin.request_cancel()
+        return found, during, await future
+
+    found, (lock, robot_lease, belle_lease, published), result = run_guarded(scenario())
+    planner._executor.shutdown()
+    assert found is None and checked == [("ur_arm", (2, 6))]
+    assert lock is not None and robot_lease.holder == "movement_exec: exec B20_R_home" and belle_lease is None
+    assert published == 0 and result.status == CANCELLED and lab.free()
 
 
 @pytest.mark.safety
@@ -527,7 +677,8 @@ def test_another_robot_moving_by_other_means_at_the_prompt_is_refused_after_conf
         future = lab.plugin.request_execute(lab.request())
         while lab.plugin.prompt is None:
             await asyncio.sleep(0)
-        belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
+        with from_outside(lab.belle):
+            belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
         await answer(lab, True)
         return await future
 
@@ -547,7 +698,8 @@ def test_another_robot_starting_to_move_during_the_motion_holds_the_held_robot()
             await asyncio.sleep(0)
         for _ in range(3):
             await lab.ctx.next_tick()
-        belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
+        with from_outside(lab.belle):
+            belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
 
     result, _held = execute(lab, lab.request(delta=0.6), True, during=start_belle)
     assert result.status == FAILED and "a200-0805 ur_arm is running a trajectory" in result.reason
@@ -563,7 +715,8 @@ def test_a_robot_whose_link_dropped_while_moving_refuses_the_request():
     driver = next(driver for driver in lab.drivers if getattr(driver, "arm", None) is belle)
 
     async def scenario():
-        belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
+        with from_outside(lab.belle):
+            belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
         for _ in range(5):
             await lab.ctx.next_tick()
         driver.silent_from = lab.ctx.t
@@ -574,7 +727,7 @@ def test_a_robot_whose_link_dropped_while_moving_refuses_the_request():
     result = run_guarded(scenario())
     assert result.status == REFUSED and "can't tell whether a200-0805 ur_arm is moving" in result.reason
     assert result.reason.endswith("until they come back (check its link in Health) or the monitor restarts")
-    assert lab.cindy.lease is None and not lab.cindy._multi_arm.messages
+    assert lab.free() and not lab.cindy._multi_arm.messages
 
 
 # --- --- --- --- --- a base step and the pendant's speed (review L7, L8) --- --- --- --- ---
@@ -637,7 +790,8 @@ def test_the_held_robot_is_held_in_the_tick_another_robot_starts_and_moves_no_fu
         for _ in range(3):
             await lab.ctx.next_tick()
         started["t"], started["at"] = lab.ctx.t, left.joint_vector().copy()
-        belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
+        with from_outside(lab.belle):
+            belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
 
     result, _held = execute(lab, lab.request(delta=0.6), True, during=start_belle)
     (held_at, where), = holds
@@ -656,7 +810,8 @@ def test_another_robot_moving_at_a_robotiq_prompt_refuses_it_after_confirm():
         future = lab.plugin.request_execute(lab.request("B35_H_open", serial="a200-0805", route=None))
         while lab.plugin.prompt is None:
             await asyncio.sleep(0)
-        alice.send_joint_move(alice.joint_vector() + np.radians([20, 0, 0, 0, 0, 0]))
+        with from_outside(lab.alice):
+            alice.send_joint_move(alice.joint_vector() + np.radians([20, 0, 0, 0, 0, 0]))
         await answer(lab, True)
         return await future
 
@@ -678,7 +833,8 @@ def test_another_robot_moving_at_a_grasp_prompt_refuses_it_after_confirm():
         future = lab.plugin.request_execute(grasp)
         while lab.plugin.prompt is None:
             await asyncio.sleep(0)
-        alice.send_joint_move(alice.joint_vector() + np.radians([20, 0, 0, 0, 0, 0]))
+        with from_outside(lab.alice):
+            alice.send_joint_move(alice.joint_vector() + np.radians([20, 0, 0, 0, 0, 0]))
         await answer(lab, True)
         return await future
 
@@ -738,7 +894,8 @@ def test_another_robot_moving_while_the_grasp_clears_its_stall_tightens_nothing(
     async def move_alice(lab):
         while not lab.tools["left_ur_arm"]._command.messages:
             await asyncio.sleep(0)
-        alice.send_joint_move(alice.joint_vector() + np.radians([20, 0, 0, 0, 0, 0]))
+        with from_outside(lab.alice):
+            alice.send_joint_move(alice.joint_vector() + np.radians([20, 0, 0, 0, 0, 0]))
 
     result, _held = execute(lab, grasp, True, during=move_alice)
     assert result.status == REFUSED and "a200-0804 ur_arm is running a trajectory; nothing tightened" in result.reason

@@ -1,13 +1,15 @@
 """
 PlannerService: the base class of a headless planner plugin, which plans, cancels and commits on request.
 
-* A planner plugin subclasses it and supplies `make_search`, `stale_reason` and `send`; it offers others its
+* A planner plugin subclasses it and supplies `make_search`, `stale_reason` and `execute`; it offers others its
   `PlannerContract` (`plan.py`), and its panel is a separate plugin (`planner_panel.PlannerPanel`).
+* Each commit is one task that holds the robot's lease around the whole motion: `execute` sends the plan and watches
+  it until it is over, so a freeze or clearance it opens covers the motion too.
 ! Requests run in the planner's own context (`ctx.submit`), so soft stop, teardown and its errors apply to them, and
-  every future resolves: a cancelled search gives a plan in state "cancelled". Only a request a soft stop drops
-  before it ran stays pending; that stop cancels every task that could be waiting for it.
+  every future resolves: a cancelled search gives a plan in state "cancelled", a commit to a soft-stopped robot
+  answers that nothing was sent.
 ! Commit sends nothing while any robot is held for an automatic motion (`shared/execution/interlock.py`): one
-  motion at a time, from a panel or another plugin alike.
+  motion at a time, from a panel or another plugin alike. Checked at the commit and again right before the lease.
 """
 
 from __future__ import annotations
@@ -17,12 +19,13 @@ import itertools
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from typing import Generic
+from typing import Callable, Generic
 
 from async_timeout import timeout
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
+from ...robot_interface.soft_stop import MotionRefused
 from ..execution.interlock import held
 from .plan import Plan, R
 from .planner_search import PlanningWorld, Search
@@ -33,6 +36,8 @@ class PlannerService(HuskyPlugin, Generic[R]):
 
     #: Prefix of the worker thread's name, e.g. "base-plan".
     worker_name = "plan"
+    #: Whether a commit to a robot still running an earlier commit replaces that motion, or is refused.
+    replaces_running = False
 
     def __init__(self):
         """No plan yet; the worker thread starts with the first search."""
@@ -46,6 +51,9 @@ class PlannerService(HuskyPlugin, Generic[R]):
         #: The subclass's planning world. ! Worker thread only, from its first use on.
         self._world: PlanningWorld | None = None
         self._ctx: PluginContext | None = None
+        #: The task of the last commit to each robot, by serial, and the ones a newer commit is replacing.
+        self._executions: dict[str, asyncio.Task] = {}
+        self._replaced: set[asyncio.Task] = set()
 
     # --- --- --- --- --- FOR THE SUBCLASS TO SUPPLY --- --- --- --- ---
 
@@ -63,8 +71,13 @@ class PlannerService(HuskyPlugin, Generic[R]):
         """Why a ready plan no longer fits the robot, e.g. "the arm moved since planning"; "" if it still does."""
         raise NotImplementedError
 
-    def send(self, ctx: PluginContext, plan: Plan[R]) -> tuple[bool, str]:
-        """Send a ready plan to the robot. Returns whether it was taken, and a message."""
+    async def execute(self, ctx: PluginContext, plan: Plan[R], answer: Callable[[bool, str], None]) -> None:
+        """Send a ready plan to its robot and watch the motion until it is over; a task holding the robot's lease.
+
+        - Call `answer(True, message)` once the robot took the plan, or `answer(False, why)` and return if it did not.
+          Raising MotionRefused before answering answers that nothing was sent.
+        - ! Cancelled by Stop all, the plugin stopping, or a newer commit (`replaced`): stop the motion unless replaced.
+        """
         raise NotImplementedError
 
     def forget(self, plan: Plan[R]) -> None:
@@ -90,17 +103,31 @@ class PlannerService(HuskyPlugin, Generic[R]):
             self._task.cancel()
 
     def clear(self) -> None:
-        """End a search in progress and forget the plan. ! A sent plan's motion goes on: stop it on the robot."""
+        """End a search in progress and forget the plan. ! A sent plan's motion goes on: `cancel_commit` stops it."""
         self.cancel()
         if self._plan is not None:
             self.forget(self._plan)
         self._plan = None
 
     def commit(self, plan_id: int) -> asyncio.Future[tuple[bool, str]]:
-        """Send plan `plan_id` to the robot if it is still the latest and ready; resolves with (sent, message)."""
+        """Send plan `plan_id` if it is still the latest and ready; resolves with (sent, message) once sent.
+
+        The motion is then watched until it is over, holding the robot's lease.
+        """
         future = asyncio.get_running_loop().create_future()
-        self._ctx.submit(f"commit plan {plan_id}", lambda: future.set_result(self._commit(plan_id)))
+        self._ctx.submit(f"commit plan {plan_id}", lambda: self._commit(plan_id, future))
         return future
+
+    def cancel_commit(self) -> bool:
+        """Stop every motion a commit started that still runs: its task is cancelled, and `execute` stops the robot."""
+        running = [task for task in self._executions.values() if not task.done()]
+        for task in running:
+            task.cancel("commit cancelled by the operator")
+        return bool(running)
+
+    def replaced(self) -> bool:
+        """Whether a newer commit is replacing the running `execute`: called while it is being cancelled."""
+        return asyncio.current_task() in self._replaced
 
     # --- --- --- --- --- HOOKS --- --- --- --- ---
 
@@ -158,7 +185,7 @@ class PlannerService(HuskyPlugin, Generic[R]):
             abort.set()
         search.finished()
         if result.path is None:
-            self._settle(future, replace(plan, state="failed", message=f"no plan: {result.reason}"))
+            self._settle(future, replace(plan, state="failed", message=f"no plan: {result.reason}", hit=result.hit))
             return
         message, warning = search.accepted(result)
         self._settle(future, replace(plan, state="ready", path=result.path, message=message, warning=warning))
@@ -170,18 +197,64 @@ class PlannerService(HuskyPlugin, Generic[R]):
         if not future.done():
             future.set_result(plan)
 
-    def _commit(self, plan_id: int) -> tuple[bool, str]:
-        """Send plan `plan_id` if it is the latest and ready, and no robot is held for an automatic motion."""
+    def _commit(self, plan_id: int, future: asyncio.Future[tuple[bool, str]]) -> None:
+        """Start executing plan `plan_id` if it is the latest and ready, and no robot is held for an automatic motion.
+
+        Otherwise answer why not.
+        """
         plan = self._plan
         if plan is None or plan.id != plan_id:
-            return False, "nothing sent: that plan was replaced or cleared"
+            future.set_result((False, "nothing sent: that plan was replaced or cleared"))
+            return
         if plan.state != "ready":
-            return False, f"nothing sent: the plan is {plan.state}" + (f" ({plan.message})" if plan.message else "")
-        found = held(self._ctx.world)
-        if found is not None:
+            future.set_result((False, f"nothing sent: the plan is {plan.state}"
+                                      + (f" ({plan.message})" if plan.message else "")))
+            return
+        if (why := self._held_problem()) is not None:
             # ! One motion at a time: the plan stays ready, to commit once the automatic motion is over.
-            return False, f"nothing sent: {found[0]} is held by {found[1].holder} ({found[1].label}); Cancel it first"
-        sent, message = self.send(self._ctx, plan)
-        if sent:
-            self._plan = replace(plan, state="sent", message=message, warning=False)
-        return sent, message
+            future.set_result((False, why))
+            return
+        serial = plan.request.serial
+        running = self._executions.get(serial)
+        if running is not None and running.done():
+            running = None
+        if running is not None and not self.replaces_running:
+            future.set_result((False, f"nothing sent: an earlier commit still moves {serial}; wait, or Hold it"))
+            return
+        if running is not None:
+            self._replaced.add(running)
+            running.cancel()
+        self._executions[serial] = self._ctx.spawn(f"plan {plan.id} on {serial}", self._execute(plan, running, future))
+
+    async def _execute(self, plan: Plan[R], replacing: asyncio.Task | None,
+                       future: asyncio.Future[tuple[bool, str]]) -> None:
+        """Lease the plan's robot once the commit it replaces has ended, and `execute` the plan; always answers."""
+        def answer(sent: bool, message: str) -> None:
+            if future.done():
+                return
+            if sent and self._plan is not None and self._plan.id == plan.id:
+                self._plan = replace(plan, state="sent", message=message, warning=False)
+            future.set_result((sent, message))
+
+        try:
+            if replacing is not None:
+                await asyncio.gather(replacing, return_exceptions=True)  # it gives the lease back as it ends
+            if (why := self._held_problem()) is not None:
+                # ! Checked again: a robot may have been held while the replaced commit ended. Nothing awaits from
+                #   here to the lease.
+                answer(False, why)
+                return
+            with self._ctx.lease_robots([plan.request.serial], f"commit plan {plan.id}"):
+                await self.execute(self._ctx, plan, answer)
+        except MotionRefused as refused:
+            answer(False, f"nothing sent: {refused}")
+        finally:
+            self._replaced.discard(asyncio.current_task())
+            answer(False, "nothing sent: the commit ended before sending")
+
+    def _held_problem(self) -> str | None:
+        """Why nothing may be sent now: a robot held for an automatic motion (one motion at a time); None if none is."""
+        found = held(self._ctx.world)
+        if found is None:
+            return None
+        return f"nothing sent: {found[0]} is held by {found[1].holder} ({found[1].label}); Cancel it first"

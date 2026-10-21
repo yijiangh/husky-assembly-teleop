@@ -22,7 +22,7 @@ from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene, world_poses
 
 from ...config import RobotConfig
-from ...shared.base_collision.base_collision_world import BaseCollisionWorld, held_bodies
+from ...world.base_collision import BaseCollisionWorld, held_bodies
 from ...world.kinematics import stow_joints
 
 #: Keep at least this far from every other robot and body, metres.
@@ -92,7 +92,7 @@ class PlanningWorld(BaseCollisionWorld):
         nearest = min((contact for own_body in self.mirror.body_ids(part) for body in self.mirror.body_ids(other)
                        for contact in p.getClosestPoints(own_body, body, margin, physicsClientId=client)),
                       key=lambda contact: contact[8])
-        return self._label(other), tuple(nearest[6])
+        return self.snapshot.label(other), tuple(nearest[6])
 
     def clearance(self, own: str, poses, limit: float = CLEARANCE_LIMIT) -> tuple[float, tuple | None]:
         """The least distance from a robot to everything else over some floor poses, to CLEARANCE_STEP.

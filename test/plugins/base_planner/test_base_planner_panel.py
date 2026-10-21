@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from robot_fakes import lease_test_robots
 
 from husky_assembly_teleop.plugins.base_planner.panel_plugin import NO_TASK, BasePlannerPanel
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
@@ -41,10 +42,10 @@ class Planner(PlannerService):
         """Never stale."""
         return ""
 
-    def send(self, ctx, plan):
-        """Keep the plan."""
+    async def execute(self, ctx, plan, answer):
+        """Keep the plan; the motion is over at once."""
         self.sent.append(plan.id)
-        return True, "sent"
+        answer(True, "sent")
 
 
 def panel_for(api) -> BasePlannerPanel:
@@ -94,7 +95,8 @@ def test_the_panel_plans_and_commits_through_the_api():
     """Plan sends the panel's request; Commit refuses when the target moved, else the planner sends the plan."""
     planner, ctx = Planner(), SimpleNamespace(submit=lambda _label, run: run(), now=lambda: 0.0,
                                               spawn=lambda _label, work: asyncio.get_running_loop().create_task(work),
-                                              log_info=lambda _text: None, world=SimpleNamespace(robots={}))
+                                              log_info=lambda _text: None, lease_robots=lease_test_robots,
+                                              world=SimpleNamespace(robots={}))
     planner.setup(ctx)
 
     async def scenario():

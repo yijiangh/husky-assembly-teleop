@@ -1,8 +1,13 @@
 """
-The robot lease: one automatic motion at a time across every robot, and every other motion command refused meanwhile.
+The one-motion-at-a-time lock: one automatic motion across every robot, and every other motion command refused then.
 
-`take` gives a lease only while no robot holds one and nothing moves (`busy_reason`); `give_back` returns it. While any
-robot is held, a plugin about to command any robot calls `refuse_while_held` first and sends nothing if it refuses.
+`take` holds a robot only while no robot is held, no robot is leased (`robot_interface/robot_lease.py`) and nothing
+moves (`busy_reason`); `give_back` returns it. While any robot is held, a plugin about to command any robot calls
+`refuse_while_held` first and sends nothing if it refuses; `PluginContext` gives no robot lease to anyone else.
+
+- ! Two leases: this lock (`HuskyRobotInterface.lease`, our `Lease`) is across every robot; the robot lease
+  (`HuskyRobotInterface.lease_slot`) is per robot, and every motion command needs it. The holder of this lock also
+  takes the held robot's robot lease (movement_exec), so its sends pass, and the robot's other users are kept off.
 
 - Hold and Stop are never refused: Hold calls the lease's `stop`, which cancels the holder's work and holds every arm.
 - "Moving" fails safe: an arm or base whose states went stale after being live counts as moving (nobody can tell).
@@ -81,16 +86,22 @@ def held(world: WorldState) -> tuple[str, Lease] | None:
 
 
 def busy_reason(world: WorldState, now: float, besides: str | None = None) -> str:
-    """Why no automatic motion may start now: a robot is held, or an arm or a base moves; "" if one may.
+    """Why no automatic motion may start now: a robot is held or leased, or an arm or a base moves; "" if one may.
+
+    A robot leased by any plugin (robot_control's teleop, a planner's commit, a base experiment) is busy: it may move.
 
     Args:
         world: The measured world.
         now: ROS time, seconds.
-        besides: A robot left out (its lease, arms and base): the one an automatic motion is for, or None.
+        besides: A robot left out (its leases, arms and base): the one an automatic motion is for, or None.
     """
     for serial, robot in world.robots.items():
         if serial != besides and lease_of(robot) is not None:
             return f"{serial} is held by {robot.lease.holder} ({robot.lease.label})"
+    for serial, robot in world.robots.items():
+        leased = robot.lease_slot.lease
+        if serial != besides and leased is not None:
+            return f"{serial} is leased by {leased.holder}"
     for serial, robot in world.robots.items():
         if serial == besides:
             continue

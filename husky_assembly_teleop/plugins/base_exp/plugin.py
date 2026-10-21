@@ -9,12 +9,12 @@ Base experiment: drive test paths from where the robot stands with the onboard p
   - Robot: constant commands, one cell (v, ω) of the command grid per run, sent from here open loop (`twist.py`);
     for how the robot's response changes with speed and turn rate.
   Each run is checked against the other robots and every scene body (`obstacles` loads with it: the lab's border).
-- Guard: during every run the robot is soft-stopped, and automation paused, once it comes within STOP_DISTANCE of
-  anything; the operator switches the velocity controller back on, drives it clear and starts again.
+- Clearance: during every run the robot is soft-stopped, and automation stopped, once it comes within STOP_DISTANCE
+  of anything in the scene (`ctx.clearance`); the operator resumes it, drives it clear and starts again.
 - Errors are measured here, the same for every controller (`tracking.py`): each new mocap pose against the path
   sent. After the follower ends, recording goes on until the robot stands still (SETTLE), for the error at the end.
 - Each run is saved to a folder of its own under the experiment's name (`record.py`), with experiment.json and
-  overview.png (`report.py`).
+  recording.npz; `report.py` adds report.json and overview.png.
 - ! Needs the Drive root (HUSKY_DRIVE_ROOT, `drive.py`) with record.RECORDING_FOLDER in it; setup fails without.
 
 ! The follower (`crl_husky pure_pursuit`) runs on the robot, or with `pure_pursuit_sim.launch.py` for a test.
@@ -29,6 +29,7 @@ import random
 from collections import deque
 from html import escape
 from pathlib import Path
+from typing import Any, Coroutine
 
 import numpy as np
 import viser
@@ -49,9 +50,10 @@ from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values, warning
 from ...ui.trace_plot import TracePlot
+from ...world.clearance import STOP_DISTANCE, Clearance, ClearanceRefused
 from ...world.checks import STALE_AFTER
 from . import record
-from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, STOP_DISTANCE, Clearance, Sampler, StandardSet
+from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, PathClearance, Sampler, StandardSet
 from .plan import Plan, plan_from
 from .report import write_report
 from .templates import PARAMETERS, TEMPLATES
@@ -64,8 +66,6 @@ LIVE_SAMPLES = 1200
 LIVE_MIN_SPANS = (0.02, 2.0, 0.05, 5.0)
 #: Seconds to wait for the follower to take a path.
 ACK_TIMEOUT = 2.0
-#: The command and odometry logs saved with a run start this many seconds before the path was sent.
-LOG_BEFORE = 1.0
 #: A run times out after its expected duration times this, plus RUN_MARGIN seconds.
 RUN_FACTOR, RUN_MARGIN = 2.0, 10.0
 #: Grid cells tried per automated run before giving up on finding a clear path, and per template before the next.
@@ -139,11 +139,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._alert = ""
         self._seed = random.randrange(2 ** 31)
         self._rng = random.Random(self._seed)
-        self._clearance = Clearance()
-        #: The constant-command run's command now, when it was last sent, and every send: (time, time, v, w, 1).
-        self._twist = (0.0, 0.0)
-        self._twist_sent = math.nan
-        self._twist_log: list[tuple] = []
+        self._clearance = PathClearance()
         #: The run's error measurement, its latest sample and phase, and the time of the mocap fix measured last.
         self._tracker: Tracker | None = None
         self._sample: Sample | None = None
@@ -223,7 +219,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._live = ctx.trace(*live, max_samples=LIVE_SAMPLES)
         panel = ctx.view.panel()
         with panel.add_tab("Base tracking", icon=viser.Icon.CHART_LINE):
-            self._plots = [TracePlot(ctx.view.gui, self._live, signal.name, seconds=None, min_span=span)
+            self._plots = [TracePlot(ctx.view.gui, self._live, signal, seconds=None, min_span=span)
                            for signal, span in zip(live, LIVE_MIN_SPANS)]
         panel.dock_left()
         self._markers = Markers(ctx)
@@ -241,7 +237,11 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._auto_runs.value = AUTO_RUNS[str(paths)]
 
     def _tracking_signals(self) -> list[Signal]:
-        """The monitor's tracking errors of the current run, and their context; unknown outside a run."""
+        """The monitor's tracking errors of the current run, and their context; unknown outside a run.
+
+        The context: turning (1 on a turn on the spot, else 0), path curvature, progress (0 to 1), path speed and turn
+        rate, phase (0 sent, 1 following, 2 settling).
+        """
         def read(pick):
             return lambda: None if self._sample is None else pick(self._sample)
 
@@ -250,7 +250,7 @@ class BaseExperimentPlugin(HuskyPlugin):
                 Signal("tracking_context",
                        read(lambda s: (s.turning, s.curvature, s.progress, s.speed, s.turn_rate, self._phase)),
                        ("turning", "curvature", "progress", "speed", "turn_rate", "phase"),
-                       "flag, 1/m, 0-1, m/s, rad/s, 0 sent 1 following 2 settling")]
+                       ("", "1/m", "", "m/s", "rad/s", ""))]
 
     def _live_signals(self, ctx: PluginContext) -> list:
         """The run's tracking errors and the chosen robot's follower commands, under fixed names for the plots."""
@@ -306,7 +306,8 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._outcome = f"not started: {problem}"
             return
         self._alert, self._auto_note, self._auto_alert = "", "", ""
-        self._task = ctx.spawn(f"base experiment {self.serial}", self._run(ctx, self._preview))
+        self._task = ctx.spawn(f"base experiment {self.serial}",
+                               self._leased(ctx, self.serial, self._run(ctx, self._preview)))
 
     def _on_auto(self, ctx: PluginContext) -> None:
         """Start automated runs, unless something keeps them from starting."""
@@ -318,8 +319,8 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._auto_note = f"auto not started: {problem}"
             return
         self._alert = ""
-        self._task = ctx.spawn(f"base experiment auto {self.serial}",
-                               self._auto(ctx, self.serial, int(self._auto_runs.value), self._auto_paths.value))
+        self._task = ctx.spawn(f"base experiment auto {self.serial}", self._leased(
+            ctx, self.serial, self._auto(ctx, self.serial, int(self._auto_runs.value), self._auto_paths.value)))
 
     def _start_problem(self, ctx: PluginContext) -> str:
         """Why no run can start now, or ""."""
@@ -328,10 +329,21 @@ class BaseExperimentPlugin(HuskyPlugin):
             return "a run is going on"
         if found := held(ctx.world):
             return f"{found[0]} is held by {found[1].holder} ({found[1].label}): one motion at a time"
+        lease = ctx.world.robots[self.serial].lease_slot.lease
+        if lease is not None:
+            return f"{self.serial} is leased by {lease.holder}"
         problem = base.follow_problem()
         return f"{self.serial}: {problem}" if problem else ""
 
     # --- --- --- --- --- RUNS (tasks) --- --- --- --- ---
+
+    async def _leased(self, ctx: PluginContext, serial: str, work: Coroutine[Any, Any, None]) -> None:
+        """Run `work` holding the robot's lease, so nothing else in this monitor drives it meanwhile."""
+        try:
+            with ctx.lease_robots([serial], "experiment"):
+                await work
+        finally:
+            work.close()  # never started if the lease was refused; closing it avoids a "never awaited" warning
 
     async def _run(self, ctx: PluginContext, plan: Plan, automation: dict | None = None,
                    recorded: bool = True) -> None:
@@ -349,7 +361,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._tracker, self._sample, self._phase, self._measured_fix = Tracker(plan.path), None, SENT, None
         self._live.clear()
         experiment: dict = {}
-        path_id, sent_at, guard, timed_out, estopped, lost = None, math.inf, None, False, False, ""
+        path_id, sent_at, clearance, timed_out, estopped, lost = None, math.inf, None, False, False, ""
 
         def report() -> FollowerState | None:
             follower = base.state.follower
@@ -358,10 +370,10 @@ class BaseExperimentPlugin(HuskyPlugin):
 
         def ended() -> bool:
             nonlocal lost
-            # * Without its pose the guard is blind: stop, though the follower also aborts on its own.
+            # * Without its pose the clearance is blind: stop, though the follower also aborts on its own.
             lost = pose_lost(base.mocap_id, base.state, ctx.now())
             follower = base.state.follower
-            return (bool(self._alert) or bool(base.state.estopped) or bool(lost) or follower.path_id != path_id
+            return (bool(base.state.estopped) or bool(lost) or follower.path_id != path_id
                     or follower.state != "following" or ctx.now() - follower.update_time > 2 * STALE_AFTER)
 
         try:
@@ -373,16 +385,19 @@ class BaseExperimentPlugin(HuskyPlugin):
                 experiment = await record.describe(ctx, base, plan, **more)
             self._outcome = "running"
             if found := held(ctx.world):
-                # ! Checked again here: describing the run awaited, and a robot may have been held meanwhile.
+                # ! Checked again here, right before the send: describing the run awaited, and a robot may have been
+                #   held for an automatic motion meanwhile. Nothing awaits from here to `send_path`.
                 raise ValueError(f"{found[0]} is held by {found[1].holder} ({found[1].label})")
-            path_id = experiment["path_id"] = base.send_path(*plan.poses.T, plan.t, *plan.speed_caps)
-            sent_at = self._sent_at = ctx.now()
-            guard = ctx.spawn(f"guard {plan.serial}", self._guard(ctx, plan.serial))
-            # * The follower's own errors are kept as diagnostics; the tracking signals compare controllers.
-            with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(), _times(robot),
+            # * The follower's own errors are kept as diagnostics; the tracking signals compare controllers. Its
+            #   reports and the wheel odometry are kept per message too, from before the send.
+            with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(),
                             signals.follower_position_error(robot), signals.follower_yaw_error(robot),
-                            signals.follower_command(robot), signals.follower_progress(robot)) as rec:
+                            signals.follower_command(robot), signals.follower_progress(robot),
+                            *_message_signals(robot, follower=True)) as rec, \
+                    ctx.clearance([plan.serial], STOP_DISTANCE) as clearance:
                 self._record = rec
+                path_id = experiment["path_id"] = base.send_path(*plan.poses.T, plan.t, *plan.speed_caps)
+                sent_at = self._sent_at = ctx.now()
                 await ctx.wait_until(lambda: report() is not None, timeout_s=ACK_TIMEOUT,
                                      description="the follower to take the path")
                 self._phase = FOLLOWING
@@ -403,8 +418,6 @@ class BaseExperimentPlugin(HuskyPlugin):
                 self._outcome = E_STOPPED
             elif timed_out:
                 self._outcome = "timed out: did not finish"
-            elif self._alert:
-                self._outcome = "soft stopped: too close"
             elif lost:
                 self._outcome = f"aborted: mocap lost ({lost})"
             elif follower.path_id != path_id:
@@ -418,13 +431,13 @@ class BaseExperimentPlugin(HuskyPlugin):
             ctx.log_warn(str(timeout))
         except ValueError as error:
             self._outcome = f"not sent: {error}"
+        except ClearanceRefused as refused:
+            self._outcome = f"not sent: {refused}"
         except asyncio.CancelledError:
-            self._outcome = "stopped"
+            self._outcome = self._stopped(ctx, clearance)
             raise
         finally:
             self._phase = SENT
-            if guard is not None:
-                guard.cancel()
             if not finished and path_id is not None:
                 base.stop_path()
             if recorded and experiment:
@@ -434,84 +447,61 @@ class BaseExperimentPlugin(HuskyPlugin):
     async def _run_twist(self, ctx: PluginContext, plan: Plan, automation: dict) -> None:
         """Drive one constant-command run open loop: stand TWIST_LEAD, hold the command for its duration, stop, settle, save.
 
-        The command is sent every tick from here; the guard runs as in `_run`. On the real robot it needs the velocity
-        controller (without it the run ends "not driven" and automation pauses); the simulator has none.
+        The command is sent every tick from here; the clearance runs as in `_run`. On the real robot it needs the
+        velocity controller (without it the run ends "not driven" and automation pauses); the simulator has none.
         """
         robot = ctx.world.robots[plan.serial]
         base = robot.base
         v, w = plan.settings["parameters"]["v"], plan.settings["parameters"]["w"]
         self._sent, self._record, self._outcome = plan, None, "reading the setup"
         self._tracker, self._sample, self._phase, self._measured_fix = Tracker(plan.path), None, SENT, None
-        self._twist, self._twist_sent, self._twist_log = (0.0, 0.0), math.nan, []
         self._live.clear()
         experiment: dict = {}
-        guard, checked = None, True
-
-        def send(linear: float, angular: float, check: bool) -> bool:
-            if not base.send_twist(linear, angular, require_controller=check):
-                return False
-            self._twist, self._twist_sent = (linear, angular), ctx.now()
-            self._twist_log.append((self._twist_sent, self._twist_sent, linear, angular, 1.0))
-            return True
-
+        clearance = None
         try:
             experiment = await record.describe(
                 ctx, base, plan, experiment_name=folder_name(self._experiment.value),
                 clearance={"path": PATH_CLEARANCE, "stop": STOP_DISTANCE}, automation=automation,
                 # ? Sent from the monitor over the network: the delay includes it; its stamps are the monitor's clock.
                 command_source="monitor")
-            checked = experiment["environment"] != "sim"
             self._outcome = "running"
             self._sent_at = ctx.now()
-            guard = ctx.spawn(f"guard {plan.serial}", self._guard(ctx, plan.serial))
-            with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(), *self._twist_signals(robot),
-                            signals.follower_progress(robot)) as rec:
+            with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(), signals.follower_progress(robot),
+                            *_message_signals(robot, follower=False)) as rec, \
+                    ctx.clearance([plan.serial], STOP_DISTANCE) as clearance:
                 self._record = rec
                 self._phase = FOLLOWING
                 step_at = ctx.now() + TWIST_LEAD
                 end = step_at + plan.expected
-                while ctx.now() < end and not self._alert and not base.state.estopped:
+                while ctx.now() < end and not base.state.estopped:
                     if lost := pose_lost(base.mocap_id, base.state, ctx.now()):
-                        # * Open loop, but the guard needs the pose: stop.
+                        # * Open loop, but the clearance needs the pose: stop.
                         self._outcome = f"aborted: mocap lost ({lost})"
                         return
                     command = (v, w) if ctx.now() >= step_at else (0.0, 0.0)
                     if found := held(ctx.world):
                         self._outcome = f"stopped: {found[0]} is held by {found[1].holder} ({found[1].label})"
                         return
-                    if not send(*command, checked):
+                    if not base.send_twist(*command):
                         # * No controller failure: automation pauses for the operator.
                         self._outcome = f"not driven: {PLATFORM_VELOCITY_CONTROLLER} is not active"
                         return
                     await ctx.next_tick()
-                send(0.0, 0.0, False)
+                base.send_twist(0.0, 0.0, require_controller=False)
                 self._phase = SETTLING
                 experiment["settled"] = await self._settle(ctx, plan.serial)
-            self._outcome = E_STOPPED if base.state.estopped else "soft stopped: too close" if self._alert else "done"
+            self._outcome = E_STOPPED if base.state.estopped else "done"
+        except ClearanceRefused as refused:
+            self._outcome = f"not sent: {refused}"
         except asyncio.CancelledError:
-            self._outcome = "stopped"
+            self._outcome = self._stopped(ctx, clearance)
             raise
         finally:
-            send(0.0, 0.0, False)
+            base.send_twist(0.0, 0.0, require_controller=False)
             self._phase = SENT
-            if guard is not None:
-                guard.cancel()
             if experiment:
                 self._save(ctx, plan, experiment)
             ctx.log_info(f"base experiment on {plan.serial}: {plan.label}: {self._outcome}")
-
-    def _twist_signals(self, robot) -> list[Signal]:
-        """The constant-command run's command and the times signal (pose capture, command send).
-
-        The command goes under the follower command's name, so reports and replays read it unchanged.
-        """
-        def times():
-            captured = robot.base.state.last_fix_time
-            return (math.nan if captured is None else captured, self._twist_sent)
-
-        serial = robot.config.serial
-        return [Signal(f"{serial}_follower_command", lambda: self._twist, ("v", "w"), "m/s, rad/s"),
-                Signal("times", times, ("pose", "command"), "s")]
 
     def _save(self, ctx: PluginContext, plan: Plan, experiment: dict) -> None:
         """Save the run, if recording is on, and write its report on a worker thread."""
@@ -519,26 +509,20 @@ class BaseExperimentPlugin(HuskyPlugin):
         if rec is None or not self._recording.value or len(rec) == 0:
             return
         try:
-            base = ctx.world.robots[plan.serial].base
-            since = self._sent_at - LOG_BEFORE
-            # * A constant-command run's commands come from here, not from the follower.
-            commands = (np.array(self._twist_log).reshape(-1, 5) if plan.settings["name"] == TWIST
-                        else base.follower_history(since))
-            logs = {"commands": commands, "wheel_odometry": base.odometry_history(since)}
-            saved = record.save(self._recordings, rec, plan, experiment, self._outcome, logs)
+            saved = record.save(self._recordings, rec, plan, experiment, self._outcome, ctx.config.recording_format)
         except OSError as error:
             ctx.log_error(f"base experiment: recording not saved: {error}")
             return
         self._outcome += f" → {saved.parent.name}"
         try:
-            ctx.spawn("report run", self._report(ctx, saved))
+            ctx.spawn("report run", self._report(ctx, saved), survives_soft_stop=True)
         except RuntimeError:
             ctx.log_info(f"base experiment: no report while stopping; make it with report.py {saved.parent}")
 
     async def _report(self, ctx: PluginContext, saved: Path) -> None:
         """Write the run's experiment.json and overview.png beside its recording."""
         try:
-            await ctx.run_in_thread(write_report, saved)
+            await ctx.run_in_thread(write_report, saved.parent)
         except Exception as error:  # a broken report must not count as a plugin failure
             ctx.log_warn(f"base experiment: report for {saved.parent.name} failed: {error}")
             return
@@ -630,7 +614,8 @@ class BaseExperimentPlugin(HuskyPlugin):
                                f"{failures} controller failures")
             ctx.log_info(f"base experiment {self._auto_note}")
         except asyncio.CancelledError:
-            self._auto_note = f"auto stopped by the operator after {done} runs"
+            stopper = "the clearance" if self._alert else "the operator"
+            self._auto_note = f"auto stopped by {stopper} after {done} runs"
             ctx.log_info(f"base experiment {self._auto_note}")
             raise
         finally:
@@ -708,19 +693,14 @@ class BaseExperimentPlugin(HuskyPlugin):
             await ctx.next_tick()
         return False
 
-    async def _guard(self, ctx: PluginContext, serial: str) -> None:
-        """Soft-stop the robot and flag the run once it comes within STOP_DISTANCE of anything; checks every tick."""
-        robot = ctx.world.robots[serial]
-        while True:
-            pose = self._robot_pose(ctx, serial)
-            hit = None if pose is None else await self._clearance.pose_hit(ctx.scene.snapshot, serial, pose)
-            if hit is not None:
-                robot.soft_stop()
-                self._alert = (f"{serial} came within {STOP_DISTANCE * 100:.0f} cm of {hit}: soft stopped. "
-                               f"Switch its velocity controller back on, drive it clear, then start again")
-                ctx.log_error(f"base experiment: {self._alert}")
-                return
-            await ctx.next_tick()
+    def _stopped(self, ctx: PluginContext, clearance: Clearance | None) -> str:
+        """The outcome of a cancelled run; a clearance trip also raises the alert, which stops automation."""
+        if clearance is None or clearance.problem is None:
+            return "stopped"
+        self._alert = (f"{clearance.problem}: soft stopped. Resume it in the health panel, drive it clear, then "
+                       f"start again")
+        ctx.log_error(f"base experiment: {self._alert}")
+        return "soft stopped: too close"
 
     # --- --- --- --- --- UPDATE --- --- --- --- ---
 
@@ -811,7 +791,9 @@ class BaseExperimentPlugin(HuskyPlugin):
         elif self._outcome:
             failed = self._outcome.startswith(("aborted", "timed out", "not started", "not driven", "soft stopped",
                                                E_STOPPED))
-            chips += chip(escape(self._outcome.split(" → ")[0][:40]), FAIL if failed else OK, self._outcome)
+            # * Short on the chip ("not started" without its reason), the whole outcome on hover.
+            label = "not started" if self._outcome.startswith("not started") else self._outcome.split(" → ")[0][:40]
+            chips += chip(escape(label), FAIL if failed else OK, self._outcome)
         # ! The guard's alert stays until the next Start: the operator has to deal with it.
         return (block(chips) + (warning(escape(self._alert), FAIL) if self._alert else "")
                 + (warning(escape(self._auto_alert)) if self._auto_alert else ""))
@@ -867,13 +849,15 @@ def _controller_failure(outcome: str) -> bool:
             and reason not in ("another path replaced it", "the follower went silent"))
 
 
-def _times(robot) -> Signal:
-    """When the newest pose was captured and when the follower sent its newest command, seconds (both stamped)."""
-    def read():
-        captured, follower = robot.base.state.last_fix_time, robot.base.state.follower
-        return (math.nan if captured is None else captured, math.nan if follower is None else follower.stamp)
-
-    return Signal("times", read, ("pose", "command"), "s")
+def _message_signals(robot, follower: bool) -> list[Signal]:
+    """Every mocap sample and odometry message, and every path sent and follower report or else every twist sent."""
+    every = [signals.base_floor_pose(robot, every_message=True), signals.wheel_odometry(robot, every_message=True)]
+    if follower:
+        every += [signals.path_sent(robot), signals.follower_command(robot, every_message=True),
+                  signals.follower_state(robot, every_message=True)]
+    else:
+        every.append(signals.twist_sent(robot))
+    return every
 
 
 def _return_plan(serial: str, pose, home) -> Plan:

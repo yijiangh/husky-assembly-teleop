@@ -23,8 +23,9 @@ class MirrorPool:
         self.serial: str | None = None
         #: Whether the PyBullet window is open.
         self.gui = False
-        # Display text for our ids, from the last synced snapshot.
-        self.label = Scene().label
+        #: The snapshot synced last: display text for our ids (`label`), and the scene of a `CollisionHit`.
+        self.snapshot = Scene()
+        self.label = self.snapshot.label
         #: Given to each mirror: logs each full rebuild of its cell, and why. Set by the plugin.
         self.log: Callable[[str], None] | None = None
 
@@ -62,7 +63,7 @@ class MirrorPool:
         """
         mirror = self.mirror(serial)
         mirror.sync(snapshot)
-        self.label = snapshot.label
+        self.snapshot, self.label = snapshot, snapshot.label
         return mirror
 
     def set_gui(self, gui: bool, snapshot: Scene, serial: str) -> None:

@@ -1,19 +1,29 @@
-"""robot_control's moves on an arm with its real checks: joint moves, streamed Cartesian moves, Hold and the D-pad."""
+"""robot_control's moves on an arm with its real checks: joint jogs, streamed Cartesian moves, Hold and the D-pad."""
 
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from robot_fakes import TCP_ORIENTATION, TCP_POSITION, fake_arm
+from robot_fakes import TCP_ORIENTATION, TCP_POSITION, FreeRobots, fake_arm, lease_context, wait_ticks_until
+from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
-from husky_assembly_teleop.plugins.robot_control.plugin import RobotControlPlugin, _BaseWidgets
-from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER,
-                                                       SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_NAMES)
+from husky_assembly_teleop.plugins.robot_control.dpad import HOLD_TIMEOUT
+from husky_assembly_teleop.plugins.robot_control.markers import place_markers, target_from_world
+from husky_assembly_teleop.plugins.robot_control.plugin import BASE, RobotControlPlugin, _BaseWidgets
+from husky_assembly_teleop.plugins.robot_control.status import refusal_chip
+from husky_assembly_teleop.plugins.robot_control.teleop_lease import IDLE_AFTER
+from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, MOVING_WITHIN,
+                                                       SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_LIMITS)
 from husky_assembly_teleop.robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
+from husky_assembly_teleop.robot_interface.robot_lease import Lease, take_lease
+from husky_assembly_teleop.world.clearance import ALL_ARMS, STOP_DISTANCE, Clearance
+from scaffolding_assembly_core.geometry import Pose
 
 pytestmark = pytest.mark.safety
 
@@ -21,21 +31,20 @@ pytestmark = pytest.mark.safety
 TICK = 0.05
 
 
-def free_world() -> SimpleNamespace:
-    """The world's robots as the robot lease reads them: robot 0804, held by no plugin (`execution/interlock.py`)."""
-    return SimpleNamespace(robots={"0804": SimpleNamespace(lease=None)})
-
-
 class Context:
     """A plugin context whose clock is the arm's node clock and advances one TICK per `next_tick`.
 
-    `follow` runs every tick, to play the arm moving. No robot is held for an automatic motion (`world`).
+    `follow` runs every tick, to play the arm moving.
     """
 
     def __init__(self, arm, follow=lambda: None):
-        """Share `arm`'s clock."""
+        """Share `arm`'s clock; every robot's lease is free."""
         self.arm, self.follow, self.lines = arm, follow, []
-        self.world = free_world()
+        self.world = SimpleNamespace(robots=FreeRobots())
+
+    def take_lease(self, serials, label):
+        """Lease robots of the fake world, as the monitor does."""
+        return take_lease([self.world.robots[serial].lease_slot for serial in serials], f"robot_control: {label}")
 
     def now(self) -> float:
         """The arm's ROS time."""
@@ -122,36 +131,14 @@ def test_test_mode_checks_one_target_and_streams_nothing():
     assert not arm._target_frame.sent and "TEST MODE" in ctx.text()
 
 
-@pytest.mark.parametrize("arrives", [True, False])
-def test_a_joint_move_waits_for_the_arm_and_never_raises(arrives):
-    """The move goes out through every check; arrival is logged, and so is a timeout, without raising."""
-    arm = fake_arm()
-    target = np.radians([20.0, -30.0, 40.0, 0.0, 10.0, 0.0])
-
-    def follow():
-        arm.state.last_update_time = arm._node.now
-        if arrives:
-            for name, value in zip(UR_JOINT_NAMES, target):
-                arm.state.joint_positions[f"ur_arm_{name}"] = float(value)
-
-    ctx = Context(arm, follow)
-    asyncio.run(RobotControlPlugin()._execute_move(ctx, "0804", arm, target))
-    assert len(arm._trajectory.sent) == 1 and not arm._node.log.text("error")
-    assert ("arrived" in ctx.text()) is arrives and ("timed out" in ctx.text()) is not arrives
-
-
-@pytest.mark.parametrize("controller", [SCALED_JOINT_TRAJECTORY_CONTROLLER, CARTESIAN_COMPLIANCE_CONTROLLER])
-def test_a_cancelled_move_holds_the_arm(controller):
-    """Stop all, the plugin stopping or shutdown cancel the task: the trajectory or the targets must not run on."""
-    arm = fake_arm(controller)
+def test_a_cancelled_move_holds_the_arm():
+    """Stop all, the plugin stopping or shutdown cancel the task: the targets must not run on."""
+    arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
     ctx = Context(arm, tracking(arm))
     plugin = RobotControlPlugin()
 
     async def run():
-        if controller == CARTESIAN_COMPLIANCE_CONTROLLER:
-            move = plugin._stream_cartesian_move(ctx, "0804", arm, TCP_POSITION + [0.05, 0.0, 0.0], TCP_ORIENTATION)
-        else:
-            move = plugin._execute_move(ctx, "0804", arm, np.radians([20.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
+        move = plugin._stream_cartesian_move(ctx, "0804", arm, TCP_POSITION + [0.05, 0.0, 0.0], TCP_ORIENTATION)
         task = asyncio.create_task(move)
         for _ in range(3):
             await asyncio.sleep(0)
@@ -166,8 +153,7 @@ def test_a_cancelled_move_holds_the_arm(controller):
 def test_one_move_per_arm_at_a_time_and_hold_cancels_it():
     """A second Start while a move runs is ignored; Hold cancels the running move and holds the arm."""
     arm, plugin = fake_arm(), RobotControlPlugin()
-    ctx = Context(arm)
-    plugin._ctx = ctx
+    ctx = plugin._ctx = Context(arm)  # * Hold reads the robot's lock through the context kept from setup
 
     async def run():
         never = asyncio.Event()
@@ -189,19 +175,133 @@ def test_one_move_per_arm_at_a_time_and_hold_cancels_it():
 def test_hold_also_removes_an_applied_force():
     """After Hold the compliance controller must no longer push with the force set before."""
     arm, plugin = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER), RobotControlPlugin()
-    plugin._ctx = Context(arm)
-    plugin._apply_force(("0804", "ur_arm"), arm, np.array([0.0, 0.0, 10.0]))
+    plugin._ctx = Context(arm)  # * Hold reads the robot's lock through the context kept from setup
+    plugin._apply_force(plugin._ctx, ("0804", "ur_arm"), arm, np.array([0.0, 0.0, 10.0]))
     plugin._hold_arm("0804", arm)
     assert arm._target_wrench.sent[-1].wrench.force.z == 0.0 and not plugin._applied_force
+
+
+def _jogged_arm(joints=None):
+    """A plugin with one arm under the joint controller, at full jog speed, and a context sharing its clock."""
+    arm, plugin = fake_arm(joints=joints), RobotControlPlugin()
+    plugin._arms = [SimpleNamespace(serial="0804", arm=arm, jog_speed=SimpleNamespace(value=1.0), free_drive_keep=None)]
+    return arm, plugin, Context(arm)
+
+
+def _jog_ticks(arm, plugin, ctx, ticks: int, press=None) -> None:
+    """Run `ticks` ticks of jog updates, the arm measured fresh each tick, with `press` (joint, direction) held."""
+    for _ in range(ticks):
+        arm._node.now += TICK
+        arm.state.last_update_time = arm._node.now
+        if press is not None:
+            plugin._on_jog_hold(ctx, ("0804", "ur_arm"), *press)
+        plugin._update_jogs(ctx, ctx.now())
+
+
+def test_a_held_jog_button_sends_one_jog_and_its_release_holds():
+    """Holding sends one jog, not one per report; once the reports stop, one hold goes out."""
+    arm, plugin, ctx = _jogged_arm()
+    _jog_ticks(arm, plugin, ctx, 5, press=(0, 1.0))
+    assert len(arm._trajectory.sent) == 1 and len(arm._trajectory.sent[0].points) > 2
+    _jog_ticks(arm, plugin, ctx, int(2 * HOLD_TIMEOUT / TICK))
+    assert len(arm._trajectory.sent) == 2 and "hold sent" in arm._node.log.text("info")
+
+
+def test_another_jog_button_holds_the_arm_and_jogs_once_it_is_still():
+    """Switching buttons holds the arm; the new jog waits, quietly, until the arm could take it."""
+    arm, plugin, ctx = _jogged_arm()
+    _jog_ticks(arm, plugin, ctx, 2, press=(0, 1.0))
+    _jog_ticks(arm, plugin, ctx, int(MOVING_WITHIN / TICK) - 1, press=(1, -1.0))
+    assert [len(trajectory.points) == 1 for trajectory in arm._trajectory.sent] == [False, True]
+    _jog_ticks(arm, plugin, ctx, 3, press=(1, -1.0))
+    assert [len(trajectory.points) == 1 for trajectory in arm._trajectory.sent] == [False, True, False]
+    assert not arm._node.log.text("error")
+
+
+@pytest.mark.parametrize("stop", ["soft stop", "controller off"])
+def test_a_jog_is_held_when_the_robot_stops_or_the_controller_changes(stop):
+    """A soft stop or another controller ends the press at once, with a hold, and raises nothing."""
+    arm, plugin, ctx = _jogged_arm()
+    _jog_ticks(arm, plugin, ctx, 2, press=(0, 1.0))
+    if stop == "soft stop":
+        arm._latch.stopped = True
+    else:
+        arm.state.controllers.active = None
+    _jog_ticks(arm, plugin, ctx, 3, press=(0, 1.0))
+    assert len(arm._trajectory.sent) == 2 and "hold sent" in arm._node.log.text("info")
+
+
+def test_a_jog_leases_the_robot_until_it_is_idle():
+    """The jog goes out under robot_control's lease; once released and still for IDLE_AFTER, the lease is given back."""
+    arm, plugin, ctx = _jogged_arm()
+    _jog_ticks(arm, plugin, ctx, 2, press=(0, 1.0))
+    assert plugin._leases.held("0804") and len(arm._trajectory.sent) == 1
+    arm.state.is_executing = False
+    for _ in range(int((2 * HOLD_TIMEOUT + IDLE_AFTER) / TICK) + 2):
+        _jog_ticks(arm, plugin, ctx, 1)
+        arm.state.is_executing = False
+        plugin._leases.release_idle(ctx, partial(plugin._busy, ctx.now()))
+    assert not plugin._leases.held("0804")
+
+
+def test_a_jog_on_a_robot_another_plugin_holds_is_dropped_and_says_why():
+    """Leased to the arm planner: nothing is sent, nothing raises, and a "lease refused" chip names the holder."""
+    arm, plugin, ctx = _jogged_arm()
+    Lease("arm_planner: commit plan 2", (ctx.world.robots["0804"].lease_slot,))
+    _jog_ticks(arm, plugin, ctx, 5, press=(0, 1.0))
+    assert not arm._trajectory.sent and not plugin._leases.held("0804")
+    refused = plugin._refusals[("0804", "ur_arm")]
+    assert refused.label == "lease refused" and "leased by arm_planner: commit plan 2" in refused.reason
+    chip = refusal_chip([refused], ctx.now())
+    assert ">lease refused<" in chip and "arm_planner: commit plan 2" in chip
+    assert ctx.text().count("leased by arm_planner") == 1, "logged once, not every tick"
+
+
+def test_a_jog_the_arm_refuses_shows_the_arms_reason():
+    """The arm's own checks refuse the jog: its `last_refusal` carries the reason for the chip."""
+    arm, plugin, ctx = _jogged_arm()
+    arm.state.operational, arm.state.problem = False, "protective stop"
+    _jog_ticks(arm, plugin, ctx, 2, press=(0, 1.0))
+    assert not arm._trajectory.sent
+    assert arm.last_refusal.label == "move refused" and "protective stop" in arm.last_refusal.reason
+    assert ">move refused<" in refusal_chip([plugin._refusals.get(("0804", "ur_arm")), arm.last_refusal], ctx.now())
+
+
+def test_a_tool_button_on_a_leased_robot_says_why():
+    """A one-shot command refused for the lease returns None and leaves a chip instead of raising."""
+    arm, plugin, ctx = _jogged_arm()
+    Lease("movement_exec", (ctx.world.robots["0804"].lease_slot,))
+    assert plugin._leased(ctx, ("0804", "ur_arm"), lambda: arm.send_target_wrench([0.0, 0.0, 1.0])) is None
+    assert plugin._refusals[("0804", "ur_arm")].label == "lease refused"
+
+
+def test_a_jog_at_the_joint_limit_is_refused_once_per_press():
+    """At the limit nothing is sent, and a held button warns once, not every tick."""
+    arm, plugin, ctx = _jogged_arm(joints=[UR_JOINT_LIMITS[0], 0.0, 0.0, 0.0, 0.0, 0.0])
+    _jog_ticks(arm, plugin, ctx, 5, press=(0, 1.0))
+    assert not arm._trajectory.sent and ctx.text().count("at its limit") == 1
+
+
+def test_the_gizmo_and_the_sliders_name_the_same_target():
+    """A target in the husky's base_link, drawn in the world, comes back the same from a gizmo at that pose."""
+    arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
+    arm.base_in_husky = Pose((0.2, -0.1, 0.4), tuple(Rotation.from_euler("xyz", [0.3, -0.2, 1.0]).as_quat()))
+    inertia = Pose((1.0, 2.0, 0.5), tuple(Rotation.from_euler("z", 0.7).as_quat()))
+    ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial="0804")]),
+                          kinematics=SimpleNamespace(link_pose=lambda serial, link: inertia))
+    position, orientation = np.array([0.5, 0.1, 0.6]), Rotation.from_euler("xyz", [10, 20, 30], degrees=True).as_quat()
+    world = place_markers(ctx, "0804", arm, arm.from_husky(position, orientation), np.zeros(3), None)["target_world"]
+    back = target_from_world(ctx, "0804", arm, Pose(tuple(world[0]), tuple(world[1])))
+    np.testing.assert_allclose(back[0], position, atol=1e-9)
+    assert (Rotation.from_quat(back[1]).inv() * Rotation.from_quat(orientation)).magnitude() < 1e-9
 
 
 def _driven_base():
     """A plugin with one base whose velocity controller runs, recording its twists."""
     sent, controller = [], [PLATFORM_VELOCITY_CONTROLLER]
     base = SimpleNamespace(controllers=SimpleNamespace(is_active=lambda name: name == controller[0]),
-                           send_twist=lambda linear, angular: sent.append((linear, angular)))
+                           send_twist=lambda linear, angular: sent.append((linear, angular)), soft_stopped=False)
     plugin = RobotControlPlugin()
-    plugin._ctx = SimpleNamespace(world=free_world(), log_warn=lambda _message: None)
     plugin._bases = [_BaseWidgets(serial="0804", base=base, panel=None, status=None,
                                   speed=SimpleNamespace(value=1.0), phone_speed=SimpleNamespace(value=1.0))]
     return plugin, sent, controller
@@ -210,7 +310,7 @@ def _driven_base():
 def test_a_held_base_stops_when_its_controller_goes_off():
     """The hold is dropped as soon as the velocity controller stops, and one stop goes out."""
     plugin, sent, controller = _driven_base()
-    ctx = SimpleNamespace(now=lambda: 0.0)
+    ctx = lease_context(now=lambda: 0.0, log_warn=lambda _text: None)
     plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
     plugin.update(ctx)
     controller[0] = None
@@ -222,8 +322,87 @@ def test_a_held_base_stops_when_its_controller_goes_off():
 def test_teardown_stops_a_base_that_is_being_driven():
     """Shutting down mid-drive sends a stop."""
     plugin, sent, _controller = _driven_base()
-    ctx = SimpleNamespace(now=lambda: 0.0)
+    ctx = lease_context(now=lambda: 0.0, log_warn=lambda _text: None)
     plugin._on_hold(ctx, "0804", False, 0.0, 1.0)
     plugin.update(ctx)
     plugin.teardown(ctx)
     assert sent[-1] == (0.0, 0.0)
+
+
+class BaseContext:
+    """A plugin context for driving a base: real tasks and leases, and clearances kept for the test to trip."""
+
+    def __init__(self):
+        """At ROS time 0; every robot's lease is free."""
+        self.world, self.clearances, self.lines = SimpleNamespace(robots=FreeRobots()), [], []
+
+    wait_until = staticmethod(wait_ticks_until)
+
+    def now(self) -> float:
+        """ROS time, seconds."""
+        return 0.0
+
+    def take_lease(self, serials, label):
+        """Lease robots of the fake world, as the monitor does."""
+        return take_lease([self.world.robots[serial].lease_slot for serial in serials], f"robot_control: {label}")
+
+    def spawn(self, label, work):
+        """Start `work` as a task."""
+        return asyncio.get_running_loop().create_task(work, name=label)
+
+    @contextmanager
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=()):
+        """Keep the clearance; the test trips it."""
+        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms))
+        yield self.clearances[-1]
+
+    def log_warn(self, message: str) -> None:
+        """Keep it."""
+        self.lines.append(message)
+
+
+def test_driving_with_clearance_keeps_one_on_the_base_until_it_is_unticked():
+    """Every tick of a hold drives under the same clearance; unticking Clearance ends it."""
+    plugin, sent, _controller = _driven_base()
+    plugin._bases[0].clearance = SimpleNamespace(value=True)
+    ctx = BaseContext()
+
+    async def drive() -> bool:
+        plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        guard = plugin._base_guards["0804"]
+        guarding = not guard.done()
+        plugin._bases[0].clearance.value = False
+        await guard
+        return guarding
+
+    assert asyncio.run(drive()) and len(sent) == 2
+    assert [clearance.serials for clearance in ctx.clearances] == [("0804",)]
+
+
+def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
+    """Tripped, the base is soft stopped and a held button is dropped with what the base came too close to."""
+    plugin, sent, _controller = _driven_base()
+    plugin._bases[0].clearance = SimpleNamespace(value=True)
+    base, ctx = plugin._bases[0].base, BaseContext()
+
+    async def drive() -> None:
+        plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        assert ctx.clearances[0].unknown_arms == ALL_ARMS  # * driving by hand: an unknown arm counts as stowed
+        ctx.clearances[0].problem = "robot 0804 came within 10 cm of wall"
+        base.soft_stopped = True  # as the monitor's trip does
+        guard = plugin._base_guards["0804"]
+        guard.cancel()
+        await asyncio.gather(guard, return_exceptions=True)
+        plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
+        plugin.update(ctx)
+
+    asyncio.run(drive())
+    refusal = plugin._refusals[("0804", BASE)]
+    assert refusal.label == "too close" and "came within 10 cm of wall: soft stopped" in refusal.reason
+    assert "0804" not in plugin._held and sent[-1] == (0.0, 0.0)

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from controller_manager_msgs.srv import ListControllers, SwitchController
+from controller_manager_msgs.srv import ConfigureController, ListControllers, SwitchController
 from rclpy.node import Node
 
 from .connections import RosConnections
@@ -70,11 +70,13 @@ class ControllerManagerInterface:
         self._connect()
 
     def _connect(self) -> None:
-        """Create the two service clients and the poll timer."""
+        """Create the service clients and the poll timer."""
         self._list_client = self._ros.client(
             ListControllers, f"{self.namespace}/controller_manager/list_controllers")
         self._switch_client = self._ros.client(
             SwitchController, f"{self.namespace}/controller_manager/switch_controller")
+        self._configure_client = self._ros.client(
+            ConfigureController, f"{self.namespace}/controller_manager/configure_controller")
         # * Polled: the service is often not up yet at construction, and controllers can change externally.
         self._ros.timer(REFRESH_PERIOD, self.refresh)
 
@@ -124,11 +126,12 @@ class ControllerManagerInterface:
         future.add_done_callback(self._on_list_answer)
         return True
 
-    def switch(self, controller: str) -> bool:
+    def switch(self, controller: str, unguarded: bool = False) -> bool:
         """Start `controller`, stopping whichever switchable one is running; the outcome lands in `state`.
 
         Args:
             controller: One of `switchable`.
+            unguarded: Skip the guard. ! Only for `hold` and `resume`: stopping and recovering need no lease.
 
         Returns:
             bool: True if the request went out or it already runs. False otherwise; `state.switch_error` says why.
@@ -138,7 +141,7 @@ class ControllerManagerInterface:
                                        f"on {self.namespace}")
             self._node.get_logger().error(self.state.switch_error)
             return False
-        if self._guard is not None and (problem := self._guard(controller)):
+        if not unguarded and self._guard is not None and (problem := self._guard(controller)):
             self.state.switch_error = f"{self.namespace}: not starting {controller}: {problem}"
             self._node.get_logger().error(self.state.switch_error)
             return False
@@ -171,6 +174,38 @@ class ControllerManagerInterface:
         future = self._switch_client.call_async(request)
         future.add_done_callback(lambda done: self._on_switch_answer(controller, done))
         return True
+
+    def restart(self, controller: str) -> bool:
+        """Start a stopped `controller` afresh: configure it again, then switch to it, both unguarded.
+
+        ! Only for `resume`. Stopped and started again, a diff drive controller keeps its speed limiter's last
+          commands and brakes from them once started: the base creeps. Configuring clears them.
+        If the controller manager cannot configure it (it still runs, or the manager is older), it is switched to as
+        it is, and the log says so.
+
+        Returns:
+            bool: True if the request went out.
+        """
+        if not self._configure_client.service_is_ready():
+            return self.switch(controller, unguarded=True)
+        request = ConfigureController.Request()
+        request.name = controller
+        self._configure_client.call_async(request).add_done_callback(
+            lambda done: self._on_configure_answer(controller, done))
+        return True
+
+    def _on_configure_answer(self, controller: str, future) -> None:
+        """Switch to `controller` once its configure is answered, configured afresh or not."""
+        try:
+            ok = bool(future.result().ok)
+        except Exception as error:
+            ok, why = False, f"configure_controller raised: {error}"
+        else:
+            why = "the controller manager refused (it still runs, or the manager is older)"
+        if not ok:
+            self._node.get_logger().warning(f"{self.namespace}: {controller} not configured afresh: {why}; "
+                                            f"starting it as it was, so the base may creep")
+        self.switch(controller, unguarded=True)
 
     def deactivate_all(self) -> bool:
         """Stop every switchable controller and start none, for the soft stop.

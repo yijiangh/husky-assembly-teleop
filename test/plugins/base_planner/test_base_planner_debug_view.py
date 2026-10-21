@@ -1,6 +1,5 @@
 """Tests for the base planner's debug view: a search's record drawn on the floor and listed in the panel."""
 
-from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -50,11 +49,7 @@ def test_debug_off_draws_nothing(server):
 
 def _ctx(server: viser.ViserServer):
     """A plugin context with just what the view uses; deferred callbacks run at once."""
-    @contextmanager
-    def ui():
-        yield server.gui
-
-    return SimpleNamespace(view=SimpleNamespace(scene=server.scene, scene_root="/plugin", ui=ui),
+    return SimpleNamespace(view=SimpleNamespace(scene=server.scene, scene_root="/plugin", gui=server.gui),
                            defer_value=lambda label, run: lambda event: run(event.target.value))
 
 

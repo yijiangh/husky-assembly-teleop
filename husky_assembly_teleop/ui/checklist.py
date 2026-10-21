@@ -110,7 +110,7 @@ class CheckList:
 
 
 def _tight_style(select_all_uuid: str) -> str:
-    """CSS that packs the rows of one CheckList: no gap between rows, box before a full-width label.
+    """CSS that packs the rows of one CheckList: no gap between rows, box before a label that wraps when long.
 
     ? Targets viser 1.1's DOM, `row > flex > label box > p > label[for=<uuid>]`, found through the
       "Select all" label so no other folder changes. If a viser update breaks it, only the spacing reverts.
@@ -127,5 +127,5 @@ def _tight_style(select_all_uuid: str) -> str:
             f"{rows} > div {{ padding-bottom: 0 !important; }}"
             f"{rows} > div > div {{ flex-direction: row-reverse; justify-content: flex-end; column-gap: 0.5em; }}"
             f"{rows} > div > div > div {{ width: auto !important; flex-grow: 0 !important; "
-            f"padding-right: 0 !important; }}"
+            f"flex-shrink: 1 !important; min-width: 0 !important; padding-right: 0 !important; }}"
             f"</style>")

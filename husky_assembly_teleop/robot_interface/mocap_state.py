@@ -36,6 +36,27 @@ class RawMarkers:
     measured: np.ndarray
 
 
+@dataclass(frozen=True)
+class MocapSample:
+    """One relay message of a rigid body, as a mocap event hands it on.
+
+    Attributes:
+        valid: Whether the pose is valid (`tracked`); else position and orientation are NaN.
+        position: World-frame position, metres.
+        orientation: Quaternion (x, y, z, w).
+        marker_error: Mean marker error, metres.
+        update_time: ROS time the monitor handled the message, seconds.
+        stamp: ROS time the cameras captured it, seconds (the relay PC's clock, time synced).
+    """
+
+    valid: bool
+    position: np.ndarray
+    orientation: np.ndarray
+    marker_error: float
+    update_time: float
+    stamp: float
+
+
 class MocapBody(Protocol):
     """The measured fields every mocap-tracked body has (BaseState, TrackedObject).
 

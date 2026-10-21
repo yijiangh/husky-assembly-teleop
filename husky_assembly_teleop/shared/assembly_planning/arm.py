@@ -12,7 +12,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -24,9 +24,16 @@ from ..planner.planner_search import TIME_LIMIT, PlanResult
 from ..planner.rrt_connect import connect
 from ..planner.timed_path import TimedPath
 
+if TYPE_CHECKING:
+    from ...world.collision_hit import CollisionHit
+
+#: Describes a configuration in collision: (where, the joints changed, the pair the check stopped on, the joints a
+#: search moved or None for a full check) -> the hit (`arm_planner.planner.collision_hit`).
+HitOf = Callable[[str, Mapping[str, float], tuple[str, str], "Sequence[str] | None"], "CollisionHit"]
+
 #: Collision-checking resolution along a move, radians per joint.
 JOINT_STEP = 0.05
-#: Joint speed of the preview, rad/s: the same as robot_control's joint moves.
+#: Joint speed of the preview, rad/s: the same as `joint_move`'s.
 PREVIEW_SPEED = JOINT_MOVE_MAX_SPEED
 
 
@@ -70,7 +77,8 @@ def _distance(q1: Sequence[float], q2: Sequence[float]) -> float:
 
 
 def plan_arm(mirror: CompasFabMirror, arm_name: str, goal: Sequence[float], abort: threading.Event, *,
-             label: Callable[[str], str] = str, time_limit: float = TIME_LIMIT) -> PlanResult[ArmPath]:
+             label: Callable[[str], str] = str, time_limit: float = TIME_LIMIT,
+             hit: HitOf | None = None) -> PlanResult[ArmPath]:
     """Plan a collision-free joint path for one arm, from where it is in the synced world to `goal`.
 
     Args:
@@ -80,6 +88,8 @@ def plan_arm(mirror: CompasFabMirror, arm_name: str, goal: Sequence[float], abor
         abort: Set from the main thread to end the search early.
         label: Display text for a scene id, for the reasons.
         time_limit: Give up searching after this long, seconds.
+        hit: Describes a start or target in collision as a `CollisionHit` (its message then is the reason), or None
+            for the reason alone.
 
     Returns:
         PlanResult[ArmPath]: The path, or why there is none.
@@ -89,17 +99,22 @@ def plan_arm(mirror: CompasFabMirror, arm_name: str, goal: Sequence[float], abor
     start = tuple(float(mirror.state.robot_configuration[name]) for name in names)
     goal = tuple(float(value) for value in goal)
 
-    def reason(where: str, pair: tuple[str, str]) -> str:
-        return f"{where} is in collision: {label(pair[0])} with {label(pair[1])}"
+    def refused(where: str, joints: Mapping[str, float], pair: tuple[str, str],
+                moved: Sequence[str] | None) -> PlanResult[ArmPath]:
+        if hit is None:
+            return PlanResult(None, f"{where} is in collision: {label(pair[0])} with {label(pair[1])}",
+                              time.time() - started)
+        found = hit(where, joints, pair, moved)
+        return PlanResult(None, found.message, time.time() - started, hit=found)
 
     # * Check the start in full once; the fast `search_check` skips pairs the arm does not move.
     hits = mirror.collisions()
     if hits:
-        return PlanResult(None, reason("start", hits[0]), time.time() - started)
+        return refused("start", {}, hits[0], None)
     check = mirror.search_check(names)
-    hit = check(goal)
-    if hit is not None:
-        return PlanResult(None, reason("target", hit), time.time() - started)
+    pair = check(goal)
+    if pair is not None:
+        return refused("target", dict(zip(names, goal)), pair, names)
 
     limits = np.array(UR_JOINT_LIMITS)
     corners = connect(start, goal, _distance, lambda: tuple(np.random.uniform(-limits, limits)), _extend,

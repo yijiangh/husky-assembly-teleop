@@ -106,8 +106,8 @@ class BodyGizmo:
         self._move = ctx.view.scene.add_transform_controls(f"{root}/move", scale=0.6, depth_test=False, visible=False)
         self._corner = None if on_resize is None else ctx.view.scene.add_transform_controls(
             f"{root}/corner", scale=0.25, disable_rotations=True, depth_test=False, visible=False)
-        #: Whether clicks pick and the gizmos show; e.g. from an "Active" checkbox.
-        self.active = True
+        #: Whether clicks pick and the gizmos show; e.g. from an "Edit" checkbox. Off until the plugin turns it on.
+        self.active = False
         # The body the gizmos are on, its pose and size, and the fixed corner a resize keeps.
         self._target: str | None = None
         self._pose: Pose | None = None

@@ -56,7 +56,8 @@ class RobotLab:
         """
         joints = joints or {}
         self.configs = tuple(robot_config(serial) for serial in (ALICE, BELLE, CINDY))
-        self.ctx = FakeContext(robots=self.configs, step=self.tick)
+        # * Named movement_exec: the one plugin that holds robots for an automatic motion takes its leases under it.
+        self.ctx = FakeContext(robots=self.configs, step=self.tick, name="movement_exec")
         node = fake_node(self.ctx.now, self.ctx.logs)
         self.tools = {"left_ur_arm": fake_scaffolding(node, "/a200_0806/left_gripper"),
                       "right_ur_arm": fake_scaffolding(node, "/a200_0806/right_gripper")}

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Callable, Generic, Protocol, TypeVar
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.scene import Scene
+    from ...world.collision_hit import CollisionHit
 
 #: Give up searching after this long, seconds.
 TIME_LIMIT = 10.0
@@ -35,12 +36,14 @@ class PlanResult(Generic[P]):
         reason: Why not, when `path` is None; empty otherwise.
         seconds: How long it took, syncing the world included.
         direct: Whether the straight move was already free.
+        hit: What collides, when the start or goal does.
     """
 
     path: P | None
     reason: str = ""
     seconds: float = 0.0
     direct: bool = False
+    hit: CollisionHit | None = None
 
 
 class PlanningWorld(Protocol):

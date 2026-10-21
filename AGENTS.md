@@ -58,13 +58,16 @@ python3 -m colcon build --symlink-install --packages-select husky_assembly_teleo
 source install/setup.bash
 
 cd src/husky-assembly-teleop
-python3 -m pytest test/plugins/base_planner   # while iterating: only the area you change (seconds)
-python3 -m pytest                             # quick set (~15 s): no slow tests, no linters
+python3 -m pytest -n 0 test/world             # while iterating: only the area you change, without workers (seconds)
+python3 -m pytest                             # quick set (~20 s): no slow tests, no linters
 python3 -m pytest -m safety                   # before every lab session: command guards, frames, layers, linters
 python3 -m pytest -m ""                       # everything (~1 min), before every commit
+python3 -m pytest -m "" --old-scripts         # also the old calibration scripts (~45 s more), when calibration changes
 ```
 
 - ! Run everything (`-m ""`) before every commit, and commit only when it passes.
+- Tests run on one worker per core (pytest-xdist) and fail after 60 s (pytest-timeout); both are in `requirements.txt`.
+- ! A test must not depend on how fast the machine is: workers share the cores, so a search under a wall-clock limit gets time to spare (`test_base_planner_lattice.py`).
 - `test/` mirrors the package: `test/<area>/` for `monitor`, `robot_interface`, `world`, `ui`, `plugin_api`, `shared`, `config`, `mocap_relay`, `core` (the core's mirrors as used here), `experiments`, and `test/plugins/<plugin>/`. `test/structure/` holds the layer test and the linters.
 - Mark a test `safety` when it guards a command to a real robot, or the frames and models commands rely on. Mark it `slow` when it takes over a second or checks offline analysis; every test under `test/experiments/` is slow.
 - Helpers for several folders sit in `test/` itself and import by name: `repo_paths.py`, `*_fixtures.py`, and `robot_fakes.py` (a node with a settable clock, service clients and publishers that keep what they get, an arm with its real checks, all without ROS).

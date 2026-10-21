@@ -26,6 +26,7 @@ def manager(active: str | None = None, others: dict[str, str] | None = None, rea
         interface.state.controllers[active] = "active"
     interface._reported_unavailable, interface._guard = False, None
     interface._list_client, interface._switch_client = Client(ready), Client(ready)
+    interface._configure_client = Client(ready)
     return interface
 
 
@@ -135,3 +136,25 @@ def test_a_missing_controller_manager_is_reported_once():
     assert interface._node.log.text("warning").count("not available") == 1
     interface._list_client.ready = True
     assert interface.refresh() and "is available" in interface._node.log.text("info")
+
+
+@pytest.mark.parametrize("finish, afresh", [(lambda future: future.answer(SimpleNamespace(ok=True)), True),
+                                            (lambda future: future.answer(SimpleNamespace(ok=False)), False),
+                                            (lambda future: future.fail(RuntimeError("timeout")), False)])
+def test_restart_configures_the_controller_afresh_then_switches_to_it(finish, afresh):
+    """Configure first, which clears what the controller kept from its stop; then switch either way, warning if not."""
+    interface = manager()
+    assert interface.restart(JOINTS)
+    configure, = interface._configure_client.calls
+    assert configure.request.name == JOINTS and not interface._switch_client.calls
+    finish(configure)
+    switch, = interface._switch_client.calls
+    assert list(switch.request.activate_controllers) == [JOINTS]
+    assert ("not configured afresh" in interface._node.log.text("warning")) != afresh
+
+
+def test_restart_switches_at_once_without_a_configure_service():
+    """No configure service (an older manager, the simulator): the controller is switched to as it is."""
+    interface = manager()
+    interface._configure_client = Client(False)
+    assert interface.restart(JOINTS) and len(interface._switch_client.calls) == 1

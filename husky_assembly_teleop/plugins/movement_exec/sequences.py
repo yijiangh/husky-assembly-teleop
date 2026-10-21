@@ -132,8 +132,9 @@ async def run_part(job: Job, run: PartRun) -> None:
 def world_problem(job: Job, motion: bool) -> str:
     """Why a part may not run now; "" if it may.
 
-    Every part: the process and the current action are still the request's, and nothing else moves (`others_moving`).
-    A motion also: the robot is live, the safety sync vouches for each of its arms (`ArmInterface.safety_problem`:
+    Every part: the process and the current action are still the request's, the robot is not soft stopped (Stop all,
+    or a clearance tripped: its commands are refused until Resume), and nothing else moves (`others_moving`). A motion
+    also: the robot is live, the safety sync vouches for each of its arms (`ArmInterface.safety_problem`:
     else the arm refuses the trajectory anyway), and the plan is not stale (`stale_reason`).
 
     Args:
@@ -145,6 +146,8 @@ def world_problem(job: Job, motion: bool) -> str:
         return "the process was loaded again since the request"
     if view.current is None or view.current[0] != request.action:
         return f"the current action is no longer {request.action}"
+    if job.robot.soft_stopped:
+        return f"{job.who} is soft stopped; press Resume first"
     moving = others_moving(job)
     if moving or not motion:
         return moving

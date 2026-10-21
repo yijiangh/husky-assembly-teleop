@@ -73,8 +73,9 @@ def test_trace_save_stores_extra_arrays(tmp_path):
 
 
 def test_report_plots_a_recording(tmp_path):
-    """A run folder gets experiment.json (setup, outcome, numbers by segment) and overview.png."""
-    from husky_assembly_teleop.plugins.base_exp.report import load, metrics, write_report
+    """A run folder gets report.json (its description and numbers by segment) and overview.png."""
+    from husky_assembly_teleop.plugins.base_exp.report import metrics, write_report
+    from husky_assembly_teleop.shared.recordings.runs import load_recording, save_recording, write_description
     poses = drive_turn_drive(1.0, math.pi / 2, 0.5)
     t = np.arange(0.0, 10.0, 0.05)
     n = len(t)
@@ -89,12 +90,11 @@ def test_report_plots_a_recording(tmp_path):
     trace = Trace([Signal(name, None, labels) for name, labels in names])
     for i, time in enumerate(t):
         trace.add(time, driven[i], (0.01, np.nan), 0.02, context[i], (0.2, 0.0))
-    setup = {"environment": "sim", "sim_model": {"xICR": 0.0}, "controller": {"name": "pure_pursuit"}}
-    saved = trace.save(tmp_path / "recording.npz", {
-        "path_poses": poses, "path_t": np.array([]), "path_label": np.array("Drive, turn, drive"),
-        "outcome": np.array("done"), "speed_caps": np.array([0.2, 0.5]), "expected_duration": np.array(9.0),
-        "experiment": np.array(json.dumps(setup))})
-    numbers = metrics(load(saved))
+    write_description(tmp_path, {"environment": "sim", "sim_model": {"xICR": 0.0},
+                                 "controller": {"name": "pure_pursuit"}, "speed_caps": {"linear": 0.2, "angular": 0.5},
+                                 "expected_duration": 9.0, "path_label": "Drive, turn, drive", "outcome": "done"})
+    save_recording(tmp_path, trace, "a200-0804", {"path_poses": poses, "path_t": np.array([])})
+    numbers = metrics(load_recording(tmp_path), 9.0)
     assert numbers.motion_position == pytest.approx(0.01) and numbers.motion_heading == pytest.approx(1.146, 1e-3)
     assert numbers.segments["spot turn"]["samples"] == 19 and numbers.segments["straight"]["samples"] == 161
     assert numbers.end_position == pytest.approx(math.hypot(1.0 - poses[-1, 0], poses[-1, 1]))
@@ -102,6 +102,7 @@ def test_report_plots_a_recording(tmp_path):
     data, png = write_report(tmp_path)
     report = json.loads(data.read_text())
     assert report["environment"] == "sim" and report["metrics"]["segments"]["spot turn"]["samples"] == 19
+    assert report["metrics"]["expected"] == 9.0 and data.name == "report.json"
     assert png.name == "overview.png" and png.stat().st_size > 10_000
 
 

@@ -6,9 +6,10 @@ quality is how far it predicts wrong `horizon` seconds after starting at a measu
 commands (`errors`); 1 s is about how long pure pursuit takes to correct (0.2 m lookahead at 0.2 m/s). A replay of
 a whole run from its start (`free_run`) drifts, so it is for plots only.
 
-Commands come from the follower's log (`commands`: every report, stamped) when recorded, else from the
-tick-sampled `follower_command`. Poses and commands are timed by their stamps (`times`) when recorded, else by the
-monitor's tick, which adds the latencies to the delay.
+Poses are every mocap sample at its capture time (`mocap.*`); runs recorded before that have the tick's pose at its
+capture time (`times`), or only the tick's time, which adds the latencies to the delay. Commands are every follower
+report (`follower.*`) or every command a constant-command run sent (`twist.*`), at their stamps; older runs have
+the tick's `follower_command` with `times`.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ import numpy as np
 from crl_husky.base_model import BaseModel
 
 from ...plugins.base_exp.report import segment_types
+from ...shared.recordings.runs import Recording
+from ...shared.recordings.series import held
 
 #: Integration step, seconds.
 STEP = 0.01
@@ -68,7 +71,7 @@ class Track:
         command: (M, 2) commanded v and ω.
         odometry_time: Stamp of each wheel odometry message, ascending; empty without it.
         odometry: (K, 2) v and ω from the wheels.
-        clock: "stamps" (capture and command stamps) or "tick" (the monitor's tick time).
+        clock: "stamps" (capture and command stamps) or "tick" (the monitor's tick time, the oldest runs).
     """
 
     pose_time: np.ndarray
@@ -114,33 +117,41 @@ class Errors:
         return self.position[:, column], self.heading[:, column]
 
 
-def track(run: dict[str, np.ndarray]) -> Track | None:
-    """A loaded recording (`report.load`) as a Track; None if it has too few poses."""
-    context = run["tracking_context"]
-    phase = context[:, 5]
+def track(run: Recording) -> Track | None:
+    """A loaded recording (`load_recording`) as a Track; None if it has too few poses.
+
+    A mocap sample takes the phase and segment of the first tick sample after it was handled.
+    """
+    t, phase, kinds = run["t"], run.channel("tracking_context", "phase"), segment_types(run)
     keep = np.isin(phase, PHASES)
-    stamped = "times" in run
-    times = run["times"] if stamped else np.column_stack([run["t"]] * 2)
-    pose = run["floor_pose"]
-    finite = keep & np.isfinite(pose).all(axis=1) & np.isfinite(times[:, 0])
-    pose_time, first = np.unique(times[finite, 0], return_index=True)
+    stamped = "times" in run or len(run.get("mocap.floor_pose", ())) > 0
+    times = run["times"] if "times" in run else np.column_stack([t] * 2)
+    if len(run.get("mocap.floor_pose", ())):
+        seen = np.searchsorted(t, run["mocap.t"], side="left")
+        inside = seen < len(t)
+        seen = seen[inside]
+        pose_time, pose = run["mocap.stamp"][inside], run["mocap.floor_pose"][inside]
+        pose_phase, pose_kinds = phase[seen], kinds[seen]
+    else:
+        pose_time, pose, pose_phase, pose_kinds = times[:, 0], run["floor_pose"], phase, kinds
+    finite = np.isin(pose_phase, PHASES) & np.isfinite(pose).all(axis=1) & np.isfinite(pose_time)
+    pose_time, first = np.unique(pose_time[finite], return_index=True)
     if len(pose_time) < FEWEST_POSES:
         return None
     pose = pose[finite][first].copy()
     pose[:, 2] = np.unwrap(pose[:, 2])
-    moving = (phase[finite] == FOLLOWING)[first]
-    kinds = segment_types(context[finite])[first]
+    moving = (pose_phase[finite] == FOLLOWING)[first]
+    kinds = pose_kinds[finite][first]
 
-    log = run.get("commands")
-    if stamped and log is not None and len(log):
-        command_time, command = log[:, 1], log[:, 2:4]
+    sent = next((group for group in ("follower", "twist") if len(run.get(f"{group}.command", ()))), None)
+    if stamped and sent is not None:
+        command_time, command = run[f"{sent}.stamp"], run[f"{sent}.command"]
     else:
         command_time, command = times[keep, 1], run["follower_command"][keep]
     command_time, command = _ascending(command_time, command)
 
-    odometry = run.get("wheel_odometry")
-    if stamped and odometry is not None and len(odometry):
-        odometry_time, odometry = _ascending(odometry[:, 1], odometry[:, 2:4])
+    if stamped and len(run.get("odometry.velocity", ())):
+        odometry_time, odometry = _ascending(run["odometry.stamp"], run["odometry.velocity"])
     else:
         odometry_time, odometry = np.empty(0), np.empty((0, 2))
     return Track(pose_time, pose, moving, kinds, command_time, command, odometry_time, odometry,
@@ -149,9 +160,9 @@ def track(run: dict[str, np.ndarray]) -> Track | None:
 
 def commands_at(track: Track, model: Model, times: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """The v and ω acting at `times`: the latest command sent `model.delay` before; zero before the first."""
-    index = np.searchsorted(track.command_time, np.asarray(times) - model.delay, side="right") - 1
-    known = index >= 0
-    command = track.command[np.clip(index, 0, None)] if len(track.command) else np.zeros((*np.shape(times), 2))
+    if not len(track.command):
+        return np.zeros(np.shape(times)), np.zeros(np.shape(times))
+    command, known = held(track.command_time, track.command, np.asarray(times) - model.delay)
     return np.where(known, command[..., 0], 0.0), np.where(known, command[..., 1], 0.0)
 
 

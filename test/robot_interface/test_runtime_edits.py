@@ -8,7 +8,7 @@ import threading
 
 import numpy as np
 import pytest
-from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot
+from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, lease_to_test
 
 from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER
 from husky_assembly_teleop.robot_interface.robot import HuskyRobotInterface, Lease
@@ -23,7 +23,7 @@ HOME = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0]
 
 def compliant_arm(ctx: FakeContext):
     """An arm under the compliance controller, its TCP measured now, a target sent 20 mm away 0.1 s ago."""
-    arm = fake_arm(fake_node(ctx.now, ctx.logs), "ur_arm", HOME, active=CARTESIAN_COMPLIANCE_CONTROLLER)
+    arm = lease_to_test(fake_arm(fake_node(ctx.now, ctx.logs), "ur_arm", HOME, active=CARTESIAN_COMPLIANCE_CONTROLLER))
     state = arm.state
     state.tcp_position, state.tcp_orientation = np.array([0.4, 0.1, 0.4]), np.array([0.0, 0.0, 0.0, 1.0])
     state.tcp_update_time = ctx.t
@@ -47,7 +47,8 @@ def test_both_arms_carry_their_velocities():
     """E2: the multi-arm message's points carry each arm's velocities; velocities for other arms are refused."""
     ctx = FakeContext()
     node = fake_node(ctx.now, ctx.logs)
-    robot = fake_robot(node, "a200-0806", [fake_arm(node, "left_ur_arm", HOME), fake_arm(node, "right_ur_arm", HOME)])
+    robot = lease_to_test(fake_robot(node, "a200-0806", [fake_arm(node, "left_ur_arm", HOME),
+                                                         fake_arm(node, "right_ur_arm", HOME)]))
     positions = np.array([HOME, np.add(HOME, 0.01), np.add(HOME, 0.02)])
     velocities = {"left_ur_arm": np.full((3, 6), 0.01), "right_ur_arm": np.full((3, 6), 0.02)}
     velocities["left_ur_arm"][-1] = velocities["right_ur_arm"][-1] = 0.0

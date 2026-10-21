@@ -9,7 +9,6 @@ and report.json. No ROS. Follows doc/experiment_report_guide.md: numbers only, n
 from __future__ import annotations
 
 import csv
-import json
 import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -19,8 +18,9 @@ from matplotlib.figure import Figure
 
 from ...plugins.base_planner.follow import DEVIATED, DEVIATED_XICRS, EXACT
 from ...plugins.base_planner.path import densify
-from ...plugins.base_planner.recording import load_description, load_plan_arrays
+from ...plugins.base_planner.recording import load_plan_arrays
 from ...plugins.base_planner.tasks import BY_NAME, TASK_ORIGIN, TASKS
+from ...shared.recordings.runs import load_description, recording_path, write_report
 from .figures import colour, draw_all, draw_lab
 from .report import (SimulatedMetrics, RunMetrics, draw_floor, load, metrics, plot, plot_plan, planner,
                      settings_line, simulated_metrics)
@@ -175,12 +175,11 @@ def load_attempts(experiment: Path) -> list[Attempt]:
         attempt = Attempt(len(attempts) + 1, folder, description)
         if (folder / "plan.npz").is_file():
             plot_plan(folder)
-        if (folder / "recording.npz").is_file():
+        if recording_path(folder) is not None:
             data = load(folder)
             attempt.run = metrics(data)
             plot(data, attempt.run, folder / "overview.png", folder.name)
-            (folder / "report.json").write_text(json.dumps({**description, "metrics": asdict(attempt.run)},
-                                                           indent=2, default=_plain) + "\n")
+            write_report(folder, description, asdict(attempt.run))
             outcome = (description.get("run") or {}).get("outcome", "")
             if outcome.startswith(OPERATOR):
                 attempt.run_left_out = f"run {outcome}"
@@ -745,10 +744,6 @@ def _pose(pose) -> str:
 
 def _strip(cell: str) -> str:
     return cell.replace("**", "")
-
-
-def _plain(value):
-    return value.item() if isinstance(value, np.generic) else np.asarray(value).tolist()
 
 
 RESULTS_PROMPT = """# Prompt for results.md

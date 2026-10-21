@@ -80,7 +80,7 @@ def draw_lab(attempts: list, planners: list[str], out: Path, environment: str) -
     for attempt in runs:
         run = load(attempt.folder)
         color = colour(attempt.planner, planners)
-        following = np.flatnonzero(run["follower_progress"][:, 2] == FOLLOWING)
+        following = np.flatnonzero(run.channel("follower_progress", "state") == FOLLOWING)
         driven = run["floor_pose"][following[0]:] if len(following) else run["floor_pose"]
         axis.plot(*run["path_poses"][:, :2].T, "--", color=color, linewidth=1.0, alpha=0.7, zorder=3)
         axis.plot(*driven[:, :2].T, "-", color=color, linewidth=1.6, zorder=4)

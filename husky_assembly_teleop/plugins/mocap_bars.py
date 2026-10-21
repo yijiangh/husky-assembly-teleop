@@ -7,7 +7,8 @@ The view shows the real bar (blue, the process bar and its mounted halves at the
 one, and with "Show markers" the measured markers (green measured, orange filled in by Motive), the fitted markers
 (blue: markers, axis, a line per residual) and the planned markers (grey). The planned bar is the process body in
 the live scene (`process/bars/<id>`): a built bar at its assembly pose, a held one on the real robot's flange.
-Record writes a take of the fit, its residuals and the deviation to the Drive (`data_experiment/mocap_bars/`).
+Record writes a take of the fit, its residuals and the deviation to the Drive (`data_experiment/mocap_bars/`): a run
+folder per take with experiment.json and recording.npz (`shared/recordings/runs.py`).
 
 - ! Marker layouts come only from the process (`BodySpec.markers` of the halves mounted on a bar); old compas_fab
   exports converted on load have none.
@@ -21,17 +22,18 @@ Run with:  -p plugins:="['mocap_bars']"  (loads `process`)
 from __future__ import annotations
 
 import asyncio
-import json
 from html import escape
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 import viser
 
-from ..drive import drive_folder, folder_name, stamped_name
+from ..drive import drive_folder, folder_name
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..plugin_api.trace import Signal
+from ..shared.recordings.runs import run_folder, save_recording, write_description
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.scene_view import add_shape
 from ..ui.style import BUSY, NONE, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, note, section, values
@@ -171,7 +173,7 @@ class MocapBarsPlugin(HuskyPlugin):
         elif self._bar_id is None or self._object is None:
             self._message = "choose a bar and track its rigid body first"
         else:
-            self._take = ctx.spawn("record take", self._record_take(ctx))
+            self._take = ctx.spawn("record take", self._record_take(ctx), survives_soft_stop=True)
 
     async def _record_take(self, ctx: PluginContext) -> None:
         """Record the fit for the chosen seconds, then save it with the bar's layout and the plan's context."""
@@ -188,10 +190,15 @@ class MocapBarsPlugin(HuskyPlugin):
                        "step": selection.movement.id if selection is not None else None, "seconds": seconds,
                        "frame": "world (mocap, Z-up), metres; quaternions (x, y, z, w); deviation in the planned "
                                 "bar's frame, its axis z"}
-        path = self._folder / experiment / f"{stamped_name(bar_id.split('/')[-1])}.npz"
-        extra = {"model_markers": model, "model_marker_names": np.array(names),
-                 "description": np.array(json.dumps(description))}
-        await ctx.run_in_thread(take.save, path, extra)
+        extra = {"model_markers": model, "model_marker_names": np.array(names)}
+        file_format = ctx.config.recording_format
+
+        def save() -> Path:
+            folder = run_folder(self._folder, experiment, bar_id.split("/")[-1])
+            write_description(folder, description)
+            return save_recording(folder, take, None, extra, file_format)
+
+        path = await ctx.run_in_thread(save)
         fitted = int(np.isfinite(take.values("fit_rms")).sum())
         self._message = f"saved {len(take)} samples ({fitted} fitted) to {path}"
         ctx.log_info(self._message)

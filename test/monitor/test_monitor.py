@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -12,7 +13,12 @@ from robot_fakes import Log
 import husky_assembly_teleop.monitor as monitor_module
 from husky_assembly_teleop.monitor import HuskyMonitor
 from husky_assembly_teleop.plugin_api.plugin import HuskyPlugin
+from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
+from husky_assembly_teleop.world.clearance import STOP_DISTANCE
 from husky_assembly_teleop.world.measured import WorldState
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
 
 #: Consecutive failing ticks after which a plugin is stopped.
@@ -114,6 +120,27 @@ class FakeTimer:
         """Nothing to stop."""
 
 
+class FakeClearances:
+    """Stands in for ClearanceChecker: keeps what it is asked, and hands out `found` once as the finished check."""
+
+    def __init__(self):
+        """Nothing asked or found."""
+        self.asked, self.found = [], None
+
+    def check(self, _snapshot, asked) -> bool:
+        """Keep what is asked."""
+        self.asked.append(asked)
+        return True
+
+    def finished(self):
+        """`found`, once."""
+        found, self.found = self.found, None
+        return found
+
+    def close(self) -> None:
+        """Nothing to close."""
+
+
 def build(monkeypatch, *plugins: HuskyPlugin, robots=()) -> HuskyMonitor:
     """A monitor with these plugins (dependency order), built by its own `_build` without ROS or viser.
 
@@ -134,6 +161,7 @@ def build(monkeypatch, *plugins: HuskyPlugin, robots=()) -> HuskyMonitor:
     monitor._timer, monitor._stop_reasons, monitor._undecodable, monitor._shut_down = FakeTimer(), {}, set(), False
     monitor._pump_ros = lambda: 0
     monitor._startup_started, monitor._startup_times = 0.0, {}
+    monitor._clearances, monitor.clearance_trips = FakeClearances(), ()
     for index, robot in enumerate(robots):
         monitor._world.robots[f"r{index}"] = robot
     monitor._build()
@@ -208,37 +236,69 @@ def test_a_plugin_failing_setup_stops_and_its_dependents_are_never_set_up(monkey
 
 @pytest.mark.safety
 def test_soft_stop_stops_every_robot_before_plugins_act_and_cancels_their_tasks(monkeypatch):
-    """Stop all: each robot's soft stop runs before any plugin update, and every plugin task is cancelled."""
+    """Stop all: each robot's soft stop runs before any plugin update; every task but the survivors is cancelled."""
     calls = []
-    robots = [SimpleNamespace(soft_stop=lambda index=index: calls.append((f"robot {index}", "soft stop")))
+    robots = [SimpleNamespace(soft_stop=lambda reason="", index=index: calls.append((f"robot {index}", "soft stop")))
               for index in range(2)]
     monitor = build(monkeypatch, Recorder("a", calls), robots=robots)
 
     async def run():
-        task = monitor._loaded["a"].ctx.spawn("move", asyncio.sleep(60.0))
+        ctx = monitor._loaded["a"].ctx
+        move = ctx.spawn("move", asyncio.sleep(60.0))
+        load = ctx.spawn("load", asyncio.sleep(60.0), survives_soft_stop=True)
         monitor._viz.stop_requested = True
         await monitor._tick()
         await asyncio.sleep(0)
-        return task
+        return move, not load.done()
 
-    task = asyncio.run(run())
+    move, survived = asyncio.run(run())
     assert calls[1:4] == [("robot 0", "soft stop"), ("robot 1", "soft stop"), ("a", "update")]
-    assert task.cancelled()
+    assert move.cancelled() and survived
+    assert "cancelled 'a: move'" in monitor.get_logger().text("warning")
 
 
 @pytest.mark.safety
-def test_soft_stop_drops_what_was_clicked_before_it(monkeypatch):
-    """A Start queued before Stop all never runs (it would run after the stop, in the same tick); later ones do."""
+def test_clicks_queued_before_stop_all_still_run_and_a_refused_one_is_no_failure(monkeypatch):
+    """A click queued before Stop all runs after it; one whose command the stopped robot refuses ends with a warning."""
     calls = []
     monitor = build(monkeypatch, Recorder("a", calls))
     ctx = monitor._loaded["a"].ctx
-    ctx.submit("start run", lambda: calls.append(("a", "start run")))
+
+    def start() -> None:
+        raise RobotStopped("robot r0 is soft stopped, a path not sent; press Resume first")
+
+    ctx.submit("start run", start)
+    ctx.submit("load", lambda: calls.append(("a", "load")))
     monitor._viz.stop_requested = True
     ticks(monitor)
-    assert ("a", "start run") not in calls and "'start run'" in monitor.get_logger().text("warning")
-    ctx.submit("start run", lambda: calls.append(("a", "start run")))
-    ticks(monitor)
-    assert ("a", "start run") in calls
+    assert ("a", "load") in calls and monitor._loaded["a"].errors == 0
+    assert "intent 'start run' ended: robot r0 is soft stopped" in monitor.get_logger().text("warning")
+
+
+@pytest.mark.safety
+def test_a_refused_command_in_an_update_or_a_task_never_stops_the_plugin(monkeypatch):
+    """A RobotStopped raised by update tick after tick, or ending a task, is a warning, not a failure."""
+
+    class Refused(Recorder):
+        def update(self, ctx) -> None:
+            """Command a stopped robot."""
+            super().update(ctx)
+            raise RobotStopped("robot r0 is soft stopped, a twist not sent; press Resume first")
+
+    async def follow() -> None:
+        raise RobotStopped("robot r0 is soft stopped, a path not sent; press Resume first")
+
+    monitor = build(monkeypatch, Refused("a", []))
+
+    async def run():
+        monitor._loaded["a"].ctx.spawn("follow", follow())
+        for _ in range(MAX_ERRORS + 1):
+            await monitor._tick()
+
+    asyncio.run(run())
+    warnings = monitor.get_logger().text("warning")
+    assert not monitor._loaded["a"].stopped and monitor._loaded["a"].errors == 0
+    assert "plugin 'a' update ended" in warnings and "task 'a: follow' ended" in warnings
 
 
 @pytest.mark.safety
@@ -246,10 +306,11 @@ def test_a_robot_failing_to_stop_does_not_keep_the_others_from_stopping(monkeypa
     """One robot's soft stop raising is logged; the next robot still stops, tasks are cancelled, the tick goes on."""
     calls = []
 
-    def broken():
+    def broken(reason=""):
         raise RuntimeError("publisher destroyed")
 
-    robots = [SimpleNamespace(soft_stop=broken), SimpleNamespace(soft_stop=lambda: calls.append(("r1", "soft stop")))]
+    robots = [SimpleNamespace(soft_stop=broken),
+              SimpleNamespace(soft_stop=lambda reason="": calls.append(("r1", "soft stop")))]
     monitor = build(monkeypatch, Recorder("a", calls), robots=robots)
 
     async def run():
@@ -293,3 +354,48 @@ def test_a_teardown_that_raises_does_not_stop_the_others(monkeypatch):
     monitor = build(monkeypatch, Recorder("a", calls), Recorder("b", calls, raises=("teardown",)))
     asyncio.run(monitor.shutdown())
     assert ("a", "teardown") in calls and "failed in teardown" in monitor.get_logger().text("error")
+
+
+def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost_pose(monkeypatch):
+    """Each tick asks about driven robots; a found hit or a lost base pose soft stops the robot and cancels the task."""
+    calls, stops = [], []
+    tracked = SimpleNamespace(mocap_id=1, state=SimpleNamespace(marker_errors=deque([(100.0, 0.0)]),
+                                                                last_fix_time=100.0))
+    robots = [SimpleNamespace(base=tracked, soft_stop=lambda reason="", serial=serial: stops.append(serial))
+              for serial in ("r0", "r1")]
+    plugin = Recorder("a", calls)
+    monitor = build(monkeypatch, plugin, robots=robots)
+    # * Both robots known in the snapshot, else a clearance refuses to start.
+    model = SimpleNamespace(movable_joints=())
+    known = Scene(robots={robot_id(name): RobotObject(robot_id(name), model, Pose(), {}) for name in ("r0", "r1")})
+    monkeypatch.setattr(monitor_module, "take_snapshot", lambda *_args: known)
+    monitor._snapshot = known
+    ctx = monitor._loaded["a"].ctx
+
+    async def drive(serial):
+        with ctx.clearance([serial]) as clearance:
+            await ctx.wait_until(lambda: False)
+        return clearance
+
+    async def run():
+        found = ctx.spawn("drive r0", drive("r0"))
+        await asyncio.sleep(0)
+        await monitor._tick()
+        (key, own, margin, assumable), = monitor._clearances.asked[-1]
+        assert own == robot_id("r0") and margin == STOP_DISTANCE and assumable == frozenset()
+        monitor._clearances.found = [(key, "came within 10 cm of wall", None)]
+        await monitor._tick()
+        lost = ctx.spawn("drive r1", drive("r1"))
+        await asyncio.sleep(0)
+        lost_state = SimpleNamespace(marker_errors=deque(), tracked=False, tracking_valid=False, last_update_time=None)
+        robots[1].base = SimpleNamespace(mocap_id=1, state=lost_state)
+        await monitor._tick()
+        return await asyncio.gather(found, lost, return_exceptions=True)
+
+    found, lost = asyncio.run(run())
+    assert isinstance(found, asyncio.CancelledError) and isinstance(lost, asyncio.CancelledError)
+    assert stops == ["r0", "r1"]
+    errors = monitor.get_logger().text("error")
+    assert "robot r0 came within 10 cm of wall" in errors and "robot r1 cannot be checked" in errors
+    trips = [(trip.serial, trip.task) for trip in monitor.clearance_trips]
+    assert trips == [("r0", "a: drive r0"), ("r1", "a: drive r1")]

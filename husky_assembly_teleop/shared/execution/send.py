@@ -7,6 +7,7 @@ of a two-arm robot together, then waits until the time is up and every arm is at
 - Every ending but arriving holds every arm of the robot: a timeout, a stop short of the end, something else moving
   (`watch`), a cancel (re-raised). A hold an arm refuses (stale joints) makes the outcome HOLD_NOT_SENT, said loudly.
 - A dry run builds each arm's trajectory, so every check the arm runs before sending runs, and sends nothing.
+- A send the robot refuses by raising (soft stopped, or the robot's lease not held: `MotionRefused`) is REFUSED.
 - ! Main thread, from a plugin task.
 """
 
@@ -21,6 +22,7 @@ import numpy as np
 
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.arm import JOINT_STATE_MAX_AGE
+from ...robot_interface.soft_stop import MotionRefused
 from ..assembly_planning.joints import arm_joint_names
 from .retime import retime
 
@@ -214,17 +216,20 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
     if missing:
         return SendOutcome(REFUSED, f"{serial} has no arm {', '.join(missing)}")
     arms = {motion.arm: robot.arms[motion.arm] for motion in command.arms}
-    if dry_run:
-        return _dry_run(ctx, command, arms)
-    if len(command.arms) == 2:
-        sent = robot.send_multi_arm_trajectory({motion.arm: motion.positions for motion in command.arms},
-                                               command.duration,
-                                               {motion.arm: motion.velocities for motion in command.arms})
-    elif len(command.arms) == 1:
-        motion = command.arms[0]
-        sent = arms[motion.arm].send_joint_trajectory(motion.positions, command.duration, motion.velocities)
-    else:
-        return SendOutcome(REFUSED, f"{len(command.arms)} arms in one command; at most two move together")
+    try:
+        if dry_run:
+            return _dry_run(ctx, command, arms)
+        if len(command.arms) == 2:
+            sent = robot.send_multi_arm_trajectory({motion.arm: motion.positions for motion in command.arms},
+                                                   command.duration,
+                                                   {motion.arm: motion.velocities for motion in command.arms})
+        elif len(command.arms) == 1:
+            motion = command.arms[0]
+            sent = arms[motion.arm].send_joint_trajectory(motion.positions, command.duration, motion.velocities)
+        else:
+            return SendOutcome(REFUSED, f"{len(command.arms)} arms in one command; at most two move together")
+    except MotionRefused as refused:
+        return SendOutcome(REFUSED, f"{serial} refused the trajectory: {refused}; nothing sent")
     if not sent:
         return SendOutcome(REFUSED, f"{serial} refused the trajectory (the log says why); nothing sent")
     started = ctx.now()

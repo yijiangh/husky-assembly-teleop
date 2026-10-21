@@ -9,8 +9,8 @@ import pytest
 
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.plugins.base_exp.auto import (GRID, STANDARD_SET, Clearance, Sampler, StandardSet, cell_key,
-                                                         cells, check_poses, standard_set)
+from husky_assembly_teleop.plugins.base_exp.auto import (GRID, STANDARD_SET, PathClearance, Sampler, StandardSet,
+                                                         cell_key, cells, check_poses, standard_set)
 from husky_assembly_teleop.plugins.base_exp.plan import plan_from
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
@@ -69,12 +69,12 @@ def test_clearance_sees_walls_and_robots():
         return np.column_stack([x0 + s * math.cos(yaw), y0 + s * math.sin(yaw), np.full_like(s, yaw)])
 
     async def check():
-        clearance = Clearance()
+        clearance = PathClearance()
         try:
             into_wall = await clearance.path_hit(snapshot, alice.serial, straight(0, 0, 0.0, 2.5))
             toward_cindy = await clearance.path_hit(snapshot, alice.serial, straight(0, 0, -math.pi / 2, 1.8))
             open_space = await clearance.path_hit(snapshot, alice.serial, straight(0, 0, math.pi / 2, 1.0))
-            here = await clearance.pose_hit(snapshot, alice.serial, (0.0, 0.0, 0.0))
+            here = await clearance.path_hit(snapshot, alice.serial, np.array([(0.0, 0.0, 0.0)]), 0.1)
         finally:
             clearance.close()
         return into_wall, toward_cindy, open_space, here

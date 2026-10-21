@@ -8,7 +8,7 @@ import random
 import numpy as np
 import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, design_scene, purged_process, robot_config, step
-from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot
+from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, lease_to_test
 
 from husky_assembly_teleop.plugins.motion_planner.plugin import MotionPlannerPlugin
 from husky_assembly_teleop.shared.execution.send import DRY_RUN, motion_command, send_motion
@@ -74,7 +74,7 @@ def test_real_plans_pass_every_check_of_the_arms_and_send_nothing():
             start = dict(zip(trajectory.joint_names, trajectory.positions[0]))
             arms = [fake_arm(node, arm.name, [start[name] for name in arm_joint_names(arm.name)])
                     for arm in config.arms]
-            robot = fake_robot(node, serial, arms)
+            robot = lease_to_test(fake_robot(node, serial, arms))  # * as the executor's task holds its lease
             built = []
             for arm in arms:
                 build = arm.build_trajectory

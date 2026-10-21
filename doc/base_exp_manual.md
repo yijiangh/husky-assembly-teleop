@@ -27,7 +27,9 @@ Order: A, then C, at 0.2 m/s; B per condition, any time.
 Runs and reports live on the project's Google Drive:
 
 - runs: `$HUSKY_DRIVE_ROOT/data_experiment/base_exp/<experiment name>/<date>_<time>_<robot>_<path>_<sim|real>/`
-  (`recording.npz`, `experiment.json`, `overview.png`);
+  (`experiment.json`: setup and outcome; `recording.npz`; `report.json`: the run's numbers; `overview.png`). The
+  recording holds the tick's signals and every mocap sample, wheel odometry message, and follower report or command
+  sent (`mocap.*`, `odometry.*`, `follower.*` or `twist.*`, each with its own `t` and `stamp`);
 - reports: `$HUSKY_DRIVE_ROOT/data_experiment/base_exp/<experiment name>/_analysis/`.
 
 **Experiment names:** A and C together under one name per condition and speed, e.g. `alice_tiles_stowed_v020`; B
@@ -255,7 +257,7 @@ The reports hold numbers only; how they are built: `doc/experiment_report_guide.
 | "not tracked" | No mocap pose: simulator or relay not running, or wrong mocap id (Alice 1840, Belle 1850, Cindy 1860). |
 | The robot jumps between two places | Two simulators publish the same mocap topic: `pgrep -af husky_sim`, stop the old one. |
 | "auto not started: no lab border" | Add `obstacles` to the monitor's plugins. |
-| The real robot does not move, or a run ends "not driven" | The velocity controller is off: switch it on in `robot_control`, also after every soft stop. |
+| The real robot does not move, or a run ends "not driven" | The velocity controller is off: switch it on in `robot_control`; after a soft stop, press Resume in the health panel. |
 | The monitor logs "cannot decode messages" | A follower with an older message definition still runs somewhere: rebuild and restart it. |
 | A report leaves path runs out "under other conditions" | The experiment holds path runs recorded under different `CONDITIONS`; the path reports use the ones most have. Use one experiment name per condition for A and C. Constant commands are compared across conditions instead. |
 | `constant_commands.md` counts runs with a stall | The robot briefly stopped during a constant command (seen with commands sent over Wi-Fi). Only the part without it is used; nothing to do unless most runs stall. `commands_stalls.csv` lists them. |

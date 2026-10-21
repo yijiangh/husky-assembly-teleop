@@ -24,6 +24,7 @@ from typing import Any
 
 import numpy as np
 
+from ...shared.recordings.series import held, within
 from .replay import Errors, Model, Track, errors, track
 
 #: Delays tried, seconds; the one that fits best is taken. From the wheels also negative ones: odometry that arrives
@@ -143,7 +144,7 @@ def _pairs(t: Track, source: str, output: str) -> tuple[np.ndarray, ...] | None:
         if len(t.odometry_time) == 0:
             return None
         # * Wheels only while the run was followed or settling, like the poses.
-        inside = (t.odometry_time >= t.pose_time[0]) & (t.odometry_time <= t.pose_time[-1])
+        inside = within(t.odometry_time, t.pose_time[0], t.pose_time[-1])
         output_time = t.odometry_time[inside]
         forward, turn = t.odometry[inside, 0], t.odometry[inside, 1]
         sideways = np.full(len(output_time), np.nan)
@@ -157,14 +158,13 @@ def _stack(data: list[tuple], delay: float) -> tuple[np.ndarray, ...]:
       continuous speed, so it is interpolated.
     """
     columns = [[], [], [], [], []]
-    for output_time, forward, sideways, turn, input_time, v, w, held in data:
+    for output_time, forward, sideways, turn, input_time, v, w, is_held in data:
         acted = output_time - delay
-        if held:
-            index = np.searchsorted(input_time, acted, side="right") - 1
-            valid = index >= 0
-            inputs = v[index[valid]], w[index[valid]]
+        if is_held:
+            command, valid = held(input_time, np.column_stack([v, w]), acted)
+            inputs = command[valid, 0], command[valid, 1]
         else:
-            valid = (acted >= input_time[0]) & (acted <= input_time[-1])
+            valid = within(acted, input_time[0], input_time[-1])
             inputs = np.interp(acted[valid], input_time, v), np.interp(acted[valid], input_time, w)
         for column, values in zip(columns, (forward[valid], sideways[valid], turn[valid], *inputs)):
             column.append(values)

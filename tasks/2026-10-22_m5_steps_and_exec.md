@@ -326,7 +326,9 @@ Confirm buttons (assembly_run's and movement_exec's prompts each answer only the
 
 Later: merged with Jakob's `jg/viser-cleanup` 60d011a on `yh/core-port-jg-sync`; the paths cited here moved
 (`shared/planning/` → `shared/assembly_planning/`, the contracts, the planner split):
-[2026-10-25_jg_sync_60d011a.md](2026-10-25_jg_sync_60d011a.md).
+[2026-10-25_jg_sync_60d011a.md](2026-10-25_jg_sync_60d011a.md). Then 08769c1 on `yh/core-port-sync-08769c1`:
+his robot lease under our lock, his soft-stop latch, jogs instead of joint Start, the collision view:
+[2026-10-27_jg_sync_08769c1.md](2026-10-27_jg_sync_08769c1.md).
 
 Tasks A–I done on `yh/core-port`: ab5d21c runtime edits E1–E4 (A), 8ec5934 retime (B), 298c74a operator, interlock,
 basis (C), d7ee939 send (D), c2669a4 tools (E), db2afe0 lock checks in other plugins (F), ed87c3c movement_exec (G),

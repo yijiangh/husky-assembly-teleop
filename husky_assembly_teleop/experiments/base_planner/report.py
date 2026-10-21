@@ -18,7 +18,6 @@ Redo reports by hand:  python3 -m husky_assembly_teleop.experiments.base_planner
 
 from __future__ import annotations
 
-import json
 import math
 import re
 import sys
@@ -31,7 +30,9 @@ from matplotlib.figure import Figure
 
 from ...plots import heading_arrows, time_spans
 from ...plugins.base_planner.path import densify
-from ...plugins.base_planner.recording import load_description, load_plan_arrays
+from ...plugins.base_planner.recording import load_plan_arrays
+from ...shared.recordings.runs import Recording, load_description, load_recording, write_report as write_numbers
+from ...shared.recordings.series import finite_mean, span, within
 
 PATH_COLOR, ROBOT_COLOR = "tab:blue", "tab:orange"
 TURN_SHADE = "0.9"
@@ -114,17 +115,14 @@ class SimulatedMetrics:
     duration: float
 
 
-def load(folder: str | Path) -> dict:
+def load(folder: str | Path) -> Recording:
     """A run's arrays, with the robot's serial dropped from the signal names, and its description as "run".
 
     "run" holds the attempt's setup, its run's outcome and controller, and the path's goal, length and planned
     duration; "plan" the plan's record (None for runs recorded before plans were) and "plan_arrays" its plan.npz.
     """
     folder = Path(folder)
-    with np.load(folder / "recording.npz") as data:
-        pose_key = next(key for key in data.files if key.endswith("_floor_pose"))
-        prefix = pose_key[:-len("floor_pose")]
-        run = {key.removeprefix(prefix): data[key] for key in data.files}
+    run = load_recording(folder)
     description = load_description(folder)
     if description is None:
         raise FileNotFoundError(f"{folder} has no experiment.json")
@@ -239,10 +237,11 @@ def deviation(run: dict) -> tuple[np.ndarray, np.ndarray]:
     return distances, headings
 
 
-def metrics(run: dict) -> RunMetrics:
+def metrics(run: Recording) -> RunMetrics:
     """The numbers of a loaded run."""
     t, pose = run["t"], run["floor_pose"]
-    following = run["follower_progress"][:, 2] == FOLLOWING
+    state = run.channel("follower_progress", "state")
+    following = state == FOLLOWING
     distances, headings = deviation(run)
     moving = following & np.isfinite(distances)
     known = pose[np.isfinite(pose).all(axis=1)]
@@ -257,22 +256,23 @@ def metrics(run: dict) -> RunMetrics:
         planned_length=float(run["run"]["length"]),
         driven_length=driven,
         planned_duration=float(run["run"]["planned_duration"]),
-        duration=_span(t[following]),
-        pieces=int(np.nanmax(run["follower_progress"][:, 1])) + 1,
+        duration=span(t[following]),
+        pieces=int(np.nanmax(run.channel("follower_progress", "piece"))) + 1,
         stops=sum(1 for start, end in time_spans(t, following & still) if end - start >= STOP_TIME),
         spot_turn_time=float(np.sum(dt[following & spot])),
-        mean_deviation=_mean(distances[moving]),
+        mean_deviation=finite_mean(distances[moving]),
         p95_deviation=float(np.percentile(distances[moving], 95)) if moving.any() else math.nan,
         max_deviation=float(np.max(distances[moving])) if moving.any() else math.nan,
-        mean_heading=math.degrees(_mean(np.abs(headings[moving]))),
+        mean_heading=math.degrees(finite_mean(np.abs(headings[moving]))),
         max_heading=math.degrees(float(np.max(np.abs(headings[moving])))) if moving.any() else math.nan,
-        follower_cross_track=_mean(np.abs(run["follower_position_error"][following, 0])),
+        follower_cross_track=finite_mean(np.abs(run.channel("follower_position_error", "cross")[following])),
         end_position=float(np.hypot(*(known[-1, :2] - goal[:2]))) if len(known) else math.nan,
         end_heading=math.degrees(abs(math.remainder(float(known[-1, 2] - goal[2]), 2 * math.pi)))
         if len(known) else math.nan,
-        settle_drift=_settle_drift(t, pose, run["follower_progress"][:, 2]),
+        settle_drift=_settle_drift(t, pose, state),
         speed_ratio=_ratio(driven, float(np.sum(np.abs(commands[following, 0]) * dt[following]))),
-        odometry_ratio=_ratio(driven, _logged_distance(run["wheel_odometry"], t[following])),
+        odometry_ratio=_ratio(driven, _logged_distance(run.get("odometry.t", np.empty(0)),
+                                                       run.get("odometry.velocity", np.empty((0, 2))), t[following])),
     )
 
 
@@ -297,16 +297,15 @@ def write_report(folder: str | Path) -> tuple[Path, Path]:
     folder = Path(folder)
     run = load(folder)
     numbers = metrics(run)
-    data = folder / "report.json"
-    data.write_text(json.dumps({**run["run"], "metrics": asdict(numbers)}, indent=2) + "\n")
-    return data, plot(run, numbers, folder / "overview.png", folder.name)
+    return (write_numbers(folder, load_description(folder), asdict(numbers)),
+            plot(run, numbers, folder / "overview.png", folder.name))
 
 
-def plot(run: dict, numbers: RunMetrics, out: Path, title: str) -> Path:
+def plot(run: Recording, numbers: RunMetrics, out: Path, title: str) -> Path:
     """Draw the overview of a run; returns `out`."""
     t = run["t"] - run["t"][0]
     pose, poses = run["floor_pose"], run["path_poses"]
-    following = run["follower_progress"][:, 2] == FOLLOWING
+    following = run.channel("follower_progress", "state") == FOLLOWING
     distances, headings = deviation(run)
     commands = run["follower_command"]
     spot = following & (np.abs(commands[:, 0]) < STILL) & (np.abs(commands[:, 1]) >= TURNING)
@@ -345,7 +344,7 @@ def plot(run: dict, numbers: RunMetrics, out: Path, title: str) -> Path:
 
     # * Errors and commands over time.
     error.plot(t, distances * 100, color="tab:red", label="distance from the path (mocap)")
-    error.plot(t, np.abs(run["follower_position_error"][:, 0]) * 100, color="tab:purple", alpha=0.7,
+    error.plot(t, np.abs(run.channel("follower_position_error", "cross")) * 100, color="tab:purple", alpha=0.7,
                label="follower's own cross-track (point it steers)")
     error.set_ylabel("distance [cm]")
     error.set_title(f"while following: mean {numbers.mean_deviation * 100:.1f} cm, "
@@ -398,23 +397,13 @@ def _length(pose: np.ndarray) -> float:
     return float(np.sum(np.hypot(*np.diff(known[:, :2], axis=0).T))) if len(known) > 1 else 0.0
 
 
-def _logged_distance(log: np.ndarray, times: np.ndarray) -> float:
-    """Metres a log of (time, stamp, v, w) reports within the span of `times`."""
-    if len(times) < 2 or not len(log):
+def _logged_distance(received: np.ndarray, velocity: np.ndarray, times: np.ndarray) -> float:
+    """Metres the messages' (v, w) `velocity`, received at `received`, add up to within the span of `times`."""
+    if len(times) < 2 or not len(received):
         return math.nan
-    inside = log[(log[:, 0] >= times[0]) & (log[:, 0] <= times[-1])]
-    return float(np.sum(np.abs(inside[:-1, 2]) * np.diff(inside[:, 0]))) if len(inside) > 1 else math.nan
-
-
-def _mean(values: np.ndarray) -> float:
-    """Mean of the finite values, NaN if there are none."""
-    finite = values[np.isfinite(values)]
-    return float(finite.mean()) if finite.size else math.nan
-
-
-def _span(times: np.ndarray) -> float:
-    """Seconds from the first to the last time, 0 for fewer than two."""
-    return float(times[-1] - times[0]) if len(times) > 1 else 0.0
+    inside = within(received, times[0], times[-1])
+    at, speed = received[inside], velocity[inside, 0]
+    return float(np.sum(np.abs(speed[:-1]) * np.diff(at))) if len(at) > 1 else math.nan
 
 
 def _ratio(a: float, b: float) -> float:

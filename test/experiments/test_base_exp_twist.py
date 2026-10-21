@@ -6,6 +6,7 @@ import random
 
 import numpy as np
 import pytest
+from base_exp_fixtures import labelled, saved
 from crl_husky.base_model import BaseModel
 
 from husky_assembly_teleop.experiments.base_exp.commands import responses, steady, write
@@ -14,8 +15,12 @@ from husky_assembly_teleop.plugins.base_exp.twist import (MAX_WHEEL_SPEED, SEGME
                                                           grid, settings_of, twist_plan)
 
 
-def _segment_run(v, w, delay=0.2, speed=0.9, steering=0.95, x_icr=-0.12, wheel_delay=0.1, rate=20.0):
-    """A constant-command run through the simulator model, as the plugin records it: 0.5 s still, SEGMENT s, 1.5 s."""
+def _segment_run(v, w, delay=0.2, speed=0.9, steering=0.95, x_icr=-0.12, wheel_delay=0.1, rate=20.0, old=False):
+    """A constant-command run through the simulator model, as the plugin records it: 0.5 s still, SEGMENT s, 1.5 s.
+
+    Every mocap sample and every command sent, as recorded now; with `old` as runs recorded before: the tick's pose
+    and command, with `times`.
+    """
     model, fine, lead = BaseModel(x_icr, speed, steering), 20, 0.5
     seconds = lead + SEGMENT + 1.5
     t = np.arange(0.0, seconds, 1.0 / rate)
@@ -29,9 +34,14 @@ def _segment_run(v, w, delay=0.2, speed=0.9, steering=0.95, x_icr=-0.12, wheel_d
     context = np.zeros((len(t), 6))
     context[:, 5] = np.where(t < lead + SEGMENT, 1, 2)
     wheels = (t - wheel_delay >= lead) & (t - wheel_delay < lead + SEGMENT)
-    return {"t": t, "floor_pose": pose[::fine], "tracking_context": context, "follower_command": command,
-            "times": np.column_stack([t, t]), "commands": np.column_stack([t, t, command, np.ones(len(t))]),
-            "wheel_odometry": np.column_stack([t, t, v * wheels, w * wheels])}
+    run = {"t": t, "floor_pose": pose[::fine], "tracking_context": context, "odometry.t": t, "odometry.stamp": t,
+           "odometry.velocity": np.column_stack([v * wheels, w * wheels])}
+    if old:
+        run.update({"follower_command": command, "times": np.column_stack([t, t])})
+    else:
+        run.update({"mocap.t": t + 0.005, "mocap.stamp": t, "mocap.floor_pose": pose[::fine], "twist.t": t,
+                    "twist.stamp": t, "twist.command": command})
+    return labelled(run)
 
 
 def test_grid_keeps_the_wheel_limit_and_both_directions():
@@ -62,10 +72,11 @@ def test_plan_predicts_the_ideal_arc():
     assert plan.expected == SEGMENT
 
 
+@pytest.mark.parametrize("old", [False, True])
 @pytest.mark.parametrize("v, w", [(0.2, 0.5), (0.0, -0.3), (0.3, 0.0), (-0.2, 0.3)])
-def test_steady_recovers_the_response(v, w):
-    """Steady values give back the model; the step delay is the command delay (within a sample)."""
-    found = steady(_segment_run(v, w))
+def test_steady_recovers_the_response(v, w, old):
+    """Steady values give back the model, as recorded now and before; the step delay is the command delay."""
+    found = steady(_segment_run(v, w, old=old))
     if abs(v) > 0.05:
         assert found.speed_efficiency == pytest.approx(0.9, abs=0.02)
     if abs(w) > 0.1:
@@ -83,8 +94,7 @@ def test_constant_command_runs_load_with_the_others(tmp_path):
         folder.mkdir(parents=True)
         (folder / "experiment.json").write_text(json.dumps(
             {"experiment_name": "exp", "template": settings, "outcome": "done", "environment": "real"}))
-        arrays = {f"x_{k}" if k == "floor_pose" else k: value for k, value in _segment_run(0.2, 0.5).items()}
-        np.savez(folder / "recording.npz", **arrays)
+        np.savez(folder / "recording.npz", **saved(_segment_run(0.2, 0.5)))
     runs, _, left_out = load_runs(tmp_path, "exp")
     assert list(runs.run) == ["twist"] and runs.kind.iloc[0] == COMMANDS
     assert left_out == "1 without the monitor's tracking"  # the arc: a path run needs the tracking
@@ -100,8 +110,7 @@ def test_e_stopped_and_listed_runs_are_left_out(tmp_path):
         folder.mkdir(parents=True)
         (folder / "experiment.json").write_text(json.dumps(
             {"experiment_name": "exp", "template": settings_of(0.2, 0.5), "outcome": outcome, "environment": "real"}))
-        np.savez(folder / "recording.npz", **{f"x_{k}" if k == "floor_pose" else k: value
-                                              for k, value in _segment_run(0.2, 0.5).items()})
+        np.savez(folder / "recording.npz", **saved(_segment_run(0.2, 0.5)))
     (tmp_path / "exp" / EXCLUDED).write_text("# bad runs\nlisted  # e-stopped before the plugin knew\n")
     runs, _, left_out = load_runs(tmp_path, "exp")
     assert list(runs.run) == ["kept"]
@@ -116,8 +125,7 @@ def test_two_models_under_one_name_are_numbered(tmp_path):
         (folder / "experiment.json").write_text(json.dumps(
             {"experiment_name": "exp", "template": settings_of(0.2, 0.5), "outcome": "done", "environment": "sim",
              "sim_model": {"model": "m", "xICR": x_icr}}))
-        np.savez(folder / "recording.npz", **{f"x_{k}" if k == "floor_pose" else k: value
-                                              for k, value in _segment_run(0.2, 0.5).items()})
+        np.savez(folder / "recording.npz", **saved(_segment_run(0.2, 0.5)))
     runs, _, _ = load_runs(tmp_path, "exp")
     assert list(runs.robot) == ["sim m", "sim m #2"]
     assert list(runs.scenario) == ["sim m · constant commands", "sim m #2 · constant commands"]
@@ -126,8 +134,8 @@ def test_two_models_under_one_name_are_numbered(tmp_path):
 def test_stall_is_cut_out_of_the_steady_part():
     """A run whose wheels stop for a moment is judged on its longest stretch without the stop."""
     run = _segment_run(0.2, 0.5)
-    t = run["wheel_odometry"][:, 1]
-    run["wheel_odometry"][(t > 1.9) & (t < 2.3), 2:] = 0.0
+    t = run["odometry.stamp"]
+    run["odometry.velocity"][(t > 1.9) & (t < 2.3)] = 0.0
     found = steady(run)
     assert found.stalled == pytest.approx(0.3, abs=0.1) and 1.5 < found.steady < 2.2
     assert math.isnan(found.delay) and found.steering_efficiency == pytest.approx(0.95, abs=0.02)
@@ -141,8 +149,7 @@ def test_conditions_that_differ_name_the_groups(tmp_path):
         (folder / "experiment.json").write_text(json.dumps(
             {"experiment_name": "recorded_elsewhere", "template": settings_of(0.2, 0.5), "outcome": "done",
              "environment": "real", "conditions": {"arm": arm, "floor": "tiles"}}))
-        arrays = {f"x_{k}" if k == "floor_pose" else k: value for k, value in _segment_run(0.2, 0.5).items()}
-        np.savez(folder / "recording.npz", **arrays)
+        np.savez(folder / "recording.npz", **saved(_segment_run(0.2, 0.5)))
     runs, _, left_out = load_runs(tmp_path, "exp")
     assert len(runs) == 3 and left_out == "none"
     assert list(responses(runs).robot) == ["stowed", "stowed", "forward"]
@@ -158,8 +165,7 @@ def test_report_tables_render(tmp_path):
             (folder / "experiment.json").write_text(json.dumps(
                 {"experiment_name": "exp", "template": settings_of(v, w), "outcome": "done", "environment": "real",
                  "conditions": {"arm": arm, "floor": "tiles"}}))
-            arrays = {f"x_{k}" if k == "floor_pose" else k: value for k, value in _segment_run(v, w).items()}
-            np.savez(folder / "recording.npz", **arrays)
+            np.savez(folder / "recording.npz", **saved(_segment_run(v, w)))
     runs, profiles, left_out = load_runs(tmp_path, "exp")
     out = tmp_path / "out"
     out.mkdir()

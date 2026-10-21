@@ -3,7 +3,7 @@ Quick debug tool: click any scene body with a world pose, drag it with a gizmo, 
 
 Clicking in the 3D view picks the nearest body under the cursor; the dropdown does the same. Position and roll,
 pitch, yaw can also be typed in. Log prints the pose; Reset puts the body back where it was first seen.
-Untick "Active" to hide the gizmo and stop picking by click; viser does not tell the server whether a folder is open.
+Tick "Edit" (off at start) to show the gizmo and pick by click; viser does not tell the server whether a folder is open.
 To edit the lab's obstacles for good (move, resize, add, save), use the `obstacles` plugin.
 
 ! Writes other plugins' live bodies directly, which plugins normally must not do. Debug only: the moves are never
@@ -54,9 +54,9 @@ class DebugGizmoPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        with ctx.view.ui() as gui:
+        with ctx.view.ui(expanded=False) as gui:
             gui.add_html(section("move body", SECTION_CTRL))
-            self._active = gui.add_checkbox("Active", True, hint="Show the gizmo and pick bodies by clicking in 3D.")
+            self._edit = gui.add_checkbox("Edit", False, hint="Show the gizmo and pick bodies by clicking in 3D.")
             self._select = gui.add_dropdown("Body", [NONE_ENTRY])
             self._position = gui.add_vector3("Position m", (0.0, 0.0, 0.0), step=0.001)
             self._rpy = gui.add_vector3("RPY °", (0.0, 0.0, 0.0), step=0.1,
@@ -154,10 +154,10 @@ class DebugGizmoPlugin(HuskyPlugin):
         self._sync_options(ctx)
         body_id = self._select.value
         pose = self._pose(ctx, body_id)
-        self._gizmo.active = self._active.value
-        if body_id != self._gizmo_on or not self._active.value:
+        self._gizmo.active = self._edit.value
+        if body_id != self._gizmo_on or not self._edit.value:
             self._gizmo.place(body_id, pose)
-            self._gizmo_on = body_id if self._active.value else None
+            self._gizmo_on = body_id if self._edit.value else None
         if pose is None:
             self._status.content = note("no movable body: load a plugin that puts bodies, e.g. obstacles")
             return

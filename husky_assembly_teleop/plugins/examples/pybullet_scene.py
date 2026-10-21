@@ -89,7 +89,8 @@ class ExamplePybulletPlugin(HuskyPlugin):
             move = gui.add_button_group("Move", list(MOVES))
             move.on_click(ctx.defer_value("move box", lambda clicked: self._move_box(ctx, MOVES[clicked])))
 
-        self._check_task = ctx.spawn("collision checks", self._check_loop(ctx))
+        # * Only checks, never commands: a soft stop leaves it running.
+        self._check_task = ctx.spawn("collision checks", self._check_loop(ctx), survives_soft_stop=True)
 
     def _move_box(self, ctx: PluginContext, direction: tuple[int, int]) -> None:
         """Move the box one step, in place (intent, on the main thread).
@@ -136,16 +137,13 @@ class ExamplePybulletPlugin(HuskyPlugin):
                 if not robot.acting_problems()}
 
     def update(self, ctx: PluginContext) -> None:
-        """Read the tool0 poses, and restart the checks after a soft stop cancelled them.
+        """Read the tool0 poses.
 
         Args:
             ctx: This plugin's context.
         """
         self._tool_poses = {(serial, arm_name): ctx.kinematics.link_pose(serial, f"{arm_name}_tool0")
                             for serial, arm_name in self._tool_frames}
-        # ? Soft stop cancels every task; a failed task stays down.
-        if self._check_task is not None and self._check_task.cancelled():
-            self._check_task = ctx.spawn("collision checks", self._check_loop(ctx))
 
     def draw(self, ctx: PluginContext) -> None:
         """Move the tool frames and update the status text.

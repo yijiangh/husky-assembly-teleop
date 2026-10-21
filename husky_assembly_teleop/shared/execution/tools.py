@@ -5,6 +5,7 @@ A movement's tool steps on the real tools: a Robotiq move, and a scaffolding too
   stops the fingers where they are.
 - Scaffolding grasp: STOP (clears a left-over stall), wait until no tool reports STALLED, close (the M1 gripper screw
   tightens) until every tool reports STALLED. Every tool is stopped on the way out, whatever happened.
+- A command the robot refuses by raising (soft stopped, or the robot's lease not held: `MotionRefused`) is REFUSED.
 - ! Main thread, from a plugin task.
 """
 
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING, Callable, Mapping
 
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.end_effectors import ScaffoldingV3
+from ...robot_interface.soft_stop import MotionRefused
 
 if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
@@ -93,7 +95,10 @@ async def robotiq_move(ctx: PluginContext, gripper: RobotiqGripper, position: fl
         ctx.log_warn(f"DRY RUN {name}: gripper move to {position:.3f} rad passed every check, NOT SENT")
         return ToolOutcome(DRY_RUN, "every check passed; nothing sent (dry run)")
     started = ctx.now()
-    gripper.move(position, effort)
+    try:
+        gripper.move(position, effort)
+    except MotionRefused as refused:
+        return ToolOutcome(REFUSED, f"{name}: {refused}")
     try:
         await ctx.wait_until(lambda: not gripper.state.moving, timeout_s=timeout_s, description=f"{name} to answer")
     except WaitTimeout:
@@ -127,8 +132,8 @@ async def scaffolding_grasp(ctx: PluginContext, tools: Mapping[str, ScaffoldingV
             the wait for the stall to clear (up to CLEAR_TIMEOUT).
 
     Returns:
-        ToolOutcome: STALLED (clamped), TIMEOUT, REFUSED (a driver silent, or `ready` said no: nothing tightened) or
-            DRY_RUN.
+        ToolOutcome: STALLED (clamped), TIMEOUT, REFUSED (a driver silent, `ready` said no, or the robot refused
+            the close: nothing tightened) or DRY_RUN.
 
     Raises:
         asyncio.CancelledError: When cancelled; every tool was stopped first.
@@ -164,8 +169,11 @@ async def scaffolding_grasp(ctx: PluginContext, tools: Mapping[str, ScaffoldingV
         problem = ready()
         if problem:
             return ToolOutcome(REFUSED, f"{problem}; nothing tightened", ctx.now() - started, _grasp_detail(tools))
-        for tool in tools.values():
-            tool.close()
+        try:
+            for tool in tools.values():
+                tool.close()
+        except MotionRefused as refused:
+            return ToolOutcome(REFUSED, f"{refused}; nothing tightened", ctx.now() - started, _grasp_detail(tools))
         closed = ctx.now()
         try:
             await ctx.wait_until(lambda: every(closed, True), timeout_s=timeout_s,

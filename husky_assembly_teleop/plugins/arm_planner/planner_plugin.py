@@ -9,23 +9,27 @@ models in a compas_fab world (several seconds).
 
 from __future__ import annotations
 
+import asyncio
 import math
 import threading
+from typing import Callable, Sequence
 
 import numpy as np
 
+from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.arm import joint_path_move
 from ...robot_interface.mocap_state import pose_lost
 from ...shared.arm_planner_contract import ArmPlanRequest
+from ...world.collision_hit import CollisionHit
 from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from scaffolding_assembly_core.ids import robot_id
-from .planner import ArmPath, ArmPlanningWorld, arm_joint_names, plan_arm
+from .planner import ArmPath, ArmPlanningWorld, arm_joint_names, path_hit, plan_arm
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far; the panel also
 #: refuses a target this far from the planned goal.
@@ -34,9 +38,11 @@ STALE_POSITION = 0.05              # m
 STALE_YAW = math.radians(3.0)      # rad; 5 cm at 1 m reach, as STALE_POSITION
 #: Extra time for the first plan of a robot, which loads the models, seconds.
 LOAD_ALLOWANCE = 60.0
+#: Seconds a sent path may take beyond its duration before the arm is held.
+MOTION_MARGIN = 5.0
 
 
-def send_to_arm(ctx: PluginContext, serial: str, arm_name: str, path: ArmPath) -> bool:
+def send_to_arm(ctx: PluginContext, serial: str, arm_name: str, path: ArmPath) -> float | None:
     """Send a path to an arm as one joint trajectory that stops at every waypoint (`joint_path_move`).
 
     Args:
@@ -47,18 +53,18 @@ def send_to_arm(ctx: PluginContext, serial: str, arm_name: str, path: ArmPath) -
             refuses it.
 
     Returns:
-        bool: Whether the arm took the path; if not, the log says why.
+        float | None: The path's duration in seconds, or None if the arm did not take it (the log says why).
     """
     order = [path.joint_names.index(name) for name in arm_joint_names(arm_name)]
     try:
         positions, velocities, duration = joint_path_move(path.points[:, order])
     except ValueError as error:
         ctx.log_warn(f"{serial} {arm_name}: nothing sent: {error}")
-        return False
+        return None
     if not ctx.world.robots[serial].arms[arm_name].send_joint_trajectory(positions, duration, velocities):
-        return False
+        return None
     ctx.log_info(f"{serial} {arm_name}: sent a {len(path.points)}-waypoint path, {duration:.1f} s")
-    return True
+    return duration
 
 
 @register
@@ -117,6 +123,43 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
                       accepted=accepted, finished=lambda: self._loaded.add(serial))
 
+    def check_path(self, serial: str, arm: str,
+                   waypoints: Sequence[Sequence[float]]) -> asyncio.Future[CollisionHit | None]:
+        """Check a given joint path for one arm for collisions, in the world as it is now (`ArmPlannerContract`)."""
+        future = asyncio.get_running_loop().create_future()
+        path = np.array(waypoints, dtype=float)
+        self._ctx.submit(f"check path {serial}", lambda: self._start_check(serial, arm, path, future))
+        return future
+
+    def _start_check(self, serial: str, arm: str, waypoints: np.ndarray,
+                     future: asyncio.Future[CollisionHit | None]) -> None:
+        """Snapshot the world and check the path on the worker, after any search before it. Main thread."""
+        snapshot, _guessed = with_guesses(self._ctx.scene.snapshot, robot_id(serial))
+
+        def work() -> CollisionHit | None:
+            problems = snapshot.robots[robot_id(serial)].acting_problems()
+            if problems:
+                raise ValueError(f"{serial} can't be checked: {'; '.join(problems)}")
+            result = path_hit(self._world, self._world.sync(snapshot, serial), arm, waypoints)
+            self._loaded.add(serial)
+            return result
+
+        async def run() -> None:
+            try:
+                result = await asyncio.get_running_loop().run_in_executor(self._executor, work)
+            except ValueError as error:
+                if not future.done():
+                    future.set_exception(error)
+                return
+            except BaseException as error:
+                if not future.done():
+                    future.set_exception(RuntimeError(f"the check failed: {error!r}"))
+                raise
+            if not future.done():
+                future.set_result(result)
+
+        self._ctx.spawn(f"check path {serial} {arm}", run())
+
     def stale_reason(self, ctx: PluginContext, plan: Plan[ArmPlanRequest]) -> str:
         """Stale once the arm or base moves away from the plan's start, or mocap loses a base it tracked then."""
         request = plan.request
@@ -137,12 +180,25 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                 return "the base moved since planning"
         return ""
 
-    def send(self, ctx: PluginContext, plan: Plan[ArmPlanRequest]) -> tuple[bool, str]:
-        """Send the plan to the arm."""
-        serial, arm = plan.request.serial, plan.request.arm
-        if send_to_arm(ctx, serial, arm, plan.path):
-            return True, f"sent to {serial} {arm}"
-        return False, f"{serial} {arm} refused the path (the log says why)"
+    async def execute(self, ctx: PluginContext, plan: Plan[ArmPlanRequest],
+                      answer: Callable[[bool, str], None]) -> None:
+        """Send the plan to the arm, and wait until it stands still; Hold it if cancelled or late."""
+        serial, arm_name = plan.request.serial, plan.request.arm
+        arm = ctx.world.robots[serial].arms[arm_name]
+        duration = send_to_arm(ctx, serial, arm_name, plan.path)
+        if duration is None:
+            answer(False, f"{serial} {arm_name} refused the path (the log says why)")
+            return
+        answer(True, f"sent to {serial} {arm_name}")
+        try:
+            await ctx.wait_until(lambda: not arm.state.is_executing, timeout_s=duration + MOTION_MARGIN,
+                                 description=f"{serial} {arm_name} to finish the path")
+        except WaitTimeout as late:
+            ctx.log_warn(f"{late}; holding the arm")
+            arm.hold()
+        except asyncio.CancelledError:
+            arm.hold()  # ! the lease is given back next: nothing would stop the arm otherwise
+            raise
 
     def forget(self, plan: Plan[ArmPlanRequest]) -> None:
         """Drop the base position the plan was for."""

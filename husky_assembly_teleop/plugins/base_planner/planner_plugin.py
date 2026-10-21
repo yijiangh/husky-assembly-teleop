@@ -16,7 +16,7 @@ import asyncio
 import math
 import threading
 from dataclasses import asdict, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from crl_husky.follower_path import FollowerPath
 
@@ -38,7 +38,8 @@ from ...world.follower import path_check
 from scaffolding_assembly_core.ids import robot_id
 from .path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, BasePath
 from .algorithms import ALGORITHMS, Algorithm, Debug
-from .recording import RECORDING_FOLDER, attempt_folder, load_description, save_plan, write_description
+from ...shared.recordings.runs import load_description, save_recording, write_description
+from .recording import RECORDING_FOLDER, attempt_folder, save_plan
 from .tasks import BY_NAME, TASK_ORIGIN
 from .world import PlanningWorld, from_stow
 
@@ -91,6 +92,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
     name = "base_planner"
     experimental = True
     worker_name = "base-plan"
+    # * The follower takes a new path at any time: a new commit to a driving robot replaces its path.
+    replaces_running = True
     # * For the selected process step, recorded with each attempt and needed for a process task to count.
     requires = ("process",)
 
@@ -100,12 +103,11 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         # ! Worker thread only (sync, search, close).
         self._world = PlanningWorld()
         self._algorithms: list[Algorithm] = [algorithm() for algorithm in ALGORITHMS]
-        # The path last sent: robot, follower's cut, id, ROS time it went out; the run following it, and its samples.
+        # The path last sent: robot, follower's cut, id, ROS time it went out, and its run's samples.
         self._sent_serial: str | None = None
         self._sent: FollowerPath | None = None
         self._sent_id: int | None = None
         self._sent_at = 0.0
-        self._run_task: asyncio.Task | None = None
         self._trace: Trace | None = None
         # The last search's debug record, once it returned.
         self._debug: Debug | None = None
@@ -156,8 +158,12 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                                 "speed_caps": {"linear": MAX_LINEAR_SPEED, "angular": MAX_ANGULAR_SPEED}},
                  "algorithm": algorithm.label, "settings": asdict(settings), "start": list(start),
                  "goal": list(goal), "guessed": guessed}
-        folder = attempt_folder(self._recordings, setup["experiment"], serial, task, environment) \
-            if request.record and self._recordings is not None else None
+        folder = None
+        if request.record and self._recordings is not None:
+            try:
+                folder = attempt_folder(self._recordings, setup["experiment"], serial, task, environment)
+            except OSError as error:
+                ctx.log_error(f"base planner: attempt not recorded: {error}")
         # The worker's error saving the attempt, for the main thread to log.
         not_saved: list[str] = []
 
@@ -205,24 +211,6 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 return f"the arm moved since planning (replans beyond {math.degrees(STALE_JOINT):.0f}°)"
         return ""
 
-    def send(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> tuple[bool, str]:
-        """Send the plan to the follower and follow its run; refused while the base may not follow a path."""
-        serial, path = plan.request.serial, plan.path
-        base = ctx.world.robots[serial].base
-        if problem := base.follow_problem():
-            return False, f"not committed: {serial}: {problem}"
-        try:
-            sent_id = send_to_onboard_follower(base, path)
-        except ValueError as error:
-            return False, f"not committed: {error}"
-        if self._run_task is not None:
-            self._run_task.cancel()  # the old run is saved as replaced
-        self._sent_serial, self._sent = serial, FollowerPath.from_poses(*path.points.T)
-        self._sent_id, self._sent_at = sent_id, ctx.now()
-        self._run_task = ctx.spawn(f"follow {serial}", self._follow(ctx, plan.request, path, self._plan_record))
-        ctx.log_info(f"base path {sent_id} sent to {serial}: {path.length:.2f} m, {len(path.points)} waypoints")
-        return True, f"sent to {serial}'s follower (path {sent_id})"
-
     def forget(self, plan: Plan[BasePlanRequest]) -> None:
         """The debug record goes with the plan; a sent path keeps driving (Stop all stops it), and stays drawn."""
         self._debug = None
@@ -231,20 +219,44 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
 
     # --- --- --- --- --- RUN (task) --- --- --- --- ---
 
-    async def _follow(self, ctx: PluginContext, request: BasePlanRequest, path: BasePath, plan: dict | None) -> None:
-        """Record the robot from Commit until the follower is done with the path, then save it if `request.record`.
+    async def execute(self, ctx: PluginContext, plan: Plan[BasePlanRequest],
+                      answer: Callable[[bool, str], None]) -> None:
+        """Send the plan to the follower, then record the robot until the follower is done; save it if recorded.
 
-        `plan` is the plan's `_plan_record`: its setup, planning time and recorded folder (None if not recorded).
+        Recording and a clearance start before the send: a soft stop within the margin the path was planned with,
+        not the usual STOP_DISTANCE, so a path the planner found never trips it. Refused while the base may not
+        follow a path.
+
+        ? The margin is no stopping distance: at the planning speed the robot rolls ~10 cm after a trip. Revisit
+          with the speed-aware clearance (tasks/2026-10-21_collision_view.md, follow-ups).
         """
+        request, path, record = plan.request, plan.path, self._plan_record
         serial = request.serial
+        margin = self._algorithm(request)[1].margin
         robot = ctx.world.robots[serial]
-        sent_id, sent_at, started = self._sent_id, self._sent_at, started_at()
-        outcome, rec = "stopped", None
+        if problem := robot.base.follow_problem():
+            answer(False, f"not committed: {serial}: {problem}")
+            return
+        sent_id, sent_at, started = None, ctx.now(), started_at()
+        outcome, rec, clearance = "stopped", None, None
         try:
             with ctx.record(signals.base_floor_pose(robot), signals.follower_position_error(robot),
                             signals.follower_yaw_error(robot), signals.follower_command(robot),
-                            signals.follower_progress(robot)) as rec:
-                self._trace = rec
+                            signals.follower_progress(robot), signals.follower_command(robot, every_message=True),
+                            signals.follower_state(robot, every_message=True),
+                            signals.base_floor_pose(robot, every_message=True),
+                            signals.wheel_odometry(robot, every_message=True)) as rec, \
+                    ctx.clearance([serial], margin) as clearance:
+                try:
+                    sent_id = send_to_onboard_follower(robot.base, path)
+                except ValueError as error:
+                    answer(False, f"not committed: {error}")
+                    return
+                sent_at = ctx.now()
+                self._sent_serial, self._sent = serial, FollowerPath.from_poses(*path.points.T)
+                self._sent_id, self._sent_at, self._trace = sent_id, sent_at, rec
+                ctx.log_info(f"base path {sent_id} sent to {serial}: {path.length:.2f} m, {len(path.points)} waypoints")
+                answer(True, f"sent to {serial}'s follower (path {sent_id})")
                 try:
                     # * Under way is WARN (sent or following); done, aborted, replaced or silent ends the run.
                     await ctx.wait_until(lambda: self._path_check(ctx, serial, sent_id, sent_at).level != WARN,
@@ -257,28 +269,29 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                     robot.base.stop_path()
                 await ctx.sleep(SETTLE)
         except asyncio.CancelledError:
-            # ! Stop the path, unless a new commit replaced this run: then it only ends the recording.
-            replaced = (self._sent_serial, self._sent_id) != (serial, sent_id)
-            outcome = "replaced by a new commit" if replaced else "stopped"
-            if not replaced:
+            # ! Stop the path, unless a new commit replaces this run: its path replaces this one on the follower.
+            outcome = "replaced by a new commit" if self.replaced() else "stopped"
+            if clearance is not None and clearance.problem:
+                outcome = f"soft stopped: {clearance.problem}"
+            if sent_id is not None and not self.replaced():
                 robot.base.stop_path()
             raise
         finally:
-            ctx.log_info(f"base path {sent_id} on {serial}: {outcome}")
-            if request.record and self._recordings is not None and rec is not None and len(rec):
-                self._save(ctx, request, path, rec, outcome, started, sent_at, plan or {})
+            if sent_id is not None:
+                ctx.log_info(f"base path {sent_id} on {serial}: {outcome}")
+                if request.record and self._recordings is not None and rec is not None and len(rec):
+                    self._save(ctx, request, path, rec, outcome, started, sent_at, record or {})
 
     def _save(self, ctx: PluginContext, request: BasePlanRequest, path: BasePath, rec: Trace, outcome: str,
               started: str, sent_at: float, plan: dict) -> None:
-        """Add a run to its plan's attempt: recording.npz (samples, path, follower and wheel logs), and the run.
+        """Add a run to its plan's attempt: recording.npz (per tick and per message, and the path), and the run.
 
         The run goes into the attempt's experiment.json.
 
         A plan not recorded, or committed a second time, gets a folder of its own with what is known of the plan.
         """
         serial = request.serial
-        base = ctx.world.robots[serial].base
-        follower = base.state.follower
+        follower = ctx.world.robots[serial].base.state.follower
         run = {"started": started, "outcome": outcome, "sent_at": sent_at,
                "controller": follower.controller if follower is not None else "unknown"}
         folder = plan.get("folder")
@@ -293,10 +306,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 description = {**setup, "plan": known, "plan_folder": folder.name if folder is not None else None}
                 folder = attempt_folder(self._recordings, setup["experiment"], serial, setup["task"],
                                         setup["environment"])
-                folder.mkdir(parents=True)
-            extra = {"path_poses": path.points, "path_t": path.times, "outcome": outcome,
-                     "commands": base.follower_history(sent_at), "wheel_odometry": base.odometry_history(sent_at)}
-            rec.save(folder / "recording.npz", extra)
+            save_recording(folder, rec, serial, {"path_poses": path.points, "path_t": path.times},
+                           ctx.config.recording_format)
             write_description(folder, {**description, "run": run})
         except OSError as error:
             ctx.log_error(f"base planner: run not saved: {error}")

@@ -15,9 +15,12 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        MAX_TARGET_FORCE, MAX_TARGET_TORQUE, MOVING_WITHIN,
                                                        START_TOLERANCE, SYNC_STATUS_MAX_AGE, TRAJECTORY_MAX_DURATION,
                                                        TRAJECTORY_MAX_JOINT_SPEED, TRAJECTORY_MAX_WAYPOINTS,
-                                                       UR_JOINT_LIMITS, joint_move, joint_path_move)
+                                                       UR_JOINT_LIMITS, JOG_DISTANCE, JOG_LIMIT_MARGIN,
+                                                       JOG_MAX_SPEED, joint_jog, joint_move, joint_path_move)
 from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
 from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
+from husky_assembly_teleop.robot_interface.robot_lease import Lease, NotLeased
+from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
 
 pytestmark = pytest.mark.safety
 
@@ -41,12 +44,17 @@ def refused(arm, positions, duration, velocities=None) -> str:
 # --- --- --- --- --- trajectories --- --- --- --- ---
 
 def test_a_slow_trajectory_from_the_arm_goes_out():
-    """Waypoints spread evenly over the duration, and the arm counts as executing."""
+    """Waypoints spread evenly over the duration, the arm counts as executing, and the trajectory is fired as sent."""
     arm = fake_arm()
+    heard = []
+    arm.trajectories_sent.attach(heard.append)
     assert arm.send_joint_trajectory(*line(arm))
     trajectory, = arm._trajectory.sent
     assert len(trajectory.points) == 11 and trajectory.points[-1].time_from_start.sec == 10
     assert arm.state.is_executing and arm.state.last_motion_time == arm._node.now
+    sent, = heard
+    np.testing.assert_allclose(sent.target, trajectory.points[-1].positions)
+    assert (sent.duration, sent.waypoints, sent.hold, sent.update_time) == (10.0, 11, 0, arm._node.now)
 
 
 @pytest.mark.parametrize("big", [np.radians([170.0, -90.0, 150.0, 200.0, -300.0, 10.0]), np.full(6, 1e-4)])
@@ -170,9 +178,10 @@ def test_fake_hardware_moves_without_a_dashboard_but_not_without_the_sync():
     lambda arm: setattr(arm.state, "status_update_time", arm.state.status_update_time - SYNC_STATUS_MAX_AGE - 0.1),
     lambda arm: setattr(arm.state, "operational", False),
     lambda arm: setattr(arm.state, "program_playing", False),
+    lambda arm: setattr(arm._latch, "stopped", True),
 ])
 def test_free_drive_needs_the_safety_sync(unsafe):
-    """Not started, and its heartbeat stops (free drive ends within 1 s), while the sync does not vouch for the arm."""
+    """Not started, and its heartbeat stops (free drive ends in 1 s), while unsafe for the sync or soft stopped."""
     arm = fake_arm(FREE_DRIVE_CONTROLLER)
     arm.state.controllers.requested, arm._free_drive = FREE_DRIVE_CONTROLLER, Publisher()
     arm.request_free_drive()
@@ -213,6 +222,27 @@ def test_a_path_planned_a_degree_away_from_the_arm_is_refused():
     assert "not at the first waypoint" in refused(away, positions, duration, velocities)
 
 
+@pytest.mark.parametrize("speed", [JOG_MAX_SPEED, 0.05 * JOG_MAX_SPEED])
+def test_a_jog_passes_every_check_and_rests_jog_distance_on(speed):
+    """Only the one joint moves, never faster than asked, and it comes to rest JOG_DISTANCE away."""
+    arm = fake_arm()
+    positions, velocities, duration = joint_jog(arm.joint_vector(), 1, -1.0, speed)
+    assert arm.send_joint_trajectory(positions, duration, velocities)
+    assert np.max(np.abs(velocities[:, 1])) == pytest.approx(speed)
+    np.testing.assert_allclose(positions[-1], [0.0, -JOG_DISTANCE, 0.0, 0.0, 0.0, 0.0], atol=1e-12)
+    assert not np.any(velocities[-1]) and not np.any(np.delete(positions, 1, axis=1))
+
+
+def test_a_jog_stops_short_of_the_joint_limit_and_refuses_at_it():
+    """Near the elbow's limit the jog ends JOG_LIMIT_MARGIN short of it; at the limit there is nothing to jog."""
+    near = UR_JOINT_LIMITS[2] - JOG_LIMIT_MARGIN - np.radians(5.0)
+    positions, velocities, duration = joint_jog([0.0, 0.0, near, 0.0, 0.0, 0.0], 2, 1.0)
+    assert positions[-1, 2] == pytest.approx(UR_JOINT_LIMITS[2] - JOG_LIMIT_MARGIN)
+    assert fake_arm(joints=positions[0]).send_joint_trajectory(positions, duration, velocities)
+    with pytest.raises(ValueError, match="elbow"):
+        joint_jog(positions[-1], 2, 1.0)
+
+
 # --- --- --- --- --- hold --- --- --- --- ---
 
 def _stop(arm) -> tuple[np.ndarray, float]:
@@ -226,7 +256,12 @@ def test_hold_at_rest_stays_at_the_measured_joints():
     """At rest, the hold point is where the arm is, HOLD_DURATION from now, and the target wrench is zeroed."""
     joints = np.radians([10.0, -80.0, 90.0, -100.0, -90.0, 30.0])
     arm = fake_arm(joints=joints)
+    trajectories, wrenches = [], []
+    arm.trajectories_sent.attach(trajectories.append)
+    arm.wrenches_sent.attach(wrenches.append)
     assert arm.hold()
+    assert trajectories[0].hold == 1 and np.allclose(trajectories[0].target, joints)
+    assert wrenches[0].force.tolist() == [0.0, 0.0, 0.0] and wrenches[0].torque.tolist() == [0.0, 0.0, 0.0]
     positions, duration = _stop(arm)
     np.testing.assert_allclose(positions, joints)
     assert duration == pytest.approx(HOLD_DURATION)
@@ -263,7 +298,7 @@ def test_hold_in_free_drive_switches_to_the_trajectory_controller():
     """The trajectory controller holds the arm where it is once it runs."""
     arm = fake_arm(FREE_DRIVE_CONTROLLER)
     switched = []
-    arm.controllers.switch = lambda name: switched.append(name) or True
+    arm.controllers.switch = lambda name, unguarded=False: switched.append(name) or True
     assert arm.hold() and switched == [SCALED_JOINT_TRAJECTORY_CONTROLLER] and not arm._trajectory.sent
 
 
@@ -289,7 +324,10 @@ def test_hold_under_compliance_targets_the_tcp():
     """The target is the measured tool0, even with a URDF that breaks the stock frames, and the wrench is zeroed."""
     arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
     arm.urdf_problem = "turned base"
+    heard = []
+    arm.targets_sent.attach(heard.append)
     assert arm.hold()
+    assert heard[0].hold == 1 and np.allclose(heard[0].position, TCP_POSITION)
     target, = arm._target_frame.sent
     np.testing.assert_allclose([target.pose.position.x, target.pose.position.y, target.pose.position.z],
                                TCP_POSITION)
@@ -324,10 +362,12 @@ def test_a_close_target_goes_out_and_is_remembered():
 
 
 def test_test_mode_checks_and_records_but_never_sends():
-    """In cartesian_test_mode a good target returns False, is not published, but is kept for the 3D view."""
+    """In cartesian_test_mode a good target returns False, is not published or fired, but is kept for the 3D view."""
     arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER, cartesian_test_mode=True)
+    heard = []
+    arm.targets_sent.attach(heard.append)
     assert not arm.send_cartesian_target(TCP_POSITION, TCP_ORIENTATION)
-    assert not arm._target_frame.sent and arm.state.sent_target_time == arm._node.now
+    assert not arm._target_frame.sent and arm.state.sent_target_time == arm._node.now and not heard
     assert "TEST MODE" in arm._node.log.text("warning")
 
 
@@ -426,3 +466,53 @@ def test_test_mode_never_sends_a_wrench():
     arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER, cartesian_test_mode=True)
     assert not arm.send_target_wrench([0.0, 0.0, 5.0])
     assert not arm._target_wrench.sent
+
+
+def test_a_soft_stopped_arm_refuses_every_motion_but_a_hold():
+    """Trajectories, joint moves, Cartesian targets and wrenches raise RobotStopped, sending nothing; holds go out."""
+    arm, compliance = fake_arm(), fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
+    arm._latch.stopped = compliance._latch.stopped = True
+    for command in (lambda: arm.send_joint_trajectory(*line(arm)), lambda: arm.send_joint_move(np.full(6, 0.1)),
+                    lambda: compliance.send_cartesian_target(TCP_POSITION, TCP_ORIENTATION),
+                    lambda: compliance.send_target_wrench([0.0, 0.0, 5.0])):
+        with pytest.raises(RobotStopped, match="soft stopped"):
+            command()
+    assert not arm._trajectory.sent and not compliance._target_frame.sent and not compliance._target_wrench.sent
+    assert arm.hold() and len(arm._trajectory.sent) == 1
+
+
+@pytest.mark.parametrize("holder", [None, "a planner"])
+def test_without_its_lease_an_arm_refuses_every_motion_and_switch_but_a_hold(holder):
+    """Free or leased to another, every motion and controller switch raises or is refused; a hold goes out."""
+    arm, compliance = fake_arm(), fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
+    arm._lease_slot.lease = compliance._lease_slot.lease = None
+    lease = None if holder is None else Lease(holder, (arm._lease_slot, compliance._lease_slot))
+    why = "robot 0804 is not leased" if holder is None else "robot 0804 is leased by a planner"
+    for command in (lambda: arm.send_joint_trajectory(*line(arm)), lambda: arm.send_joint_move(np.full(6, 0.1)),
+                    lambda: compliance.send_cartesian_target(TCP_POSITION, TCP_ORIENTATION),
+                    lambda: compliance.send_target_wrench([0.0, 0.0, 5.0])):
+        with pytest.raises(NotLeased, match=why):
+            command()
+    assert not arm._trajectory.sent and not compliance._target_frame.sent and not compliance._target_wrench.sent
+    assert why in arm._switch_refusal(FREE_DRIVE_CONTROLLER)
+    assert why in arm._switch_refusal(SCALED_JOINT_TRAJECTORY_CONTROLLER)
+    if lease is not None:
+        with lease.use():
+            assert arm._switch_refusal(FREE_DRIVE_CONTROLLER) is None
+            assert arm.send_joint_trajectory(*line(arm)) and compliance.send_target_wrench([0.0, 0.0, 5.0])
+    arm.state.last_motion_time = None
+    assert arm.hold() and len(arm._trajectory.sent) == (1 if lease is None else 2)
+
+
+def test_free_drive_stays_on_only_while_requested_under_the_lease():
+    """Requested under the robot's lease, free drive stays on; requested without it, it ends."""
+    arm = fake_arm(FREE_DRIVE_CONTROLLER)
+    arm.state.controllers.requested, arm._free_drive = FREE_DRIVE_CONTROLLER, Publisher()
+    lease = Lease("calibration", (arm._lease_slot,))
+    with lease.use():
+        arm.request_free_drive()
+    arm._keep_free_drive()
+    assert len(arm._free_drive.sent) == 1
+    arm.request_free_drive()
+    arm._keep_free_drive()
+    assert len(arm._free_drive.sent) == 1 and "leased by calibration" in arm._node.log.text("error")

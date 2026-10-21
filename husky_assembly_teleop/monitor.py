@@ -28,12 +28,15 @@ from .plugin_api.concurrency import TickTimer
 from .config import MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
 from scaffolding_assembly_core.geometry import Geometry
+from .world.clearance import TRIPS_KEPT, ClearanceChecker, ClearanceTrip, assumable_joints
 from .world.kinematics import Kinematics
-from .plugin_api.plugin import HuskyPlugin, load_plugins
+from .plugin_api.plugin import HuskyPlugin, UnknownPluginError, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
-from scaffolding_assembly_core.ids import tracked_id
+from .robot_interface.mocap_state import pose_lost
+from .robot_interface.soft_stop import MotionRefused
+from scaffolding_assembly_core.ids import robot_id, tracked_id
 from scaffolding_assembly_core.scene import Scene
 from .world.scene import PluginScene, take_snapshot, tracked_body
 from .ui.visualization import Visualization
@@ -110,6 +113,10 @@ class HuskyMonitor(Node):
         #: The live scene plugins edit, and this tick's copy of it (`take_snapshot`).
         self._scene = Scene()
         self._snapshot = Scene()
+        #: Checks the plugins' clearances (`ctx.clearance`) on its own worker.
+        self._clearances = ClearanceChecker()
+        #: The last TRIPS_KEPT clearance trips of every plugin, oldest first; replaced on each trip.
+        self.clearance_trips: tuple[ClearanceTrip, ...] = ()
         self._viz: Visualization | None = None
         # * Built before the plugins, so tasks started in their setup are timed too.
         self._timer = TickTimer(asyncio.get_running_loop(),
@@ -211,6 +218,10 @@ class HuskyMonitor(Node):
         """Current ROS time in seconds."""
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def clearance_tripped(self, trip: ClearanceTrip) -> None:
+        """Keep a clearance trip, for `PluginContext.clearance_trips`."""
+        self.clearance_trips = (*self.clearance_trips, trip)[-TRIPS_KEPT:]
+
     def log_info(self, message: str) -> None:
         """Log `message` at info level."""
         self.get_logger().info(message)
@@ -295,12 +306,13 @@ class HuskyMonitor(Node):
         """One tick. The order below is deliberate; see the comment on each step."""
         self._tick_index += 1
 
-        # 1. Run every ROS callback that is waiting, so the world is as fresh as it gets.
+        # 1. Run every ROS callback that is waiting, so the world is as fresh as it gets. Message signals record
+        #    here, inside the callbacks.
         with self._timer.part("ROS callbacks"):
             count = self._pump_ros()
         self._timer.note("ROS callbacks", f"{count} callbacks")
 
-        # 2. Soft stop before any plugin can command new actions.
+        # 2. Soft stop before any plugin can command new actions: from here on, the robots refuse them.
         if self._viz.take_stop_request():
             self._soft_stop()
 
@@ -320,13 +332,23 @@ class HuskyMonitor(Node):
                 with self._timer.part(f"plugin {loaded.name!r} update"):
                     self._step_plugin(loaded)
 
-        # 6. Resume tasks waiting for this tick, in dependency order; yielding once lets each step before the draw.
+        # 6. Stop robots too close to something (`ctx.clearance`) and cancel the tasks whose freeze broke, then
+        #    resume tasks waiting for this tick, in dependency order; yielding once lets each step before the draw.
         #    ? Stopped plugins too: their cancelled tasks may still be cleaning up.
+        try:
+            self._check_clearances(snapshot, now)
+        except Exception:
+            self.log_error(f"clearance check failed:\n{traceback.format_exc()}")
         for loaded in self._loaded.values():
+            if not loaded.stopped:
+                try:
+                    loaded.ctx._check_freezes()
+                except Exception:
+                    self._plugin_failed(loaded, "freezes")
             loaded.ctx._wake_tick_waiters()
         await asyncio.sleep(0)
 
-        # 7. Sample traces last, so they see this tick's measurements, link poses and commands alike.
+        # 7. Sample tick signals last, so they see this tick's measurements, link poses and commands alike.
         for loaded in self._loaded.values():
             if not loaded.stopped:
                 try:
@@ -402,32 +424,57 @@ class HuskyMonitor(Node):
         return taken
 
     def _soft_stop(self) -> None:
-        """Stop every robot, drop every plugin's queued intents and cancel every plugin task.
+        """Stop every robot, and cancel every plugin task but those spawned with `survives_soft_stop`.
 
         - In the core so it works whichever plugins are loaded.
-        - Intents are dropped: a Start clicked just before Stop would otherwise run after it, in this tick's step 5.
+        - Each robot refuses motion commands until Resume, so queued intents still run: a Start clicked just before
+          Stop gets RobotStopped, a Load just loads.
         - ! A robot that raises is logged; the other robots are still stopped, and the tick goes on.
         """
-        self.log_warn("SOFT STOP: stopping every robot and cancelling every plugin task")
+        self.log_warn("SOFT STOP: stopping every robot and cancelling the plugin tasks that may move one")
         for serial, robot in self._world.robots.items():
             try:
-                robot.soft_stop()
+                robot.soft_stop("Stop all")
             except Exception:
                 self.log_error(f"SOFT STOP: stopping {serial} failed:\n{traceback.format_exc()}")
         for loaded in self._loaded.values():
-            dropped = loaded.ctx._drop_intents()
-            if dropped:
-                queued = ", ".join(repr(label) for label in dropped)
-                self.log_warn(f"SOFT STOP: dropped {loaded.name}'s queued {queued}")
-            loaded.ctx._cancel_all_tasks()
+            cancelled = loaded.ctx._cancel_for_soft_stop()
+            if cancelled:
+                self.log_warn(f"SOFT STOP: cancelled {', '.join(repr(name) for name in cancelled)}")
+
+    def _check_clearances(self, snapshot: Scene, now: float) -> None:
+        """Trip what the last clearance check found too close, then start checking this tick's snapshot.
+
+        A robot whose base pose is lost trips at once; the rest is checked on the worker, a tick or two behind.
+        """
+        for (ctx, clearance, serial), why, hit in self._clearances.finished() or ():
+            ctx._trip_clearance(clearance, serial, why, hit)
+        asked = []
+        for loaded in self._loaded.values():
+            if loaded.stopped:
+                continue
+            for clearance in list(loaded.ctx._clearances):
+                for serial in clearance.serials:
+                    base = self._world.robots[serial].base
+                    if lost := pose_lost(base.mocap_id, base.state, now):
+                        loaded.ctx._trip_clearance(clearance, serial, f"cannot be checked: {lost}")
+                        break
+                    robot = snapshot.robots.get(robot_id(serial))
+                    assumable = (assumable_joints(robot.model.movable_joints, clearance.unknown_arms)
+                                 if robot is not None else frozenset())
+                    asked.append(((loaded.ctx, clearance, serial), robot_id(serial), clearance.margin, assumable))
+        if asked:
+            self._clearances.check(snapshot, asked)
 
     def _step_plugin(self, loaded: _LoadedPlugin) -> None:
-        """Give one plugin its turn: count failed tasks, run intents, then update.
+        """Give one plugin its turn: count failed tasks and message signals, run intents, then update.
 
         Each part is caught on its own, so one failing still lets the others run unless the plugin got stopped.
         """
         if loaded.ctx._take_task_failures():
             self._plugin_failed(loaded, "a task", details="")
+        if (skipped := loaded.ctx._take_signal_failures()) is not None:
+            self._plugin_failed(loaded, "a message signal", details=skipped)
         # Intents first, so UI work is applied before the update that reacts to it.
         if not loaded.stopped:
             try:
@@ -437,6 +484,9 @@ class HuskyMonitor(Node):
         if not loaded.stopped:
             try:
                 loaded.plugin.update(loaded.ctx)
+            except MotionRefused as refused:
+                # ! No failure, but the rest of this update was skipped: check `soft_stopped` and the lease first.
+                self.log_warn(f"plugin {loaded.name!r} update ended: {refused}")
             except Exception:
                 self._plugin_failed(loaded, "update")
 
@@ -552,6 +602,7 @@ class HuskyMonitor(Node):
             self._close(loaded)
         if self._viz is not None:
             self._viz.stop()
+        self._clearances.close()
         self._executor.shutdown()
         self._timer.stop()
 
@@ -581,6 +632,10 @@ def main(args: list[str] | None = None) -> None:
     sys.setswitchinterval(GIL_SWITCH_INTERVAL)
     try:
         asyncio.run(_run_monitor())
+    except UnknownPluginError as error:
+        # * A config mistake: the message says what to fix, and a traceback would only bury it.
+        print(f"\n{error}", file=sys.stderr)
+        sys.exit(1)
     except KeyboardInterrupt:
         pass  # Ctrl-C during startup, or a second one during shutdown
     finally:

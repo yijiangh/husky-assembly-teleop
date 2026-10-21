@@ -5,22 +5,27 @@ import json
 import math
 from collections import deque
 from contextlib import contextmanager
+from dataclasses import replace
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from crl_husky.follower_path import FollowerPath
-from robot_fakes import Node
+from robot_fakes import Node, lease_test_robots, wait_ticks_until
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugin_api.trace import Signal, Trace
 from husky_assembly_teleop.robot_interface.base import BaseInterface, FollowerState
+from husky_assembly_teleop.robot_interface.event import Event
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, steer, timed_path
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
 from husky_assembly_teleop.plugins.base_planner.tasks import BY_NAME
+from husky_assembly_teleop.plugins.base_planner.world import COLLISION_MARGIN
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from husky_assembly_teleop.world.checks import WARN
+from husky_assembly_teleop.world.clearance import STOP_DISTANCE, Clearance
 
 SERIAL = "alice"
 
@@ -71,7 +76,9 @@ class FakeBase:
                                      estopped=estopped, follower=follower)
         self._node = Node(10.0)
         self.refuses = refuses
-        self.sent = []
+        self.sent, self.stops = [], 0
+        self.follower_reports, self.odometry_messages = Event(f"{SERIAL}_follower"), Event(f"{SERIAL}_odometry")
+        self.mocap_messages = Event(f"{SERIAL}_mocap")
 
     #: The base's own gate, as the real base has it.
     follow_problem = BaseInterface.follow_problem
@@ -83,6 +90,50 @@ class FakeBase:
         self.sent.append(args)
         return 7
 
+    def stop_path(self):
+        """Count the stop."""
+        self.stops += 1
+
+
+class CommitCtx:
+    """A plugin context for a commit: real tasks, the test lease, a recording that keeps nothing, a run never done."""
+
+    def __init__(self, base: FakeBase):
+        """SERIAL is `base`, at ROS time 10 s."""
+        robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL), lease=None)
+        self.world = SimpleNamespace(robots={SERIAL: robot})
+        self.config = SimpleNamespace(drive_root=None)
+
+    lease_robots = staticmethod(lease_test_robots)
+    wait_until = staticmethod(wait_ticks_until)
+
+    def now(self) -> float:
+        """ROS time, seconds."""
+        return 10.0
+
+    def log_info(self, _message):
+        """Drop it."""
+
+    log_warn = log_info
+
+    def submit(self, _label, run):
+        """Run the intent now."""
+        run()
+
+    def spawn(self, _label, work):
+        """Start the task."""
+        return asyncio.get_running_loop().create_task(work)
+
+    @contextmanager
+    def record(self, *_signals):
+        """Keep nothing."""
+        yield []
+
+    @contextmanager
+    def clearance(self, serials, margin=STOP_DISTANCE):
+        """Never trip."""
+        yield Clearance(tuple(serials), margin)
+
 
 def test_the_planner_offers_the_planner_api():
     """Other plugins can drive the base planner as a PlannerContract."""
@@ -92,13 +143,11 @@ def test_the_planner_offers_the_planner_api():
 def commit(base: FakeBase):
     """Commit a ready plan for SERIAL on `base` through the planner's API; returns (sent, message) and the planner.
 
-    The run is not started.
+    The run follows the path until the test ends, which cancels it.
     """
     planner = BasePlannerPlugin()
-    ctx = SimpleNamespace(world=SimpleNamespace(robots={SERIAL: SimpleNamespace(base=base, lease=None)}),
-                          config=SimpleNamespace(drive_root=None), now=lambda: 10.0, log_info=lambda _message: None,
-                          log_warn=lambda _message: None, spawn=lambda _label, work: work.close(),
-                          submit=lambda _label, run: run())
+    ctx = CommitCtx(base)
+    planner._path_check = lambda *_args: SimpleNamespace(level=WARN, label="following", detail="")
     planner.setup(ctx)
     path = planned((0.0, 0.0, 0.0), (1.0, 1.0, 0.0))
     planner._plan = Plan(1, BasePlanRequest(SERIAL, tuple(path.goal)), "ready", path)
@@ -180,24 +229,27 @@ REQUEST = BasePlanRequest(SERIAL, (1.0, 1.0, 0.0), record=True, experiment="tria
 
 
 def _saving(tmp_path):
-    """A plugin recording to `tmp_path`, a trace of two poses, and a context with a simulated base."""
+    """A plugin recording to `tmp_path`, a trace of two poses and three follower reports, and a simulated base."""
     plugin = BasePlannerPlugin()
     plugin._recordings = tmp_path
-    rec = Trace([Signal(f"{SERIAL}_floor_pose", lambda: None, ("x", "y", "yaw"), "m, rad")])
+    reports = Event(f"{SERIAL}_follower")
+    rec = Trace([Signal(f"{SERIAL}_floor_pose", lambda: None, ("x", "y", "yaw"), ("m", "m", "rad")),
+                 Signal("command", lambda report: report.command, ("v", "w"), on=reports)])
     rec.add(1.0, (0.0, 0.0, 0.0))
     rec.add(2.0, (0.5, 0.4, 0.7))
-    base = SimpleNamespace(state=SimpleNamespace(follower=None), simulation=SimpleNamespace(node="husky_sim"),
-                           follower_history=lambda _since: np.zeros((3, 5)),
-                           odometry_history=lambda _since: np.zeros((2, 4)))
+    for t in (1.0, 1.5, 2.0):
+        rec.take(reports, SimpleNamespace(update_time=t, stamp=t - 0.1, command=(0.2, 0.0)))
+    base = SimpleNamespace(state=SimpleNamespace(follower=None), simulation=SimpleNamespace(node="husky_sim"))
     ctx = SimpleNamespace(world=SimpleNamespace(robots={SERIAL: SimpleNamespace(base=base)}),
-                          log_info=lambda _message: None, log_error=pytest.fail)
+                          config=SimpleNamespace(recording_format="npz"), log_info=lambda _message: None,
+                          log_error=pytest.fail)
     return plugin, rec, ctx
 
 
 def test_unrecorded_plans_run_gets_an_attempt_of_its_own(tmp_path):
     """Planned with Record off: the run gets a folder of its own, with what is known of the plan.
 
-    It holds recording.npz (samples, path, follower log) and experiment.json.
+    It holds recording.npz (samples, every follower report, path) and experiment.json.
     """
     plugin, rec, ctx = _saving(tmp_path)
     path = planned((0.0, 0.0, 0.0), (1.0, 1.0, 0.0))
@@ -207,7 +259,7 @@ def test_unrecorded_plans_run_gets_an_attempt_of_its_own(tmp_path):
     assert folder.name.endswith(f"_{SERIAL}_free_sim")
     data = np.load(folder / "recording.npz")
     np.testing.assert_array_equal(data["path_poses"], path.points)
-    assert data[f"{SERIAL}_floor_pose"].shape == (2, 3) and data["commands"].shape == (3, 5)
+    assert data[f"{SERIAL}_floor_pose"].shape == (2, 3) and data[f"{SERIAL}_follower.command"].shape == (3, 2)
     description = json.loads((folder / "experiment.json").read_text())
     assert description["run"]["outcome"] == "done" and description["plan"]["length"] == pytest.approx(path.length)
 
@@ -236,8 +288,9 @@ class FakeClock:
 
     def __init__(self, robot, step):
         """Start at ROS time 10 s, with SERIAL being `robot`."""
-        self.t, self.robot, self.step, self.traces, self.logs = 10.0, robot, step, [], []
+        self.t, self.robot, self.step, self.traces, self.logs, self.clearances = 10.0, robot, step, [], [], []
         self.world = SimpleNamespace(robots={SERIAL: robot})
+        self.config = SimpleNamespace(recording_format="npz")
 
     def now(self) -> float:
         """ROS time, seconds."""
@@ -245,13 +298,24 @@ class FakeClock:
 
     @contextmanager
     def record(self, *signals):
-        """Sample `signals` every tick while the block runs."""
+        """Sample `signals` every tick, or on every message of their event, while the block runs."""
         trace = Trace(signals)
+        listeners = [(event, partial(trace.take, event)) for event in trace.events]
+        for event, listener in listeners:
+            event.attach(listener)
         self.traces.append(trace)
         try:
             yield trace
         finally:
             self.traces.remove(trace)
+            for event, listener in listeners:
+                event.detach(listener)
+
+    @contextmanager
+    def clearance(self, serials, margin=STOP_DISTANCE):
+        """Keep the clearance asked for; the test trips it by setting its problem and cancelling the run."""
+        self.clearances.append(Clearance(tuple(serials), margin))
+        yield self.clearances[-1]
 
     async def wait_until(self, predicate, timeout_s=None, description=""):
         """Tick until `predicate` holds."""
@@ -287,37 +351,49 @@ def test_run_is_recorded_until_the_follower_is_done(tmp_path):
     base = SimpleNamespace(state=SimpleNamespace(position=np.zeros(3), orientation=np.array([0.0, 0.0, 0.0, 1.0]),
                                                  follower=follower),
                            simulation=SimpleNamespace(node="husky_sim"),
-                           follower_history=lambda _since: np.zeros((0, 5)),
-                           odometry_history=lambda _since: np.zeros((0, 4)))
+                           follower_reports=Event(f"{SERIAL}_follower"), odometry_messages=Event(f"{SERIAL}_odometry"),
+                           mocap_messages=Event(f"{SERIAL}_mocap"))
     robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL))
 
     def step(t):
-        """Drive along x at 0.2 m/s; the follower reports done at the end."""
+        """Drive along x at 0.2 m/s, reporting twice per tick; the follower reports done at the end."""
         x = min(0.2 * (t - 10.0), 1.0)
         base.state.position = np.array([x, 0.0, 0.0])
         follower.progress, follower.update_time = x, t
         follower.state = "done" if x >= 1.0 else "following"
+        for late in (0.05, 0.0):
+            base.follower_reports.fire(replace(follower, update_time=t - late, stamp=t - late - 0.01,
+                                               command=np.array([0.2, 0.0])))
 
+    base.follow_problem, base.send_path = (lambda: ""), (lambda *_args: 7)
     ctx = FakeClock(robot, step)
     plugin = BasePlannerPlugin()
     plugin._recordings = tmp_path
-    plugin._sent_id, plugin._sent_at = 7, ctx.now()
-    asyncio.run(plugin._follow(ctx, REQUEST, path, None))
+    answers = []
+    asyncio.run(plugin.execute(ctx, Plan(1, REQUEST, "ready", path), lambda *answer: answers.append(answer)))
+    assert answers == [(True, f"sent to {SERIAL}'s follower (path 7)")] and plugin._sent_id == 7
 
     folder, = (tmp_path / "trial").iterdir()
     data = np.load(folder / "recording.npz")
     poses = data[f"{SERIAL}_floor_pose"]
     assert poses[-1, 0] == pytest.approx(1.0) and data["t"][-1] - data["t"][0] >= 5.0
-    assert str(data["outcome"]) == "done"
+    assert json.loads((folder / "experiment.json").read_text())["run"]["outcome"] == "done"
+    assert str(data["robot"]) == SERIAL and "outcome" not in data
+    # * Every report, not one per tick, with its own times; no odometry in the simulator.
+    reports = data[f"{SERIAL}_follower.t"]
+    assert len(reports) == 2 * len(data["t"]) and np.all(np.diff(reports) > 0)
+    assert data[f"{SERIAL}_follower.command"][:, 0] == pytest.approx(0.2)
+    assert data[f"{SERIAL}_follower.stamp"] == pytest.approx(reports - 0.01)
+    assert data[f"{SERIAL}_odometry.velocity"].shape == (0, 2)
     assert json.loads((folder / "experiment.json").read_text())["environment"] == "sim"
 
 
 @pytest.mark.safety
-@pytest.mark.parametrize("how", ["timeout", "cancel", "replaced", "other robot"])
+@pytest.mark.parametrize("how", ["timeout", "cancel", "clearance", "replaced"])
 def test_a_run_that_ends_before_the_follower_stops_the_path(how):
-    """Timed out, or cancelled (Stop all, shutdown): the follower is stopped.
+    """Timed out, cancelled (Stop all, shutdown) or too close to something (clearance): the follower is stopped.
 
-    A new commit, to this robot or another, only ends the old run's recording; the old path is left alone.
+    A new commit to this robot only ends the old run: its own path replaces the old one on the follower.
     """
     path = planned((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
     follower = FollowerState(controller="pure_pursuit", state="following", reason="", path_id=7, timed=False,
@@ -327,7 +403,10 @@ def test_a_run_that_ends_before_the_follower_stops_the_path(how):
     stops = []
     base = SimpleNamespace(state=SimpleNamespace(position=np.zeros(3), orientation=np.array([0.0, 0.0, 0.0, 1.0]),
                                                  follower=follower),
-                           stop_path=lambda: stops.append(how))
+                           stop_path=lambda: stops.append(how), follow_problem=lambda: "",
+                           send_path=lambda *_args: 7,
+                           follower_reports=Event(f"{SERIAL}_follower"), odometry_messages=Event(f"{SERIAL}_odometry"),
+                           mocap_messages=Event(f"{SERIAL}_mocap"))
     robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL))
 
     def step(t):
@@ -335,23 +414,29 @@ def test_a_run_that_ends_before_the_follower_stops_the_path(how):
 
     ctx = FakeClock(robot, step)
     plugin = BasePlannerPlugin()
-    plugin._recordings, plugin._sent_serial, plugin._sent_id, plugin._sent_at = None, SERIAL, 7, ctx.now()
+    plugin._recordings = None
     plugin._path_check = lambda *_args: SimpleNamespace(level=WARN, label="following", detail="")
 
     async def scenario():
-        task = asyncio.create_task(plugin._follow(ctx, REQUEST, path, None))
+        task = asyncio.create_task(plugin.execute(ctx, Plan(1, REQUEST, "ready", path), lambda *_answer: None))
         if how == "timeout":
             await task
             return
         await asyncio.sleep(0)
-        if how != "cancel":
-            plugin._sent_serial, plugin._sent_id = (SERIAL, 8) if how == "replaced" else ("bob", 8)
+        if how == "clearance":
+            ctx.clearances[0].problem = f"robot {SERIAL} came within 10 cm of wall"
+        elif how == "replaced":
+            plugin._replaced.add(task)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
     asyncio.run(scenario())
-    assert stops == ([] if how in ("replaced", "other robot") else [how])
+    assert stops == ([] if how == "replaced" else [how])
+    # * The clearance keeps the margin the path was planned with, so a path the planner found never trips it.
+    assert [(clearance.serials, clearance.margin) for clearance in ctx.clearances] == [((SERIAL,), COLLISION_MARGIN)]
+    if how == "clearance":
+        assert ctx.logs[-1].endswith(f"soft stopped: robot {SERIAL} came within 10 cm of wall")
 
 
 def test_attempt_counts_for_its_task_only_from_its_start_to_its_target():

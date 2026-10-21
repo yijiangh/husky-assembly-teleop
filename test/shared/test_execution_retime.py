@@ -8,7 +8,7 @@ from functools import lru_cache
 
 import numpy as np
 import pytest
-from plugin_fakes import FakeContext, fake_arm, fake_node
+from plugin_fakes import FakeContext, fake_arm, fake_node, lease_to_test
 from repo_paths import REPO
 
 from husky_assembly_teleop.robot_interface.arm import (JOINT_MOVE_MAX_SPEED, TRAJECTORY_MAX_JOINT_ACCELERATION,
@@ -82,7 +82,7 @@ def test_random_paths_pass_the_arms_own_checks(dimensions, dense):
         assert not np.any(timed.velocities[-1])
         assert np.max(off_polyline(timed.positions, path)) < 1e-9
         for first in range(0, dimensions, 6):
-            arm = fake_arm(node, f"arm{first}", path[0, first:first + 6])
+            arm = lease_to_test(fake_arm(node, f"arm{first}", path[0, first:first + 6]))
             columns = slice(first, first + 6)
             assert arm._check_trajectory(timed.positions[:, columns], timed.duration,
                                          timed.velocities[:, columns]) is None, (seed, ctx.lines("error"))

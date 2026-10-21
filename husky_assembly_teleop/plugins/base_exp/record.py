@@ -4,8 +4,9 @@ What a run is recorded with: its setup, read from ROS at Start, and its own fold
 - Sim or real: real unless the base's simulator announces itself (`BaseInterface.simulation`); then its node's
   parameters are the sim model.
 - Controller: the follower's node, as it names itself in BaseFollowerState, with all its parameters.
-- Folder: <Drive root>/RECORDING_FOLDER/<experiment name>/<date>_<time>_<robot>_<template>_<sim|real>/
-  recording.npz; `report.py` adds experiment.json and overview.png beside it.
+- Folder: <Drive root>/RECORDING_FOLDER/<experiment name>/<date>_<time>_<robot>_<template>_<sim|real>/ with
+  experiment.json (this setup, the path's label, the outcome) and recording.npz (`shared/recordings/runs.py`);
+  `report.py` adds report.json and overview.png beside them.
 - Every run also records CONDITIONS, which this experiment holds fixed (base, arm, floor).
 - Runs with equal `setup_key` were made with the same environment, sim model, controller tuning and conditions;
   `environment_label` sorts them into the real robot, the ideal simulator, and a simulator with a model.
@@ -19,10 +20,11 @@ from pathlib import Path
 
 import numpy as np
 
-from ...drive import stamped_name, started_at
+from ...drive import started_at
 from ...plugin_api.context import PluginContext
 from ...plugin_api.trace import Trace
 from ...robot_interface.base import BaseInterface, parameter_value
+from ...shared.recordings.runs import DESCRIPTION, run_folder, save_recording, write_description
 from .plan import Plan
 
 #: Recordings, under the Drive root (`drive.py`); ! create it in Drive, it is never created here.
@@ -109,7 +111,7 @@ def current_key(setup_now: dict) -> tuple:
 def earlier_runs(recordings: Path, experiment_name: str, key: tuple) -> list[dict]:
     """The experiment.json of every saved run of an experiment with setup `key`, oldest first."""
     found = []
-    for data in sorted((recordings / experiment_name).glob("*/experiment.json")):
+    for data in sorted((recordings / experiment_name).glob(f"*/{DESCRIPTION}")):
         experiment = json.loads(data.read_text())
         if setup_key(experiment) == key:
             found.append(experiment)
@@ -132,25 +134,28 @@ async def parameters(ctx: PluginContext, base: BaseInterface, node: str) -> dict
     return {name: parameter_value(value) for name, value in zip(names, values)}
 
 
-def save(recordings: Path, rec: Trace, plan: Plan, experiment: dict, outcome: str,
-         logs: dict[str, np.ndarray] | None = None) -> Path:
-    """Save a run's recording, with the path sent and its setup, into a new folder of its own.
+def save(recordings: Path, rec: Trace, plan: Plan, experiment: dict, outcome: str, file_format: str = "npz") -> Path:
+    """Save a run into a new folder of its own: its description, and its recording with the path sent.
+
+    The recording holds the tick signals and, per message, "<serial>_mocap", "<serial>_odometry", and
+    "<serial>_follower" (path runs) or "<serial>_twist" (constant-command runs).
 
     Args:
         recordings: The experiments' folder, RECORDING_FOLDER under the Drive root.
-        logs: Message logs over the run, saved as they are: "commands" (every follower report: received, stamp, v, w,
-            state code) and "wheel_odometry" (received, stamp, v, w); see `BaseInterface.follower_log`.
+        rec: The run's trace.
+        plan: The path sent.
+        experiment: The run's description (`describe`).
+        outcome: How the run ended.
+        file_format: The recording's format, "npz" or "json".
 
     Returns:
-        Path: The recording.npz written.
+        Path: The recording written.
 
     Raises:
         OSError: If it cannot be written.
     """
-    folder = (recordings / experiment.get("experiment_name", "default")
-              / stamped_name(plan.serial, plan.slug, experiment['environment']))
-    extra = {"path_poses": plan.poses, "path_t": np.array([]) if plan.t is None else plan.t,
-             "path_label": np.array(plan.label), "outcome": np.array(outcome),
-             "speed_caps": np.array(plan.speed_caps), "expected_duration": np.array(plan.expected),
-             "experiment": np.array(json.dumps(experiment)), **(logs or {})}
-    return rec.save(folder / "recording.npz", extra)
+    folder = run_folder(recordings, experiment.get("experiment_name", "default"), plan.serial, plan.slug,
+                        experiment["environment"])
+    write_description(folder, {**experiment, "path_label": plan.label, "outcome": outcome})
+    return save_recording(folder, rec, plan.serial,
+                          {"path_poses": plan.poses, "path_t": np.array([]) if plan.t is None else plan.t}, file_format)

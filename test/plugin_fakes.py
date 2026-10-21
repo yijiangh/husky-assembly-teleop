@@ -7,28 +7,37 @@ Robots: `fake_arm` and `fake_robot` are the real `ArmInterface` and `HuskyRobotI
 they run is the real one; their publishers keep what is sent (`Published`), and an `ArmDriver` moves an arm along what
 it was sent, feeding its joint states and the safety sync's status as the robot would. `fake_robotiq` and
 `fake_scaffolding` are the real tool interfaces, answered by a `RobotiqDriver` and a `ScaffoldingDriver`.
+
+Leases: a fake robot's parts share its soft-stop latch and its robot lease slot, free at first, as on a real robot.
+Code that sends to them takes the lease as the monitor's plugins do (`FakeContext.take_lease`, the real one), or a
+test hands it the lease every test holds (`lease_to_test`).
 """
 
 from __future__ import annotations
 
 import asyncio
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from functools import partial
 from types import SimpleNamespace
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 import numpy as np
-from robot_fakes import Controllers
+from action_msgs.msg import GoalStatus
+from robot_fakes import TEST_LEASE, Controllers
 from sensor_msgs.msg import JointState
 
 from husky_assembly_teleop.config import ArmConfig
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
+from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER, ArmInterface, ArmState
 from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.robot_interface.controller_manager import ControllerManagerState
 from husky_assembly_teleop.robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV3,
                                                                  ScaffoldingV3State)
+from husky_assembly_teleop.robot_interface.event import Event
 from husky_assembly_teleop.robot_interface.robot import HuskyRobotInterface
+from husky_assembly_teleop.robot_interface.robot_lease import LeaseSlot, leased
+from husky_assembly_teleop.robot_interface.soft_stop import SoftStopLatch
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.scene import Scene
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
@@ -78,8 +87,13 @@ class FakeGui:
 class FakeContext:
     """The part of a `PluginContext` plugins use, without a monitor; a test reads `logs` and moves `t`."""
 
+    #: Robot leases, as the monitor gives them: the real `PluginContext` code, one-motion-at-a-time check included.
+    take_lease = PluginContext.take_lease
+    lease_robots = PluginContext.lease_robots
+    _lease_slots = PluginContext._lease_slots
+
     def __init__(self, robots: tuple = (), plugins: dict | None = None, snapshot: Scene | None = None,
-                 step: Callable[[float], None] = lambda _t: None, drive_root=None):
+                 step: Callable[[float], None] = lambda _t: None, drive_root=None, name: str = "a plugin"):
         """Start at ROS time 10 s.
 
         Args:
@@ -88,7 +102,12 @@ class FakeContext:
             snapshot: The scene snapshot; tests may replace `scene.snapshot` at any time.
             step: Called with the new time at every tick.
             drive_root: `config.drive_root`.
+            name: The plugin's name, which its leases are taken under.
         """
+        self.name = name
+        #: The leases taken with `take_lease`; the tasks spawned to survive a soft stop.
+        self._leases: set = set()
+        self.survivors: set[asyncio.Task] = set()
         self.t, self.step = 10.0, step
         #: Whether the plugin was stopped or torn down (`PluginContext.closed`).
         self.closed = False
@@ -122,9 +141,12 @@ class FakeContext:
         """A queued intent, run at once (no tick here)."""
         run()
 
-    def spawn(self, label: str, work) -> asyncio.Task:
-        """Start a task on the running loop."""
-        return asyncio.get_running_loop().create_task(work, name=label)
+    def spawn(self, label: str, work, survives_soft_stop: bool = False) -> asyncio.Task:
+        """Start a task on the running loop; one a soft stop leaves alone is kept in `survivors`."""
+        task = asyncio.get_running_loop().create_task(work, name=label)
+        if survives_soft_stop:
+            self.survivors.add(task)
+        return task
 
     async def run_in_thread(self, function: Callable, *args: Any, **kwargs: Any) -> Any:
         """Run on the loop's default thread pool."""
@@ -221,17 +243,21 @@ def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
     arm.controllers = Controllers(arm.state.controllers, f"/{name}", node)
     arm.controllers.switches = []
 
-    def switch(controller: str) -> bool:
-        """Start `controller` at once, as an answered switch request would."""
+    def switch(controller: str, unguarded: bool = False) -> bool:
+        """Start `controller` at once, as an answered switch request would; `unguarded` as the real one takes it."""
         arm.controllers.switches.append(controller)
         arm.state.controllers.active = arm.state.controllers.requested = controller
         return True
 
     arm.controllers.switch = switch
-    arm._simulated, arm._free_drive_until = lambda: None, float("-inf")
+    arm._simulated, arm._free_drive_until, arm._free_drive_leases = lambda: None, float("-inf"), frozenset()
+    # * Its own latch and lease slot, until `fake_robot` gives it the robot's.
+    arm._latch, arm._lease_slot = SoftStopLatch(name), LeaseSlot(name)
     arm.urdf_problem, arm.pendant_tcp, arm.base_in_husky = None, Pose(), Pose()
     arm._test_mode_logged, arm._motion_reference, arm._slight_reference, arm._free_drive_on = {}, {}, {}, False
     arm._trajectory, arm._target_frame, arm._target_wrench = Published(), Published(), Published()
+    arm.trajectories_sent, arm.targets_sent, arm.wrenches_sent = (Event(f"{name}_trajectory"), Event(f"{name}_target"),
+                                                                  Event(f"{name}_wrench"))
     arm._zero_ft = SimpleNamespace(service_is_ready=lambda: True, calls=[])
     arm._zero_ft.call_async = arm._zero_ft.calls.append
     arm.end_effector = end_effector
@@ -247,7 +273,33 @@ def fake_robot(node: SimpleNamespace, serial: str, arms: Sequence[ArmInterface])
     robot.arms = {arm.config.name: arm for arm in arms}
     robot.base = SimpleNamespace(state=BaseState())  # never measured, as in the simulator
     robot._multi_arm = Published() if len(arms) == 2 else None
+    # * One latch and one lease slot for the whole robot, shared by its arms and tools; the lease starts free.
+    robot.soft_stop_latch, robot.lease_slot = SoftStopLatch(serial), LeaseSlot(serial)
+    for arm in arms:
+        arm._latch, arm._lease_slot = robot.soft_stop_latch, robot.lease_slot
+        if arm.end_effector is not None:
+            arm.end_effector._latch, arm.end_effector._lease_slot = robot.soft_stop_latch, robot.lease_slot
     return robot
+
+
+@contextmanager
+def from_outside(robot: HuskyRobotInterface) -> Iterator[None]:
+    """Send in the block as something outside this monitor would (the pendant, another monitor), leaving no lease.
+
+    The robot's lease is held only inside the block, so after it only the motion shows, not a lease.
+    """
+    with leased([robot.lease_slot], "outside the monitor"):
+        yield
+
+
+def lease_to_test(part):
+    """Lease a fake robot, or a fake arm or tool on its own, to the lease every test holds (`robot_fakes.TEST_LEASE`).
+
+    A test may then send to it directly; returns `part`.
+    """
+    slot = part.lease_slot if isinstance(part, HuskyRobotInterface) else part._lease_slot
+    slot.lease = TEST_LEASE
+    return part
 
 
 class ArmDriver:
@@ -311,8 +363,20 @@ class ArmDriver:
 
 # --- --- --- --- --- TOOLS --- --- --- --- ---
 
+class FakeGoal(SimpleNamespace):
+    """One goal sent to a fake GripperCommand server: its message, its goal handle, and whether it was cancelled.
+
+    `on_answer` and `on_result` are the gripper's callbacks, called by the `RobotiqDriver` when it answers.
+    """
+
+    def cancel_goal_async(self) -> SimpleNamespace:
+        """Ask to cancel; the driver ends the goal as cancelled at its next tick."""
+        self.cancelled = True
+        return SimpleNamespace(add_done_callback=lambda _callback: None)
+
+
 class FakeAction:
-    """A GripperCommand action client: ready or not, keeping every goal sent."""
+    """A GripperCommand action client: ready or not, keeping every goal sent (`FakeGoal`)."""
 
     def __init__(self, ready: bool = True):
         """Ready unless told otherwise."""
@@ -324,8 +388,10 @@ class FakeAction:
 
     def send_goal_async(self, goal) -> SimpleNamespace:
         """Keep the goal; the answer is the driver's."""
-        self.goals.append(goal)
-        return SimpleNamespace(add_done_callback=lambda _callback: None)
+        sent = FakeGoal(command=goal.command, cancelled=False, accepted=True, on_answer=None, on_result=None)
+        sent.get_result_async = lambda: SimpleNamespace(add_done_callback=partial(setattr, sent, "on_result"))
+        self.goals.append(sent)
+        return SimpleNamespace(add_done_callback=partial(setattr, sent, "on_answer"))
 
 
 def fake_robotiq(node: SimpleNamespace, namespace: str = "/a200_0804/gripper", position: float = 0.0) -> RobotiqGripper:
@@ -334,11 +400,16 @@ def fake_robotiq(node: SimpleNamespace, namespace: str = "/a200_0804/gripper", p
     gripper._node, gripper.namespace = node, namespace
     gripper.state = RobotiqState(position=position)
     gripper._action = FakeAction()
+    gripper._goal, gripper._cancel_on_accept = None, False
+    # * Its own latch and lease slot, until `fake_robot` gives it the robot's.
+    gripper._latch, gripper._lease_slot = SoftStopLatch(namespace), LeaseSlot(namespace)
     return gripper
 
 
 class RobotiqDriver:
-    """Answers a fake Robotiq's goals `delay` s after they are sent, its fingers ending at `reach(target)`.
+    """Accepts a fake Robotiq's goals at once and ends them `delay` s after they are sent, its fingers at `reach(target)`.
+
+    A cancelled goal ends cancelled at the next tick, the fingers where they are.
 
     Attributes:
         answer: False: never answers (the action server hangs).
@@ -348,21 +419,31 @@ class RobotiqDriver:
                  answer: bool = True):
         """Answer `gripper`'s goals."""
         self.gripper, self.delay, self.reach, self.answer = gripper, delay, reach, answer
-        self._answered, self._sent_at = 0, {}
+        self._sent_at: dict[int, float] = {}
+        self._ended: set[int] = set()
 
     def tick(self, t: float) -> None:
-        """Answer the goals whose time has come, in order."""
-        goals = self.gripper._action.goals
-        for index in range(self._answered, len(goals)):
-            self._sent_at.setdefault(index, t)
-        while self.answer and self._answered < len(goals) and t - self._sent_at[self._answered] >= self.delay:
-            target = goals[self._answered].command.position
-            self._answered += 1
-            reached = self.reach(target)
-            self.gripper._on_joint_state(JointState(name=[RobotiqGripper.KNUCKLE_JOINT], position=[reached]))
-            result = SimpleNamespace(reached_goal=abs(reached - target) < 1e-3, stalled=abs(reached - target) >= 1e-3,
-                                     position=reached)
-            self.gripper._on_result(SimpleNamespace(result=lambda result=result: SimpleNamespace(result=result)))
+        """Accept new goals, then end the goals that were cancelled or whose time has come, in order."""
+        if not self.answer:
+            return
+        for index, goal in enumerate(self.gripper._action.goals):
+            if index in self._ended:
+                continue
+            if index not in self._sent_at:
+                self._sent_at[index] = t
+                goal.on_answer(SimpleNamespace(result=lambda goal=goal: goal))
+            if goal.cancelled:
+                self._ended.add(index)
+                goal.on_result(SimpleNamespace(result=lambda: SimpleNamespace(status=GoalStatus.STATUS_CANCELED)))
+            elif t - self._sent_at[index] >= self.delay:
+                self._ended.add(index)
+                target = goal.command.position
+                reached = self.reach(target)
+                self.gripper._on_joint_state(JointState(name=[RobotiqGripper.KNUCKLE_JOINT], position=[reached]))
+                result = SimpleNamespace(reached_goal=abs(reached - target) < 1e-3,
+                                         stalled=abs(reached - target) >= 1e-3, position=reached)
+                goal.on_result(SimpleNamespace(result=lambda result=result: SimpleNamespace(
+                    status=GoalStatus.STATUS_SUCCEEDED, result=result)))
 
 
 def fake_scaffolding(node: SimpleNamespace, namespace: str = "/a200_0806/left_gripper") -> ScaffoldingV3:
@@ -371,6 +452,8 @@ def fake_scaffolding(node: SimpleNamespace, namespace: str = "/a200_0806/left_gr
     tool._node, tool.namespace = node, namespace
     tool.state = ScaffoldingV3State()
     tool._command = Published()
+    # * Its own latch and lease slot, until `fake_robot` gives it the robot's.
+    tool._latch, tool._lease_slot = SoftStopLatch(namespace), LeaseSlot(namespace)
     return tool
 
 

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot
+from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, from_outside
 
 from husky_assembly_teleop.shared.execution.basis import basis_of, stale_reason
 from husky_assembly_teleop.shared.execution.interlock import Busy, busy_reason, give_back, refuse_while_held, take
@@ -216,7 +216,8 @@ def test_a_slow_move_is_busy_from_its_start_to_a_second_after_its_end():
             await lab.ctx.next_tick()
         assert busy_reason(lab.ctx.world, lab.ctx.t) == ""
         start = lab.ctx.t
-        duration = arm.send_joint_move(arm.joint_vector() + np.radians([3.0, 0, 0, 0, 0, 0]))
+        with from_outside(lab.belle):
+            duration = arm.send_joint_move(arm.joint_vector() + np.radians([3.0, 0, 0, 0, 0, 0]))
         blind = []
         while lab.ctx.t < start + duration + 1.0:
             await lab.ctx.next_tick()
@@ -236,7 +237,8 @@ def test_an_arm_whose_joint_states_went_stale_is_busy():
     lab, arm, driver = moving_lab()
 
     async def scenario():
-        arm.send_joint_move(arm.joint_vector() + np.radians([30.0, 0, 0, 0, 0, 0]))
+        with from_outside(lab.belle):
+            arm.send_joint_move(arm.joint_vector() + np.radians([30.0, 0, 0, 0, 0, 0]))
         for _ in range(5):
             await lab.ctx.next_tick()
         driver.silent_from = lab.ctx.t

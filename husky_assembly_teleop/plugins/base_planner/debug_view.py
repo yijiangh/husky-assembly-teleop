@@ -99,7 +99,8 @@ class DebugView:
 
     def _add_checkboxes(self, debug: Debug) -> None:
         """A checkbox per layer in the layers folder, and buttons to show all or none."""
-        with self._ctx.view.ui() as gui, self._layers:
+        gui = self._ctx.view.gui
+        with self._layers:
             every = gui.add_button_group("Show", ["All", "None"], hint="Show every debug layer, or none")
             every.on_click(self._ctx.defer_value("debug layers", lambda label: self._show_all(label == "All")))
             self._widgets.append(every)

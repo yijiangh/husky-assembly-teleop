@@ -12,6 +12,7 @@ panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AbstractContextManager
 from html import escape
 from typing import TYPE_CHECKING, Iterable
 
@@ -21,6 +22,7 @@ from ...config import find_robot_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
+from ...ui.phone import columns_css
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
 from .plan import Plan, PlannerContract
 
@@ -30,6 +32,10 @@ if TYPE_CHECKING:
 
 #: Time slider resolution, seconds.
 SLIDER_STEP = 0.05
+#: The side panel tab every planner panel's tab goes in.
+PLAN_TAB = ("Plan", viser.Icon.ROUTE)
+#: Lays out the Run folder as Commit and Cancel side by side, for an html widget outside that folder.
+COMMIT_STYLE = f"<style>{columns_css(viser.Icon.SEND, 2)}</style>"
 
 
 #: Chip text and colour of each state of the planner's latest plan, and of no plan.
@@ -47,6 +53,8 @@ class PlannerPanel(HuskyPlugin):
 
     #: The planner plugin this panel drives. ! Also list it in `requires`.
     planner = ""
+    #: This panel's tab inside PLAN_TAB: label and icon.
+    tab: tuple[str, viser.IconName | None] = ("", None)
 
     def __init__(self):
         """Start with no robot chosen and no target."""
@@ -94,12 +102,16 @@ class PlannerPanel(HuskyPlugin):
         """Take the planner's API. ! Call first in setup."""
         self._api = ctx.require(self.planner)
 
+    def _ui(self, ctx: PluginContext) -> AbstractContextManager[viser.GuiApi]:
+        """Add widgets inside this panel's tab, in the side panel's Plan tab."""
+        return ctx.view.tab(PLAN_TAB, self.tab)
+
     def _add_path_controls(self, ctx: PluginContext, gui: viser.GuiApi, plan_hint: str, commit_hint: str) -> None:
         """Add the "path" section: Plan/Play/Clear, the time slider and Commit, with their callbacks.
 
         Args:
             ctx: This plugin's context.
-            gui: GUI api, inside `ctx.view.ui()`.
+            gui: GUI api, inside `_ui`.
             plan_hint: Hover text of the Plan/Play/Clear buttons.
             commit_hint: Hover text of Commit.
         """
@@ -107,10 +119,16 @@ class PlannerPanel(HuskyPlugin):
         plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
         self._slider = gui.add_slider("t s", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
                                       hint="Scrub through the planned path")
-        commit = gui.add_button("Commit", color="blue", icon=viser.Icon.SEND, hint=commit_hint)
+        # * Cancel beside Commit: a folder of its own, laid out in two columns (found by Commit's icon).
+        gui.add_html(COMMIT_STYLE)
+        with gui.add_folder("Run"):
+            commit = gui.add_button("Commit", color="blue", icon=viser.Icon.SEND, hint=commit_hint)
+            cancel = gui.add_button("Cancel", color="red", icon=viser.Icon.PLAYER_STOP,
+                                    hint="Stop the motion Commit started: the planner stops the robot")
         plan.on_click(ctx.defer_value("path button", lambda label: self._on_path(ctx, label)))
         self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value))))
         commit.on_click(ctx.defer("commit", lambda: self._commit(ctx)))
+        cancel.on_click(ctx.defer("cancel commit", lambda: self._cancel_commit()))
 
     def _add_ghosts(self, ctx: PluginContext, robots: Iterable[RobotConfig]) -> None:
         """Build a target ghost and a path ghost per robot, shown only while the panel is in use.
@@ -129,7 +147,7 @@ class PlannerPanel(HuskyPlugin):
         * Raising instead would stop the plugin and mark the whole monitor broken, e.g. when run without robots.
         """
         self.idle = True
-        with ctx.view.ui() as gui:
+        with self._ui(ctx) as gui:
             gui.add_html(block(note(escape(why))))
 
     # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
@@ -182,6 +200,14 @@ class PlannerPanel(HuskyPlugin):
             self._say(f"not committed: {change}; replan", failed=True)
             return
         ctx.spawn(f"commit plan {plan.id}", self._report(self._api.commit(plan.id)))
+
+    def _cancel_commit(self) -> None:
+        """Stop the motion a commit started, and say so."""
+        self._used.touch()
+        if self._api.cancel_commit():
+            self._say("commit cancelled: the robot stops", failed=True)
+        else:
+            self._say("nothing to cancel: no commit is running")
 
     async def _report(self, sent: asyncio.Future[tuple[bool, str]]) -> None:
         """Show how a commit went."""
