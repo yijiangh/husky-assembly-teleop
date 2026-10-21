@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Generic, Protocol, TypeVar, runtime_checkable
 
 from .timed_path import TimedPath
+
+if TYPE_CHECKING:
+    from ...world.collision_hit import CollisionHit
 
 #: Every plan state.
 STATES = ("planning", "ready", "stale", "sent", "failed", "cancelled")
@@ -39,6 +42,7 @@ class Plan(Generic[R]):
         path: The path once found, else None.
         message: What happens or happened: progress, what was found, why it failed or went stale.
         warning: Whether `message` is a warning, e.g. planned from a guessed robot pose.
+        hit: What collides, when it failed because the start or goal does.
     """
 
     id: int
@@ -47,6 +51,7 @@ class Plan(Generic[R]):
     path: TimedPath | None = None
     message: str = ""
     warning: bool = False
+    hit: CollisionHit | None = None
 
 
 @runtime_checkable

@@ -142,4 +142,63 @@ def test_a_given_path_is_checked_at_its_waypoints_and_between_them(world, config
                                 (goal, [goal], "waypoint 1")):
         box = Body("t/box", box_geometry((0.15, 0.15, 0.15)), tool_at(world, config, joints), label="the box")
         hit = path_hit(world, world.sync(snapshot(config, start, (box,)), ALICE), ARM, np.array(path))
-        assert hit is not None and hit.startswith(where) and "the box" in hit, hit
+        assert hit is not None and hit.message.startswith(where) and "the box" in hit.message, hit
+
+
+@pytest.mark.slow
+def test_a_hit_lists_every_pair_that_blocks_it_with_its_contact(world, config):
+    """A box at the goal: the arm side comes first and the contact overlaps; a box the arm never moves is not listed."""
+    start, goal = start_and_goal(config)
+    tool = tool_at(world, config, goal)
+    box = Body("t/box", box_geometry((0.15, 0.15, 0.15)), tool, label="the box")
+    static = Body("t/static", box_geometry((0.1, 0.1, 0.1)), Pose.from_arrays((0.0, 0.0, 0.25), (0, 0, 0, 1)))
+    hit = path_hit(world, world.sync(snapshot(config, start, (box, static)), ALICE), ARM, np.array([goal]))
+
+    assert hit.where == "waypoint 1" and hit.robot == robot_id(ALICE)
+    assert all(b == "t/box" and a.startswith(f"{robot_id(ALICE)}/") or a.startswith("tools/") for a, b in hit.pairs)
+    assert len(hit.contacts) == len(hit.pairs) and all(contact is not None for contact in hit.contacts)
+    first = hit.contacts[0]
+    assert first.pair == hit.pairs[0] and first.depth < 0.0
+    assert np.linalg.norm(np.subtract(first.point_b, tool.position)) < 0.15
+    assert hit.scene.robots[robot_id(ALICE)].joints[NAMES[0]] == pytest.approx(goal[0])
+
+
+@pytest.mark.slow
+def test_a_start_in_collision_lists_every_pair(world, config):
+    """The start is checked in full: a box at the chassis blocks it though the arm never moves it."""
+    start, goal = start_and_goal(config)
+    static = Body("t/static", box_geometry((0.1, 0.1, 0.1)), Pose.from_arrays((0.0, 0.0, 0.25), (0, 0, 0, 1)))
+    result = plan_arm(world, world.sync(snapshot(config, start, (static,)), ALICE), ARM, goal, threading.Event())
+    assert result.hit is not None and result.hit.where == "start" and result.reason == result.hit.message
+    assert any("t/static" in pair for pair in result.hit.pairs)
+
+
+@pytest.mark.slow
+def test_a_hit_moves_the_held_body_with_the_arm(world, config):
+    """In the hit's scene, a body held on tool0 sits at the tool at the target, not where the snapshot had it."""
+    start, goal = start_and_goal(config)
+    held = Body("t/held", box_geometry((0.05, 0.05, 0.05)), Attachment(robot_id(ALICE), "ur_arm_tool0", Pose()),
+                touches=(robot_id(ALICE),), label="the held part")
+    box = Body("t/box", box_geometry((0.05, 0.05, 0.05)), tool_at(world, config, goal), touches=(robot_id(ALICE),))
+    scene = snapshot(config, start, (held, box))
+    result = plan_arm(world, world.sync(scene, ALICE), ARM, goal, threading.Event())
+    assert result.hit.pairs == (("t/held", "t/box"),)
+    moved = result.hit.scene.world_poses["t/held"].position
+    np.testing.assert_allclose(moved, tool_at(world, config, goal).position, atol=1e-6)
+    assert scene.robots[robot_id(ALICE)].joints[NAMES[0]] == pytest.approx(start[0])
+
+
+@pytest.mark.slow
+def test_a_hit_on_another_robot_names_the_link_touched(world, config):
+    """Another robot is one body to the check; the contact narrows it to the link the arm touched."""
+    start, goal = start_and_goal(config)
+    belle = robot_config_from_serial("0805", DATA)
+    # * Her chassis sits about 0.26 to 0.36 m above her root: lowered so that it surrounds Alice's tool.
+    root = Pose.from_arrays(np.subtract(tool_at(world, config, goal).position, (0.0, 0.0, 0.3)), (0, 0, 0, 1))
+    other = RobotObject(robot_id("0805"), belle.model, root, dict(zip(NAMES, belle.arms[0].stow_joints)))
+    scene = snapshot(config, start)
+    scene.robots[other.id] = other
+    hit = path_hit(world, world.sync(scene, ALICE), ARM, np.array([goal]))
+    assert hit is not None and hit.pairs[0][1] == other.id
+    touched = hit.contacts[0].pair[1]
+    assert touched.startswith(f"{other.id}/") or touched in {tool.id for tool in belle.model.tools.values()}, touched

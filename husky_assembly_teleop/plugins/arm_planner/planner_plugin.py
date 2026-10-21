@@ -22,6 +22,7 @@ from ...plugin_api.plugin import register
 from ...robot_interface.arm import joint_path_move
 from ...robot_interface.mocap_state import pose_lost
 from ...shared.arm_planner_contract import ArmPlanRequest
+from ...world.collision_hit import CollisionHit
 from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
@@ -122,21 +123,23 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
                       accepted=accepted, finished=lambda: self._loaded.add(serial))
 
-    def check_path(self, serial: str, arm: str, waypoints: Sequence[Sequence[float]]) -> asyncio.Future[str | None]:
+    def check_path(self, serial: str, arm: str,
+                   waypoints: Sequence[Sequence[float]]) -> asyncio.Future[CollisionHit | None]:
         """Check a given joint path for one arm for collisions, in the world as it is now (`ArmPlannerContract`)."""
         future = asyncio.get_running_loop().create_future()
         path = np.array(waypoints, dtype=float)
         self._ctx.submit(f"check path {serial}", lambda: self._start_check(serial, arm, path, future))
         return future
 
-    def _start_check(self, serial: str, arm: str, waypoints: np.ndarray, future: asyncio.Future[str | None]) -> None:
+    def _start_check(self, serial: str, arm: str, waypoints: np.ndarray,
+                     future: asyncio.Future[CollisionHit | None]) -> None:
         """Snapshot the world and check the path on the worker, after any search before it. Main thread."""
         snapshot, _guessed = with_guesses(self._ctx.scene.snapshot, robot_id(serial))
 
-        def work() -> str | None:
+        def work() -> CollisionHit | None:
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
-                return f"{serial} can't be checked: {'; '.join(problems)}"
+                raise ValueError(f"{serial} can't be checked: {'; '.join(problems)}")
             result = path_hit(self._world, self._world.sync(snapshot, serial), arm, waypoints)
             self._loaded.add(serial)
             return result
@@ -144,9 +147,13 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         async def run() -> None:
             try:
                 result = await asyncio.get_running_loop().run_in_executor(self._executor, work)
+            except ValueError as error:
+                if not future.done():
+                    future.set_exception(error)
+                return
             except BaseException as error:
                 if not future.done():
-                    future.set_result(f"the check failed: {error!r}")
+                    future.set_exception(RuntimeError(f"the check failed: {error!r}"))
                 raise
             if not future.done():
                 future.set_result(result)

@@ -10,6 +10,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from ..world.collision_hit import CollisionHit
 from .planner.plan import PlannerContract
 
 
@@ -31,7 +32,8 @@ class ArmPlanRequest:
 class ArmPlannerContract(PlannerContract[ArmPlanRequest], Protocol):
     """What `ctx.require("arm_planner")` offers: the planner contract, and path checks."""
 
-    def check_path(self, serial: str, arm: str, waypoints: Sequence[Sequence[float]]) -> asyncio.Future[str | None]:
+    def check_path(self, serial: str, arm: str,
+                   waypoints: Sequence[Sequence[float]]) -> asyncio.Future[CollisionHit | None]:
         """Check a joint path for one arm against the robot itself, the other robots and every scene body.
 
         Each waypoint and the straight joint move between two are checked, in the world as it is now; the robot's
@@ -43,5 +45,7 @@ class ArmPlannerContract(PlannerContract[ArmPlanRequest], Protocol):
             waypoints: (n, 6) joint values, radians, UR driver order.
 
         Returns:
-            asyncio.Future[str | None]: Resolves with the first collision, or None if the whole path is clear.
+            asyncio.Future[CollisionHit | None]: Resolves with the first configuration that collides and every pair
+                that blocks it, or None if the whole path is clear. Raises ValueError if the robot can't be checked
+                (absent), RuntimeError if the check itself failed.
         """
