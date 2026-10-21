@@ -28,7 +28,7 @@ from .plugin_api.concurrency import TickTimer
 from .config import MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
 from scaffolding_assembly_core.geometry import Geometry
-from .world.clearance import TRIPS_KEPT, ClearanceChecker, ClearanceTrip
+from .world.clearance import TRIPS_KEPT, ClearanceChecker, ClearanceTrip, assumable_joints
 from .world.kinematics import Kinematics
 from .plugin_api.plugin import HuskyPlugin, UnknownPluginError, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
@@ -459,7 +459,10 @@ class HuskyMonitor(Node):
                     if lost := pose_lost(base.mocap_id, base.state, now):
                         loaded.ctx._trip_clearance(clearance, serial, f"cannot be checked: {lost}")
                         break
-                    asked.append(((loaded.ctx, clearance, serial), robot_id(serial), clearance.margin))
+                    robot = snapshot.robots.get(robot_id(serial))
+                    assumable = (assumable_joints(robot.model.movable_joints, clearance.unknown_arms)
+                                 if robot is not None else frozenset())
+                    asked.append(((loaded.ctx, clearance, serial), robot_id(serial), clearance.margin, assumable))
         if asked:
             self._clearances.check(snapshot, asked)
 

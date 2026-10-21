@@ -22,7 +22,7 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_LIMITS)
 from husky_assembly_teleop.robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, take_lease
-from husky_assembly_teleop.world.clearance import STOP_DISTANCE, Clearance
+from husky_assembly_teleop.world.clearance import ALL_ARMS, STOP_DISTANCE, Clearance
 from scaffolding_assembly_core.geometry import Pose
 
 pytestmark = pytest.mark.safety
@@ -350,9 +350,9 @@ class BaseContext:
         return asyncio.get_running_loop().create_task(work, name=label)
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE):
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=()):
         """Keep the clearance; the test trips it."""
-        self.clearances.append(Clearance(tuple(serials), margin))
+        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms))
         yield self.clearances[-1]
 
     def log_warn(self, message: str) -> None:
@@ -392,6 +392,7 @@ def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
         plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
         plugin.update(ctx)
         await asyncio.sleep(0)
+        assert ctx.clearances[0].unknown_arms == ALL_ARMS  # * driving by hand: an unknown arm counts as stowed
         ctx.clearances[0].problem = "robot 0804 came within 10 cm of wall"
         base.soft_stopped = True  # as the monitor's trip does
         guard = plugin._base_guards["0804"]

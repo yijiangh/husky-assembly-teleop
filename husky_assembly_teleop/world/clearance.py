@@ -5,7 +5,9 @@ Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, 
 
 - Checked against the whole tick snapshot, other robots included; allowed contacts (`Body.touches`, what a robot
   holds) are skipped.
-- ! What cannot be checked counts as too close: a lost base pose, or a robot the mirror cannot place.
+- ! What cannot be checked counts as too close: a lost base pose, or a robot the mirror cannot place. Only arms named
+  in `Clearance.unknown_arms` may be unknown (manual moves): they are checked at their stow pose. A robot that
+  cannot be checked when a clearance starts refuses it (`ClearanceRefused`), so nothing is sent.
 - One worker thread checks one snapshot at a time, a tick or two behind the robot. Not an emergency stop.
 - On a trip, `PluginContext.clearance` soft stops the robot (Resume needed) and cancels the task. The monitor keeps
   the last TRIPS_KEPT trips with what came too close (`ClearanceTrip`), for the collisions plugin.
@@ -14,11 +16,13 @@ Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, 
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
-from typing import Any, Hashable
+from dataclasses import dataclass, replace
+from typing import Any, Collection, Hashable, Iterable, Literal
 
+from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
 
+from ..robot_interface.soft_stop import MotionRefused
 from .base_collision import BaseCollisionWorld
 from .collision_hit import CollisionHit
 
@@ -26,6 +30,8 @@ from .collision_hit import CollisionHit
 STOP_DISTANCE = 0.1
 #: How many trips the monitor keeps.
 TRIPS_KEPT = 10
+#: For `unknown_arms`: every arm of the robot.
+ALL_ARMS = "all"
 
 
 @dataclass(eq=False)
@@ -37,12 +43,45 @@ class Clearance:
         margin: Distance below which it trips, metres.
         problem: Why it tripped, or None while it holds.
         hit: What came too close, once tripped; None while it holds, or when it could not be checked.
+        unknown_arms: Arms whose joints may be unknown, checked at their stow pose, or ALL_ARMS; none by default.
+            The base pose must always be known.
     """
 
     serials: tuple[str, ...]
     margin: float
     problem: str | None = None
     hit: CollisionHit | None = None
+    unknown_arms: Collection[str] | Literal["all"] = ()
+
+
+class ClearanceRefused(MotionRefused):
+    """A clearance could not check its robot when it started (`clearance_problem`): nothing was sent."""
+
+    label = "cannot check"
+
+
+def clearance_problem(robot: RobotObject | None, assumable: frozenset[str] = frozenset()) -> str:
+    """Why a clearance cannot check a robot, or "": absent, base not tracked, or joints not known it may not assume.
+
+    Args:
+        robot: The robot in the snapshot, or None if it is not there.
+        assumable: Joints that may be unknown (`assumable_joints`).
+    """
+    if robot is None:
+        return "it is not in the scene"
+    return "; ".join(replace(robot, unmeasured=robot.unmeasured - assumable).acting_problems())
+
+
+def assumable_joints(joints: Iterable[str], unknown_arms: Collection[str] | Literal["all"]) -> frozenset[str]:
+    """The joints among `joints` that a clearance may take at their stow pose: those of `unknown_arms`.
+
+    Args:
+        joints: A robot's movable joints, e.g. `RobotModel.movable_joints`.
+        unknown_arms: Arm names (a joint "<arm>_<name>" belongs to arm "<arm>"), or ALL_ARMS for every joint.
+    """
+    if unknown_arms == ALL_ARMS:
+        return frozenset(joints)
+    return frozenset(joint for joint in joints if any(joint.startswith(f"{arm}_") for arm in unknown_arms))
 
 
 @dataclass(frozen=True)
@@ -73,8 +112,8 @@ class ClearanceChecker:
         self._world = BaseCollisionWorld()
         self._pending: Future | None = None
 
-    def check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float]]) -> bool:
-        """Start checking each (key, robot id, margin) in `snapshot`, unless the last check still runs.
+    def check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str]]]) -> bool:
+        """Start checking each (key, robot id, margin, joints that may be unknown) in `snapshot`, unless one runs.
 
         Returns:
             bool: Whether the check started; False while the last one runs (this snapshot is skipped).
@@ -100,12 +139,25 @@ class ClearanceChecker:
         self._executor.submit(self._world.close)
         self._executor.shutdown(wait=True)
 
-    def _check(self, snapshot: Scene,
-               asked: list[tuple[Hashable, str, float]]) -> list[tuple[Any, str, CollisionHit | None]]:
+    def _check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str]]]
+               ) -> list[tuple[Any, str, CollisionHit | None]]:
         """Sync the world to `snapshot` and say why each robot that is too close, or cannot be checked, is. Worker."""
+        found, checked = [], []
+        for key, own, margin, assumable in asked:
+            if problem := clearance_problem(snapshot.robots.get(own), assumable):
+                found.append((key, f"cannot be checked: {problem}", None))
+            else:
+                checked.append((key, own, margin))
+        # * The unknown joints left may be: take them as known, at the stow pose the kinematics filled in.
+        #   A strict clearance on the same robot failed above already.
+        lenient = {own for _key, own, _margin in checked if snapshot.robots.get(own) is not None
+                   and snapshot.robots[own].unmeasured}
+        if lenient:
+            snapshot = replace(snapshot, robots={object_id: replace(robot, unmeasured=frozenset())
+                                                 if object_id in lenient else robot
+                                                 for object_id, robot in snapshot.robots.items()})
         self._world.sync(snapshot)
-        found = []
-        for key, own, margin in asked:
+        for key, own, margin in checked:
             try:
                 hit = self._world.collision_hit(own, margin, "clearance")
             except (ValueError, KeyError) as error:

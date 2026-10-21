@@ -11,7 +11,12 @@ from robot_fakes import Log, fake_arm
 
 from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.robot_interface.robot_lease import LeaseSlot, NotLeased
+from husky_assembly_teleop.world.clearance import ALL_ARMS, ClearanceRefused
 from husky_assembly_teleop.world.freeze import WorldMoved, take_basis
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Scene
 from husky_assembly_teleop.world.measured import WorldState
 
 pytestmark = pytest.mark.safety
@@ -19,15 +24,25 @@ pytestmark = pytest.mark.safety
 NOW = 100.0
 
 
-def _context() -> tuple[PluginContext, WorldState, Log]:
-    """A context for plugin "executor" over robot 0805 with one arm, at ROS time NOW, logging into the Log."""
+#: Robot 0805's arm joints, for its model in the snapshot.
+ARM_JOINTS = ("ur_arm_shoulder_pan_joint", "ur_arm_elbow_joint")
+
+
+def _context(unmeasured: frozenset = frozenset()) -> tuple[PluginContext, WorldState, Log]:
+    """A context for plugin "executor" over robot 0805 with one arm, at ROS time NOW, logging into the Log.
+
+    The snapshot has 0805 tracked, with `unmeasured` joints not known.
+    """
     world, log = WorldState(), Log()
     world.robots["0805"] = SimpleNamespace(arms={"ur_arm": fake_arm(now=NOW)}, lease_slot=LeaseSlot("0805"))
     monitor = SimpleNamespace(world=world, now=lambda: NOW, log_warn=log.warning, log_info=log.info,
                               log_error=log.error, timer=SimpleNamespace(timed_task=lambda _name, work: work),
                               clearance_trips=())
     monitor.clearance_tripped = lambda trip: setattr(monitor, "clearance_trips", (*monitor.clearance_trips, trip))
-    return PluginContext("executor", monitor, view=None, scene=None, kinematics=None), world, log
+    robot = RobotObject(robot_id("0805"), SimpleNamespace(movable_joints=ARM_JOINTS), Pose(), {},
+                        unmeasured=unmeasured)
+    scene = SimpleNamespace(snapshot=Scene(robots={robot.id: robot}))
+    return PluginContext("executor", monitor, view=None, scene=scene, kinematics=None), world, log
 
 
 def _turn(world: WorldState, degrees: float) -> None:
@@ -148,3 +163,22 @@ def test_a_clearance_needs_a_task_of_its_plugin():
     with pytest.raises(RuntimeError, match="clearance\\(\\) runs only inside a task"):
         with ctx.clearance(["0805"]):
             pass
+
+
+def test_a_clearance_refuses_to_start_on_a_robot_it_cannot_check():
+    """Arm joints not known: a strict clearance raises before its block runs; one allowing the arm starts."""
+    ctx, _world, _log = _context(unmeasured=frozenset({"ur_arm_elbow_joint"}))
+    ran = []
+
+    async def drive(**allowed) -> None:
+        with ctx.clearance(["0805"], **allowed):
+            ran.append(allowed)
+
+    async def scenario():
+        strict = ctx.spawn("strict", drive())
+        lenient = ctx.spawn("lenient", drive(unknown_arms=ALL_ARMS))
+        return await asyncio.gather(strict, lenient, return_exceptions=True)
+
+    strict, lenient = asyncio.run(scenario())
+    assert isinstance(strict, ClearanceRefused) and "joints not known: ur_arm_elbow_joint" in str(strict)
+    assert lenient is None and ran == [{"unknown_arms": ALL_ARMS}]

@@ -49,7 +49,7 @@ from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values, warning
 from ...ui.trace_plot import TracePlot
-from ...world.clearance import STOP_DISTANCE, Clearance
+from ...world.clearance import STOP_DISTANCE, Clearance, ClearanceRefused
 from ...world.checks import STALE_AFTER
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, PathClearance, Sampler, StandardSet
@@ -424,6 +424,8 @@ class BaseExperimentPlugin(HuskyPlugin):
             ctx.log_warn(str(timeout))
         except ValueError as error:
             self._outcome = f"not sent: {error}"
+        except ClearanceRefused as refused:
+            self._outcome = f"not sent: {refused}"
         except asyncio.CancelledError:
             self._outcome = self._stopped(ctx, clearance)
             raise
@@ -480,6 +482,8 @@ class BaseExperimentPlugin(HuskyPlugin):
                 self._phase = SETTLING
                 experiment["settled"] = await self._settle(ctx, plan.serial)
             self._outcome = E_STOPPED if base.state.estopped else "done"
+        except ClearanceRefused as refused:
+            self._outcome = f"not sent: {refused}"
         except asyncio.CancelledError:
             self._outcome = self._stopped(ctx, clearance)
             raise

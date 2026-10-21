@@ -39,7 +39,7 @@ from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import REFUSAL_SHOWN, SECTION_SENSOR, block, numbers, section, values
-from ...world.clearance import STOP_DISTANCE
+from ...world.clearance import ALL_ARMS, STOP_DISTANCE, ClearanceRefused
 from scaffolding_assembly_core.geometry import Pose
 from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, build_compliance_inputs, build_free_drive_inputs,
                         build_jog_inputs, build_phone_arm_inputs, build_tool_inputs, pose_from_sliders,
@@ -205,7 +205,8 @@ class RobotControlPlugin(HuskyPlugin):
             clearance = gui.add_checkbox(
                 "Clearance", initial_value=True,
                 hint=f"While driving, soft stop the base once it comes within {STOP_DISTANCE * 100:.0f} cm of anything "
-                     f"in the scene. Untick to drive out of a tight spot; the phone's D-pad follows it too.")
+                     f"in the scene; an arm whose joints are not known counts as stowed. Untick to drive out of a "
+                     f"tight spot; the phone's D-pad follows it too.")
             return speed, clearance
 
         panel, built = build_controller_panel(ctx, gui, base.controllers,
@@ -396,12 +397,18 @@ class RobotControlPlugin(HuskyPlugin):
     async def _guard_base(self, ctx: PluginContext, widgets: _BaseWidgets) -> None:
         """Keep a clearance on the base while this plugin holds its lease and Clearance stays ticked.
 
-        A trip soft stops the base (`ctx.clearance`); the status line then says what it came too close to.
+        A trip soft stops the base (`ctx.clearance`); the status line then says what it came too close to. Driving
+        by hand, an arm whose joints are not known is checked at its stow pose; the base pose must be known.
         """
         serial, clearance = widgets.serial, None
         try:
-            with ctx.clearance([serial]) as clearance:
+            with ctx.clearance([serial], unknown_arms=ALL_ARMS) as clearance:
                 await ctx.wait_until(lambda: not self._leases.held(serial) or not widgets.clearance.value)
+        except ClearanceRefused as refused:
+            # ! The drive streams its twists apart from this guard: stop the robot, as a trip would.
+            self._tripped[serial] = str(refused)
+            ctx.world.robots[serial].soft_stop(str(refused))
+            self._refuse(ctx, (serial, BASE), "cannot check", f"{refused}: soft stopped")
         except asyncio.CancelledError:
             if clearance is not None and clearance.problem:
                 self._tripped[serial] = clearance.problem

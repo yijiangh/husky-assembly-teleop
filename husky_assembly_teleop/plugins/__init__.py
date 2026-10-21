@@ -28,6 +28,8 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`.
   move, whoever moved them. Example of both: `examples/lease_and_freeze.py`.
 * Clearances (optional, `ctx.clearance`): while a task drives a robot, the robot is soft stopped and the task
   cancelled once it comes within a margin of anything in the scene. Plugins only provide bodies; the runtime checks.
+  Strict by default: unknown arm joints trip it too. Manual moves pass `unknown_arms=ALL_ARMS` (or arm names): those
+  arms count as stowed. The base pose must always be known.
   The last trips, with what came too close, are in `ctx.clearance_trips`; the `collisions` plugin draws them.
 
 * Header: `ctx.view.header()` puts a short status above every plugin's folder, e.g. health's banner.

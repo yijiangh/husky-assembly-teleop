@@ -16,7 +16,9 @@ from husky_assembly_teleop.plugin_api.plugin import HuskyPlugin
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
 from husky_assembly_teleop.world.clearance import STOP_DISTANCE
 from husky_assembly_teleop.world.measured import WorldState
+from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
 
 #: Consecutive failing ticks after which a plugin is stopped.
@@ -363,6 +365,11 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
               for serial in ("r0", "r1")]
     plugin = Recorder("a", calls)
     monitor = build(monkeypatch, plugin, robots=robots)
+    # * Both robots known in the snapshot, else a clearance refuses to start.
+    model = SimpleNamespace(movable_joints=())
+    known = Scene(robots={robot_id(name): RobotObject(robot_id(name), model, Pose(), {}) for name in ("r0", "r1")})
+    monkeypatch.setattr(monitor_module, "take_snapshot", lambda *_args: known)
+    monitor._snapshot = known
     ctx = monitor._loaded["a"].ctx
 
     async def drive(serial):
@@ -374,8 +381,8 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
         found = ctx.spawn("drive r0", drive("r0"))
         await asyncio.sleep(0)
         await monitor._tick()
-        (key, own, margin), = monitor._clearances.asked[-1]
-        assert own == robot_id("r0") and margin == STOP_DISTANCE
+        (key, own, margin, assumable), = monitor._clearances.asked[-1]
+        assert own == robot_id("r0") and margin == STOP_DISTANCE and assumable == frozenset()
         monitor._clearances.found = [(key, "came within 10 cm of wall", None)]
         await monitor._tick()
         lost = ctx.spawn("drive r1", drive("r1"))
