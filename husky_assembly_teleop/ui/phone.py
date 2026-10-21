@@ -49,7 +49,7 @@ def grid_css(cells: tuple[tuple[str, int, int], ...], columns: int) -> str:
     return grid + places
 
 
-def columns_css(icon: str, columns: int) -> str:
+def columns_css(icon: str, columns: int, wrap: bool = False) -> str:
     """CSS that lays out, row by row in `columns` columns, the buttons of every folder holding a button with `icon`.
 
     ! Keep only buttons in that folder: any other widget takes a cell too.
@@ -57,12 +57,21 @@ def columns_css(icon: str, columns: int) -> str:
     Args:
         icon: An icon of one of the folder's buttons, e.g. viser.Icon.MINUS.
         columns: How many columns.
+        wrap: Let a long label wrap onto more lines, the button growing taller, instead of being cut off.
 
     Returns:
         str: CSS rules, without the <style> element.
     """
-    return (f"div:has(> div > button .icon-tabler-{icon}) "
-            f"{{ display: grid; grid-template-columns: repeat({columns}, minmax(0, 1fr)); column-gap: 8px; }}")
+    folder = f"div:has(> div > button .icon-tabler-{icon})"
+    css = f"{folder} {{ display: grid; grid-template-columns: repeat({columns}, minmax(0, 1fr)); column-gap: 8px; }}"
+    if wrap:
+        # ? viser's buttons are Mantine buttons: a fixed height, and a label that never wraps.
+        css += (f"{folder} button {{ height: auto !important; min-height: var(--button-height); padding-top: 4px; "
+                f"padding-bottom: 4px; }}"
+                f"{folder} button .mantine-Button-inner {{ height: auto; }}"
+                f"{folder} button .mantine-Button-label {{ white-space: normal !important; overflow: visible; "
+                f"line-height: 1.25; text-align: center; }}")
+    return css
 
 
 def big_buttons(icons: list[str], height: int, icon_size: int, labels: bool = True) -> str:

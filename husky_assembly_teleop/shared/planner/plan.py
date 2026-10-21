@@ -69,7 +69,14 @@ class PlannerContract(Protocol[R]):
         """End a search in progress; its plan becomes "cancelled". Nothing else changes."""
 
     def clear(self) -> None:
-        """End a search in progress and forget the plan. ! A sent plan's motion goes on: stop it on the robot."""
+        """End a search in progress and forget the plan. ! A sent plan's motion goes on: `cancel_commit` stops it."""
 
     def commit(self, plan_id: int) -> asyncio.Future[tuple[bool, str]]:
         """Send plan `plan_id` to the robot if it is still the latest and ready; resolves with (sent, message)."""
+
+    def cancel_commit(self) -> bool:
+        """Stop every motion a commit started that still runs (the planner's `execute` stops the robot); main thread.
+
+        Returns:
+            bool: Whether one was running.
+        """

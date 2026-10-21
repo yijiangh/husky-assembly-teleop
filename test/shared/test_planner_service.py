@@ -379,3 +379,31 @@ def test_the_panel_asks_for_a_replan_once_its_target_moves():
 
     before, after, message = run(Planner(), scenario)
     assert "plan ready" in before and "target moved" in after and message == "the target changed since planning"
+
+
+@pytest.mark.safety
+def test_cancel_commit_stops_the_running_motion():
+    """Cancel ends the running commit, whose execute then stops the robot; with nothing running it says so."""
+    stopped = []
+
+    async def execute(ctx, plan, answer):
+        answer(True, "sent")
+        try:
+            await wait_ticks_until(lambda: False)
+        except asyncio.CancelledError:
+            stopped.append(plan.id)  # * where a planner stops its robot
+            raise
+
+    async def scenario(planner, ctx):
+        idle = planner.cancel_commit()
+        plan = await planner.request_plan(Request("alice"))
+        await planner.commit(plan.id)
+        cancelled = planner.cancel_commit()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        return idle, cancelled, plan, planner.cancel_commit()
+
+    planner = Planner()
+    planner.execute = execute
+    idle, cancelled, plan, again = run(planner, scenario)
+    assert not idle and cancelled and stopped == [plan.id] and not again

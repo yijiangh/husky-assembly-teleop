@@ -100,7 +100,7 @@ class PlannerService(HuskyPlugin, Generic[R]):
             self._task.cancel()
 
     def clear(self) -> None:
-        """End a search in progress and forget the plan. ! A sent plan's motion goes on: stop it on the robot."""
+        """End a search in progress and forget the plan. ! A sent plan's motion goes on: `cancel_commit` stops it."""
         self.cancel()
         if self._plan is not None:
             self.forget(self._plan)
@@ -114,6 +114,13 @@ class PlannerService(HuskyPlugin, Generic[R]):
         future = asyncio.get_running_loop().create_future()
         self._ctx.submit(f"commit plan {plan_id}", lambda: self._commit(plan_id, future))
         return future
+
+    def cancel_commit(self) -> bool:
+        """Stop every motion a commit started that still runs: its task is cancelled, and `execute` stops the robot."""
+        running = [task for task in self._executions.values() if not task.done()]
+        for task in running:
+            task.cancel("commit cancelled by the operator")
+        return bool(running)
 
     def replaced(self) -> bool:
         """Whether a newer commit is replacing the running `execute`: called while it is being cancelled."""
