@@ -159,7 +159,7 @@ def build(monkeypatch, *plugins: HuskyPlugin, robots=()) -> HuskyMonitor:
     monitor._timer, monitor._stop_reasons, monitor._undecodable, monitor._shut_down = FakeTimer(), {}, set(), False
     monitor._pump_ros = lambda: 0
     monitor._startup_started, monitor._startup_times = 0.0, {}
-    monitor._clearances = FakeClearances()
+    monitor._clearances, monitor.clearance_trips = FakeClearances(), ()
     for index, robot in enumerate(robots):
         monitor._world.robots[f"r{index}"] = robot
     monitor._build()
@@ -307,7 +307,8 @@ def test_a_robot_failing_to_stop_does_not_keep_the_others_from_stopping(monkeypa
     def broken():
         raise RuntimeError("publisher destroyed")
 
-    robots = [SimpleNamespace(soft_stop=broken), SimpleNamespace(soft_stop=lambda: calls.append(("r1", "soft stop")))]
+    robots = [SimpleNamespace(soft_stop=broken),
+              SimpleNamespace(soft_stop=lambda: calls.append(("r1", "soft stop")))]
     monitor = build(monkeypatch, Recorder("a", calls), robots=robots)
 
     async def run():
@@ -375,7 +376,7 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
         await monitor._tick()
         (key, own, margin), = monitor._clearances.asked[-1]
         assert own == robot_id("r0") and margin == STOP_DISTANCE
-        monitor._clearances.found = [(key, "came within 10 cm of wall")]
+        monitor._clearances.found = [(key, "came within 10 cm of wall", None)]
         await monitor._tick()
         lost = ctx.spawn("drive r1", drive("r1"))
         await asyncio.sleep(0)
@@ -389,3 +390,5 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
     assert stops == ["r0", "r1"]
     errors = monitor.get_logger().text("error")
     assert "robot r0 came within 10 cm of wall" in errors and "robot r1 cannot be checked" in errors
+    trips = [(trip.serial, trip.task) for trip in monitor.clearance_trips]
+    assert trips == [("r0", "a: drive r0"), ("r1", "a: drive r1")]

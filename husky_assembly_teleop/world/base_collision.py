@@ -17,8 +17,11 @@ import numpy as np
 import pybullet as p
 
 from scaffolding_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.ids import TRACKED, link_id
 from scaffolding_assembly_core.mirrors.pybullet import PyBulletMirror
 from scaffolding_assembly_core.scene import Attachment, Scene
+
+from .collision_hit import CollisionHit, Contact
 
 
 def held_bodies(snapshot: Scene, robot: str) -> list[str]:
@@ -47,8 +50,8 @@ class BaseCollisionWorld:
     def __init__(self):
         """Start empty; the first `sync` loads the robots and bodies (slow, on the worker)."""
         self.mirror: PyBulletMirror | None = None
-        # Display text for our ids, from the last synced snapshot.
-        self._label = Scene().label
+        #: The snapshot synced last: display text for our ids, and the scene of a `CollisionHit`.
+        self.snapshot = Scene()
         # ? Cheap pre-check for `hit_by`: floor footprints (min x, min y, max x, max y) by id, and robot reach.
         self._footprints: dict[str, tuple[float, float, float, float]] = {}
         self._reach: dict[str, float] = {}
@@ -70,7 +73,7 @@ class BaseCollisionWorld:
                 self._put(body_id, synced)
         self._moved = set()
         self.mirror.sync(snapshot)
-        self._label = snapshot.label
+        self.snapshot = snapshot
         # Footprint, reach and what is held depend on arm pose, so refresh them every sync.
         ids = list(self.mirror.robots) + self.mirror.obstacle_ids()
         self._footprints = {object_id: self._footprint(self.mirror.body_ids(object_id)) for object_id in ids}
@@ -114,21 +117,69 @@ class BaseCollisionWorld:
             str | None: Label of the first robot or body within `margin`; None if clear.
         """
         hit = self._hit(own, pose, margin)
-        return self._label(hit[1]) if hit is not None else None
+        return self.snapshot.label(hit[1]) if hit is not None else None
 
-    def hit_where_synced(self, own: str, margin: float) -> str | None:
-        """What robot `own`, or what it holds, comes within `margin` of where the last `sync` put them; None if clear.
+    def collision_hit(self, own: str, margin: float, where: str) -> CollisionHit | None:
+        """Everything robot `own`, or what it holds, comes within `margin` of where the last `sync` put them.
+
+        Args:
+            own: The robot, by id.
+            margin: Distance below which a pair counts, metres.
+            where: What the robot was doing, for the hit's message.
+
+        Returns:
+            CollisionHit | None: Every such pair, robot or held body first, with its closest contact; None if clear.
 
         Raises:
             ValueError: If the robot cannot be checked, e.g. a joint is not measured (`RobotObject.acting_problems`).
         """
         parts = self._parts(own)
         candidates = [object_id for object_id in self._footprints if object_id not in parts]
-        for part in parts:
-            hits = self.mirror.collisions(part, margin, candidates)
-            if hits:
-                return self._label(hits[0])
-        return None
+        pairs = tuple((part, other) for part in parts for other in self.mirror.collisions(part, margin, candidates))
+        if not pairs:
+            return None
+        snapshot = self.snapshot
+        # ? The mirror's rule: a free, unmeasured body with a non-convex mesh is built concave, the rest as hulls.
+        concave = frozenset(object_id for pair in pairs for object_id in pair if object_id in snapshot.bodies
+                            and isinstance(snapshot.bodies[object_id].placement, Pose)
+                            and not object_id.startswith(f"{TRACKED}/")
+                            and any(not getattr(shape, "convex", True)
+                                    for shape in snapshot.bodies[object_id].geometry.collision))
+        return CollisionHit(snapshot, own, where, pairs, tuple(self._contact(pair, margin) for pair in pairs),
+                            concave=concave, margin=margin)
+
+    # * Core candidate: `_contact` and `_names` belong next to `PyBulletMirror.collisions`, which finds the same
+    #   points but keeps only the other side's id; they repeat its private naming (`_names`: robot links, and each
+    #   mounted tool as a "<flange>_tool" link).
+
+    def _contact(self, pair: tuple[str, str], margin: float) -> Contact | None:
+        """The closest contact of a pair within `margin`, allowed contacts left out; None if PyBullet finds none."""
+        client = self.mirror.client_id
+        closest, names = None, None
+        for body_a in self.mirror.body_ids(pair[0]):
+            for body_b in self.mirror.body_ids(pair[1]):
+                for point in p.getClosestPoints(body_a, body_b, margin, physicsClientId=client):
+                    # ? Point fields: 3, 4 links; 5, 6 positions on A and B; 8 signed distance.
+                    sides = self._names(pair[0], body_a, point[3]), self._names(pair[1], body_b, point[4])
+                    if any(self.mirror.allowed(a, b) for a in sides[0] for b in sides[1]):
+                        continue
+                    if closest is None or point[8] < closest[8]:
+                        closest, names = point, sides
+        if closest is None:
+            return None
+        return Contact((names[0][-1], names[1][-1]), tuple(closest[5]), tuple(closest[6]), float(closest[8]))
+
+    def _names(self, object_id: str, body: int, link: int) -> list[str]:
+        """The ids one side of a contact goes by, narrowest last: a body; or a robot link, then its mounted tool."""
+        robot = self.snapshot.robots.get(object_id)
+        if robot is None:
+            return [object_id]
+        client = self.mirror.client_id
+        name = (p.getBodyInfo(body, physicsClientId=client)[0] if link < 0
+                else p.getJointInfo(body, link, physicsClientId=client)[12]).decode()
+        flange = name.removesuffix("_tool")
+        tool = robot.model.tools.get(flange) if flange != name else None
+        return [link_id(object_id, name)] + ([tool.id] if tool is not None else [])
 
     def reach(self, own: str) -> float:
         """How far robot `own` and what it holds reach across the floor from base_footprint, as last synced, metres."""

@@ -24,7 +24,9 @@ def _context() -> tuple[PluginContext, WorldState, Log]:
     world, log = WorldState(), Log()
     world.robots["0805"] = SimpleNamespace(arms={"ur_arm": fake_arm(now=NOW)}, lease_slot=LeaseSlot("0805"))
     monitor = SimpleNamespace(world=world, now=lambda: NOW, log_warn=log.warning, log_info=log.info,
-                              log_error=log.error, timer=SimpleNamespace(timed_task=lambda _name, work: work))
+                              log_error=log.error, timer=SimpleNamespace(timed_task=lambda _name, work: work),
+                              clearance_trips=())
+    monitor.clearance_tripped = lambda trip: setattr(monitor, "clearance_trips", (*monitor.clearance_trips, trip))
     return PluginContext("executor", monitor, view=None, scene=None, kinematics=None), world, log
 
 
@@ -135,6 +137,9 @@ def test_a_tripped_clearance_soft_stops_the_robot_and_cancels_its_task():
     assert task.cancelled() and stops == ["0805"] and not ctx._clearances
     assert seen["clearance"].problem == "robot 0805 came within 10 cm of wall"
     assert "'executor: drive': robot 0805 came within 10 cm of wall; soft stopped it" in log.text("error")
+    trip, = ctx.clearance_trips
+    assert (trip.serial, trip.task, trip.problem, trip.hit) == (
+        "0805", "executor: drive", "robot 0805 came within 10 cm of wall", None)
 
 
 def test_a_clearance_needs_a_task_of_its_plugin():

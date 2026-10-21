@@ -7,7 +7,8 @@ Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, 
   holds) are skipped.
 - ! What cannot be checked counts as too close: a lost base pose, or a robot the mirror cannot place.
 - One worker thread checks one snapshot at a time, a tick or two behind the robot. Not an emergency stop.
-- On a trip, `PluginContext.clearance` soft stops the robot (Resume needed) and cancels the task.
+- On a trip, `PluginContext.clearance` soft stops the robot (Resume needed) and cancels the task. The monitor keeps
+  the last TRIPS_KEPT trips with what came too close (`ClearanceTrip`), for the collisions plugin.
 """
 
 from __future__ import annotations
@@ -19,9 +20,12 @@ from typing import Any, Hashable
 from scaffolding_assembly_core.scene import Scene
 
 from .base_collision import BaseCollisionWorld
+from .collision_hit import CollisionHit
 
 #: Default distance, metres, below which a clearance trips.
 STOP_DISTANCE = 0.1
+#: How many trips the monitor keeps.
+TRIPS_KEPT = 10
 
 
 @dataclass(eq=False)
@@ -32,11 +36,32 @@ class Clearance:
         serials: The robots, by serial.
         margin: Distance below which it trips, metres.
         problem: Why it tripped, or None while it holds.
+        hit: What came too close, once tripped; None while it holds, or when it could not be checked.
     """
 
     serials: tuple[str, ...]
     margin: float
     problem: str | None = None
+    hit: CollisionHit | None = None
+
+
+@dataclass(frozen=True)
+class ClearanceTrip:
+    """One trip, as the monitor keeps it.
+
+    Attributes:
+        time: When it tripped, ROS time in seconds.
+        serial: The robot stopped.
+        task: The task cancelled, e.g. "base_exp: run path".
+        problem: Why, as in `Clearance.problem`.
+        hit: What came too close, with the scene as checked; None when the robot could not be checked.
+    """
+
+    time: float
+    serial: str
+    task: str
+    problem: str
+    hit: CollisionHit | None
 
 
 class ClearanceChecker:
@@ -59,8 +84,8 @@ class ClearanceChecker:
         self._pending = self._executor.submit(self._check, snapshot, list(asked))
         return True
 
-    def finished(self) -> list[tuple[Any, str]] | None:
-        """The (key, why) of each robot the last check found too close, once; None while it runs or none was started.
+    def finished(self) -> list[tuple[Any, str, CollisionHit | None]] | None:
+        """The (key, why, hit) of each robot the last check found too close, once; None while it runs or none started.
 
         Raises:
             Exception: Whatever the check raised.
@@ -75,16 +100,17 @@ class ClearanceChecker:
         self._executor.submit(self._world.close)
         self._executor.shutdown(wait=True)
 
-    def _check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float]]) -> list[tuple[Any, str]]:
+    def _check(self, snapshot: Scene,
+               asked: list[tuple[Hashable, str, float]]) -> list[tuple[Any, str, CollisionHit | None]]:
         """Sync the world to `snapshot` and say why each robot that is too close, or cannot be checked, is. Worker."""
         self._world.sync(snapshot)
         found = []
         for key, own, margin in asked:
             try:
-                hit = self._world.hit_where_synced(own, margin)
+                hit = self._world.collision_hit(own, margin, "clearance")
             except (ValueError, KeyError) as error:
-                found.append((key, f"cannot be checked: {error}"))
+                found.append((key, f"cannot be checked: {error}", None))
                 continue
             if hit is not None:
-                found.append((key, f"came within {margin * 100:.0f} cm of {hit}"))
+                found.append((key, f"came within {margin * 100:.0f} cm of {snapshot.label(hit.pairs[0][1])}", hit))
         return found

@@ -28,7 +28,7 @@ from .plugin_api.concurrency import TickTimer
 from .config import MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
 from scaffolding_assembly_core.geometry import Geometry
-from .world.clearance import ClearanceChecker
+from .world.clearance import TRIPS_KEPT, ClearanceChecker, ClearanceTrip
 from .world.kinematics import Kinematics
 from .plugin_api.plugin import HuskyPlugin, UnknownPluginError, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
@@ -115,6 +115,8 @@ class HuskyMonitor(Node):
         self._snapshot = Scene()
         #: Checks the plugins' clearances (`ctx.clearance`) on its own worker.
         self._clearances = ClearanceChecker()
+        #: The last TRIPS_KEPT clearance trips of every plugin, oldest first; replaced on each trip.
+        self.clearance_trips: tuple[ClearanceTrip, ...] = ()
         self._viz: Visualization | None = None
         # * Built before the plugins, so tasks started in their setup are timed too.
         self._timer = TickTimer(asyncio.get_running_loop(),
@@ -215,6 +217,10 @@ class HuskyMonitor(Node):
     def now(self) -> float:
         """Current ROS time in seconds."""
         return self.get_clock().now().nanoseconds * 1e-9
+
+    def clearance_tripped(self, trip: ClearanceTrip) -> None:
+        """Keep a clearance trip, for `PluginContext.clearance_trips`."""
+        self.clearance_trips = (*self.clearance_trips, trip)[-TRIPS_KEPT:]
 
     def log_info(self, message: str) -> None:
         """Log `message` at info level."""
@@ -441,8 +447,8 @@ class HuskyMonitor(Node):
 
         A robot whose base pose is lost trips at once; the rest is checked on the worker, a tick or two behind.
         """
-        for (ctx, clearance, serial), why in self._clearances.finished() or ():
-            ctx._trip_clearance(clearance, serial, why)
+        for (ctx, clearance, serial), why, hit in self._clearances.finished() or ():
+            ctx._trip_clearance(clearance, serial, why, hit)
         asked = []
         for loaded in self._loaded.values():
             if loaded.stopped:

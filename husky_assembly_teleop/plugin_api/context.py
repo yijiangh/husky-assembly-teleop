@@ -13,13 +13,13 @@ import asyncio
 import queue
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Iterable, Iterator, TypeVar
 
 from ..robot_interface.robot_lease import Lease, LeaseSlot, leased, take_lease
 from ..robot_interface.soft_stop import MotionRefused
-from ..world.clearance import STOP_DISTANCE, Clearance
+from ..world.clearance import STOP_DISTANCE, Clearance, ClearanceTrip
 from ..world.freeze import Basis, Freeze, Tolerance, WorldMoved, basis_problem
 from .concurrency import WaitTimeout, describe_exception, ros_future
 from .trace import MAX_SAMPLES, Signal, Trace
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from scaffolding_assembly_core.geometry import Geometry
     from ..monitor import HuskyMonitor
     from ..ui.visualization import PluginView
+    from ..world.collision_hit import CollisionHit
     from ..world.kinematics import Kinematics
     from ..world.measured import TrackedObject, WorldState
     from ..world.scene import PluginScene
@@ -260,7 +261,8 @@ class PluginContext:
 
         - Checked against the whole scene: obstacles, process bodies, tracked objects and the other robots. Allowed
           contacts (`Body.touches`, what the robot holds) are skipped. A lost base pose trips it too.
-        - A trip soft stops that robot (Resume needed), cancels the running task, and is kept in `problem`.
+        - A trip soft stops that robot (Resume needed), cancels the running task, and is kept in `problem` and `hit`,
+          and in `clearance_trips` for every plugin.
         - Checked on a worker, a tick or two behind: keep `margin` above what the robot covers meanwhile.
         - ! Only inside a task of this plugin (`spawn`). Not an emergency stop.
 
@@ -282,6 +284,11 @@ class PluginContext:
             yield clearance
         finally:
             self._clearances.pop(clearance, None)
+
+    @property
+    def clearance_trips(self) -> tuple[ClearanceTrip, ...]:
+        """tuple[ClearanceTrip, ...]: The last clearance trips of every plugin, oldest first; replaced on each trip."""
+        return self._monitor.clearance_trips
 
     def _own_task(self, what: str) -> asyncio.Task:
         """The running task, which must be one of this plugin's; RuntimeError otherwise."""
@@ -539,12 +546,15 @@ class PluginContext:
                 self.log_warn(f"task {task.get_name()!r}: {problem}; cancelling it")
                 task.cancel(f"freeze broken: {problem}")
 
-    def _trip_clearance(self, clearance: Clearance, serial: str, why: str) -> None:
-        """Soft stop robot `serial` and cancel the clearance's task, unless it ended meanwhile."""
+    def _trip_clearance(self, clearance: Clearance, serial: str, why: str, hit: CollisionHit | None = None) -> None:
+        """Soft stop robot `serial` and cancel the clearance's task, unless it ended meanwhile; tell the monitor."""
         task = self._clearances.pop(clearance, None)
         if task is None:
             return
         clearance.problem = f"robot {serial} {why}"
+        clearance.hit = None if hit is None else replace(hit, where=task.get_name())
+        self._monitor.clearance_tripped(ClearanceTrip(self.now(), serial, task.get_name(), clearance.problem,
+                                                      clearance.hit))
         self.world.robots[serial].soft_stop()
         self.log_error(f"task {task.get_name()!r}: {clearance.problem}; soft stopped it and cancelling the task")
         task.cancel(f"clearance: {clearance.problem}")

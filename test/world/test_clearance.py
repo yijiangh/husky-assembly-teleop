@@ -48,7 +48,14 @@ def test_a_robot_at_the_wall_is_too_close_and_one_in_the_open_is_not():
     checker = ClearanceChecker()
     try:
         assert found(checker, snapshot(config, -2.0), own) == []
-        assert found(checker, snapshot(config, 0.6), own) == [("drive", f"came within 10 cm of {WALL.label}")]
+        (key, why, hit), = found(checker, snapshot(config, 0.6), own)
+        assert (key, why) == ("drive", f"came within 10 cm of {WALL.label}")
+        assert hit.robot == own and hit.margin == STOP_DISTANCE and hit.pairs[0] == (own, WALL.id)
+        # * The contact names the link that came close (the top plate reaches into the wall here), on the wall's face.
+        contact = hit.contacts[0]
+        assert contact.pair[0].startswith(f"{own}/") and contact.pair[1] == WALL.id
+        assert contact.depth < STOP_DISTANCE and contact.point_b[0] == pytest.approx(0.9, abs=1e-3)
+        assert hit.concave == frozenset() and hit.message.startswith("clearance: ")
         assert checker.check(snapshot(config, -2.0), [("drive", own, STOP_DISTANCE)])
         assert not checker.check(snapshot(config, -2.0), [("drive", own, STOP_DISTANCE)])
     finally:
