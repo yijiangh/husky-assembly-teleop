@@ -1,0 +1,84 @@
+"""
+Small moves of an arm's tool0 given in tool0's own frame, solved into joint angles on the robot's URDF.
+
+The UR driver takes no Cartesian moves, so `tool_step_target` finds the joints with a few Newton steps on the URDF's
+forward kinematics; `ArmInterface.send_tool_step` sends them as a short joint move.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Sequence
+
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.kinematics import link_pose
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
+
+#: Largest tool step: metres, and radians.
+TOOL_STEP_MAX = 0.01
+TOOL_STEP_MAX_ANGLE = np.radians(5.0)
+#: Largest change of any joint one tool step may need, radians: more means the arm is near a singularity.
+TOOL_STEP_MAX_JOINT = np.radians(10.0)
+#: A step is solved once tool0 is this close to its target: metres, and radians.
+TOOL_STEP_TOLERANCE = 1e-7
+TOOL_STEP_ANGLE_TOLERANCE = 1e-6
+#: Newton steps tried before giving up.
+TOOL_STEP_ITERATIONS = 10
+#: Joint offset for the Jacobian's finite differences, radians.
+_DELTA = 1e-7
+
+
+def tool_step_target(urdf: Path, arm: str, joints: Sequence[float], step: Pose,
+                     pivot: Sequence[float] = (0.0, 0.0, 0.0)) -> np.ndarray:
+    """The joints that move the arm's tool0 by `step`, given in tool0 and turning about `pivot`.
+
+    Args:
+        urdf: The robot's URDF.
+        arm: The arm's name, the prefix of its URDF joints and links, e.g. "ur_arm".
+        joints: Joint angles now, radians, UR_JOINT_NAMES order.
+        step: The move in tool0's frame: a shift, metres, and a turn.
+        pivot: The point in tool0 the turn is about, metres, e.g. a tool's tip; it stays put if `step` only turns.
+
+    Returns:
+        np.ndarray: The joint angles, UR_JOINT_NAMES order.
+
+    Raises:
+        ValueError: If the step is larger than TOOL_STEP_MAX or TOOL_STEP_MAX_ANGLE, needs a joint to move more than
+            TOOL_STEP_MAX_JOINT (near a singularity), or is not solved.
+    """
+    shift, turn = float(np.linalg.norm(step.position)), Rotation.from_quat(step.orientation).magnitude()
+    if shift > TOOL_STEP_MAX or turn > TOOL_STEP_MAX_ANGLE:
+        raise ValueError(f"a tool step of {shift * 1e3:.1f} mm and {np.degrees(turn):.1f}° is over the limit of "
+                         f"{TOOL_STEP_MAX * 1e3:g} mm and {np.degrees(TOOL_STEP_MAX_ANGLE):g}°")
+    names, link = [f"{arm}_{name}" for name in UR_JOINT_NAMES], f"{arm}_tool0"
+
+    def tool0(values: np.ndarray) -> np.ndarray:
+        return link_pose(urdf, Pose(), dict(zip(names, values)), link).matrix()
+
+    start = np.asarray(joints, dtype=float)
+    about = np.eye(4)
+    about[:3, 3] = pivot
+    target = tool0(start) @ about @ step.matrix() @ np.linalg.inv(about)
+    here = start.copy()
+    for _ in range(TOOL_STEP_ITERATIONS):
+        now = tool0(here)
+        error = _difference(target, now)
+        if np.linalg.norm(error[:3]) <= TOOL_STEP_TOLERANCE and np.linalg.norm(error[3:]) <= TOOL_STEP_ANGLE_TOLERANCE:
+            break
+        jacobian = np.column_stack([_difference(tool0(here + _DELTA * unit), now) / _DELTA for unit in np.eye(6)])
+        here = here + np.linalg.lstsq(jacobian, error, rcond=None)[0]
+        moved = np.abs(here - start)
+        if moved.max() > TOOL_STEP_MAX_JOINT:
+            raise ValueError(f"the step needs {np.degrees(moved.max()):.0f}° on {UR_JOINT_NAMES[int(moved.argmax())]}: "
+                             f"the arm is too near a singularity; move it away by free drive or joint jog")
+    else:
+        raise ValueError(f"the tool step was not solved in {TOOL_STEP_ITERATIONS} steps")
+    return here
+
+
+def _difference(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """How far pose `a` is from pose `b` (4x4 matrices): shift, then turn as a rotation vector, in their own frame."""
+    return np.concatenate([a[:3, 3] - b[:3, 3], Rotation.from_matrix(a[:3, :3] @ b[:3, :3].T).as_rotvec()])

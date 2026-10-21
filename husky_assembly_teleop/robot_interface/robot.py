@@ -106,8 +106,8 @@ class HuskyRobotInterface:
             self.arms[arm.name] = ArmInterface(
                 node, config.ros_namespace, arm,
                 fixed_transform(config.model.urdf, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem,
-                simulated=partial(self.simulated.get, arm.ros_namespace), latch=self.soft_stop_latch,
-                lease_slot=self.lease_slot)
+                urdf=config.model.urdf, simulated=partial(self.simulated.get, arm.ros_namespace),
+                latch=self.soft_stop_latch, lease_slot=self.lease_slot)
         #: The husky frame in the mocap-tracked frame (fixed, from the URDF).
         self._husky_in_mocap_frame = fixed_transform(config.model.urdf, MOCAP_FRAME, HUSKY_FRAME)
         self.state = RobotState(serial=config.serial, base=self.base.state,
