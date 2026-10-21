@@ -231,7 +231,24 @@ def make_panel(planner: ArmPlannerPlugin) -> ArmPlannerPanel:
     panel.serial, panel.arm, panel._has_target, panel._load_now = SERIAL, ARM, True, False
     panel._sliders = [SimpleNamespace(value=math.degrees(value)) for value in GOAL]
     panel._used = SimpleNamespace(touch=lambda: None, active=True)
+    panel._collisions = FakeCollisions()
     return panel
+
+
+class FakeCollisions:
+    """The collisions panel: keeps what each source shows, and which labels are ticked."""
+
+    def __init__(self):
+        """Nothing shown."""
+        self.shown = {}
+
+    def replace(self, source, hits, shown=()):
+        """Keep the source's hits and ticked labels."""
+        self.shown[source] = (dict(hits), tuple(shown))
+
+    def clear(self, source):
+        """Drop the source."""
+        self.shown.pop(source, None)
 
 
 def test_target_change_compares_the_sliders_and_arm_with_the_plan():
@@ -275,3 +292,27 @@ def test_the_panel_plans_and_commits_through_the_api(found_path):
     assert found.startswith("RRT: 2 waypoints") and "target changed" in refused
     assert committed == f"sent to {SERIAL} {ARM}" and planner.plan.state == "sent"
     assert planner.plan.request == ArmPlanRequest(SERIAL, ARM, pytest.approx(tuple(GOAL))) and len(ctx.sent) == 1
+
+
+def test_a_plan_refused_for_a_collision_shows_its_hit_until_the_next_plan(monkeypatch):
+    """A target in collision lists its hit in the collisions panel, ticked; the next plan found removes it."""
+    hit = SimpleNamespace(where="target", message="target is in collision: a with b")
+    results = iter([PlanResult(None, hit.message, hit=hit), PlanResult(PATH, seconds=0.1)])
+    monkeypatch.setattr(arm_plugin, "plan_arm", lambda world, mirror, arm, goal, abort: next(results))
+    ctx = FakeCtx()
+    planner = make_planner(ctx)
+    panel = make_panel(planner)
+
+    async def scenario():
+        shown = []
+        for _ in range(2):
+            panel._on_path(ctx, "Plan")
+            await asyncio.sleep(0.05)
+            panel.update(ctx)
+            shown.append(dict(panel._collisions.shown))
+        return shown
+
+    refused, found = run(planner, ctx, scenario)
+    label = f"{SERIAL} {ARM} target"
+    assert planner.plan.state == "ready" and refused == {"arm_planner_panel": ({label: hit}, (label,))}
+    assert found == {}

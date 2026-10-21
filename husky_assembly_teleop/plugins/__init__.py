@@ -28,6 +28,7 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`.
   move, whoever moved them. Example of both: `examples/lease_and_freeze.py`.
 * Clearances (optional, `ctx.clearance`): while a task drives a robot, the robot is soft stopped and the task
   cancelled once it comes within a margin of anything in the scene. Plugins only provide bodies; the runtime checks.
+  The last trips, with what came too close, are in `ctx.clearance_trips`; the `collisions` plugin draws them.
 
 * Header: `ctx.view.header()` puts a short status above every plugin's folder, e.g. health's banner.
 * Tabs: `ctx.view.tab(...)` puts a panel into the side panel's tabs: Control (robot_control) and Plan, with a tab

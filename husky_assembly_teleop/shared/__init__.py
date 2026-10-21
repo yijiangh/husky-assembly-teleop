@@ -14,6 +14,7 @@ What plugins share with each other: contracts, data types, base classes and help
 
   arm_planner_contract.py   what the arm planner offers: plans for one arm (`ArmPlanRequest`, `ArmPlannerContract`)
   base_planner_contract.py  what the base planner offers: base paths (`BasePlanRequest`, `BasePlannerContract`)
+  collisions_contract.py    what the collisions plugin offers: a panel of collision hits (`CollisionsContract`)
   obstacles_contract.py     what the obstacles plugin offers: the lab as in the scene (`ObstaclesContract`)
   process_contract.py       what the process plugin offers: its selected movement (`Selection`, `ProcessContract`)
   planner/                  base classes and helpers for the planner plugins

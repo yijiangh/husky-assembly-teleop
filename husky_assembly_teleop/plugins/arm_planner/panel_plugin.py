@@ -17,6 +17,7 @@ import viser
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.arm_planner_contract import ArmPlanRequest
+from ...shared.collisions_contract import CollisionsContract
 from ...shared.planner.planner_panel import PlannerPanel
 from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import with_guesses
@@ -37,7 +38,7 @@ class ArmPlannerPanel(PlannerPanel):
     experimental = True
     planner = "arm_planner"
     tab = ("Arm", viser.Icon.ROBOT)
-    requires = ("arm_planner", "process")
+    requires = ("arm_planner", "process", "collisions")
 
     def __init__(self):
         """Start with no robot chosen and no target."""
@@ -47,12 +48,15 @@ class ArmPlannerPanel(PlannerPanel):
         self._load: np.ndarray | None = None
         #: Load the sliders from the arm's current joints on the next update, unless `_load` is set.
         self._load_now = True
+        #: The plan whose collision, if any, the collisions panel shows.
+        self._reported: Plan | None = None
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the panel, and a target ghost and a path ghost per robot with arms."""
         self._connect(ctx)
+        self._collisions: CollisionsContract = ctx.require("collisions")
         arms = {robot.serial: [arm.name for arm in robot.arms] for robot in ctx.config.robots if robot.arms}
         if not arms:
             self._set_up_idle(ctx, "no robots with arms configured: nothing to plan for")
@@ -226,6 +230,15 @@ class ArmPlannerPanel(PlannerPanel):
             set_joint_sliders(self._sliders, self._load)
             self._load = None
         super().update(ctx)
+        plan = self._api.plan
+        if plan is not self._reported:
+            # * A plan refused for a collision shows it at once; any newer plan takes it away.
+            self._reported = plan
+            if plan is not None and plan.hit is not None:
+                label = f"{plan.request.serial} {plan.request.arm} {plan.hit.where}"
+                self._collisions.replace(self.name, {label: plan.hit}, shown=(label,))
+            else:
+                self._collisions.clear(self.name)
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the ghosts and fill the panel."""

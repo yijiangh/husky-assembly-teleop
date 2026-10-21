@@ -25,7 +25,7 @@ replaces. See `doc/refactor_rationale.md` for why the old flags had to go, and
 | `kissing_experiment` | `DUAL_ARM_KISSING_REP_EXPERIMENT` | |
 | `visual_servoing` | the live tracker and its plots | |
 | `compliant_control` | `CONNECT_COMPLIANT_CONTROLLER` | |
-| `collision_diagnosis` | `cc_diagnosis`, previously always-on | |
+| `collisions` | `cc_diagnosis`, previously always-on | **Milestone 1, experimental.** In **Plan › Collisions**: lists the hits other plugins report (`CollisionsContract`: calibration takes, a failed arm plan), one group per source with the things hit most and Clear. A ticked hit draws, as checked, both sides of every pair that blocks it (what moved solid red, what it moved into see-through cyan) and the deepest contact with its depth; Focus adds every robot as checked, faint; "As checked" draws meshes as their convex hulls, as compas_fab tests them. Hits are `world.collision_hit.CollisionHit`, with the scene as checked, so a drawing never drifts. Contacts are computed in the arm planner for now (`collision_hit`), a candidate for the core. Clearance trips of any plugin come under "clearance" (`ctx.clearance_trips`, kept by the monitor), the newest ticked. Not yet: the base planner's hits, joint limits as a reason, allowed contacts in the hover text. Plan: `tasks/2026-10-21_collision_view.md`. |
 | `scaffolding` | the scaffolding tool buttons | |
 | `joint_stream` | live joint plots | |
 
@@ -43,8 +43,8 @@ or compas_fab. `shared.planner.rrt_connect.connect` runs RRT-Connect (`birrt`) f
 
 ## Per tick, or as a task
 
-Anything that just keeps something in step -- `process`, `joint_stream`,
-`collision_diagnosis` -- does it in `update`, a one-tick function.
+Anything that just keeps something in step -- `process`, `joint_stream` -- does it in `update`, a one-tick
+function.
 
 Anything with a shape -- calibration sweep, kissing experiment,
 plan-then-execute -- is a task: an `async def` started with `ctx.spawn` from a
