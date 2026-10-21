@@ -106,6 +106,11 @@ Take 8's top plate overlap is 5 mm: more than rounding, small enough for a hull 
   motion (arc) up to where it would stop, stop time ~0.6 s, with the same margin (`BaseCollisionWorld.hit_by` per
   pose); motion from the last sent twist, the follower's command and wheel odometry, whichever are fresh; direction
   aware, so driving away from something never trips. Open: one stop time for all robots or per robot.
+- **Base planner commits** (user, 21 Oct: for now): the commit's clearance uses the margin the path was planned with
+  (default 5 cm), not STOP_DISTANCE (10 cm), which tripped every path passing 5–10 cm from something (the narrow
+  passage tasks). The margin is no stopping distance: at 0.2 m/s the robot rolls ~10 cm after a trip, and nothing
+  slows it near obstacles (the follower slows only for curves and piece ends). Fix with the speed-aware clearance
+  above, or by timing the path slower where its measured clearance is small (the follower takes timed paths).
 
 - **Move `hit_contacts` to the core** as `CompasFabMirror.contacts(joints)` (submodule commit first), then delete
   the teleop copy. Same for the base planner's world. With Coal (`project_coal_vs_pybullet`) contacts come natively.

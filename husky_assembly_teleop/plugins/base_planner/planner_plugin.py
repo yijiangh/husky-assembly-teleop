@@ -223,11 +223,16 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                       answer: Callable[[bool, str], None]) -> None:
         """Send the plan to the follower, then record the robot until the follower is done; save it if recorded.
 
-        Recording and a clearance (soft stop within STOP_DISTANCE of anything in the scene) start before the send.
-        Refused while the base may not follow a path.
+        Recording and a clearance start before the send: a soft stop within the margin the path was planned with,
+        not the usual STOP_DISTANCE, so a path the planner found never trips it. Refused while the base may not
+        follow a path.
+
+        ? The margin is no stopping distance: at the planning speed the robot rolls ~10 cm after a trip. Revisit
+          with the speed-aware clearance (tasks/2026-10-21_collision_view.md, follow-ups).
         """
         request, path, record = plan.request, plan.path, self._plan_record
         serial = request.serial
+        margin = self._algorithm(request)[1].margin
         robot = ctx.world.robots[serial]
         if problem := robot.base.follow_problem():
             answer(False, f"not committed: {serial}: {problem}")
@@ -241,7 +246,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                             signals.follower_state(robot, every_message=True),
                             signals.base_floor_pose(robot, every_message=True),
                             signals.wheel_odometry(robot, every_message=True)) as rec, \
-                    ctx.clearance([serial]) as clearance:
+                    ctx.clearance([serial], margin) as clearance:
                 try:
                     sent_id = send_to_onboard_follower(robot.base, path)
                 except ValueError as error:

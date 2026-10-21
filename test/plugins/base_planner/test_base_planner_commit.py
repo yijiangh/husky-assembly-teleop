@@ -21,6 +21,7 @@ from husky_assembly_teleop.robot_interface.event import Event
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, steer, timed_path
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
 from husky_assembly_teleop.plugins.base_planner.tasks import BY_NAME
+from husky_assembly_teleop.plugins.base_planner.world import COLLISION_MARGIN
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from husky_assembly_teleop.world.checks import WARN
@@ -431,7 +432,8 @@ def test_a_run_that_ends_before_the_follower_stops_the_path(how):
 
     asyncio.run(scenario())
     assert stops == ([] if how == "replaced" else [how])
-    assert [clearance.serials for clearance in ctx.clearances] == [(SERIAL,)]
+    # * The clearance keeps the margin the path was planned with, so a path the planner found never trips it.
+    assert [(clearance.serials, clearance.margin) for clearance in ctx.clearances] == [((SERIAL,), COLLISION_MARGIN)]
     if how == "clearance":
         assert ctx.logs[-1].endswith(f"soft stopped: robot {SERIAL} came within 10 cm of wall")
 
