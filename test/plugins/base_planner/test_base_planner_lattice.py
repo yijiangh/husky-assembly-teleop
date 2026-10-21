@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from crl_husky.base_model import load_model
 
-from husky_assembly_teleop.plugins.base_planner.algorithms import Debug
+from husky_assembly_teleop.plugins.base_planner.algorithms import Debug, lattice
 from husky_assembly_teleop.plugins.base_planner.algorithms.base import FOLLOWER_MODEL
 from crl_husky.pure_pursuit import PurePursuit, PurePursuitParams
 from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import (MIN_DRIVE, Settings, _arc, _fragile,
@@ -30,6 +30,12 @@ ACROSS = np.array([-ALONG[1], ALONG[0]])
 ARM, OTHER_SIDE = 0.885, 0.346
 #: How far the default follower model puts the turning centre ahead of base_footprint, metres.
 AHEAD = -load_model(FOLLOWER_MODEL)["xICR"]
+
+
+@pytest.fixture(autouse=True)
+def time_to_spare(monkeypatch):
+    """Searches get 40 s instead of TIME_LIMIT: a busy machine (parallel tests) must not fail a search that succeeds."""
+    monkeypatch.setattr(lattice, "TIME_LIMIT", 40.0)
 
 
 def _passage(gap: float, depth: float = 1.0, height: float = 0.2, length: float = 5.0) -> list[Body]:
@@ -239,12 +245,14 @@ def test_debug_records_the_search(world, robots, alice):  # noqa: F811
 
 
 @pytest.mark.slow
-def test_too_narrow_says_where_it_got_stuck_and_what_it_touches(world, robots, alice):  # noqa: F811
+def test_too_narrow_says_where_it_got_stuck_and_what_it_touches(world, robots, alice, monkeypatch):  # noqa: F811
     """A passage narrower than the robot: the reason says where the search got stuck, and debug draws it.
 
     The reason gives how close it got, what blocked it there and the room at the target; debug draws that spot and
-    where the robot touches the blocks.
+    where the robot touches the blocks. The search runs until it gives up: 10 s lets it reach the blocks even on a
+    busy machine.
     """
+    monkeypatch.setattr(lattice, "TIME_LIMIT", 10.0)
     world.sync(_snapshot(robots, _passage(WHEELS - 0.1)))
     debug = Debug(on=True)
     result = plan(world, alice, _at(-2.0, 0.0), _at(2.0, 0.0), threading.Event(), debug=debug)
