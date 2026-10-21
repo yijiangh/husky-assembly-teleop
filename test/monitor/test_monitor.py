@@ -236,7 +236,7 @@ def test_a_plugin_failing_setup_stops_and_its_dependents_are_never_set_up(monkey
 def test_soft_stop_stops_every_robot_before_plugins_act_and_cancels_their_tasks(monkeypatch):
     """Stop all: each robot's soft stop runs before any plugin update; every task but the survivors is cancelled."""
     calls = []
-    robots = [SimpleNamespace(soft_stop=lambda index=index: calls.append((f"robot {index}", "soft stop")))
+    robots = [SimpleNamespace(soft_stop=lambda reason="", index=index: calls.append((f"robot {index}", "soft stop")))
               for index in range(2)]
     monitor = build(monkeypatch, Recorder("a", calls), robots=robots)
 
@@ -304,11 +304,11 @@ def test_a_robot_failing_to_stop_does_not_keep_the_others_from_stopping(monkeypa
     """One robot's soft stop raising is logged; the next robot still stops, tasks are cancelled, the tick goes on."""
     calls = []
 
-    def broken():
+    def broken(reason=""):
         raise RuntimeError("publisher destroyed")
 
     robots = [SimpleNamespace(soft_stop=broken),
-              SimpleNamespace(soft_stop=lambda: calls.append(("r1", "soft stop")))]
+              SimpleNamespace(soft_stop=lambda reason="": calls.append(("r1", "soft stop")))]
     monitor = build(monkeypatch, Recorder("a", calls), robots=robots)
 
     async def run():
@@ -359,7 +359,7 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
     calls, stops = [], []
     tracked = SimpleNamespace(mocap_id=1, state=SimpleNamespace(marker_errors=deque([(100.0, 0.0)]),
                                                                 last_fix_time=100.0))
-    robots = [SimpleNamespace(base=tracked, soft_stop=lambda serial=serial: stops.append(serial))
+    robots = [SimpleNamespace(base=tracked, soft_stop=lambda reason="", serial=serial: stops.append(serial))
               for serial in ("r0", "r1")]
     plugin = Recorder("a", calls)
     monitor = build(monkeypatch, plugin, robots=robots)

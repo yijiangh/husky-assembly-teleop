@@ -192,8 +192,10 @@ class HuskyRobotInterface:
         """bool: Whether the robot is soft stopped: its motion commands raise RobotStopped until `resume`."""
         return self.soft_stop_latch.stopped
 
-    def soft_stop(self) -> None:
+    def soft_stop(self, reason: str = "") -> None:
         """Stop the whole robot, and refuse every command that could move it, until an operator resumes it.
+
+        `reason` is kept in the latch for the panels, e.g. "Stop all" or what a clearance came too close to.
 
         - Arms: stay stopped until `resume`.
         - Base: see BaseInterface.stop; `resume` switches its velocity controller on again.
@@ -203,9 +205,9 @@ class HuskyRobotInterface:
         ! Not an emergency stop: it needs wifi and the on-board nodes. Use the pendant or platform e-stop.
         ! Each part is stopped even if another raises; the error is logged.
         """
-        self.soft_stop_latch.stopped = True
+        self.soft_stop_latch.stopped, self.soft_stop_latch.reason = True, reason
         log = self._node.get_logger()
-        log.warning(f"robot {self.config.serial}: SOFT STOP")
+        log.warning(f"robot {self.config.serial}: SOFT STOP" + (f": {reason}" if reason else ""))
         try:
             self.base.stop()
         except Exception as error:
@@ -230,7 +232,7 @@ class HuskyRobotInterface:
         Returns:
             bool: True if every request went out. False if the controller manager or the sync is not reachable.
         """
-        self.soft_stop_latch.stopped = False
+        self.soft_stop_latch.stopped, self.soft_stop_latch.reason = False, ""
         # * Afresh: started as it was, the velocity controller brakes from its speed at the stop, so the base creeps.
         base = self.base.controllers.restart(PLATFORM_VELOCITY_CONTROLLER)
         arms = self._call_sync(self._resume_arms, "resume arms") if self.arms else True

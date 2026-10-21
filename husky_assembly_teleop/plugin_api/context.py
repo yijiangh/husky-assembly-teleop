@@ -555,7 +555,7 @@ class PluginContext:
         clearance.hit = None if hit is None else replace(hit, where=task.get_name())
         self._monitor.clearance_tripped(ClearanceTrip(self.now(), serial, task.get_name(), clearance.problem,
                                                       clearance.hit))
-        self.world.robots[serial].soft_stop()
+        self.world.robots[serial].soft_stop(clearance.problem)
         self.log_error(f"task {task.get_name()!r}: {clearance.problem}; soft stopped it and cancelling the task")
         task.cancel(f"clearance: {clearance.problem}")
 

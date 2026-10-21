@@ -434,7 +434,7 @@ class HuskyMonitor(Node):
         self.log_warn("SOFT STOP: stopping every robot and cancelling the plugin tasks that may move one")
         for serial, robot in self._world.robots.items():
             try:
-                robot.soft_stop()
+                robot.soft_stop("Stop all")
             except Exception:
                 self.log_error(f"SOFT STOP: stopping {serial} failed:\n{traceback.format_exc()}")
         for loaded in self._loaded.values():

@@ -29,12 +29,14 @@ class SoftStopLatch:
     Attributes:
         serial: The robot, for messages.
         stopped: True from a soft stop until the next resume.
+        reason: Why it was stopped, e.g. "Stop all"; "" when not stopped or not said.
     """
 
     def __init__(self, serial: str):
         """Start not stopped."""
         self.serial = serial
         self.stopped = False
+        self.reason = ""
 
     def problem(self) -> str | None:
         """Why nothing may move this robot now, or None."""

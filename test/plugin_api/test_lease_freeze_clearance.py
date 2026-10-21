@@ -115,7 +115,7 @@ def test_a_tripped_clearance_soft_stops_the_robot_and_cancels_its_task():
     """The robot is soft stopped, the task cancelled with the reason kept and logged; a late trip changes nothing."""
     ctx, world, log = _context()
     stops = []
-    world.robots["0805"].soft_stop = lambda: stops.append("0805")
+    world.robots["0805"].soft_stop = lambda reason="": stops.append(("0805", reason))
     seen = {}
 
     async def drive() -> None:
@@ -134,7 +134,7 @@ def test_a_tripped_clearance_soft_stops_the_robot_and_cancels_its_task():
         return task
 
     task = asyncio.run(scenario())
-    assert task.cancelled() and stops == ["0805"] and not ctx._clearances
+    assert task.cancelled() and stops == [("0805", "robot 0805 came within 10 cm of wall")] and not ctx._clearances
     assert seen["clearance"].problem == "robot 0805 came within 10 cm of wall"
     assert "'executor: drive': robot 0805 came within 10 cm of wall; soft stopped it" in log.text("error")
     trip, = ctx.clearance_trips

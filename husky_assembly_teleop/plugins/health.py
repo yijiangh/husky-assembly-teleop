@@ -197,12 +197,17 @@ class HealthPlugin(HuskyPlugin):
             ctx: This plugin's context.
         """
         every_check = [check for lines in self._robot_checks.values() for _name, checks in lines for check in checks]
-        banner = render_banner(every_check + self._object_checks)
+        stops = {serial: stop for serial in self._robot_checks
+                 if (stop := soft_stop_check(ctx.world.robots[serial])) is not None}
+        banner = render_banner(every_check + list(stops.values()) + self._object_checks)
         self._banner.content = banner
         rows = []
         for serial, lines in self._robot_checks.items():
             robot = [check for _name, checks in lines for check in checks]
-            rows.append(section(serial, LEVEL_COLORS[worst_level(robot)])
+            stop = stops.get(serial)
+            # * Next to the name: whatever else is green, nothing moves this robot until Resume.
+            heading = serial + (" " + check_chip(stop) if stop is not None else "")
+            rows.append(section(heading, LEVEL_COLORS[worst_level(robot + ([stop] if stop is not None else []))])
                         + "".join(render_line(name, checks) for name, checks in lines))
             self._robot_rows[serial].content = rows[-1]
         rows.append((section("objects", LEVEL_COLORS[worst_level(self._object_checks)])
@@ -567,6 +572,14 @@ def tool_check(arm: ArmInterface, now: float) -> Check | None:
 
 
 # --- --- --- --- --- DRAWING --- --- --- --- ---
+
+def soft_stop_check(robot: HuskyRobotInterface) -> Check | None:
+    """A red SOFT STOPPED chip while the robot is soft stopped, the reason as its hover text; None otherwise."""
+    latch = robot.soft_stop_latch
+    if not latch.stopped:
+        return None
+    return Check("SOFT STOPPED", BAD, f"{latch.reason or 'soft stopped'}; press Resume to move it again")
+
 
 def render_banner(checks: list[Check]) -> str:
     """The banner's HTML: green when every check is, else how many are not.
