@@ -1009,7 +1009,13 @@ action's number.
 
 **b) Mount pause**
 - [ ] pane 1: read the log
-  - **Expect:** `[transfer <bar>_J_M3_CDFM_transfer_to_approach] the arms stand at the insertion start with EMPTY tools: mount the bar and clamp it with the tool buttons, then click 'Confirm Exec'. ...`
+  - **Expect:** first the force sensors are zeroed (tools still empty, so from here on the wrist
+    forces are the bar's own load):
+    `[transfer <bar>_J_M3_CDFM_transfer_to_approach] force sensors zeroed at the mount pause (tools empty) (|F| a/b -> c/d N).`
+  - **Expect:** `[transfer <bar>_J_M3_CDFM_transfer_to_approach] the arms stand at the insertion start with EMPTY tools (force sensors just zeroed): mount the bar and clamp it with the tool buttons, then click 'Confirm Exec'. ...`
+  - **If not:** `... could not zero the force sensors at the mount pause (tools empty); going on with the reading as is ...`
+    or `... the force sensor zero was not confirmed ...`: the step goes on; the wrist forces in the
+    as-built records are then relative to an older zero (the card's `load` block says which).
 - [ ] by hand: mount the bar in both tools → buttons **on the tools**: clamp it
 - [ ] button [Confirm Exec] (or button [Cancel Exec])
   - `Cancel Exec` ends it without a correction (`mount pause cancelled; no servo correction.`).

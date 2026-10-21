@@ -1630,6 +1630,8 @@ class HuskyMonitor(Node):
             self.get_logger().info(
                 f"Zeroed {n} force/torque sensor(s). Do this with the tool EMPTY "
                 f"-- taring with the bar held hides its weight.")
+            # * Remembered for the as-built record (what its force readings are relative to).
+            self._ft_zero = {'at': datetime.now().isoformat(timespec='seconds'), 'note': 'the panel button'}
 
     def toggle_ft_watch(self):
         """Start/stop streaming the live tool0 wrench into the force plots.
@@ -10112,8 +10114,9 @@ class HuskyMonitor(Node):
 
         Returns:
             dict | None: ``{'left_raw', 'right_raw', 'left_force_N', 'left_torque_Nm',
-            'right_force_N', 'right_torque_Nm'}``, or None (with a warning) when
-            there is no reading.
+            'right_force_N', 'right_torque_Nm', 'zero'}``, or None (with a warning) when
+            there is no reading. ``zero`` is ``{'at', 'note'}`` of the last zero this
+            monitor run made (the readings are relative to it), None when it made none.
         """
         try:
             hi = self.huskies[self.selected_robot_id].interface
@@ -10125,6 +10128,7 @@ class HuskyMonitor(Node):
                 'left_torque_Nm': mags.get('left', {}).get('torque_Nm'),
                 'right_force_N': mags.get('right', {}).get('force_N'),
                 'right_torque_Nm': mags.get('right', {}).get('torque_Nm'),
+                'zero': getattr(self, '_ft_zero', None),
             }
         except Exception as e:
             self.get_logger().warn(f"take recorded without a force reading: {e}")

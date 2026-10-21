@@ -5204,26 +5204,34 @@ def retreat_guardrails(monitor, tail, *, replanned: bool, compliant_errs,
 FT_ZERO_TIMEOUT_S = 2.0
 
 
-def _zero_force_sensors_before_retreat(monitor, tag: str):
+def _zero_force_sensors(monitor, tag: str, why: str = 'before the compliant part'):
     """Zero every arm's force/torque sensor and wait for the driver to confirm it.
 
-    Called right before the retreat's compliant part. The compliance controller
-    moves each tool until stiffness x offset balances the force it reads, so a
-    force left in the reading -- a sensor bias, or the contact preload left by
-    the insert -- drives the tool on its own: on the real robot both tools
-    pushed about 12 mm INTO the joint at the start of the retreat. Zeroed here,
-    the compliant part reacts only to the forces that appear while backing off.
+    Called at two moments:
 
-    ! Zeroed on purpose while the bar is still gripped and in contact: the usual
-    ! rule (zero only when the tool holds nothing) does not apply, the point is
-    ! to tare exactly this state.
+    * Right before the retreat's compliant part. The compliance controller
+      moves each tool until stiffness x offset balances the force it reads, so a
+      force left in the reading -- a sensor bias, or the contact preload left by
+      the insert -- drives the tool on its own: on the real robot both tools
+      pushed about 12 mm INTO the joint at the start of the retreat. Zeroed here,
+      the compliant part reacts only to the forces that appear while backing off.
+      ! Zeroed on purpose while the bar is still gripped and in contact: the
+      ! usual rule (zero only when the tool holds nothing) does not apply, the
+      ! point is to tare exactly this state.
+    * At the transfer's mount pause, with the tools still EMPTY and the wrists
+      already turned the way they will hold the bar: from then on the readings
+      are the bar's own load (its weight, the mount's preload).
 
-    Never blocks the retreat: when a zero cannot be sent or is not confirmed in
-    ``FT_ZERO_TIMEOUT_S``, it warns and the retreat goes on with the reading as is.
+    A confirmed zero is remembered on the monitor (``monitor._ft_zero``: when and
+    why), so the as-built record can say what its force readings are relative to.
+
+    Never blocks the step: when a zero cannot be sent or is not confirmed in
+    ``FT_ZERO_TIMEOUT_S``, it warns and the step goes on with the reading as is.
 
     Args:
         monitor (HuskyMonitor): The monitor (its connected robot's interface).
         tag (str): Log tag (the movement id).
+        why (str): When this zero happens, in plain words, for the log and the record.
 
     Yields:
         None: One yield per monitor tick while waiting for the driver.
@@ -5238,8 +5246,8 @@ def _zero_force_sensors_before_retreat(monitor, tag: str):
     before = [float(np.linalg.norm(np.asarray(hi.arm_ft_sensor[i][:3], dtype=float))) for i in arms]
     if not all([hi.zero_ft_sensor(i) for i in arms]):
         monitor.get_logger().warn(
-            f'[{tag}] could not zero the force sensors before the compliant part; it reacts '
-            f'to the current reading (|F| ' + '/'.join(f'{f:.1f}' for f in before) + ' N).')
+            f'[{tag}] could not zero the force sensors {why}; going on with the reading as is '
+            f'(|F| ' + '/'.join(f'{f:.1f}' for f in before) + ' N).')
         return False
     futures = [getattr(hi, 'ft_zero_future', [None] * len(before))[i] for i in arms]
     deadline = time.time() + FT_ZERO_TIMEOUT_S
@@ -5256,8 +5264,8 @@ def _zero_force_sensors_before_retreat(monitor, tag: str):
     text = (f'|F| ' + '/'.join(f'{f:.1f}' for f in before) + ' -> '
             + '/'.join(f'{f:.1f}' for f in after) + ' N')
     if confirmed:
-        monitor.get_logger().info(
-            f'[{tag}] force sensors zeroed before the compliant part ({text}).')
+        monitor.get_logger().info(f'[{tag}] force sensors zeroed {why} ({text}).')
+        monitor._ft_zero = {'at': datetime.now().isoformat(timespec='seconds'), 'note': why}
     else:
         monitor.get_logger().warn(
             f'[{tag}] the force sensor zero was not confirmed (the driver reported a failure '
@@ -5613,9 +5621,9 @@ def execute_planned_trajectory_compliant(monitor):
 
         # --- Chunk 2: the compliant phase (all of M3; M2's final split_mm) ---
         # * Retreat: tare the force sensors first, while the arms are still under
-        # * joint control and at rest (see _zero_force_sensors_before_retreat).
+        # * joint control and at rest (see _zero_force_sensors).
         if is_retreat:
-            yield from _zero_force_sensors_before_retreat(monitor, tag)
+            yield from _zero_force_sensors(monitor, tag, why="before the retreat's compliant part (bar still gripped)")
         # wait until the switch is completely (yield will go back to top level monitor to get updated state)
         switched_to_compliance = yield from switch_dual_arm_controller(
             monitor,
@@ -5899,10 +5907,20 @@ def execute_transfer_then_servo(monitor):
 
     # * 2. Workaround: the tools are empty -- the operator mounts the bar now.
     if as_free_move:
+        # * Zero the force sensors first: the tools are empty and the wrists already
+        # * turned the way they will hold the bar, so every reading from here on (the
+        # * as-built records, the servo's load guard) is the bar's own load.
+        # ! The insert of a bar that tightens then feels the bar's weight and the
+        # ! mount's preload in its compliant part, as it did on 2026-10-20 (the last
+        # ! zero was an empty-tool one then too). A second zero after the clamp is a
+        # ! separate decision, not taken here.
+        zeroed = yield from _zero_force_sensors(
+            monitor, f'transfer {transfer.movement_id}', why='at the mount pause (tools empty)')
         monitor._servo_abort = False
         confirmed = yield from wait_for_operator_confirm(
             monitor,
-            f"{tag} the arms stand at the insertion start with EMPTY tools: mount the "
+            f"{tag} the arms stand at the insertion start with EMPTY tools"
+            f"{' (force sensors just zeroed)' if zeroed else ''}: mount the "
             f"bar and clamp it with the tool buttons, then click 'Confirm Exec'. "
             f"'Cancel Exec' ends here (the insert then starts where the transfer "
             f"ended, no correction).")
