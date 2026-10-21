@@ -450,14 +450,13 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._tracker, self._sample, self._phase, self._measured_fix = Tracker(plan.path), None, SENT, None
         self._live.clear()
         experiment: dict = {}
-        clearance, checked = None, True
+        clearance = None
         try:
             experiment = await record.describe(
                 ctx, base, plan, experiment_name=folder_name(self._experiment.value),
                 clearance={"path": PATH_CLEARANCE, "stop": STOP_DISTANCE}, automation=automation,
                 # ? Sent from the monitor over the network: the delay includes it; its stamps are the monitor's clock.
                 command_source="monitor")
-            checked = experiment["environment"] != "sim"
             self._outcome = "running"
             self._sent_at = ctx.now()
             with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(), signals.follower_progress(robot),
@@ -473,7 +472,7 @@ class BaseExperimentPlugin(HuskyPlugin):
                         self._outcome = f"aborted: mocap lost ({lost})"
                         return
                     command = (v, w) if ctx.now() >= step_at else (0.0, 0.0)
-                    if not base.send_twist(*command, require_controller=checked):
+                    if not base.send_twist(*command):
                         # * No controller failure: automation pauses for the operator.
                         self._outcome = f"not driven: {PLATFORM_VELOCITY_CONTROLLER} is not active"
                         return

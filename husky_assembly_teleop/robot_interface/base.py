@@ -317,8 +317,7 @@ class BaseInterface:
         Args:
             linear_x: Forward speed, metres per second.
             angular_z: Turn rate, radians per second.
-            require_controller: Send only while the velocity controller runs; False for the simulator (it has none),
-                or for a stop.
+            require_controller: Send only while the velocity controller runs; False for a stop.
 
         Returns:
             bool: True if sent. False if a speed is not finite, or (with `require_controller`) the velocity controller
