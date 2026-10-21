@@ -19,7 +19,7 @@ from ...world.collision_hit import CollisionHit, Contact, scene_at
 from ...shared.planner.timed_path import TimedPath
 from ...shared.planner.planner_search import PlanResult
 from ...shared.planner.rrt_connect import connect
-from ...robot_interface.arm import JOINT_MOVE_MAX_SPEED, UR_JOINT_LIMITS, UR_JOINT_NAMES
+from ...robot_interface.arm import UR_JOINT_LIMITS, UR_JOINT_NAMES, joint_path_move
 from scaffolding_assembly_core.mirrors.compas import subtree
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 from scaffolding_assembly_core.scene import Scene
@@ -27,8 +27,15 @@ from scaffolding_assembly_core.ids import link_id, robot_id
 
 #: Collision-checking resolution along a move, radians per joint.
 JOINT_STEP = 0.05
-#: Joint speed of the preview, rad/s: the same as `joint_move`'s.
-PREVIEW_SPEED = JOINT_MOVE_MAX_SPEED
+#: Searches the shortest path is kept from, and seconds after which no new one starts once a path is found.
+ATTEMPTS = 3
+IMPROVE_TIME = 3.0
+#: The search samples each joint at most this far, radians, beyond the range between start and goal.
+SAMPLE_SLACK = np.pi
+#: Longest stretch of each side of a corner, radians in joint space, that rounding it replaces.
+BLEND_LENGTH = 0.3
+#: Times a rounding that collides is halved before the arm rests at that corner instead.
+BLEND_TRIES = 4
 
 
 def arm_joint_names(arm_name: str) -> list[str]:
@@ -38,29 +45,39 @@ def arm_joint_names(arm_name: str) -> list[str]:
 
 @dataclass(frozen=True)
 class ArmPath(TimedPath):
-    """A joint path for one arm, timed at a constant joint speed for the preview.
+    """A joint path for one arm, timed as it is sent (`joint_path_move`), so the preview shows the arm's motion.
 
     `points` are joint values in radians, shape (n, 6), in `joint_names` order.
 
     Attributes:
-        joint_names: The six joints, in the order of each waypoint.
+        joint_names: The six joints, in the order of each sample.
+        velocities: Joint speeds at each sample, rad/s, shape (n, 6).
+        rests: How often the arm comes to rest on the way, at corners left sharp.
     """
 
     joint_names: tuple[str, ...]
+    velocities: np.ndarray
+    rests: int
 
     @classmethod
-    def at_preview_speed(cls, joint_names: Sequence[str], waypoints: np.ndarray) -> ArmPath:
-        """Time each segment by its largest joint change at PREVIEW_SPEED.
+    def along(cls, joint_names: Sequence[str], points: np.ndarray, stops: Sequence[int] | None = None) -> ArmPath:
+        """Time a path on `joint_path_move`'s profile.
 
         Args:
             joint_names: The six joints.
-            waypoints: (n, 6) joint values, radians; the first is the start.
+            points: (n, 6) joint values, radians; the first is the start.
+            stops: Indices of the points to rest at, as `joint_path_move` takes them; None: every point.
 
         Returns:
             ArmPath: The timed path.
+
+        Raises:
+            ValueError: If the points never move.
         """
-        steps = np.max(np.abs(np.diff(waypoints, axis=0)), axis=1) / PREVIEW_SPEED
-        return cls(times=np.concatenate([[0.0], np.cumsum(steps)]), points=waypoints, joint_names=tuple(joint_names))
+        positions, velocities, duration = joint_path_move(points, stops)
+        rests = len(points) - 2 if stops is None else len(set(stops) - {0, len(points) - 1})
+        return cls(times=np.linspace(0.0, duration, len(positions)), points=positions,
+                   joint_names=tuple(joint_names), velocities=velocities, rests=rests)
 
 
 class ArmPlanningWorld:
@@ -252,12 +269,50 @@ def _extend(q1: Sequence[float], q2: Sequence[float]) -> list[tuple[float, ...]]
     """Points from q1 (excluded) to q2 (included), at most JOINT_STEP apart on every joint."""
     q1, q2 = np.asarray(q1, dtype=float), np.asarray(q2, dtype=float)
     count = max(1, math.ceil(float(np.max(np.abs(q2 - q1))) / JOINT_STEP))
-    return [tuple(q1 + (q2 - q1) * i / count) for i in range(1, count + 1)]
+    # * One array operation: the searches call this for every segment, many thousand times per plan.
+    return list(map(tuple, (q1 + np.outer(np.arange(1, count + 1) / count, q2 - q1)).tolist()))
 
 
 def _distance(q1: Sequence[float], q2: Sequence[float]) -> float:
     """Straight-line distance in joint space, radians."""
-    return float(np.linalg.norm(np.subtract(q1, q2)))
+    return math.dist(q1, q2)
+
+
+def round_corners(corners: Sequence[Sequence[float]],
+                  collides: Callable[[tuple[float, ...]], bool]) -> tuple[np.ndarray, list[int]]:
+    """Round each corner of a clear path with a curve, where the curve is clear too, so the arm need not stop there.
+
+    The curve is a parabola from BLEND_LENGTH before the corner to as far after it (at most half of either side),
+    halved while it collides; a corner still blocked after BLEND_TRIES stays sharp.
+
+    Args:
+        corners: Start, corners, goal: (n, 6) joint values whose straight moves are clear.
+        collides: Whether a configuration is in collision.
+
+    Returns:
+        tuple[np.ndarray, list[int]]: The points, with each rounded corner sampled at most JOINT_STEP / 2 apart, and
+            the indices of the corners left sharp, for `joint_path_move` to rest at.
+    """
+    corners = np.asarray(corners, dtype=float)
+    corners = corners[np.concatenate([[True], np.any(np.diff(corners, axis=0) != 0.0, axis=1)])]
+    points, sharp = [corners[0]], []
+    for before, corner, after in zip(corners[:-2], corners[1:-1], corners[2:]):
+        incoming, outgoing = corner - before, after - corner
+        length = min(BLEND_LENGTH, np.linalg.norm(incoming) / 2, np.linalg.norm(outgoing) / 2)
+        for _ in range(BLEND_TRIES):
+            enter = corner - length * incoming / np.linalg.norm(incoming)
+            leave = corner + length * outgoing / np.linalg.norm(outgoing)
+            u = np.linspace(0.0, 1.0, max(3, int(np.ceil(4 * length / JOINT_STEP)) + 1))[:, None]
+            curve = (1 - u) ** 2 * enter + 2 * u * (1 - u) * corner + u ** 2 * leave
+            if not any(collides(tuple(q)) for q in curve):
+                points.extend(curve)
+                break
+            length /= 2
+        else:
+            sharp.append(len(points))
+            points.append(corner)
+    points.append(corners[-1])
+    return np.array(points), sharp
 
 
 def plan_arm(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, goal: Sequence[float],
@@ -291,10 +346,20 @@ def plan_arm(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, go
     if pair is not None:
         return refused(collision_hit(world, mirror, "target", dict(zip(names, goal)), pair, names))
 
+    if np.allclose(start, goal, rtol=0.0, atol=1e-6):
+        return PlanResult(None, "the arm is already at the target", time.time() - started)
+
+    # * Sample near start and goal: far samples wind the wrists through needless turns.
     limits = np.array(UR_JOINT_LIMITS)
-    corners = connect(start, goal, _distance, lambda: tuple(np.random.uniform(-limits, limits)), _extend,
-                      lambda q: check(q) is not None, abort)
+    low = np.maximum(np.minimum(start, goal) - SAMPLE_SLACK, -limits)
+    high = np.minimum(np.maximum(start, goal) + SAMPLE_SLACK, limits)
+
+    def collides(q: tuple[float, ...]) -> bool:
+        return check(q) is not None
+
+    corners = connect(start, goal, _distance, lambda: tuple(np.random.uniform(low, high)), _extend, collides, abort,
+                      attempts=ATTEMPTS, improve_time=IMPROVE_TIME)
     if corners.states is None:
         return PlanResult(None, corners.reason, time.time() - started)
-    path = ArmPath.at_preview_speed(names, np.array(corners.states, dtype=float))
+    path = ArmPath.along(names, *round_corners(corners.states, collides))
     return PlanResult(path, seconds=time.time() - started, direct=corners.direct)

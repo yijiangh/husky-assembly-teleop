@@ -234,15 +234,20 @@ def joint_jog(start: Sequence[float], joint: int, direction: float,
     return positions, velocities, float(duration)
 
 
-def joint_path_move(waypoints: Sequence[Sequence[float]], max_speed: float = JOINT_MOVE_MAX_SPEED,
+def joint_path_move(points: Sequence[Sequence[float]], stops: Sequence[int] | None = None,
+                    max_speed: float = JOINT_MOVE_MAX_SPEED,
                     max_acceleration: float = JOINT_PATH_MAX_ACCELERATION) -> tuple[np.ndarray, np.ndarray, float]:
-    """A move along straight joint-space segments that stops at every waypoint, each segment on `joint_move`'s profile.
+    """A move along a joint-space polyline that comes to rest at `stops` and runs through every other point.
 
-    Stopping keeps the arm on the segments a planner checked: corners are never cut. Each segment lasts a whole
-    number of JOINT_MOVE_WAYPOINT_SPACING steps, so every waypoint is sampled exactly.
+    Between two rests the arm follows the polyline on one cosine profile over its length, as `joint_move` does on a
+    line. Each stretch lasts the fewest JOINT_MOVE_WAYPOINT_SPACING steps whose samples keep to both limits, so every
+    rest is sampled exactly. ! Running through a sharp corner jerks the arm: round the corners, densely sampled, and
+    rest at those left sharp.
 
     Args:
-        waypoints: Joint angles (n x 6), radians, UR_JOINT_NAMES order; the first is where the arm is now.
+        points: Joint angles (n x 6), radians, UR_JOINT_NAMES order; the first is where the arm is now.
+        stops: Indices of the points to rest at; the first and last always. None: every point, so the arm keeps to
+            the straight segments and never cuts a corner.
         max_speed: Peak speed allowed on any joint, rad/s.
         max_acceleration: Peak acceleration allowed on any joint, rad/s^2.
 
@@ -251,27 +256,54 @@ def joint_path_move(waypoints: Sequence[Sequence[float]], max_speed: float = JOI
             and the duration in seconds.
 
     Raises:
-        ValueError: If the waypoints never move.
+        ValueError: If the points never move.
     """
-    waypoints = np.asarray(waypoints, dtype=float)
-    deltas = np.diff(waypoints, axis=0)
-    spans = np.max(np.abs(deltas), axis=1) if len(deltas) else np.zeros(0)
-    moving = spans > 0.0
-    if not np.any(moving):
+    points = np.asarray(points, dtype=float)
+    rests = sorted({0, len(points) - 1, *(range(len(points)) if stops is None else stops)})
+    stretches = [points[a:b + 1] for a, b in zip(rests[:-1], rests[1:]) if np.any(points[a:b + 1] != points[a])]
+    if not stretches:
         raise ValueError("the path does not move")
-    starts, deltas, spans = waypoints[:-1][moving], deltas[moving], spans[moving]
-    # * The cosine profile peaks at pi/2 span/T in speed and pi^2/2 span/T^2 in acceleration.
-    seconds = np.maximum(np.pi / 2 * spans / max_speed, np.pi * np.sqrt(spans / (2 * max_acceleration)))
-    steps = np.maximum(np.ceil(seconds / JOINT_MOVE_WAYPOINT_SPACING - 1e-9).astype(int), 1)
-    ends = np.cumsum(steps)
-    index = np.arange(ends[-1] + 1)
-    segment = np.minimum(np.searchsorted(ends, index, side="left"), len(steps) - 1)
-    phase = np.pi * (index - (ends - steps)[segment]) / steps[segment]
-    positions = starts[segment] + ((1.0 - np.cos(phase)) / 2.0)[:, None] * deltas[segment]
-    durations = steps * JOINT_MOVE_WAYPOINT_SPACING
-    velocities = (np.pi / (2.0 * durations[segment]) * np.sin(phase))[:, None] * deltas[segment]
-    velocities[-1] = 0.0
-    return positions, velocities, float(ends[-1] * JOINT_MOVE_WAYPOINT_SPACING)
+    positions, velocities = [points[:1]], [np.zeros((1, points.shape[1]))]
+    for stretch in stretches:
+        stretch_positions, stretch_velocities = _cosine_along(stretch, max_speed, max_acceleration)
+        positions.append(stretch_positions[1:])
+        velocities.append(stretch_velocities[1:])
+    positions, velocities = np.concatenate(positions), np.concatenate(velocities)
+    return positions, velocities, float((len(positions) - 1) * JOINT_MOVE_WAYPOINT_SPACING)
+
+
+def _cosine_along(polyline: np.ndarray, max_speed: float,
+                  max_acceleration: float) -> tuple[np.ndarray, np.ndarray]:
+    """One rest-to-rest stretch of `joint_path_move`: samples JOINT_MOVE_WAYPOINT_SPACING apart, both ends at rest."""
+    lengths = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
+    keep = np.concatenate([[True], lengths > 0.0])
+    polyline, lengths = polyline[keep], lengths[lengths > 0.0]
+    arc = np.concatenate([[0.0], np.cumsum(lengths)])
+    directions = np.diff(polyline, axis=0) / lengths[:, None]
+    span = arc[-1] * float(np.max(np.abs(directions)))
+    # * On a line the cosine profile peaks at pi/2 span/T in speed and pi^2/2 span/T^2 in acceleration; bends need
+    #   more time, found by measuring the samples as the arm's guards do.
+    seconds = max(np.pi / 2 * span / max_speed, np.pi * np.sqrt(span / (2 * max_acceleration)))
+    steps = max(int(np.ceil(seconds / JOINT_MOVE_WAYPOINT_SPACING - 1e-9)), 1)
+    while True:
+        phase = np.linspace(0.0, np.pi, steps + 1)
+        travelled = arc[-1] * (1.0 - np.cos(phase)) / 2.0
+        positions = np.column_stack([np.interp(travelled, arc, column) for column in polyline.T])
+        segment = np.clip(np.searchsorted(arc, travelled, side="right") - 1, 0, len(directions) - 1)
+        speed = arc[-1] * np.pi / (2.0 * steps * JOINT_MOVE_WAYPOINT_SPACING) * np.sin(phase)
+        velocities = speed[:, None] * directions[segment]
+        velocities[[0, -1]] = 0.0
+        step = JOINT_MOVE_WAYPOINT_SPACING
+        over_speed = max(float(np.max(np.abs(np.diff(positions, axis=0)))) / step,
+                         float(np.max(np.abs(velocities)))) / max_speed
+        over_acceleration = float(np.max(np.abs(np.diff(velocities, axis=0)))) / step / max_acceleration
+        if steps >= 2:
+            over_acceleration = max(over_acceleration, float(np.max(np.abs(np.diff(positions, n=2, axis=0))))
+                                    / step ** 2 / max_acceleration)
+        stretch = max(over_speed, np.sqrt(over_acceleration))
+        if stretch <= 1.0 + 1e-9:
+            return positions, velocities
+        steps = max(steps + 1, int(np.ceil(steps * stretch)))
 
 
 def flange_from_reported(position: Sequence[float], quaternion: Sequence[float],

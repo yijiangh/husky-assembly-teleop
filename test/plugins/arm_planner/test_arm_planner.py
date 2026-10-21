@@ -10,6 +10,7 @@ import pytest
 
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
+from husky_assembly_teleop.robot_interface.arm import joint_path_move
 from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, ArmPlanningWorld, _extend, arm_joint_names,
                                                                path_hit, plan_arm)
 from scaffolding_assembly_core.geometry import box_geometry
@@ -111,12 +112,14 @@ def test_start_in_collision_is_refused(world, config):
     assert result.path is None and result.reason.startswith("start is in collision")
 
 
-def test_path_timing():
-    """Segments are timed by their largest joint change; sample interpolates and clamps."""
-    path = ArmPath.at_preview_speed(NAMES, np.array([[0.0] * 6, [1.0, 0.5, 0, 0, 0, 0], [1.0, 0.5, 0, 0, 0, 2.0]]))
-    np.testing.assert_allclose(np.diff(path.times) * np.radians(20.0), [1.0, 2.0])
-    np.testing.assert_allclose(path.sample(path.times[1] / 2)[:2], [0.5, 0.25])
-    np.testing.assert_allclose(path.sample(1e9), path.goal)
+def test_the_preview_follows_the_cosine_profile_sent():
+    """The preview speeds up and slows down as the arm will: slow at the ends, halfway at half time; it clamps."""
+    goal = np.array([1.0, 0.5, 0, 0, 0, 0])
+    path = ArmPath.along(NAMES, np.array([[0.0] * 6, goal]))
+    np.testing.assert_allclose(path.points, joint_path_move([[0.0] * 6, goal])[0])
+    np.testing.assert_allclose(path.sample(path.duration / 2), goal / 2, atol=1e-9)
+    assert path.sample(path.duration / 4)[0] < 0.2
+    np.testing.assert_allclose(path.sample(1e9), goal)
 
 
 def test_window_without_display_raises(config, monkeypatch):
@@ -202,3 +205,4 @@ def test_a_hit_on_another_robot_names_the_link_touched(world, config):
     assert hit is not None and hit.pairs[0][1] == other.id
     touched = hit.contacts[0].pair[1]
     assert touched.startswith(f"{other.id}/") or touched in {tool.id for tool in belle.model.tools.values()}, touched
+

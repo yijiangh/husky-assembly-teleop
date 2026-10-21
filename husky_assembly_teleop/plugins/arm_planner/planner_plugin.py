@@ -19,7 +19,6 @@ import numpy as np
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
-from ...robot_interface.arm import joint_path_move
 from ...robot_interface.mocap_state import pose_lost
 from ...shared.arm_planner_contract import ArmPlanRequest
 from ...world.collision_hit import CollisionHit
@@ -43,28 +42,24 @@ MOTION_MARGIN = 5.0
 
 
 def send_to_arm(ctx: PluginContext, serial: str, arm_name: str, path: ArmPath) -> float | None:
-    """Send a path to an arm as one joint trajectory that stops at every waypoint (`joint_path_move`).
+    """Send a path to an arm as one joint trajectory, timed as planned and previewed.
 
     Args:
         ctx: The plugin's context, for the world and logging.
         serial: Which robot.
         arm_name: Which arm.
-        path: The path to follow; its first waypoint must be where the arm is now (`START_TOLERANCE`), else the arm
+        path: The path to follow; its first point must be where the arm is now (`START_TOLERANCE`), else the arm
             refuses it.
 
     Returns:
         float | None: The path's duration in seconds, or None if the arm did not take it (the log says why).
     """
     order = [path.joint_names.index(name) for name in arm_joint_names(arm_name)]
-    try:
-        positions, velocities, duration = joint_path_move(path.points[:, order])
-    except ValueError as error:
-        ctx.log_warn(f"{serial} {arm_name}: nothing sent: {error}")
+    if not ctx.world.robots[serial].arms[arm_name].send_joint_trajectory(path.points[:, order], path.duration,
+                                                                         path.velocities[:, order]):
         return None
-    if not ctx.world.robots[serial].arms[arm_name].send_joint_trajectory(positions, duration, velocities):
-        return None
-    ctx.log_info(f"{serial} {arm_name}: sent a {len(path.points)}-waypoint path, {duration:.1f} s")
-    return duration
+    ctx.log_info(f"{serial} {arm_name}: sent a path of {path.duration:.1f} s, {path.rests} rests on the way")
+    return path.duration
 
 
 @register
@@ -114,7 +109,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         def accepted(result: PlanResult) -> tuple[str, bool]:
             self._start_base = (result.path, base, tracked)
             how = "straight" if result.direct else "RRT"
-            return (f"{how}: {len(result.path.points)} waypoints, {result.path.duration:.1f} s, "
+            return (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
                     f"found in {result.seconds:.1f} s{guess}"), bool(guessed)
 
         return Search(label=f"plan {serial} {arm}",

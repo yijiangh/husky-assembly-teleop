@@ -260,6 +260,6 @@ class ArmPlannerPanel(PlannerPanel):
         if plan is None or plan.path is None:
             path, at = "path    —", "at t    —"
         else:
-            path = f"path    {len(plan.path.points)} waypoints  {plan.path.duration:5.1f} s"
+            path = f"path    {plan.path.duration:5.1f} s  {plan.path.rests} rests on the way"
             at = "at t    " + " ".join(f"{math.degrees(v):+6.1f}" for v in plan.path.sample(self._t))
         return block(values(path, at) + self._message_html())
