@@ -162,6 +162,31 @@ def test_both_leases_are_back_when_the_result_arrives():
 
 
 @pytest.mark.safety
+def test_a_request_whose_task_cannot_start_gives_both_leases_back(monkeypatch):
+    """Spawning the step's task raises, as a closing plugin's context does: both leases are given back, then raised.
+
+    Else every other plugin would be refused every lease until a restart.
+    """
+    lab = Lab()
+
+    def closed(_label, work, survives_soft_stop=False):
+        work.close()
+        raise RuntimeError("plugin 'movement_exec' is stopped; no new tasks")
+
+    monkeypatch.setattr(lab.ctx, "spawn", closed)
+
+    async def scenario():
+        with pytest.raises(RuntimeError, match="no new tasks"):
+            lab.plugin.request_execute(lab.request())
+
+    run_guarded(scenario())
+    assert lab.free() and lab.plugin.active == "" and lab.published() == 0
+    other = FakeContext(name="robot_control")
+    other.world = lab.ctx.world
+    assert other.take_lease(["a200-0805"], "teleop").holder == "robot_control: teleop"
+
+
+@pytest.mark.safety
 def test_a_robot_lease_refused_after_the_lock_gives_the_lock_back(monkeypatch):
     """The lock taken, then the robot lease refused (a lease `busy_reason` could not see): busy, the lock given back."""
     lab = Lab()

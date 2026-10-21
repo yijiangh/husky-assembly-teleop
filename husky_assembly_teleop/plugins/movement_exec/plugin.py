@@ -118,12 +118,20 @@ class MovementExecPlugin(HuskyPlugin):
             self._finished(ctx, request, result)
             future.set_result(result)
             return future
-        job = Job(ctx, request, ctx.world.robots[request.serial], ctx.require("assembly_run"), self._prompts,
-                  self._dry_run, lambda name, movement, data: self._event(job, name, movement, data))
-        self._active, self._cancel_reason = f"{request.robot_name} · {request.label}", ""
-        ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
-                     + (" (DRY RUN)" if job.dry_run else ""))
-        self._task = ctx.spawn(f"exec {request.label}", self._run(job, lease, robot_lease, future))
+        try:
+            job = Job(ctx, request, ctx.world.robots[request.serial], ctx.require("assembly_run"), self._prompts,
+                      self._dry_run, lambda name, movement, data: self._event(job, name, movement, data))
+            self._active, self._cancel_reason = f"{request.robot_name} · {request.label}", ""
+            ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
+                         + (" (DRY RUN)" if job.dry_run else ""))
+            self._task = ctx.spawn(f"exec {request.label}", self._run(job, lease, robot_lease, future))
+        except BaseException:
+            # ! No task runs to give them back (e.g. the plugin is closing, so spawn refuses): every other plugin
+            #   would be refused every lease until a restart.
+            robot_lease.release()
+            give_back(ctx.world, lease)
+            self._active = ""
+            raise
         # * A safety net for a task cancelled before it started: its own `finally` never ran.
         self._task.add_done_callback(lambda task: self._ended(ctx, task, lease, robot_lease, future))
         return future

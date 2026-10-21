@@ -244,8 +244,16 @@ def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
     arm.controllers.switches = []
 
     def switch(controller: str, unguarded: bool = False) -> bool:
-        """Start `controller` at once, as an answered switch request would; `unguarded` as the real one takes it."""
+        """Start `controller` at once, as an answered switch request would; refused by the arm's guard as the real one.
+
+        The guard (`ArmInterface._switch_refusal`: the lease, and for free drive the latch and the safety sync) runs
+        unless `unguarded`. Every switch asked is kept in `switches`, refused ones too.
+        """
         arm.controllers.switches.append(controller)
+        problem = None if unguarded else arm._switch_refusal(controller)
+        if problem is not None:
+            arm.state.controllers.switch_error = f"{controller} not started: {problem}"
+            return False
         arm.state.controllers.active = arm.state.controllers.requested = controller
         return True
 

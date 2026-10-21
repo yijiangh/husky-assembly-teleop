@@ -108,6 +108,22 @@ def test_a_refused_trajectory_sends_nothing():
     assert not lab.cindy._multi_arm.messages and lab.holds(lab.cindy) == [0, 0]
 
 
+def test_a_two_arm_send_fires_each_arms_trajectories_sent():
+    """Recordings and message streams see a two-arm motion: one `trajectories_sent` record per arm, with its end."""
+    lab = Lab()
+    names, rows = cindy_path()
+    records = {}
+    for name, arm in lab.cindy.arms.items():
+        arm.trajectories_sent.attach(lambda record, name=name: records.setdefault(name, []).append(record))
+    command = motion_command("a200-0806", CINDY_ARMS, names, rows, 1.0)
+    outcome = lab.run(lab.cindy, command)
+    assert outcome.status == ARRIVED and len(lab.cindy._multi_arm.messages) == 1
+    for motion in command.arms:
+        sent, = records[motion.arm]
+        assert sent.hold == 0 and sent.duration == command.duration and sent.waypoints == len(motion.positions)
+        assert np.allclose(sent.target, motion.positions[-1])
+
+
 def test_a_soft_stopped_or_unleased_robot_refuses_and_nothing_goes_out():
     """Soft stopped (until Resume), or leased to another plugin: REFUSED, saying why; nothing published or held.
 

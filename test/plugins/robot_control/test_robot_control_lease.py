@@ -27,8 +27,10 @@ from husky_assembly_teleop.plugins.robot_control.arm_panel import build_phone_ar
 from husky_assembly_teleop.plugins.robot_control.dpad import MAX_LINEAR_SPEED
 from husky_assembly_teleop.plugins.robot_control.plugin import FREE_DRIVE_RETRY, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.plugins.robot_control.status import build_controller_panel
-from husky_assembly_teleop.plugins.robot_control.teleop_lease import IDLE_AFTER
-from husky_assembly_teleop.robot_interface.arm import FREE_DRIVE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER
+from husky_assembly_teleop.plugins.robot_control import plugin as robot_control_module
+from husky_assembly_teleop.plugins.robot_control.teleop_lease import IDLE_AFTER, TeleopLeases
+from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER,
+                                                       SCALED_JOINT_TRAJECTORY_CONTROLLER)
 from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
 from husky_assembly_teleop.robot_interface.robot import Lease
@@ -92,6 +94,14 @@ class Lab:
             for arm in robot.arms.values():
                 arm.state.last_update_time = arm.state.status_update_time = self.ctx.t
                 arm.state.controllers.last_update_time = self.ctx.t
+
+    def compliance(self) -> None:
+        """Alice's arm under the compliance controller, its TCP measured now."""
+        state = self.arm.state
+        state.controllers.active = state.controllers.requested = CARTESIAN_COMPLIANCE_CONTROLLER
+        state.tcp_position, state.tcp_orientation = np.array([0.3, 0.1, 0.4]), np.array([0.0, 0.0, 0.0, 1.0])
+        state.tcp_raw_position, state.tcp_raw_orientation = state.tcp_position, state.tcp_orientation
+        state.tcp_update_time = self.ctx.t
 
     def leased(self):
         """robot_control's `leased` for Alice's arm, as its builders get it."""
@@ -240,6 +250,97 @@ def test_controller_switch_and_force_are_refused_while_held_and_a_zero_force_goe
     lab.plugin._apply_force(lab.ctx, KEY, lab.arm, np.zeros(3))
     wrench, = lab.arm._target_wrench.messages  # * a zero force removes one: never refused
     assert wrench.wrench.force.z == 0.0 and lab.robot.lease_slot.lease is None
+
+
+def test_a_zero_force_under_compliance_targets_the_tcp_first_so_the_arm_stays():
+    """Alice held, under the compliance controller: Zero sets a target at her measured TCP, then zeroes the wrench.
+
+    No lease, never refused: else an arm the force pushed off its target would spring back to it (up to 10 cm). With
+    the TCP stale the wrench is zeroed all the same, and the chip says the arm may move.
+    """
+    lab = Lab()
+    lab.compliance()
+    lab.hold_robot()
+    sent = []
+    lab.arm.targets_sent.attach(lambda record: sent.append(("target", record.position.tolist(), record.hold)))
+    lab.arm.wrenches_sent.attach(lambda record: sent.append(("wrench", record.force.tolist())))
+    lab.plugin._apply_force(lab.ctx, KEY, lab.arm, np.zeros(3))
+    assert sent == [("target", [0.3, 0.1, 0.4], 1), ("wrench", [0.0, 0.0, 0.0])]
+    assert lab.robot.lease_slot.lease is None
+    lab.arm.state.tcp_update_time = lab.ctx.t - 1.0
+    lab.plugin._apply_force(lab.ctx, KEY, lab.arm, np.zeros(3))
+    assert sent[2:] == [("wrench", [0.0, 0.0, 0.0])] and "may move" in lab.arm.last_refusal.reason
+
+
+def test_an_applied_force_keeps_robot_controls_lease_so_exec_stays_busy():
+    """A 5 N force on Alice keeps robot_control's teleop lease past the idle time: Cindy can't be held meanwhile.
+
+    Once the force is zeroed and Alice is idle, robot_control gives her back and Cindy can be held.
+    """
+    lab = Lab()
+    lab.compliance()
+    lab.free_drive_arm()
+    lab.plugin._apply_force(lab.ctx, KEY, lab.arm, np.array([0.0, 0.0, 5.0]))
+    assert len(lab.arm._target_wrench.messages) == 1 and lab.robot.lease_slot.lease.holder == "robot_control: teleop"
+    lab.later(IDLE_AFTER + 2.5)
+    lab.plugin._leases.release_idle(lab.ctx, partial(lab.plugin._busy, lab.ctx.t))
+    with pytest.raises(Busy, match="a200-0804 is leased by robot_control: teleop"):
+        lab.hold_robot("a200-0806")
+    lab.plugin._apply_force(lab.ctx, KEY, lab.arm, np.zeros(3))
+    lab.later(IDLE_AFTER + 0.5)
+    lab.plugin._leases.release_idle(lab.ctx, partial(lab.plugin._busy, lab.ctx.t))
+    assert lab.robot.lease_slot.lease is None
+    lab.hold_robot("a200-0806")
+
+
+def test_robot_control_keeps_a_robot_it_still_uses_past_the_idle_time():
+    """The teleop lease is given back only once the robot is unused for IDLE_AFTER and robot_control says idle."""
+    lab = Lab()
+    leases = TeleopLeases()
+    with leases.use(lab.ctx, SERIAL):
+        pass
+    lab.later(IDLE_AFTER + 0.5)
+    leases.release_idle(lab.ctx, lambda _serial: True)
+    assert leases.held(SERIAL) and lab.robot.lease_slot.lease is not None
+    leases.release_idle(lab.ctx, lambda _serial: False)
+    assert not leases.held(SERIAL) and lab.robot.lease_slot.lease is None
+
+
+def test_ft_zero_is_refused_while_another_robot_is_held(monkeypatch):
+    """The FT Zero button on Alice's tab tares nothing while Cindy is held; given back, it tares (no lease needed)."""
+    for name in ("add_frame_markers", "add_force_arrows"):
+        monkeypatch.setattr(robot_control_module, name, lambda *_args: {})
+    monkeypatch.setattr(robot_control_module, "add_target_gizmo", lambda *_args: None)
+    lab = Lab()
+    lab.arm.controllers.switchable = (SCALED_JOINT_TRAJECTORY_CONTROLLER, CARTESIAN_COMPLIANCE_CONTROLLER,
+                                      FREE_DRIVE_CONTROLLER)
+    lab.plugin._build_arm(lab.ctx, lab.ctx.gui, SERIAL, lab.arm)
+    zero, = (widget for widget in lab.ctx.gui.of_kind("button_group") if widget.label == "FT")
+    lease = lab.hold_robot("a200-0806")
+    zero.callback()
+    assert lab.arm._zero_ft.calls == [] and lab.plugin._refusals[KEY].label == "held"
+    give_back(lab.ctx.world, lease)
+    zero.callback()
+    assert len(lab.arm._zero_ft.calls) == 1 and lab.robot.lease_slot.lease is None
+
+
+def test_the_switch_back_from_free_drive_needs_no_lease():
+    """Alice in free drive from the tool's chord, Cindy held: the switch back goes out unguarded.
+
+    robot_control has no lease on Alice then; a guarded switch would be refused by her lease check (as the fake's
+    guard is), and the chord's free drive would go on.
+    """
+    lab = Lab()
+    lab.free_drive_arm()
+    lab.arm.controllers.state.switch_in_flight = None
+    lab.arm.state.controllers.active = FREE_DRIVE_CONTROLLER
+    lab.hold_robot("a200-0806")
+    lab.plugin._update_free_drive(lab.ctx, lab.ctx.t)
+    assert lab.arm.controllers.switches == [SCALED_JOINT_TRAJECTORY_CONTROLLER]
+    assert lab.arm.state.controllers.active == SCALED_JOINT_TRAJECTORY_CONTROLLER
+    assert lab.robot.lease_slot.lease is None
+    # * The same guard refuses a switch asked under no lease, as the CTRL buttons' Joint is while a robot is held.
+    assert not lab.arm.controllers.switch(CARTESIAN_COMPLIANCE_CONTROLLER)
 
 
 def test_hold_is_sent_and_cancels_the_holder():

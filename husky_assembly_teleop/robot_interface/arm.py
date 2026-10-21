@@ -439,7 +439,7 @@ class ArmInterface:
         state: Measured state, written only by callbacks.
         controllers: Tracks and switches this arm's controllers.
         end_effector: The mounted tool, or None for a bare arm.
-        trajectories_sent: Fired with each `SentTrajectory`, holds included.
+        trajectories_sent: Fired with each `SentTrajectory`, holds and multi-arm messages (one per arm) included.
         targets_sent: Fired with each `SentTarget`, holds included; none in test mode, where nothing is sent.
         wrenches_sent: Fired with each `SentWrench`, the zero wrench of a hold included.
 
@@ -774,6 +774,16 @@ class ArmInterface:
     def _publish_trajectory(self, trajectory: JointTrajectory, duration: float, hold: bool) -> None:
         """Publish a joint trajectory, unchecked, then fire `trajectories_sent`."""
         self._trajectory.publish(trajectory)
+        self.trajectory_sent(trajectory, duration, hold)
+
+    def trajectory_sent(self, trajectory: JointTrajectory, duration: float, hold: bool = False) -> None:
+        """Fire `trajectories_sent` for a trajectory this arm was sent, alone or in a multi-arm message (`robot.py`).
+
+        Args:
+            trajectory: What was sent.
+            duration: Its duration, seconds.
+            hold: Whether it is the braking trajectory of `hold`.
+        """
         now = self._now()
         self.trajectories_sent.fire(SentTrajectory(np.array(trajectory.points[-1].positions, dtype=float),
                                                    float(duration), len(trajectory.points), int(hold), now, now))
@@ -977,7 +987,10 @@ class ArmInterface:
     def clear_target_wrench(self) -> bool:
         """Zero the target wrench, as `hold` does: removing a force is stopping, so it needs no lease and no checks.
 
-        ! Never refused for the lease, the soft stop or the controller: robot_control's zero force must always go
+        - Under the compliance controller the target first moves to the measured TCP, as in `hold`: an arm a force
+          pushed off its target would spring back to it once the force is gone (F/K: up to 10 cm at 50 N, 500 N/m).
+          With the TCP missing or stale the wrench is zeroed all the same, and the log says the arm may move.
+        - ! Never refused for the lease, the soft stop or the controller: robot_control's zero force must always go
           out (one motion at a time, `shared/execution/interlock.py`).
 
         Returns:
@@ -986,6 +999,12 @@ class ArmInterface:
         if self.config.cartesian_test_mode:
             self._log_test_mode("target force", "F [0. 0. 0.] N  T [0. 0. 0.] N m (tool0)")
             return False
+        if self.controllers.is_active(CARTESIAN_COMPLIANCE_CONTROLLER):
+            if self.state.tcp_position is None or self._now() - self.state.tcp_update_time > JOINT_STATE_MAX_AGE:
+                self._refused("target refused", "zero force: TCP pose missing or stale, so no target at the TCP; the "
+                                                "arm may move back towards its last target")
+            else:
+                self.send_cartesian_target(self.state.tcp_position, self.state.tcp_orientation, hold=True)
         self._publish_wrench(np.zeros(3), np.zeros(3))
         return True
 

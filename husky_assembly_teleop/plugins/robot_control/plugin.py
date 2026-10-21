@@ -16,10 +16,11 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
   in the scene (`ctx.clearance`).
 * ! Every button that does nothing says why: a refusal chip on its part's status line (`_refuse`, `refusal_chip`).
 ! While another plugin holds any robot for an automatic motion (`shared/execution/interlock.py`), every motion command
-  here, to any robot, is refused with a chip and a log line (`_unless_held`, inside `_leased`); never Hold, a tool's
-  Stop, a zero force or a switch back to the joint controller. Hold on the held robot also cancels that motion. What
-  sends every tick checks before every send: a robot taken meanwhile ends the Cartesian stream (hold), the D-pad (one
-  stop), a jog (hold) and free drive (no requests, Keep on unticked, back to the joint controller).
+  here, to any robot, is refused with a chip and a log line (`_unless_held`, inside `_leased`), the CTRL buttons
+  included (their Joint too); never Hold, a tool's Stop, a zero force or free drive's own switch back to the joint
+  controller. Hold on the held robot also cancels that motion. What sends every tick checks before every send: a
+  robot taken meanwhile ends the Cartesian stream (hold), the D-pad (one stop), a jog (hold) and free drive (no
+  requests, Keep on unticked, back to the joint controller).
 """
 
 from __future__ import annotations

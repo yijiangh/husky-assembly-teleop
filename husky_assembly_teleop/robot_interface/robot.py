@@ -337,6 +337,9 @@ class HuskyRobotInterface:
         message.trajectory1 = first_trajectory
         message.trajectory2 = second_trajectory
         self._multi_arm.publish(message)
+        # * Each arm's `trajectories_sent` fires as for a trajectory of its own, so recordings see two-arm motions too.
+        first.trajectory_sent(first_trajectory, duration)
+        second.trajectory_sent(second_trajectory, duration)
         first.mark_executing()
         second.mark_executing()
         return True
