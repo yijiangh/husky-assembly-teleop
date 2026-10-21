@@ -10,16 +10,22 @@ from types import SimpleNamespace
 import pytest
 
 from repo_paths import DATA
+from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.plugins.obstacles.plugin import ObstaclesPlugin
 from husky_assembly_teleop.shared.obstacles_contract import ObstaclesContract
 from husky_assembly_teleop.world import lab as lab_module
-from husky_assembly_teleop.world.lab import (Shape, border_bodies, read_lab, read_temporary, shape_id, write_lab,
-                                             write_temporary)
+from husky_assembly_teleop.world.base_collision import BaseCollisionWorld
+from husky_assembly_teleop.world.clearance import STOP_DISTANCE
+from husky_assembly_teleop.world.lab import (FLOOR_WITHOUT_BORDER, Shape, border_bodies, floor_body, read_lab,
+                                             read_temporary, shape_id, write_lab, write_temporary)
 from husky_assembly_teleop.world.scene import PluginScene
-from scaffolding_assembly_core.geometry import Pose
-from scaffolding_assembly_core.scene import Scene
+from scaffolding_assembly_core.geometry import Pose, box_geometry
+from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.kinematics import link_pose
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Attachment, Body, Scene, world_poses
 
-#: The ids `obstacles` put before the lab moved into a file (2026-10-15): they must not change.
+#: The ids `obstacles` put before the lab moved into a file (2026-10-15): they must not change. The floor came later.
 IDS = ["obstacles/boxes/bar_table_1", "obstacles/boxes/bar_table_2", "obstacles/boxes/border_x_max",
        "obstacles/boxes/border_x_min", "obstacles/boxes/border_y_max", "obstacles/boxes/border_y_min",
        "obstacles/boxes/building_cabinet", "obstacles/boxes/main_pc_table", "obstacles/boxes/pc_table_2",
@@ -37,18 +43,18 @@ def files(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _context(data_directory: Path) -> SimpleNamespace:
-    """The part of a plugin context the plugin uses without its UI, with an empty scene."""
+def _context(data_directory: Path, robots: tuple = ()) -> SimpleNamespace:
+    """The part of a plugin context the plugin uses without its UI, with an empty scene and `robots` configured."""
     messages: list[str] = []
     scene = PluginScene(Scene(), ObstaclesPlugin.name, log_warn=messages.append, snapshot=Scene)
-    return SimpleNamespace(scene=scene, config=SimpleNamespace(data_directory=data_directory, lab=""),
+    return SimpleNamespace(scene=scene, config=SimpleNamespace(data_directory=data_directory, lab="", robots=robots),
                            log_info=messages.append, log_warn=messages.append, log_error=messages.append,
                            messages=messages)
 
 
-def _loaded(files: Path) -> tuple[ObstaclesPlugin, SimpleNamespace]:
+def _loaded(files: Path, robots: tuple = ()) -> tuple[ObstaclesPlugin, SimpleNamespace]:
     """The plugin with its files read and its bodies put, as setup does before the UI."""
-    plugin, ctx = ObstaclesPlugin(), _context(files)
+    plugin, ctx = ObstaclesPlugin(), _context(files, robots)
     plugin.load(ctx)
     plugin._put_all(ctx)
     return plugin, ctx
@@ -59,7 +65,7 @@ def _loaded(files: Path) -> tuple[ObstaclesPlugin, SimpleNamespace]:
 def test_main_lab_keeps_the_ids(files):
     """The lab file gives the same bodies, under the same ids, as the constants it replaced."""
     plugin, ctx = _loaded(files)
-    assert sorted(ctx.scene.bodies) == IDS
+    assert sorted(ctx.scene.bodies) == sorted(IDS + ["obstacles/floor"])
     assert all(body_id.startswith("obstacles/") for body_id in ctx.scene.bodies)
 
 
@@ -175,6 +181,46 @@ def test_border_follows_its_range(files):
     walls = {body.id: body for body in border_bodies("obstacles", plugin.lab.border)}
     assert set(walls) <= set(ctx.scene.bodies)
     assert ctx.scene.bodies["obstacles/boxes/border_x_max"].placement.position[0] == pytest.approx(2.1)
+
+
+# --- --- --- --- --- THE FLOOR --- --- --- --- ---
+
+def test_floor_lies_under_the_border_walls(files):
+    """A slab just under z = 0 out to the walls' outer edge, never drawn, following the border."""
+    plugin, ctx = _loaded(files)
+    floor = ctx.scene.bodies["obstacles/floor"]
+    assert floor.geometry.visual == () and floor.geometry.collision
+    plugin.set_border(ctx, (-2.0, 2.0), (-1.0, 3.0))
+    floor = ctx.scene.bodies["obstacles/floor"]
+    (box,) = floor.geometry.collision
+    size, center = box.size, floor.placement.position
+    assert center[2] + size[2] / 2 == pytest.approx(0.0)
+    assert (center[0] - size[0] / 2, center[0] + size[0] / 2) == pytest.approx((-2.2, 2.2))
+    assert (center[1] - size[1] / 2, center[1] + size[1] / 2) == pytest.approx((-1.2, 3.2))
+    (box,) = floor_body("obstacles", None, ()).geometry.collision
+    assert box.size[:2] == (FLOOR_WITHOUT_BORDER, FLOOR_WITHOUT_BORDER)
+
+
+def test_floor_lets_the_platform_touch_it_but_not_what_the_arms_hold(files):
+    """Alice standing on the floor keeps clear of it; a box she holds 5 cm above it does not."""
+    config = robot_config_from_serial("0804", DATA)
+    plugin, ctx = _loaded(files, (config,))
+    own = robot_id(config.serial)
+    floor = ctx.scene.bodies["obstacles/floor"]
+    assert f"{own}/front_left_wheel_link" in floor.touches and f"{own}/base_link" in floor.touches
+    assert f"{own}/ur_arm_base_link" in floor.touches and f"{own}/ur_arm_shoulder_link" not in floor.touches
+
+    held = Body("test/held", box_geometry((0.1, 0.1, 0.1)), Attachment(own, None, Pose((0.8, 0.0, 0.1))))
+    world = BaseCollisionWorld()
+    try:
+        for bodies, hit in (((floor,), None), ((floor, held), "floor")):
+            robots = {own: RobotObject(own, config.model, Pose(), {})}
+            bodies = {body.id: body for body in bodies}
+            world.sync(Scene(bodies=bodies, robots=robots, world_poses=world_poses(
+                bodies, robots, lambda robot, link: link_pose(robot.model.urdf, robot.base, robot.joints, link))))
+            assert world.hit_by(own, (0.0, 0.0, 0.0), STOP_DISTANCE) == hit
+    finally:
+        world.close()
 
 
 def test_shape_ids_follow_the_name():
