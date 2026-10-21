@@ -16,8 +16,8 @@ import pytest
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY
 from husky_assembly_teleop.bar_mocap_fit import (
     MOCAP_MARKERS_FILENAME, BarMarkers, DesignMarker, MoCapMarkersError, apply_authored_move, bar_servo_correction,
-    bar_slide_roll, design_bar_axis_endpoints, fake_sensed_markers, fit_bar_from_cache, kabsch, load_mocap_markers,
-    match_and_fit, pose_deviation, transform_points,
+    axis_angle_deg, bar_slide_roll, bar_take_json, design_bar_axis_endpoints, marker_match, pair_geometry, fake_sensed_markers, fit_bar_from_cache, kabsch, load_mocap_markers,
+    match_and_fit, mocap_markers_root, pose_deviation, transform_points,
 )
 
 # * The real B20 (1.8 m) of 261016_2ModulesDemo_YH: four T20_MoCap joints, two
@@ -332,6 +332,17 @@ def test_loader_missing_file(tmp_path):
         load_mocap_markers(str(tmp_path))
 
 
+def test_markers_root_own_file_wins_else_borrowed(tmp_path):
+    """The problem's own MoCapMarkers.json wins; without one the borrowed folder is used."""
+    own, borrowed = tmp_path / 'own', tmp_path / 'borrowed'
+    own.mkdir()
+    borrowed.mkdir()
+    _write(borrowed, _sidecar({'bar_B20': b20_design()}))
+    assert mocap_markers_root(str(own), str(borrowed)) == str(borrowed)
+    _write(own, _sidecar({'bar_B20': b20_design()}))
+    assert mocap_markers_root(str(own), str(borrowed)) == str(own)
+
+
 @pytest.mark.parametrize('broken, match', [
     ({'units': 'mm'}, 'units'),
     ({'two_markers': True}, 'at least 3'),
@@ -390,6 +401,123 @@ def test_fake_markers_round_trip():
     exact = fit_bar_from_cache(fake_sensed_markers(T_design, design.points(), noise_m=0.0), design)
     assert np.allclose(exact.T_world_from_bar, T_design @ bar_slide_roll(0.03, 2.0))
 
+
+
+def test_bar_take_json_shape():
+    """One measurement as a take: the nine keys a saved take has always had, ready for json."""
+    design = b20_bar_markers()
+    T_design = random_rigid(21)
+    cache = fake_sensed_markers(T_design, design.points(), noise_m=0.0)
+    fit = fit_bar_from_cache(cache, design)
+    record = {'bar': 'bar_B20', 'fit': fit, 'deviation': pose_deviation(fit.T_world_from_bar, T_design),
+              'source': 'fake', 'age_s': 0.0, 'snapshot': cache, 'design': design, 'T_design': T_design}
+    take = bar_take_json(record, {'left_force_N': 1.0})
+    assert set(take) == {'bar_B20', 'markerset_key', 'bar_fit', 'deviation', 'marker_source', 'marker_age_s',
+                         'tool_ft', 'design_markers', 'design_T_world_from_bar'}
+    assert take['bar_B20'] is cache
+    assert take['markerset_key'] == 'bar_B20'
+    assert take['bar_fit']['ok'] is True
+    assert np.allclose(take['design_T_world_from_bar'], T_design)
+    assert [m['name'] for m in take['design_markers']] == design.names()
+    json.dumps({k: v for k, v in take.items() if k != 'bar_B20'})
+
+
+def _cache_of(points: np.ndarray) -> dict:
+    """A marker snapshot of exact balls, ids 1..N, as Motive hands them over."""
+    return {k + 1: {'pos': p.tolist(), 'size': 0.019, 'error': 0.0003, 'flags': 0} for k, p in enumerate(points)}
+
+
+def _saved(fit) -> dict:
+    """A fit as it reads back from a saved file (its dict keys turned into strings)."""
+    return json.loads(json.dumps(fit.to_json()))
+
+
+def test_axis_angle_ignores_direction():
+    """The angle between two centre lines is 0..90 deg, whichever way each bar points."""
+    T = random_rigid(30)
+    assert axis_angle_deg(T, T) == pytest.approx(0.0, abs=1e-6)
+    flipped = T @ np.diag([1.0, -1.0, -1.0, 1.0])
+    assert axis_angle_deg(T, flipped) == pytest.approx(0.0, abs=1e-6)
+    assert axis_angle_deg(T, T @ bar_slide_roll(0.0, 0.0) @ _rot_x_deg(3.0)) == pytest.approx(3.0, abs=1e-6)
+
+
+def _rot_x_deg(deg: float) -> np.ndarray:
+    """A turn about x (across the bar), as 4x4."""
+    c, s_ = np.cos(np.radians(deg)), np.sin(np.radians(deg))
+    T = np.eye(4)
+    T[1:3, 1:3] = [[c, -s_], [s_, c]]
+    return T
+
+
+def test_pair_geometry_and_marker_match_on_exact_markers():
+    """Exact balls (after a save) read: every plate 48.3 mm long, no bending, no roll, every ball matched."""
+    design = b20_bar_markers()
+    T = random_rigid(31)
+    cache = _cache_of(transform_points(T, design.points()))
+    cache[99] = {'pos': (T[:3, 3] + [0.4, 0.0, 0.0]).tolist(), 'size': 0.019, 'error': 0.0003, 'flags': 0}
+    fit = fit_bar_from_cache(cache, design)
+    assert fit.ok, fit.reason
+    saved, snapshot = _saved(fit), json.loads(json.dumps(cache))
+    geometry = pair_geometry(saved, snapshot, design)
+    assert [row['joint'] for row in geometry['joints']] == [
+        'joint_J20-22_mocap', 'joint_J20-21_mocap', 'joint_J20-169_mocap', 'joint_J20-25_mocap']
+    for row in geometry['joints']:
+        assert row['n_seen'] == 2
+        assert row['length_mm'] == pytest.approx(48.3, abs=0.05)
+        assert row['length_err_mm'] == pytest.approx(0.0, abs=1e-6)
+        assert row['roll_err_deg'] == pytest.approx(0.0, abs=1e-6)
+        assert np.allclose(row['shift_mm'], 0.0, atol=1e-6)
+    assert geometry['bend_mm'] == pytest.approx(0.0, abs=1e-6)
+    assert len(geometry['spacing']) == 3 and all(abs(row['err_mm']) < 1e-6 for row in geometry['spacing'])
+    sensed, authored = marker_match(saved, snapshot, design, T)
+    states = sorted(item['state'] for item in sensed)
+    assert states == ['matched'] * 8 + ['stray']
+    assert {item['name'] for item in sensed if item['state'] == 'matched'} == set(design.names())
+    assert all(item['seen'] for item in authored) and len(authored) == 8
+    assert np.allclose([item['pos'] for item in authored], transform_points(T, design.points()))
+
+
+def test_pair_geometry_finds_a_loose_ball_and_a_bow():
+    """One ball moved 3 mm along its plate: that joint's length only. The two inner joints pushed 2 mm across: a bow."""
+    design = b20_bar_markers()
+    T = random_rigid(32)
+    names = design.names()
+
+    # * A loose ball: J20-21_mocap_M1 moved 3 mm away from its partner, along the plate.
+    pts = design.points().copy()
+    i1, i2 = names.index('J20-21_mocap_M1'), names.index('J20-21_mocap_M2')
+    along = (pts[i1] - pts[i2]) / np.linalg.norm(pts[i1] - pts[i2])
+    pts[i1] = pts[i1] + 0.003 * along
+    cache = _cache_of(transform_points(T, pts))
+    geometry = pair_geometry(_saved(fit_bar_from_cache(cache, design)), cache, design)
+    errors = {row['joint']: row['length_err_mm'] for row in geometry['joints']}
+    assert errors['joint_J20-21_mocap'] == pytest.approx(3.0, abs=0.01)
+    assert all(abs(err) < 1e-6 for joint, err in errors.items() if joint != 'joint_J20-21_mocap')
+    assert geometry['worst_length_err_mm'] == pytest.approx(3.0, abs=0.01)
+
+    # * A bow: both balls of the two inner joints 2 mm across the bar (bar x).
+    pts = design.points().copy()
+    inner = [k for k, name in enumerate(names) if name.startswith(('J20-21_', 'J20-169_'))]
+    pts[inner] += [0.002, 0.0, 0.0]
+    cache = _cache_of(transform_points(T, pts))
+    fit = fit_bar_from_cache(cache, design)
+    assert fit.ok, fit.reason
+    geometry = pair_geometry(_saved(fit), cache, design)
+    assert geometry['bend_mm'] == pytest.approx(2.0, abs=0.3)
+    assert all(abs(row['length_err_mm']) < 1e-6 for row in geometry['joints'])
+    # * The bow's direction: across the bar towards +x (where the inner joints were pushed), on the inner joints only.
+    for row in geometry['joints']:
+        if row['bend_mm'] is None:
+            assert row['bow_mm'] is None
+            continue
+        assert np.linalg.norm(row['bow_mm']) == pytest.approx(row['bend_mm'], abs=1e-9)
+        assert row['bow_mm'][0] > 1.5 and abs(row['bow_mm'][1]) < 0.3
+
+    # * A ball missing: its joint has no length, but still a shift; the fit stays readable.
+    del cache[i1 + 1]
+    fit = fit_bar_from_cache(cache, design)
+    row = next(r for r in pair_geometry(_saved(fit), cache, design)['joints'] if r['joint'] == 'joint_J20-21_mocap')
+    assert row['n_seen'] == 1 and row['length_mm'] is None and row['shift_mm'] is not None
 
 def test_cache_size_forms_and_filters():
     """Case 15: ``size`` as a number or ``[0.0188]``; string ids; bad and old markers dropped."""

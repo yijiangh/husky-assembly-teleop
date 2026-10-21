@@ -93,6 +93,7 @@ RobotCell once; takes about a minute.
 """
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -116,6 +117,7 @@ from headless_plan_skeleton_smoke import (
 )
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop import husky_world
+from husky_assembly_teleop.as_built_io import as_built_dir, read_as_built
 from husky_assembly_teleop.bar_action_io import MovementKind, held_ground_joints
 from husky_assembly_teleop.bar_mocap_fit import MOCAP_MARKERS_FILENAME, pose_deviation
 from husky_assembly_teleop.husky_world import (
@@ -533,12 +535,24 @@ def run(results: Results, problem: str, root: str, servo_root: str) -> None:
     husky_world._save_servoing_data = save_recorder
     iface.send_dual_arm_cmd = send_and_hook
 
+    n_execs = [0]    # how many execs ran: each writes a start and an end as-built record
+
+    def as_built_records() -> list:
+        """Every as-built record written so far (the scratch folder's day file(s))."""
+        files = sorted(glob.glob(os.path.join(as_built_dir(husky_world.BAR_ACTION_LIVE_REPLAN_EXE_DIR), '*.jsonl')))
+        return [record for path in files for record in read_as_built(path)]
+
+    def mat(value) -> np.ndarray:
+        """A recorded 4x4 as an array; NaN when missing, so every comparison with it fails."""
+        return np.full((4, 4), np.nan) if value is None else np.asarray(value, dtype=float)
+
     def exec_and_pump() -> tuple:
         """'Exec Selected Mv Traj', then the monitor ticks to the task's end.
 
         Returns:
             tuple: ``(n log messages before, error or None, everything printed)``.
         """
+        n_execs[0] += 1
         n_log = len(log.msgs)
         monitor.exec_selected_movement_traj()
         error, printed = call_keeping_prints(lambda: pump(monitor, iface))
@@ -592,6 +606,30 @@ def run(results: Results, problem: str, root: str, servo_root: str) -> None:
             and len(log.since(n_log, 'info', f"[servo] feedback: the MoCap bar {BAR}")) == 1
             and monitor.current_movement is insert,
             f"error {error}, mount prompts {len(prompts)}, loaded {monitor.current_movement.movement_id}")
+
+        # * --- the as-built record of the transfer: a start and an end line, the end 'before_insert'
+        records = as_built_records()
+        ab_start, ab_end = (records[-2], records[-1]) if len(records) >= 2 else ({}, {})
+        ab_bar = (ab_end.get('bars') or {}).get(BAR) or {}
+        ab_fit = ab_bar.get('bar_fit') or {}
+        ab_arms = (ab_end.get('robot_state') or {}).get('arms') or {}
+        fit_vs_real = dev_of(mat(ab_fit.get('T_world_from_bar')), bar.T_real())
+        ref_vs_design = dev_of(mat(ab_bar.get('T_reference')), T_start_design)
+        results.check(
+            f"as-built: the transfer wrote a start and an end record; at the end {BAR} is 'before_insert', "
+            f"referenced to the insert's start (the transfer's target with the grasp) and fitted where the bar is; "
+            f"the robot state holds the live joints and tool0 FK",
+            [(r.get('step') or {}).get('phase') for r in (ab_start, ab_end)] == ['start', 'end']
+            and all((r.get('step') or {}).get('index') == ti for r in (ab_start, ab_end))
+            and ab_end['step']['outcome'] == 'ok' and ab_bar.get('milestone') == 'before_insert'
+            and str(ab_bar.get('reference_kind', '')).startswith('held_authored:')
+            and ref_vs_design[0] < READING_TOL_MM and ab_fit.get('ok') is True and fit_vs_real[0] < 0.01
+            and (ab_end.get('robot_state') or {}).get('base_tracked') is True
+            and (ab_arms.get('left') or {}).get('tool0_fk') is not None
+            and np.allclose((ab_arms.get('left') or {}).get('joints', []), iface.arm_joint_pose[0]),
+            f"{len(records)} records, phases {[(r.get('step') or {}).get('phase') for r in (ab_start, ab_end)]}, "
+            f"milestone {ab_bar.get('milestone')}, reference {ab_bar.get('reference_kind')} "
+            f"({dev_text(ref_vs_design)} from the insert start), fit vs the real bar {dev_text(fit_vs_real)}")
 
         bar0 = (data[0].get('bar') if data else None) or {}
         fit0 = bar0.get('fit') or {}
@@ -755,6 +793,23 @@ def run(results: Results, problem: str, root: str, servo_root: str) -> None:
             and not log.since(n_log, 'warn', 'load guard is OFF') and len(moves) >= 1,
             f"error {error}, loaded {monitor.current_movement.movement_id}, dual-arm commands {len(moves)}")
 
+        # * --- the as-built record of the insert: its end is 'after_insert', referenced to the assembled pose
+        records = as_built_records()
+        ab_end = records[-1] if records else {}
+        ab_bar = (ab_end.get('bars') or {}).get(BAR) or {}
+        ref_vs_assembled = dev_of(mat(ab_bar.get('T_reference')), T_assembled)
+        stored_vs_rhino = dev_of(mat(ab_bar.get('T_assembled')), pp.tform_from_pose(designed[0]))
+        results.check(
+            f"as-built: the insert's end record has {BAR} 'after_insert', referenced to the assembled pose "
+            f"(held_authored:{insert.movement_id}), its Rhino pose stored beside it",
+            (ab_end.get('step') or {}).get('index') == ii and ab_end['step']['phase'] == 'end'
+            and ab_bar.get('milestone') == 'after_insert'
+            and ab_bar.get('reference_kind') == f'held_authored:{insert.movement_id}'
+            and ref_vs_assembled[0] < READING_TOL_MM and stored_vs_rhino[0] < READING_TOL_MM,
+            f"step {(ab_end.get('step') or {}).get('index')} {(ab_end.get('step') or {}).get('phase')}, milestone "
+            f"{ab_bar.get('milestone')}, reference {ab_bar.get('reference_kind')} ({dev_text(ref_vs_assembled)} from "
+            f"the assembled pose)")
+
         # ! The KEY question: ground contact vs the live-base IK and the straight line.
         ik_failed = log.since(n_log, 'warn', 'IK at live base FAILED')
         line_failed = log.since(n_log, 'warn', 'straight lines only here, so nothing is planned')
@@ -900,6 +955,19 @@ def run(results: Results, problem: str, root: str, servo_root: str) -> None:
             and written.get('planner_mode') == 'transfer' and written.get('servo_feedback') == 'tool0',
             f"{len(run_calls)} IK calls, end {ends}, JSON "
             f"{ {k: written.get(k) for k in ('planner_mode', 'servo_feedback', 'bar_name')} }")
+
+        # * --- the as-built file: two lines per exec, one per click, all in the scratch folder
+        n_before = len(as_built_records())
+        monitor.record_as_built_now()
+        records = as_built_records()
+        files = glob.glob(os.path.join(as_built_dir(husky_world.BAR_ACTION_LIVE_REPLAN_EXE_DIR), '*.jsonl'))
+        results.check(
+            "as-built: every exec wrote a start and an end record, 'As-built: record now' one more ('manual'), "
+            "all in one file under the scratch folder",
+            n_before == 2 * n_execs[0] and len(records) == n_before + 1
+            and (records[-1].get('step') or {}).get('phase') == 'manual' and len(files) == 1
+            and files[0].startswith(os.path.dirname(servo_root)),
+            f"{n_before} records for {n_execs[0]} execs, then {len(records)}; files {files}")
 
         # * --- every servo record went to the scratch folder
         results.check(

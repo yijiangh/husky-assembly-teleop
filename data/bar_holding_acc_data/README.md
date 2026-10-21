@@ -18,6 +18,15 @@ at a movement's start state) into accuracy numbers:
 Run `0_` first to sanity-check the fits, then `1_` for the actual accuracy, then
 `2_` to see the session as a whole.
 
+- **`4_assembly_viewer.py`** — the as-built record of an assembly run (the plan
+  skeleton on the real robots) as one 3D page with a slider over the actions.
+  It reads `bar_action_live_replan_exe/<date>-asbuilt/`, not this folder's takes.
+  Full details in
+  [`doc/three_robot_assembly_test_manual.md`](../../doc/three_robot_assembly_test_manual.md)
+  section 9.
+- **`viewer_common.py` / `viewer_common.js`** — the 3D page code `2_` and `4_` share
+  (scene, drawing, legend, card, the inline three.js bundle).
+
 ---
 
 ## Where the data lives

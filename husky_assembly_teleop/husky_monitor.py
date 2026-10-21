@@ -32,7 +32,7 @@ from rclpy.node import Node
 import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE
+from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE, MOCAP_MARKERS_PROBLEM_NAME
 import husky_assembly_teleop.husky_world as world
 from husky_assembly_teleop.husky_world import (
     M2_SPIRAL_DURATION_S_DEFAULT, M2_SPIRAL_MAX_RADIUS_MM, M2_SPIRAL_TURNS_DEFAULT,
@@ -74,7 +74,10 @@ from husky_assembly_teleop.bar_action_io import (
 )
 from husky_assembly_teleop.bar_mocap_fit import (
     MOCAP_MARKERS_FILENAME, BarFit, BarMarkers, MoCapMarkersError, PoseDeviation, apply_authored_move,
-    fake_sensed_markers, fit_bar_from_cache, load_mocap_markers, pose_deviation,
+    bar_take_json, fake_sensed_markers, fit_bar_from_cache, load_mocap_markers, mocap_markers_root, pose_deviation,
+)
+from husky_assembly_teleop.as_built_io import (
+    append_as_built_record, as_built_path, build_as_built_record, milestone_of,
 )
 from husky_assembly_teleop.mocap_bar_viz import (
     GHOST_HIDDEN_POSE, bar_end_points, bar_z_range, build_bar_joint_ghost, draw_bar_fit,
@@ -439,6 +442,15 @@ class HuskyMonitor(Node):
     # ! Never 1 with a real bar: whenever Motive drops out, the made-up markers
     # ! would silently take over (and could be recorded as a take).
     MOCAP_BAR_FAKE_MARKERS = 0
+    # * As-built record of the assembly: 1 = at the start and at the end of every
+    # * executed step (and on 'As-built: record now'), every bar of
+    # * MoCapMarkers.json that Motive streams is measured and appended, with the
+    # * robot's base, joints and tool0, to
+    # * <EXPERIMENT_DATA_DIRECTORY>/bar_action_live_replan_exe/<YYYYMMDD>-asbuilt/as_built_<problem>.jsonl
+    # * (as_built_io). A design problem without MoCapMarkers.json records nothing.
+    # * The page: data/bar_holding_acc_data/4_assembly_viewer.py; manual:
+    # * doc/three_robot_assembly_test_manual.md, section 9.
+    AS_BUILT_RECORD = 1
     # One 'MoCap bar' measurement at a time: button clicks run on the panel's
     # thread, 'follow live' on the monitor's tick. Re-entrant: 'record take'
     # measures while holding it. On the class so harnesses without __init__ have it.
@@ -647,6 +659,7 @@ class HuskyMonitor(Node):
         self._skeleton = None                   # plan_skeleton_io.PlanSkeleton
         self._skeleton_flags = {}               # action index -> plan_skeleton_ui.ActionFlags
         self._skeleton_run_id = None            # progress_io.new_run_id of this monitor run
+        self._as_built_run_id = None            # the run id the as-built records carry (_as_built_record)
         self._selected_action_idx = 0            # what the 'Action' slider points at
         self._loaded_action = None               # plan_skeleton_io.SkeletonAction last loaded
         self._loaded_action_bundle = None        # its plan_skeleton_io.LoadedAction
@@ -6564,20 +6577,28 @@ class HuskyMonitor(Node):
         # Read before the run: an execution may clear the staged trajectory.
         ends = ([np.asarray(self.planned_arm_trajectory[i][0][-1], dtype=float) for i in range(n_arms)]
                 if check_end else None)
+        # * As-built: where every MoCap bar is just before the step runs ...
+        self._as_built_record(idx, 'start')
         yield from run
         mv_id = self._loaded_movements[idx].movement_id
-        if self._exec_cancelled:
-            self.get_logger().info(f"[Exec] {mv_id}: 'Cancel Exec' -- nothing carried forward.")
-            return
-        if ends is not None:
+        outcome, off = ('cancelled' if self._exec_cancelled else 'ok'), None
+        if outcome == 'ok' and ends is not None:
             hi = self.huskies[self.selected_robot_id].interface
             off = max(float(np.abs(np.asarray(hi.arm_joint_pose[i], dtype=float) - ends[i]).max())
                       for i in range(n_arms))
             if off > self.EXEC_START_CONF_TOLERANCE_RAD:
-                self.get_logger().warn(
-                    f"[Exec] {mv_id}: the arms stopped {off:.3f} rad from the end of its "
-                    f"trajectory -- nothing carried forward.")
-                return
+                outcome = 'off_target'
+        # * ... and right after it, however it ended (a cancelled or stopped step is
+        # * recorded too, tagged, though nothing is carried forward from it).
+        self._as_built_record(idx, 'end', outcome, off_rad=off, commanded_end=ends)
+        if outcome == 'cancelled':
+            self.get_logger().info(f"[Exec] {mv_id}: 'Cancel Exec' -- nothing carried forward.")
+            return
+        if outcome == 'off_target':
+            self.get_logger().warn(
+                f"[Exec] {mv_id}: the arms stopped {off:.3f} rad from the end of its "
+                f"trajectory -- nothing carried forward.")
+            return
         self._propagate_live_end(idx, source=source)
 
     def _cancel_exec(self) -> None:
@@ -10200,22 +10221,28 @@ class HuskyMonitor(Node):
             bar_action: The loaded action (its ``active_bar_id`` names the bar).
         """
         self._mocap_markers = None
-        path = os.path.join(self._problem_dir(), MOCAP_MARKERS_FILENAME)
+        # * The problem's own file, else the one borrowed from MOCAP_MARKERS_PROBLEM_NAME (__init__.py).
+        markers_dir = mocap_markers_root(self._problem_dir(),
+                                         problem_root(MOCAP_MARKERS_PROBLEM_NAME, DESIGN_DATA_DIRECTORY))
+        path = os.path.join(markers_dir, MOCAP_MARKERS_FILENAME)
         if not os.path.isfile(path):
             # Said once per design problem, not at every action load.
             if getattr(self, '_mocap_markers_missing_note', None) != path:
                 self._mocap_markers_missing_note = path
-                print(f"[mocap bars] this design problem has no {MOCAP_MARKERS_FILENAME}; "
-                      "no bar can be measured with MoCap.")
+                print(f"[mocap bars] neither this design problem nor {MOCAP_MARKERS_PROBLEM_NAME} has a "
+                      f"{MOCAP_MARKERS_FILENAME}; no bar can be measured with MoCap.")
             return
         try:
-            markers = load_mocap_markers(self._problem_dir())
+            markers = load_mocap_markers(markers_dir)
         except MoCapMarkersError as e:
             self.get_logger().warn(f"[mocap bars] {e}")
             return
         self._mocap_markers = markers
         listed = ", ".join(f"{name} ({len(bar.markers)})" for name, bar in markers.bars.items())
         print(f"[mocap bars] {len(markers.bars)} instrumented bar(s): {listed or 'none'} | {markers.path}")
+        if markers_dir != self._problem_dir():
+            self.get_logger().warn(f"[mocap bars] ! {DESIGN_PROBLEM_NAME} has no {MOCAP_MARKERS_FILENAME}; using "
+                                   f"{MOCAP_MARKERS_PROBLEM_NAME}'s (MOCAP_MARKERS_PROBLEM_NAME in __init__.py)")
         for warning in markers.warnings:
             self.get_logger().warn(f"[mocap bars] {warning}")
         self._register_mocap_bar_assets()
@@ -10857,20 +10884,8 @@ class HuskyMonitor(Node):
             return
         tool_ft = self._tool_ft_reading()
         for record in records:
-            fit, design = record['fit'], record['design']
-            take = {
-                record['bar']: record['snapshot'],
-                'markerset_key': record['bar'],
-                'bar_fit': fit.to_json(),
-                'deviation': record['deviation'].to_json() if record['deviation'] is not None else None,
-                'marker_source': record['source'],
-                'marker_age_s': record['age_s'],
-                'tool_ft': tool_ft,
-                'design_markers': [{'name': m.name, 'joint': m.joint, 'label': m.label, 'bar_m': list(m.bar_m)}
-                                   for m in design.markers],
-                'design_T_world_from_bar': np.asarray(record['T_design']).tolist(),
-            }
-            self.marker_set_data.append(take)
+            fit = record['fit']
+            self.marker_set_data.append(bar_take_json(record, tool_ft))
             msg = (f"[mocap bar] take {len(self.marker_set_data)} recorded: {record['bar']} "
                    "(unsaved; 'Save markerset data' writes it)")
             if not fit.ok:
@@ -10879,6 +10894,256 @@ class HuskyMonitor(Node):
                 msg += ("; ! the 'Save markerset data' button is only on the panel with "
                         "BAR_ACTION_MOCAP_ACCURACY_TEST = 1")
             self.get_logger().info(msg)
+
+    # * ---------------------------------------------------------------------
+    # * As-built record: every MoCap bar at the start and end of every executed
+    # * step, appended to one JSON-lines file per day (as_built_io).
+    # * ---------------------------------------------------------------------
+
+    def record_as_built_now(self) -> None:
+        """'As-built: record now': one as-built record of this moment, outside any step."""
+        self._as_built_record(getattr(self, 'current_movement_index', None), 'manual')
+
+    def _as_built_record(self, idx: Optional[int], phase: str, outcome: Optional[str] = None, *,
+                         off_rad: Optional[float] = None, commanded_end: Optional[list] = None) -> None:
+        """Measure every streaming MoCap bar and append one as-built record (start / end of a step, or a click).
+
+        Measures like 'MoCap bar: record take' (`measure_mocap_bars`: every bar
+        of ``MoCapMarkers.json`` that Motive streams, full search, full report,
+        drawn), and adds per bar where it should be at that moment
+        (`_as_built_bar_reference`), its assembled pose and which moment of its
+        life this is (``as_built_io.milestone_of``), plus the robot's live base,
+        joints, tool0 FK, authored tool0 targets and wrench, and the other
+        robots' saved states. One line per call in
+        ``<bar_action_live_replan_exe>/<YYYYMMDD>-asbuilt/as_built_<problem>.jsonl``.
+
+        ! Runs on the monitor tick inside a step's task: it never raises (an
+        ! error is one log line and the step goes on).
+
+        Args:
+            idx (int | None): Index in ``_loaded_movements`` of the step; None = nothing loaded.
+            phase (str): ``'start'``, ``'end'`` or ``'manual'``.
+            outcome (str | None): How the step ended (``'ok'``, ``'cancelled'``,
+                ``'off_target'``); None for 'start' and 'manual'.
+            off_rad (float | None): How far the arms stopped from the sent trajectory's end.
+            commanded_end (list | None): The sent trajectory's last waypoint per arm.
+        """
+        if not self.AS_BUILT_RECORD or getattr(self, '_mocap_markers', None) is None:
+            return
+        movements = getattr(self, '_loaded_movements', None) or []
+        mv = movements[idx] if idx is not None and 0 <= idx < len(movements) else None
+        mv_id = mv.movement_id if mv is not None else '(no step loaded)'
+        try:
+            with self._mocap_bar_lock:
+                fits = self.measure_mocap_bars()
+                records = [self._mocap_bar_last[bar_name] for bar_name in fits]
+            spec = self._connected_robot()
+            # ! _tool_ft_reading reads two flanges: a support robot records no wrench.
+            tool_ft = self._tool_ft_reading() if spec.n_arms == 2 else None
+            action = getattr(self, '_loaded_action', None)
+            step_kinds = [kind.value if kind is not None else None
+                          for kind in (self._kind_of(m) for m in movements)]
+            step = None
+            if mv is not None:
+                kind = self._kind_of(mv)
+                step = {'index': idx, 'movement_id': mv.movement_id,
+                        'kind': kind.value if kind is not None else None,
+                        'phase': phase, 'outcome': outcome, 'arms_off_end_rad': off_rad,
+                        'commanded_end': (None if commanded_end is None
+                                          else [[float(v) for v in arm] for arm in commanded_end])}
+
+            bars, lines = {}, []
+            for record in records:
+                name = record['bar']
+                bar_id = bar_id_of_body(name)
+                T_reference, reference_kind, held_by, T_grasp = self._as_built_bar_reference(name, idx, phase)
+                designed = self._designed_bar_frame(name)
+                fit = record['fit']
+                deviation = (pose_deviation(fit.T_world_from_bar, T_reference)
+                             if fit.ok and T_reference is not None else None)
+                is_active = (bar_id == action.bar_id if action is not None
+                             else name == getattr(self, 'active_bar_name', None))
+                milestone = milestone_of(action.kind if action is not None else None,
+                                         step_kinds, idx if mv is not None else None, phase, is_active)
+                entry = bar_take_json(record, tool_ft)
+                entry.update({
+                    'bar_id': bar_id, 'held_by': held_by, 'milestone': milestone,
+                    # * The grasp (held link -> bar): with tool0_fk it gives where the ROBOT believes the bar is.
+                    'T_link_from_bar': T_grasp,
+                    'reference_kind': reference_kind, 'T_reference': T_reference,
+                    'T_assembled': pp.tform_from_pose(designed[0]) if designed is not None else None,
+                    'deviation_vs_reference': deviation.to_json() if deviation is not None else None,
+                })
+                bars[name] = entry
+                fit_txt = (f"fit ok {fit.n_matched}/{fit.n_design}, rms {fit.rms_m * 1000:.1f} mm" if fit.ok
+                           else f"fit FAILED ({fit.reason})")
+                ref_txt = (f"vs {reference_kind} dpos {deviation.dpos_mm:.1f} mm, dang {deviation.dang_deg:.3f} deg"
+                           if deviation is not None else f"no reference ({reference_kind})")
+                lines.append(f"{name}{f' [{milestone}]' if milestone else ''} {fit_txt} | {ref_txt}")
+
+            run_id = (getattr(self, '_as_built_run_id', None) or getattr(self, '_skeleton_run_id', None)
+                      or new_run_id(spec.name))
+            self._as_built_run_id = run_id
+            record_out = build_as_built_record(
+                problem=DESIGN_PROBLEM_NAME, run_id=run_id, robot=spec.name,
+                action=dict(action.to_dict(), kind=action.kind) if action is not None else None,
+                action_file=(os.path.basename(self._current_bar_action_path)
+                             if getattr(self, '_current_bar_action_path', None) else None),
+                step=step, bars=bars, robot_state=self._as_built_robot_state(mv, tool_ft),
+                beliefs=self._as_built_beliefs(),
+                instrumented_bars=list(self._mocap_markers.bars),
+                mocap_markers_path=getattr(self._mocap_markers, 'path', None))
+            # ! Read the folder at call time: the headless smokes point it at a scratch folder.
+            path = append_as_built_record(as_built_path(world.BAR_ACTION_LIVE_REPLAN_EXE_DIR, DESIGN_PROBLEM_NAME),
+                                          record_out)
+            head = f"[as-built] {mv_id} {phase}" + (f" ({outcome})" if outcome else "")
+            for line in lines or ["no bar measured"]:
+                self.get_logger().info(f"{head}: {line}")
+            print(f"{head}: recorded -> {path}")
+        except Exception as e:
+            self.get_logger().error(f"[as-built] {phase} of {mv_id} NOT recorded: {e!r}")
+
+    def _as_built_bar_reference(self, bar_name: str, idx: Optional[int], phase: str) -> tuple:
+        """Where a bar should be at an as-built record: its authored pose at that moment.
+
+        * Never from FK: a held bar's pose is the authored flange target composed
+        * with the grasp, the same rule as `get_movement_start_bar_pose`.
+
+        In order:
+
+        1. a servo runs and aims this bar (``_mocap_bar_reference``; only a
+           'record now' click can land there): that target;
+        2. nothing loaded: the bar's resting (assembled) pose;
+        3. the state read is the step's own start state for 'start' / 'manual'
+           and the NEXT step's start state for 'end' (where the step leaves the
+           bar), the step's own for the last step;
+        4. the bar rests there: that frame (``'resting'``);
+        5. it is held: the flange target that puts the arm there (this step's
+           own target at the end of the last step, else ``_start_ee_source``)
+           composed with the grasp (``'held_authored:<movement>'``); none
+           authored (e.g. while the bar is mounted by hand): no reference.
+
+        Args:
+            bar_name (str): The bar's rigid-body name in the loaded cell.
+            idx (int | None): The step's index in ``_loaded_movements``.
+            phase (str): ``'start'``, ``'end'`` or ``'manual'``.
+
+        Returns:
+            tuple: ``(T 4x4 | None, kind, held_by, T_link_from_bar 4x4 | None)``:
+            the reference pose, how it was found (``'servo_target'``,
+            ``'assembled'``, ``'resting'``, ``'held_authored:<movement_id>'`` or
+            ``'held_no_authored_pose'``), the link or tool holding the bar
+            (None when it rests) and the grasp (that link to the bar; None when
+            the bar rests or is held by a tool).
+        """
+        servo_target = self._own_dict('_mocap_bar_reference').get(bar_name)
+        if servo_target is not None:
+            return np.asarray(servo_target, dtype=float), 'servo_target', None, None
+        designed = self._designed_bar_frame(bar_name)
+        assembled = (pp.tform_from_pose(designed[0]) if designed is not None else None, 'assembled', None, None)
+        movements = getattr(self, '_loaded_movements', None) or []
+        if idx is None or not 0 <= idx < len(movements):
+            return assembled
+        k = idx + 1 if phase == 'end' and idx + 1 < len(movements) else idx
+        state = movements[k].start_state
+        rb = ((state.rigid_body_states or {}) if state is not None else {}).get(bar_name)
+        if rb is None:
+            return assembled
+        link = rb.attached_to_link
+        if not (link or rb.attached_to_tool):
+            if rb.frame is None:
+                return assembled
+            return pp.tform_from_pose(pose_from_frame(rb.frame)), 'resting', None, None
+        if not link or rb.attachment_frame is None:
+            return None, 'held_no_authored_pose', link or rb.attached_to_tool, None
+        T_grasp = pp.tform_from_pose(pose_from_frame(rb.attachment_frame))
+        spec = self._connected_robot()
+        try:
+            side = spec.side_of_link(link)
+        except KeyError:
+            side = spec.side_keys[0] if spec.n_arms == 1 else ('left' if 'left' in link else 'right')
+        own = movements[idx]
+        if k == idx and phase == 'end' and (getattr(own, 'target_ee_frames', None) or {}).get(side) is not None:
+            source = own
+        else:
+            source = self._start_ee_source(k, side)
+        if source is None or (source.target_ee_frames or {}).get(side) is None:
+            return None, 'held_no_authored_pose', link, T_grasp
+        T_reference = pp.tform_from_pose(pose_from_frame(source.target_ee_frames[side])) @ T_grasp
+        return T_reference, f'held_authored:{source.movement_id}', link, T_grasp
+
+    def _as_built_robot_state(self, mv, tool_ft: Optional[dict]) -> dict:
+        """The connected robot at an as-built record: live base, joints, tool0 FK and authored targets.
+
+        Args:
+            mv (Movement | None): The step recorded (its ``target_ee_frames`` are
+                the authored tool0 poses at its end); None = nothing loaded.
+            tool_ft (dict | None): The flanges' force/torque (`_tool_ft_reading`).
+
+        Returns:
+            dict: ``{base_tracked, base_pose [pos, quat] | None, arms: {side:
+            {joint_names, joints, tool0_fk, tool0_target_end}}, fk_note, tool_ft}``.
+        """
+        spec = self._connected_robot()
+        husky = self.huskies[self.selected_robot_id]
+        hi = husky.interface
+        tracked = self._base_pose_is_tracked()
+        base_pose = [[float(v) for v in hi.position], [float(v) for v in hi.rotation]] if tracked else None
+        fk, fk_note = {}, None
+        if not tracked:
+            fk_note = 'the base is not tracked by mocap, so tool0 is not placed in the world'
+        elif getattr(husky, 'object', None) is None:
+            fk_note = 'no robot model in the viewer to take tool0 from'
+        else:
+            try:
+                # The FK idiom of husky_world.measure_servo_tool0_error: the model at the live base and joints.
+                husky.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+                for side, link in zip(spec.side_keys, spec.flange_links):
+                    pos, quat = husky.object.get_link_pose_from_name(link)
+                    fk[side] = [[float(v) for v in pos], [float(v) for v in quat]]
+            except Exception as e:
+                fk_note = f'tool0 FK failed: {e!r}'
+        targets = (getattr(mv, 'target_ee_frames', None) or {}) if mv is not None else {}
+        arms = {}
+        for i, side in enumerate(spec.side_keys):
+            target = targets.get(side)
+            target_pose = pose_from_frame(target) if target is not None else None
+            arms[side] = {
+                'joint_names': list(spec.arm_joint_names[i]),
+                'joints': [float(v) for v in hi.arm_joint_pose[i]],
+                'tool0_fk': fk.get(side),
+                'tool0_target_end': ([[float(v) for v in target_pose[0]], [float(v) for v in target_pose[1]]]
+                                     if target_pose is not None else None),
+            }
+        return {'base_tracked': tracked, 'base_pose': base_pose, 'arms': arms, 'fk_note': fk_note,
+                'tool_ft': tool_ft}
+
+    def _as_built_beliefs(self) -> dict:
+        """The other robots' saved states (``progress.json``) and the holds, for an as-built record.
+
+        Returns:
+            dict: ``{robots: {name: {base_pose, configuration {joint: value},
+            source, at, after_action}}, holds: {bar_id: {robot, state}}}``;
+            empty outside the plan skeleton.
+        """
+        progress = getattr(self, '_progress', None)
+        if progress is None:
+            return {}
+        robots = {}
+        for name, belief in (progress.robots or {}).items():
+            try:
+                pos, quat = pose_from_frame(belief.base_frame)
+                conf = belief.configuration
+                robots[name] = {
+                    'base_pose': [[float(v) for v in pos], [float(v) for v in quat]],
+                    'configuration': dict(zip(conf.joint_names, [float(v) for v in conf.joint_values])),
+                    'source': belief.source, 'at': belief.at, 'after_action': belief.after_action,
+                }
+            except Exception as e:
+                robots[name] = {'source': getattr(belief, 'source', None), 'note': f'not readable: {e!r}'}
+        holds = {bar_id: {'robot': hold.robot, 'state': hold.state}
+                 for bar_id, hold in (progress.holds or {}).items()}
+        return {'robots': robots, 'holds': holds}
 
     def _build_trajectory_waypoint_sliders(self):
         """Add up to two "step through waypoints" sliders on the cfab PyBullet
@@ -13169,6 +13434,10 @@ class HuskyMonitor(Node):
             )
             self.buttons.append(Button('MoCap bar: clear drawing', self.clear_mocap_bar_drawing))
             self.buttons.append(Button('MoCap bar: record take', self.record_mocap_bar_take))
+            # * The as-built record of this moment (every streaming bar + the robot), the same
+            # * line every executed step writes at its start and end (AS_BUILT_RECORD).
+            if self.AS_BUILT_RECORD:
+                self.buttons.append(Button('As-built: record now', self.record_as_built_now))
             # * Ticked: the servo after a grounded bar's transfer and after its insert
             # * aims the bar by its MoCap fit; unticked: tool0 on the authored targets
             # * (the MoCap bar is recorded alongside either way). Read once per run

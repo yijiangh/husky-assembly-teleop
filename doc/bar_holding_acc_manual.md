@@ -666,6 +666,13 @@ The first three answer *what happened to this bar*. The fourth answers *what
 happened to this session*, which is a different question and the one a reader
 usually wants first.
 
+> **An assembly run has its own page.** `4_assembly_viewer.py` draws the as-built
+> record of a plan-skeleton run (every MoCap bar at every executed step, with a
+> slider over the actions); it is documented in
+> [`three_robot_assembly_test_manual.md` section 9](three_robot_assembly_test_manual.md#9-as-built-record-and-the-assembly-page--recorded-by-itself--read-afterwards).
+> It shares its 3D code with `2_session_viewer.py` through `viewer_common.py` and
+> `viewer_common.js` in the same folder, so a change there shows on both pages.
+
 > **Where the numbers live.** This manual describes the **method**; a session's
 > **numbers** live with that session, in
 > `<batch>-result/RESULTS.md`. Where a figure below is illustrated with values

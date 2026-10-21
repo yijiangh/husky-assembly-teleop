@@ -273,8 +273,10 @@ ros2 run husky_assembly_teleop husky_monitor
 - [ ] Panel, section **`MoCap bar (joint markers)`** (above `CONTROLLERS`):
       `Rhino bar lines (pink)` (a checkbox, ticked), `MoCap bar: measure + draw (streaming bars)`,
       `MoCap bar: follow live (10 Hz)` (a checkbox), `MoCap bar: clear drawing`,
-      `MoCap bar: record take`, `Servo: aim grounded bar by MoCap (else tool0)` (a checkbox, only
-      used with Cindy in section 10).
+      `MoCap bar: record take`, `As-built: record now`, `Servo: aim grounded bar by MoCap (else tool0)`
+      (a checkbox, only used with Cindy in section 10). `As-built: record now` writes one line of
+      the as-built record of an assembly run (`doc/three_robot_assembly_test_manual.md` section 9);
+      this test does not need it.
 
 ! Do not click `Mark action done` in this test: it would record B20 as built in
 `progress.json`.
@@ -492,7 +494,9 @@ B34 the box falls back to tool0 and says so.
   - Cindy brought up (its 0.3 Cindy) and checked (2.1 Cindy);
   - safety as in its section 4;
   - the flags of its 0.1, **except** that `DESIGN_PROBLEM_NAME` stays `261016_2ModulesDemo_YH`
-    (this manual's PC block, with `HUSKY_PC=robotpc` on the robot-control PC).
+    (this manual's PC block, with `HUSKY_PC=robotpc` on the robot-control PC). The three-robot
+    manual's own `261006_3bar_holding_test` works too: it borrows B20's markers from
+    `261016_2ModulesDemo_YH` (`MOCAP_MARKERS_PROBLEM_NAME`; run that way 2026-10-20).
 - [ ] Flags (section 0.1 of this manual) differ from the by-eye test:
 
 | flag | value for this section |
@@ -513,12 +517,12 @@ grep -nE "^    (FAKE_HARDWARE|USE_MOCAP|MOCAP_BAR_FAKE_MARKERS) *=" "$F"     # e
 - [ ] Start the monitor (section 3). The `MoCap bar (joint markers)` panel section now also has the
       checkbox **`Servo: aim grounded bar by MoCap (else tool0)`**, unticked by default.
 - [ ] Tick `Workaround: plan the transfer as a free move (no bar, from the live arms)`, as in the
-      three-robot manual's 7.1.
+      three-robot manual's 5.2 a).
 
 ### 10.2 Run 1: box ticked (the servo aims the bar)
 
 Tick `Servo: aim grounded bar by MoCap (else tool0)`, then run action 0 as the three-robot manual's
-7.2 describes: IK check, `Plan Movement`, `Exec Selected Mv Traj (auto)` on the transfer, then the
+5.2 describes: IK check, `Plan Movement`, `Exec Selected Mv Traj (auto)` on the transfer, then the
 mount pause. What is new:
 
 - [ ] At the exec: `[transfer B20_J_M3_CDFM_transfer_to_approach] servo feedback: MoCap bar`.
@@ -547,7 +551,7 @@ mount pause. What is new:
       `[insert plan] MoCap-bar correction carried: B20_J_M4_LM_insert left goal X mm / Y deg from the authored end.`
       X is about the `MoCap-vs-FK` gap: the insert makes Rhino's 15 mm move down from where the
       servo put the bar, not from the Rhino start.
-- [ ] `Exec Selected Mv Traj (auto)` → the rigid insert as in 7.2 (`grounded bar ... rigid insert done (no tighten).`). Then, new:
+- [ ] `Exec Selected Mv Traj (auto)` → the rigid insert as in the three-robot manual's 5.2 d) (`grounded bar ... rigid insert done (no tighten).`). Then, new:
       `[insert B20_J_M4_LM_insert] servo to the start of B20_J_M5_manual_fix_foundation (the insert's end), feedback: MoCap bar; straight-line corrections only.`
       The manual step `B20_J_M5_manual_fix_foundation` is now loaded, and the **second servo** runs
       on the assembled pose (the pink copy moves down to it):
@@ -569,18 +573,21 @@ mount pause. What is new:
     not be planned. Note the lines; B20 stays where the insert put it.
   - `[insert B20_J_M4_LM_insert] no force reading: the servo's load guard is OFF. ...`: the force
     sensors are not streaming. Watch the arms closely, or `Cancel Exec`.
-- [ ] **Fix foundation** as in 7.2. Before `Mark action done`, keep the two records (10.4).
+- [ ] **Fix foundation** as in the three-robot manual's 5.2 e). Before `Mark action done`, keep the two records (10.4).
 
 ### 10.3 Run 2: box unticked (tool0, as before)
 
 Redo action 0: un-mount B20 and put it back on its loading spot, then `Reopen action (reload clean)`
-(three-robot manual section 14). Untick the box and run it exactly as in 10.2.
+(three-robot manual 7.a). Untick the box and run it exactly as in 10.2.
 
 - [ ] `[transfer ...] servo feedback: tool0`, then
       `[servo] feedback: tool0 (0.2 mm); the MoCap bar bar_B20 is recorded alongside.`
 - [ ] The bar lines are printed at every reading as in run 1, but the loop aims tool0. It ends with
       `### SERVOING converged at iter N (< 0.2 mm)` (or `nothing left to plan`), then the
-      `### bar pose at termination (bar_B20): ...` line.
+      `### bar pose at termination (bar_B20): ...` line. Seen 2026-10-20 instead, in both servos:
+      `### SERVOING ran all 8 iterations without converging.`: the right flange stays 1–3 mm from its
+      Rhino target (the bar as mounted by hand) while the left one is within 0.2 mm; the bar moved
+      under 0.5 mm after the first pass.
 - [ ] No `correction carried` line: the insert plans to Rhino's end.
 - [ ] After the insert the second servo runs too, on tool0 (`feedback: tool0`).
 
@@ -611,11 +618,16 @@ reading in `servoing_data` carries a `bar` entry:
 
 The PNG adds the bar's distance from its design pose, dashed for MoCap and dotted for FK.
 
+The same run also writes the **as-built record** (every MoCap bar at the start and end of every
+step, `<date>-asbuilt/` next to `<date>-servoing/`); its page shows the transfer's end as
+`before insert` and the insert's end as `after insert`, with the robot-visible and robot-blind
+parts of the error side by side. See `doc/three_robot_assembly_test_manual.md` section 9.
+
 ### 10.5 If something goes wrong
 
 | the log says | do |
 |---|---|
-| `'Servo: aim grounded bar by MoCap' is ticked, but this run aims tool0: bar_B20 carries no MoCap markers.` | wrong problem (`DESIGN_PROBLEM_NAME` must be `261016_2ModulesDemo_YH`) or no `MoCapMarkers.json` (0.2) |
+| `'Servo: aim grounded bar by MoCap' is ticked, but this run aims tool0: bar_B20 carries no MoCap markers.` | no marker table for B20: neither `DESIGN_PROBLEM_NAME` nor `MOCAP_MARKERS_PROBLEM_NAME` (default `261016_2ModulesDemo_YH`) has a `MoCapMarkers.json` with B20 (0.2; three-robot manual 9.1) |
 | `... aims tool0: B20_J_M4_LM_insert does not hold a grounded bar ...` | not a grounded bar's action; expected for every bar but B20 / B34 |
 | `[servo N] bar bar_B20: ... not usable: fit failed: only k of 8 design markers matched (need 6)` | balls hidden by the arms or the tools: look at Motive; the loop aims tool0 until the fit is good |
 | `... not usable: fake markers (desk rehearsal; Motive does not stream the bar), never steered on` | `MOCAP_BAR_FAKE_MARKERS` is 1 and Motive's B20 balls are missing: set it to 0 (10.1), check the asset |

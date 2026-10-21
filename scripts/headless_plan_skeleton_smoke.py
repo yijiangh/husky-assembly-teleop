@@ -3246,6 +3246,8 @@ def main(argv: Optional[list] = None) -> int:
     try:
         root = make_scratch_problem(real_root, scratch_design, problem)
         point_package_at(scratch_design)
+        # ! The as-built records and servo records go to the scratch folder, never into the experiment data.
+        husky_world.BAR_ACTION_LIVE_REPLAN_EXE_DIR = os.path.join(scratch_design, 'bar_action_live_replan_exe')
         skeleton = load_plan_skeleton(root)
         for run in (dispatch_check, carry_check, transfer_start_check, operator_steps_check,
                     transfer_free_move_check, grounded_insert_check, one_sided_insert_check,
@@ -3257,6 +3259,14 @@ def main(argv: Optional[list] = None) -> int:
             except Exception as e:  # keep going: the summary shows where it stopped
                 traceback.print_exc()
                 results.check(f'{run.__name__} ran to the end', False, f"{type(e).__name__}: {e}")
+        # * The as-built recorder writes only for a problem with a marker table (MoCapMarkers.json).
+        as_built_dirs = [name for name in os.listdir(husky_world.BAR_ACTION_LIVE_REPLAN_EXE_DIR)
+                         if name.endswith('-asbuilt')] if os.path.isdir(husky_world.BAR_ACTION_LIVE_REPLAN_EXE_DIR) else []
+        has_table = os.path.exists(os.path.join(root, 'MoCapMarkers.json'))
+        results.check(
+            f"as-built: {'records written' if has_table else 'nothing recorded'} "
+            f"({'with' if has_table else 'without'} a MoCapMarkers.json), all under the scratch folder",
+            bool(as_built_dirs) == has_table, f"as-built folders {as_built_dirs}")
         results.check('real design folder untouched', folder_snapshot(real_root) == before)
     finally:
         if args.keep:

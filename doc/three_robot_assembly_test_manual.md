@@ -152,8 +152,10 @@ holding.
 | 11 | run 6: action 16 | 5.11 | 1 + monitor window | Alice | gripper, arm, then base away | yes |
 | 12 | run 7: action 17 | 5.12 | 1 + monitor window | Belle | gripper, arm, then base away | yes |
 | 13 | send the results back | 8 | — | — | no | — |
+| 14 | the as-built page of the run (MoCap bars at every step) | 9 | any terminal | — | no | no |
 
-Something wrong at any point: Part 7.
+Something wrong at any point: Part 7. What the first as-built run (2026-10-20) showed: Part 10
+(temporary notes).
 
 ### 0.3 What you need
 
@@ -337,7 +339,7 @@ The flags are class attributes at the top of `class HuskyMonitor`
 ```bash
 F=~/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/husky_monitor.py
 grep -nE "^    (FAKE_HARDWARE|USE_MOCAP|USE_CELL_STATE_BASE_POSE|CONNECT_COMPLIANT_CONTROLLER|LIST_CONTROLLER_SERVICES|IGNORE_BUILT_ASSEMBLY_COLLISIONS|TRANSFER_AS_FREE_MOVE|AUTO_LOAD_ACTION) *=" "$F"
-grep -nE "^    (CALIBRATION|PUNCH_CALIB_VALIDATION|BAR_ACTION_LIVE_REPLAN_EXE|BAR_ACTION_MOCAP_ACCURACY_TEST) *=" "$F"
+grep -nE "^    (CALIBRATION|PUNCH_CALIB_VALIDATION|BAR_ACTION_LIVE_REPLAN_EXE|BAR_ACTION_MOCAP_ACCURACY_TEST|AS_BUILT_RECORD) *=" "$F"
 ```
 
 **Expect:**
@@ -355,6 +357,8 @@ grep -nE "^    (CALIBRATION|PUNCH_CALIB_VALIDATION|BAR_ACTION_LIVE_REPLAN_EXE|BA
 | `CALIBRATION` | **0** | 1 only for a calibration session; Belle's on 2026-10-13/14 had both at 1 |
 | `BAR_ACTION_LIVE_REPLAN_EXE` | **1** | 0 hides the whole bar-assembly panel, the plan skeleton included |
 | `BAR_ACTION_MOCAP_ACCURACY_TEST` | 1 | the value before Belle's calibration; its extra buttons are not used in this test |
+| `PUNCH_CALIB_VALIDATION` | **0** | 1 only for a calibration session; Belle's on 2026-10-13/14 had both at 1 |
+| `AS_BUILT_RECORD` | **1** (the default) | every MoCap bar is measured and saved, raw markers included, at the start and end of every executed step (Part 9). It records only when the design problem has a `MoCapMarkers.json` (9.1) |
 
 **!** To change a flag, edit the file and restart the monitor (no rebuild needed). A running monitor
 keeps the values it started with.
@@ -434,7 +438,16 @@ ls "$P"                                        # expect: ActionSchedule.json Bar
 ls "$P"/BarActions/*__*.json | grep -vc live-solved     # expect: 18 action files (B20..B37 __J/__R, B21 and B35 __H/__HR)
 ls -a "$P" | grep -c insyncdl                  # expect: 0 = Insync has finished syncing
 ls "$P"/progress.json "$P"/BarActions/*.live-solved.json 2>/dev/null   # left over from an earlier run?
+ls "$GD/data_design_study/261016_2ModulesDemo_YH/MoCapMarkers.json"   # expect: the file (the MoCap ball table, see below)
 ```
+
+**!** `261006_3bar_holding_test` has no `MoCapMarkers.json` of its own. For now the monitor borrows
+the one of `261016_2ModulesDemo_YH` (same B20 / B21 poses, checked 2026-10-20), set by
+`MOCAP_MARKERS_PROBLEM_NAME` in `husky_assembly_teleop/__init__.py`. A problem's own file always wins.
+At each action load, pane 1 prints
+`[mocap bars] 2 instrumented bar(s): bar_B20 (8), bar_B21 (8) | .../261016_2ModulesDemo_YH/MoCapMarkers.json`
+and a warning that the file is borrowed. Without the file no bar is measured and the as-built record (9)
+writes nothing.
 
 If `progress.json` or saved plans are left over and you want to start fresh: `Reset plan skeleton
 to the Rhino export` once Cindy's monitor is up (7.a). It moves them to `$P/archive/<time>/`
@@ -1802,3 +1815,293 @@ Without the script, log pane 1 by hand (once per session; it keeps logging acros
   - how far the open jaws were from the bar's centre after the free approach;
   - whether the held bar moved while it was clamped or while the next bars were screwed in;
   - whether the jaws cleared the bar on the release.
+- **The as-built record** (9), when the run used a problem with MoCap markers: the day's
+  `as_built_<problem>.jsonl` and the page built from it (9.3).
+
+---
+
+## 9. As-built record and the assembly page  [RECORDED BY ITSELF — read afterwards]
+
+**What it is.** While the plan skeleton runs, the monitor measures every bar that carries MoCap
+balls at the **start and the end of every step** it executes, on every robot's monitor, and appends
+one line per measurement to a file of the day. Afterwards one script turns that file into a 3D web
+page with a slider over the actions. Nothing here moves a robot.
+
+Words used below:
+
+| word | means |
+|---|---|
+| record | one measurement: every streaming MoCap bar, plus the robot's base, joints and tool0 |
+| target | where the bar should be at that moment: its seat if it rests, the authored flange target with the grasp if an arm holds it (never FK) |
+| seat | the bar's assembled pose in the design |
+| milestone | a moment the page lists first (table in 9.1) |
+| bystander | any other bar measured while another bar's action runs: how a placed bar is followed through the rest of the assembly |
+
+### 9.1 What is recorded, and when
+
+| moment | step, phase | milestone | the bar is compared with |
+|---|---|---|---|
+| before the insert | J transfer, end (after its servo) | `before_insert` | the insert's start (15 mm above the seat for B20) |
+| after the insert and the tighten | J insert, end (the tighten runs inside it; B20's second servo too) | `after_insert` | the seat |
+| after B20's foundation fix | J manual fix, end | `after_fix` | the seat |
+| before / after the robot retreats | R retreat, start / end (the ungrasp runs inside it) | `before_retreat` / `after_retreat` | the seat |
+| support robot holds | H approach / move in / gripper close, end | `hold_approach` / `hold_at_grasp` / `hold_grasped` | the seat |
+| support robot lets go | HR gripper open / retreat, end | `hold_released` / `hold_retreated` | the seat |
+| every other step, start and end | — | none (`bystander` for the other bars) | the seat |
+
+Where the records go (one file per lab day and design problem, every robot's monitor appends to it):
+
+```text
+~/Insync/2025-03 Husky Assembly/data_experiment/bar_action_live_replan_exe/<YYYYMMDD>-asbuilt/as_built_<problem>.jsonl
+```
+
+What it needs:
+
+- a **`MoCapMarkers.json`**: the design problem's own, else the one of `MOCAP_MARKERS_PROBLEM_NAME`
+  (`husky_assembly_teleop/__init__.py`, default `261016_2ModulesDemo_YH`, which has B20 and B21).
+  `261006_3bar_holding_test` (this manual's) has none of its own, so it uses the borrowed one (1.d);
+- the flag `AS_BUILT_RECORD = 1` in `husky_monitor.py` (the default);
+- Motive streaming the bar assets (B20 = 1020, B21 = 1021) with **Labeled Markers** on, as in
+  `doc/mocap_bar_pose_test_manual.md` 0.3.
+
+**?** A record is about 8 KB per bar; a lab day of seven actions is well under 1 MB.
+
+### 9.2 During the run
+
+- [ ] nothing to click: run the steps as in Part 5.
+  - **Expect:** after each `Exec ...` and each tool / gripper / manual step, pane 1 prints one line per bar
+    and the file:
+    `[as-built] B20_J_M3_CDFM_transfer_to_approach end (ok): bar_B20 [before_insert] fit ok 8/8, rms 0.6 mm | vs held_authored:B20_J_M3_CDFM_transfer_to_approach dpos 0.4 mm, dang 0.030 deg`
+    `[as-built] B20_J_M3_CDFM_transfer_to_approach end (ok): recorded -> .../<YYYYMMDD>-asbuilt/as_built_261006_3bar_holding_test.jsonl`
+    (named after `DESIGN_PROBLEM_NAME`, this manual's problem, even though the markers are borrowed)
+  - **Expect:** the cyan MoCap copy of each measured bar is redrawn in PyBullet at that moment.
+- [ ] optional: button [As-built: record now] (panel section `MoCap bar (joint markers)`) at a
+      moment no step covers, e.g. after the bars stood for a while, or at the end of the session.
+  - **Expect:** the same lines, with `manual` instead of `start` / `end`.
+
+**If not:**
+
+| you see | do |
+|---|---|
+| no `[as-built]` line at all | no `MoCapMarkers.json` was found (look for `[mocap bars] neither this design problem nor ...` at the action load; check `DESIGN_PROBLEM_NAME` and `MOCAP_MARKERS_PROBLEM_NAME`, 9.1), or `AS_BUILT_RECORD = 0` |
+| `... no bar measured` | no instrumented bar streams: check the assets in Motive (1020, 1021) |
+| `fit FAILED (only 5 of 8 design markers matched (need 6))` | balls hidden by the tools or a gripper; the record is kept with the reason. Free the balls if you can, then `As-built: record now` |
+| `[as-built] end of ... NOT recorded: ...` | the drive folder could not be written (Insync not mounted?); the step itself went on |
+
+### 9.3 Building the page
+
+▶ any terminal
+
+```bash
+cd ~/ros2_ws && source venv/bin/activate
+python src/husky-assembly-teleop/data/bar_holding_acc_data/4_assembly_viewer.py 20261020 --open
+```
+
+- **Expect:** `[assembly] N records from .../20261020-asbuilt/as_built_261006_3bar_holding_test.jsonl; problem 261006_3bar_holding_test, 18 actions, 7 bars, K servo files.`
+  (seen 2026-10-20: 12 records, 6 servo files)
+- **Expect:** `[assembly] 261008_2ModulesDemo_YH.3dm has no 'env' solids; the lab room and the camera rig come from 260929_phase1_retest.3dm (same Motive frame).`
+- **Expect:** `[assembly] wrote .../bar_action_live_replan_exe/20261020-asbuilt-result/assembly_20261020.html (1.x MB)`
+
+One page per lab day, rebuilt in place each time the script runs (records written since appear).
+Leave out the date for the newest day. Other options: `--problem NAME` (when one day recorded two
+problems), `--no-robots`, `--no-cameras`, `--env-3dm PATH`, `--out PATH`, `--runs-dir PATH` (a
+headless smoke's scratch folder, for a desk rehearsal).
+
+### 9.4 Reading the page
+
+**Moving through the run**
+
+| control | does |
+|---|---|
+| slider `action` (or ← / →) | the action, in the plan's order. Its label reads the bar first, e.g. `B20 · R (release) · Cindy`, then the plan's action number, how many bars exist and who holds which |
+| the pills under it | that action's records, milestones first (`before insert`, `after insert`, ...); `[` / `]` step through them; struck through = a step that was cancelled or stopped short; ↻ = redone. **The pill you pick stays picked**: go to another action and back (e.g. `before retreat` at B20 R, then B20 J, then B20 R again) and it is still the one shown |
+| `all records` | also lists the step starts and the free moves |
+| the strip at the bottom | one cell per action in the same order, coloured by its worst placement error (grey: recorded but not measured; pale: not executed); click a cell to jump there. `strip by <bar>` shows one bar's error against its seat through the whole run |
+| left click a bar or a ball | its card; Esc or × closes it |
+
+**What the drawing means**
+
+| drawn | is |
+|---|---|
+| thin grey line | a placed bar at its seat (authored), one continuous line from its start to its end |
+| thin blue line | the action's own bar; at its step target when that is not the seat (the seat then faint) |
+| thin orange / violet / light blue line | a bar held by Alice / Belle / Cindy |
+| see-through, a little thicker, shaded along its length | a bar as MoCap measured it, coloured by its distance from where it should be at each point. Both kinds are drawn thin (measured 5.5 mm across, authored 4 mm) so the few millimetres between them show |
+| filled balls | the balls Motive saw: red = stray (matched no design ball), grey = dropped before the fit (hidden, wrong size) |
+| hollow balls | where the design balls should be (the same size as the filled ones, the real ball's); red = no ball matched it |
+| robots | the one whose monitor recorded, as measured; the others as last saved in `progress.json` (`(saved)`, paler) |
+
+**What the `data by` picker draws on the bars.** Both pickers list the measurements in the card's order
+(placement, vs the seat, rotation, tool0, servo, plate length, spacing, bending, fit residual, load). With no bar clicked, on every measured bar; once a
+bar is clicked, on that bar only (nothing of another measurement or another bar on top of it). Every
+arrow is drawn **20× longer** than the error it shows (a millimetre on a 2 m bar cannot be seen); the
+numbers beside them are the true values. The bar's name label then shows only its name.
+
+| `data by` | drawn |
+|---|---|
+| placement error | a small ball at the start, middle and end of the authored bar (dark) and of the measured one (coloured by its error), an arrow from each authored ball towards its measured one, and the distance there (`2.54 mm`). None when the step has no target for the bar (e.g. before the mount) |
+| placement vs seat | the same against the seat |
+| rotation error | at the bar's start, thin axes: the authored bar's x (red) / y (green) / z (blue, along the bar) faint, the measured bar's solid; each measured axis with its letter `X` / `Y` / `Z` at its tip and, just above the letter, the turn **about** it: `about Z: 1.79°` (the bar's roll; the Z labels sit just above the bar), `about Y: -0.02°`, `about X: -0.02°`; around each axis near its tip, a small **purple** arc sweeping that turn (20×; none when too small to see); and `centre lines 0.027° apart` under the z axis. Against the step target, else the seat. The start is not an anchor: a rigid bar's turn is the same wherever it is measured; the axes sit there because the bar's own frame does |
+| bending | every plate named (`J20-22`, `J20-21`, ...); at each inner plate a red arrow the way the bar bows there, and `J20-21 · bow 1.51 mm` |
+| plate length error | at each plate, its name and how far its two balls' distance is off the design (`J20-25 · balls off -0.68 mm`) |
+| spacing | a small ball at each plate on the bar, and between neighbouring plates their distance, measured / design (off by): `J20-22 → J20-21 · 333.7 / 335.1 (off -1.37) mm` |
+| fit residual | at each plate, its name and its two balls' distances from their design spots after the fit, M1 / M2 (`J20-22 · 2.46 / 2.04 mm`) |
+| tool0 vs target | at each flange (where FK puts it), that arm's tool0 against the step's target (`left · tool0 vs target 0.11 mm`, `right · ... 2.59 mm`) |
+| servo residual | at each flange, that arm's servo residual, the servo's last iteration (`left · servo residual 0.13 mm`); `no servo in this step` on records without one (only the end of a transfer and of a grounded bar's insert have one) |
+| load imbalance | at each flange, that wrist's force (`left · 26.51 N`, `right · 24.67 N`), and between the two the gap (`gap 1.83 N`) |
+| any other | its number on the bar's name label |
+
+Plate labels alternate below and above the bar, so neighbouring plates' labels never sit side by side.
+
+**The card**
+
+| block | answers |
+|---|---|
+| header | line 1: the step and the robot, `B20_R_M1_LM_retreat / Cindy (17:29:48)`; line 2: when the record was taken (`at the start of the step` / `at the end of the step` / `recorded by a click`) and the moment of the bar's life (`after the retreat`, ...). A step that did not end well gets a red line under it |
+| placement error | the MoCap bar vs where it should be (the step's target), at the start, the middle and the end, the largest in bold |
+| placement error vs the seat | the MoCap bar vs its **final** place in the design (its seat). The same as the placement error once the bar is placed; the two differ only while the bar is held on its way in (before the insert it should be 15 mm above its seat, so there the placement error is small and the one vs the seat about 15 mm) |
+| rotation error | the angle between the centre lines, then the turn split into a tilt about the bar's x and y and a roll about its own axis z (the colours of the axes in the view with `data by: rotation error`), and the offset at the bar's start. One value for the whole bar: it is rigid, so it turns as one piece, the angle is the same wherever it is measured, and there is no anchor and no start / middle / end |
+| robot: tool0 vs target, servo residual | each flange by FK against the step's target (`tool0 vs target, left / right`); the servo's last iteration (`servo residual, left / right`, on the end records of a transfer and of a grounded bar's insert only); then **where the error comes from**: `FK bar vs target` is what the robot can see (its servo drives it to ~0.2 mm), `MoCap vs target` the total, `MoCap vs FK` what the robot cannot see (base calibration, arm, TCP, the bar in the jaws). `data by: tool0 vs target` or `servo residual` marks this block |
+| bar shape & fit | from its balls: is a ball off, is the bar bent, does the fit hold? In mm, as `measured / design (off by)`. A **plate** is one T20 MoCap joint's plate with its two balls, 48.3 mm apart by design: one row per plate (`J20-25  47.6 / 48.3 (off -0.68)`); one row per pair of neighbouring plates, their distance (`J20-22 → J20-21  333.7 / 335.1 (off -1.37)`); the **bow** at every inner plate, the largest in bold (`J20-21: 1.51, J20-169: 0.69`); **Motive noise this day** (how much a plate's ball distance wanders between records); then the fit: balls found, the typical mismatch (rms: the root-mean-square distance between each seen ball and its design spot after the best rigid fit), the worst ball, hidden balls, extra balls near the bar. Ends with the **verdict** (below) |
+| load | Cindy's two wrist forces, left and right, then their gap (\| left − right \|, the load imbalance), and what they are relative to: `force sensors zeroed at <time> at the mount pause (tools empty)` (records since 2026-10-21) |
+| history of this bar | every record since the bar was placed (the ones before, on its loading spot or standing by, are counted, not listed): its distance from the seat at start / middle / end, its bow, and after the robot let go, **how far its ends moved since**: the answer to "did the bar move or deform during the rest of the assembly" |
+
+**The verdict** (`bar shape and fit`) tells the four causes apart, using the whole day's records of
+the bar. Thresholds at the top of `4_assembly_viewer.py`, set from the 2026-10-20 run (section 10):
+
+| the verdict says | because | what it means |
+|---|---|---|
+| `bad ball on plate X: its two balls are 47.6 mm apart, not 48.3` | a plate's ball distance is off by more than 0.6 mm (bending cannot change it) | a ball loose, half hidden or mislabelled; `in every record this day` = mounted off its spot or a wrong table entry |
+| `bending at plate X: its bow is ... away from its usual` | an inner plate's bow moved more than 0.5 mm from its day average | the bar bends under a load there (or a ball moved) |
+| `plates off the design table by the same amount in every record` | a plate sits more than 0.5 mm off where the fit puts it, and moves less than 0.5 mm over the day | the plates are mounted off their table spots: a constant offset, not bending |
+| `typical ball mismatch ... mostly the constant plate offsets` / `the fit itself is doubtful` | rms over 1.0 mm, explained or not by the line above; or another assignment of the balls fits as well | trust the placement numbers less than the rms |
+| `balls good, bar straight, fit tight` | none of the above | |
+
+The day lines need at least 3 records of the bar.
+
+**!** The page can say how big the robot-blind part is, not which part of the robot causes it: that
+needs many bars compared in the room, base and flange frames (the `3_session_report.py` method),
+which is left for when a run has enough of them. Every record keeps what that needs (FK, targets,
+base, joints, wrench).
+
+### 9.5 Rehearsal with B20 and B21
+
+The as-built record needs no extra step; this is the order that exercises every milestone with the
+two instrumented bars (this manual's problem `261006_3bar_holding_test`, markers borrowed from
+`261016_2ModulesDemo_YH`, 9.1; run 1 done 2026-10-20):
+
+| run | robot | actions | the page then shows |
+|---|---|---|---|
+| 1 | Cindy | 0 `B20_J`, 1 `B20_R` | B20 `before_insert`, `after_insert`, `after_fix`, `before_retreat`, `after_retreat` |
+| 2 | Cindy | 2 `B21_J` | B21 before / after its insert, B20 as a bystander in the same records |
+| 3 | Alice | 3 `B21_H` | Alice's records: approach, at grasp, grasped (no wrist force on a support robot) |
+| 4 | Cindy | 4 `B21_R`, 5 `B22_J`, 6 `B22_R` | B21 released by Cindy while Alice holds it; at actions 5–6 B20 placed, B21 held by Alice, B22 being built (no markers: dashed only); B20's history says whether it moved |
+
+### 9.6 Things to know
+
+- The servo after a transfer is saved under the **insert's** name (`B20_J_M4_LM_insert_servoing_data_...`);
+  the page matches servo files by time and says so in the card.
+- Only B20 and B21 carry MoCap joints in this export; B34 and B35 stream from Motive but cannot be
+  measured until their T20_MoCap joints are added in Rhino.
+- The other robots are drawn where `progress.json` last saved them, not measured.
+- The room and the camera rig come from `260929_phase1_retest.3dm`, placed only roughly (the
+  placement TODO in `doc/bar_holding_acc_manual.md`).
+- The start record of a J action's first step measures the bar wherever it lies before mounting;
+  the page leaves it out of the bar's history (counted under the chart).
+- The file is JSON **lines** (`.jsonl`), one record per line, not one JSON document: every monitor
+  only appends a line, never rewrites the file, so three monitors can share it, and a crash or a
+  drive sync mid-write costs at most the last line (`read_as_built` drops a cut-off last line).
+  `progress.json` is different: a small **state** file (about 8 KB) that a monitor rewrites whole
+  from its own memory each time (write a temporary file, then replace), because only the latest
+  state matters; the as-built file is a **log**, where every record must be kept.
+- The wrist forces in a record are read against the sensors' last zero, which the record names
+  (`load` block). Where the zeros happen:
+  - **the mount pause** (5.2 b), tools empty: from then on the J records read the bar's own load
+    (since 2026-10-21; before that nothing zeroed in a J action with the workaround);
+  - **the retreat's start**, with the bar still gripped (so its compliant part reacts only to new
+    forces): the retreat's end record therefore reads **minus** the load the bar put on the arms;
+  - the panel button `Zero Force Sensor (BOTH)`.
+  On 2026-10-20 the bar's own load at the end, just before the release, was about 25 N along the
+  bar at each arm, equal and opposite (the mount's preload), and about 10 N down in total (its
+  weight); section 10.2.
+- How the recorder works, for whoever changes it: `_exec_then_propagate` in `husky_monitor.py`
+  (the one function every executed step runs through) calls `_as_built_record` before and after
+  the step; the file format is `husky_assembly_teleop/as_built_io.py`.
+
+## 10. Notes from the 2026-10-20 run (temporary)
+
+> **?** Temporary: what the first real as-built run showed (B20 on Cindy, actions 0 `B20_J` and
+> 1 `B20_R`, problem `261006_3bar_holding_test`). Fold into section 9 or drop once the next run
+> confirms or contradicts it.
+
+Files: `20261020-asbuilt/as_built_261006_3bar_holding_test.jsonl` (12 records) and the servo files
+`20261020-servoing/B20_J_M4_LM_insert[_end]_servoing_data_20261020_17*.json`. The first try (monitor
+run 16:37) measured no bar (B20's markers were not measured; its records carry the robot only); the
+numbers below are from the second (17:07).
+
+### 10.1 Step by step
+
+| step | the bar vs where it should be | what the robot did |
+|---|---|---|
+| transfer + mount + servo (17:09 → 17:15) | 5.2 mm, then **2.5 mm** after the first correction; no better after it | left flange 0.1 mm from its target, right flange 1.2 mm; all 8 iterations ran (6.e: the right flange stays 1–3 mm off, the bar as mounted by hand) |
+| insert (17:21 → 17:25) | 2.5 mm, 1.7° | the bar went 15 mm down as planned; the vertical force on the arms changed by less than 1 N: the floor takes **none** of the bar's weight, nothing pushes into it |
+| second servo (inside the insert, 5.2 d) | 2.65 → 2.50 mm | aims tool0, which cannot see the bar's own error (by FK the bar is 0.3 mm off); 8 iterations |
+| fix foundation (17:27:43 → 17:27:57, **14 s**) | 1.7–2.5 mm (left end / right end) | the balls moved less than 0.1 mm |
+| release (retreat, 17:29) | start 1.0 / middle 8.3 / **end 16.4 mm** | the bar **turned about its right end**: the left-end balls moved 13.5 mm sideways, the right-end ones 1.5 mm |
+
+- While held, the error stays at about 2.5 mm from the transfer to the retreat, almost all of it a
+  1.8° roll about the bar's own axis. It does not change with the motion, so it sits in the grasp,
+  the marker table or the calibration; only a reference measurement can tell which (10.3 shows the
+  marker table is about 1 mm off on its own).
+- **!** The release swing: either the 14 s fix step was a click-through (a rehearsal) or the fix
+  does not stop the bar turning in the horizontal plane. If B20 really was fixed, look at that first.
+
+### 10.2 The wrist forces
+
+- In that run nothing zeroed the sensors in the J action (the workaround skips the travel to load,
+  whose end zeroes them); the last zero was an empty-tool one (0.3 N at the transfer start). Since
+  2026-10-21 the mount pause zeroes them (5.2 b).
+- Turned from each wrist's frame into the room's, the readings split cleanly: the left + right sum
+  points straight down (the bar's weight), the left − right difference lies along the bar, equal
+  and opposite at the two arms (the mount's preload: the arms squeeze or pull the bar; which one
+  depends on the UR wrench's sign convention, not checked).
+- The retreat zeroes the sensors at its start with the bar still gripped, so its end record reads
+  minus the bar's load: about **25 N along the bar** at each arm and about **10 N down** in total.
+- The preload was larger right after the mount (about 55–60 N at the first servo reading, about
+  38 N after that servo) and eased by about 2 N with every servo correction, while the right flange
+  drifted 1–3 mm off its target: the closed chain settling.
+- **!** The second servo's 20 N force stop therefore watches the preload easing, not floor contact:
+  its change reached 12 N with no load on the floor at all (the first servo, which has no stop,
+  reached 20.3 N). A stop on the left + right **sum** would react to the floor only. Not changed yet.
+
+### 10.3 What the balls say (worked back from the plates)
+
+A plate's two balls are a fixed 48.3 mm apart, so the plates measure Motive and the marker table
+themselves. From the page's `bar shape and fit` block over the day's 7 records:
+
+| the balls show | numbers | what it is |
+|---|---|---|
+| ball distance on J20-22, J20-21, J20-169 | within ±0.3 mm of 48.3, wandering record to record | **Motive's noise**: about ±0.3 mm per distance |
+| ball distance on J20-25 | 47.3–47.6 mm in **every** record | a **ball off its spot** (mounting) or a wrong table entry; not bending (a plate cannot shrink), not the fit (this number never uses the design pose) |
+| each plate's place against where the fit puts it | J20-22 1.2, J20-21 1.1, J20-169 0.5, J20-25 0.7 mm, the same in every record | the **plates are mounted off the design table** by about 1 mm |
+| distance J20-22 → J20-21 | 333.8 mm against 335.1 in the table (−1.3 mm) | the same offsets, seen as a distance |
+| bow at J20-21 | 1.5–1.6 mm (upwards), varies by 0.3 over the day, the same held, placed and released | that mounting offset again: **the bar does not bend** under its load |
+| fit rms / worst ball | 1.4–1.6 / 2.1–2.7 mm | mostly these constant offsets, not noise |
+
+So, before reading sub-millimetre placement errors on B20: re-measure its plates (or build an
+as-measured marker table from a day's balls), and check the J20-25 balls.
+
+How the bow is computed (`bar_mocap_fit.pair_geometry`): the fit places the design balls on the seen
+ones as one rigid bar. For each plate, the **shift** is the mean of (seen ball − fitted design ball)
+of its two balls, in the bar's own frame. A straight line is drawn through the shifts of the two end
+plates; an inner plate's **bow** is how far its shift sits off that line, across the bar (the part
+along the bar is left out). A straight, well-mounted bar reads ~0 (Motive noise). A bow can be a bent
+bar **or** a plate mounted off the table: one record cannot tell them apart, the day can (a bow that
+never changes is the mounting; the verdict says so).
+
+### 10.4 Open points
+
+- [ ] B20's release swing (10.1): was the bar fixed?
+- [ ] The second servo's force stop on the left + right sum instead of each arm (10.2).
+- [ ] The servo never converges while the right flange plateaus (re-mount per 6.e, or accept the plateau).
+- [ ] The 1.8° roll while held: grasp, marker table or calibration (10.1, 10.3).

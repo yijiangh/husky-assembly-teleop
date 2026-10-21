@@ -21,6 +21,7 @@ BarAction state, so the measured ``T_world_from_bar`` compares directly with it.
 What is here:
 
 - `load_mocap_markers(problem_root)` -> the design marker table (`MoCapMarkerSet`)
+- `mocap_markers_root(problem_dir, fallback_dir)` -> which folder that table is read from
 - `match_and_fit(sensed, design)` -> `BarFit`: which sensed marker is which
   design marker, WITHOUT Motive's marker ids (they shift), and the bar pose
 - `fit_bar_from_cache(cache, design)` -> the same from the monitor's marker
@@ -32,9 +33,13 @@ What is here:
   designed pose, in the designed bar's frame (x, y across the bar, z along it)
 - `bar_servo_correction(T_mocap, T_design)`, `apply_authored_move(...)` -> the
   servo loop's correction on the MoCap bar, and the insert carried from it
+- `bar_take_json(record)` -> one measurement as a saved take (marker take and as-built record)
 - `fake_sensed_markers(...)` -> a made-up marker snapshot for a desk rehearsal
 - `kabsch`, `transform_points`, `design_bar_axis_endpoints`, `bar_slide_roll`
   -> small geometry helpers
+- `axis_angle_deg`, `marker_match`, `pair_geometry` -> reading a saved fit back:
+  the angle between two centre lines, which ball matched what, and each
+  joint's plate length, shift across the bar and bending
 
 ! No ROS, no pybullet, no compas, no scipy, so this file is unit-tested on any
 ! machine. ``pp.superimposition_matrix`` would pull pybullet in through the
@@ -247,6 +252,39 @@ class BarFit:
         }
 
 
+def bar_take_json(record: dict, tool_ft: Optional[dict] = None) -> dict:
+    """One bar's MoCap measurement as a take: what 'MoCap bar: record take' and the as-built record save.
+
+    Holds the raw marker snapshot under the bar's name, the fit, the deviation
+    from the pose it was compared with, where the markers came from, their age,
+    the tool force/torque, and the bar's own marker table and reference pose, so
+    the take can be re-fitted from the saved file alone.
+
+    Args:
+        record (dict): One measurement as the monitor keeps it
+            (``HuskyMonitor._mocap_bar_last[bar]``): ``bar``, ``fit`` (BarFit),
+            ``deviation`` (PoseDeviation | None), ``source``, ``age_s``,
+            ``snapshot``, ``design`` (BarMarkers), ``T_design`` (4x4).
+        tool_ft (dict | None): The flanges' force/torque at that moment.
+
+    Returns:
+        dict: The take, in plain JSON types except the snapshot (as Motive sent it).
+    """
+    deviation = record['deviation']
+    return {
+        record['bar']: record['snapshot'],
+        'markerset_key': record['bar'],
+        'bar_fit': record['fit'].to_json(),
+        'deviation': deviation.to_json() if deviation is not None else None,
+        'marker_source': record['source'],
+        'marker_age_s': record['age_s'],
+        'tool_ft': tool_ft,
+        'design_markers': [{'name': m.name, 'joint': m.joint, 'label': m.label, 'bar_m': list(m.bar_m)}
+                           for m in record['design'].markers],
+        'design_T_world_from_bar': np.asarray(record['T_design']).tolist(),
+    }
+
+
 @dataclass
 class PoseDeviation:
     """How far a measured bar pose is from its designed pose.
@@ -283,6 +321,22 @@ class PoseDeviation:
 
 
 # * ================================================================ loader
+
+def mocap_markers_root(problem_dir: str, fallback_dir: str) -> str:
+    """The folder to read ``MoCapMarkers.json`` from: the problem's own, else a borrowed one.
+
+    Args:
+        problem_dir (str): The running design problem's folder.
+        fallback_dir (str): The folder of the problem to borrow the file from
+            (``MOCAP_MARKERS_PROBLEM_NAME`` in ``husky_assembly_teleop/__init__.py``).
+
+    Returns:
+        str: ``problem_dir`` when it holds the file, else ``fallback_dir``.
+    """
+    if os.path.isfile(os.path.join(problem_dir, MOCAP_MARKERS_FILENAME)):
+        return problem_dir
+    return fallback_dir
+
 
 def load_mocap_markers(problem_root: str) -> MoCapMarkerSet:
     """Read ``<problem_root>/MoCapMarkers.json`` (schema 2 only).
@@ -916,6 +970,203 @@ def fit_bar_from_cache(cache: dict, design: Union[BarMarkers, np.ndarray], *, ag
 
 
 # * ================================================================ desk rehearsal
+
+
+# * ---------------------------------------------------------------------------
+# * Reading a SAVED fit back (as-built records, takes): after json the fit's
+# * dict keys are strings and the snapshot's marker ids may be too.
+# * ---------------------------------------------------------------------------
+
+def axis_angle_deg(T_a: np.ndarray, T_b: np.ndarray) -> float:
+    """Angle between two bars' centre lines, ignoring which way along the bar each points.
+
+    Args:
+        T_a (np.ndarray): 4x4 pose of one bar (z along the bar).
+        T_b (np.ndarray): 4x4 pose of the other.
+
+    Returns:
+        float: Degrees, 0 to 90.
+    """
+    za = np.asarray(T_a, dtype=float)[:3, 2]
+    zb = np.asarray(T_b, dtype=float)[:3, 2]
+    cos = abs(float(za @ zb)) / (np.linalg.norm(za) * np.linalg.norm(zb))
+    return float(np.degrees(np.arccos(min(1.0, cos))))
+
+
+def _snapshot_pos(snapshot: dict, marker_id) -> Optional[np.ndarray]:
+    """A marker's position in a snapshot whose ids may have become strings (after json).
+
+    Args:
+        snapshot (dict): ``{marker id: {'pos': [x, y, z], ...}}``.
+        marker_id: The id as the fit kept it.
+
+    Returns:
+        np.ndarray | None: The position, metres; None when the id is not there.
+    """
+    for key in (marker_id, str(marker_id)):
+        if key in snapshot:
+            return np.asarray(snapshot[key]['pos'], dtype=float)
+    try:
+        return np.asarray(snapshot[int(marker_id)]['pos'], dtype=float)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _design_of_sensed(fit_json: dict) -> dict:
+    """``{design index: sensed index}`` of a saved fit (its keys turned back into ints).
+
+    Args:
+        fit_json (dict): ``BarFit.to_json()``, maybe read back from json.
+
+    Returns:
+        dict: Which sensed marker matched each matched design marker.
+    """
+    return {int(d): int(k) for k, d in (fit_json.get('correspondences') or {}).items()}
+
+
+def marker_match(fit_json: dict, snapshot: dict, design: BarMarkers,
+                 T_reference: Optional[np.ndarray]) -> tuple:
+    """Every sensed marker with what it was matched to, and every design marker where it should be.
+
+    Args:
+        fit_json (dict): ``BarFit.to_json()`` of the fit.
+        snapshot (dict): The marker snapshot the fit was made from.
+        design (BarMarkers): The bar's design markers.
+        T_reference (np.ndarray | None): 4x4 pose the design markers are placed at
+            (where the bar should be); None = no authored markers.
+
+    Returns:
+        tuple: ``(sensed, authored)``:
+
+        - sensed: ``[{'id', 'pos', 'state', 'name', 'residual_mm'}]`` for every
+          marker of the snapshot; ``state`` is ``'matched'`` (``name`` = its design
+          marker, ``residual_mm`` = its distance from that design marker once the
+          bar is fitted), ``'stray'`` (used by the fit, matched to nothing) or
+          ``'dropped'`` (left out before the fit: occluded, wrong size, large error);
+        - authored: ``[{'name', 'pos', 'seen'}]`` per design marker; ``seen``
+          False when no sensed marker matched it.
+    """
+    names = design.names()
+    sensed_ids = list(fit_json.get('sensed_ids') or [])
+    matched = {k: names[d] for d, k in _design_of_sensed(fit_json).items() if 0 <= d < len(names)}
+    used = {str(marker_id): k for k, marker_id in enumerate(sensed_ids)}
+    # Keyed by the sensed index; a saved fit (json) has them as strings.
+    residuals = {int(k): v for k, v in (fit_json.get('residuals_m') or {}).items()}
+    sensed = []
+    for marker_id, marker in snapshot.items():
+        k = used.get(str(marker_id))
+        state = 'dropped' if k is None else ('matched' if k in matched else 'stray')
+        residual = residuals.get(k) if state == 'matched' else None
+        sensed.append({'id': marker_id, 'pos': [float(v) for v in marker['pos']], 'state': state,
+                       'name': matched.get(k) if k is not None else None,
+                       'residual_mm': None if residual is None else float(residual) * 1000})
+    authored = []
+    if T_reference is not None:
+        missing = {int(d) for d in fit_json.get('missing_design') or []}
+        placed = transform_points(T_reference, design.points())
+        authored = [{'name': name, 'pos': placed[d].tolist(), 'seen': d not in missing}
+                    for d, name in enumerate(names)]
+    return sensed, authored
+
+
+def pair_geometry(fit_json: dict, snapshot: dict, design: BarMarkers) -> dict:
+    """Each MoCap joint's two balls read in the fitted bar's frame: plate integrity and bending.
+
+    * Per joint (a ``T20_MoCap`` plate, balls ``M1`` and ``M2``):
+
+    * - ``length_mm`` / ``length_err_mm``: the sensed M1-M2 distance and its
+    *   difference from the design (48.3 mm on a T20 plate). It does not change
+    *   when the bar bends: an error over ~2 mm means a ball was mislabelled,
+    *   occluded or knocked loose, not that the bar moved.
+    * - ``shift_mm``: where the joint's balls sit relative to where the RIGID
+    *   fit puts them, in the bar frame (x, y across the bar, z along it), the
+    *   mean of its matched balls.
+    * - ``bend_mm``: of that shift, the part across the bar that the straight line
+    *   through the two outer joints' shifts does not explain: a straight bar
+    *   reads ~0 (Motive noise, ~0.5 mm), a bar bowed by its load reads its sag
+    *   at that joint. The bar's ``bend_mm`` is the largest over its inner joints.
+    * - ``bow_mm``: the same as a direction, ``[x, y]`` across the bar in the bar
+    *   frame (``bend_mm`` is its length); None on the outer joints.
+    * - ``roll_err_deg``: the plate's turn about the bar against the design.
+
+    Args:
+        fit_json (dict): ``BarFit.to_json()`` of the fit (its pose must be set).
+        snapshot (dict): The marker snapshot the fit was made from.
+        design (BarMarkers): The bar's design markers.
+
+    Returns:
+        dict: ``{'joints': [{joint, n_seen, z_mm, length_mm, length_err_mm,
+        shift_mm, roll_err_deg, bend_mm, bow_mm}], 'spacing': [{from, to, mm,
+        err_mm}], 'bend_mm', 'worst_length_err_mm'}``, joints ordered along the
+        bar; a value that cannot be measured (a ball missing) is None.
+    """
+    T = fit_json.get('T_world_from_bar')
+    if T is None:
+        return {'joints': [], 'spacing': [], 'bend_mm': None, 'worst_length_err_mm': None}
+    T_bar_from_world = np.linalg.inv(np.asarray(T, dtype=float))
+    sensed_ids = list(fit_json.get('sensed_ids') or [])
+    sensed_of = _design_of_sensed(fit_json)
+
+    # * Group the design balls by joint; read each matched ball in the fitted bar frame.
+    joints = {}
+    for d, marker in enumerate(design.markers):
+        entry = joints.setdefault(marker.joint, {'design': {}, 'sensed': {}})
+        entry['design'][marker.label] = np.asarray(marker.bar_m, dtype=float)
+        k = sensed_of.get(d)
+        pos = _snapshot_pos(snapshot, sensed_ids[k]) if k is not None and k < len(sensed_ids) else None
+        if pos is not None:
+            entry['sensed'][marker.label] = transform_points(T_bar_from_world, pos)
+
+    rows = []
+    for joint, entry in joints.items():
+        design_pts, sensed_pts = entry['design'], entry['sensed']
+        design_mid = np.mean(list(design_pts.values()), axis=0)
+        shift = (np.mean([sensed_pts[label] - design_pts[label] for label in sensed_pts], axis=0) * 1000
+                 if sensed_pts else None)
+        row = {'joint': joint, 'n_seen': len(sensed_pts), 'z_mm': float(design_mid[2] * 1000),
+               'length_mm': None, 'length_err_mm': None, 'roll_err_deg': None,
+               'shift_mm': None if shift is None else shift.tolist(), 'bend_mm': None, 'bow_mm': None,
+               '_mid': None, '_design_mid': design_mid}
+        if len(design_pts) == 2 and len(sensed_pts) == 2:
+            (a, b) = sorted(design_pts)
+            length = float(np.linalg.norm(sensed_pts[a] - sensed_pts[b]))
+            row['length_mm'] = length * 1000
+            row['length_err_mm'] = (length - float(np.linalg.norm(design_pts[a] - design_pts[b]))) * 1000
+            mid = (sensed_pts[a] + sensed_pts[b]) / 2
+            turn = np.degrees(np.arctan2(mid[1], mid[0]) - np.arctan2(design_mid[1], design_mid[0]))
+            row['roll_err_deg'] = float((turn + 180.0) % 360.0 - 180.0)
+            row['_mid'] = mid
+        rows.append(row)
+    rows.sort(key=lambda row: row['z_mm'])
+
+    # * Bending: the cross-bar shift of the inner joints off the line through the outer two.
+    shifted = [row for row in rows if row['shift_mm'] is not None]
+    if len(shifted) >= 3:
+        first, last = shifted[0], shifted[-1]
+        span = last['z_mm'] - first['z_mm']
+        for row in shifted[1:-1]:
+            t = (row['z_mm'] - first['z_mm']) / span if span else 0.0
+            line = np.asarray(first['shift_mm']) + t * (np.asarray(last['shift_mm']) - np.asarray(first['shift_mm']))
+            bow = (np.asarray(row['shift_mm']) - line)[:2]
+            row['bow_mm'] = bow.tolist()
+            row['bend_mm'] = float(np.linalg.norm(bow))
+    bends = [row['bend_mm'] for row in rows if row['bend_mm'] is not None]
+
+    # * Spacing between consecutive joints (both balls seen on each), against the design.
+    spacing = []
+    for prev, row in zip(rows, rows[1:]):
+        if prev['_mid'] is None or row['_mid'] is None:
+            continue
+        mm = float(np.linalg.norm(row['_mid'] - prev['_mid']) * 1000)
+        nominal = float(np.linalg.norm(row['_design_mid'] - prev['_design_mid']) * 1000)
+        spacing.append({'from': prev['joint'], 'to': row['joint'], 'mm': mm, 'err_mm': mm - nominal})
+    for row in rows:
+        row.pop('_mid')
+        row.pop('_design_mid')
+    lengths = [abs(row['length_err_mm']) for row in rows if row['length_err_mm'] is not None]
+    return {'joints': rows, 'spacing': spacing, 'bend_mm': max(bends) if bends else None,
+            'worst_length_err_mm': max(lengths) if lengths else None}
+
 
 def fake_sensed_markers(T_world_from_bar: np.ndarray, design_points: np.ndarray, *, slide_m: float = 0.03,
                         roll_deg: float = 2.0, noise_m: float = 0.0005, seed: int = 0) -> dict:
