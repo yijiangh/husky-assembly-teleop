@@ -92,9 +92,13 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         # * Take the snapshot here, on the main thread; the arm starts where it is in it.
         live = ctx.scene.snapshot
         snapshot, guessed = with_guesses(live, robot_id(serial))
-        guess = f" (guessed: {'; '.join(guessed)})" if guessed else ""
+        notes = f" (guessed: {'; '.join(guessed)})" if guessed else ""
         if guessed:
             ctx.log_warn(f"planning for {serial} {arm} from a guess: {'; '.join(guessed)}")
+        unchecked = unchecked_robots(live, robot_id(serial))
+        if unchecked:
+            notes += f" (not checked against {'; '.join(unchecked)})"
+            ctx.log_warn(f"planning for {serial} {arm} without checking against {'; '.join(unchecked)}")
         tracked = live.robots[robot_id(serial)].base_tracked
         base = floor_pose(snapshot.robots[robot_id(serial)].base)
         loading = serial not in self._loaded
@@ -110,10 +114,10 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             self._start_base = (result.path, base, tracked)
             how = "straight" if result.direct else "RRT"
             return (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
-                    f"found in {result.seconds:.1f} s{guess}"), bool(guessed)
+                    f"found in {result.seconds:.1f} s{notes}"), bool(guessed or unchecked)
 
         return Search(label=f"plan {serial} {arm}",
-                      message=f"planning for {serial} {arm}…{guess}"
+                      message=f"planning for {serial} {arm}…{notes}"
                       + (" (loading the models first)" if loading else ""),
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
                       accepted=accepted, finished=lambda: self._loaded.add(serial))
@@ -198,6 +202,22 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
     def forget(self, plan: Plan[ArmPlanRequest]) -> None:
         """Drop the base position the plan was for."""
         self._start_base = None
+
+
+def unchecked_robots(snapshot, acting: str) -> list[str]:
+    """Other robots in the scene a plan is not checked against, each with why: base not tracked or joints not known.
+
+    ! The planning world parks them far away (`CompasFabCell.parked`), so a plan may pass through them: warn.
+
+    Args:
+        snapshot: The scene planned in.
+        acting: The id of the robot planned for.
+
+    Returns:
+        list[str]: E.g. "a200-0805: its base is not tracked"; empty if every robot present is checked.
+    """
+    return [f"{key.split('/', 1)[1]}: {'; '.join(robot.acting_problems())}" for key, robot in snapshot.robots.items()
+            if key != acting and robot.enabled and robot.acting_problems()]
 
 
 def floor_pose(pose) -> tuple[float, float, float]:

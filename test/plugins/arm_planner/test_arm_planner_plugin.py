@@ -317,3 +317,33 @@ def test_a_plan_refused_for_a_collision_shows_its_hit_until_the_next_plan(monkey
     assert planner.plan.state == "ready" and refused == {"arm_planner_panel": ({label: hit}, (label,))}
     assert found == {}
 
+
+@pytest.mark.safety
+def test_a_plan_warns_about_other_robots_it_could_not_check(found_path):
+    """Another robot present with an untracked base is left out of the check: the plan says so, as a warning."""
+    ctx = FakeCtx()
+    blind = SimpleNamespace(enabled=True, acting_problems=lambda: ["its base is not tracked"])
+    absent = SimpleNamespace(enabled=False, acting_problems=lambda: ["it is not in the scene"])
+    ctx.scene.snapshot.robots.update({robot_id("a200-0805"): blind, robot_id("a200-0804"): absent})
+    planner = make_planner(ctx)
+
+    async def scenario():
+        return await planner.request_plan(REQUEST)
+
+    plan = run(planner, ctx, scenario)
+    assert plan.state == "ready" and plan.warning
+    assert "not checked against a200-0805: its base is not tracked" in plan.message
+    assert "a200-0804" not in plan.message
+
+
+def test_a_plan_with_every_robot_checked_has_no_such_warning(found_path):
+    """Robots present and measured, or absent, need no warning."""
+    ctx = FakeCtx()
+    ctx.scene.snapshot.robots[robot_id("a200-0805")] = SimpleNamespace(enabled=True, acting_problems=lambda: [])
+    planner = make_planner(ctx)
+
+    async def scenario():
+        return await planner.request_plan(REQUEST)
+
+    plan = run(planner, ctx, scenario)
+    assert plan.state == "ready" and not plan.warning and "not checked" not in plan.message
