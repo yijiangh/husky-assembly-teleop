@@ -79,8 +79,6 @@ KNOWN = {
     "floor pairs: only in process": "pairs with process's floor; the export has none (legacy._walkable_ground)",
     "floor pairs: differ": "old and the mirror check different floors: old's slab tops at z=0, the converted process "
                            "keeps the 3D polygons (legacy._slab)",
-    "pairs allowed by static_contacts": "the mirror allows other robots' tool/body pairs already touching at sync "
-                                        "(mirrors/compas_fab.py `_allow_static_contacts`); the export has no such rule",
     # * Schema 2's allowed contacts are narrower than the export's touches (format §8.4): these pairs are new, and
     #   every one is listed. They are explained, not hidden.
     NARROW_HELD: "new pair: a Cindy tool with the bar whose half it is on (held or not). Schema 2 allows a tool only "
@@ -878,7 +876,7 @@ def _floor(name: str) -> str:
     return GROUND if name.startswith("ground/") else name
 
 
-def mirror_collisions(process, keys: List[Tuple[str, str]]) -> Tuple[dict, dict]:
+def mirror_collisions(process, keys: List[Tuple[str, str]]) -> dict:
     """The mirror's colliding pairs per movement: `process.scene_at` synced into a CompasFabMirror per acting robot.
 
     Args:
@@ -886,46 +884,40 @@ def mirror_collisions(process, keys: List[Tuple[str, str]]) -> Tuple[dict, dict]
         keys: (action id, movement id) of the movements to check.
 
     Returns:
-        tuple[dict, dict]: Pairs per movement, as sorted process ids (GROUND for a floor), and the pairs the mirror's
-            `static_contacts` allowed in that movement.
+        dict: Pairs per movement, as sorted process ids (GROUND for a floor).
     """
     movements = {(action.id, movement.id): (action.robot, movement) for action, movement in process.movements()}
-    found, allowed, mirrors = {}, {}, {}
+    found, mirrors = {}, {}
     try:
         for key in keys:
             robot, movement = movements[key]
             mirror = mirrors.get(robot) or mirrors.setdefault(robot, CompasFabMirror(robot))
             mirror.sync(process.scene_at(movement))
             found[key] = {tuple(sorted(map(_floor, pair))) for pair in mirror.collisions(full_report=True)}
-            allowed[key] = {tuple(sorted(map(_floor, pair))) for pair in mirror.static_contacts}
     finally:
         for mirror in mirrors.values():
             mirror.close()
-    return found, allowed
+    return found
 
 
-def compare_mirror(report: Report, export: dict, mirror: dict, allowed: dict, process) -> None:
+def compare_mirror(report: Report, export: dict, mirror: dict, process) -> None:
     """The export's pairs against the mirror's, every pair listed.
 
-    Pairs only the mirror's static contacts hide, and pairs that follow from schema 2's narrower contacts
-    (`_narrower`), are told apart.
+    Pairs that follow from schema 2's narrower contacts (`_narrower`) are told apart.
     """
     category = report.category(("new", "mirror"), "collision pairs")
     movements = {(action.id, movement.id): movement for action, movement in process.movements()}
     for key in sorted(set(export) & set(mirror)):
         x, y = export[key], mirror[key]
         floor_x, floor_y = {p for p in x if GROUND in p}, {p for p in y if GROUND in p}
-        hidden = (x - y) & allowed[key]
         problems = []
         kinds = defaultdict(list)
-        for pair in sorted((x - floor_x - hidden) - y):
+        for pair in sorted((x - floor_x) - y):
             kinds[_narrower(process, movements[key].start, pair, only_export=True)].append(pair)
         for pair in sorted((y - floor_y) - x):
             kinds[_narrower(process, movements[key].start, pair, only_export=False)].append(pair)
         for kind, pairs in kinds.items():
             problems.append((kind, f"{sorted(pairs)}"))
-        if hidden - floor_x:
-            problems.append(("pairs allowed by static_contacts", f"{sorted(hidden - floor_x)}"))
         if floor_x != floor_y:
             kind = "floor pairs: only in process" if not floor_x else "floor pairs: differ"
             problems.append((kind, f"only export {sorted(floor_x - floor_y)}, only mirror {sorted(floor_y - floor_x)}"))
@@ -1010,8 +1002,8 @@ def _run(export: Path, folder: Path, collisions: bool, log: Callable[[str], None
         movements = {(action.id, movement.id) for action, movement in process.movements()}
         keys = [key for key in found["new"] if key in movements]
         log(f"collisions: mirror ({len(keys)} states)")
-        found["mirror"], allowed = mirror_collisions(process, keys)
-        compare_mirror(report, found["new"], found["mirror"], allowed, process)
+        found["mirror"] = mirror_collisions(process, keys)
+        compare_mirror(report, found["new"], found["mirror"], process)
         report.notes.append(f"mirror: {sum(map(len, found['mirror'].values()))} colliding pairs over {len(keys)} "
                             f"movements; export: {sum(len(found['new'][key]) for key in keys)}")
     return report

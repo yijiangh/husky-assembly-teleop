@@ -113,7 +113,7 @@ and trimesh==4.12.2. **yourdfpy** is needed by `kinematics` and `design.scenes`,
 | `design.relations` | `part_of(design)`, `members(parts, body)`, `allowed_contacts(design, state)`: the contacts derived from `on`, `connections` and `ground_links`. |
 | `design.scenes` | `scene_at(design, movement)`, `scene_after(design, bar)`, `design_model(design, robot_id) -> RobotModel` (cached by content). |
 | `design.hold` | `release_bar(design, action_id)`, `hold_scene(scene, bar)`, `hold_scene_for(design, action_id)`. |
-| `mirrors.compas_fab` | `CompasFabMirror(robot_id, log=None)`: `.sync(scene)`, `.collisions(joints=None, full_report=False)`, `.search_check(joint_names)`, `.lend()`, `.state`, `.cell`, `.static_contacts`, `.configuration(joints)`, `.state_at(joints)`, `.set_gui(gui)`, `.close()`. |
+| `mirrors.compas_fab` | `CompasFabMirror(robot_id, log=None)`: `.sync(scene)`, `.collisions(joints=None, full_report=False)`, `.search_check(joint_names)`, `.lend()`, `.state`, `.cell`, `.tool_pairs()`, `.configuration(joints)`, `.state_at(joints)`, `.set_gui(gui)`, `.close()`. |
 | `mirrors.pybullet` | `PyBulletMirror()`: `.sync(scene)`, `.collisions(robot_id, margin=0.0, candidates=None)`, `.allowed(a, b)`, `.robot(robot_id)`, `.robots`, `.body_ids(id)`, `.id_of(pybullet_id)`, `.obstacle_ids()`, `.active()`, `.set_gui(gui)`, `.close()`. |
 | `mirrors.compas` | `frame_from_pose`, `pose_from_frame`, `rigid_body(geometry)`, `load_model(urdf, visual=True)`, `tool_model(tool, name)`, `robot_as_tool(urdf, tools, name, visual=True)`, `planning_group(cell, flange)`, `filled`, `subtree`, `PARKED_POSITION`. |
 | `mirrors.pp_client` | `pp_client(client_id)`: pybullet_planning acts on that world inside the block; restored after. |

@@ -11,6 +11,7 @@ import pytest
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import joint_path_move
+from husky_assembly_teleop.world.lab import floor_body, platform_links
 from husky_assembly_teleop.shared.planner.rrt_connect import Corners
 from husky_assembly_teleop.plugins.arm_planner import planner as planner_module
 from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, ArmPlanningWorld, _extend, arm_joint_names,
@@ -18,7 +19,7 @@ from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, ArmPlann
 from scaffolding_assembly_core.geometry import box_geometry
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Attachment, Body, Scene
-from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.ids import link_id, robot_id
 from scaffolding_assembly_core.geometry import Pose
 
 ALICE = "0804"
@@ -277,3 +278,22 @@ def test_the_search_samples_only_within_the_joint_limits(world, monkeypatch):
     assert np.all(np.array(samples) >= lower) and np.all(np.array(samples) <= upper)
     assert np.max(np.array(samples)[:, 4]) > np.radians(235.0)
 
+
+def test_the_floor_lets_wheels_rest_on_it_but_not_an_arm_through_it(world, config):
+    """The lab floor allows each robot's platform links, as the obstacles plugin sets it; an arm below it collides."""
+    belle = robot_config_from_serial("0805", DATA)
+    alice_id, belle_id = robot_id(ALICE), robot_id("0805")
+    touches = tuple(link_id(robot, link) for robot, model in ((alice_id, config.model), (belle_id, belle.model))
+                    for link in platform_links(model))
+    floor = floor_body("obstacles", None, touches)
+    start = start_and_goal(config)[0]
+    robots = {**snapshot(config, start).robots,
+              belle_id: RobotObject(belle_id, belle.model, Pose((2.0, 0.0, 0.0)),
+                                    dict(zip(NAMES, belle.arms[0].stow_joints)))}
+    scene = Scene(bodies={floor.id: floor}, world_poses={floor.id: floor.placement}, robots=robots)
+    mirror = world.sync(scene, ALICE)
+    assert mirror.collisions(full_report=True) == []
+    check = mirror.search_check(NAMES)
+    rng = np.random.default_rng(0)
+    hits = [check(q) for q in rng.uniform(-np.pi, np.pi, size=(400, 6))]
+    assert any(hit is not None and floor.id in hit for hit in hits), "no arm pose reached the floor"
