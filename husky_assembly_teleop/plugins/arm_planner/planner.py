@@ -30,7 +30,8 @@ JOINT_STEP = 0.05
 #: Searches the shortest path is kept from, and seconds after which no new one starts once a path is found.
 ATTEMPTS = 3
 IMPROVE_TIME = 3.0
-#: The search samples each joint at most this far, radians, beyond the range between start and goal.
+#: The search samples each joint at most this far, radians, beyond the range between start and goal, and never
+#: past the joint's limits (`joint_limits`).
 SAMPLE_SLACK = np.pi
 #: Longest stretch of each side of a corner, radians in joint space, that rounding it replaces.
 BLEND_LENGTH = 0.3
@@ -273,6 +274,32 @@ def _extend(q1: Sequence[float], q2: Sequence[float]) -> list[tuple[float, ...]]
     return list(map(tuple, (q1 + np.outer(np.arange(1, count + 1) / count, q2 - q1)).tolist()))
 
 
+def joint_limits(mirror: CompasFabMirror, joint_names: Sequence[str]) -> tuple[np.ndarray, np.ndarray]:
+    """Each joint's limits from the robot's URDF, within the UR's own (`UR_JOINT_LIMITS`), radians.
+
+    Args:
+        mirror: The robot's mirror.
+        joint_names: The joints, in UR driver order.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Lower and upper limits.
+    """
+    model = mirror.cell.robot_model
+    lower, upper = -np.array(UR_JOINT_LIMITS, dtype=float), np.array(UR_JOINT_LIMITS, dtype=float)
+    for index, name in enumerate(joint_names):
+        limit = model.get_joint_by_name(name).limit
+        if limit is not None and limit.lower < limit.upper:
+            lower[index], upper[index] = max(lower[index], limit.lower), min(upper[index], limit.upper)
+    return lower, upper
+
+
+def _outside(q: Sequence[float], lower: np.ndarray, upper: np.ndarray) -> str:
+    """The joints of `q` past their limits, for a message; empty if none is."""
+    return "; ".join(f"{UR_JOINT_NAMES[i]} at {math.degrees(value):.1f} deg, outside "
+                     f"{math.degrees(lower[i]):.0f} to {math.degrees(upper[i]):.0f} deg"
+                     for i, value in enumerate(q) if not lower[i] - 1e-6 <= value <= upper[i] + 1e-6)
+
+
 def _distance(q1: Sequence[float], q2: Sequence[float]) -> float:
     """Straight-line distance in joint space, radians."""
     return math.dist(q1, q2)
@@ -317,7 +344,7 @@ def round_corners(corners: Sequence[Sequence[float]],
 
 def plan_arm(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, goal: Sequence[float],
              abort: threading.Event) -> PlanResult[ArmPath]:
-    """Plan a collision-free joint path for one arm, from where it is in the synced world to `goal`.
+    """Plan a collision-free joint path for one arm within its URDF joint limits, from where it is to `goal`.
 
     Args:
         world: The planning world, for the snapshot.
@@ -337,6 +364,12 @@ def plan_arm(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, go
     def refused(hit: CollisionHit) -> PlanResult[ArmPath]:
         return PlanResult(None, hit.message, time.time() - started, hit=hit)
 
+    lower, upper = joint_limits(mirror, names)
+    if outside := _outside(start, lower, upper):
+        return PlanResult(None, f"the arm is past its joint limits: {outside}; move it back inside first",
+                          time.time() - started)
+    if outside := _outside(goal, lower, upper):
+        return PlanResult(None, f"the target is past the joint limits: {outside}", time.time() - started)
     # * Check the start in full once; the fast `search_check` skips pairs the arm does not move.
     hits = mirror.collisions()
     if hits:
@@ -349,10 +382,10 @@ def plan_arm(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, go
     if np.allclose(start, goal, rtol=0.0, atol=1e-6):
         return PlanResult(None, "the arm is already at the target", time.time() - started)
 
-    # * Sample near start and goal: far samples wind the wrists through needless turns.
-    limits = np.array(UR_JOINT_LIMITS)
-    low = np.maximum(np.minimum(start, goal) - SAMPLE_SLACK, -limits)
-    high = np.minimum(np.maximum(start, goal) + SAMPLE_SLACK, limits)
+    # * Sample near start and goal: far samples wind the wrists through needless turns. Within the limits, every
+    #   straight move and rounded corner between samples stays within them too.
+    low = np.maximum(np.minimum(start, goal) - SAMPLE_SLACK, lower)
+    high = np.minimum(np.maximum(start, goal) + SAMPLE_SLACK, upper)
 
     def collides(q: tuple[float, ...]) -> bool:
         return check(q) is not None
