@@ -128,6 +128,30 @@ class ArmPlanningWorld:
         self._mirrors.clear()
 
 
+def path_hit(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, waypoints: np.ndarray) -> str | None:
+    """Why a given joint path for one arm collides: its first waypoint, or straight joint move between two, that does.
+
+    Args:
+        world: The planning world, for labels.
+        mirror: The robot's mirror, already synced; only this arm's joints change.
+        arm_name: Which arm, e.g. "ur_arm".
+        waypoints: (n, 6) joint values, radians, UR driver order; checked as given, moves at JOINT_STEP.
+
+    Returns:
+        str | None: The first collision, or None if the whole path is clear.
+    """
+    check = mirror.search_check(arm_joint_names(arm_name))
+    previous = None
+    for index, waypoint in enumerate(np.asarray(waypoints, dtype=float)):
+        for point in [tuple(waypoint)] if previous is None else _extend(previous, waypoint):
+            hit = check(point)
+            if hit is not None:
+                where = f"waypoint {index + 1}" if np.allclose(point, waypoint) else f"the move to waypoint {index + 1}"
+                return f"{where} is in collision: {world.label(hit[0])} with {world.label(hit[1])}"
+        previous = waypoint
+    return None
+
+
 def _extend(q1: Sequence[float], q2: Sequence[float]) -> list[tuple[float, ...]]:
     """Points from q1 (excluded) to q2 (included), at most JOINT_STEP apart on every joint."""
     q1, q2 = np.asarray(q1, dtype=float), np.asarray(q2, dtype=float)

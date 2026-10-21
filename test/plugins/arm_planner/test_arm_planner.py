@@ -11,7 +11,7 @@ import pytest
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, ArmPlanningWorld, _extend, arm_joint_names,
-                                                               plan_arm)
+                                                               path_hit, plan_arm)
 from scaffolding_assembly_core.geometry import box_geometry
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Attachment, Body, Scene
@@ -131,3 +131,15 @@ def test_window_without_display_raises(config, monkeypatch):
         world.set_gui(False, snapshot(config, start), ALICE)
     finally:
         world.close()
+
+
+@pytest.mark.slow
+def test_a_given_path_is_checked_at_its_waypoints_and_between_them(world, config):
+    """Clear without a box; a box on the swing hits the move to the goal, a box at the goal the goal itself."""
+    start, goal = start_and_goal(config)
+    assert path_hit(world, world.sync(snapshot(config, start), ALICE), ARM, np.array([start, goal])) is None
+    for joints, path, where in (((start + goal) / 2, [start, goal], "the move to waypoint 2"),
+                                (goal, [goal], "waypoint 1")):
+        box = Body("t/box", box_geometry((0.15, 0.15, 0.15)), tool_at(world, config, joints), label="the box")
+        hit = path_hit(world, world.sync(snapshot(config, start, (box,)), ALICE), ARM, np.array(path))
+        assert hit is not None and hit.startswith(where) and "the box" in hit, hit

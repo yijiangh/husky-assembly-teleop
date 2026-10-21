@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
-from typing import Callable
+from typing import Callable, Sequence
 
 import numpy as np
 
@@ -28,7 +28,7 @@ from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from scaffolding_assembly_core.ids import robot_id
-from .planner import ArmPath, ArmPlanningWorld, arm_joint_names, plan_arm
+from .planner import ArmPath, ArmPlanningWorld, arm_joint_names, path_hit, plan_arm
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far; the panel also
 #: refuses a target this far from the planned goal.
@@ -121,6 +121,37 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       + (" (loading the models first)" if loading else ""),
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
                       accepted=accepted, finished=lambda: self._loaded.add(serial))
+
+    def check_path(self, serial: str, arm: str, waypoints: Sequence[Sequence[float]]) -> asyncio.Future[str | None]:
+        """Check a given joint path for one arm for collisions, in the world as it is now (`ArmPlannerContract`)."""
+        future = asyncio.get_running_loop().create_future()
+        path = np.array(waypoints, dtype=float)
+        self._ctx.submit(f"check path {serial}", lambda: self._start_check(serial, arm, path, future))
+        return future
+
+    def _start_check(self, serial: str, arm: str, waypoints: np.ndarray, future: asyncio.Future[str | None]) -> None:
+        """Snapshot the world and check the path on the worker, after any search before it. Main thread."""
+        snapshot, _guessed = with_guesses(self._ctx.scene.snapshot, robot_id(serial))
+
+        def work() -> str | None:
+            problems = snapshot.robots[robot_id(serial)].acting_problems()
+            if problems:
+                return f"{serial} can't be checked: {'; '.join(problems)}"
+            result = path_hit(self._world, self._world.sync(snapshot, serial), arm, waypoints)
+            self._loaded.add(serial)
+            return result
+
+        async def run() -> None:
+            try:
+                result = await asyncio.get_running_loop().run_in_executor(self._executor, work)
+            except BaseException as error:
+                if not future.done():
+                    future.set_result(f"the check failed: {error!r}")
+                raise
+            if not future.done():
+                future.set_result(result)
+
+        self._ctx.spawn(f"check path {serial} {arm}", run())
 
     def stale_reason(self, ctx: PluginContext, plan: Plan[ArmPlanRequest]) -> str:
         """Stale once the arm or base moves away from the plan's start, or mocap loses a base it tracked then."""
