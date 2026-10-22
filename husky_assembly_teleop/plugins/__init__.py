@@ -32,6 +32,8 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`.
   arms count as stowed. The base pose must always be known.
   The last trips, with what came too close, are in `ctx.clearance_trips`; the `collisions` plugin draws them.
 
+* Panels never jump (AGENTS.md, "Panels: nothing jumps"): chips that can appear go on a line that is always there
+  (`ui.style.chip_line`), text that comes and goes below the buttons.
 * Header: `ctx.view.header()` puts a short status above every plugin's folder, e.g. health's banner.
 * Tabs: `ctx.view.tab(...)` puts a panel into the side panel's tabs: Control (robot_control) and Plan, with a tab
   per planner panel.

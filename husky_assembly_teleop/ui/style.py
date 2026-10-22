@@ -5,8 +5,10 @@ Chips are green = ok, blue = an expected end state (e.g. a stalled screw), amber
 red = failed, gray = no data. Every helper returns
 HTML for viser's `add_html`; assigning it in every `draw` is cheap (viser only sends changes).
 
-! Never hide or grey out buttons, since that shifts the layout: ignore and log inapplicable actions instead, with
-  a red chip saying why that goes after REFUSAL_SHOWN.
+! Nothing above a button may change height while a view shows (AGENTS.md, "Panels: nothing jumps"):
+  - a chip that can appear, e.g. the refusal chip saying why a button did nothing (gone after REFUSAL_SHOWN), goes on
+    a `chip_line`, which is always there and one line high;
+  - never hide or grey out buttons: ignore and log inapplicable actions instead, with such a chip.
 """
 
 from __future__ import annotations
@@ -52,6 +54,17 @@ def section(label: str, color: str, detail: str = "") -> str:
 def block(html: str) -> str:
     """Indent content to line up with the button-row labels."""
     return f'<div style="padding:0 12px">{html}</div>'
+
+
+#: Lets `chip_line` keep its chips on one line, scrolling sideways when they don't fit.
+CHIP_LINE_STYLE = ('<style>.chip-line {display:flex; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; '
+                   'min-height:19px} .chip-line::-webkit-scrollbar {display:none} .chip-line > span {flex:none}'
+                   '</style>')
+
+
+def chip_line(html: str) -> str:
+    """A line for chips that come and go: always there, even empty, and one line high, so nothing below it moves."""
+    return block(f'{CHIP_LINE_STYLE}<div class="chip-line">{html}</div>')
 
 
 def note(text: str) -> str:

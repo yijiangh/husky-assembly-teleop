@@ -7,6 +7,17 @@ Project-wide instructions for coding agents. Keep them generic: no personal path
 - Simplicity first: make every change as simple as possible and touch as little code as possible. Reuse existing functions instead of writing new ones.
 - Code is read by humans and agents: write comments, in plain language without jargon (no "no-op").
 
+## Panels: nothing jumps
+
+Buttons must stay where the operator's finger or pointer expects them, on the laptop and on the phone.
+
+- ! While a view shows, nothing above a button may change height. A line of chips or a warning that can appear is
+  already there, empty, so its space is reserved: use `ui.style.chip_line`, one line high, which scrolls sideways
+  rather than wrapping. Chips appearing should be rare.
+- Text that comes and goes (questions, refusals, readouts that grow) goes below the buttons.
+- Never hide or show widgets above other controls; keep a fixed set of chips per view and change their colour
+  instead.
+
 ## Code style
 
 - Google-style docstrings with type hints in the signature (`def fn(a: float) -> int:`).
