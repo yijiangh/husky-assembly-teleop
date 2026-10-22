@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import re
 import threading
+from contextlib import suppress
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -64,6 +66,30 @@ def test_check_goal_refuses_a_movement_without_an_ik_goal(purged):
     """An insert's goal is its line: refused as not solved by IK, before any mirror or scene is made."""
     check = check_goal(None, purged, step(purged, "B20_J_insert"), Scene(), ())
     assert (check.ok, check.routine, check.reason, check.ik) == (False, Routine.INSERT, "goal not solved by IK", None)
+
+
+class _Captured(Exception):
+    """Raised by a stand-in `scene_for` once it has kept what it was asked."""
+
+
+@pytest.mark.parametrize("entry", [plan_movement, check_goal])
+def test_the_rhino_obstacles_box_reaches_both_scenes(purged, monkeypatch, entry):
+    """The workaround's transfer makes a planning scene and a search scene without the bar: both leave them out."""
+    acting = robot_id(f"a200-{CINDY}")
+    calls = []
+
+    def scene_for(*_args, **options) -> SimpleNamespace:
+        calls.append(options)
+        if len(calls) == 2:
+            raise _Captured()
+        return SimpleNamespace(acting=acting, scene=Scene())
+
+    monkeypatch.setattr(tamp_route, "scene_for", scene_for)
+    with suppress(_Captured):
+        entry(SimpleNamespace(robot_id=acting), purged, step(purged, "B20_J_transfer"), Scene(),
+              (robot_config(CINDY),), transfer_as_free=True, obstacles_collide=False)
+    asked = [(call["obstacles_collide"], call.get("hide_held", False)) for call in calls]
+    assert asked == [(False, False), (False, True)]
 
 
 # --- --- --- --- --- PLANNED ON THE PURGED PROCESS (slow) --- --- --- --- ---

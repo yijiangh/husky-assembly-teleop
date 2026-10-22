@@ -162,7 +162,7 @@ def world_problem(job: Job, motion: bool) -> str:
         return "the plan has no basis to check it against"
     return stale_reason(request.basis, snapshot, loaded=view.process, current=current_primary(view),
                         transfer_as_free=view.settings.transfer_as_free, ignore_built=request.ignore_built(),
-                        statuses=view.statuses)
+                        statuses=view.statuses, obstacles_collide=request.obstacles_collide())
 
 
 def others_moving(job: Job) -> str:
@@ -247,7 +247,9 @@ async def _motion(job: Job, run: PartRun) -> None:
     ctx.log_info(f"{job.who}: the teach pendant's speed slider must be at 100 %: slower, the motion times out and "
                  f"is held mid-path")
     arms = ", ".join(motion.arm for motion in command.arms)
-    ignored = " (built bars ignored)" if job.request.basis is not None and job.request.basis.ignore_built else ""
+    basis = job.request.basis
+    ignored = " (built bars ignored)" if basis is not None and basis.ignore_built else ""
+    ignored += " (Rhino obstacles not checked)" if basis is not None and not basis.obstacles_collide else ""
     text = (f"{part.movement} — move {arms} along the planned path{ignored}, {command.duration:.0f} s, largest joint "
             f"travel {math.degrees(command.travel):.0f}° (Play it first). Confirm to move.")
     if not await confirmed(job, run, text, warn=command.travel > LARGE_TRAVEL):

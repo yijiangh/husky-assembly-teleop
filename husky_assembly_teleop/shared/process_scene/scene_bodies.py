@@ -2,7 +2,8 @@
 The process scene at a movement, as live scene bodies: process ids mapped to the plugin's ids and the real robots.
 
 `scene_bodies` puts every body of the movement's process scene into the live scene; bodies the plan holds follow the
-configured real robot with the planned robot's serial. `live_ids` maps process ids to scene ids and back.
+configured real robot with the planned robot's serial, and the process's obstacles may be left out of collision checks.
+`live_ids` maps process ids to scene ids and back.
 
 ! Any thread: nothing here may touch viser, PyBullet or a PluginContext.
 """
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING
 from scaffolding_assembly_core.ids import IdMap
 from scaffolding_assembly_core.ids import robot_id as scene_robot_id
 from scaffolding_assembly_core.process import Movement, Process
+from scaffolding_assembly_core.process.types import OBSTACLE_PREFIX
 from scaffolding_assembly_core.scene import Attachment, Body, retarget
 
 from .colors import body_color
@@ -56,22 +58,38 @@ def live_ids(process: Process, robots: tuple[RobotConfig, ...], prefix: str) -> 
     return IdMap(pairs), IdMap(back)
 
 
-def scene_bodies(process: Process, movement: Movement, robots: tuple[RobotConfig, ...], prefix: str) -> list[Body]:
+def process_obstacles(process: Process) -> frozenset[str]:
+    """The process's own obstacles from Rhino (e.g. "obstacles/env39", the cabinet), by process body id.
+
+    Args:
+        process: The process.
+
+    Returns:
+        frozenset[str]: Its body ids under "obstacles/".
+    """
+    return frozenset(body_id for body_id in process.bodies if body_id.startswith(OBSTACLE_PREFIX))
+
+
+def scene_bodies(process: Process, movement: Movement, robots: tuple[RobotConfig, ...], prefix: str,
+                 obstacles_collide: bool = True) -> list[Body]:
     """Every body of the process scene at a movement's start, as a scene body "<prefix><body id>".
 
     The scene is edited for the live world:
     - a held body is attached to the configured robot with the planned robot's serial (`retarget`); held by a robot
       not configured, it is disabled where the plan has it;
-    - `touches` name the real robots, their tools and the prefixed ids; those of robots not configured are dropped.
+    - `touches` name the real robots, their tools and the prefixed ids; those of robots not configured are dropped;
+    - with `obstacles_collide` False, the process's obstacles (`process_obstacles`) are disabled: left out of every
+      collision check, and not drawn by the core.
 
-    * Every movement gives the same ids, geometry objects and colours, so changing the movement never rebuilds a body
-      in a mirror or the 3D view: it only moves, enables and disables them.
+    * Every movement, and either `obstacles_collide`, gives the same ids, geometry objects and colours, so neither
+      ever rebuilds a body in a mirror or the 3D view: they only move, enable and disable them.
 
     Args:
         process: The process.
         movement: The movement; its start is the state.
         robots: The configured robots, `ctx.config.robots`.
         prefix: Id prefix, the owning plugin's "<name>/".
+        obstacles_collide: Whether the process's obstacles count in collision checks.
 
     Returns:
         list[Body]: One scene body per process body.
@@ -86,12 +104,13 @@ def scene_bodies(process: Process, movement: Movement, robots: tuple[RobotConfig
     held = {body_id: body.placement for body_id, body in scene.bodies.items()
             if isinstance(body.placement, Attachment)}
     moved = retarget({body_id: held[body_id] for body_id in held if held[body_id].parent in ids}, ids, models)
+    left_out = frozenset() if obstacles_collide else process_obstacles(process)
 
     bodies = []
     for body_id, body in scene.bodies.items():
         placement = moved.get(body_id) or scene.world_poses.get(body_id,
                                                                 process.bodies[body_id].assembly_pose)
-        enabled = body.enabled and (body_id not in held or body_id in moved)
+        enabled = body.enabled and (body_id not in held or body_id in moved) and body_id not in left_out
         bodies.append(Body(ids(body_id), body.geometry, placement,
                            touches=tuple(ids(other) for other in body.touches if other in ids),
                            label=body.label or body_id, color=tuple(c / 255 for c in body_color(body_id)) + (1.0,),

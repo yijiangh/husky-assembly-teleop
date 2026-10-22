@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from planning_fixtures import CINDY, DATA, robot_config
+from planning_fixtures import ALICE, BELLE, CINDY, DATA, design_scene, purged_process, robot_config, step
 from process_fixtures import build_process
 
+from husky_assembly_teleop.plugins.motion_planner import work as work_module
 from husky_assembly_teleop.plugins.motion_planner.work import run_collisions, run_ik, run_plan
+from husky_assembly_teleop.shared.assembly_planning import tamp_route
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.motion_planner_contract import MotionPlanRequest
@@ -80,3 +83,24 @@ def test_an_error_is_a_failed_answer(loaded, work):
         assert answer.result.status == "failed" and answer.routine is None and not answer.ok
     if work is run_ik:
         assert not answer.ok and answer.routine is None
+
+
+@pytest.mark.parametrize("work, module", [(run_plan, tamp_route), (run_ik, tamp_route), (run_collisions, work_module)],
+                         ids=["run_plan", "run_ik", "run_collisions"])
+def test_the_rhino_obstacles_box_reaches_the_planning_scene(work, module, monkeypatch):
+    """A request with the box unticked asks `scene_for` to leave the Rhino obstacles out, from every work."""
+    purged = purged_process()
+    calls = []
+
+    def scene_for(*_args, **options):
+        calls.append(options)
+        raise RuntimeError("kept what scene_for was asked")
+
+    monkeypatch.setattr(module, "scene_for", scene_for)
+    configs = tuple(robot_config(serial) for serial in (ALICE, BELLE, CINDY))
+    asked = MotionPlanRequest(purged, step(purged, "B20_J_transfer"), design_scene(purged, "B20_J_transfer"), configs,
+                              transfer_as_free=True, obstacles_collide=False)
+    pool = SimpleNamespace(mirror=lambda serial: SimpleNamespace(robot_id=robot_id(serial)))
+    answer = work(pool, asked, threading.Event(), print)
+    assert "kept what scene_for was asked" in reason(answer)
+    assert [call["obstacles_collide"] for call in calls] == [False]

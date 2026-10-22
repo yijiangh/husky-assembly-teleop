@@ -9,7 +9,7 @@ import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, movement, purged_process, robot_config, step
 
 from husky_assembly_teleop.shared.assembly_planning.scene_for import RobotBelief, scene_for
-from husky_assembly_teleop.shared.process_scene.scene_bodies import scene_bodies
+from husky_assembly_teleop.shared.process_scene.scene_bodies import process_obstacles, scene_bodies
 from husky_assembly_teleop.world.kinematics import stow_joints
 from scaffolding_assembly_core.geometry import Pose, box_geometry, compose
 from scaffolding_assembly_core.ids import robot_id
@@ -198,6 +198,20 @@ def test_ignore_built_keeps_the_actions_own_bar(purged, movement_id):
     bodies = planning.scene.bodies
     assert all(bodies[f"process/{body_id}"].enabled for body_id in ("bars/B21", *purged.process.halves_of("bars/B21")))
     assert not bodies["process/bars/B20"].enabled
+
+
+@pytest.mark.parametrize("collide", [False, True])
+def test_rhino_obstacles_box(purged, collide):
+    """Off: every process obstacle (e.g. the cabinet env39) is disabled, the measured box kept from the snapshot is not.
+
+    On: both count.
+    """
+    bodies = _cindy_at(purged, "B21_J_transfer", obstacles_collide=collide).scene.bodies
+    rhino = {body_id for body_id in bodies if body_id.startswith("process/obstacles/")}
+    assert rhino == {f"process/{body_id}" for body_id in process_obstacles(purged.process)}
+    assert "process/obstacles/env39" in rhino
+    assert all(bodies[body_id].enabled is collide for body_id in rhino)
+    assert bodies["obstacles/boxes/A"].enabled
 
 
 def test_end_contacts_let_the_gripper_touch_its_bar(purged):

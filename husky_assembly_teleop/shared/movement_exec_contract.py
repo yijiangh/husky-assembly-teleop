@@ -88,6 +88,7 @@ class ExecRequest:
         label: Names the request, e.g. the primary movement's id.
         ignore_built: Reads the requester's "Ignore built bars" now, so a plan made otherwise is refused as stale;
             by default not ticked.
+        obstacles_collide: Reads the process plugin's "Rhino obstacles collide" now, likewise; by default ticked.
     """
 
     loaded: LoadedProcess
@@ -102,6 +103,7 @@ class ExecRequest:
     traj_time: float
     label: str
     ignore_built: Callable[[], bool] = lambda: False
+    obstacles_collide: Callable[[], bool] = lambda: True
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,8 @@
 """
 What the process plugin offers others: its selected movement (`Selection`), read through `ProcessContract`.
 
+It also says whether the process's obstacles from Rhino count in collision checks (`obstacles_collide`).
+
 Users type `ctx.require("process")` with it: `process: ProcessContract = ctx.require("process")`. The process, its
 actions and movements are the core's types (`scaffolding_assembly_core.process`).
 """
@@ -42,6 +44,13 @@ class ProcessContract(Protocol):
     @property
     def selection(self) -> Selection | None:
         """Selection | None: The selected movement, or None while no process with movements is loaded."""
+
+    @property
+    def obstacles_collide(self) -> bool:
+        """bool: Whether the process's obstacles (Rhino's "obstacles/<name>") count in collision checks.
+
+        False: they are only drawn (the panel's "Rhino obstacles collide" box).
+        """
 
     def request_select(self, index: int) -> None:
         """Select a movement by index into `process.movements()`, clamped; ignored while no process is loaded.

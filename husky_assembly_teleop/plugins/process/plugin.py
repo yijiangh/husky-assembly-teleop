@@ -10,6 +10,9 @@ Every body of the selected movement's process scene (`Process.scene_at`) goes in
 robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.ProcessDrawing`), with the other
 bodies on request. The plugin only reads processes: it never edits one.
 
+The "Rhino obstacles collide" box (off at start) decides whether the process's obstacles ("obstacles/<name>")
+count in every collision check; while off they are disabled scene bodies, drawn see-through by the overlay.
+
 The panel lists a window of the schedule's actions around the selected one (`action_window`); click a row to jump.
 
 Process folders are given relative to the Drive root (`drive.py`), e.g. "data_design_study/<process>", or absolute.
@@ -41,7 +44,7 @@ from scaffolding_assembly_core.legacy.timing import Stopwatch
 from scaffolding_assembly_core.process import Action, Movement, Process, assumed_start_all, joints_at
 from scaffolding_assembly_core.process.scenes import process_model
 from ...shared.process_contract import Selection
-from ...shared.process_scene.scene_bodies import live_ids, scene_bodies
+from ...shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
 from ...ui.checklist import ACTION_ROWS, action_window
 from .drawing import ProcessDrawing, load_robot_models
 from .loading import load_process
@@ -55,6 +58,13 @@ LOAD_TIMEOUT = 300.0
 
 #: Shown in place of the robot for a `bar_placing` action, which no robot acts in.
 BY_HAND_LABEL = "by hand"
+
+#: Whether the process's obstacles from Rhino count in collision checks when the monitor starts.
+#: ! Off: they were never measured (the cabinet stands 0.38 m off); the `obstacles` plugin's measured ones are the room.
+OBSTACLES_COLLIDE = False
+
+#: Scene ids of the `obstacles` plugin's measured obstacles; not the process's own "process/obstacles/…".
+MEASURED_PREFIX = "obstacles/"
 
 
 def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[Process, dict, Stopwatch]:
@@ -102,6 +112,11 @@ class ProcessPlugin(HuskyPlugin):
 
         #: Show the robot at the movement's target instead of its start.
         self.at_target = False
+
+        #: Whether the process's obstacles count in collision checks (`ProcessContract.obstacles_collide`).
+        self.obstacles_collide = OBSTACLES_COLLIDE
+        # The loaded process's obstacles from Rhino, by process id (`process_obstacles`).
+        self._obstacles: frozenset[str] = frozenset()
 
         #: Goes up whenever the process or selected movement changes; the scene bodies are put again then.
         self.revision = 0
@@ -170,6 +185,13 @@ class ProcessPlugin(HuskyPlugin):
                                              "converted into <export>_process next to it")
             load = gui.add_button("Load", hint="Load the folder; an old export is converted first (about 15 s) "
                                                "unless its <export>_process copy is up to date")
+            self._collide = gui.add_checkbox("Rhino obstacles collide", initial_value=OBSTACLES_COLLIDE,
+                                             hint="Count the process's obstacles from Rhino (e.g. the cabinet) in "
+                                                  "every collision check: base and arm planners, clearances, "
+                                                  "assembly planning. Off: drawn see-through only; the measured "
+                                                  "obstacles (obstacles plugin) still count. Replan after a change.")
+            # ! Always one line, so nothing below it moves.
+            self._collide_status = gui.add_html("")
             self._actions_title = gui.add_html(section("actions", SECTION_CTRL))
             # * A window of the schedule that follows the selection: click a row to jump to that action.
             self._action_rows = [gui.add_button("·", color="gray") for _ in range(ACTION_ROWS)]
@@ -180,15 +202,21 @@ class ProcessPlugin(HuskyPlugin):
             show = gui.add_button_group("Show", ["Start", "Target"],
                                         hint="The robot at the movement's start state, or at its target configuration")
             view = gui.add_button_group("View", ["Hide", "Ghost", "All"],
-                                        hint="Hide / show the overlay (robots, tools, held bodies; standing bodies "
-                                             "are scene bodies, always drawn); ghost makes it see-through; all also "
-                                             "overlays absent bodies, see-through")
+                                        hint="Hide / show the overlay (robots, tools, held bodies, and the Rhino "
+                                             "obstacles while they don't collide; other standing bodies are scene "
+                                             "bodies, always drawn); ghost makes it see-through; all also overlays "
+                                             "absent bodies, see-through")
             # ! Keep changing text BELOW the buttons, so they never move mid-click.
             self._details = gui.add_html("")
             self._error_text = gui.add_html("")
 
         # ! Route every viser callback through defer so it runs on the main thread.
         load.on_click(ctx.defer("load process", lambda: self.load(ctx, Path(self._folder.value.strip()))))
+        # ! Operator clicks only: draw writes the box back, and viser calls back for that too, which could undo a click
+        #   queued in the same tick.
+        self._collide.on_update(ctx.defer_value("Rhino obstacles collide",
+                                                lambda value: self.set_obstacles_collide(ctx, bool(value)),
+                                                operator_only=True))
         self._slider.on_update(ctx.defer_value("select step", lambda value: self.select(int(value))))
         go.on_click(ctx.defer_value("step button", self._on_go))
         show.on_click(ctx.defer_value("show", lambda label: self._set_at_target(label == "Target")))
@@ -233,6 +261,21 @@ class ProcessPlugin(HuskyPlugin):
             return
         self.index = index
         self._changed()
+
+    def set_obstacles_collide(self, ctx: PluginContext, collide: bool) -> None:
+        """Count the process's obstacles in every collision check, or leave them out; the scene bodies are put again.
+
+        Args:
+            ctx: This plugin's context.
+            collide: Whether they count.
+        """
+        # A repeated value (e.g. two clicks queued in one tick) changes nothing: the bodies are not put again.
+        if collide == self.obstacles_collide:
+            return
+        self.obstacles_collide = collide
+        self._changed()
+        ctx.log_info("Rhino obstacles now count in every collision check" if collide
+                     else "Rhino obstacles are drawn only: left out of every collision check; replan")
 
     def _set_at_target(self, at_target: bool) -> None:
         """Show the start state, or the target."""
@@ -331,6 +374,7 @@ class ProcessPlugin(HuskyPlugin):
         for index, action in enumerate(self._action_of):
             self._first_of.setdefault(action, index)
         self._assumed = assumed_start_all(process)
+        self._obstacles = process_obstacles(process)
 
     async def _build(self, ctx: PluginContext) -> None:
         """Add the process's viser nodes, spread over ticks."""
@@ -380,19 +424,21 @@ class ProcessPlugin(HuskyPlugin):
         # ? Same ids and geometry objects every movement: mirrors only move and switch bodies, never rebuild.
         robots = ctx.config.robots
         try:
-            bodies = scene_bodies(self.process, movement, robots, prefix)
+            bodies = scene_bodies(self.process, movement, robots, prefix, self.obstacles_collide)
         except ValueError as refused:
             # ! A grasp the real robot can't take is a data problem: report it, put the bodies without the robots.
             self._error = f"held bodies left where planned: {refused}"
             ctx.log_error(self._error)
             robots = ()
-            bodies = scene_bodies(self.process, movement, robots, prefix)
+            bodies = scene_bodies(self.process, movement, robots, prefix, self.obstacles_collide)
         ctx.scene.put_many(bodies)
         self.ids, self.process_ids = live_ids(self.process, robots, prefix)
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the overlay from the selected state, and fill the panel."""
         self._status.content = self._status_html()
+        self._collide.value = self.obstacles_collide
+        self._collide_status.content = self._collide_html(ctx)
         selected = self.selected
         self._error_text.content = block(values(escape(self._error))) if self._error else ""
         self._draw_action_list()
@@ -413,7 +459,9 @@ class ProcessPlugin(HuskyPlugin):
             return
         try:
             joints = joints_at(self.process, action.id, movement.id, self.at_target, self._assumed)
-            drawing.show(movement.start, joints, self._everything)
+            # * Left out of collision checks, the core no longer draws the Rhino obstacles: the overlay does.
+            drawing.show(movement.start, joints, self._everything,
+                         frozenset() if self.obstacles_collide else self._obstacles)
         except Exception as failure:
             # ! A state that does not fit its process is a data problem: report it, do not raise.
             self._error = f"cannot draw {movement.id}: {type(failure).__name__}: {failure}"
@@ -457,6 +505,16 @@ class ProcessPlugin(HuskyPlugin):
             chips = chip("no process", NONE)
         if self._error:
             chips += chip("error", FAIL, self._error)
+        return block(_one_line(chips))
+
+    def _collide_html(self, ctx: PluginContext) -> str:
+        """One line of chips: whether the Rhino obstacles collide, and a warning when nothing in the room is checked."""
+        if self.obstacles_collide:
+            return block(_one_line(chip("Rhino obstacles collide", OK)))
+        chips = chip("Rhino obstacles: drawn only", NONE, "left out of every collision check")
+        if not any(body_id.startswith(MEASURED_PREFIX) for body_id in ctx.scene.snapshot.bodies):
+            chips += chip("room unchecked", FAIL, "no measured obstacles in the scene: add 'obstacles' to the "
+                                                  "plugins, or nothing in the room is checked")
         return block(_one_line(chips))
 
     def _details_html(self, action: Action, movement: Movement) -> str:

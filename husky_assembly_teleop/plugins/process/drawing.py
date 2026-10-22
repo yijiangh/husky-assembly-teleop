@@ -3,8 +3,9 @@ The process plugin's overlay: what the core's 3D view cannot draw of one process
 
 Drawn from the process alone, with forward kinematics from each robot's yourdfpy model.
 
-- * Bodies that `stand` are scene bodies, drawn by the core. The overlay draws the robots, their tools and the
-  bodies they carry, and, when asked, every other body (absent ones), always see-through.
+- * Bodies that `stand` are scene bodies, drawn by the core, except the Rhino obstacles switched out of collision
+  checks (`reference`). The overlay draws those, see-through; the robots, their tools and the bodies they carry; and,
+  when asked, every other body (absent ones), always see-through.
 - `load_robot_models` is slow: run it on the loading thread.
 - `ProcessDrawing` is main thread only; a new state only changes poses, joint values and colours.
 - ? Robots are single-colour meshes (`add_simple_urdf`), so "Ghost" only changes their opacity.
@@ -133,7 +134,8 @@ class ProcessDrawing:
     def visible(self, value: bool) -> None:
         self._root.visible = value
 
-    def show(self, state: State, joints: Mapping[str, Mapping[str, float]], everything: bool = False) -> None:
+    def show(self, state: State, joints: Mapping[str, Mapping[str, float]], everything: bool = False,
+             reference: frozenset[str] = frozenset()) -> None:
         """Pose the overlay from one state.
 
         Args:
@@ -141,6 +143,8 @@ class ProcessDrawing:
             joints: Robot id -> joint values to draw it at (the core's `process.joints_at`);
                 joints not given are drawn at zero.
             everything: Also draw the bodies that neither stand nor move with a robot (absent ones).
+            reference: Process ids drawn see-through where they stand: bodies switched out of collision checks,
+                which the core therefore does not draw (the Rhino obstacles while their box is off).
         """
         # * Robots first: held bodies read their links from the posed models.
         for robot_id, robot in self._robots.items():
@@ -168,7 +172,8 @@ class ProcessDrawing:
                     continue
                 pose = compose(self._link_pose(holder, link, holder_state.base), where.grasp)
                 look = (ATTACHED_COLOR, GHOST_OPACITY if self._ghost else None)
-            elif everything and not _stands(self._process, state, body_id):
+            elif (everything and not _stands(self._process, state, body_id)) or (
+                    body_id in reference and _stands(self._process, state, body_id)):
                 pose = where if isinstance(where, Pose) else self._process.bodies[body_id].assembly_pose
                 look = (body_color(body_id), GHOST_OPACITY)
             else:

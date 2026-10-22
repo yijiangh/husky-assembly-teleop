@@ -33,6 +33,7 @@ class MotionPlanRequest:
         beliefs: Live robot id -> where it was last recorded, for robots not measured (`scene_for`).
         transfer_as_free: The transfer workaround (`classify`).
         ignore_built: Plan as if the built bars were not there (`scene_for`).
+        obstacles_collide: Whether the process's obstacles from Rhino count (`scene_for`); the process plugin's box.
         goal_joints: Arm joints to plan to instead of solving the goal (`plan_movement`).
         joints: Acting robot joints to check collisions at (`request_collisions`); None: as in the snapshot.
         label: Names the request in the planner's panel and log; empty: the movement's id.
@@ -45,6 +46,7 @@ class MotionPlanRequest:
     beliefs: Mapping[str, RobotBelief] = field(default_factory=dict)
     transfer_as_free: bool = False
     ignore_built: bool = False
+    obstacles_collide: bool = True
     goal_joints: Mapping[str, float] | None = None
     joints: Mapping[str, float] | None = None
     label: str = ""

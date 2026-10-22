@@ -42,7 +42,8 @@ def run_plan(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Even
         serial = _acting(request, abort)
         return plan_movement(pool.mirror(serial), request.loaded, request.step, request.snapshot, request.robots,
                              transfer_as_free=request.transfer_as_free, beliefs=request.beliefs,
-                             ignore_built=request.ignore_built, goal_joints=request.goal_joints, abort=abort, log=log)
+                             ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide,
+                             goal_joints=request.goal_joints, abort=abort, log=log)
     except Exception as error:
         return RouteResult(MovementResult("failed", _reason(error)), None, seconds=time.monotonic() - started)
 
@@ -64,7 +65,7 @@ def run_ik(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Event,
         serial = _acting(request, abort)
         return check_goal(pool.mirror(serial), request.loaded, request.step, request.snapshot, request.robots,
                           transfer_as_free=request.transfer_as_free, beliefs=request.beliefs,
-                          ignore_built=request.ignore_built, log=log)
+                          ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide, log=log)
     except Exception as error:
         return GoalCheck(request.step.movement.id, None, False, _reason(error), seconds=time.monotonic() - started)
 
@@ -85,7 +86,8 @@ def run_collisions(pool: MirrorPool, request: MotionPlanRequest, abort: threadin
     try:
         mirror = pool.mirror(_acting(request, abort))
         planning = scene_for(request.loaded, request.step, request.snapshot, request.robots, beliefs=request.beliefs,
-                             ignore_built=request.ignore_built, end_contacts=True)
+                             ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide,
+                             end_contacts=True)
         mirror.sync(planning.scene)
         pairs = collisions(mirror, dict(request.joints) if request.joints is not None else None, full_report=True)
         return CollisionReport(tuple(in_process_terms(pair, planning.process_ids) for pair in pairs), "",

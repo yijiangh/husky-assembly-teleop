@@ -70,7 +70,7 @@ class PlanningScene:
 
 def scene_for(loaded: LoadedProcess, step: Step, snapshot: Scene, robots: tuple[RobotConfig, ...], *,
               prefix: str = "process/", beliefs: Mapping[str, RobotBelief] | None = None, hide_held: bool = False,
-              ignore_built: bool = False, keep: tuple[str, ...] = ("obstacles/",),
+              ignore_built: bool = False, obstacles_collide: bool = True, keep: tuple[str, ...] = ("obstacles/",),
               end_contacts: bool = False) -> PlanningScene:
     """The planning scene of one step: the snapshot's robots and kept bodies, plus the step's process bodies.
 
@@ -88,6 +88,8 @@ def scene_for(loaded: LoadedProcess, step: Step, snapshot: Scene, robots: tuple[
         hide_held: Disable the bodies the acting robot holds (plan without the bar).
         ignore_built: Disable the built bars and their halves, except the action's own bar and those the acting
             robot holds.
+        obstacles_collide: Whether the process's obstacles from Rhino count (`scene_bodies`); the measured ones
+            kept from the snapshot always do.
         keep: Prefixes of the snapshot bodies to keep; the process bodies replace the rest.
         end_contacts: Also let each tool touch the body it is on at the movement's end (a linear move into a grasp):
             the tool with that body only, not the rest of its part.
@@ -109,7 +111,7 @@ def scene_for(loaded: LoadedProcess, step: Step, snapshot: Scene, robots: tuple[
     for body_id, body in snapshot.bodies.items():
         if body_id.startswith(tuple(keep)):
             scene.bodies[body_id] = body.copy()
-    for body in scene_bodies(process, step.movement, robots, prefix):
+    for body in scene_bodies(process, step.movement, robots, prefix, obstacles_collide):
         scene.put(body)
     warnings = [f"{planned} (serial {spec.serial}) is not configured: left out of the planning scene"
                 for planned, spec in process.robots.items() if planned not in ids and start.robots.get(planned)]

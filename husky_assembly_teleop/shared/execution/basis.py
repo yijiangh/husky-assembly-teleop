@@ -1,9 +1,9 @@
 """
 What a plan was made from (`PlanBasis`), and why it no longer fits (`stale_reason`).
 
-A plan is stale once anything it was planned on changed: the process, the current step, the run's settings or
-statuses, the acting robot's arm or base, or another robot. Checked by the step panel every tick and by the executor
-after Confirm and just before sending.
+A plan is stale once anything it was planned on changed: the process, the current step, the run's settings, the
+Rhino obstacles box or the statuses, the acting robot's arm or base, or another robot. Checked by the step panel every
+tick and by the executor after Confirm and just before sending.
 
 Pure: any thread.
 """
@@ -51,6 +51,7 @@ class PlanBasis:
         statuses: Every action's status in the run when planned.
         time: ROS time of planning, seconds.
         goal_base: Where the robot stood when the goal the plan reused was solved (Check goal), or None.
+        obstacles_collide: Whether the process's obstacles from Rhino counted.
     """
 
     loaded: LoadedProcess
@@ -66,6 +67,7 @@ class PlanBasis:
     statuses: Mapping[str, str]
     time: float
     goal_base: Pose | None = None
+    obstacles_collide: bool = True
 
     def as_record(self) -> dict:
         """The basis as JSON values, for the run's records."""
@@ -76,12 +78,13 @@ class PlanBasis:
                            for live, (base, joints) in self.others.items()},
                 "transfer_as_free": self.transfer_as_free, "ignore_built": self.ignore_built,
                 "statuses": dict(self.statuses), "time": self.time,
-                "goal_base": _pose(self.goal_base) if self.goal_base is not None else None}
+                "goal_base": _pose(self.goal_base) if self.goal_base is not None else None,
+                "obstacles_collide": self.obstacles_collide}
 
 
 def basis_of(snapshot: Scene, loaded: LoadedProcess, step: Step, serial: str, names: tuple[str, ...],
              start: Mapping[str, float], settings: RunSettings, statuses: Mapping[str, str], ignore_built: bool,
-             now: float, goal_base: Pose | None = None) -> PlanBasis:
+             now: float, goal_base: Pose | None = None, obstacles_collide: bool = True) -> PlanBasis:
     """The basis of a plan made now from `snapshot`.
 
     Args:
@@ -96,6 +99,7 @@ def basis_of(snapshot: Scene, loaded: LoadedProcess, step: Step, serial: str, na
         ignore_built: Whether built bars were left out.
         now: ROS time, seconds.
         goal_base: Where the goal the plan reused was solved, or None.
+        obstacles_collide: Whether the process's obstacles from Rhino counted.
 
     Returns:
         PlanBasis: The basis.
@@ -104,13 +108,16 @@ def basis_of(snapshot: Scene, loaded: LoadedProcess, step: Step, serial: str, na
     others = {live: (robot.base, dict(robot.joints)) for live, robot in snapshot.robots.items() if live != acting}
     return PlanBasis(loaded, step.action.id, step.movement_index, serial, tuple(names),
                      {name: float(start[name]) for name in names}, snapshot.robots[acting].base, others,
-                     settings.transfer_as_free, ignore_built, dict(statuses), now, goal_base)
+                     settings.transfer_as_free, ignore_built, dict(statuses), now, goal_base, obstacles_collide)
 
 
 def stale_reason(basis: PlanBasis, snapshot: Scene, *, loaded: LoadedProcess | None,
                  current: tuple[str, int] | None, transfer_as_free: bool, ignore_built: bool,
-                 statuses: Mapping[str, str]) -> str:
+                 statuses: Mapping[str, str], obstacles_collide: bool = True) -> str:
     """Why a plan no longer fits; "" if it still does. The first reason found, in this order.
+
+    The process, the step, the workaround or 'ignore built bars', the Rhino obstacles box, the statuses, the acting
+    robot (there, its arm, its base, where its reused goal was solved), then each other robot.
 
     Args:
         basis: What the plan was made from.
@@ -120,6 +127,7 @@ def stale_reason(basis: PlanBasis, snapshot: Scene, *, loaded: LoadedProcess | N
         transfer_as_free: The run's transfer workaround now.
         ignore_built: Whether built bars are left out now.
         statuses: Every action's status in the run now.
+        obstacles_collide: Whether the process's obstacles from Rhino count now.
 
     Returns:
         str: E.g. "cindy's arm moved 2.3° since planning (replan beyond 2.0°)", or "".
@@ -130,6 +138,8 @@ def stale_reason(basis: PlanBasis, snapshot: Scene, *, loaded: LoadedProcess | N
         return "the current step changed since planning"
     if transfer_as_free != basis.transfer_as_free or ignore_built != basis.ignore_built:
         return "the transfer workaround or 'ignore built bars' changed since planning"
+    if obstacles_collide != basis.obstacles_collide:
+        return f"the Rhino obstacles were switched {'on' if obstacles_collide else 'off'} since planning"
     if dict(statuses) != dict(basis.statuses):
         return "an action was marked done or reopened since planning"
     robot = snapshot.robots.get(robot_id(basis.serial))

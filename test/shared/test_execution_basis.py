@@ -37,11 +37,11 @@ def snapshot(cindy_joint: float = 0.0, cindy_x: float = 1.0, alice_x: float = -1
         ALICE: RobotObject(ALICE, model, Pose((alice_x, 0.0, 0.0)), {"ur_arm_elbow_joint": alice_joint})})
 
 
-def basis(settings: RunSettings = RunSettings()):
+def basis(settings: RunSettings = RunSettings(), obstacles_collide: bool = True):
     """The basis of a plan for B20_J's transfer (movement 3) made from `snapshot()`."""
     step = SimpleNamespace(action=SimpleNamespace(id="B20_J"), movement_index=3)
     return basis_of(snapshot(), LOADED, step, "a200-0806", NAMES, {NAMES[0]: 0.0, NAMES[1]: 1.0}, settings,
-                    STATUSES, False, 12.0)
+                    STATUSES, False, 12.0, obstacles_collide=obstacles_collide)
 
 
 def reason(scene: Scene, **now) -> str:
@@ -84,6 +84,20 @@ def test_movements_at_their_thresholds(scene, stale, words):
 def test_the_run_and_the_process_changing(changes, words):
     """A reloaded process, another step, other settings or statuses each make the plan stale."""
     assert words in reason(snapshot(), **changes)
+
+
+@pytest.mark.parametrize("planned, now, words", [
+    (False, True, "the Rhino obstacles were switched on since planning"),
+    (True, False, "the Rhino obstacles were switched off since planning"),
+    (False, False, ""),
+    (True, True, ""),
+])
+def test_the_rhino_obstacles_box(planned, now, words):
+    """The basis keeps whether the Rhino obstacles counted, in its record too; switching them makes the plan stale."""
+    made = basis(obstacles_collide=planned)
+    assert made.obstacles_collide is planned and made.as_record()["obstacles_collide"] is planned
+    given = dict(loaded=LOADED, current=("B20_J", 3), transfer_as_free=True, ignore_built=False, statuses=STATUSES)
+    assert stale_reason(made, snapshot(), **given, obstacles_collide=now) == words
 
 
 def test_the_acting_robot_gone():

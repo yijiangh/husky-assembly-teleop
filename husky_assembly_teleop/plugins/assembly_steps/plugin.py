@@ -8,7 +8,7 @@ which asks the operator to Confirm each part; once every part is done the next s
 action's last step Mark done is offered.
 
 - Check goal: the goal by IK at the live base, logged, shown as the target ghost and recorded; a plan of the same step
-  reuses it while the base stays within 2 mm / 0.5°.
+  reuses it while the base stays within 2 mm / 0.5° and the process plugin's "Rhino obstacles collide" is unchanged.
 - A plan is used once: Exec takes it, and it is cleared once the step ran; only a request refused before sending
   anything, or a dry run, gives it back (still checked for staleness).
 - ! EXPERIMENTAL, with movement_exec the first plugins that move robots.
@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from ...shared.assembly_run_contract import AssemblyRunContract, RunView
     from ...shared.motion_planner_contract import MotionPlannerContract
     from ...shared.movement_exec_contract import MovementExecContract
+    from ...shared.process_contract import ProcessContract
 
 #: Seconds to wait for a plan: every try of tamp's longest search, the first plan's model loading, and a margin.
 PLAN_TIME_LIMIT = ATTEMPTS * FAR["max_time"] + 60.0 + WAIT_MARGIN
@@ -266,7 +267,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
         # * The snapshot is taken here, on the main thread; the planner's worker makes the scene from it.
         request = MotionPlanRequest(view.process, step, ctx.scene.snapshot, ctx.config.robots, beliefs=view.beliefs,
                                     transfer_as_free=view.settings.transfer_as_free, ignore_built=self.ignore_built,
-                                    label=f"check goal {step.label}")
+                                    obstacles_collide=self._obstacles_collide(ctx), label=f"check goal {step.label}")
         self._say(f"solving the goal of {step.label}…")
         check = await self._goal.solve(ctx, self._key_of_goal(), request)
         if check is None:
@@ -274,7 +275,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return None
         self._say(goal_line(check), failed=not check.ok)
         self._assembly_run(ctx).request_record("check_goal", action=action, movement=step.movement.id,
-                                               data=check.as_record())
+                                               data={**check.as_record(),
+                                                     "obstacles_collide": request.obstacles_collide})
         return check
 
     # --- --- --- --- --- PLANNER PLUGIN --- --- --- --- ---
@@ -296,7 +298,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
                 goal_base = self._goal.of(self._key_of_goal()).base if goal_joints is not None else None
                 request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots, beliefs=view.beliefs,
                                             transfer_as_free=view.settings.transfer_as_free,
-                                            ignore_built=self.ignore_built, goal_joints=goal_joints,
+                                            ignore_built=self.ignore_built,
+                                            obstacles_collide=self._obstacles_collide(ctx), goal_joints=goal_joints,
                                             label=f"plan {step.label}")
         found: dict[str, RouteResult] = {}
 
@@ -320,11 +323,12 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self._route = route
             self._basis = basis_of(snapshot, view.process, step, self.serial, trajectory.joint_names,
                                    dict(zip(trajectory.joint_names, trajectory.positions[0])), view.settings,
-                                   view.statuses, self.ignore_built, now, goal_base)
+                                   view.statuses, self.ignore_built, now, goal_base,
+                                   obstacles_collide=request.obstacles_collide)
             self._assembly_run(ctx).request_record("plan", action=action, movement=step.movement.id, data={
                 "planner": route.planner, "attempts": route.attempts, "seconds": route.seconds,
                 "waypoints": route.waypoints, "goal_reused": request.goal_joints is not None,
-                "warnings": list(route.warnings)})
+                "warnings": list(route.warnings), "obstacles_collide": request.obstacles_collide})
             return (f"{route.planner}: {route.waypoints} waypoints in {route.seconds:.1f} s; the motion takes "
                     f"{self.path.duration:.1f} s"), bool(route.warnings)
 
@@ -339,7 +343,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
         view = self._assembly_run(ctx).view
         return stale_reason(self._basis, ctx.scene.snapshot, loaded=view.process, current=current_primary(view),
                             transfer_as_free=view.settings.transfer_as_free, ignore_built=self.ignore_built,
-                            statuses=view.statuses)
+                            statuses=view.statuses, obstacles_collide=self._obstacles_collide(ctx))
 
     def forget_plan(self) -> None:
         """Drop the route and its basis with the path."""
@@ -389,14 +393,16 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return
         stale = self.stale_reason(ctx) if motion else ""
         if stale:
-            # * Checked here too: an input in the same tick (e.g. Ignore built bars) comes before the update's check.
+            # * Checked here too: an input in the same tick (e.g. Ignore built bars, Rhino obstacles collide) comes
+            #   before the update's check.
             self.plan_state = "stale"
             self._say(f"Exec refused, the plan is stale: {stale}", failed=True)
             return
         request = ExecRequest(view.process, action, op_step, parts, self.serial or "", self._robot_name,
                               self._route if motion else None, op_step.primary if motion else None,
                               self._basis if motion else None, self.traj_time, step.label,
-                              ignore_built=lambda: self.ignore_built)
+                              ignore_built=lambda: self.ignore_built,
+                              obstacles_collide=lambda: self._obstacles_collide(ctx))
         if motion:
             self.plan_state = "sent"  # ! used once: never sent again
         executor: MovementExecContract = ctx.require("movement_exec")
@@ -444,9 +450,24 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return "a plan is being made: wait, or Clear"
         return ""
 
+    def _obstacles_collide(self, ctx: PluginContext) -> bool:
+        """Whether the process plugin counts its Rhino obstacles in collision checks now.
+
+        Args:
+            ctx: This plugin's context.
+
+        Returns:
+            bool: The process plugin's "Rhino obstacles collide" box.
+        """
+        process: ProcessContract = ctx.require("process")
+        return process.obstacles_collide
+
     def _key_of_goal(self) -> tuple | None:
-        """What a goal check is for: the current (loaded process, action, primary)."""
-        return None if self._key is None else self._key[:3]
+        """What a goal check is for: the current (loaded process, action, primary, Rhino obstacles collide).
+
+        * With the box: a goal checked with the other setting is never shown or reused.
+        """
+        return None if self._key is None else (*self._key[:3], self._obstacles_collide(self._ctx))
 
     def _timed(self, route: RouteResult) -> TimedPath | str:
         """The route timed for the arms at the motion time (`retime`), for the preview; or why it can't be."""

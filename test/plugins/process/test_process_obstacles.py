@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
 from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 import viser
+from planning_fixtures import ALICE, purged_process, robot_config
+from plugin_fakes import FakeContext
 from process_fixtures import build_process, with_start
 
 from repo_paths import DATA
@@ -17,12 +21,23 @@ from scaffolding_assembly_core.robot import robot_model
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.scene import Attachment
 from husky_assembly_teleop.config import robot_config_from_serial
+from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.plugins.process.loading import load_process
-from husky_assembly_teleop.shared.process_scene.scene_bodies import live_ids, scene_bodies
+from husky_assembly_teleop.shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
 from husky_assembly_teleop.plugins.process.drawing import GHOST_OPACITY, ProcessDrawing, load_robot_models
+from husky_assembly_teleop.plugins.process import plugin as process_plugin
 from husky_assembly_teleop.plugins.process.plugin import BY_HAND_LABEL, ProcessPlugin
-from scaffolding_assembly_core.scene import Scene
+from husky_assembly_teleop.world.base_collision import BaseCollisionWorld
+from husky_assembly_teleop.world.kinematics import stow_joints
+from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.kinematics import link_pose
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Body, Scene, world_poses
 from husky_assembly_teleop.world.scene import PluginScene
+
+#: A Rhino obstacle added to the fixture process (`_with_cabinet`), and its live id.
+CABINET = BodySpec("obstacles/cabinet", Pose((0.0, 3.0, 0.5)), box_geometry((0.5, 0.5, 1.0)))
+LIVE_CABINET = f"process/{CABINET.id}"
 
 
 @pytest.fixture
@@ -163,6 +178,180 @@ def test_overlay_draws_only_what_the_core_does_not(process):
         assert all(mesh.opacity == GHOST_OPACITY for mesh in drawing._bodies["bars/B1"][1])
     finally:
         server.stop()
+
+
+# --- --- --- --- --- the "Rhino obstacles collide" box --- --- --- --- ---
+
+def _with_cabinet(process: Process) -> Process:
+    """The process with CABINET, a Rhino obstacle, standing in every movement's start."""
+    actions = {action_id: replace(action, movements=tuple(
+        replace(movement, start=replace(movement.start, present=movement.start.present | {CABINET.id}))
+        for movement in action.movements)) for action_id, action in process.actions.items()}
+    return replace(process, bodies={**process.bodies, CABINET.id: CABINET}, actions=actions)
+
+
+class _Drawing(SimpleNamespace):
+    """The overlay, keeping the `reference` of every `show`."""
+
+    def set_ghost(self, ghost: bool) -> None:
+        """Nothing to fade."""
+
+    def show(self, state, joints, everything: bool = False, reference: frozenset[str] = frozenset()) -> None:
+        """Keep what it was asked to draw see-through where it stands."""
+        self.references.append(reference)
+
+
+class _ViserContext(FakeContext):
+    """A fake context whose value callbacks are the real ones (`PluginContext.defer_value`), handed viser's events."""
+
+    defer_value = PluginContext.defer_value
+
+
+def _set_up(process: Process, ctx: FakeContext | None = None) -> tuple[ProcessPlugin, FakeContext, Scene]:
+    """The plugin on a fake context, `process` taken and drawn by a `_Drawing`; the live scene is its own snapshot."""
+    live = Scene()
+    ctx = ctx or FakeContext()
+    ctx.config.process_directory = None
+    ctx.scene = PluginScene(live, "process", ctx.log_warn, lambda: live)
+    plugin = ProcessPlugin()
+    plugin.setup(ctx)
+    plugin._take(process)
+    plugin._changed()
+    plugin._drawing = _Drawing(references=[])
+    return plugin, ctx, live
+
+
+def test_rhino_obstacles_are_disabled_and_nothing_else_changes(process):
+    """Box off: exactly the process's obstacles are disabled; every other field, and every other body, as with it on."""
+    process = _with_cabinet(process)
+    movement = _movement(process, 1)[1]
+    on = {body.id: body for body in scene_bodies(process, movement, (), "process/", True)}
+    off = {body.id: body for body in scene_bodies(process, movement, (), "process/", False)}
+    assert process_obstacles(process) == {CABINET.id} and on[LIVE_CABINET].enabled
+    assert {body_id for body_id in on if on[body_id].enabled != off[body_id].enabled} == {LIVE_CABINET}
+    assert all(off[body_id].geometry is on[body_id].geometry and off[body_id].color == on[body_id].color
+               and off[body_id].touches == on[body_id].touches and off[body_id].placement == on[body_id].placement
+               for body_id in on)
+
+
+def test_overlay_draws_the_rhino_obstacles_left_out_of_collision_checks(process):
+    """A standing body in `reference` is drawn see-through where it stands; without it, it is left to the core.
+
+    An absent one (B1 before its mount) is not drawn, even in `reference`.
+    """
+    process = _with_cabinet(process)
+    server = viser.ViserServer(port=0, verbose=False)
+    try:
+        drawing = ProcessDrawing(server, "/process", process, load_robot_models(process))
+        for _ in drawing.build():
+            pass
+        frame, meshes = drawing._bodies[CABINET.id]
+        action, movement = _movement(process, 0)
+        joints = joints_at(process, action.id, movement.id)
+        drawing.show(movement.start, joints)
+        assert not frame.visible
+        drawing.show(movement.start, joints, reference=frozenset({CABINET.id, "bars/B1"}))
+        assert frame.visible and tuple(frame.position) == pytest.approx(CABINET.assembly_pose.position)
+        assert all(mesh.opacity == GHOST_OPACITY for mesh in meshes)
+        assert not drawing._bodies["bars/B1"][0].visible
+    finally:
+        server.stop()
+
+
+def test_the_box_starts_off_and_a_flip_puts_the_bodies_again(process):
+    """Off at start: the cabinet is a disabled scene body, overlaid see-through; ticking puts it again, enabled.
+
+    The same geometry object both ways, so no mirror rebuilds it; ticking again does nothing.
+    """
+    plugin, ctx, live = _set_up(_with_cabinet(process))
+    assert not plugin.obstacles_collide and plugin._collide.value is False
+    plugin.update(ctx)
+    plugin.draw(ctx)
+    geometry = live.bodies[LIVE_CABINET].geometry
+    assert not live.bodies[LIVE_CABINET].enabled and live.bodies["process/ground/WG0"].enabled
+    assert plugin._drawing.references[-1] == {CABINET.id}
+    revision = plugin.revision
+    plugin._collide.callback(True)
+    assert plugin.revision == revision + 1
+    assert ctx.lines("info")[-1] == "Rhino obstacles now count in every collision check"
+    plugin.update(ctx)
+    plugin.draw(ctx)
+    assert live.bodies[LIVE_CABINET].enabled and live.bodies[LIVE_CABINET].geometry is geometry
+    assert plugin._drawing.references[-1] == frozenset() and plugin._collide.value is True
+    plugin._collide.callback(True)
+    assert plugin.revision == revision + 1
+
+
+def test_only_the_operators_click_flips_the_box(process):
+    """The draw's own write-back calls back too, without a client: only a click with a client counts."""
+    plugin, _ctx, _live = _set_up(process, _ViserContext())
+
+    def event(client) -> SimpleNamespace:
+        """The box's update event, ticked."""
+        return SimpleNamespace(client=client, target=SimpleNamespace(value=True))
+
+    asyncio.run(plugin._collide.callback(event(None)))
+    assert not plugin.obstacles_collide
+    asyncio.run(plugin._collide.callback(event(object())))
+    assert plugin.obstacles_collide
+
+
+def test_bodies_put_without_the_robots_keep_the_box(process, monkeypatch):
+    """A grasp the real robot can't take: the bodies are put again without the robots, still with the box's setting."""
+    plugin, ctx, _live = _set_up(process)
+    flags = []
+
+    def refusing_once(process, movement, robots, prefix, obstacles_collide) -> list:
+        flags.append(obstacles_collide)
+        if len(flags) == 1:
+            raise ValueError("the real robot has no left_tool0")
+        return []
+
+    monkeypatch.setattr(process_plugin, "scene_bodies", refusing_once)
+    plugin.update(ctx)
+    assert flags == [False, False] and plugin._error.startswith("held bodies left where planned")
+
+
+def test_the_status_line_says_when_nothing_in_the_room_is_checked(process):
+    """Off, no measured obstacle in the scene: "room unchecked"; with one, or with the box on, not."""
+    plugin, ctx, live = _set_up(process)
+    plugin.draw(ctx)
+    assert "drawn only" in plugin._collide_status.content and "room unchecked" in plugin._collide_status.content
+    live.put(Body("obstacles/boxes/A", box_geometry((0.2, 0.2, 0.2)), Pose((5.0, 5.0, 0.1))))
+    plugin.draw(ctx)
+    assert "drawn only" in plugin._collide_status.content and "room unchecked" not in plugin._collide_status.content
+    live.remove("obstacles/boxes/A")
+    plugin.set_obstacles_collide(ctx, True)
+    plugin.draw(ctx)
+    assert "Rhino obstacles collide" in plugin._collide_status.content
+    assert "drawn only" not in plugin._collide_status.content and "room unchecked" not in plugin._collide_status.content
+
+
+@pytest.mark.slow
+def test_alice_parked_hits_the_cabinet_only_while_the_rhino_obstacles_collide():
+    """The lab finding: Alice parked at (0.3, 1.35) facing +y, arm stowed, stands in the cabinet env39 (0.38 m off).
+
+    The collision world of the base planner and the clearances finds it with the box on, and nothing with it off; one
+    world takes both, as in the monitor.
+    """
+    loaded = purged_process()
+    config = robot_config(ALICE)
+    own = robot_id(config.serial)
+    park = Pose((0.3, 1.35, 0.0), (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4)))
+    robots = {own: RobotObject(own, config.model, park, stow_joints(config, config.model.movable_joints))}
+    movement = next(iter(loaded.process.movements()))[1]
+    world = BaseCollisionWorld()
+    hits = []
+    try:
+        for collide in (True, False):
+            bodies = {body.id: body for body in scene_bodies(loaded.process, movement, (config,), "process/", collide)}
+            world.sync(Scene(bodies=bodies, robots=robots, world_poses=world_poses(
+                bodies, robots, lambda robot, link: link_pose(robot.model.urdf, robot.base, robot.joints, link))))
+            hit = world.collision_hit(own, 0.0, "parked")
+            hits.append(hit.pairs if hit is not None else ())
+    finally:
+        world.close()
+    assert hits == [((own, "process/obstacles/env39"),), ()]
 
 
 def test_bar_placed_by_hand(tmp_path):

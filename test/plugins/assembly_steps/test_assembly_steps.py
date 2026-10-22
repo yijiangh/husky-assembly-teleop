@@ -97,7 +97,10 @@ def _answered(value):
 
 
 class Steps(RobotLab):
-    """The robots live, the run at `current`, the step panel on a fake planner and executor."""
+    """The robots live, the run at `current`, the step panel on a fake planner and executor.
+
+    The process plugin is only its "Rhino obstacles collide" box, ticked; a test flips `process.obstacles_collide`.
+    """
 
     def __init__(self, current, transfer_as_free: bool = True):
         """Build everything and take the current step."""
@@ -105,7 +108,9 @@ class Steps(RobotLab):
         self.loaded = purged_process()
         self.run = FakeRun(self.loaded, current, transfer_as_free)
         self.planner, self.executor = FakePlanner(self), FakeExecutor()
-        self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor}
+        self.process = SimpleNamespace(obstacles_collide=True)
+        self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor,
+                            "process": self.process}
         self.ctx.kinematics = SimpleNamespace(base_pose=lambda serial: self.bases[serial],
                                               joints=lambda serial: {})
         self.plugin = AssemblyStepsPlugin()
@@ -185,6 +190,80 @@ def test_a_plan_request_carries_the_run_and_the_checked_goal():
     assert first.goal_joints == goal and second.goal_joints is None
     assert lab.plugin.traj_time == 15.0 and lab.plugin.plan_state == "ready"
     assert [event for event, _fields in lab.run.records] == ["check_goal", "plan", "plan"]
+
+
+def test_goal_and_plan_carry_the_rhino_obstacles_box_and_a_goal_checked_otherwise_is_not_reused():
+    """Alice's approach, the box unticked: the goal check and the plan carry it, and the plan reuses the goal.
+
+    Ticked, the goal checked unticked is neither shown nor reused; unticked again, it is.
+    """
+    lab = Steps(("B21_H", 0))
+    lab.process.obstacles_collide = False
+    goal = dict(zip(arm_joint_names("ur_arm"), [1.0, -1.0, 1.0, -1.0, 1.0, 0.0]))
+    lab.planner.check = GoalCheck("B21_H_approach", Routine.SUPPORT_APPROACH, True, base=lab.bases["a200-0804"],
+                                  goal_joints=goal, ik=IkResult(goal, 0.0, 1, 8, "ssik", ("alice",), None))
+    shown = []
+
+    async def scenario():
+        await lab.plugin.checked_goal(lab.ctx)
+        await lab.plan()
+        lab.process.obstacles_collide = True
+        shown.append(lab.plugin.goal)
+        await lab.plan()
+        lab.process.obstacles_collide = False
+        shown.append(lab.plugin.goal)
+        await lab.plan()
+
+    asyncio.run(scenario())
+    check, = lab.planner.goals
+    first, ticked, unticked = lab.planner.plans
+    assert not check.obstacles_collide and not first.obstacles_collide and not lab.plugin._basis.obstacles_collide
+    assert ticked.obstacles_collide and not unticked.obstacles_collide
+    assert shown == [None, lab.planner.check]
+    assert first.goal_joints == goal and ticked.goal_joints is None and unticked.goal_joints == goal
+    assert [(event, fields["data"]["obstacles_collide"]) for event, fields in lab.run.records] == [
+        ("check_goal", False), ("plan", False), ("plan", True), ("plan", False)]
+
+
+@pytest.mark.safety
+def test_the_basis_keeps_the_box_the_plan_was_asked_with():
+    """Ticked while the plan is on its way: the plan was asked unticked, so it is stale as soon as it is ready."""
+    lab = Steps(("B20_R", 2))
+    lab.process.obstacles_collide = False
+    answers, pending = [], []
+
+    def held_back(request):
+        """The fake planner's answer, kept back until the test gives it."""
+        answers.append(FakePlanner.request_plan(lab.planner, request).result())
+        pending.append(asyncio.get_running_loop().create_future())
+        return pending[-1]
+
+    lab.planner.request_plan = held_back
+
+    async def scenario():
+        lab.plugin._on_path(lab.ctx, "Plan")
+        while not pending:
+            await asyncio.sleep(0)
+        lab.process.obstacles_collide = True
+        pending[0].set_result(answers[0])
+        await lab.plugin._plan_task
+
+    asyncio.run(scenario())
+    assert not lab.planner.plans[0].obstacles_collide and not lab.plugin._basis.obstacles_collide
+    lab.update()
+    assert lab.plugin.plan_state == "stale" and "the Rhino obstacles were switched on since planning" in lab.html()
+
+
+@pytest.mark.safety
+def test_switching_the_rhino_obstacles_makes_the_plan_stale_on_the_panel():
+    """A plan made with the box unticked goes stale once it is ticked, the reason on the panel."""
+    lab = Steps(("B20_R", 2))
+    lab.process.obstacles_collide = False
+    asyncio.run(lab.plan())
+    assert lab.plugin.plan_state == "ready" and not lab.plugin._basis.obstacles_collide
+    lab.process.obstacles_collide = True
+    lab.update()
+    assert lab.plugin.plan_state == "stale" and "the Rhino obstacles were switched on since planning" in lab.html()
 
 
 @pytest.mark.safety
@@ -302,7 +381,8 @@ def test_check_goal_asks_with_the_run_and_records_the_answer():
     assert request.transfer_as_free and request.label == "check goal B20_J_transfer"
     (event, fields), = lab.run.records
     assert event == "check_goal" and (fields["action"], fields["movement"]) == ("B20_J", "B20_J_transfer")
-    assert fields["data"] == answer.as_record() and goal_line(answer) in lab.ctx.lines("info")
+    assert fields["data"] == {**answer.as_record(), "obstacles_collide": True}
+    assert goal_line(answer) in lab.ctx.lines("info")
     shown = []
     ghost = SimpleNamespace(show=lambda base, joints, parts=None: shown.append((base, dict(joints))),
                             hide=lambda: shown.append(None))
@@ -355,7 +435,9 @@ class Walk(RobotLab):
         self.planner = MotionPlannerPlugin()
         self.planner._log = self.planner._pool.log = lambda _line: None
         self.executor = MovementExecPlugin()
-        self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor}
+        # * The Rhino obstacles count, as the walk was planned before their box.
+        self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor,
+                            "process": SimpleNamespace(obstacles_collide=True)}
         self.executor.setup(self.ctx)
         self.ctx.kinematics = SimpleNamespace(base_pose=lambda serial: self.bases[serial], joints=lambda serial: {})
         self.steps = AssemblyStepsPlugin()
@@ -463,6 +545,15 @@ class Executed(Steps):
             await self.ctx.next_tick()
         self.update()
 
+    async def planned_without_rhino_obstacles(self) -> None:
+        """Plan with the Rhino obstacles box unticked, then let 2.5 s pass (a lease needs still arms)."""
+        self.process.obstacles_collide = False
+        await self.plan()
+        assert self.plugin.plan_state == "ready" and not self.plugin._basis.obstacles_collide
+        for _ in range(25):
+            await self.ctx.next_tick()
+        self.update()
+
     async def confirm(self) -> None:
         """Confirm the prompt a little over 0.5 s after it opened."""
         while self.executor.prompt is None and self.executor.active:
@@ -510,6 +601,44 @@ def test_unticking_ignore_built_bars_at_the_prompt_is_refused_after_confirm():
     asyncio.run(scenario())
     assert "(built bars ignored)" in prompts[0]
     assert not lab.cindy._multi_arm.messages and "ignore built bars" in lab.executor._last
+
+
+@pytest.mark.safety
+def test_switching_the_rhino_obstacles_with_exec_sends_nothing():
+    """Ticked in the same tick as Exec (both intents before the update): the plan made without them is not sent."""
+    lab = Executed(("B20_R", 2))
+
+    async def scenario():
+        await lab.planned_without_rhino_obstacles()
+        lab.process.obstacles_collide = True
+        lab.plugin._commit(lab.ctx)
+        await lab.confirm()
+
+    asyncio.run(scenario())
+    assert not lab.cindy._multi_arm.messages and "Rhino obstacles were switched on" in lab.plugin._message
+    assert lab.plugin.plan_state == "stale"
+
+
+@pytest.mark.safety
+def test_switching_the_rhino_obstacles_at_the_prompt_is_refused_after_confirm():
+    """The prompt says the Rhino obstacles are not checked; ticked while it waits: refused after Confirm, none sent."""
+    lab = Executed(("B20_R", 2))
+    prompts = []
+
+    async def scenario():
+        await lab.planned_without_rhino_obstacles()
+        lab.plugin._commit(lab.ctx)
+        # * Stop waiting once the Exec ends: refused before its prompt, there is none to wait for.
+        while lab.executor.prompt is None and lab.executor.active:
+            await asyncio.sleep(0)
+        if lab.executor.prompt is not None:
+            prompts.append(lab.executor.prompt.line)
+        lab.process.obstacles_collide = True
+        await lab.confirm()
+
+    asyncio.run(scenario())
+    assert prompts and "(Rhino obstacles not checked)" in prompts[0]
+    assert not lab.cindy._multi_arm.messages and "Rhino obstacles were switched on" in lab.executor._last
 
 
 # --- --- --- --- --- the reused goal's base, and a plan given back stale (review L4, L5) --- --- --- --- ---
