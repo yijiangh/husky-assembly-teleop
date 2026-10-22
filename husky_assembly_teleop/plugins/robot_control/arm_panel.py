@@ -297,16 +297,16 @@ def pose_from_sliders(sliders: list[viser.GuiSliderHandle]) -> tuple[np.ndarray,
 
 
 def pose_plan_line(arm: ArmInterface, pose: list[viser.GuiSliderHandle]) -> str:
-    """What Start would do from here: distance, turn and duration of the Cartesian move."""
+    """What Start would do from here: distance, turn and duration of the Cartesian move; gray "—" before a TCP."""
     state = arm.state
+    limits = (f"(≤{CARTESIAN_MOVE_MAX_SPEED * 100:.0f} cm/s, "
+              f"≤{np.degrees(CARTESIAN_MOVE_MAX_ROTATION_SPEED):.0f} °/s, "
+              f"≥{CARTESIAN_MOVE_MIN_DURATION:.0f} s)")
     if state.tcp_position is None:
-        return note("no TCP pose yet")
+        return block(values(f"Δ {'—':>6} m {'—':>6} °   T {'—':>5} s", limits, dim=True))
     position, orientation = arm.from_husky(*pose_from_sliders(pose))
     duration, _ = cartesian_move(state.tcp_position, state.tcp_orientation, position, orientation)
     distance = float(np.linalg.norm(position - state.tcp_position))
     turn = float(np.degrees((Rotation.from_quat(state.tcp_orientation).inv()
                              * Rotation.from_quat(orientation)).magnitude()))
-    return block(values(f"Δ {distance:6.3f} m {turn:6.1f} °   T {duration:5.1f} s",
-                        f"(≤{CARTESIAN_MOVE_MAX_SPEED * 100:.0f} cm/s, "
-                        f"≤{np.degrees(CARTESIAN_MOVE_MAX_ROTATION_SPEED):.0f} °/s, "
-                        f"≥{CARTESIAN_MOVE_MIN_DURATION:.0f} s)"))
+    return block(values(f"Δ {distance:6.3f} m {turn:6.1f} °   T {duration:5.1f} s", limits))

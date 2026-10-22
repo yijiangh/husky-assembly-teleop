@@ -34,7 +34,7 @@ from ..robot_interface.base import BaseState
 from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManagerState
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
 from ..ui.phone import phone_text
-from ..ui.style import BUSY, LEVEL_COLORS, NONE, OK, block, check_chip, chip, section
+from ..ui.style import BUSY, LEVEL_COLORS, NONE, OK, block, check_chip, chip, chip_line, section
 from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
 
 # --- --- --- --- --- THRESHOLDS --- --- --- --- ---
@@ -555,7 +555,7 @@ def render_chips(checks: list[Check]) -> str:
 
 
 def render_line(name: str, checks: list[Check]) -> str:
-    """One line of a robot's row: its part's name in gray, then a chip per check."""
+    """One line of a robot's row, one line high: its part's name in gray, then a chip per check."""
     label = (f'<span style="display:inline-block;width:42px;font-size:11px;color:{NONE}">'
              f'{name}</span>')
-    return block(label + "".join(check_chip(check) for check in checks))
+    return chip_line(label + "".join(check_chip(check) for check in checks))

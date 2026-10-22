@@ -67,6 +67,12 @@ def chip_line(html: str) -> str:
     return block(f'{CHIP_LINE_STYLE}<div class="chip-line">{html}</div>')
 
 
+def note_line(text: str) -> str:
+    """Small gray text that may come and go, on one line that is always there: cut with "…", the full text on hover."""
+    return block(f'<div title="{escape(text, quote=True)}" style="font-size:11px;color:{NONE};white-space:nowrap;'
+                 f'overflow:hidden;text-overflow:ellipsis">{escape(text) or "—"}</div>')
+
+
 def note(text: str) -> str:
     """Small gray text, for placeholders."""
     return block(f'<div style="font-size:11px;color:{NONE}">{text}</div>')
