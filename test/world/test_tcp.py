@@ -1,4 +1,4 @@
-"""Tests for health.tcp_check: the reported tool0 against the kinematics' tool0, judged while the arm is still."""
+"""Tests for world.tcp.tcp_check: the reported tool0 against the kinematics' tool0, judged while the arm is still."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from husky_assembly_teleop.plugins.health import TCP_POSITION_TOLERANCE, tcp_check
+from husky_assembly_teleop.world.tcp import TCP_POSITION_TOLERANCE, tcp_check
 from husky_assembly_teleop.robot_interface.arm import STILL_AFTER
 from husky_assembly_teleop.world.checks import GOOD, WARN
 from scaffolding_assembly_core.geometry import Pose
