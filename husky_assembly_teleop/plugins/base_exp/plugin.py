@@ -47,7 +47,8 @@ from ...shared.obstacles_contract import ObstaclesContract
 from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values, warning
+from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section,
+                         values, warning)
 from ...ui.trace_plot import TracePlot
 from ...world.clearance import STOP_DISTANCE, Clearance, ClearanceRefused
 from ...world.checks import STALE_AFTER
@@ -785,7 +786,7 @@ class BaseExperimentPlugin(HuskyPlugin):
             label = "not started" if self._outcome.startswith("not started") else self._outcome.split(" → ")[0][:40]
             chips += chip(escape(label), FAIL if failed else OK, self._outcome)
         # ! The guard's alert stays until the next Start: the operator has to deal with it.
-        return (block(chips) + (warning(escape(self._alert), FAIL) if self._alert else "")
+        return (chip_line(chips) + (warning(escape(self._alert), FAIL) if self._alert else "")
                 + (warning(escape(self._auto_alert)) if self._auto_alert else ""))
 
     def _details_html(self, ctx: PluginContext) -> str:

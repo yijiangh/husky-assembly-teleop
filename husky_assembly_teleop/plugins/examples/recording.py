@@ -99,5 +99,6 @@ class ExampleRecordingPlugin(HuskyPlugin):
             self._status.content = block(chip("no robot with an arm", NONE))
             return
         running = self._task is not None and not self._task.done()
-        self._status.content = block((chip("recording", BUSY) if running else chip("idle", OK)) + values(self._result))
+        state = chip("recording", BUSY) if running else chip("idle", OK)
+        self._status.content = block(state + values(self._result or "—"))
         self._plot.draw()

@@ -164,9 +164,10 @@ class ExamplePybulletPlugin(HuskyPlugin):
             state = chip("no robots", NONE)
         elif hits:
             state = chip("collision", FAIL)
-            lines.extend(hits)
         else:
             state = chip("clear", OK)
+        # * One line for all hits, so the Move buttons below stay put.
+        lines.append(f"hits          {'; '.join(hits) or '—'}")
         lines.append(f"checked tick  {self._checked_tick}")
         self._status.content = block(state + values(*lines))
 

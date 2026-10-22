@@ -40,8 +40,8 @@ from ..ui.top_down import Dot, FloorGrid, render_top_down, scene_footprints
 from ..plugin_api.context import PluginContext
 from ..world.mocap import MARKER_ERROR_WARN, mocap_check
 from ..plugin_api.plugin import HuskyPlugin, register
-from ..ui.style import (LEVEL_COLORS, NONE, OK, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, note, numbers,
-                        section, values)
+from ..ui.style import (LEVEL_COLORS, NONE, OK, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, note_line,
+                        numbers, section, values)
 from ..world.checks import BAD, GOOD, WARN, Check
 from ..world.measured import TrackedObject
 
@@ -677,6 +677,7 @@ class MocapProbePlugin(HuskyPlugin):
             min_height: The block's least height; lower on the phone, so Record point stays on screen.
         """
         # * No check detail here (the side panel's chip has it): only the recorded point's name.
+        # ! The name line and the x y z rows are always there, so Label and Record point below never move.
         detail = ""
         if ctx.now() < self._flash_until:
             color, word, detail = FLASH_COLOR, "RECORDED", self.samples[-1].name if self.samples else ""
@@ -684,16 +685,16 @@ class MocapProbePlugin(HuskyPlugin):
             color, word = NONE, "NOT TRACKING"
         else:
             color, word = LEVEL_COLORS[check.level], BIG_WORDS[check.level]
-        if detail:
-            detail = f'<div style="font-size:clamp(14px,2.5vw,32px);opacity:.9">{escape(detail)}</div>'
+        detail = (f'<div style="font-size:clamp(14px,2.5vw,32px);opacity:.9">'
+                  f'{escape(detail) if detail else "&nbsp;"}</div>')
         probe = self._probe
-        position = ""
-        if probe is not None and probe.position is not None:
-            # * Fixed width and sign, so the digits stand still while the probe moves; dim when the fix is stale.
-            dim = "opacity:.5;" if check is None or check.level == BAD else ""
-            rows = "".join(f"<div>{axis} {value:+7.3f}</div>" for axis, value in zip("xyz", probe.position))
-            position = (f'<div style="font:700 clamp(20px,5vw,64px)/1.2 monospace;white-space:pre;'
-                        f'margin-top:8px;{dim}">{rows}</div>')
+        # * Fixed width and sign, so the digits stand still while the probe moves; dim when the fix is stale or absent.
+        xyz = None if probe is None or probe.position is None else probe.position
+        dim = "opacity:.5;" if xyz is None or check is None or check.level == BAD else ""
+        rows = "".join(f"<div>{axis} {numbers(None if xyz is None else (xyz[i],), 1, 7, 3)}</div>"
+                       for i, axis in enumerate("xyz"))
+        position = (f'<div style="font:700 clamp(20px,5vw,64px)/1.2 monospace;white-space:pre;'
+                    f'margin-top:8px;{dim}">{rows}</div>')
         # ? vh units, so the box grows with a floated, enlarged panel.
         return (f'<div style="background:{color};color:#fff;border-radius:8px;min-height:{min_height};'
                 f'display:flex;flex-direction:column;align-items:center;justify-content:center;'
@@ -742,9 +743,8 @@ class MocapProbePlugin(HuskyPlugin):
                 self._tiles[cell].color = coverage_color(self.coverage.rate(*cell))
         self._dirty.clear()
         self._coverage_status.content = self._coverage_html()
-        # ? Plain wrapping text, not `values`: an export path is long.
-        self._result.content = note(escape(self._message)) if self._message else ""
-        self._phone_result.content = phone_text(note(escape(self._message))) if self._message else ""
+        self._result.content = note_line(self._message)
+        self._phone_result.content = phone_text(note_line(self._message))
         if self._mapping.value and self._map_task is None and ctx.now() - self._map_time >= MAP_PERIOD:
             self._map_time = ctx.now()
             self._map_task = ctx.spawn("phone map", self._draw_map(ctx), survives_soft_stop=True)

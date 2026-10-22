@@ -26,7 +26,7 @@ import viser
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, section
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, chip, chip_line, section
 
 CYCLES = 3
 TIMER_SECONDS = 3.0
@@ -162,7 +162,7 @@ class ExampleSequencePlugin(HuskyPlugin):
             chips = chip("idle", NONE)
         if self.outcome:
             chips += chip(self.outcome, OK if self.outcome == "done" else FAIL)
-        self._status.content = block(chips)
+        self._status.content = chip_line(chips)
 
         progress = 0.0
         if self._step_seconds:
