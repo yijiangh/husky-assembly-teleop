@@ -165,7 +165,7 @@ class RobotControlPlugin(HuskyPlugin):
                     with parts.add_tab("Base", icon=viser.Icon.CAR):
                         self._bases.append(self._build_base(ctx, gui, serial, robot.base))
                     for arm in robot.arms.values():
-                        with parts.add_tab(arm.config.label, icon=viser.Icon.ROBOT):
+                        with parts.add_tab(arm.config.label, icon=viser.Icon.CRANE):
                             self._arms.append(self._build_arm(ctx, gui, serial, arm))
         # * The phone's Control tab: a sub-tab per robot with its own speed slider and the same D-pad.
         #   Below it, a folder per arm: Open and Close, and free drive while held.

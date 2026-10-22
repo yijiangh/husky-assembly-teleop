@@ -38,7 +38,7 @@ class ArmPlannerPanel(PlannerPanel):
     experimental = True
     planner = "arm_planner"
     tab_path = (PLAN_TAB, "Arm")
-    icon = viser.Icon.ROBOT
+    icon = viser.Icon.CRANE
     requires = ("arm_planner", "process", "collisions")
 
     def __init__(self):
