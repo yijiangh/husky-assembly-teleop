@@ -51,9 +51,10 @@ CLEARANCE = "clearance"
 
 @dataclass
 class _Source:
-    """One source's group in the panel, and its hits by label."""
+    """One source's group in the panel: its summary line, its list, and its hits by label."""
 
     folder: viser.GuiFolderHandle
+    summary: viser.GuiHtmlHandle
     list: CheckList
     hits: dict[str, CollisionHit]
 
@@ -110,18 +111,27 @@ class CollisionsPlugin(HuskyPlugin):
     # --- --- --- --- --- CONTRACT --- --- --- --- ---
 
     def replace(self, source: str, hits: Mapping[str, CollisionHit], shown: Collection[str] = ()) -> None:
-        """Make these a source's hits, dropping its earlier ones (`CollisionsContract`)."""
-        self.clear(source)
-        with self._tab() as gui:
-            folder = gui.add_folder(source)
-            with folder:
-                gui.add_html(note_line(_summary(hits)))
-                clear = gui.add_button("Clear", icon=viser.Icon.TRASH, hint=f"Remove {source}'s hits from the list")
-                checklist = CheckList(self._ctx, gui, "hits", empty_text="nothing collides")
-        clear.on_click(self._ctx.defer(f"clear {source}", lambda: self.clear(source)))
+        """Make these a source's hits, dropping its earlier ones (`CollisionsContract`).
+
+        A source already listed keeps its folder where it is, so the folders below it don't move; a new one goes last.
+        """
+        found = self._sources.get(source)
+        if found is None:
+            with self._tab() as gui:
+                folder = gui.add_folder(source)
+                with folder:
+                    summary = gui.add_html("")
+                    clear = gui.add_button("Clear", icon=viser.Icon.TRASH,
+                                           hint=f"Remove {source}'s hits from the list")
+                    checklist = CheckList(self._ctx, gui, "hits", empty_text="nothing collides")
+            clear.on_click(self._ctx.defer(f"clear {source}", lambda: self.clear(source)))
+            found = self._sources[source] = _Source(folder, summary, checklist, {})
+        for label in found.hits:
+            found.list.remove(label)
+        found.summary.content = note_line(_summary(hits))
         for label, hit in hits.items():
-            checklist.add(label, _item(label, hit), hint=_details(hit), selected=label in shown)
-        self._sources[source] = _Source(folder, checklist, dict(hits))
+            found.list.add(label, _item(label, hit), hint=_details(hit), selected=label in shown)
+        found.hits = dict(hits)
 
     def clear(self, source: str) -> None:
         """Drop a source and its hits (`CollisionsContract`)."""

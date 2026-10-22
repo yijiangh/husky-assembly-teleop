@@ -109,6 +109,19 @@ def test_replace_drops_a_sources_old_hits_and_clear_drops_the_source(server):
     assert plugin._sources == {} and plugin._empty.visible
 
 
+def test_a_new_report_keeps_the_sources_folder_where_it_is(server):
+    """Re-reporting a source refills its folder in place: the folders below it don't move, its list is the new hits."""
+    plugin = CollisionsPlugin()
+    plugin.setup(make_ctx(server))
+    plugin.replace("planner", {"a": hit()})
+    plugin.replace("calibration", {"take 1": hit()})
+    folder = plugin._sources["planner"].folder
+    plugin.replace("planner", {"b": hit(), "c": hit()})
+    found = plugin._sources["planner"]
+    assert found.folder is folder and list(plugin._sources) == ["planner", "calibration"]
+    assert list(found.list._boxes) == ["b", "c"] and "hit: " in found.summary.content
+
+
 def test_focus_follows_the_ticked_hits(server):
     """Focus offers the ticked hits; a hit no longer ticked falls back to none."""
     plugin = CollisionsPlugin()
