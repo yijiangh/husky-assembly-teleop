@@ -765,7 +765,7 @@ class BaseExperimentPlugin(HuskyPlugin):
             plot.draw()
 
     def _status_html(self, ctx: PluginContext) -> str:
-        """Chips: robot, mocap, follower, velocity controller, run; and the guard's alert."""
+        """Chips on one line: robot, mocap, follower, velocity controller, run."""
         base = ctx.world.robots[self.serial].base
         chips = chip(escape(self.serial), SECTION_CTRL)
         chips += chip("tracked", OK) if base.state.tracked else chip("not tracked", FAIL)
@@ -785,12 +785,14 @@ class BaseExperimentPlugin(HuskyPlugin):
             # * Short on the chip ("not started" without its reason), the whole outcome on hover.
             label = "not started" if self._outcome.startswith("not started") else self._outcome.split(" → ")[0][:40]
             chips += chip(escape(label), FAIL if failed else OK, self._outcome)
-        # ! The guard's alert stays until the next Start: the operator has to deal with it.
-        return (chip_line(chips) + (warning(escape(self._alert), FAIL) if self._alert else "")
-                + (warning(escape(self._auto_alert)) if self._auto_alert else ""))
+        return chip_line(chips)
 
     def _details_html(self, ctx: PluginContext) -> str:
-        """The plan and the follower's numbers, in a fixed number of rows."""
+        """The guard's and automation's alerts, then the plan and the follower's numbers in a fixed number of rows.
+
+        ! The alerts stay until the next Start: the operator has to deal with them. They sit here, below the controls,
+        so they push nothing.
+        """
         plan = self._sent if self.running else self._preview
         if plan is None:
             size = f"path      {self._preview_problem or '—'}"
@@ -808,10 +810,12 @@ class BaseExperimentPlugin(HuskyPlugin):
                       f"yaw {math.degrees(follower.yaw_error):+6.1f}°")
             command = f"v {follower.command[0]:+5.2f} m/s  w {math.degrees(follower.command[1]):+6.1f} °/s"
         label = escape(plan.label) if plan is not None else "—"
-        return block(values(f"plan      {label}", size, f"progress  {progress}", f"error     {errors}",
-                            f"command   {command}", f"last      {escape(self._outcome) or '—'}",
-                            f"auto      {escape(self._auto_note) or '—'}",
-                            f"paths     {escape(self._paths_note) or '—'}"))
+        alerts = ((warning(escape(self._alert), FAIL) if self._alert else "")
+                  + (warning(escape(self._auto_alert)) if self._auto_alert else ""))
+        return alerts + block(values(f"plan      {label}", size, f"progress  {progress}", f"error     {errors}",
+                                     f"command   {command}", f"last      {escape(self._outcome) or '—'}",
+                                     f"auto      {escape(self._auto_note) or '—'}",
+                                     f"paths     {escape(self._paths_note) or '—'}"))
 
     def _progress_percent(self) -> float:
         """Progress for the bar: of the automated series if one has a set length, else of the current run."""
