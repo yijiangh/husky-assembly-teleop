@@ -4,8 +4,8 @@ This document explains the mocap relay and gives a migration guide for older cod
 callbacks (for example HuskyMonitor).
 
 The relay lives here (`husky_assembly_teleop/mocap_relay/`, executable `husky_mocap_relay`,
-`ros2 launch husky_assembly_teleop mocap.launch.py`); it moved from crl-husky on 16 Oct 2026. crl-husky keeps what
-it publishes (`crl_husky_msgs`), the NatNet client (`crl_husky/optitrack/`) and each robot's default base
+`ros2 launch husky_assembly_teleop mocap.launch.py`), with its NatNet client (OptiTrack's SDK, `mocap_relay/natnet/`);
+both moved from crl-husky. crl-husky keeps what the relay publishes (`crl_husky_msgs`) and each robot's default base
 calibration (`crl_husky/config/robots/<serial>/mocap_config.json`).
 
 ## What Changed Compared To The Old HuskyMonitor Path

@@ -23,7 +23,8 @@ from repo_paths import REPO
 #: Our code: the package without the old monitor, plus tests and scripts. external/ and data/ are not ours.
 ROOT = REPO
 PATHS = [str(ROOT / d) for d in ("husky_assembly_teleop", "test", "scripts")]
-EXCLUDE = [str(ROOT / "husky_assembly_teleop" / "old")]
+#: The old monitor, and OptiTrack's NatNet SDK vendored next to the relay.
+EXCLUDE = [str(ROOT / "husky_assembly_teleop" / d) for d in ("old", "mocap_relay/natnet")]
 
 
 @pytest.mark.flake8

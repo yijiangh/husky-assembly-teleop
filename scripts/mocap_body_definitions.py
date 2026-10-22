@@ -6,7 +6,7 @@ Watch Motive's rigid body definitions and report refines, pivot edits, bodies ma
     python3 scripts/mocap_body_definitions.py compare /tmp/definitions.jsonl 3 17   readings 3 and 17 of a log
 
 Read-only: it only asks Motive for its model descriptions, so it can run next to the relay. Run it from the workspace
-with the venv and ROS sourced (it uses crl_husky's NatNet client). Names and streaming ids are not part of a body: the
+with the venv and ROS sourced (it uses the relay's NatNet client). Names and streaming ids are not part of a body: the
 same markers under another name or id are reported as such, not as a change.
 
 Lab test, one change at a time, noting the numbers each prints:

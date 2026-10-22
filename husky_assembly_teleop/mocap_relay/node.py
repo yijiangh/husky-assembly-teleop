@@ -26,7 +26,6 @@ from typing import Dict, List, Optional, Tuple
 
 import rclpy
 from builtin_interfaces.msg import Time
-from crl_husky.optitrack.NatNetClient import NatNetClient
 from crl_husky_msgs.msg import MocapRigidBodyPose
 from crl_husky_msgs.srv import GetStreamingMocapIds
 from geometry_msgs.msg import Point
@@ -42,6 +41,7 @@ from ..drive import drive_root
 from ..world.calibration_sessions import (DESCRIBE_HEADER, SESSIONS_FOLDER, SIM_SESSIONS_FOLDER, Calibration, explain,
                                           newest_session_file, resolve, robot_mocap_ids)
 from .log_text import box, good, wrap
+from .natnet.NatNetClient import NatNetClient
 
 #: The relay's service; whoever serves it is a running relay.
 STREAMING_IDS_SERVICE = "/mocap/get_streaming_ids"

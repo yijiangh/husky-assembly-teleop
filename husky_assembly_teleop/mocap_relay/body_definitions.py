@@ -18,10 +18,11 @@ from itertools import permutations
 from typing import Sequence
 
 import numpy as np
-from crl_husky.optitrack.DataDescriptions import DataDescriptions
-from crl_husky.optitrack.NatNetClient import NatNetClient
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.transform import Rotation
+
+from .natnet.DataDescriptions import DataDescriptions
+from .natnet.NatNetClient import NatNetClient
 
 #: NatNet message ids used here.
 NAT_REQUEST_MODELDEF, NAT_MODELDEF = 4, 5
