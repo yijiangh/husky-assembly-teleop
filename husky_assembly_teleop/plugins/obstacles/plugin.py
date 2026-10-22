@@ -29,7 +29,7 @@ import viser
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.body_gizmo import BodyGizmo
-from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, block, chip, note, section, values
+from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, block, chip, chip_line, note, section, values
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import link_id, robot_id
 from scaffolding_assembly_core.scene import Body
@@ -373,7 +373,7 @@ class ObstaclesPlugin(HuskyPlugin):
         """
         name = self.path.name if self.path else "no lab file"
         state = chip("unsaved", BUSY, "Save writes the lab file") if self.dirty else chip("saved", OK)
-        self._lab_status.content = block(chip(escape(name), NONE, str(self.path)) + state + values(
+        self._lab_status.content = chip_line(chip(escape(name), NONE, str(self.path)) + state) + block(values(
             f"{len(self.lab.shapes)} obstacles, {len(self.temporary)} temporary"))
         if self.lab.border is not None:
             self._border_x.value = tuple(round(v, 3) for v in self.lab.border.x)

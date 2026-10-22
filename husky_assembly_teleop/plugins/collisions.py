@@ -18,7 +18,6 @@ from __future__ import annotations
 import time
 from collections import Counter
 from dataclasses import dataclass
-from html import escape
 from itertools import count
 from typing import Collection, Mapping
 
@@ -33,7 +32,7 @@ from ..shared.planner.planner_panel import PLAN_TAB
 from ..ui.checklist import CheckList
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.scene_view import add_shape
-from ..ui.style import note
+from ..ui.style import note, note_line
 from scaffolding_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Pose, Shape, TriMesh
 from scaffolding_assembly_core.ids import link_id
 from scaffolding_assembly_core.scene import Scene, scene_parts
@@ -116,7 +115,7 @@ class CollisionsPlugin(HuskyPlugin):
         with self._tab() as gui:
             folder = gui.add_folder(source)
             with folder:
-                gui.add_html(note(escape(_summary(hits))))
+                gui.add_html(note_line(_summary(hits)))
                 clear = gui.add_button("Clear", icon=viser.Icon.TRASH, hint=f"Remove {source}'s hits from the list")
                 checklist = CheckList(self._ctx, gui, "hits", empty_text="nothing collides")
         clear.on_click(self._ctx.defer(f"clear {source}", lambda: self.clear(source)))

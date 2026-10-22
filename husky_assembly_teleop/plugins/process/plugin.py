@@ -33,7 +33,7 @@ from async_timeout import timeout
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, chip_line, note, section, values
 from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
@@ -464,7 +464,7 @@ class ProcessPlugin(HuskyPlugin):
             chips = chip("no process", NONE)
         if self._error:
             chips += chip("error", FAIL, self._error)
-        return block(_one_line(chips))
+        return chip_line(chips)
 
     def _details_html(self, action: Action, movement: Movement) -> str:
         """Two rows of chips and three of text describing the selected movement."""

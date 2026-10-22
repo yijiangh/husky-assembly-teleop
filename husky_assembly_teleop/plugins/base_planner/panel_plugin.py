@@ -31,7 +31,8 @@ from ...ui.base_markers import Markers
 from ...ui.ghost import RobotGhost
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, check_chip, chip, section, values
+from ...ui.style import (BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, check_chip, chip, chip_line, section,
+                         values)
 from ...robot_interface.base import live_report
 from ...world.follower import path_check
 from scaffolding_assembly_core.geometry import Pose
@@ -309,7 +310,7 @@ class BasePlannerPanel(PlannerPanel):
         if planner._sent_id is not None:
             follower = ctx.world.robots[planner._sent_serial].base.state.follower
             chips += check_chip(path_check(follower, planner._sent_id, planner._sent_at, ctx.now()))
-        return block(chips)
+        return chip_line(chips)
 
     def _details_html(self) -> str:
         """Numbers of the target and the plan, and the last message, in a fixed number of rows."""
