@@ -23,7 +23,7 @@ class CheckList:
     def __init__(self, ctx: PluginContext, gui: viser.GuiApi, label: str, empty_text: str = "nothing yet"):
         """Build the folder, the "Select all" checkbox and the empty-list note.
 
-        ! Call inside `ctx.view.ui()`, so the folder lands in the plugin's folder.
+        ! Call inside `ctx.view.ui()`, so the folder lands in the plugin's tab.
 
         Args:
             ctx: The owning plugin's context, for routing "Select all" to the main thread.

@@ -1,7 +1,7 @@
 """
 The health panel: a banner, a row per robot (with Unlock, Resume, Reconnect) and one for tracked objects.
 
-The banner sits above every plugin's folder (`ctx.view.header()`), so it shows while folders are collapsed.
+The banner sits under Stop all (`ctx.view.header()`), so it shows whichever tabs are open.
 
 A robot's row has a line of chips for its base and one for each arm with its tool.
 
@@ -85,6 +85,7 @@ class HealthPlugin(HuskyPlugin):
     """One panel listing every robot and tracked object, green when all is well."""
 
     name = "health"
+    icon = viser.Icon.HEART_RATE_MONITOR
 
     def __init__(self):
         """Start with no widgets; setup builds them."""
@@ -110,10 +111,10 @@ class HealthPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        # * The banner sits above every plugin's folder, so a problem shows while folders are collapsed.
+        # * The banner sits under Stop all, so a problem shows whichever tabs are open.
         with ctx.view.header() as gui:
             self._banner = gui.add_html("")
-        with ctx.view.ui() as gui:
+        with ctx.view.folder() as gui:
             for serial in ctx.world.robots:
                 self._robot_rows[serial] = gui.add_html("")
                 # ? A button group: the only way in viser 1.1 to put buttons side by side.

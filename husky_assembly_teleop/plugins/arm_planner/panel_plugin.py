@@ -18,7 +18,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.arm_planner_contract import ArmPlanRequest
 from ...shared.collisions_contract import CollisionsContract
-from ...shared.planner.planner_panel import PlannerPanel
+from ...shared.planner.planner_panel import PLAN_TAB, PlannerPanel
 from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import with_guesses
 from ...ui.ghost import RobotGhost
@@ -37,7 +37,8 @@ class ArmPlannerPanel(PlannerPanel):
     name = "arm_planner_panel"
     experimental = True
     planner = "arm_planner"
-    tab = ("Arm", viser.Icon.ROBOT)
+    tab_path = (PLAN_TAB, "Arm")
+    icon = viser.Icon.ROBOT
     requires = ("arm_planner", "process", "collisions")
 
     def __init__(self):
@@ -65,7 +66,7 @@ class ArmPlannerPanel(PlannerPanel):
         self.serial = next(iter(arms))
         self.arm = arms[self.serial][0]
 
-        with self._ui(ctx) as gui:
+        with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             self._robot = gui.add_dropdown("Robot", options=list(arms), initial_value=self.serial)
             self._arm = gui.add_dropdown("Arm", options=arms[self.serial], initial_value=self.arm)

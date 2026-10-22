@@ -68,6 +68,7 @@ class MocapBarsPlugin(HuskyPlugin):
     """Fits a process bar's markers to a tracked Motive rigid body and measures its deviation from the plan."""
 
     name = "mocap_bars"
+    icon = viser.Icon.RULER_2
     requires = ("process",)
     experimental = True
 

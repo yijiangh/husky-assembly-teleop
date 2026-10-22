@@ -34,9 +34,14 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`.
 
 * Panels never jump (AGENTS.md, "Panels: nothing jumps"): chips that can appear go on a line that is always there
   (`ui.style.chip_line`), text that comes and goes below the buttons.
-* Header: `ctx.view.header()` puts a short status above every plugin's folder, e.g. health's banner.
-* Tabs: `ctx.view.tab(...)` puts a panel into the side panel's tabs: Control (robot_control) and Plan, with a tab
-  per planner panel.
+* Prefer tabs to folders: users can drag tabs into windows of their own, folders stay put.
+  - `ctx.view.ui()` is the plugin's tab in the side panel, at its `tab_path` (e.g. `("Plan", "Arm")`, default its
+    name); `hidden = True` starts it in the minimized panel at the right edge, for tools not needed every session.
+  - `ctx.view.tab(label, hidden=...)` adds a further tab, nested in a tab named after the plugin, so its owner shows.
+  - `ctx.view.folder()` is a folder in the main panel, for what must always show, like health's rows.
+  - ! Set `icon`: every tab a plugin owns at the top of a panel carries it (also its phone tab); shared parents like
+    Plan carry none; tabs nested inside the plugin's tab pick their own.
+* Header: `ctx.view.header()` puts a short status under Stop all, e.g. health's banner.
 * Phone: a plugin may add a tab to the phone page with `ctx.view.phone()` (and a short status above the tabs with
   `ctx.view.phone_header()`). Keep it to what an operator needs next to the robots; the rest stays on the laptop.
 """

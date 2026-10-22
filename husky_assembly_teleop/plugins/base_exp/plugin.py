@@ -110,6 +110,7 @@ class BaseExperimentPlugin(HuskyPlugin):
     """Sends template paths to the onboard follower, by hand or at random, shows them and records the runs."""
 
     name = "base_exp"
+    icon = viser.Icon.CHART_LINE
     experimental = True
     #: Automation needs the lab's border (`ObstaclesContract.lab`).
     requires = ("obstacles",)

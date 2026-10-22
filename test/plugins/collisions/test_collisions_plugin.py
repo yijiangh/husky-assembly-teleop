@@ -58,7 +58,7 @@ def make_ctx(server: viser.ViserServer) -> SimpleNamespace:
     async def run_in_thread(function, *args):
         return function(*args)
 
-    view = SimpleNamespace(tab=tab, scene=server.scene, scene_root=ROOT)
+    view = SimpleNamespace(ui=tab, scene=server.scene, scene_root=ROOT)
     return SimpleNamespace(view=view, defer=defer, defer_value=defer_value, spawn=spawn, run_in_thread=run_in_thread,
                            clearance_trips=())
 

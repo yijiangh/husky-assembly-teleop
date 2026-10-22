@@ -48,6 +48,8 @@ class ObstaclesPlugin(HuskyPlugin):
     """Puts the lab file's obstacles, border and floor, and the temporary obstacles, into the scene, and edits them."""
 
     name = "obstacles"
+    icon = viser.Icon.BARRIER_BLOCK
+    hidden = True
 
     def __init__(self):
         """Start with an empty lab; setup reads the files."""
@@ -76,7 +78,7 @@ class ObstaclesPlugin(HuskyPlugin):
         """
         self.load(ctx)
         self._put_all(ctx)
-        with ctx.view.ui(expanded=False) as gui:
+        with ctx.view.ui() as gui:
             gui.add_html(section("lab", SECTION_CTRL))
             self._lab_status: viser.GuiHtmlHandle = gui.add_html("")
             lab_actions = gui.add_button_group("Lab", ["Save", "Revert"])

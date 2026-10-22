@@ -29,6 +29,7 @@ from pathlib import Path
 
 from typing import TYPE_CHECKING
 
+import viser
 from async_timeout import timeout
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
@@ -98,6 +99,7 @@ class ProcessPlugin(HuskyPlugin):
     """Shows the authored state at one movement at a time and steps through the schedule."""
 
     name = "process"
+    icon = viser.Icon.LIST_NUMBERS
     experimental = True
 
     def __init__(self):

@@ -4,7 +4,7 @@ A mocap probe: track one rigid body, show its live pose, and record points with 
 Points are numbered per label ("table_1", ...) and shown in the 3D view. Delete and
 Export act on the selected points, so one session can give one file per obstacle.
 "Load points" adds the points of an exported file, unselected; a name already taken is renumbered.
-A big "Probe" status panel (minimized on the right) is readable from across the room.
+A big Status tab (minimized on the right) is readable from across the room.
 The phone's Mocap tab has the same big status, Label, Record point, Map coverage, a top-down map while mapping
 (coverage cells, obstacles, robots, points, probe) and the last points.
 
@@ -263,6 +263,9 @@ class MocapProbePlugin(HuskyPlugin):
     """Tracks a mocap probe, shows its pose, and records, lists and exports points."""
 
     name = "mocap_probe"
+    hidden = True
+    tab_path = ("Mocap probe",)
+    icon = viser.Icon.CROSSHAIR
 
     def __init__(self):
         """Start with no probe tracked and no samples."""
@@ -330,12 +333,9 @@ class MocapProbePlugin(HuskyPlugin):
                                          hint="Replace the map with an exported one; mapping then adds to it.")
             self._coverage_status: viser.GuiHtmlHandle = gui.add_html("")
 
-        # * Big status in its own panel, so it can be floated and enlarged. Raw gui api: ui() would use our folder.
-        panel = ctx.view.panel()
-        with panel.add_tab("Probe", icon=viser.Icon.CROSSHAIR):
-            self._big: viser.GuiHtmlHandle = ctx.view.gui.add_html("")
-        panel.dock_right()
-        panel.minimize()
+        # * Big status in a tab of its own, so it can be dragged out and enlarged.
+        with ctx.view.tab("Status", viser.Icon.EYE, hidden=True) as gui:
+            self._big: viser.GuiHtmlHandle = gui.add_html("")
 
         # * The phone: record while walking with the probe. Tracking, export and the list stay on the laptop.
         with ctx.view.phone("Mocap", viser.Icon.CROSSHAIR) as phone:

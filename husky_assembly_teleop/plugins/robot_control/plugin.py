@@ -51,8 +51,6 @@ from .status import (ControllerPanel, arm_status, base_status, build_controller_
                      phone_base_status, refusal_chip, show_only_running, tool_status)
 from .teleop_lease import TeleopLeases
 
-#: The side panel tab this plugin fills.
-CONTROL_TAB = ("Control", viser.Icon.DEVICE_GAMEPAD_2)
 #: Seconds to wait before asking again after a refused free drive switch, so a dead service is not asked every tick.
 FREE_DRIVE_RETRY = 1.0
 #: The part name of a robot's base in refusal keys; arms use their own names.
@@ -101,6 +99,8 @@ class RobotControlPlugin(HuskyPlugin):
     """Shows each robot's state and gives basic control over it."""
 
     name = "robot_control"
+    tab_path = ("Control",)
+    icon = viser.Icon.DEVICE_GAMEPAD_2
 
     def __init__(self):
         """Start with no widgets; setup builds them."""
@@ -156,7 +156,7 @@ class RobotControlPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        with ctx.view.tab(CONTROL_TAB) as gui:
+        with ctx.view.ui() as gui:
             robots = gui.add_tab_group()
             for serial, robot in ctx.world.robots.items():
                 # "a200-0806" -> "0806"

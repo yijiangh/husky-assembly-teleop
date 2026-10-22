@@ -237,7 +237,7 @@ Some plugins show content in panels separate from the main control panel. Panels
 - The control at the right end of that bar collapses and expands the panel.
 - Drag the edge of a floating panel to resize it.
 
-The main panel (Stop all, health) is docked on the right, with the plugins' tabs below it: **Control** (`robot_control`, a tab per robot), **Plan**, with a tab per planner panel (**Arm**, **Base**), and a tab per plugin. Drag a tab out to give it a window of its own, or into another panel. Tools not needed every session (`obstacles`, `debug_gizmo`, `mocap_probe`) start in a minimized strip at the right edge. Plugins add a tab with `ctx.view.ui()` or `ctx.view.tab()` (`plugins/__init__.py`).
+The main panel (Stop all, health) floats in the top left corner. The plugins' tabs are docked on the right: **Control** (`robot_control`, a tab per robot), **Plan**, with a tab per planner panel (**Arm**, **Base**), and a tab per plugin; each plugin's tabs carry its icon. Drag a tab out to give it a window of its own, or into another panel. Tools and plots not needed every session (`obstacles`, `debug_gizmo`, `mocap_probe`, the calibration plots) start in a minimized strip at the right edge, nested under their plugin's name. Plugins add tabs with `ctx.view.ui()` and `ctx.view.tab()` (`plugins/__init__.py`).
 
 Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on the right at start. Floated and enlarged, its text scales with the panel and is readable from a distance.
 `base_exp` shows its live error and command plots in a **Base tracking** panel, docked on the left.

@@ -161,7 +161,7 @@ class HuskyMonitor(Node):
             ctx = PluginContext(
                 name=plugin.name,
                 monitor=self,
-                view=self._viz.view_for(plugin.name),
+                view=self._viz.view_for(plugin.name, plugin.hidden, plugin.tab_path, plugin.icon),
                 scene=PluginScene(self._scene, plugin.name,
                                   log_warn=lambda message, name=plugin.name: self.log_warn(f"[{name}] {message}"),
                                   snapshot=lambda: self._snapshot),

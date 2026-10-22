@@ -1,14 +1,12 @@
-"""Tests for the side panel: plugins' tabs found by path, made in order on first use, removed with their plugin."""
+"""Tests for the side panels: plugins' tabs at their tab path, made in order on first use, removed with their plugin."""
 
 from __future__ import annotations
 
 import pytest
 import viser
 
+from husky_assembly_teleop.ui.style import PATH_TABS_MARKER
 from husky_assembly_teleop.ui.visualization import Visualization
-
-CONTROL = ("Control", viser.Icon.DEVICE_GAMEPAD_2)
-PLAN = ("Plan", viser.Icon.ROUTE)
 
 
 @pytest.fixture
@@ -21,15 +19,12 @@ def viz():
 
 def test_plugins_share_parent_tabs_and_clear_only_their_own(viz):
     """Control, then Plan with Arm and Base inside; clearing the arm panel leaves Plan and Base."""
-    control, arm, base = viz.view_for("robot_control"), viz.view_for("arm_panel"), viz.view_for("base_panel")
-    with control.tab(CONTROL) as gui:
-        gui.add_button("Drive")
-    with arm.tab(PLAN, ("Arm", viser.Icon.ROBOT)) as gui:
-        gui.add_button("Plan arm")
-    with base.tab(PLAN, ("Base", viser.Icon.CAR)) as gui:
-        gui.add_button("Plan base")
-    with arm.tab(PLAN, ("Arm", viser.Icon.ROBOT)) as gui:
-        gui.add_button("Again")
+    control = viz.view_for("robot_control", tab_path=("Control",), icon=viser.Icon.DEVICE_GAMEPAD_2)
+    arm = viz.view_for("arm_panel", tab_path=("Plan", "Arm"), icon=viser.Icon.ROBOT)
+    base = viz.view_for("base_panel", tab_path=("Plan", "Base"), icon=viser.Icon.CAR)
+    for view in (control, arm, base, arm):
+        with view.ui() as gui:
+            gui.add_button("Go")
     side = viz._side
     assert side._panel._tab_labels == ("Control", "Plan")
     assert side._groups[("Plan",)]._tab_labels == ("Arm", "Base")
@@ -38,3 +33,68 @@ def test_plugins_share_parent_tabs_and_clear_only_their_own(viz):
     assert side._groups[("Plan",)]._tab_labels == ("Base",)
     control.clear()
     assert side._panel._tab_labels == ("Plan",)
+
+
+def test_own_tabs_carry_the_plugin_icon_and_shared_parents_none(viz):
+    """The plugin's tab and the tab named after it carry its icon; Plan carries none; a nested tab picks its own."""
+    arm = viz.view_for("arm_panel", tab_path=("Plan", "Arm"), icon=viser.Icon.ROBOT)
+    probe = viz.view_for("mocap_probe", hidden=True, tab_path=("Mocap probe", "Points"), icon=viser.Icon.CROSSHAIR)
+    with arm.ui():
+        pass
+    with probe.ui():
+        pass
+    with probe.tab("Status", viser.Icon.EYE, hidden=True):
+        pass
+    plan_icon, = viz._side._panel._tab_icons_html
+    probe_icon, = viz._hidden_side._panel._tab_icons_html
+    arm_icon, = viz._side._groups[("Plan",)]._tab_icons_html
+    assert plan_icon is None and arm_icon and probe_icon
+    assert viz._hidden_side._groups[("Mocap probe",)]._tab_labels == ("Points", "Status")
+
+
+def marked(tab: viser.GuiTabHandle) -> bool:
+    """Whether the tab holds the path marker."""
+    return any(getattr(child, "content", None) == PATH_TABS_MARKER for child in tab._children.values())
+
+
+def test_only_tabs_shared_by_plugins_mark_their_tab_bar_as_a_path(viz):
+    """Plan holds Arm and Base of two plugins, so its bar is a path; the probe's own tab holds its sections."""
+    for name, path in (("arm_panel", ("Plan", "Arm")), ("base_panel", ("Plan", "Base"))):
+        with viz.view_for(name, tab_path=path).ui():
+            pass
+    probe = viz.view_for("mocap_probe", tab_path=("Mocap probe", "Points"))
+    with probe.ui():
+        pass
+    with probe.tab("Status"):
+        pass
+    assert marked(viz._side._tabs[("Plan",)]) and not marked(viz._side._tabs[("Mocap probe",)])
+
+
+def test_extra_tabs_nest_under_the_plugin_name_in_the_minimized_panel(viz):
+    """Hidden tabs go in the second panel under a tab named after the plugin; it shows only while it holds a tab."""
+    obstacles, calibration = viz.view_for("obstacles", hidden=True), viz.view_for("calibration")
+    with obstacles.ui() as gui:
+        gui.add_button("Add")
+    with calibration.ui() as gui:
+        gui.add_button("Start")
+    with calibration.tab("Live", hidden=True) as gui:
+        gui.add_button("Plot")
+    with calibration.tab("Results", hidden=True) as gui:
+        gui.add_button("Figure")
+    side, hidden = viz._side, viz._hidden_side
+    assert side._panel._tab_labels == ("Calibration",)
+    assert hidden._panel._tab_labels == ("Obstacles", "Calibration") and hidden._panel.visible
+    assert hidden._groups[("Calibration",)]._tab_labels == ("Live", "Results")
+    obstacles.clear()
+    calibration.clear()
+    assert hidden._panel._tab_labels == () and not hidden._panel.visible
+
+
+def test_a_folder_goes_in_the_main_panel_not_the_tabs(viz):
+    """`folder()` makes no side panel; clearing the plugin removes the folder."""
+    health = viz.view_for("health")
+    with health.folder() as gui:
+        gui.add_html("row")
+    assert not viz._side._panel.visible and health._folder is not None
+    health.clear()
+    assert health._folder._impl.removed

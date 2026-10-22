@@ -74,7 +74,7 @@ class FakeVisualization:
         self.ports, self.frozen, self.stop_requested = (8080, 8081), False, False
         self.draws, self.broken, self.views, self.stopped = 0, {}, {}, False
 
-    def view_for(self, name: str) -> FakeView:
+    def view_for(self, name: str, *_settings: object) -> FakeView:
         """A fresh view per plugin."""
         return self.views.setdefault(name, FakeView())
 

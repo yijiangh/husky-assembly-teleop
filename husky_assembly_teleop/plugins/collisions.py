@@ -28,7 +28,6 @@ import viser
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..world.collision_hit import CollisionHit
-from ..shared.planner.planner_panel import PLAN_TAB
 from ..ui.checklist import CheckList
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.scene_view import add_shape
@@ -74,6 +73,7 @@ class CollisionsPlugin(HuskyPlugin):
 
     name = "collisions"
     experimental = True
+    icon = viser.Icon.ALERT_TRIANGLE
 
     def __init__(self):
         """Start with nothing reported."""
@@ -95,7 +95,7 @@ class CollisionsPlugin(HuskyPlugin):
     def setup(self, ctx: PluginContext) -> None:
         """Build the panel's fixed part; each source adds its own group below it."""
         self._ctx = ctx
-        with self._tab() as gui:
+        with self._ctx.view.ui() as gui:
             self._as_checked = gui.add_checkbox(
                 "As checked", initial_value=True,
                 hint="Draw meshes as the check tested them (compas_fab: each mesh's convex hull); untick for the "
@@ -103,10 +103,6 @@ class CollisionsPlugin(HuskyPlugin):
             self._focus = gui.add_dropdown("Focus", options=[NO_FOCUS], initial_value=NO_FOCUS,
                                            hint="Also show every robot as it was checked for this ticked hit, faint")
             self._empty = gui.add_html(note("no collisions reported"))
-
-    def _tab(self):
-        """The panel's tab, next to the planners'; made on first use."""
-        return self._ctx.view.tab(PLAN_TAB, ("Collisions", viser.Icon.ALERT_TRIANGLE))
 
     # --- --- --- --- --- CONTRACT --- --- --- --- ---
 
@@ -117,7 +113,7 @@ class CollisionsPlugin(HuskyPlugin):
         """
         found = self._sources.get(source)
         if found is None:
-            with self._tab() as gui:
+            with self._ctx.view.ui() as gui:
                 folder = gui.add_folder(source)
                 with folder:
                     summary = gui.add_html("")

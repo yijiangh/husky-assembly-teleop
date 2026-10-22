@@ -66,7 +66,7 @@ class PluginContext:
         Args:
             name: The owning plugin's name.
             monitor: The monitor; plugins reach it only through this context.
-            view: The plugin's private scene subtree and GUI folder.
+            view: The plugin's private scene subtree and side panel tabs.
             scene: The collision scene, limited to this plugin's own ids.
             kinematics: Robot base, joint and link poses, fixed for this tick.
             dependencies: Names declared in `requires`; only these resolve through `require`.
