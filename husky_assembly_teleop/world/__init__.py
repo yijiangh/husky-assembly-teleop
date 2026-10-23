@@ -4,6 +4,7 @@ What is in the world, and where.
   measured.py   WorldState: what sensors report (robots, tracked objects)
   checks.py     Check and its GOOD/WARN/BAD levels: a status verdict as data
   mocap.py      how a mocap fix is judged, for bases and objects alike
+  tcp.py        how the TCP an arm reports is judged against tool0 by the robot's kinematics
   freeze.py     freezes: whether what a task relies on still stands where it was measured
   clearance.py  clearances: stop a driven robot that comes too close to anything in the scene
   base_collision.py  what a robot base comes near, in a PyBullet mirror of the scene

@@ -323,8 +323,8 @@ Click **Confirm** in movement_exec.
 
 **5.5** **Expect:** the next prompt is the bar by hand:
 
-> B20_J_place_bar — do Operator places the bar by hand, then Confirm (the robot panels and free drive, also from the
-> tool's buttons, are locked until this step ends; Cancel to use them).
+> B20_J_place_bar — do Operator places the bar by hand, then Confirm (the robot panels and their free drive refuse while
+> this step has the robots' leases; Cancel to use them).
 
 Click **Confirm**.
 

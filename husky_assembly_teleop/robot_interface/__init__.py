@@ -15,6 +15,7 @@ The only package that talks to a robot; callers read state and call commands, ne
   refusal.py             Refusal: a command a part did not send and why, for the button's status chip
   frames.py              poses between the world, the husky and each arm
   ur_frames.py           the UR frame convention the arms' Cartesian commands rely on
+  tool_step.py           small tool0 moves in tool0's own frame, solved into joint angles on the URDF
   stream_stats.py        how well a high-rate stream gets through: rate, gaps, delay
   connections.py         the ROS entities one interface created, so a reconnect can recreate them
   event.py               Event: an interface's messages and sent commands, handed to listeners such as recordings

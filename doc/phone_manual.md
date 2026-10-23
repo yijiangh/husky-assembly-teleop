@@ -29,6 +29,7 @@ Start it as usual (README, "Start the monitor"). The tabs come from the plugins 
 | **Control** | `robot_control` |
 | **Health** | always there (`health` is a default plugin) |
 | **Mocap** | `mocap_probe` |
+| **Exec** | `movement_exec` (loaded with `assembly_steps`) |
 
 The ports are fixed so a bookmark keeps working: desktop **8080**, phone **8081**. If one is taken, usually by a
 monitor that is still running, the monitor refuses to start and says which port. A second monitor on purpose:
@@ -99,6 +100,15 @@ For recording points with the mocap probe (`mocap_probe`); choose its rigid body
   in blue, recorded points in pink and the probe as a white dot (grey without a fix); +x right, +y up. It is redrawn
   at most twice a second.
 - The last points. Export and delete them on the laptop.
+
+### Exec
+
+For running an assembly step next to the robot (`movement_exec`); the step is started with **Exec** on the laptop.
+
+- The status line: what runs, and whether a prompt waits.
+- The prompt, naming the robot, then **Confirm** (do what it says) and **Cancel** (answer no; with no prompt open,
+  stop the running step, every arm held).
+- The last result.
 
 ## 5. After a stop
 

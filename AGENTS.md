@@ -81,7 +81,7 @@ python3 -m pytest -m "" --old-scripts         # also the old calibration scripts
 - ! A test must not depend on how fast the machine is: workers share the cores, so a search under a wall-clock limit gets time to spare (`test_base_planner_lattice.py`).
 - `test/` mirrors the package: `test/<area>/` for `monitor`, `robot_interface`, `world`, `ui`, `plugin_api`, `shared`, `config`, `mocap_relay`, `core` (the core's mirrors as used here), `experiments`, and `test/plugins/<plugin>/`. `test/structure/` holds the layer test and the linters.
 - Mark a test `safety` when it guards a command to a real robot, or the frames and models commands rely on. Mark it `slow` when it takes over a second or checks offline analysis; every test under `test/experiments/` is slow.
-- Helpers for several folders sit in `test/` itself and import by name: `repo_paths.py`, `*_fixtures.py`, and `robot_fakes.py` (a node with a settable clock, service clients and publishers that keep what they get, an arm with its real checks, all without ROS).
+- Helpers for several folders sit in `test/` itself and import by name: `repo_paths.py`, `*_fixtures.py`, `robot_fakes.py` (a node with a settable clock, service clients and publishers that keep what they get, an arm with its real checks, all without ROS), `plugin_fakes.py` (a plugin context ticking ROS time, real robot interfaces without ROS, drivers that follow what is sent) and `robot_lab.py` (Alice, Belle and Cindy as such robots, live in the snapshot).
 
 ## Task notes
 

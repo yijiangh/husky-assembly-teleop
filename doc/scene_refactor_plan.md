@@ -190,7 +190,7 @@ Rules shared by every mirror:
 - **`PyBulletMirror`.** `obstacles` and the base collision checks (`world/base_collision.py`) use the scene;
   `example_pybullet` shows the pattern.
 - **Process objects.** The process plugin puts the selected movement's process scene (`Process.scene_at`,
-  `plugins/process/scene_bodies.py`) into the live scene: process ids prefixed (`bars/B1` → `process/bars/B1`) through
+  `shared/process_scene/scene_bodies.py`) into the live scene: process ids prefixed (`bars/B1` → `process/bars/B1`) through
   an explicit `IdMap`; bodies held in the plan follow the configured real robot (`ids.retarget`, `robots/cindy` →
   `robots/a200-0806` by the design's `serial`), and touches name the real robots and their tools. Planned robots stay
   an overlay.
@@ -208,7 +208,7 @@ Settled:
   to path ids (`bars/B1`), and each design robot has a `serial` field. Measured robots' ids use serials
   (`robots/a200-0806`): serials for all machine use, names only for humans; user-facing inputs accept both.
 - **Tool mapping.** Tools are separate objects in every planning cell; a design tool maps to the configured robot's
-  tool on the same flange (`plugins/process/scene_bodies.py`).
+  tool on the same flange (`shared/process_scene/scene_bodies.py`).
 - **Snapshot freshness.** Mirrors and planners refuse an acting robot with `base_tracked=False` or `unmeasured`
   movable joints. The monitor's base and arm planners plan anyway from the guessed values, with a warning
   (`shared/planner/planner_search.with_guesses`).
