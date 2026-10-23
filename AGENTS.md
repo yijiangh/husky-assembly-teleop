@@ -83,6 +83,17 @@ python3 -m pytest -m "" --old-scripts         # also the old calibration scripts
 - Mark a test `safety` when it guards a command to a real robot, or the frames and models commands rely on. Mark it `slow` when it takes over a second or checks offline analysis; every test under `test/experiments/` is slow.
 - Helpers for several folders sit in `test/` itself and import by name: `repo_paths.py`, `*_fixtures.py`, `robot_fakes.py` (a node with a settable clock, service clients and publishers that keep what they get, an arm with its real checks, all without ROS), `plugin_fakes.py` (a plugin context ticking ROS time, real robot interfaces without ROS, drivers that follow what is sent) and `robot_lab.py` (Alice, Belle and Cindy as such robots, live in the snapshot).
 
+## Branches
+
+- `core-port` is the main branch. Work on a side branch off it, one per feature or milestone.
+- To land a side branch: rebase it onto the latest `core-port`, run everything (`pytest -m ""`), then fast-forward
+  `core-port` to it (`git merge --ff-only`) and push. A small fix may go straight onto `core-port` when everything
+  passes.
+- ! Never rewrite `core-port` (no force push). Rebase a side branch only while nobody else builds on it; once someone
+  does, merge `core-port` into it instead.
+- The core submodule follows its `main`, crl-husky its `jg/ros2` (README names the commit the monitor needs). Push
+  crl-husky and the core before this repo, so a pin never points at a commit others cannot fetch.
+
 ## Task notes
 
 At the end of plan mode, write the spec and instructions to `tasks/<yyyy-mm-dd>_<topic>.md`. Update it when the plan changes during the work.
