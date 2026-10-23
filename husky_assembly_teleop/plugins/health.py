@@ -260,6 +260,8 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
         tool = tool_check(arm, now)
         if tool is not None:
             checks.append(tool)
+            # * Named for the tool: a second plain SIM on the arm's line would not say whose it is.
+            checks += simulated_check(robot.simulated.get(arm.config.end_effector_namespace), f"{tool.label} SIM")
         checks.append((tcp_checks or {}).get((robot.config.serial, arm.config.name),
                                              Check("tcp", WARN, "not checked yet: waiting for the arm to be still")))
         # * Only when out of date: the monitor uses the calibration, but the URDF file other tools read does not.
@@ -270,11 +272,11 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
     return lines
 
 
-def simulated_check(simulation: SimulatedPart | None) -> list[Check]:
-    """An amber SIM chip while a part announces itself as simulated, else none: checks on it are relaxed."""
+def simulated_check(simulation: SimulatedPart | None, label: str = "SIM") -> list[Check]:
+    """An amber SIM chip (`label`) while a part announces itself as simulated, else none: checks on it are relaxed."""
     if simulation is None:
         return []
-    return [Check("SIM", WARN, f"{simulation.kind} ({simulation.node}): simulated, so some safety checks are skipped")]
+    return [Check(label, WARN, f"{simulation.kind} ({simulation.node}): simulated, so some safety checks are skipped")]
 
 
 def stream_check(label: str, quality: StreamQuality, rate: float = ARM_RATE) -> Check:

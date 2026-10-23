@@ -3,7 +3,7 @@
 Tests the new monitor (`yh/core-port`: Jakob's newer code, merged on 2026-10-21, plus the Rhino obstacles box of
 2026-10-22, and since 2026-10-23 every panel in a tab of the side panel) against three simulated robots on this laptop.
 The robots come from Jakob's simulation (`launch/sim.launch.py robot:=all`, [simulation_manual.md](simulation_manual.md)),
-on crl-husky `jg/ros2` (934fc9a or later): a simulated base and the UR driver's fake hardware for the arms, parked, with a fake Motive
+on crl-husky `jg/ros2` (78041cf or later): a simulated base and the UR driver's fake hardware for the arms, parked, with a fake Motive
 that adds Motive's measured latency, jitter and marker errors, and the mocap relay that publishes each base as on the
 lab PC. Everything talks over Zenoh, as the lab does with the new monitor, through a Zenoh router of the fake lab's own.
 There is no robot, no real Motive and no tool. Plan about an hour.
@@ -93,7 +93,7 @@ Before the first real-lab run, check that the robots have the same Zenoh version
 
 This is Jakob's export of the two-module demo. Its first 18 actions are the three-robot sequence B20–B37.
 
-**0.3** Build the workspace from this branch, with crl-husky on `jg/ros2` (934fc9a or later): the fake lab runs the installed relay
+**0.3** Build the workspace from this branch, with crl-husky on `jg/ros2` (78041cf or later): the fake lab runs the installed relay
 and fake Motive, and `env.sh` refuses an install without them.
 
 ```shell
@@ -172,8 +172,8 @@ its calibrations (every robot on `crl-husky default`), and once the robots are u
   at the right edge.
 
 **Expected in the simulation:**
-- `robotiq` and `scaffolding_v3` stay red: no tool drivers.
-- The top shows about `12 PROBLEMS`: the four tools, the seven `SIM` chips and Belle's `mocap`.
+- `robotiq` and `scaffolding_v3` are green, each followed by an amber `robotiq SIM` or `scaffolding_v3 SIM` chip.
+- The top shows about `12 PROBLEMS`: the eleven `SIM` chips (three bases, four arms, four tools) and Belle's `mocap`.
 - On a busy PC a base's `signal` chip may turn red (hover: a gap); see the known issues.
 
 ---
@@ -334,8 +334,8 @@ Click **Confirm**.
 
 Click **Confirm**.
 
-**Expect:** the grasp is refused with `left_ur_arm: no tool status in the last 1 s; is its driver running?`. That is
-right for the simulation, which has no tool drivers.
+**Expect:** after about 2 s, `B20_J_grasp: every gripper screw STALLED: the bar is clamped`. The simulated tools stall
+a fixed time after the tighten, bar or no bar.
 
 **5.7** Step 2/2 is the insert. Don't run it: its Exec line says the insert is not supported yet.
 
@@ -529,8 +529,8 @@ process panel `movement 1/4  B21_H_approach`.
 **9.4** Step 2/4 is `B21_H_open`. Click Exec; the prompt is `B21_H_open — OPEN the gripper (0.426). Confirm to send.`
 Click Confirm.
 
-**Expect:** it is refused with `/a200_0804/gripper: the gripper's action server is not available`. That is right: the
-simulation has no Robotiq driver. Stop the B21_H steps here.
+**Expect:** at once, `B21_H_open: at 0.426 rad`: the simulated Robotiq reaches every goal at once. Stop the B21_H steps
+here.
 
 ---
 
@@ -596,7 +596,6 @@ These are not mistakes on your side.
 | The odd monitor start (pytest imported). | A workaround for compas_fab's stdout race (see section 1). It needs a real fix before any lab use: decision 1 afterwards. |
 | Rhino's cabinet `env39` is in a different place from the measured one. | Rhino's cabinet (y 1.63–2.23 m) is about 0.38 m nearer the park row (y = 1.35 m) than the probe-measured cabinet (`data/lab/main.json`, from y = 2.00 m). With **Rhino obstacles collide** ticked, the base planner refuses any start or target on the park row (4.1); unticked, the default, the row is fine, and the robots start on it. The Rhino file needs the fix for Rhino's own planning. |
 | Cindy's base path is refused while the process shows a movement where she holds a bar (4.2). | The base planner counts a held bar as part of the robot, and at `B20_J_transfer` the design has B20 in her grippers; from her start it reaches the measured cabinet. With the transfer workaround, the bar isn't actually there while she drives, but the base planner doesn't know the workaround. Show the action's start (**◀ action**) first. |
-| Grasp and Robotiq steps are refused. | The simulation has no tool drivers. |
 | Insert, retreat and handoff are refused; the servo logs "no servo correction (not supported yet)". | M6 and M7 are specified, not built. |
 | B20_R_home won't plan until Cindy's grippers are jogged off the bar (6.2). | In the simulation the insert and retreat never ran. |
 | Don't press **Cancel** in base_planner_panel right after a **Commit** while that robot is still driving an earlier path. | A race in Jakob's code (review finding M1, your decision 3a): within about one tick, the earlier path can keep driving with nothing watching it. Stop a driving base with **Stop all**. |
