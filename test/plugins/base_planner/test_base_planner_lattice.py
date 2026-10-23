@@ -209,12 +209,12 @@ def test_parks_inside_a_narrow_passage_either_way(world, robots, alice):  # noqa
 
 @pytest.mark.slow
 def test_goes_around_a_gap_that_only_looks_wide_enough(world, robots, alice):  # noqa: F811
-    """A gap 1 cm too narrow for the margin: the guide checks with the margin, so it leads round the walls at once."""
+    """A gap 1 cm too narrow for the margin: the cost map checks with the margin, so it leads round the walls."""
     world.sync(_snapshot(robots, _passage(WHEELS + 2.0 * Settings().margin - 0.01, depth=0.6, length=2.0)))
     debug = Debug(on=True)
     result = plan(world, alice, _at(-2.0, 0.4, 0.0), _at(2.0, 0.0), threading.Event(), debug=debug)
     assert result.path is not None, result.reason
-    assert not any(text.startswith("guide relearned") for text in debug.notes)
+    assert not any(text.startswith("cost map relearned") for text in debug.notes)
     _assert_followed_clear(world, alice, result.path)
 
 
@@ -233,12 +233,12 @@ def test_passes_between_tall_walls_with_the_arm_on_the_roomy_side(world, robots,
 
 @pytest.mark.slow
 def test_debug_records_the_search(world, robots, alice):  # noqa: F811
-    """With debug on, a passage leaves the guide's map, portals, the moves, the path as followed, and notes."""
+    """With debug on, a passage leaves the cost map, portals, the moves, the path as followed, and notes."""
     world.sync(_snapshot(robots, _passage(WHEELS + 2.0 * Settings().margin + 2.0 * 0.04)))
     debug = Debug(on=True)
     result = plan(world, alice, _at(-2.0, 0.3, 0.0), _at(2.0, 0.0), threading.Event(), debug=debug)
     assert result.path is not None, result.reason
-    for name in ("guide: no heading fits", "guide's way", "portals", "path as followed, per xICR"):
+    for name in ("cost map: no heading fits", "cost map's way", "portals", "path as followed, per xICR"):
         assert debug.layers[name].segments or debug.layers[name].points, name
     assert any(text.startswith("search:") for text in debug.notes)
     assert any("Room (margin 5 cm)" in text for text in debug.notes)

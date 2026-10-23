@@ -53,7 +53,7 @@ from ...ui.trace_plot import TracePlot
 from ...world.clearance import STOP_DISTANCE, Clearance, ClearanceRefused
 from ...world.checks import STALE_AFTER
 from . import record
-from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, PathClearance, Sampler, StandardSet
+from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, PathCollisionCheck, Sampler, StandardSet
 from .plan import Plan, plan_from
 from .report import write_report
 from .templates import PARAMETERS, TEMPLATES
@@ -140,7 +140,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._alert = ""
         self._seed = random.randrange(2 ** 31)
         self._rng = random.Random(self._seed)
-        self._clearance = PathClearance()
+        self._path_check = PathCollisionCheck()
         #: The run's error measurement, its latest sample and phase, and the time of the mocap fix measured last.
         self._tracker: Tracker | None = None
         self._sample: Sample | None = None
@@ -275,7 +275,7 @@ class BaseExperimentPlugin(HuskyPlugin):
 
     def teardown(self, ctx: PluginContext) -> None:
         """Close the clearance checker's mirror and worker."""
-        self._clearance.close()
+        self._path_check.close()
 
     # --- --- --- --- --- INTENTS --- --- --- --- ---
 
@@ -621,7 +621,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         """
         pose = self._robot_pose(ctx, serial)
         plan = _return_plan(serial, pose, home)
-        hit = await self._clearance.path_hit(ctx.scene.snapshot, serial, plan.path.polyline(), RETURN_CLEARANCE)
+        hit = await self._path_check.path_hit(ctx.scene.snapshot, serial, plan.path.polyline(), RETURN_CLEARANCE)
         if hit is not None:
             self._stop_auto(ctx, f"stopped: the way back to the start passes {hit}; move the robot to open space")
             return False
@@ -655,7 +655,7 @@ class BaseExperimentPlugin(HuskyPlugin):
                 plan = twist_plan(serial, settings["parameters"]["v"], settings["parameters"]["w"], anchor)
             else:
                 plan, _ = plan_from(serial, settings, anchor)
-            if plan is not None and await self._clearance.path_hit(snapshot, serial, plan.path.polyline()) is None:
+            if plan is not None and await self._path_check.path_hit(snapshot, serial, plan.path.polyline()) is None:
                 return plan, tries
             if tries >= SAMPLE_TRIES:
                 break

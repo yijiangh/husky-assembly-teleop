@@ -193,12 +193,12 @@ def check_poses(polyline: np.ndarray) -> np.ndarray:
     return np.array(picked)
 
 
-class PathClearance:
+class PathCollisionCheck:
     """Checks a robot's planned path against the rest of the world, in its own mirror on its own worker thread."""
 
     def __init__(self):
         """Start the worker; the mirror is made on the worker at the first check."""
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="base-exp-clearance")
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="base-exp-path-check")
         #: ! Worker thread only.
         self._world = BaseCollisionWorld()
 
