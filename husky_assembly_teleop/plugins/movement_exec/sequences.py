@@ -2,7 +2,8 @@
 A step's parts, run one at a time: a motion along its plan, a tool step, or a step done by hand.
 
 Each part asks the operator first, the robot named, and checks the world again after Confirm. A motion is then rebuilt
-from the live joints and sent in the same tick, so nothing can change between the last check and the send.
+from the live joints and sent in the same tick, so nothing can change between the last check and the send; the other
+robots are frozen (`ctx.freeze`) until it ends.
 
 ! Main thread, inside the plugin's task.
 """
@@ -31,6 +32,7 @@ from ...shared.execution.tools import DRY_RUN as TOOL_DRY, REFUSED as TOOL_REFUS
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, CLOSE_PART, DONE, DRY_RUN, FAILED,
                                               GRASP_PART, HOLD_NOT_SENT, MOTION_PART, OPEN_PART, REFUSED, REFUSED_PART,
                                               current_primary)
+from ...world.freeze import WorldMoved, take_basis
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.geometry import Pose
@@ -42,6 +44,7 @@ if TYPE_CHECKING:
     from ...shared.execution.send import MotionCommand
     from ...shared.execution.tools import ToolOutcome
     from ...shared.movement_exec_contract import ExecRequest, PartPlan
+    from ...world.freeze import Basis, Freeze
 
 #: Seconds the arms stand still after the travel to load before the force sensors are zeroed (old W:5781).
 FT_ZERO_SETTLE = 2.0
@@ -89,6 +92,7 @@ class PartRun:
         end: The acting arms' measured joints after a motion that arrived, by name.
         base: The acting robot's base then.
         progress: How far a motion's send got, for a cancel's record; None for other parts.
+        freeze: The other robots' freeze while a motion runs; its `problem` says why it broke. None for other parts.
     """
 
     part: PartPlan
@@ -100,6 +104,7 @@ class PartRun:
     end: dict[str, float] | None = None
     base: Pose | None = None
     progress: SendProgress | None = None
+    freeze: Freeze | None = None
 
     def ended(self, result: str, status: str, reason: str) -> None:
         """Say how the part ended."""
@@ -169,11 +174,27 @@ def others_moving(job: Job) -> str:
     """Why the part must not move now: another robot moves, or this robot's base moves; else "".
 
     ! One motion at a time across every robot: checked before the prompt, after Confirm and, for a motion, every tick
-      while the arms move (`send_motion`'s watch). The request leases every robot, so only motion this monitor did not
-      send (the pendant, a node on the robot) can show up here.
+      while the arms move (`send_motion`'s watch, next to the freeze). The request leases every robot, so only motion
+      this monitor did not send (the pendant, a node on the robot) can show up here.
     """
     serial, now = job.request.serial, job.ctx.now()
     return moving_reason(job.ctx.world, now, besides=serial) or base_moving(job.robot.base.state, f"{serial} base", now)
+
+
+def others_basis(job: Job) -> Basis:
+    """What a motion relies on standing still: the other robots' arms and bases, measured now, for `ctx.freeze`.
+
+    Arms that never sent joint states and bases never fixed by mocap this session are left out, as `moving_reason`
+    leaves them out (that robot is not running, or not tracked: the plan did not check against it).
+
+    Raises:
+        WorldMoved: If one of them can no longer be measured (stale joints, mocap lost).
+    """
+    others = [(serial, robot) for serial, robot in job.ctx.world.robots.items() if serial != job.request.serial]
+    return take_basis(job.ctx.world, job.ctx.now(),
+                      arms=[(serial, name) for serial, robot in others for name, arm in robot.arms.items()
+                            if arm.state.last_update_time is not None],
+                      bases=[serial for serial, robot in others if robot.base.state.last_fix_time is not None])
 
 
 def live_command(job: Job) -> MotionCommand | str:
@@ -261,9 +282,17 @@ async def _motion(job: Job, run: PartRun) -> None:
         run.ended(REFUSED, "refused", command)
         return
     run.command = command.as_record()
+    try:
+        basis = others_basis(job)
+    except WorldMoved as unmeasured:
+        run.ended(REFUSED, "refused", f"can't tell whether the other robots stand still: {unmeasured}")
+        return
     run.progress = SendProgress()
-    outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run, watch=lambda: others_moving(job),
-                                progress=run.progress)
+    # * Both hold every arm: the watch at another robot's first activity, the freeze once one was displaced (a push
+    #   too) or lost to mocap, which cancels this task.
+    with ctx.freeze(basis) as run.freeze:
+        outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run, watch=lambda: others_moving(job),
+                                    progress=run.progress)
     run.outcome = outcome.as_record()
     result = {ARRIVED: DONE, SENT_DRY: DRY_RUN, SENT_REFUSED: REFUSED, SENT_NOT_HELD: HOLD_NOT_SENT}.get(
         outcome.status, FAILED)

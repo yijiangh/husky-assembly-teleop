@@ -10,7 +10,7 @@ it was sent, feeding its joint states and the safety sync's status as the robot 
 
 Leases: a fake robot's parts share its soft-stop latch and its robot lease slot, free at first, as on a real robot.
 Code that sends to them takes the lease as the monitor's plugins do (`FakeContext.take_lease`, the real one), or a
-test hands it the lease every test holds (`lease_to_test`).
+test hands it the lease every test holds (`lease_to_test`). Freezes are the real ones too, checked every tick.
 """
 
 from __future__ import annotations
@@ -91,6 +91,10 @@ class FakeContext:
     take_lease = PluginContext.take_lease
     lease_robots = PluginContext.lease_robots
     _lease_slots = PluginContext._lease_slots
+    #: Freezes, checked after each tick's step: the real `PluginContext` code.
+    freeze = PluginContext.freeze
+    _check_freezes = PluginContext._check_freezes
+    _own_task = PluginContext._own_task
 
     def __init__(self, robots: tuple = (), plugins: dict | None = None, snapshot: Scene | None = None,
                  step: Callable[[float], None] = lambda _t: None, drive_root=None, name: str = "a plugin"):
@@ -108,6 +112,9 @@ class FakeContext:
         #: The leases taken with `take_lease`; the tasks spawned to survive a soft stop.
         self._leases: set = set()
         self.survivors: set[asyncio.Task] = set()
+        #: The tasks spawned, and the freezes being watched with the task each cancels.
+        self._tasks: set[asyncio.Task] = set()
+        self._freezes: dict = {}
         self.t, self.step = 10.0, step
         #: Whether the plugin was stopped or torn down (`PluginContext.closed`).
         self.closed = False
@@ -144,6 +151,7 @@ class FakeContext:
     def spawn(self, label: str, work, survives_soft_stop: bool = False) -> asyncio.Task:
         """Start a task on the running loop; one a soft stop leaves alone is kept in `survivors`."""
         task = asyncio.get_running_loop().create_task(work, name=label)
+        self._tasks.add(task)
         if survives_soft_stop:
             self.survivors.add(task)
         return task
@@ -153,9 +161,10 @@ class FakeContext:
         return await asyncio.get_running_loop().run_in_executor(None, partial(function, *args, **kwargs))
 
     async def next_tick(self) -> None:
-        """Advance 0.1 s, step the world, let other tasks run."""
+        """Advance 0.1 s, step the world, cancel the tasks whose freeze broke, let other tasks run."""
         self.t += 0.1
         self.step(self.t)
+        self._check_freezes()
         await asyncio.sleep(0)
 
     async def wait_until(self, predicate: Callable[[], bool], timeout_s: float | None = None,

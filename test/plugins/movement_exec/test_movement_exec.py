@@ -20,7 +20,7 @@ from husky_assembly_teleop.monitor import HuskyMonitor
 from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.plugins.movement_exec import plugin as exec_module
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
-from husky_assembly_teleop.robot_interface.base import FollowerState
+from husky_assembly_teleop.robot_interface.base import BaseState, FollowerState
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
 from husky_assembly_teleop.shared.execution.basis import basis_of
 from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT,
@@ -906,6 +906,90 @@ def test_a_base_path_sent_just_before_the_lease_holds_the_acting_robots_arms_onc
     result, _held = execute(lab, lab.request(delta=0.6), True, during=follow_soon)
     assert result.status == FAILED and "a200-0805 base is following a path" in result.reason
     assert lab.run.files()[-1]["outcome"]["status"] == "INTERRUPTED"
+
+
+def track_base(lab: Lab, serial: str) -> SimpleNamespace:
+    """Give a robot's base rigid body 9, a live mocap pose at the origin every tick until `mocap.lost` is set.
+
+    Returns:
+        SimpleNamespace: `state`, the base's state, and `lost`.
+    """
+    mocap = SimpleNamespace(state=BaseState(), lost=False)
+    lab.robots[serial].base = SimpleNamespace(mocap_id=9, state=mocap.state)
+    step = lab.ctx.step
+
+    def tick(t):
+        step(t)
+        state = mocap.state
+        if state.position is None:
+            state.position, state.orientation = np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0])
+        state.last_update_time = t
+        if not mocap.lost:
+            state.tracked = state.tracking_valid = True
+            state.marker_errors.append((t, 0.0))
+            state.last_fix_time = t
+
+    lab.ctx.step = tick
+    tick(lab.ctx.t)
+    return mocap
+
+
+@pytest.mark.safety
+def test_a_base_driving_or_pushed_during_the_motion_holds_the_acting_robots_arms():
+    """Belle's tracked base moves 2 cm while Cindy's arms move, its wheels still (a push): the freeze holds Cindy.
+
+    The watch sees a robot's first activity (wheels, follower, joints); the freeze sees displacement, whatever moved it.
+    """
+    lab = Lab()
+    mocap = track_base(lab, "a200-0805")
+
+    async def push_soon(lab):
+        while not lab.cindy._multi_arm.messages:
+            await asyncio.sleep(0)
+        mocap.state.position = np.array([0.02, 0.0, 0.0])
+
+    result, _held = execute(lab, lab.request(delta=0.6), True, during=push_soon)
+    assert result.status == FAILED and "robot a200-0805 base moved 20 mm" in result.reason
+    assert "Stop all" not in result.reason and lab.free()
+    holds = [sum(len(message.points) == 1 for message in arm._trajectory.messages) for arm in lab.cindy.arms.values()]
+    assert holds == [1, 1] and lab.run.files()[-1]["outcome"]["status"] == "INTERRUPTED"
+    (_event, fields), = [record for record in lab.run.records if record[0] == "cancel"]
+    assert fields["data"]["reason"] == "freeze broken: robot a200-0805 base moved 20 mm, 0.0 deg"
+
+
+@pytest.mark.safety
+def test_another_robot_lost_by_mocap_during_the_motion_holds_the_acting_robots_arms():
+    """Belle's base pose is lost while Cindy's arms move: it may move unseen, so Cindy is held."""
+    lab = Lab()
+    mocap = track_base(lab, "a200-0805")
+
+    async def hide_soon(lab):
+        while not lab.cindy._multi_arm.messages:
+            await asyncio.sleep(0)
+        mocap.lost = True
+
+    result, _held = execute(lab, lab.request(delta=0.6), True, during=hide_soon)
+    assert result.status == FAILED and "robot a200-0805 base: no valid mocap pose" in result.reason
+
+
+@pytest.mark.safety
+def test_another_robot_lost_by_mocap_at_the_prompt_is_refused_after_confirm():
+    """Belle's base pose, tracked before, is lost while Cindy's prompt waits: refused after Confirm, nothing sent."""
+    lab = Lab()
+    mocap = track_base(lab, "a200-0805")
+
+    async def scenario():
+        future = lab.plugin.request_execute(lab.request())
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        mocap.lost = True
+        await answer(lab, True)
+        return await future
+
+    result = run_guarded(scenario())
+    assert result.status == REFUSED and "can't tell whether the other robots stand still: robot a200-0805 base" \
+        in result.reason
+    assert not lab.cindy._multi_arm.messages and lab.free()
 
 
 @pytest.mark.safety

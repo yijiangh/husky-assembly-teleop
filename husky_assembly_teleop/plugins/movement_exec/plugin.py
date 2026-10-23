@@ -4,7 +4,8 @@ Run one step of the assembly on the real robot: its motion along the plan, its t
 Requests come through `MovementExecContract`; each part runs after the operator's Confirm and is recorded in the
 assembly run. Every robot is leased from the request to its end, so nothing else here moves a robot, and every check
 runs again after Confirm, with the command rebuilt from the live joints in the same tick. Cancel or Stop all ends it
-with every arm held.
+with every arm held; so does another robot starting to move, or one displaced (`ctx.freeze`, pushes too) or lost to
+mocap while a motion runs.
 
 - ! EXPERIMENTAL, the first plugin that runs process movements on the robots: keep the e-stops in hand.
 """
@@ -27,7 +28,7 @@ from ...shared.assembly_run_contract import ASSEMBLY_TAB
 from ...shared.execution.basis import STALE_BASE
 from ...shared.execution.moving import moving_reason
 from ...shared.execution.operator import PromptBox
-from ...shared.execution.send import motion_command
+from ...shared.execution.send import INTERRUPTED, motion_command
 from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT, MAX_TRAJ_TIME,
                                               MOTION_PART, REFUSED, REFUSED_PART, ExecRequest, ExecResult, serial_of)
 from .panel import ExecPanel
@@ -259,6 +260,8 @@ class MovementExecPlugin(HuskyPlugin):
                     result = ExecResult(DRY_RUN, "dry run: every check passed, nothing sent", (), end, base) \
                         if job.dry_run else ExecResult(DONE, "every part done", tuple(done), end, base)
         finally:
+            # ! Given back even after HOLD_NOT_SENT, when an arm may still move: the operator recovers it with
+            #   robot_control, which needs the lease.
             lease.release()
             self._prompts.current = None
             if not future.done():
@@ -269,10 +272,12 @@ class MovementExecPlugin(HuskyPlugin):
         """Record a part cut short by a cancel (where the arms stopped, the holds) and say who cancelled it.
 
         Returns:
-            ExecResult: CANCELLED, or HOLD_NOT_SENT when an arm refused its hold.
+            ExecResult: CANCELLED; FAILED when the freeze broke (another robot moved); HOLD_NOT_SENT when an arm
+                refused its hold.
         """
         part, progress = run.part, run.progress
-        reason = self._cancel_reason or cancelled_by(job.ctx)
+        moved = None if self._cancel_reason or run.freeze is None else run.freeze.problem
+        reason = self._cancel_reason or (f"freeze broken: {moved}" if moved else cancelled_by(job.ctx))
         refused = progress.hold_not_sent if progress is not None else []
         if progress is not None:
             run.outcome = {"seconds": progress.seconds, "end": progress.end, "holds": dict(progress.holds)}
@@ -282,6 +287,8 @@ class MovementExecPlugin(HuskyPlugin):
         if refused:
             run.ended(HOLD_NOT_SENT, HOLD_NOT_SENT, f"HOLD NOT SENT on {', '.join(refused)}: stop {job.request.serial} "
                                                     f"with the teach pendant or the e-stop (cancelled: {reason})")
+        elif moved:
+            run.ended(FAILED, INTERRUPTED, f"{moved}; every arm held")
         else:
             run.ended(CANCELLED, "cancelled", f"cancelled ({reason})")
         job.event("cancel", part.movement, {"reason": reason})
