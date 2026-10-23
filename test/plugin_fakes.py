@@ -181,16 +181,16 @@ class FakeContext:
         until = self.t + seconds
         await self.wait_until(lambda: self.t >= until)
 
-    def log_info(self, message: str) -> None:
-        """Keep the line."""
+    def log_info(self, message: str, topic: str = "") -> None:
+        """Keep the line; the topic is not kept."""
         self.logs.append(("info", message))
 
-    def log_warn(self, message: str) -> None:
-        """Keep the line."""
+    def log_warn(self, message: str, topic: str = "") -> None:
+        """Keep the line; the topic is not kept."""
         self.logs.append(("warn", message))
 
-    def log_error(self, message: str) -> None:
-        """Keep the line."""
+    def log_error(self, message: str, topic: str = "") -> None:
+        """Keep the line; the topic is not kept."""
         self.logs.append(("error", message))
 
     def lines(self, level: str) -> list[str]:
