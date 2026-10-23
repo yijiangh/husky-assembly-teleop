@@ -14,8 +14,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 session="${FAKE_LAB_SESSION:-fake_lab}"
 # * The panes' shells come from the tmux server, not from this shell: pass the fake-lab settings that are set.
 settings=""
-for name in FAKE_LAB_HOME FAKE_LAB_DOMAIN FAKE_LAB_PORT FAKE_LAB_UR_PREFIX; do
-    [ -n "${!name}" ] && settings+="$name=${!name} "
+for name in ${!FAKE_LAB_*}; do
+    settings+="$name=$(printf %q "${!name}") "
 done
 if ! tmux has-session -t "$session" 2>/dev/null; then
     tmux new-session -d -s "$session" -n lab -x 220 -y 60

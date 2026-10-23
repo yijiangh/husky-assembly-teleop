@@ -8,11 +8,12 @@
 
 set -e
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The fake-lab settings that are set (FAKE_LAB_*), for the clean environment.
+settings=(); for name in ${!FAKE_LAB_*}; do settings+=("$name=${!name}"); done
 
 # ! A clean environment: your shell's ROS settings (domain, middleware, the lab workspace) never leak in.
 exec env -i HOME="$HOME" USER="$USER" PATH=/usr/local/bin:/usr/bin:/bin TERM="${TERM:-xterm}" \
-    LANG="${LANG:-C.UTF-8}" FAKE_LAB_HOME="${FAKE_LAB_HOME:-$HOME/husky_fake_lab}" \
-    FAKE_LAB_DOMAIN="$FAKE_LAB_DOMAIN" FAKE_LAB_UR_PREFIX="$FAKE_LAB_UR_PREFIX" \
+    LANG="${LANG:-C.UTF-8}" "${settings[@]}" \
     bash --noprofile --norc -c '
         source "$0/env.sh" || exit 1
         mkdir -p "$FAKE_LAB_HOME" && cd "$FAKE_LAB_HOME"  # out of any checkout

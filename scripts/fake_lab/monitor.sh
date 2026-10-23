@@ -17,6 +17,8 @@
 
 set -e
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The fake-lab settings that are set (FAKE_LAB_*), for the clean environment.
+settings=(); for name in ${!FAKE_LAB_*}; do settings+=("$name=${!name}"); done
 port="${1:-${FAKE_LAB_PORT:-8080}}"
 FAKE_LAB_HOME="${FAKE_LAB_HOME:-$HOME/husky_fake_lab}"
 mkdir -p "$FAKE_LAB_HOME/logs"
@@ -25,7 +27,7 @@ log="$FAKE_LAB_HOME/logs/monitor_$(date +%Y%m%d_%H%M%S).log"
 # ! A clean environment: your shell's ROS settings (domain, middleware, the lab workspace) never leak in.
 exec env -i HOME="$HOME" USER="$USER" PATH=/usr/local/bin:/usr/bin:/bin TERM="${TERM:-xterm}" \
     LANG="${LANG:-C.UTF-8}" DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
-    FAKE_LAB_HOME="$FAKE_LAB_HOME" FAKE_LAB_DOMAIN="$FAKE_LAB_DOMAIN" FAKE_LAB_UR_PREFIX="$FAKE_LAB_UR_PREFIX" \
+    "${settings[@]}" \
     bash --noprofile --norc -c '
         source "$0/env.sh" || exit 1
         if [ ! -f "$HUSKY_DRIVE_ROOT/$FAKE_LAB_PROCESS/process.json" ]; then

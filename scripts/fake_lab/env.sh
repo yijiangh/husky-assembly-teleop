@@ -5,9 +5,10 @@
 #   domains (80, 84-86).
 # ! The monitor's Drive root is a scratch folder (~/husky_fake_lab/drive): runs/ never reach the real Drive.
 
-#: This checkout and its workspace (ros2_ws_next): scripts/fake_lab/ -> the repo -> src/ -> the workspace.
+#: This checkout and its workspace: scripts/fake_lab/ -> the repo -> src/ -> the workspace, unless FAKE_LAB_WS names
+#: one (for a checkout outside a workspace, e.g. a worktree).
 FAKE_LAB_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-FAKE_LAB_WS="$(cd "$FAKE_LAB_REPO/../.." && pwd)"
+FAKE_LAB_WS="${FAKE_LAB_WS:-$(cd "$FAKE_LAB_REPO/../.." && pwd)}"
 #: Scratch data: the Drive copy (drive/) and the monitor logs (logs/).
 FAKE_LAB_HOME="${FAKE_LAB_HOME:-$HOME/husky_fake_lab}"
 #: The process the test uses, relative to the Drive root.
@@ -38,6 +39,17 @@ if [ -n "$FAKE_LAB_UR_PREFIX" ]; then
     export PYTHONPATH="$FAKE_LAB_UR_PREFIX/local/lib/python3.10/dist-packages:$PYTHONPATH"
 fi
 source "$FAKE_LAB_WS/install/setup.bash"
+# ? Only for a checkout the workspace does not install (e.g. a worktree): an install of this package alone, built from
+#   it with --symlink-install, over the workspace's.
+if [ -n "$FAKE_LAB_OVERLAY" ]; then
+    source "$FAKE_LAB_OVERLAY/local_setup.bash"
+fi
+# * The core and tamp of this checkout's pins, ahead of the venv's (those of the workspace's checkout).
+for package in scaffolding_assembly_core husky_assembly_tamp; do
+    if [ -d "$FAKE_LAB_REPO/external/$package/$package" ]; then
+        export PYTHONPATH="$FAKE_LAB_REPO/external/$package:$PYTHONPATH"
+    fi
+done
 export HUSKY_DRIVE_ROOT="$FAKE_LAB_HOME/drive"
 
 # ! Every fake-lab node runs on rmw_zenoh (the lab PC needs it too: README, One-time setup).
