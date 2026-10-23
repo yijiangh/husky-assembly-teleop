@@ -19,7 +19,6 @@ Process folders are given relative to the Drive root (`drive.py`), e.g. "data_de
 Loading an old compas_fab export converts it into `<export>_process` (reused while up to date) and loads that.
 The panel warns where a process robot or its tools differ from the configured real robot (`world/model_check.py`).
 
-! EXPERIMENTAL: how processes load, and what planners read, may still change.
 ! Loading a relative folder needs the Drive root (HUSKY_DRIVE_ROOT or `drive_root`).
 ! Loading runs on a worker thread that only returns a result; viser nodes are added on the main thread.
 """
@@ -97,7 +96,6 @@ class ProcessPlugin(HuskyPlugin):
 
     name = "process"
     icon = viser.Icon.LIST_NUMBERS
-    experimental = True
 
     def __init__(self):
         """Start with nothing loaded."""
