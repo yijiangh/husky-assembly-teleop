@@ -4,10 +4,10 @@ Clearances: while a task drives a robot, stop it once it comes too close to anyt
 Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, tracked objects) need not know.
 
 - Checked against the whole tick snapshot, other robots included; allowed contacts (`Body.touches`, what a robot
-  holds) are skipped.
+  holds) are skipped. Other robots not measured are checked as their stand-ins (`stand_ins.py`).
 - ! What cannot be checked counts as too close: a lost base pose, or a robot the mirror cannot place. Only arms named
-  in `Clearance.unknown_arms` may be unknown (manual moves): they are checked at their stow pose. A robot that
-  cannot be checked when a clearance starts refuses it (`ClearanceRefused`), so nothing is sent.
+  in `Clearance.unknown_arms` may be unknown (manual moves): they are checked where last seen, or stowed. A robot
+  that cannot be checked when a clearance starts refuses it (`ClearanceRefused`), so nothing is sent.
 - One worker thread checks one snapshot at a time, a tick or two behind the robot. Not an emergency stop.
 - On a trip, `PluginContext.clearance` soft stops the robot (Resume needed) and cancels the task. The monitor keeps
   the last TRIPS_KEPT trips with what came too close (`ClearanceTrip`), for the collisions plugin.
@@ -25,6 +25,7 @@ from scaffolding_assembly_core.scene import Scene
 from ..robot_interface.soft_stop import MotionRefused
 from .base_collision import BaseCollisionWorld
 from .collision_hit import CollisionHit
+from .stand_ins import with_stand_ins
 
 #: Default distance, metres, below which a clearance trips.
 STOP_DISTANCE = 0.1
@@ -43,8 +44,10 @@ class Clearance:
         margin: Distance below which it trips, metres.
         problem: Why it tripped, or None while it holds.
         hit: What came too close, once tripped; None while it holds, or when it could not be checked.
-        unknown_arms: Arms whose joints may be unknown, checked at their stow pose, or ALL_ARMS; none by default.
+        unknown_arms: Arms whose joints may be unknown, checked where last seen or stowed, or ALL_ARMS; none by
+            default.
             The base pose must always be known.
+        stand_ins: Other robots not measured when it started, and how they are checked (`StandIns.warnings`).
     """
 
     serials: tuple[str, ...]
@@ -52,6 +55,7 @@ class Clearance:
     problem: str | None = None
     hit: CollisionHit | None = None
     unknown_arms: Collection[str] | Literal["all"] = ()
+    stand_ins: tuple[str, ...] = ()
 
 
 class ClearanceRefused(MotionRefused):
@@ -148,7 +152,7 @@ class ClearanceChecker:
                 found.append((key, f"cannot be checked: {problem}", None))
             else:
                 checked.append((key, own, margin))
-        # * The unknown joints left may be: take them as known, at the stow pose the kinematics filled in.
+        # * The unknown joints left may be: take them as known, where the kinematics has them (last seen, or stowed).
         #   A strict clearance on the same robot failed above already.
         lenient = {own for _key, own, _margin in checked if snapshot.robots.get(own) is not None
                    and snapshot.robots[own].unmeasured}
@@ -156,6 +160,7 @@ class ClearanceChecker:
             snapshot = replace(snapshot, robots={object_id: replace(robot, unmeasured=frozenset())
                                                  if object_id in lenient else robot
                                                  for object_id, robot in snapshot.robots.items()})
+        snapshot = with_stand_ins(snapshot, {own for _key, own, _margin in checked}).scene
         self._world.sync(snapshot)
         for key, own, margin in checked:
             try:

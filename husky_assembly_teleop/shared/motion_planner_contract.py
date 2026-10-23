@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from ..world.collision_hit import CollisionHit
     from .assembly_planning.process_steps import LoadedProcess, Step
     from .assembly_planning.route_result import GoalCheck, RouteResult
-    from .assembly_planning.scene_for import RobotBelief
 
 
 @dataclass(frozen=True)
@@ -31,7 +30,6 @@ class MotionPlanRequest:
         step: The movement.
         snapshot: `ctx.scene.snapshot`, taken on the main thread: the acting robot's base and joints are the start.
         robots: The configured robots, `ctx.config.robots`.
-        beliefs: Live robot id -> where it was last recorded, for robots not measured (`scene_for`).
         transfer_as_free: The transfer workaround (`classify`).
         ignore_built: Plan as if the built bars were not there (`scene_for`).
         obstacles_collide: Whether the process's obstacles from Rhino count (`scene_for`); the process plugin's box.
@@ -44,7 +42,6 @@ class MotionPlanRequest:
     step: Step
     snapshot: Scene
     robots: tuple[RobotConfig, ...]
-    beliefs: Mapping[str, RobotBelief] = field(default_factory=dict)
     transfer_as_free: bool = False
     ignore_built: bool = False
     obstacles_collide: bool = True

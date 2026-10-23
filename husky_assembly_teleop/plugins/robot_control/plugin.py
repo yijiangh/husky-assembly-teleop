@@ -205,8 +205,8 @@ class RobotControlPlugin(HuskyPlugin):
             clearance = gui.add_checkbox(
                 "Clearance", initial_value=True,
                 hint=f"While driving, soft stop the base once it comes within {STOP_DISTANCE * 100:.0f} cm of anything "
-                     f"in the scene; an arm whose joints are not known counts as stowed. Untick to drive out of a "
-                     f"tight spot; the phone's D-pad follows it too.")
+                     f"in the scene; an arm whose joints are not known counts where last seen, or stowed. Untick to "
+                     f"drive out of a tight spot; the phone's D-pad follows it too.")
             return speed, clearance
 
         panel, built = build_controller_panel(ctx, gui, base.controllers,

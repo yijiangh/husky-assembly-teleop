@@ -17,6 +17,8 @@ from scaffolding_assembly_core.scene import Body, Scene, world_poses
 
 pytestmark = [pytest.mark.safety, pytest.mark.slow]
 
+#: Alice and Belle.
+CONFIGS = tuple(robot_config_from_serial(serial, DATA) for serial in ("0804", "0805"))
 #: A wall across the floor at x = 1 m.
 WALL = Body("obstacles/wall", box_geometry((0.2, 4.0, 1.0)), Pose((1.0, 0.0, 0.5)), label="wall")
 
@@ -80,5 +82,25 @@ def test_an_unknown_arm_trips_a_strict_clearance_and_counts_as_stowed_in_a_lenie
         (_key, why, _hit), = found(checker, snapshot(config, -2.0, unknown), own,
                                    assumable_joints(config.model.movable_joints, ["left_ur_arm"]))
         assert why.startswith("cannot be checked")
+    finally:
+        checker.close()
+
+
+def test_another_robot_that_lost_mocap_is_checked_where_last_seen():
+    """Belle's base is not tracked: she still stands where last seen, so Alice driving up to her trips."""
+    alice, belle = CONFIGS
+    own, other = robot_id(alice.serial), robot_id(belle.serial)
+
+    def scene(x: float) -> Scene:
+        robots = {own: RobotObject(own, alice.model, Pose((x, -3.0, 0.0)), {}),
+                  other: RobotObject(other, belle.model, Pose((0.0, -3.0, 0.0)), {}, base_tracked=False,
+                                     base_time=1.0)}
+        return Scene(robots=robots, world_poses={})
+
+    checker = ClearanceChecker()
+    try:
+        assert found(checker, scene(-3.0), own) == []
+        (_key, why, hit), = found(checker, scene(-0.8), own)
+        assert why == f"came within 10 cm of {other}" and hit is not None
     finally:
         checker.close()

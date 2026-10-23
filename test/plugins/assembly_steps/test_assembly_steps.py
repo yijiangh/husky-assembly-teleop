@@ -25,7 +25,6 @@ from husky_assembly_teleop.shared.assembly_planning.ik import IkResult
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
-from husky_assembly_teleop.shared.assembly_planning.scene_for import RobotBelief
 from husky_assembly_teleop.ui.ghost import RecentUse
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
@@ -178,12 +177,11 @@ def test_a_refused_workaround_change_puts_the_box_back():
 
 
 def test_a_plan_request_carries_the_run_and_the_checked_goal():
-    """Alice's approach: the run's beliefs and workaround, Ignore built bars, and the goal checked at this base.
+    """Alice's approach: the run's workaround, Ignore built bars, and the goal checked at this base.
 
     A base moved 3 mm since the check solves the goal again.
     """
     lab = Steps(("B21_H", 0))
-    lab.run.view.beliefs = {"robots/a200-0805": RobotBelief(Pose())}
     lab.plugin.set_ignore_built(True)
     goal = dict(zip(arm_joint_names("ur_arm"), [1.0, -1.0, 1.0, -1.0, 1.0, 0.0]))
     lab.planner.check = GoalCheck("B21_H_approach", Routine.SUPPORT_APPROACH, True, base=lab.bases["a200-0804"],
@@ -198,7 +196,7 @@ def test_a_plan_request_carries_the_run_and_the_checked_goal():
 
     asyncio.run(scenario())
     first, second = lab.planner.plans
-    assert first.beliefs == lab.run.view.beliefs and first.transfer_as_free and first.ignore_built
+    assert first.transfer_as_free and first.ignore_built
     assert first.goal_joints == goal and second.goal_joints is None
     assert lab.plugin.traj_time == 15.0 and lab.plugin.plan_state == "ready"
     assert [event for event, _fields in lab.run.records] == ["check_goal", "plan", "plan"]
@@ -379,17 +377,16 @@ def test_the_log_line():
 
 
 def test_check_goal_asks_with_the_run_and_records_the_answer():
-    """The request carries the run's beliefs, workaround and the tick's snapshot; the answer is logged and recorded.
+    """The request carries the run's workaround and the tick's snapshot; the answer is logged and recorded.
 
     It shows as the target ghost while its step is current.
     """
     lab = Steps(("B20_J", 3))
-    lab.run.view.beliefs = {"robots/a200-0805": RobotBelief(Pose())}
     lab.planner.check = cindy_check()
     answer = asyncio.run(lab.plugin.checked_goal(lab.ctx))
     request, = lab.planner.goals
     assert request.loaded is lab.loaded and request.step.movement.id == "B20_J_transfer"
-    assert request.snapshot is lab.ctx.scene.snapshot and request.beliefs == lab.run.view.beliefs
+    assert request.snapshot is lab.ctx.scene.snapshot
     assert request.transfer_as_free and request.label == "check goal B20_J_transfer"
     (event, fields), = lab.run.records
     assert event == "check_goal" and (fields["action"], fields["movement"]) == ("B20_J", "B20_J_transfer")

@@ -23,6 +23,7 @@ from ..world.clearance import (STOP_DISTANCE, Clearance, ClearanceRefused, Clear
                                clearance_problem)
 from scaffolding_assembly_core.ids import robot_id
 from ..world.freeze import Basis, Freeze, Tolerance, WorldMoved, basis_problem
+from ..world.stand_ins import with_stand_ins
 from .concurrency import WaitTimeout, describe_exception, ros_future
 from .trace import MAX_SAMPLES, Signal, Trace
 
@@ -289,7 +290,9 @@ class PluginContext:
           and in `clearance_trips` for every plugin.
         - Checked on a worker, a tick or two behind: keep `margin` above what the robot covers meanwhile.
         - Strict by default: a robot whose arm joints are not known trips it. Manual moves may name `unknown_arms`
-          (or ALL_ARMS): those are checked at their stow pose. A base pose must always be known.
+          (or ALL_ARMS): those are checked where last seen, or stowed. A base pose must always be known.
+        - Other robots not measured are checked as stand-ins (`stand_ins.py`); those at the start are logged as a
+          warning and kept in `stand_ins`, for the plugin to show.
         - ! A robot it cannot check right now refuses it: ClearanceRefused before the block runs, so enter it before
           sending anything.
         - ! Only inside a task of this plugin (`spawn`). Not an emergency stop.
@@ -315,7 +318,10 @@ class PluginContext:
             assumable = assumable_joints(robot.model.movable_joints, unknown_arms) if robot is not None else frozenset()
             if problem := clearance_problem(robot, assumable):
                 raise ClearanceRefused(f"robot {serial} cannot be checked for clearance: {problem}")
-        clearance = Clearance(serials, margin, unknown_arms=unknown_arms)
+        guessed = with_stand_ins(snapshot, {robot_id(serial) for serial in serials}).warnings
+        for line in guessed:
+            self.log_warn(f"clearance on {', '.join(serials)}: {line}")
+        clearance = Clearance(serials, margin, unknown_arms=unknown_arms, stand_ins=guessed)
         self._clearances[clearance] = task
         try:
             yield clearance

@@ -274,7 +274,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return None
         view, action, _step, step = current
         # * The snapshot is taken here, on the main thread; the planner's worker makes the scene from it.
-        request = MotionPlanRequest(view.process, step, ctx.scene.snapshot, ctx.config.robots, beliefs=view.beliefs,
+        request = MotionPlanRequest(view.process, step, ctx.scene.snapshot, ctx.config.robots,
                                     transfer_as_free=view.settings.transfer_as_free, ignore_built=self.ignore_built,
                                     obstacles_collide=self._obstacles_collide(ctx), label=f"check goal {step.label}")
         self._say(f"solving the goal of {step.label}…")
@@ -305,7 +305,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             else:
                 goal_joints = self._goal.joints_near(self._key_of_goal(), live.base)
                 goal_base = self._goal.of(self._key_of_goal()).base if goal_joints is not None else None
-                request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots, beliefs=view.beliefs,
+                request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots,
                                             transfer_as_free=view.settings.transfer_as_free,
                                             ignore_built=self.ignore_built,
                                             obstacles_collide=self._obstacles_collide(ctx), goal_joints=goal_joints,
