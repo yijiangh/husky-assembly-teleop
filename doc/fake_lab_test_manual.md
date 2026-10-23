@@ -27,8 +27,7 @@ bar's steps.
 | **assembly_run (ours, M4).** The run record `runs/<date>_<time>/`: which actions are done, where each robot was left, an event log. Mark done, Reopen, New run, and continue after a restart. The run's settings, such as the transfer workaround. | **Ours** | 4–6, 11 |
 | **motion_planner (ours, M3–M4).** Plans a step's motion at the live base through tamp, solves goals by exact IK (ssik), checks collisions. One worker, which the other plugins ask. | **Ours** | 5–7, 9 |
 | **assembly_steps (ours, M5).** The operator's step panel: Check goal, Plan, Play, Exec, Prev / Next, Mark done. A plan goes stale when anything moves, or when a setting changes. | **Ours** | 5–9 |
-| **movement_exec (ours, M5).** Runs a step's parts after Confirm (desktop or the phone's Exec tab). One motion at a time across all robots. Checks before every send: another robot moving, a silent link, the safety sync. Retimes paths to the arms' limits. Tool steps, by-hand steps, Cancel, and a record of every part. | **Ours** | 5–8, 10 |
-| **Our edits inside Jakob's panels.** robot_control, health, base_planner and arm_planner refuse motion while movement_exec holds a robot. Free drive ends during a hold. | **Ours** | 6, 7 |
+| **movement_exec (ours, M5).** Runs a step's parts after Confirm (desktop or the phone's Exec tab). One motion at a time across all robots: it leases every robot while it runs, so Jakob's panels get no lease. Checks before every send: another robot moving, a silent link, the safety sync. Retimes paths to the arms' limits. Tool steps, by-hand steps, Cancel, and a record of every part. | **Ours** | 5–8, 10 |
 | **Under the hood (ours, M2–M3, not visible as a panel).** Each movement mapped to a routine, steps grouped (with the transfer workaround), the planning scene per movement, swept collision checks, and the core's tool-vs-tool check (CC.6). | **Ours** | everywhere a step is planned |
 | **Not in this test:** insert, retreat and handoff (M6, compliance); the servo and the MoCap bar fit (M7); calibration (M10). | Specs, waiting for your OK | – |
 
@@ -350,11 +349,8 @@ Then set **Motion s** to **25**. The slow motion gives you time for 6.4.
 **6.4** Click **Exec**, then **Confirm**. While Cindy moves:
 
 - **Alice's arm:** open **Control** → `0804` → `Arm`, then press **+ lift** for a moment.
-  - **Expect, in the monitor pane:** `a200-0804 ur_arm: refused: a200-0806 is held by movement_exec (B20_R_home), one
-    motion at a time; Cancel it first`.
-- **Health:** in the health panel, click **Unlock** under A200-0804.
-  - **Expect:** `a200-0804 Unlock refused: a200-0806 is held by movement_exec (B20_R_home), one motion at a time; Cancel
-    it first`.
+  - **Expect:** a `lease refused` chip on Alice's arm, and in the monitor pane a line saying robot a200-0804 is leased
+    by `movement_exec: exec B20_R_home`.
 
 After about 25 s, **expect:** `B20_R_home: arrived, end within 0.00°` and `Exec B20_R_home: done — every part done`.
 

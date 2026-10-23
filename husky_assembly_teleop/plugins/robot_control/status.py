@@ -58,8 +58,7 @@ def build_controller_panel(ctx: PluginContext, gui: viser.GuiApi, controllers: C
         gui: The GUI api, inside the tab the panel goes in.
         controllers: The controller manager to show and switch.
         input_builders: Per controller, a function that adds its inputs; missing ones get a placeholder.
-        leased: Runs a command under the robot's lease, which a switch needs; it refuses (sends nothing) while any
-            robot is held for an automatic motion (robot_control's `_leased`).
+        leased: Runs a command under the robot's lease, which a switch needs.
 
     Returns:
         tuple[ControllerPanel, dict[str, object]]: The handles, and what each input builder returned.

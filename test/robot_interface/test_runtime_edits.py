@@ -1,9 +1,8 @@
-"""The runtime edits for the executor: a hold under compliance, both arms' velocities, an awaited search, the lease."""
+"""The runtime edits for the executor: a hold under compliance, both arms' velocities, an awaited search."""
 
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import threading
 
 import numpy as np
@@ -11,7 +10,6 @@ import pytest
 from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, lease_to_test
 
 from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER
-from husky_assembly_teleop.robot_interface.robot import HuskyRobotInterface, Lease
 from husky_assembly_teleop.plugins.assembly_steps.step_panel_base import PlannerPlugin, Search
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
@@ -99,12 +97,3 @@ def test_a_search_can_be_awaited_on_the_main_thread():
     asyncio.run(panel._run(search(work=lambda: PlanResult(PATH)), threading.Event()))
     assert panel.plan_state == "ready" and panel.path is PATH
     panel._executor.shutdown()
-
-
-def test_the_lease_is_none_until_taken():
-    """E4: a robot holds no lease at first; a lease cannot be changed in place."""
-    assert HuskyRobotInterface.lease is None
-    assert HuskyRobotInterface.__new__(HuskyRobotInterface).lease is None
-    lease = Lease("movement_exec", "B20_R_home", 1.0, lambda: None)
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        lease.holder = "robot_control"

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Callable, Sequence
+from typing import Sequence
 
 import numpy as np
 from crl_husky_msgs.msg import MultiArmTrajectory, SafetySyncStatus, SimulatedPart
@@ -57,26 +57,6 @@ class RobotState:
         return merged
 
 
-@dataclass(frozen=True)
-class Lease:
-    """Who holds a robot for an automatic motion; other plugins refuse to command it meanwhile.
-
-    - ! Set and cleared only through `shared/execution/interlock.py`; robot_interface does not enforce it.
-    - Hold is always allowed, and calls `stop`, which cancels the holder's work.
-
-    Attributes:
-        holder: The plugin holding it, e.g. "movement_exec".
-        label: What it runs, e.g. "B20_R_home".
-        since: ROS time it was taken, seconds.
-        stop: Cancels the holder's work. Main thread.
-    """
-
-    holder: str
-    label: str
-    since: float
-    stop: Callable[[], None]
-
-
 class HuskyRobotInterface:
     """ROS2 interface to one husky: a base, its arms, and their tools.
 
@@ -92,12 +72,7 @@ class HuskyRobotInterface:
         soft_stop_latch: Set from `soft_stop` until `resume`; while set, every part refuses commands that could move.
         lease_slot: Who holds the robot's lease (`robot_lease.py`); every part refuses motion and controller switches
             sent without it.
-        lease: Who holds the robot for an automatic motion, or None (`Lease`). ! Not `lease_slot`: this one is the
-            one-motion-at-a-time lock across every robot (`shared/execution/interlock.py`); movement_exec also takes
-            the robot's `lease_slot` for the same time.
     """
-
-    lease: Lease | None = None
 
     def __init__(self, node: Node, config: RobotConfig):
         """Build the base and one ArmInterface per configured arm, without waiting for the robot.

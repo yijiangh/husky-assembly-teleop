@@ -201,8 +201,7 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
         gui: The GUI api, inside the arm's tab.
         label: "<serial> <arm name>", for intent names.
         arm: The arm; must have an end effector.
-        leased: Runs a command under the robot's lease, which every tool command but a stop needs; it refuses
-            (sends nothing) while any robot is held for an automatic motion (robot_control's `_leased`).
+        leased: Runs a command under the robot's lease, which every tool command but a stop needs.
 
     Returns:
         viser.GuiHtmlHandle: The tool's status line.
@@ -239,8 +238,7 @@ def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, ar
         arm: The arm.
         on_free_drive: Called on the main thread at every report of the held free drive button; it switches to
             the free drive controller and keeps free drive on.
-        leased: Runs a command under the robot's lease, which the gripper's Open and Close need; it refuses while
-            any robot is held for an automatic motion.
+        leased: Runs a command under the robot's lease, which the gripper's Open and Close need.
 
     Returns:
         viser.GuiHtmlHandle: The arm's status line.
@@ -267,7 +265,7 @@ def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gri
         gui: The GUI api, inside the arm's tab.
         label: "<serial> <arm name>", for intent names.
         gripper: The gripper to command.
-        leased: Runs a command under the robot's lease; it refuses while any robot is held for an automatic motion.
+        leased: Runs a command under the robot's lease.
     """
     position = gui.add_slider("pos rad", min=gripper.OPEN_POSITION, max=gripper.CLOSED_POSITION, step=0.01,
                               initial_value=gripper.OPEN_POSITION,

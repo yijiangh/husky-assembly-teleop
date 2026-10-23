@@ -55,8 +55,8 @@ class Lab(RobotLab):
         self.plugin.setup(self.ctx)
 
     def free(self) -> bool:
-        """Whether Cindy is given back: neither held for an automatic motion (the lock) nor leased (her robot lease)."""
-        return self.cindy.lease is None and self.cindy.lease_slot.lease is None
+        """Whether every robot is given back: none leased."""
+        return all(robot.lease_slot.lease is None for robot in self.ctx.world.robots.values())
 
     def request(self, movement: str = "B20_R_home", serial: str = "a200-0806", delta: float = 0.2,
                 route_movement: int | None = None, **changes) -> ExecRequest:
@@ -115,8 +115,7 @@ def execute(lab: Lab, request: ExecRequest, *answers: bool, during=None):
     """Run a request to its end, answering its prompts in order; `during(lab)` runs once the first answer is in."""
     async def scenario():
         future = lab.plugin.request_execute(request)
-        held = lab.cindy.lease
-        lab.robot_lease = lab.cindy.lease_slot.lease
+        held = lab.robot_lease = lab.cindy.lease_slot.lease
         for ok in answers:
             await answer(lab, ok)
         if during is not None:
@@ -133,7 +132,7 @@ def test_a_motion_is_confirmed_sent_arrives_and_is_recorded():
     lab = Lab()
     result, held = execute(lab, lab.request(), True)
     assert result.status == DONE and result.done == (2,), result.reason
-    assert held is not None and held.label == "B20_R_home" and lab.free()
+    assert held is not None and set(held.serials) == set(lab.ctx.world.robots) and lab.free()
     assert lab.robot_lease.holder == "movement_exec: exec B20_R_home" and not lab.robot_lease.active
     assert len(lab.cindy._multi_arm.messages) == 1
     events = [event for event, _fields in lab.run.records]
@@ -187,8 +186,8 @@ def test_a_request_whose_task_cannot_start_gives_both_leases_back(monkeypatch):
 
 
 @pytest.mark.safety
-def test_a_robot_lease_refused_after_the_lock_gives_the_lock_back(monkeypatch):
-    """The lock taken, then the robot lease refused (a lease `busy_reason` could not see): busy, the lock given back."""
+def test_a_refused_lease_is_busy_and_leases_nothing(monkeypatch):
+    """The robots' lease refused: busy, naming the lease, nothing leased or sent."""
     lab = Lab()
 
     def refused(_serials, _label):
@@ -590,8 +589,8 @@ def test_a_robot_not_live_or_another_current_action_is_refused():
 # --- --- --- --- --- one motion at a time across every robot (review H1) --- --- --- --- ---
 
 @pytest.mark.safety
-def test_robot_control_cannot_move_another_robot_while_one_is_held():
-    """Cindy's prompt open: robot_control's Cartesian Start on Belle is refused, no lease taken; Confirm moves Cindy."""
+def test_robot_control_cannot_move_another_robot_while_a_step_runs():
+    """Cindy's prompt open: robot_control's Start on Belle is refused by the executor's lease; Confirm moves Cindy."""
     from husky_assembly_teleop.plugins.robot_control.plugin import RobotControlPlugin
     lab = Lab()
     control = RobotControlPlugin()
@@ -604,20 +603,21 @@ def test_robot_control_cannot_move_another_robot_while_one_is_held():
             await asyncio.sleep(0)
         control._start_move(lab.ctx, "a200-0805", belle, "cartesian move", control._stream_cartesian_move,
                             belle.state.tcp_position, belle.state.tcp_orientation)
+        await asyncio.gather(*control._trajectory_tasks.values(), return_exceptions=True)
         await answer(lab, True)
         return await future
 
     result = run_guarded(scenario())
     assert result.status == DONE and not belle._trajectory.messages and len(lab.cindy._multi_arm.messages) == 1
-    assert any("a200-0805 ur_arm: refused: a200-0806 is held" in line for line in lab.ctx.lines("warn"))
-    assert not control._trajectory_tasks and lab.belle.lease_slot.lease is None
+    assert any("a200-0805 is leased by movement_exec: exec B20_R_home" in line for line in lab.ctx.lines("warn"))
+    assert lab.free()
 
 
 @pytest.mark.safety
 def test_exec_is_busy_while_another_plugin_leases_any_robot():
     """robot_control's teleop lease on Belle, or a planner's commit lease on Cindy herself: Exec is refused at once.
 
-    Nothing is sent, Cindy is neither held nor leased by movement_exec, and the reason names the lease.
+    Nothing is sent, no robot is leased by movement_exec, and the reason names the lease.
     """
     for serial, holder in (("a200-0805", "robot_control"), ("a200-0806", "base_planner")):
         lab = Lab()
@@ -625,16 +625,17 @@ def test_exec_is_busy_while_another_plugin_leases_any_robot():
         other.world = lab.ctx.world
         lease = other.take_lease([serial], "teleop" if holder == "robot_control" else "commit plan 1")
         result, held = execute(lab, lab.request())
-        assert result.status == REFUSED and result.reason == f"busy: {serial} is leased by {lease.holder}"
-        assert held is None and lab.cindy.lease is None and lab.ctx.world.robots[serial].lease_slot.lease is lease
+        assert result.status == REFUSED and result.reason == f"busy: robot {serial} is leased by {lease.holder}"
+        # ? `held` is Cindy's lease right after the request: the commit's own, when the commit leases her.
+        assert held in (None, lease) and lab.ctx.world.robots[serial].lease_slot.lease is lease
         assert lab.published() == 0 and lab.run.records == []
 
 
 @pytest.mark.safety
 def test_no_other_plugin_gets_a_lease_while_a_step_runs():
-    """Cindy's prompt open (her step holds her): robot_control gets no lease on Belle, nor on Cindy; Confirm moves Cindy.
+    """Cindy's prompt open: robot_control gets no lease on Belle, nor on Cindy; Confirm moves Cindy.
 
-    movement_exec holds Cindy's robot lease the whole step, the prompt included.
+    movement_exec holds every robot's lease the whole step, the prompt included.
     """
     lab = Lab()
     control = FakeContext(name="robot_control")
@@ -656,15 +657,15 @@ def test_no_other_plugin_gets_a_lease_while_a_step_runs():
 
     result = run_guarded(scenario())
     assert result.status == DONE and lab.free() and lab.belle.lease_slot.lease is None
-    assert refusals == ["robot a200-0806 is held by movement_exec (B20_R_home) for an automatic motion, one motion at "
-                        "a time; Cancel it first"] * 2
+    assert refusals == [f"robot {serial} is leased by movement_exec: exec B20_R_home"
+                        for serial in ("a200-0805", "a200-0806")]
 
 
 @pytest.mark.safety
 def test_a_path_check_during_a_step_moves_nothing_and_leases_nothing(monkeypatch):
     """The arm planner checks a joint path for Belle while Cindy's step waits at its prompt.
 
-    It answers, sends nothing and leases nothing; Cindy stays held and leased until her step ends.
+    It answers, sends nothing and leases nothing; every robot stays leased to the step until it ends.
     """
     from husky_assembly_teleop.plugins.arm_planner import planner_plugin as arm_plugin
     lab = Lab()
@@ -681,14 +682,14 @@ def test_a_path_check_during_a_step_moves_nothing_and_leases_nothing(monkeypatch
             await asyncio.sleep(0)
         belle = lab.belle.arms["ur_arm"].joint_vector()
         found = await planner.check_path("a200-0805", "ur_arm", [belle, belle + 0.1])
-        during = (lab.cindy.lease, lab.cindy.lease_slot.lease, lab.belle.lease_slot.lease, lab.published())
+        during = (lab.cindy.lease_slot.lease, lab.belle.lease_slot.lease, lab.published())
         lab.plugin.request_cancel()
         return found, during, await future
 
-    found, (lock, robot_lease, belle_lease, published), result = run_guarded(scenario())
+    found, (robot_lease, belle_lease, published), result = run_guarded(scenario())
     planner._executor.shutdown()
     assert found is None and checked == [("ur_arm", (2, 6))]
-    assert lock is not None and robot_lease.holder == "movement_exec: exec B20_R_home" and belle_lease is None
+    assert robot_lease.holder == "movement_exec: exec B20_R_home" and belle_lease is robot_lease
     assert published == 0 and result.status == CANCELLED and lab.free()
 
 

@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...shared.assembly_run_contract import exported_end, first_pending, is_live, live_record
-from ...shared.execution.interlock import held
 from ...shared.assembly_planning.steps import first_step
 from ...shared.process_scene.scene_bodies import live_ids
 from ...shared.runs.runs import (DONE, Progress, RobotRecord, Run, RunError, RunSettings, mark_done, new_run,
@@ -27,6 +26,8 @@ if TYPE_CHECKING:
     from ...shared.assembly_planning.process_steps import LoadedProcess
     from ...shared.process_contract import ProcessContract
 
+#: The plugin that runs a step on the robots: while it leases them, nothing that moves the step may change.
+STEP_RUNNER = "movement_exec"
 #: Seconds the operator has to answer a prompt.
 CONFIRM_TIMEOUT = 120.0
 #: The insert split's range, millimetres.
@@ -65,7 +66,7 @@ class RunWrites:
             return refusal
         if self.view.statuses[action_id] == DONE:
             return f"{action_id} is already done"
-        refusal = self._held(ctx)
+        refusal = self._step_running(ctx)
         if refusal:
             return refusal
         acting = self._acting(ctx, action_id)
@@ -269,11 +270,16 @@ class RunWrites:
     # --- --- --- --- --- REFUSALS --- --- --- --- ---
 
     @staticmethod
-    def _held(ctx: PluginContext) -> str:
-        """Why nothing that moves the current step or the robots may change now: a robot is held for a step; else ""."""
-        found = held(ctx.world)
-        return "" if found is None else (f"{found[0]} is held by {found[1].holder} ({found[1].label}): wait until it "
-                                         f"is done, or Cancel it")
+    def _step_running(ctx: PluginContext) -> str:
+        """Why nothing that moves the current step or the robots may change now: a step runs on them; else "".
+
+        ? A step runs while STEP_RUNNER leases the robots (`ctx` names a lease "<plugin>: <label>").
+        """
+        for serial, robot in ctx.world.robots.items():
+            lease = robot.lease_slot.lease
+            if lease is not None and lease.holder.startswith(f"{STEP_RUNNER}: "):
+                return f"{serial} is leased by {lease.holder}: wait until it is done, or Cancel it"
+        return ""
 
     def _not_open(self) -> str:
         """Why nothing may be written yet: no process, or its runs not read; else ""."""

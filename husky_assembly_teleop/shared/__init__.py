@@ -27,7 +27,7 @@ What plugins share with each other: contracts, data types, base classes and help
   assembly_planning/          the assembly's planning: the process as steps, routines, planning scenes, IK and
                               collision checks on a mirror pool, the tamp route
   execution/                  running a planned movement on the robots: timing, sending, tools, the operator's
-                              prompt, the one-motion-at-a-time lock, and when a plan goes stale
+                              prompt, whether anything moves, and when a plan goes stale
   planner/                    base classes and helpers for the planner plugins
   process_scene/              the process scene at a movement as live scene bodies, and the colours of bodies
   recordings/                 experiment runs on the Drive: run folders, descriptions, recordings read by label

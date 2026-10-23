@@ -134,7 +134,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
 
     def request_set_current(self, action_id: str, movement_index: int | None = None) -> None:
         """Make an action current (at a movement it has, else its first step) and select it; never starts a run."""
-        if self._refused("Select", self._unknown(action_id) or self._held(ctx=self._ctx)):
+        if self._refused("Select", self._unknown(action_id) or self._step_running(self._ctx)):
             return
         self._stop_auto()
         self._set_current(self._ctx, action_id, movement_index)
@@ -162,7 +162,8 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         """Put a done action (the current one if None) back to pending, and make it current."""
         ctx = self._ctx
         action_id = action_id or self._current_action()
-        if self._refused("Reopen", self._unknown(action_id) or self._busy() or self._no_run() or self._held(ctx)):
+        if self._refused("Reopen", self._unknown(action_id) or self._busy() or self._no_run()
+                         or self._step_running(ctx)):
             return
         try:
             run = reopen(self._run, action_id)
@@ -178,7 +179,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
 
     def request_new_run(self) -> None:
         """Start a new run after the operator confirms; every action pending, the old run kept."""
-        if not self._refused("New run", self._busy() or self._held(self._ctx)):
+        if not self._refused("New run", self._busy() or self._step_running(self._ctx)):
             self._stop_auto()
             self._ask("Start a new run? Every action starts pending; the old run is kept.")
             self._spawn(self._ctx, "new run", self._new_run(self._ctx))
@@ -190,13 +191,14 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         missing = "" if target is not None else (f"no offered run is named {run_name!r}" if run_name
                                                  else "no run made on these files is offered" if run_name == ""
                                                  else "no run is offered to continue")
-        if not self._refused("Continue", self._busy() or missing or self._held(self._ctx)):
+        if not self._refused("Continue", self._busy() or missing or self._step_running(self._ctx)):
             self._stop_auto()
             self._continuing = self._spawn(self._ctx, "continue run", self._continue(self._ctx, target))
 
     def request_settings(self, **changes: Any) -> None:
         """Change run settings (`RunSettings` fields); saved with the run, which this starts if there is none."""
-        refusal = self._settings_problem(changes) or self._not_open() or self._offered_first() or self._held(self._ctx)
+        refusal = (self._settings_problem(changes) or self._not_open() or self._offered_first()
+                   or self._step_running(self._ctx))
         if refusal:
             self._settings_refused += 1
             self._refused("Settings", refusal)

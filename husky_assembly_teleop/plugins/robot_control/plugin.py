@@ -15,12 +15,6 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
 * Base Clearance (ticked by default): while driving, the base is soft stopped once it comes too close to anything
   in the scene (`ctx.clearance`).
 * ! Every button that does nothing says why: a refusal chip on its part's status line (`_refuse`, `refusal_chip`).
-! While another plugin holds any robot for an automatic motion (`shared/execution/interlock.py`), every motion command
-  here, to any robot, is refused with a chip and a log line (`_unless_held`, inside `_leased`), the CTRL buttons
-  included (their Joint too); never Hold, a tool's Stop, a zero force or free drive's own switch back to the joint
-  controller. Hold on the held robot also cancels that motion. What sends every tick checks before every send: a
-  robot taken meanwhile ends the Cartesian stream (hold), the D-pad (one stop), a jog (hold) and free drive (no
-  requests, Keep on unticked, back to the joint controller).
 """
 
 from __future__ import annotations
@@ -43,8 +37,6 @@ from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...robot_interface.end_effectors import EndEffectorState, RobotiqState, ScaffoldingV3, ScaffoldingV3State
 from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
-from ...shared.execution.interlock import held as held_robot
-from ...shared.execution.interlock import lease_of
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import REFUSAL_SHOWN, SECTION_SENSOR, block, numbers, section, values
 from ...shared.teleop.dpad import HOLD_TIMEOUT, PHONE_DPAD_STYLE, Hold, build_velocity_inputs
@@ -112,8 +104,6 @@ class RobotControlPlugin(HuskyPlugin):
 
     def __init__(self):
         """Start with no widgets; setup builds them."""
-        #: The context, for Hold, which cancels an automatic motion holding the robot (`_hold_arm`).
-        self._ctx: PluginContext | None = None
         self._bases: list[_BaseWidgets] = []
         self._arms: list[_ArmWidgets] = []
 
@@ -166,7 +156,6 @@ class RobotControlPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        self._ctx = ctx
         with ctx.view.ui() as gui:
             robots = gui.add_tab_group()
             for serial, robot in ctx.world.robots.items():
@@ -261,7 +250,7 @@ class RobotControlPlugin(HuskyPlugin):
         # Independent of the running controller.
         gui.add_html(section("sensor", SECTION_SENSOR))
         zero = gui.add_button_group("FT", ["Zero"], hint="Tares the current load. Only with nothing gripped.")
-        zero.on_click(ctx.defer(f"zero FT {label}", lambda: self._unless_held(ctx, key) and arm.zero_ft_sensor()))
+        zero.on_click(ctx.defer(f"zero FT {label}", arm.zero_ft_sensor))
 
         tool = None if arm.end_effector is None else build_tool_inputs(ctx, gui, label, arm,
                                                                        partial(self._leased, ctx, key))
@@ -314,41 +303,12 @@ class RobotControlPlugin(HuskyPlugin):
         if sent:
             self._applied_force[key] = force
 
-    def _held_refusal(self, ctx: PluginContext) -> str | None:
-        """Why no motion command may go to any robot now: one is held for an automatic motion; None while none is.
-
-        ! One motion at a time across every robot (`shared/execution/interlock.py`). The robot lease alone keeps
-          other plugins off the held robot only; this keeps them off every robot.
-        """
-        found = held_robot(ctx.world)
-        if found is None:
-            return None
-        serial, lease = found
-        return f"refused: {serial} is held by {lease.holder} ({lease.label}), one motion at a time; Cancel it first"
-
-    def _unless_held(self, ctx: PluginContext, key: tuple[str, str]) -> bool:
-        """Whether a motion command to part `key` may go out: False, its refusal chip shown, while any robot is held.
-
-        Args:
-            ctx: This plugin's context.
-            key: (serial, part): BASE or an arm's name.
-        """
-        reason = self._held_refusal(ctx)
-        if reason is not None:
-            self._refuse(ctx, key, "held", reason)
-        return reason is None
-
     def _leased(self, ctx: PluginContext, key: tuple[str, str], command: Callable[[], Any]) -> Any:
         """Run `command` under this plugin's lease of robot `key[0]`, leasing it first if free.
 
-        ! Refused while any robot is held for an automatic motion (`_unless_held`), before any lease is taken.
-
         Returns:
-            Any: What `command` returned; None if refused (a robot held, no lease, soft stop), which `_refuse` then
-                shows.
+            Any: What `command` returned; None if refused (no lease, soft stop), which `_refuse` then shows.
         """
-        if not self._unless_held(ctx, key):
-            return None
         try:
             with self._leases.use(ctx, key[0]):
                 return command()
@@ -371,16 +331,11 @@ class RobotControlPlugin(HuskyPlugin):
         self._refusals[key] = Refusal(label, reason, ctx.now())
 
     def _drop_reason(self, ctx: PluginContext, serial: str, soft_stopped: bool) -> tuple[str, str] | None:
-        """Why a held button on robot `serial` does nothing now, as (label, reason).
-
-        Soft stop, any robot held for an automatic motion (`_held_refusal`), or another plugin's lease of this robot.
-        """
+        """Why a held button on robot `serial` does nothing now, as (label, reason): soft stop or another's lease."""
         if soft_stopped and serial in self._tripped:
             return "too close", f"{self._tripped[serial]}: soft stopped; drive clear after Resume, or untick Clearance"
         if soft_stopped:
             return "soft stopped", f"robot {serial} is soft stopped; press Resume first"
-        if (held_reason := self._held_refusal(ctx)) is not None:
-            return "held", held_reason
         taken = self._leases.taken(ctx, serial)
         return None if taken is None else ("lease refused", taken)
 
@@ -484,11 +439,6 @@ class RobotControlPlugin(HuskyPlugin):
         ! On release, switch back only while free drive still runs: after Stop all or a switch on the laptop, a
           release must not start a controller. If the switch back fails, free drive still ends within 1 s, since
           the requests stop (`ArmInterface.request_free_drive`).
-        ! While any robot is held for an automatic motion: no requests, Keep on unticked, and every arm in free drive
-          switched back to the joint controller. "Every arm in free drive" includes free drive started on the robot
-          by the tool's button chord (crl_husky onboard/free_drive_buttons.py), the held robot's too: it is switched
-          back each time, until the lease ends (the by-hand prompt says so). An arm whose controller manager has gone
-          quiet is not asked meanwhile; it is switched back once a fresh answer still shows Free.
 
         Args:
             ctx: This plugin's context.
@@ -498,20 +448,13 @@ class RobotControlPlugin(HuskyPlugin):
             key = (widgets.serial, widgets.arm.config.name)
             controllers = widgets.arm.controllers
             last = self._free_drive_held.get(key)
-            # * While any robot is held, another plugin holds this robot or it is soft stopped, held buttons and Keep
-            #   on do nothing.
+            # * While another plugin holds the robot or it is soft stopped, held buttons and Keep on do nothing.
             dropped = self._drop_reason(ctx, widgets.serial, widgets.arm.soft_stopped)
             pressed = last is not None and now - last[0] <= HOLD_TIMEOUT
             keep = widgets.free_drive_keep
             if keep is not None and keep.value and controllers.state.requested != FREE_DRIVE_CONTROLLER:
                 keep.value = False  # another controller was chosen: Keep on must be ticked again
             kept = keep is not None and keep.value
-            # ! While any robot is held for an automatic motion, no arm is freed: Keep on unticked (it would free the
-            #   arm again the moment the motion ends), and the joint controller holds the arm (below).
-            taken = (pressed or kept or key in self._free_driving or controllers.is_active(FREE_DRIVE_CONTROLLER)) \
-                and self._held_refusal(ctx) is not None
-            if taken and kept:
-                keep.value = False
             if dropped is not None and (pressed or kept):
                 self._refuse(ctx, key, *dropped)
             held = pressed and dropped is None
@@ -525,23 +468,15 @@ class RobotControlPlugin(HuskyPlugin):
                 switched = self._leased(ctx, key, lambda: controllers.switch(FREE_DRIVE_CONTROLLER))
                 if switched:
                     self._free_driving.add(key)
-            elif not phone_held and (key in self._free_driving or taken):
-                # * Released, or a robot was taken for an automatic motion: switching back holds the arm, which needs
-                #   no lease.
-                if taken and controllers.is_active(FREE_DRIVE_CONTROLLER) and \
-                        controllers.running_problem(FREE_DRIVE_CONTROLLER):
-                    # ? Under a lease, an arm whose controller manager has gone quiet is not asked to switch back
-                    #   until it answers again: it could not switch anyway (an error line every second otherwise),
-                    #   and free drive already ends within 1 s, since no requests go out.
-                    continue
+            elif not phone_held and key in self._free_driving:
+                # * Switching back holds the arm, which needs no lease.
                 switched = (not controllers.is_active(FREE_DRIVE_CONTROLLER)
                             or controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER, unguarded=True))
                 if switched:
                     self._free_driving.discard(key)
             else:
                 continue
-            # ? Under a lease the switch back is asked again only after a while: a failed one leaves free drive running.
-            if not switched or (taken and controllers.is_active(FREE_DRIVE_CONTROLLER)):
+            if not switched:
                 self._free_drive_retry[key] = now + FREE_DRIVE_RETRY
 
     def _update_jogs(self, ctx: PluginContext, now: float) -> None:
@@ -660,8 +595,6 @@ class RobotControlPlugin(HuskyPlugin):
             *args: The move's target, after (ctx, serial, arm).
         """
         key = (serial, arm.config.name)
-        if not self._unless_held(ctx, key):
-            return
         running = self._trajectory_tasks.get(key)
         if running is not None and not running.done():
             self._refuse(ctx, key, "start refused", "a move is already running; Start ignored")
@@ -669,7 +602,7 @@ class RobotControlPlugin(HuskyPlugin):
         self._trajectory_tasks[key] = ctx.spawn(f"{kind} {serial} {arm.config.name}", move(ctx, serial, arm, *args))
 
     def _hold_arm(self, serial: str, arm: ArmInterface) -> None:
-        """Hold the arm where it is and cancel its running move task, and any automatic motion holding the robot.
+        """Hold the arm where it is and cancel its running move task.
 
         ! Holds even when no task of ours runs: a trajectory may come from elsewhere.
 
@@ -682,11 +615,6 @@ class RobotControlPlugin(HuskyPlugin):
         running = self._trajectory_tasks.get((serial, arm.config.name))
         if running is not None and not running.done():
             running.cancel()
-        lease = lease_of(self._ctx.world.robots[serial])
-        if lease is not None:
-            # * Its own error handling holds every arm of the robot.
-            self._ctx.log_warn(f"Hold on {serial} {arm.config.name}: cancelling {lease.holder} ({lease.label})")
-            lease.stop()
 
     async def _stream_cartesian_move(self, ctx: PluginContext, serial: str, arm: ArmInterface,
                                      position: np.ndarray, orientation: np.ndarray) -> None:
@@ -728,13 +656,6 @@ class RobotControlPlugin(HuskyPlugin):
         try:
             while True:
                 elapsed = ctx.now() - start
-                found = held_robot(ctx.world)
-                if found is not None:
-                    # ! A robot was taken for an automatic motion mid-stream: one motion at a time, so stop here.
-                    arm.hold()
-                    ctx.log_warn(f"{name}: cartesian move stopped and held: {found[0]} is held by "
-                                 f"{found[1].holder} ({found[1].label}), one motion at a time")
-                    return
                 if not arm.send_cartesian_target(*sample(elapsed)):
                     # The arm logged why; hold so it settles where it is.
                     ctx.log_warn(f"{name}: cartesian move stopped early")

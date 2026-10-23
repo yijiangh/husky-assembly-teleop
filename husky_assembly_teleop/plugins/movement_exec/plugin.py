@@ -2,12 +2,12 @@
 Run one step of the assembly on the real robot: its motion along the plan, its tool steps, its steps done by hand.
 
 Another plugin asks (`request_execute`, `MovementExecContract`); each part asks the operator to Confirm first, on the
-laptop or the phone, and is recorded in the run (`assembly_run`). From the request to its end the robot is held
-(`shared/execution/interlock.py`: other plugins' commands to every robot are refused) and leased
-(`robot_interface/robot_lease.py`: its sends need the lease, and no other plugin gets it); Cancel here, Hold in
-robot_control, or Stop all ends it, every arm held.
+laptop or the phone, and is recorded in the run (`assembly_run`). From the request to its end every robot is leased
+(`robot_interface/robot_lease.py`): its sends need the lease, and no other plugin gets one, so nothing else here moves
+any robot (one motion at a time). Cancel here or Stop all ends it, every arm held; a Hold in robot_control stops the
+motion, which then ends short of its end.
 
-- Refused at once: while another request runs, any robot is held, leased or moving, a refused part (a later
+- Refused at once: while another request runs, any robot is leased or moving, a refused part (a later
   milestone's routine), a request for another robot, a plan for another robot, movement or base.
 - Before every motion, and again after Confirm: the robot is live, the safety sync vouches for each of its arms, the
   plan is not stale, the process and the current action are the request's; then the command is rebuilt from the
@@ -30,7 +30,7 @@ from ...plugin_api.plugin import HuskyPlugin, register
 from ...robot_interface.robot_lease import NotLeased
 from ...shared.assembly_planning.route_result import pose_error
 from ...shared.execution.basis import STALE_BASE
-from ...shared.execution.interlock import Busy, give_back, take
+from ...shared.execution.moving import moving_reason
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import motion_command
 from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT, MAX_TRAJ_TIME,
@@ -39,8 +39,7 @@ from .panel import ExecPanel
 from .sequences import Job, PartRun, run_part
 
 if TYPE_CHECKING:
-    from ...robot_interface.robot import Lease
-    from ...robot_interface.robot_lease import Lease as RobotLease
+    from ...robot_interface.robot_lease import Lease
     from ...shared.execution.operator import Prompt
 
 #: Why a request was cancelled when this plugin did not cancel it: the soft stop, or the plugin closing.
@@ -69,7 +68,7 @@ class MovementExecPlugin(HuskyPlugin):
         #: The running request, its task and its label for the panel.
         self._task: asyncio.Task | None = None
         self._active = ""
-        #: "operator" once Cancel (or a Hold) cancelled the running task; else a cancel came from outside.
+        #: "operator" once Cancel cancelled the running task; else a cancel came from outside.
         self._cancel_reason = ""
         #: The last result as one line, and whether it failed; how many dry-run changes were refused.
         self._last, self._last_failed = "", False
@@ -93,25 +92,21 @@ class MovementExecPlugin(HuskyPlugin):
         return self._dry_run
 
     def request_execute(self, request: ExecRequest) -> asyncio.Future[ExecResult]:
-        """Run a step's parts, holding and leasing its robot until done; a refusal resolves the future at once.
+        """Run a step's parts, leasing every robot until done; a refusal resolves the future at once.
 
         ! Main thread.
         """
         ctx = self._ctx
         future = asyncio.get_running_loop().create_future()
         refusal = self._refusal(ctx, request)
+        if not refusal and (moving := moving_reason(ctx.world, ctx.now())):
+            refusal = f"busy: {moving}"
         if not refusal:
             try:
-                lease = take(ctx.world, request.serial, self.name, request.label, self.request_cancel, ctx.now())
-            except Busy as busy:
-                refusal = f"busy: {busy}"
-        if not refusal:
-            try:
-                # * The robot's lease too, for the whole request (prompts and parts done by hand included): its sends
-                #   need it, and no other plugin gets it meanwhile.
-                robot_lease = ctx.take_lease([request.serial], f"exec {request.label}")
+                # * Every robot's lease, for the whole request (prompts and parts done by hand included): its sends
+                #   need it, and no other plugin moves any robot meanwhile (one motion at a time).
+                lease = ctx.take_lease(ctx.world.robots, f"exec {request.label}")
             except NotLeased as refused:
-                give_back(ctx.world, lease)
                 refusal = f"busy: {refused}"
         if refusal:
             result = ExecResult(REFUSED, refusal)
@@ -124,16 +119,15 @@ class MovementExecPlugin(HuskyPlugin):
             self._active, self._cancel_reason = f"{request.robot_name} · {request.label}", ""
             ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
                          + (" (DRY RUN)" if job.dry_run else ""))
-            self._task = ctx.spawn(f"exec {request.label}", self._run(job, lease, robot_lease, future))
+            self._task = ctx.spawn(f"exec {request.label}", self._run(job, lease, future))
         except BaseException:
             # ! No task runs to give them back (e.g. the plugin is closing, so spawn refuses): every other plugin
             #   would be refused every lease until a restart.
-            robot_lease.release()
-            give_back(ctx.world, lease)
+            lease.release()
             self._active = ""
             raise
         # * A safety net for a task cancelled before it started: its own `finally` never ran.
-        self._task.add_done_callback(lambda task: self._ended(ctx, task, lease, robot_lease, future))
+        self._task.add_done_callback(lambda task: self._ended(ctx, task, lease, future))
         return future
 
     def request_confirm(self) -> None:
@@ -144,7 +138,7 @@ class MovementExecPlugin(HuskyPlugin):
             self._last, self._last_failed = why, True
 
     def request_cancel(self) -> None:
-        """Cancel the open prompt, else the running request (every arm is held); also the robot lease's stop."""
+        """Cancel the open prompt, else the running request (every arm is held)."""
         if self._prompts.current is not None:
             self._prompts.answer(False, self._ctx.now())
             self._ctx.log_warn("Cancel: the prompt is answered Cancel")
@@ -232,13 +226,12 @@ class MovementExecPlugin(HuskyPlugin):
             return f"the plan can't be sent to {request.serial}: {error}"
         return ""
 
-    async def _run(self, job: Job, lease: Lease, robot_lease: RobotLease, future: asyncio.Future) -> None:
-        """Run the parts in order, stopping at the first not done; give the robot back and resolve the future after.
+    async def _run(self, job: Job, lease: Lease, future: asyncio.Future) -> None:
+        """Run the parts in order, stopping at the first not done; give the robots back and resolve the future after.
 
         Args:
             job: The request being run.
-            lease: The lock holding the robot (one motion at a time).
-            robot_lease: The robot's lease, held by this task while it runs: its commands need it.
+            lease: Every robot's lease, held by this task while it runs: its commands need it.
             future: Resolved with the result.
         """
         ctx, request = job.ctx, job.request
@@ -246,7 +239,7 @@ class MovementExecPlugin(HuskyPlugin):
         end = base = None
         result = ExecResult(FAILED, "ended before its first part")
         try:
-            with robot_lease.use():
+            with lease.use():
                 for part in request.parts:
                     run = PartRun(part)
                     try:
@@ -269,8 +262,7 @@ class MovementExecPlugin(HuskyPlugin):
                     result = ExecResult(DRY_RUN, "dry run: every check passed, nothing sent", (), end, base) \
                         if job.dry_run else ExecResult(DONE, "every part done", tuple(done), end, base)
         finally:
-            robot_lease.release()
-            give_back(ctx.world, lease)
+            lease.release()
             self._prompts.current = None
             if not future.done():
                 self._finished(ctx, request, result)
@@ -324,11 +316,9 @@ class MovementExecPlugin(HuskyPlugin):
         job.event("error", run.part.movement, {"error": repr(error)})
         return ExecResult(run.result, f"{run.part.movement}: {run.reason}", done, end, base)
 
-    def _ended(self, ctx: PluginContext, task: asyncio.Task, lease: Lease, robot_lease: RobotLease,
-               future: asyncio.Future) -> None:
-        """Give the robot back once the task is over, however it ended; resolve a future it never got to."""
-        robot_lease.release()
-        give_back(ctx.world, lease)
+    def _ended(self, ctx: PluginContext, task: asyncio.Task, lease: Lease, future: asyncio.Future) -> None:
+        """Give the robots back once the task is over, however it ended; resolve a future it never got to."""
+        lease.release()
         if self._task is task:
             self._prompts.current = None
         if not future.done():

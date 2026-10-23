@@ -15,6 +15,7 @@ from process_fixtures import JOINTS, build_process, with_action, write_robot_fil
 from husky_assembly_teleop.plugins.assembly_run.panel import RunPanel
 from husky_assembly_teleop.plugins.assembly_run.plugin import AssemblyRunPlugin
 from husky_assembly_teleop.plugins.process.loading import load_process
+from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, take_lease
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.assembly_planning.steps import first_step
 from husky_assembly_teleop.shared.execution.basis import basis_of, stale_reason
@@ -86,8 +87,13 @@ class Lab:
     def moving(self, live: str, executing: bool) -> None:
         """Say whether a robot's arm runs a trajectory, as `world.robots[serial].arms[...].state.is_executing`."""
         state = SimpleNamespace(is_executing=executing)
-        self.ctx.world.robots[live.split("/", 1)[1]] = SimpleNamespace(arms={"arm": SimpleNamespace(state=state)},
-                                                                       lease=None)
+        serial = live.split("/", 1)[1]
+        self.ctx.world.robots[serial] = SimpleNamespace(arms={"arm": SimpleNamespace(state=state)},
+                                                        lease_slot=LeaseSlot(serial))
+
+    def lease_to_exec(self, serial: str) -> Lease:
+        """Lease a robot as movement_exec does while a step runs."""
+        return take_lease([self.ctx.world.robots[serial].lease_slot], "movement_exec: exec B21_H_approach")
 
     def plugin(self) -> tuple[AssemblyRunPlugin, FakeProcess]:
         """A new plugin, as after a restart, on the process loaded again."""
@@ -564,17 +570,17 @@ def test_a_moving_arm_is_never_recorded(tmp_path):
     assert set(read_run(plugin.view.folder).progress.actions["B1_J_joint"].ends) == {CINDY}
 
 
-def test_a_robot_held_for_a_motion_refuses_the_mark(tmp_path):
-    """While any robot is held by the executor, Mark done is refused, naming the holder."""
+def test_a_robot_leased_for_a_step_refuses_the_mark(tmp_path):
+    """While the executor leases any robot, Mark done is refused, naming the lease."""
     lab = Lab(tmp_path, alice=True)
 
     async def scenario():
         plugin, _process = await opened(lab)
         lab.moving(ALICE, False)
-        lab.ctx.world.robots["a200-0804"].lease = SimpleNamespace(holder="movement_exec", label="B21_H_approach")
+        lease = lab.lease_to_exec("a200-0804")
         plugin.request_mark_done()
-        assert "a200-0804 is held by movement_exec (B21_H_approach)" in plugin._message and runs(lab) == []
-        lab.ctx.world.robots["a200-0804"].lease = None
+        assert "a200-0804 is leased by movement_exec: exec B21_H_approach" in plugin._message and runs(lab) == []
+        lease.release()
         plugin.request_mark_done()
         await settle(plugin)
         return plugin
@@ -583,8 +589,8 @@ def test_a_robot_held_for_a_motion_refuses_the_mark(tmp_path):
     assert plugin.view.statuses["B1_J_joint"] == DONE
 
 
-def test_a_held_robot_refuses_selecting_reopening_and_settings(tmp_path):
-    """While a robot is held for a step (an Exec runs), a row click, Reopen and a settings change are refused."""
+def test_a_robot_leased_for_a_step_refuses_selecting_reopening_and_settings(tmp_path):
+    """While the executor leases a robot (an Exec runs), a row click, Reopen and a settings change are refused."""
     lab = Lab(tmp_path, alice=True)
 
     async def scenario():
@@ -592,15 +598,15 @@ def test_a_held_robot_refuses_selecting_reopening_and_settings(tmp_path):
         lab.moving(ALICE, False)
         plugin.request_mark_done()
         await settle(plugin)
-        lab.ctx.world.robots["a200-0804"].lease = SimpleNamespace(holder="movement_exec", label="B21_H_approach")
+        lab.lease_to_exec("a200-0804")
         current, selected = plugin.view.current, list(process.selected)
         plugin.request_set_current("B1_J_joint")
-        assert "Select refused: a200-0804 is held by movement_exec" in plugin._message
+        assert "Select refused: a200-0804 is leased by movement_exec" in plugin._message
         plugin.request_reopen("B1_J_joint")
-        assert "Reopen refused: a200-0804 is held" in plugin._message
+        assert "Reopen refused: a200-0804 is leased" in plugin._message
         refused = plugin._settings_refused
         plugin.request_settings(transfer_as_free=False)
-        assert "Settings refused: a200-0804 is held" in plugin._message and plugin._settings_refused == refused + 1
+        assert "Settings refused: a200-0804 is leased" in plugin._message and plugin._settings_refused == refused + 1
         return plugin, process, current, selected
 
     plugin, process, current, selected = asyncio.run(scenario())

@@ -34,7 +34,7 @@ class Ctx:
     """A plugin context whose intents run at once and whose tasks are plain asyncio tasks."""
 
     def __init__(self):
-        """No log yet; no robot held for an automatic motion (`world`)."""
+        """No log yet; no robots (`world`)."""
         self.log = []
         self.world = SimpleNamespace(robots={})
 

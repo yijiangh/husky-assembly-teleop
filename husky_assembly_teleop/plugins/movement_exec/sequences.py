@@ -22,7 +22,7 @@ from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.movement import Routine
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import STALE_ARM, stale_reason
-from ...shared.execution.interlock import base_moving, busy_reason
+from ...shared.execution.moving import base_moving, moving_reason
 from ...shared.execution.send import ARRIVED, LARGE_TRAVEL, SendProgress, motion_command, send_motion
 from ...shared.execution.send import DRY_RUN as SENT_DRY, HOLD_NOT_SENT as SENT_NOT_HELD, REFUSED as SENT_REFUSED
 from ...shared.execution.tools import (FELL_SHORT, GRASP_TIMEOUT, REACHED, ROBOTIQ_CLOSE, ROBOTIQ_EFFORT, ROBOTIQ_OPEN,
@@ -166,13 +166,14 @@ def world_problem(job: Job, motion: bool) -> str:
 
 
 def others_moving(job: Job) -> str:
-    """Why the part must not move now: another robot is held or moves, or this robot's base moves; else "".
+    """Why the part must not move now: another robot moves, or this robot's base moves; else "".
 
     ! One motion at a time across every robot: checked before the prompt, after Confirm and, for a motion, every tick
-      while the arms move (`send_motion`'s watch).
+      while the arms move (`send_motion`'s watch). The request leases every robot, so only motion this monitor did not
+      send (the pendant, a node on the robot) can show up here.
     """
     serial, now = job.request.serial, job.ctx.now()
-    return busy_reason(job.ctx.world, now, besides=serial) or base_moving(job.robot.base.state, f"{serial} base", now)
+    return moving_reason(job.ctx.world, now, besides=serial) or base_moving(job.robot.base.state, f"{serial} base", now)
 
 
 def live_command(job: Job) -> MotionCommand | str:
@@ -331,9 +332,9 @@ async def _grasp(job: Job, run: PartRun) -> None:
 
 
 async def _by_hand(job: Job, run: PartRun) -> None:
-    """A step done by hand, the robot still held: done once the operator confirms it.
+    """A step done by hand, every robot still leased: done once the operator confirms it.
 
-    ? Held, so nothing else moves meanwhile (and the step panel keeps its done parts): the monitor's panels stay
+    ? Leased, so nothing else moves meanwhile (and the step panel keeps its done parts): the monitor's panels stay
       locked; the prompt says so, and how to drive a base without them.
     """
     part = run.part
@@ -342,8 +343,8 @@ async def _by_hand(job: Job, run: PartRun) -> None:
         text = (f"{part.movement} — drive {job.who}'s base there with its joystick or the command line (the D-pad and "
                 f"the base planner are locked while this step runs; Cancel to use them), then Confirm.")
     else:
-        text = (f"{part.movement} — {part.text}, then Confirm (the robot panels and free drive, also from the "
-                f"tool's buttons, are locked until this step ends; Cancel to use them).")
+        text = (f"{part.movement} — {part.text}, then Confirm (the robot panels and their free drive are locked "
+                f"until this step ends; Cancel to use them).")
     if await confirmed(job, run, text):
         run.ended(DRY_RUN if job.dry_run else DONE, "confirmed", "done by hand, confirmed by the operator")
 

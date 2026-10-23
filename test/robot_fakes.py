@@ -58,8 +58,8 @@ class FreeRobots(dict):
     """`world.robots` of a fake context: any serial is a robot whose lease is free, and held by nobody."""
 
     def __missing__(self, serial: str):
-        """A robot with only a free lease slot, not held for an automatic motion (`lease`)."""
-        robot = self[serial] = SimpleNamespace(lease_slot=LeaseSlot(serial), lease=None)
+        """A robot with only a free lease slot."""
+        robot = self[serial] = SimpleNamespace(lease_slot=LeaseSlot(serial))
         return robot
 
 

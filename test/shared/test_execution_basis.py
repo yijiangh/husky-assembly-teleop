@@ -1,4 +1,4 @@
-"""When a plan goes stale, who may take a robot's lease, and how the operator's prompt takes answers."""
+"""When a plan goes stale, whether anything moves, and how the operator's prompt takes answers."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, from_outside
 
 from husky_assembly_teleop.shared.execution.basis import basis_of, stale_reason
-from husky_assembly_teleop.shared.execution.interlock import Busy, busy_reason, give_back, refuse_while_held, take
+from husky_assembly_teleop.shared.execution.moving import moving_reason
 from husky_assembly_teleop.shared.execution.operator import PROMPT_ARM_S, PromptBox
 from husky_assembly_teleop.shared.runs.runs import RunSettings
 from scaffolding_assembly_core.geometry import Pose
@@ -116,56 +116,20 @@ def world(ctx: FakeContext) -> SimpleNamespace:
     return SimpleNamespace(robots={"a200-0806": cindy, "a200-0804": alice})
 
 
-def test_one_lease_at_a_time():
-    """A lease refuses a second on any robot until given back; while one is held, commands to any robot are refused."""
-    ctx = FakeContext()
-    robots = world(ctx)
-    lease = take(robots, "a200-0806", "movement_exec", "B20_R_home", lambda: None, ctx.t)
-    assert robots.robots["a200-0806"].lease is lease
-    with pytest.raises(Busy, match="held by movement_exec"):
-        take(robots, "a200-0804", "movement_exec", "B21_H_approach", lambda: None, ctx.t)
-    lines = []
-    assert refuse_while_held(robots, "a200-0806 tool Open", lines.append)
-    assert refuse_while_held(robots, "a200-0804 ur_arm Start", lines.append)
-    assert lines == ["a200-0806 tool Open refused: a200-0806 is held by movement_exec (B20_R_home), one motion at a "
-                     "time; Cancel it first",
-                     "a200-0804 ur_arm Start refused: a200-0806 is held by movement_exec (B20_R_home), one motion at "
-                     "a time; Cancel it first"]
-    assert busy_reason(robots, ctx.t, besides="a200-0806") == ""
-    give_back(robots, lease)
-    assert not refuse_while_held(robots, "a200-0804 ur_arm Start", lines.append)
-    assert robots.robots["a200-0806"].lease is None and busy_reason(robots, ctx.t) == ""
-    with pytest.raises(Busy, match="not configured"):
-        take(robots, "a200-0805", "movement_exec", "B35_H_open", lambda: None, ctx.t)
-
-
-def test_a_lease_given_back_late_leaves_a_newer_one():
-    """Giving back an old lease clears nothing once the robot holds another."""
-    ctx = FakeContext()
-    robots = world(ctx)
-    old = take(robots, "a200-0806", "movement_exec", "first", lambda: None, ctx.t)
-    give_back(robots, old)
-    new = take(robots, "a200-0806", "movement_exec", "second", lambda: None, ctx.t)
-    give_back(robots, old)
-    assert robots.robots["a200-0806"].lease is new
-
-
-def test_an_arm_running_moving_or_unknown_refuses_a_lease():
-    """`is_executing`, a slight motion within 2 s, or joint states over 0.5 s old on any arm refuse a lease."""
+def test_an_arm_running_moving_or_unknown_is_moving():
+    """`is_executing`, a slight motion within 2 s, or joint states over 0.5 s old on any arm count as moving."""
     ctx = FakeContext()
     robots = world(ctx)
     state = robots.robots["a200-0804"].arms["ur_arm"].state
     state.is_executing = True
-    with pytest.raises(Busy, match="a200-0804 ur_arm is running a trajectory"):
-        take(robots, "a200-0806", "movement_exec", "B20_R_home", lambda: None, ctx.t)
+    assert moving_reason(robots, ctx.t) == "a200-0804 ur_arm is running a trajectory"
+    assert moving_reason(robots, ctx.t, besides="a200-0804") == ""
     state.is_executing, state.last_slight_motion_time = False, ctx.t - 1.9
-    with pytest.raises(Busy, match="a200-0804 ur_arm moved within the last 2 s"):
-        take(robots, "a200-0806", "movement_exec", "B20_R_home", lambda: None, ctx.t)
+    assert moving_reason(robots, ctx.t) == "a200-0804 ur_arm moved within the last 2 s"
     state.last_slight_motion_time = ctx.t - 2.1
-    give_back(robots, take(robots, "a200-0806", "movement_exec", "B20_R_home", lambda: None, ctx.t))
+    assert moving_reason(robots, ctx.t) == ""
     state.last_update_time = ctx.t - 0.6
-    with pytest.raises(Busy, match="can't tell whether a200-0804 ur_arm is moving"):
-        take(robots, "a200-0806", "movement_exec", "B20_R_home", lambda: None, ctx.t)
+    assert "can't tell whether a200-0804 ur_arm is moving" in moving_reason(robots, ctx.t)
 
 
 def test_a_confirm_too_soon_is_ignored_and_answers_reach_only_their_prompt():
@@ -221,21 +185,21 @@ def moving_lab():
     return lab, arm, next(driver for driver in lab.drivers if getattr(driver, "arm", None) is arm)
 
 
-def test_a_slow_move_is_busy_from_its_start_to_a_second_after_its_end():
-    """A 3° joint move over 5 s (robot_control's Start): every tick of it, and a second after, refuses a lease."""
+def test_a_slow_move_is_moving_from_its_start_to_a_second_after_its_end():
+    """A 3° joint move over 5 s (robot_control's Start): every tick of it, and a second after, counts as moving."""
     lab, arm, _driver = moving_lab()
 
     async def scenario():
         for _ in range(12):
             await lab.ctx.next_tick()
-        assert busy_reason(lab.ctx.world, lab.ctx.t) == ""
+        assert moving_reason(lab.ctx.world, lab.ctx.t) == ""
         start = lab.ctx.t
         with from_outside(lab.belle):
             duration = arm.send_joint_move(arm.joint_vector() + np.radians([3.0, 0, 0, 0, 0, 0]))
         blind = []
         while lab.ctx.t < start + duration + 1.0:
             await lab.ctx.next_tick()
-            if not busy_reason(lab.ctx.world, lab.ctx.t):
+            if not moving_reason(lab.ctx.world, lab.ctx.t):
                 blind.append(round(lab.ctx.t - start, 1))
         return blind, start + duration
 
@@ -243,10 +207,10 @@ def test_a_slow_move_is_busy_from_its_start_to_a_second_after_its_end():
     assert blind == []
     lab.ctx.t = end + 2.2
     lab.tick(lab.ctx.t)
-    assert busy_reason(lab.ctx.world, lab.ctx.t) == ""
+    assert moving_reason(lab.ctx.world, lab.ctx.t) == ""
 
 
-def test_an_arm_whose_joint_states_went_stale_is_busy():
+def test_an_arm_whose_joint_states_went_stale_is_moving():
     """Belle's link drops while she moves: "can't tell"; a robot never measured this session is not counted."""
     lab, arm, driver = moving_lab()
 
@@ -260,12 +224,10 @@ def test_an_arm_whose_joint_states_went_stale_is_busy():
             await lab.ctx.next_tick()
 
     asyncio.run(scenario())
-    reason = busy_reason(lab.ctx.world, lab.ctx.t)
+    reason = moving_reason(lab.ctx.world, lab.ctx.t)
     assert "can't tell whether a200-0805 ur_arm is moving" in reason
-    with pytest.raises(Busy):
-        take(lab.ctx.world, "a200-0806", "movement_exec", "B20_R_home", lambda: None, lab.ctx.t)
     arm.state.last_update_time = None  # never measured this session
-    assert busy_reason(lab.ctx.world, lab.ctx.t) == ""
+    assert moving_reason(lab.ctx.world, lab.ctx.t) == ""
 
 
 def test_a_joint_velocity_or_a_millimetre_counts_as_moving():
@@ -277,28 +239,28 @@ def test_a_joint_velocity_or_a_millimetre_counts_as_moving():
     lab.tick(lab.ctx.t)
     here = list(arm.joint_vector())
     arm._on_joint_state(JointState(name=list(UR_JOINT_NAMES), position=here, velocity=[0.0, 0.02, 0, 0, 0, 0]))
-    assert "moved" in busy_reason(lab.ctx.world, lab.ctx.t)
+    assert "moved" in moving_reason(lab.ctx.world, lab.ctx.t)
     lab.ctx.t += 3.0
     lab.tick(lab.ctx.t)
-    assert busy_reason(lab.ctx.world, lab.ctx.t) == ""
+    assert moving_reason(lab.ctx.world, lab.ctx.t) == ""
     here[3] += 0.002
     arm._on_joint_state(JointState(name=list(UR_JOINT_NAMES), position=here))
-    assert "moved" in busy_reason(lab.ctx.world, lab.ctx.t)
+    assert "moved" in moving_reason(lab.ctx.world, lab.ctx.t)
 
 
-def test_a_driving_base_is_busy():
-    """Wheels turning, a path being followed, or wheel states gone stale after being live: busy."""
+def test_a_driving_base_is_moving():
+    """Wheels turning, a path being followed, or wheel states gone stale after being live: moving."""
     lab, _arm, _driver = moving_lab()
     base = lab.cindy.base.state
     base.joint_states_update_time, base.wheel_velocities = lab.ctx.t, {"front_left_wheel_joint": 0.0}
-    assert busy_reason(lab.ctx.world, lab.ctx.t) == ""
+    assert moving_reason(lab.ctx.world, lab.ctx.t) == ""
     base.wheel_velocities = {"front_left_wheel_joint": 0.3}
-    assert "a200-0806 base is driving" in busy_reason(lab.ctx.world, lab.ctx.t)
+    assert "a200-0806 base is driving" in moving_reason(lab.ctx.world, lab.ctx.t)
     base.wheel_velocities = {"front_left_wheel_joint": 0.0}
     base.follower = SimpleNamespace(state="following", update_time=lab.ctx.t)
-    assert "following a path" in busy_reason(lab.ctx.world, lab.ctx.t)
+    assert "following a path" in moving_reason(lab.ctx.world, lab.ctx.t)
     base.follower = None
     lab.ctx.t += 1.0
     lab.tick(lab.ctx.t)
-    assert "can't tell whether a200-0806 base is moving" in busy_reason(lab.ctx.world, lab.ctx.t)
-    assert busy_reason(lab.ctx.world, lab.ctx.t, besides="a200-0806") == ""
+    assert "can't tell whether a200-0806 base is moving" in moving_reason(lab.ctx.world, lab.ctx.t)
+    assert moving_reason(lab.ctx.world, lab.ctx.t, besides="a200-0806") == ""

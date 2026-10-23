@@ -8,8 +8,6 @@ PlannerService: the base class of a headless planner plugin, which plans, cancel
 ! Requests run in the planner's own context (`ctx.submit`), so soft stop, teardown and its errors apply to them, and
   every future resolves: a cancelled search gives a plan in state "cancelled", a commit to a soft-stopped robot
   answers that nothing was sent.
-! Commit sends nothing while any robot is held for an automatic motion (`shared/execution/interlock.py`): one
-  motion at a time, from a panel or another plugin alike. Checked at the commit and again right before the lease.
 """
 
 from __future__ import annotations
@@ -26,7 +24,6 @@ from async_timeout import timeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...robot_interface.soft_stop import MotionRefused
-from ..execution.interlock import held
 from .plan import Plan, R
 from .planner_search import PlanningWorld, Search
 
@@ -198,10 +195,7 @@ class PlannerService(HuskyPlugin, Generic[R]):
             future.set_result(plan)
 
     def _commit(self, plan_id: int, future: asyncio.Future[tuple[bool, str]]) -> None:
-        """Start executing plan `plan_id` if it is the latest and ready, and no robot is held for an automatic motion.
-
-        Otherwise answer why not.
-        """
+        """Start executing plan `plan_id` if it is the latest and ready; otherwise answer why not."""
         plan = self._plan
         if plan is None or plan.id != plan_id:
             future.set_result((False, "nothing sent: that plan was replaced or cleared"))
@@ -209,10 +203,6 @@ class PlannerService(HuskyPlugin, Generic[R]):
         if plan.state != "ready":
             future.set_result((False, f"nothing sent: the plan is {plan.state}"
                                       + (f" ({plan.message})" if plan.message else "")))
-            return
-        if (why := self._held_problem()) is not None:
-            # ! One motion at a time: the plan stays ready, to commit once the automatic motion is over.
-            future.set_result((False, why))
             return
         serial = plan.request.serial
         running = self._executions.get(serial)
@@ -239,11 +229,6 @@ class PlannerService(HuskyPlugin, Generic[R]):
         try:
             if replacing is not None:
                 await asyncio.gather(replacing, return_exceptions=True)  # it gives the lease back as it ends
-            if (why := self._held_problem()) is not None:
-                # ! Checked again: a robot may have been held while the replaced commit ended. Nothing awaits from
-                #   here to the lease.
-                answer(False, why)
-                return
             with self._ctx.lease_robots([plan.request.serial], f"commit plan {plan.id}"):
                 await self.execute(self._ctx, plan, answer)
         except MotionRefused as refused:
@@ -251,10 +236,3 @@ class PlannerService(HuskyPlugin, Generic[R]):
         finally:
             self._replaced.discard(asyncio.current_task())
             answer(False, "nothing sent: the commit ended before sending")
-
-    def _held_problem(self) -> str | None:
-        """Why nothing may be sent now: a robot held for an automatic motion (one motion at a time); None if none is."""
-        found = held(self._ctx.world)
-        if found is None:
-            return None
-        return f"nothing sent: {found[0]} is held by {found[1].holder} ({found[1].label}); Cancel it first"

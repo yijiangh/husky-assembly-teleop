@@ -33,7 +33,6 @@ from ..robot_interface.base import JOINT_STATES_RATE as BASE_RATE
 from ..robot_interface.base import BaseState
 from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManagerState
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
-from ..shared.execution.interlock import refuse_while_held
 from ..ui.phone import phone_text
 from ..ui.style import BUSY, LEVEL_COLORS, NONE, OK, block, check_chip, chip, chip_line, section
 from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
@@ -79,22 +78,6 @@ ROBOT_ACTIONS = {
     "Resume": "resume",
     "Reconnect": "reconnect",
 }
-#: Refused while any robot is held for an automatic motion: Unlock and Resume let arms move again, and Reconnect
-#: drops for a moment the links that motion is watched and held through.
-MOTION_ACTIONS = ("Unlock", "Resume", "Reconnect")
-
-
-def robot_action(ctx: PluginContext, serial: str, clicked: str) -> None:
-    """Run a robot button's action; each is refused while any robot is held (MOTION_ACTIONS).
-
-    Args:
-        ctx: The plugin's context.
-        serial: The robot.
-        clicked: The button's label, a key of ROBOT_ACTIONS.
-    """
-    if clicked in MOTION_ACTIONS and refuse_while_held(ctx.world, f"{serial} {clicked}", ctx.log_warn):
-        return
-    getattr(ctx.world.robots[serial], ROBOT_ACTIONS[clicked])()
 
 
 @register
@@ -140,11 +123,11 @@ class HealthPlugin(HuskyPlugin):
                     hint="Unlock: like 'Enable robot' on the teach pendant; clear the cause first. "
                          "Resume: undo 'Stop all' for this robot: it takes motion commands again, its arms' "
                          "programs play again and its base's velocity controller is switched on. "
-                         "Reconnect: rebuild every topic, service and action of this robot. "
-                         "All three are refused while any robot is held for an automatic motion.")
+                         "Reconnect: rebuild every topic, service and action of this robot.")
                 # ! Bind this loop's serial as a default argument.
-                actions.on_click(ctx.defer_value(f"robot action {serial}",
-                                                 lambda clicked, serial=serial: robot_action(ctx, serial, clicked)))
+                actions.on_click(ctx.defer_value(
+                    f"robot action {serial}",
+                    lambda clicked, serial=serial: getattr(ctx.world.robots[serial], ROBOT_ACTIONS[clicked])()))
             self._objects_row = gui.add_html("")
         # * The phone shows the same banner and rows, without the actions: those stay on the laptop.
         with ctx.view.phone_header() as phone:

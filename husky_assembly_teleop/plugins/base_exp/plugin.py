@@ -43,7 +43,6 @@ from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.trace import Signal, Trace
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState, live_report
 from ...robot_interface.mocap_state import pose_lost
-from ...shared.execution.interlock import held
 from ...shared.obstacles_contract import ObstaclesContract
 from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
@@ -329,8 +328,6 @@ class BaseExperimentPlugin(HuskyPlugin):
         base = ctx.world.robots[self.serial].base
         if self.running:
             return "a run is going on"
-        if found := held(ctx.world):
-            return f"{found[0]} is held by {found[1].holder} ({found[1].label}): one motion at a time"
         lease = ctx.world.robots[self.serial].lease_slot.lease
         if lease is not None:
             return f"{self.serial} is leased by {lease.holder}"
@@ -386,10 +383,6 @@ class BaseExperimentPlugin(HuskyPlugin):
             if recorded:
                 experiment = await record.describe(ctx, base, plan, **more)
             self._outcome = "running"
-            if found := held(ctx.world):
-                # ! Checked again here, right before the send: describing the run awaited, and a robot may have been
-                #   held for an automatic motion meanwhile. Nothing awaits from here to `send_path`.
-                raise ValueError(f"{found[0]} is held by {found[1].holder} ({found[1].label})")
             # * The follower's own errors are kept as diagnostics; the tracking signals compare controllers. Its
             #   reports and the wheel odometry are kept per message too, from before the send.
             with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(),
@@ -481,9 +474,6 @@ class BaseExperimentPlugin(HuskyPlugin):
                         self._outcome = f"aborted: mocap lost ({lost})"
                         return
                     command = (v, w) if ctx.now() >= step_at else (0.0, 0.0)
-                    if found := held(ctx.world):
-                        self._outcome = f"stopped: {found[0]} is held by {found[1].holder} ({found[1].label})"
-                        return
                     if not base.send_twist(*command):
                         # * No controller failure: automation pauses for the operator.
                         self._outcome = f"not driven: {PLATFORM_VELOCITY_CONTROLLER} is not active"

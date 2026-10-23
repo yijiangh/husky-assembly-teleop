@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Collection, Coroutine, Iterable, Iterator, Literal, TypeVar
 
-from ..robot_interface.robot_lease import Lease, LeaseSlot, NotLeased, leased, take_lease
+from ..robot_interface.robot_lease import Lease, LeaseSlot, leased, take_lease
 from ..robot_interface.soft_stop import MotionRefused
 from ..world.clearance import (STOP_DISTANCE, Clearance, ClearanceRefused, ClearanceTrip, assumable_joints,
                                clearance_problem)
@@ -201,8 +201,7 @@ class PluginContext:
             label: What the lease is for, after this plugin's name in messages, e.g. "wiggle 0804 left".
 
         Raises:
-            NotLeased: If any of them is leased already, or any robot is held for another plugin's automatic motion
-                (`_lease_slots`); none is leased then.
+            NotLeased: If any of them is leased already; none is leased then.
             KeyError: If a serial is not a connected robot.
 
         Example:
@@ -223,8 +222,7 @@ class PluginContext:
             label: What the lease is for, after this plugin's name in messages.
 
         Raises:
-            NotLeased: If any of them is leased already, or any robot is held for another plugin's automatic motion
-                (`_lease_slots`); none is leased then.
+            NotLeased: If any of them is leased already; none is leased then.
             KeyError: If a serial is not a connected robot.
         """
         lease = take_lease(self._lease_slots(serials), f"{self.name}: {label}")
@@ -232,20 +230,8 @@ class PluginContext:
         return lease
 
     def _lease_slots(self, serials: Iterable[str]) -> list[LeaseSlot]:
-        """The lease slots of robots `serials`; KeyError for an unknown one.
-
-        Raises:
-            NotLeased: While any robot is held for another plugin's automatic motion (`HuskyRobotInterface.lease`,
-                `shared/execution/interlock.py`). ! One motion at a time across every robot: a robot's own lease
-                keeps others off that robot only, so no plugin but the holder gets any lease meanwhile.
-        """
-        slots = [self.world.robots[serial].lease_slot for serial in serials]
-        for serial, robot in self.world.robots.items():
-            hold = robot.lease
-            if hold is not None and hold.holder != self.name:
-                raise NotLeased(f"robot {serial} is held by {hold.holder} ({hold.label}) for an automatic motion, one "
-                                f"motion at a time; Cancel it first")
-        return slots
+        """The lease slots of robots `serials`; KeyError for an unknown one."""
+        return [self.world.robots[serial].lease_slot for serial in serials]
 
     @contextmanager
     def freeze(self, basis: Basis, tolerance: Tolerance = Tolerance()) -> Iterator[Freeze]:

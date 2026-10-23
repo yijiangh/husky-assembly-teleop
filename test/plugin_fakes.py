@@ -87,7 +87,7 @@ class FakeGui:
 class FakeContext:
     """The part of a `PluginContext` plugins use, without a monitor; a test reads `logs` and moves `t`."""
 
-    #: Robot leases, as the monitor gives them: the real `PluginContext` code, one-motion-at-a-time check included.
+    #: Robot leases, as the monitor gives them: the real `PluginContext` code.
     take_lease = PluginContext.take_lease
     lease_robots = PluginContext.lease_robots
     _lease_slots = PluginContext._lease_slots
@@ -294,10 +294,16 @@ def fake_robot(node: SimpleNamespace, serial: str, arms: Sequence[ArmInterface])
 def from_outside(robot: HuskyRobotInterface) -> Iterator[None]:
     """Send in the block as something outside this monitor would (the pendant, another monitor), leaving no lease.
 
-    The robot's lease is held only inside the block, so after it only the motion shows, not a lease.
+    The robot's lease is held only inside the block, so after it only the motion shows, not a lease. Outside senders
+    know nothing of this monitor's leases: one the robot has (e.g. the executor's) is set aside meanwhile, then put
+    back.
     """
-    with leased([robot.lease_slot], "outside the monitor"):
-        yield
+    kept, robot.lease_slot.lease = robot.lease_slot.lease, None
+    try:
+        with leased([robot.lease_slot], "outside the monitor"):
+            yield
+    finally:
+        robot.lease_slot.lease = kept
 
 
 def lease_to_test(part):
