@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from ...plugin_api.context import PluginContext
 from ...shared.runs.runs import DONE, RunSettings
 from ...ui.checklist import ACTION_ROWS, action_window
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
 
 if TYPE_CHECKING:
     from ...shared.assembly_run_contract import RunView
@@ -133,7 +133,7 @@ class RunPanel:
         chips += chip(f"{done}/{len(schedule)} done", OK if schedule and done == len(schedule) else NONE)
         if status.save_error:
             chips += chip("save error", FAIL, status.save_error)
-        self._status.content = block(chips)
+        self._status.content = chip_line(chips)
 
         current = view.current
         index = schedule.index(current[0]) if current is not None and current[0] in schedule else None

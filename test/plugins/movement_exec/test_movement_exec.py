@@ -557,6 +557,8 @@ def test_a_hold_not_sent_on_cancel_is_the_result_record_and_panel_line():
     assert outcome["end_stale"] and all(age > 0.5 for age in outcome["end_age"].values())
     lab.plugin.draw(lab.ctx)
     assert any("HOLD NOT SENT" in widget.content for widget in lab.ctx.gui.of_kind("html"))
+    panel = lab.plugin._panel
+    assert all(line.content.count('class="chip-line"') == 1 for line in (panel._status, panel._phone_status))
 
 
 @pytest.mark.safety

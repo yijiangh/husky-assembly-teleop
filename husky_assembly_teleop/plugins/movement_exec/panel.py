@@ -13,7 +13,7 @@ import viser
 
 from ...plugin_api.context import PluginContext
 from ...ui.phone import big_buttons, phone_text
-from ...ui.style import BUSY, FAIL, NONE, block, chip
+from ...ui.style import BUSY, FAIL, NONE, block, chip, chip_line
 
 if TYPE_CHECKING:
     from ...shared.execution.operator import Prompt
@@ -75,9 +75,9 @@ class ExecPanel:
             chips += chip("waiting for Confirm", FAIL if prompt.warn else BUSY)
         line = _one_line(escape(prompt.line) if prompt is not None else "no prompt",
                          (FAIL if prompt.warn else BUSY) if prompt is not None else NONE)
-        self._status.content = block(chips)
+        self._status.content = chip_line(chips)
         self._prompt.content = block(line)
-        self._phone_status.content = phone_text(block(chips))
+        self._phone_status.content = phone_text(chip_line(chips))
         self._phone_prompt.content = phone_text(block(line))
         if (dry_run, refused) != self._shown:
             self._shown = (dry_run, refused)

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from ...plugin_api.context import PluginContext
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CLOSE_PART, GRASP_PART, MAX_TRAJ_TIME,
                                               MOTION_PART, OPEN_PART, PartPlan)
-from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values
+from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
 
 if TYPE_CHECKING:
     from .plugin import AssemblyStepsPlugin
@@ -78,7 +78,7 @@ class StepsPanel:
         current = plugin.current()
         executor = ctx.require("movement_exec")
         if current is None:
-            self._status.content = block(chip("no current step", NONE) + plugin._plan_chip())
+            self._status.content = chip_line(chip("no current step", NONE) + plugin._plan_chip())
             self._step.content = block(values("—"))
             self._moves.content = block(values("Exec: —"))
         else:
@@ -89,7 +89,7 @@ class StepsPanel:
                      + chip(f"step {number}/{count}", NONE) + plugin._plan_chip())
             if executor.active:
                 chips += chip(escape(f"exec: {executor.active}"), BUSY)
-            self._status.content = block(chips)
+            self._status.content = chip_line(chips)
             movements = view.process.process.actions[action].movements
             routine = plugin.routine()
             text = f"{primary.label} ({routine.value if routine is not None else 'unclassified'})"

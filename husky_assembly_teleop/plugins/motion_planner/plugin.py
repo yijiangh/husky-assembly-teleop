@@ -30,7 +30,7 @@ from ...shared.motion_planner_contract import CollisionReport, MotionPlanRequest
 from ...shared.planner.planner_panel import PLAN_TAB
 from ...shared.planner.planner_search import with_guesses
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, values
+from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, chip_line, values
 from .work import run_collisions, run_ik, run_plan
 
 #: The work a request runs on the worker: (pool, request, abort, log) -> its answer.
@@ -201,7 +201,7 @@ class MotionPlannerPlugin(HuskyPlugin):
             chips += chip(f"{queued} queued", BUSY)
         chips += chip(f"worlds: {escape(', '.join(self._worlds)) or 'none'}", OK if self._worlds else NONE,
                       "robots whose planning world is loaded; the first request for a robot loads its models")
-        self._status.content = block(chips)
+        self._status.content = chip_line(chips)
         color = FAIL if self._last_failed else NONE
         self._details.content = block(f'<div title="{escape(self._last, quote=True)}" style="color:{color}">'
                                       + values(escape(self._last) or "no answer yet") + "</div>")

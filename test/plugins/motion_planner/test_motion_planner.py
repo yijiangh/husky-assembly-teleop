@@ -112,6 +112,9 @@ def test_cancel_answers_queued_requests_unrun(monkeypatch):
         queued = [plugin.request_ik(request("ik")), plugin.request_collisions(request("collisions"))]
         await asyncio.get_running_loop().run_in_executor(None, started.wait, 5.0)
         assert plugin.running == "first"
+        plugin._status, plugin._details = SimpleNamespace(content=""), SimpleNamespace(content="")
+        plugin.draw(None)
+        assert plugin._status.content.count('class="chip-line"') == 1 and "2 queued" in plugin._status.content
         plugin.request_cancel()
         answers = await asyncio.gather(first, *queued)
         plugin.teardown(None)

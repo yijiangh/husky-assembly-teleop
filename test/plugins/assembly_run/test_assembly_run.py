@@ -397,6 +397,7 @@ def test_the_panel_shows_the_run_and_its_buttons_ask_the_plugin(tmp_path):
             ("1. B1_J_joint · cindy · done", "green"), ("2. B1_H_hold · alice · pending", "blue"),
             ("3. B1_R_release · cindy · pending", "gray")]
         assert rows[5].label == "·" and "cindy     live now" in gui.widgets[-1].content
+        assert plugin._panel._status.content.count('class="chip-line"') == 1
         rows[2].callback()
         assert plugin.view.current[0] == "B1_R_release"
         gui.of_kind("checkbox")[1].callback(True)

@@ -143,6 +143,7 @@ def test_steps_follow_the_run_and_walk_with_prev_and_next():
     """
     lab = Steps(("B20_J", 3))
     assert lab.plugin.position == (1, 2) and lab.plugin.traj_time == 10.0
+    assert lab.plugin._panel._status.content.count('class="chip-line"') == 1
     assert "then: B20_J_place_bar, B20_J_grasp · skipped: B20_J_load" in lab.html()
     assert "moves left_ur_arm, right_ur_arm; then waits for B20_J_place_bar by hand; then tightens" in lab.html()
     lab.plugin.go(lab.ctx, 1)
