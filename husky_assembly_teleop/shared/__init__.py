@@ -19,4 +19,5 @@ What plugins share with each other: contracts, data types, base classes and help
   process_contract.py       what the process plugin offers: its selected movement (`Selection`, `ProcessContract`)
   planner/                  base classes and helpers for the planner plugins
   recordings/               experiment runs on the Drive: run folders, descriptions, recordings read by label
+  teleop/                   driving by hand: the base's D-pad
 """

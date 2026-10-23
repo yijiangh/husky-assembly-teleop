@@ -21,7 +21,7 @@ from ...robot_interface.end_effectors import EndEffector, RobotiqGripper, Scaffo
 from ...ui.joint_sliders import JOINT_SLIDER_NAMES
 from ...ui.phone import columns_css
 from ...ui.style import FAIL, SECTION_CTRL, SECTION_TOOL, block, note, section, values, warning
-from .dpad import HOLD_CALLBACK_HZ
+from ...shared.teleop.dpad import HOLD_CALLBACK_HZ
 from .markers import marker_legend
 
 #: TCP position slider range (metres, around the arm's base) and step.

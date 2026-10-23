@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable
 
 import viser
@@ -33,15 +34,40 @@ HOLD_CALLBACK_HZ = 20.0
 HOLD_TIMEOUT = 0.25
 
 
+@dataclass(frozen=True)
+class Hold:
+    """A D-pad button held: its signs of linear and angular speed, its D-pad's speed slider, and its last report.
+
+    Attributes:
+        linear: Sign of the linear speed asked for.
+        angular: Sign of the angular speed asked for.
+        speed: The speed slider of the D-pad it is on.
+        time: When the browser last reported it held, `ctx.now()`.
+    """
+
+    linear: float
+    angular: float
+    speed: viser.GuiSliderHandle
+    time: float
+
+    def released(self, now: float) -> bool:
+        """Whether no report came for HOLD_TIMEOUT: the button counts as released."""
+        return now - self.time > HOLD_TIMEOUT
+
+    def twist(self) -> tuple[float, float]:
+        """The twist it asks for: linear (m/s) and angular (rad/s) speed."""
+        return self.linear * self.speed.value * MAX_LINEAR_SPEED, self.angular * self.speed.value * MAX_ANGULAR_SPEED
+
+
 def build_velocity_inputs(ctx: PluginContext, gui: viser.GuiApi, serial: str,
-                          on_hold: Callable[[float, float], None]) -> viser.GuiSliderHandle:
+                          on_hold: Callable[[Hold], None]) -> viser.GuiSliderHandle:
     """Add the inputs for platform_velocity_controller: a speed slider and the D-pad.
 
     Args:
         ctx: The plugin's context.
         gui: The GUI api, inside the base's tab.
         serial: The robot's serial, for intent names.
-        on_hold: Called every report of a held button, with its signs of linear and angular speed.
+        on_hold: Called with a `Hold` every report of a held button.
 
     Returns:
         viser.GuiSliderHandle: The speed slider, a fraction of the full speed.
@@ -55,6 +81,7 @@ def build_velocity_inputs(ctx: PluginContext, gui: viser.GuiApi, serial: str,
     for button, (label, _, linear, angular) in zip(buttons, HOLD_BUTTONS):
         # ! Bind loop values as defaults, or every button drives like the last.
         button.on_hold(ctx.defer(f"hold {label} {serial}",
-                                 lambda linear=linear, angular=angular: on_hold(linear, angular)),
+                                 lambda linear=linear, angular=angular: on_hold(
+                                     Hold(linear, angular, speed, ctx.now()))),
                        callback_hz=HOLD_CALLBACK_HZ)
     return speed

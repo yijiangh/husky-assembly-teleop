@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from robot_fakes import lease_context
 
-from husky_assembly_teleop.plugins.robot_control.dpad import HOLD_TIMEOUT, MAX_LINEAR_SPEED
+from husky_assembly_teleop.shared.teleop.dpad import HOLD_TIMEOUT, MAX_LINEAR_SPEED, Hold
 from husky_assembly_teleop.plugins.robot_control.plugin import FREE_DRIVE_RETRY, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.robot_interface.arm import FREE_DRIVE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER
 from husky_assembly_teleop.ui.visualization import Visualization
@@ -84,9 +84,9 @@ def test_phone_hold_drives_at_the_phone_speed():
     plugin._bases = [_BaseWidgets(serial=SERIAL, base=base, panel=None, status=None,
                                   speed=SimpleNamespace(value=0.5), phone_speed=SimpleNamespace(value=1.0))]
 
-    plugin._on_hold(ctx, SERIAL, True, 1.0, 0.0)
+    plugin._on_hold(SERIAL, Hold(1.0, 0.0, plugin._bases[0].phone_speed, ctx.now()))
     plugin.update(ctx)
-    plugin._on_hold(ctx, SERIAL, False, 1.0, 0.0)
+    plugin._on_hold(SERIAL, Hold(1.0, 0.0, plugin._bases[0].speed, ctx.now()))
     plugin.update(ctx)
     assert sent == [(MAX_LINEAR_SPEED, 0.0), (0.5 * MAX_LINEAR_SPEED, 0.0)]
 
