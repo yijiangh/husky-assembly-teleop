@@ -1,6 +1,7 @@
 """
-Fake lab: every robot simulated as crl-husky's sim_all.launch.py does (base and arms, arms at their parked joints),
-but each base starts shifted from its parked pose in -y (launch argument shift_y, metres).
+Fake lab: every robot simulated as crl-husky's sim_all.launch.py does, each base shifted from its parked pose.
+
+Base and arms, arms at their parked joints; each base starts shifted in -y (launch argument shift_y, metres).
 
 ! Why the shift: the parked row (park.yaml, y = 1.35 m, facing +y) overlaps the process's Rhino cabinet
   (obstacles/env39, y 1.63-2.23 m), so once the process is loaded the base planner refuses every parked start. The
