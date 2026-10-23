@@ -2,6 +2,13 @@
 
 Status: **steps 1–5 and the refactor (§10) implemented**; report in §9. Brief: the core extraction prompt (decisions 1–16 there are fixed).
 
+! This plan uses the names of its time. The package is `scaffolding_assembly_core`, and the format is the process
+format, schema 2.1 (its `doc/process_format.md`): design → process, `carried` / `Carried(to, offset)` → `attached` /
+`Holder(to, grasp)`, `Attachment.grasp` → `offset`, `SceneSnapshot` → `Scene`, one `grip` channel per tool kind
+(no `TOOL_CHANNELS`), `pose_in_tcp` on halves instead of `parts` and their seats, no `mount_contacts`, plan checks
+B1–B15, `present` lists obstacles too, converted exports are `<export>_process`.
+Current words: `doc/glossary.md`.
+
 ## 1. Goal
 
 Extract `design_io`, the scene and the mirrors into a top-level package `bar_assembly_core/` next to

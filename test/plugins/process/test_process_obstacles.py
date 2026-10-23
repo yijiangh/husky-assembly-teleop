@@ -145,7 +145,7 @@ def test_scene_accepts_them(process):
 
 
 def test_overlay_draws_only_what_the_core_does_not(process):
-    """Standing bodies are left to the core, held ones are drawn, absent ones only with `everything`."""
+    """Standing bodies are left to the runtime, held ones are drawn, absent ones only with `everything`."""
     server = viser.ViserServer(port=0, verbose=False)
     try:
         drawing = ProcessDrawing(server, "/process", process, load_robot_models(process))

@@ -83,7 +83,7 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
             ctx.log_info(f"{clicked} ignored: {why}")
 
     async def _wiggle(self, ctx: PluginContext, serial: str, arm_name: str) -> None:
-        """Turn the wrist out and back, holding the robot's lease and freezing everything else.
+        """Turn the wrist out and back, under the robot's lease and a freeze of everything else.
 
         Args:
             ctx: This plugin's context.

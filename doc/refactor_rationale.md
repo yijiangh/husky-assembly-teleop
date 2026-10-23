@@ -1,6 +1,6 @@
 # Why the monitor was rewritten the way it was
 
-Background for the `husky_assembly_teleop` core (`monitor.py`, `config.py`,
+Background for the `husky_assembly_teleop` runtime (`monitor.py`, `config.py`,
 `plugin_api/`, `world/`, `robot_interface/`, `ui/`).
 
 This file holds the *archaeology*: what the old code did, and which specific
@@ -117,12 +117,11 @@ Do not diff two URDFs against each other either: a calibrated URDF and a working
 URDF differ in which end effectors are mounted, so their link sets differ, and
 xacro expansion order makes a structural diff unreliable.
 
-**What the rewrite does about it (planned, not yet implemented).** Calibration
-is a small explicit overlay keyed by joint name -- each entry a delta on that
-joint's origin xyz/rpy -- applied after parsing. Reviewable and diffable in git,
-and independent of which tool is mounted. For now `RobotConfig.calibration_file`
-exists but nothing reads it, and the calibrated URDFs are still used (TODO in
-`config.py`).
+**What the rewrite does about it.** One URDF per robot, with no calibrated
+variants. Each arm's UR factory calibration (crl-husky's copy, the one its driver
+runs with) is applied to the model at startup (`config._apply_ur_calibrations`),
+and `UrCalibrationCheck` reports when the URDF itself differs from it. The base
+calibration is not in any URDF: the mocap relay applies it (`doc/mocap_relay.md`).
 
 ## Blocking waits on the single thread
 
@@ -141,8 +140,8 @@ Between two awaits a task has the thread to itself and needs no locks.
 
 The tick pumps ROS: it runs every waiting ROS callback at its start, then
 handles a soft stop, updates forward kinematics, copies the whole world for
-planners and the view, runs the plugin hooks (intents, then update), resumes
-the tasks waiting for it, and draws. Between ticks
+planners and the view, runs the plugin hooks (intents, then update), checks
+clearances and freezes, resumes the tasks waiting for it, samples the traces, and draws. Between ticks
 `WorldState` does not change and always matches the kinematics and the copy. The price is that a fast topic needs a queue deep enough for one tick.
 
 Considered and rejected:
@@ -157,7 +156,7 @@ Considered and rejected:
 
 A plugin that fails too often is stopped together with every plugin that
 requires it, and the panel shows the monitor as broken until restart. Carrying
-on with a dependent reading frozen state would be worse than stopping it.
+on with a dependent reading state nobody updates any more would be worse than stopping it.
 Stopping only cancels their tasks, to end the error spam: their UI and scene
 bodies stay until shutdown, on purpose, so the operator can investigate before
 restarting.
@@ -210,7 +209,7 @@ its library means swapping the library renames every import above it. Plugins
 talk to a `PluginView` (in `ui/visualization.py`) through their context, so most of them
 never mention viser at all.
 
-The core is grouped by what a module is about, not by who calls it:
+The runtime is grouped by what a module is about, not by who calls it:
 - `monitor.py`, `config.py`, `tool_urdfs.py` stay at the top: the entry point
   and the run configuration everything else is built from.
 - `plugin_api/`: what a plugin is (`plugin.py`) and what it is handed (`context.py`, `concurrency.py`).

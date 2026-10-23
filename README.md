@@ -154,7 +154,7 @@ pip install -r requirements.txt
 
 # Code Structure
 
-The monitor is a small core that ticks and owns the shared state; every feature is a plugin. Each folder's `__init__.py` lists its files.
+The monitor is a small runtime that ticks and owns the shared state; every feature is a plugin. Each folder's `__init__.py` lists its files.
 
 | Folder | What is in it |
 |---|---|
@@ -177,7 +177,8 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 | Doc | What it covers |
 |---|---|
 | `AGENTS.md` | Conventions, build and test commands; for coding agents and people alike. |
-| `doc/refactor_rationale.md` | Why the core is built the way it is. |
+| `doc/glossary.md` | The project's words and what each means where. |
+| `doc/refactor_rationale.md` | Why the runtime is built the way it is. |
 | `doc/plugin_roadmap.md` | Which plugins exist, and which old features are still to be ported. |
 | `doc/scene_refactor_plan.md`, `doc/ur_frames.md` | The scene, the UR arm frames. The process file format is in the core's `doc/process_format.md`. |
 | `tasks/` | Specs written while building a feature. |

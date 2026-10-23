@@ -5,7 +5,7 @@ It serves the selected movement, and the maps between process ids and live scene
 `requires = ("process",)`: they read `selection` (`shared.process_contract.ProcessContract`).
 
 Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "process/<body id>"
-(`scene_bodies.py`): the core draws it and planners avoid it. A body the plan holds follows the configured real
+(`scene_bodies.py`): the runtime draws it and planners avoid it. A body the plan holds follows the configured real
 robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.ProcessDrawing`), with the other
 bodies on request. The plugin only reads processes: it never edits one.
 

@@ -1,1 +1,1 @@
-"""Monitor node for the husky robots: core, plugins and process I/O."""
+"""Monitor node for the husky robots: runtime, plugins and process I/O."""

@@ -1,9 +1,9 @@
 """
-The process plugin's overlay: what the core's 3D view cannot draw of one process state.
+The process plugin's overlay: what the runtime's 3D view cannot draw of one process state.
 
 Drawn from the process alone, with forward kinematics from each robot's yourdfpy model.
 
-- * Bodies that `stand` are scene bodies, drawn by the core. The overlay draws the robots, their tools and the
+- * Bodies that `stand` are scene bodies, drawn by the runtime. The overlay draws the robots, their tools and the
   bodies they carry, and, when asked, every other body (absent ones), always see-through.
 - `load_robot_models` is slow: run it on the loading thread.
 - `ProcessDrawing` is main thread only; a new state only changes poses, joint values and colours.
@@ -172,7 +172,7 @@ class ProcessDrawing:
                 pose = where if isinstance(where, Pose) else self._process.bodies[body_id].assembly_pose
                 look = (body_color(body_id), GHOST_OPACITY)
             else:
-                frame.visible = False  # standing: the core draws it; or not asked for
+                frame.visible = False  # standing: the runtime draws it; or not asked for
                 continue
             _place(frame, pose)
             if self._looks.get(body_id) != look:
@@ -204,7 +204,7 @@ class ProcessDrawing:
 def _stands(process: Process, state: State, body_id: str) -> bool:
     """Whether a body stands on its own in a state: present, and not an attached, unbuilt bar or one of its halves.
 
-    * Standing bodies are scene bodies, drawn by the core; the overlay draws the rest.
+    * Standing bodies are scene bodies, drawn by the runtime; the overlay draws the rest.
     """
     return is_present(process, state, body_id) and not isinstance(placement(process, state, body_id), Holder)
 

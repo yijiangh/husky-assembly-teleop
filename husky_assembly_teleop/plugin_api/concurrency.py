@@ -5,7 +5,7 @@ The tick, ROS callbacks and every task (`ctx.spawn`) share one thread, so betwee
 no locks. For timeouts use `ctx.wait_until(..., timeout_s=)` (ROS clock) or `async_timeout.timeout` (wall clock).
 
 - ! Never block in a task: await `ctx.wait_until` / `ctx.sleep`, or use `ctx.run_in_thread` for heavy work.
-- ! Never swallow `asyncio.CancelledError` (bare `except:`, `except BaseException:`): cancelling is how jobs,
+- ! Never swallow `asyncio.CancelledError` (bare `except:`, `except BaseException:`): cancelling is how Cancel,
   soft stop and shutdown end a task.
 - ! Never `await` inside `with mirror.active()`: another task would run with pybullet_planning on the wrong client.
 """

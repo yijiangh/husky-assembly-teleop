@@ -68,7 +68,7 @@ def test_pose_lost_after_the_timeout_without_a_valid_sample():
 
 
 def test_pose_lost_once_the_newest_pose_was_captured_too_long_ago():
-    """The relay republishes a frozen frame as valid after the stream stops: arriving now, it is still lost."""
+    """The relay republishes its last frame as valid after the stream stops: arriving now, it is still lost."""
     body = TrackedObject(name="probe", mocap_id=1)
     message = MocapRigidBodyPose(pose_valid=True, tracking_valid=True)
     message.header.stamp.sec = 10

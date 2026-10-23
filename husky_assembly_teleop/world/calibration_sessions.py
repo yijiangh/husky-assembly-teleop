@@ -3,7 +3,8 @@ Which base calibration the mocap relay applies to each robot's rigid body: crl-h
 
 - Default: the one in the robot's `mocap_config.json` in crl-husky (`config_resolver`), always there and rough.
 - Newer: the newest calibration session on the Drive, `data_experiment/calibration_data/<YYYYMMDD>/
-  calibrated_transformation_<serial>_rhino.json`, used only if it passes `sanity_problem` against the default.
+  calibrated_transformation_<digits>_rhino.json` (the robot's four serial digits), used only if it passes
+  `sanity_problem` against the default.
 - Rigid bodies of no robot (probe, bars) get none: Motive's pivot defines them.
 
 Shared by the relay and the monitor's calibration plugin. Pure functions of files; no ROS, any thread.

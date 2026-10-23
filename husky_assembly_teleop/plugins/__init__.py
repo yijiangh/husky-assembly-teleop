@@ -3,14 +3,14 @@ One module (or package) per feature, found by `plugin.discover`.
 
 Add a file with @register; run it with `-p plugins:="['<name>']"`.
 
-! Everything that is not a real robot lives here; the core knows nothing about
+! Everything that is not a real robot lives here; the runtime knows nothing about
   bars, racks or assembly steps. Plugins draw only into their own PluginView.
 ! Plugins never import each other (test/structure/test_layers.py): shared code, data types and service interfaces go in
   `shared/`, and another plugin's live data comes only from `ctx.require`, for names in `requires`, typed by its
   `<Name>Contract` Protocol in `shared/`.
 
 * Scene rules:
-  - Put collision objects in `ctx.scene` under "<plugin name>/…"; the core draws
+  - Put collision objects in `ctx.scene` under "<plugin name>/…"; the runtime draws
     and removes them. ! Never edit a `Geometry` in place: assign a new one. Build
     large meshes on a loading thread (`ctx.run_in_thread`).
   - Read robot and link poses from `ctx.kinematics`, not from URDFs.
@@ -22,8 +22,8 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`.
   cancelled unless spawned with `survives_soft_stop` (only for work that never commands a robot). ! In `update`,
   check `soft_stopped` before commanding: RobotStopped there skips the rest of the hook.
 * Leases: every command that could move a robot, or switches its controllers, needs that robot's lease, else raises
-  NotLeased; stopping and holding need none. `ctx.lease_robots` holds it for a `with` block in a task, `ctx.take_lease`
-  across ticks. ! Hold it while the motion runs, not only while sending. Leases only keep this monitor's code apart.
+  NotLeased; stopping and `hold` need none. `ctx.lease_robots` holds it for a `with` block in a task, `ctx.take_lease`
+  across ticks. ! Keep it while the motion runs, not only while sending. Leases only keep this monitor's code apart.
 * Freezes (optional, `ctx.freeze`): a task that assumes other robots or objects stand still is cancelled once they
   move, whoever moved them. Example of both: `examples/lease_and_freeze.py`.
 * Clearances (optional, `ctx.clearance`): while a task drives a robot, the robot is soft stopped and the task

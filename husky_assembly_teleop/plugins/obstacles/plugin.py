@@ -140,7 +140,7 @@ class ObstaclesPlugin(HuskyPlugin):
         self.write_temporary(ctx)
 
     def teardown(self, ctx: PluginContext) -> None:
-        """Remove the scene click callback; the core removes the bodies.
+        """Remove the scene click callback; the runtime removes the bodies.
 
         Args:
             ctx: This plugin's context.
