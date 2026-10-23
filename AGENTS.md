@@ -86,10 +86,11 @@ python3 -m pytest -m "" --old-scripts         # also the old calibration scripts
 ## Branches
 
 - `core-port` is the main branch. Work on a side branch off it, one per feature or milestone.
-- Merge only, never rebase. To take in new work from `core-port`, merge `core-port` into the side branch.
-- To land a side branch: merge `core-port` into it, run everything (`pytest -m ""`), then
-  `git merge --no-ff <side branch>` on `core-port` and push.
-- ! Never rewrite a pushed branch (no rebase, amend or force push), `core-port` above all: others build on it.
+- Branches only you have (not pushed): rebase or merge as you like.
+- ! Never rewrite a branch others may have, i.e. anything pushed and `core-port` above all: no rebase, amend or force
+  push. Take in new work from `core-port` by merging it in.
+- To land a side branch: bring it up to date with `core-port`, run everything (`pytest -m ""`), then merge it into
+  `core-port` and push.
 - The core submodule follows its `main`, crl-husky its `jg/ros2` (README names the commit the monitor needs). Push
   crl-husky and the core before this repo, so a pin never points at a commit others cannot fetch.
 
