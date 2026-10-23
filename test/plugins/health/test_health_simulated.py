@@ -12,3 +12,10 @@ def test_sim_chip_only_for_a_simulated_part():
     assert simulated_check(None) == []
     chip, = simulated_check(SimulatedPart("base", "husky_sim", "base simulator", 10.0))
     assert chip.label == "SIM" and chip.level == WARN and "husky_sim" in chip.detail
+
+
+def test_a_simulated_tool_gets_a_sim_chip_named_for_it():
+    """On the arm's line, after the tool's own chip: the label says which part is simulated."""
+    chip, = simulated_check(SimulatedPart("left_gripper", "left_gripper/scaffolding_tool_sim", "scaffolding tool sim",
+                                          10.0), "scaffolding_v3 SIM")
+    assert chip.label == "scaffolding_v3 SIM" and "scaffolding tool sim" in chip.detail

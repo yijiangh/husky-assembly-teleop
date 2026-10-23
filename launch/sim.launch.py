@@ -11,7 +11,8 @@ The relay (mocap.launch.py) and the monitor start once, as with the real robots;
 - Every argument of crl_husky's sim_robot.launch.py and of sim_mocap.launch.py is one of this launch's, read from those
   files with their defaults: `ros2 launch husky_assembly_teleop sim.launch.py --show-args` lists them.
 - `fake_motive:=true` adds sim_motive (sim_mocap.launch.py); without it the relay uses the true poses as they are.
-- `robot:=all` simulates every robot (sim_all.launch.py): parked, without tools.
+- `robot:=all` simulates every robot (sim_all.launch.py): parked, each arm with the robot's tool (crl-husky's
+  model.yaml).
 """
 
 import importlib.util
@@ -55,9 +56,9 @@ def _includes(context, robot_arguments, motive_arguments):
         return {name: LaunchConfiguration(name) for name in names}.items()
 
     if LaunchConfiguration("robot").perform(context).strip() == "all":
-        if any(LaunchConfiguration(name).perform(context) not in ("", "none") for name in ("tool", "tool_left",
-                                                                                         "tool_right")):
-            raise ValueError("robot:=all puts no tools on: simulate the robot with the marker on its own")
+        if any(LaunchConfiguration(name).perform(context).strip() for name in ("tool", "tool_left", "tool_right")):
+            raise ValueError("robot:=all puts each robot's own tools on (model.yaml): simulate a robot on its own to "
+                             "choose its tools or the marker")
         actions = [IncludeLaunchDescription(PythonLaunchDescriptionSource(str(SIM_ALL)))]
     else:
         actions = [IncludeLaunchDescription(PythonLaunchDescriptionSource(str(SIM_ROBOT)),

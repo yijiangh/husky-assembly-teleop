@@ -171,7 +171,7 @@ calibrations as `sim_calibrations`. In the robots' domain the relay reads Motive
 export ROS_DOMAIN_ID=70                                               # a domain of its own, never 80
 ros2 launch husky_assembly_teleop mocap.launch.py                     # the relay, once
 ros2 launch husky_assembly_teleop sim.launch.py robot:=0805 tool:=calibration_marker fake_motive:=true \
-    delay_sec:=0.01 noise:=0.0005,0.1                                 # robot:=all for every robot, without tools
+    delay_sec:=0.01 noise:=0.0005,0.1                                 # robot:=all for every robot, with its tools
 ```
 
 `sim.launch.py` starts crl-husky's `sim_robot.launch.py` (or `sim_all.launch.py`) and, with `fake_motive:=true`,
