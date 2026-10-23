@@ -50,8 +50,9 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **tracked object**: a mocap rigid body that is not a robot, scene id `tracked/<name>`, never put in the scene by a
   plugin (`ctx.track_object`). ! Its `tracked` flag stays true when the relay goes silent: check `pose_lost`.
 - **fix / pose_lost / stale reading**: a fix is one valid mocap sample; `pose_lost` means none for 0.3 s, so nothing
-  may drive from it; a reading is stale past its age limit (`STALE_AFTER`, `JOINT_STATE_MAX_AGE`).
-  `robot_interface/mocap_state.py`, `world/checks.py`.
+  may drive from it; a reading is stale past its age limit (`STALE_AFTER`, `JOINT_STATE_MAX_AGE`). In the snapshot a
+  lost base is untracked and stale joints are unmeasured: missing means unknown. `robot_interface/mocap_state.py`,
+  `world/checks.py`, `world/scene.py`.
 - **ghost**: a see-through robot copy for a target, a plan or a preview, shown only while its panel was the last one
   used. `ui/ghost.py`.
 

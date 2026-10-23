@@ -652,7 +652,8 @@ class BaseExperimentPlugin(HuskyPlugin):
                                  chooser: Sampler | StandardSet | TwistGrid) -> tuple[Plan | None, int]:
         """The chooser's first path that, placed where the robot stands, keeps PATH_CLEARANCE from everything."""
         anchor = self._robot_pose(ctx, serial)
-        if anchor is None or not ctx.world.robots[serial].base.state.tracked:
+        base = ctx.world.robots[serial].base
+        if anchor is None or pose_lost(base.mocap_id, base.state, ctx.now()):
             return None, 0
         snapshot = ctx.scene.snapshot
         tries = 0
@@ -786,7 +787,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         """Chips on one line: robot, mocap, follower, velocity controller, run."""
         base = ctx.world.robots[self.serial].base
         chips = chip(escape(self.serial), SECTION_CTRL)
-        chips += chip("tracked", OK) if base.state.tracked else chip("not tracked", FAIL)
+        lost = pose_lost(base.mocap_id, base.state, ctx.now())
+        chips += chip("not tracked", FAIL, lost) if lost else chip("tracked", OK)
         follower = self._follower(ctx)
         if follower is None:
             chips += chip("no follower", FAIL, "start crl_husky pure_pursuit (or pure_pursuit_sim.launch.py)")

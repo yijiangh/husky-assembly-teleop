@@ -38,6 +38,7 @@ from ...ui.style import (BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, check_chip
 from ...robot_interface.base import live_report
 from ...world.follower import path_check
 from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.ids import robot_id
 from .algorithms import ALGORITHMS, Algorithm
 from .debug_view import DebugView
 from .planner_plugin import DEFAULT_EXPERIMENT, BasePlannerPlugin, differs, floor_pose
@@ -322,7 +323,7 @@ class BasePlannerPanel(PlannerPanel):
 
     def _status_html(self, ctx: PluginContext) -> str:
         """One line of chips: the robot, whether it is tracked, the plan's state and the last run's."""
-        tracked = ctx.world.robots[self.serial].base.state.tracked
+        tracked = ctx.scene.snapshot.robots[robot_id(self.serial)].base_tracked
         chips = chip(escape(self.serial), SECTION_CTRL)
         chips += chip("tracked" if tracked else "not tracked", OK if tracked else BUSY,
                       "" if tracked else "planning needs the base tracked by mocap")
