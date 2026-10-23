@@ -4,7 +4,8 @@ What the movement_exec plugin offers other plugins (`MovementExecContract`), its
 Other plugins ask with an `ExecRequest`; `part_plan` says how a step's movements are run.
 
 A part is a motion along a plan, a tool step (Robotiq open or close, a scaffolding grasp), or a step done by hand.
-Routines not supported yet are refused, naming what is missing (`LATER`).
+Routines not supported yet are refused, naming what is missing (`LATER`). While movement_exec has a robot's lease for
+a step, nothing that changes the step may change (`step_running`).
 
 Pure: any thread.
 """
@@ -13,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Mapping, Protocol
 
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from scaffolding_assembly_core.geometry import Pose
 
     from ..config import RobotConfig
+    from ..robot_interface.robot import HuskyRobotInterface
     from .assembly_run_contract import RunView
     from .execution.basis import PlanBasis
     from .execution.operator import Prompt
@@ -40,6 +42,9 @@ MOTION = frozenset(DEFAULT_TRAJ_TIME)
 #: Routines not supported yet, and what each is in the refusal.
 LATER = {Routine.INSERT: "the insert", Routine.RETREAT_LINEAR: "the linear retreat",
          Routine.TRANSFER_HELD: "the transfer with the bar held"}
+
+#: The plugin that runs a step on the robots: while it has their leases, nothing that moves the step may change.
+STEP_RUNNER = "movement_exec"
 
 #: What a part does.
 MOTION_PART, OPEN_PART, CLOSE_PART, GRASP_PART, BY_HAND_PART, BASE_PART, REFUSED_PART = (
@@ -90,6 +95,7 @@ class ExecRequest:
         ignore_built: Reads the requester's "Ignore built bars" now, so a plan made otherwise is refused as stale;
             by default not ticked.
         obstacles_collide: Reads the process plugin's "Rhino obstacles collide" now, likewise; by default ticked.
+        transfer_as_free: Reads the process plugin's "Transfer workaround" now, likewise; by default ticked.
     """
 
     loaded: LoadedProcess
@@ -105,6 +111,7 @@ class ExecRequest:
     label: str
     ignore_built: Callable[[], bool] = lambda: False
     obstacles_collide: Callable[[], bool] = lambda: True
+    transfer_as_free: Callable[[], bool] = lambda: True
 
 
 @dataclass(frozen=True)
@@ -161,6 +168,24 @@ class MovementExecContract(Protocol):
 
     def request_dry_run(self, on: bool) -> None:
         """Turn the dry run on or off; refused while a request runs."""
+
+
+def step_running(robots: Mapping[str, HuskyRobotInterface]) -> str:
+    """Why nothing that changes the current step may change now: STEP_RUNNER has a robot's lease; else "".
+
+    ! Main thread only, where leases change.
+
+    Args:
+        robots: The robots by serial (`ctx.world.robots`); a lease's holder reads "<plugin>: <label>".
+
+    Returns:
+        str: E.g. "a200-0806 is leased by movement_exec: exec B20_J_transfer: wait until it is done, or Cancel it".
+    """
+    for serial, robot in robots.items():
+        lease = robot.lease_slot.lease
+        if lease is not None and lease.holder.startswith(f"{STEP_RUNNER}: "):
+            return f"{serial} is leased by {lease.holder}: wait until it is done, or Cancel it"
+    return ""
 
 
 def serial_of(loaded: LoadedProcess, action_id: str, robots: tuple[RobotConfig, ...]) -> str | None:
@@ -246,8 +271,12 @@ def step_parts(loaded: LoadedProcess, action_id: str, step: OperatorStep, robots
                  for index in step.indices)
 
 
-def current_step(view: RunView) -> tuple[str, list[OperatorStep], int] | None:
-    """The run's current action, its steps (with the run's transfer workaround) and the step holding its movement.
+def current_step(view: RunView, transfer_as_free: bool) -> tuple[str, list[OperatorStep], int] | None:
+    """The run's current action, its steps and the step holding its movement.
+
+    Args:
+        view: The run now.
+        transfer_as_free: The transfer workaround (the process plugin's).
 
     Returns:
         tuple[str, list[OperatorStep], int] | None: None without a process, a current action, or steps.
@@ -256,15 +285,14 @@ def current_step(view: RunView) -> tuple[str, list[OperatorStep], int] | None:
         return None
     action_id, movement = view.current
     try:
-        steps = operator_steps(view.process.process, view.process.process.actions[action_id],
-                               view.settings.transfer_as_free)
+        steps = operator_steps(view.process.process, view.process.process.actions[action_id], transfer_as_free)
     except UnknownMovement:
         return None
     index = step_index_of(steps, movement)
     return None if index is None else (action_id, steps, index)
 
 
-def current_primary(view: RunView) -> tuple[str, int] | None:
-    """The current (action id, primary movement index) a plan is checked against, or None."""
-    found = current_step(view)
+def current_primary(view: RunView, transfer_as_free: bool) -> tuple[str, int] | None:
+    """The current (action id, primary movement index) a plan is checked against, or None (`current_step`)."""
+    found = current_step(view, transfer_as_free)
     return None if found is None else (found[0], found[1][found[2]].primary)

@@ -38,14 +38,15 @@ def _no_git(monkeypatch):
 
 
 class FakeProcess:
-    """The process plugin as assembly_run sees it: a selection, and the steps others selected.
+    """The process plugin as assembly_run sees it: a selection, the transfer workaround, and the steps others selected.
 
     `loaded` is the process with its steps, for the tests' step indices; the selection serves its `Process`.
     """
 
     def __init__(self, process):
-        """Select the first movement of `process`."""
+        """Select the first movement of `process`; the workaround on, as at start."""
         self.loaded, self.index, self.selected = loaded_process(process), 0, []
+        self.transfer_as_free = True
 
     @property
     def selection(self) -> Selection:
@@ -179,13 +180,13 @@ def test_the_process_is_wrapped_once_so_a_plan_stays_ready_until_a_reload(tmp_pa
         view = plugin.view
         loaded, run = view.process, plugin._run
         step = loaded.steps[loaded.index_of(*view.current)]
-        basis = basis_of(lab.ctx.scene.snapshot, loaded, step, "a200-0806", (), {}, view.settings, view.statuses,
-                         False, lab.ctx.t)
+        basis = basis_of(lab.ctx.scene.snapshot, loaded, step, "a200-0806", (), {}, True, view.statuses, False,
+                         lab.ctx.t)
 
         def reason() -> str:
             now = plugin.view
             return stale_reason(basis, lab.ctx.scene.snapshot, loaded=now.process, current=now.current,
-                                transfer_as_free=now.settings.transfer_as_free, ignore_built=False,
+                                transfer_as_free=True, ignore_built=False,
                                 statuses=now.statuses)
 
         reasons = []
@@ -343,7 +344,7 @@ def test_settings_are_saved_with_the_run(tmp_path):
 
     again = asyncio.run(scenario())
     settings = again.view.settings
-    assert (settings.spiral, settings.insert_split_mm, settings.transfer_as_free) == (True, 12.0, True)
+    assert (settings.spiral, settings.insert_split_mm) == (True, 12.0)
     assert read_events(again.view.folder)[1]["event"] == "settings"
 
 
@@ -400,7 +401,7 @@ def test_the_panel_shows_the_run_and_its_buttons_ask_the_plugin(tmp_path):
         assert plugin._panel._status.content.count('class="chip-line"') == 1
         rows[2].callback()
         assert plugin.view.current[0] == "B1_R_release"
-        gui.of_kind("checkbox")[1].callback(True)
+        gui.of_kind("checkbox")[0].callback(True)
         await settle(plugin)
         assert plugin.view.settings.spiral
 
@@ -606,13 +607,13 @@ def test_a_robot_leased_for_a_step_refuses_selecting_reopening_and_settings(tmp_
         plugin.request_reopen("B1_J_joint")
         assert "Reopen refused: a200-0804 is leased" in plugin._message
         refused = plugin._settings_refused
-        plugin.request_settings(transfer_as_free=False)
+        plugin.request_settings(spiral=True)
         assert "Settings refused: a200-0804 is leased" in plugin._message and plugin._settings_refused == refused + 1
         return plugin, process, current, selected
 
     plugin, process, current, selected = asyncio.run(scenario())
     assert plugin.view.current == current and process.selected == selected
-    assert plugin.view.statuses["B1_J_joint"] == DONE and plugin.view.settings.transfer_as_free
+    assert plugin.view.statuses["B1_J_joint"] == DONE and not plugin.view.settings.spiral
 
 
 def test_a_step_started_while_new_run_waits_for_confirm_refuses_it(tmp_path):

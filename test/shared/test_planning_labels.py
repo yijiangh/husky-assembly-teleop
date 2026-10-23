@@ -140,14 +140,18 @@ def test_an_insert_with_nothing_to_tighten_is_not_called_a_ground_bar(purged):
 
 
 def test_the_process_panel_shows_the_old_name_the_row_and_the_sentence(purged):
-    """At a screwed insert: its kinds' chips, the action's codes with this one ringed, the old name and the sentence."""
+    """At a screwed insert: its kinds' chips, the action's codes with this one ringed, the old name and the sentence.
+
+    The transfer workaround is on at start: the row is in run order, the transit first, no travel to load.
+    """
     panel = ProcessPlugin()
     panel._take(purged.process)
     panel.select(next(index for index, (_, one) in enumerate(panel._movements) if one.id == "B22_J_insert"))
     html = panel._details_html(*panel.selected)
     assert f"old name {INSERT_TIGHTEN}" in html and "Straight-line insert 15 mm" in html
-    for code in ("J_M0", "J_M1", "J_M2", "J_M3", "J_M4+5"):
+    for code in ("J_transit", "J_M1", "J_M2", "J_M4+5"):
         assert f">{code}</span>" in html
+    assert ">J_M0</span>" not in html and ">J_M3</span>" not in html
     assert "1px dashed #666666" in html and "linear-gradient(90deg,#d5e8d4,#e6d0de)" in html
     # * Only the selected movement is ringed, and every chip keeps one weight, so nothing moves as the ring moves.
     assert html.count("box-shadow:inset 0 0 0 2px #212529;") == 1
@@ -195,6 +199,18 @@ def test_support_gripper_opens_and_closes_and_a_bar_placed_by_hand(small):
     label = label_movement(small, placing, place)
     assert (label.old_name, label.code, label.kinds) == ("", "P_place", (MANUAL,))
     assert label.text.startswith("The operator places B1 by hand")
+
+
+def test_the_transfer_workaround_transit(small):
+    """With the workaround, a coupled free movement is the transit: "J_transit", a plain FM, its own sentence."""
+    two = ("robots/cindy/left_tool0", "robots/cindy/right_tool0")
+    transfer = _movement_like(small, "X_J_transfer", arms=two, path="free", coupled=True)
+    jointing = Action("X_J", "bar_jointing", "robots/cindy", "bars/B1", (transfer,))
+    label = label_movement(small, jointing, transfer, transfer_as_free=True)
+    assert (label.code, label.old_name, label.kinds) == ("J_transit", "", (FM,))
+    assert label.text == ("Cindy's two arms travel with empty tools from wherever they are to the insert start, where "
+                          "the operator places the bar (FM; the transfer workaround, in place of J_M0 and J_M3).")
+    assert label_movement(small, jointing, transfer).code == "J_M3"
 
 
 def test_the_panel_escapes_rhino_labels(small):

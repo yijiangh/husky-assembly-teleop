@@ -10,6 +10,10 @@ Every body of the selected movement's process scene (`Process.scene_at`) goes in
 robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.ProcessDrawing`), with the other
 bodies on request. The plugin only reads processes: it never edits one.
 
+The "Transfer workaround" box (on at start, this session only) runs Cindy's transfer as a free move with empty tools
+to the insert start, where the operator places the bar. While it is on, the panel lists and draws each jointing action
+in that order (`steps.as_run`); `process` stays the authored process, and `Selection.index` an authored index.
+
 The "Rhino obstacles collide" box (off at start) decides whether the process's obstacles ("obstacles/<name>")
 count in every collision check; while off they are disabled scene bodies, drawn see-through by the overlay.
 
@@ -47,6 +51,8 @@ from scaffolding_assembly_core.process.scenes import process_model
 from ...shared.process_contract import Selection
 from ...shared.assembly_planning.labels import Kind, label_movement
 from ...shared.assembly_planning.movement import mating_drives
+from ...shared.assembly_planning.steps import as_run
+from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
 from ...ui.checklist import ACTION_ROWS, action_window
 from .drawing import ProcessDrawing, load_robot_models
@@ -61,6 +67,9 @@ LOAD_TIMEOUT = 300.0
 
 #: Shown in place of the robot for a `bar_placing` action, which no robot acts in.
 BY_HAND_LABEL = "by hand"
+
+#: Whether the transfer workaround is on when the monitor starts: Cindy's transfer runs as a free move with empty tools.
+TRANSFER_AS_FREE = True
 
 #: Whether the process's obstacles from Rhino count in collision checks when the monitor starts.
 #: ! Off: they were never measured (the cabinet stands 0.38 m off); the `obstacles` plugin's measured ones are the room.
@@ -101,15 +110,23 @@ class ProcessPlugin(HuskyPlugin):
 
     def __init__(self):
         """Start with nothing loaded."""
-        #: The loaded process, or None. Replaced on load, never edited.
+        #: The loaded process as authored, or None. Replaced on load, never edited.
         self.process: Process | None = None
-        #: Every (action, movement) of the schedule, in order (`Process.movements`); `index` points into it.
+        #: Whether the transfer workaround is on (`ProcessContract.transfer_as_free`).
+        self.transfer_as_free = TRANSFER_AS_FREE
+        #: The process as the panel shows it: with the workaround, jointing actions in run order (`as_run`).
+        self._shown: Process | None = None
+        #: Every (action, movement) of the shown schedule, in order (`Process.movements`); `index` points into it.
         self._movements: tuple[tuple[Action, Movement], ...] = ()
         #: Schedule index of each movement's action, and the first movement of each action with any.
         self._action_of: tuple[int, ...] = ()
         self._first_of: dict[int, int] = {}
-        #: The assumed start joints of every movement (`assumed_start_all`), for drawing and the panel.
+        #: The assumed start joints of every shown movement (`assumed_start_all`), for drawing and the panel.
         self._assumed: dict = {}
+        #: Each shown movement's index in the authored `process.movements()`; and the way back, where an authored
+        #: movement not shown (the workaround's travel to load) goes to its action's first shown one.
+        self._authored_index: tuple[int, ...] = ()
+        self._shown_index: dict[int, int] = {}
 
         #: Index of the selected movement in `_movements`.
         self.index = 0
@@ -164,10 +181,14 @@ class ProcessPlugin(HuskyPlugin):
         selected = self.selected
         if selected is None:
             return None
+        action, movement = selected
+        index = self._authored_index[self.index]
         last = self._selection
-        if (last is None or last.process is not self.process or last.index != self.index or last.ids is not self.ids
+        # * A flip of the workaround changes the shown action, though the authored index may stay.
+        if (last is None or last.process is not self.process or last.index != index or last.action is not action
+                or last.movement is not movement or last.ids is not self.ids
                 or last.process_ids is not self.process_ids):
-            self._selection = Selection(self.process, self.index, *selected, self.ids, self.process_ids)
+            self._selection = Selection(self.process, index, action, movement, self.ids, self.process_ids)
         return self._selection
 
     @property
@@ -189,6 +210,10 @@ class ProcessPlugin(HuskyPlugin):
                                              "converted into <export>_process next to it")
             load = gui.add_button("Load", hint="Load the folder; an old export is converted first (about 15 s) "
                                                "unless its <export>_process copy is up to date")
+            self._transfer = gui.add_checkbox("Transfer workaround", initial_value=TRANSFER_AS_FREE,
+                                              hint="Run Cindy's transfer as a free move with empty tools to the insert "
+                                                   "start; you place the bar there. Lists and draws each jointing "
+                                                   "action in that order. Replan after a change.")
             self._collide = gui.add_checkbox("Rhino obstacles collide", initial_value=OBSTACLES_COLLIDE,
                                              hint="Count the process's obstacles from Rhino (e.g. the cabinet) in "
                                                   "every collision check: base and arm planners, clearances, "
@@ -216,8 +241,11 @@ class ProcessPlugin(HuskyPlugin):
 
         # ! Route every viser callback through defer so it runs on the main thread.
         load.on_click(ctx.defer("load process", lambda: self.load(ctx, Path(self._folder.value.strip()))))
-        # ! Operator clicks only: draw writes the box back, and viser calls back for that too, which could undo a click
-        #   queued in the same tick.
+        # ! Operator clicks only: draw writes the boxes back, and viser calls back for that too, which could undo a
+        #   click queued in the same tick.
+        self._transfer.on_update(ctx.defer_value("Transfer workaround",
+                                                 lambda value: self.set_transfer_as_free(ctx, bool(value)),
+                                                 operator_only=True))
         self._collide.on_update(ctx.defer_value("Rhino obstacles collide",
                                                 lambda value: self.set_obstacles_collide(ctx, bool(value)),
                                                 operator_only=True))
@@ -248,12 +276,14 @@ class ProcessPlugin(HuskyPlugin):
         self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder), survives_soft_stop=True)
 
     def request_select(self, index: int) -> None:
-        """Select a movement for another plugin (`ProcessContract.request_select`): `select`.
+        """Select a movement for another plugin (`ProcessContract.request_select`): `select` its shown movement.
 
         Args:
-            index: The movement's index into `process.movements()`; clamped, ignored while no process is loaded.
+            index: The movement's index into the authored `process.movements()`; clamped, ignored while no process
+                is loaded. One not shown selects its action's first shown movement.
         """
-        self.select(index)
+        if self._movements:
+            self.select(self._shown_index[max(0, min(int(index), len(self._shown_index) - 1))])
 
     def select(self, index: int) -> None:
         """Select a movement by index into `_movements`, clamped; ignored before a process is loaded."""
@@ -265,6 +295,32 @@ class ProcessPlugin(HuskyPlugin):
             return
         self.index = index
         self._changed()
+
+    def set_transfer_as_free(self, ctx: PluginContext, on: bool) -> None:
+        """Turn the transfer workaround on or off: the list is built again, on the same authored movement if shown.
+
+        Refused while movement_exec has a robot's lease for a step (`step_running`): the step being run must not
+        change under it; `draw` puts the box back.
+
+        Args:
+            ctx: This plugin's context.
+            on: Whether the workaround is on.
+        """
+        # A repeated value (e.g. two clicks queued in one tick) changes nothing.
+        if on == self.transfer_as_free:
+            return
+        refusal = step_running(ctx.world.robots)
+        if refusal:
+            ctx.log_warn(f"Transfer workaround not changed: {refusal}")
+            return
+        self.transfer_as_free = on
+        if self.process is not None:
+            authored = self._authored_index[self.index] if self._movements else 0
+            self._show()
+            self.index = self._shown_index.get(authored, 0)
+        self._changed()
+        ctx.log_info("Transfer workaround on: jointing actions shown and run transit, place, grasp, insert" if on
+                     else "Transfer workaround off: jointing actions as authored")
 
     def set_obstacles_collide(self, ctx: PluginContext, collide: bool) -> None:
         """Count the process's obstacles in every collision check, or leave them out; the scene bodies are put again.
@@ -370,15 +426,26 @@ class ProcessPlugin(HuskyPlugin):
 
     def _take(self, process: Process) -> None:
         """Make `process` the loaded one, with its movement list and assumed starts, and select its first movement."""
-        schedule_index = {action_id: index for index, action_id in enumerate(process.schedule)}
         self.process, self.index = process, 0
-        self._movements = tuple(process.movements())
+        self._show()
+        self._obstacles = process_obstacles(process)
+
+    def _show(self) -> None:
+        """Build the shown process (`as_run`), its movement list, assumed starts and the maps to authored indices."""
+        process = self.process
+        self._shown = shown = as_run(process, self.transfer_as_free)
+        schedule_index = {action_id: index for index, action_id in enumerate(process.schedule)}
+        self._movements = tuple(shown.movements())
         self._action_of = tuple(schedule_index[action.id] for action, _ in self._movements)
         self._first_of = {}
         for index, action in enumerate(self._action_of):
             self._first_of.setdefault(action, index)
-        self._assumed = assumed_start_all(process)
-        self._obstacles = process_obstacles(process)
+        self._assumed = assumed_start_all(shown)
+        authored = {(action.id, movement.id): index for index, (action, movement) in enumerate(process.movements())}
+        self._authored_index = tuple(authored[(action.id, movement.id)] for action, movement in self._movements)
+        listed = {index: shown_index for shown_index, index in enumerate(self._authored_index)}
+        self._shown_index = {index: listed.get(index, self._first_of[schedule_index[action_id]])
+                             for (action_id, _), index in authored.items()}
 
     async def _build(self, ctx: PluginContext) -> None:
         """Add the process's viser nodes, spread over ticks."""
@@ -441,6 +508,7 @@ class ProcessPlugin(HuskyPlugin):
     def draw(self, ctx: PluginContext) -> None:
         """Pose the overlay from the selected state, and fill the panel."""
         self._status.content = self._status_html()
+        self._transfer.value = self.transfer_as_free
         self._collide.value = self.obstacles_collide
         self._collide_status.content = self._collide_html(ctx)
         selected = self.selected
@@ -462,7 +530,7 @@ class ProcessPlugin(HuskyPlugin):
         if not self._visible:
             return
         try:
-            joints = joints_at(self.process, action.id, movement.id, self.at_target, self._assumed)
+            joints = joints_at(self._shown, action.id, movement.id, self.at_target, self._assumed)
             # * Left out of collision checks, the Rhino obstacles are drawn by the overlay, not the runtime.
             drawing.show(movement.start, joints, self._everything,
                          frozenset() if self.obstacles_collide else self._obstacles)
@@ -490,7 +558,7 @@ class ProcessPlugin(HuskyPlugin):
                 # ! Never hide a row: that would shift the buttons below it.
                 button.label, button.color = "·", "gray"
                 continue
-            action = self.process.actions[self.process.schedule[index]]
+            action = self._shown.actions[self.process.schedule[index]]
             robot = self.process.robots[action.robot].name if action.robot else BY_HAND_LABEL
             button.label = f"{index + 1}. {action.id} · {robot} · {len(action.movements)} mv"
             button.color = "blue" if index == current else "gray"
@@ -523,7 +591,7 @@ class ProcessPlugin(HuskyPlugin):
 
     def _details_html(self, action: Action, movement: Movement) -> str:
         """Three rows of chips, four lines of text and a two-line description of the selected movement."""
-        labels = [label_movement(self.process, action, each) for each in action.movements]
+        labels = [label_movement(self.process, action, each, self.transfer_as_free) for each in action.movements]
         number = action.movements.index(movement)
         label = labels[number]
         which = chip(f"{self.index + 1}/{len(self._movements)}", OK)

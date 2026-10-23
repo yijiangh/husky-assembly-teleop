@@ -16,6 +16,7 @@ from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...shared.assembly_run_contract import exported_end, first_pending, is_live, live_record
 from ...shared.assembly_planning.steps import first_step
+from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
 from ...shared.runs.runs import (DONE, Progress, RobotRecord, Run, RunError, RunSettings, mark_done, new_run,
                                  record_event, record_movement, save_info, save_progress, stamp, with_current)
@@ -26,8 +27,6 @@ if TYPE_CHECKING:
     from ...shared.assembly_planning.process_steps import LoadedProcess
     from ...shared.process_contract import ProcessContract
 
-#: The plugin that runs a step on the robots: while it leases them, nothing that moves the step may change.
-STEP_RUNNER = "movement_exec"
 #: Seconds the operator has to answer a prompt.
 CONFIRM_TIMEOUT = 120.0
 #: The insert split's range, millimetres.
@@ -144,7 +143,7 @@ class RunWrites:
             loaded = self._loaded
             self._starting = asyncio.wrap_future(self._writer.submit(
                 new_run, loaded.process, ctx.config.robots, self._settings, continued_from=continued_from,
-                root=ctx.config.drive_root))
+                root=ctx.config.drive_root, transfer_as_free=ctx.require("process").transfer_as_free))
             self._starting.add_done_callback(lambda done: self._started(ctx, loaded, done))
         try:
             await asyncio.shield(self._starting)
@@ -243,7 +242,7 @@ class RunWrites:
         action = process.actions[action_id]
         if type(movement_index) is int and 0 <= movement_index < len(action.movements):  # ? not True, not "1"
             return movement_index
-        first = first_step(process, action, self._settings.transfer_as_free)
+        first = first_step(process, action, ctx.require("process").transfer_as_free)
         if movement_index is not None:
             ctx.log_warn(f"{action_id} has no movement {movement_index} (it has {len(action.movements)}): "
                          f"it starts at its first step, {action.movements[first].id}")
@@ -282,13 +281,9 @@ class RunWrites:
     def _step_running(ctx: PluginContext) -> str:
         """Why nothing that moves the current step or the robots may change now: a step runs on them; else "".
 
-        ? A step runs while STEP_RUNNER leases the robots (`ctx` names a lease "<plugin>: <label>").
+        ? A step runs while movement_exec has the robots' leases (`step_running`).
         """
-        for serial, robot in ctx.world.robots.items():
-            lease = robot.lease_slot.lease
-            if lease is not None and lease.holder.startswith(f"{STEP_RUNNER}: "):
-                return f"{serial} is leased by {lease.holder}: wait until it is done, or Cancel it"
-        return ""
+        return step_running(ctx.world.robots)
 
     def _not_open(self) -> str:
         """Why nothing may be written yet: no process, or its runs not read; else ""."""

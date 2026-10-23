@@ -99,16 +99,17 @@ def _answered(value):
 class Steps(RobotLab):
     """The robots live, the run at `current`, the step panel on a fake planner and executor.
 
-    The process plugin is only its "Rhino obstacles collide" box, ticked; a test flips `process.obstacles_collide`.
+    The process plugin is only its "Rhino obstacles collide" box, ticked, and its "Transfer workaround" box; a test
+    flips `process.obstacles_collide` or `process.transfer_as_free`.
     """
 
     def __init__(self, current, transfer_as_free: bool = True):
         """Build everything and take the current step."""
         super().__init__()
         self.loaded = purged_process()
-        self.run = FakeRun(self.loaded, current, transfer_as_free)
+        self.run = FakeRun(self.loaded, current)
         self.planner, self.executor = FakePlanner(self), FakeExecutor()
-        self.process = SimpleNamespace(obstacles_collide=True)
+        self.process = SimpleNamespace(obstacles_collide=True, transfer_as_free=transfer_as_free)
         self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor,
                             "process": self.process}
         self.ctx.kinematics = SimpleNamespace(base_pose=lambda serial: self.bases[serial],
@@ -159,26 +160,15 @@ def test_steps_follow_the_run_and_walk_with_prev_and_next():
 
 
 def test_toggling_the_workaround_moves_to_the_steps_primary():
-    """B20_J at its travel to load without the workaround; turning it on makes the transfer current."""
+    """B20_J at its travel to load without the workaround; ticked in the process panel, the transfer is current."""
     lab = Steps(("B20_J", 0), transfer_as_free=False)
-    lab.plugin.set_workaround(lab.ctx, True)
+    lab.process.transfer_as_free = True
     lab.update()
     assert lab.run.selected == [("B20_J", 3)]
 
 
-def test_a_refused_workaround_change_puts_the_box_back():
-    """The run refuses the change (e.g. a step runs): the box shows the run's value again, and says so."""
-    lab = Steps(("B20_J", 3))
-    lab.run.request_settings = lambda **changes: None
-    box, = [widget for widget in lab.ctx.gui.of_kind("checkbox") if widget.label == "Transfer workaround"]
-    box.value = False
-    lab.plugin.set_workaround(lab.ctx, False)
-    lab.update()
-    assert box.value is True and "Transfer workaround refused" in lab.html()
-
-
 def test_a_plan_request_carries_the_run_and_the_checked_goal():
-    """Alice's approach: the run's beliefs and workaround, Ignore built bars, and the goal checked at this base.
+    """Alice's approach: the run's beliefs, the workaround, Ignore built bars, and the goal checked at this base.
 
     A base moved 3 mm since the check solves the goal again.
     """
@@ -379,7 +369,7 @@ def test_the_log_line():
 
 
 def test_check_goal_asks_with_the_run_and_records_the_answer():
-    """The request carries the run's beliefs, workaround and the tick's snapshot; the answer is logged and recorded.
+    """The request carries the run's beliefs, the workaround and the tick's snapshot; the answer is logged and recorded.
 
     It shows as the target ghost while its step is current.
     """
@@ -449,7 +439,7 @@ class Walk(RobotLab):
         self.executor = MovementExecPlugin()
         # * The Rhino obstacles count, as the walk was planned before their box.
         self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor,
-                            "process": SimpleNamespace(obstacles_collide=True)}
+                            "process": SimpleNamespace(obstacles_collide=True, transfer_as_free=True)}
         self.executor.setup(self.ctx)
         self.ctx.kinematics = SimpleNamespace(base_pose=lambda serial: self.bases[serial], joints=lambda serial: {})
         self.steps = AssemblyStepsPlugin()
@@ -566,6 +556,14 @@ class Executed(Steps):
             await self.ctx.next_tick()
         self.update()
 
+    async def planned_with_the_workaround(self) -> None:
+        """Plan with the transfer workaround on, then let 2.5 s pass (a lease needs still arms)."""
+        await self.plan()
+        assert self.plugin.plan_state == "ready" and self.plugin._basis.transfer_as_free
+        for _ in range(25):
+            await self.ctx.next_tick()
+        self.update()
+
     async def confirm(self) -> None:
         """Confirm the prompt a little over 0.5 s after it opened."""
         while self.executor.prompt is None and self.executor.active:
@@ -651,6 +649,42 @@ def test_switching_the_rhino_obstacles_at_the_prompt_is_refused_after_confirm():
     asyncio.run(scenario())
     assert prompts and "(Rhino obstacles not checked)" in prompts[0]
     assert not lab.cindy._multi_arm.messages and "Rhino obstacles were switched on" in lab.executor._last
+
+
+@pytest.mark.safety
+def test_switching_the_transfer_workaround_with_exec_sends_nothing():
+    """Unticked in the process panel in the same tick as Exec: the plan made with it on is not sent."""
+    lab = Executed(("B20_R", 2))
+
+    async def scenario():
+        await lab.planned_with_the_workaround()
+        lab.process.transfer_as_free = False
+        lab.plugin._commit(lab.ctx)
+        await lab.confirm()
+
+    asyncio.run(scenario())
+    assert not lab.cindy._multi_arm.messages and "transfer workaround" in lab.plugin._message
+    assert lab.plugin.plan_state == "stale"
+
+
+@pytest.mark.safety
+def test_switching_the_transfer_workaround_at_the_prompt_is_refused_after_confirm():
+    """Workaround changed after Confirm: refused, nothing sent (the process panel refuses it while a step runs)."""
+    lab = Executed(("B20_R", 2))
+    prompts = []
+
+    async def scenario():
+        await lab.planned_with_the_workaround()
+        lab.plugin._commit(lab.ctx)
+        while lab.executor.prompt is None and lab.executor.active:
+            await asyncio.sleep(0)
+        if lab.executor.prompt is not None:
+            prompts.append(lab.executor.prompt.line)
+        lab.process.transfer_as_free = False
+        await lab.confirm()
+
+    asyncio.run(scenario())
+    assert prompts and not lab.cindy._multi_arm.messages and "transfer workaround" in lab.executor._last
 
 
 # --- --- --- --- --- the reused goal's base, and a plan given back stale (review L4, L5) --- --- --- --- ---

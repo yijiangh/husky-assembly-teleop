@@ -101,9 +101,9 @@ class RobotLab:
 class FakeRun:
     """assembly_run as other plugins see it: a view, and what they asked."""
 
-    def __init__(self, loaded, current, transfer_as_free=True):
+    def __init__(self, loaded, current):
         """The run at `current`, every action pending."""
-        self.view = SimpleNamespace(process=loaded, current=current, settings=RunSettings(transfer_as_free),
+        self.view = SimpleNamespace(process=loaded, current=current, settings=RunSettings(),
                                     statuses={action: "pending" for action in loaded.process.schedule},
                                     beliefs={})
         self.records, self.selected, self.marked = [], [], []

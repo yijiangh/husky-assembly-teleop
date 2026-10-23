@@ -72,9 +72,6 @@ class RunPanel:
             prompt = gui.add_button_group("Prompt", ["Confirm", "Cancel"], hint="Answer the question below")
             self._prompt = gui.add_html("")
             gui.add_html(section("settings", SECTION_TOOL))
-            self._transfer = gui.add_checkbox("Transfer workaround", True,
-                                              hint="Run the transfer as a free move without the bar; the operator "
-                                                   "places the bar at the insertion start")
             self._split = gui.add_slider("Insert split mm", min=0.0, max=30.0, step=0.5, initial_value=5.0,
                                          hint="The insert's last millimetres run compliant")
             self._spiral = gui.add_checkbox("Spiral", False, hint="The insert's compliant part searches in a spiral")
@@ -89,8 +86,8 @@ class RunPanel:
         action.on_click(ctx.defer_value("action button", lambda label: plugin.request_mark_done()
                                         if label == "Mark done" else plugin.request_reopen()))
         prompt.on_click(ctx.defer_value("prompt button", lambda label: plugin.answer(label == "Confirm")))
-        settings = ((self._transfer, "transfer_as_free", bool), (self._split, "insert_split_mm", float),
-                    (self._spiral, "spiral", bool), (self._servo, "servo_by_bar", bool))
+        settings = ((self._split, "insert_split_mm", float), (self._spiral, "spiral", bool),
+                    (self._servo, "servo_by_bar", bool))
         for widget, setting, kind in settings:
             widget.on_update(ctx.defer_value(setting, lambda value, setting=setting, kind=kind:
                                              plugin.request_settings(**{setting: kind(value)})))
@@ -159,8 +156,8 @@ class RunPanel:
             # ? Only when the settings change or a change was refused: the operator's own accepted click comes back
             #   as a request for what is already set, which changes nothing.
             self._shown_settings = (view.settings, status.settings_refused)
-            self._transfer.value, self._split.value = view.settings.transfer_as_free, view.settings.insert_split_mm
-            self._spiral.value, self._servo.value = view.settings.spiral, view.settings.servo_by_bar
+            self._split.value, self._spiral.value = view.settings.insert_split_mm, view.settings.spiral
+            self._servo.value = view.settings.servo_by_bar
 
         message, failed = status.message
         lines = [f"current   {_where(view)}", *status.robots]

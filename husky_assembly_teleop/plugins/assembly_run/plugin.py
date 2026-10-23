@@ -266,7 +266,9 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
     def answer(self, confirmed: bool) -> None:
         """Answer the prompt: Confirm or Cancel; ignored without one."""
         if not self._prompt:
-            self._ctx.log_info(f"{'Confirm' if confirmed else 'Cancel'} ignored: nothing to answer")
+            # ! The run's own prompt only: a motion's Confirm is movement_exec's, easy to mix up with this row.
+            self._ctx.log_info(f"{'Confirm' if confirmed else 'Cancel'} ignored: no run question is open; a motion "
+                               f"or tool step is confirmed in Assembly › Exec or the phone's Exec tab")
             return
         self._answer = confirmed
 

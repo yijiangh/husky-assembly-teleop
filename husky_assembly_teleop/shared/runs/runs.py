@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime
 from hashlib import sha256
 from importlib.util import find_spec
@@ -69,16 +69,14 @@ class RunError(ValueError):
 
 @dataclass(frozen=True)
 class RunSettings:
-    """How the run executes; kept in run.json.
+    """How the run executes; kept in run.json. The transfer workaround is not one: it is the process plugin's.
 
     Attributes:
-        transfer_as_free: The transfer workaround: the coupled transfer runs as a free move without the bar.
         insert_split_mm: The last part of an insert run compliant, millimetres (0 to 30).
         spiral: The insert's compliant part searches in a spiral.
         servo_by_bar: Servo a grounded bar by its mocap fit instead of tool0.
     """
 
-    transfer_as_free: bool = True
     insert_split_mm: float = 5.0
     spiral: bool = False
     servo_by_bar: bool = False
@@ -207,9 +205,12 @@ def read_run(folder: Path) -> Run:
     """
     folder = Path(folder)
     data = _read(folder / RUN_FILE, "run")
+    # * Only the settings there are now: an older run.json may hold more (e.g. "transfer_as_free").
+    known = {each.name for each in fields(RunSettings)}
+    settings = RunSettings(**{name: value for name, value in data["settings"].items() if name in known})
     info = RunInfo(data["name"], data["created_at"], data["process"], data["process_hash"],
                    dict(data["action_hashes"]), dict(data["robots"]), dict(data["commits"]),
-                   RunSettings(**data["settings"]), data.get("continued_from"), tuple(data.get("changed_since", ())))
+                   settings, data.get("continued_from"), tuple(data.get("changed_since", ())))
     path = folder / PROGRESS_FILE
     if not path.is_file():
         pending = {action_id: ActionRecord() for action_id in info.action_hashes}
@@ -307,7 +308,8 @@ def reopen(run: Run, action_id: str, *, now: datetime | None = None) -> Run:
 # --- --- --- --- --- WRITING --- --- --- --- ---
 
 def new_run(process: Process, robots: tuple[RobotConfig, ...], settings: RunSettings, *,
-            continued_from: Run | None = None, now: datetime | None = None, root: Path | None = None) -> Run:
+            continued_from: Run | None = None, now: datetime | None = None, root: Path | None = None,
+            transfer_as_free: bool) -> Run:
     """Start a run in the process folder: its folder, run.json, progress.json and a first event.
 
     Continuing an earlier run carries its statuses, ends, beliefs and current action by action id; actions no longer
@@ -321,6 +323,7 @@ def new_run(process: Process, robots: tuple[RobotConfig, ...], settings: RunSett
         continued_from: A run on an earlier export of this process, or None for a fresh start.
         now: The run's time, which names it; now if None.
         root: The Drive root, to record the process folder relative to it.
+        transfer_as_free: The transfer workaround (the process plugin's), for a carried action's first step.
 
     Returns:
         Run: The new run, as written.
@@ -340,7 +343,7 @@ def new_run(process: Process, robots: tuple[RobotConfig, ...], settings: RunSett
         if current is not None and (isinstance(movement, bool) or not isinstance(movement, int)
                                     or not 0 <= movement < len(process.actions[current[0]].movements)):
             action = process.actions[current[0]]
-            current = (action.id, first_step(process, action, settings.transfer_as_free))
+            current = (action.id, first_step(process, action, transfer_as_free))
             event["current_moved"] = [list(old.current), list(current)]
         beliefs = dict(old.robots)
         changed = (*((PROCESS_FILE,) if process_hash != old_info.process_hash else ()),

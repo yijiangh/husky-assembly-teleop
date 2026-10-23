@@ -5,22 +5,25 @@ The steps an operator walks through in one action: each runs one movement, with 
   that retreat.
 - With the transfer workaround the free transfer runs first, with empty tools. The operator and tool movements
   authored before it (place, grasp) are done after its motion, in a pause at the insertion start, and the travel to
-  load before them is skipped.
+  load before them is skipped. `as_run` gives the process in that order, for display.
 
 Pure: any thread.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence
 
-from scaffolding_assembly_core.process import Action, Process
+from scaffolding_assembly_core.process import Action, Movement, Process, RobotState, State, Target
+from scaffolding_assembly_core.process.plan_check import end_state
 
 from .movement import MovementSpec, Routine, UnknownMovement, classify_action
 
 #: Routines done in the pause after a free transfer (placing the bar by hand, closing the tools).
 _PAUSE = (Routine.OPERATOR, Routine.TOOL_ONLY)
+#: The label of the transfer as the workaround runs it (`as_run`).
+TRANSIT_LABEL = "Transit to the insert start, empty tools (transfer workaround)"
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,30 @@ def first_step(process: Process, action: Action, transfer_as_free: bool) -> int:
         return 0
 
 
+def as_run(process: Process, transfer_as_free: bool) -> Process:
+    """The process with each action's movements in the order its operator steps run them, for display only.
+
+    With the workaround a jointing action lists the transfer first, as a transit with empty tools from where the
+    action starts to the insert start; then placing and grasping the bar there, then the insert. The travel to load is
+    left out.
+    Every movement keeps its id.
+
+    - ! For the process panel and the planners' targets only: plans, runs and records keep the authored process.
+    - An action the workaround does not change (no pause, nothing skipped) keeps its authored objects.
+
+    Args:
+        process: The authored process.
+        transfer_as_free: The transfer workaround.
+
+    Returns:
+        Process: `process` itself without the workaround; else a copy with the jointing actions in run order.
+    """
+    if not transfer_as_free:
+        return process
+    return replace(process, actions={action_id: _as_run(process, action)
+                                     for action_id, action in process.actions.items()})
+
+
 def step_index_of(steps: Sequence[OperatorStep], movement_index: int | None) -> int | None:
     """Which step holds a movement: as its primary, run with or after it, or skipped by it.
 
@@ -122,3 +149,53 @@ def step_index_of(steps: Sequence[OperatorStep], movement_index: int | None) -> 
 def _is_ungrasp(spec: MovementSpec) -> bool:
     """Whether a movement only opens tools: a tool movement whose every commanded grip goes "open"."""
     return spec.routine is Routine.TOOL_ONLY and bool(spec.grips) and set(spec.grips.values()) == {"open"}
+
+
+def _as_run(process: Process, action: Action) -> Action:
+    """One action in run order with the workaround (`as_run`); the action itself when the workaround changes nothing."""
+    try:
+        steps = operator_steps(process, action, True)
+    except UnknownMovement:
+        return action
+    # ! Only the workaround pauses or skips: anything else, e.g. a release's ungrasp run with its retreat, stays as
+    #   authored.
+    if not any(step.after_motion or step.skipped for step in steps):
+        return action
+    movements = action.movements
+    shown: list[Movement] = []
+    for step in steps:
+        if not step.after_motion:
+            shown += [movements[index] for index in (step.primary, *step.with_motion)]
+            continue
+        # * The transfer becomes the transit; each movement of the pause starts where the one before it ends.
+        transit = _transit(action, movements[step.primary], movements[0].start)
+        shown += [transit, *(movements[index] for index in step.with_motion)]
+        state = _end(transit, action.robot)
+        for index in step.after_motion:
+            shown.append(replace(movements[index], start=state))
+            state = end_state(shown[-1])
+    return replace(action, movements=tuple(shown))
+
+
+def _transit(action: Action, transfer: Movement, start: State) -> Movement:
+    """The transfer as the workaround runs it: from the action's `start` (no bar, tools open) to the insert start.
+
+    Its target is the acting robot's joints where the transfer ends, or the transfer's own target if they are unknown.
+    """
+    end = _end(transfer, action.robot).robots.get(action.robot)
+    joints = end.joints if end is not None else None
+    target = Target.of(joints={action.robot: joints}) if joints else transfer.target
+    return replace(transfer, start=start, target=target, label=TRANSIT_LABEL)
+
+
+def _end(movement: Movement, robot: str) -> State:
+    """The state a movement ends in (`end_state`), the robot at its target joints even when its start ones are null.
+
+    ? `end_state` leaves the joints unknown after a start with null joints, and exports leave the transfer's start null.
+    """
+    state = end_state(movement)
+    after = state.robots.get(robot)
+    given = movement.target.joints.get(robot) if movement.target is not None else None
+    if after is None or after.joints is not None or not given:
+        return state
+    return replace(state, robots={**state.robots, robot: RobotState(after.base, dict(given))})

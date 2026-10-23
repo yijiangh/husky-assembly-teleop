@@ -165,9 +165,11 @@ def world_problem(job: Job, motion: bool) -> str:
             return f"{job.who} {name}: {problem}"
     if request.basis is None:
         return "the plan has no basis to check it against"
-    return stale_reason(request.basis, snapshot, loaded=view.process, current=current_primary(view),
-                        transfer_as_free=view.settings.transfer_as_free, ignore_built=request.ignore_built(),
-                        statuses=view.statuses, obstacles_collide=request.obstacles_collide())
+    transfer_as_free = request.transfer_as_free()
+    return stale_reason(request.basis, snapshot, loaded=view.process,
+                        current=current_primary(view, transfer_as_free), transfer_as_free=transfer_as_free,
+                        ignore_built=request.ignore_built(), statuses=view.statuses,
+                        obstacles_collide=request.obstacles_collide())
 
 
 def others_moving(job: Job) -> str:

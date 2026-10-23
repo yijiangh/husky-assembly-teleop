@@ -133,9 +133,10 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   `shared/assembly_planning/steps.py`, `shared/movement_exec_contract.py`.
 - **live robot**: a robot measured now: in the snapshot, every movable joint measured and its base tracked, both
   fresh (`is_live`). Plan and Exec need it live. `shared/assembly_run_contract.py`.
-- **transfer workaround**: a run setting: the transfer runs as a free move with empty tools, the operator places and
-  grasps the bar at the insertion start after it, and the travel to load is skipped.
-  `shared/assembly_planning/steps.py`.
+- **transfer workaround**: the process panel's setting for this session, on at start (runs don't keep it): the
+  transfer runs as a free move with empty tools, the operator places and grasps the bar at the insertion start after
+  it, and the travel to load is skipped. While it is on, the panel lists each jointing action in that order (`as_run`).
+  `shared/assembly_planning/steps.py`, `plugins/process/`.
 - **Rhino obstacles**: the process's own obstacles from Rhino (bodies under `obstacles/`, e.g. the cabinet). Unless
   "Rhino obstacles collide" is ticked, they are drawn see-through and left out of every collision check; the measured
   room is the `obstacles` plugin's. `shared/process_scene/scene_bodies.py` (`process_obstacles`).

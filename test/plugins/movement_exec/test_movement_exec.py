@@ -79,7 +79,7 @@ class Lab(RobotLab):
         primary = next(each for each in self.loaded.steps if each.action.id == action
                        and each.movement_index == operator.primary)
         basis = basis_of(self.ctx.scene.snapshot, self.loaded, primary, serial, tuple(names),
-                         dict(zip(names, start.tolist())), self.run.view.settings, self.run.view.statuses, False,
+                         dict(zip(names, start.tolist())), True, self.run.view.statuses, False,
                          self.ctx.t)
         request = ExecRequest(self.loaded, action, operator,
                               step_parts(self.loaded, action, operator, self.configs, True), serial,

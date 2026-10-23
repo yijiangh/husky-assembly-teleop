@@ -14,7 +14,6 @@ from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, from_outs
 from husky_assembly_teleop.shared.execution.basis import basis_of, stale_reason
 from husky_assembly_teleop.shared.execution.moving import moving_reason
 from husky_assembly_teleop.shared.execution.operator import PROMPT_ARM_S, PromptBox
-from husky_assembly_teleop.shared.runs.runs import RunSettings
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
@@ -37,10 +36,10 @@ def snapshot(cindy_joint: float = 0.0, cindy_x: float = 1.0, alice_x: float = -1
         ALICE: RobotObject(ALICE, model, Pose((alice_x, 0.0, 0.0)), {"ur_arm_elbow_joint": alice_joint})})
 
 
-def basis(settings: RunSettings = RunSettings(), obstacles_collide: bool = True):
+def basis(transfer_as_free: bool = True, obstacles_collide: bool = True):
     """The basis of a plan for B20_J's transfer (movement 3) made from `snapshot()`."""
     step = SimpleNamespace(action=SimpleNamespace(id="B20_J"), movement_index=3)
-    return basis_of(snapshot(), LOADED, step, "a200-0806", NAMES, {NAMES[0]: 0.0, NAMES[1]: 1.0}, settings,
+    return basis_of(snapshot(), LOADED, step, "a200-0806", NAMES, {NAMES[0]: 0.0, NAMES[1]: 1.0}, transfer_as_free,
                     STATUSES, False, 12.0, obstacles_collide=obstacles_collide)
 
 

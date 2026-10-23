@@ -32,8 +32,7 @@ class StepsPanel:
             ctx: The plugin's context.
             plugin: The plugin the widgets call.
         """
-        # The workaround (with the count of refused changes) and motion time the widgets were last set to.
-        self._shown_workaround: tuple[bool, int] | None = None
+        # The motion time the slider was last set to.
         self._shown_time: float | None = None
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
@@ -52,9 +51,6 @@ class StepsPanel:
                                         hint="How long the motion takes; the arms' limits may need longer")
             self._minimum = gui.add_html("")
             gui.add_html(section("settings", SECTION_TOOL))
-            self._workaround = gui.add_checkbox("Transfer workaround", True,
-                                                hint="The run's setting: the transfer runs as a free move without "
-                                                     "the bar; the operator places it at the insertion start")
             self._ignore = gui.add_checkbox("Ignore built bars", False,
                                             hint="Plan as if the built bars were not there: for tests in the air")
             self._mark = gui.add_button("Mark done", hint="Mark the action done in the run, once its last step ran")
@@ -63,8 +59,6 @@ class StepsPanel:
         steps.on_click(ctx.defer_value("step button", lambda label: plugin.go(ctx, -1 if label == PREV else 1)))
         check.on_click(ctx.defer("check goal", lambda: plugin.check_goal(ctx)))
         self._time.on_update(ctx.defer_value("motion time", lambda value: plugin.set_traj_time(float(value))))
-        self._workaround.on_update(ctx.defer_value("transfer workaround",
-                                                   lambda value: plugin.set_workaround(ctx, bool(value))))
         self._ignore.on_update(ctx.defer_value("ignore built bars", lambda value: plugin.set_ignore_built(bool(value))))
         self._mark.on_click(ctx.defer("mark done", lambda: plugin.mark_done(ctx)))
 
@@ -106,10 +100,6 @@ class StepsPanel:
             self._shown_time = self._time.value = plugin.traj_time
         minimum = "—" if math.isnan(plugin.minimum) else f"{plugin.minimum:.1f}"
         self._minimum.content = block(values(f"min {minimum} s by the arms' limits"))
-        workaround = (ctx.require("assembly_run").view.settings.transfer_as_free, plugin.workaround_refused)
-        if workaround != self._shown_workaround:
-            self._shown_workaround = workaround
-            self._workaround.value = workaround[0]
         self._ignore.value = plugin.ignore_built
         self._mark.label = f"Mark {plugin.offer} done" if plugin.offer else "Mark done (after the last step)"
         self._details.content = block(plugin._message_html())
