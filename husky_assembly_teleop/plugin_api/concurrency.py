@@ -74,7 +74,7 @@ class TickTimer:
     SMALL_PART = 0.001
 
     def __init__(self, loop: asyncio.AbstractEventLoop, late_after: float, repeat_after: float,
-                 log_warn: Callable[[str], None]):
+                 log_warn: Callable[[str], None], on_tick: Callable[[float], None] = lambda _late: None):
         """Start measuring.
 
         Args:
@@ -82,10 +82,12 @@ class TickTimer:
             late_after: Seconds after it was due that a tick counts as late.
             repeat_after: Seconds between two reports; the worst late tick in between is reported next.
             log_warn: Receives each report.
+            on_tick: Called at every tick but the first, with the seconds it is late, 0 if no more than `late_after`.
         """
         self._late_after = late_after
         self._repeat_after = repeat_after
         self._log_warn = log_warn
+        self._on_tick = on_tick
         # Seconds per part since the current tick started, and a note per part (e.g. a message count).
         self._parts: dict[str, float] = {}
         self._notes: dict[str, str] = {}
@@ -142,6 +144,8 @@ class TickTimer:
             late: Seconds this tick started after it was due.
         """
         now = time.perf_counter()
+        if self._started is not None:
+            self._on_tick(late if late > self._late_after else 0.0)
         if self._started is not None and late > self._late_after:
             self._late_count += 1
             if self._worst is None or late > self._worst[0]:

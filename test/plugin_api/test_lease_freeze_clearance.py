@@ -35,9 +35,11 @@ def _context(unmeasured: frozenset = frozenset()) -> tuple[PluginContext, WorldS
     """
     world, log = WorldState(), Log()
     world.robots["0805"] = SimpleNamespace(arms={"ur_arm": fake_arm(now=NOW)}, lease_slot=LeaseSlot("0805"), lease=None)
-    monitor = SimpleNamespace(world=world, now=lambda: NOW, log_warn=log.warning, log_info=log.info,
-                              log_error=log.error, timer=SimpleNamespace(timed_task=lambda _name, work: work),
-                              clearance_trips=())
+    # * The monitor's log functions also take the source, here the plugin's name.
+    monitor = SimpleNamespace(world=world, now=lambda: NOW, log_warn=lambda text, _source: log.warning(text),
+                              log_info=lambda text, _source: log.info(text),
+                              log_error=lambda text, _source: log.error(text),
+                              timer=SimpleNamespace(timed_task=lambda _name, work: work), clearance_trips=())
     monitor.clearance_tripped = lambda trip: setattr(monitor, "clearance_trips", (*monitor.clearance_trips, trip))
     robot = RobotObject(robot_id("0805"), SimpleNamespace(movable_joints=ARM_JOINTS), Pose(), {},
                         unmeasured=unmeasured)

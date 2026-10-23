@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from rclpy.task import Future as RosFuture
 
     from ..config import MonitorConfig
+    from .console_log import ConsoleLog
     from scaffolding_assembly_core.geometry import Geometry
     from ..monitor import HuskyMonitor
     from ..ui.visualization import PluginView
@@ -137,17 +138,26 @@ class PluginContext:
         """
         return self._closed
 
-    def log_info(self, message: str) -> None:
-        """Log `message` at info level, tagged with this plugin's name."""
-        self._monitor.log_info(f"[{self.name}] {message}")
+    def log_info(self, message: str, topic: str = "") -> None:
+        """Log `message` at info level, tagged with this plugin's name, or "<name>/<topic>" so a view can filter it."""
+        self._monitor.log_info(message, self._log_source(topic))
 
-    def log_warn(self, message: str) -> None:
-        """Log `message` at warning level, tagged with this plugin's name."""
-        self._monitor.log_warn(f"[{self.name}] {message}")
+    def log_warn(self, message: str, topic: str = "") -> None:
+        """Log `message` at warning level, tagged as `log_info` does."""
+        self._monitor.log_warn(message, self._log_source(topic))
 
-    def log_error(self, message: str) -> None:
-        """Log `message` at error level, tagged with this plugin's name."""
-        self._monitor.log_error(f"[{self.name}] {message}")
+    def log_error(self, message: str, topic: str = "") -> None:
+        """Log `message` at error level, tagged as `log_info` does."""
+        self._monitor.log_error(message, self._log_source(topic))
+
+    def _log_source(self, topic: str) -> str:
+        """This plugin's name, with "/<topic>" when given."""
+        return f"{self.name}/{topic}" if topic else self.name
+
+    @property
+    def console_log(self) -> ConsoleLog:
+        """ConsoleLog: The monitor's newest log lines, from every plugin, and the share of late ticks. Read only."""
+        return self._monitor.console_log
 
     def require(self, name: str) -> HuskyPlugin:
         """Get a plugin this one declared in `requires`. Undeclared ones do not resolve.

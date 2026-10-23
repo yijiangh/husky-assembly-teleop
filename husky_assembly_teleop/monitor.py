@@ -21,10 +21,13 @@ from dataclasses import dataclass
 import rclpy
 from rclpy.executors import SingleThreadedExecutor, TimeoutException
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
+from rclpy.impl.rcutils_logger import RcutilsLogger
+from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
 
 from .plugin_api.concurrency import TickTimer
+from .plugin_api.console_log import ROBOTS, RUNTIME, TICKS, ConsoleLog, ConsoleLogger
 from .config import MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
 from scaffolding_assembly_core.geometry import Geometry
@@ -77,6 +80,11 @@ class _LoadedPlugin:
         return self.plugin.name
 
 
+def _prefixed(message: str, source: str) -> str:
+    """The line for stdout and the ROS log: "[source] message", or the message alone from the monitor itself."""
+    return message if source == RUNTIME else f"[{source}] {message}"
+
+
 class HuskyMonitor(Node):
     """The monitor node. Plugins reach it only through their PluginContext.
 
@@ -93,6 +101,11 @@ class HuskyMonitor(Node):
     def __init__(self):
         """Bring up state, scene, UI and plugins. `run` then starts ticking."""
         super().__init__("husky_monitor")
+        #: The newest log lines, for the console plugin. The monitor logs through `_ros_logger`; what the robot
+        #: interfaces log through `get_logger` is kept too, as "robots".
+        self.console_log = ConsoleLog()
+        self._ros_logger = super().get_logger()
+        self._robots_logger = ConsoleLogger(self._ros_logger.name, ROBOTS, self.console_log)
         # When startup began, and how long each timed step took; logged as one line after the first tick.
         self._startup_started = time.perf_counter()
         self._startup_times: dict[str, float] = {}
@@ -122,7 +135,9 @@ class HuskyMonitor(Node):
         # * Built before the plugins, so tasks started in their setup are timed too.
         self._timer = TickTimer(asyncio.get_running_loop(),
                                 late_after=self._config.tick_period * self._config.late_tick_warn_ratio,
-                                repeat_after=self._config.late_tick_warn_period, log_warn=self.log_warn)
+                                repeat_after=self._config.late_tick_warn_period,
+                                log_warn=lambda message: self.log_warn(message, TICKS),
+                                on_tick=lambda late: self.console_log.count_tick(late, self._config.tick_period))
         # Why each stopped plugin stopped, by name, for the banner.
         self._stop_reasons: dict[str, str] = {}
         # Topics whose messages did not decode, so each is reported once.
@@ -163,7 +178,7 @@ class HuskyMonitor(Node):
                 monitor=self,
                 view=self._viz.view_for(plugin.name, plugin.hidden, plugin.tab_path, plugin.icon),
                 scene=PluginScene(self._scene, plugin.name,
-                                  log_warn=lambda message, name=plugin.name: self.log_warn(f"[{name}] {message}"),
+                                  log_warn=lambda message, name=plugin.name: self.log_warn(message, name),
                                   snapshot=lambda: self._snapshot),
                 kinematics=self._kinematics,
                 dependencies=plugin.requires,
@@ -223,17 +238,28 @@ class HuskyMonitor(Node):
         """Keep a clearance trip, for `PluginContext.clearance_trips`."""
         self.clearance_trips = (*self.clearance_trips, trip)[-TRIPS_KEPT:]
 
-    def log_info(self, message: str) -> None:
-        """Log `message` at info level."""
-        self.get_logger().info(message)
+    def get_logger(self) -> RcutilsLogger:
+        """The node's logger; what is logged through it also goes in `console_log`, as "robots".
 
-    def log_warn(self, message: str) -> None:
-        """Log `message` at warning level."""
-        self.get_logger().warning(message)
+        ? rclpy calls it while the node is built, before `console_log` exists: those lines go to the ROS log only.
+        """
+        return getattr(self, "_robots_logger", None) or super().get_logger()
 
-    def log_error(self, message: str) -> None:
-        """Log `message` at error level."""
-        self.get_logger().error(message)
+    def log_info(self, message: str, source: str = RUNTIME) -> None:
+        """Log `message` at info level, from `source`: a plugin's name, or a source in `console_log`."""
+        # ! One rclpy call per level: rclpy refuses a call site that logs at more than one level.
+        if self._ros_logger.info(_prefixed(message, source)):
+            self.console_log.add(LoggingSeverity.INFO, source, message)
+
+    def log_warn(self, message: str, source: str = RUNTIME) -> None:
+        """Log `message` at warning level, from `source`."""
+        if self._ros_logger.warning(_prefixed(message, source)):
+            self.console_log.add(LoggingSeverity.WARN, source, message)
+
+    def log_error(self, message: str, source: str = RUNTIME) -> None:
+        """Log `message` at error level, from `source`."""
+        if self._ros_logger.error(_prefixed(message, source)):
+            self.console_log.add(LoggingSeverity.ERROR, source, message)
 
     def plugin(self, name: str) -> HuskyPlugin:
         """Look up a loaded plugin by name; KeyError if none is loaded."""

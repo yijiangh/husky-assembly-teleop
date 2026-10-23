@@ -12,6 +12,7 @@ from robot_fakes import Log
 
 import husky_assembly_teleop.monitor as monitor_module
 from husky_assembly_teleop.monitor import HuskyMonitor
+from husky_assembly_teleop.plugin_api.console_log import ConsoleLog
 from husky_assembly_teleop.plugin_api.plugin import HuskyPlugin
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
 from husky_assembly_teleop.world.clearance import STOP_DISTANCE
@@ -153,6 +154,7 @@ def build(monkeypatch, *plugins: HuskyPlugin, robots=()) -> HuskyMonitor:
     monitor = HuskyMonitor.__new__(HuskyMonitor)
     log, clock = Log(), [100.0]
     monitor.get_logger, monitor.now, monitor.clock = (lambda: log), (lambda: clock[0]), clock
+    monitor._ros_logger, monitor.console_log = log, ConsoleLog()
     monitor._config = SimpleNamespace(robots=(), enabled_plugins=(), viser_port=0, phone_port=0,
                                       max_plugin_errors=MAX_ERRORS, shutdown_grace=0.5, tick_period=0.001)
     monitor._world, monitor._loaded, monitor._object_connections, monitor._tick_index = WorldState(), {}, {}, 0
@@ -399,3 +401,28 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
     assert "robot r0 came within 10 cm of wall" in errors and "robot r1 cannot be checked" in errors
     trips = [(trip.serial, trip.task) for trip in monitor.clearance_trips]
     assert trips == [("r0", "a: drive r0"), ("r1", "a: drive r1")]
+
+
+def test_log_lines_reach_the_ros_log_and_the_console_with_their_source(monkeypatch):
+    """A plugin's line goes to the ROS log as "[name] text" and to the console as the plain text under its name."""
+    monitor = build(monkeypatch, Recorder("a", []))
+    monitor._loaded["a"].ctx.log_warn("slow")
+    monitor.log_info("started")
+    assert monitor.get_logger().lines[-2:] == [("warning", "[a] slow"), ("info", "started")]
+    kept = [(entry.source, entry.text) for entry in monitor.console_log.entries()]
+    assert kept[-2:] == [("a", "slow"), ("runtime", "started")]
+
+
+def test_a_plugin_topic_is_part_of_the_source(monkeypatch):
+    """A topic tags the line "<plugin>/<topic>", in the ROS log and in the console."""
+    monitor = build(monkeypatch, Recorder("a", []))
+    monitor._loaded["a"].ctx.log_info("changed", "chips")
+    assert monitor.get_logger().lines[-1] == ("info", "[a/chips] changed")
+    assert monitor.console_log.entries()[-1].source == "a/chips"
+
+
+def test_the_node_logger_is_rclpys_own_until_the_console_log_exists(monkeypatch):
+    """While the node is built, before the monitor set up its console log, rclpy's own logger answers."""
+    rclpy_logger = object()
+    monkeypatch.setattr(monitor_module.Node, "get_logger", lambda _node: rclpy_logger)
+    assert HuskyMonitor.__new__(HuskyMonitor).get_logger() is rclpy_logger

@@ -135,7 +135,8 @@ class Log:
         self.lines: list[tuple[str, str]] = []
 
     def _keep(self, level: str):
-        return lambda text, **_options: self.lines.append((level, text))
+        # * True, as rclpy returns for a line it logged.
+        return lambda text, **_options: self.lines.append((level, text)) or True
 
     def __getattr__(self, level: str):
         """debug, info, warning, warn, error and fatal all keep their line."""
