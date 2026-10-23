@@ -183,6 +183,8 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 | `tasks/` | Specs written while building a feature. |
 | `doc/base_exp_manual.md` | Base controller experiments: goal and hypotheses, the three experiments (robot model, model over conditions, controllers), how to run them and where the results are. |
 | `doc/phone_manual.md` | The phone page: connecting a phone, every tab and button, what to do after a stop, troubleshooting. |
+| `doc/simulation_manual.md` | Simulated robots and mocap: one robot, several, realistic mocap, base experiments, every argument, what is not simulated. |
+| `doc/mocap_relay.md` | The mocap relay: topics, calibrations, simulated inputs. |
 | `doc/calibration_manual.md` and the other manuals | **Outdated**, written for the old monitor; each says at the top what is missing or different now. |
 | `DOCKER.md` | **Unknown state**, not tested with the new monitor. |
 
@@ -206,17 +208,7 @@ ros2 launch husky_assembly_teleop mocap.launch.py use_drive:=false          # cr
 
 Without a relay, no mocap is available. Details in [doc/mocap_relay.md](doc/mocap_relay.md).
 
-**Simulations** use the same relay, started the same way in the simulation's own domain (never 80): there it also publishes each simulated robot's true pose (crl-husky `husky_sim`) and a fake Motive's bodies (`sim_motive`), in place of Motive's with the same id, while they stream. Start the relay and the monitor once; simulations come and go:
-
-```shell
-export ROS_DOMAIN_ID=70
-ros2 launch husky_assembly_teleop mocap.launch.py                     # once, as above
-ros2 launch crl_husky sim_robot.launch.py robot:=0806                 # one robot, base and arms (crl-husky)
-ros2 launch crl_husky sim_all.launch.py                               # or every robot in crl-husky's config/robots
-ros2 launch husky_assembly_teleop sim_mocap.launch.py                 # optional: sim_motive, a fake Motive
-```
-
-The simulated robot publishes what is truly there: husky_sim the base's true pose and, with `tool:=calibration_marker` (dual arm: `tool_left`, `tool_right`), that arm's true tool0 as the calibration marker's body (1866), turned by `joint_offsets` (degrees) when its encoders should be off. `sim_motive` knows no robots: it adds Motive's imperfections to every true pose (an offset of the body frame, noise, dropouts, drift, a delay), and the relay calibrates its bodies with the simulated sessions. Without it the relay uses the true poses as they are. Details in [doc/mocap_relay.md](doc/mocap_relay.md), "Simulated Inputs".
+**Simulations** use the same relay, started the same way in the simulation's own domain: see [Simulation](#simulation).
 
 ## 2. Start the monitor
 
@@ -245,7 +237,7 @@ Some plugins show content in panels separate from the main control panel. Panels
 - The control at the right end of that bar collapses and expands the panel.
 - Drag the edge of a floating panel to resize it.
 
-The **side panel**, docked on the right, holds the plugins' tabs: **Control** (`robot_control`, a tab per robot) and **Plan**, with a tab per planner panel (**Arm**, **Base**). Plugins add one with `ctx.view.tab()` (`plugins/__init__.py`).
+The main panel (Stop all, health) is docked on the right, with the plugins' tabs below it: **Control** (`robot_control`, a tab per robot), **Plan**, with a tab per planner panel (**Arm**, **Base**), and a tab per plugin. Drag a tab out to give it a window of its own, or into another panel. Tools not needed every session (`obstacles`, `debug_gizmo`, `mocap_probe`) start in a minimized strip at the right edge. Plugins add a tab with `ctx.view.ui()` or `ctx.view.tab()` (`plugins/__init__.py`).
 
 Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on the right at start. Floated and enlarged, its text scales with the panel and is readable from a distance.
 `base_exp` shows its live error and command plots in a **Base tracking** panel, docked on the left.
@@ -307,10 +299,10 @@ Drive.
 | `mocap_probe` | Tracks the probe and records points with it, e.g. obstacle corners; exports JSON and loads it back. Shows its state in a separate panel, see [Panels](#panels). **Map coverage** walks a 15 × 15 m grid of 1 m cells, centred on the mocap origin, and colours each on the floor by how often the probe was tracked there (grey: not visited, red → green), with the mean ± std marker error per cell; export and load as JSON. |
 | `mocap_bars` | Fits a process bar's CAD markers (from the markers on its connector halves) to the Motive rigid body made of them, without Motive's labels, draws the real bar at the fitted pose next to the planned one, and shows the fit's residuals and how far the bar is from where the selected step plans it (across and along its axis, tilt); **Record take** saves the fit to `data_experiment/mocap_bars/<experiment>/` on the Drive. Loads `process`. Experimental. |
 | `process` | Loads a process and shows the state at one movement at a time; the planners load their targets from its selected step. Experimental. |
-| `base_planner_panel` | In **Plan › Base**: plans a collision-free path for a base around the other robots and scene bodies, with the algorithm chosen in its panel (each with its settings, and a Debug view that draws how the search worked); Commit sends it to the onboard pure pursuit follower (`crl_husky pure_pursuit`, or `pure_pursuit_sim.launch.py` to test, in your own ROS domain, never 80), which drives it at once if the velocity controller is active. The floor shows the path as the follower cuts it and the robot's trail; with Record ticked each run is saved to `data_experiment/base_planner/` on the Drive (`drive_root`, create the folder in Drive first). Loads `base_planner`, the headless planner it drives (other plugins can request and commit plans through it too), and `process`. Experimental. |
+| `base_planner_panel` | In **Plan › Base**: plans a collision-free path for a base around the other robots and scene bodies, with the algorithm chosen in its panel (each with its settings, and a Debug view that draws how the search worked); Commit sends it to the onboard pure pursuit follower (`crl_husky pure_pursuit`, or a simulation in your own ROS domain, never 80: [doc/simulation_manual.md](doc/simulation_manual.md)), which drives it at once if the velocity controller is active. The floor shows the path as the follower cuts it and the robot's trail; with Record ticked each run is saved to `data_experiment/base_planner/` on the Drive (`drive_root`, create the folder in Drive first). Loads `base_planner`, the headless planner it drives (other plugins can request and commit plans through it too), and `process`. Experimental. |
 | `arm_planner_panel` | In **Plan › Arm**: plans a collision-free arm motion to a joint target (the arm now, its stow pose, the process step, or sliders) and sends it as one joint trajectory that runs through rounded corners and rests only where a corner cannot be rounded clear of collisions; the preview shows the same timing. The panel for the headless `arm_planner` plugin (loaded with it), which others can use through `ArmPlannerContract`. Experimental. |
 | `collisions` | In **Plan › Collisions**: lists what collision checks hit, per source (calibration takes, a failed arm plan), and draws the ticked hits as they were checked: what moved solid red, what it moved into see-through cyan, the deepest contact with its depth; Focus adds every robot as checked, faint. "As checked" shows meshes as the convex hulls compas_fab tests. Clearance trips of any plugin (a driven robot stopped for coming within its margin of something) come under **clearance**, the newest ticked, with the gap as "x mm apart". Loaded by calibration and the arm planner panel; load it by name to see clearance trips with other plugins. Experimental. |
-| `base_exp` | Drives test paths (straight, turn, arc, sine, drive-turn-drive; geometric or timed) from where the base stands with the onboard pure pursuit follower, with live error plots; the monitor measures every run's errors itself, the same for every controller, and keeps recording until the robot settles; each run gets its own folder under `data_experiment/base_exp/<experiment name>/` on the Drive (`drive_root`) with its setup (sim or real, sim model, controller and parameters) and outcome (experiment.json), the recording (.npz), and once reported its numbers (report.json) and an overview plot (.png). **Start auto** runs paths at one fixed speed, the standard paths (the same 10 in every scenario, resumed per experiment and setup) or random paths from a grid of distances and angles, or constant commands open loop over a grid of speeds and turn rates; each run is checked to keep 0.3 m from every robot and scene body (`obstacles` loads with it, for the lab border); during any run the robot is soft-stopped and automation paused if it comes within 0.1 m of anything. Experimental; needs `crl_husky pure_pursuit` on the robot, or `pure_pursuit_sim.launch.py` to test. Analyse the runs with `scripts/analyze_base_exp.py`: `summary.md` compares the controllers, `robot_model.md` fits a model of the robot, `constant_commands.md` shows how it changes with speed and turn rate. How to run: [doc/base_exp_manual.md](doc/base_exp_manual.md). |
+| `base_exp` | Drives test paths (straight, turn, arc, sine, drive-turn-drive; geometric or timed) from where the base stands with the onboard pure pursuit follower, with live error plots; the monitor measures every run's errors itself, the same for every controller, and keeps recording until the robot settles; each run gets its own folder under `data_experiment/base_exp/<experiment name>/` on the Drive (`drive_root`) with its setup (sim or real, sim model, controller and parameters) and outcome (experiment.json), the recording (.npz), and once reported its numbers (report.json) and an overview plot (.png). **Start auto** runs paths at one fixed speed, the standard paths (the same 10 in every scenario, resumed per experiment and setup) or random paths from a grid of distances and angles, or constant commands open loop over a grid of speeds and turn rates; each run is checked to keep 0.3 m from every robot and scene body (`obstacles` loads with it, for the lab border); during any run the robot is soft-stopped and automation paused if it comes within 0.1 m of anything. Experimental; needs `crl_husky pure_pursuit` on the robot, or a simulation ([doc/simulation_manual.md](doc/simulation_manual.md)). Analyse the runs with `scripts/analyze_base_exp.py`: `summary.md` compares the controllers, `robot_model.md` fits a model of the robot, `constant_commands.md` shows how it changes with speed and turn rate. How to run: [doc/base_exp_manual.md](doc/base_exp_manual.md). |
 | `example_plot`, `example_ui`, `example_sequence`, `example_pybullet`, `example_recording`, `example_robot_state` | Minimal plugins, as templates for new ones. |
 
 ### Examples
@@ -341,6 +333,30 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['cindy']" \
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" \
     -p plugins:="['example_plot', 'example_pybullet', 'example_sequence', 'example_ui']"
 ```
+
+## Simulation
+
+Simulated robots run beside the same relay and monitor as the real ones, in a ROS domain of their own (never 80): the
+monitor drives them unchanged, and health shows a `SIM` chip for a simulated base and arm. Start the relay and the monitor once;
+simulations come and go:
+
+```shell
+export ROS_DOMAIN_ID=70
+ros2 launch husky_assembly_teleop mocap.launch.py                                  # once
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['belle']" -p plugins:="['robot_control']"  # once
+ros2 launch husky_assembly_teleop sim.launch.py robot:=0805                        # one robot, base and arms
+ros2 launch husky_assembly_teleop sim.launch.py robot:=all fake_motive:=true       # every robot, a fake Motive
+```
+
+- `sim.launch.py` starts crl-husky's `sim_robot.launch.py` (`sim_all.launch.py` for `robot:=all`) and, with
+  `fake_motive:=true`, `sim_mocap.launch.py`; it takes every argument of both (`--show-args`).
+- The robot (crl-husky) publishes its true poses: the base, and with `tool:=calibration_marker` an arm's tool0 as the
+  marker's body, turned by `joint_offsets` when its encoders should be off.
+- `sim_motive`, the fake Motive, adds Motive's imperfections to every true pose (`delay_sec`, `noise`, `offsets`,
+  `marker_error`, `drift`, `dropout`); without it the relay uses the true poses as they are.
+
+Workflows (one robot, several, realistic mocap from measured values, base experiments, in the lab),
+every argument and what is not simulated: [doc/simulation_manual.md](doc/simulation_manual.md).
 
 ## What changed from the old monitor
 

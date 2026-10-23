@@ -45,6 +45,12 @@ with the same id while it streams.
 - Checked live (domain 72, Belle with the marker): the marker truth equals the monitor's FK of tool0 to 0.000 mm;
   through the fake Motive the base is off by the domain's 21 Oct sim session (5.2 mm), the marker exact.
 
+## One launch for a simulation (user, 22 Oct)
+
+- `launch/sim.launch.py`: crl-husky's sim_robot (or sim_all with `robot:=all`, no tools) and, with
+  `fake_motive:=true`, sim_mocap. It reads both files' argument declarations, so it offers every argument with their
+  defaults and never copies them (test/mocap_relay/test_sim_launch.py). Relay and monitor stay separate: started once.
+
 ## Changes
 
 - crl-husky: husky_sim (truth only, `mocap_id`, no mocap delay/noise), pure_pursuit_sim and sim_robot (no

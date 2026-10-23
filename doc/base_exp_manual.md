@@ -101,12 +101,13 @@ ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=
 ```
 
 - `sim_model`: how the simulated robot moves. `controller_model`: what pure pursuit assumes.
-- Mocap delay and noise come from `sim_motive`, a fake Motive between the simulator and the relay, e.g.
-  `ros2 launch husky_assembly_teleop sim_mocap.launch.py delay_sec:=0.01 noise:=0.0005,0.1`; each run records its
-  delay and its base's noise as part of the sim model (0 without one).
 - To simulate the arms too (fake hardware, with the safety sync), start the whole robot instead:
-  `ros2 launch crl_husky sim_robot.launch.py robot:=0804 start_x:=1.0 start_y:=-1.5`; or every robot with
-  `sim_all.launch.py`.
+  `ros2 launch husky_assembly_teleop sim.launch.py robot:=0804 start_x:=1.0 start_y:=-1.5` (crl-husky's
+  `sim_robot.launch.py`); or every robot with `robot:=all` (`sim_all.launch.py`).
+- Mocap delay and noise come from `sim_motive`, a fake Motive between the simulator and the relay: add
+  `fake_motive:=true delay_sec:=0.01 noise:=0.0005,0.1` to `sim.launch.py` (or start `sim_mocap.launch.py` with them);
+  each run records its delay and its base's noise as part of the sim model (0 without one). Realistic values and
+  every argument: [simulation_manual.md](simulation_manual.md).
 - Models are `crl_husky/config/base_models/<name>.yaml` in crl-husky: `ideal`, and `alice_tiles_2` (Alice, tiles,
   arm stowed; `alice_tiles` is the earlier fit). Single values override the sim model, e.g. `xICR:=-0.10`.
 
