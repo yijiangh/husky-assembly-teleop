@@ -78,6 +78,25 @@ ROBOT_ACTIONS = {
     "Resume": "resume",
     "Reconnect": "reconnect",
 }
+#: Refused while another plugin has the robot's lease: Unlock lets its arms move again, and Reconnect drops for a
+#: moment the links that plugin's motion is watched and held through. Resume needs no lease (`robot_lease.py`).
+LEASED_ACTIONS = ("Unlock", "Reconnect")
+
+
+def robot_action(ctx: PluginContext, serial: str, clicked: str) -> None:
+    """Run a robot button's action (a key of ROBOT_ACTIONS); LEASED_ACTIONS are refused while the robot is leased.
+
+    Args:
+        ctx: health's context.
+        serial: The robot.
+        clicked: The button's label.
+    """
+    robot = ctx.world.robots[serial]
+    lease = robot.lease_slot.lease
+    if clicked in LEASED_ACTIONS and lease is not None:
+        ctx.log_warn(f"{serial} {clicked} refused: robot {serial} is leased by {lease.holder}")
+        return
+    getattr(robot, ROBOT_ACTIONS[clicked])()
 
 
 @register
@@ -123,11 +142,11 @@ class HealthPlugin(HuskyPlugin):
                     hint="Unlock: like 'Enable robot' on the teach pendant; clear the cause first. "
                          "Resume: undo 'Stop all' for this robot: it takes motion commands again, its arms' "
                          "programs play again and its base's velocity controller is switched on. "
-                         "Reconnect: rebuild every topic, service and action of this robot.")
+                         "Reconnect: rebuild every topic, service and action of this robot. "
+                         "Unlock and Reconnect are refused while another plugin has the robot's lease.")
                 # ! Bind this loop's serial as a default argument.
-                actions.on_click(ctx.defer_value(
-                    f"robot action {serial}",
-                    lambda clicked, serial=serial: getattr(ctx.world.robots[serial], ROBOT_ACTIONS[clicked])()))
+                actions.on_click(ctx.defer_value(f"robot action {serial}",
+                                                 lambda clicked, serial=serial: robot_action(ctx, serial, clicked)))
             self._objects_row = gui.add_html("")
         # * The phone shows the same banner and rows, without the actions: those stay on the laptop.
         with ctx.view.phone_header() as phone:

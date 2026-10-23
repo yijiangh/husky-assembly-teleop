@@ -22,11 +22,14 @@ from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath
 from husky_assembly_teleop.plugins.arm_planner.planner_plugin import ArmPlannerPlugin
 from husky_assembly_teleop.plugins.base_planner.path import BasePath
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
+from husky_assembly_teleop.plugins.health import robot_action
+from husky_assembly_teleop.plugins.robot_control import plugin as robot_control_module
 from husky_assembly_teleop.plugins.robot_control.arm_panel import build_tool_inputs
 from husky_assembly_teleop.plugins.robot_control.plugin import RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.plugins.robot_control.status import build_controller_panel
 from husky_assembly_teleop.plugins.robot_control.teleop_lease import IDLE_AFTER, TeleopLeases
-from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER
+from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER,
+                                                       SCALED_JOINT_TRAJECTORY_CONTROLLER)
 from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, NotLeased, take_lease
 from husky_assembly_teleop.shared.arm_planner_contract import ArmPlanRequest
@@ -297,3 +300,38 @@ def test_base_exp_does_not_start_while_the_executor_leases_every_robot():
     plugin.serial = SERIAL
     lab.lease_every_robot()
     assert plugin._start_problem(lab.ctx) == f"{SERIAL} is leased by {EXEC}"
+
+
+def test_ft_zero_needs_the_lease(monkeypatch):
+    """FT Zero tares nothing while the executor leases Alice: a gripped bar's weight would be tared away."""
+    for name in ("add_frame_markers", "add_force_arrows"):
+        monkeypatch.setattr(robot_control_module, name, lambda *_args: {})
+    monkeypatch.setattr(robot_control_module, "add_target_gizmo", lambda *_args: None)
+    lab = Lab()
+    lab.arm.controllers.switchable = (SCALED_JOINT_TRAJECTORY_CONTROLLER, CARTESIAN_COMPLIANCE_CONTROLLER,
+                                      FREE_DRIVE_CONTROLLER)
+    lab.plugin._build_arm(lab.ctx, lab.ctx.gui, SERIAL, lab.arm)
+    zero, = (widget for widget in lab.ctx.gui.of_kind("button_group") if widget.label == "FT")
+    lease = lab.lease_every_robot()
+    zero.callback()
+    assert lab.arm._zero_ft.calls == [] and lab.plugin._refusals[KEY].label == "lease refused"
+    lease.release()
+    zero.callback()
+    assert len(lab.arm._zero_ft.calls) == 1
+
+
+def test_health_unlock_and_reconnect_are_refused_while_the_robot_is_leased():
+    """Unlock and Reconnect are refused while the executor leases Alice; Resume needs no lease and goes out."""
+    lab = Lab()
+    calls = []
+    lab.robot.unlock_protective_stop = lambda: calls.append("unlock")
+    lab.robot.resume = lambda: calls.append("resume")
+    lab.robot.reconnect = lambda: calls.append("reconnect")
+    lease = lab.lease_every_robot()
+    for clicked in ("Unlock", "Resume", "Reconnect"):
+        robot_action(lab.ctx, SERIAL, clicked)
+    assert calls == ["resume"]
+    assert len([line for line in lab.ctx.lines("warn") if f"is leased by {EXEC}" in line]) == 2
+    lease.release()
+    robot_action(lab.ctx, SERIAL, "Reconnect")
+    assert calls == ["resume", "reconnect"]

@@ -250,7 +250,8 @@ class RobotControlPlugin(HuskyPlugin):
         # Independent of the running controller.
         gui.add_html(section("sensor", SECTION_SENSOR))
         zero = gui.add_button_group("FT", ["Zero"], hint="Tares the current load. Only with nothing gripped.")
-        zero.on_click(ctx.defer(f"zero FT {label}", arm.zero_ft_sensor))
+        # ! Under the lease: taring while another plugin's step grips a bar would tare away its weight.
+        zero.on_click(ctx.defer(f"zero FT {label}", lambda: self._leased(ctx, key, arm.zero_ft_sensor)))
 
         tool = None if arm.end_effector is None else build_tool_inputs(ctx, gui, label, arm,
                                                                        partial(self._leased, ctx, key))
