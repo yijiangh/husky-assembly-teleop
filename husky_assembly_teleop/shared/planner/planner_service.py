@@ -3,7 +3,7 @@ PlannerService: the base class of a headless planner plugin, which plans, cancel
 
 * A planner plugin subclasses it and supplies `make_search`, `stale_reason` and `execute`; it offers others its
   `PlannerContract` (`plan.py`), and its panel is a separate plugin (`planner_panel.PlannerPanel`).
-* Each commit is one task that holds the robot's lease around the whole motion: `execute` sends the plan and watches
+* Each commit is one task that has the robot's lease for the whole motion: `execute` sends the plan and watches
   it until it is over, so a freeze or clearance it opens covers the motion too.
 ! Requests run in the planner's own context (`ctx.submit`), so soft stop, teardown and its errors apply to them, and
   every future resolves: a cancelled search gives a plan in state "cancelled", a commit to a soft-stopped robot

@@ -282,7 +282,7 @@ def mating_drives(process: Process, movement: Movement) -> MatingDrives:
 
 
 def _flange_tools(process: Process, movement: Movement) -> list[str]:
-    """The tools mounted on a movement's moving flanges."""
+    """The tools on a movement's moving flanges."""
     tools = []
     for flange in movement.arms:
         robot, link = split_link_id(flange)

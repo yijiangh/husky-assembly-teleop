@@ -276,7 +276,7 @@ async def _motion(job: Job, run: PartRun) -> None:
     snapshot = ctx.scene.snapshot.robots.get(robot_id(job.request.serial))
     run.base = snapshot.base if snapshot is not None else None
     if part.routine in (Routine.TRANSFER_FREE, Routine.SUPPORT_APPROACH):
-        ctx.log_info(f"{job.who}: {part.movement}: servo correction: M7, not run")
+        ctx.log_info(f"{job.who}: {part.movement}: no servo correction (not supported yet)")
     elif part.routine is Routine.SUPPORT_LEAVE:
         ctx.log_info(f"{job.who}: {part.movement}: done; drive the base away by hand")
     elif part.routine is Routine.FREE_TO_LOAD:
@@ -288,7 +288,7 @@ async def _motion(job: Job, run: PartRun) -> None:
 
 
 async def _robotiq(job: Job, run: PartRun) -> None:
-    """Open the Robotiq to 0.426, or close it stiffly to 0.8 (the compliant handoff is M6) after a warning prompt."""
+    """Open the Robotiq to 0.426, or close it stiffly to 0.8 (no compliant handoff yet) after a warning prompt."""
     part = run.part
     arm = part.tools[0]
     gripper = job.robot.arms[arm].end_effector if arm in job.robot.arms else None
@@ -299,8 +299,8 @@ async def _robotiq(job: Job, run: PartRun) -> None:
     position = ROBOTIQ_OPEN if opening else ROBOTIQ_CLOSE
     run.command = {"tool": "robotiq", "arm": arm, "position": position, "effort": ROBOTIQ_EFFORT}
     text = (f"{part.movement} — OPEN the gripper ({ROBOTIQ_OPEN}). Confirm to send." if opening else
-            f"{part.movement} — STIFF close ({ROBOTIQ_CLOSE}; the compliant handoff comes in M6): jaws empty, no bar "
-            f"held by another robot. Confirm to send.")
+            f"{part.movement} — STIFF close ({ROBOTIQ_CLOSE}; the compliant handoff is not supported yet): jaws "
+            f"empty, no bar held by another robot. Confirm to send.")
     if not await confirmed(job, run, text, warn=not opening):
         return
     problem = world_problem(job, motion=False)
@@ -334,17 +334,17 @@ async def _grasp(job: Job, run: PartRun) -> None:
 async def _by_hand(job: Job, run: PartRun) -> None:
     """A step done by hand, every robot still leased: done once the operator confirms it.
 
-    ? Leased, so nothing else moves meanwhile (and the step panel keeps its done parts): the monitor's panels stay
-      locked; the prompt says so, and how to drive a base without them.
+    ? Leased, so nothing else moves meanwhile (and the step panel keeps its done parts): the monitor's panels refuse
+      while the step has the leases; the prompt says so, and how to drive a base without them.
     """
     part = run.part
     run.command = {"by_hand": part.text}
     if part.kind == BASE_PART:
         text = (f"{part.movement} — drive {job.who}'s base there with its joystick or the command line (the D-pad and "
-                f"the base planner are locked while this step runs; Cancel to use them), then Confirm.")
+                f"the base planner refuse while this step has the robot's lease; Cancel to use them), then Confirm.")
     else:
-        text = (f"{part.movement} — {part.text}, then Confirm (the robot panels and their free drive are locked "
-                f"until this step ends; Cancel to use them).")
+        text = (f"{part.movement} — {part.text}, then Confirm (the robot panels and their free drive refuse while "
+                f"this step has the robots' leases; Cancel to use them).")
     if await confirmed(job, run, text):
         run.ended(DRY_RUN if job.dry_run else DONE, "confirmed", "done by hand, confirmed by the operator")
 

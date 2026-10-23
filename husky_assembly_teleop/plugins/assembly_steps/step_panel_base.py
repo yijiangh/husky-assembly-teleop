@@ -1,8 +1,7 @@
 """
 PlannerPlugin: plan to a target, preview the path, commit it; the base class of assembly_steps only.
 
-! Transitional: a private copy of the old shared planner panel, kept so assembly_steps runs unchanged while the other
-  planners use `shared/planner/` (`PlannerService`, `PlannerPanel`). assembly_steps moves onto those next.
+assembly_steps' own planner panel base; the other planners use `shared/planner/` (`PlannerService`, `PlannerPanel`).
 
 Plan states: none -> planning -> ready -> sent; a ready plan goes stale when the robot or target moves.
 

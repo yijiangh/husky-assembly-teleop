@@ -4,7 +4,7 @@ The steps an operator walks through in one action: each runs one movement, with 
 - An ungrasp (a tool movement opening every grip it commands) directly before a two-arm linear retreat runs with
   that retreat.
 - With the transfer workaround the free transfer runs first, with empty tools. The operator and tool movements
-  authored before it (mount, grasp) are done after its motion, in a pause at the insertion start, and the travel to
+  authored before it (place, grasp) are done after its motion, in a pause at the insertion start, and the travel to
   load before them is skipped.
 
 Pure: any thread.
@@ -19,7 +19,7 @@ from scaffolding_assembly_core.process import Action, Process
 
 from .movement import MovementSpec, Routine, UnknownMovement, classify_action
 
-#: Routines done in the pause after a free transfer (mounting the bar by hand, closing the tools).
+#: Routines done in the pause after a free transfer (placing the bar by hand, closing the tools).
 _PAUSE = (Routine.OPERATOR, Routine.TOOL_ONLY)
 
 
@@ -31,7 +31,7 @@ class OperatorStep:
         primary: The movement the step loads and runs.
         with_motion: Tool movements carried out while the primary moves (the ungrasp during the retreat).
         after_motion: Movements done after the primary's motion, in this order, in a pause before the next step
-            (with the transfer workaround: mount and grasp the bar in the empty tools at the insertion start).
+            (with the transfer workaround: place and grasp the bar in the empty tools at the insertion start).
         skipped: Movements not run at all, carried by this step (with the workaround: the travel to load).
     """
 

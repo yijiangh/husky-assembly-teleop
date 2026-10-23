@@ -251,7 +251,7 @@ def test_a_commit_holds_the_robots_lease_from_the_send_until_the_motion_ends():
 
 @pytest.mark.safety
 def test_a_commit_to_a_robot_leased_elsewhere_sends_nothing():
-    """Another plugin holds the robot: nothing is sent, the answer names the holder, and the plan stays ready."""
+    """Another plugin has the robot's lease: nothing is sent, the answer names the holder, and the plan stays ready."""
     guard = LeaseSlot("alice")
     Lease("robot_control: teleop", (guard,))
 

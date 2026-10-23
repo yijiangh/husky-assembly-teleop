@@ -54,7 +54,7 @@ class StepsPanel:
             gui.add_html(section("settings", SECTION_TOOL))
             self._workaround = gui.add_checkbox("Transfer workaround", True,
                                                 hint="The run's setting: the transfer runs as a free move without "
-                                                     "the bar; the operator mounts it at the insertion start")
+                                                     "the bar; the operator places it at the insertion start")
             self._ignore = gui.add_checkbox("Ignore built bars", False,
                                             hint="Plan as if the built bars were not there: for tests in the air")
             self._mark = gui.add_button("Mark done", hint="Mark the action done in the run, once its last step ran")

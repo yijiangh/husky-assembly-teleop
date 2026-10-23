@@ -5,7 +5,7 @@ A movement's tool steps on the real tools: a Robotiq move, and a scaffolding too
   stops the fingers where they are.
 - Scaffolding grasp: STOP (clears a left-over stall), wait until no tool reports STALLED, close (the M1 gripper screw
   tightens) until every tool reports STALLED. Every tool is stopped on the way out, whatever happened.
-- A command the robot refuses by raising (soft stopped, or the robot's lease not held: `MotionRefused`) is REFUSED.
+- A command the robot refuses by raising (soft stopped, or no lease: `MotionRefused`) is REFUSED.
 - ! Main thread, from a plugin task.
 """
 
@@ -165,7 +165,7 @@ async def scaffolding_grasp(ctx: PluginContext, tools: Mapping[str, ScaffoldingV
         except WaitTimeout:
             return ToolOutcome(TIMEOUT, f"a gripper screw still reports STALLED {CLEAR_TIMEOUT:.0f} s after STOP; "
                                         f"nothing tightened", ctx.now() - started, _grasp_detail(tools))
-        # ! Asked again here, with no wait before the close: the wait above may have lasted seconds.
+        # ? Asked again here, with no wait before the close: the wait above may have lasted seconds.
         problem = ready()
         if problem:
             return ToolOutcome(REFUSED, f"{problem}; nothing tightened", ctx.now() - started, _grasp_detail(tools))

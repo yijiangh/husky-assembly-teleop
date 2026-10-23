@@ -137,9 +137,9 @@ class Steps(RobotLab):
 
 
 def test_steps_follow_the_run_and_walk_with_prev_and_next():
-    """B20_J (workaround): mount and grasp after the transfer, the load skipped; Next, Prev; B20_R's ungrasp.
+    """B20_J (workaround): place and grasp after the transfer, the load skipped; Next, Prev; B20_R's ungrasp.
 
-    The insert is refused until M6.
+    The insert is refused: not supported yet.
     """
     lab = Steps(("B20_J", 3))
     assert lab.plugin.position == (1, 2) and lab.plugin.traj_time == 10.0
@@ -149,7 +149,7 @@ def test_steps_follow_the_run_and_walk_with_prev_and_next():
     lab.plugin.go(lab.ctx, 1)
     lab.update()
     assert lab.run.selected == [("B20_J", 4)] and lab.plugin.position == (2, 2)
-    assert "refuses B20_J_insert: insert runs in M6" in lab.html()
+    assert "refuses B20_J_insert: the insert is not supported yet" in lab.html()
     lab.plugin.go(lab.ctx, 1)
     assert "no step there" in lab.plugin._message
     lab.plugin.go(lab.ctx, -1)
@@ -494,8 +494,8 @@ def test_walking_b21_h_and_b20_j_with_the_real_planner_and_executor():
     """B21_H and B20_J's transfer step, planned for real, run on fake robots that follow, every part recorded.
 
     Alice's B21_H: approach (planned), open, to grasp (planned), close, then Mark done offered. Cindy's B20_J transfer
-    step with the workaround: the free transfer (planned), the mount by hand, the grasp; then the insert, refused
-    until M6. Cindy ends where the transfer's plan ends.
+    step with the workaround: the free transfer (planned), placing the bar by hand, the grasp; then the insert,
+    refused as not supported yet. Cindy ends where the transfer's plan ends.
     """
     walk = Walk("B21_H_approach")
 
@@ -528,7 +528,7 @@ def test_walking_b21_h_and_b20_j_with_the_real_planner_and_executor():
     assert [file["movement"] for file in files] == ["B20_J_transfer", "B20_J_place_bar", "B20_J_grasp"]
     assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "confirmed", "stalled"]
     assert files[0]["plan"]["planner"] == "tamp.plan_free_dual_arm"
-    assert position == (2, 2) and parts[0].kind == "refused" and "M6" in parts[0].text
+    assert position == (2, 2) and parts[0].kind == "refused" and "not supported yet" in parts[0].text
     end = files[0]["plan"]["rows"][-1]
     names = files[0]["plan"]["joint_names"]
     measured = {name: value for arm in walk.cindy.arms.values()

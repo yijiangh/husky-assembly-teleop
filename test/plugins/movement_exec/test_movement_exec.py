@@ -128,7 +128,7 @@ def execute(lab: Lab, request: ExecRequest, *answers: bool, during=None):
 
 @pytest.mark.safety
 def test_a_motion_is_confirmed_sent_arrives_and_is_recorded():
-    """B20_R_home: prompt, Confirm, one multi-arm message, arrived; done, the lease held during and given back."""
+    """B20_R_home: prompt, Confirm, one multi-arm message, arrived; done, every robot leased and then given back."""
     lab = Lab()
     result, held = execute(lab, lab.request(), True)
     assert result.status == DONE and result.done == (2,), result.reason
@@ -146,8 +146,8 @@ def test_a_motion_is_confirmed_sent_arrives_and_is_recorded():
 
 
 @pytest.mark.safety
-def test_both_leases_are_back_when_the_result_arrives():
-    """The result resolves with Cindy given back already, so its caller may start the next step at once."""
+def test_every_robot_is_back_when_the_result_arrives():
+    """The result resolves with every robot given back already, so its caller may start the next step at once."""
     lab = Lab()
 
     async def scenario():
@@ -161,8 +161,8 @@ def test_both_leases_are_back_when_the_result_arrives():
 
 
 @pytest.mark.safety
-def test_a_request_whose_task_cannot_start_gives_both_leases_back(monkeypatch):
-    """Spawning the step's task raises, as a closing plugin's context does: both leases are given back, then raised.
+def test_a_request_whose_task_cannot_start_gives_every_robot_back(monkeypatch):
+    """Spawning the step's task raises, as a closing plugin's context does: every robot is given back, then raised.
 
     Else every other plugin would be refused every lease until a restart.
     """
@@ -343,7 +343,7 @@ def test_an_error_inside_holds_and_gives_the_robot_back(monkeypatch):
 
 
 def test_the_transfer_with_the_workaround_runs_motion_then_by_hand_then_grasp():
-    """B20_J's transfer step: parts (3, 1, 2); Cancel at the mount by hand leaves done = (3,)."""
+    """B20_J's transfer step: parts (3, 1, 2); Cancel at placing the bar by hand leaves done = (3,)."""
     lab = Lab(current=("B20_J", 3))
     request = lab.request("B20_J_transfer")
     assert [(part.index, part.kind) for part in request.parts] == [(3, "motion"), (1, "operator"), (2, "grasp")]
@@ -353,7 +353,7 @@ def test_the_transfer_with_the_workaround_runs_motion_then_by_hand_then_grasp():
 
 
 def test_the_whole_transfer_step_ends_with_the_grasp():
-    """Confirm all three: the motion, the mount by hand, the grasp (both screws stalled); done (3, 1, 2)."""
+    """Confirm all three: the motion, placing the bar by hand, the grasp (both screws stalled); done (3, 1, 2)."""
     lab = Lab(current=("B20_J", 3))
     result, _held = execute(lab, lab.request("B20_J_transfer"), True, True, True)
     assert result.status == DONE and result.done == (3, 1, 2), result.reason
@@ -384,7 +384,7 @@ def test_a_dry_run_never_gives_done_and_sends_nothing():
 
 @pytest.mark.safety
 def test_robotiq_and_refused_parts():
-    """Belle's open is a Robotiq part that reaches 0.426; Cindy's retreat step (M6) is refused, nothing sent."""
+    """Belle's open is a Robotiq part that reaches 0.426; Cindy's retreat step, not supported yet, is refused."""
     lab = Lab(current=("B35_H", 1))
     request = lab.request("B35_H_open", serial="a200-0805", route=None)
     assert [part.kind for part in request.parts] == ["robotiq_open"]
@@ -393,7 +393,7 @@ def test_robotiq_and_refused_parts():
     assert lab.run.files()[0]["outcome"]["status"] == "reached"
     lab = Lab(current=("B20_R", 1))
     result, _held = execute(lab, lab.request("B20_R_retreat"))
-    assert result.status == REFUSED and "runs in M6" in result.reason and lab.published() == 0
+    assert result.status == REFUSED and "not supported yet" in result.reason and lab.published() == 0
 
 
 @pytest.mark.safety
@@ -470,8 +470,8 @@ def test_stop_all_mid_motion_holds_every_arm_and_is_recorded_as_a_soft_stop():
 def test_a_confirm_clicked_in_the_tick_of_stop_all_runs_after_it_and_moves_nothing():
     """Confirm and Stop all in one tick: Cindy latched and the step cancelled first; the Confirm runs after, moves nothing.
 
-    Stop all no longer drops queued clicks. The step is recorded as cancelled by the soft stop, no trajectory goes
-    out, and both leases are given back.
+    Stop all keeps queued clicks. The step is recorded as cancelled by the soft stop, no trajectory goes out, and
+    every robot is given back.
     """
     lab = Lab()
     # * The plugin's intent queue as the monitor keeps it, and the monitor's own soft stop working on it: it latches
@@ -514,7 +514,7 @@ def test_a_confirm_clicked_in_the_tick_of_stop_all_runs_after_it_and_moves_nothi
 def test_a_confirm_reaching_a_step_the_soft_stop_did_not_cancel_sends_nothing():
     """Cindy soft stopped at her prompt, the step not cancelled: Confirm is refused after it, saying Resume.
 
-    As after a clearance trip, or for a task that survived the stop. Nothing is sent, both leases are given back.
+    As after a clearance trip, or for a task that survived the stop. Nothing is sent, every robot is given back.
     """
     lab = Lab()
 
@@ -716,8 +716,8 @@ def test_another_robot_moving_by_other_means_at_the_prompt_is_refused_after_conf
 
 
 @pytest.mark.safety
-def test_another_robot_starting_to_move_during_the_motion_holds_the_held_robot():
-    """Belle starts moving while Cindy's arms move: Cindy is held, the part fails naming Belle."""
+def test_another_robot_starting_to_move_during_the_motion_holds_the_acting_robots_arms():
+    """Belle starts moving while Cindy's arms move: Cindy's arms hold, the part fails naming Belle."""
     lab = Lab()
     belle = lab.belle.arms["ur_arm"]
 
@@ -760,10 +760,10 @@ def test_a_robot_whose_link_dropped_while_moving_refuses_the_request():
 
 # --- --- --- --- --- a base step and the pendant's speed (review L7, L8) --- --- --- --- ---
 
-def test_a_base_step_says_how_to_drive_while_the_panels_are_locked():
+def test_a_base_step_says_how_to_drive_while_the_panels_refuse():
     """A base drive by hand: the prompt says to drive with the joystick or the command line, or Cancel first.
 
-    The monitor's D-pad and base planner stay locked while the step runs (the robot stays held).
+    The monitor's D-pad and base planner refuse while the step has the robot's lease.
     """
     from husky_assembly_teleop.plugins.movement_exec.sequences import Job, PartRun, run_part
     from husky_assembly_teleop.shared.movement_exec_contract import BASE_PART, PartPlan
@@ -784,7 +784,7 @@ def test_a_base_step_says_how_to_drive_while_the_panels_are_locked():
         await task
 
     run_guarded(scenario())
-    assert "joystick or the command line" in lines[0] and "D-pad and the base planner are locked" in lines[0]
+    assert "joystick or the command line" in lines[0] and "D-pad and the base planner refuse" in lines[0]
     assert run.result == DONE
 
 
@@ -798,7 +798,7 @@ def test_exec_says_the_pendant_speed_slider_must_be_at_100():
 # --- --- --- --- --- the watch's timing, and the tool parts' re-check (re-review F1, F3) --- --- --- --- ---
 
 @pytest.mark.safety
-def test_the_held_robot_is_held_in_the_tick_another_robot_starts_and_moves_no_further():
+def test_the_acting_robots_arms_hold_in_the_tick_another_robot_starts_and_moves_no_further():
     """Belle starts moving mid-motion: Cindy's hold goes out within a tick, and her arm makes no progress after it."""
     lab = Lab()
     belle, left = lab.belle.arms["ur_arm"], lab.cindy.arms["left_ur_arm"]
@@ -872,7 +872,7 @@ def test_another_robot_moving_at_a_grasp_prompt_refuses_it_after_confirm():
 
 
 @pytest.mark.safety
-def test_the_held_robots_own_base_driving_during_its_motion_holds_it():
+def test_the_acting_robots_own_base_driving_during_its_motion_holds_its_arms():
     """Cindy's own wheels start turning while her arms move: her arms are held, the part fails naming her base."""
     lab = Lab()
     base = lab.cindy.base.state
@@ -888,8 +888,8 @@ def test_the_held_robots_own_base_driving_during_its_motion_holds_it():
 
 
 @pytest.mark.safety
-def test_a_base_path_sent_just_before_the_lease_holds_the_held_robot_once_the_follower_reports_it():
-    """Belle's base got a path just before Cindy was taken; her follower reports "following": Cindy is held.
+def test_a_base_path_sent_just_before_the_lease_holds_the_acting_robots_arms_once_the_follower_reports_it():
+    """Belle's base got a path just before the lease was taken; her follower reports "following": Cindy's arms hold.
 
     ? The monitor keeps no send time for a path, so the watch learns of it from the follower's report or the wheels.
     """

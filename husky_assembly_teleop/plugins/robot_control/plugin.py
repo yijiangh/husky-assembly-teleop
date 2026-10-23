@@ -445,7 +445,7 @@ class RobotControlPlugin(HuskyPlugin):
             key = (widgets.serial, widgets.arm.config.name)
             controllers = widgets.arm.controllers
             last = self._free_drive_held.get(key)
-            # * While another plugin holds the robot or it is soft stopped, held buttons and Keep on do nothing.
+            # * While another plugin has the robot's lease or it is soft stopped, held buttons and Keep on do nothing.
             dropped = self._drop_reason(ctx, widgets.serial, widgets.arm.soft_stopped)
             pressed = last is not None and now - last[0] <= HOLD_TIMEOUT
             keep = widgets.free_drive_keep

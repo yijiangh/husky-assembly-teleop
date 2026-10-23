@@ -6,7 +6,8 @@ The project's Google Drive folder, where experiment data lives, synced to this m
   a shortcut); below it, paths are the same for everyone, so code uses paths relative to it. Absolute paths pass
   through unchanged, for data elsewhere.
 - ! Folders under the root are never created here: a folder made locally that exists unsynced in Drive is uploaded as
-  a second folder of the same name. Create it in Drive, or sync it, instead.
+  a second folder of the same name. Create it in Drive, or sync it, instead. Inside a process folder code may create
+  its own folders (assembly_run's `runs/<stamp>/`).
 - Saved runs and takes are named the same everywhere: `folder_name` for a name typed in the panel, `stamped_name` for
   a run, `started_at` for the time written into one.
 """

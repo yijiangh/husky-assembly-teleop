@@ -7,7 +7,7 @@ of a two-arm robot together, then waits until the time is up and every arm is at
 - Every ending but arriving holds every arm of the robot: a timeout, a stop short of the end, something else moving
   (`watch`), a cancel (re-raised). A hold an arm refuses (stale joints) makes the outcome HOLD_NOT_SENT, said loudly.
 - A dry run builds each arm's trajectory, so every check the arm runs before sending runs, and sends nothing.
-- A send the robot refuses by raising (soft stopped, or the robot's lease not held: `MotionRefused`) is REFUSED.
+- A send the robot refuses by raising (soft stopped, or no lease: `MotionRefused`) is REFUSED.
 - ! Main thread, from a plugin task.
 """
 

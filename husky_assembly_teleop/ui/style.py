@@ -17,7 +17,7 @@ from html import escape
 
 from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
 
-#: The ring that marks the current chip of a row (`swatch_chip`); no movement kind uses it.
+#: The ring that marks the current chip of a row (`swatch_chip`); a colour no swatch fill uses.
 RING = "#212529"
 
 # Colours: chips put white text on these, readable in light and dark theme.

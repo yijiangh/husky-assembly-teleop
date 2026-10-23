@@ -81,7 +81,7 @@ PREFIXES = {"bar_jointing": "J", "bar_release": "R", "bar_holding": "H", "bar_ho
 TEXTS = {
     "J_M0_free_to_load": "{robot}'s two arms travel from wherever they are to the bar loading pose (FM, arms "
                          "independent, planned live).",
-    "J_M1_manual_mount_bar": "The operator mounts {bar}, joint halves already installed, into {robot}'s two end "
+    "J_M1_manual_mount_bar": "The operator places {bar}, joint halves already installed, into {robot}'s two end "
                              "effectors (Manual).",
     "J_M2_tool_grasp_bar": "Both arm tools drive their grasping screws until they stall: {bar} is clamped (TM).",
     "J_M3_CDFM_transfer_to_approach": "{robot} carries {bar} to the approach pose, just short of the assembled pose "
@@ -158,7 +158,7 @@ def kinds_of(process: Process, movement: Movement) -> tuple[Kind, ...]:
         arm = CDLM if linear else CDFM
     else:
         arm = LM if linear else FM
-    # ! A ground bar's tightens are never sent: no tool runs through its insert.
+    # * A ground bar's tightens are never sent: no tool runs through its insert.
     tools = movement.grip_change or (mating_drives(process, movement).kept if movement.drives else {})
     return (arm, TM_THROUGH) if tools else (arm,)
 
@@ -197,12 +197,12 @@ def label_movement(process: Process, action: Action, movement: Movement) -> Move
 def _old_name(process: Process, action: Action, movement: Movement, routine: Routine) -> str:
     """The old monitor's name of a classified movement, or "" if it had none."""
     if action.type == "bar_jointing" and routine == Routine.OPERATOR:
-        # ? An operator step after the insert is a ground bar's foundation fix; before it, the bar is mounted.
+        # ? An operator step after the insert is a ground bar's foundation fix; before it, the bar is placed.
         earlier = action.movements[:action.movements.index(movement)]
         inserted = any(routine_or_none(action, each) == Routine.INSERT for each in earlier)
         return "J_M5_manual_fix_foundation" if inserted else "J_M1_manual_mount_bar"
     if action.type == "bar_jointing" and routine == Routine.INSERT:
-        # ! Screws really sent win: a bar on the ground at one end may still tighten at the other.
+        # ? Screws really sent win: a bar on the ground at one end may still tighten at the other.
         drives = mating_drives(process, movement)
         if drives.kept:
             return INSERT_TIGHTEN

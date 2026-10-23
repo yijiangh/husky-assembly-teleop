@@ -333,7 +333,7 @@ class BaseInterface:
 
         Raises:
             RobotStopped: If the robot is soft stopped and the twist is not zero; a zero twist always goes out.
-            NotLeased: If the twist is not zero and the running code does not hold the robot's lease.
+            NotLeased: If the twist is not zero and the running code does not have the robot's lease.
         """
         now = self._node.get_clock().now().nanoseconds * 1e-9
         if not (math.isfinite(linear_x) and math.isfinite(angular_z)):
@@ -383,7 +383,7 @@ class BaseInterface:
             ValueError: If x, y, yaw (and t) differ in length or hold a value that is not finite, or the follower may
                 not take a path now (`follow_problem`); nothing is sent.
             RobotStopped: If the robot is soft stopped.
-            NotLeased: If the running code does not hold the robot's lease.
+            NotLeased: If the running code does not have the robot's lease.
         """
         self._latch.check("a path")
         self._lease_slot.check("a path")

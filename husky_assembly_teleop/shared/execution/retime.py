@@ -1,9 +1,9 @@
 """
-Time a planned joint path for the arm's trajectory controller: Jakob's cosine profile per run, sampled evenly in time.
+Time a planned joint path for the arm's trajectory controller: a cosine profile per run, sampled evenly in time.
 
 A run is the stretch of the path between two stops. The arm glides through gentle bends at speed and stops only at a
-bend it can't glide through: tamp's free paths are dense, so stopping at every waypoint (as `joint_path_move` does)
-would be stop-and-go.
+bend it can't glide through: tamp's free paths are dense, so stopping at every waypoint (as `joint_path_move` does
+with `stops=None`) would be stop-and-go.
 
 What the controller runs is the cubic through each sample's position and velocity (the velocities are the samples'
 own finite differences, zero at the stops). A bend gets a stop when that cubic, next to it, needs more than

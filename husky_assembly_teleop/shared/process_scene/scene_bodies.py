@@ -79,7 +79,7 @@ def scene_bodies(process: Process, movement: Movement, robots: tuple[RobotConfig
       not configured, it is disabled where the plan has it;
     - `touches` name the real robots, their tools and the prefixed ids; those of robots not configured are dropped;
     - with `obstacles_collide` False, the process's obstacles (`process_obstacles`) are disabled: left out of every
-      collision check, and not drawn by the core.
+      collision check, and not drawn by the runtime.
 
     * Every movement, and either `obstacles_collide`, gives the same ids, geometry objects and colours, so neither
       ever rebuilds a body in a mirror or the 3D view: they only move, enable and disable them.

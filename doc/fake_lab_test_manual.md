@@ -319,7 +319,7 @@ Click **Confirm** in movement_exec.
 
 **Expect:**
 - Both arms move.
-- **Monitor pane:** `B20_J_transfer: arrived, end within 0.00°`, then `servo correction: M7, not run`.
+- **Monitor pane:** `B20_J_transfer: arrived, end within 0.00°`, then `B20_J_transfer: no servo correction (not supported yet)`.
 
 **5.5** **Expect:** the next prompt is the bar by hand:
 
@@ -337,7 +337,7 @@ Click **Confirm**.
 **Expect:** the grasp is refused with `left_ur_arm: no tool status in the last 1 s; is its driver running?`. That is
 right for the simulation, which has no tool drivers.
 
-**5.7** Step 2/2 is the insert. Don't run it: its Exec line says it is refused, because inserts come with M6.
+**5.7** Step 2/2 is the insert. Don't run it: its Exec line says the insert is not supported yet.
 
 **5.8** In **assembly_run**, click Action **Mark done**.
 
@@ -349,7 +349,7 @@ right for the simulation, which has no tool drivers.
 
 ## 6. B20_R: home, and one motion at a time (ours)
 
-**6.1** Step 1/2 is the retreat together with the ungrasp. Its Exec line says both are refused until M6. Click
+**6.1** Step 1/2 is the retreat together with the ungrasp. Its Exec line says neither is supported yet. Click
 **Next ▶**.
 
 **6.2** Step 2/2 is `B20_R_home (free_home)`. Click **Plan**.
@@ -597,7 +597,7 @@ These are not mistakes on your side.
 | Rhino's cabinet `env39` is in a different place from the measured one. | Rhino's cabinet (y 1.63–2.23 m) is about 0.38 m nearer the park row (y = 1.35 m) than the probe-measured cabinet (`data/lab/main.json`, from y = 2.00 m). With **Rhino obstacles collide** ticked, the base planner refuses any start or target on the park row (4.1); unticked, the default, the row is fine, and the robots start on it. The Rhino file needs the fix for Rhino's own planning. |
 | Cindy's base path is refused while the process shows a movement where she holds a bar (4.2). | The base planner counts a held bar as part of the robot, and at `B20_J_transfer` the design has B20 in her grippers; from her start it reaches the measured cabinet. With the transfer workaround, the bar isn't actually there while she drives, but the base planner doesn't know the workaround. Show the action's start (**◀ action**) first. |
 | Grasp and Robotiq steps are refused. | The simulation has no tool drivers. |
-| Insert, retreat and handoff are refused; the servo logs "M7, not run". | M6 and M7 are specified, not built. |
+| Insert, retreat and handoff are refused; the servo logs "no servo correction (not supported yet)". | M6 and M7 are specified, not built. |
 | B20_R_home won't plan until Cindy's grippers are jogged off the bar (6.2). | In the simulation the insert and retreat never ran. |
 | Don't press **Cancel** in base_planner_panel right after a **Commit** while that robot is still driving an earlier path. | A race in Jakob's code (review finding M1, your decision 3a): within about one tick, the earlier path can keep driving with nothing watching it. Stop a driving base with **Stop all**. |
 | After a link comes back (8.3), a burst of red `[rmw_zenoh_cpp] Query queue depth of 10 reached …` lines. | Jakob's controller-manager check asks once a second without waiting for the answer; the questions pile up while the link is down. Harmless; a fix is Jakob's. |

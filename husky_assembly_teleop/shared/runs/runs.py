@@ -20,7 +20,7 @@ URDF as kept in the data folder (the same on every PC). Times are local ISO time
 - Pure functions return a new `Run`; `new_run`, `save_*` and `record_*` write. Files are replaced atomically, so a
   reader never sees half a file; a stray `.tmp` is ignored.
 - The run used last is the one whose progress changed last (`updated_at`, to the microsecond), not the newest folder.
-- ! A file with another `schema` is refused (`RunError`).
+- * A file with another `schema` is refused (`RunError`).
 """
 
 from __future__ import annotations

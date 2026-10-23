@@ -11,7 +11,7 @@ action's last step Mark done is offered.
   reuses it while the base stays within 2 mm / 0.5° and the process plugin's "Rhino obstacles collide" is unchanged.
 - A plan is used once: Exec takes it, and it is cleared once the step ran; only a request refused before sending
   anything, or a dry run, gives it back (still checked for staleness).
-- ! EXPERIMENTAL, with movement_exec the first plugins that move robots.
+- ! EXPERIMENTAL, with movement_exec the first plugins that run process movements on the robots.
 """
 
 from __future__ import annotations

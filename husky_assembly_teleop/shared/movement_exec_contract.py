@@ -4,7 +4,7 @@ What the movement_exec plugin offers other plugins (`MovementExecContract`), its
 Other plugins ask with an `ExecRequest`; `part_plan` says how a step's movements are run.
 
 A part is a motion along a plan, a tool step (Robotiq open or close, a scaffolding grasp), or a step done by hand.
-Routines run in later milestones are refused, naming the milestone (`LATER`).
+Routines not supported yet are refused, naming what is missing (`LATER`).
 
 Pure: any thread.
 """
@@ -32,13 +32,14 @@ if TYPE_CHECKING:
     from .assembly_planning.process_steps import LoadedProcess
 
 #: Seconds a motion takes by default, per routine (the old export's values); the operator may slow it, up to
-#: MAX_TRAJ_TIME. The routines in it are the motions M5 runs.
+#: MAX_TRAJ_TIME. The routines in it are the motions the executor runs.
 DEFAULT_TRAJ_TIME = {Routine.FREE_TO_LOAD: 30.0, Routine.TRANSFER_FREE: 10.0, Routine.FREE_HOME: 10.0,
                      Routine.SUPPORT_APPROACH: 15.0, Routine.SUPPORT_LEAVE: 15.0, Routine.SUPPORT_LINEAR: 5.0}
 MAX_TRAJ_TIME = 90.0
 MOTION = frozenset(DEFAULT_TRAJ_TIME)
-#: Routines not run yet, and the milestone that runs them.
-LATER = {Routine.INSERT: "M6", Routine.RETREAT_LINEAR: "M6", Routine.TRANSFER_HELD: "M7"}
+#: Routines not supported yet, and what each is in the refusal.
+LATER = {Routine.INSERT: "the insert", Routine.RETREAT_LINEAR: "the linear retreat",
+         Routine.TRANSFER_HELD: "the transfer with the bar held"}
 
 #: What a part does.
 MOTION_PART, OPEN_PART, CLOSE_PART, GRASP_PART, BY_HAND_PART, BASE_PART, REFUSED_PART = (
@@ -150,7 +151,7 @@ class MovementExecContract(Protocol):
         """bool: Whether requests run every check and send nothing."""
 
     def request_execute(self, request: ExecRequest) -> asyncio.Future[ExecResult]:
-        """Run a step's parts, holding its robot until done; the future gives how it ended."""
+        """Run a step's parts with every robot leased until done; the future gives how it ended."""
 
     def request_confirm(self) -> None:
         """Confirm the open prompt."""
@@ -200,13 +201,13 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
         arms = tuple(arm.arm for arm in spec.arms)
         return part(routine, MOTION_PART, f"move {', '.join(arms)} along the plan", arms)
     if routine in LATER:
-        return part(routine, REFUSED_PART, f"{routine.value} runs in {LATER[routine]}")
+        return part(routine, REFUSED_PART, f"{LATER[routine]} is not supported yet")
     if routine is Routine.OPERATOR:
         return part(routine, BY_HAND_PART, f"do {movement.label or movement.id} by hand")
     if routine is Routine.BASE_ONLY:
         return part(routine, BASE_PART, f"drive the base for {movement.label or movement.id} by hand")
     if spec.drives.kept or not spec.grips:
-        return part(routine, REFUSED_PART, "a tool movement with a drive, or without a grip, runs in M6")
+        return part(routine, REFUSED_PART, "a tool movement with a drive, or without a grip, is not supported yet")
     serial = serial_of(loaded, action_id, robots)
     config = next((config for config in robots if config.serial == serial), None)
     if config is None:
@@ -215,11 +216,11 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
     arms, kinds = [], set()
     for tool in spec.grips:
         arm = flanges.get(tool, "")[:-len(FLANGE_SUFFIX)]
-        mounted = next((each.end_effector for each in config.arms if each.name == arm), None)
+        fitted = next((each.end_effector for each in config.arms if each.name == arm), None)
         kind = process.tools[tool].kind
-        if mounted != kind:
+        if fitted != kind:
             return part(routine, REFUSED_PART, f"{tool} is a {kind} on {arm or 'no flange'}, but {serial} has "
-                                               f"{mounted or 'nothing'} there")
+                                               f"{fitted or 'nothing'} there")
         arms.append(arm)
         kinds.add(kind)
     grips = set(spec.grips.values())
@@ -231,15 +232,16 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
     if kind == "scaffolding_v3" and grip == "closed":
         return part(routine, GRASP_PART, "scaffolding grasp", tuple(arms))
     if kind == "scaffolding_v3":
-        return part(routine, REFUSED_PART, "a scaffolding open outside a retreat runs in M6")
+        return part(routine, REFUSED_PART, "a scaffolding open outside a retreat is not supported yet")
     return part(routine, REFUSED_PART, f"a {kind} tool is not run by the executor")
 
 
 def step_parts(loaded: LoadedProcess, action_id: str, step: OperatorStep, robots: tuple[RobotConfig, ...],
                transfer_as_free: bool) -> tuple[PartPlan, ...]:
-    """Every movement a step runs, as parts in order; one run during the motion is refused (M6)."""
+    """Every movement a step runs, as parts in order; one run during the motion is refused (not supported yet)."""
     movements = loaded.process.actions[action_id].movements
-    return tuple(PartPlan(index, movements[index].id, None, REFUSED_PART, (), "runs during its motion in M6")
+    during = "running during the motion is not supported yet"
+    return tuple(PartPlan(index, movements[index].id, None, REFUSED_PART, (), during)
                  if index in step.with_motion else part_plan(loaded, action_id, index, robots, transfer_as_free)
                  for index in step.indices)
 

@@ -463,7 +463,7 @@ class ProcessPlugin(HuskyPlugin):
             return
         try:
             joints = joints_at(self.process, action.id, movement.id, self.at_target, self._assumed)
-            # * Left out of collision checks, the core no longer draws the Rhino obstacles: the overlay does.
+            # * Left out of collision checks, the Rhino obstacles are drawn by the overlay, not the runtime.
             drawing.show(movement.start, joints, self._everything,
                          frozenset() if self.obstacles_collide else self._obstacles)
         except Exception as failure:
@@ -558,7 +558,7 @@ class ProcessPlugin(HuskyPlugin):
         carries += chip(movement.controller or "no arm moves", NONE)
         carries += chip(f"ends on {movement.ends_on}", NONE)
 
-        # ! A drive the monitor never sends (e.g. a tighten on a ground half) says so.
+        # * A drive the monitor never sends (e.g. a tighten on a ground half) says so.
         dropped = mating_drives(self.process, movement).dropped if movement.drives else {}
         moves = [arm.split("/")[-1] for arm in movement.arms] + [
             f"{tool.split('/')[-1]} grip {grip}" for tool, grip in movement.grip_change.items()] + [

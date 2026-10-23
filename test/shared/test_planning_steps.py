@@ -25,7 +25,7 @@ def purged():
 def test_jointing_steps(purged):
     """J: one step per movement; with the workaround, the transfer, then mount and grasp, and no travel to load.
 
-    The workaround's transfer runs with empty tools; the operator mounts and grasps the bar after it.
+    The workaround's transfer runs with empty tools; the operator places and grasps the bar after it.
     """
     jointing = action(purged, "B21_J")
     assert operator_steps(purged.process, jointing) == [OperatorStep(index) for index in range(5)]

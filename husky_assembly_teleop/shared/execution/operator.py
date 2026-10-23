@@ -107,7 +107,7 @@ class PromptBox:
             bool: True if confirmed, False if cancelled.
         """
         try:
-            # ? No time limit: mounting a bar by hand can take minutes.
+            # ? No time limit: placing a bar by hand can take minutes.
             await ctx.wait_until(lambda: prompt.id in self._answers, description=f"an answer to {prompt.line!r}")
             return self._answers[prompt.id]
         finally:

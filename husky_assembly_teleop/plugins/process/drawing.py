@@ -144,7 +144,7 @@ class ProcessDrawing:
                 joints not given are drawn at zero.
             everything: Also draw the bodies that neither stand nor move with a robot (absent ones).
             reference: Process ids drawn see-through where they stand: bodies switched out of collision checks,
-                which the core therefore does not draw (the Rhino obstacles while their box is off).
+                which the runtime therefore does not draw (the Rhino obstacles while their box is off).
         """
         # * Robots first: held bodies read their links from the posed models.
         for robot_id, robot in self._robots.items():

@@ -231,7 +231,7 @@ def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
         name: The arm's name, e.g. "left_ur_arm".
         joints: Its six joint angles, UR order.
         active: The running controller.
-        end_effector: The mounted tool's interface, or None.
+        end_effector: The interface of the tool on its flange, or None.
     """
     arm = ArmInterface.__new__(ArmInterface)
     arm._node, arm.config = node, ArmConfig(name=name, ros_namespace=name)

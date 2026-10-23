@@ -122,6 +122,24 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **park / stow**: park is the base's parked floor pose (`park_pose`); stow is the arm's rest joints (`stow_joints`);
   both come from crl-husky's `park.yaml`. Inside a mirror, **parked** means moved far away because absent or unknown.
 
+## Assembly runs
+
+- **assembly run**: how far the assembly of one process got (actions done, where each robot was left, the run's
+  settings, an event log), kept in `runs/<YYYYMMDD_HHMMSS>/` inside the process folder. Not an experiment's run
+  folder, not a calibration run. `shared/runs/runs.py`, `plugins/assembly_run/`.
+- **operator step / part**: an operator step is one movement of an action with the tool movements folded into it, as
+  the step panel walks them (`OperatorStep`); its parts are how the executor runs each of those movements: a motion,
+  a tool step, a step by hand, or refused (`PartPlan`). Not a guided procedure's step.
+  `shared/assembly_planning/steps.py`, `shared/movement_exec_contract.py`.
+- **live robot**: a robot measured now: in the snapshot, every movable joint measured and its base tracked, both
+  fresh (`is_live`). Plan and Exec need it live. `shared/assembly_run_contract.py`.
+- **transfer workaround**: a run setting: the transfer runs as a free move with empty tools, the operator places and
+  grasps the bar at the insertion start after it, and the travel to load is skipped.
+  `shared/assembly_planning/steps.py`.
+- **Rhino obstacles**: the process's own obstacles from Rhino (bodies under `obstacles/`, e.g. the cabinet). Unless
+  "Rhino obstacles collide" is ticked, they are drawn see-through and left out of every collision check; the measured
+  room is the `obstacles` plugin's. `shared/process_scene/scene_bodies.py` (`process_obstacles`).
+
 ## Guided procedure (calibration)
 
 - **guided procedure**: steps the operator walks through one at a time, each judged by checks; calibration is built

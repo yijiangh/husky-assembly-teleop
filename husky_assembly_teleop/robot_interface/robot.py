@@ -70,7 +70,7 @@ class HuskyRobotInterface:
         arms: The arms, keyed by ArmConfig.name, in configuration order.
         state: Everything measured, for the scene and viewer.
         soft_stop_latch: Set from `soft_stop` until `resume`; while set, every part refuses commands that could move.
-        lease_slot: Who holds the robot's lease (`robot_lease.py`); every part refuses motion and controller switches
+        lease_slot: Who has the robot's lease (`robot_lease.py`); every part refuses motion and controller switches
             sent without it.
     """
 
@@ -287,7 +287,7 @@ class HuskyRobotInterface:
 
         Raises:
             RobotStopped: If the robot is soft stopped.
-            NotLeased: If the running code does not hold the robot's lease.
+            NotLeased: If the running code does not have the robot's lease.
         """
         self.soft_stop_latch.check("a multi-arm trajectory")
         self.lease_slot.check("a multi-arm trajectory")

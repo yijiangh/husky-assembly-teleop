@@ -74,7 +74,7 @@ class RunPanel:
             gui.add_html(section("settings", SECTION_TOOL))
             self._transfer = gui.add_checkbox("Transfer workaround", True,
                                               hint="Run the transfer as a free move without the bar; the operator "
-                                                   "mounts the bar at the insertion start")
+                                                   "places the bar at the insertion start")
             self._split = gui.add_slider("Insert split mm", min=0.0, max=30.0, step=0.5, initial_value=5.0,
                                          hint="The insert's last millimetres run compliant")
             self._spiral = gui.add_checkbox("Spiral", False, hint="The insert's compliant part searches in a spiral")

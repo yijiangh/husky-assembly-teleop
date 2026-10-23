@@ -80,7 +80,7 @@ def base_moving(state: BaseState, label: str, now: float) -> str:
 
     ? A path handed to the follower just before a lease counts only once the follower reports it (about 30 times a
       second) or the wheels turn: the monitor keeps no time for a path it sent. The watch during the automatic
-      motion sees it then and holds the held robot.
+      motion sees it then and holds the acting robot's arms.
 
     Args:
         state: The base's state.

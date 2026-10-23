@@ -372,7 +372,7 @@ class ArmState:
             the sync stops every arm.
         problem: What the sync says is wrong with this arm, or "".
         stop_reason: Why the sync last stopped every arm, or "".
-        end_effector: State of the mounted tool, or None for a bare arm.
+        end_effector: State of the tool on its flange, or None for a bare arm.
         last_motion_time: ROS time the joints last moved or a trajectory was sent.
         last_slight_motion_time: ROS time any joint last moved by SLIGHT_MOTION, or reported a speed over
             SLIGHT_SPEED; catches the slow start and end of a move that `last_motion_time` misses.
@@ -469,19 +469,20 @@ class SentWrench:
 
 
 class ArmInterface:
-    """ROS2 interface to one UR arm and the tool mounted on it.
+    """ROS2 interface to one UR arm and the tool on its flange.
 
     Attributes:
         config: This arm's configuration.
         state: Measured state, written only by callbacks.
         controllers: Tracks and switches this arm's controllers.
-        end_effector: The mounted tool, or None for a bare arm.
+        end_effector: The tool on its flange, or None for a bare arm.
         trajectories_sent: Fired with each `SentTrajectory`, holds and multi-arm messages (one per arm) included.
         targets_sent: Fired with each `SentTarget`, holds included; none in test mode, where nothing is sent.
         wrenches_sent: Fired with each `SentWrench`, the zero wrench of a hold included.
 
     ! Every motion command and controller switch but `hold` needs the robot's lease, else raises NotLeased
-      (`robot_lease.py`); while the robot is soft stopped, they raise RobotStopped (`soft_stop.py`).
+      (`robot_lease.py`); while the robot is soft stopped, they raise RobotStopped (`soft_stop.py`), except
+      `clear_target_wrench`, which needs only the lease.
     * A command refused without raising leaves its reason in `last_refusal`, for panels.
     """
 
@@ -519,8 +520,9 @@ class ArmInterface:
         self.state = ArmState()
         #: When each test-mode banner was last logged, ROS time.
         self._test_mode_logged: dict[str, float] = {}
-        #: Joint positions, by URDF name, where motion (and slight motion) was last detected.
+        #: Joint positions, by URDF name, where motion was last detected (`MOTION_THRESHOLD`).
         self._motion_reference: dict[str, float] = {}
+        #: Joint positions, by URDF name, where slight motion was last detected (`SLIGHT_MOTION`).
         self._slight_reference: dict[str, float] = {}
         #: Whether free drive was being kept on at the last heartbeat, to log the change.
         self._free_drive_on = False
@@ -695,7 +697,7 @@ class ArmInterface:
 
         Raises:
             RobotStopped: If the robot is soft stopped.
-            NotLeased: If the running code does not hold the robot's lease.
+            NotLeased: If the running code does not have the robot's lease.
         """
         self._latch.check(f"a {controller} command to arm {self.config.name}")
         self._lease_slot.check(f"a {controller} command to arm {self.config.name}")
@@ -1059,7 +1061,7 @@ class ArmInterface:
             bool: True if sent. False in test mode (logged), where nothing is sent.
 
         Raises:
-            NotLeased: If the running code does not hold the robot's lease.
+            NotLeased: If the running code does not have the robot's lease.
         """
         self._lease_slot.check(f"a zero target wrench to arm {self.config.name}")
         if self.config.cartesian_test_mode:

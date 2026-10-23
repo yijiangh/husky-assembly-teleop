@@ -26,7 +26,7 @@ class Lab:
         """Build the robots; `driver` options go to every arm's driver (follow, silent_from, speed)."""
         self.ctx = FakeContext(step=self.tick)
         node = fake_node(self.ctx.now, self.ctx.logs)
-        # * Leased to the test, as a plugin's task holds the robot's lease while it sends.
+        # * Leased to the test, as a plugin's task has the robot's lease while it sends.
         self.cindy = lease_to_test(fake_robot(node, "a200-0806", [fake_arm(node, name, START) for name in CINDY_ARMS]))
         self.alice = lease_to_test(fake_robot(node, "a200-0804", [fake_arm(node, "ur_arm", START)]))
         self.drivers = [ArmDriver(arm, robot, **driver) for robot in (self.cindy, self.alice)

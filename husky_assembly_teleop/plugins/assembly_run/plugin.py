@@ -1,16 +1,9 @@
 """
 Remember how far an assembly got: which actions are done, where each robot was left, and the run's settings.
 
-When the process plugin loads a process, this reads the runs in its folder (`shared/runs/runs.py`). It continues the run
-used last when that run was made on exactly these process files (and no newer run folder is unreadable). Otherwise the
-operator chooses: Continue the run used last (in a new run, carried over by action id), Continue an older run made on
-these files, or start a New run; with no run yet, the first write starts one. Then the first pending action becomes
-current, and its first step is selected in the process plugin once the action's robot is live (at most 15 s later,
-unless the operator picks a step first; at once after a soft stop); never while runs are offered.
-
-Mark done records every live robot where it is. When the action's own robot is not live, the operator confirms and
-its end is the export's, marked assumed. Reopen puts a done action back to pending. Other plugins read `view` and send
-requests (`shared.assembly_run_contract.AssemblyRunContract`).
+On a process load it continues the assembly run used last when it was made on exactly these process files, else the
+operator chooses (`shared/runs/runs.py`); then the first pending action becomes current, and its first step is
+selected once the action's robot is live. Other plugins read and change it through `AssemblyRunContract`.
 
 - ! Nothing is written until the runs were read: an open that fails or is stopped is tried again.
 - ! Runs are written into the process folder (`runs/`), in order on a writer thread; the state here changes first.

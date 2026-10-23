@@ -1,19 +1,12 @@
 """
 Run one step of the assembly on the real robot: its motion along the plan, its tool steps, its steps done by hand.
 
-Another plugin asks (`request_execute`, `MovementExecContract`); each part asks the operator to Confirm first, on the
-laptop or the phone, and is recorded in the run (`assembly_run`). From the request to its end every robot is leased
-(`robot_interface/robot_lease.py`): its sends need the lease, and no other plugin gets one, so nothing else here moves
-any robot (one motion at a time). Cancel here or Stop all ends it, every arm held; a Hold in robot_control stops the
-motion, which then ends short of its end.
+Requests come through `MovementExecContract`; each part runs after the operator's Confirm and is recorded in the
+assembly run. Every robot is leased from the request to its end, so nothing else here moves a robot, and every check
+runs again after Confirm, with the command rebuilt from the live joints in the same tick. Cancel or Stop all ends it
+with every arm held.
 
-- Refused at once: while another request runs, any robot is leased or moving, a refused part (a later
-  milestone's routine), a request for another robot, a plan for another robot, movement or base.
-- Before every motion, and again after Confirm: the robot is live, the safety sync vouches for each of its arms, the
-  plan is not stale, the process and the current action are the request's; then the command is rebuilt from the
-  live joints and sent in the same tick.
-- Dry run: every check, every trajectory built, nothing sent; nothing is ever done by it.
-- ! EXPERIMENTAL, the first plugin that moves robots: keep the e-stops in hand.
+- ! EXPERIMENTAL, the first plugin that runs process movements on the robots: keep the e-stops in hand.
 """
 
 from __future__ import annotations
@@ -235,7 +228,7 @@ class MovementExecPlugin(HuskyPlugin):
 
         Args:
             job: The request being run.
-            lease: Every robot's lease, held by this task while it runs: its commands need it.
+            lease: Every robot's lease, which this task has while it runs: its commands need it.
             future: Resolved with the result.
         """
         ctx, request = job.ctx, job.request
@@ -284,7 +277,7 @@ class MovementExecPlugin(HuskyPlugin):
         if progress is not None:
             run.outcome = {"seconds": progress.seconds, "end": progress.end, "holds": dict(progress.holds)}
             if refused:
-                # ! A hold is refused on stale joints: then "end" is where they were last seen, not where it stopped.
+                # ? A hold is refused on stale joints: then "end" is where they were last seen, not where it stopped.
                 run.outcome.update(end_stale=progress.end_stale, end_age=dict(progress.end_age))
         if refused:
             run.ended(HOLD_NOT_SENT, HOLD_NOT_SENT, f"HOLD NOT SENT on {', '.join(refused)}: stop {job.request.serial} "
