@@ -215,14 +215,13 @@ class BaseExperimentPlugin(HuskyPlugin):
                              for p in PARAMETERS}
             self._details = gui.add_html("")
 
-        # * Plots in their own panel, so they can be floated and enlarged. Raw gui api: ui() would use our folder.
-        live = self._live_signals(ctx)
-        self._live = ctx.trace(*live, max_samples=LIVE_SAMPLES)
-        panel = ctx.view.panel()
-        with panel.add_tab("Base tracking", icon=viser.Icon.CHART_LINE):
-            self._plots = [TracePlot(ctx.view.gui, self._live, signal, seconds=None, min_span=span)
-                           for signal, span in zip(live, LIVE_MIN_SPANS)]
-        panel.dock_left()
+            # * The live plots in a tab, in a folder closed at start; last, so opening it moves no button.
+            live = self._live_signals(ctx)
+            self._live = ctx.trace(*live, max_samples=LIVE_SAMPLES)
+            with gui.add_folder("Live plots", expand_by_default=False), \
+                    gui.add_tab_group().add_tab("Errors and commands", viser.Icon.CHART_LINE):
+                self._plots = [TracePlot(gui, self._live, signal, seconds=None, min_span=span)
+                               for signal, span in zip(live, LIVE_MIN_SPANS)]
         self._markers = Markers(ctx)
 
         self._robot.on_update(ctx.defer_value("choose robot", lambda serial: self._choose_robot(str(serial))))

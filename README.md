@@ -242,7 +242,7 @@ Some plugins show content in panels separate from the main control panel. Panels
 The main panel (Stop all, health) floats in the top left corner. The plugins' tabs are docked on the right: **Control** (`robot_control`, a tab per robot), **Plan**, with a tab per planner panel (**Arm**, **Base**, **Motion**), **Assembly** (**Run**, **Exec**, **Steps**), and a tab per plugin; each plugin's tabs carry its icon. Drag a tab out to give it a window of its own, or into another panel. Tools and plots not needed every session (`obstacles`, `debug_gizmo`, `mocap_probe`, the calibration plots) start in a minimized strip at the right edge, nested under their plugin's name. Plugins add tabs with `ctx.view.ui()` and `ctx.view.tab()` (`plugins/__init__.py`). To pick a plugin's icon, `scripts/icon_gallery.py` shows every icon viser ships, searchable (tabler.io shows newer versions that can look different).
 
 Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on the right at start. Floated and enlarged, its text scales with the panel and is readable from a distance.
-`base_exp` shows its live error and command plots in a **Base tracking** panel, docked on the left.
+`base_exp` shows its live error and command plots in an **Errors and commands** tab inside the **Live plots** folder at the bottom of its tab (closed at start).
 
 ### Phone
 
