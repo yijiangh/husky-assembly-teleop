@@ -95,6 +95,8 @@ class RunWrites:
 
     def _apply_mark(self, ctx: PluginContext, action_id: str, ends: Mapping[str, RobotRecord], assumed: bool) -> None:
         """Mark an action done, make the first pending one current, then write both."""
+        if self._refused("Mark done", self._step_running(ctx)):
+            return  # ? a step started while the run was being started
         try:
             run = mark_done(self._run, action_id, ends, assumed)
         except RunError as refused:
@@ -174,6 +176,8 @@ class RunWrites:
         if not await self._confirmed(ctx):
             self._say("no new run")
             return
+        if self._refused("New run", self._step_running(ctx)):
+            return
         self._starting = None
         if await self._start(ctx, None) is not None:
             self._say(f"new run {self._run.info.name}")
@@ -222,7 +226,12 @@ class RunWrites:
     # --- --- --- --- --- STATE --- --- --- --- ---
 
     def _set_current(self, ctx: PluginContext, action_id: str, movement_index: int | None = None) -> None:
-        """Make an action's movement current (its first step if None or one it lacks), save it, and select it."""
+        """Make an action's movement current (its first step if None or one it lacks), save it, and select it.
+
+        ? Refused while a step runs: a prompt, a run starting or the wait for a live robot may have let one start.
+        """
+        if self._refused("Select", self._step_running(ctx)):
+            return
         movement = self._movement(ctx, action_id, movement_index)
         self._save_current(ctx, (action_id, movement))
         selector: ProcessContract = ctx.require("process")

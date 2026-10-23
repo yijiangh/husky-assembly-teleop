@@ -614,6 +614,45 @@ def test_a_robot_leased_for_a_step_refuses_selecting_reopening_and_settings(tmp_
     assert plugin.view.statuses["B1_J_joint"] == DONE and plugin.view.settings.transfer_as_free
 
 
+def test_a_step_started_while_new_run_waits_for_confirm_refuses_it(tmp_path):
+    """New run asked, then the executor leases a robot before Confirm: no new run, the current step kept."""
+    lab = Lab(tmp_path, alice=True)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        lab.moving(ALICE, False)
+        plugin.request_mark_done()
+        await settle(plugin)
+        current, selected = plugin.view.current, list(process.selected)
+        plugin.request_new_run()
+        lab.lease_to_exec("a200-0804")
+        await answered(plugin, True)
+        assert "New run refused: a200-0804 is leased by movement_exec" in plugin._message
+        return plugin, process, current, selected
+
+    plugin, process, current, selected = asyncio.run(scenario())
+    assert len(runs(lab)) == 1 and plugin.view.current == current and process.selected == selected
+
+
+def test_a_step_started_while_waiting_for_a_live_robot_stops_the_automatic_selection(tmp_path):
+    """The run waits for Cindy to select her action; the executor leases a robot meanwhile: nothing is selected."""
+    lab = Lab(tmp_path, live_from=None, alice=True)
+
+    async def scenario():
+        plugin, process = lab.plugin()
+        lab.moving(ALICE, False)
+        plugin.update(lab.ctx)
+        while plugin._go_task is None:
+            await asyncio.sleep(0)
+        lab.lease_to_exec("a200-0804")
+        await settle(plugin)
+        return plugin, process
+
+    plugin, process = asyncio.run(scenario())
+    assert process.selected == [] and plugin.view.current is None
+    assert "Select refused: a200-0804 is leased by movement_exec" in plugin._message
+
+
 def test_an_arm_moving_while_the_prompt_waits_refuses_the_confirmed_mark(tmp_path):
     """Cindy not live: the prompt waits; her arm starts moving meanwhile, so Confirm marks nothing."""
     lab = Lab(tmp_path, live_from=None)
