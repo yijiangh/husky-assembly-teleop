@@ -3,7 +3,7 @@
 Tests the new monitor (`yh/core-port`: Jakob's newer code, merged on 2026-10-21, plus the Rhino obstacles box of
 2026-10-22, and since 2026-10-23 every panel in a tab of the side panel) against three simulated robots on this laptop.
 The robots come from Jakob's simulation (`launch/sim.launch.py robot:=all`, [simulation_manual.md](simulation_manual.md)),
-on crl-husky `jg/ros2-next`: a simulated base and the UR driver's fake hardware for the arms, parked, with a fake Motive
+on crl-husky `jg/ros2` (934fc9a or later): a simulated base and the UR driver's fake hardware for the arms, parked, with a fake Motive
 that adds Motive's measured latency, jitter and marker errors, and the mocap relay that publishes each base as on the
 lab PC. Everything talks over Zenoh, as the lab does with the new monitor, through a Zenoh router of the fake lab's own.
 There is no robot, no real Motive and no tool. Plan about an hour.
@@ -93,7 +93,7 @@ Before the first real-lab run, check that the robots have the same Zenoh version
 
 This is Jakob's export of the two-module demo. Its first 18 actions are the three-robot sequence B20–B37.
 
-**0.3** Build the workspace from this branch, with crl-husky on `jg/ros2-next`: the fake lab runs the installed relay
+**0.3** Build the workspace from this branch, with crl-husky on `jg/ros2` (934fc9a or later): the fake lab runs the installed relay
 and fake Motive, and `env.sh` refuses an install without them.
 
 ```shell
