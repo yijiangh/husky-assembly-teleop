@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..robot_interface.mocap_relay import MocapRelayInterface
 from ..robot_interface.mocap_state import RawMarkers
 from ..robot_interface.robot import HuskyRobotInterface
 
@@ -57,10 +58,12 @@ class WorldState:
         robots: Connected robots, keyed by serial. Each owns its own RobotState.
         tracked_objects: Mocap-observed non-robot bodies, keyed by name. Changed only through
             PluginContext.track_object / untrack_object.
+        mocap_relay: The mocap relay of the monitor's domain: the base calibrations it applies; None in tests.
     """
 
     robots: dict[str, HuskyRobotInterface] = field(default_factory=dict)
     tracked_objects: dict[str, TrackedObject] = field(default_factory=dict)
+    mocap_relay: MocapRelayInterface | None = None
 
     def add_robot(self, robot: HuskyRobotInterface) -> None:
         """Register a robot.

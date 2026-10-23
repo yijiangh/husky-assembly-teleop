@@ -74,8 +74,8 @@ rotation about the mocap x axis):
 
 Consumers never convert axes themselves; everything published by the relay is
 already in this frame. Calibration files (`base_mocap_from_base_footprint`) must be
-expressed in the same convention, i.e. computed by the calibration pipeline that
-writes `calibrated_transformation_<robot>_rhino.json`.
+expressed in the same convention, i.e. computed by the `calibration` plugin (or the old pipeline), which
+writes `calibrated_transformation_<digits>_rhino.json`.
 
 ! Data recorded in the old 'rotated' convention `(z, x, y)` is in the rhino frame yawed -90 deg about Z (its +x
 points along rhino -y); it converts to rhino with `(x, y) -> (y, -x)` and `yaw -> yaw - 90 deg`.
@@ -142,10 +142,14 @@ Calibration is relay-side, not consumer-side.
 - Default, always present: each robot's crl-husky `config/robots/<serial>/mocap_config.json`, one calibration per mocap id
   (or null). No pinning, no "newest file wins".
 - Newer, optional: the newest session on the project's Drive, `data_experiment/calibration_data/<YYYYMMDD>/
-  calibrated_transformation_<serial>_rhino.json` (only directly in a dated folder), used if it is within 5 cm / 5°
-  of the default; otherwise the relay warns and keeps the default.
+  calibrated_transformation_<digits>_rhino.json` (`<digits>`: the serial's last four; only directly in a dated
+  folder, not in its `archive/`), used if it is within 5 cm / 5° of the default and names no other rigid body in its
+  `mocap_id`; otherwise the relay warns and keeps the default.
 - The relay logs what it applies (rigid body, robot, source, sha256, which arm it was measured on) and publishes it
   latched on `/mocap_relay/calibrations`. `/mocap_relay/reload_calibration` (std_srvs/Trigger) applies the newest.
+- The monitor reads that announcement and calls the reload service through `MocapRelayInterface`
+  (`robot_interface/mocap_relay.py`, `world.mocap_relay`); the `calibration` plugin writes new sessions and applies
+  them that way (`doc/calibration_manual.md`).
 - Rigid bodies of no robot (probe, bars) are published as Motive gives them.
 
 ## Quick Verification
@@ -166,9 +170,11 @@ Calibration is relay-side, not consumer-side.
 
 ## Source Files
 
-- Relay node: `husky_assembly_teleop/mocap_relay/node.py`, calibration choice in `calibration.py`
+- Relay node: `husky_assembly_teleop/mocap_relay/node.py`, calibration choice in `world/calibration_sessions.py`
+- The monitor's side: `husky_assembly_teleop/robot_interface/mocap_relay.py` (`MocapRelayInterface`)
 - Relay launch: `launch/mocap.launch.py`
-- Tests: `test/mocap_relay/test_mocap_relay_node.py`, `test/mocap_relay/test_mocap_relay_calibration.py`
+- Tests: `test/mocap_relay/test_mocap_relay_node.py`, `test/world/test_calibration_sessions.py`,
+  `test/robot_interface/test_mocap_relay_interface.py`
 - Pose message: crl-husky `crl_husky_msgs/msg/MocapRigidBodyPose.msg`
 - Streaming IDs service: crl-husky `crl_husky_msgs/srv/GetStreamingMocapIds.srv`
 - Robot config, default calibrations: crl-husky `crl_husky/config/robots/README.md`

@@ -12,7 +12,7 @@ import pytest
 from robot_fakes import Log, Publisher
 from scipy.spatial.transform import Rotation
 
-from husky_assembly_teleop.mocap_relay.calibration import Calibration
+from husky_assembly_teleop.world.calibration_sessions import Calibration
 from husky_assembly_teleop.mocap_relay.node import (MARKER_OCCLUDED, MARKER_POINT_CLOUD_SOLVED, MocapRelay,
                                                     apply_base_calibration)
 
@@ -162,3 +162,20 @@ def test_markers_are_turned_to_z_up_and_flagged_when_filled_in():
     assert list(message.marker_ids) == [1, 2, 3]
     assert [(p.x, p.y, p.z) for p in message.marker_positions][1] == (0.0, -2.0, 1.0)
     assert list(message.marker_measured) == [False, True, False]
+
+
+def test_a_simulated_body_is_calibrated_and_stamped_like_motives():
+    """source:=sim: a raw Z-up body from the simulator gets its robot's calibration and keeps the simulator's stamp."""
+    from builtin_interfaces.msg import Time
+    from crl_husky_msgs.msg import MocapRigidBodyPose
+    calibration = Calibration(mocap_id=3, robot_serial="a200-0804", position=(0.1, 0.0, -0.3),
+                              orientation=(0.0, 0.0, 0.0, 1.0), source="test", sha256="", measured=())
+    node = relay({3: calibration})
+    message = MocapRigidBodyPose(pose_valid=True, tracking_valid=True, marker_error=0.0003)
+    message.header.stamp = Time(sec=1_700_000_000, nanosec=5)
+    message.pose.position.x, message.pose.position.y, message.pose.position.z = 1.0, 2.0, 0.5
+    node._receive_sim_body(3, message)
+    sent = published(node, 3)
+    position, quaternion = pose_of(sent)
+    np.testing.assert_allclose(position, (1.1, 2.0, 0.2), atol=1e-12)
+    assert sent.pose_valid and (sent.header.stamp.sec, sent.header.stamp.nanosec) == (1_700_000_000, 5)

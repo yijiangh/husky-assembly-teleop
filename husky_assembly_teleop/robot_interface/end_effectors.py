@@ -552,8 +552,8 @@ def make_end_effector(node: Node, robot_namespace: str, arm: ArmConfig,
         lease_slot: The robot's lease slot; a new one by default.
 
     Returns:
-        EndEffector | None: The tool's interface, or None for a bare arm.
+        EndEffector | None: The tool's interface, or None for a bare arm or a tool without a driver.
     """
-    if arm.end_effector is None:
-        return None
-    return _CLASS_BY_KIND[arm.end_effector](node, robot_namespace, arm, latch, lease_slot)
+    # * A tool without a driver (calibration_marker) is only a model, for drawing and collision checks.
+    tool_class = _CLASS_BY_KIND.get(arm.end_effector)
+    return None if tool_class is None else tool_class(node, robot_namespace, arm, latch, lease_slot)

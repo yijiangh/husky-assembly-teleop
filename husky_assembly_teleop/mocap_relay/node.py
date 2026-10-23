@@ -4,12 +4,14 @@ ROS2 node that relays OptiTrack rigid body data into ROS topics.
 It consumes NatNet rigid body callbacks at mocap frequency and republishes the latest pose of each rigid body at a
 lower, timer-driven rate, with the raw markers Motive labeled to it in the same frame. Each pose is stamped with when
 the cameras captured it, on this PC's clock, and a robot's rigid body is turned into its base_footprint pose with
-its base calibration (`calibration.py`).
+its base calibration (`world/calibration_sessions.py`).
 
 - Services: `/mocap/get_streaming_ids` (which ids stream), `~/reload_calibration` (apply the newest calibrations).
 - `~/calibrations` (latched): what is applied to each rigid body, with its source and hash.
 - ! Calibrations are applied at start and on `~/reload_calibration` only. A newer one appearing on the Drive is
   logged, never applied by itself: a robot driving its path onboard would jump.
+- `source:=sim` reads raw rigid bodies from a simulator (`sim_motive.py`, SIM_PREFIX topics, Z-up) instead of
+  Motive, and treats them exactly the same: for testing calibrations in a simulation. Never in the robots' domain.
 
 Moved from crl-husky's `control_pc/mocap_relay.py`; behaviour other than the calibration lookup is unchanged.
 """
@@ -35,9 +37,10 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from crl_husky import config_resolver
+from crl_husky.simulated_parts import fleet_domain_problem
 from ..drive import drive_root
-from .calibration import (DESCRIBE_HEADER, SESSIONS_FOLDER, Calibration, explain, newest_session_file, resolve,
-                          robot_mocap_ids)
+from ..world.calibration_sessions import (DESCRIBE_HEADER, SESSIONS_FOLDER, SIM_SESSIONS_FOLDER, Calibration, explain,
+                                          newest_session_file, resolve, robot_mocap_ids)
 from .log_text import box, good, wrap
 
 #: The relay's service; whoever serves it is a running relay.
@@ -45,6 +48,8 @@ STREAMING_IDS_SERVICE = "/mocap/get_streaming_ids"
 #: Seconds to look for another relay on the network before starting.
 #: ? The ROS graph fills in shortly after a node starts, so an immediate look can miss it.
 RELAY_DISCOVERY_SEC = 2.0
+#: Where a simulator publishes raw rigid bodies for `source:=sim`: <prefix>/id_<n>/pose, Z-up world, uncalibrated.
+SIM_PREFIX = "/mocap_sim/rigid_body"
 #: Motive latencies outside [0, this] are treated as garbage; the frame is stamped with its arrival instead.
 MAX_PLAUSIBLE_LATENCY_SEC = 0.5
 #: NatNet labeled marker flags: hidden from the cameras, and position measured by the cameras.
@@ -149,10 +154,14 @@ class MocapRelay(Node):
         self.declare_parameter("reconnect_min_interval_sec", 2.0)
         # Comma-separated rigid-body ids never published, e.g. "1840" for a robot a simulator stands in for.
         self.declare_parameter("exclude_ids", "")
-        # * Calibrations: the Drive root (empty: HUSKY_DRIVE_ROOT), whether to look there, how often to check.
+        # * Calibrations: the Drive root (empty: HUSKY_DRIVE_ROOT), whether to look there, how often to check. With
+        # * source:=sim the sessions are the simulated ones (SIM_SESSIONS_FOLDER), never the robots'.
         self.declare_parameter("drive_root", "")
         self.declare_parameter("use_drive", True)
         self.declare_parameter("watch_period_sec", 30.0)
+        # * Where poses come from: "natnet" (Motive), or "sim" (a simulator's raw bodies `sim_ids`, see SIM_PREFIX).
+        self.declare_parameter("source", "natnet")
+        self.declare_parameter("sim_ids", "")
 
         self.client_ip = self.get_parameter("client_ip").value
         self.server_ip = self.get_parameter("server_ip").value
@@ -171,6 +180,11 @@ class MocapRelay(Node):
             self.get_logger().info(f"not publishing rigid bodies {sorted(self.exclude_ids)}")
         self.drive_root = (drive_root(str(self.get_parameter("drive_root").value))
                            if bool(self.get_parameter("use_drive").value) else None)
+        # ! A simulation never reads the robots' sessions: only its own simulated ones.
+        simulated = str(self.get_parameter("source").value) == "sim"
+        self.sessions_folder = SIM_SESSIONS_FOLDER if simulated else SESSIONS_FOLDER
+        if simulated and self.drive_root is not None and self.drive_root.is_dir():
+            (self.drive_root / self.sessions_folder).mkdir(parents=True, exist_ok=True)
 
         # Latest sample per rigid body id, written by the NatNet thread and read by the executor.
         self._samples_lock = threading.Lock()
@@ -207,11 +221,44 @@ class MocapRelay(Node):
         self._service = self.create_service(GetStreamingMocapIds, STREAMING_IDS_SERVICE,
                                             self._handle_get_streaming_ids)
         self._publish_timer = self.create_timer(1.0 / self.publish_rate_hz, self._publish_cached_poses)
-        self._health_timer = self.create_timer(0.5, self._check_mocap_health)
 
+        source = str(self.get_parameter("source").value)
+        self.mocap_client = None
+        if source == "sim":
+            self._start_sim_source(str(self.get_parameter("sim_ids").value))
+            return
+        if source != "natnet":
+            raise RuntimeError(f"source must be 'natnet' or 'sim', not {source!r}")
+        self._health_timer = self.create_timer(0.5, self._check_mocap_health)
         self.mocap_client = NatNetClient()
         self._configure_mocap_client(self.mocap_client)
         self._start_mocap_client()
+
+    def _start_sim_source(self, ids_text: str) -> None:
+        """Subscribe to a simulator's raw rigid bodies instead of Motive.
+
+        Raises:
+            RuntimeError: In the robots' ROS domain, or without ids.
+        """
+        problem = fleet_domain_problem()
+        if problem:
+            raise RuntimeError(f"source:=sim refused: {problem}")
+        ids = sorted({int(token) for token in ids_text.replace(" ", "").split(",") if token})
+        if not ids:
+            raise RuntimeError("source:=sim needs sim_ids, e.g. sim_ids:=1850,1866")
+        for rigid_body_id in ids:
+            self.create_subscription(MocapRigidBodyPose, f"{SIM_PREFIX}/id_{rigid_body_id}/pose",
+                                     lambda message, i=rigid_body_id: self._receive_sim_body(i, message), 10)
+        self.get_logger().info(f"Starting mocap relay on simulated rigid bodies {ids} ({SIM_PREFIX}), "
+                               f"publishing at {self.publish_rate_hz:.0f} Hz")
+
+    def _receive_sim_body(self, rigid_body_id: int, message: MocapRigidBodyPose) -> None:
+        """One simulated rigid body, already Z-up and stamped with when it was true: a frame of its own."""
+        p, q = message.pose.position, message.pose.orientation
+        self._hold_body(rigid_body_id, (p.x, p.y, p.z), (q.x, q.y, q.z, q.w), bool(message.tracking_valid),
+                        float(message.marker_error))
+        stamp_ns = message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec
+        self._commit_frame(stamp_ns or time.time_ns(), time.monotonic())
 
     # --- --- --- --- --- CALIBRATIONS --- --- --- --- ---
 
@@ -224,15 +271,15 @@ class MocapRelay(Node):
         elif root is None:
             where = f"the Drive root is not a folder, crl-husky defaults only: {self.drive_root}"
         else:
-            where = f"Drive sessions: {root / SESSIONS_FOLDER}"
+            where = f"Drive sessions: {root / self.sessions_folder}"
         config_resolver.reload_robot_configs()
         calibrations: Dict[int, Calibration] = {}
         rows = []
         problems = 0
         for mocap_id, serial in sorted(robot_mocap_ids().items()):
-            calibration, warnings = resolve(mocap_id, serial, root)
+            calibration, warnings = resolve(mocap_id, serial, root, self.sessions_folder)
             problems += len(warnings)
-            rows += explain(mocap_id, serial, calibration, warnings, root)
+            rows += explain(mocap_id, serial, calibration, warnings, root, sessions=self.sessions_folder)
             if calibration is None:
                 log.error(box(f"rigid body {mocap_id} ({serial}): NO CALIBRATION",
                               "Its poses are published uncalibrated, as Motive gives them: not its base_footprint."))
@@ -249,7 +296,8 @@ class MocapRelay(Node):
         self._calibrations = calibrations
         # * Every newest session looked at now counts as seen, applied or refused: only later ones are reported.
         self._reported_newer = {str(path.relative_to(root)) for path in
-                                (newest_session_file(root, serial) for serial in set(robot_mocap_ids().values()))
+                                (newest_session_file(root, serial, self.sessions_folder)
+                                 for serial in set(robot_mocap_ids().values()))
                                 if path is not None} if root is not None else set()
         self._calibrations_publisher.publish(String(data=json.dumps({
             "applied": why, "time": time.time(), "drive_root": str(root) if root else None,
@@ -271,7 +319,7 @@ class MocapRelay(Node):
             return
         applied = self._calibrations
         for mocap_id, serial in robot_mocap_ids().items():
-            path = newest_session_file(self.drive_root, serial)
+            path = newest_session_file(self.drive_root, serial, self.sessions_folder)
             if path is None:
                 continue
             source = str(path.relative_to(self.drive_root))
@@ -344,13 +392,16 @@ class MocapRelay(Node):
         """Commit the frame's bodies, stamped with the frame's capture time."""
         now_mono = time.monotonic()
         self._last_frame_mono_sec = now_mono
-        capture_time_ns = self._capture_time_ns(data_dict)
-        pending, self._pending_samples = self._pending_samples, {}
-        if pending and not data_dict.get("labeled_marker_count") and not self._warned_no_markers:
+        if self._pending_samples and not data_dict.get("labeled_marker_count") and not self._warned_no_markers:
             self._warned_no_markers = True
             self.get_logger().warn(wrap(
                 "Motive streams no labeled markers; poses are published without raw markers. "
                 "Enable 'Labeled Markers' in Motive's streaming settings to get them."))
+        self._commit_frame(self._capture_time_ns(data_dict), now_mono)
+
+    def _commit_frame(self, capture_time_ns: int, now_mono: float) -> None:
+        """Make the held bodies the latest samples, stamped with their frame's capture time."""
+        pending, self._pending_samples = self._pending_samples, {}
         with self._samples_lock:
             for rb_id, sample in pending.items():
                 self._samples[rb_id] = dataclasses.replace(
@@ -438,11 +489,15 @@ class MocapRelay(Node):
 
         Calibration files must be expressed in this convention too.
         """
-        rigid_body_id = int(rigid_body_id)
-        if rigid_body_id in self.exclude_ids:
-            return
         pos = (pos_xyz_y_up[0], -pos_xyz_y_up[2], pos_xyz_y_up[1])
         quat = (quat_xyzw_y_up[0], -quat_xyzw_y_up[2], quat_xyzw_y_up[1], quat_xyzw_y_up[3])
+        self._hold_body(int(rigid_body_id), pos, quat, tracking_valid, marker_error)
+
+    def _hold_body(self, rigid_body_id: int, pos: Vec3, quat: QuatXyzw, tracking_valid: bool,
+                   marker_error: float) -> None:
+        """Hold one rigid body's Z-up pose, calibrated if it is a robot's, until its frame is committed."""
+        if rigid_body_id in self.exclude_ids:
+            return
         calibration = self._calibrations.get(rigid_body_id)
         if calibration is not None:
             pos, quat = apply_base_calibration(calibration, pos, quat)

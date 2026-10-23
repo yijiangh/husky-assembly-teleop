@@ -34,6 +34,7 @@ from .plugin_api.plugin import HuskyPlugin, UnknownPluginError, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
+from .robot_interface.mocap_relay import MocapRelayInterface
 from .robot_interface.mocap_state import pose_lost
 from .robot_interface.soft_stop import MotionRefused
 from scaffolding_assembly_core.ids import robot_id, tracked_id
@@ -97,7 +98,7 @@ class HuskyMonitor(Node):
         self._startup_times: dict[str, float] = {}
 
         self._config = config_from_ros_parameters(self)
-        self._world = WorldState()
+        self._world = WorldState(mocap_relay=MocapRelayInterface(self, self.now))
         self._loaded: dict[str, _LoadedPlugin] = {}
         # The mocap subscription of each tracked object, by object name.
         self._object_connections: dict[str, RosConnections] = {}

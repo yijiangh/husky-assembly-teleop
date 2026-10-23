@@ -54,7 +54,7 @@ def test_tcp_is_the_tcp_link(test_tool):
 
 
 @pytest.mark.parametrize("kind, arm", [("robotiq", "ur_arm"), ("scaffolding_v3", "left_ur_arm"),
-                                       ("scaffolding_v3", "right_ur_arm")])
+                                       ("scaffolding_v3", "right_ur_arm"), ("calibration_marker", "right_ur_arm")])
 def test_mounted_tools_load(kind, arm):
     """Every tool model in data/ loads with shapes to draw and to collide with; no TCP link means tool0."""
     tool = tool_spec(kind, arm, DATA, f"tools/x/{arm}")

@@ -7,16 +7,17 @@ from pathlib import Path
 
 import pytest
 
-from husky_assembly_teleop.mocap_relay.calibration import (SESSIONS_FOLDER, default_calibration, explain,
-                                                           newest_session_file, resolve, robot_mocap_ids)
+from husky_assembly_teleop.world.calibration_sessions import (SESSIONS_FOLDER, SIM_SESSIONS_FOLDER,
+                                                              default_calibration, explain,
+                                                              newest_session_file, resolve, robot_mocap_ids)
 
 #: Alice's rigid body and serial in crl-husky's config.
 ALICE_ID, ALICE = 1840, "a200-0804"
 
 
-def _session(root: Path, day: str, content: dict, folder: str = "") -> Path:
+def _session(root: Path, day: str, content: dict, folder: str = "", sessions: Path = SESSIONS_FOLDER) -> Path:
     """Write a calibration session's output for Alice, e.g. on day "20261101"."""
-    path = root / SESSIONS_FOLDER / day / folder / "calibrated_transformation_0804_rhino.json"
+    path = root / sessions / day / folder / "calibrated_transformation_0804_rhino.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(content))
     return path
@@ -58,6 +59,15 @@ def test_newest_session_wins_and_subfolders_are_ignored(tmp_path):
     assert table[2].split() == ["vs", "default", "3.0", "mm", "/", "0.00°"] and len(table) == 3
 
 
+def test_robots_and_simulations_never_read_each_others_sessions(tmp_path):
+    """The robots' relay sees only real sessions, a simulation's only the simulated ones, even if newer."""
+    real = _session(tmp_path, "20261001", _shifted(0.002))
+    simulated = _session(tmp_path, "20261020", _shifted(0.003), sessions=SIM_SESSIONS_FOLDER)
+    assert newest_session_file(tmp_path, ALICE) == real
+    assert newest_session_file(tmp_path, ALICE, SIM_SESSIONS_FOLDER) == simulated
+    assert resolve(ALICE_ID, ALICE, tmp_path, SIM_SESSIONS_FOLDER)[0].session == "20261020"
+
+
 @pytest.mark.parametrize("content, why", [
     (_shifted(0.2), "from the default"),
     ({"base_mocap_from_base_footprint": [[0, 0], [0, 0, 0, 1]]}, "must be"),
@@ -71,6 +81,17 @@ def test_insane_sessions_fall_back_to_the_default(tmp_path, content, why):
     assert len(warnings) == 1 and why in warnings[0] and "using the default" in warnings[0]
     table = "\n".join(explain(ALICE_ID, ALICE, calibration, warnings, tmp_path))
     assert "crl-husky default" in table and "! refused   20261020/calibrated_transformation_0804_rhino.json" in table
+
+
+def test_another_arms_session_is_passed_over(tmp_path):
+    """A newer session measured on another arm (a mount check of Cindy's right arm) is skipped, not applied."""
+    older = _session(tmp_path, "20261019", _shifted(0.003))
+    other = {key.replace("base_mocap_from_ur_arm", "base_mocap_from_right_ur_arm"): value
+             for key, value in _shifted(0.002).items()}
+    _session(tmp_path, "20261020", other)
+    assert newest_session_file(tmp_path, ALICE) == older
+    calibration, warnings = resolve(ALICE_ID, ALICE, tmp_path)
+    assert calibration.session == "20261019" and warnings == []
 
 
 def test_a_half_synced_file_falls_back(tmp_path):

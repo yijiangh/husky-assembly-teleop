@@ -26,6 +26,7 @@ TOOL_URDF_DIRECTORY = "tool_urdf"
 #: TODO scaffolding_v1 has no model yet, so it is neither drawn nor collision checked.
 TOOL_URDFS: dict[str, str | dict[str, str]] = {
     "robotiq": "robotiq_2f_85.urdf",
+    "calibration_marker": "calibration_marker.urdf",
     "scaffolding_v3": {"ur_arm": "scaffolding_v3_left.urdf",
                        "left_ur_arm": "scaffolding_v3_left.urdf",
                        "right_ur_arm": "scaffolding_v3_right.urdf"},
