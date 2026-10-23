@@ -372,3 +372,19 @@ def test_check_goal_of_a_support_approach(purged, configs, mirrors):
     target, = movement(purged, "B21_H_approach")[1].target.link_poses.values()
     reached = link_pose(robot_config(ALICE).model.urdf, check.base, check.goal_joints, "ur_arm_tool0")
     assert pose_error(reached, target)[0] <= POSE_TOL[0] and pose_error(reached, target)[1] <= POSE_TOL[1]
+
+
+@pytest.mark.slow
+def test_a_support_goal_outside_the_urdf_limits_is_refused(purged, configs):
+    """Alice's approach to given joints with the pan past its limit: refused before any search, naming the joint."""
+    alice = robot_id(f"a200-{ALICE}")
+    mirror = CompasFabMirror(alice)
+    snapshot = design_scene(purged, "B21_H_approach")
+    goal = {**snapshot.robots[alice].joints, "ur_arm_shoulder_pan_joint": 7.0}
+    try:
+        route = plan_movement(mirror, purged, step(purged, "B21_H_approach"), snapshot, configs, goal_joints=goal,
+                              log=lambda _line: None)
+    finally:
+        mirror.close()
+    assert route.result.status == "failed" and route.attempts == 0, route.result.reason
+    assert "outside the URDF limits: goal ur_arm_shoulder_pan_joint=+7.000" in route.result.reason

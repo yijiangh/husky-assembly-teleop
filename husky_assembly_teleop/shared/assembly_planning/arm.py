@@ -77,7 +77,8 @@ def _distance(q1: Sequence[float], q2: Sequence[float]) -> float:
 
 
 def plan_arm(mirror: CompasFabMirror, arm_name: str, goal: Sequence[float], abort: threading.Event, *,
-             label: Callable[[str], str] = str, time_limit: float = TIME_LIMIT,
+             limits: tuple[Sequence[float], Sequence[float]], label: Callable[[str], str] = str,
+             time_limit: float = TIME_LIMIT,
              hit: HitOf | None = None) -> PlanResult[ArmPath]:
     """Plan a collision-free joint path for one arm, from where it is in the synced world to `goal`.
 
@@ -86,6 +87,8 @@ def plan_arm(mirror: CompasFabMirror, arm_name: str, goal: Sequence[float], abor
         arm_name: Which arm, e.g. "ur_arm".
         goal: Six joint values, radians, UR driver order.
         abort: Set from the main thread to end the search early.
+        limits: The URDF's lower and upper limits of the six joints (`joints.joint_limits`); the search samples
+            within them and within UR_JOINT_LIMITS.
         label: Display text for a scene id, for the reasons.
         time_limit: Give up searching after this long, seconds.
         hit: Describes a start or target in collision as a `CollisionHit` (its message then is the reason), or None
@@ -116,8 +119,8 @@ def plan_arm(mirror: CompasFabMirror, arm_name: str, goal: Sequence[float], abor
     if pair is not None:
         return refused("target", dict(zip(names, goal)), pair, names)
 
-    limits = np.array(UR_JOINT_LIMITS)
-    corners = connect(start, goal, _distance, lambda: tuple(np.random.uniform(-limits, limits)), _extend,
+    lower, upper = np.maximum(limits[0], -UR_JOINT_LIMITS), np.minimum(limits[1], UR_JOINT_LIMITS)
+    corners = connect(start, goal, _distance, lambda: tuple(np.random.uniform(lower, upper)), _extend,
                       lambda q: check(q) is not None, abort, time_limit)
     if corners.states is None:
         return PlanResult(None, corners.reason, time.time() - started)

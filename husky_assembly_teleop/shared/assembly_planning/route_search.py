@@ -175,14 +175,17 @@ class RouteSearch:
             RouteResult: Solved, with the first path clear between its waypoints.
 
         Raises:
-            Refused: If the start or goal collides, the search is cancelled, or no try gives a clear path.
+            Refused: If the start or goal collides or is outside the URDF limits, the search is cancelled, or no try
+                gives a clear path.
         """
         self.goal_joints = goal
+        self.check_limits(goal)
+        limits = joint_limits(self.robot.model.urdf, self.names)
         failures = []
         for _ in range(ATTEMPTS):
             self.next_attempt()
-            found = plan_arm(self.mirror, part.arm, [goal[name] for name in self.names], self.abort, label=self.label,
-                             time_limit=SUPPORT_TIME)
+            found = plan_arm(self.mirror, part.arm, [goal[name] for name in self.names], self.abort, limits=limits,
+                             label=self.label, time_limit=SUPPORT_TIME)
             self.mirror.sync(self.scene)
             if found.path is None and found.reason.startswith(("target is in collision", "start is in collision")):
                 self.refuse_endpoints(goal)
