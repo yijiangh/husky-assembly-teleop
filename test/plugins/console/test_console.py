@@ -1,0 +1,98 @@
+"""The console shows plugin lines by default, the rest on request, newest first, at a fixed height."""
+
+from contextlib import nullcontext
+from types import SimpleNamespace
+
+from plugin_fakes import FakeContext
+from rclpy.logging import LoggingSeverity
+
+from husky_assembly_teleop.plugin_api.console_log import ROBOTS, RUNTIME, TICKS, ConsoleLog, Entry
+from husky_assembly_teleop.plugins.console import (EVERY_SOURCE, LIST_HEIGHT, SHOW_ALL, SHOW_PLUGINS, SHOW_WARNINGS,
+                                                   ConsolePlugin, render, shown)
+
+DEBUG, INFO, WARN, ERROR = (LoggingSeverity.DEBUG, LoggingSeverity.INFO, LoggingSeverity.WARN,
+                            LoggingSeverity.ERROR)
+
+
+def _shown_sources(show: str, source: str = EVERY_SOURCE) -> list[tuple[str, str]]:
+    """Which of a mixed set of lines `show` lets through, as (source, level name)."""
+    entries = [Entry(0.0, level, name, "text") for name in ("robot_control", RUNTIME, ROBOTS, "health", "health/chips",
+                                                            TICKS)
+               for level in (DEBUG, INFO, WARN, ERROR)]
+    return [(entry.source, entry.level.name) for entry in entries if shown(entry, show, source)]
+
+
+def test_plugins_leaves_out_health_changes_and_ticks_but_never_an_error():
+    """Info and up from the plugins (health's own messages too), the runtime and the robots; else only errors."""
+    assert _shown_sources(SHOW_PLUGINS) == [
+        (name, level) for name in ("robot_control", RUNTIME, ROBOTS, "health") for level in ("INFO", "WARN", "ERROR")
+    ] + [("health/chips", "ERROR"), (TICKS, "ERROR")]
+
+
+def test_warnings_shows_warnings_from_all_but_the_ticks_and_all_shows_everything():
+    """Warnings: warnings and errors except tick reports (errors always). All: every line."""
+    assert _shown_sources(SHOW_WARNINGS) == [
+        (name, level) for name in ("robot_control", RUNTIME, ROBOTS, "health", "health/chips")
+        for level in ("WARN", "ERROR")
+    ] + [(TICKS, "ERROR")]
+    assert len(_shown_sources(SHOW_ALL)) == 24
+
+
+def test_a_source_narrows_to_its_own_lines():
+    """Source picks one source; the Show rules still apply."""
+    assert _shown_sources(SHOW_ALL, TICKS) == [(TICKS, level) for level in ("DEBUG", "INFO", "WARN", "ERROR")]
+
+
+def test_the_list_is_newest_first_escaped_at_a_fixed_height_with_the_whole_message_on_hover():
+    """Newest on top; HTML in a message is shown, not run; a traceback shows its first line and the rest on hover."""
+    html = render([Entry(1.0, INFO, "a", "first"), Entry(2.0, ERROR, "b", "failed <x>\nTraceback\n  line")])
+    assert html.index("failed &lt;x&gt;") < html.index("first")
+    assert "(+2 lines)" in html and 'title="failed &lt;x&gt;\nTraceback\n  line"' in html
+    assert f"height:{LIST_HEIGHT}px" in html and "nothing to show" in render([])
+
+
+def _console() -> tuple[ConsolePlugin, FakeContext, ConsoleLog, list]:
+    """A console set up in a fake context with an empty log; the list records each `minimize`."""
+    ctx = FakeContext(name="console")
+    log = ctx.console_log = ConsoleLog()
+    minimized = []
+    panel = SimpleNamespace(add_tab=lambda *_tab: nullcontext(), float=lambda **_place: None,
+                            minimize=lambda: minimized.append(True))
+    ctx.view = SimpleNamespace(panel=lambda: panel, gui=ctx.gui)
+    console = ConsolePlugin()
+    console.setup(ctx)
+    ctx.gui.of_kind("dropdown")[0].value = EVERY_SOURCE  # * The fake takes the options for the value.
+    return console, ctx, log, minimized
+
+
+def test_the_plugin_draws_the_filtered_lines_and_offers_each_source():
+    """It starts minimized; at Plugins health's colour change counts as hidden; each source is a Source choice."""
+    console, ctx, log, minimized = _console()
+    assert minimized, "the window starts minimized"
+    log.add(INFO, "robot_control", "drive done")
+    log.add(INFO, "health/chips", "0804 base: mocap green -> amber")
+    console.draw(ctx)
+    status, lines = ctx.gui.of_kind("html")
+    assert "drive done" in lines.content and "mocap" not in lines.content
+    assert "1 hidden" in status.content and "late ticks 0%" in status.content
+    assert ctx.gui.of_kind("dropdown")[0].options == [EVERY_SOURCE, "health/chips", "robot_control"]
+    ctx.gui.of_kind("button_group")[0].callback(SHOW_ALL)
+    console.draw(ctx)
+    assert "mocap" in lines.content
+
+
+def test_a_line_added_while_the_list_is_drawn_shows_at_the_next_draw():
+    """A line another thread adds between reading the version and the lines is never left out for good."""
+    console, ctx, log, _minimized = _console()
+    read = log.entries
+
+    def entries_then_a_line_comes_in():
+        lines = read()
+        log.add(ERROR, "robots", "switch failed")
+        return lines
+
+    log.entries = entries_then_a_line_comes_in
+    console.draw(ctx)
+    log.entries = read
+    console.draw(ctx)
+    assert "switch failed" in ctx.gui.of_kind("html")[1].content

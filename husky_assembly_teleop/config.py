@@ -41,7 +41,7 @@ _ROBOT_URDF_FOLDER = tempfile.TemporaryDirectory(prefix="husky_robot_urdf_")
 ROBOT_URDF_DIRECTORY = Path(_ROBOT_URDF_FOLDER.name)
 
 #: Plugins loaded before the requested ones; `-p no_default_plugins:=true` skips them.
-DEFAULT_PLUGINS: tuple[str, ...] = ("health",)
+DEFAULT_PLUGINS: tuple[str, ...] = ("health", "console")
 
 
 @dataclass(frozen=True)
