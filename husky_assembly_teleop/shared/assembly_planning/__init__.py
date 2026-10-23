@@ -6,6 +6,8 @@ The process as steps, planning scenes, routines, IK and collision checks on a pl
   process_steps.py  the process as steps (`LoadedProcess`, `Step`): every movement in schedule order
   joints.py         arm joint names and sides, URDF limits, goals unwrapped by whole turns next to a start
   movement.py       a process movement classified by its parts: routine, arms, goal, the drives really sent
+  labels.py         a movement as the operator knows it: its old monitor name, the action flowchart's kind and
+                    colours, one sentence on what it does
   steps.py          an action's movements grouped into the operator's steps
   scene_for.py      a process step's planning scene on the real robots; unmeasured robots from a belief or the design
   collision.py      checks on a synced compas_fab mirror: a state, a path swept between waypoints; world-frame FK

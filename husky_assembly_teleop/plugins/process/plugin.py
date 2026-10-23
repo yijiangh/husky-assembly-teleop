@@ -37,13 +37,15 @@ from async_timeout import timeout
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, swatch_chip, values
 from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
 from scaffolding_assembly_core.process import Action, Movement, Process, assumed_start_all, joints_at
 from scaffolding_assembly_core.process.scenes import process_model
 from ...shared.process_contract import Selection
+from ...shared.assembly_planning.labels import Kind, label_movement
+from ...shared.assembly_planning.movement import mating_drives
 from ...shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
 from ...ui.checklist import ACTION_ROWS, action_window
 from .drawing import ProcessDrawing, load_robot_models
@@ -518,13 +520,22 @@ class ProcessPlugin(HuskyPlugin):
         return block(_one_line(chips))
 
     def _details_html(self, action: Action, movement: Movement) -> str:
-        """Two rows of chips and three of text describing the selected movement."""
+        """Three rows of chips, four lines of text and a two-line description of the selected movement."""
+        labels = [label_movement(self.process, action, each) for each in action.movements]
+        number = action.movements.index(movement)
+        label = labels[number]
         which = chip(f"{self.index + 1}/{len(self._movements)}", OK)
         if action.robot:
             which += chip(escape(self.process.robots[action.robot].name), SECTION_CTRL, action.robot)
         else:
             which += chip(BY_HAND_LABEL, SECTION_CTRL, "a bar_placing action: the operator places the bar")
-        which += chip(escape(movement_kind(movement)), NONE, movement.label)
+        # * Its kinds in the action flowchart's colours: FM, LM, CDFM, CDLM, Manual, TM (dashed: runs through).
+        which += "".join(_kind_chip(kind, f"{kind.name}; Rhino: {movement.label}") for kind in label.kinds)
+        # * The action's movements by their old codes, coloured by kind, this one marked: robot and operator steps
+        #   at a glance.
+        strip = "".join(_kind_chip(other.kinds[0], f"{other.old_name or each.id}: {each.label}", other.code,
+                                   current=each is movement)
+                        for each, other in zip(action.movements, labels))
 
         # ! Say so when the drawn start is not authored.
         target = movement.target.joints.get(action.robot) if movement.target is not None else None
@@ -545,23 +556,38 @@ class ProcessPlugin(HuskyPlugin):
         carries += chip(movement.controller or "no arm moves", NONE)
         carries += chip(f"ends on {movement.ends_on}", NONE)
 
+        # ! A drive the monitor never sends (e.g. a tighten on a ground half) says so.
+        dropped = mating_drives(self.process, movement).dropped if movement.drives else {}
         moves = [arm.split("/")[-1] for arm in movement.arms] + [
             f"{tool.split('/')[-1]} grip {grip}" for tool, grip in movement.grip_change.items()] + [
-            f"{tool.split('/')[-1]} {direction}" for tool, direction in movement.drives.items()]
-        lines = [f"action   {self._action_of[self.index] + 1}/{len(self.process.schedule)}  {action.id}",
-                 f"movement {action.movements.index(movement) + 1}/{len(action.movements)}  {movement.id}",
+            f"{tool.split('/')[-1]} {direction}{' (not sent)' if tool in dropped else ''}"
+            for tool, direction in movement.drives.items()]
+        about = f" · {action.label}" if action.label else ""
+        lines = [f"action   {self._action_of[self.index] + 1}/{len(self.process.schedule)}  {action.id}{about}",
+                 f"movement {number + 1}/{len(action.movements)}  {movement.id}",
+                 f"old name {label.old_name or '- (not in the old monitor)'}",
                  f"moves    {', '.join(moves) or '-'}"]
         text = values(*(_one_line(escape(line)) for line in lines))
-        return block(_one_line(which) + _one_line(carries) + text)
+        return block(_one_line(which) + _one_line(strip) + _one_line(carries) + text + _description(label.text))
 
 
-def movement_kind(movement) -> str:
-    """A movement's kind from its parts, e.g. "linear coupled + tools", "tools", "manual"."""
-    if movement.ends_on == "operator":
-        return "manual"
-    arms = f"{movement.path}{' coupled' if movement.coupled else ''}" if movement.arms else ""
-    tools = "tools" if movement.has_tool_part else ""
-    return " + ".join(part for part in (arms, tools) if part)
+def _kind_chip(kind: Kind, title: str, text: str = "", current: bool = False) -> str:
+    """A chip in a flowchart kind's colours.
+
+    Args:
+        kind: The movement kind.
+        title: Hover text.
+        text: The label; the kind's abbreviation if empty.
+        current: Mark it as the selected movement of a row.
+    """
+    return swatch_chip(escape(text or kind.short), kind.fill, kind.border, title, kind.fill_to, kind.dashed, current)
+
+
+def _description(text: str) -> str:
+    """Two lines of wrapped text, cut with "…" past them so the panel never changes height; all of it on hover."""
+    return (f'<div title="{escape(text, quote=True)}" style="font-size:11px;line-height:1.5;height:3em;'
+            f'overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;'
+            f'margin-top:2px">{escape(text)}</div>')
 
 
 def robot_differences(process: Process, robots: tuple[RobotConfig, ...]) -> list[str]:

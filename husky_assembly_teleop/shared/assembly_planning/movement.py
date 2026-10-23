@@ -192,6 +192,23 @@ def classify_action(process: Process, action: Action, transfer_as_free: bool = F
     return tuple(classify(process, action, movement, transfer_as_free) for movement in action.movements)
 
 
+def routine_or_none(action: Action, movement: Movement, transfer_as_free: bool = False) -> Routine | None:
+    """A movement's routine by its parts alone, or None if they match none; for labels, planners use `classify`.
+
+    Args:
+        action: The action the movement belongs to.
+        movement: The movement.
+        transfer_as_free: Run a coupled free movement without the bar (the transfer workaround).
+
+    Returns:
+        Routine | None: The routine, or None.
+    """
+    try:
+        return _routine(action, movement, transfer_as_free)
+    except UnknownMovement:
+        return None
+
+
 def next_start(process: Process, action: Action, movement: Movement) -> tuple[dict | None, str]:
     """The acting robot's joints at the next start that gives them, walking forward in schedule order.
 
