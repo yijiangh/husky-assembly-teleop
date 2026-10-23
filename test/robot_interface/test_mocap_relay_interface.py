@@ -70,3 +70,19 @@ def test_another_format_is_refused():
     """Anything but the relay's format raises, so the guarded callback drops it with a log line."""
     with pytest.raises(ValueError, match="not the relay's calibration announcement"):
         applied_calibrations(json.dumps({"calibrations": [{"mocap_id": 1}]}))
+
+
+def test_a_fake_motives_calibrations_are_kept_apart():
+    """The simulated sessions' calibrations come separately; an older relay without them gives none."""
+    node = RelayNode()
+    relay = MocapRelayInterface(node, lambda: node.now)
+    sim = Calibration(1850, "a200-0805", (0.05, 0.01, -0.48), (0.0, 0.0, 0.0, 1.0),
+                      "data_experiment/calibration_data_sim/domain_70/20261022/"
+                      "calibrated_transformation_0805_rhino.json",
+                      "99aa", ("base_mocap_from_ur_arm_base_link_inertia",), "20261022")
+    announcement = {**json.loads(ANNOUNCEMENT), "sim_calibrations": [sim.as_dict()]}
+    node.callbacks[CALIBRATIONS_TOPIC](String(data=json.dumps(announcement)))
+    assert relay.state.calibrations[1850].sha256 == BELLE.sha256
+    assert relay.state.sim_calibrations[1850].sha256 == "99aa"
+    node.callbacks[CALIBRATIONS_TOPIC](String(data=ANNOUNCEMENT))
+    assert relay.state.sim_calibrations == {}

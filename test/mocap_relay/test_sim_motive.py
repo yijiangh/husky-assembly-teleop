@@ -1,25 +1,24 @@
-"""Motive in a simulation: the raw rigid bodies sim_motive gives the relay."""
+"""Motive in a simulation: what the fake Motive makes of a body's true pose, and how the relay takes it back."""
+
+from collections import deque
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from builtin_interfaces.msg import Time
+from robot_fakes import Publisher
 from scipy.spatial.transform import Rotation
 
-from repo_paths import DATA
-from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.mocap_relay.node import apply_base_calibration
-from husky_assembly_teleop.mocap_relay.sim_motive import (drifted, lost, marker_pose, noisy, observed, offset_joints,
-                                                          offset_pose, rigid_body)
+from husky_assembly_teleop.mocap_relay.node import apply_base_calibration, remove_base_calibration
+from husky_assembly_teleop.mocap_relay.sim_motive import SimMotive, drifted, lost, noisy, observed, offset_pose
+from husky_assembly_teleop.robot_interface.simulated_parts import body_values
 from husky_assembly_teleop.world.calibration_sessions import Calibration
 from scaffolding_assembly_core.geometry import Pose, compose, invert
-from scaffolding_assembly_core.kinematics import link_pose
 
 pytestmark = pytest.mark.safety
 
-#: A pose that is not the identity, and the 0805's arm in a bent pose.
+#: A pose that is not the identity.
 POSE = offset_pose([1.2, -0.4, 0.3, 10.0, -20.0, 75.0])
-JOINTS = {f"ur_arm_{name}": value for name, value in zip(
-    ("shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint", "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"),
-    (0.3, -1.2, 1.4, -1.5, 1.6, 0.2))}
 
 
 def angle(a: Pose, b: Pose) -> float:
@@ -27,39 +26,55 @@ def angle(a: Pose, b: Pose) -> float:
     return float(np.degrees((Rotation.from_quat(a.orientation).inv() * Rotation.from_quat(b.orientation)).magnitude()))
 
 
-def test_the_relay_turns_the_raw_body_back_into_the_true_footprint():
-    """Calibrated with the true calibration, the relay publishes exactly the simulator's base_footprint."""
+def calibration(pose: Pose) -> Calibration:
+    """Belle's base calibration as `pose`."""
+    return Calibration(1850, "a200-0805", pose.position, pose.orientation, "test", "", ())
+
+
+def test_an_offset_base_is_found_by_its_true_calibration():
+    """With the base off by an error, the default moved by that error gives the true footprint back."""
     footprint = Pose((1.7, 1.35, 0.0), tuple(Rotation.from_euler("z", 90, degrees=True).as_quat()))
-    truth = offset_pose([0.056, 0.011, -0.479, 0.3, -0.2, 90.4])
-    raw = rigid_body(footprint, truth)
-    calibration = Calibration(1850, "a200-0805", truth.position, truth.orientation, "test", "", ())
-    position, quaternion = apply_base_calibration(calibration, raw.position, raw.orientation)
+    default, error = offset_pose([0.056, 0.011, -0.479, 0.3, -0.2, 90.4]), [0.004, -0.003, 0.002, 0.0, 0.0, 0.5]
+    published = observed(footprint, error, [0.0] * 6, 0.0, np.random.default_rng(0), [0.0, 0.0])
+    body = remove_base_calibration(calibration(default), published.position, published.orientation)
+    position, quaternion = apply_base_calibration(calibration(compose(default, offset_pose(error))), *body)
     np.testing.assert_allclose(position, footprint.position, atol=1e-12)
-    turn = Rotation.from_quat(quaternion).inv() * Rotation.from_quat(footprint.orientation)
-    assert turn.magnitude() < 1e-9
-
-
-def test_the_marker_sits_at_its_offset_on_tool0():
-    """The marker body is tool0 by forward kinematics, moved by the offset in tool0's frame."""
-    urdf = robot_config_from_serial("0805", DATA).model.urdf
-    footprint = Pose((1.0, 2.0, 0.0))
-    joints = {f"ur_arm_{name}": value for name, value in zip(
-        ("shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint", "wrist_1_joint", "wrist_2_joint",
-         "wrist_3_joint"), (0.3, -1.2, 1.4, -1.5, 1.6, 0.2))}
-    offset = offset_pose([0.01, -0.005, 0.025, 0.0, 0.0, 15.0])
-    marker = marker_pose(urdf, footprint, joints, "ur_arm", offset)
-    tool0 = link_pose(urdf, footprint, joints, "ur_arm_tool0")
-    assert marker == compose(tool0, offset)
-    assert np.linalg.norm(np.subtract(marker.position, tool0.position)) == pytest.approx(np.linalg.norm([0.01, -0.005,
-                                                                                                         0.025]))
+    assert angle(Pose(position, quaternion), footprint) < 1e-7
 
 
 def test_zero_settings_report_the_true_pose_exactly():
-    """Without noise, drift or joint offsets a body is reported exactly where it is, as before they existed."""
+    """Without offset, noise or drift a body is reported exactly where it is."""
     rng = np.random.default_rng(0)
-    assert observed(POSE, [0.0] * 6, 12.0, rng, [0.0, 0.0]) is POSE
-    assert offset_joints(JOINTS, "ur_arm", [0.0] * 6) == JOINTS
+    assert observed(POSE, [0.0] * 6, [0.0] * 6, 12.0, rng, [0.0, 0.0]) is POSE
     assert lost(rng, 0.0, 0.0, 5.0, -np.inf) == (False, -np.inf)
+
+
+def test_an_offset_puts_the_true_pose_where_a_calibration_would():
+    """The offset is the true pose in Motive's body frame: the body composed with it is the truth again."""
+    offset = [0.01, -0.005, 0.025, 0.0, 0.0, 15.0]
+    body = observed(POSE, offset, [0.0] * 6, 0.0, np.random.default_rng(0), [0.0, 0.0])
+    again = compose(body, offset_pose(offset))
+    np.testing.assert_allclose(again.position, POSE.position, atol=1e-12)
+    assert angle(again, POSE) < 1e-7 and angle(body, POSE) == pytest.approx(15.0)
+
+
+@pytest.mark.parametrize("text, body, values", [
+    ("", 7, [0.0, 0.0]),
+    ("0.1,0.2", 7, [0.1, 0.2]),
+    ("0.1,0.2 7:0.3,0.4", 7, [0.3, 0.4]),
+    ("7:0,0 0.1,0.2", 7, [0.0, 0.0]),
+    ("0.1,0.2 7:0.3,0.4", 8, [0.1, 0.2]),
+    ("8:0.3,0.4", 7, [0.0, 0.0]),
+])
+def test_per_body_values_take_a_bodys_own_entry_over_the_one_for_all(text, body, values):
+    """Values for every body, `<id>:<values>` for one; a body's own entry wins, also when it is zero."""
+    assert body_values(text, body, 2) == values
+
+
+def test_per_body_values_need_their_count():
+    """An entry with too few or too many numbers is refused."""
+    with pytest.raises(ValueError, match="2 numbers expected"):
+        body_values("7:0.1", 7, 2)
 
 
 def test_noise_has_the_asked_spread_and_no_bias():
@@ -89,21 +104,6 @@ def test_drift_grows_linearly_with_time_along_a_fixed_direction():
         assert angle(POSE, drifted(POSE, rate, minutes)) == pytest.approx(0.2 * minutes)
 
 
-def test_joint_offsets_move_the_marker_as_the_offset_arm_would():
-    """The marker follows forward kinematics of the joints plus the offsets; the given joints stay unchanged."""
-    urdf = robot_config_from_serial("0805", DATA).model.urdf
-    footprint, offset = Pose((1.0, 2.0, 0.0)), offset_pose([0.01, -0.005, 0.025, 0.0, 0.0, 15.0])
-    offsets = [0.2, -0.1, 0.15, 0.0, 0.3, -0.5]
-    before = dict(JOINTS)
-    marker = marker_pose(urdf, footprint, offset_joints(JOINTS, "ur_arm", offsets), "ur_arm", offset)
-    turned = {name: value + np.radians(o) for (name, value), o in zip(JOINTS.items(), offsets)}
-    assert marker == compose(link_pose(urdf, footprint, turned, "ur_arm_tool0"), offset)
-    assert JOINTS == before
-    true = marker_pose(urdf, footprint, JOINTS, "ur_arm", offset)
-    moved = np.linalg.norm(np.subtract(marker.position, true.position))
-    assert 1e-3 < moved < 2e-2
-
-
 def test_dropouts_lose_samples_at_the_given_rate():
     """Single-sample losses come at about the given rate, and none without a chance."""
     rng = np.random.default_rng(11)
@@ -119,3 +119,28 @@ def test_a_dropout_burst_lasts_its_seconds():
         gone, until = lost(rng, 1.0 if i == 0 else 0.0, 0.25, i / 120.0, until)
         states.append(gone)
     assert sum(states) == 30 and all(states[:30])
+
+
+class Elapsed:
+    """A ROS time that is always one second after the start."""
+
+    def __sub__(self, _other):
+        """One second."""
+        return SimpleNamespace(nanoseconds=1_000_000_000)
+
+
+def test_a_body_reaches_the_relay_after_the_delay_stamped_with_when_it_was_true():
+    """No delay sends each body at once; Motive's latency holds it back; the stamp stays the truth's either way."""
+    for delay, sent in ((0.0, 1), (10.0, 0)):
+        node = SimMotive.__new__(SimMotive)
+        node._delay, node._dropout, node._dropout_burst_s = delay, 0.0, 0.0
+        node._rng, node._start = np.random.default_rng(0), SimpleNamespace()
+        node.get_clock = lambda: SimpleNamespace(now=lambda: Elapsed())
+        stamp, publisher = Time(sec=12, nanosec=34), Publisher()
+        node._bodies = {1850: {"truth": POSE, "stamp": stamp, "offset": [0.0] * 6, "drift": [0.0] * 6,
+                               "noise": [0.0, 0.0], "marker_error": 0.0003, "held": None, "lost_until": -np.inf,
+                               "queue": deque(), "publisher": publisher}}
+        node._publish()
+        assert len(publisher.sent) == sent
+        if sent:
+            assert publisher.sent[0].header.stamp == stamp and publisher.sent[0].pose_valid

@@ -1,4 +1,4 @@
-"""The relay's frames, calibrations, stamps and validity, without ROS or NatNet: what a robot's pose means."""
+"""The relay's frames, calibrations, stamps, validity and sources, without ROS or NatNet: what a pose means."""
 
 from __future__ import annotations
 
@@ -13,8 +13,9 @@ from robot_fakes import Log, Publisher
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.world.calibration_sessions import Calibration
-from husky_assembly_teleop.mocap_relay.node import (MARKER_OCCLUDED, MARKER_POINT_CLOUD_SOLVED, MocapRelay,
-                                                    apply_base_calibration)
+from husky_assembly_teleop.mocap_relay.node import (FAKE_MOTIVE, MARKER_OCCLUDED, MARKER_POINT_CLOUD_SOLVED, MOTIVE,
+                                                    SIM_MOTIVE_PREFIX, TRUTH, TRUTH_PREFIX, MocapRelay,
+                                                    apply_base_calibration, remove_base_calibration)
 
 pytestmark = pytest.mark.safety
 
@@ -23,14 +24,19 @@ Y_UP_TO_Z_UP = Rotation.from_euler("x", 90.0, degrees=True)
 STALE_AFTER = 1.0
 
 
-def relay(calibrations=None, exclude=(), frequency: int = 0) -> MocapRelay:
-    """A relay without ROS or NatNet; `frequency` is NatNet's hi-res clock rate (0: no hi-res stamps)."""
+def relay(calibrations=None, sim_calibrations=None, frequency: int = 0, defaults=None) -> MocapRelay:
+    """A relay without ROS or NatNet, outside the robots' domain.
+
+    `frequency` is NatNet's hi-res clock rate (0: no hi-res stamps).
+    """
     node = MocapRelay.__new__(MocapRelay)
     log = Log()
     node.get_logger = lambda: log
     node.create_publisher = lambda _type, topic, _depth: Publisher()
-    node.exclude_ids, node._calibrations, node._logged_uncalibrated = set(exclude), dict(calibrations or {}), set()
+    node._calibrations = {MOTIVE: dict(calibrations or {}), FAKE_MOTIVE: dict(sim_calibrations or {})}
+    node._logged_uncalibrated, node._defaults = set(), dict(defaults or {})
     node._pending_samples, node._samples, node._samples_lock, node._rb_publishers = {}, {}, threading.Lock(), {}
+    node._sim_samples, node._sim_topics, node._sources = {FAKE_MOTIVE: {}, TRUTH: {}}, set(), {}
     node._warned_no_markers = node._warned_no_hires_stamps = node._logged_latency = False
     node.mocap_client = SimpleNamespace(get_high_res_clock_frequency=lambda: frequency)
     node.topic_prefix, node.frame_id = "/mocap/rigid_body", "mocap_world"
@@ -103,14 +109,6 @@ def test_only_the_calibrated_body_is_moved_to_its_base():
     assert node.get_logger().text("info").count("rigid body 9: no robot's") == 1
 
 
-def test_excluded_bodies_are_never_published():
-    """The simulated robot's own body (exclude_ids) gives no pose and no markers."""
-    node = relay(exclude=(5,))
-    frame(node, 5, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), markers={1: {"pos": (0, 0, 0), "error": 0.0, "param": 2}})
-    node._publish_cached_poses()
-    assert 5 not in node._rb_publishers
-
-
 @pytest.mark.parametrize("tracking, error, age, valid", [
     (True, 0.001, 0.0, True),
     (False, 0.001, 0.0, False),
@@ -164,18 +162,120 @@ def test_markers_are_turned_to_z_up_and_flagged_when_filled_in():
     assert list(message.marker_measured) == [False, True, False]
 
 
-def test_a_simulated_body_is_calibrated_and_stamped_like_motives():
-    """source:=sim: a raw Z-up body from the simulator gets its robot's calibration and keeps the simulator's stamp."""
+def calibration(position) -> Calibration:
+    """A calibration of rigid body 3 that only moves base_footprint by `position` in the body's frame."""
+    return Calibration(mocap_id=3, robot_serial="a200-0804", position=tuple(position),
+                       orientation=(0.0, 0.0, 0.0, 1.0), source="test", sha256="", measured=())
+
+
+def sim_body(node: MocapRelay, source: str, rigid_body_id: int, position, stamp=(1_700_000_000, 5)) -> None:
+    """One simulated Z-up body from `source`, unturned, stamped with when it was true."""
     from builtin_interfaces.msg import Time
     from crl_husky_msgs.msg import MocapRigidBodyPose
-    calibration = Calibration(mocap_id=3, robot_serial="a200-0804", position=(0.1, 0.0, -0.3),
-                              orientation=(0.0, 0.0, 0.0, 1.0), source="test", sha256="", measured=())
-    node = relay({3: calibration})
     message = MocapRigidBodyPose(pose_valid=True, tracking_valid=True, marker_error=0.0003)
-    message.header.stamp = Time(sec=1_700_000_000, nanosec=5)
-    message.pose.position.x, message.pose.position.y, message.pose.position.z = 1.0, 2.0, 0.5
-    node._receive_sim_body(3, message)
+    message.header.stamp = Time(sec=stamp[0], nanosec=stamp[1])
+    message.pose.position.x, message.pose.position.y, message.pose.position.z = position
+    message.pose.orientation.w = 1.0
+    node._receive_sim_body(source, rigid_body_id, message)
+
+
+def age(samples: dict, rigid_body_id: int, seconds: float) -> None:
+    """Make a body's sample `seconds` older than now."""
+    samples[rigid_body_id] = replace(samples[rigid_body_id], received_mono_sec=time.monotonic() - seconds)
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_removing_a_calibration_undoes_applying_it(seed):
+    """The body back from its base_footprint, for arbitrary poses and calibrations."""
+    rng = np.random.default_rng(seed)
+    body_p, body_r = tuple(rng.normal(size=3)), Rotation.random(random_state=seed)
+    offset = Calibration(3, "a200-0804", tuple(rng.normal(size=3) * 0.2),
+                         tuple(Rotation.random(random_state=seed + 100).as_quat()), "test", "", ())
+    position, quaternion = remove_base_calibration(offset, *apply_base_calibration(offset, body_p, body_r.as_quat()))
+    np.testing.assert_allclose(position, body_p, atol=1e-12)
+    assert same_rotation(quaternion, body_r.as_quat())
+
+
+def test_a_fake_motives_base_gets_the_simulated_calibration_over_the_default_and_keeps_its_stamp():
+    """A fake Motive's base: the default off, the simulated session's on (never the robots'), the truth's stamp kept."""
+    node = relay({3: calibration((0.5, 0.5, 0.5))}, {3: calibration((0.1, 0.0, -0.3))},
+                 defaults={3: calibration((0.1, 0.0, -0.2))})
+    sim_body(node, FAKE_MOTIVE, 3, (1.0, 2.0, 0.5))
     sent = published(node, 3)
-    position, quaternion = pose_of(sent)
-    np.testing.assert_allclose(position, (1.1, 2.0, 0.2), atol=1e-12)
+    np.testing.assert_allclose(pose_of(sent)[0], (1.0, 2.0, 0.4), atol=1e-12)
     assert sent.pose_valid and (sent.header.stamp.sec, sent.header.stamp.nanosec) == (1_700_000_000, 5)
+
+
+def test_with_the_default_applied_a_fake_motives_base_is_unchanged():
+    """No simulated session: the default comes off and goes on again, so the base stays where the fake Motive put it."""
+    default = calibration((0.06, 0.01, -0.48))
+    node = relay(sim_calibrations={3: default}, defaults={3: default})
+    sim_body(node, FAKE_MOTIVE, 3, (1.0, 2.0, 0.0))
+    np.testing.assert_allclose(pose_of(published(node, 3))[0], (1.0, 2.0, 0.0), atol=1e-12)
+
+
+def test_a_simulators_truth_is_published_as_it_is():
+    """A simulator's true base_footprint needs no calibration, whatever is applied to the robot's body."""
+    node = relay({3: calibration((0.5, 0.5, 0.5))}, {3: calibration((0.1, 0.0, -0.3))})
+    sim_body(node, TRUTH, 3, (1.0, 2.0, 0.0))
+    np.testing.assert_allclose(pose_of(published(node, 3))[0], (1.0, 2.0, 0.0), atol=1e-12)
+
+
+def test_a_simulated_body_stands_in_for_motives_while_it_streams():
+    """Fake Motive over truth over Motive, each only while it streams; then the next comes back, logged."""
+    node = relay()
+    frame(node, 3, (5.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    assert pose_of(published(node, 3))[0][0] == 5.0
+    sim_body(node, TRUTH, 3, (1.0, 0.0, 0.0))
+    assert pose_of(published(node, 3))[0][0] == 1.0
+    sim_body(node, FAKE_MOTIVE, 3, (2.0, 0.0, 0.0))
+    assert pose_of(published(node, 3))[0][0] == 2.0
+    age(node._sim_samples[FAKE_MOTIVE], 3, STALE_AFTER + 0.1)
+    assert pose_of(published(node, 3))[0][0] == 1.0
+    age(node._sim_samples[TRUTH], 3, STALE_AFTER + 0.1)
+    frame(node, 3, (5.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    message = published(node, 3)
+    assert pose_of(message)[0][0] == 5.0 and message.pose_valid
+    assert "rigid body 3: now from the Motive, was the simulator's truth" in node.get_logger().text("info")
+
+
+def test_with_every_source_quiet_the_last_heard_is_published_invalid():
+    """No source streams: the one heard last is published, marked invalid."""
+    node = relay()
+    frame(node, 3, (5.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    sim_body(node, FAKE_MOTIVE, 3, (2.0, 0.0, 0.0))
+    age(node._samples, 3, STALE_AFTER + 0.5)
+    age(node._sim_samples[FAKE_MOTIVE], 3, STALE_AFTER + 0.2)
+    message = published(node, 3)
+    assert pose_of(message)[0][0] == 2.0 and not message.pose_valid
+    assert node._get_streaming_ids(time.monotonic()) == []
+
+
+def test_a_simulated_body_never_commits_a_half_received_motive_frame():
+    """Motive's bodies wait for their frame's end, also while simulated bodies arrive in between."""
+    node = relay()
+    node._receive_rigid_body_frame(7, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), True, 0.001)
+    sim_body(node, TRUTH, 3, (1.0, 0.0, 0.0))
+    assert 7 not in node._samples and 7 in node._pending_samples
+    node._receive_mocap_frame({"labeled_marker_count": 0})
+    assert 7 in node._samples and node._get_streaming_ids(time.monotonic()) == [3, 7]
+
+
+def test_simulated_inputs_are_found_by_their_topics_once_each():
+    """Every truth and fake Motive topic is subscribed to once, with its source and id; other topics are left."""
+    node = relay()
+    subscribed = []
+    node.create_subscription = lambda _type, topic, callback, _depth: subscribed.append((topic, callback))
+    topics = [f"{TRUTH_PREFIX}/id_1840/pose", f"{SIM_MOTIVE_PREFIX}/id_1866/pose", "/mocap/rigid_body/id_1840/pose",
+              f"{TRUTH_PREFIX}/id_x/pose"]
+    node.get_topic_names_and_types = lambda: [(topic, ["crl_husky_msgs/msg/MocapRigidBodyPose"]) for topic in topics]
+    node._look_for_simulated_inputs()
+    node._look_for_simulated_inputs()
+    assert [topic for topic, _ in subscribed] == topics[:2]
+    sim_message = SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=0.0, z=0.0),
+                                                       orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)),
+                                  header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
+                                  tracking_valid=True, marker_error=0.0)
+    for _, callback in subscribed:
+        callback(sim_message)
+    assert set(node._sim_samples[TRUTH]) == {1840} and set(node._sim_samples[FAKE_MOTIVE]) == {1866}

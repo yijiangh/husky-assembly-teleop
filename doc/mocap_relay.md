@@ -152,6 +152,34 @@ Calibration is relay-side, not consumer-side.
   them that way (`doc/calibration_manual.md`).
 - Rigid bodies of no robot (probe, bars) are published as Motive gives them.
 
+## Simulated Inputs
+
+Outside the robots' domain (every domain but those in crl-husky's `robot.yaml` files) the relay also reads simulated
+inputs, subscribing to each as its topic appears, so the relay and the monitor keep running while simulations come and
+go. Per rigid body, the first of these that streams (heard within `streaming_stale_timeout_sec`) is published:
+
+| Source | Topic | Calibration |
+|---|---|---|
+| fake Motive (`sim_motive`, `launch/sim_mocap.launch.py`) | `/mocap_sim/motive/id_<n>/pose`: each truth with Motive's imperfections, Z-up; a robot's base relative to crl-husky's default calibration | the default taken off, then the simulated sessions', `calibration_data_sim/domain_<ROS_DOMAIN_ID>/` |
+| simulator's truth (crl-husky `husky_sim`, started by `sim_robot` or `sim_all`) | `/mocap_sim/truth/id_<n>/pose`: the true base_footprint, and the true tool0 of an arm carrying the calibration marker | none |
+| Motive (NatNet) | | the robots' sessions |
+
+When a source stops, the next one comes back (logged). `/mocap_relay/calibrations` lists the fake Motive's
+calibrations as `sim_calibrations`. In the robots' domain the relay reads Motive only.
+
+```shell
+export ROS_DOMAIN_ID=70                                               # a domain of its own, never 80
+ros2 launch husky_assembly_teleop mocap.launch.py                     # the relay, once
+ros2 launch crl_husky sim_robot.launch.py robot:=0805 tool:=calibration_marker   # or sim_all.launch.py for all
+ros2 launch husky_assembly_teleop sim_mocap.launch.py delay_sec:=0.01 noise:=0.0005,0.1
+```
+
+`sim_motive` knows no robots or arms: it takes every true pose on `/mocap_sim/truth`, moves each body's frame by its
+`offsets` entry (for a robot's base: how far the true calibration is from crl-husky's default), adds `delay_sec`
+(Motive's latency) and the other imperfections, and announces "mocap" on the `simulated_parts` of each robot whose
+base it fakes. Per-body arguments take values for every body, or `<id>:<values>` per body. Its arguments:
+`launch/sim_mocap.launch.py` and [calibration_manual.md](calibration_manual.md), "Testing in a simulation".
+
 ## Quick Verification
 
 1. List relay topics:

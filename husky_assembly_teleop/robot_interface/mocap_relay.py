@@ -49,22 +49,31 @@ class MocapRelayState:
     """What the relay last announced.
 
     Attributes:
-        calibrations: The base calibration it applies, by rigid body; a body it publishes uncalibrated is missing.
+        calibrations: The base calibration it applies to Motive's bodies, by rigid body; a body it publishes
+            uncalibrated is missing.
+        sim_calibrations: The same for a fake Motive's bodies, from the simulated sessions; empty in the robots'
+            domain. A simulator's true pose gets none.
         calibrations_time: ROS time the last announcement arrived, seconds, or None before one.
     """
 
     calibrations: dict[int, AppliedCalibration] = field(default_factory=dict)
+    sim_calibrations: dict[int, AppliedCalibration] = field(default_factory=dict)
     calibrations_time: float | None = None
 
 
-def applied_calibrations(text: str) -> dict[int, AppliedCalibration]:
+def applied_calibrations(text: str, key: str = "calibrations") -> dict[int, AppliedCalibration]:
     """Read the relay's announcement: the calibration it applies, by rigid body.
+
+    Args:
+        text: The announcement.
+        key: "calibrations" for Motive's bodies, "sim_calibrations" for a fake Motive's (none from older relays).
 
     Raises:
         ValueError: If the text is not the relay's format.
     """
     try:
-        entries = json.loads(text)["calibrations"]
+        announcement = json.loads(text)
+        entries = announcement["calibrations"] if key == "calibrations" else announcement.get(key, [])
         return {int(entry["mocap_id"]): AppliedCalibration(
             tuple(float(v) for v in entry[BASE_KEY][0]), tuple(float(v) for v in entry[BASE_KEY][1]),
             str(entry["sha256"]), str(entry["source"]), str(entry.get("session", ""))) for entry in entries}
@@ -97,6 +106,7 @@ class MocapRelayInterface:
     def _on_calibrations(self, message: String) -> None:
         """Keep the relay's latest announcement."""
         self.state.calibrations = applied_calibrations(message.data)
+        self.state.sim_calibrations = applied_calibrations(message.data, "sim_calibrations")
         self.state.calibrations_time = self._now()
 
     def reload_calibrations(self):

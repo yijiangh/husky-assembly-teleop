@@ -206,6 +206,18 @@ ros2 launch husky_assembly_teleop mocap.launch.py use_drive:=false          # cr
 
 Without a relay, no mocap is available. Details in [doc/mocap_relay.md](doc/mocap_relay.md).
 
+**Simulations** use the same relay, started the same way in the simulation's own domain (never 80): there it also publishes each simulated robot's true pose (crl-husky `husky_sim`) and a fake Motive's bodies (`sim_motive`), in place of Motive's with the same id, while they stream. Start the relay and the monitor once; simulations come and go:
+
+```shell
+export ROS_DOMAIN_ID=70
+ros2 launch husky_assembly_teleop mocap.launch.py                     # once, as above
+ros2 launch crl_husky sim_robot.launch.py robot:=0806                 # one robot, base and arms (crl-husky)
+ros2 launch crl_husky sim_all.launch.py                               # or every robot in crl-husky's config/robots
+ros2 launch husky_assembly_teleop sim_mocap.launch.py                 # optional: sim_motive, a fake Motive
+```
+
+The simulated robot publishes what is truly there: husky_sim the base's true pose and, with `tool:=calibration_marker` (dual arm: `tool_left`, `tool_right`), that arm's true tool0 as the calibration marker's body (1866), turned by `joint_offsets` (degrees) when its encoders should be off. `sim_motive` knows no robots: it adds Motive's imperfections to every true pose (an offset of the body frame, noise, dropouts, drift, a delay), and the relay calibrates its bodies with the simulated sessions. Without it the relay uses the true poses as they are. Details in [doc/mocap_relay.md](doc/mocap_relay.md), "Simulated Inputs".
+
 ## 2. Start the monitor
 
 ```shell

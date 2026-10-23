@@ -88,7 +88,8 @@ class HuskyRobotInterface:
         #: The parts of this robot announced as simulated (`simulated_parts.py`).
         self.simulated = SimulatedParts(lambda: node.get_clock().now().nanoseconds * 1e-9)
         self.base = BaseInterface(node, config, simulated=partial(self.simulated.get, "base"),
-                                  latch=self.soft_stop_latch, lease_slot=self.lease_slot)
+                                  latch=self.soft_stop_latch, lease_slot=self.lease_slot,
+                                  mocap_simulated=partial(self.simulated.get, "mocap"))
         # * The model already has each arm's UR calibration applied; an out-of-date URDF file is loud, not fatal.
         for check in config.ur_calibration:
             if check.out_of_date:

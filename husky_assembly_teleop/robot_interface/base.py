@@ -214,7 +214,8 @@ class BaseInterface:
 
     def __init__(self, node: Node, config: RobotConfig,
                  simulated: Callable[[], SimulatedPart | None] = lambda: None, latch: SoftStopLatch | None = None,
-                 lease_slot: LeaseSlot | None = None):
+                 lease_slot: LeaseSlot | None = None,
+                 mocap_simulated: Callable[[], SimulatedPart | None] = lambda: None):
         """Subscribe to mocap and create the velocity publisher.
 
         Args:
@@ -223,10 +224,12 @@ class BaseInterface:
             simulated: The base's simulator announcement while it is simulated, else None (`SimulatedParts.get`).
             latch: The robot's soft-stop latch; a new one by default.
             lease_slot: The robot's lease slot; a new one by default.
+            mocap_simulated: The fake Motive's announcement while it stands in for this base's mocap, else None.
         """
         self._node = node
         self._config = config
         self._simulated = simulated
+        self._mocap_simulated = mocap_simulated
         self._latch = latch or SoftStopLatch(config.serial)
         self._lease_slot = lease_slot or LeaseSlot(config.serial)
         self.state = BaseState()
@@ -296,6 +299,11 @@ class BaseInterface:
     def simulation(self) -> SimulatedPart | None:
         """The base simulator's announcement (`SimulatedPart`) while this base is simulated, else None: a real base."""
         return self._simulated()
+
+    @property
+    def mocap_simulation(self) -> SimulatedPart | None:
+        """The fake Motive's announcement (`SimulatedPart`) while one stands in for this base's mocap, else None."""
+        return self._mocap_simulated()
 
     def follow_problem(self) -> str:
         """Why the onboard follower may not be handed a path now, or "": no live mocap pose, e-stop, or no follower.
@@ -430,7 +438,7 @@ class BaseInterface:
                       if node_namespace == namespace)
 
     def list_parameters(self, node: str):
-        """Ask a node in this robot's namespace for its parameter names.
+        """Ask a node in this robot's namespace (or by its full name, "/sim_motive") for its parameter names.
 
         Returns:
             The rclpy future of the ListParameters call (await with `ctx.ros`), or None if the node does not answer.
@@ -441,7 +449,7 @@ class BaseInterface:
         return clients[0].call_async(ListParameters.Request())
 
     def get_parameters(self, node: str, names: list[str]):
-        """Ask a node in this robot's namespace for parameter values; convert them with `parameter_value`.
+        """Ask a node in this robot's namespace (or by its full name) for parameter values, see `parameter_value`.
 
         Returns:
             The rclpy future of the GetParameters call (await with `ctx.ros`), or None if the node does not answer.
@@ -454,7 +462,7 @@ class BaseInterface:
     def _clients_for(self, node: str) -> tuple:
         """The parameter clients of `node`, made on first use."""
         if node not in self._parameter_clients:
-            prefix = f"/{self._config.ros_namespace}/{node}"
+            prefix = node if node.startswith("/") else f"/{self._config.ros_namespace}/{node}"
             self._parameter_clients[node] = (self._ros.client(ListParameters, f"{prefix}/list_parameters"),
                                              self._ros.client(GetParameters, f"{prefix}/get_parameters"))
         return self._parameter_clients[node]
