@@ -14,6 +14,8 @@ Loaded by default (config.DEFAULT_PLUGINS).
 from __future__ import annotations
 
 import math
+import time
+from dataclasses import dataclass
 
 import viser
 from sensor_msgs.msg import BatteryState
@@ -60,6 +62,12 @@ SIGNAL_DELAY_WARN = 0.03
 SIGNAL_DELAY_BAD = 0.1
 SIGNAL_AHEAD_WARN = -0.005
 SIGNAL_AHEAD_BAD = -0.02
+
+#: Seconds (wall clock) a chip must keep a new colour before the change is logged, so a flickering chip makes one
+#: line, not many.
+LOG_HOLD = 1.5
+#: The log topic of the colour changes: their source is "health/chips", which the console's default view leaves out.
+CHIPS_TOPIC = "chips"
 
 #: BMS health values that are fine; anything else is red.
 BATTERY_HEALTH_OK = (BatteryState.POWER_SUPPLY_HEALTH_UNKNOWN, BatteryState.POWER_SUPPLY_HEALTH_GOOD)
@@ -121,6 +129,8 @@ class HealthPlugin(HuskyPlugin):
         self._object_checks: list[Check] = []
         #: Last level per (row, chip position), to log when a chip changes colour.
         self._levels: dict[tuple[str, int], int] = {}
+        #: Colour changes not logged yet, by (row, chip position); see `_log_changes`.
+        self._changes: dict[tuple[str, int], _Change] = {}
         #: Each arm's last TCP verdict by (serial, arm name), kept while the arm moves (`tcp_check`).
         self._tcp_checks: dict[tuple[str, str], Check] = {}
 
@@ -172,18 +182,18 @@ class HealthPlugin(HuskyPlugin):
                                for obj in ctx.world.tracked_objects.values()]
         lines = [(f"{serial} {name}", checks) for serial, robot_lines in self._robot_checks.items()
                  for name, checks in robot_lines]
+        # * The hold runs on the wall clock: a paused simulation or a bag jumping back must not hold a change.
+        held = time.monotonic()
         for row, checks in [*lines, ("objects", self._object_checks)]:
-            self._log_changes(ctx, row, checks)
+            self._note_changes(row, checks, held)
+        self._log_changes(ctx, held)
 
-    def _log_changes(self, ctx: PluginContext, row: str, checks: list[Check]) -> None:
-        """Log every chip that changed colour since the last tick, so short outages can be traced later.
+    def _note_changes(self, row: str, checks: list[Check], now: float) -> None:
+        """Note every chip of `row` ("<serial> <base or arm>", or "objects") that changed colour since the last tick.
 
-        A chip's first level is not logged: at start every chip is still waiting for its robot.
+        `now` is the wall clock (`time.monotonic`), seconds.
 
-        Args:
-            ctx: This plugin's context.
-            row: The line, "<serial> <base or arm>", or "objects".
-            checks: That row's checks this tick.
+        A chip's first level is not noted: at start every chip is still waiting for its robot.
         """
         # * Keyed by position, not label: combined chips change their label with their colour.
         for index, check in enumerate(checks):
@@ -192,13 +202,26 @@ class HealthPlugin(HuskyPlugin):
             self._levels[key] = check.level
             if before is None or before == check.level:
                 continue
-            message = f"health {row} {check.label}: {LEVEL_NAMES[before]} -> {LEVEL_NAMES[check.level]}: {check.detail}"
-            if check.level == BAD:
-                ctx.log_error(message)
-            elif check.level > before:
-                ctx.log_warn(message)
+            change = self._changes.setdefault(key, _Change(before, check.level))
+            change.check, change.since, change.count = check, now, change.count + 1
+            # * The furthest from where it started, the worse on a tie: amber to green and back is "flickered green".
+            change.furthest = max(change.furthest, check.level, key=lambda level: (abs(level - change.first), level))
+
+    def _log_changes(self, ctx: PluginContext, now: float) -> None:
+        """Log the colour changes that held for LOG_HOLD seconds, one line per row, so outages can be traced later."""
+        rows: dict[str, list[_Change]] = {}
+        for key, change in list(self._changes.items()):
+            if now - change.since >= LOG_HOLD:
+                rows.setdefault(key[0], []).append(self._changes.pop(key))
+        for row, changes in rows.items():
+            message = f"{row}: " + "; ".join(change.describe() for change in changes)
+            level = max(change.log_level() for change in changes)
+            if level == BAD:
+                ctx.log_error(message, CHIPS_TOPIC)
+            elif level == WARN:
+                ctx.log_warn(message, CHIPS_TOPIC)
             else:
-                ctx.log_info(message)
+                ctx.log_info(message, CHIPS_TOPIC)
 
     def draw(self, ctx: PluginContext) -> None:
         """Copy this tick's checks into the banner and the rows.
@@ -229,6 +252,43 @@ class HealthPlugin(HuskyPlugin):
 
 #: Chip colours by level, for the log.
 LEVEL_NAMES = {GOOD: "green", WARN: "amber", BAD: "red"}
+
+
+@dataclass
+class _Change:
+    """A chip's colour changes since its last logged colour `first`, the last at time `since`, to `check`'s.
+
+    `furthest` is the colour furthest from `first` it had, the worse on a tie.
+    """
+
+    first: int
+    furthest: int
+    check: Check | None = None
+    since: float = 0.0
+    count: int = 0
+
+    def describe(self) -> str:
+        """E.g. "mocap green -> amber (2 changes, red for a moment): <detail>" or "mocap flickered red, green again"."""
+        label, last = self.check.label, self.check.level
+        changes = f" ({self.count} changes)" if self.count > 1 else ""
+        if last == self.first:
+            return f"{label} flickered {LEVEL_NAMES[self.furthest]}{changes}, {LEVEL_NAMES[last]} again"
+        if self._red_for_a_moment():
+            changes = f" ({self.count} changes, red for a moment)"
+        return f"{label} {LEVEL_NAMES[self.first]} -> {LEVEL_NAMES[last]}{changes}: {self.check.detail}"
+
+    def log_level(self) -> int:
+        """BAD for an error (turned red), WARN for a warning (turned worse, or red for a moment), else GOOD."""
+        last = self.check.level
+        if last == self.first:
+            return WARN if self.furthest == BAD else GOOD
+        if last == BAD:
+            return BAD
+        return WARN if last > self.first or self._red_for_a_moment() else GOOD
+
+    def _red_for_a_moment(self) -> bool:
+        """Whether it was red in between, neither starting nor ending red."""
+        return self.furthest == BAD and BAD not in (self.first, self.check.level)
 
 
 # --- --- --- --- --- CHECKS (`now` is ROS time, seconds) --- --- --- --- ---
