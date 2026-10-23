@@ -420,12 +420,12 @@ class Visualization:
         self._server.gui.add_command("Stop all robots", description="Soft stop of every robot",
                                      hotkey="escape", icon=viser.Icon.HAND_STOP).on_trigger(self._request_stop)
 
-        # * Freeze: while frozen the monitor skips every plugin's `draw`, so panel text can be selected
+        # * Pause: while paused the monitor skips every plugin's `draw`, so panel text can be selected
         #   (each rewrite drops the selection). Controls, updates and tasks keep running.
-        self._frozen = False
-        self._freeze = self._server.gui.add_button("Live", color="green", icon=viser.Icon.ACTIVITY)
-        self._freeze.on_click(self._toggle_freeze)
-        self._show_freeze_state()
+        self._paused = False
+        self._pause = self._server.gui.add_button("Live", color="green", icon=viser.Icon.ACTIVITY)
+        self._pause.on_click(self._toggle_pause)
+        self._show_pause_state()
 
         # * Read by `draw` each tick, so the switch is applied on the main thread.
         self._show_collision = self._server.gui.add_checkbox(
@@ -502,9 +502,9 @@ class Visualization:
         return self._server.atomic()
 
     @property
-    def frozen(self) -> bool:
-        """bool: Whether the operator froze the panels. Read by the monitor each tick."""
-        return self._frozen
+    def paused(self) -> bool:
+        """bool: Whether the operator paused the panels. Read by the monitor each tick."""
+        return self._paused
 
     def _request_stop(self, _event: object) -> None:
         """Ask for a soft stop. A viser callback; only sets a flag the tick reads."""
@@ -536,25 +536,25 @@ class Visualization:
             f'Details are in the log.</div></div>')
         self._broken.visible = True
 
-    def _toggle_freeze(self, _event: viser.GuiEvent) -> None:
-        """Freeze or unfreeze the panels. A viser callback; only flips a flag the tick reads."""
-        self._frozen = not self._frozen
-        self._show_freeze_state()
+    def _toggle_pause(self, _event: viser.GuiEvent) -> None:
+        """Pause the panels or make them live again. A viser callback; only flips a flag the tick reads."""
+        self._paused = not self._paused
+        self._show_pause_state()
 
-    def _show_freeze_state(self) -> None:
-        """Make the freeze button show the current state."""
-        if self._frozen:
-            self._freeze.label, self._freeze.color, self._freeze.icon = "Frozen", "orange", viser.Icon.SNOWFLAKE
-            self._freeze.hint = "Panels are paused, so their text can be selected. Click to go live again."
+    def _show_pause_state(self) -> None:
+        """Make the pause button show the current state."""
+        if self._paused:
+            self._pause.label, self._pause.color, self._pause.icon = "Paused", "orange", viser.Icon.PLAYER_PAUSE
+            self._pause.hint = "Panels are paused, so their text can be selected. Click to go live again."
         else:
-            self._freeze.label, self._freeze.color, self._freeze.icon = "Live", "green", viser.Icon.ACTIVITY
-            self._freeze.hint = ("Click to pause every panel, so its text can be selected and copied. "
-                                 "Buttons still act; the robots in the 3D view stay live.")
+            self._pause.label, self._pause.color, self._pause.icon = "Live", "green", viser.Icon.ACTIVITY
+            self._pause.hint = ("Click to pause every panel, so its text can be selected and copied. "
+                                "Buttons still act; the robots in the 3D view stay live.")
 
     def draw(self, snapshot: Scene) -> None:
         """Draw this tick's copy of the world: robots with their tools, tracked objects and scene bodies.
 
-        Called once per tick inside `atomic()`, also while frozen.
+        Called once per tick inside `atomic()`, also while paused.
 
         ! Only the snapshot taken this tick: the real robots and their tools must always show the newest
           measurement, never a copy a planner kept.

@@ -357,11 +357,11 @@ class HuskyMonitor(Node):
                 except Exception:
                     self._plugin_failed(loaded, "traces")
 
-        # 8. Draw. While frozen (for text selection), only robots and the scene are drawn, not plugins.
+        # 8. Draw. While paused (for text selection), only robots and the scene are drawn, not plugins.
         with self._viz.atomic():
             with self._timer.part("robots and scene draw"):
                 self._viz.draw(snapshot)
-            for loaded in self._loaded.values() if not self._viz.frozen else ():
+            for loaded in self._loaded.values() if not self._viz.paused else ():
                 if loaded.stopped:
                     continue
                 try:
@@ -427,7 +427,7 @@ class HuskyMonitor(Node):
     def _soft_stop(self) -> None:
         """Stop every robot, and cancel every plugin task but those spawned with `survives_soft_stop`.
 
-        - In the core so it works whichever plugins are loaded.
+        - In the runtime so it works whichever plugins are loaded.
         - Each robot refuses motion commands until Resume, so queued intents still run: a Start clicked just before
           Stop gets RobotStopped, a Load just loads.
         - ! A robot that raises is logged; the other robots are still stopped, and the tick goes on.

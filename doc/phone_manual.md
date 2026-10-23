@@ -109,7 +109,7 @@ For recording points with the mocap probe (`mocap_probe`); choose its rigid body
   "Restart"). Wait until the arm runs, press Reactivate on the laptop, and only then use Open and Close: presses while
   the gripper is dead are queued on the robot and may all run at once when it comes back.
 
-Several people can drive at once, from the laptop and from phones: there is no lock. Each press drives for only
+Several people can drive at once, from the laptop and from phones: they share one lease (robot_control's), so nothing keeps them apart. Each press drives for only
 0.25 s after its last report, so talk to each other.
 
 ## 6. When something does not work
@@ -122,4 +122,4 @@ Several people can drive at once, from the laptop and from phones: there is no l
 | D-pad does nothing | The base does not run **Vel** (status line amber) | Switch it in the laptop's robot panel |
 | Free drive does nothing | The arm's controller manager is not reachable (arm chip "no ctrl"), or the safety sync does not vouch for the arm (no status, not operational, program stopped) | Check Health; the monitor asks again every second while you hold |
 | Gripper does not react | After a stop or e-stop the gripper link is down | Section 5 |
-| Nothing changes on the page | The laptop's panels are frozen (its **Live** button shows **Frozen**) | Press it on the laptop: freezing stops the phone's updates too |
+| Nothing changes on the page | The laptop's panels are paused (its **Live** button shows **Paused**) | Press it on the laptop: pausing stops the phone's updates too |

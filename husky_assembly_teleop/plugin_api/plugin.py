@@ -59,7 +59,7 @@ class HuskyPlugin:
     def draw(self, ctx: PluginContext) -> None:
         """Copy state into the handles made in `setup`; do not add nodes here.
 
-        ! Skipped while the panels are frozen: put anything that must keep running in `update`, an intent or a task.
+        ! Skipped while the panels are paused: put anything that must keep running in `update`, an intent or a task.
         """
 
     def teardown(self, ctx: PluginContext) -> None:

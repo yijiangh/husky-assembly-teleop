@@ -71,7 +71,7 @@ class FakeVisualization:
 
     def __init__(self, port=None, phone_port=None):
         """Nothing drawn, no stop requested."""
-        self.ports, self.frozen, self.stop_requested = (8080, 8081), False, False
+        self.ports, self.paused, self.stop_requested = (8080, 8081), False, False
         self.draws, self.broken, self.views, self.stopped = 0, {}, {}, False
 
     def view_for(self, name: str, *_settings: object) -> FakeView:
