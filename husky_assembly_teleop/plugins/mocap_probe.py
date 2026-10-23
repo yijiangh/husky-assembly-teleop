@@ -4,7 +4,7 @@ A mocap probe: track one rigid body, show its live pose, and record points with 
 Points are numbered per label ("table_1", ...) and shown in the 3D view. Delete and
 Export act on the selected points, so one session can give one file per obstacle.
 "Load points" adds the points of an exported file, unselected; a name already taken is renumbered.
-A big Status tab (minimized on the right) is readable from across the room.
+A big Status tab, readable from across the room, sits in the "Big status" folder at the bottom, closed at start.
 The phone's Mocap tab has the same big status, Label, Record point, Map coverage, a top-down map while mapping
 (coverage cells, obstacles, robots, points, probe) and the last points.
 
@@ -333,9 +333,10 @@ class MocapProbePlugin(HuskyPlugin):
                                          hint="Replace the map with an exported one; mapping then adds to it.")
             self._coverage_status: viser.GuiHtmlHandle = gui.add_html("")
 
-        # * Big status in a tab of its own, so it can be dragged out and enlarged.
-        with ctx.view.tab("Status", viser.Icon.EYE, hidden=True) as gui:
-            self._big: viser.GuiHtmlHandle = gui.add_html("")
+            # * The big status tab in a folder, closed at start; last, so opening it moves no button.
+            with gui.add_folder("Big status", expand_by_default=False), \
+                    gui.add_tab_group().add_tab("Status", viser.Icon.EYE):
+                self._big: viser.GuiHtmlHandle = gui.add_html("")
 
         # * The phone: record while walking with the probe. Tracking, export and the list stay on the laptop.
         with ctx.view.phone("Mocap", viser.Icon.CROSSHAIR) as phone:
