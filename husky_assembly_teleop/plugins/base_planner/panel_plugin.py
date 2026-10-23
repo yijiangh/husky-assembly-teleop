@@ -15,6 +15,7 @@ The last three sit in a collapsed Advanced folder, so the panel shows only targe
 from __future__ import annotations
 
 import math
+from contextlib import AbstractContextManager
 from dataclasses import asdict
 from html import escape
 
@@ -52,7 +53,6 @@ class BasePlannerPanel(PlannerPanel):
     name = "base_planner_panel"
     experimental = True
     planner = "base_planner"
-    tab = ("Base", viser.Icon.CAR)
     requires = ("base_planner", "process")
 
     def __init__(self):
@@ -65,6 +65,14 @@ class BasePlannerPanel(PlannerPanel):
         self._planner: BasePlannerPlugin | None = None
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
+
+    def _ui(self, ctx: PluginContext) -> AbstractContextManager[viser.GuiApi]:
+        """Add widgets in this plugin's folder in the main column, not in the side panel's Plan tab.
+
+        * The base is driven before a step is planned: list this plugin after `assembly_run` and before
+          `assembly_steps` in `plugins`, and its folder sits between them, in the order an operator works.
+        """
+        return ctx.view.ui()
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the panel, and a target ghost and a path ghost per robot."""
