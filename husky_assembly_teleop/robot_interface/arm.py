@@ -1049,17 +1049,19 @@ class ArmInterface:
         return True
 
     def clear_target_wrench(self) -> bool:
-        """Zero the target wrench, as `hold` does: removing a force is stopping, so it needs no lease and no checks.
+        """Zero the target wrench, as `hold` does; it needs the robot's lease, but not the controller or other checks.
 
         - Under the compliance controller the target first moves to the measured TCP, as in `hold`: an arm a force
           pushed off its target would spring back to it once the force is gone (F/K: up to 10 cm at 50 N, 500 N/m).
           With the TCP missing or stale the wrench is zeroed all the same, and the log says the arm may move.
-        - ! Never refused for the lease, the soft stop or the controller: robot_control's zero force must always go
-          out (one motion at a time, `shared/execution/interlock.py`).
 
         Returns:
             bool: True if sent. False in test mode (logged), where nothing is sent.
+
+        Raises:
+            NotLeased: If the running code does not hold the robot's lease.
         """
+        self._lease_slot.check(f"a zero target wrench to arm {self.config.name}")
         if self.config.cartesian_test_mode:
             self._log_test_mode("target force", "F [0. 0. 0.] N  T [0. 0. 0.] N m (tool0)")
             return False

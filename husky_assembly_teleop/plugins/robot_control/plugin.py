@@ -294,13 +294,10 @@ class RobotControlPlugin(HuskyPlugin):
     def _apply_force(self, ctx: PluginContext, key: tuple[str, str], arm: ArmInterface, force: np.ndarray) -> None:
         """Send a target force (N, tool frame) to the arm and remember it if accepted.
 
-        ? Zero removes a force, like a Stop: it needs no lease and is never refused (`clear_target_wrench`).
+        ? Zero goes out as `clear_target_wrench`, which first sets the target at the TCP so the arm stays where it is.
         """
-        if not np.any(force):
-            sent = arm.clear_target_wrench()
-        else:
-            sent = self._leased(ctx, key, lambda: arm.send_target_wrench(force))
-        if sent:
+        send = arm.clear_target_wrench if not np.any(force) else partial(arm.send_target_wrench, force)
+        if self._leased(ctx, key, send):
             self._applied_force[key] = force
 
     def _leased(self, ctx: PluginContext, key: tuple[str, str], command: Callable[[], Any]) -> Any:

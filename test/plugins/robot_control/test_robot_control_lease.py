@@ -185,21 +185,30 @@ def test_stop_and_hold_go_out_while_the_executor_leases_every_robot():
     assert len(hold.points) == 1
 
 
-def test_a_zero_force_under_compliance_targets_the_tcp_first_so_the_arm_stays():
-    """Alice leased to the executor, under compliance: Zero sets a target at her measured TCP, then zeroes the wrench.
+def test_a_zero_force_needs_the_lease():
+    """While the executor leases Alice, Zero sends nothing and the chip names the lease, as any other force."""
+    lab = Lab()
+    lab.compliance()
+    lab.lease_every_robot()
+    lab.plugin._apply_force(lab.ctx, KEY, lab.arm, np.zeros(3))
+    assert not lab.arm._target_wrench.messages and not lab.arm._target_frame.messages
+    assert lab.plugin._refusals[KEY].label == "lease refused" and lab.refusals()
 
-    No lease, never refused: else an arm the force pushed off its target would spring back to it (up to 10 cm). With
-    the TCP stale the wrench is zeroed all the same, and the chip says the arm may move.
+
+def test_a_zero_force_under_compliance_targets_the_tcp_first_so_the_arm_stays():
+    """Under compliance, Zero sets a target at Alice's measured TCP, then zeroes the wrench, under robot_control's lease.
+
+    Else an arm the force pushed off its target would spring back to it (up to 10 cm). With the TCP stale the wrench
+    is zeroed all the same, and the chip says the arm may move.
     """
     lab = Lab()
     lab.compliance()
-    lease = lab.lease_every_robot()
     sent = []
     lab.arm.targets_sent.attach(lambda record: sent.append(("target", record.position.tolist(), record.hold)))
     lab.arm.wrenches_sent.attach(lambda record: sent.append(("wrench", record.force.tolist())))
     lab.plugin._apply_force(lab.ctx, KEY, lab.arm, np.zeros(3))
     assert sent == [("target", [0.3, 0.1, 0.4], 1), ("wrench", [0.0, 0.0, 0.0])]
-    assert lab.robot.lease_slot.lease is lease
+    assert lab.robot.lease_slot.lease.holder == "robot_control: teleop"
     lab.arm.state.tcp_update_time = lab.ctx.t - 1.0
     lab.plugin._apply_force(lab.ctx, KEY, lab.arm, np.zeros(3))
     assert sent[2:] == [("wrench", [0.0, 0.0, 0.0])] and "may move" in lab.arm.last_refusal.reason
