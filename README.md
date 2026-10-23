@@ -183,7 +183,7 @@ The monitor is a small runtime that ticks and owns the shared state; every featu
 | `doc/scene_refactor_plan.md`, `doc/ur_frames.md` | The scene, the UR arm frames. The process file format is in the core's `doc/process_format.md`. |
 | `tasks/` | Specs written while building a feature. |
 | `doc/base_exp_manual.md` | Base controller experiments: goal and hypotheses, the three experiments (robot model, model over conditions, controllers), how to run them and where the results are. |
-| `doc/fake_lab_test_manual.md` | The fake lab: the monitor against three simulated robots on one laptop (crl-husky's simulator, on Zenoh), started with `scripts/fake_lab/tmux.sh`; a step-by-step test of the assembly steps, which parts are Jakob's and which ours, and the known issues. |
+| `doc/fake_lab_test_manual.md` | The fake lab: the monitor against three simulated robots on one laptop (our simulation with a fake Motive and the relay, on Zenoh), started with `scripts/fake_lab/tmux.sh`; a step-by-step test of the assembly steps, which parts are Jakob's and which ours, and the known issues. |
 | `doc/phone_manual.md` | The phone page: connecting a phone, every tab and button, what to do after a stop, troubleshooting. |
 | `doc/simulation_manual.md` | Simulated robots and mocap: one robot, several, realistic mocap, base experiments, every argument, what is not simulated. |
 | `doc/mocap_relay.md` | The mocap relay: topics, calibrations, simulated inputs. |
@@ -367,6 +367,8 @@ ros2 launch husky_assembly_teleop sim.launch.py robot:=all fake_motive:=true    
 
 Workflows (one robot, several, realistic mocap from measured values, base experiments, in the lab),
 every argument and what is not simulated: [doc/simulation_manual.md](doc/simulation_manual.md).
+The fake lab (`scripts/fake_lab/tmux.sh`) scripts all of this for every robot with the assembly plugins, isolated
+on a Zenoh router of its own: [doc/fake_lab_test_manual.md](doc/fake_lab_test_manual.md).
 
 ## What changed from the old monitor
 

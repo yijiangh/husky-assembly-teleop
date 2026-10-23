@@ -2,14 +2,17 @@
 
 Tests the new monitor (`yh/core-port`: Jakob's newer code, merged on 2026-10-21, plus the Rhino obstacles box of
 2026-10-22, and since 2026-10-23 the base planner in the middle column) against three simulated robots on this laptop.
-The robots come from crl-husky's simulator, as its `sim_all.launch.py` (crl-husky f138fdb) starts them: a simulated
-base, and the UR driver's fake hardware for the arms. Our `scripts/fake_lab/sim.launch.py` only starts each base 0.5 m
-behind its park pose. Everything talks over Zenoh, as the lab does with the new monitor, through a Zenoh router of the
-fake lab's own. There is no robot, no mocap and no tool. Plan about an hour.
+The robots come from Jakob's simulation (`launch/sim.launch.py robot:=all`, [simulation_manual.md](simulation_manual.md)),
+on crl-husky `jg/ros2-next`: a simulated base and the UR driver's fake hardware for the arms, parked, with a fake Motive
+that adds Motive's measured latency, jitter and marker errors, and the mocap relay that publishes each base as on the
+lab PC. Everything talks over Zenoh, as the lab does with the new monitor, through a Zenoh router of the fake lab's own.
+There is no robot, no real Motive and no tool. Plan about an hour.
 
 Every step was run on 2026-10-22, on Zenoh, with this code, and gave the results it lists. On 2026-10-23 the base
 planner's panel moved from the side panel's **Plan** tab to the middle column, above motion_planner; its buttons
-and results are the same.
+and results are the same. Also on 2026-10-23 the fake lab moved to Jakob's simulation: the robots start on their park
+row instead of 0.5 m behind it, with mocap. Sections 0–2 were run again then; the base plans of 4.1, 4.2 and 9.2 were
+not, and say so.
 
 ## What you are testing, and whose it is
 
@@ -23,7 +26,7 @@ bar's steps.
 | **The Rhino obstacles box (new).** "Rhino obstacles collide" in the process panel, off at start. While it is off, the process's own obstacles from Rhino (the cabinet `env39`) are drawn see-through and left out of every collision check: base and arm planners, clearances, assembly planning. Tick it to count them. A plan made before a change goes stale. | **Ours** | 3, 4, 5 |
 | **obstacles.** The lab's measured obstacles, from `data/lab/main.json`: the cabinet, tables, tripods, trusses and the border walls. They always count. | Jakob | 2, 4 |
 | **The planners.** **base_planner_panel**, in the middle column between assembly_run and motion_planner, plans a base path and sends it to the robot's follower, with a clearance watch while it drives. In the side panel's **Plan** tab, **Arm** plans one arm to a joint target, and **Collisions** lists what blocked a plan. | Jakob | 4, 6, 9 |
-| **The simulated robots.** crl-husky's simulator, as `sim_all.launch.py` starts it, with the `SIM` chips. The 0.5 m start shift is ours (`sim.launch.py`). | Jakob | 1 |
+| **The simulated robots.** Jakob's simulation (`launch/sim.launch.py`): crl-husky's simulator, a fake Motive and the mocap relay, with the `SIM` chips. The fake-lab scripts around it are ours. | Jakob | 1, 2 |
 | **assembly_run (ours, M4).** The run record `runs/<date>_<time>/`: which actions are done, where each robot was left, an event log. Mark done, Reopen, New run, and continue after a restart. The run's settings, such as the transfer workaround. | **Ours** | 4–6, 11 |
 | **motion_planner (ours, M3–M4).** Plans a step's motion at the live base through tamp, solves goals by exact IK (ssik), checks collisions. One worker, which the other plugins ask. | **Ours** | 5–7, 9 |
 | **assembly_steps (ours, M5).** The operator's step panel: Check goal, Plan, Play, Exec, Prev / Next, Mark done. A plan goes stale when anything moves, or when a setting changes. | **Ours** | 5–9 |
@@ -56,7 +59,8 @@ Each panel in the middle column belongs to one plugin, and its title is the plug
 
 > ⚠️ **Safety.** Everything runs on ROS domain 70, from a clean environment. Every node connects only to the fake
 > lab's own Zenoh router, which listens on the loopback only (port 7470; the lab's routers use 7447) and connects to
-> no robot. Your `.bashrc` puts every new terminal on Cyclone and domain 86 (Cindy's), but these scripts never use it.
+> no robot. The relay looks for Motive at 127.0.0.1 only. Your `.bashrc` puts every new terminal on Cyclone and
+> domain 86 (Cindy's), but these scripts never use it.
 > The robots now in use can't see this test, and it can't see them. The monitor's Drive root is the scratch folder
 > `~/husky_fake_lab/drive`, so its `runs/` never reach the real Drive.
 
@@ -66,11 +70,12 @@ Steps are numbered so you can report them as, for example, "5.4 not OK: …".
 
 ## 0. Once, before the first test
 
-**0.1** Install the UR driver and Zenoh's ROS middleware. The simulated arms run on the UR driver's fake hardware,
-which added 39 packages. Zenoh adds 2 more; the lab needs them anyway (README, One-time setup). Nothing is upgraded.
+**0.1** Install the UR driver, Zenoh's ROS middleware and tmux. The simulated arms run on the UR driver's fake
+hardware, which added 39 packages. Zenoh adds 2 more; the lab needs them anyway (README, One-time setup). tmux holds the
+panes (section 1). Nothing is upgraded.
 
 ```shell
-sudo apt install ros-humble-ur-robot-driver ros-humble-rmw-zenoh-cpp ros-humble-zenoh-cpp-vendor
+sudo apt install ros-humble-ur-robot-driver ros-humble-rmw-zenoh-cpp ros-humble-zenoh-cpp-vendor tmux
 ```
 
 Before the first real-lab run, check that the robots have the same Zenoh version (crl-husky's README requires it):
@@ -86,6 +91,13 @@ Before the first real-lab run, check that the robots have the same Zenoh version
 
 This is Jakob's export of the two-module demo. Its first 18 actions are the three-robot sequence B20–B37.
 
+**0.3** Build the workspace from this branch, with crl-husky on `jg/ros2-next`: the fake lab runs the installed relay
+and fake Motive, and `env.sh` refuses an install without them.
+
+```shell
+cd ~/Code/ros2_ws_next && source venv/bin/activate && python3 -m colcon build --symlink-install
+```
+
 ---
 
 ## 1. The shared tmux session
@@ -96,11 +108,13 @@ This is Jakob's export of the two-module demo. Its first 18 actions are the thre
 ~/Code/ros2_ws_next/src/husky-assembly-teleop/scripts/fake_lab/tmux.sh
 ```
 
-This opens the tmux session **`fake_lab`** with one window and three panes:
-- **top:** the three simulated robots (`sim.sh`). They start at once.
+This opens the tmux session **`fake_lab`** with one window and four panes:
+- **top:** the three simulated robots and the fake Motive (`sim.sh`). They start at once.
 - **middle, the monitor pane:** the monitor command (`monitor.sh`), typed in but not started yet.
-- **bottom, small:** the Zenoh router (`router.sh`) that every node meets through, as the PC's and the robots' routers
-  do in the lab. It starts first.
+- **bottom left, small:** the Zenoh router (`router.sh`) that every node meets through, as the PC's and the robots'
+  routers do in the lab. It starts first.
+- **bottom right, small:** the mocap relay (`relay.sh`), as on the lab PC: it publishes each base's pose from the fake
+  Motive.
 
 I read the panes from my side (`tmux capture-pane`). I never type into them unless you ask.
 
@@ -108,11 +122,17 @@ I read the panes from my side (`tmux capture-pane`). I never type into them unle
 - **Come back:** run `tmux.sh` again, or `tmux attach -t fake_lab`.
 - **More panes:** Ctrl-b " splits one, for example for section 8.
 
-**Expect, in the bottom pane:** `fake lab: Zenoh router for ROS domain 70, on 127.0.0.1:7470 only`.
+**Expect, in the bottom left pane:** `fake lab: Zenoh router for ROS domain 70, on 127.0.0.1:7470 only`.
+
+**Expect, in the bottom right pane:** `fake lab: mocap relay on ROS domain 70, Zenoh router 127.0.0.1:7470, no Motive`,
+its calibrations (every robot on `crl-husky default`), and once the robots are up
+`rigid body 1840: now from the fake Motive, was the simulator's truth`, the same for 1850 and 1860. A
+`No NatNet frames … reconnecting` line every 30 s is right: no Motive runs here.
 
 **Expect, in the top pane:**
 - `fake lab: alice, belle and cindy on ROS domain 70, Zenoh router 127.0.0.1:7470`;
-- then many `Configured and activated …` lines;
+- then many `Configured and activated …` lines, and `sim_motive: rigid body 1840: faking it, noise [1.5e-05, 0.003],
+  marker_error 0.0005`, the same for 1850 and 1860;
 - four `process has died` lines, one per arm. That is the cartesian controllers' spawner: those controllers aren't
   installed here, and nothing in this test uses them.
 
@@ -122,8 +142,6 @@ I read the panes from my side (`tmux capture-pane`). I never type into them unle
 - `fake lab: open http://localhost:8080 …` and the path of the log it saves;
 - about 10 s later, `started in … ms`.
 
-There are also three `controller manager is not available` warnings, one per base: the simulated base has no controller
-manager.
 
 > **Why `monitor.sh` starts the monitor in an odd way.** It imports pytest first, as a workaround for a bug I found
 > while preparing this test. compas_fab closes stdout for a moment around every model it loads. Inside the monitor,
@@ -139,19 +157,21 @@ manager.
 
 **Expect:**
 - **3D view:**
-  - three robots side by side at y = 0.85 m (Alice at x = 0.3, Belle at 1.7, Cindy at 3.1), facing +y, arms at their
-    stow pose. That is 0.5 m behind their park row; the reason is in the known issues at the end.
+  - three robots side by side on their park row, y = 1.35 m (Alice at x = 0.3, Belle at 1.7, Cindy at 3.1), facing
+    +y, arms at their stow pose.
   - the measured lab (Jakob's **obstacles** panel, at the bottom of the middle column): the cabinet behind the robots,
     tables, tall grey tripod cylinders, and an orange border around the floor.
-- **health:** every arm shows a green `arm` chip and a `SIM` chip.
+- **health:** every arm shows a green `arm` chip and a `SIM` chip. Every base shows a `SIM` chip, a green `ctrl` chip
+  and a `mocap` chip: green for Alice and Cindy, amber for Belle, whose fake Motive body reports the 1.2 mm marker
+  error measured in the lab (hover it).
 - **Middle column, top to bottom:** health, process, assembly_run, base_planner_panel, motion_planner,
   movement_exec, assembly_steps, obstacles: the order this manual uses them in.
 - **Side panel on the right:** the tabs **Control** and **Plan**. Control has one tab per robot.
 
 **Expected in the simulation:**
 - `robotiq` and `scaffolding_v3` stay red: no tool drivers.
-- Each base's `ctrl` chip stays red, and the top shows about `14 PROBLEMS`: the simulated base has no controller
-  manager.
+- The top shows about `12 PROBLEMS`: the four tools, the seven `SIM` chips and Belle's `mocap`.
+- On a busy PC a base's `signal` chip may turn red (hover: a gap); see the known issues.
 
 ---
 
@@ -208,6 +228,9 @@ checked. `monitor.sh` loads them; tell me if you see it.
 
 **4.1** **The box on a base plan.** Belle's park pose is inside Rhino's cabinet.
 
+> Not run again since the robots start on the park row: Belle now starts at her park pose, so step 4 may name the
+> start rather than the target, and the plan of step 5 is about 0 m long.
+
 1. Go to **base_planner_panel** in the middle column, between assembly_run and motion_planner.
 2. Pick Robot **a200-0805**.
 3. Click Load **Park**.
@@ -233,7 +256,8 @@ Then, in **base_planner_panel**:
 2. Click Load **Step**.
    - **Expect:** `target +0.527 -3.067 +89.6°`.
 3. Click **Plan**.
-   - **Expect:** after about 2 s, `Lattice (hybrid A*) (straight): 4.83 m, 27.3 s`.
+   - **Expect:** after about 2 s, `Lattice (hybrid A*) (straight): 4.83 m, 27.3 s`. That was from the old start,
+     0.5 m behind the park row; from the row the length and time differ a little.
 4. Click **Commit**.
 
 **Expect:**
@@ -246,8 +270,8 @@ While a base drives, Jakob's clearance watch soft-stops it if it comes within th
 
 Alice and Belle stay where they are until section 9.
 
-Driving a base by hand (**Control** → `Base` → **Vel**) doesn't work in the simulation: the simulated base has no
-controller manager, so its velocity controller can't be switched on.
+The simulated base has a stand-in controller manager (crl-husky), so its `ctrl` chip is green and driving it by hand
+(**Control** → `Base` → **Vel**) can switch its velocity controller on; not tried in this test.
 
 ---
 
@@ -481,7 +505,8 @@ process panel `movement 1/4  B21_H_approach`.
    - **Expect:** `target +0.638 -1.561 -29.6°`. If it shows another target, the process panel hadn't followed yet:
      click Step again.
 3. Click **Plan**.
-   - **Expect:** `Lattice (hybrid A*): 3.12 m, 25.2 s`.
+   - **Expect:** `Lattice (hybrid A*): 3.12 m, 25.2 s`. That was from the old start, 0.5 m behind the park row; from
+     the row the length and time differ a little.
 4. Click **Commit**.
 
 **Expect:**
@@ -555,7 +580,7 @@ starts pending; the old run is kept.`); click **Confirm** there.
 
 1. Press Ctrl-C once in the monitor pane and wait for `Server stopped`.
 2. Press Ctrl-C in the top pane.
-3. Run `tmux kill-session -t fake_lab`. This also stops the router.
+3. Run `tmux kill-session -t fake_lab`. This also stops the router and the relay.
 
 ---
 
@@ -566,13 +591,15 @@ These are not mistakes on your side.
 | What you see | Why |
 |---|---|
 | The odd monitor start (pytest imported). | A workaround for compas_fab's stdout race (see section 1). It needs a real fix before any lab use: decision 1 afterwards. |
-| Rhino's cabinet `env39` is in a different place from the measured one. | Rhino's cabinet (y 1.63–2.23 m) is about 0.38 m nearer the park row (y = 1.35 m) than the probe-measured cabinet (`data/lab/main.json`, from y = 2.00 m). With **Rhino obstacles collide** ticked, the base planner refuses any start or target on the park row (4.1); unticked, the default, the row is fine. The robots still start 0.5 m behind the row (`sim.sh shift_y:=0` starts them on it). The Rhino file needs the fix for Rhino's own planning. |
+| Rhino's cabinet `env39` is in a different place from the measured one. | Rhino's cabinet (y 1.63–2.23 m) is about 0.38 m nearer the park row (y = 1.35 m) than the probe-measured cabinet (`data/lab/main.json`, from y = 2.00 m). With **Rhino obstacles collide** ticked, the base planner refuses any start or target on the park row (4.1); unticked, the default, the row is fine, and the robots start on it. The Rhino file needs the fix for Rhino's own planning. |
 | Cindy's base path is refused while the process shows a movement where she holds a bar (4.2). | The base planner counts a held bar as part of the robot, and at `B20_J_transfer` the design has B20 in her grippers; from her start it reaches the measured cabinet. With the transfer workaround, the bar isn't actually there while she drives, but the base planner doesn't know the workaround. Show the action's start (**◀ action**) first. |
 | Grasp and Robotiq steps are refused. | The simulation has no tool drivers. |
 | Insert, retreat and handoff are refused; the servo logs "M7, not run". | M6 and M7 are specified, not built. |
 | B20_R_home won't plan until Cindy's grippers are jogged off the bar (6.2). | In the simulation the insert and retreat never ran. |
 | Don't press **Cancel** in base_planner_panel right after a **Commit** while that robot is still driving an earlier path. | A race in Jakob's code (review finding M1, your decision 3a): within about one tick, the earlier path can keep driving with nothing watching it. Stop a driving base with **Stop all**. |
 | After a link comes back (8.3), a burst of red `[rmw_zenoh_cpp] Query queue depth of 10 reached …` lines. | Jakob's controller-manager check asks once a second without waiting for the answer; the questions pile up while the link is down. Harmless; a fix is Jakob's. |
+| A base's `signal` chip turns red now and then (hover: a gap). | The monitor's own callbacks run late on a busy PC; the simulator publishes at a steady 50 Hz. Close other simulations and test runs, and run the monitor under the performance power profile. |
+| While a robot's link is down (8.1), its mocap pose keeps arriving, but ever older. | The fake Motive keeps publishing the frozen base, as Motive keeps tracking a robot whose WiFi dropped, but with the stamp of its last true pose. A fix in the fake Motive is Jakob's. |
 | A robot's arm stays red after `link.sh … up`. | The link was down for more than 60 s, and Zenoh's sessions expired (section 8). Restart the fake lab. |
 | process needs **Load**. | The README says it loads at start; the code waits for the button. A doc fix. |
 | A plan made in base_planner_panel or **Plan** → **Arm** before you change the Rhino obstacles box is kept. | Jakob's planners don't replan on a scene change (the same as when an obstacle is edited). Replan after changing the box. The assembly steps' plans do go stale (7.3). |

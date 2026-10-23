@@ -75,6 +75,18 @@ ros2 launch husky_assembly_teleop sim_mocap.launch.py
 - ! Run one fake Motive per domain: each fakes every simulated body, so two would both publish them. Nothing refuses
   a second one.
 
+## The fake lab: every robot with the assembly plugins, scripted
+
+`scripts/fake_lab/` runs this simulation (`robot:=all`, with the fake Motive at the measured values below), the relay
+and the monitor on the assembly plugins, each in a clean environment on a Zenoh router of its own on the loopback
+(domain 70, port 7470), with a scratch copy of the Drive, in one tmux session: `scripts/fake_lab/tmux.sh`. `link.sh`
+freezes one robot as if its WiFi dropped. The step-by-step test of the assembly steps on it is
+[fake_lab_test_manual.md](fake_lab_test_manual.md).
+
+- `FAKE_LAB_DOMAIN` (the router's port is 7400 + the domain), `FAKE_LAB_PORT` (the monitor's) and `FAKE_LAB_HOME` (the
+  scratch data) run a second fake lab beside yours.
+- `FAKE_LAB_WS` and `FAKE_LAB_OVERLAY` run a checkout its workspace does not install, e.g. a worktree (`env.sh`).
+
 ## Realistic mocap
 
 Motive as measured: a static-body night with continuous calibration off (13–14 Oct 2026,
@@ -184,4 +196,5 @@ The fake Motive (`sim_mocap`, with `fake_motive:=true`); per-body values are `<v
 | The relay's simulated inputs | `husky_assembly_teleop/mocap_relay/node.py`, [mocap_relay.md](mocap_relay.md) |
 | The fake Motive | `husky_assembly_teleop/mocap_relay/sim_motive.py`, `launch/sim_mocap.launch.py` |
 | One launch for a simulation | `launch/sim.launch.py` |
+| The fake lab around it | `scripts/fake_lab/`, [fake_lab_test_manual.md](fake_lab_test_manual.md) |
 | The monitor's view of simulated parts | `husky_assembly_teleop/robot_interface/simulated_parts.py` |

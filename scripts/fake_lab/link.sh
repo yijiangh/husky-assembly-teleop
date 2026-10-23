@@ -5,7 +5,8 @@
 # Usage: link.sh alice|belle|cindy down|up
 #
 # ! Only children of the running fake-lab launch (sim.sh) are touched, never a shell or a tool that merely names the
-#   robot's namespace.
+#   robot's namespace. The fake Motive names no robot and keeps running: it goes on publishing the frozen base where
+#   it stands, as Motive tracks a robot whose WiFi dropped.
 
 set -e
 case "$1" in
@@ -21,10 +22,11 @@ case "$2" in
 esac
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
 domain="${FAKE_LAB_DOMAIN:-70}"
 # The fake-lab launch on this domain (another one may run on its own domain beside it).
 launch=""
-for pid in $(pgrep -u "$USER" -f "^/usr/bin/python3 /opt/ros/humble/bin/ros2 launch $here/sim.launch.py" || true); do
+for pid in $(pgrep -u "$USER" -f "^/usr/bin/python3 /opt/ros/humble/bin/ros2 launch $repo/launch/sim.launch.py" || true); do
     tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx "ROS_DOMAIN_ID=$domain" && launch+="$pid "
 done
 if [ "$(echo $launch | wc -w)" != 1 ]; then
