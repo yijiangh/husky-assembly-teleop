@@ -206,8 +206,10 @@ class PluginContext:
 
         Example:
             >>> with ctx.lease_robots(["0804"], "wiggle"):
-            ...     arm.send_joint_move(target)
-            ...     await ctx.wait_until(lambda: not arm.state.is_executing, timeout_s=10.0)
+            ...     duration = arm.send_joint_move(target)
+            ...     # Wait on the joints, not `is_executing`: it clears during a slow move. Hold the arm on a timeout.
+            ...     await ctx.wait_until(lambda: np.allclose(arm.joint_vector(), target, atol=1e-2),
+            ...                          timeout_s=duration + 5.0)
         """
         with leased(self._lease_slots(serials), f"{self.name}: {label}") as lease:
             yield lease

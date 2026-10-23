@@ -4,7 +4,7 @@ The headless arm planner: plans a collision-free path for one arm to a joint goa
 Others use it through `ArmPlannerContract`; its panel is `arm_planner_panel`. The first plan for a robot loads its
 models in a compas_fab world (several seconds).
 
-! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_to_arm`).
+! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`).
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ from typing import Callable, Sequence
 
 import numpy as np
 
-from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.mocap_state import pose_lost
 from ...shared.arm_planner_contract import ArmPlanRequest
 from ...shared.assembly_planning.mirrors import MirrorPool
+from ...shared.execution.send import REFUSED, ArmMotion, MotionCommand, send_motion
 from ...world.collision_hit import CollisionHit
 from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ...shared.planner.plan import Plan
@@ -38,29 +38,22 @@ STALE_POSITION = 0.05              # m
 STALE_YAW = math.radians(3.0)      # rad; 5 cm at 1 m reach, as STALE_POSITION
 #: Extra time for the first plan of a robot, which loads the models, seconds.
 LOAD_ALLOWANCE = 60.0
-#: Seconds a sent path may take beyond its duration before the arm is held.
-MOTION_MARGIN = 5.0
 
 
-def send_to_arm(ctx: PluginContext, serial: str, arm_name: str, path: ArmPath) -> float | None:
-    """Send a path to an arm as one joint trajectory, timed as planned and previewed.
+def arm_command(serial: str, arm_name: str, path: ArmPath) -> MotionCommand:
+    """A path as a command for one arm, in the driver's joint order, timed as planned and previewed.
 
     Args:
-        ctx: The plugin's context, for the world and logging.
         serial: Which robot.
         arm_name: Which arm.
         path: The path to follow; its first point must be where the arm is now (`START_TOLERANCE`), else the arm
             refuses it.
-
-    Returns:
-        float | None: The path's duration in seconds, or None if the arm did not take it (the log says why).
     """
     order = [path.joint_names.index(name) for name in arm_joint_names(arm_name)]
-    if not ctx.world.robots[serial].arms[arm_name].send_joint_trajectory(path.points[:, order], path.duration,
-                                                                         path.velocities[:, order]):
-        return None
-    ctx.log_info(f"{serial} {arm_name}: sent a path of {path.duration:.1f} s, {path.rests} rests on the way")
-    return path.duration
+    points = path.points[:, order]
+    travel = float(np.max(np.sum(np.abs(np.diff(points, axis=0)), axis=0)))
+    return MotionCommand(serial, (ArmMotion(arm_name, points, path.velocities[:, order]),), path.duration,
+                         path.duration, path.duration, travel)
 
 
 @register
@@ -182,23 +175,19 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
 
     async def execute(self, ctx: PluginContext, plan: Plan[ArmPlanRequest],
                       answer: Callable[[bool, str], None]) -> None:
-        """Send the plan to the arm, and wait until it stands still; Hold it if cancelled or late."""
-        serial, arm_name = plan.request.serial, plan.request.arm
-        arm = ctx.world.robots[serial].arms[arm_name]
-        duration = send_to_arm(ctx, serial, arm_name, plan.path)
-        if duration is None:
-            answer(False, f"{serial} {arm_name} refused the path (the log says why)")
-            return
-        answer(True, f"sent to {serial} {arm_name}")
-        try:
-            await ctx.wait_until(lambda: not arm.state.is_executing, timeout_s=duration + MOTION_MARGIN,
-                                 description=f"{serial} {arm_name} to finish the path")
-        except WaitTimeout as late:
-            ctx.log_warn(f"{late}; holding the arm")
-            arm.hold()
-        except asyncio.CancelledError:
-            arm.hold()  # ! the lease is given back next: nothing would stop the arm otherwise
-            raise
+        """Send the plan to the arm and watch it until it is at the end; else hold it (`send_motion`).
+
+        ! Arrival is judged on the joints, not `is_executing`, which clears during a slow move (the pendant's speed
+          slider): the lease would go back mid-motion.
+        """
+        serial, arm_name, path = plan.request.serial, plan.request.arm, plan.path
+        ctx.log_info(f"{serial} {arm_name}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
+        outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
+                                    on_sent=lambda: answer(True, f"sent to {serial} {arm_name}"))
+        if outcome.status == REFUSED:
+            answer(False, outcome.reason)
+        else:
+            (ctx.log_info if outcome.ok else ctx.log_warn)(f"{serial} {arm_name}: {outcome.reason}")
 
     def forget(self, plan: Plan[ArmPlanRequest]) -> None:
         """Drop the base position the plan was for."""

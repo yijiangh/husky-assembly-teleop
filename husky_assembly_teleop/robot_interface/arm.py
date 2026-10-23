@@ -357,6 +357,7 @@ class ArmState:
         digital_in: UR digital inputs by pin.
         is_executing: Whether the arm is moving under a trajectory we sent.
             ? Guessed from motion: True from sending until the joints have been still for STILL_AFTER.
+            ! Not an arrival check: it clears during a slow move (the pendant's speed slider); compare the joints.
         controllers: The arm controller manager's state.
 
         * The fields below come from multi_arm_safety_sync (`on_sync_status`).

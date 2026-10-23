@@ -26,7 +26,9 @@ import viser
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
+from ...robot_interface.arm import MOVING_WITHIN, ArmInterface
 from ...robot_interface.soft_stop import MotionRefused
+from ...shared.execution.send import ARRIVED_TOLERANCE
 from ...ui.style import BUSY, FAIL, NONE, OK, REFUSAL_SHOWN, SECTION_CTRL, chip, chip_line, section
 from ...world.freeze import take_basis
 
@@ -111,8 +113,10 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
                             refusal = arm.last_refusal
                             self.outcome = ("move refused", refusal.reason if refusal else "see the log")
                             return
-                        await ctx.wait_until(lambda: not arm.state.is_executing, timeout_s=duration + MOVE_MARGIN,
-                                             description=f"{serial} {arm_name} to stop")
+                        # ! Wait on the joints, not `is_executing`: it clears during a slow move (the pendant's speed
+                        #   slider), and the lease would go back while the arm still moves.
+                        await ctx.wait_until(lambda: _settled(ctx, arm, target), timeout_s=duration + MOVE_MARGIN,
+                                             description=f"{serial} {arm_name} to arrive")
             self.outcome = ("done", "")
         except MotionRefused as refused:
             # Expected: another holder has the robot's lease, or something moved before the start.
@@ -145,3 +149,10 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
         if self._refused is not None and ctx.now() - self._refused[2] <= REFUSAL_SHOWN:
             chips += chip(self._refused[0], FAIL, self._refused[1])
         self._status.content = chip_line(chips)
+
+
+def _settled(ctx: PluginContext, arm: ArmInterface, target: np.ndarray) -> bool:
+    """Whether `arm` is at `target` (ARRIVED_TOLERANCE) and has not moved for MOVING_WITHIN, so it takes a new move."""
+    here, moved = arm.joint_vector(), arm.state.last_motion_time
+    return (here is not None and float(np.max(np.abs(here - target))) < ARRIVED_TOLERANCE
+            and (moved is None or ctx.now() - moved >= MOVING_WITHIN))

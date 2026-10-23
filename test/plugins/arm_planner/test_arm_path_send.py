@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
 from husky_assembly_teleop.plugins.arm_planner.planner import BLEND_LENGTH, ArmPath, arm_joint_names, round_corners
-from husky_assembly_teleop.plugins.arm_planner.planner_plugin import send_to_arm
+from husky_assembly_teleop.plugins.arm_planner.planner_plugin import arm_command
 from husky_assembly_teleop.robot_interface.arm import (JOINT_MOVE_MAX_SPEED, JOINT_MOVE_WAYPOINT_SPACING,
                                                        JOINT_PATH_MAX_ACCELERATION, joint_path_move)
 from robot_fakes import fake_arm
@@ -103,35 +101,18 @@ def test_path_move_refuses_a_path_that_does_not_move():
         joint_path_move(WAYPOINTS[[0, 0]])
 
 
-class _FakeArm:
-    """Records the trajectory it is sent; refuses when told to."""
-
-    def __init__(self, accept: bool):
-        self.accept, self.sent = accept, None
-
-    def send_joint_trajectory(self, positions, duration, velocities=None) -> bool:
-        self.sent = (positions, duration, velocities)
-        return self.accept
-
-
-def _ctx(arm: _FakeArm) -> SimpleNamespace:
-    return SimpleNamespace(world=SimpleNamespace(robots={"0806": SimpleNamespace(arms={"left_ur_arm": arm})}),
-                           log_info=lambda _text: None, log_warn=lambda _text: None)
-
-
-def test_send_to_arm_sends_the_planned_trajectory_in_driver_order():
-    """The path's samples, timing and velocities go out as planned, in the UR driver's joint order; a refusal shows."""
+def test_arm_command_is_the_planned_trajectory_in_driver_order():
+    """The path's samples, timing and velocities go out as planned, in the UR driver's joint order."""
     names = arm_joint_names("left_ur_arm")
     shuffled = [names[i] for i in (5, 4, 3, 2, 1, 0)]
     path = ArmPath.along(shuffled, WAYPOINTS[:, ::-1])
-    arm = _FakeArm(accept=True)
-    assert send_to_arm(_ctx(arm), "0806", "left_ur_arm", path) == path.duration
-    positions, duration, velocities = arm.sent
+    command = arm_command("0806", "left_ur_arm", path)
+    (motion,) = command.arms
     expected, expected_velocities, expected_duration = joint_path_move(WAYPOINTS)
-    np.testing.assert_allclose(positions, expected)
-    np.testing.assert_allclose(velocities, expected_velocities)
-    assert duration == pytest.approx(expected_duration)
-    assert not send_to_arm(_ctx(_FakeArm(accept=False)), "0806", "left_ur_arm", path)
+    assert (command.serial, motion.arm) == ("0806", "left_ur_arm")
+    np.testing.assert_allclose(motion.positions, expected)
+    np.testing.assert_allclose(motion.velocities, expected_velocities)
+    assert command.duration == pytest.approx(expected_duration)
 
 
 def test_a_path_that_does_not_move_is_no_path():

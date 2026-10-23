@@ -9,14 +9,15 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from plugin_fakes import ArmDriver, FakeContext, fake_arm, fake_node, fake_robot
 from robot_fakes import lease_test_robots, wait_ticks_until
 
-from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugins.arm_planner import planner_plugin as arm_plugin
 from husky_assembly_teleop.plugins.arm_planner.panel_plugin import ArmPlannerPanel
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath, arm_joint_names
 from husky_assembly_teleop.plugins.arm_planner.planner_plugin import ArmPlannerPlugin
 from husky_assembly_teleop.shared.arm_planner_contract import ArmPlanRequest
+from husky_assembly_teleop.shared.execution.send import ARRIVED_TOLERANCE
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from scaffolding_assembly_core.ids import robot_id
@@ -44,11 +45,13 @@ class FakeCtx:
         """The arm at START, the base at the origin with a live mocap pose, and an arm that accepts."""
         self.joints, self.base, self.sent, self.clock = dict(zip(NAMES, START)), (0.0, 0.0, 0.0), [], 0.0
         arm = SimpleNamespace(send_joint_trajectory=lambda positions, duration, velocities: self.sent.append(positions)
-                              or True, state=SimpleNamespace(is_executing=False))
+                              or True, state=SimpleNamespace(last_update_time=0.0, last_motion_time=0.0),
+                              joint_vector=lambda: START, hold=lambda: True)
         mocap = SimpleNamespace(marker_errors=deque([(0.0, 0.001)]), last_update_time=0.0, last_fix_time=0.0,
                                 tracking_valid=True, tracked=True)
         self.world = SimpleNamespace(robots={SERIAL: SimpleNamespace(
-            arms={ARM: arm}, base=SimpleNamespace(mocap_id=5, state=mocap), lease=None)})
+            config=SimpleNamespace(serial=SERIAL), arms={ARM: arm}, base=SimpleNamespace(mocap_id=5, state=mocap),
+            lease=None)})
         robot = SimpleNamespace(enabled=False, acting_problems=lambda: [], base=pose(0.0, 0.0, 0.0), base_tracked=True)
         self.scene = SimpleNamespace(snapshot=SimpleNamespace(robots={robot_id(SERIAL): robot}))
         self.kinematics = SimpleNamespace(joints=lambda _serial: self.joints,
@@ -171,57 +174,89 @@ def test_the_start_base_belongs_to_the_plan_it_was_made_for(found_path):
     assert planner._start_base is None and planner.stale_reason(ctx, plan) == ""
 
 
-@pytest.mark.safety
-def test_execute_sends_the_path_and_waits_until_the_arm_stands_still():
-    """The plan's path goes to the request's arm, the commit is answered, and the motion is watched to its end."""
-    ctx, planner, answers = FakeCtx(), ArmPlannerPlugin(), []
-    arm = ctx.world.robots[SERIAL].arms[ARM]
-    arm.state.is_executing = True
+def _driven(speed: float = 1.0, start: np.ndarray = START) -> tuple[FakeContext, object]:
+    """A context over robot SERIAL with a real arm ARM at `start`, run by an ArmDriver at `speed` (1: as timed)."""
+    driver = None
+    ctx = FakeContext(name="arm_planner", step=lambda t: driver.tick(t))
+    node = fake_node(ctx.now, ctx.logs)
+    arm = fake_arm(node, ARM, start)
+    ctx.world.robots[SERIAL] = robot = fake_robot(node, SERIAL, [arm])
+    driver = ArmDriver(arm, robot, speed=speed)
+    return ctx, arm
+
+
+def _commit(ctx: FakeContext, answers: list, cancel_after: int | None = None) -> np.ndarray:
+    """Execute the ready plan under the robot's lease, cancelled after `cancel_after` ticks if given; then let 2 s pass.
+
+    Returns:
+        np.ndarray: The arm's joints when the commit ended (and the lease went back).
+    """
+    async def commit():
+        with ctx.lease_robots([SERIAL], "commit plan 1"):
+            await ArmPlannerPlugin().execute(ctx, ready_plan(), lambda *answer: answers.append(answer))
 
     async def scenario():
-        task = asyncio.create_task(planner.execute(ctx, ready_plan(), lambda *answer: answers.append(answer)))
-        await asyncio.sleep(0)
-        moving = not task.done()
-        arm.state.is_executing = False
-        await task
-        return moving
+        task = asyncio.create_task(commit())
+        if cancel_after is not None:
+            for _ in range(cancel_after):
+                await ctx.next_tick()
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        ended = ctx.world.robots[SERIAL].arms[ARM].joint_vector().copy()
+        for _ in range(20):
+            await ctx.next_tick()
+        return ended
 
-    assert asyncio.run(scenario()) and answers == [(True, f"sent to {SERIAL} {ARM}")]
-    assert np.allclose(ctx.sent[0][0], START) and np.allclose(ctx.sent[0][-1], GOAL)
+    return asyncio.run(scenario())
+
+
+def _held(arm) -> bool:
+    """Whether the last trajectory the arm got is a hold (a single point)."""
+    return len(arm._trajectory.messages[-1].points) == 1
+
+
+@pytest.mark.safety
+def test_execute_sends_the_path_and_waits_until_the_arm_is_at_its_end():
+    """The plan's path goes to the request's arm, the commit is answered once sent, and it ends with the arm there."""
+    (ctx, arm), answers = _driven(), []
+    ended = _commit(ctx, answers)
+    assert answers == [(True, f"sent to {SERIAL} {ARM}")] and len(arm._trajectory.messages) == 1
+    assert np.allclose(ended, GOAL, atol=1e-3)
 
 
 @pytest.mark.safety
 def test_execute_reports_an_arm_that_refuses_the_path():
-    """An arm that refuses the trajectory answers the commit that nothing was sent."""
-    ctx, planner, answers = FakeCtx(), ArmPlannerPlugin(), []
-    ctx.world.robots[SERIAL].arms[ARM].send_joint_trajectory = lambda *args: False
-    asyncio.run(planner.execute(ctx, ready_plan(), lambda *answer: answers.append(answer)))
+    """An arm that refuses the trajectory (it is not at the path's start) answers the commit that nothing was sent."""
+    (ctx, arm), answers = _driven(start=START + np.radians([10.0, 0, 0, 0, 0, 0])), []
+    _commit(ctx, answers)
     (sent, message), = answers
-    assert not sent and "refused" in message
+    assert not sent and "refused" in message and not arm._trajectory.messages
 
 
 @pytest.mark.safety
-@pytest.mark.parametrize("how", ["cancel", "late"])
-def test_an_arm_path_cancelled_or_late_is_held(how):
-    """Cancelled (Stop all, plugin stop) or still moving past its duration: the arm is held."""
-    ctx, planner, held = FakeCtx(), ArmPlannerPlugin(), []
-    arm = ctx.world.robots[SERIAL].arms[ARM]
-    arm.state.is_executing, arm.hold = True, lambda: held.append(how)
+def test_a_cancelled_commit_holds_the_arm():
+    """Cancelled (Stop all, plugin stop, a new commit) while the arm moves: it is held before the lease goes back."""
+    (ctx, arm), answers = _driven(), []
+    ended = _commit(ctx, answers, cancel_after=5)
+    assert _held(arm) and not np.allclose(ended, GOAL, atol=1e-2)
+    assert np.allclose(arm.joint_vector(), ended, atol=1e-6)
 
-    async def late(*_args, description="", **_kwargs):
-        raise WaitTimeout(f"timed out waiting for {description}")
 
-    if how == "late":
-        ctx.wait_until = late
+@pytest.mark.safety
+@pytest.mark.parametrize("speed, held", [(0.1, True), (0.25, False)])
+def test_a_slow_arm_keeps_the_commit_until_it_is_at_its_end_or_held(speed, held):
+    """The pendant's speed slider under 100 %: the commit, and so the lease, lasts until the arm arrives or is held.
 
-    async def scenario():
-        task = asyncio.create_task(planner.execute(ctx, ready_plan(), lambda *_answer: None))
-        await asyncio.sleep(0)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-
-    asyncio.run(scenario())
-    assert held == [how]
+    At 10 % it is late, held, and moves no more.
+    ! `is_executing` clears during such a move: waiting on it gave the lease back while the arm still moved.
+    """
+    (ctx, arm), answers = _driven(speed), []
+    ended = _commit(ctx, answers)
+    assert answers == [(True, f"sent to {SERIAL} {ARM}")] and _held(arm) == held
+    if held:
+        assert np.allclose(arm.joint_vector(), ended, atol=1e-6)
+    else:
+        assert np.max(np.abs(ended - GOAL)) < ARRIVED_TOLERANCE
 
 
 def make_panel(planner: ArmPlannerPlugin) -> ArmPlannerPanel:

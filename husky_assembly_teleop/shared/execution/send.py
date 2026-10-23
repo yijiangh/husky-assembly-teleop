@@ -191,7 +191,7 @@ def motion_command(serial: str, arm_names: Sequence[str], joint_names: Sequence[
 
 async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: MotionCommand, *,
                       dry_run: bool = False, watch: Callable[[], str] | None = None,
-                      progress: SendProgress | None = None) -> SendOutcome:
+                      progress: SendProgress | None = None, on_sent: Callable[[], None] | None = None) -> SendOutcome:
     """Send a motion and wait until every arm is at its end once the duration is up; hold every arm otherwise.
 
     Args:
@@ -201,6 +201,7 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
         dry_run: Build every trajectory (all the arm's checks) and send nothing.
         watch: Checked every tick while the arms move: why the motion must stop (e.g. another robot moves), or "".
         progress: Filled in when a cancel cuts the send short (where the arms were, the holds), or None.
+        on_sent: Called once the trajectory went out, before the wait, e.g. to answer a commit.
 
     Returns:
         SendOutcome: ARRIVED, REFUSED (nothing sent), TIMEOUT, STOPPED or INTERRUPTED (all held), HOLD_NOT_SENT, or
@@ -234,6 +235,8 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
         return SendOutcome(REFUSED, f"{serial} refused the trajectory (the log says why); nothing sent")
     started = ctx.now()
     ctx.log_info(f"{serial}: moving {', '.join(arms)}, {command.duration:.1f} s")
+    if on_sent is not None:
+        on_sent()
     ends = {motion.arm: motion.positions[-1] for motion in command.arms}
     lost, interrupted = False, ""
 
