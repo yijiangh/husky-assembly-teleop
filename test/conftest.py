@@ -1,6 +1,7 @@
 """Shared test setup: this folder's helper modules are importable from every test folder.
 
 Tests under experiments/ check offline analysis that no robot session runs, so they are marked slow.
+Tests under plugins/<name>/ are marked <name>: `pytest -m <name>` runs that plugin's tests, slow ones too.
 Tests marked old_scripts run only with `--old-scripts`, even under `-m ""`.
 Every test holds TEST_LEASE, which the fake robots in `robot_fakes.py` are leased to.
 ? Without pytest-xdist or pytest-timeout (requirements.txt), their settings in setup.cfg are accepted and ignored: the
@@ -20,6 +21,8 @@ import pytest  # noqa: E402
 from robot_fakes import TEST_LEASE  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+#: The plugins with tests of their own, each a marker.
+PLUGINS = sorted(path.name for path in (HERE / "plugins").iterdir() if path.is_dir() and path.name != "__pycache__")
 
 
 #: The plugins setup.cfg asks for that this Python lacks.
@@ -39,6 +42,12 @@ def pytest_addoption(parser):
         parser.addini("timeout", "pytest-timeout is not installed: ignored, no time limit")
 
 
+def pytest_configure(config):
+    """Register a marker per plugin folder."""
+    for name in PLUGINS:
+        config.addinivalue_line("markers", f"{name}: the tests under plugins/{name}/")
+
+
 def pytest_report_header(config):
     """Say which of setup.cfg's plugins are missing, and what that changes."""
     if MISSING:
@@ -47,11 +56,14 @@ def pytest_report_header(config):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Mark every test under experiments/ slow; skip old_scripts tests unless `--old-scripts` is given."""
+    """Mark tests under experiments/ slow and under plugins/<name>/ <name>; skip old_scripts without `--old-scripts`."""
     skip_old = pytest.mark.skip(reason="runs the old calibration scripts: pytest --old-scripts")
     for item in items:
-        if Path(str(item.fspath)).resolve().relative_to(HERE).parts[0] == "experiments":
+        parts = Path(str(item.fspath)).resolve().relative_to(HERE).parts
+        if parts[0] == "experiments":
             item.add_marker(pytest.mark.slow)
+        if parts[0] == "plugins" and len(parts) > 2:
+            item.add_marker(getattr(pytest.mark, parts[1]))
         if "old_scripts" in item.keywords and not config.getoption("--old-scripts"):
             item.add_marker(skip_old)
 
