@@ -7,6 +7,17 @@ Project-wide instructions for coding agents. Keep them generic: no personal path
 - Simplicity first: make every change as simple as possible and touch as little code as possible. Reuse existing functions instead of writing new ones.
 - Code is read by humans and agents: write comments, in plain language without jargon (no "no-op").
 
+## Panels: nothing jumps
+
+Buttons must stay where the operator's finger or pointer expects them, on the laptop and on the phone.
+
+- ! While a view shows, nothing above a button may change height. A line of chips or a warning that can appear is
+  already there, empty, so its space is reserved: use `ui.style.chip_line`, one line high, which scrolls sideways
+  rather than wrapping. Chips appearing should be rare.
+- Text that comes and goes (questions, refusals, readouts that grow) goes below the buttons.
+- Never hide or show widgets above other controls; keep a fixed set of chips per view and change their colour
+  instead.
+
 ## Code style
 
 - Google-style docstrings with type hints in the signature (`def fn(a: float) -> int:`).
@@ -41,7 +52,7 @@ When briefing a subagent to write or edit comments, paste this section into its 
   - ! It imports nothing from `husky_assembly_teleop`, ROS or viser, and runs on Python 3.9: change it in the submodule following its own `AGENTS.md`, run its own tests there (`cd external/scaffolding_assembly_core && python3 -m pytest`), commit and push it, then commit the new submodule pointer here.
 - `husky_assembly_teleop/plugins/__init__.py`: the rules every plugin follows. `plugins/robot_control/` is the reference plugin, `plugins/examples/` the templates.
 - `husky_assembly_teleop/shared/`: for plugins to share code, data and services; plugins never import each other. What plugin `<name>` offers is `<Name>Contract` in `shared/<name>_contract.py`; subfolders (`shared/planner/`) hold base classes and helpers. `test/structure/test_layers.py` checks that imports only go down the layers.
-- `doc/refactor_rationale.md`: why the core is built the way it is. `doc/plugin_roadmap.md`: which old features are still to be ported. `doc/scene_refactor_plan.md`: the scene.
+- `doc/glossary.md`: the project's words (runtime, core, lease, freeze, clearance, ...) and which meaning each has where. `doc/refactor_rationale.md`: why the runtime is built the way it is. `doc/plugin_roadmap.md`: which old features are still to be ported. `doc/scene_refactor_plan.md`: the scene.
 - `doc/experiment_design_guide.md` and `doc/experiment_report_guide.md`: JG's Experiment Design Guide: how to plan, build and analyse an experiment, and how its generated reports are written.
 - `husky_assembly_teleop/old/`: the old monitor, reference only. It does not run; never import it from new code.
 - Docs marked outdated at the top describe the old monitor.

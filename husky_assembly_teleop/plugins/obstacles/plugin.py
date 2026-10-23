@@ -1,7 +1,9 @@
 """
 The lab's obstacles in the scene, and the tools to edit them.
 
-Furniture and floor border come from the lab file; temporary obstacles are for a session's tests.
+Furniture and floor border come from the lab file; temporary obstacles are for a session's tests. The floor is a slab
+under z = 0 out to the border walls, not drawn: arms, tools and what they hold collide with it, the robots' platform
+links (wheels, chassis) may touch it.
 
 - Lab obstacles come from `data/lab/<lab>.json` (`-p lab:=<name>`, default "main"), in git and the same for everyone.
   Edits stay in memory until Save; Revert goes back to the file; an amber chip shows unsaved changes.
@@ -11,8 +13,8 @@ Furniture and floor border come from the lab file; temporary obstacles are for a
   gizmos: drag with them (only the yaw of a turn is kept), resize with the corner one, or type position, yaw and size.
 
 Ids: "obstacles/boxes/<name>", "obstacles/cylinders/<name>", "obstacles/trusses/<name>", and the border walls
-"obstacles/boxes/border_x_min" and so on. Planners see them in `ctx.scene.snapshot`. Other plugins read the lab through
-`shared.obstacles_contract.ObstaclesContract` (`lab`).
+"obstacles/boxes/border_x_min" and so on, and "obstacles/floor". Planners see them in `ctx.scene.snapshot`. Other
+plugins read the lab through `shared.obstacles_contract.ObstaclesContract` (`lab`).
 """
 
 from __future__ import annotations
@@ -27,11 +29,13 @@ import viser
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.body_gizmo import BodyGizmo
-from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, block, chip, note, section, values
+from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, block, chip, chip_line, note, section, values
 from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.ids import link_id, robot_id
 from scaffolding_assembly_core.scene import Body
 from ...world.lab import (DEFAULT_LAB, GROUPS, LAB_COLOR, TEMPORARY_COLOR, Border, Lab, Shape, border_bodies,
-                          lab_file, read_lab, read_temporary, shape_id, slug, write_lab, write_temporary)
+                          floor_body, lab_file, platform_links, read_lab, read_temporary, shape_id, slug, write_lab,
+                          write_temporary)
 
 #: Dropdown entry while there is nothing to edit.
 NONE_ENTRY = "(none)"
@@ -41,9 +45,11 @@ NEW_SIZE = (0.5, 0.5, 1.0)
 
 @register
 class ObstaclesPlugin(HuskyPlugin):
-    """Puts the lab file's obstacles and border, and the temporary obstacles, into the scene, and edits them."""
+    """Puts the lab file's obstacles, border and floor, and the temporary obstacles, into the scene, and edits them."""
 
     name = "obstacles"
+    icon = viser.Icon.BARRIER_BLOCK
+    hidden = True
 
     def __init__(self):
         """Start with an empty lab; setup reads the files."""
@@ -72,7 +78,7 @@ class ObstaclesPlugin(HuskyPlugin):
         """
         self.load(ctx)
         self._put_all(ctx)
-        with ctx.view.ui(expanded=False) as gui:
+        with ctx.view.ui() as gui:
             gui.add_html(section("lab", SECTION_CTRL))
             self._lab_status: viser.GuiHtmlHandle = gui.add_html("")
             lab_actions = gui.add_button_group("Lab", ["Save", "Revert"])
@@ -134,7 +140,7 @@ class ObstaclesPlugin(HuskyPlugin):
         self.write_temporary(ctx)
 
     def teardown(self, ctx: PluginContext) -> None:
-        """Remove the scene click callback; the core removes the bodies.
+        """Remove the scene click callback; the runtime removes the bodies.
 
         Args:
             ctx: This plugin's context.
@@ -261,11 +267,11 @@ class ObstaclesPlugin(HuskyPlugin):
             self._gizmo_on = None  # put the gizmos on it again in draw
 
     def set_border(self, ctx: PluginContext, x, y) -> None:
-        """Set the usable floor's x and y range; the walls follow."""
+        """Set the usable floor's x and y range; the walls and the floor follow."""
         border = self.lab.border or Border((0.0, 0.0), (0.0, 0.0))
         x, y = tuple(sorted(float(v) for v in x)), tuple(sorted(float(v) for v in y))
         self.lab = replace(self.lab, border=replace(border, x=x, y=y))
-        ctx.scene.put_many(border_bodies(self.name, self.lab.border))
+        ctx.scene.put_many(self._border_and_floor(ctx))
 
     def _pick(self, body_id: str) -> None:
         """Select an obstacle picked in the 3D view."""
@@ -310,10 +316,16 @@ class ObstaclesPlugin(HuskyPlugin):
         return new_id
 
     def _put_all(self, ctx: PluginContext) -> None:
-        """Put every obstacle and the border walls into the scene, replacing what this plugin had there."""
+        """Put every obstacle, the border walls and the floor into the scene, replacing what this plugin had there."""
         ctx.scene.remove_prefix(f"{self.name}/")
         ctx.scene.put_many([self._body(body_id, shape) for body_id, shape in self.shapes().items()]
-                           + border_bodies(self.name, self.lab.border))
+                           + self._border_and_floor(ctx))
+
+    def _border_and_floor(self, ctx: PluginContext) -> list[Body]:
+        """The border walls and the floor under them, which every robot's platform links may touch."""
+        touches = tuple(link_id(robot_id(robot.serial), link) for robot in ctx.config.robots
+                        for link in platform_links(robot.model))
+        return border_bodies(self.name, self.lab.border) + [floor_body(self.name, self.lab.border, touches)]
 
     def _body(self, body_id: str, shape: Shape) -> Body:
         """The scene body of one obstacle."""
@@ -363,7 +375,7 @@ class ObstaclesPlugin(HuskyPlugin):
         """
         name = self.path.name if self.path else "no lab file"
         state = chip("unsaved", BUSY, "Save writes the lab file") if self.dirty else chip("saved", OK)
-        self._lab_status.content = block(chip(escape(name), NONE, str(self.path)) + state + values(
+        self._lab_status.content = chip_line(chip(escape(name), NONE, str(self.path)) + state) + block(values(
             f"{len(self.lab.shapes)} obstacles, {len(self.temporary)} temporary"))
         if self.lab.border is not None:
             self._border_x.value = tuple(round(v, 3) for v in self.lab.border.x)

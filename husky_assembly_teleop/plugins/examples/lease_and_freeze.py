@@ -27,7 +27,7 @@ from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...robot_interface.soft_stop import MotionRefused
-from ...ui.style import BUSY, FAIL, NONE, OK, REFUSAL_SHOWN, SECTION_CTRL, block, chip, section
+from ...ui.style import BUSY, FAIL, NONE, OK, REFUSAL_SHOWN, SECTION_CTRL, chip, chip_line, section
 from ...world.freeze import take_basis
 
 #: The wiggle: wrist 3 turns this far, radians, then back.
@@ -83,7 +83,7 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
             ctx.log_info(f"{clicked} ignored: {why}")
 
     async def _wiggle(self, ctx: PluginContext, serial: str, arm_name: str) -> None:
-        """Turn the wrist out and back, holding the robot's lease and freezing everything else.
+        """Turn the wrist out and back, under the robot's lease and a freeze of everything else.
 
         Args:
             ctx: This plugin's context.
@@ -144,4 +144,4 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
             chips += chip(label, OK if label in ("running", "done") else FAIL, reason)
         if self._refused is not None and ctx.now() - self._refused[2] <= REFUSAL_SHOWN:
             chips += chip(self._refused[0], FAIL, self._refused[1])
-        self._status.content = block(chips)
+        self._status.content = chip_line(chips)

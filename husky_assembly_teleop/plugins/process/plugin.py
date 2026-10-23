@@ -6,7 +6,7 @@ It serves the selected movement, and the maps between process ids and live scene
 (`shared.process_contract.ProcessContract`).
 
 Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "process/<body id>"
-(`scene_bodies.py`): the core draws it and planners avoid it. A body the plan holds follows the configured real
+(`scene_bodies.py`): the runtime draws it and planners avoid it. A body the plan holds follows the configured real
 robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.ProcessDrawing`), with the other
 bodies on request. The plugin only reads processes: it never edits one.
 
@@ -33,11 +33,12 @@ from pathlib import Path
 
 from typing import TYPE_CHECKING
 
+import viser
 from async_timeout import timeout
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, swatch_chip, values
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, chip_line, note, section, swatch_chip, values
 from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
@@ -95,6 +96,7 @@ class ProcessPlugin(HuskyPlugin):
     """Shows the authored state at one movement at a time and steps through the schedule."""
 
     name = "process"
+    icon = viser.Icon.LIST_NUMBERS
     experimental = True
 
     def __init__(self):
@@ -507,17 +509,17 @@ class ProcessPlugin(HuskyPlugin):
             chips = chip("no process", NONE)
         if self._error:
             chips += chip("error", FAIL, self._error)
-        return block(_one_line(chips))
+        return chip_line(chips)
 
     def _collide_html(self, ctx: PluginContext) -> str:
         """One line of chips: whether the Rhino obstacles collide, and a warning when nothing in the room is checked."""
         if self.obstacles_collide:
-            return block(_one_line(chip("Rhino obstacles collide", OK)))
+            return chip_line(chip("Rhino obstacles collide", OK))
         chips = chip("Rhino obstacles: drawn only", NONE, "left out of every collision check")
         if not any(body_id.startswith(MEASURED_PREFIX) for body_id in ctx.scene.snapshot.bodies):
             chips += chip("room unchecked", FAIL, "no measured obstacles in the scene: add 'obstacles' to the "
                                                   "plugins, or nothing in the room is checked")
-        return block(_one_line(chips))
+        return chip_line(chips)
 
     def _details_html(self, action: Action, movement: Movement) -> str:
         """Three rows of chips, four lines of text and a two-line description of the selected movement."""

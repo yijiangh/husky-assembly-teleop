@@ -24,7 +24,7 @@ from husky_assembly_teleop.plugins.base_planner.path import BasePath
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
 from husky_assembly_teleop.plugins.health import robot_action
 from husky_assembly_teleop.plugins.robot_control.arm_panel import build_phone_arm_inputs, build_tool_inputs
-from husky_assembly_teleop.plugins.robot_control.dpad import MAX_LINEAR_SPEED
+from husky_assembly_teleop.shared.teleop.dpad import MAX_LINEAR_SPEED, Hold
 from husky_assembly_teleop.plugins.robot_control.plugin import FREE_DRIVE_RETRY, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.plugins.robot_control.status import build_controller_panel
 from husky_assembly_teleop.plugins.robot_control import plugin as robot_control_module
@@ -123,7 +123,7 @@ class Lab:
         answers = []
         for planner, request, path in (
                 (arm_planner, ArmPlanRequest(SERIAL, "ur_arm", tuple(START)),
-                 ArmPath.at_preview_speed(arm_joint_names("ur_arm"), np.array([START, START]))),
+                 ArmPath.along(arm_joint_names("ur_arm"), np.array([START, np.add(START, 0.01)]))),
                 (base_planner, BasePlanRequest(SERIAL, (1.0, 0.0, 0.0)),
                  BasePath(np.array([0.0, 1.0]), np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])))):
             planner.setup(self.ctx)
@@ -194,23 +194,23 @@ def test_the_dpad_and_free_drive_are_refused_while_held():
     lab = Lab()
     lab.plugin._bases = [_BaseWidgets(serial=SERIAL, base=lab.robot.base, panel=None, status=None,
                                       speed=SimpleNamespace(value=0.5))]
-    lab.plugin._on_hold(lab.ctx, SERIAL, False, 1.0, 0.0)
+    lab.plugin._on_hold(SERIAL, Hold(1.0, 0.0, lab.plugin._bases[0].speed, lab.ctx.now()))
     lab.plugin.update(lab.ctx)
     assert lab.twists == [(0.5 * MAX_LINEAR_SPEED, 0.0)]
     # ? Alice marked held while robot_control drives her: since the robot lease, `take` refuses that, so this proves
     #   the D-pad's own check, a second line.
     marked = lab.set_held(SERIAL)
     for _ in range(3):
-        lab.plugin._on_hold(lab.ctx, SERIAL, False, 1.0, 0.0)
+        lab.plugin._on_hold(SERIAL, Hold(1.0, 0.0, lab.plugin._bases[0].speed, lab.ctx.now()))
         lab.plugin.update(lab.ctx)
     assert lab.twists[1:] == [(0.0, 0.0)] and len(lab.refusals()) == 1
     give_back(lab.ctx.world, marked)
     # * The same with Cindy marked held while Alice drives: Alice gets one stop, and no twist after it.
-    lab.plugin._on_hold(lab.ctx, SERIAL, False, 1.0, 0.0)
+    lab.plugin._on_hold(SERIAL, Hold(1.0, 0.0, lab.plugin._bases[0].speed, lab.ctx.now()))
     lab.plugin.update(lab.ctx)
     marked = lab.set_held("a200-0806")
     for _ in range(3):
-        lab.plugin._on_hold(lab.ctx, SERIAL, False, 1.0, 0.0)
+        lab.plugin._on_hold(SERIAL, Hold(1.0, 0.0, lab.plugin._bases[0].speed, lab.ctx.now()))
         lab.plugin.update(lab.ctx)
     assert lab.twists[2:] == [(0.5 * MAX_LINEAR_SPEED, 0.0), (0.0, 0.0)] and len(lab.refusals()) == 2
     give_back(lab.ctx.world, marked)
@@ -376,7 +376,7 @@ def test_a_commit_whose_task_starts_after_a_robot_was_held_sends_nothing():
     planner = ArmPlannerPlugin()
     planner.setup(lab.ctx)
     planner._plan = Plan(1, ArmPlanRequest(SERIAL, "ur_arm", tuple(START)),
-                         "ready", ArmPath.at_preview_speed(arm_joint_names("ur_arm"), np.array([START, START])))
+                         "ready", ArmPath.along(arm_joint_names("ur_arm"), np.array([START, np.add(START, 0.01)])))
 
     async def scenario():
         future = planner.commit(1)
@@ -400,7 +400,7 @@ def test_cancel_beside_commit_stops_a_running_commit_even_while_a_robot_is_held(
     goal = list(START)
     goal[0] += 0.2
     planner._plan = Plan(1, ArmPlanRequest(SERIAL, "ur_arm", tuple(goal)),
-                         "ready", ArmPath.at_preview_speed(arm_joint_names("ur_arm"), np.array([START, goal])))
+                         "ready", ArmPath.along(arm_joint_names("ur_arm"), np.array([START, goal])))
 
     async def scenario():
         sent = await planner.commit(1)
@@ -439,12 +439,12 @@ def test_robot_control_keeps_no_clearance_while_held_and_soft_stops_a_base_it_ca
 
     async def scenario():
         lease = lab.hold_robot("a200-0806")
-        plugin._on_hold(lab.ctx, SERIAL, False, 1.0, 0.0)
+        plugin._on_hold(SERIAL, Hold(1.0, 0.0, plugin._bases[0].speed, lab.ctx.now()))
         plugin.update(lab.ctx)
         await asyncio.sleep(0)
         held = (list(guards), list(lab.twists), dict(plugin._base_guards))
         give_back(lab.ctx.world, lease)
-        plugin._on_hold(lab.ctx, SERIAL, False, 1.0, 0.0)
+        plugin._on_hold(SERIAL, Hold(1.0, 0.0, plugin._bases[0].speed, lab.ctx.now()))
         plugin.update(lab.ctx)
         await asyncio.gather(*plugin._base_guards.values(), return_exceptions=True)
         return held
@@ -573,7 +573,7 @@ def test_every_command_to_one_robot_is_refused_while_another_is_held():
     control = lab.plugin
     control._bases = [_BaseWidgets(serial=SERIAL, base=lab.robot.base, panel=None, status=None,
                                    speed=SimpleNamespace(value=0.5))]
-    control._on_hold(lab.ctx, SERIAL, False, 1.0, 0.0)
+    control._on_hold(SERIAL, Hold(1.0, 0.0, control._bases[0].speed, lab.ctx.now()))
     control.update(lab.ctx)
     lab.free_drive_arm()
     control._on_jog_hold(lab.ctx, KEY, 0, 1.0)

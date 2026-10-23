@@ -2,7 +2,8 @@
 What a run is recorded with: its setup, read from ROS at Start, and its own folder for the recording.
 
 - Sim or real: real unless the base's simulator announces itself (`BaseInterface.simulation`); then its node's
-  parameters are the sim model.
+  parameters are the sim model, and a fake Motive's (`BaseInterface.mocap_simulation`) give its mocap delay and
+  noise, 0 without one.
 - Controller: the follower's node, as it names itself in BaseFollowerState, with all its parameters.
 - Folder: <Drive root>/RECORDING_FOLDER/<experiment name>/<date>_<time>_<robot>_<template>_<sim|real>/ with
   experiment.json (this setup, the path's label, the outcome) and recording.npz (`shared/recordings/runs.py`);
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +26,7 @@ from ...drive import started_at
 from ...plugin_api.context import PluginContext
 from ...plugin_api.trace import Trace
 from ...robot_interface.base import BaseInterface, parameter_value
+from ...robot_interface.simulated_parts import body_values
 from ...shared.recordings.runs import DESCRIPTION, run_folder, save_recording, write_description
 from .plan import Plan
 
@@ -35,6 +38,10 @@ PARAMETER_TIMEOUT = 1.0
 #: change results.
 MODEL_PARAMETERS = {"xICR": 0.0, "speed_efficiency": 1.0, "steering_efficiency": 1.0, "cmd_delay_sec": 0.0,
                     "mocap_delay_sec": 0.0, "mocap_noise_position_m": 0.0, "mocap_noise_yaw_rad": 0.0}
+#: The sim model's mocap values from the fake Motive's parameters: (parameter, element of its per-body value or None
+#: for a number, factor).
+MOCAP_PARAMETERS = {"mocap_delay_sec": ("delay_sec", None, 1.0), "mocap_noise_position_m": ("noise", 0, 1.0),
+                    "mocap_noise_yaw_rad": ("noise", 1, math.pi / 180.0)}
 #: Conditions held fixed for every run; ! change them here when the robot or the place changes (e.g. castors).
 CONDITIONS = {"base": "skid steer (stock Husky wheels)", "arm": "stowed", "floor": "RobotX hall, tiles"}
 #: Controller parameters that do not change how it drives.
@@ -51,6 +58,10 @@ async def setup(ctx: PluginContext, base: BaseInterface) -> dict:
               "nodes": base.node_names()}
     if simulation is not None:
         result["sim_model"] = await parameters(ctx, base, simulation.node)
+        mocap = base.mocap_simulation
+        if mocap is not None:
+            result["sim_mocap"] = await parameters(ctx, base, mocap.node)
+            result["sim_mocap_body"] = base.mocap_id
     return result
 
 
@@ -80,7 +91,23 @@ def sim_model(experiment: dict) -> dict[str, float] | None:
     model = experiment.get("sim_model")
     if experiment.get("environment") != "sim" or not isinstance(model, dict):
         return None
-    return {key: round(float(model.get(key, ideal)), 4) for key, ideal in MODEL_PARAMETERS.items()}
+    # * Older runs have the mocap values in the simulator's parameters, newer ones from the fake Motive's.
+    values = {**model, **mocap_values(experiment.get("sim_mocap"), experiment.get("sim_mocap_body"))}
+    return {key: round(float(values.get(key, ideal)), 4) for key, ideal in MODEL_PARAMETERS.items()}
+
+
+def mocap_values(fake_motive, body: int | None) -> dict[str, float]:
+    """The sim model's mocap delay and the base body's noise from a fake Motive's parameters; none without one."""
+    if not isinstance(fake_motive, dict):
+        return {}
+    values = {}
+    for key, (name, element, factor) in MOCAP_PARAMETERS.items():
+        value = fake_motive.get(name)
+        if value is not None and element is None:
+            values[key] = float(value) * factor
+        elif value is not None and body is not None:
+            values[key] = body_values(str(value), int(body), 2)[element] * factor
+    return values
 
 
 def environment_label(experiment: dict) -> str:

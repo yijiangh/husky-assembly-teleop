@@ -18,7 +18,6 @@ from __future__ import annotations
 import time
 from collections import Counter
 from dataclasses import dataclass
-from html import escape
 from itertools import count
 from typing import Collection, Mapping
 
@@ -29,11 +28,10 @@ import viser
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..world.collision_hit import CollisionHit
-from ..shared.planner.planner_panel import PLAN_TAB
 from ..ui.checklist import CheckList
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.scene_view import add_shape
-from ..ui.style import note
+from ..ui.style import note, note_line
 from scaffolding_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Pose, Shape, TriMesh
 from scaffolding_assembly_core.ids import link_id
 from scaffolding_assembly_core.scene import Scene, scene_parts
@@ -52,9 +50,10 @@ CLEARANCE = "clearance"
 
 @dataclass
 class _Source:
-    """One source's group in the panel, and its hits by label."""
+    """One source's group in the panel: its summary line, its list, and its hits by label."""
 
     folder: viser.GuiFolderHandle
+    summary: viser.GuiHtmlHandle
     list: CheckList
     hits: dict[str, CollisionHit]
 
@@ -74,6 +73,7 @@ class CollisionsPlugin(HuskyPlugin):
 
     name = "collisions"
     experimental = True
+    icon = viser.Icon.ALERT_TRIANGLE
 
     def __init__(self):
         """Start with nothing reported."""
@@ -95,7 +95,7 @@ class CollisionsPlugin(HuskyPlugin):
     def setup(self, ctx: PluginContext) -> None:
         """Build the panel's fixed part; each source adds its own group below it."""
         self._ctx = ctx
-        with self._tab() as gui:
+        with self._ctx.view.ui() as gui:
             self._as_checked = gui.add_checkbox(
                 "As checked", initial_value=True,
                 hint="Draw meshes as the check tested them (compas_fab: each mesh's convex hull); untick for the "
@@ -104,25 +104,30 @@ class CollisionsPlugin(HuskyPlugin):
                                            hint="Also show every robot as it was checked for this ticked hit, faint")
             self._empty = gui.add_html(note("no collisions reported"))
 
-    def _tab(self):
-        """The panel's tab, next to the planners'; made on first use."""
-        return self._ctx.view.tab(PLAN_TAB, ("Collisions", viser.Icon.ALERT_TRIANGLE))
-
     # --- --- --- --- --- CONTRACT --- --- --- --- ---
 
     def replace(self, source: str, hits: Mapping[str, CollisionHit], shown: Collection[str] = ()) -> None:
-        """Make these a source's hits, dropping its earlier ones (`CollisionsContract`)."""
-        self.clear(source)
-        with self._tab() as gui:
-            folder = gui.add_folder(source)
-            with folder:
-                gui.add_html(note(escape(_summary(hits))))
-                clear = gui.add_button("Clear", icon=viser.Icon.TRASH, hint=f"Remove {source}'s hits from the list")
-                checklist = CheckList(self._ctx, gui, "hits", empty_text="nothing collides")
-        clear.on_click(self._ctx.defer(f"clear {source}", lambda: self.clear(source)))
+        """Make these a source's hits, dropping its earlier ones (`CollisionsContract`).
+
+        A source already listed keeps its folder where it is, so the folders below it don't move; a new one goes last.
+        """
+        found = self._sources.get(source)
+        if found is None:
+            with self._ctx.view.ui() as gui:
+                folder = gui.add_folder(source)
+                with folder:
+                    summary = gui.add_html("")
+                    clear = gui.add_button("Clear", icon=viser.Icon.TRASH,
+                                           hint=f"Remove {source}'s hits from the list")
+                    checklist = CheckList(self._ctx, gui, "hits", empty_text="nothing collides")
+            clear.on_click(self._ctx.defer(f"clear {source}", lambda: self.clear(source)))
+            found = self._sources[source] = _Source(folder, summary, checklist, {})
+        for label in found.hits:
+            found.list.remove(label)
+        found.summary.content = note_line(_summary(hits))
         for label, hit in hits.items():
-            checklist.add(label, _item(label, hit), hint=_details(hit), selected=label in shown)
-        self._sources[source] = _Source(folder, checklist, dict(hits))
+            found.list.add(label, _item(label, hit), hint=_details(hit), selected=label in shown)
+        found.hits = dict(hits)
 
     def clear(self, source: str) -> None:
         """Drop a source and its hits (`CollisionsContract`)."""

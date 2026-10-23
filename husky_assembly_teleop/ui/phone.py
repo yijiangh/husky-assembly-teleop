@@ -100,7 +100,7 @@ def big_buttons(icons: list[str], height: int, icon_size: int, labels: bool = Tr
 
 #: The phone page's CSS, in order: no 3D canvas; the sheet fills the screen; a long press must not select text, open
 #: the browser menu or scroll (a scroll cancels a hold); finger-sized buttons; icons beside their label; chips
-#: readable at arm's length (`phone_text`); a big Stop all.
+#: readable at arm's length (`phone_text`), with chip lines high enough for them; a big Stop all.
 PHONE_STYLE = f"""
 canvas {{ display: none; }}
 {SHEET} {{ top: 0 !important; left: 0 !important; width: 100% !important; max-height: 100% !important;
@@ -110,6 +110,7 @@ canvas {{ display: none; }}
 {SHEET} .mantine-Button-root {{ height: 44px !important; }}
 {SHEET} .mantine-Button-section svg {{ position: static !important; transform: none !important; }}
 {SHEET} .phone-text span, {SHEET} .phone-text div {{ font-size: 14px !important; }}
+{SHEET} .chip-line {{ min-height: 24px; }}
 {SHEET} .phone-text span[style*="width:42px"] {{ width: auto !important; min-width: 44px; margin-right: 6px; }}
 {big_buttons([viser.Icon.HAND_STOP], 72, 30)}
 """

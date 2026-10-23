@@ -15,7 +15,6 @@ The last three sit in a collapsed Advanced folder, so the panel shows only targe
 from __future__ import annotations
 
 import math
-from contextlib import AbstractContextManager
 from dataclasses import asdict
 from html import escape
 
@@ -26,13 +25,14 @@ from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.base_planner_contract import BasePlanRequest
-from ...shared.planner.planner_panel import PlannerPanel
+from ...shared.planner.planner_panel import PLAN_TAB, PlannerPanel
 from ...shared.planner.plan import Plan
 from ...ui.base_markers import Markers
 from ...ui.ghost import RobotGhost
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, check_chip, chip, section, values
+from ...ui.style import (BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, check_chip, chip, chip_line, section,
+                         values)
 from ...robot_interface.base import live_report
 from ...world.follower import path_check
 from scaffolding_assembly_core.geometry import Pose
@@ -53,6 +53,8 @@ class BasePlannerPanel(PlannerPanel):
     name = "base_planner_panel"
     experimental = True
     planner = "base_planner"
+    tab_path = (PLAN_TAB, "Base")
+    icon = viser.Icon.CAR
     requires = ("base_planner", "process")
 
     def __init__(self):
@@ -65,14 +67,6 @@ class BasePlannerPanel(PlannerPanel):
         self._planner: BasePlannerPlugin | None = None
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
-
-    def _ui(self, ctx: PluginContext) -> AbstractContextManager[viser.GuiApi]:
-        """Add widgets in this plugin's folder in the main column, not in the side panel's Plan tab.
-
-        * The base is driven before a step is planned: list this plugin after `assembly_run` and before
-          `assembly_steps` in `plugins`, and its folder sits between them, in the order an operator works.
-        """
-        return ctx.view.ui()
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the panel, and a target ghost and a path ghost per robot."""
@@ -87,7 +81,7 @@ class BasePlannerPanel(PlannerPanel):
         self.serial = serials[0]
         root = ctx.view.scene_root
 
-        with self._ui(ctx) as gui:
+        with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             self._robot = gui.add_dropdown("Robot", options=serials, initial_value=self.serial)
 
@@ -317,7 +311,7 @@ class BasePlannerPanel(PlannerPanel):
         if planner._sent_id is not None:
             follower = ctx.world.robots[planner._sent_serial].base.state.follower
             chips += check_chip(path_check(follower, planner._sent_id, planner._sent_at, ctx.now()))
-        return block(chips)
+        return chip_line(chips)
 
     def _details_html(self) -> str:
         """Numbers of the target and the plan, and the last message, in a fixed number of rows."""

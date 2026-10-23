@@ -13,7 +13,7 @@ from robot_fakes import TCP_ORIENTATION, TCP_POSITION, FreeRobots, fake_arm, lea
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
-from husky_assembly_teleop.plugins.robot_control.dpad import HOLD_TIMEOUT
+from husky_assembly_teleop.shared.teleop.dpad import HOLD_TIMEOUT, Hold
 from husky_assembly_teleop.plugins.robot_control.markers import place_markers, target_from_world
 from husky_assembly_teleop.plugins.robot_control.plugin import BASE, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.plugins.robot_control.status import refusal_chip
@@ -311,7 +311,7 @@ def test_a_held_base_stops_when_its_controller_goes_off():
     """The hold is dropped as soon as the velocity controller stops, and one stop goes out."""
     plugin, sent, controller = _driven_base()
     ctx = lease_context(now=lambda: 0.0, log_warn=lambda _text: None)
-    plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
+    plugin._on_hold("0804", Hold(1.0, 0.0, plugin._bases[0].speed, ctx.now()))
     plugin.update(ctx)
     controller[0] = None
     plugin.update(ctx)
@@ -323,7 +323,7 @@ def test_teardown_stops_a_base_that_is_being_driven():
     """Shutting down mid-drive sends a stop."""
     plugin, sent, _controller = _driven_base()
     ctx = lease_context(now=lambda: 0.0, log_warn=lambda _text: None)
-    plugin._on_hold(ctx, "0804", False, 0.0, 1.0)
+    plugin._on_hold("0804", Hold(0.0, 1.0, plugin._bases[0].speed, ctx.now()))
     plugin.update(ctx)
     plugin.teardown(ctx)
     assert sent[-1] == (0.0, 0.0)
@@ -368,7 +368,7 @@ def test_driving_with_clearance_keeps_one_on_the_base_until_it_is_unticked():
     ctx = BaseContext()
 
     async def drive() -> bool:
-        plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
+        plugin._on_hold("0804", Hold(1.0, 0.0, plugin._bases[0].speed, ctx.now()))
         plugin.update(ctx)
         await asyncio.sleep(0)
         plugin.update(ctx)
@@ -390,7 +390,7 @@ def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
     base, ctx = plugin._bases[0].base, BaseContext()
 
     async def drive() -> None:
-        plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
+        plugin._on_hold("0804", Hold(1.0, 0.0, plugin._bases[0].speed, ctx.now()))
         plugin.update(ctx)
         await asyncio.sleep(0)
         assert ctx.clearances[0].unknown_arms == ALL_ARMS  # * driving by hand: an unknown arm counts as stowed
@@ -399,7 +399,7 @@ def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
         guard = plugin._base_guards["0804"]
         guard.cancel()
         await asyncio.gather(guard, return_exceptions=True)
-        plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
+        plugin._on_hold("0804", Hold(1.0, 0.0, plugin._bases[0].speed, ctx.now()))
         plugin.update(ctx)
 
     asyncio.run(drive())

@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<!--
+  The calibration marker: a flat Motive marker plate on a 3D-printed disk on tool0, for collision checking only
+  (it has no driver). The root link sits on tool0, z out of the flange.
+  Disk 63 mm across (the flange) and 7 mm thick; plate 150 x 140 x 10 mm on it, centred on the flange axis.
+  ? The plate measures 150 x 130 mm but sits off centre; 140 mm covers it either way.
+-->
+<robot name="calibration_marker">
+  <link name="calibration_marker">
+    <visual>
+      <origin xyz="0 0 0.0035"/>
+      <geometry><cylinder radius="0.0315" length="0.007"/></geometry>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.012"/>
+      <geometry><box size="0.150 0.140 0.010"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.0035"/>
+      <geometry><cylinder radius="0.0315" length="0.007"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0 0 0.012"/>
+      <geometry><box size="0.150 0.140 0.010"/></geometry>
+    </collision>
+  </link>
+  <link name="tcp"/>
+  <joint name="calibration_marker-tcp" type="fixed">
+    <parent link="calibration_marker"/>
+    <child link="tcp"/>
+  </joint>
+</robot>

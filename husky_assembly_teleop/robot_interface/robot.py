@@ -113,7 +113,8 @@ class HuskyRobotInterface:
         #: The parts of this robot announced as simulated (`simulated_parts.py`).
         self.simulated = SimulatedParts(lambda: node.get_clock().now().nanoseconds * 1e-9)
         self.base = BaseInterface(node, config, simulated=partial(self.simulated.get, "base"),
-                                  latch=self.soft_stop_latch, lease_slot=self.lease_slot)
+                                  latch=self.soft_stop_latch, lease_slot=self.lease_slot,
+                                  mocap_simulated=partial(self.simulated.get, "mocap"))
         # * The model already has each arm's UR calibration applied; an out-of-date URDF file is loud, not fatal.
         for check in config.ur_calibration:
             if check.out_of_date:
@@ -131,8 +132,8 @@ class HuskyRobotInterface:
             self.arms[arm.name] = ArmInterface(
                 node, config.ros_namespace, arm,
                 fixed_transform(config.model.urdf, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem,
-                simulated=partial(self.simulated.get, arm.ros_namespace), latch=self.soft_stop_latch,
-                lease_slot=self.lease_slot)
+                urdf=config.model.urdf, simulated=partial(self.simulated.get, arm.ros_namespace),
+                latch=self.soft_stop_latch, lease_slot=self.lease_slot)
         #: The husky frame in the mocap-tracked frame (fixed, from the URDF).
         self._husky_in_mocap_frame = fixed_transform(config.model.urdf, MOCAP_FRAME, HUSKY_FRAME)
         self.state = RobotState(serial=config.serial, base=self.base.state,

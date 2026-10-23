@@ -33,4 +33,5 @@ What plugins share with each other: contracts, data types, base classes and help
   recordings/                 experiment runs on the Drive: run folders, descriptions, recordings read by label
   runs/                       an assembly's record in its process folder (`runs/<stamp>/`): actions done, where
                               robots were left, settings. ! Not `recordings/`, which holds experiment runs
+  teleop/                     driving by hand: the base's D-pad
 """

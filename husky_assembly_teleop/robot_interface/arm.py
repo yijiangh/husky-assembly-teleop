@@ -7,6 +7,7 @@ Each command checks the running controller and its inputs itself before sending.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Sequence
 
 import numpy as np
@@ -34,6 +35,7 @@ from .simulated_parts import SimulatedPart
 from .refusal import Refusal
 from .robot_lease import LeaseSlot, held_leases
 from .soft_stop import SoftStopLatch
+from .tool_step import tool_step_target
 from .ur_frames import BASE_LINK_FROM_UR_BASE
 
 # ? qos_profile_sensor_data but deeper, to hold one tick of samples: 100 covers 500 Hz for 200 ms.
@@ -121,6 +123,9 @@ JOG_DISTANCE = np.radians(30.0)
 JOG_LIMIT_MARGIN = np.radians(2.0)
 #: Default peak acceleration of `joint_path_move` on any joint, rad/s^2: half the trajectory limit, for margin.
 JOINT_PATH_MAX_ACCELERATION = TRAJECTORY_MAX_JOINT_ACCELERATION / 2
+#: `send_tool_step`: fastest any joint moves, rad/s, and the shortest step, seconds.
+TOOL_STEP_MAX_SPEED = np.radians(5.0)
+TOOL_STEP_MIN_DURATION = 0.5
 
 
 #: Defaults for `cartesian_move`: TCP speed, m/s ...
@@ -238,15 +243,20 @@ def joint_jog(start: Sequence[float], joint: int, direction: float,
     return positions, velocities, float(duration)
 
 
-def joint_path_move(waypoints: Sequence[Sequence[float]], max_speed: float = JOINT_MOVE_MAX_SPEED,
+def joint_path_move(points: Sequence[Sequence[float]], stops: Sequence[int] | None = None,
+                    max_speed: float = JOINT_MOVE_MAX_SPEED,
                     max_acceleration: float = JOINT_PATH_MAX_ACCELERATION) -> tuple[np.ndarray, np.ndarray, float]:
-    """A move along straight joint-space segments that stops at every waypoint, each segment on `joint_move`'s profile.
+    """A move along a joint-space polyline that comes to rest at `stops` and runs through every other point.
 
-    Stopping keeps the arm on the segments a planner checked: corners are never cut. Each segment lasts a whole
-    number of JOINT_MOVE_WAYPOINT_SPACING steps, so every waypoint is sampled exactly.
+    Between two rests the arm follows the polyline on one cosine profile over its length, as `joint_move` does on a
+    line. Each stretch lasts the fewest JOINT_MOVE_WAYPOINT_SPACING steps whose samples keep to both limits, so every
+    rest is sampled exactly. ! Running through a sharp corner jerks the arm: round the corners, densely sampled, and
+    rest at those left sharp.
 
     Args:
-        waypoints: Joint angles (n x 6), radians, UR_JOINT_NAMES order; the first is where the arm is now.
+        points: Joint angles (n x 6), radians, UR_JOINT_NAMES order; the first is where the arm is now.
+        stops: Indices of the points to rest at; the first and last always. None: every point, so the arm keeps to
+            the straight segments and never cuts a corner.
         max_speed: Peak speed allowed on any joint, rad/s.
         max_acceleration: Peak acceleration allowed on any joint, rad/s^2.
 
@@ -255,27 +265,54 @@ def joint_path_move(waypoints: Sequence[Sequence[float]], max_speed: float = JOI
             and the duration in seconds.
 
     Raises:
-        ValueError: If the waypoints never move.
+        ValueError: If the points never move.
     """
-    waypoints = np.asarray(waypoints, dtype=float)
-    deltas = np.diff(waypoints, axis=0)
-    spans = np.max(np.abs(deltas), axis=1) if len(deltas) else np.zeros(0)
-    moving = spans > 0.0
-    if not np.any(moving):
+    points = np.asarray(points, dtype=float)
+    rests = sorted({0, len(points) - 1, *(range(len(points)) if stops is None else stops)})
+    stretches = [points[a:b + 1] for a, b in zip(rests[:-1], rests[1:]) if np.any(points[a:b + 1] != points[a])]
+    if not stretches:
         raise ValueError("the path does not move")
-    starts, deltas, spans = waypoints[:-1][moving], deltas[moving], spans[moving]
-    # * The cosine profile peaks at pi/2 span/T in speed and pi^2/2 span/T^2 in acceleration.
-    seconds = np.maximum(np.pi / 2 * spans / max_speed, np.pi * np.sqrt(spans / (2 * max_acceleration)))
-    steps = np.maximum(np.ceil(seconds / JOINT_MOVE_WAYPOINT_SPACING - 1e-9).astype(int), 1)
-    ends = np.cumsum(steps)
-    index = np.arange(ends[-1] + 1)
-    segment = np.minimum(np.searchsorted(ends, index, side="left"), len(steps) - 1)
-    phase = np.pi * (index - (ends - steps)[segment]) / steps[segment]
-    positions = starts[segment] + ((1.0 - np.cos(phase)) / 2.0)[:, None] * deltas[segment]
-    durations = steps * JOINT_MOVE_WAYPOINT_SPACING
-    velocities = (np.pi / (2.0 * durations[segment]) * np.sin(phase))[:, None] * deltas[segment]
-    velocities[-1] = 0.0
-    return positions, velocities, float(ends[-1] * JOINT_MOVE_WAYPOINT_SPACING)
+    positions, velocities = [points[:1]], [np.zeros((1, points.shape[1]))]
+    for stretch in stretches:
+        stretch_positions, stretch_velocities = _cosine_along(stretch, max_speed, max_acceleration)
+        positions.append(stretch_positions[1:])
+        velocities.append(stretch_velocities[1:])
+    positions, velocities = np.concatenate(positions), np.concatenate(velocities)
+    return positions, velocities, float((len(positions) - 1) * JOINT_MOVE_WAYPOINT_SPACING)
+
+
+def _cosine_along(polyline: np.ndarray, max_speed: float,
+                  max_acceleration: float) -> tuple[np.ndarray, np.ndarray]:
+    """One rest-to-rest stretch of `joint_path_move`: samples JOINT_MOVE_WAYPOINT_SPACING apart, both ends at rest."""
+    lengths = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
+    keep = np.concatenate([[True], lengths > 0.0])
+    polyline, lengths = polyline[keep], lengths[lengths > 0.0]
+    arc = np.concatenate([[0.0], np.cumsum(lengths)])
+    directions = np.diff(polyline, axis=0) / lengths[:, None]
+    span = arc[-1] * float(np.max(np.abs(directions)))
+    # * On a line the cosine profile peaks at pi/2 span/T in speed and pi^2/2 span/T^2 in acceleration; bends need
+    #   more time, found by measuring the samples as the arm's guards do.
+    seconds = max(np.pi / 2 * span / max_speed, np.pi * np.sqrt(span / (2 * max_acceleration)))
+    steps = max(int(np.ceil(seconds / JOINT_MOVE_WAYPOINT_SPACING - 1e-9)), 1)
+    while True:
+        phase = np.linspace(0.0, np.pi, steps + 1)
+        travelled = arc[-1] * (1.0 - np.cos(phase)) / 2.0
+        positions = np.column_stack([np.interp(travelled, arc, column) for column in polyline.T])
+        segment = np.clip(np.searchsorted(arc, travelled, side="right") - 1, 0, len(directions) - 1)
+        speed = arc[-1] * np.pi / (2.0 * steps * JOINT_MOVE_WAYPOINT_SPACING) * np.sin(phase)
+        velocities = speed[:, None] * directions[segment]
+        velocities[[0, -1]] = 0.0
+        step = JOINT_MOVE_WAYPOINT_SPACING
+        over_speed = max(float(np.max(np.abs(np.diff(positions, axis=0)))) / step,
+                         float(np.max(np.abs(velocities)))) / max_speed
+        over_acceleration = float(np.max(np.abs(np.diff(velocities, axis=0)))) / step / max_acceleration
+        if steps >= 2:
+            over_acceleration = max(over_acceleration, float(np.max(np.abs(np.diff(positions, n=2, axis=0))))
+                                    / step ** 2 / max_acceleration)
+        stretch = max(over_speed, np.sqrt(over_acceleration))
+        if stretch <= 1.0 + 1e-9:
+            return positions, velocities
+        steps = max(steps + 1, int(np.ceil(steps * stretch)))
 
 
 def flange_from_reported(position: Sequence[float], quaternion: Sequence[float],
@@ -452,7 +489,8 @@ class ArmInterface:
     last_refusal: Refusal | None = None
 
     def __init__(self, node: Node, robot_namespace: str, config: ArmConfig, base_in_husky: Pose,
-                 urdf_problem: str | None = None, simulated: Callable[[], SimulatedPart | None] = lambda: None,
+                 urdf_problem: str | None = None, urdf: Path | None = None,
+                 simulated: Callable[[], SimulatedPart | None] = lambda: None,
                  latch: SoftStopLatch | None = None, lease_slot: LeaseSlot | None = None):
         """Create every subscription, publisher and client of one arm.
 
@@ -462,6 +500,7 @@ class ArmInterface:
             config: This arm.
             base_in_husky: This arm's base_link in the husky frame.
             urdf_problem: Why the URDF breaks the stock UR frames, or None. If set, Cartesian targets are refused.
+            urdf: The robot's URDF, which tool steps are solved on; None refuses them.
             simulated: The arm's fake hardware announcement while it runs on it, else None (`SimulatedParts.get`).
             latch: The robot's soft-stop latch, shared with the tool; a new one by default.
             lease_slot: The robot's lease slot, shared with the tool; a new one by default.
@@ -476,6 +515,7 @@ class ArmInterface:
         #: The TCP set on the pendant, in tool0: what the reported TCP includes (not the tool's own `Tool.tcp`).
         self.pendant_tcp = config.pendant_tcp
         self.urdf_problem = urdf_problem
+        self.urdf = urdf
         self.state = ArmState()
         #: When each test-mode banner was last logged, ROS time.
         self._test_mode_logged: dict[str, float] = {}
@@ -808,6 +848,30 @@ class ArmInterface:
         if not self.send_joint_trajectory(positions, duration, velocities):
             return None
         return duration
+
+    def send_tool_step(self, step: Pose, pivot: Sequence[float] = (0.0, 0.0, 0.0)) -> float | None:
+        """Move tool0 by `step`, given in tool0 and turning about `pivot`, as a short joint move (`tool_step_target`).
+
+        ! No collision checking. For small watched moves by hand, e.g. bringing a tip onto a target.
+
+        Args:
+            step: The move in tool0's frame.
+            pivot: The point in tool0 the turn is about, metres.
+
+        Returns:
+            float | None: The duration in seconds, or None if nothing was sent (reason logged).
+        """
+        here = self.joint_vector()
+        if here is None or self.urdf is None:
+            self._refused("tool step refused", "not moving: " + ("no joint state yet" if here is None else
+                                                                 "no URDF to solve the step on"))
+            return None
+        try:
+            target = tool_step_target(self.urdf, self.config.name, here, step, pivot)
+        except ValueError as error:
+            self._refused("tool step refused", f"not moving: {error}")
+            return None
+        return self.send_joint_move(target, TOOL_STEP_MAX_SPEED, TOOL_STEP_MIN_DURATION)
 
     def send_cartesian_target(self, position: Sequence[float], orientation: Sequence[float],
                               hold: bool = False) -> bool:

@@ -68,6 +68,7 @@ class MocapBarsPlugin(HuskyPlugin):
     """Fits a process bar's markers to a tracked Motive rigid body and measures its deviation from the plan."""
 
     name = "mocap_bars"
+    icon = viser.Icon.RULER_2
     requires = ("process",)
     experimental = True
 
@@ -290,7 +291,12 @@ class MocapBarsPlugin(HuskyPlugin):
         self._draw_markers()
 
     def _status_lines(self) -> list[str]:
-        """Marker counts, the fit's error and the deviation from the plan, one per line."""
+        """Marker counts, the fit's error and the deviation from the plan: always 3 lines, "—" when missing."""
+        lines = self._readout()
+        return lines + ["—"] * (3 - len(lines))
+
+    def _readout(self) -> list[str]:
+        """Up to 3 lines: marker counts, the fit's error and the deviation from the plan."""
         if not self._layouts:
             return ["no bar with markers in the loaded process"]
         obj, fit, bar_id = self._object, self._fit, self._bar_id

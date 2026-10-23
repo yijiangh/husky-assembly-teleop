@@ -4,6 +4,9 @@ Moved here from crl-husky (`crl_husky mocap.launch.py`), which keeps the message
 
     ros2 launch husky_assembly_teleop mocap.launch.py                           # Motive PC at 192.168.0.28
     ros2 launch husky_assembly_teleop mocap.launch.py server_ip:=192.168.0.117  # another Motive PC
+
+The same in a simulation's own domain: there the relay also publishes simulated robots and a fake Motive's bodies
+(node.py), in place of Motive's with the same id, so it keeps running while simulations come and go.
 """
 
 import os
@@ -45,7 +48,6 @@ def _build_node(context):
     multicast_address = LaunchConfiguration("multicast_address").perform(context)
     frame_timeout_sec = float(LaunchConfiguration("frame_timeout_sec").perform(context))
     reconnect_min_interval_sec = float(LaunchConfiguration("reconnect_min_interval_sec").perform(context))
-    exclude_ids = LaunchConfiguration("exclude_ids").perform(context)
     auto_detect = LaunchConfiguration("auto_detect_client_ip").perform(context).lower() in ("1", "true", "yes")
     drive_root = LaunchConfiguration("drive_root").perform(context)
     use_drive = LaunchConfiguration("use_drive").perform(context).lower() in ("1", "true", "yes")
@@ -84,7 +86,6 @@ def _build_node(context):
                 "multicast_address": multicast_address,
                 "frame_timeout_sec": frame_timeout_sec,
                 "reconnect_min_interval_sec": reconnect_min_interval_sec,
-                "exclude_ids": exclude_ids,
                 "drive_root": drive_root,
                 "use_drive": use_drive,
                 "watch_period_sec": watch_period_sec,
@@ -157,11 +158,6 @@ def generate_launch_description():
                 "reconnect_min_interval_sec",
                 default_value="2.0",
                 description="Minimum time between reconnect attempts",
-            ),
-            DeclareLaunchArgument(
-                "exclude_ids",
-                default_value="",
-                description="Comma-separated rigid-body ids not to publish, e.g. the robot a simulator stands in for",
             ),
             DeclareLaunchArgument(
                 "drive_root",

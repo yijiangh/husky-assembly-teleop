@@ -34,6 +34,7 @@ from .plugin_api.plugin import HuskyPlugin, UnknownPluginError, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
+from .robot_interface.mocap_relay import MocapRelayInterface
 from .robot_interface.mocap_state import pose_lost
 from .robot_interface.soft_stop import MotionRefused
 from scaffolding_assembly_core.ids import robot_id, tracked_id
@@ -97,7 +98,7 @@ class HuskyMonitor(Node):
         self._startup_times: dict[str, float] = {}
 
         self._config = config_from_ros_parameters(self)
-        self._world = WorldState()
+        self._world = WorldState(mocap_relay=MocapRelayInterface(self, self.now))
         self._loaded: dict[str, _LoadedPlugin] = {}
         # The mocap subscription of each tracked object, by object name.
         self._object_connections: dict[str, RosConnections] = {}
@@ -160,7 +161,7 @@ class HuskyMonitor(Node):
             ctx = PluginContext(
                 name=plugin.name,
                 monitor=self,
-                view=self._viz.view_for(plugin.name),
+                view=self._viz.view_for(plugin.name, plugin.hidden, plugin.tab_path, plugin.icon),
                 scene=PluginScene(self._scene, plugin.name,
                                   log_warn=lambda message, name=plugin.name: self.log_warn(f"[{name}] {message}"),
                                   snapshot=lambda: self._snapshot),
@@ -356,11 +357,11 @@ class HuskyMonitor(Node):
                 except Exception:
                     self._plugin_failed(loaded, "traces")
 
-        # 8. Draw. While frozen (for text selection), only robots and the scene are drawn, not plugins.
+        # 8. Draw. While paused (for text selection), only robots and the scene are drawn, not plugins.
         with self._viz.atomic():
             with self._timer.part("robots and scene draw"):
                 self._viz.draw(snapshot)
-            for loaded in self._loaded.values() if not self._viz.frozen else ():
+            for loaded in self._loaded.values() if not self._viz.paused else ():
                 if loaded.stopped:
                     continue
                 try:
@@ -426,7 +427,7 @@ class HuskyMonitor(Node):
     def _soft_stop(self) -> None:
         """Stop every robot, and cancel every plugin task but those spawned with `survives_soft_stop`.
 
-        - In the core so it works whichever plugins are loaded.
+        - In the runtime so it works whichever plugins are loaded.
         - Each robot refuses motion commands until Resume, so queued intents still run: a Start clicked just before
           Stop gets RobotStopped, a Load just loads.
         - ! A robot that raises is logged; the other robots are still stopped, and the tick goes on.

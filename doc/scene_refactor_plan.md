@@ -15,17 +15,17 @@ Read this first if you are picking it up:
 
 ## 1. Goals
 
-1. **One scene of collision objects**, owned by the core and free of any physics or collision backend. Plugins (`obstacles`, `process`) add their objects to it.
+1. **One scene of collision objects**, a core type (`scaffolding_assembly_core.scene`) held by the runtime and free of any physics or collision backend. Plugins (`obstacles`, `process`) add their objects to it.
 2. **Planners get a consistent copy of the whole world**: measured robots and tracked objects plus every scene object, all from the same moment. They mirror it into their own backend: PyBullet (`base_planner`), later compas_fab, pinocchio + coal.
-3. **The core draws the scene** (robots, tracked objects and scene objects); viser's debug view toggles visibility.
+3. **The runtime draws the scene** (robots, tracked objects and scene objects); viser's debug view toggles visibility.
 4. **Syncing a mirror is cheap.** Geometry is converted once and uploaded once per backend. Afterwards a sync only moves what moved.
 
-Non-goals, for now: a planner changing an attachment while it plans, and several planners controlling one robot (execution locking).
+Non-goals, for now: a planner changing an attachment while it plans. Which planner may command a robot is not the scene's job: that is the robot's lease (`robot_interface/robot_lease.py`).
 
 ## 2. The tick
 
 ```
-1 pump ROS → 2 soft stop → 3 kinematics.update → 4 take_snapshot → 5 plugin steps → 6 resume tasks → 7 draw
+1 pump ROS → 2 soft stop → 3 kinematics.update → 4 take_snapshot → 5 plugin steps → 6 clearances, freezes, resume tasks → 7 sample traces → 8 draw
 ```
 
 - **Measured state changes only in step 1**, and forward kinematics is fixed in step 3. Step 4 copies the whole world: robots, tracked objects and every scene body with its resolved world pose.
@@ -43,9 +43,9 @@ Non-goals, for now: a planner changing an attachment while it plans, and several
 | **Geometry is immutable, and is recognised by object identity** | Only building is expensive (2–30 ms per mesh body in PyBullet). A new `Geometry` object is the signal to rebuild. Comparing meshes by value would cost as much as converting them. | Content hashing each sync. |
 | **Mirrors detect ids appearing and disappearing, and compare poses by value** | Comparing 2000 poses costs 0.1 ms; resetting 2000 bodies in PyBullet costs 14 ms. So only changed poses are sent. | Change logs, revision counters, dirty flags: each needs bookkeeping in every writer. |
 | **`RobotModel` is what mirrors build a robot from** | URDF without tools, SRDF, and each tool apart (as compas_fab cells in Rhino and tamp need it). Frozen and compared by identity, like `Geometry`: a new tool means a new model, the signal for mirrors to reload. `RobotConfig` (serials, drivers) stays in the monitor and builds the live model. | `RobotConfig` as the description: it mixed drivers with geometry, and mirrors compared it by value. |
-| **Kinematics is its own core object** (`kinematics.py`), updated once per tick | One place owns the changing yourdfpy state and the rule "an absent measurement keeps its last value". Its own parse, without meshes (~2 ms), so the 3D view's models are separate. | A yourdfpy model shared with the drawing, where every caller must set the configuration first. |
+| **Kinematics is its own runtime object** (`kinematics.py`), updated once per tick | One place owns the changing yourdfpy state and the rule "an absent measurement keeps its last value". Its own parse, without meshes (~2 ms), so the 3D view's models are separate. | A yourdfpy model shared with the drawing, where every caller must set the configuration first. |
 | **compas_fab structures stay at the boundary** | `RobotCell` describes the world from one robot's point of view (link names without a robot), and copying compas data is slow (`RobotCellState` with 2000 bodies: 194 ms). Its `RigidBody` only takes meshes (no primitives). So the scene has its own shapes; `RigidBody`, `RobotCell` and `RobotCellState` are built inside a compas_fab mirror. | `RobotCellState` as the scene. |
-| **Drawing the scene is core** | Generic, follows every plugin's objects (including removal when a plugin closes), and keeps updating while panels are frozen. | A `scene_view` plugin. |
+| **Drawing the scene is in the runtime** | Generic, follows every plugin's objects (including removal when a plugin closes), and keeps updating while panels are paused. | A `scene_view` plugin. |
 
 Measurements (this machine):
 
@@ -138,9 +138,9 @@ Rules shared by every mirror:
 
 ### 6.2 `CompasFabMirror` (`mirrors/compas_fab.py`, one per acting robot)
 - compas_fab's own `PyBulletClient("direct")`. `RobotCell`: the acting robot's URDF and SRDF from its `RobotModel`; each mounted tool a `ToolModel` keyed by its tool id, attached to the SRDF group ending at its flange, `touch_links` from `RobotModel.tool_touches` (as Rhino and tamp build cells); every other robot one `ToolModel` with its tools welded on, key its robot id, parked while absent; every body with collision meshes as `rigid_body_models[id]`, keys are our ids. Bodies without collision meshes are left out (compas_fab would fail on them).
-- ! compas_fab checks every stationary tool against every stationary body. Other robots' pairs already touching at `sync` can't change while this robot plans, so they are allowed for that snapshot (`static_contacts`). The acting robot's own tools are never allowed this way.
+- ! compas_fab checks every stationary tool against every stationary body. A contact is allowed only where the scene says so (`touches`, a holder). Another robot is one tool in the cell, and compas_fab allows only whole tools: a contact allowed with any of its links or mounted tools allows that whole robot. Such pairs never move while this robot plans, so only the start check is coarse. Anything else touching, between other robots and bodies too, is a collision at the start of every plan: the process has to declare it or remove it.
 - `lend()`: hands the planner to other code (tamp) with pybullet_planning pointed at this world; the next `sync` writes the full state, and rebuilds the cell if the borrower set its own.
-- `collisions(joints)` is compas_fab's `check_collision` (~25 ms with 50 bodies: it deep-copies the state per call). `search_check(joint_names)` resolves compas_fab's allowed pairs once and checks only pairs with a moving side, carrying held bodies and the arm's tools along (~1.5 ms); tests hold it equal to `check_collision`.
+- `collisions(joints)` is compas_fab's `check_collision` (~25 ms with 50 bodies: it deep-copies the state per call), then each of the acting robot's tools against every other tool (`tool_pairs`): compas_fab checks no tool against a tool, and other robots are tools in the cell. `search_check(joint_names)` resolves the same allowed pairs once and checks only pairs with a moving side, carrying held bodies and the arm's tools along (~1.5 ms); tests hold it equal to `collisions`.
 - **Shapes are converted by `mirrors/compas.rigid_body`:** each `Geometry` becomes a `RigidBody` of compas meshes, from `shape_mesh(shape)` for every collision shape (also used as visual meshes by default). The mirror only caches the result per `Geometry` object for its lifetime.
 - `RobotCellState` from the snapshot:
 
@@ -158,9 +158,9 @@ Rules shared by every mirror:
 ### 6.3 `CoalMirror` + pinocchio (later, sketch)
 - Robots from `pinocchio.buildModelsFromUrdf`; bodies as `coal.BVHModel` / `coal.Convex`; attached bodies on their link's frame. Boxes and cylinders map to exact `coal.Box` / `coal.Cylinder`.
 
-## 7. Drawing (core, `ui/scene_view.py`, owned by `Visualization`)
+## 7. Drawing (runtime, `ui/scene_view.py`, owned by `Visualization`)
 
-`Visualization.draw(snapshot)` runs every tick, also while panels are frozen.
+`Visualization.draw(snapshot)` runs every tick, also while panels are paused.
 
 | What | Nodes | Updated |
 |---|---|---|
@@ -173,7 +173,7 @@ Rules shared by every mirror:
 
 ## 8. Rules for plugin authors (in `plugins/__init__.py`)
 
-- Put collision objects in `ctx.scene` under `<plugin name>/…`. Don't draw them yourself; the core does. Removal when your plugin closes is automatic.
+- Put collision objects in `ctx.scene` under `<plugin name>/…`. Don't draw them yourself; the runtime does. Removal when your plugin closes is automatic.
 - Change a body in place or `put` a new one with the same id. To change its shape, assign a new `Geometry`; never edit one.
 - Build `Geometry` for large meshes on a loading thread (`ctx.run_in_thread`), then `put` on the main thread.
 - For robot poses and link poses use `ctx.kinematics`. Don't parse URDFs yourself.
@@ -185,7 +185,7 @@ Rules shared by every mirror:
 - **compas_fab cells.** Other robots are `ToolModel`s (the design uses them too). `set_robot_cell` takes about 2.3 s
   (robot and 2 tools about 1.9 s, 92 bodies about 0.4 s); loading 3 models about 8 s. Details in §6.2.
 - **Kinematics.** `kinematics.py`, `ctx.kinematics`; nothing reads link poses from PyBullet.
-- **Scene and drawing.** `geometry.py`, `scene.py`, `ctx.scene`, `take_snapshot` in the tick, core drawing; tracked
+- **Scene and drawing.** `geometry.py`, `scene.py`, `ctx.scene`, `take_snapshot` in the tick, runtime drawing; tracked
   objects (`ctx.track_object`) draw no frame of their own.
 - **`PyBulletMirror`.** `obstacles` and the base collision checks (`world/base_collision.py`) use the scene;
   `example_pybullet` shows the pattern.

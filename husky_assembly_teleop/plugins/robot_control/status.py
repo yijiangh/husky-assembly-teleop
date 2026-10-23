@@ -20,7 +20,7 @@ from ...robot_interface.refusal import Refusal
 from ...robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV1State, ScaffoldingV3,
                                               ScaffoldingV3State)
 from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, REFUSAL_SHOWN, SECTION_CTRL, block, check_chip, chip,
-                         freshness_chip, note, numbers, section, values)
+                         chip_line, freshness_chip, note, numbers, section, values)
 from ...world.checks import STALE_AFTER
 from ...world.mocap import MARKER_ERROR_WARN, mocap_check
 
@@ -116,13 +116,13 @@ def refusal_chip(refusals: Iterable[Refusal | None], now: float) -> str:
 def phone_base_status(base: BaseInterface, refused: str = "") -> str:
     """The phone's line for a base: whether its D-pad drives (else switch on the laptop), and `refused`."""
     if base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
-        return block(chip("D-pad drives", OK) + refused)
-    return block(_controller_chip(base.controllers) + chip("D-pad off: switch on the laptop", BUSY) + refused)
+        return chip_line(chip("D-pad drives", OK) + refused)
+    return chip_line(_controller_chip(base.controllers) + chip("D-pad off: switch on the laptop", BUSY) + refused)
 
 
 def phone_arm_status(arm: ArmInterface, refused: str = "") -> str:
     """The phone's line for an arm: its running controller ("Free" while free driving), and `refused`."""
-    return block(_controller_chip(arm.controllers) + refused)
+    return chip_line(_controller_chip(arm.controllers) + refused)
 
 
 def base_status(base: BaseInterface, now: float, refused: str = "") -> str:
@@ -132,9 +132,9 @@ def base_status(base: BaseInterface, now: float, refused: str = "") -> str:
     yaw = None if state.orientation is None else Rotation.from_quat(state.orientation).as_euler(
         "xyz", degrees=True)[2:]
     stale = not state.tracked or now - state.last_fix_time >= STALE_AFTER
-    return block(chips + values(f"xyz {numbers(state.position, 3, 7, 3)} m",
-                                f"yaw {numbers(yaw, 1, 7, 1)} °", dim=stale) + _mocap_line(state, now)
-                 + _wifi_line(state.joint_states_stats.quality(now)))
+    return chip_line(chips) + block(values(f"xyz {numbers(state.position, 3, 7, 3)} m",
+                                           f"yaw {numbers(yaw, 1, 7, 1)} °", dim=stale) + _mocap_line(state, now)
+                                    + _wifi_line(state.joint_states_stats.quality(now)))
 
 
 def _mocap_line(body: MocapBody, now: float) -> str:
@@ -162,7 +162,7 @@ def arm_status(arm: ArmInterface, now: float, refused: str = "") -> str:
     chips += refused
     joints = arm.joint_vector()
     stale = state.last_update_time is None or now - state.last_update_time >= STALE_AFTER
-    return block(chips + values(
+    return chip_line(chips) + block(values(
         f"q   {numbers(None if joints is None else np.degrees(joints), 6, 6, 1)} °",
         f"tcp {numbers(state.tcp_position, 3, 6, 3)} m",
         f"F   {numbers(None if state.wrench is None else state.wrench[:3], 3, 6, 1)} N",
@@ -200,9 +200,9 @@ def tool_status(state: object, now: float) -> str:
         measured = None if state.position is None else [state.position]
         commanded = None if state.commanded_position is None else [state.commanded_position]
         effort = None if state.commanded_effort is None else [state.commanded_effort]
-        return block(chips + values(f"pos {numbers(measured, 1, 6, 3)} rad",
-                                    f"cmd {numbers(commanded, 1, 6, 3)} rad  force {numbers(effort, 1, 5, 2)}",
-                                    dim=stale))
+        return chip_line(chips) + block(values(
+            f"pos {numbers(measured, 1, 6, 3)} rad",
+            f"cmd {numbers(commanded, 1, 6, 3)} rad  force {numbers(effort, 1, 5, 2)}", dim=stale))
     if isinstance(state, ScaffoldingV3State):
         chips = freshness_chip("status", state.last_update_time, now)
         if state.last_update_time is not None:  # every field is set together
@@ -212,7 +212,7 @@ def tool_status(state: object, now: float) -> str:
         stale = state.last_update_time is None or now - state.last_update_time >= STALE_AFTER
         current = "—".rjust(6) if state.current is None else f"{state.current:6d}"
         pwm = "—".rjust(4) if state.pwm_pct is None else f"{state.pwm_pct:4d}"
-        return block(chips + values(f"I   {current} mA   pwm {pwm} %", dim=stale))
+        return chip_line(chips) + block(values(f"I   {current} mA   pwm {pwm} %", dim=stale))
     if isinstance(state, ScaffoldingV1State):
         chips = freshness_chip("io", state.last_update_time, now)
         if state.last_request_ok is False:
@@ -220,7 +220,7 @@ def tool_status(state: object, now: float) -> str:
         # Outputs as the UR reports them; the tool itself reports nothing.
         if state.gripper_closed is not None:
             chips += chip("grip closed" if state.gripper_closed else "grip open", OK)
-        return block(chips)
+        return chip_line(chips)
     return ""
 
 

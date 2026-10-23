@@ -86,7 +86,14 @@ every simulator terminal, also:
 export ROS_DOMAIN_ID=70          # the simulation domain; never 80
 ```
 
-**Terminal 1: simulator and follower** (Alice, mocap id 1840, starting in open floor):
+**Terminal 1: mocap relay**, once, as with the real robots; it publishes the simulated robot's true pose in place of
+Motive's body (in the lab the rest still comes from Motive):
+
+```bash
+ros2 launch husky_assembly_teleop mocap.launch.py
+```
+
+**Terminal 2: simulator and follower** (Alice, mocap id 1840, starting in open floor):
 
 ```bash
 ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=1840 start_x:=1.0 start_y:=-1.5 \
@@ -95,12 +102,16 @@ ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=
 
 - `sim_model`: how the simulated robot moves. `controller_model`: what pure pursuit assumes.
 - To simulate the arms too (fake hardware, with the safety sync), start the whole robot instead:
-  `ros2 launch crl_husky sim_robot.launch.py robot:=0804 start_x:=1.0 start_y:=-1.5`; or every robot with
-  `sim_all.launch.py`.
+  `ros2 launch husky_assembly_teleop sim.launch.py robot:=0804 start_x:=1.0 start_y:=-1.5` (crl-husky's
+  `sim_robot.launch.py`); or every robot with `robot:=all` (`sim_all.launch.py`).
+- Mocap delay and noise come from `sim_motive`, a fake Motive between the simulator and the relay: add
+  `fake_motive:=true delay_sec:=0.01 noise:=0.0005,0.1` to `sim.launch.py` (or start `sim_mocap.launch.py` with them);
+  each run records its delay and its base's noise as part of the sim model (0 without one). Realistic values and
+  every argument: [simulation_manual.md](simulation_manual.md).
 - Models are `crl_husky/config/base_models/<name>.yaml` in crl-husky: `ideal`, and `alice_tiles_2` (Alice, tiles,
   arm stowed; `alice_tiles` is the earlier fit). Single values override the sim model, e.g. `xICR:=-0.10`.
 
-**Terminal 2: monitor**, then open <http://localhost:8095> (its phone page is on 8096):
+**Terminal 3: monitor**, then open <http://localhost:8095> (its phone page is on 8096):
 
 ```bash
 ros2 run husky_assembly_teleop husky_monitor --ros-args \
@@ -125,7 +136,7 @@ ssh administrator@192.168.0.113
 cd ~/workspace && colcon build --packages-select crl_husky_msgs crl_husky
 ```
 
-**Terminal 1 (control PC): mocap relay**, unless running: `ros2 launch crl_husky mocap.launch.py`
+**Terminal 1 (control PC): mocap relay**, unless running: `ros2 launch husky_assembly_teleop mocap.launch.py`
 
 **Terminal 2 (robot): follower.** Restart it to switch models; every run records which one it used.
 

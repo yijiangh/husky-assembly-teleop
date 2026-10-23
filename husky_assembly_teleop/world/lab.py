@@ -3,7 +3,7 @@ The lab's obstacles as data: shapes on the floor and the border of the usable ar
 
 A lab file (`data/lab/<name>.json`, in git) holds resolved shapes: type, name, centre, size, yaw and a free `source`
 note. Temporary obstacles live in a local file instead (`TEMPORARY_FILE`), never in the lab file.
-Pure data and file handling; no scene, no UI.
+The floor is not in the file: a slab under the border (`floor_body`). Pure data, files and scene bodies; no UI.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from scaffolding_assembly_core.geometry import BoxShape, Geometry, Pose, box_geometry, cylinder_geometry
+from scaffolding_assembly_core.kinematics import chain_joints
+from scaffolding_assembly_core.robot import RobotModel
 from scaffolding_assembly_core.scene import Body
 
 #: Lab files, under the data directory; `-p lab:=<name>` picks `<name>.json`.
@@ -31,6 +33,9 @@ GROUPS = {"box": "boxes", "cylinder": "cylinders", "truss": "trusses"}
 #: Ground plate under a truss column: side and thickness, metres.
 TRUSS_PLATE = 0.8
 TRUSS_PLATE_THICKNESS = 0.02
+#: The floor: thickness of the slab under z = 0, and its side around the origin while the lab has no border, metres.
+FLOOR_THICKNESS = 0.05
+FLOOR_WITHOUT_BORDER = 20.0
 #: File format name and version.
 FORMAT, VERSION = "husky_lab", 1
 UNITS = ("world frame (mocap, Z-up), metres; yaw in degrees about Z. size: box sides; cylinder (diameter, diameter, "
@@ -156,6 +161,11 @@ def border_id(plugin: str, name: str) -> str:
     return f"{plugin}/boxes/{slug(name)}"
 
 
+def floor_id(plugin: str) -> str:
+    """The scene id of the floor: "<plugin>/floor"."""
+    return f"{plugin}/floor"
+
+
 def lab_file(data_directory: Path, lab: str) -> Path:
     """The file of lab `lab`: a path to a .json file as given, else `<data>/lab/<lab>.json`."""
     path = Path(lab).expanduser()
@@ -277,3 +287,26 @@ def border_bodies(plugin: str, border: Border | None) -> list[Body]:
         return []
     return [Body(border_id(plugin, name), geometry, pose, label=name, color=BORDER_COLOR)
             for name, geometry, pose in border.walls()]
+
+
+def floor_body(plugin: str, border: Border | None, touches: tuple[str, ...]) -> Body:
+    """The floor: a slab just under z = 0, out to the border walls' outer edge; never drawn, only collides.
+
+    Args:
+        plugin: The owning plugin's name.
+        border: The lab's border; None for a FLOOR_WITHOUT_BORDER square around the origin.
+        touches: What may touch it: the robots' platform links (`platform_links`).
+    """
+    if border is None:
+        (x0, x1), (y0, y1) = ((-FLOOR_WITHOUT_BORDER / 2, FLOOR_WITHOUT_BORDER / 2),) * 2
+    else:
+        (x0, x1), (y0, y1) = ((low - border.width, high + border.width) for low, high in (border.x, border.y))
+    geometry = Geometry((), box_geometry((x1 - x0, y1 - y0, FLOOR_THICKNESS)).collision)
+    return Body(floor_id(plugin), geometry, Pose(((x0 + x1) / 2, (y0 + y1) / 2, -FLOOR_THICKNESS / 2)),
+                touches=touches, label="floor")
+
+
+def platform_links(model: RobotModel) -> tuple[str, ...]:
+    """The links of a robot no arm joint moves (wheels, chassis): they may touch the floor, driving never changes it."""
+    movable = set(model.movable_joints)
+    return tuple(sorted(link for link in model.links if not movable.intersection(chain_joints(model.urdf, link))))

@@ -90,10 +90,12 @@ def test_a_guard_refuses_only_what_it_names():
 
 
 def test_switching_to_the_running_controller_sends_nothing():
-    """Already running: True, and it counts as ours."""
+    """Already running: True, it counts as ours, and an earlier failed switch away from it is cleared."""
     interface = manager(CARTESIAN)
+    interface.state.switch_error = "switch to 'joints' failed: controller manager rejected the switch"
     assert interface.switch(CARTESIAN)
     assert not interface._switch_client.calls and interface.state.requested == CARTESIAN
+    assert interface.state.switch_error is None
 
 
 def test_deactivate_all_goes_out_even_while_a_switch_is_pending():

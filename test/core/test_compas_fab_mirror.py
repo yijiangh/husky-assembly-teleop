@@ -107,11 +107,22 @@ def test_other_robot_is_an_obstacle(mirror, configs):
     assert mirror.collisions(full_report=True) == []
 
 
-def test_stationary_contacts_are_allowed(mirror, configs):
-    """A box inside Belle, far from Alice, is allowed for the snapshot and listed."""
-    mirror.sync(world(configs, (Body("t/box", box_geometry((0.2, 0.2, 0.2)), Pose((10.0, 0.0, 0.3))),)))
+def test_a_contact_between_other_things_is_a_collision_unless_declared(mirror, configs):
+    """A box inside Belle, far from Alice, still collides: only the scene's `touches` allow it."""
+    inside_belle = Pose((10.0, 0.0, 0.3))
+    mirror.sync(world(configs, (Body("t/box", box_geometry((0.2, 0.2, 0.2)), inside_belle),)))
+    assert mirror.collisions(full_report=True) == [(BELLE_ID, "t/box")]
+    mirror.sync(world(configs, (Body("t/box", box_geometry((0.2, 0.2, 0.2)), inside_belle, touches=(BELLE_ID,)),)))
     assert mirror.collisions() == []
-    assert mirror.static_contacts == [(BELLE_ID, "t/box")]
+
+
+def test_a_body_that_may_touch_another_robots_gripper_may_touch_that_robot(mirror, configs):
+    """compas_fab allows only whole tools, and Belle is one: allowing her gripper allows all of her (start check)."""
+    belle_gripper = next(iter(configs[BELLE].model.tools.values())).id
+    inside_belle = Pose((10.0, 0.0, 0.3))
+    mirror.sync(world(configs, (Body("t/box", box_geometry((0.2, 0.2, 0.2)), inside_belle,
+                                     touches=(belle_gripper,)),)))
+    assert mirror.collisions() == []
 
 
 def test_attached_body_moves_with_the_arm(mirror, configs):
@@ -187,6 +198,33 @@ def test_search_check_agrees_with_check_collision(mirror, configs):
         assert (fast is None) == (slow == []), f"{values}: fast {fast}, compas_fab {slow}"
         results.append(fast is None)
     assert 5 < sum(results) < 55, "want both clear and colliding samples"
+
+
+def test_a_gripper_against_another_robot_is_a_collision(mirror, configs):
+    """Alice's gripper inside Belle, and nothing else touching, is found by both checks (compas_fab misses it)."""
+    belle = world(configs, belle=Pose((1.0, 0.0, 0.0)))
+    mirror.sync(belle)
+    arm = list(stow(configs[ALICE]))
+    reach = dict(zip(arm, [0.069, -0.018, -1.611, 2.044, -0.419, 2.171]))
+    assert mirror.collisions(reach, full_report=True) == [(GRIPPER, BELLE_ID)]
+    assert mirror.search_check(arm)(list(reach.values())) == (GRIPPER, BELLE_ID)
+
+
+def test_the_two_grippers_of_one_robot_collide():
+    """Cindy's left gripper against her right, and nothing else touching, is found by both checks."""
+    cindy = robot_config_from_serial("0806", DATA)
+    joints = {f"{arm.name}_{name}": value for arm in cindy.arms for name, value in zip(UR_JOINT_NAMES, arm.stow_joints)}
+    left = [f"left_ur_arm_{name}" for name in UR_JOINT_NAMES]
+    crossed = [-0.44, 5.72, 1.31, -0.01, -0.09, -3.16]
+    mirror = CompasFabMirror(CINDY_ID)
+    try:
+        mirror.sync(Scene(robots={CINDY_ID: RobotObject(CINDY_ID, cindy.model, Pose(), joints)}))
+        assert mirror.collisions() == []
+        grippers = (DESIGN_TOOLS["AT3L"], DESIGN_TOOLS["AT3R"])
+        assert mirror.collisions(dict(zip(left, crossed)), full_report=True) == [grippers]
+        assert mirror.search_check(left)(crossed) == grippers
+    finally:
+        mirror.close()
 
 
 # --- --- --- --- --- AGAINST THE DESIGN'S OWN CELL --- --- --- --- ---
@@ -279,6 +317,7 @@ def test_same_result_as_the_design_cell():
             except CollisionCheckError as error:
                 expected[label] = {frozenset(map(lambda model: _design_id(design_cell, model), pair))
                                    for pair in error.collision_pairs}
+            expected[label] |= _design_tool_contacts(client, state)
 
     mirror = CompasFabMirror(CINDY_ID)
     try:
@@ -302,6 +341,15 @@ def _design_id(cell, model) -> str:
         if value is model:
             return DESIGN_TOOLS.get(name, name)
     return f"{CINDY_ID}/{model.name}"
+
+
+def _design_tool_contacts(client, state) -> set[frozenset]:
+    """Tool against tool in the design's cell as posed: the step the mirror adds to compas_fab's check."""
+    shown = [name for name in client.tools_puids if not state.tool_states[name].is_hidden]
+    acting = [name for name in shown if state.tool_states[name].attached_to_group is not None]
+    return {frozenset(DESIGN_TOOLS.get(name, name) for name in (a, b)) for a in acting for b in shown
+            if b != a and p.getClosestPoints(client.tools_puids[a], client.tools_puids[b], 0.0,
+                                             physicsClientId=client.client_id)}
 
 
 def _listed(pairs: set[frozenset]) -> list[tuple[str, ...]]:

@@ -13,5 +13,6 @@ What is in the world, and where.
   scene.py      collision objects we don't measure, and the per-tick snapshot
   lab.py        the lab's obstacles and floor border as data, and their files
   model_check.py  whether two models of one robot agree (planned and real, URDF and UR calibration)
+  calibration_sessions.py  base calibrations: crl-husky's default or a Drive session, and which one the relay applies
   marker_fit.py   fitting known marker layouts to raw mocap markers
 """

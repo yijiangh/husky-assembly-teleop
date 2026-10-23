@@ -3,16 +3,18 @@ Which base calibration the mocap relay applies to each robot's rigid body: crl-h
 
 - Default: the one in the robot's `mocap_config.json` in crl-husky (`config_resolver`), always there and rough.
 - Newer: the newest calibration session on the Drive, `data_experiment/calibration_data/<YYYYMMDD>/
-  calibrated_transformation_<serial>_rhino.json`, used only if it passes `sanity_problem` against the default.
+  calibrated_transformation_<digits>_rhino.json` (the robot's four serial digits), used only if it passes
+  `sanity_problem` against the default.
 - Rigid bodies of no robot (probe, bars) get none: Motive's pivot defines them.
 
-Pure functions of files; no ROS, any thread.
+Shared by the relay and the monitor's calibration plugin. Pure functions of files; no ROS, any thread.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import textwrap
 from dataclasses import dataclass
@@ -25,6 +27,10 @@ from crl_husky import config_resolver
 
 #: Calibration sessions, below the Drive root: one folder per day, YYYYMMDD.
 SESSIONS_FOLDER = Path("data_experiment") / "calibration_data"
+#: Simulated calibration sessions, below the Drive root: only a simulation's relay reads them, never the robots'. One
+#: folder per ROS domain, so simulations in different domains never apply each other's calibrations.
+SIM_SESSIONS_FOLDER = (Path("data_experiment") / "calibration_data_sim"
+                       / f"domain_{os.environ.get('ROS_DOMAIN_ID', '0')}")
 SESSION_NAME = re.compile(r"\d{8}")
 #: The pipeline's output in a session, per robot's four serial digits.
 SESSION_OUTPUT = "calibrated_transformation_{digits}_rhino.json"
@@ -117,27 +123,58 @@ def default_calibration(mocap_id: int) -> Calibration | None:
     return _calibration(mocap_id, entry["robot_serial"], content, entry["file"])
 
 
-def newest_session_file(root: Path, robot_serial: str) -> Path | None:
-    """The robot's calibration file in the newest session folder that has one, or None.
+def calibrating_arm_key(robot_serial: str) -> str | None:
+    """The key naming the arm crl-husky's default calibration was measured on; None if the default names none.
 
-    ! Only directly inside each dated session folder: `archive/` and `backup/` below it are older attempts.
+    E.g. "base_mocap_from_left_ur_arm_base_link_inertia".
     """
-    sessions = root / SESSIONS_FOLDER
+    for mocap_id, serial in robot_mocap_ids().items():
+        if serial == robot_serial:
+            try:
+                default = default_calibration(mocap_id)
+            except ValueError:
+                return None
+            return default.measured[0] if default is not None and default.measured else None
+    return None
+
+
+def newest_session_file(root: Path, robot_serial: str, sessions: Path = SESSIONS_FOLDER) -> Path | None:
+    """The robot's calibration file in the newest session folder that has one measured on its calibrating arm, or None.
+
+    - ! Only directly inside each dated session folder: `archive/` and `backup/` below it are older attempts.
+    - A file measured on another arm (Cindy's right arm checks its mount only) is passed over.
+    - `sessions`: the sessions folder below the root, SIM_SESSIONS_FOLDER for a simulation.
+    """
+    sessions = root / sessions
     if not sessions.is_dir():
         return None
     name = SESSION_OUTPUT.format(digits=robot_serial[-4:])
+    arm_key = calibrating_arm_key(robot_serial)
     for session in sorted((p for p in sessions.iterdir() if p.is_dir() and SESSION_NAME.fullmatch(p.name)),
                           key=lambda p: p.name, reverse=True):
-        if (session / name).is_file():
-            return session / name
+        path = session / name
+        if path.is_file() and not (arm_key and _other_arm(path, arm_key)):
+            return path
     return None
+
+
+def _other_arm(path: Path, arm_key: str) -> bool:
+    """Whether a calibration file names a measured arm, and not the one `arm_key` names.
+
+    A file naming none, or one that does not read, does not count: its reader reports it.
+    """
+    try:
+        arms = {key for key in json.loads(path.read_text()) if key.startswith("base_mocap_from_") and key != BASE_KEY}
+    except (OSError, ValueError, AttributeError):
+        return False
+    return bool(arms) and arm_key not in arms
 
 
 def read_session_file(path: Path, root: Path, mocap_id: int, robot_serial: str) -> Calibration:
     """Read one session's calibration for a robot's rigid body.
 
-    TEMPORARY compatibility: the pipeline writes no `mocap_id` yet (TODO in the calibration pipeline), so the id
-    comes from crl-husky by the robot's serial; a file that does name one must name this one.
+    Files from the old pipeline name no `mocap_id`: the id then comes from crl-husky by the robot's serial. A file
+    that names one (the calibration plugin writes it) must name this one.
 
     Raises:
         ValueError: If the file does not parse, names another rigid body, or its transform is malformed.
@@ -172,7 +209,8 @@ def sanity_problem(candidate: Calibration, default: Calibration) -> str | None:
     return None
 
 
-def resolve(mocap_id: int, robot_serial: str, root: Path | None) -> tuple[Calibration | None, list[str]]:
+def resolve(mocap_id: int, robot_serial: str, root: Path | None,
+            sessions: Path = SESSIONS_FOLDER) -> tuple[Calibration | None, list[str]]:
     """The calibration to apply to a robot's rigid body, and warnings about what was passed over.
 
     The newest Drive session if there is one and it passes the sanity check, else the default.
@@ -181,6 +219,7 @@ def resolve(mocap_id: int, robot_serial: str, root: Path | None) -> tuple[Calibr
         mocap_id: The rigid body.
         robot_serial: Its robot.
         root: The Drive root, or None to use only the default.
+        sessions: The sessions folder below the root.
 
     Returns:
         tuple[Calibration | None, list[str]]: The calibration (None: the robot has none at all), and warnings.
@@ -191,7 +230,7 @@ def resolve(mocap_id: int, robot_serial: str, root: Path | None) -> tuple[Calibr
     except ValueError as error:
         default = None
         warnings.append(f"crl-husky's default is unusable: {error}")
-    path = newest_session_file(root, robot_serial) if root is not None else None
+    path = newest_session_file(root, robot_serial, sessions) if root is not None else None
     if path is None:
         return default, warnings
     try:
@@ -210,7 +249,7 @@ def resolve(mocap_id: int, robot_serial: str, root: Path | None) -> tuple[Calibr
 
 
 def explain(mocap_id: int, robot_serial: str, calibration: Calibration | None, warnings: list[str],
-            root: Path | None, width: int = 96) -> list[str]:
+            root: Path | None, width: int = 96, sessions: Path = SESSIONS_FOLDER) -> list[str]:
     """Table lines for one robot, under DESCRIBE_HEADER: its row, where it came from, and why a newer one was refused.
 
     Args:
@@ -220,10 +259,11 @@ def explain(mocap_id: int, robot_serial: str, calibration: Calibration | None, w
         warnings: What `resolve` warned about.
         root: The Drive root looked in, or None.
         width: Characters per line.
+        sessions: The sessions folder below the root.
     """
     def detail(label: str, text: str) -> str:
         # Drive paths relative to the sessions folder and crl-husky's from config/, which the table's title names.
-        text = text.replace(f"{SESSIONS_FOLDER.as_posix()}/", "")
+        text = text.replace(f"{sessions.as_posix()}/", "")
         text = text[text.find("config/robots/"):] if text.startswith("/") and "config/robots/" in text else text
         return textwrap.fill(text, width, initial_indent=f"{'':6}{label:<12}", subsequent_indent=" " * 18,
                              break_long_words=False, break_on_hyphens=False)

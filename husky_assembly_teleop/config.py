@@ -30,7 +30,7 @@ from .tool_urdfs import absolute_mesh_urdf, tool_spec
 #:   robotiq         Robotiq 2F-85 gripper.
 #:   scaffolding_v1  Scaffolding tool switched by UR tool digital outputs.
 #:   scaffolding_v3  Scaffolding tool with an RS485 driver.
-EndEffectorKind = Literal["robotiq", "scaffolding_v1", "scaffolding_v3"]
+EndEffectorKind = Literal["robotiq", "scaffolding_v1", "scaffolding_v3", "calibration_marker"]
 END_EFFECTOR_KINDS: tuple[str, ...] = get_args(EndEffectorKind)
 #: Extra names the `tools` parameter accepts: crl_husky's "robotiq_2F_85", and "none" for a bare arm.
 _TOOL_ALIASES: dict[str, str | None] = {"robotiq_2F_85": "robotiq", "none": None}

@@ -48,12 +48,13 @@ from ...shared.obstacles_contract import ObstaclesContract
 from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values, warning
+from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section,
+                         values, warning)
 from ...ui.trace_plot import TracePlot
 from ...world.clearance import STOP_DISTANCE, Clearance, ClearanceRefused
 from ...world.checks import STALE_AFTER
 from . import record
-from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, PathClearance, Sampler, StandardSet
+from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, PathCollisionCheck, Sampler, StandardSet
 from .plan import Plan, plan_from
 from .report import write_report
 from .templates import PARAMETERS, TEMPLATES
@@ -110,6 +111,7 @@ class BaseExperimentPlugin(HuskyPlugin):
     """Sends template paths to the onboard follower, by hand or at random, shows them and records the runs."""
 
     name = "base_exp"
+    icon = viser.Icon.CHART_LINE
     experimental = True
     #: Automation needs the lab's border (`ObstaclesContract.lab`).
     requires = ("obstacles",)
@@ -139,7 +141,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._alert = ""
         self._seed = random.randrange(2 ** 31)
         self._rng = random.Random(self._seed)
-        self._clearance = PathClearance()
+        self._path_check = PathCollisionCheck()
         #: The run's error measurement, its latest sample and phase, and the time of the mocap fix measured last.
         self._tracker: Tracker | None = None
         self._sample: Sample | None = None
@@ -274,7 +276,7 @@ class BaseExperimentPlugin(HuskyPlugin):
 
     def teardown(self, ctx: PluginContext) -> None:
         """Close the clearance checker's mirror and worker."""
-        self._clearance.close()
+        self._path_check.close()
 
     # --- --- --- --- --- INTENTS --- --- --- --- ---
 
@@ -629,7 +631,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         """
         pose = self._robot_pose(ctx, serial)
         plan = _return_plan(serial, pose, home)
-        hit = await self._clearance.path_hit(ctx.scene.snapshot, serial, plan.path.polyline(), RETURN_CLEARANCE)
+        hit = await self._path_check.path_hit(ctx.scene.snapshot, serial, plan.path.polyline(), RETURN_CLEARANCE)
         if hit is not None:
             self._stop_auto(ctx, f"stopped: the way back to the start passes {hit}; move the robot to open space")
             return False
@@ -663,7 +665,7 @@ class BaseExperimentPlugin(HuskyPlugin):
                 plan = twist_plan(serial, settings["parameters"]["v"], settings["parameters"]["w"], anchor)
             else:
                 plan, _ = plan_from(serial, settings, anchor)
-            if plan is not None and await self._clearance.path_hit(snapshot, serial, plan.path.polyline()) is None:
+            if plan is not None and await self._path_check.path_hit(snapshot, serial, plan.path.polyline()) is None:
                 return plan, tries
             if tries >= SAMPLE_TRIES:
                 break
@@ -774,7 +776,7 @@ class BaseExperimentPlugin(HuskyPlugin):
             plot.draw()
 
     def _status_html(self, ctx: PluginContext) -> str:
-        """Chips: robot, mocap, follower, velocity controller, run; and the guard's alert."""
+        """Chips on one line: robot, mocap, follower, velocity controller, run."""
         base = ctx.world.robots[self.serial].base
         chips = chip(escape(self.serial), SECTION_CTRL)
         chips += chip("tracked", OK) if base.state.tracked else chip("not tracked", FAIL)
@@ -794,12 +796,14 @@ class BaseExperimentPlugin(HuskyPlugin):
             # * Short on the chip ("not started" without its reason), the whole outcome on hover.
             label = "not started" if self._outcome.startswith("not started") else self._outcome.split(" → ")[0][:40]
             chips += chip(escape(label), FAIL if failed else OK, self._outcome)
-        # ! The guard's alert stays until the next Start: the operator has to deal with it.
-        return (block(chips) + (warning(escape(self._alert), FAIL) if self._alert else "")
-                + (warning(escape(self._auto_alert)) if self._auto_alert else ""))
+        return chip_line(chips)
 
     def _details_html(self, ctx: PluginContext) -> str:
-        """The plan and the follower's numbers, in a fixed number of rows."""
+        """The guard's and automation's alerts, then the plan and the follower's numbers in a fixed number of rows.
+
+        ! The alerts stay until the next Start: the operator has to deal with them. They sit here, below the controls,
+        so they push nothing.
+        """
         plan = self._sent if self.running else self._preview
         if plan is None:
             size = f"path      {self._preview_problem or '—'}"
@@ -817,10 +821,12 @@ class BaseExperimentPlugin(HuskyPlugin):
                       f"yaw {math.degrees(follower.yaw_error):+6.1f}°")
             command = f"v {follower.command[0]:+5.2f} m/s  w {math.degrees(follower.command[1]):+6.1f} °/s"
         label = escape(plan.label) if plan is not None else "—"
-        return block(values(f"plan      {label}", size, f"progress  {progress}", f"error     {errors}",
-                            f"command   {command}", f"last      {escape(self._outcome) or '—'}",
-                            f"auto      {escape(self._auto_note) or '—'}",
-                            f"paths     {escape(self._paths_note) or '—'}"))
+        alerts = ((warning(escape(self._alert), FAIL) if self._alert else "")
+                  + (warning(escape(self._auto_alert)) if self._auto_alert else ""))
+        return alerts + block(values(f"plan      {label}", size, f"progress  {progress}", f"error     {errors}",
+                                     f"command   {command}", f"last      {escape(self._outcome) or '—'}",
+                                     f"auto      {escape(self._auto_note) or '—'}",
+                                     f"paths     {escape(self._paths_note) or '—'}"))
 
     def _progress_percent(self) -> float:
         """Progress for the bar: of the automated series if one has a set length, else of the current run."""

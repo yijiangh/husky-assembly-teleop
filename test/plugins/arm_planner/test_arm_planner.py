@@ -10,12 +10,16 @@ import pytest
 
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
+from husky_assembly_teleop.robot_interface.arm import joint_path_move
+from husky_assembly_teleop.world.lab import floor_body, platform_links
+from husky_assembly_teleop.shared.planner.rrt_connect import Corners
+from husky_assembly_teleop.plugins.arm_planner import planner as planner_module
 from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, ArmPlanningWorld, _extend, arm_joint_names,
-                                                               path_hit, plan_arm)
+                                                               joint_limits, path_hit, plan_arm)
 from scaffolding_assembly_core.geometry import box_geometry
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Attachment, Body, Scene
-from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.ids import link_id, robot_id
 from scaffolding_assembly_core.geometry import Pose
 
 ALICE = "0804"
@@ -111,12 +115,14 @@ def test_start_in_collision_is_refused(world, config):
     assert result.path is None and result.reason.startswith("start is in collision")
 
 
-def test_path_timing():
-    """Segments are timed by their largest joint change; sample interpolates and clamps."""
-    path = ArmPath.at_preview_speed(NAMES, np.array([[0.0] * 6, [1.0, 0.5, 0, 0, 0, 0], [1.0, 0.5, 0, 0, 0, 2.0]]))
-    np.testing.assert_allclose(np.diff(path.times) * np.radians(20.0), [1.0, 2.0])
-    np.testing.assert_allclose(path.sample(path.times[1] / 2)[:2], [0.5, 0.25])
-    np.testing.assert_allclose(path.sample(1e9), path.goal)
+def test_the_preview_follows_the_cosine_profile_sent():
+    """The preview speeds up and slows down as the arm will: slow at the ends, halfway at half time; it clamps."""
+    goal = np.array([1.0, 0.5, 0, 0, 0, 0])
+    path = ArmPath.along(NAMES, np.array([[0.0] * 6, goal]))
+    np.testing.assert_allclose(path.points, joint_path_move([[0.0] * 6, goal])[0])
+    np.testing.assert_allclose(path.sample(path.duration / 2), goal / 2, atol=1e-9)
+    assert path.sample(path.duration / 4)[0] < 0.2
+    np.testing.assert_allclose(path.sample(1e9), goal)
 
 
 def test_window_without_display_raises(config, monkeypatch):
@@ -202,3 +208,92 @@ def test_a_hit_on_another_robot_names_the_link_touched(world, config):
     assert hit is not None and hit.pairs[0][1] == other.id
     touched = hit.contacts[0].pair[1]
     assert touched.startswith(f"{other.id}/") or touched in {tool.id for tool in belle.model.tools.values()}, touched
+
+
+# --- --- --- --- --- joint limits --- --- --- --- ---
+
+#: The dual-arm robot: its URDF limits shoulder lift to +-270 deg and the wrists to +-240 deg, inside the UR's +-360.
+DUAL = "0806"
+LEFT = "left_ur_arm"
+
+
+def dual_mirror(world, at=None):
+    """The dual-arm robot alone, both arms stowed, the left arm at `at` if given."""
+    config = robot_config_from_serial(DUAL, DATA)
+    joints = {}
+    for arm in config.arms:
+        joints.update(zip(arm_joint_names(arm.name), arm.stow_joints))
+    if at is not None:
+        joints.update(zip(arm_joint_names(LEFT), at))
+    robot = RobotObject(robot_id(DUAL), config.model, Pose(), joints)
+    return config, world.sync(Scene(robots={robot.id: robot}), DUAL)
+
+
+def test_joint_limits_come_from_the_urdf_within_the_ur_limits(world):
+    """The dual-arm robot's tighter URDF limits apply; joints the URDF allows a full turn keep the UR's."""
+    _config, mirror = dual_mirror(world)
+    lower, upper = joint_limits(mirror, arm_joint_names(LEFT))
+    np.testing.assert_allclose(upper, np.radians([360.0, 270.0, 180.0, 240.0, 240.0, 240.0]), atol=1e-6)
+    np.testing.assert_allclose(lower, -upper)
+
+
+def test_a_target_past_a_joint_limit_is_refused(world):
+    """A wrist target beyond the URDF's 240 deg is refused, naming the joint, before any search."""
+    config, mirror = dual_mirror(world)
+    goal = np.array(config.arms[0].stow_joints if config.arms[0].name == LEFT else config.arms[1].stow_joints)
+    goal[5] = np.radians(250.0)
+    result = plan_arm(world, mirror, LEFT, goal, threading.Event())
+    assert result.path is None and result.reason.startswith("the target is past the joint limits: wrist_3_joint")
+
+
+def test_a_start_past_a_joint_limit_is_refused(world):
+    """An arm already past a limit cannot be planned from; the message says to move it back."""
+    config, _mirror = dual_mirror(world)
+    stow = np.array(next(arm.stow_joints for arm in config.arms if arm.name == LEFT))
+    start = stow.copy()
+    start[3] = np.radians(-245.0)
+    _config, mirror = dual_mirror(world, start)
+    result = plan_arm(world, mirror, LEFT, stow, threading.Event())
+    assert result.path is None and "wrist_1_joint" in result.reason and "move it back" in result.reason
+
+
+def test_the_search_samples_only_within_the_joint_limits(world, monkeypatch):
+    """Every sample the search draws lies within the URDF limits, however close start and goal are to them."""
+    config, _mirror = dual_mirror(world)
+    start = np.array(next(arm.stow_joints for arm in config.arms if arm.name == LEFT))
+    start[4] = np.radians(230.0)
+    _config, mirror = dual_mirror(world, start)
+    goal = start.copy()
+    goal[0] += 0.5
+    samples = []
+
+    def fake_connect(start, goal, distance, sample, *_args, **_kwargs):
+        samples.extend(sample() for _ in range(2000))
+        return Corners([start, goal], direct=True)
+
+    monkeypatch.setattr(planner_module, "connect", fake_connect)
+    result = plan_arm(world, mirror, LEFT, goal, threading.Event())
+    assert result.path is not None, result.reason
+    lower, upper = joint_limits(mirror, arm_joint_names(LEFT))
+    assert np.all(np.array(samples) >= lower) and np.all(np.array(samples) <= upper)
+    assert np.max(np.array(samples)[:, 4]) > np.radians(235.0)
+
+
+def test_the_floor_lets_wheels_rest_on_it_but_not_an_arm_through_it(world, config):
+    """The lab floor allows each robot's platform links, as the obstacles plugin sets it; an arm below it collides."""
+    belle = robot_config_from_serial("0805", DATA)
+    alice_id, belle_id = robot_id(ALICE), robot_id("0805")
+    touches = tuple(link_id(robot, link) for robot, model in ((alice_id, config.model), (belle_id, belle.model))
+                    for link in platform_links(model))
+    floor = floor_body("obstacles", None, touches)
+    start = start_and_goal(config)[0]
+    robots = {**snapshot(config, start).robots,
+              belle_id: RobotObject(belle_id, belle.model, Pose((2.0, 0.0, 0.0)),
+                                    dict(zip(NAMES, belle.arms[0].stow_joints)))}
+    scene = Scene(bodies={floor.id: floor}, world_poses={floor.id: floor.placement}, robots=robots)
+    mirror = world.sync(scene, ALICE)
+    assert mirror.collisions(full_report=True) == []
+    check = mirror.search_check(NAMES)
+    rng = np.random.default_rng(0)
+    hits = [check(q) for q in rng.uniform(-np.pi, np.pi, size=(400, 6))]
+    assert any(hit is not None and floor.id in hit for hit in hits), "no arm pose reached the floor"

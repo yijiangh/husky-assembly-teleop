@@ -47,20 +47,18 @@ from ...shared.execution.interlock import held as held_robot
 from ...shared.execution.interlock import lease_of
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import REFUSAL_SHOWN, SECTION_SENSOR, block, numbers, section, values
+from ...shared.teleop.dpad import HOLD_TIMEOUT, PHONE_DPAD_STYLE, Hold, build_velocity_inputs
 from ...world.clearance import ALL_ARMS, STOP_DISTANCE, ClearanceRefused
 from scaffolding_assembly_core.geometry import Pose
 from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, build_compliance_inputs, build_free_drive_inputs,
                         build_jog_inputs, build_phone_arm_inputs, build_tool_inputs, pose_from_sliders,
                         pose_plan_line)
-from .dpad import HOLD_TIMEOUT, MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, PHONE_DPAD_STYLE, build_velocity_inputs
 from .markers import (add_force_arrows, add_frame_markers, add_target_gizmo, draw_markers, place_markers,
                       target_from_world)
 from .status import (ControllerPanel, arm_status, base_status, build_controller_panel, phone_arm_status,
                      phone_base_status, refusal_chip, show_only_running, tool_status)
 from .teleop_lease import TeleopLeases
 
-#: The side panel tab this plugin fills.
-CONTROL_TAB = ("Control", viser.Icon.DEVICE_GAMEPAD_2)
 #: Seconds to wait before asking again after a refused free drive switch, so a dead service is not asked every tick.
 FREE_DRIVE_RETRY = 1.0
 #: The part name of a robot's base in refusal keys; arms use their own names.
@@ -109,6 +107,8 @@ class RobotControlPlugin(HuskyPlugin):
     """Shows each robot's state and gives basic control over it."""
 
     name = "robot_control"
+    tab_path = ("Control",)
+    icon = viser.Icon.DEVICE_GAMEPAD_2
 
     def __init__(self):
         """Start with no widgets; setup builds them."""
@@ -121,7 +121,7 @@ class RobotControlPlugin(HuskyPlugin):
         self._driving: set[str] = set()
 
         #: Last hold report per base serial: (linear sign, angular sign, arrival time, from the phone).
-        self._held: dict[str, tuple[float, float, float, bool]] = {}
+        self._held: dict[str, Hold] = {}
 
         #: Last report of each arm's held free drive button, by (serial, arm name): (arrival time, from the phone).
         self._free_drive_held: dict[tuple[str, str], tuple[float, bool]] = {}
@@ -167,7 +167,7 @@ class RobotControlPlugin(HuskyPlugin):
             ctx: This plugin's context.
         """
         self._ctx = ctx
-        with ctx.view.tab(CONTROL_TAB) as gui:
+        with ctx.view.ui() as gui:
             robots = gui.add_tab_group()
             for serial, robot in ctx.world.robots.items():
                 # "a200-0806" -> "0806"
@@ -176,7 +176,7 @@ class RobotControlPlugin(HuskyPlugin):
                     with parts.add_tab("Base", icon=viser.Icon.CAR):
                         self._bases.append(self._build_base(ctx, gui, serial, robot.base))
                     for arm in robot.arms.values():
-                        with parts.add_tab(arm.config.label, icon=viser.Icon.ROBOT):
+                        with parts.add_tab(arm.config.label, icon=viser.Icon.CRANE):
                             self._arms.append(self._build_arm(ctx, gui, serial, arm))
         # * The phone's Control tab: a sub-tab per robot with its own speed slider and the same D-pad.
         #   Below it, a folder per arm: Open and Close, and free drive while held.
@@ -187,7 +187,7 @@ class RobotControlPlugin(HuskyPlugin):
                 with robots.add_tab(widgets.serial.split("-")[-1], icon=viser.Icon.ROBOT):
                     widgets.phone_status = phone.add_html("")
                     widgets.phone_speed = build_velocity_inputs(
-                        ctx, phone, widgets.serial, partial(self._on_hold, ctx, widgets.serial, True))
+                        ctx, phone, widgets.serial, partial(self._on_hold, widgets.serial))
                     for arm_widgets in (arm for arm in self._arms if arm.serial == widgets.serial):
                         name = arm_widgets.arm.config.name
                         with phone.add_folder(arm_widgets.arm.config.label):
@@ -212,7 +212,7 @@ class RobotControlPlugin(HuskyPlugin):
         status = gui.add_html("")
 
         def velocity_inputs() -> tuple[viser.GuiSliderHandle, viser.GuiCheckboxHandle]:
-            speed = build_velocity_inputs(ctx, gui, serial, partial(self._on_hold, ctx, serial, False))
+            speed = build_velocity_inputs(ctx, gui, serial, partial(self._on_hold, serial))
             clearance = gui.add_checkbox(
                 "Clearance", initial_value=True,
                 hint=f"While driving, soft stop the base once it comes within {STOP_DISTANCE * 100:.0f} cm of anything "
@@ -290,17 +290,9 @@ class RobotControlPlugin(HuskyPlugin):
 
     # --- --- --- --- --- INTENTS (widget callbacks, run on the main thread) --- --- --- --- ---
 
-    def _on_hold(self, ctx: PluginContext, serial: str, phone: bool, linear: float, angular: float) -> None:
-        """Record that a hold button is still pressed.
-
-        Args:
-            ctx: This plugin's context.
-            serial: The base's robot serial.
-            phone: Whether the button is on the phone, whose speed slider then applies.
-            linear: Sign of the linear speed the button asks for.
-            angular: Sign of the angular speed the button asks for.
-        """
-        self._held[serial] = (linear, angular, ctx.now(), phone)
+    def _on_hold(self, serial: str, hold: Hold) -> None:
+        """Record that a hold button of base `serial` is still pressed (desktop or phone: its own speed applies)."""
+        self._held[serial] = hold
 
     def _on_free_drive_hold(self, ctx: PluginContext, key: tuple[str, str], phone: bool) -> None:
         """Record that an arm's free drive button is still held; on the phone it also switches the controller."""
@@ -410,16 +402,14 @@ class RobotControlPlugin(HuskyPlugin):
             if dropped is None and held is not None \
                     and not widgets.base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
                 dropped = "drive refused", "the velocity controller is not running; switch to Vel"
-            if held is not None and (now - held[2] > HOLD_TIMEOUT or dropped is not None):
+            if held is not None and (held.released(now) or dropped is not None):
                 if dropped is not None:
                     self._refuse(ctx, (widgets.serial, BASE), *dropped)
                 del self._held[widgets.serial]
                 held = None
             if held is not None:
                 self._keep_clear(ctx, widgets)
-                speed = (widgets.phone_speed if held[3] else widgets.speed).value
-                self._leased(ctx, (widgets.serial, BASE), lambda: widgets.base.send_twist(
-                    held[0] * speed * MAX_LINEAR_SPEED, held[1] * speed * MAX_ANGULAR_SPEED))
+                self._leased(ctx, (widgets.serial, BASE), lambda: widgets.base.send_twist(*held.twist()))
                 self._driving.add(widgets.serial)
             elif widgets.serial in self._driving:
                 # Just released: send one stop now.

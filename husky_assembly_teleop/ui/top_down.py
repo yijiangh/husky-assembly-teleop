@@ -90,8 +90,13 @@ def footprint(shape: Shape, pose: Pose) -> np.ndarray:
 
 
 def scene_footprints(scene: Scene) -> Iterable[tuple[np.ndarray, tuple[int, int, int]]]:
-    """Every footprint in `scene` with its colour: enabled bodies, then enabled robots' links and tools."""
+    """Every footprint in `scene` with its colour: enabled bodies, then enabled robots' links and tools.
+
+    A part the 3D view does not draw (no visual shapes, as the floor) is left out.
+    """
     for part_id, geometry, pose in scene_parts(scene):
+        if not geometry.visual:
+            continue
         color = ROBOT_COLOR if part_id.startswith(("robots/", "tools/")) else BODY_COLOR
         for shape in geometry.collision or geometry.visual:
             yield footprint(shape, pose), color

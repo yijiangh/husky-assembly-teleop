@@ -18,13 +18,13 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.arm_planner_contract import ArmPlanRequest
 from ...shared.collisions_contract import CollisionsContract
-from ...shared.planner.planner_panel import PlannerPanel
+from ...shared.planner.planner_panel import PLAN_TAB, PlannerPanel
 from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import with_guesses
 from ...ui.ghost import RobotGhost
 from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_joint_sliders
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import SECTION_CTRL, SECTION_TOOL, block, chip, section, values
+from ...ui.style import SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
 from scaffolding_assembly_core.ids import robot_id
 from .planner import arm_joint_names
 from .planner_plugin import STALE_JOINT
@@ -37,7 +37,8 @@ class ArmPlannerPanel(PlannerPanel):
     name = "arm_planner_panel"
     experimental = True
     planner = "arm_planner"
-    tab = ("Arm", viser.Icon.ROBOT)
+    tab_path = (PLAN_TAB, "Arm")
+    icon = viser.Icon.CRANE
     requires = ("arm_planner", "process", "collisions")
 
     def __init__(self):
@@ -65,7 +66,7 @@ class ArmPlannerPanel(PlannerPanel):
         self.serial = next(iter(arms))
         self.arm = arms[self.serial][0]
 
-        with self._ui(ctx) as gui:
+        with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             self._robot = gui.add_dropdown("Robot", options=list(arms), initial_value=self.serial)
             self._arm = gui.add_dropdown("Arm", options=arms[self.serial], initial_value=self.arm)
@@ -244,7 +245,7 @@ class ArmPlannerPanel(PlannerPanel):
         """Pose the ghosts and fill the panel."""
         if self.idle:
             return
-        self._status.content = block(chip(escape(f"{self.serial} {self.arm}"), SECTION_CTRL) + self._plan_chip())
+        self._status.content = chip_line(chip(escape(f"{self.serial} {self.arm}"), SECTION_CTRL) + self._plan_chip())
         # Loading a target from the step can switch the robot or arm; show that here.
         self._robot.value = self.serial
         if tuple(self._arm.options) != tuple(self._arms[self.serial]):
@@ -260,6 +261,6 @@ class ArmPlannerPanel(PlannerPanel):
         if plan is None or plan.path is None:
             path, at = "path    —", "at t    —"
         else:
-            path = f"path    {len(plan.path.points)} waypoints  {plan.path.duration:5.1f} s"
+            path = f"path    {plan.path.duration:5.1f} s  {plan.path.rests} rests on the way"
             at = "at t    " + " ".join(f"{math.degrees(v):+6.1f}" for v in plan.path.sample(self._t))
         return block(values(path, at) + self._message_html())

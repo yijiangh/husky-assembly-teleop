@@ -118,3 +118,21 @@ def test_setup_key_ignores_topics_and_start_pose():
     tuned = json.loads(json.dumps(run))
     tuned["controller"]["parameters"]["lookahead"] = 0.3
     assert setup_key(run) == setup_key(moved) != setup_key(tuned)
+
+
+def test_the_mocap_delay_and_noise_come_from_the_fake_motive():
+    """Newer sim runs take the mocap values from the fake Motive (0 without one), like older runs from the simulator."""
+    from husky_assembly_teleop.plugins.base_exp.record import environment_label, setup_key, sim_model
+    controller = {"name": "pure_pursuit", "parameters": {"lookahead": 0.2}}
+    older = {"environment": "sim", "controller": controller,
+             "sim_model": {"xICR": 0.0, "mocap_delay_sec": 0.0, "mocap_noise_position_m": 0.0,
+                           "mocap_noise_yaw_rad": 0.0}}
+    plain = {"environment": "sim", "controller": controller, "sim_model": {"xICR": 0.0}}
+    faked = {**plain, "sim_mocap": {"delay_sec": 0.02, "noise": "0.1,0.1 1840:0.001,0.5", "rate_hz": 120.0},
+             "sim_mocap_body": 1840}
+    silent = {**plain, "sim_mocap": "/sim_motive did not answer"}
+    assert setup_key(older) == setup_key(plain) == setup_key(silent) != setup_key(faked)
+    assert environment_label(plain) == "sim ideal" and environment_label(faked) == "sim model"
+    model = sim_model(faked)
+    assert model["mocap_delay_sec"] == 0.02 and model["mocap_noise_position_m"] == 0.001
+    assert model["mocap_noise_yaw_rad"] == pytest.approx(round(math.radians(0.5), 4))

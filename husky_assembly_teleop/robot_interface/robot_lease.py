@@ -8,6 +8,8 @@ that relies on other robots standing still adds a freeze (`world/freeze.py`).
 - A lease takes all its robots or none, and never waits.
 - ! Holding is per asyncio task: code inside `with leased(...)` or `with lease.use()` holds the lease, and so do the
   tasks it spawns there. Hand the lease to a helper that runs elsewhere and let it call `lease.use()`.
+- ! Keep a lease until the motion you sent has ended or been held: given back early, other code here may command the
+  robot mid-motion and nothing supervises it.
 """
 
 from __future__ import annotations

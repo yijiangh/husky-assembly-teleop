@@ -28,7 +28,8 @@ class ControllerManagerState:
         controllers: Reported controller name to lifecycle state.
         active: The running switchable controller, or None if none runs or no answer has arrived.
         switch_in_flight: Controller a switch is waiting on, or None.
-        switch_error: Why the last switch failed, or None. Cleared when a new switch goes out.
+        switch_error: Why the last switch failed, or None. Cleared when a new switch goes out or the running
+            controller is asked for again.
         requested: The controller this monitor last switched to, while it is still the running one (or the
             switch is pending); None otherwise, e.g. after a stop or a switch from outside.
         last_update_time: ROS time in seconds of the last answer, or None.
@@ -146,7 +147,9 @@ class ControllerManagerInterface:
             self._node.get_logger().error(self.state.switch_error)
             return False
         if self.state.active == controller:
+            # Asking for the running one again acknowledges a failed switch away from it.
             self.state.requested = controller
+            self.state.switch_error = None
             return True
         if not self._switch_client.service_is_ready():
             self.state.switch_error = f"{self.namespace}: switch_controller is not available"

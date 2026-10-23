@@ -125,11 +125,15 @@ A ROS domain of its own, on zenoh like the fleet. ! Never the fleet's domain 80:
 
 ```bash
 export ROS_DOMAIN_ID=70
+ros2 launch husky_assembly_teleop mocap.launch.py     # once: the relay publishes the simulated robot's pose
 ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=1840 \
   controller_model:=alice_tiles_2 sim_model:=alice_tiles_2 xICR:=-0.15
 ```
 
-and the monitor, in the same domain:
+Or the whole robot with its arms, `ros2 launch husky_assembly_teleop sim.launch.py robot:=0804` (crl-husky's
+`sim_robot.launch.py`), or every robot with `robot:=all` (`sim_all.launch.py`), both parked, with each robot's base
+model; `fake_motive:=true` adds `sim_motive`, a fake Motive with Motive's delay and noise
+([simulation_manual.md](simulation_manual.md)). Then the monitor, in the same domain:
 
 ```bash
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" \

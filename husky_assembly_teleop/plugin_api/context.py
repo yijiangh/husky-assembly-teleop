@@ -1,5 +1,5 @@
 """
-The plugin contract: what a plugin is handed, and what it is allowed to touch.
+What a plugin is handed by the runtime, and what it is allowed to touch.
 
 Each plugin gets its own PluginContext, so its queue, tasks and UI are disposed of with it.
 
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Intent:
-    """Work handed in from a viser thread, to run on the ROS thread.
+    """Work handed in from a viser thread, to run on the main thread.
 
     Attributes:
         label: Human-readable name, used when the work raises.
@@ -66,7 +66,7 @@ class PluginContext:
         Args:
             name: The owning plugin's name.
             monitor: The monitor; plugins reach it only through this context.
-            view: The plugin's private scene subtree and GUI folder.
+            view: The plugin's private scene subtree and side panel tabs.
             scene: The collision scene, limited to this plugin's own ids.
             kinematics: Robot base, joint and link poses, fixed for this tick.
             dependencies: Names declared in `requires`; only these resolve through `require`.
@@ -216,7 +216,7 @@ class PluginContext:
     def take_lease(self, serials: Iterable[str], label: str) -> Lease:
         """Lease robots across ticks, until `lease.release()` or this plugin stops; send under `with lease.use():`.
 
-        For leases no single task spans, e.g. teleop that holds a robot while its buttons are in use.
+        For leases no single task spans, e.g. teleop that keeps a robot's lease while its buttons are in use.
 
         Args:
             serials: The robots to lease, all or none.

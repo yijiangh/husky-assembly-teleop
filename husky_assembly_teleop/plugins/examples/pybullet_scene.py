@@ -2,7 +2,7 @@
 Example 3: put a box in the scene and check the robots for collision in our own PyBullet world.
 
 The pattern every planner follows:
-  1. Put a body in `ctx.scene`; the core draws it and removes it when the plugin closes.
+  1. Put a body in `ctx.scene`; the runtime draws it and removes it when the plugin closes.
      Buttons move it in place (`body.placement = Pose(...)`).
   2. Read link poses from `ctx.kinematics`: here each arm's tool0, drawn as a frame.
   3. Each tick a task hands `ctx.scene.snapshot` to one worker thread, which syncs its
@@ -102,7 +102,7 @@ class ExamplePybulletPlugin(HuskyPlugin):
         body = ctx.scene.bodies[BOX_ID]
         position = np.array(body.placement.position)
         position[:2] += np.array(direction) * BOX_STEP
-        # * The next snapshot has the new pose; the core view and our mirror follow.
+        # * The next snapshot has the new pose; the runtime's 3D view and our mirror follow.
         body.placement = Pose.from_arrays(position, body.placement.orientation)
 
     async def _check_loop(self, ctx: PluginContext) -> None:
@@ -164,9 +164,10 @@ class ExamplePybulletPlugin(HuskyPlugin):
             state = chip("no robots", NONE)
         elif hits:
             state = chip("collision", FAIL)
-            lines.extend(hits)
         else:
             state = chip("clear", OK)
+        # * One line for all hits, so the Move buttons below stay put.
+        lines.append(f"hits          {'; '.join(hits) or '—'}")
         lines.append(f"checked tick  {self._checked_tick}")
         self._status.content = block(state + values(*lines))
 

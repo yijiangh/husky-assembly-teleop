@@ -1,7 +1,7 @@
 """
 The health panel: a banner, a row per robot (with Unlock, Resume, Reconnect) and one for tracked objects.
 
-The banner sits above every plugin's folder (`ctx.view.header()`), so it shows while folders are collapsed.
+The banner sits under Stop all (`ctx.view.header()`), so it shows whichever tabs are open.
 
 A robot's row has a line of chips for its base and one for each arm with its tool.
 
@@ -15,18 +15,15 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import viser
-from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import BatteryState
 from ur_dashboard_msgs.msg import RobotMode, SafetyMode
 
 from ..plugin_api.context import PluginContext
 from ..world.mocap import mocap_check
+from ..world.tcp import tcp_check, tool0_by_kinematics
 from ..plugin_api.plugin import HuskyPlugin, register
-from ..robot_interface.arm import STILL_AFTER, ArmInterface
-from scaffolding_assembly_core.geometry import Pose, compose, invert
-from scaffolding_assembly_core.robot import FLANGE_SUFFIX
+from ..robot_interface.arm import ArmInterface
 from ..robot_interface.end_effectors import RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ..robot_interface.robot import HuskyRobotInterface
 from ..robot_interface.simulated_parts import SimulatedPart
@@ -38,7 +35,7 @@ from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManag
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
 from ..shared.execution.interlock import refuse_while_held
 from ..ui.phone import phone_text
-from ..ui.style import BUSY, LEVEL_COLORS, NONE, OK, block, check_chip, chip, section
+from ..ui.style import BUSY, LEVEL_COLORS, NONE, OK, block, check_chip, chip, chip_line, section
 from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
 
 # --- --- --- --- --- THRESHOLDS --- --- --- --- ---
@@ -64,11 +61,6 @@ SIGNAL_DELAY_WARN = 0.03
 SIGNAL_DELAY_BAD = 0.1
 SIGNAL_AHEAD_WARN = -0.005
 SIGNAL_AHEAD_BAD = -0.02
-
-#: Largest offset, metres, and turn, radians, between reported and computed tool0 that counts as agreeing.
-#: ? Guesses: a calibrated URDF should agree with the UR's own kinematics to about a millimetre.
-TCP_POSITION_TOLERANCE = 2e-3
-TCP_ANGLE_TOLERANCE = math.radians(0.5)
 
 #: BMS health values that are fine; anything else is red.
 BATTERY_HEALTH_OK = (BatteryState.POWER_SUPPLY_HEALTH_UNKNOWN, BatteryState.POWER_SUPPLY_HEALTH_GOOD)
@@ -110,6 +102,7 @@ class HealthPlugin(HuskyPlugin):
     """One panel listing every robot and tracked object, green when all is well."""
 
     name = "health"
+    icon = viser.Icon.HEART_RATE_MONITOR
 
     def __init__(self):
         """Start with no widgets; setup builds them."""
@@ -135,10 +128,10 @@ class HealthPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        # * The banner sits above every plugin's folder, so a problem shows while folders are collapsed.
+        # * The banner sits under Stop all, so a problem shows whichever tabs are open.
         with ctx.view.header() as gui:
             self._banner = gui.add_html("")
-        with ctx.view.ui() as gui:
+        with ctx.view.folder() as gui:
             for serial in ctx.world.robots:
                 self._robot_rows[serial] = gui.add_html("")
                 # ? A button group: the only way in viser 1.1 to put buttons side by side.
@@ -168,9 +161,7 @@ class HealthPlugin(HuskyPlugin):
         now = ctx.now()
         for serial, robot in ctx.world.robots.items():
             for name, arm in robot.arms.items():
-                expected = compose(invert(ctx.kinematics.link_pose(serial, f"{name}_base_link")),
-                                   ctx.kinematics.link_pose(serial, f"{name}{FLANGE_SUFFIX}"))
-                check = tcp_check(arm, expected, now)
+                check = tcp_check(arm, tool0_by_kinematics(ctx.kinematics, serial, name), now)
                 if check is not None:
                     self._tcp_checks[(serial, name)] = check
         self._robot_checks = {serial: robot_checks(robot, now, self._tcp_checks)
@@ -282,48 +273,6 @@ def simulated_check(simulation: SimulatedPart | None) -> list[Check]:
     if simulation is None:
         return []
     return [Check("SIM", WARN, f"{simulation.kind} ({simulation.node}): simulated, so some safety checks are skipped")]
-
-
-def tcp_check(arm: ArmInterface, expected: Pose, now: float) -> Check | None:
-    """Whether the TCP the arm reports, less the pendant's TCP, is tool0 where the URDF's kinematics put it.
-
-    Off means the pendant's active TCP is not `ArmConfig.pendant_tcp` (tool0), or the URDF or its calibration is off.
-    ! Judged only while the arm has been still for STILL_AFTER: joints and TCP arrive in separate messages.
-
-    Args:
-        arm: The arm.
-        expected: tool0 in the arm's base_link, by forward kinematics of this tick's joints.
-        now: Current ROS time, seconds.
-
-    Returns:
-        Check | None: The verdict, or None while the arm moves (keep the last one).
-    """
-    state = arm.state
-    if state.tcp_position is None:
-        return Check("tcp", WARN, "no tcp_pose yet")
-    if now - state.tcp_update_time > STALE_AFTER:
-        return Check("tcp", WARN, f"no tcp_pose for over {STALE_AFTER:g}s")
-    if state.last_motion_time is not None and now - state.last_motion_time < STILL_AFTER:
-        return None
-    distance = float(np.linalg.norm(np.subtract(state.tcp_position, expected.position)))
-    angle = float((Rotation.from_quat(state.tcp_orientation).inv() * Rotation.from_quat(expected.orientation))
-                  .magnitude())
-    limits = f"{TCP_POSITION_TOLERANCE * 1e3:g} mm / {np.degrees(TCP_ANGLE_TOLERANCE):g}°"
-    if distance > TCP_POSITION_TOLERANCE or angle > TCP_ANGLE_TOLERANCE:
-        # ? Whole millimetres and degrees: the tooltip text changes only when the offset does.
-        return Check("TCP", WARN, f"reported tool0 {distance * 1e3:.0f} mm / {np.degrees(angle):.0f}° from the "
-                                  f"kinematics (over {limits}): is the pendant's active TCP "
-                                  f"{_tcp_text(arm.pendant_tcp)}? Else the URDF or its calibration is off")
-    return Check("tcp", GOOD, f"reported tool0 within {limits} of the kinematics")
-
-
-def _tcp_text(tcp: Pose) -> str:
-    """A TCP as the pendant takes it: position in mm and rotation vector in degrees; "zero" for tool0."""
-    if np.allclose(tcp.position, 0.0) and np.allclose(np.abs(tcp.orientation), (0.0, 0.0, 0.0, 1.0)):
-        return "zero, i.e. tool0"
-    position = np.round(np.asarray(tcp.position) * 1e3, 1)
-    rotation = np.round(np.degrees(Rotation.from_quat(tcp.orientation).as_rotvec()), 1)
-    return f"xyz {position.tolist()} mm, rotation vector {rotation.tolist()}°"
 
 
 def stream_check(label: str, quality: StreamQuality, rate: float = ARM_RATE) -> Check:
@@ -624,7 +573,7 @@ def render_chips(checks: list[Check]) -> str:
 
 
 def render_line(name: str, checks: list[Check]) -> str:
-    """One line of a robot's row: its part's name in gray, then a chip per check."""
+    """One line of a robot's row, one line high: its part's name in gray, then a chip per check."""
     label = (f'<span style="display:inline-block;width:42px;font-size:11px;color:{NONE}">'
              f'{name}</span>')
-    return block(label + "".join(check_chip(check) for check in checks))
+    return chip_line(label + "".join(check_chip(check) for check in checks))

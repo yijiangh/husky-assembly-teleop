@@ -5,8 +5,10 @@ Chips are green = ok, blue = an expected end state (e.g. a stalled screw), amber
 red = failed, gray = no data. Every helper returns
 HTML for viser's `add_html`; assigning it in every `draw` is cheap (viser only sends changes).
 
-! Never hide or grey out buttons, since that shifts the layout: ignore and log inapplicable actions instead, with
-  a red chip saying why that goes after REFUSAL_SHOWN.
+! Nothing above a button may change height while a view shows (AGENTS.md, "Panels: nothing jumps"):
+  - a chip that can appear, e.g. the refusal chip saying why a button did nothing (gone after REFUSAL_SHOWN), goes on
+    a `chip_line`, which is always there and one line high;
+  - never hide or grey out buttons: ignore and log inapplicable actions instead, with such a chip.
 """
 
 from __future__ import annotations
@@ -76,6 +78,45 @@ def section(label: str, color: str, detail: str = "") -> str:
 def block(html: str) -> str:
     """Indent content to line up with the button-row labels."""
     return f'<div style="padding:0 12px">{html}</div>'
+
+
+#: Lets `chip_line` keep its chips on one line, scrolling sideways when they don't fit.
+CHIP_LINE_STYLE = ('<style>.chip-line {display:flex; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; '
+                   'min-height:19px} .chip-line::-webkit-scrollbar {display:none} .chip-line > span {flex:none}'
+                   '</style>')
+
+#: Put right before the tab group inside a tab shared by several plugins (Plan), so its bar shows as a path.
+PATH_TABS_MARKER = '<span class="path-tabs"></span>'
+
+#: The tab bar right after `PATH_TABS_MARKER`, not the bars inside the plugins' tabs below it.
+_PATH_BAR = ('[data-dock-group] div:has(> .path-tabs) + * [data-dock-strip]'
+             ':not(div:has(> .path-tabs) + * [data-dock-group] [data-dock-group] [data-dock-strip])')
+
+#: Tabs nested in a tab look like a bar of pills, so a root tab row that wraps never reads as nested tabs: tinted
+#: inside a plugin, outlined after `PATH_TABS_MARKER`, where they choose between plugins.
+#: ! viser sets the dock tabs' style inline, hence `!important`; the path rules win by being more specific.
+NESTED_TABS_STYLE = (
+    '<style>[data-dock-group] [data-dock-group] [data-dock-strip] {background-image:none !important; '
+    'background-color:var(--mantine-color-default-hover); border-radius:6px; margin:6px 8px; padding:2px; '
+    'font-size:0.8em !important} '
+    '[data-dock-group] [data-dock-group] [data-dock-tab] {height:2em !important; border-radius:4px; '
+    'box-shadow:none !important} '
+    '[data-dock-group] [data-dock-group] [data-dock-tab][aria-selected="true"] '
+    '{background-color:var(--mantine-color-body) !important} '
+    f'{_PATH_BAR} {{background-color:transparent; box-shadow:inset 0 0 0 1px var(--mantine-color-default-border)}} '
+    f'{_PATH_BAR} > [data-dock-tab][aria-selected="true"] '
+    '{background-color:var(--mantine-color-default-hover) !important}</style>')
+
+
+def chip_line(html: str) -> str:
+    """A line for chips that come and go: always there, even empty, and one line high, so nothing below it moves."""
+    return block(f'{CHIP_LINE_STYLE}<div class="chip-line">{html}</div>')
+
+
+def note_line(text: str) -> str:
+    """Small gray text that may come and go, on one line that is always there: cut with "…", the full text on hover."""
+    return block(f'<div title="{escape(text, quote=True)}" style="font-size:11px;color:{NONE};white-space:nowrap;'
+                 f'overflow:hidden;text-overflow:ellipsis">{escape(text) or "—"}</div>')
 
 
 def note(text: str) -> str:

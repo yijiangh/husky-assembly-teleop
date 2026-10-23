@@ -29,7 +29,7 @@ from .phone import PHONE_TITLE, PhonePage
 from .quaternion import quaternion_to_wxyz
 from .scene_view import SceneView, add_shape
 from ..tool_urdfs import resolve_mesh_path
-from .style import FAIL
+from .style import FAIL, NESTED_TABS_STYLE, PATH_TABS_MARKER
 
 
 #: Mesh roughness, 0 = mirror, 1 = flat; just under 1 keeps edges readable.
@@ -52,6 +52,9 @@ JOINT_TOLERANCE = 1e-4
 
 #: Starting width of the side panel, pixels. Fits an arm's joint row, the widest line.
 SIDE_PANEL_WIDTH = 420
+
+#: Where a tab goes in a side panel: (label, icon) per level, outermost first.
+TabPath = tuple[tuple[str, viser.IconName | None], ...]
 
 
 def joints_changed(values: np.ndarray, shown: np.ndarray | None) -> bool:
@@ -306,18 +309,36 @@ def pinned_server(port: int, parameter: str, label: str) -> viser.ViserServer:
 
 
 class SidePanel:
-    """The panel docked on the right that plugins share: tabs found by their path of labels, made on first use."""
+    """A panel of tabs docked on the right that plugins share: tabs found by their path of labels, made on first use.
 
-    def __init__(self, server: viser.ViserServer):
-        """No panel until the first tab is asked for."""
+    Users can drag its tabs out into windows of their own or into other panels. It shows only while it holds a tab.
+    """
+
+    def __init__(self, server: viser.ViserServer, minimized: bool = False):
+        """Dock the panel, hidden until its first tab.
+
+        ! Each panel docked later sits further out, so make the panel meant for the edge last.
+
+        Args:
+            server: The desktop server.
+            minimized: Whether the panel starts minimized to a strip.
+        """
         self._server = server
-        self._panel: viser.PanelHandle | None = None
+        self._panel = server.gui.add_panel(visible=False)
+        self._panel.dock_right()
+        self._panel.set_width(SIDE_PANEL_WIDTH)
+        if minimized:
+            self._panel.minimize()
         #: Tabs by their path of labels, and per tab the tab group holding the tabs nested in it.
         self._tabs: dict[tuple[str, ...], viser.GuiTabHandle] = {}
         self._groups: dict[tuple[str, ...], viser.GuiTabGroupHandle] = {}
 
-    def tab(self, path: tuple[tuple[str, viser.IconName | None], ...]) -> tuple[viser.GuiTabHandle, bool]:
+    def tab(self, path: TabPath, shared: int = 0) -> tuple[viser.GuiTabHandle, bool]:
         """The tab at `path`, a (label, icon) per level, made with any missing parents; tabs keep the order made.
+
+        Args:
+            path: (label, icon) per level.
+            shared: How many outer levels are tabs shared by several plugins, like Plan; their tab bars show as paths.
 
         Returns:
             tuple[viser.GuiTabHandle, bool]: The tab, and whether this call made it.
@@ -326,30 +347,34 @@ class SidePanel:
         made = labels not in self._tabs
         for depth, (label, icon) in enumerate(path, 1):
             if labels[:depth] not in self._tabs:
-                self._tabs[labels[:depth]] = self._add_tab(labels[:depth - 1], label, icon)
+                self._tabs[labels[:depth]] = self._add_tab(labels[:depth - 1], label, icon, depth - 1 <= shared)
         return self._tabs[labels], made
 
     def remove(self, labels: tuple[str, ...]) -> None:
-        """Remove the tab at `labels`, with every tab nested in it."""
+        """Remove the tab at `labels`, with every tab nested in it, and then each parent left with no tabs."""
         for key in [key for key in self._tabs if key[:len(labels)] == labels]:
             self._groups.pop(key, None)
             tab = self._tabs.pop(key)
             if key == labels:
                 tab.remove()
+        parent = labels[:-1]
+        if parent and not any(key[:len(parent)] == parent and key != parent for key in self._tabs):
+            self.remove(parent)
+        self._panel.visible = bool(self._tabs)
 
-    def _add_tab(self, parent: tuple[str, ...], label: str, icon: viser.IconName | None) -> viser.GuiTabHandle:
-        """Add a tab to the panel, or to the tab group inside the parent tab; either is made when first needed."""
+    def _add_tab(self, parent: tuple[str, ...], label: str, icon: viser.IconName | None,
+                 shared: bool) -> viser.GuiTabHandle:
+        """Add a tab to the panel, or to the tab group inside the parent tab; either is made when first needed.
+
+        A group inside a parent shared by several plugins (`shared`) is marked, so its bar shows as a path.
+        """
         if not parent:
-            first = self._panel is None
-            if first:
-                self._panel = self._server.gui.add_panel()
-            tab = self._panel.add_tab(label, icon)
-            if first:
-                self._panel.dock_right()
-                self._panel.set_width(SIDE_PANEL_WIDTH)
-            return tab
+            self._panel.visible = True
+            return self._panel.add_tab(label, icon)
         if parent not in self._groups:
             with self._tabs[parent]:
+                if shared:
+                    self._server.gui.add_html(PATH_TABS_MARKER)
                 self._groups[parent] = self._server.gui.add_tab_group()
         return self._groups[parent].add_tab(label, icon)
 
@@ -378,7 +403,7 @@ class Visualization:
         self._server.gui.configure_theme(control_width="large")
         # ? Sets the browser tab title (the first <title> on the page wins). HTML, not markdown,
         #   which viser pads into an empty row.
-        self._server.gui.add_html(f"<title>{PAGE_TITLE}</title>")
+        self._server.gui.add_html(f"<title>{PAGE_TITLE}</title>{NESTED_TABS_STYLE}")
 
         # * Hidden until a plugin is stopped; see `show_broken`.
         self._broken = self._server.gui.add_html("", visible=False)
@@ -395,12 +420,12 @@ class Visualization:
         self._server.gui.add_command("Stop all robots", description="Soft stop of every robot",
                                      hotkey="escape", icon=viser.Icon.HAND_STOP).on_trigger(self._request_stop)
 
-        # * Freeze: while frozen the monitor skips every plugin's `draw`, so panel text can be selected
+        # * Pause: while paused the monitor skips every plugin's `draw`, so panel text can be selected
         #   (each rewrite drops the selection). Controls, updates and tasks keep running.
-        self._frozen = False
-        self._freeze = self._server.gui.add_button("Live", color="green", icon=viser.Icon.ACTIVITY)
-        self._freeze.on_click(self._toggle_freeze)
-        self._show_freeze_state()
+        self._paused = False
+        self._pause = self._server.gui.add_button("Live", color="green", icon=viser.Icon.ACTIVITY)
+        self._pause.on_click(self._toggle_pause)
+        self._show_pause_state()
 
         # * Read by `draw` each tick, so the switch is applied on the main thread.
         self._show_collision = self._server.gui.add_checkbox(
@@ -409,10 +434,13 @@ class Visualization:
                  "scene bodies and tracked objects in their own colour.")
         self._collision_shown = False
 
-        #: Plugins' header folders (`PluginView.header`), above every plugin's folder. Unlabelled: no title or border.
+        #: Plugins' header folders (`PluginView.header`), under Stop all. Unlabelled: no title or border.
         self._header = self._server.gui.add_folder(None)
-        #: Plugins' tabs (`PluginView.tab`).
+        # * This panel floats in the top left corner. The plugins' tabs (`PluginView.tab`) are docked on the right,
+        #   and those hidden by default in a minimized strip at the right edge.
+        self._server.gui.main_panel.float(x=15, y=15)
         self._side = SidePanel(self._server)
+        self._hidden_side = SidePanel(self._server, minimized=True)
 
         # Per-robot handles by serial, built once in load_robot.
         self._robots: dict[str, _DrawnRobot] = {}
@@ -449,16 +477,21 @@ class Visualization:
         if urdf._collision_root_frame is not None:
             urdf.show_visual, urdf.show_collision = not collision, collision
 
-    def view_for(self, plugin_name: str) -> PluginView:
-        """Carve out a private scene subtree and GUI folder for one plugin.
+    def view_for(self, plugin_name: str, hidden: bool = False, tab_path: tuple[str, ...] = (),
+                 icon: viser.IconName | None = None) -> PluginView:
+        """Carve out a private scene subtree and side panel tabs for one plugin.
 
         Args:
             plugin_name: Unique plugin name; becomes the scene path segment.
+            hidden: Whether its tab starts in the minimized panel (`HuskyPlugin.hidden`).
+            tab_path: Where its tab goes (`HuskyPlugin.tab_path`).
+            icon: The icon on its own tabs (`HuskyPlugin.icon`).
 
         Returns:
             PluginView: The plugin's slice of the UI.
         """
-        return PluginView(self._server, plugin_name, self._header, self._phone, self._side)
+        return PluginView(self._server, plugin_name, self._header, self._phone, (self._side, self._hidden_side),
+                          hidden, tab_path, icon)
 
     def atomic(self) -> AbstractContextManager[None]:
         """Batch every scene change made inside the block into one update.
@@ -469,9 +502,9 @@ class Visualization:
         return self._server.atomic()
 
     @property
-    def frozen(self) -> bool:
-        """bool: Whether the operator froze the panels. Read by the monitor each tick."""
-        return self._frozen
+    def paused(self) -> bool:
+        """bool: Whether the operator paused the panels. Read by the monitor each tick."""
+        return self._paused
 
     def _request_stop(self, _event: object) -> None:
         """Ask for a soft stop. A viser callback; only sets a flag the tick reads."""
@@ -503,25 +536,25 @@ class Visualization:
             f'Details are in the log.</div></div>')
         self._broken.visible = True
 
-    def _toggle_freeze(self, _event: viser.GuiEvent) -> None:
-        """Freeze or unfreeze the panels. A viser callback; only flips a flag the tick reads."""
-        self._frozen = not self._frozen
-        self._show_freeze_state()
+    def _toggle_pause(self, _event: viser.GuiEvent) -> None:
+        """Pause the panels or make them live again. A viser callback; only flips a flag the tick reads."""
+        self._paused = not self._paused
+        self._show_pause_state()
 
-    def _show_freeze_state(self) -> None:
-        """Make the freeze button show the current state."""
-        if self._frozen:
-            self._freeze.label, self._freeze.color, self._freeze.icon = "Frozen", "orange", viser.Icon.SNOWFLAKE
-            self._freeze.hint = "Panels are paused, so their text can be selected. Click to go live again."
+    def _show_pause_state(self) -> None:
+        """Make the pause button show the current state."""
+        if self._paused:
+            self._pause.label, self._pause.color, self._pause.icon = "Paused", "orange", viser.Icon.PLAYER_PAUSE
+            self._pause.hint = "Panels are paused, so their text can be selected. Click to go live again."
         else:
-            self._freeze.label, self._freeze.color, self._freeze.icon = "Live", "green", viser.Icon.ACTIVITY
-            self._freeze.hint = ("Click to pause every panel, so its text can be selected and copied. "
-                                 "Buttons still act; the robots in the 3D view stay live.")
+            self._pause.label, self._pause.color, self._pause.icon = "Live", "green", viser.Icon.ACTIVITY
+            self._pause.hint = ("Click to pause every panel, so its text can be selected and copied. "
+                                "Buttons still act; the robots in the 3D view stay live.")
 
     def draw(self, snapshot: Scene) -> None:
         """Draw this tick's copy of the world: robots with their tools, tracked objects and scene bodies.
 
-        Called once per tick inside `atomic()`, also while frozen.
+        Called once per tick inside `atomic()`, also while paused.
 
         ! Only the snapshot taken this tick: the real robots and their tools must always show the newest
           measurement, never a copy a planner kept.
@@ -558,26 +591,39 @@ class Visualization:
 
 
 class PluginView:
-    """One plugin's private scene subtree, GUI folder and side panel tabs in viser, and its phone tab, as `ctx.view`."""
+    """One plugin's private scene subtree and side panel tabs in viser, and its phone tab, as `ctx.view`."""
 
     def __init__(self, server: viser.ViserServer, plugin_name: str, header: viser.GuiFolderHandle, phone: PhonePage,
-                 side: SidePanel):
-        """Create the plugin's scene root; its GUI folder, header, tabs and phone tab come on first use.
+                 sides: tuple[SidePanel, SidePanel], hidden: bool, tab_path: tuple[str, ...],
+                 icon: viser.IconName | None):
+        """Create the plugin's scene root; its header, tabs and phone tab come on first use.
 
         Args:
             server: The shared viser server.
             plugin_name: Unique plugin name.
-            header: The desktop's header folder, above every plugin's folder.
+            header: The desktop's header folder, under Stop all.
             phone: The phone page.
-            side: The side panel every plugin's tabs go in.
+            sides: The side panel, and the minimized one for tabs hidden by default.
+            hidden: Whether `ui()` goes in the minimized panel.
+            tab_path: Where `ui()` goes, a label per level; empty for a tab named after the plugin.
+            icon: The plugin's icon, on its own tabs.
         """
         self._server = server
         self._name = plugin_name
         self._header_parent = header
         self._header: viser.GuiFolderHandle | None = None
-        self._side = side
-        #: Side panel tabs this plugin made, by their path of labels.
-        self._side_tabs: list[tuple[str, ...]] = []
+        self._sides = sides
+        self._hidden = hidden
+        #: The plugin's name as tabs show it, and its icon. Its own tabs carry the icon, shared parents like Plan none.
+        self._label, self._icon = plugin_name.replace("_", " ").capitalize(), icon
+        labels = tab_path or (self._label,)
+        self._tab_path = tuple((label, icon if label == self._label or depth == len(labels) else None)
+                               for depth, label in enumerate(labels, 1))
+        #: How many outer levels of the tab path are shared with other plugins, up to the tab named after this one.
+        self._shared = next((depth for depth, label in enumerate(labels[:-1]) if label == self._label),
+                            len(labels) - 1)
+        #: Side panel tabs this plugin made: their panel and path of labels.
+        self._side_tabs: list[tuple[SidePanel, tuple[str, ...]]] = []
         self._phone = phone
         self._phone_tab: viser.GuiTabHandle | None = None
         self._phone_header: viser.GuiFolderHandle | None = None
@@ -585,7 +631,7 @@ class PluginView:
         #: Scene path owned by this plugin, e.g. "/plugins/calibration". Everything it adds hangs below it.
         self.scene_root = f"/plugins/{plugin_name}"
         self._root = server.scene.add_frame(self.scene_root, show_axes=False)
-        # ? Created on first use of `ui()`, so a panel-only plugin leaves no empty folder.
+        #: The folder `folder()` made in the main panel.
         self._folder: viser.GuiFolderHandle | None = None
         #: Separate panels made through `panel()`, removed with everything else.
         self._panels: list[viser.PanelHandle] = []
@@ -597,12 +643,22 @@ class PluginView:
 
     @property
     def gui(self) -> viser.GuiApi:
-        """viser.GuiApi: GUI api. Prefer `ui()`, which also parents to the folder."""
+        """viser.GuiApi: GUI api. Prefer `ui()` or `tab()`, which also set the parent."""
         return self._server.gui
 
+    def ui(self) -> AbstractContextManager[viser.GuiApi]:
+        """Add GUI widgets inside this plugin's tab, at its `tab_path`; only widgets created inside the block land there.
+
+        Returns:
+            AbstractContextManager[viser.GuiApi]: The GUI api, with this plugin's tab as parent.
+        """
+        return self._side_tab(self._tab_path, self._hidden, self._shared)
+
     @contextmanager
-    def ui(self, expanded: bool = True) -> Iterator[viser.GuiApi]:
-        """Add GUI widgets inside this plugin's folder; only widgets created inside the block land there.
+    def folder(self, expanded: bool = True) -> Iterator[viser.GuiApi]:
+        """Add GUI widgets inside this plugin's folder in the main panel, under Stop all, instead of a tab.
+
+        ! Only for what must show whichever tabs are open, like health's rows: folders cannot be moved.
 
         Args:
             expanded: Whether the folder starts open; only the call that makes it counts.
@@ -611,31 +667,36 @@ class PluginView:
             viser.GuiApi: The GUI api, with this plugin's folder as parent.
         """
         if self._folder is None:
-            self._folder = self._server.gui.add_folder(self._name, expand_by_default=expanded)
+            self._folder = self._server.gui.add_folder(self._label, expand_by_default=expanded)
         with self._folder:
             yield self._server.gui
 
-    @contextmanager
-    def tab(self, *path: tuple[str, viser.IconName | None]) -> Iterator[viser.GuiApi]:
-        """Add widgets inside a tab of the side panel, made on first use with any missing parents.
-
-        ! One plugin per tab: only the tab a plugin made is removed with it, never the parents it shares.
+    def tab(self, label: str, icon: viser.IconName | None = None, hidden: bool = False
+            ) -> AbstractContextManager[viser.GuiApi]:
+        """Add widgets inside a further tab of this plugin, inside a tab named after it, so its owner shows.
 
         Args:
-            *path: (label, icon) per level, e.g. `("Plan", Icon.ROUTE), ("Arm", Icon.ROBOT)`; the first plugin to
-                name a tab sets its icon.
+            label: The tab's label.
+            icon: The tab's icon, free to choose (nested in the plugin's tab); read when the tab is made.
+            hidden: Whether the tab goes in the minimized panel at the right edge, for what is not needed every time.
 
-        Yields:
-            viser.GuiApi: The GUI api, with the tab as parent.
+        Returns:
+            AbstractContextManager[viser.GuiApi]: The GUI api, with the tab as parent.
         """
-        tab, made = self._side.tab(path)
+        return self._side_tab(((self._label, self._icon), (label, icon)), hidden, 0)
+
+    @contextmanager
+    def _side_tab(self, path: TabPath, hidden: bool, shared: int) -> Iterator[viser.GuiApi]:
+        """Add widgets inside the tab at `path` in a side panel; removed with this plugin, a parent once it is empty."""
+        side = self._sides[hidden]
+        tab, made = side.tab(path, shared)
         if made:
-            self._side_tabs.append(tuple(label for label, _ in path))
+            self._side_tabs.append((side, tuple(label for label, _ in path)))
         with tab:
             yield self._server.gui
 
     def panel(self) -> viser.PanelHandle:
-        """Create a panel owned by this plugin: a window beside the main one.
+        """Create a panel owned by this plugin: a window beside the main one. Prefer `tab()`, which shares a panel.
 
         ! Always use this instead of `gui.add_panel()`: only panels made here are removed on teardown.
 
@@ -648,7 +709,7 @@ class PluginView:
 
     @contextmanager
     def header(self) -> Iterator[viser.GuiApi]:
-        """Add widgets under Stop all, above every plugin's folder, so they show while folders are collapsed.
+        """Add widgets under Stop all, so they show whichever tabs are open.
 
         ! For a short status only, like health's banner: everything else belongs in `ui()`.
 
@@ -669,13 +730,13 @@ class PluginView:
 
         Args:
             label: The tab's label, default the plugin name; read on the first call only.
-            icon: The tab's icon; read on the first call only.
+            icon: The tab's icon, default the plugin's; read on the first call only.
 
         Yields:
             viser.GuiApi: The phone server's GUI api, with this plugin's tab as parent.
         """
         if self._phone_tab is None:
-            self._phone_tab = self._phone.tabs.add_tab(label or self._name, icon)
+            self._phone_tab = self._phone.tabs.add_tab(label or self._name, icon or self._icon)
         with self._phone_tab:
             yield self._phone.server.gui
 
@@ -693,15 +754,15 @@ class PluginView:
             yield self._phone.server.gui
 
     def clear(self) -> None:
-        """Remove everything this plugin added: scene nodes, folder, header, panels and tabs, phone tab and header."""
+        """Remove everything this plugin added: scene nodes, header, folder, panels and tabs, phone tab and header."""
         self._root.remove()
         if self._folder is not None:
             self._folder.remove()
         for panel in self._panels:
             panel.remove()
         self._panels.clear()
-        for labels in self._side_tabs:
-            self._side.remove(labels)
+        for side, labels in self._side_tabs:
+            side.remove(labels)
         self._side_tabs.clear()
         for handle in (self._header, self._phone_tab, self._phone_header):
             if handle is not None:

@@ -27,7 +27,7 @@ class HuskyPlugin:
       dependents are stopped until restart.
     """
 
-    #: Unique name, used for the scene path, GUI folder, config and logs.
+    #: Unique name, used for the scene path, GUI tab, config and logs.
     name: str = "unnamed"
 
     #: Plugins to set up before this one; reach them through `ctx.require`.
@@ -35,6 +35,17 @@ class HuskyPlugin:
 
     #: Whether its design is still open; loading it logs a warning.
     experimental: bool = False
+
+    #: Whether its tab (`ctx.view.ui()`) starts in the minimized panel at the right edge, for tools not needed every
+    #: session.
+    hidden: bool = False
+
+    #: Where its tab goes, a label per level, e.g. `("Plan", "Arm")`; empty for a tab named after the plugin.
+    tab_path: tuple[str, ...] = ()
+
+    #: Its icon (a `viser.Icon`), on each of its own tabs so they show whose they are; shared parents like Plan get
+    #: none. Use the same one for its phone tab.
+    icon: str | None = None
 
     def setup(self, ctx: PluginContext) -> None:
         """Build widgets and scene nodes once, at startup, and keep the handles for `draw`.
@@ -48,7 +59,7 @@ class HuskyPlugin:
     def draw(self, ctx: PluginContext) -> None:
         """Copy state into the handles made in `setup`; do not add nodes here.
 
-        ! Skipped while the panels are frozen: put anything that must keep running in `update`, an intent or a task.
+        ! Skipped while the panels are paused: put anything that must keep running in `update`, an intent or a task.
         """
 
     def teardown(self, ctx: PluginContext) -> None:

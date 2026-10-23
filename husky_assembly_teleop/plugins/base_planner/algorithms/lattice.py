@@ -9,7 +9,7 @@ Hybrid A* over the base's floor pose (x, y, yaw) that drives curves where they f
   straight, from where the robot has room.
 - Each move is checked as the follower drives it (`path.driven`) at both ends of the xICR range, with extra margin for
   how far earlier turns and curves may still have the base off the path (`_Node.slack`).
-- Guided by the cost still to go on a coarse map of where the robot's shape fits at each heading (`_Guide`). The path
+- Guided by the cost still to go on a coarse map of where the robot's shape fits at each heading (`_CostMap`). The path
   found is shortened, then checked as the follower really drives it, simulated across the range (`follow.followed`).
 """
 
@@ -37,7 +37,7 @@ from ..world import CLEARANCE_LIMIT, CLEARANCE_STEP, COLLISION_MARGIN, FLOOR_BOT
 from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, Algorithm, Debug, add_follower_settings,
                    add_margin_setting, yaw_step)
 
-#: Search grid: the first pose to reach a cell and heading bin keeps it. Cell size, metres (also of the guide's fine
+#: Search grid: the first pose to reach a cell and heading bin keeps it. Cell size, metres (also of the cost map's fine
 #: maps), and heading bin, radians.
 CELL = 0.05
 HEADING_BIN = math.radians(2.5)
@@ -65,7 +65,8 @@ TRACK_BASE = 0.01   # m
 TRACK_GAIN = 0.3
 #: The distance still to go counts this many times: 1 finds the cheapest path, more finds one sooner.
 GREED = 2.5
-#: Try to finish from every FINISH_EVERY-th node taken, and from every node within FINISH_NEAR metres of the approach.
+#: Try to finish from every FINISH_EVERY-th node taken, and from every node within FINISH_NEAR metres of the lead's
+#: start.
 FINISH_EVERY = 10
 FINISH_NEAR = 1.0
 #: Keep at most this many entries into one grid cell waiting; an entry is only checked once taken, and one that hits
@@ -73,28 +74,30 @@ FINISH_NEAR = 1.0
 MAX_ENTRIES = 4
 #: The search stays in the box around start and target, grown by this much per side, metres.
 PADDING = 3.0
-#: Guide: where the robot's shape fits, at SHAPE_HEADINGS headings on the search grid, then on a GUIDE_CELL grid at
-#: GUIDE_HEADINGS headings (fits if it fits at a nearby sample), and the cost to go from there, BLOCKED times where it
-#: does not fit, so the search avoids such places but can still pass where the guide is too coarse.
+#: Cost map: where the robot's shape fits, at SHAPE_HEADINGS headings on the search grid, then on a MAP_CELL grid at
+#: MAP_HEADINGS headings (fits if it fits at a nearby sample), and the cost to go from there, BLOCKED times where it
+#: does not fit, so the search avoids such places but can still pass where the cost map is too coarse.
 SHAPE_HEADINGS = 72
-GUIDE_HEADINGS = 36
-GUIDE_CELL = 0.10    # m
+MAP_HEADINGS = 36
+MAP_CELL = 0.10    # m
 BLOCKED = 10.0
-#: Room: where the robot fits at fewer than ROOMY_FITS of the SHAPE_HEADINGS headings, the guide's way costs more, up
-#: to TIGHT times where it fits at one. So the guide leads round a squeeze when a way with room is not much longer (the
-#: search finds that sooner, and the follower drives it more surely); a passage that is the only way costs only TIGHT.
+#: Room: where the robot fits at fewer than ROOMY_FITS of the SHAPE_HEADINGS headings, the cost map's way costs more,
+#: up to TIGHT times where it fits at one. So the cost map leads round a squeeze when a way with room is not much
+#: longer (the search finds that sooner, and the follower drives it more surely); a passage that is the only way costs
+#: only TIGHT.
 ROOMY_FITS = 36
 TIGHT = 3.0
 #: The shape fits where it overlaps things in fewer than this many search-grid cells: rasterizing it is that rough.
 OVERLAP = 3
-#: The guide learns from the search: every move that hits makes its guide cell LEARN_STEP times dearer (up to BLOCKED),
-#: and after every RELEARN_HITS such hits the cost to go is worked out again. So a way the guide wrongly thinks fits
+#: The cost map learns from the search: every move that hits makes its cell LEARN_STEP times dearer (up to BLOCKED),
+#: and after every RELEARN_HITS such hits the cost to go is worked out again. So a way the cost map wrongly thinks fits
 #: (it is coarse, and leaves out the follower's swing) stops pulling the search in.
 LEARN_STEP = 1.0
 RELEARN_HITS = 300
-#: Guide moves: grid steps (one way; the other is the same edge), used at headings within GUIDE_SLIP of their direction.
+#: Cost map moves: grid steps (one way; the other is the same edge), used at headings within MAP_SLIP of their
+#: direction.
 DIRECTIONS = ((1, 0), (2, 1), (1, 1), (1, 2), (0, 1), (-1, 2), (-1, 1), (-2, 1))
-GUIDE_SLIP = math.radians(30.0)
+MAP_SLIP = math.radians(30.0)
 #: Portals: narrow places, where the robot fits at PORTAL_FITS or fewer of the SHAPE_HEADINGS headings, the one
 #: fitting at fewest per PORTAL_SPACING square, at most PORTAL_COUNT. The search may cross one in a single move: lined
 #: up exactly PORTAL_LEAD before, then straight through and PORTAL_PAST beyond.
@@ -128,11 +131,11 @@ SEND_STEP = 0.05
 SEND_TURN = 0.05
 
 #: Debug layers, back to front: name and colour (r, g, b).
-FLOOR = "guide: no heading fits", (206, 212, 218)
-LEARNED = "guide: learned to avoid", (255, 212, 59)
-GUIDE_WAY = "guide's way", (250, 176, 5)
-GUIDE_TIGHT = "guide's way: robot does not fit", (232, 89, 12)
-APPROACH = "approach", (174, 62, 201)
+FLOOR = "cost map: no heading fits", (206, 212, 218)
+LEARNED = "cost map: learned to avoid", (255, 212, 59)
+MAP_WAY = "cost map's way", (250, 176, 5)
+MAP_TIGHT = "cost map's way: robot does not fit", (232, 89, 12)
+LEAD_IN = "lead onto the target", (174, 62, 201)
 TAKEN = "moves taken", (134, 142, 150)
 HIT = "moves that hit, where the base was", (224, 49, 49)
 FINISHES = "finishes refused", (255, 135, 135)
@@ -218,7 +221,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
         PlanResult[BasePath]: The path, or why there is none.
     """
     debug = debug or Debug()
-    for layer in (FLOOR, LEARNED, GUIDE_WAY, GUIDE_TIGHT, APPROACH, PORTALS, PORTAL_LINES, TAKEN, HIT, FINISHES,
+    for layer in (FLOOR, LEARNED, MAP_WAY, MAP_TIGHT, LEAD_IN, PORTALS, PORTAL_LINES, TAKEN, HIT, FINISHES,
                   CLOSEST, SEARCHED, SHORTENED, FOLLOWED, FAILED_AT, TOUCHES):
         debug.layer(*layer)
     started = phase = time.time()
@@ -360,19 +363,19 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
                 break
             refused.append(f"{'forwards' if side > 0 else 'backwards'} {what}")
     tail = [goal] if arrive != goal else []
-    debug.path(APPROACH[0], [arrive, goal], APPROACH[1])
-    approach = (f"straight in {'forwards' if np.dot(np.subtract(goal[:2], arrive[:2]), heading) > 0 else 'backwards'}"
-                f" over {math.dist(arrive[:2], goal[:2]):.2f} m"
-                if tail else f"no straight drive in ({'; '.join(refused) or 'lead 0'})")
+    debug.path(LEAD_IN[0], [arrive, goal], LEAD_IN[1])
+    lead_note = (f"straight in {'forwards' if np.dot(np.subtract(goal[:2], arrive[:2]), heading) > 0 else 'backwards'}"
+                 f" over {math.dist(arrive[:2], goal[:2]):.2f} m"
+                 if tail else f"no straight drive in ({'; '.join(refused) or 'lead 0'})")
     target_room = room(goal)
-    lap(f"approach: {approach}. Room (margin {margin * 100:.0f} cm): start {room(start)}, target {target_room}"
+    lap(f"lead: {lead_note}. Room (margin {margin * 100:.0f} cm): start {room(start)}, target {target_room}"
         + (f", start of the drive in {room(arrive)}" if tail else ""))
 
     # * From here on in turning-centre poses.
     start_c, arrive_c, tail_c = (_to_centre(start, ahead), _to_centre(arrive, ahead),
                                  [_to_centre(pose, ahead) for pose in tail])
 
-    # * One move onto the approach, if it is clear.
+    # * One move onto the lead's start, if it is clear.
     join = _join(start_c, arrive_c)
     if join:
         poses = [start_c] + join + _continued(tail_c, arrive_c[2], join[-1][2])
@@ -391,19 +394,19 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     low = np.minimum.reduce([start[:2], arrive[:2], goal[:2]]) - PADDING
     shape = tuple(int(math.ceil(size / CELL)) + 1 for size in np.maximum.reduce(
         [start[:2], arrive[:2], goal[:2]]) + PADDING - low)
-    guide = _Guide(world, own, low, shape, arrive,
-                   min(settings.turn_weight, CURVE_WEIGHT) if settings.curves else settings.turn_weight, margin)
-    debug.points(FLOOR[0], guide.nowhere(), FLOOR[1])
-    debug.points(PORTALS[0], guide.portals, PORTALS[1])
-    way = guide.way(start)
+    cost_map = _CostMap(world, own, low, shape, arrive,
+                        min(settings.turn_weight, CURVE_WEIGHT) if settings.curves else settings.turn_weight, margin)
+    debug.points(FLOOR[0], cost_map.nowhere(), FLOOR[1])
+    debug.points(PORTALS[0], cost_map.portals, PORTALS[1])
+    way = cost_map.way(start)
     for (x0, y0, _), (x1, y1, fits) in zip(way[:-1], way[1:]):
         if fits:
-            debug.lines(GUIDE_WAY[0], [((x0, y0), (x1, y1))], GUIDE_WAY[1])
+            debug.lines(MAP_WAY[0], [((x0, y0), (x1, y1))], MAP_WAY[1])
     tight = [(x, y) for x, y, fits in way if not fits]
-    debug.points(GUIDE_TIGHT[0], tight, GUIDE_TIGHT[1])
+    debug.points(MAP_TIGHT[0], tight, MAP_TIGHT[1])
     length = sum(math.dist(a[:2], b[:2]) for a, b in zip(way[:-1], way[1:]))
-    lap(f"guide: {shape[0]} x {shape[1]} cells, {len(guide.portals)} portals; its way is {length:.1f} m"
-        + (f", and the robot fits nowhere near the heading along {len(tight) * GUIDE_CELL:.1f} m of it, first at "
+    lap(f"cost map: {shape[0]} x {shape[1]} cells, {len(cost_map.portals)} portals; its way is {length:.1f} m"
+        + (f", and the robot fits nowhere near the heading along {len(tight) * MAP_CELL:.1f} m of it, first at "
            f"({tight[0][0]:.2f}, {tight[0][1]:.2f})" if tight else ", the robot fitting all along"))
 
     def widest(xy, yaw: float, turns, shifts):
@@ -450,10 +453,10 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
         lead_in, past = xy - (behind + PORTAL_LEAD) * along, xy + (ahead + PORTAL_PAST) * along
         return (float(lead_in[0]), float(lead_in[1]), heading), (float(past[0]), float(past[1]), heading)
 
-    corners, reason = _search(start_c, arrive_c, tail_c, ahead, guide, centred, hits, failure, touched, ends, swing,
+    corners, reason = _search(start_c, arrive_c, tail_c, ahead, cost_map, centred, hits, failure, touched, ends, swing,
                               settings, started + TIME_LIMIT, abort, debug)
     if corners is None:
-        return failed(f"{reason}. Target: {target_room}, {approach}")
+        return failed(f"{reason}. Target: {target_room}, {lead_note}")
     corners = _merged(corners)
     debug.path(SEARCHED[0], [_to_base(pose, ahead) for pose in corners], SEARCHED[1])
     lap(f"search: {reason}; {len(corners)} waypoints")
@@ -472,11 +475,11 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
                   f"{failure[0][1]:.2f})")
 
 
-class _Guide:
-    """Cost still to go from a pose to the approach, on a coarse map of where the robot's shape fits at each heading.
+class _CostMap:
+    """Cost still to go from a pose to the lead's start, on a coarse map of where the robot's shape fits per heading.
 
     Turning costs as in the search; at each heading it moves forwards or backwards in the grid directions within
-    GUIDE_SLIP of the heading, never sideways, but may skip a cell (knight moves).
+    MAP_SLIP of the heading, never sideways, but may skip a cell (knight moves).
     """
 
     def __init__(self, world: PlanningWorld, own: str, low, shape: tuple[int, int], target, turn_weight: float,
@@ -513,22 +516,22 @@ class _Guide:
         self.portals = _portals(~hit, low)
         # Room: how much more driving costs, per search-grid cell, from how many headings fit there.
         room = 1.0 + (TIGHT - 1.0) * np.clip(1.0 - (~hit).sum(axis=0) / ROOMY_FITS, 0.0, 1.0)
-        # Coarse: fits at a guide heading if it fits at a sample within one sample of it, and in a coarse cell if it
+        # Coarse: fits at a cost map heading if it fits at a sample within one sample of it, and in a coarse cell if it
         # fits in one of the search-grid cells there.
-        per = SHAPE_HEADINGS // GUIDE_HEADINGS
+        per = SHAPE_HEADINGS // MAP_HEADINGS
         hit = np.stack([hit[(k * per + np.arange(-per + 1, per)) % SHAPE_HEADINGS].all(axis=0)
-                        for k in range(GUIDE_HEADINGS)])
-        step = int(round(GUIDE_CELL / CELL))
+                        for k in range(MAP_HEADINGS)])
+        step = int(round(MAP_CELL / CELL))
         nx, ny = (-(-size // step) for size in shape)
         hit = np.pad(hit, ((0, 0), (0, nx * step - shape[0]), (0, ny * step - shape[1])), constant_values=True)
-        hit = hit.reshape(GUIDE_HEADINGS, nx, step, ny, step).all(axis=(2, 4)).transpose(1, 2, 0)
+        hit = hit.reshape(MAP_HEADINGS, nx, step, ny, step).all(axis=(2, 4)).transpose(1, 2, 0)
         # A coarse cell has the room of its roomiest search-grid cell, as it fits if one of them fits.
         room = np.pad(room, ((0, nx * step - shape[0]), (0, ny * step - shape[1])), constant_values=TIGHT)
         room = room.reshape(nx, step, ny, step).min(axis=(1, 3))
         self._low, self._shape, self._hit = np.asarray(low, dtype=float) + (step - 1) * CELL / 2.0, (nx, ny), hit
 
-        index = np.arange(nx * ny * GUIDE_HEADINGS).reshape(nx, ny, GUIDE_HEADINGS)
-        turn = turn_weight * 2.0 * math.pi / GUIDE_HEADINGS + 1e-6
+        index = np.arange(nx * ny * MAP_HEADINGS).reshape(nx, ny, MAP_HEADINGS)
+        turn = turn_weight * 2.0 * math.pi / MAP_HEADINGS + 1e-6
         rows, cols, lengths = [], [], []
 
         def join(a, b, length):
@@ -537,21 +540,21 @@ class _Guide:
             lengths.append(np.full(rows[-1].shape, length))
 
         # Grid steps at each heading, both ways, for `way`.
-        self._steps = [[] for _ in range(GUIDE_HEADINGS)]
-        for k in range(GUIDE_HEADINGS):
+        self._steps = [[] for _ in range(MAP_HEADINGS)]
+        for k in range(MAP_HEADINGS):
             for dx, dy in DIRECTIONS:
-                if abs(math.remainder(math.atan2(dy, dx) - 2.0 * math.pi * k / GUIDE_HEADINGS, math.pi)) > GUIDE_SLIP:
+                if abs(math.remainder(math.atan2(dy, dx) - 2.0 * math.pi * k / MAP_HEADINGS, math.pi)) > MAP_SLIP:
                     continue
                 self._steps[k] += [(dx, dy), (-dx, -dy)]
                 join(np.s_[max(0, -dx):nx + min(0, -dx), max(0, -dy):ny + min(0, -dy), k],
-                     np.s_[max(0, dx):nx + min(0, dx), max(0, dy):ny + min(0, dy), k], GUIDE_CELL * math.hypot(dx, dy))
-        join(np.s_[:, :, :], (slice(None), slice(None), np.roll(np.arange(GUIDE_HEADINGS), -1)), turn)
+                     np.s_[max(0, dx):nx + min(0, dx), max(0, dy):ny + min(0, dy), k], MAP_CELL * math.hypot(dx, dy))
+        join(np.s_[:, :, :], (slice(None), slice(None), np.roll(np.arange(MAP_HEADINGS), -1)), turn)
         # The edges between grid nodes, with their length before weighting.
         self._edges = tuple(np.concatenate(part) for part in (rows, cols, lengths))
         # A source node joined to the target's cell at every heading, by the turn to the target's yaw.
         i, j = self._cell(target)
-        headings = 2.0 * math.pi * np.arange(GUIDE_HEADINGS) / GUIDE_HEADINGS
-        self._source = (np.full(GUIDE_HEADINGS, index.size), index[i, j],
+        headings = 2.0 * math.pi * np.arange(MAP_HEADINGS) / MAP_HEADINGS
+        self._source = (np.full(MAP_HEADINGS, index.size), index[i, j],
                         turn_weight * np.abs(np.angle(np.exp(1j * (headings - target[2])))) + 1e-6)
         # Where the robot does not fit counts BLOCKED times, where it fits with little room more as it has less, and
         # where the search's moves hit, more as they hit.
@@ -569,9 +572,9 @@ class _Guide:
         lengths = lengths * (weight[rows] + weight[cols]) / 2.0
         graph = coo_matrix((np.concatenate([lengths, self._source[2]]),
                             (np.concatenate([rows, self._source[0]]), np.concatenate([cols, self._source[1]]))),
-                           shape=(nx * ny * GUIDE_HEADINGS + 1,) * 2).tocsr()
-        self._to_go = dijkstra(graph, directed=False, indices=nx * ny * GUIDE_HEADINGS)[:-1].reshape(
-            nx, ny, GUIDE_HEADINGS)
+                           shape=(nx * ny * MAP_HEADINGS + 1,) * 2).tocsr()
+        self._to_go = dijkstra(graph, directed=False, indices=nx * ny * MAP_HEADINGS)[:-1].reshape(
+            nx, ny, MAP_HEADINGS)
         self.version += 1
 
     def hit(self, pose) -> None:
@@ -585,32 +588,32 @@ class _Guide:
         self._solve()
 
     def learned(self) -> np.ndarray:
-        """(x, y) of the cells the guide learned to avoid: as dear as where the robot does not fit."""
-        return self._low + GUIDE_CELL * np.argwhere(1.0 + LEARN_STEP * self._hits >= BLOCKED)
+        """(x, y) of the cells the cost map learned to avoid: as dear as where the robot does not fit."""
+        return self._low + MAP_CELL * np.argwhere(1.0 + LEARN_STEP * self._hits >= BLOCKED)
 
     def _cell(self, xy) -> tuple[int, int]:
         """The coarse grid index around (x, y), which may lie outside the grid."""
-        i, j = np.round((np.asarray(xy[:2], dtype=float) - self._low) / GUIDE_CELL).astype(int)
+        i, j = np.round((np.asarray(xy[:2], dtype=float) - self._low) / MAP_CELL).astype(int)
         return int(i), int(j)
 
     def __call__(self, x: float, y: float, yaw: float) -> float:
         """Cost still to go from (x, y, yaw); inf outside the map."""
         i, j = self._cell((x, y))
         if 0 <= i < self._shape[0] and 0 <= j < self._shape[1]:
-            return float(self._to_go[i, j, int(round(yaw * GUIDE_HEADINGS / (2.0 * math.pi))) % GUIDE_HEADINGS])
+            return float(self._to_go[i, j, int(round(yaw * MAP_HEADINGS / (2.0 * math.pi))) % MAP_HEADINGS])
         return math.inf
 
     def way(self, pose) -> list[tuple[float, float, bool]]:
-        """The way the guide sees from `pose` to its target: (x, y, whether the robot fits there at that heading)."""
+        """The way the cost map sees from `pose` to its target: (x, y, whether the robot fits there at that heading)."""
         i, j = self._cell(pose)
-        k = int(round(pose[2] * GUIDE_HEADINGS / (2.0 * math.pi))) % GUIDE_HEADINGS
+        k = int(round(pose[2] * MAP_HEADINGS / (2.0 * math.pi))) % MAP_HEADINGS
         nx, ny = self._shape
         if not (0 <= i < nx and 0 <= j < ny and math.isfinite(self._to_go[i, j, k])):
             return []
         out = []
         for _ in range(nx * ny):
-            out.append((*(self._low + GUIDE_CELL * np.array([i, j])), not self._hit[i, j, k]))
-            options = [(i, j, (k + 1) % GUIDE_HEADINGS), (i, j, (k - 1) % GUIDE_HEADINGS)]
+            out.append((*(self._low + MAP_CELL * np.array([i, j])), not self._hit[i, j, k]))
+            options = [(i, j, (k + 1) % MAP_HEADINGS), (i, j, (k - 1) % MAP_HEADINGS)]
             options += [(i + dx, j + dy, k) for dx, dy in self._steps[k] if 0 <= i + dx < nx and 0 <= j + dy < ny]
             best = min(options, key=lambda cell: self._to_go[cell])
             if self._to_go[best] >= self._to_go[i, j, k]:
@@ -620,7 +623,7 @@ class _Guide:
 
     def nowhere(self) -> np.ndarray:
         """(x, y) of the coarse cells where the robot fits at no heading."""
-        return self._low + GUIDE_CELL * np.argwhere(self._hit.all(axis=2))
+        return self._low + MAP_CELL * np.argwhere(self._hit.all(axis=2))
 
 
 def _grown(cells: np.ndarray, margin: float) -> np.ndarray:
@@ -701,16 +704,16 @@ class _Node:
         return self.slack0 * max(0.0, 1.0 - self.since / SETTLE_DISTANCE)
 
 
-def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, failure: list, touched, ends,
+def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits, failure: list, touched, ends,
             swing: float, settings: Settings, deadline: float, abort: threading.Event, debug: Debug):
-    """Hybrid A* over turning-centre poses from start to the approach; each move is checked once taken.
+    """Hybrid A* over turning-centre poses from start to the lead's start; each move is checked once taken.
 
     Args:
         start: (x, y, yaw) to start from, of the turning centre, like all poses here.
         arrive: (x, y, yaw) to finish at, by `_join`.
         tail: Poses after `arrive` (the straight drive in), checked with the finish.
         ahead: How far the turning centre lies ahead of base_footprint, metres.
-        guide: Cost still to go, and the portals, both for base_footprint.
+        cost_map: Cost still to go, and the portals, both for base_footprint.
         centred: `centred(portal)` from `plan`: a portal's base_footprint lead-in and far-side poses, or None.
         hits: `hits(poses, xicrs, extra)` from `plan`.
         failure: `plan`'s record of the last check that hit: where, with which xICR, what, and the clearance.
@@ -729,7 +732,7 @@ def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, fai
         return _to_base(pose, ahead)
 
     def to_go(pose) -> float:
-        return guide(*base(pose))
+        return cost_map(*base(pose))
 
     # Moves: (kind, amount, drive), the drive signed (negative: backwards). "drive" straight; "turn" on the spot by
     # `amount` radians, then drive; "arc" at curvature `amount`, 1/m; "portal": through portal `amount`, lined up by
@@ -780,20 +783,20 @@ def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, fai
         """Moves through up to PORTAL_TRIES portals: lead-in within reach, far side closer to the target."""
         here = to_go(node.pose)
         options = []
-        for k, (x, y, yaw) in enumerate(guide.portals):
+        for k, (x, y, yaw) in enumerate(cost_map.portals):
             # Roughly, before centring: the narrow place as long as the robot.
             lead_in = (x - (PORTAL_LEAD + 0.5) * math.cos(yaw), y - (PORTAL_LEAD + 0.5) * math.sin(yaw))
             past = (x + (PORTAL_PAST + 0.5) * math.cos(yaw), y + (PORTAL_PAST + 0.5) * math.sin(yaw), yaw)
             near = math.dist(base(node.pose)[:2], lead_in)
             # ! Skip portals already found to have no way through: they would take the tries from the good ones.
             if (near < PORTAL_REACH and (index, k) not in tried and through.get(k, True) is not None
-                    and guide(*past) < here):
-                options.append((guide(*past) + near, k))
+                    and cost_map(*past) < here):
+                options.append((cost_map(*past) + near, k))
         out = []
         for _, k in sorted(options)[:PORTAL_TRIES]:
             tried.add((index, k))
             if k not in through:
-                line = centred(guide.portals[k])
+                line = centred(cost_map.portals[k])
                 through[k] = line and tuple(_to_centre(pose, ahead) for pose in line)
                 crossings[k] = Counter()
             if through[k] is not None and _join(node.pose, through[k][0]):
@@ -803,12 +806,12 @@ def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, fai
     nodes = [_Node(start, 0.0, -1, (start,), False, 0.0, 0.0)]
     # Entries: (cost + greed * to go, cost, tie-break, parent index, move); a node is made only once its entry is taken.
     ties = itertools.count()
-    heap = [(GREED * to_go(start), 0.0, next(ties), -1, None, guide.version)]
+    heap = [(GREED * to_go(start), 0.0, next(ties), -1, None, cost_map.version)]
     relearned, since_relearn = 0, 0
     closed: set = set()
     entries: dict = {}
     taken, hit, refused = [], [], []
-    # What the moves hit, per hit; and the node with the least left to go, by the guide.
+    # What the moves hit, per hit; and the node with the least left to go, by the cost map.
     blocked: list[str] = []
     # Per hit: the pose that hit and the clearance checked, and whether it was through a portal.
     hit_at: list = []
@@ -823,7 +826,7 @@ def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, fai
         debug.path(CLOSEST[0], [base(pose) for pose in poses_to(closest[1])], CLOSEST[1])
         debug.points(CLOSEST[0], [(x, y)], CLOSEST[1])
         near = Counter(what for pose, what in zip(hit, blocked) if math.dist(pose[:2], (x, y)) < NEAR)
-        return (f"{why}; closest {math.dist((x, y), base(arrive)[:2]):.1f} m from the approach, at "
+        return (f"{why}; closest {math.dist((x, y), base(arrive)[:2]):.1f} m from the lead's start, at "
                 f"({x:.2f}, {y:.2f}, {math.degrees(yaw) % 360:.0f}°)"
                 + (f", where moves hit {_most(near)}" if near else ""))
 
@@ -835,10 +838,10 @@ def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, fai
                 return None, stuck(f"no path found in {TIME_LIMIT:.0f} s")
             _, cost, _, parent_index, move, version = heapq.heappop(heap)
             node = nodes[0] if parent_index < 0 else child(nodes[parent_index], parent_index, move)
-            if version != guide.version:
-                # * Scored by an older guide: score it again, and take it when its turn comes.
+            if version != cost_map.version:
+                # * Scored by an older cost map: score it again, and take it when its turn comes.
                 heapq.heappush(heap, (cost + GREED * to_go(node.pose), cost, next(ties), parent_index, move,
-                                      guide.version))
+                                      cost_map.version))
                 continue
             key = cell(node.pose)
             if key in closed:
@@ -851,10 +854,10 @@ def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, fai
                     hit.append(base(node.pose))
                     blocked.append(what.removeprefix("hits "))
                     hit_at.append((failure[0], failure[3], move[0] == "portal"))
-                    guide.hit(failure[0])
+                    cost_map.hit(failure[0])
                     since_relearn += 1
                     if since_relearn >= RELEARN_HITS:
-                        guide.relearn()
+                        cost_map.relearn()
                         relearned, since_relearn = relearned + 1, 0
                     if move[0] == "portal":
                         crossings[move[1]][what.removeprefix("hits ")] += 1
@@ -886,7 +889,7 @@ def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, fai
                 if math.isfinite(left):
                     entries[next_key] = entries.get(next_key, 0) + 1
                     heapq.heappush(heap, (next_node.cost + GREED * left, next_node.cost, next(ties), index, move,
-                                          guide.version))
+                                          cost_map.version))
         return None, stuck("no path inside the planning area")
     finally:
         debug.lines(TAKEN[0], taken, TAKEN[1])
@@ -905,11 +908,11 @@ def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, fai
         if blocked:
             debug.note(f"moves hit {_most(Counter(blocked), 4)}")
         if relearned:
-            learned = guide.learned()
+            learned = cost_map.learned()
             debug.points(LEARNED[0], learned, LEARNED[1])
-            debug.note(f"guide relearned {relearned} times from the hits; it now avoids {len(learned)} cells")
+            debug.note(f"cost map relearned {relearned} times from the hits; it now avoids {len(learned)} cells")
         for k, line in through.items():
-            x, y, yaw = guide.portals[k]
+            x, y, yaw = cost_map.portals[k]
             if line is None:
                 debug.note(f"portal at ({x:.2f}, {y:.2f}): no clear line through it")
                 continue
