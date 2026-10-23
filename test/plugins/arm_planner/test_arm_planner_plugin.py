@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections import deque
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import numpy as np
@@ -22,6 +23,7 @@ from husky_assembly_teleop.shared.arm_planner_contract import ArmPlanRequest
 from husky_assembly_teleop.shared.execution.send import ARRIVED_TOLERANCE
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
+from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject
@@ -76,6 +78,11 @@ class FakeCtx:
 
     lease_robots = staticmethod(lease_test_robots)
     wait_until = staticmethod(wait_ticks_until)
+
+    @contextmanager
+    def clearance(self, _serials, _margin, unknown_arms=()):
+        """Keep no clearance: nothing here could trip one."""
+        yield
 
     def log_info(self, _text):
         """Ignore the line."""
@@ -222,11 +229,13 @@ def _held(arm) -> bool:
 
 @pytest.mark.safety
 def test_execute_sends_the_path_and_waits_until_the_arm_is_at_its_end():
-    """The plan's path goes to the request's arm, the commit is answered once sent, and it ends with the arm there."""
+    """The plan's path goes to the arm under a 1 cm clearance, answered once sent; it ends with the arm there."""
     (ctx, arm), answers = _driven(), []
     ended = _commit(ctx, answers)
     assert answers == [(True, f"sent to {SERIAL} {ARM}")] and len(arm._trajectory.messages) == 1
     assert np.allclose(ended, GOAL, atol=1e-3)
+    clearance, = ctx.clearances
+    assert (clearance.serials, clearance.margin) == ((SERIAL,), ARM_STOP_DISTANCE) and ARM_STOP_DISTANCE == 0.01
 
 
 @pytest.mark.safety

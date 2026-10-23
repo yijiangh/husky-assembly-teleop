@@ -79,9 +79,9 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   robot, it soft stops that robot and cancels the task once the robot comes within the margin (0.1 m by default) of
   anything in the snapshot, other robots as their stand-ins; unknown arm joints of its own robot trip it unless
   `unknown_arms` lets them count where last seen, or stowed. A **trip** is one firing (`ctx.clearance_trips`).
-  robot_control's Clearance box turns it on for D-pad driving. `world/clearance.py`. The base planner's **path
-  clearance** is a measured number instead: a planned path's nearest distance to anything, recorded in
-  `experiment.json`.
+  robot_control's Clearance boxes turn it on for D-pad driving and, at 1 cm (`ARM_STOP_DISTANCE`), for arm joint
+  jogs; the arm planner's commits always keep 1 cm. `world/clearance.py`. The base planner's **path clearance** is a
+  measured number instead: a planned path's nearest distance to anything, recorded in `experiment.json`.
 - **hold**: the arm command "stop where you are and stay" (`arm.hold()`, the Hold button), which needs no lease and is
   refused only without a fresh measurement. Also: a D-pad **hold button** (counts as released 0.25 s after its last
   report), a support robot's **bar hold** (`bar_holding`), and a guided step's precondition that **holds** (below).

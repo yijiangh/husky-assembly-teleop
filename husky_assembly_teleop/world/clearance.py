@@ -29,6 +29,8 @@ from .stand_ins import with_stand_ins
 
 #: Default distance, metres, below which a clearance trips.
 STOP_DISTANCE = 0.1
+#: Distance kept while an arm moves (jogs, planned paths), metres: tight, so it can still reach close to things.
+ARM_STOP_DISTANCE = 0.01
 #: How many trips the monitor keeps.
 TRIPS_KEPT = 10
 #: For `unknown_arms`: every arm of the robot.

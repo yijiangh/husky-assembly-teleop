@@ -12,8 +12,8 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
   - `update` does per-tick work; anything longer than a tick is a `ctx.spawn` task.
 * Robots are commanded and read only through their interfaces; no topic names here.
 * A robot is leased while in use (`teleop_lease.py`): a jog or drive is refused while another plugin holds it.
-* Base Clearance (ticked by default): while driving, the base is soft stopped once it comes too close to anything
-  in the scene (`ctx.clearance`).
+* Clearance (ticked by default): while driving the base or jogging an arm, the robot is soft stopped once it comes
+  too close to anything in the scene (`ctx.clearance`); a jog waits until its clearance checks.
 * ! Every button that does nothing says why: a refusal chip on its part's status line (`_refuse`, `refusal_chip`).
 """
 
@@ -40,7 +40,7 @@ from ...robot_interface.soft_stop import MotionRefused
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import REFUSAL_SHOWN, SECTION_SENSOR, block, numbers, section, values
 from ...shared.teleop.dpad import HOLD_TIMEOUT, PHONE_DPAD_STYLE, Hold, build_velocity_inputs
-from ...world.clearance import ALL_ARMS, STOP_DISTANCE, ClearanceRefused
+from ...world.clearance import ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, ClearanceRefused
 from scaffolding_assembly_core.geometry import Pose
 from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, build_compliance_inputs, build_free_drive_inputs,
                         build_jog_inputs, build_phone_arm_inputs, build_tool_inputs, pose_from_sliders,
@@ -84,6 +84,8 @@ class _ArmWidgets:
     tool_status: viser.GuiHtmlHandle | None
     #: The jog speed slider, a fraction of JOG_MAX_SPEED.
     jog_speed: viser.GuiSliderHandle
+    #: Jog Clearance: while ticked, a jog soft stops the robot once it comes within ARM_STOP_DISTANCE (`_guard_jog`).
+    jog_clearance: viser.GuiCheckboxHandle | None
     compliance: ComplianceInputs
     frames: dict[str, viser.FrameHandle]
     arrows: dict[str, viser.ArrowsHandle]
@@ -147,6 +149,9 @@ class RobotControlPlugin(HuskyPlugin):
         #: Per base serial, the task keeping a clearance while this plugin drives it, and why the last one tripped.
         self._base_guards: dict[str, asyncio.Task] = {}
         self._tripped: dict[str, str] = {}
+        #: Per arm, the task keeping a clearance while this plugin jogs it; arms in `_jog_checked` once it checks.
+        self._jog_guards: dict[tuple[str, str], asyncio.Task] = {}
+        self._jog_checked: set[tuple[str, str]] = set()
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -234,7 +239,8 @@ class RobotControlPlugin(HuskyPlugin):
 
         status = gui.add_html("")
         hold = partial(self._hold_arm, serial, arm)
-        jog_inputs = partial(build_jog_inputs, ctx, gui, label, partial(self._on_jog_hold, ctx, key), hold)
+        jog_inputs = partial(build_jog_inputs, ctx, gui, label, partial(self._on_jog_hold, ctx, key), hold,
+                             ARM_STOP_DISTANCE)
         compliance_inputs = partial(build_compliance_inputs, ctx, gui, label, arm,
                                     load=partial(self._load_pose.add, key),
                                     start=partial(self._start_move, ctx, serial, arm, "cartesian move",
@@ -256,7 +262,8 @@ class RobotControlPlugin(HuskyPlugin):
         tool = None if arm.end_effector is None else build_tool_inputs(ctx, gui, label, arm,
                                                                        partial(self._leased, ctx, key))
         return _ArmWidgets(serial=serial, arm=arm, panel=panel, status=status, tool_status=tool,
-                           jog_speed=built[SCALED_JOINT_TRAJECTORY_CONTROLLER],
+                           jog_speed=built[SCALED_JOINT_TRAJECTORY_CONTROLLER][0],
+                           jog_clearance=built[SCALED_JOINT_TRAJECTORY_CONTROLLER][1],
                            compliance=built[CARTESIAN_COMPLIANCE_CONTROLLER],
                            free_drive_keep=built[FREE_DRIVE_CONTROLLER],
                            frames=add_frame_markers(ctx, serial, arm), arrows=add_force_arrows(ctx, serial, arm),
@@ -508,8 +515,49 @@ class RobotControlPlugin(HuskyPlugin):
                     arm.hold()
                 jogging = None
             moved = arm.state.last_motion_time
-            if press is not None and jogging is None and (moved is None or now - moved >= MOVING_WITHIN):
+            if press is not None and jogging is None and (moved is None or now - moved >= MOVING_WITHIN) \
+                    and self._jog_clear(ctx, widgets):
                 self._jogging[key] = (*press, self._send_jog(ctx, widgets, *press))
+
+    def _jog_clear(self, ctx: PluginContext, widgets: _ArmWidgets) -> bool:
+        """Whether a jog may go out now: Clearance unticked, or its clearance checks; else start that clearance.
+
+        The clearance starts within a tick, or refuses this press with a chip saying why (`_guard_jog`).
+        """
+        key = (widgets.serial, widgets.arm.config.name)
+        if widgets.jog_clearance is None or not widgets.jog_clearance.value or key in self._jog_checked:
+            return True
+        guard = self._jog_guards.get(key)
+        # * Leased first, so the guard does not end at once for want of a lease.
+        if (guard is None or guard.done()) and self._leased(ctx, key, lambda: True):
+            self._jog_guards[key] = ctx.spawn(f"clearance {widgets.serial} {key[1]}", self._guard_jog(ctx, widgets))
+        return False
+
+    async def _guard_jog(self, ctx: PluginContext, widgets: _ArmWidgets) -> None:
+        """Keep an ARM_STOP_DISTANCE clearance on the robot while this plugin holds its lease and Clearance is ticked.
+
+        The jogged arm and the base must be known; the robot's other arms may not be (where last seen, or stowed). Not a
+        check of the robot against itself.
+        """
+        serial, key, clearance = widgets.serial, (widgets.serial, widgets.arm.config.name), None
+        others = [arm.arm.config.name for arm in self._arms if arm.serial == serial and arm is not widgets]
+        try:
+            with ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others) as clearance:
+                self._jog_checked.add(key)
+                await ctx.wait_until(lambda: not self._leases.held(serial) or not widgets.jog_clearance.value)
+        except ClearanceRefused as refused:
+            # * This press is answered: no jog until the next one.
+            held = self._jog_held.get(key)
+            if held is not None:
+                self._jogging[key] = (*held[:2], False)
+            self._refuse(ctx, key, "cannot check", f"{refused}; untick Clearance to jog without it")
+        except asyncio.CancelledError:
+            if clearance is not None and clearance.problem:
+                self._tripped[serial] = clearance.problem
+                self._refuse(ctx, key, "too close", f"{clearance.problem}: soft stopped")
+            raise
+        finally:
+            self._jog_checked.discard(key)
 
     def _send_jog(self, ctx: PluginContext, widgets: _ArmWidgets, joint: int, direction: float) -> bool:
         """Send a jog of one joint at the speed slider's speed; whether the arm took it (if not, a chip says why)."""

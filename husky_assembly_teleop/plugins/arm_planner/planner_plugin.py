@@ -4,7 +4,8 @@ The headless arm planner: plans a collision-free path for one arm to a joint goa
 Others use it through `ArmPlannerContract`; its panel is `arm_planner_panel`. The first plan for a robot loads its
 models in a compas_fab world (several seconds).
 
-! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`).
+! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`), under an
+  ARM_STOP_DISTANCE clearance on the robot (`ctx.clearance`), so the base pose must be known to send.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
+from ...world.clearance import ARM_STOP_DISTANCE
 from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.ids import robot_id
 from .planner import ArmPath, path_hit, plan_arm
@@ -190,13 +192,18 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       answer: Callable[[bool, str], None]) -> None:
         """Send the plan to the arm and watch it until it is at the end; else hold it (`send_motion`).
 
-        ! Arrival is judged on the joints, not `is_executing`, which clears during a slow move (the pendant's speed
+        - An ARM_STOP_DISTANCE clearance starts first: one that cannot check refuses the commit (nothing sent), a
+          trip soft stops the robot and cancels this. The robot's other arms may be unknown (where last seen, or
+          stowed).
+        - ! Arrival is judged on the joints, not `is_executing`, which clears during a slow move (the pendant's speed
           slider): the lease would go back mid-motion.
         """
         serial, arm_name, path = plan.request.serial, plan.request.arm, plan.path
-        ctx.log_info(f"{serial} {arm_name}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
-        outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
-                                    on_sent=lambda: answer(True, f"sent to {serial} {arm_name}"))
+        others = [name for name in ctx.world.robots[serial].arms if name != arm_name]
+        with ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others):
+            ctx.log_info(f"{serial} {arm_name}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
+            outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
+                                        on_sent=lambda: answer(True, f"sent to {serial} {arm_name}"))
         if outcome.status == REFUSED:
             answer(False, outcome.reason)
         else:
