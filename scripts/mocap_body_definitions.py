@@ -1,7 +1,9 @@
 """
 Watch Motive's rigid body definitions and report refines, pivot edits, bodies made again and other bodies on an id.
 
-! WIP: the lab test below is not done yet. Reads NatNet 4.0 (the lab's Motive 3.0.3.1) and 4.1.
+! WIP: of the lab test below, 3, 6 and 7 pass on the lab's Motive 3.0.3.1 (NatNet 4.0); the others are not done.
+  Reads NatNet 4.0 and 4.1. A body missing for one reading comes back as "new body", not compared with its earlier
+  definition: calibration compares against the definition it stored, so it needs no such history.
 
     python3 scripts/mocap_body_definitions.py watch                        Motive at 192.168.0.28, every 2 s
     python3 scripts/mocap_body_definitions.py watch --ids 1850,1866 --log /tmp/definitions.jsonl
@@ -20,7 +22,8 @@ Lab test, one change at a time, noting the numbers each prints:
   6. Make a body from other markers under that streaming id: "other body".
   7. Change a body's streaming id: "id A -> B", unchanged.
   8. Restart Motive and load the same project: nothing.
-Also note whether "Motive set tracked models changed" appears with each change.
+Also note whether "Motive set tracked models changed" appears with each change. Seen: with a body added, removed or
+swapped for another, not with a refine, so only reading the definitions catches a refine.
 """
 
 from __future__ import annotations
