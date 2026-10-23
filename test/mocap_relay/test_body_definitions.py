@@ -6,6 +6,7 @@ import socket
 import struct
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -14,6 +15,10 @@ from scipy.spatial.transform import Rotation
 from husky_assembly_teleop.mocap_relay.body_definitions import (NAT_MODELDEF, RIGID_BODY, BodyDefinition,
                                                                 DescriptionClient, compare, encode_descriptions,
                                                                 match, parse_descriptions)
+
+#: The lab's Motive 3.0.3.1 (NatNet 4.0) answering NAT_REQUEST_MODELDEF, 23 Oct 2026: the "all" marker set and 10
+#: cameras, no rigid bodies; the payload after the message header.
+MOTIVE_3_0_REPLY = (Path(__file__).parent / "data" / "modeldef_motive_3_0_3_1.bin").read_bytes()
 
 #: A marker layout like a calibration marker plate: five markers, no symmetry, metres from the pivot.
 MARKERS = np.array([[0.0, 0.0, 0.0], [0.061, 0.004, 0.0], [0.013, 0.072, 0.002], [-0.044, 0.031, 0.011],
@@ -101,6 +106,30 @@ def test_descriptions_of_other_kinds_are_skipped_by_their_size():
     payload = struct.pack("<i", 2) + camera + message[4:]
     read, problems = parse_descriptions(payload, 4, 1)
     assert problems == [] and read == [body()]
+
+
+def test_motive_3_0_cameras_are_passed_without_sizes():
+    """Motive 3.0's reply (NatNet 4.0, no sizes): its marker set and cameras are read to the end."""
+    read, problems = parse_descriptions(MOTIVE_3_0_REPLY, 4, 0)
+    assert problems == [] and read == []
+
+
+def test_natnet_4_0_rigid_bodies_after_the_cameras_are_read():
+    """Rigid bodies behind Motive 3.0's cameras come back as written."""
+    bodies = [body(), body(MARKERS * 1.5, streaming_id=1850, name="base")]
+    count, = struct.unpack_from("<i", MOTIVE_3_0_REPLY)
+    payload = struct.pack("<i", count + 2) + MOTIVE_3_0_REPLY[4:] + encode_descriptions(bodies, 4, 0)[8:]
+    read, problems = parse_descriptions(payload, 4, 0)
+    assert problems == [] and read == bodies
+
+
+def test_an_unknown_kind_stops_reading_before_4_1():
+    """Without a size, a kind NatNetClient cannot read either ends the reading, with the bodies read so far."""
+    message = encode_descriptions([body()], 4, 0)[4:]
+    payload = struct.pack("<i", 2) + message[4:] + struct.pack("<i", 9) + b"\x01" * 8
+    read, problems = parse_descriptions(payload, 4, 0)
+    assert read == [body()] and problems == ["description 2 of 2 is of kind 9, which NatNet 4.0 gives no size for: "
+                                             "stopped reading there"]
 
 
 def test_natnet_before_3_has_no_offsets():

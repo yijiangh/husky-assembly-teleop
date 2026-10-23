@@ -6,8 +6,7 @@ orientation edit moves them all together; another body on the same streaming id 
 streaming ids are not part of a body: the same markers under another name or id are the same body.
 
 ! Not used by the relay yet: `scripts/mocap_body_definitions.py` tries it against Motive.
-! WIP: written for NatNet 4.1 (Motive 3.1+); the lab's Motive 3.0.3.1 streams NatNet 4.0, which it cannot read past
-  a description of another kind than marker set or rigid body.
+! WIP: reads NatNet 4.0 (the lab's Motive 3.0.3.1) and 4.1, but the lab test in the script is not done yet.
 """
 
 from __future__ import annotations
@@ -30,6 +29,8 @@ from .natnet.NatNetClient import NatNetClient
 NAT_REQUEST_MODELDEF, NAT_MODELDEF = 4, 5
 #: NatNet description types.
 MARKER_SET, RIGID_BODY = 0, 1
+#: NatNetClient's reader of each other description kind, for NatNet before 4.1, which gives no size to skip by.
+SDK_READERS = {2: "skeleton", 3: "force_plate", 4: "device", 5: "camera"}
 
 #: Offsets this close, metres, count as identical: float32 rounding of a 0.1 m offset is about 1e-8 m.
 IDENTICAL = 1e-7
@@ -231,9 +232,10 @@ def parse_descriptions(data: bytes, major: int, minor: int) -> tuple[list[BodyDe
     """The rigid bodies of a NAT_MODELDEF message's payload (after its 4-byte header), and what could not be read.
 
     From NatNet 4.1 each description carries its size, so other kinds are skipped and each rigid body is checked
-    against its size; before that only marker sets and rigid bodies can be passed, and reading stops at another kind.
+    against its size. Before that, skeletons, force plates, devices and cameras (Motive 3.0 sends one per camera) are
+    passed with NatNetClient's own readers, and reading stops at an unknown kind.
     """
-    bodies, problems = [], []
+    bodies, problems, sdk = [], [], None
     count, = struct.unpack_from("<i", data, 0)
     offset = 4
     for index in range(count):
@@ -258,6 +260,11 @@ def parse_descriptions(data: bytes, major: int, minor: int) -> tuple[list[BodyDe
             offset += 4
             for _ in range(markers):
                 _name, offset = _string(data, offset)
+        elif kind in SDK_READERS:
+            sdk = sdk or NatNetClient()
+            read = getattr(sdk, f"_NatNetClient__unpack_{SDK_READERS[kind]}_description")
+            length, _description = read(data[offset:], major, minor)
+            offset += length
         else:
             problems.append(f"description {index + 1} of {count} is of kind {kind}, which NatNet {major}.{minor} "
                             f"gives no size for: stopped reading there")
