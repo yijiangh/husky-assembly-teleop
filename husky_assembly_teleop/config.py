@@ -32,7 +32,7 @@ from .tool_urdfs import absolute_mesh_urdf, tool_spec
 #:   scaffolding_v3  Scaffolding tool with an RS485 driver.
 EndEffectorKind = Literal["robotiq", "scaffolding_v1", "scaffolding_v3", "calibration_marker"]
 END_EFFECTOR_KINDS: tuple[str, ...] = get_args(EndEffectorKind)
-#: Extra names the `tools` parameter accepts: crl_husky's "robotiq_2F_85", and "none" for a bare arm.
+#: Extra names the `tools` parameter and crl-husky's model.yaml use: "robotiq_2F_85", and "none" for a bare arm.
 _TOOL_ALIASES: dict[str, str | None] = {"robotiq_2F_85": "robotiq", "none": None}
 
 #: Robot URDFs with absolute mesh paths (`RobotModel.urdf`), in a folder of this process's own, removed when it exits.
@@ -201,30 +201,27 @@ class MonitorConfig:
 
 
 # --- --- --- --- --- WHAT EACH ROBOT IS --- --- --- --- ---
-# * Name, URDF and SRDF come from crl-husky (`get_robot_model`, its config/robots/<serial>/model.yaml), and so do the
-#   parked base pose and arm joints (`get_park`, park.yaml), which the simulators start from; the arms and tools are
-#   here. Each arm of the URDF is checked against its UR calibration in crl-husky
+# * Name, URDF, SRDF and each arm's tool come from crl-husky (`get_robot_model`, its config/robots/<serial>/model.yaml),
+#   and so do the parked base pose and arm joints (`get_park`, park.yaml); the simulators start from the same. The
+#   arms and their namespaces are here. Each arm of the URDF is checked against its UR calibration in crl-husky
 #   at startup (`_apply_ur_calibrations`), its stock UR base frames by test (doc/ur_frames.md).
 # ? TODO consolidate a robot's config further: it is spread over crl-husky's robot.yaml, env/setup.bash,
 #   mocap_config.json, model.yaml and this table.
 #: Where crl-husky's model paths start, below the data directory.
 _URDF_ROOT = "husky_urdf"
 
-_SINGLE_ARM_WITH_ROBOTIQ = (
-    ArmConfig(name="ur_arm", ros_namespace="ur5e",
-              end_effector="robotiq", end_effector_namespace="gripper"),
+_SINGLE_ARM = (
+    ArmConfig(name="ur_arm", ros_namespace="ur5e", end_effector_namespace="gripper"),
 )
-_DUAL_ARM_WITH_SCAFFOLDING_V3 = (
-    ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e", label="Left",
-              end_effector="scaffolding_v3", end_effector_namespace="left_gripper"),
-    ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e", label="Right",
-              end_effector="scaffolding_v3", end_effector_namespace="right_gripper"),
+_DUAL_ARM = (
+    ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e", label="Left", end_effector_namespace="left_gripper"),
+    ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e", label="Right", end_effector_namespace="right_gripper"),
 )
 
 _ROBOTS_BY_SERIAL = {
-    "0804": dict(arms=_SINGLE_ARM_WITH_ROBOTIQ),
-    "0805": dict(arms=_SINGLE_ARM_WITH_ROBOTIQ),
-    "0806": dict(arms=_DUAL_ARM_WITH_SCAFFOLDING_V3),
+    "0804": dict(arms=_SINGLE_ARM),
+    "0805": dict(arms=_SINGLE_ARM),
+    "0806": dict(arms=_DUAL_ARM),
 }
 
 
@@ -234,21 +231,22 @@ def robot_config_from_serial(token: str, data_directory: Path,
                              tools: tuple[EndEffectorKind | None, ...] | None = None) -> RobotConfig:
     """Build one RobotConfig from a serial ("0806", "a200-0806", "/a200_0806") or name ("cindy").
 
-    Arms come from `_ROBOTS_BY_SERIAL`; URDF, SRDF, parked poses and mocap id from crl_husky's config_resolver.
+    Arms come from `_ROBOTS_BY_SERIAL`; URDF, SRDF, tools, parked poses and mocap id from crl_husky's config_resolver.
 
     Args:
         token: The serial or name as typed on the command line.
         data_directory: Root the URDF path is resolved against.
         default_position: Where to draw it until the first mocap fix, or None for its parked pose.
         default_yaw: Which way it faces there, radians about Z, or None for its parked yaw.
-        tools: The end effector per arm, in arm order (None for a bare arm), or None for the defaults.
+        tools: The end effector per arm, in arm order (None for a bare arm), or None for the robot's (model.yaml).
 
     Returns:
         RobotConfig: The robot, its model holding its tools.
 
     Raises:
         ValueError: If `token` names no known robot, crl-husky has no model.yaml or park.yaml for it, park.yaml has
-            no joints for one of its arms, or `tools` does not give one tool per arm.
+            no joints for one of its arms, model.yaml names an unknown tool, or `tools` does not give one tool per
+            arm.
         FileNotFoundError: If the URDF is missing (usually a wrong `data_directory`), or crl_husky has no
             mocap_config.json for the robot.
     """
@@ -277,7 +275,12 @@ def robot_config_from_serial(token: str, data_directory: Path,
     unparked = [arm.name for arm in spec["arms"] if _arm_side(arm.name) not in park["arms"]]
     if unparked:
         raise ValueError(f"crl-husky's park.yaml for robot {number!r} has no joints for {', '.join(unparked)}")
-    arms = tuple(replace(arm, stow_joints=park["arms"][_arm_side(arm.name)]) for arm in spec["arms"])
+    if "tools" not in model:
+        raise ValueError("crl-husky is too old: its get_robot_model names no tools; update crl-husky (README)")
+    own = {side: _tool_kind(name, f"crl-husky's config/robots/{number}/model.yaml") for side, name in
+           model["tools"].items()}
+    arms = tuple(replace(arm, stow_joints=park["arms"][_arm_side(arm.name)], end_effector=own.get(_arm_side(arm.name)))
+                 for arm in spec["arms"])
     park = park["base"]
     if tools is not None:
         if len(tools) != len(arms):
@@ -344,7 +347,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     r"""Build the frozen run configuration from `node`'s ROS2 parameters.
 
     - `tools`: one entry per robot, tools in arm order, "none" for a bare arm; only where it differs
-      from `_ROBOTS_BY_SERIAL`.
+      from the robot's (crl-husky's model.yaml).
     - `no_default_plugins:=true` skips DEFAULT_PLUGINS.
     - `drive_root`: the project's Google Drive folder; empty falls back to HUSKY_DRIVE_ROOT (`drive.py`).
     - `recording_format`: "npz" (the default) or "json".
@@ -436,17 +439,18 @@ def _parse_tools(entries: tuple[str, ...]) -> dict[str, tuple[EndEffectorKind | 
         number = _serial_digits(serial)
         if number is None or not names:
             raise ValueError(f"tools entry {entry!r} should look like '0806:scaffolding_v3,scaffolding_v1'")
-        kinds = []
-        for name in (name.strip() for name in names.split(",")):
-            if name in _TOOL_ALIASES:
-                kinds.append(_TOOL_ALIASES[name])
-            elif name in END_EFFECTOR_KINDS:
-                kinds.append(name)
-            else:
-                valid = ", ".join((*END_EFFECTOR_KINDS, *_TOOL_ALIASES))
-                raise ValueError(f"unknown tool {name!r} in tools entry {entry!r}; valid tools are {valid}")
-        tools[number] = tuple(kinds)
+        tools[number] = tuple(_tool_kind(name.strip(), f"tools entry {entry!r}") for name in names.split(","))
     return tools
+
+
+def _tool_kind(name: str, where: str) -> EndEffectorKind | None:
+    """The end effector a tool name means (None for "none"), or ValueError naming `where` it was read."""
+    if name in _TOOL_ALIASES:
+        return _TOOL_ALIASES[name]
+    if name in END_EFFECTOR_KINDS:
+        return name
+    raise ValueError(f"unknown tool {name!r} in {where}; valid tools are "
+                     f"{', '.join((*END_EFFECTOR_KINDS, *_TOOL_ALIASES))}")
 
 
 def _robots(serials: tuple[str, ...], data_directory: Path,
