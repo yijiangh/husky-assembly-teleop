@@ -18,6 +18,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from html import escape
 from typing import Any, Callable
 
+import viser
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.scene import Scene
 
@@ -26,6 +27,7 @@ from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.assembly_planning.route_result import GoalCheck, RouteResult
 from ...shared.motion_planner_contract import CollisionReport, MotionPlanRequest
+from ...shared.planner.planner_panel import PLAN_TAB
 from ...shared.planner.planner_search import with_guesses
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, values
@@ -68,6 +70,8 @@ class MotionPlannerPlugin(HuskyPlugin):
 
     name = "motion_planner"
     experimental = True
+    tab_path = (PLAN_TAB, "Motion")
+    icon = viser.Icon.ROUTE
 
     def __init__(self):
         """Start idle, with no mirror made."""

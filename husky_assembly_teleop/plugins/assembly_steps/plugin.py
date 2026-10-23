@@ -21,6 +21,7 @@ import math
 import threading
 from typing import TYPE_CHECKING
 
+import viser
 from scaffolding_assembly_core.ids import robot_id
 
 from ...plugin_api.context import PluginContext
@@ -29,7 +30,7 @@ from ...shared.assembly_planning.movement import Routine, UnknownMovement, class
 from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
 from ...shared.assembly_planning.route_search import ATTEMPTS
 from ...shared.assembly_planning.tamp_route import FAR, IK_GOALS
-from ...shared.assembly_run_contract import is_live
+from ...shared.assembly_run_contract import ASSEMBLY_TAB, is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
 from ...shared.execution.retime import RetimeError, retime
 from ...shared.motion_planner_contract import MotionPlanRequest
@@ -62,6 +63,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
     name = "assembly_steps"
     requires = ("process", "assembly_run", "motion_planner", "movement_exec")
     experimental = True
+    tab_path = (ASSEMBLY_TAB, "Steps")
+    icon = viser.Icon.STAIRS_UP
     worker_name = "steps"
 
     def __init__(self):

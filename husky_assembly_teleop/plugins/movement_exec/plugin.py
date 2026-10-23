@@ -23,12 +23,14 @@ import math
 import traceback
 from typing import TYPE_CHECKING, Any, Mapping
 
+import viser
 from scaffolding_assembly_core.ids import robot_id
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...robot_interface.robot_lease import NotLeased
 from ...shared.assembly_planning.route_result import pose_error
+from ...shared.assembly_run_contract import ASSEMBLY_TAB
 from ...shared.execution.basis import STALE_BASE
 from ...shared.execution.moving import moving_reason
 from ...shared.execution.operator import PromptBox
@@ -58,6 +60,8 @@ class MovementExecPlugin(HuskyPlugin):
     name = "movement_exec"
     requires = ("motion_planner", "assembly_run")
     experimental = True
+    tab_path = (ASSEMBLY_TAB, "Exec")
+    icon = viser.Icon.PLAYER_PLAY
 
     def __init__(self):
         """Idle, the dry run off."""

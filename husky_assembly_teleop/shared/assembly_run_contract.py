@@ -22,6 +22,10 @@ from .assembly_planning.process_steps import LoadedProcess
 from .runs.runs import (ASSUMED, DONE, LIVE, LIVE_BASE_AGE, LIVE_JOINTS_AGE, ActionRecord, Progress, RobotRecord,
                         RunSettings)
 
+#: The side panel tab the assembly's panels share: `tab_path = (ASSEMBLY_TAB, label)` (assembly_run, assembly_steps,
+#: movement_exec).
+ASSEMBLY_TAB = "Assembly"
+
 
 @dataclass(frozen=True)
 class RunView:

@@ -25,10 +25,12 @@ from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Mapping
 
+import viser
+
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...shared.assembly_run_contract import RunView, beliefs_of, first_pending, is_live
+from ...shared.assembly_run_contract import ASSEMBLY_TAB, RunView, beliefs_of, first_pending, is_live
 from ...shared.assembly_planning.process_steps import LoadedProcess, loaded_process
 from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, RunError, RunSettings, continue_run,
                                  file_hashes, find_runs, made_after, record_event, reopen, save_progress, with_current)
@@ -71,6 +73,8 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
     name = "assembly_run"
     requires = ("process",)
     experimental = True
+    tab_path = (ASSEMBLY_TAB, "Run")
+    icon = viser.Icon.CHECKLIST
 
     def __init__(self):
         """Start with no process."""
