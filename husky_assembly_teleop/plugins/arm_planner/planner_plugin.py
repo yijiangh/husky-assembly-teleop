@@ -20,6 +20,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.mocap_state import pose_lost
 from ...shared.arm_planner_contract import ArmPlanRequest
+from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.execution.send import REFUSED, ArmMotion, MotionCommand, send_motion
 from ...world.collision_hit import CollisionHit
@@ -29,7 +30,7 @@ from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from scaffolding_assembly_core.ids import robot_id
-from .planner import ArmPath, arm_joint_names, path_hit, plan_arm
+from .planner import ArmPath, path_hit, plan_arm
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far; the panel also
 #: refuses a target this far from the planned goal.

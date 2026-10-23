@@ -18,6 +18,7 @@ import numpy as np
 
 from ...world.collision_hit import CollisionHit
 from ...shared.assembly_planning.collision import collision_hit
+from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.planner.timed_path import TimedPath
 from ...shared.planner.planner_search import PlanResult
 from ...shared.planner.rrt_connect import connect
@@ -37,11 +38,6 @@ SAMPLE_SLACK = np.pi
 BLEND_LENGTH = 0.3
 #: Times a rounding that collides is halved before the arm rests at that corner instead.
 BLEND_TRIES = 4
-
-
-def arm_joint_names(arm_name: str) -> list[str]:
-    """The URDF names of one arm's six joints (e.g. arm "left_ur_arm"), in the UR driver's order."""
-    return [f"{arm_name}_{name}" for name in UR_JOINT_NAMES]
 
 
 @dataclass(frozen=True)

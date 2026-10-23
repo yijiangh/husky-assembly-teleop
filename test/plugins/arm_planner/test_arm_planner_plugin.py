@@ -14,7 +14,8 @@ from robot_fakes import lease_test_robots, wait_ticks_until
 
 from husky_assembly_teleop.plugins.arm_planner import planner_plugin as arm_plugin
 from husky_assembly_teleop.plugins.arm_planner.panel_plugin import ArmPlannerPanel
-from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath, arm_joint_names
+from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath
+from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.plugins.arm_planner.planner_plugin import ArmPlannerPlugin
 from husky_assembly_teleop.shared.arm_planner_contract import ArmPlanRequest
 from husky_assembly_teleop.shared.execution.send import ARRIVED_TOLERANCE

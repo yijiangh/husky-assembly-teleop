@@ -184,7 +184,8 @@ def fake_arm(controller: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, joints
     arm = ArmInterface.__new__(ArmInterface)
     arm._node, arm.config = Node(now), ArmConfig(name="ur_arm", ros_namespace="ur5e", **config)
     arm.base_in_husky, arm.pendant_tcp, arm.urdf_problem, arm.urdf, arm.end_effector = Pose(), Pose(), None, None, None
-    arm.state, arm._test_mode_logged, arm._motion_reference, arm._free_drive_on = ArmState(), {}, {}, False
+    arm.state, arm._test_mode_logged, arm._free_drive_on = ArmState(), {}, False
+    arm._motion_reference, arm._slight_reference = {}, {}
     arm._free_drive_until, arm._free_drive_leases = float("-inf"), frozenset()
     arm._simulated, arm._latch, arm._lease_slot = (lambda: simulated), SoftStopLatch("0804"), leased_slot("0804")
     arm.controllers = Controllers(arm.state.controllers, "/a200_0804/ur5e", arm._node)

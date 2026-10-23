@@ -14,8 +14,8 @@ from husky_assembly_teleop.robot_interface.arm import joint_path_move
 from husky_assembly_teleop.world.lab import floor_body, platform_links
 from husky_assembly_teleop.shared.planner.rrt_connect import Corners
 from husky_assembly_teleop.plugins.arm_planner import planner as planner_module
-from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, _extend, arm_joint_names, joint_limits,
-                                                               path_hit, plan_arm)
+from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath, _extend, joint_limits, path_hit, plan_arm
+from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.mirrors import MirrorPool
 from scaffolding_assembly_core.geometry import box_geometry
 from scaffolding_assembly_core.robot import RobotObject

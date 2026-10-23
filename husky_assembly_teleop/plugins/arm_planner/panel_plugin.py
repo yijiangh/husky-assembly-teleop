@@ -26,7 +26,7 @@ from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_join
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
 from scaffolding_assembly_core.ids import robot_id
-from .planner import arm_joint_names
+from ...shared.assembly_planning.joints import arm_joint_names
 from .planner_plugin import STALE_JOINT
 
 

@@ -270,7 +270,7 @@ def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
     arm._simulated, arm._free_drive_until, arm._free_drive_leases = lambda: None, float("-inf"), frozenset()
     # * Its own latch and lease slot, until `fake_robot` gives it the robot's.
     arm._latch, arm._lease_slot = SoftStopLatch(name), LeaseSlot(name)
-    arm.urdf_problem, arm.pendant_tcp, arm.base_in_husky = None, Pose(), Pose()
+    arm.urdf_problem, arm.urdf, arm.pendant_tcp, arm.base_in_husky = None, None, Pose(), Pose()
     arm._test_mode_logged, arm._motion_reference, arm._slight_reference, arm._free_drive_on = {}, {}, {}, False
     arm._trajectory, arm._target_frame, arm._target_wrench = Published(), Published(), Published()
     arm.trajectories_sent, arm.targets_sent, arm.wrenches_sent = (Event(f"{name}_trajectory"), Event(f"{name}_target"),

@@ -5,7 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from husky_assembly_teleop.plugins.arm_planner.planner import BLEND_LENGTH, ArmPath, arm_joint_names, round_corners
+from husky_assembly_teleop.plugins.arm_planner.planner import BLEND_LENGTH, ArmPath, round_corners
+from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.plugins.arm_planner.planner_plugin import arm_command
 from husky_assembly_teleop.robot_interface.arm import (JOINT_MOVE_MAX_SPEED, JOINT_MOVE_WAYPOINT_SPACING,
                                                        JOINT_PATH_MAX_ACCELERATION, joint_path_move)
