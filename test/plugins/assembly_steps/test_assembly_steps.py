@@ -165,6 +165,17 @@ def test_toggling_the_workaround_moves_to_the_steps_primary():
     assert lab.run.selected == [("B20_J", 3)]
 
 
+def test_a_refused_workaround_change_puts_the_box_back():
+    """The run refuses the change (e.g. a step runs): the box shows the run's value again, and says so."""
+    lab = Steps(("B20_J", 3))
+    lab.run.request_settings = lambda **changes: None
+    box, = [widget for widget in lab.ctx.gui.of_kind("checkbox") if widget.label == "Transfer workaround"]
+    box.value = False
+    lab.plugin.set_workaround(lab.ctx, False)
+    lab.update()
+    assert box.value is True and "Transfer workaround refused" in lab.html()
+
+
 def test_a_plan_request_carries_the_run_and_the_checked_goal():
     """Alice's approach: the run's beliefs and workaround, Ignore built bars, and the goal checked at this base.
 

@@ -32,8 +32,8 @@ class StepsPanel:
             ctx: The plugin's context.
             plugin: The plugin the widgets call.
         """
-        # The workaround and motion time the widgets were last set to.
-        self._shown_workaround: bool | None = None
+        # The workaround (with the count of refused changes) and motion time the widgets were last set to.
+        self._shown_workaround: tuple[bool, int] | None = None
         self._shown_time: float | None = None
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
@@ -106,9 +106,10 @@ class StepsPanel:
             self._shown_time = self._time.value = plugin.traj_time
         minimum = "—" if math.isnan(plugin.minimum) else f"{plugin.minimum:.1f}"
         self._minimum.content = block(values(f"min {minimum} s by the arms' limits"))
-        workaround = ctx.require("assembly_run").view.settings.transfer_as_free
+        workaround = (ctx.require("assembly_run").view.settings.transfer_as_free, plugin.workaround_refused)
         if workaround != self._shown_workaround:
-            self._shown_workaround = self._workaround.value = workaround
+            self._shown_workaround = workaround
+            self._workaround.value = workaround[0]
         self._ignore.value = plugin.ignore_built
         self._mark.label = f"Mark {plugin.offer} done" if plugin.offer else "Mark done (after the last step)"
         self._details.content = block(plugin._message_html())

@@ -79,6 +79,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         self._robot_name = ""
         #: The workaround as last seen, to notice the operator toggling it.
         self._transfer: bool | None = None
+        #: How many workaround changes the run refused; a change makes the panel show the run's value again.
+        self.workaround_refused = 0
         #: Seconds the motion should take, the operator's; the default per routine at each new step.
         self.traj_time = 10.0
         self.ignore_built = False
@@ -235,8 +237,12 @@ class AssemblyStepsPlugin(PlannerPlugin):
         self.ignore_built = bool(ignore)
 
     def set_workaround(self, ctx: PluginContext, on: bool) -> None:
-        """Ask the run to change its transfer workaround."""
-        self._assembly_run(ctx).request_settings(transfer_as_free=bool(on))
+        """Ask the run to change its transfer workaround; if it refuses, the box shows the run's value again."""
+        run = self._assembly_run(ctx)
+        run.request_settings(transfer_as_free=bool(on))
+        if run.view.settings.transfer_as_free != bool(on):
+            self.workaround_refused += 1
+            self._say("Transfer workaround refused: the reason is on the Run panel", failed=True)
 
     def mark_done(self, ctx: PluginContext) -> None:
         """Mark the offered action done in the run."""
