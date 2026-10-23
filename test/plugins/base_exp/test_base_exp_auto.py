@@ -3,15 +3,18 @@
 import asyncio
 import math
 import random
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.plugins.base_exp.auto import (GRID, STANDARD_SET, PathCollisionCheck, Sampler, StandardSet,
-                                                         cell_key, cells, check_poses, standard_set)
+from husky_assembly_teleop.plugins.base_exp.auto import (GRID, PATH_CLEARANCE, STANDARD_SET, PathCollisionCheck,
+                                                         Sampler, StandardSet, cell_key, cells, check_poses,
+                                                         standard_set)
 from husky_assembly_teleop.plugins.base_exp.plan import plan_from
+from husky_assembly_teleop.plugins.base_exp.plugin import BaseExperimentPlugin
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject
@@ -80,8 +83,11 @@ def test_clearance_sees_walls_and_robots():
         return into_wall, toward_cindy, open_space, here
 
     into_wall, toward_cindy, open_space, here = asyncio.run(check())
-    assert into_wall == "wall"
-    assert toward_cindy is not None and "wall" not in toward_cindy
+    assert into_wall.robot == robot_id(alice.serial) and into_wall.pairs[0][1] == wall.id
+    assert into_wall.margin == PATH_CLEARANCE and into_wall.where.startswith("pose ")
+    # * The hit's scene has Alice where she comes too close, not where the snapshot has her.
+    assert into_wall.scene.robots[robot_id(alice.serial)].base.position[0] > 1.5
+    assert toward_cindy is not None and all(wall.id not in pair for pair in toward_cindy.pairs)
     assert open_space is None and here is None
 
 
@@ -168,3 +174,18 @@ def test_earlier_runs_match_the_current_setup(tmp_path):
     found = earlier_runs(tmp_path, "exp", current_key(setup))
     assert len(found) == 2
     assert earlier_runs(tmp_path, "missing", current_key(setup)) == []
+
+
+def test_a_blocked_way_back_shows_in_the_collisions_panel_until_the_next_start():
+    """The hit that stopped automation is listed, ticked; once it is gone (a new Start), the source is cleared."""
+    listed = {}
+    panel = SimpleNamespace(replace=lambda source, hits, shown=(): listed.update({source: (hits, tuple(shown))}),
+                            clear=lambda source: listed.pop(source, None))
+    plugin, hit = BaseExperimentPlugin(), SimpleNamespace(robot="robots/a200-0804", where="pose 3 of 40")
+    ctx = SimpleNamespace(require=lambda _name: panel)
+    plugin._return_hit = hit
+    plugin.update(ctx)
+    assert listed == {"base_exp": ({"a200-0804 way back": hit}, ("a200-0804 way back",))}
+    plugin._return_hit = None
+    plugin.update(ctx)
+    assert listed == {}

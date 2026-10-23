@@ -73,3 +73,15 @@ def test_contact_with_what_the_robot_holds_is_left_out(world, config):
     own = robot_id(config.serial)
     world.sync(scene(config, [held_bar(own, z=0.3)]))
     assert world.hit_by(own, (0.0, 0.0, 0.0), 0.0) is None
+
+
+def test_a_hit_at_a_pose_has_the_robot_and_what_it_holds_there(world, config):
+    """Holding the bar 1 m on, she hits the post: the hit's scene has her and the bar there, the bar's side first."""
+    own = robot_id(config.serial)
+    world.sync(scene(config, [POST, held_bar(own)]))
+    hit = world.collision_hit(own, 0.0, "target", (1.0, 0.0, 0.0))
+    assert hit.where == "target" and hit.pairs == (("test/bar", "test/post"),)
+    np.testing.assert_allclose(hit.scene.robots[own].base.position, (1.0, 0.0, 0.0), atol=1e-9)
+    np.testing.assert_allclose(hit.scene.world_poses["test/bar"].position, (1.0, 0.0, 1.0), atol=1e-9)
+    assert world.snapshot.robots[own].base.position == (0.0, 0.0, 0.0)
+    assert world.collision_hit(own, 0.0, "start", (0.0, 0.0, 0.0)) is None

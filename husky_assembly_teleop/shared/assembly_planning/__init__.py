@@ -10,7 +10,8 @@ The process as steps, planning scenes, routines, IK and collision checks on a pl
                     colours, one sentence on what it does
   steps.py          an action's movements grouped into the operator's steps
   scene_for.py      a process step's planning scene on the real robots; unmeasured robots from a belief or the design
-  collision.py      checks on a synced compas_fab mirror: a state, a path swept between waypoints; world-frame FK
+  collision.py      checks on a synced compas_fab mirror: a state, a path swept between waypoints, what a check hit
+                    (`collision_hit`); world-frame FK
   ik.py             exact ssik IK at the live base, nearest collision-free branch first; PyBullet IK as fallback
   arm.py            one arm's RRT-Connect on a synced mirror, the path timed at the preview speed
   single_arm.py     one arm's straight tool0 move: exact ssik IK at every step; compas_fab's cartesian planner as

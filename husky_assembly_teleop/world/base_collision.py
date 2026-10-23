@@ -119,26 +119,30 @@ class BaseCollisionWorld:
         hit = self._hit(own, pose, margin)
         return self.snapshot.label(hit[1]) if hit is not None else None
 
-    def collision_hit(self, own: str, margin: float, where: str) -> CollisionHit | None:
-        """Everything robot `own`, or what it holds, comes within `margin` of where the last `sync` put them.
+    def collision_hit(self, own: str, margin: float, where: str, pose=None) -> CollisionHit | None:
+        """Everything robot `own`, or what it holds, comes within `margin` of, where the last `sync` or `pose` put it.
 
         Args:
             own: The robot, by id.
             margin: Distance below which a pair counts, metres.
             where: What the robot was doing, for the hit's message.
+            pose: (x, y, yaw) to place the robot at first, with what it holds; None: where the last `sync` put it.
 
         Returns:
             CollisionHit | None: Every such pair, robot or held body first, with its closest contact; None if clear.
+                Its scene has the robot at `pose`.
 
         Raises:
             ValueError: If the robot cannot be checked, e.g. a joint is not measured (`RobotObject.acting_problems`).
         """
+        if pose is not None:
+            self._place(own, pose)
         parts = self._parts(own)
         candidates = [object_id for object_id in self._footprints if object_id not in parts]
         pairs = tuple((part, other) for part in parts for other in self.mirror.collisions(part, margin, candidates))
         if not pairs:
             return None
-        snapshot = self.snapshot
+        snapshot = self.snapshot if pose is None else self._scene_at(own, pose)
         # ? The mirror's rule: a free, unmeasured body with a non-convex mesh is built concave, the rest as hulls.
         concave = frozenset(object_id for pair in pairs for object_id in pair if object_id in snapshot.bodies
                             and isinstance(snapshot.bodies[object_id].placement, Pose)
@@ -147,6 +151,16 @@ class BaseCollisionWorld:
                                     for shape in snapshot.bodies[object_id].geometry.collision))
         return CollisionHit(snapshot, own, where, pairs, tuple(self._contact(pair, margin) for pair in pairs),
                             concave=concave, margin=margin)
+
+    def _scene_at(self, own: str, pose) -> Scene:
+        """A copy of the synced snapshot with robot `own` at a floor pose (x, y, yaw), as `_place` puts it."""
+        scene = self.snapshot.copy()
+        robot = scene.robots[own]
+        x, y, yaw = pose
+        robot.base = Pose((x, y, robot.base.position[2]), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)))
+        for body_id, (offset, _) in self._held.get(own, {}).items():
+            scene.world_poses[body_id] = compose(robot.base, offset)
+        return scene
 
     # * Core candidate: `_contact` and `_names` belong next to `PyBulletMirror.collisions`, which finds the same
     #   points but keeps only the other side's id; they repeat its private naming (`_names`: robot links, and each
@@ -234,18 +248,20 @@ class BaseCollisionWorld:
             p.resetBasePositionAndOrientation(body, pose.position, pose.orientation,
                                               physicsClientId=self.mirror.client_id)
 
-    def path_hit(self, own: str, poses, margin: float) -> str | None:
-        """What a robot comes within `margin` of at any of some floor poses, first in order; None if all are clear.
+    def path_hit(self, own: str, poses, margin: float) -> CollisionHit | None:
+        """What a robot comes within `margin` of at the first of some floor poses where it comes that close.
 
         Args:
             own: The robot, by id.
             poses: (x, y, yaw) poses, close enough together that checking each checks the way between.
             margin: Keep at least this far from everything else, metres.
+
+        Returns:
+            CollisionHit | None: The hit at that pose ("pose i of n"), or None if all are clear.
         """
-        for pose in poses:
-            hit = self.hit_by(own, pose, margin)
-            if hit is not None:
-                return hit
+        for index, pose in enumerate(poses):
+            if self._hit(own, pose, margin) is not None:
+                return self.collision_hit(own, margin, f"pose {index + 1} of {len(poses)}", pose)
         return None
 
     def close(self) -> None:

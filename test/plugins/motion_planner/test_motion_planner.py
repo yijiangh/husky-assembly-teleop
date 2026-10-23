@@ -94,6 +94,48 @@ def test_requests_run_in_order_one_at_a_time(monkeypatch):
     assert asyncio.run(scenario()) == [SOLVED] * 3 and order == ["plan 0", "plan 1", "plan 2"]
 
 
+class Collisions:
+    """The collisions panel, keeping what it is given."""
+
+    def __init__(self):
+        """Nothing shown."""
+        self.hits, self.shown = {}, []
+
+    def replace(self, source, hits, shown=()):
+        """Keep a source's hits and the ticked labels."""
+        self.hits[source], self.shown = dict(hits), list(shown)
+
+    def clear(self, source):
+        """Drop a source."""
+        self.hits.pop(source, None)
+
+
+def test_the_last_answers_hits_show_in_the_collisions_panel(monkeypatch):
+    """A failed plan's hits show by request and place, the first ticked; a newer answer without hits takes them away."""
+    goal, swept = SimpleNamespace(where="goal"), SimpleNamespace(where="segment 3 of 9, try 1")
+    answers = iter([RouteResult(MovementResult("failed", "the goal collides"), Routine.FREE_HOME, hits=(goal, swept)),
+                    SOLVED])
+    monkeypatch.setattr(motion, "run_plan", lambda *_args: next(answers))
+    panel = Collisions()
+    ctx = SimpleNamespace(require=lambda name: panel if name == "collisions" else None)
+
+    async def scenario():
+        plugin = planner()
+        shown = []
+        for label in ("plan home", "plan home again"):
+            await plugin.request_plan(request(label))
+            await asyncio.sleep(0)
+            plugin.update(ctx)
+            shown.append((dict(panel.hits), list(panel.shown)))
+        plugin.teardown(None)
+        return shown
+
+    failed, solved = asyncio.run(scenario())
+    assert failed == ({"motion_planner": {"plan home: goal": goal, "plan home: segment 3 of 9, try 1": swept}},
+                      ["plan home: goal"])
+    assert solved[0] == {}
+
+
 def test_cancel_answers_queued_requests_unrun(monkeypatch):
     """Cancel stops the running request; the queued ones answer "cancelled" without touching a mirror."""
     started = threading.Event()

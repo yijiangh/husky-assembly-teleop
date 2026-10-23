@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -23,6 +24,9 @@ from .collision import SweptReport
 from .ik import IkResult
 from .joints import arm_side
 from .movement import MovementSpec, Routine
+
+if TYPE_CHECKING:
+    from ...world.collision_hit import CollisionHit
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,7 @@ class RouteResult:
         joint_error: The largest gap between the path's end and a joint goal, radians; None for a pose goal.
         goal_joints: The arm joints planned to, where the goal was in joints (given, or solved by IK).
         colliding: Colliding pairs found on the way, in process ids where mapped.
+        hits: The collisions found on the way, in scene ids, for the collisions plugin.
         swept: The swept check of the path, where one ran.
         ik: The goal's IK, where one ran.
         warnings: Robots left out of the scene, a colliding start of a linear move, a mismatched grasp.
@@ -58,6 +63,7 @@ class RouteResult:
     swept: SweptReport | None = None
     ik: IkResult | None = None
     warnings: tuple[str, ...] = ()
+    hits: tuple[CollisionHit, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -83,6 +89,7 @@ class GoalCheck:
         sources: Live id of each other robot -> where its base and joints came from (`scene_for`).
         warnings: Robots and bodies left out of the scene, and why.
         seconds: Time taken: scenes, syncs and IK.
+        hits: What the goal collides with, where IK found only colliding solutions, for the collisions plugin.
     """
 
     movement: str
@@ -98,6 +105,7 @@ class GoalCheck:
     sources: dict[str, str] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
     seconds: float = 0.0
+    hits: tuple[CollisionHit, ...] = ()
 
     @property
     def max_from_authored(self) -> float | None:

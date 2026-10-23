@@ -14,7 +14,7 @@ from typing import Callable
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.process.solutions import MovementResult
 
-from ...shared.assembly_planning.collision import collisions, in_process_terms
+from ...shared.assembly_planning.collision import collision_hit, in_process_terms
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.assembly_planning.route_result import GoalCheck, RouteResult
 from ...shared.assembly_planning.scene_for import scene_for
@@ -80,7 +80,7 @@ def run_collisions(pool: MirrorPool, request: MotionPlanRequest, abort: threadin
         log: Unused; the same signature as the other work.
 
     Returns:
-        CollisionReport: Every colliding pair, or why the check did not run.
+        CollisionReport: Every colliding pair and its hit, or why the check did not run.
     """
     started = time.monotonic()
     try:
@@ -89,9 +89,11 @@ def run_collisions(pool: MirrorPool, request: MotionPlanRequest, abort: threadin
                              ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide,
                              end_contacts=True)
         mirror.sync(planning.scene)
-        pairs = collisions(mirror, dict(request.joints) if request.joints is not None else None, full_report=True)
+        joints = dict(request.joints) if request.joints is not None else None
+        hit = collision_hit(mirror, planning.scene, "start" if joints is None else "the given joints", joints)
+        pairs = hit.pairs if hit is not None else ()
         return CollisionReport(tuple(in_process_terms(pair, planning.process_ids) for pair in pairs), "",
-                               dict(planning.sources), planning.warnings, time.monotonic() - started)
+                               dict(planning.sources), planning.warnings, time.monotonic() - started, hit)
     except Exception as error:
         return CollisionReport(reason=_reason(error), seconds=time.monotonic() - started)
 

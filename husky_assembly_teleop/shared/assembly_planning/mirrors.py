@@ -1,6 +1,8 @@
 """
 A planner's compas_fab mirrors, one per robot it plans for, and the robot shown in PyBullet's own window.
 
+The arm planner and the motion planner each keep one.
+
 ! Worker thread only: make, sync, plan with and close the mirrors on the one thread that owns them.
 """
 
@@ -23,9 +25,6 @@ class MirrorPool:
         self.serial: str | None = None
         #: Whether the PyBullet window is open.
         self.gui = False
-        #: The snapshot synced last: display text for our ids (`label`), and the scene of a `CollisionHit`.
-        self.snapshot = Scene()
-        self.label = self.snapshot.label
         #: Given to each mirror: logs each full rebuild of its cell, and why. Set by the plugin.
         self.log: Callable[[str], None] | None = None
 
@@ -51,19 +50,18 @@ class MirrorPool:
         self.serial = serial
         return mirror
 
-    def sync(self, snapshot: Scene, serial: str) -> CompasFabMirror:
-        """Make one robot's planning world match a snapshot.
+    def sync(self, scene: Scene, serial: str) -> CompasFabMirror:
+        """Make one robot's planning world match a scene.
 
         Args:
-            snapshot: The tick's copy of the world, taken on the main thread.
+            scene: The world to plan in, e.g. the tick's snapshot taken on the main thread.
             serial: The robot to plan for.
 
         Returns:
             CompasFabMirror: Its mirror, synced.
         """
         mirror = self.mirror(serial)
-        mirror.sync(snapshot)
-        self.snapshot, self.label = snapshot, snapshot.label
+        mirror.sync(scene)
         return mirror
 
     def set_gui(self, gui: bool, snapshot: Scene, serial: str) -> None:

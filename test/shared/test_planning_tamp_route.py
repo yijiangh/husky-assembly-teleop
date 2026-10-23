@@ -248,6 +248,28 @@ def test_a_box_at_home_fails_the_way_home(purged, configs, mirrors):
 
 
 @pytest.mark.slow
+def test_a_colliding_goal_or_start_carries_its_hit(purged, configs):
+    """The way home into a box gives one hit: at the goal, her side first; with a box over her upper arm, at the start.
+
+    The goal's hit has her arms at home in its scene. Needs no IK, so it runs without ssik.
+    """
+    home = movement(purged, "B20_R_home")[1]
+    cindy, target = home.start.robots["robots/cindy"], home.target.joints["robots/cindy"]
+    wrist = link_pose(robot_config(CINDY).model.urdf, cindy.base, {**cindy.joints, **target}, "left_ur_arm_tool0")
+    for size, where in ((0.1, "goal"), (0.3, "start")):
+        box = Body("obstacles/box", box_geometry((size, size, size)), wrist)
+        row, = run_check(purged, configs, ["B20_R"], only=["B20_R_home"], extra_bodies=(box,), verbose=False,
+                         log=lambda _line: None)
+        hit, = row.route.hits
+        assert (hit.where, hit.robot) == (where, CINDY_ID) and f"the {where} collides" in row.reason
+        assert len(hit.contacts) == len(hit.pairs) and any("obstacles/box" in pair for pair in hit.pairs)
+        if where == "goal":
+            assert all(a.startswith((f"{CINDY_ID}/", "tools/a200-0806/")) for a, _b in hit.pairs), hit.pairs
+            assert all(hit.scene.robots[CINDY_ID].joints[name] == pytest.approx(value)
+                       for name, value in target.items())
+
+
+@pytest.mark.slow
 def test_perturbed_bases(purged, check):
     """Alice 2 cm / 2° off her design base: the approach and the grasp still end on their world targets."""
     rows = check("B21_H_approach", "B21_H_to_grasp", perturb=(0.02, 2.0), seed=0)

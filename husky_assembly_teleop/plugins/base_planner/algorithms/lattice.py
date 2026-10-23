@@ -30,6 +30,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
 
 from ....shared.planner.planner_search import PlanResult, TIME_LIMIT
+from ....world.collision_hit import CollisionHit
 from ..follow import XICR_RANGE, followed, thinned
 from ..path import (MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE, BasePath, densify, driven, steer,
                     timed_path)
@@ -234,13 +235,13 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
         debug.note(f"{text} ({time.time() - phase:.2f} s)")
         phase = time.time()
 
-    def failed(reason: str) -> PlanResult[BasePath]:
-        return PlanResult(None, "cancelled" if abort.is_set() else reason, time.time() - started)
+    def failed(reason: str, hit: CollisionHit | None = None) -> PlanResult[BasePath]:
+        return PlanResult(None, "cancelled" if abort.is_set() else reason, time.time() - started, hit=hit)
 
     for name, pose in (("start", start), ("target", goal)):
         other = world.hit_by(own, pose, margin)
         if other is not None:
-            return failed(f"{name} is in collision with {other}")
+            return failed(f"{name} is in collision with {other}", world.collision_hit(own, margin, name, pose))
 
     try:
         model = load_model(settings.follower_model)

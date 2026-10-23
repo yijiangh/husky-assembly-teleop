@@ -125,7 +125,8 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     for name, pose in (("start", start), ("target", goal)):
         other = world.hit_by(own, pose, margin)
         if other is not None:
-            return PlanResult(None, f"{name} is in collision with {other}", time.time() - started)
+            return PlanResult(None, f"{name} is in collision with {other}", time.time() - started,
+                              hit=world.collision_hit(own, margin, name, pose))
 
     try:
         x_model = load_model(settings.follower_model)["xICR"]

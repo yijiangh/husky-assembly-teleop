@@ -153,7 +153,8 @@ def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snaps
     return GoalCheck(movement, route.spec.routine, goal is not None, reason, route.planning.acting, route.robot.base,
                      dict(route.start) or None, route.ik, goal,
                      {name: float(authored[name]) for name in route.names if name in authored} or None,
-                     dict(route.planning.sources), tuple(route.warnings), time.monotonic() - started)
+                     dict(route.planning.sources), tuple(route.warnings), time.monotonic() - started,
+                     tuple(route.hits))
 
 
 def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
@@ -216,12 +217,11 @@ class _Route(RouteSearch):
             Refused: Why it is not: a free move's start collides, or the routine's own reason.
         """
         self.prepare()
-        hits = self.terms(collisions(self.mirror, full_report=True))
-        if hits:
+        touches = self.terms(collisions(self.mirror, full_report=True))
+        if touches:
             if self.spec.routine not in _LINEAR:
-                self.colliding += hits
-                raise Refused(f"the start collides: {pairs_text(hits)}")
-            self.warnings.append(f"the start touches: {pairs_text(hits)}")
+                raise Refused(f"the start collides: {pairs_text(self.hit('start', None))}")
+            self.warnings.append(f"the start touches: {pairs_text(touches)}")
         return getattr(self, f"_{self.spec.routine.value}")()
 
     def _transfer_free(self) -> RouteResult:
@@ -360,7 +360,8 @@ class _Route(RouteSearch):
         self.mirror.sync(self.scene)
         self.planner = f"single_arm.plan_linear/{path.backend}"
         if path.points is None:
-            self.colliding += self.terms([path.colliding] if path.colliding else [])
+            if path.colliding_joints is not None:
+                self.hit(f"waypoint {path.waypoint}", path.colliding_joints)
             raise Refused(f"{self.planner}: {path.reason}")
         return self.solved(path.points, {part: goal})
 
@@ -403,9 +404,11 @@ class _Route(RouteSearch):
             # * IK in the scene with the held bar: it must be clear where the goal puts it.
             self.mirror.sync(self.planning.scene)
             self.ik = solve_ik(self.mirror, self.robot, targets, reference=self.spec.goal_joints, log=self.log)
+            if self.ik.joints is None and self.ik.colliding_joints is not None:
+                self.mirror.sync(self.planning.scene)  # ? IK may have lent the mirror
+                self.hit("goal by IK", self.ik.colliding_joints, self.planning.scene)
             self.mirror.sync(self.scene)
             if self.ik.joints is None:
-                self.colliding += self.terms([self.ik.colliding] if self.ik.colliding else [])
                 raise Refused(f"no IK for the goal ({self.ik.backend}): {self.ik.reason}")
             goal = self.joints_of(self.ik.joints)
         if unwrap:

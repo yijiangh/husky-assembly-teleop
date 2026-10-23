@@ -1,4 +1,4 @@
-"""Tests for assembly_planning.collision: compas_fab's FK in the world frame, swept checks, hits in process terms."""
+"""Tests for assembly_planning.collision: compas_fab's FK in the world frame, swept checks, hits, process terms."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from compas_fab.robots import TargetMode
 from planning_fixtures import BELLE, CINDY, robot_config
 from scipy.spatial.transform import Rotation
 
-from husky_assembly_teleop.shared.assembly_planning.collision import (SweptReport, collisions, in_process_terms,
-                                                                      swept_check, world_frame_fk)
+from husky_assembly_teleop.shared.assembly_planning.collision import (SweptReport, collision_hit, collisions,
+                                                                      in_process_terms, swept_check, world_frame_fk)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.world.kinematics import stow_joints
 from scaffolding_assembly_core.geometry import Pose, box_geometry
@@ -90,7 +90,10 @@ def test_world_frame_fk_matches_the_urdf(mirror):
 
 @pytest.mark.slow
 def test_swept_check_finds_a_box_between_clear_waypoints(mirror):
-    """A box where the left tool passes midway: both waypoints clear, both segments hit, every sample counted."""
+    """A box where the left tool passes midway: both waypoints clear, both segments hit, every sample counted.
+
+    The first state that hits becomes a hit: the left arm's side first, the box second, the arm there in its scene.
+    """
     cindy = _cindy(OFF_ORIGIN)
     start = np.array([cindy.joints[name] for name in LEFT])
     end = start + np.array([2.0, 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -99,12 +102,20 @@ def test_swept_check_finds_a_box_between_clear_waypoints(mirror):
     mirror.sync(_scene(cindy))
     assert swept_check(mirror, LEFT, [start, end]) == SweptReport(True, 199)
 
-    mirror.sync(_scene(cindy, bodies=(Body("obstacles/box", box_geometry((0.04, 0.04, 0.04)), Pose(middle.position)),)))
+    scene = _scene(cindy, bodies=(Body("obstacles/box", box_geometry((0.04, 0.04, 0.04)), Pose(middle.position)),))
+    mirror.sync(scene)
     assert collisions(mirror, dict(zip(LEFT, start))) == [] and collisions(mirror, dict(zip(LEFT, end))) == []
     report = swept_check(mirror, LEFT, [start, end, start])
     assert not report.ok and report.samples == 2 * 199 and report.error == ""
     assert [index for index, _pairs in report.bad_segments] == [0, 1]
     assert all(any("obstacles/box" in pair for pair in pairs) for _index, pairs in report.bad_segments)
+
+    hit = collision_hit(mirror, scene, "segment 0", report.colliding_joints, LEFT)
+    assert hit.pairs and all(b == "obstacles/box" and a.startswith((f"{CINDY_ID}/left_", CINDY_LEFT_TOOL))
+                             for a, b in hit.pairs), hit.pairs
+    assert len(hit.contacts) == len(hit.pairs) and hit.contacts[0].depth <= 0.0
+    assert {name: hit.scene.robots[CINDY_ID].joints[name] for name in LEFT} == report.colliding_joints
+    assert collision_hit(mirror, scene, "start", dict(zip(LEFT, start)), LEFT) is None
 
 
 @pytest.mark.slow

@@ -11,6 +11,7 @@ Base experiment: drive test paths from where the robot stands with the onboard p
   Each run is checked against the other robots and every scene body (`obstacles` loads with it: the lab's border).
 - Clearance: during every run the robot is soft-stopped, and automation stopped, once it comes within STOP_DISTANCE
   of anything in the scene (`ctx.clearance`); the operator resumes it, drives it clear and starts again.
+- A way back to the start that is not clear stops automation; the collisions panel shows what it comes too close to.
 - Errors are measured here, the same for every controller (`tracking.py`): each new mocap pose against the path
   sent. After the follower ends, recording goes on until the robot stands still (SETTLE), for the error at the end.
 - Each run is saved to a folder of its own under the experiment's name (`record.py`), with experiment.json and
@@ -43,6 +44,7 @@ from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.trace import Signal, Trace
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState, live_report
 from ...robot_interface.mocap_state import pose_lost
+from ...shared.collisions_contract import CollisionsContract
 from ...shared.obstacles_contract import ObstaclesContract
 from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
@@ -52,6 +54,7 @@ from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block
 from ...ui.trace_plot import TracePlot
 from ...world.clearance import STOP_DISTANCE, Clearance, ClearanceRefused
 from ...world.checks import STALE_AFTER
+from ...world.collision_hit import CollisionHit
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, PathCollisionCheck, Sampler, StandardSet
 from .plan import Plan, plan_from
@@ -113,7 +116,7 @@ class BaseExperimentPlugin(HuskyPlugin):
     icon = viser.Icon.CHART_LINE
     experimental = True
     #: Automation needs the lab's border (`ObstaclesContract.lab`).
-    requires = ("obstacles",)
+    requires = ("obstacles", "collisions")
 
     def __init__(self):
         """Start with no robot, no preview and no run."""
@@ -135,8 +138,11 @@ class BaseExperimentPlugin(HuskyPlugin):
         #: The automated series: runs done, runs asked for (0: until Stop), its start time; and where its paths stand.
         self._series: tuple[int, int, float] | None = None
         self._paths_note = ""
-        #: Why the last series stopped early, shown until the next Start.
+        #: Why the last series stopped early, shown until the next Start; the way back's hit if that stopped it, and
+        #: the hit the collisions panel shows.
         self._auto_alert = ""
+        self._return_hit: CollisionHit | None = None
+        self._reported: CollisionHit | None = None
         self._alert = ""
         self._seed = random.randrange(2 ** 31)
         self._rng = random.Random(self._seed)
@@ -305,7 +311,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         if problem:
             self._outcome = f"not started: {problem}"
             return
-        self._alert, self._auto_note, self._auto_alert = "", "", ""
+        self._alert, self._auto_note, self._auto_alert, self._return_hit = "", "", "", None
         self._task = ctx.spawn(f"base experiment {self.serial}",
                                self._leased(ctx, self.serial, self._run(ctx, self._preview)))
 
@@ -554,7 +560,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         else:
             # * Balanced within this collection run only.
             chooser = Sampler([], self._rng)
-        self._paths_note, self._auto_alert = chooser.summary, ""
+        self._paths_note, self._auto_alert, self._return_hit = chooser.summary, "", None
         resumed = f", resuming after {before}" if before else ""
         ctx.log_info(f"base experiment auto: starting {runs or 'unlimited'} runs{resumed} ({paths.lower()}) on "
                      f"{serial} from {_pose_text(home)}, experiment {name}")
@@ -622,7 +628,9 @@ class BaseExperimentPlugin(HuskyPlugin):
         plan = _return_plan(serial, pose, home)
         hit = await self._path_check.path_hit(ctx.scene.snapshot, serial, plan.path.polyline(), RETURN_CLEARANCE)
         if hit is not None:
-            self._stop_auto(ctx, f"stopped: the way back to the start passes {hit}; move the robot to open space")
+            self._return_hit = hit
+            self._stop_auto(ctx, f"stopped: the way back to the start passes {hit.name(hit.pairs[0][1])}; move the "
+                                 f"robot to open space")
             return False
         self._auto_note = f"auto: driving back to the start ({math.hypot(pose[0] - home[0], pose[1] - home[1]):.1f} m)"
         ctx.log_info(f"base experiment auto: driving back to the start pose {_pose_text(home)}")
@@ -696,7 +704,18 @@ class BaseExperimentPlugin(HuskyPlugin):
     # --- --- --- --- --- UPDATE --- --- --- --- ---
 
     def update(self, ctx: PluginContext) -> None:
-        """Measure the run's tracking error on each new mocap fix; while idle, keep the preview on the robot."""
+        """Measure the run's tracking error on each new mocap fix; while idle, keep the preview on the robot.
+
+        A way back that stopped automation shows in the collisions panel until the next Start.
+        """
+        if self._return_hit is not self._reported:
+            self._reported = self._return_hit
+            collisions: CollisionsContract = ctx.require("collisions")
+            if self._return_hit is not None:
+                label = f"{self._return_hit.robot.rsplit('/', 1)[-1]} way back"
+                collisions.replace(self.name, {label: self._return_hit}, shown=(label,))
+            else:
+                collisions.clear(self.name)
         if self.running:
             self._measure(ctx)
         if self.serial is None or self.running:

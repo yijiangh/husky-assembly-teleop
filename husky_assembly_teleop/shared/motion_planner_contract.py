@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from scaffolding_assembly_core.scene import Scene
 
     from ..config import RobotConfig
+    from ..world.collision_hit import CollisionHit
     from .assembly_planning.process_steps import LoadedProcess, Step
     from .assembly_planning.route_result import GoalCheck, RouteResult
     from .assembly_planning.scene_for import RobotBelief
@@ -62,6 +63,7 @@ class CollisionReport:
         sources: Live id of each other robot -> where its base and joints came from (`scene_for`).
         warnings: Robots and bodies left out of the scene, and why.
         seconds: Time taken.
+        hit: The same collision in scene ids, for the collisions plugin; None if clear.
     """
 
     pairs: tuple[tuple[str, str], ...] = ()
@@ -69,6 +71,7 @@ class CollisionReport:
     sources: dict[str, str] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
     seconds: float = 0.0
+    hit: CollisionHit | None = None
 
 
 class MotionPlannerContract(Protocol):

@@ -273,6 +273,7 @@ def test_the_view_only_paths_command_no_robot():
     """The collisions plugin and the arm planner's path check only read and draw: no command, lease or stop in them."""
     from husky_assembly_teleop.plugins import collisions
     from husky_assembly_teleop.plugins.arm_planner import planner as arm_planner
+    from husky_assembly_teleop.shared.assembly_planning import collision
     commands = {"send_joint_trajectory", "send_joint_move", "send_cartesian_target", "send_target_wrench",
                 "clear_target_wrench", "send_twist", "send_path", "stop_path", "send_multi_arm_trajectory", "hold",
                 "switch", "restart", "request_free_drive", "zero_ft_sensor", "take_lease", "lease_robots", "soft_stop",
@@ -280,7 +281,7 @@ def test_the_view_only_paths_command_no_robot():
     sources = {"collisions": inspect.getsource(collisions),
                "check_path": inspect.getsource(ArmPlannerPlugin.check_path) + inspect.getsource(
                    ArmPlannerPlugin._start_check),
-               "path_hit": inspect.getsource(arm_planner.path_hit) + inspect.getsource(arm_planner.collision_hit)}
+               "path_hit": inspect.getsource(arm_planner.path_hit) + inspect.getsource(collision.collision_hit)}
     for name, source in sources.items():
         tree = ast.parse(textwrap.dedent(source))
         called = {node.func.attr for node in ast.walk(tree)

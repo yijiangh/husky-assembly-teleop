@@ -21,7 +21,7 @@ from scaffolding_assembly_core.scene import Scene
 
 from .process_steps import Step
 from .arm import plan_arm
-from .collision import collisions, in_process_terms, swept_check, world_frame_fk
+from .collision import collision_hit, in_process_terms, swept_check, world_frame_fk
 from .joints import joint_limits, outside_limits
 from .movement import ArmPart, GoalSource, MovementSpec
 from .route_result import RouteResult, line_goal, pose_error
@@ -29,6 +29,7 @@ from .scene_for import PlanningScene
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
+    from ...world.collision_hit import CollisionHit
 
 #: Tries of a search before giving up, each a new random search.
 ATTEMPTS = 3
@@ -71,6 +72,7 @@ class RouteSearch:
         self.planner, self.attempts = "", 0
         self.goal_joints: dict[str, float] | None = None
         self.colliding: list[tuple[str, str]] = []
+        self.hits: list[CollisionHit] = []
         self.warnings = [*planning.warnings, *spec.warnings]
         self.swept = self.ik = None
 
@@ -217,9 +219,8 @@ class RouteSearch:
         if trajectory is None:
             where = f" at waypoint {report['waypoint']}/{report['n_waypoints'] - 1}" if "waypoint" in report else ""
             state = report.get("first_colliding_state")
-            pairs = self.terms(collisions(self.mirror, {name: float(state.robot_configuration[name]) for name in
-                                                        self.names}, full_report=True)) if state is not None else []
-            self.colliding += pairs
+            pairs = self.hit(f"the nearest step{where}", {
+                name: float(state.robot_configuration[name]) for name in self.names}) if state is not None else []
             hit = f", the nearest step collides: {pairs_text(pairs)}" if pairs else ""
             raise Refused(f"{self.planner}: {report.get('reason', 'no path')}{where}{hit}")
         order = [list(trajectory.joint_names).index(name) for name in self.names]
@@ -240,9 +241,12 @@ class RouteSearch:
         if self.swept.error:
             return f"the swept check failed: {self.swept.error}"
         segment, pairs = self.swept.bad_segments[0]
-        pairs = self.terms(pairs)
-        self.colliding += pairs
-        return f"segment {segment} of {len(path) - 1} sweeps through {pairs_text(pairs)}"
+        found = self.hit(f"segment {segment} of {len(path) - 1}, try {self.attempts}", self.swept.colliding_joints)
+        if not found:
+            # ? The full check missed what the search check hit: name the swept check's pairs.
+            found = self.terms(pairs)
+            self.colliding += found
+        return f"segment {segment} of {len(path) - 1} sweeps through {pairs_text(found)}"
 
     def refuse_endpoints(self, goal: Mapping[str, float]) -> None:
         """Stop where a search found its start or goal in collision, naming which one and what it hits.
@@ -254,11 +258,34 @@ class RouteSearch:
             Refused: Always; "the goal collides: …", else "the start collides: …", else too close for the search.
         """
         for where, joints in (("goal", goal), ("start", None)):
-            pairs = self.terms(collisions(self.mirror, joints, full_report=True))
+            pairs = self.hit(where, joints)
             if pairs:
-                self.colliding += pairs
                 raise Refused(f"the {where} collides: {pairs_text(pairs)}")
         raise Refused("the start or the goal is too close to something for the search's checks")
+
+    def hit(self, where: str, joints: Mapping[str, float] | None, scene: Scene | None = None) -> list[tuple[str, str]]:
+        """Keep what a configuration collides with as a hit, and its pairs in process ids, from the synced mirror.
+
+        ! Leaves the mirror at that configuration (`collision_hit`).
+
+        Args:
+            where: Which configuration, e.g. "goal".
+            joints: The planned joints changed from the synced state, by name: only pairs with a moving side count;
+                None: the synced state, checked in full.
+            scene: The scene the mirror is synced to; None: the search scene.
+
+        Returns:
+            list[tuple[str, str]]: The pairs, each side in process ids where it maps (also kept in `colliding`);
+                empty if clear.
+        """
+        found = collision_hit(self.mirror, scene or self.scene, where, joints,
+                              moved=self.names if joints is not None else None)
+        if found is None:
+            return []
+        self.hits.append(found)
+        pairs = self.terms(found.pairs)
+        self.colliding += pairs
+        return pairs
 
     def next_attempt(self) -> None:
         """Count one more try, unless planning was cancelled; the mirror synced for it.
@@ -325,7 +352,7 @@ class RouteSearch:
         """
         return RouteResult(result, self.spec.routine, self.planner, self.attempts, 0.0, waypoints, end_error or {},
                            joint_error, self.goal_joints, tuple(dict.fromkeys(self.colliding)), self.swept, self.ik,
-                           tuple(self.warnings))
+                           tuple(self.warnings), tuple(self.hits))
 
     def terms(self, pairs: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
         """Colliding pairs in process ids, where mapped.

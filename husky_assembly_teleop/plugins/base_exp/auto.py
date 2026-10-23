@@ -28,6 +28,7 @@ from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.scene import Scene
 
 from ...world.base_collision import BaseCollisionWorld
+from ...world.collision_hit import CollisionHit
 
 #: A path must keep this far from everything, metres: tracking error plus a safety margin.
 PATH_CLEARANCE = 0.3
@@ -203,7 +204,7 @@ class PathCollisionCheck:
         self._world = BaseCollisionWorld()
 
     async def path_hit(self, snapshot: Scene, serial: str, poses: np.ndarray,
-                       margin: float = PATH_CLEARANCE) -> str | None:
+                       margin: float = PATH_CLEARANCE) -> CollisionHit | None:
         """What the robot would come within `margin` of along `poses` (n x 3), or None if the path is clear."""
         return await self._run(self._path_hit, snapshot, serial, check_poses(poses), margin)
 
@@ -216,7 +217,7 @@ class PathCollisionCheck:
         """Run `function` on the worker and wait for it."""
         return await asyncio.get_running_loop().run_in_executor(self._executor, function, *args)
 
-    def _path_hit(self, snapshot: Scene, serial: str, poses: np.ndarray, margin: float) -> str | None:
-        """Worker: sync the world to the snapshot and name the first thing the robot hits along the poses."""
+    def _path_hit(self, snapshot: Scene, serial: str, poses: np.ndarray, margin: float) -> CollisionHit | None:
+        """Worker: sync the world to the snapshot and say what the robot comes too close to first along the poses."""
         self._world.sync(snapshot)
         return self._world.path_hit(robot_id(serial), poses, margin)

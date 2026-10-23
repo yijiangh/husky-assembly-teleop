@@ -1,7 +1,7 @@
 """
 The arm planner: a collision-free path for one arm to a joint target, sent as one trajectory.
 
-  planner.py         the joint-space search, its compas_fab planning worlds (worker thread) and the timed path
+  planner.py         the joint-space search on a compas_fab mirror (worker thread), the timed path and path checks
   planner_plugin.py  `arm_planner`: the headless planner (`ArmPlannerContract`)
   panel_plugin.py    `arm_planner_panel`: target sliders and arm choice on `PlannerPanel`, through that contract
 """

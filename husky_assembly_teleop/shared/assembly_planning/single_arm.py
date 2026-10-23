@@ -54,6 +54,7 @@ class LinearPath:
         reason: Why there is no path; empty otherwise.
         waypoint: The step that failed, from 1; 0 if none did.
         colliding: The pair that blocked the step, as scene ids, if a collision did.
+        colliding_joints: The arm's joints at that step, by name, if a collision blocked it.
     """
 
     joint_names: tuple[str, ...]
@@ -62,6 +63,7 @@ class LinearPath:
     reason: str = ""
     waypoint: int = 0
     colliding: tuple[str, str] | None = None
+    colliding_joints: dict[str, float] | None = None
 
 
 def interpolate_poses(start: Pose, goal: Pose, max_step_distance: float = STEP_DISTANCE,
@@ -129,10 +131,11 @@ def plan_linear(mirror: CompasFabMirror, robot: RobotObject, arm: str, goal: Pos
                                                    f"{MAX_JOINT_STEP:.3f})", index)
         free = next((q for q in near if check(q) is None), None)
         if free is None:
-            pairs = collisions(mirror, dict(zip(names, near[0].tolist())), full_report=True)
+            joints = dict(zip(names, near[0].tolist()))
+            pairs = collisions(mirror, joints, full_report=True)
             pair = pairs[0] if pairs else None
             hit = f": {pair[0]} with {pair[1]}" if pair else ""
-            return LinearPath(names, None, "ssik", f"{where}: collides{hit}", index, pair)
+            return LinearPath(names, None, "ssik", f"{where}: collides{hit}", index, pair, joints)
         points.append(free)
     return LinearPath(names, np.array(points), "ssik")
 

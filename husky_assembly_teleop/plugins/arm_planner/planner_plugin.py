@@ -21,6 +21,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.mocap_state import pose_lost
 from ...shared.arm_planner_contract import ArmPlanRequest
+from ...shared.assembly_planning.mirrors import MirrorPool
 from ...world.collision_hit import CollisionHit
 from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ...shared.planner.plan import Plan
@@ -28,7 +29,7 @@ from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from scaffolding_assembly_core.ids import robot_id
-from .planner import ArmPath, ArmPlanningWorld, arm_joint_names, path_hit, plan_arm
+from .planner import ArmPath, arm_joint_names, path_hit, plan_arm
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far; the panel also
 #: refuses a target this far from the planned goal.
@@ -79,10 +80,10 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         #: the base then; `stale_reason` compares the base.
         self._start_base: tuple[ArmPath, tuple[float, float, float], bool] | None = None
         # ! Worker thread only (sync, search, close).
-        self._world = ArmPlanningWorld()
+        self._world = MirrorPool()
 
     def setup(self, ctx: PluginContext) -> None:
-        """Let the planning world log through the plugin."""
+        """Let the mirrors log through the plugin."""
         super().setup(ctx)
         self._world.log = ctx.log_info  # ? the ROS logger is safe to call from the worker
 
@@ -108,7 +109,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
                 return PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0)
-            return plan_arm(self._world, self._world.sync(snapshot, serial), arm, goal, abort)
+            return plan_arm(self._world.sync(snapshot, serial), snapshot, arm, goal, abort)
 
         def accepted(result: PlanResult) -> tuple[str, bool]:
             self._start_base = (result.path, base, tracked)
@@ -139,7 +140,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
                 raise ValueError(f"{serial} can't be checked: {'; '.join(problems)}")
-            result = path_hit(self._world, self._world.sync(snapshot, serial), arm, waypoints)
+            result = path_hit(self._world.sync(snapshot, serial), snapshot, arm, waypoints)
             self._loaded.add(serial)
             return result
 

@@ -1,11 +1,11 @@
 """
 Lists what collision checks hit, per source, and draws the ticked hits as they were checked.
 
-Sources report through `CollisionsContract` (calibration takes, a failed arm plan); clearance trips of every plugin
-(`ctx.clearance_trips`) come under "clearance", the newest ticked. A ticked hit shows both sides of
-every blocking pair: what moved solid red, what it moved into see-through cyan, each contact as two dots, the deepest
-with its depth. The focused hit also shows every robot as checked, faint. "As checked" draws meshes as the check
-tested them.
+Sources report through `CollisionsContract` (calibration takes, a failed arm or base plan, the motion planner's
+last answer, base_exp's blocked way back); clearance trips of every plugin (`ctx.clearance_trips`) come under
+"clearance", the newest ticked. A ticked hit shows both sides of every blocking pair: what moved solid red, what it
+moved into see-through cyan, each contact as two dots, the deepest with its depth. The focused hit also shows every
+robot as checked, faint. "As checked" draws meshes as the check tested them.
 
 ? viser has no order-independent transparency: see-through shapes of different colours pop in front of each other as
   the view turns. So only one strong colour is see-through (cyan), drawn without depth writes; red is solid.

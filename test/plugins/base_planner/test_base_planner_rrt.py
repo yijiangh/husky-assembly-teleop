@@ -76,10 +76,12 @@ def test_free_line_is_direct(world, robots, alice):
 
 
 def test_target_inside_a_robot_is_refused_with_a_reason(world, robots, alice):
-    """A target in collision is reported as such, without searching."""
+    """A target in collision is reported as such, without searching, with its hit: Alice at the target in its scene."""
     world.sync(_snapshot(robots))
     result = plan(world, alice, (0.0, 0.0, 0.0), (2.0, 0.2, 0.0), threading.Event())
     assert result.path is None and "target" in result.reason
+    assert (result.hit.where, result.hit.robot, result.hit.pairs[0][0]) == ("target", alice, alice)
+    np.testing.assert_allclose(result.hit.scene.robots[alice].base.position[:2], (2.0, 0.2))
 
 
 @pytest.mark.slow

@@ -8,6 +8,7 @@ The last three sit in a collapsed Advanced folder, so the panel shows only targe
 - The floor shows the plan as the follower will cut it, the sent path, and the robot's trail until the next Commit.
 - A task of the experiment's standard set (`tasks`) puts its virtual obstacles into the scene, under this panel's
   name; Load sets the target to its start (to drive there) or its target.
+- A plan refused for a start or target in collision shows the hit in the collisions panel until a newer plan.
 ! Drive the planner through its public API (set target, plan, cancel, results) from the panel wherever you can,
   so those paths stay ready for other users such as an executor; only debug drawing and internal state reach inside.
 """
@@ -25,6 +26,7 @@ from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.base_planner_contract import BasePlanRequest
+from ...shared.collisions_contract import CollisionsContract
 from ...shared.planner.planner_panel import PLAN_TAB, PlannerPanel
 from ...shared.planner.plan import Plan
 from ...ui.base_markers import Markers
@@ -55,11 +57,13 @@ class BasePlannerPanel(PlannerPanel):
     planner = "base_planner"
     tab_path = (PLAN_TAB, "Base")
     icon = viser.Icon.CAR
-    requires = ("base_planner", "process")
+    requires = ("base_planner", "process", "collisions")
 
     def __init__(self):
         """Start with no robot chosen and no target."""
         super().__init__()
+        #: The plan whose collision, if any, the collisions panel shows.
+        self._reported: Plan | None = None
         # The settings' widgets; the planner keeps its own algorithms for planning.
         self._algorithms: list[Algorithm] = [algorithm() for algorithm in ALGORITHMS]
         # The plan's path as the follower will cut it, for drawing: (plan id, its cut).
@@ -74,6 +78,7 @@ class BasePlannerPanel(PlannerPanel):
         # * The planner itself, only for what this panel alone shows: the debug record, the sent path and its run,
         #   and the PyBullet window. Everything else goes through `self._api`.
         self._planner = ctx.require(self.planner)
+        self._collisions: CollisionsContract = ctx.require("collisions")
         serials = [robot.serial for robot in ctx.config.robots]
         if not serials:
             self._set_up_idle(ctx, "no robots configured: nothing to plan for")
@@ -262,6 +267,23 @@ class BasePlannerPanel(PlannerPanel):
         x, y, yaw = (float(v) for v in pose)
         z = float(ctx.kinematics.base_pose(serial).position[2])
         ghost.show(Pose((x, y, z), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))), ctx.kinematics.joints(serial))
+
+    # --- --- --- --- --- TICK --- --- --- --- ---
+
+    def update(self, ctx: PluginContext) -> None:
+        """Take the planner's news and advance playback; show a refused plan's collision, or take it away."""
+        super().update(ctx)
+        if self.idle:
+            return
+        plan = self._api.plan
+        if plan is not self._reported:
+            # * A plan refused for a collision shows it at once; any newer plan takes it away.
+            self._reported = plan
+            if plan is not None and plan.hit is not None:
+                label = f"{plan.request.serial} {plan.hit.where}"
+                self._collisions.replace(self.name, {label: plan.hit}, shown=(label,))
+            else:
+                self._collisions.clear(self.name)
 
     # --- --- --- --- --- DRAW --- --- --- --- ---
 

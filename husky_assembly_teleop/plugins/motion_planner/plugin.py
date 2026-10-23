@@ -4,7 +4,8 @@ Plan process movements for other plugins: a request in (`MotionPlanRequest`), an
 Other plugins declare `requires = ("motion_planner",)` and type it as `MotionPlannerContract`
 (`shared/motion_planner_contract.py`). Every request runs on one worker thread (`work.py`), which owns a compas_fab
 mirror per robot (`MirrorPool`, made on its first request: loading the models takes up to a minute). The panel shows
-what runs and the last answer, cancels everything, and opens PyBullet's own window on a robot's planning world.
+what runs and the last answer, cancels everything, and opens PyBullet's own window on a robot's planning world; the
+collisions panel shows what the last answer collided with.
 
 ! EXPERIMENTAL: requests and answers may still change.
 ! The worker is the only thread that touches the mirrors, the PyBullet window's included.
@@ -16,7 +17,7 @@ import asyncio
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from html import escape
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import viser
 from scaffolding_assembly_core.ids import robot_id
@@ -32,6 +33,10 @@ from ...shared.planner.planner_search import with_guesses
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, chip_line, values
 from .work import run_collisions, run_ik, run_plan
+
+if TYPE_CHECKING:
+    from ...shared.collisions_contract import CollisionsContract
+    from ...world.collision_hit import CollisionHit
 
 #: The work a request runs on the worker: (pool, request, abort, log) -> its answer.
 Work = Callable[[MirrorPool, MotionPlanRequest, threading.Event, Callable[[str], None]], Any]
@@ -64,6 +69,16 @@ def describe(answer: RouteResult | GoalCheck | CollisionReport) -> tuple[str, bo
     return (f"collides: {pairs}" if pairs else "clear"), bool(pairs)
 
 
+def hits_of(label: str, answer: RouteResult | GoalCheck | CollisionReport) -> dict[str, CollisionHit]:
+    """An answer's collision hits by label for the collisions panel, e.g. "plan B20_J_transfer: goal"."""
+    found = answer.hits if isinstance(answer, (RouteResult, GoalCheck)) else (answer.hit,) if answer.hit else ()
+    hits = {}
+    for hit in found:
+        name = f"{label}: {hit.where}"
+        hits[name if name not in hits else f"{name} ({len(hits) + 1})"] = hit
+    return hits
+
+
 @register
 class MotionPlannerPlugin(HuskyPlugin):
     """Plans, solves goals and checks collisions for other plugins on one worker thread."""
@@ -72,6 +87,7 @@ class MotionPlannerPlugin(HuskyPlugin):
     experimental = True
     tab_path = (PLAN_TAB, "Motion")
     icon = viser.Icon.ROUTE
+    requires = ("collisions",)
 
     def __init__(self):
         """Start idle, with no mirror made."""
@@ -85,6 +101,9 @@ class MotionPlannerPlugin(HuskyPlugin):
         self._worlds: tuple[str, ...] = ()
         # The last answer's line, and whether it failed.
         self._last, self._last_failed = "", False
+        # The last answer's hits by label, and the ones the collisions panel shows.
+        self._hits: dict[str, CollisionHit] = {}
+        self._reported: dict[str, CollisionHit] | None = None
         # Gets the planners' lines; the ROS logger is safe to call from the worker.
         self._log: Callable[[str], None] = print
         # The robot whose world the PyBullet window shows when it opens.
@@ -150,13 +169,13 @@ class MotionPlannerPlugin(HuskyPlugin):
             self._worlds = self._pool.serials
 
     def _finished(self, label: str, done: asyncio.Future) -> None:
-        """Log how a request ended and keep its line for the panel. Main thread."""
-        error = done.exception()
+        """Log how a request ended; keep its line for the panel and its hits for the collisions panel. Main thread."""
+        error, hits = done.exception(), {}
         if error is not None:
             line, failed = f"raised {error!r}", True  # ? a bug: the work answers its failures
         else:
-            line, failed = describe(done.result())
-        self._last, self._last_failed = f"{label}: {line}", failed
+            (line, failed), hits = describe(done.result()), hits_of(label, done.result())
+        self._last, self._last_failed, self._hits = f"{label}: {line}", failed, hits
         self._log(self._last)
 
     # --- --- --- --- --- HOOKS --- --- --- --- ---
@@ -189,8 +208,16 @@ class MotionPlannerPlugin(HuskyPlugin):
             self._worlds = self._pool.serials  # ? opening the window can load a robot's world
 
     def update(self, ctx: PluginContext) -> None:
-        """Forget finished requests."""
+        """Forget finished requests; show the last answer's collisions, the first ticked, or take older ones away."""
         self._jobs = [entry for entry in self._jobs if not entry[0].done()]
+        hits = self._hits
+        if hits is not self._reported:
+            self._reported = hits
+            collisions: CollisionsContract = ctx.require("collisions")
+            if hits:
+                collisions.replace(self.name, hits, shown=list(hits)[:1])
+            else:
+                collisions.clear(self.name)
 
     def draw(self, ctx: PluginContext) -> None:
         """Show what runs, how many wait, the robots with a loaded world, and the last answer."""
