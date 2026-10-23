@@ -1,16 +1,16 @@
 # Fake-lab test manual: the core port on three simulated robots
 
 Tests the new monitor (`yh/core-port`: Jakob's newer code, merged on 2026-10-21, plus the Rhino obstacles box of
-2026-10-22, and since 2026-10-23 the base planner in the middle column) against three simulated robots on this laptop.
+2026-10-22, and since 2026-10-23 every panel in a tab of the side panel) against three simulated robots on this laptop.
 The robots come from Jakob's simulation (`launch/sim.launch.py robot:=all`, [simulation_manual.md](simulation_manual.md)),
 on crl-husky `jg/ros2-next`: a simulated base and the UR driver's fake hardware for the arms, parked, with a fake Motive
 that adds Motive's measured latency, jitter and marker errors, and the mocap relay that publishes each base as on the
 lab PC. Everything talks over Zenoh, as the lab does with the new monitor, through a Zenoh router of the fake lab's own.
 There is no robot, no real Motive and no tool. Plan about an hour.
 
-Every step was run on 2026-10-22, on Zenoh, with this code, and gave the results it lists. On 2026-10-23 the base
-planner's panel moved from the side panel's **Plan** tab to the middle column, above motion_planner; its buttons
-and results are the same. Also on 2026-10-23 the fake lab moved to Jakob's simulation: the robots start on their park
+Every step was run on 2026-10-22, on Zenoh, with this code, and gave the results it lists. On 2026-10-23 the panels
+moved into tabs of the side panel (**Assembly** › Run, Exec, Steps; **Plan** › Base, Motion, Arm); their buttons and
+results are the same. Also on 2026-10-23 the fake lab moved to Jakob's simulation: the robots start on their park
 row instead of 0.5 m behind it, with mocap. Sections 0–2 were run again then; the base plans of 4.1, 4.2 and 9.2 were
 not, and say so.
 
@@ -25,7 +25,7 @@ bar's steps.
 | **process.** Loads a process folder (Rhino's new export) and shows a movement in 3D. | Jakob | 3, 4 |
 | **The Rhino obstacles box (new).** "Rhino obstacles collide" in the process panel, off at start. While it is off, the process's own obstacles from Rhino (the cabinet `env39`) are drawn see-through and left out of every collision check: base and arm planners, clearances, assembly planning. Tick it to count them. A plan made before a change goes stale. | **Ours** | 3, 4, 5 |
 | **obstacles.** The lab's measured obstacles, from `data/lab/main.json`: the cabinet, tables, tripods, trusses and the border walls. They always count. | Jakob | 2, 4 |
-| **The planners.** **base_planner_panel**, in the middle column between assembly_run and motion_planner, plans a base path and sends it to the robot's follower, with a clearance watch while it drives. In the side panel's **Plan** tab, **Arm** plans one arm to a joint target, and **Collisions** lists what blocked a plan. | Jakob | 4, 6, 9 |
+| **The planners.** **base_planner_panel**, in **Plan** › **Base**, plans a base path and sends it to the robot's follower, with a clearance watch while it drives. **Plan** › **Arm** plans one arm to a joint target, and the **Collisions** tab lists what blocked a plan. | Jakob | 4, 6, 9 |
 | **The simulated robots.** Jakob's simulation (`launch/sim.launch.py`): crl-husky's simulator, a fake Motive and the mocap relay, with the `SIM` chips. The fake-lab scripts around it are ours. | Jakob | 1, 2 |
 | **assembly_run (ours, M4).** The run record `runs/<date>_<time>/`: which actions are done, where each robot was left, an event log. Mark done, Reopen, New run, and continue after a restart. The run's settings, such as the transfer workaround. | **Ours** | 4–6, 11 |
 | **motion_planner (ours, M3–M4).** Plans a step's motion at the live base through tamp, solves goals by exact IK (ssik), checks collisions. One worker, which the other plugins ask. | **Ours** | 5–7, 9 |
@@ -45,9 +45,11 @@ bar's steps.
 | `progress.json` and its Reset. | **assembly_run**: the run folders, with Mark done, Reopen and New run. An old run is never deleted. |
 | Check goal, Plan and Exec for the current movement. | **assembly_steps**: the same buttons for the run's current step, plus Play, and Prev / Next. |
 | The confirmation before each motion or tool action. | **movement_exec**: one prompt at a time, with Confirm and Cancel. The phone page has the same prompt. |
-| Jog, stow and gripper buttons. | The side panel on the right: **Control** has a tab per robot (Base, and Arm or Left / Right); **Plan** has the arm planner and Collisions. The base planner is **base_planner_panel** in the middle column. |
+| Jog, stow and gripper buttons. | The side panel on the right: **Control** has a tab per robot (Base, and Arm or Left / Right); **Plan** has the base planner (Base), motion_planner (Motion) and the arm planner (Arm); **Collisions** has a tab of its own. |
 
-Each panel in the middle column belongs to one plugin, and its title is the plugin's name.
+Each tab of the side panel on the right belongs to one plugin and is named after it; the assembly's three share the
+**Assembly** tab (assembly_run is **Assembly** › **Run**, movement_exec **Exec**, assembly_steps **Steps**), the
+planners the **Plan** tab. Health floats at the top left.
 
 **Words used below:**
 - **Milestones M2–M10.** These are steps of the port plan, not the tool's M1/M2 motors (the grasp prompt also mentions
@@ -159,14 +161,15 @@ its calibrations (every robot on `crl-husky default`), and once the robots are u
 - **3D view:**
   - three robots side by side on their park row, y = 1.35 m (Alice at x = 0.3, Belle at 1.7, Cindy at 3.1), facing
     +y, arms at their stow pose.
-  - the measured lab (Jakob's **obstacles** panel, at the bottom of the middle column): the cabinet behind the robots,
+  - the measured lab (Jakob's **obstacles** plugin, its panel minimized at the right edge): the cabinet behind the robots,
     tables, tall grey tripod cylinders, and an orange border around the floor.
 - **health:** every arm shows a green `arm` chip and a `SIM` chip. Every base shows a `SIM` chip, a green `ctrl` chip
   and a `mocap` chip: green for Alice and Cindy, amber for Belle, whose fake Motive body reports the 1.2 mm marker
   error measured in the lab (hover it).
-- **Middle column, top to bottom:** health, process, assembly_run, base_planner_panel, motion_planner,
-  movement_exec, assembly_steps, obstacles: the order this manual uses them in.
-- **Side panel on the right:** the tabs **Control** and **Plan**. Control has one tab per robot.
+- **Top left:** health, with Stop all.
+- **Side panel on the right:** the tabs **Process**, **Assembly** (Run, Exec, Steps: the order this manual uses them
+  in), **Plan** (Base, Motion, Arm), **Control** (one tab per robot) and **Collisions**; **Obstacles** sits minimized
+  at the right edge.
 
 **Expected in the simulation:**
 - `robotiq` and `scaffolding_v3` stay red: no tool drivers.
@@ -231,7 +234,7 @@ checked. `monitor.sh` loads them; tell me if you see it.
 > Not run again since the robots start on the park row: Belle now starts at her park pose, so step 4 may name the
 > start rather than the target, and the plan of step 5 is about 0 m long.
 
-1. Go to **base_planner_panel** in the middle column, between assembly_run and motion_planner.
+1. Open **Plan** › **Base** (base_planner_panel) in the side panel.
 2. Pick Robot **a200-0805**.
 3. Click Load **Park**.
    - **Expect:** `target +1.700 +1.350 +90.0°`.

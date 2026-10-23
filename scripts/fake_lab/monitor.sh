@@ -11,9 +11,6 @@
 #   the monitor with pytest imported. Side effect: PyBullet's own messages print in this terminal.
 # * The measured lab obstacles (`obstacles`, data/lab/main.json) are loaded: the process's own Rhino obstacles count
 #   in collision checks only while the process panel's "Rhino obstacles collide" box is ticked (off at start).
-# * The plugins' folders follow the order of `plugins` (each after the plugins it needs): base_planner_panel comes
-#   after assembly_run and before assembly_steps, so the main column reads as the manual runs: process, run, base,
-#   then the steps.
 
 set -e
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
