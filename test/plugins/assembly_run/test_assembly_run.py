@@ -38,15 +38,17 @@ def _no_git(monkeypatch):
 
 
 class FakeProcess:
-    """The process plugin as assembly_run sees it: a selection, the transfer workaround, and the steps others selected.
+    """The process plugin as assembly_run sees it: a selection, the transfer workaround, the steps others selected.
 
-    `loaded` is the process with its steps, for the tests' step indices; the selection serves its `Process`.
+    `loaded` is the process with its steps, for the tests' step indices; the selection serves its `Process`. `index` is
+    the operator's pick in the panel; `marks` the actions' marks last given.
     """
 
     def __init__(self, process):
         """Select the first movement of `process`; the workaround on, as at start."""
         self.loaded, self.index, self.selected = loaded_process(process), 0, []
         self.transfer_as_free = True
+        self.marks: dict[str, str] = {}
 
     @property
     def selection(self) -> Selection:
@@ -58,6 +60,13 @@ class FakeProcess:
         """Note the selection."""
         self.selected.append(index)
         self.index = index
+
+    def request_marks(self, marks) -> None:
+        """Keep the marks."""
+        self.marks = dict(marks)
+
+    def request_carry(self, carry) -> None:
+        """Nothing to draw."""
 
 
 class Lab:
@@ -119,14 +128,6 @@ async def opened(lab: Lab) -> tuple[AssemblyRunPlugin, FakeProcess]:
     plugin.update(lab.ctx)
     await settle(plugin)
     return plugin, process
-
-
-async def answered(plugin: AssemblyRunPlugin, confirmed: bool) -> None:
-    """Wait for the prompt, answer it, and let it finish."""
-    while not plugin._prompt:
-        await asyncio.sleep(0)
-    plugin.answer(confirmed)
-    await settle(plugin)
 
 
 def first_index(process: FakeProcess, action_id: str) -> int:
@@ -223,18 +224,27 @@ def test_mark_done_live_starts_the_run_and_moves_on(tmp_path):
     assert [event["event"] for event in read_events(folder)] == ["new_run", "mark_done"]
 
 
-def test_mark_done_not_live_asks_first(tmp_path):
-    """Cindy not live: Cancel leaves everything as it was; Confirm marks with the export's end, assumed."""
+def test_mark_done_not_live_needs_a_second_click(tmp_path):
+    """Cindy not live: one click only says so; 11 s later a click only asks again; a second within 10 s marks it.
+
+    Marked with the export's end, assumed.
+    """
     lab = Lab(tmp_path, live_from=None)
 
     async def scenario():
         plugin, _process = await opened(lab)
         plugin.request_mark_done()
-        await answered(plugin, False)
+        await settle(plugin)
         assert runs(lab) == [] and plugin.view.statuses["B1_J_joint"] == PENDING
+        assert "click Mark done again within 10 s" in plugin._message and plugin.again == "mark B1_J_joint"
+        lab.ctx.t += 11.0
+        assert plugin.again == ""
         plugin.request_mark_done()
-        assert "not live" in plugin._prompt
-        await answered(plugin, True)
+        await settle(plugin)
+        assert runs(lab) == [] and plugin.again == "mark B1_J_joint"
+        lab.ctx.t += 9.0
+        plugin.request_mark_done()
+        await settle(plugin)
         return plugin
 
     plugin = asyncio.run(scenario())
@@ -264,8 +274,11 @@ def test_reopen_puts_the_action_back(tmp_path):
     assert read_events(run.folder)[-1]["event"] == "reopen"
 
 
-def test_new_run_after_confirm_keeps_the_old_one(tmp_path):
-    """New run, confirmed: a second folder with every action pending; the first run's files unchanged."""
+def test_new_run_on_a_second_click_keeps_the_old_one(tmp_path):
+    """New run: one click, 11 s, one more only asks; a double click doesn't count; a later one starts a new folder.
+
+    Every action pending in it; the first run's files unchanged.
+    """
     lab = Lab(tmp_path)
 
     async def scenario():
@@ -275,7 +288,18 @@ def test_new_run_after_confirm_keeps_the_old_one(tmp_path):
         first, = runs(lab)
         before = (first / "progress.json").read_bytes()
         plugin.request_new_run()
-        await answered(plugin, True)
+        lab.ctx.t += 11.0
+        plugin.update(lab.ctx)
+        assert "not confirmed" in plugin._message
+        plugin.request_new_run()
+        await settle(plugin)
+        assert len(runs(lab)) == 1 and "click New run again within 10 s" in plugin._message
+        plugin.request_new_run()  # * a double click: too soon to count
+        await settle(plugin)
+        assert len(runs(lab)) == 1 and "a double click" in plugin._message and plugin.again == "new run"
+        lab.ctx.t += 1.0
+        plugin.request_new_run()
+        await settle(plugin)
         assert (first / "progress.json").read_bytes() == before
         return plugin
 
@@ -382,30 +406,182 @@ def test_record_writes_an_event_and_a_movement_file(tmp_path):
     assert json.loads((plugin.view.folder / events[2]["file"]).read_text())["waypoints"] == 3
 
 
-def test_the_panel_shows_the_run_and_its_buttons_ask_the_plugin(tmp_path):
-    """Rows show each action's robot and status, coloured; a row click, Mark done and a setting reach the plugin."""
+def test_the_panel_and_the_process_rows_show_the_run_and_its_buttons_ask_the_plugin(tmp_path):
+    """Mark done, Reopen, New run and a setting reach the plugin; each action's mark goes to the process panel's rows.
+
+    Mark done and New run say on their button when they wait for a second click.
+    """
     lab = Lab(tmp_path)
 
     async def scenario():
-        plugin, _process = await opened(lab)
+        plugin, process = await opened(lab)
         plugin._panel = RunPanel(lab.ctx, plugin)
         gui = lab.ctx.gui
-        rows, groups = gui.of_kind("button"), gui.of_kind("button_group")
-        groups[1].callback("Mark done")
+        mark, reopen = gui.of_kind("button")
+        run, = gui.of_kind("button_group")
+        mark.callback()
         await settle(plugin)
+        plugin.update(lab.ctx)
+        assert set(process.marks) == set(process.loaded.process.schedule)
+        assert [process.marks[action] for action in ("B1_J_joint", "B1_H_hold")] == ["done", "pending"]
+        assert plugin.view.current[0] == "B1_H_hold"
+        run.callback("New run")
         plugin.draw(lab.ctx)
-        assert [(row.label, row.color) for row in rows[:3]] == [
-            ("1. B1_J_joint · cindy · done", "green"), ("2. B1_H_hold · alice · pending", "blue"),
-            ("3. B1_R_release · cindy · pending", "gray")]
-        assert rows[5].label == "·" and "cindy     live now" in gui.widgets[-1].content
+        assert run.options[2] == "New run: click again" and mark.label == "B1_H_hold done"
+        assert "cindy     live now" in gui.widgets[-1].content
         assert plugin._panel._status.content.count('class="chip-line"') == 1
-        rows[2].callback()
-        assert plugin.view.current[0] == "B1_R_release"
+        reopen.callback()
+        plugin.draw(lab.ctx)
+        assert run.options[2] == "New run" and "B1_H_hold" in plugin._message
         gui.of_kind("checkbox")[0].callback(True)
         await settle(plugin)
         assert plugin.view.settings.spiral
 
     asyncio.run(scenario())
+
+
+def test_an_assumed_mark_shows_in_the_process_rows(tmp_path):
+    """Marked with Cindy not live: the action's mark is "assumed"; the button asked for its second click before."""
+    lab = Lab(tmp_path, live_from=None)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        plugin._panel = RunPanel(lab.ctx, plugin)
+        mark, _reopen = lab.ctx.gui.of_kind("button")
+        mark.callback()
+        plugin.draw(lab.ctx)
+        assert mark.label == "Click again"
+        lab.ctx.t += 1.0
+        mark.callback()
+        await settle(plugin)
+        plugin.update(lab.ctx)
+        plugin.draw(lab.ctx)
+        assert mark.label == f"{plugin.view.current[0]} done" and process.marks["B1_J_joint"] == "assumed"
+
+    asyncio.run(scenario())
+
+
+def test_the_run_follows_a_movement_picked_in_the_process_panel(tmp_path):
+    """A pick in the process panel becomes the run's current movement, saved; the run selects nothing itself."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        plugin.request_settings(spiral=True)
+        await settle(plugin)
+        selected = list(process.selected)
+        process.index = 4
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        # * Written once the picking stops, not at every pick.
+        assert read_run(plugin.view.folder).progress.current != plugin.view.current
+        lab.ctx.t += 2.0
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        return plugin, process, selected
+
+    plugin, process, selected = asyncio.run(scenario())
+    step = process.loaded.steps[4]
+    assert plugin.view.current == (step.action.id, step.movement_index) and process.selected == selected
+    assert read_run(plugin.view.folder).progress.current == plugin.view.current
+
+
+def test_a_pick_in_the_process_panel_drops_a_waiting_mark(tmp_path):
+    """Mark done waits for its second click; another action picked: it waits no more, so the next click only asks."""
+    lab = Lab(tmp_path, live_from=None)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        plugin.request_mark_done()
+        assert plugin.again == "mark B1_J_joint"
+        process.index = first_index(process, "B1_R_release")
+        plugin.update(lab.ctx)
+        assert plugin.again == "" and plugin.view.current[0] == "B1_R_release"
+        lab.ctx.t += 1.0
+        plugin.request_mark_done()
+        await settle(plugin)
+        return plugin
+
+    plugin = asyncio.run(scenario())
+    assert runs(lab) == [] and plugin.again == "mark B1_R_release"
+    assert set(plugin.view.statuses.values()) == {PENDING}
+
+
+def test_the_runs_own_selection_is_not_taken_for_a_pick(tmp_path):
+    """A movement the panel doesn't list selects another there: the run keeps the movement it made current."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        listed = first_index(process, "B1_H_hold")
+        process.request_select = lambda _index: setattr(process, "index", listed)
+        plugin.request_set_current("B1_H_hold", 1)
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        return plugin
+
+    assert asyncio.run(scenario()).view.current == ("B1_H_hold", 1)
+
+
+def test_a_pick_made_while_a_step_has_a_robots_lease_is_never_followed(tmp_path):
+    """A pick while movement_exec has a robot's lease only shows that movement: the run stays on its step, then too.
+
+    When the step ends without moving on (failed, cancelled, a dry run), the panel goes back to the run's movement, and
+    that is not taken for a pick. Once the lease is given back, the next pick is followed again.
+    """
+    lab = Lab(tmp_path, alice=True)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        lab.moving(ALICE, False)
+        current = plugin.view.current
+        lease = lab.lease_to_exec("a200-0804")
+        process.index = 4
+        plugin.update(lab.ctx)
+        assert plugin.view.current == current
+        lease.release()
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        plugin.update(lab.ctx)
+        assert plugin.view.current == current and process.index == process.loaded.index_of(*current)
+        process.index = 5
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        return plugin, process
+
+    plugin, process = asyncio.run(scenario())
+    step = process.loaded.steps[5]
+    assert plugin.view.current == (step.action.id, step.movement_index)
+
+
+@pytest.mark.parametrize("run_first", [True, False])
+def test_after_a_step_that_moves_on_the_panel_shows_the_runs_next_step(tmp_path, run_first):
+    """A pick during a step, then the step done: the run moves to its next step and the panel shows it.
+
+    Either order: the run sees the lease given back before or after the step panel moves it on (`_executed`).
+    """
+    lab = Lab(tmp_path, alice=True)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        lab.moving(ALICE, False)
+        action, movement = plugin.view.current
+        following = (action, 2 if movement != 2 else 1)
+        lease = lab.lease_to_exec("a200-0804")
+        plugin.update(lab.ctx)
+        process.index = first_index(process, "B1_R_release")
+        plugin.update(lab.ctx)
+        lease.release()
+        if run_first:
+            plugin.update(lab.ctx)
+        plugin.request_set_current(*following)
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        plugin.update(lab.ctx)
+        return plugin, process, following
+
+    plugin, process, following = asyncio.run(scenario())
+    assert plugin.view.current == following and process.index == process.loaded.index_of(*following)
 
 
 # --- --- --- --- --- REVIEW CASES --- --- --- --- ---
@@ -616,8 +792,8 @@ def test_a_robot_leased_for_a_step_refuses_selecting_reopening_and_settings(tmp_
     assert plugin.view.statuses["B1_J_joint"] == DONE and not plugin.view.settings.spiral
 
 
-def test_a_step_started_while_new_run_waits_for_confirm_refuses_it(tmp_path):
-    """New run asked, then the executor leases a robot before Confirm: no new run, the current step kept."""
+def test_a_step_started_between_the_new_run_clicks_refuses_it(tmp_path):
+    """New run clicked once, then the executor leases a robot: the second click starts no run, the step is kept."""
     lab = Lab(tmp_path, alice=True)
 
     async def scenario():
@@ -628,7 +804,9 @@ def test_a_step_started_while_new_run_waits_for_confirm_refuses_it(tmp_path):
         current, selected = plugin.view.current, list(process.selected)
         plugin.request_new_run()
         lab.lease_to_exec("a200-0804")
-        await answered(plugin, True)
+        lab.ctx.t += 1.0
+        plugin.request_new_run()
+        await settle(plugin)
         assert "New run refused: a200-0804 is leased by movement_exec" in plugin._message
         return plugin, process, current, selected
 
@@ -655,37 +833,76 @@ def test_a_step_started_while_waiting_for_a_live_robot_stops_the_automatic_selec
     assert "Select refused: a200-0804 is leased by movement_exec" in plugin._message
 
 
-def test_an_arm_moving_while_the_prompt_waits_refuses_the_confirmed_mark(tmp_path):
-    """Cindy not live: the prompt waits; her arm starts moving meanwhile, so Confirm marks nothing."""
+def test_an_arm_moving_before_the_second_click_refuses_the_mark(tmp_path):
+    """Cindy not live: the first click asks for a second; her arm starts moving meanwhile, so the second is refused."""
     lab = Lab(tmp_path, live_from=None)
 
     async def scenario():
         plugin, _process = await opened(lab)
         plugin.request_mark_done()
         lab.moving(CINDY, True)
-        await answered(plugin, True)
+        plugin.request_mark_done()
+        await settle(plugin)
         return plugin
 
     plugin = asyncio.run(scenario())
     assert "still moving" in plugin._message and runs(lab) == [] and plugin.view.statuses["B1_J_joint"] == PENDING
 
 
-def test_a_second_click_waits_for_the_prompt(tmp_path):
-    """While a prompt waits, another Mark done, a New run or a Reopen is refused at once."""
+def test_another_request_cancels_a_waiting_click(tmp_path):
+    """Mark done waits for its second click: New run, Select or Reopen in between cancels it, so nothing is marked.
+
+    A refused click never waits for a second one.
+    """
     lab = Lab(tmp_path, live_from=None)
 
     async def scenario():
         plugin, _process = await opened(lab)
+        for other in (plugin.request_new_run, lambda: plugin.request_set_current("B1_J_joint"),
+                      lambda: plugin.request_reopen("B1_J_joint")):
+            plugin.request_mark_done()
+            other()
+            assert not plugin.again.startswith("mark")
+            plugin.request_mark_done()
+            assert plugin.again == "mark B1_J_joint"
+            plugin.request_set_current("B1_J_joint")
+        await settle(plugin)
+        lab.moving(CINDY, True)
         plugin.request_mark_done()
-        prompt = plugin._prompt
-        for request in (plugin.request_mark_done, plugin.request_new_run):
-            request()
-            assert plugin._message.endswith("answer the prompt first") and plugin._prompt == prompt
-        await answered(plugin, False)
+        assert "still moving" in plugin._message and plugin.again == ""
         return plugin
 
     plugin = asyncio.run(scenario())
-    assert runs(lab) == [] and len(plugin._tasks) == 0
+    assert runs(lab) == [] and plugin.view.statuses["B1_J_joint"] == PENDING
+
+
+def test_a_refused_second_click_ends_the_wait(tmp_path):
+    """New run, then Mark done with Cindy not live: a step starts after the first click, so the second is refused.
+
+    A refused click never waits for a second one: after the step, the third click only asks again.
+    """
+    lab = Lab(tmp_path, live_from=None)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        lab.moving(CINDY, False)
+        for request, key in ((plugin.request_new_run, "new run"), (plugin.request_mark_done, "mark B1_J_joint")):
+            request()
+            assert plugin.again == key
+            lease = lab.lease_to_exec("a200-0806")
+            lab.ctx.t += 1.0
+            request()
+            assert "refused: a200-0806 is leased by movement_exec" in plugin._message and plugin.again == ""
+            lease.release()
+            lab.ctx.t += 1.0
+            request()
+            await settle(plugin)
+            assert plugin.again == key
+            plugin.request_set_current("B1_J_joint")
+        return plugin
+
+    plugin = asyncio.run(scenario())
+    assert runs(lab) == [] and plugin.view.statuses["B1_J_joint"] == PENDING
 
 
 def test_while_runs_are_offered_settings_and_reopen_say_so(tmp_path):
@@ -728,7 +945,7 @@ def test_settings_that_make_no_sense_are_refused_not_raised(tmp_path):
 
 
 def test_a_step_picked_while_waiting_stops_the_automatic_selection(tmp_path):
-    """The operator picks a step in the process panel while the run waits for Cindy: it is not overridden."""
+    """A step picked in the process panel while the run waits for Cindy is not overridden: it becomes current."""
     lab = Lab(tmp_path, live_from=None)
 
     async def scenario():
@@ -739,10 +956,12 @@ def test_a_step_picked_while_waiting_stops_the_automatic_selection(tmp_path):
         process.index = 4
         plugin.update(lab.ctx)
         await settle(plugin)
-        return process
+        return plugin, process
 
-    process = asyncio.run(scenario())
+    plugin, process = asyncio.run(scenario())
     assert process.selected == [] and process.index == 4 and lab.ctx.t < 25.0
+    step = process.loaded.steps[4]
+    assert plugin.view.current == (step.action.id, step.movement_index)
 
 
 # --- --- --- --- --- RE-REVIEW CASES --- --- --- --- ---

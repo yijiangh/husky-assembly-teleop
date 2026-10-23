@@ -624,6 +624,8 @@ class PluginView:
                             len(labels) - 1)
         #: Side panel tabs this plugin made: their panel and path of labels.
         self._side_tabs: list[tuple[SidePanel, tuple[str, ...]]] = []
+        #: This plugin's bands in its shared tab (`ui(band=)`), by (the tab's path of labels, band).
+        self._bands: dict[tuple[tuple[str, ...], float], viser.GuiFolderHandle] = {}
         self._phone = phone
         self._phone_tab: viser.GuiTabHandle | None = None
         self._phone_header: viser.GuiFolderHandle | None = None
@@ -646,13 +648,19 @@ class PluginView:
         """viser.GuiApi: GUI api. Prefer `ui()` or `tab()`, which also set the parent."""
         return self._server.gui
 
-    def ui(self) -> AbstractContextManager[viser.GuiApi]:
+    def ui(self, band: float | None = None) -> AbstractContextManager[viser.GuiApi]:
         """Add GUI widgets inside this plugin's tab, at its `tab_path`; only widgets created inside the block land there.
 
+        Plugins with the same `tab_path` share one tab through bands: a band is an unlabelled folder of this plugin's,
+        made on first use, and bands sort top to bottom by their number, whichever plugin made them.
+
+        Args:
+            band: The band's place in the tab, or None to add to the tab itself.
+
         Returns:
-            AbstractContextManager[viser.GuiApi]: The GUI api, with this plugin's tab as parent.
+            AbstractContextManager[viser.GuiApi]: The GUI api, with this plugin's tab or band as parent.
         """
-        return self._side_tab(self._tab_path, self._hidden, self._shared)
+        return self._side_tab(self._tab_path, self._hidden, self._shared, band)
 
     @contextmanager
     def folder(self, expanded: bool = True) -> Iterator[viser.GuiApi]:
@@ -686,13 +694,24 @@ class PluginView:
         return self._side_tab(((self._label, self._icon), (label, icon)), hidden, 0)
 
     @contextmanager
-    def _side_tab(self, path: TabPath, hidden: bool, shared: int) -> Iterator[viser.GuiApi]:
-        """Add widgets inside the tab at `path` in a side panel; removed with this plugin, a parent once it is empty."""
+    def _side_tab(self, path: TabPath, hidden: bool, shared: int, band: float | None = None
+                  ) -> Iterator[viser.GuiApi]:
+        """Add widgets inside the tab at `path` in a side panel, or in this plugin's `band` there (`ui`).
+
+        The tab is removed with the plugin that made it, a parent once it is empty; a band with its plugin.
+        """
         side = self._sides[hidden]
         tab, made = side.tab(path, shared)
+        labels = tuple(label for label, _ in path)
         if made:
-            self._side_tabs.append((side, tuple(label for label, _ in path)))
-        with tab:
+            self._side_tabs.append((side, labels))
+        parent = tab
+        if band is not None:
+            if (labels, band) not in self._bands:
+                with tab:
+                    self._bands[(labels, band)] = self._server.gui.add_folder(None, order=band)
+            parent = self._bands[(labels, band)]
+        with parent:
             yield self._server.gui
 
     def panel(self) -> viser.PanelHandle:
@@ -754,13 +773,18 @@ class PluginView:
             yield self._phone.server.gui
 
     def clear(self) -> None:
-        """Remove everything this plugin added: scene nodes, header, folder, panels and tabs, phone tab and header."""
+        """Remove all this plugin added: scene nodes, header, folder, panels, bands and tabs, phone tab and header."""
         self._root.remove()
         if self._folder is not None:
             self._folder.remove()
         for panel in self._panels:
             panel.remove()
         self._panels.clear()
+        for band in self._bands.values():
+            # ? A tab another plugin made, and removed first, took this band with it; viser warns on a second remove.
+            if not band._impl.removed:
+                band.remove()
+        self._bands.clear()
         for side, labels in self._side_tabs:
             side.remove(labels)
         self._side_tabs.clear()

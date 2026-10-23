@@ -10,7 +10,7 @@ panel with big buttons; it finds the sheet by an empty element with the id MARKE
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Iterable, Sequence
 
 import viser
 
@@ -52,7 +52,8 @@ def grid_css(cells: tuple[tuple[str, int, int], ...], columns: int) -> str:
 def columns_css(icon: str, columns: int, wrap: bool = False) -> str:
     """CSS that lays out, row by row in `columns` columns, the buttons of every folder holding a button with `icon`.
 
-    ! Keep only buttons in that folder: any other widget takes a cell too.
+    ! Keep only buttons in that folder: any other widget takes a cell too. And give the folder a label: viser 1.1.1
+      draws an unlabelled one without an element of its own, so the grid would take its container (`side_by_side_css`).
 
     Args:
         icon: An icon of one of the folder's buttons, e.g. viser.Icon.MINUS.
@@ -74,20 +75,23 @@ def columns_css(icon: str, columns: int, wrap: bool = False) -> str:
     return css
 
 
-def big_buttons(icons: list[str], height: int, icon_size: int, labels: bool = True) -> str:
-    """CSS that makes the phone page's buttons with these icons `height` px high, with `icon_size` px icons.
+def big_buttons(icons: list[str], height: int, icon_size: int, labels: bool = True, scope: str = SHEET) -> str:
+    """CSS that makes the buttons with these icons `height` px high, with `icon_size` px icons.
 
     Args:
         icons: The buttons' icons, e.g. viser.Icon.HAND_STOP.
         height: Button height, px.
         icon_size: Icon size, px.
         labels: False for icon-only buttons: drops the empty label so the icon is centred.
+        scope: A selector the buttons are inside: the phone page's sheet by default, "" for the whole page.
 
     Returns:
         str: CSS rules, without the <style> element.
     """
+    inside = f"{scope} " if scope else ""
+
     def each(suffix: str = "") -> str:
-        return ", ".join(f"{SHEET} button:has(.icon-tabler-{icon}){suffix}" for icon in icons)
+        return ", ".join(f"{inside}button:has(.icon-tabler-{icon}){suffix}" for icon in icons)
 
     # * viser draws an icon in a 1em box, so the icon grows with its section's font size.
     css = (f"{each()} {{ height: {height}px !important; font-size: 18px !important; }}"
@@ -96,6 +100,40 @@ def big_buttons(icons: list[str], height: int, icon_size: int, labels: bool = Tr
         css += (f"{each(' .mantine-Button-label')} {{ display: none; }}"
                 f"{each(' .mantine-Button-section')} {{ margin: 0 !important; }}")
     return css
+
+
+def side_by_side_css(uuids: Sequence[str]) -> str:
+    """CSS that puts these buttons on one row, side by side; add them one after the other, nothing between them.
+
+    ? viser 1.1.1 draws an unlabelled folder (`add_folder(None)`) without an element of its own, so `columns_css` would
+      lay out the whole container around it: this styles each button instead, found by its id (the button's uuid).
+
+    Args:
+        uuids: The buttons' uuids, `handle._impl.uuid`, left to right.
+
+    Returns:
+        str: CSS rules, without the <style> element.
+    """
+    # * Each button's box keeps viser's side margins (Mantine's "xs" spacing).
+    width = f"calc({100 / len(uuids):g}% - 2 * var(--mantine-spacing-xs))"
+    return "".join(f'div:has(> button[id="{uuid}"]) {{ display: inline-block; width: {width}; vertical-align: top; }}'
+                   for uuid in uuids)
+
+
+def slim_labels_css(uuids: Iterable[str], width_em: float = 2.5) -> str:
+    """CSS that shrinks the label box of these inputs to `width_em`, so a slider with a short label takes the row.
+
+    ? viser gives every labelled input a fixed 7.25em label box. This relies on viser 1.1.1's markup,
+      `div(label box) > p > label[for=<uuid>]` (client `components/common.tsx`); if it changes, the box is wide again.
+
+    Args:
+        uuids: The inputs' uuids, `handle._impl.uuid`.
+        width_em: The label box's width, em.
+
+    Returns:
+        str: CSS rules, without the <style> element.
+    """
+    return "".join(f'div:has(> p > label[for="{uuid}"]) {{ width: {width_em}em !important; }}' for uuid in uuids)
 
 
 #: The phone page's CSS, in order: no 3D canvas; the sheet fills the screen; a long press must not select text, open

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 import viser
+from viser._icons import svg_from_icon
 
 from husky_assembly_teleop.ui.style import PATH_TABS_MARKER
 from husky_assembly_teleop.ui.visualization import Visualization
@@ -98,3 +101,35 @@ def test_a_folder_goes_in_the_main_panel_not_the_tabs(viz):
     assert not viz._side._panel.visible and health._folder is not None
     health.clear()
     assert health._folder._impl.removed
+
+
+@pytest.mark.parametrize("maker", ["assembly_run", "assembly_steps"])
+def test_plugins_share_a_tab_through_bands_and_clear_only_their_own(viz, maker):
+    """Two plugins at tab path ("Assembly",) get their bands in band order, whichever starts first; its maker's icon.
+
+    Clearing the other plugin removes only its bands; the maker cleared first takes a third plugin's bands with it,
+    and clearing that one then warns of nothing.
+    """
+    icons = {"assembly_run": viser.Icon.LIST_CHECK, "assembly_steps": viser.Icon.STAIRS_UP}
+    bands = {"assembly_run": 400.0, "assembly_steps": 100.0}
+    views = {name: viz.view_for(name, tab_path=("Assembly",), icon=icon) for name, icon in icons.items()}
+    other = next(name for name in views if name != maker)
+    for name in (maker, other, "assembly_steps"):
+        with views[name].ui(band=bands[name]) as gui:
+            gui.add_button(name)
+    side = viz._side
+    tab = side._tabs[("Assembly",)]
+    assert sorted((child.order, len(child._children)) for child in tab._children.values()) == [(100.0, 2), (400.0, 1)]
+    assert side._panel._tab_labels == ("Assembly",) and side._panel._tab_icons_html == (svg_from_icon(icons[maker]),)
+    (band,) = views[other]._bands.values()
+    views[other].clear()
+    assert side._panel._tab_labels == ("Assembly",) and band._impl.removed
+    assert [child.order for child in tab._children.values()] == [bands[maker]]
+    exec_ = viz.view_for("movement_exec", tab_path=("Assembly",), icon=viser.Icon.PLAYER_PLAY)
+    with exec_.ui(band=300.0) as gui:
+        gui.add_button("Confirm")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        views[maker].clear()
+        exec_.clear()
+    assert side._panel._tab_labels == ()

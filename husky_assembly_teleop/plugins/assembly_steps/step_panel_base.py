@@ -5,8 +5,9 @@ assembly_steps' own planner panel base; the other planners use `shared/planner/`
 
 Plan states: none -> planning -> ready -> sent; a ready plan goes stale when the robot or target moves.
 
-* Subclasses implement `make_search`, `stale_reason`, `send_plan`, `show_target` and `show_path`,
-  and build their panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers.
+* Subclasses implement `make_search`, `stale_reason`, `send_plan`, `show_target` and `show_path`, build their own
+  panel (its time slider is `_slider`, its buttons call `_on_path`, `_scrub` and `_commit`), and use `_add_ghosts` and
+  the `_draw_*` helpers.
 ! The planning world is the subclass's, created on the worker thread; the base only closes it at teardown.
 """
 
@@ -19,15 +20,15 @@ from dataclasses import dataclass
 from html import escape
 from typing import TYPE_CHECKING, Awaitable, Callable, Iterable
 
-import viser
 from async_timeout import timeout
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...shared.planner.planner_search import PlanningWorld
 from ...shared.planner.timed_path import TimedPath
+from ...ui.assembly_tab import STEP_BAND
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
+from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, note
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
@@ -144,26 +145,6 @@ class PlannerPlugin(HuskyPlugin):
 
     # --- --- --- --- --- SETUP HELPERS --- --- --- --- ---
 
-    def _add_path_controls(self, ctx: PluginContext, gui: viser.GuiApi, plan_hint: str, commit_hint: str,
-                           commit_label: str = "Commit") -> None:
-        """Add the "path" section: Plan/Play/Clear, the time slider and Commit, with their callbacks.
-
-        Args:
-            ctx: This plugin's context.
-            gui: GUI api, inside `ctx.view.ui()`.
-            plan_hint: Hover text of the Plan/Play/Clear buttons.
-            commit_hint: Hover text of Commit.
-            commit_label: The Commit button's label, e.g. "Exec".
-        """
-        gui.add_html(section("path", SECTION_CTRL))
-        plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
-        self._slider = gui.add_slider("t s", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
-                                      hint="Scrub through the planned path")
-        commit = gui.add_button(commit_label, color="blue", icon=viser.Icon.SEND, hint=commit_hint)
-        plan.on_click(ctx.defer_value("path button", lambda label: self._on_path(ctx, label)))
-        self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value))))
-        commit.on_click(ctx.defer("commit", lambda: self._commit(ctx)))
-
     def _add_ghosts(self, ctx: PluginContext, robots: Iterable[RobotConfig]) -> None:
         """Build a target ghost and a path ghost per robot, shown only while the panel is in use.
 
@@ -185,7 +166,8 @@ class PlannerPlugin(HuskyPlugin):
             why: One line, e.g. "no robots configured".
         """
         self.idle = True
-        with ctx.view.ui() as gui:
+        # * Where the step's panel would be in the shared Assembly tab.
+        with ctx.view.ui(band=STEP_BAND) as gui:
             gui.add_html(block(note(escape(why))))
 
     def teardown(self, ctx: PluginContext) -> None:

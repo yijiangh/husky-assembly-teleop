@@ -24,13 +24,13 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...robot_interface.robot_lease import NotLeased
 from ...shared.assembly_planning.route_result import pose_error
-from ...shared.assembly_run_contract import ASSEMBLY_TAB
 from ...shared.execution.basis import STALE_BASE
 from ...shared.execution.moving import moving_reason
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import INTERRUPTED, motion_command
 from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT, MAX_TRAJ_TIME,
                                               MOTION_PART, REFUSED, REFUSED_PART, ExecRequest, ExecResult, serial_of)
+from ...ui.assembly_tab import ASSEMBLY_TAB
 from .panel import ExecPanel
 from .sequences import Job, PartRun, run_part
 
@@ -54,7 +54,7 @@ class MovementExecPlugin(HuskyPlugin):
     name = "movement_exec"
     requires = ("motion_planner", "assembly_run")
     experimental = True
-    tab_path = (ASSEMBLY_TAB, "Exec")
+    tab_path = (ASSEMBLY_TAB,)
     icon = viser.Icon.PLAYER_PLAY
 
     def __init__(self):

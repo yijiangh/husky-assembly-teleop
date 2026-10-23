@@ -4,7 +4,7 @@ A selectable list: one checkbox per item in a collapsible folder, "Select all" o
 viser 1.1 has no multi-select widget. Build one in `setup`, `add` / `remove` items from intents, read
 `selected()` when acting, and call `sync()` from `draw`. Item checkboxes have no callbacks.
 
-`action_window` is the window of a schedule that a panel's list of action rows shows (process, assembly_run).
+`action_window` is the window of a schedule that a panel's list of action rows shows (process).
 """
 
 from __future__ import annotations

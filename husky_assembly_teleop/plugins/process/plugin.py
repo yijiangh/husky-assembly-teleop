@@ -17,7 +17,10 @@ in that order (`steps.as_run`); `process` stays the authored process, and `Selec
 The "Rhino obstacles collide" box (off at start) decides whether the process's obstacles ("obstacles/<name>")
 count in every collision check; while off they are disabled scene bodies, drawn see-through by the overlay.
 
-The panel lists a window of the schedule's actions around the selected one (`action_window`); click a row to jump.
+The panel is the top of the side panel's Assembly tab (`ui/assembly_tab.py`), above the steps planned and run from
+it. It lists a window of the schedule's actions around the selected one (`action_window`); click a row to jump.
+Each row shows the mark the run gives its action (`request_marks`: pending, done, done with its end assumed). After a
+Live IK or a plan, the action's later movements are drawn with the joints found (`request_carry`), the drawing only.
 
 Process folders are given relative to the Drive root (`drive.py`), e.g. "data_design_study/<process>", or absolute.
 Loading an old compas_fab export converts it into `<export>_process` (reused while up to date) and loads that.
@@ -35,20 +38,21 @@ import traceback
 from html import escape
 from pathlib import Path
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
-import viser
 from async_timeout import timeout
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, chip_line, note, section, swatch_chip, values
+from ...ui.assembly_tab import ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
+from ...ui.style import (BUSY, FAIL, NONE, OK, REFUSAL_SHOWN, SECTION_CTRL, block, chip, chip_line, section,
+                         swatch_chip, values)
 from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
 from scaffolding_assembly_core.process import Action, Movement, Process, assumed_start_all, joints_at
 from scaffolding_assembly_core.process.scenes import process_model
-from ...shared.process_contract import Selection
+from ...shared.process_contract import MARK_ASSUMED, MARK_DONE, Carry, Selection
 from ...shared.assembly_planning.labels import Kind, label_movement
 from ...shared.assembly_planning.movement import mating_drives
 from ...shared.assembly_planning.steps import as_run
@@ -105,7 +109,9 @@ class ProcessPlugin(HuskyPlugin):
     """Shows the authored state at one movement at a time and steps through the schedule."""
 
     name = "process"
-    icon = viser.Icon.LIST_NUMBERS
+    tab_path = (ASSEMBLY_TAB,)
+    # * The Assembly tab's icon: this plugin makes the tab, since the other three require it.
+    icon = ASSEMBLY_ICON
     experimental = True
 
     def __init__(self):
@@ -136,6 +142,8 @@ class ProcessPlugin(HuskyPlugin):
 
         #: Whether the process's obstacles count in collision checks (`ProcessContract.obstacles_collide`).
         self.obstacles_collide = OBSTACLES_COLLIDE
+        # Why the last "Transfer workaround" change was refused, and when (ROS time); "" after a change it made.
+        self._transfer_refused, self._transfer_refused_at = "", 0.0
         # The loaded process's obstacles from Rhino, by process id (`process_obstacles`).
         self._obstacles: frozenset[str] = frozenset()
 
@@ -161,7 +169,8 @@ class ProcessPlugin(HuskyPlugin):
         #: The process's viser nodes, built after a load; None until built.
         self._drawing: ProcessDrawing | None = None
         self._visible = True
-        self._ghost = False
+        #: Draw the overlay see-through; on at start (View Ghost toggles it), so the real robots show through it.
+        self._ghost = True
         # Overlay the bodies that do not stand in the state (absent ones) too.
         self._everything = False
         # True when the drawing is out of date and draw must re-pose it.
@@ -172,6 +181,10 @@ class ProcessPlugin(HuskyPlugin):
         self._scene_revision = -1
         # What `selection` last returned, kept while nothing in it changes.
         self._selection: Selection | None = None
+        #: Each action's mark in its row, by action id (`request_marks`); and the joints carried forward
+        #: (`request_carry`). Both cleared when a process loads.
+        self._marks: dict[str, str] = {}
+        self._carry: Carry | None = None
 
     # --- --- --- --- --- WHAT OTHER PLUGINS READ --- --- --- --- ---
 
@@ -199,9 +212,11 @@ class ProcessPlugin(HuskyPlugin):
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the panel, with the configured process folder filled in; nothing loads until Load is clicked."""
+        """Build the panel at the top of the Assembly tab, the folder filled in; nothing loads before Load."""
         folder = ctx.config.process_directory
-        with ctx.view.ui() as gui:
+        # * First in the Assembly tab: pick the action and movement here, then plan and run them below.
+        with ctx.view.ui(band=PROCESS_BAND) as gui:
+            gui.add_html(section("process", SECTION_CTRL))
             self._status = gui.add_html("")
             self._folder = gui.add_text("Folder", initial_value=str(folder or ""),
                                         hint="Process folder relative to the Drive root, e.g. "
@@ -226,16 +241,17 @@ class ProcessPlugin(HuskyPlugin):
             self._action_rows = [gui.add_button("·", color="gray") for _ in range(ACTION_ROWS)]
             gui.add_html(section("step", SECTION_CTRL))
             self._slider = gui.add_slider("Step", min=0, max=1, step=1, initial_value=0)
-            go = gui.add_button_group("Go", ["◀ action", "◀", "▶", "action ▶"],
+            go = gui.add_button_group("Go", ["◀ action", "◀ mv", "mv ▶", "action ▶"],
                                       hint="Previous / next movement, or jump to the previous / next action")
             show = gui.add_button_group("Show", ["Start", "Target"],
                                         hint="The robot at the movement's start state, or at its target configuration")
             view = gui.add_button_group("View", ["Hide", "Ghost", "All"],
                                         hint="Hide / show the overlay (robots, tools, held bodies, and the Rhino "
                                              "obstacles while they don't collide; other standing bodies are scene "
-                                             "bodies, always drawn); ghost makes it see-through; all also overlays "
-                                             "absent bodies, see-through")
-            # ! Keep changing text BELOW the buttons, so they never move mid-click.
+                                             "bodies, always drawn); ghost (on at start) makes it see-through; all "
+                                             "also overlays absent bodies, see-through")
+            # ! Keep changing text BELOW the buttons, so they never move mid-click; and keep its height fixed: the
+            #   Assembly tab's buttons are below it.
             self._details = gui.add_html("")
             self._error_text = gui.add_html("")
 
@@ -285,6 +301,23 @@ class ProcessPlugin(HuskyPlugin):
         if self._movements:
             self.select(self._shown_index[max(0, min(int(index), len(self._shown_index) - 1))])
 
+    def request_marks(self, marks: Mapping[str, str]) -> None:
+        """Show each action's mark in its row (`ProcessContract.request_marks`), replacing the marks given before.
+
+        Args:
+            marks: Action id -> MARK_PENDING, MARK_DONE or MARK_ASSUMED.
+        """
+        self._marks = dict(marks)
+
+    def request_carry(self, carry: Carry | None) -> None:
+        """Draw an action's later movements with joints found live (`ProcessContract.request_carry`); None: as authored.
+
+        Args:
+            carry: The joints, the robot and from which movement on; or None.
+        """
+        self._carry = carry
+        self._stale = True
+
     def select(self, index: int) -> None:
         """Select a movement by index into `_movements`, clamped; ignored before a process is loaded."""
         if not self._movements:
@@ -300,7 +333,7 @@ class ProcessPlugin(HuskyPlugin):
         """Turn the transfer workaround on or off: the list is built again, on the same authored movement if shown.
 
         Refused while movement_exec has a robot's lease for a step (`step_running`): the step being run must not
-        change under it; `draw` puts the box back.
+        change under it; `draw` puts the box back, and a chip under the boxes says why for REFUSAL_SHOWN s.
 
         Args:
             ctx: This plugin's context.
@@ -311,8 +344,10 @@ class ProcessPlugin(HuskyPlugin):
             return
         refusal = step_running(ctx.world.robots)
         if refusal:
+            self._transfer_refused, self._transfer_refused_at = refusal, ctx.now()
             ctx.log_warn(f"Transfer workaround not changed: {refusal}")
             return
+        self._transfer_refused = ""
         self.transfer_as_free = on
         if self.process is not None:
             authored = self._authored_index[self.index] if self._movements else 0
@@ -348,9 +383,9 @@ class ProcessPlugin(HuskyPlugin):
         if not self._movements:
             return
         current = self._action_of[self.index]
-        if label == "◀":
+        if label == "◀ mv":
             self.select(self.index - 1)
-        elif label == "▶":
+        elif label == "mv ▶":
             self.select(self.index + 1)
         elif label == "◀ action":
             # First movement of this action, or of the previous action with movements if already there.
@@ -425,8 +460,12 @@ class ProcessPlugin(HuskyPlugin):
             ctx.log_warn(f"a process robot differs from the configured one: {line}")
 
     def _take(self, process: Process) -> None:
-        """Make `process` the loaded one, with its movement list and assumed starts, and select its first movement."""
+        """Make `process` the loaded one, with its movement list and assumed starts, and select its first movement.
+
+        The old process's marks and carried joints go with it.
+        """
         self.process, self.index = process, 0
+        self._marks, self._carry = {}, None
         self._show()
         self._obstacles = process_obstacles(process)
 
@@ -512,10 +551,12 @@ class ProcessPlugin(HuskyPlugin):
         self._collide.value = self.obstacles_collide
         self._collide_status.content = self._collide_html(ctx)
         selected = self.selected
-        self._error_text.content = block(values(escape(self._error))) if self._error else ""
+        # * One line, even empty: the full error on hover.
+        error = " ".join(self._error.split())
+        self._error_text.content = block(values(_one_line(escape(error) or "&nbsp;", error)))
         self._draw_action_list()
         if selected is None:
-            self._details.content = note("no process loaded")
+            self._details.content = _empty_details()
             return
         action, movement = selected
         self._slider.max = max(len(self._movements) - 1, 1)
@@ -531,6 +572,9 @@ class ProcessPlugin(HuskyPlugin):
             return
         try:
             joints = joints_at(self._shown, action.id, movement.id, self.at_target, self._assumed)
+            carry = self._carry
+            if self._carry_applies(action, movement):
+                joints[carry.robot] = {**joints.get(carry.robot, {}), **carry.joints}
             # * Left out of collision checks, the Rhino obstacles are drawn by the overlay, not the runtime.
             drawing.show(movement.start, joints, self._everything,
                          frozenset() if self.obstacles_collide else self._obstacles)
@@ -560,9 +604,33 @@ class ProcessPlugin(HuskyPlugin):
                 continue
             action = self._shown.actions[self.process.schedule[index]]
             robot = self.process.robots[action.robot].name if action.robot else BY_HAND_LABEL
-            button.label = f"{index + 1}. {action.id} · {robot} · {len(action.movements)} mv"
-            button.color = "blue" if index == current else "gray"
+            mark = self._marks.get(action.id)
+            label = f"{index + 1}. {action.id} · {robot} · {len(action.movements)} mv"
+            button.label = label + (f" · {'done (assumed)' if mark == MARK_ASSUMED else mark}" if mark else "")
+            button.color = ("blue" if index == current else "orange" if mark == MARK_ASSUMED
+                            else "green" if mark == MARK_DONE else "gray")
     # ! Keep every row one line tall (`_one_line`) and the chip set fixed, so nothing shifts between steps.
+
+    def _carry_applies(self, action: Action, movement: Movement) -> bool:
+        """Whether the carried joints show at this movement of `action`.
+
+        They do at the carry's movement shown at its target, and at every later movement of the action as shown.
+
+        Args:
+            action: The action as shown (`as_run`).
+            movement: One of its movements.
+
+        Returns:
+            bool: Whether to draw the carry's robot at its joints here.
+        """
+        carry = self._carry
+        if carry is None or carry.action_id != action.id:
+            return False
+        shown = [each.id for each in action.movements]
+        if carry.movement_id not in shown:
+            return False
+        at, number = shown.index(carry.movement_id), action.movements.index(movement)
+        return number > at or (number == at and self.at_target)
 
     def _status_html(self) -> str:
         """One line of chips: load progress or process, plus any error."""
@@ -580,13 +648,22 @@ class ProcessPlugin(HuskyPlugin):
         return chip_line(chips)
 
     def _collide_html(self, ctx: PluginContext) -> str:
-        """One line of chips: whether the Rhino obstacles collide, and a warning when nothing in the room is checked."""
+        """One line of chips under the boxes: a refused workaround change, the Rhino obstacles, an unchecked room.
+
+        Chips: a "Transfer workaround" change refused in the last REFUSAL_SHOWN s, first so it is never scrolled out
+        of sight, its reason on hover; whether the Rhino obstacles collide; a warning when nothing in the room is
+        checked.
+        """
+        chips = ""
+        if self._transfer_refused and ctx.now() - self._transfer_refused_at < REFUSAL_SHOWN:
+            chips += chip("workaround refused", FAIL, f"Transfer workaround not changed: {self._transfer_refused}")
         if self.obstacles_collide:
-            return chip_line(chip("Rhino obstacles collide", OK))
-        chips = chip("Rhino obstacles: drawn only", NONE, "left out of every collision check")
-        if not any(body_id.startswith(MEASURED_PREFIX) for body_id in ctx.scene.snapshot.bodies):
-            chips += chip("room unchecked", FAIL, "no measured obstacles in the scene: add 'obstacles' to the "
-                                                  "plugins, or nothing in the room is checked")
+            chips += chip("Rhino obstacles collide", OK)
+        else:
+            chips += chip("Rhino obstacles: drawn only", NONE, "left out of every collision check")
+            if not any(body_id.startswith(MEASURED_PREFIX) for body_id in ctx.scene.snapshot.bodies):
+                chips += chip("room unchecked", FAIL, "no measured obstacles in the scene: add 'obstacles' to the "
+                                                      "plugins, or nothing in the room is checked")
         return chip_line(chips)
 
     def _details_html(self, action: Action, movement: Movement) -> str:
@@ -623,6 +700,10 @@ class ProcessPlugin(HuskyPlugin):
             carries += chip("showing start", NONE)
         else:
             carries += chip("showing target" if target else "no target: start", OK if target else BUSY)
+        if self._carry_applies(action, movement):
+            carry = self._carry
+            title = f"{escape(carry.robot)} drawn at the joints found for {escape(carry.movement_id)}'s end"
+            carries += chip(f"joints from {escape(carry.source)}", BUSY, title)
         carries += chip(movement.controller or "no arm moves", NONE)
         carries += chip(f"ends on {movement.ends_on}", NONE)
 
@@ -684,6 +765,22 @@ def robot_differences(process: Process, robots: tuple[RobotConfig, ...]) -> list
     return lines
 
 
-def _one_line(html: str) -> str:
-    """Keep content on one line, cutting anything too wide with "…"; `pre` keeps padded columns aligned."""
-    return f'<div style="white-space:pre;overflow:hidden;text-overflow:ellipsis">{html}</div>'
+def _one_line(html: str, title: str = "") -> str:
+    """Keep content on one line, cutting anything too wide with "…"; `pre` keeps padded columns aligned.
+
+    Args:
+        html: The content.
+        title: Hover text, e.g. the whole line; none if empty.
+    """
+    hover = f' title="{escape(title, quote=True)}"' if title else ""
+    return f'<div{hover} style="white-space:pre;overflow:hidden;text-overflow:ellipsis">{html}</div>'
+
+
+def _empty_details() -> str:
+    """The details before a load: the same rows as `_details_html`, empty, so the first Load moves nothing below."""
+    def hidden(html: str) -> str:
+        return f'<span style="visibility:hidden">{html}</span>'
+
+    swatch, plain = hidden(swatch_chip("-", NONE, NONE)), hidden(chip("-", NONE))
+    return block(_one_line(chip("no process loaded", NONE) + swatch) + _one_line(swatch) + _one_line(plain)
+                 + values(*[_one_line("&nbsp;")] * 4) + _description(""))

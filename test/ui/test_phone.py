@@ -12,6 +12,7 @@ from robot_fakes import lease_context
 from husky_assembly_teleop.shared.teleop.dpad import HOLD_TIMEOUT, MAX_LINEAR_SPEED, Hold
 from husky_assembly_teleop.plugins.robot_control.plugin import FREE_DRIVE_RETRY, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.robot_interface.arm import FREE_DRIVE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER
+from husky_assembly_teleop.ui.phone import SHEET, big_buttons, side_by_side_css, slim_labels_css
 from husky_assembly_teleop.ui.visualization import Visualization
 
 SERIAL = "a200-0804"
@@ -211,3 +212,23 @@ def test_keep_on_frees_the_arm_every_tick_until_another_controller_runs():
         clock[0] = t
         plugin._update_free_drive(ctx, t)
     assert widgets.arm.requests == [0.0, 1.0] and not widgets.free_drive_keep.value
+
+
+def test_big_buttons_on_the_phone_sheet_or_the_whole_page():
+    """By default only the phone sheet's buttons grow; an empty scope makes the rule apply on the whole page."""
+    assert big_buttons(["check"], 40, 18).startswith(f"{SHEET} button:has(.icon-tabler-check) {{ height: 40px")
+    assert big_buttons(["check", "x"], 40, 18, scope="").startswith(
+        "button:has(.icon-tabler-check), button:has(.icon-tabler-x) { height: 40px")
+
+
+def test_slim_labels_shrink_the_label_box_of_each_input():
+    """One rule per input, found by its label's `for`, overriding viser's inline width."""
+    rule = 'div:has(> p > label[for="{}"]) {{ width: 3.0em !important; }}'
+    assert slim_labels_css(["a1", "b2"], 3.0) == rule.format("a1") + rule.format("b2")
+
+
+def test_side_by_side_buttons_share_a_row_by_their_ids():
+    """Each button's box, found by the button's id, takes its share of the row, less viser's side margins."""
+    css = side_by_side_css(["u1", "u2"])
+    assert css.count("display: inline-block; width: calc(50% - 2 * var(--mantine-spacing-xs))") == 2
+    assert 'div:has(> button[id="u1"])' in css and 'div:has(> button[id="u2"])' in css

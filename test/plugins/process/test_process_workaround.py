@@ -14,6 +14,8 @@ from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.plugins.process.plugin import ProcessPlugin
 from husky_assembly_teleop.robot_interface.robot_lease import LeaseSlot, take_lease
+from husky_assembly_teleop.shared.process_contract import Carry
+from husky_assembly_teleop.ui.style import REFUSAL_SHOWN
 from scaffolding_assembly_core.process import write
 
 #: B22_J as it runs with the workaround: no travel to load, the transfer first.
@@ -117,7 +119,8 @@ def test_request_select_takes_an_authored_index(purged):
 def test_the_flip_is_refused_while_a_step_has_a_robots_lease(small):
     """movement_exec has Cindy's lease for a step: the box changes nothing, one line says why, the draw puts it back.
 
-    Another holder's lease (robot_control's teleop) refuses nothing.
+    A red chip under the boxes says so for REFUSAL_SHOWN s, first on the line that is always there. Another holder's
+    lease (robot_control's teleop) refuses nothing.
     """
     plugin, ctx = _set_up(small)
     slot = LeaseSlot("a200-0806")
@@ -131,6 +134,12 @@ def test_the_flip_is_refused_while_a_step_has_a_robots_lease(small):
     plugin._transfer.value = False
     plugin.draw(ctx)
     assert plugin._transfer.value is True
+    status = plugin._collide_status.content
+    assert status.count('class="chip-line"') == 1 and status.index("workaround refused") < status.index("Rhino")
+    assert "Transfer workaround not changed: a200-0806 is leased by movement_exec" in status
+    ctx.t += REFUSAL_SHOWN
+    plugin.draw(ctx)
+    assert "workaround refused" not in plugin._collide_status.content
 
     lease.release()
     take_lease([slot], "robot_control: teleop")
@@ -150,3 +159,27 @@ def test_only_the_operators_click_flips_the_box(small):
     assert plugin.transfer_as_free
     asyncio.run(plugin._transfer.callback(event(object())))
     assert not plugin.transfer_as_free
+
+
+def test_with_the_workaround_the_carry_follows_the_order_shown(purged):
+    """Carried from B22_J's transfer: not at the transit's start; at its target, the place, the grasp and the insert."""
+    plugin, ctx = _set_up(purged.process)
+    action = plugin._shown.actions["B22_J"]
+    cindy = action.robot
+    plugin.request_carry(Carry("B22_J", "B22_J_transfer", cindy, {"left_ur_arm_shoulder_pan_joint": 1.234}, "plan"))
+    plugin._drawing = SimpleNamespace(shown=[], visible=True,
+                                      show=lambda state, joints, *_args: plugin._drawing.shown.append(joints))
+    index = {movement.id: number for number, (_action, movement) in enumerate(plugin._movements)}
+
+    def pan(movement_id: str, at_target: bool = False) -> float | None:
+        """Cindy's left pan as drawn at a movement's start or target."""
+        plugin.select(index[movement_id])
+        plugin.at_target, plugin._stale = at_target, True
+        plugin.draw(ctx)
+        return plugin._drawing.shown[-1].get(cindy, {}).get("left_ur_arm_shoulder_pan_joint")
+
+    assert pan("B22_J_transfer") != 1.234
+    assert [pan(movement_id, at_target) for movement_id, at_target in (
+        ("B22_J_transfer", True), ("B22_J_place_bar", False), ("B22_J_grasp", False), ("B22_J_insert", False))] == \
+        [1.234] * 4
+    assert "joints from plan" in plugin._details.content

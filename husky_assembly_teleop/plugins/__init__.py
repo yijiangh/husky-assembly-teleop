@@ -37,6 +37,9 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`.
 * Prefer tabs to folders: users can drag tabs into windows of their own, folders stay put.
   - `ctx.view.ui()` is the plugin's tab in the side panel, at its `tab_path` (e.g. `("Plan", "Arm")`, default its
     name); `hidden = True` starts it in the minimized panel at the right edge, for tools not needed every session.
+  - Plugins with the same `tab_path` share one tab through bands, `ctx.view.ui(band=...)`, sorted by number; the
+    first to start sets its icon. The Assembly tab holds process, assembly_steps, movement_exec and assembly_run
+    (`ui/assembly_tab.py`).
   - `ctx.view.tab(label, hidden=...)` adds a further tab, nested in a tab named after the plugin, so its owner shows.
   - `ctx.view.folder()` is a folder in the main panel, for what must always show, like health's rows.
   - ! Set `icon`: every tab a plugin owns at the top of a panel carries it (also its phone tab); shared parents like

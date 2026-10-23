@@ -12,9 +12,9 @@ from dataclasses import fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping
 
-from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...shared.assembly_run_contract import exported_end, first_pending, is_live, live_record
+from ...shared.execution.operator import PROMPT_ARM_S
 from ...shared.assembly_planning.steps import first_step
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
@@ -27,8 +27,10 @@ if TYPE_CHECKING:
     from ...shared.assembly_planning.process_steps import LoadedProcess
     from ...shared.process_contract import ProcessContract
 
-#: Seconds the operator has to answer a prompt.
-CONFIRM_TIMEOUT = 120.0
+#: Seconds (ROS time) in which a second click confirms New run, or Mark done with the action's robot not live.
+CONFIRM_AGAIN = 10.0
+#: What waits for its second click (`AssemblyRunPlugin.again`): a new run, or marking an action ("mark <action id>").
+AGAIN_NEW_RUN, AGAIN_MARK = "new run", "mark"
 #: The insert split's range, millimetres.
 SPLIT_RANGE = (0.0, 30.0)
 #: How far the loaded process's runs were read; only OPEN allows writes.
@@ -73,13 +75,8 @@ class RunWrites:
             return f"an arm of {acting} is still moving: wait until it stops"
         return ""
 
-    async def _confirm_mark(self, ctx: PluginContext, action_id: str, acting: str, robot: str) -> None:
-        """Once confirmed, and still allowed, mark an action whose robot is not live with the export's end, assumed."""
-        if not await self._confirmed(ctx):
-            self._say(f"{action_id} not marked")
-            return
-        if self._refused("Mark done", self._mark_refusal(ctx, action_id)):
-            return  # ? e.g. an arm started moving while the prompt waited
+    async def _mark_assumed(self, ctx: PluginContext, action_id: str, acting: str, robot: str) -> None:
+        """Mark an action whose robot is not live done with the export's end, assumed (the second click)."""
         end = exported_end(self._loaded, action_id, at=stamp())
         if end is None:
             self._say(f"{action_id} not marked: the export leaves {robot}'s base or joints open", failed=True)
@@ -171,10 +168,7 @@ class RunWrites:
         ctx.log_info(f"started run {self._run.folder}{since}")
 
     async def _new_run(self, ctx: PluginContext) -> None:
-        """Start a new run once the operator confirms; then the first action is current."""
-        if not await self._confirmed(ctx):
-            self._say("no new run")
-            return
+        """Start a new run (the second click); then the first action is current."""
         if self._refused("New run", self._step_running(ctx)):
             return
         self._starting = None
@@ -235,6 +229,8 @@ class RunWrites:
         self._save_current(ctx, (action_id, movement))
         selector: ProcessContract = ctx.require("process")
         selector.request_select(self._loaded.index_of(action_id, movement))
+        # * Read back, not the index asked for: a movement the panel doesn't list selects another, not to be followed.
+        self._selected = selector.selection.index
 
     def _movement(self, ctx: PluginContext, action_id: str, movement_index: int | None) -> int:
         """A movement index the action has: the one given, else its first step (warned when one was given)."""
@@ -248,12 +244,20 @@ class RunWrites:
                          f"it starts at its first step, {action.movements[first].id}")
         return first
 
-    def _save_current(self, ctx: PluginContext, current: tuple[str, int] | None) -> None:
-        """Make `current` current, and write the run's progress with it."""
+    def _save_current(self, ctx: PluginContext, current: tuple[str, int] | None, write: bool = True) -> None:
+        """Make `current` current, and write the run's progress with it.
+
+        Args:
+            ctx: The plugin's context.
+            current: (action id, movement index), or None.
+            write: Write progress.json now; False leaves it to the caller (a pick followed in the process panel is
+                written once the picking stops, `FOLLOW_SAVE_AFTER`).
+        """
         self._current = current
         if self._run is not None:
             self._run = with_current(self._run, current)
-            self._write(ctx, "save the progress", save_progress, self._run)
+            if write:
+                self._write(ctx, "save the progress", save_progress, self._run)
         self._changed()
 
     def _progress(self) -> Progress:
@@ -296,13 +300,12 @@ class RunWrites:
         return ""
 
     def _busy(self) -> str:
-        """Why nothing that writes may start now: the run is not open, a prompt waits, or a run is being started; else "".
+        """Why nothing that writes may start now: the run is not open, or a run is being started; else "".
 
         ? Being started includes a Continue still running: a second Continue would race the first.
         """
         starting = self._starting is not None or (self._continuing is not None and not self._continuing.done())
-        return self._not_open() or ("answer the prompt first" if self._prompt
-                                    else "a run is being started: wait a moment" if starting else "")
+        return self._not_open() or ("a run is being started: wait a moment" if starting else "")
 
     def _offered_first(self) -> str:
         """Why nothing is written while runs are offered; else ""."""
@@ -368,23 +371,38 @@ class RunWrites:
             ctx.log_error(f"could not {what}: {job.exception()!r}")
             self._changed()
 
-    def _ask(self, prompt: str) -> None:
-        """Put a question to the operator, at once, so a second click is refused until it is answered."""
-        self._prompt, self._answer = prompt, None
-        self._changed()
+    def _arm(self, ctx: PluginContext, key: str, message: str) -> None:
+        """Wait CONFIRM_AGAIN s for the second click of `key` (`again`), and say what it will do.
 
-    async def _confirmed(self, ctx: PluginContext) -> bool:
-        """The answer to the question asked: True on Confirm, False on Cancel or none within CONFIRM_TIMEOUT."""
-        try:
-            await ctx.wait_until(lambda: self._answer is not None, timeout_s=CONFIRM_TIMEOUT,
-                                 description="Confirm or Cancel")
-            return bool(self._answer)
-        except WaitTimeout:
-            ctx.log_warn(f"no answer in {CONFIRM_TIMEOUT:.0f} s to: {self._prompt}")
+        Args:
+            ctx: The plugin's context, for the clock.
+            key: What waits: AGAIN_NEW_RUN, or AGAIN_MARK and the action id.
+            message: What the second click does, for the message line.
+        """
+        self._again = (key, ctx.now() + CONFIRM_AGAIN)
+        self._say(message)
+
+    def _clicked_again(self, ctx: PluginContext, key: str, message: str) -> bool:
+        """Whether this click is the second one `key` waits for; the first click arms it and says `message`.
+
+        ! A second click within PROMPT_ARM_S of the first is a double click: ignored, the first one still waits.
+
+        Args:
+            ctx: The plugin's context, for the clock.
+            key: What waits: AGAIN_NEW_RUN, or AGAIN_MARK and the action id.
+            message: What a second click does, for the message line.
+
+        Returns:
+            bool: True when it confirms (and the wait ends); False when it armed the wait or was too soon.
+        """
+        if self.again != key:
+            self._arm(ctx, key, message)
             return False
-        finally:
-            self._prompt, self._answer = "", None
-            self._changed()
+        if ctx.now() - (self._again[1] - CONFIRM_AGAIN) < PROMPT_ARM_S:
+            self._say(f"ignored: clicked again within {PROMPT_ARM_S} s (a double click?). {message}")
+            return False
+        self._again = None
+        return True
 
     def _spawn(self, ctx: PluginContext, label: str, work: Coroutine) -> asyncio.Task:
         """Start a task of this process's run, cancelled when another process loads."""

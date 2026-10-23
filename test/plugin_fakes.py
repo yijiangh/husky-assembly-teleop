@@ -74,7 +74,8 @@ class FakeGui:
 
         def add(label: str = "", *values: Any, **options: Any) -> FakeWidget:
             widget = FakeWidget(kind=name[4:], label=label, value=values[0] if values else options.get("initial_value"),
-                                content="", color=options.get("color"), options=options)
+                                content="", color=options.get("color"), options=options,
+                                _impl=SimpleNamespace(uuid=f"fake-{len(self.widgets)}", removed=False))
             self.widgets.append(widget)
             return widget
         return add
@@ -123,8 +124,8 @@ class FakeContext:
         self.scene = SimpleNamespace(snapshot=snapshot if snapshot is not None else Scene())
         self.world = SimpleNamespace(robots={})
         self.gui = FakeGui()
-        self.view = SimpleNamespace(ui=lambda: nullcontext(self.gui), phone=lambda *_tab: nullcontext(self.gui),
-                                    scene_root="/plugin")
+        self.view = SimpleNamespace(ui=lambda band=None: nullcontext(self.gui),
+                                    phone=lambda *_tab: nullcontext(self.gui), scene_root="/plugin")
         #: (level, message) per log line.
         self.logs: list[tuple[str, str]] = []
 

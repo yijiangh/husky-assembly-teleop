@@ -1049,3 +1049,15 @@ def test_a_program_stopped_at_the_prompt_is_refused_after_confirm():
     assert result.status == REFUSED and lab.published() == 0
     assert result.reason == ("B20_R_home: cindy (a200-0806) left_ur_arm: its program is stopped (Stop all, or the sync "
                              "stopped it); press Resume")
+
+
+def test_confirm_and_cancel_are_buttons_of_their_own_in_the_assembly_tab():
+    """Confirm and Cancel are two buttons, on the desktop as on the phone; the desktop's reach the plugin."""
+    lab = Lab()
+    buttons = lab.ctx.gui.of_kind("button")
+    assert [(button.label, button.color) for button in buttons] == [("Confirm", "green"), ("Cancel", "red")] * 2
+    assert lab.ctx.gui.of_kind("button_group") == []
+    buttons[0].callback()
+    assert lab.plugin._last == "nothing to answer"
+    buttons[1].callback()
+    assert lab.ctx.lines("info")[-1] == "Cancel: nothing to cancel"

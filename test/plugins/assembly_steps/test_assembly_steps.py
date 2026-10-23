@@ -96,11 +96,18 @@ def _answered(value):
     return future
 
 
+def fake_process(transfer_as_free: bool = True) -> SimpleNamespace:
+    """The process plugin as the step panel sees it: its two boxes, and the joints carried forward (`carries`)."""
+    process = SimpleNamespace(obstacles_collide=True, transfer_as_free=transfer_as_free, carries=[])
+    process.request_carry = process.carries.append
+    return process
+
+
 class Steps(RobotLab):
     """The robots live, the run at `current`, the step panel on a fake planner and executor.
 
-    The process plugin is only its "Rhino obstacles collide" box, ticked, and its "Transfer workaround" box; a test
-    flips `process.obstacles_collide` or `process.transfer_as_free`.
+    The process plugin is only its "Rhino obstacles collide" box, ticked, its "Transfer workaround" box, and the joints
+    carried forward; a test flips `process.obstacles_collide` or `process.transfer_as_free`.
     """
 
     def __init__(self, current, transfer_as_free: bool = True):
@@ -109,7 +116,7 @@ class Steps(RobotLab):
         self.loaded = purged_process()
         self.run = FakeRun(self.loaded, current)
         self.planner, self.executor = FakePlanner(self), FakeExecutor()
-        self.process = SimpleNamespace(obstacles_collide=True, transfer_as_free=transfer_as_free)
+        self.process = fake_process(transfer_as_free)
         self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor,
                             "process": self.process}
         self.ctx.kinematics = SimpleNamespace(base_pose=lambda serial: self.bases[serial],
@@ -137,26 +144,61 @@ class Steps(RobotLab):
             await self.plugin._plan_task
 
 
-def test_steps_follow_the_run_and_walk_with_prev_and_next():
-    """B20_J (workaround): place and grasp after the transfer, the load skipped; Next, Prev; B20_R's ungrasp.
+def test_steps_follow_the_run():
+    """B20_J (workaround): place and grasp after the transfer, the load skipped; the insert once the run is there.
 
-    The insert is refused: not supported yet.
+    The run follows the process panel's selection; the insert is refused: not supported yet. B20_R's ungrasp goes with
+    its move.
     """
     lab = Steps(("B20_J", 3))
     assert lab.plugin.position == (1, 2) and lab.plugin.traj_time == 10.0
     assert lab.plugin._panel._status.content.count('class="chip-line"') == 1
     assert "then: B20_J_place_bar, B20_J_grasp · skipped: B20_J_load" in lab.html()
     assert "moves left_ur_arm, right_ur_arm; then waits for B20_J_place_bar by hand; then tightens" in lab.html()
-    lab.plugin.go(lab.ctx, 1)
+    lab.run.view.current = ("B20_J", 4)
     lab.update()
-    assert lab.run.selected == [("B20_J", 4)] and lab.plugin.position == (2, 2)
-    assert "refuses B20_J_insert: the insert is not supported yet" in lab.html()
-    lab.plugin.go(lab.ctx, 1)
-    assert "no step there" in lab.plugin._message
-    lab.plugin.go(lab.ctx, -1)
-    assert lab.run.selected[-1] == ("B20_J", 3)
+    assert lab.plugin.position == (2, 2) and "refuses B20_J_insert: the insert is not supported yet" in lab.html()
+    lab.run.view.current = ("B20_J", 3)
+    lab.update()
+    assert lab.plugin.position == (1, 2) and lab.run.selected == []
     lab = Steps(("B20_R", 1))
     assert "with: B20_R_ungrasp" in lab.html()
+
+
+def test_live_ik_says_which_start_it_solves():
+    """The transfer's goal is the insert start, the approach's the linear move's start; other moves have none."""
+    labels = {current: Steps(current).ctx.gui.of_kind("button")[0].label
+              for current in (("B20_J", 3), ("B21_H", 0), ("B20_R", 2))}
+    assert labels == {("B20_J", 3): "Live IK: insert start", ("B21_H", 0): "Live IK: linear start",
+                      ("B20_R", 2): "Live IK (transfer or approach only)"}
+
+
+def test_a_plan_fills_the_plots_and_carries_its_end_until_another_action():
+    """A plan fills both plots, and the process panel draws the action on from its last row.
+
+    Clear empties the plots; another movement of the action keeps the carried joints, another action drops them.
+    """
+    lab = Steps(("B20_R", 2))
+    asyncio.run(lab.plan())
+    lab.update()
+    values, steps = lab.ctx.gui.of_kind("uplot")
+    trajectory = lab.plugin.route.result.trajectory
+    assert len(values.data) == 1 + len(trajectory.joint_names) and len(values.data[0]) == len(lab.plugin.path.times)
+    assert [series["label"] for series in values.series[1:4]] == ["L pan", "L lift", "L elbow"]
+    assert list(steps.data[0]) == [1.0, 2.0] and steps.data[1][0] == pytest.approx(math.degrees(0.05))
+    carry, = lab.process.carries[1:]
+    assert (carry.action_id, carry.movement_id, carry.robot) == ("B20_R", "B20_R_home", "robots/cindy")
+    assert carry.joints == dict(zip(trajectory.joint_names, trajectory.positions[-1]))
+    lab.plugin._on_path(lab.ctx, "Clear")
+    lab.update()
+    # * Emptied to one blank point: a plot sent no rows never draws again in an open page (viser 1.1.1).
+    assert all(len(column) == 1 and math.isnan(column[0]) for column in values.data[1:] + steps.data[1:])
+    lab.run.view.current = ("B20_R", 1)
+    lab.update()
+    assert lab.process.carries[-1] is carry
+    lab.run.view.current = ("B21_H", 0)
+    lab.update()
+    assert lab.process.carries[-1] is None
 
 
 def test_toggling_the_workaround_moves_to_the_steps_primary():
@@ -305,8 +347,8 @@ def test_exec_moves_on_to_the_next_step():
     assert lab.run.selected == [("B35_H", 2)]
 
 
-def test_the_last_step_offers_mark_done():
-    """Belle's close, the action's last step, done: Mark B35_H done is offered and marks it in the run."""
+def test_the_last_step_suggests_mark_done():
+    """Belle's close, the action's last step, done: the panel says to Mark done (assembly_run's button, below)."""
     lab = Steps(("B35_H", 3))
 
     async def scenario():
@@ -317,9 +359,7 @@ def test_the_last_step_offers_mark_done():
     asyncio.run(scenario())
     lab.update()
     assert lab.run.selected == [] and lab.plugin.offer == "B35_H"
-    assert any(widget.label == "Mark B35_H done" for widget in lab.ctx.gui.of_kind("button"))
-    lab.plugin.mark_done(lab.ctx)
-    assert lab.run.marked == ["B35_H"]
+    assert "every step of B35_H done: Mark done below" in lab.html() and lab.run.marked == []
 
 
 @pytest.mark.safety
@@ -390,17 +430,40 @@ def test_check_goal_asks_with_the_run_and_records_the_answer():
                             hide=lambda: shown.append(None))
     lab.plugin.show_target(lab.ctx, ghost)
     assert shown == [(lab.bases["a200-0806"], RAW)]
-    lab.plugin.go(lab.ctx, 1)
+    carry = lab.process.carries[-1]
+    assert (carry.action_id, carry.movement_id, carry.robot, carry.joints) == ("B20_J", "B20_J_transfer",
+                                                                               "robots/cindy", RAW)
+    lab.run.view.current = ("B20_J", 4)
     lab.update()
     lab.plugin.show_target(lab.ctx, ghost)
     assert shown[-1] is None or shown[-1][1] != RAW
 
 
+def test_a_late_live_ik_answer_carries_nothing_once_the_step_changed():
+    """The run moves to another action while Live IK waits: its answer comes; nothing is carried, its line says so."""
+    lab = Steps(("B20_J", 3))
+
+    async def scenario():
+        answer = asyncio.get_running_loop().create_future()
+        lab.planner.request_ik = lambda request: answer
+        task = asyncio.ensure_future(lab.plugin.checked_goal(lab.ctx))
+        await asyncio.sleep(0)
+        lab.run.view.current = ("B21_H", 0)
+        lab.update()
+        answer.set_result(cindy_check())
+        return await task
+
+    check = asyncio.run(scenario())
+    assert check.ok and lab.process.carries[-1] is None and goal_line(check) not in lab.plugin._message
+    assert lab.plugin._message == "Live IK for B20_J_transfer came after the step changed: not used"
+
+
 def test_check_goal_refuses_routines_without_an_ik_goal():
-    """Check goal on the way home (joints, not IK) says so and asks nothing."""
+    """Live IK on the way home (joints, not IK) says so and asks nothing."""
     lab = Steps(("B20_R", 2))
     lab.plugin.check_goal(lab.ctx)
-    assert "only a transfer or an approach" in lab.plugin._message and lab.planner.goals == []
+    assert "only a transfer (the move before the insert) or an approach" in lab.plugin._message
+    assert lab.planner.goals == []
 
 
 # --- --- --- --- --- the slow walk: the real motion planner and executor --- --- --- --- ---
@@ -439,7 +502,7 @@ class Walk(RobotLab):
         self.executor = MovementExecPlugin()
         # * The Rhino obstacles count, as the walk was planned before their box.
         self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor,
-                            "process": SimpleNamespace(obstacles_collide=True, transfer_as_free=True)}
+                            "process": fake_process()}
         self.executor.setup(self.ctx)
         self.ctx.kinematics = SimpleNamespace(base_pose=lambda serial: self.bases[serial], joints=lambda serial: {})
         self.steps = AssemblyStepsPlugin()

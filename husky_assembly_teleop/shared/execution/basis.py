@@ -49,7 +49,7 @@ class PlanBasis:
         ignore_built: Whether built bars were left out.
         statuses: Every action's status in the run when planned.
         time: ROS time of planning, seconds.
-        goal_base: Where the robot stood when the goal the plan reused was solved (Check goal), or None.
+        goal_base: Where the robot stood when the goal the plan reused was solved (Live IK), or None.
         obstacles_collide: Whether the process's obstacles from Rhino counted.
     """
 
@@ -157,7 +157,7 @@ def stale_reason(basis: PlanBasis, snapshot: Scene, *, loaded: LoadedProcess | N
         distance, turn = pose_error(robot.base, basis.goal_base)
         if distance > STALE_BASE[0] or turn > STALE_BASE[1]:
             return (f"{basis.serial}'s base is {distance * 1e3:.1f} mm, {math.degrees(turn):.2f}° from where its goal "
-                    f"was solved (Check goal again and replan beyond {STALE_BASE[0] * 1e3:.0f} mm or "
+                    f"was solved (Live IK again and replan beyond {STALE_BASE[0] * 1e3:.0f} mm or "
                     f"{math.degrees(STALE_BASE[1]):.1f}°)")
     for live, (base, joints) in basis.others.items():
         other = snapshot.robots.get(live)

@@ -1,5 +1,7 @@
 """
-The assembly_run panel: the run, its actions, its buttons and prompt, its settings, and where the robots are.
+The assembly_run part of the Assembly tab: Mark done and Reopen, the run's settings, the run, and where the robots are.
+
+The actions are listed, with their marks, in the process panel; selecting one there makes it current here.
 
 ! Never hide a row or a button, and keep every changing line one line tall, so nothing moves under the cursor.
 """
@@ -11,15 +13,15 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from ...plugin_api.context import PluginContext
 from ...shared.runs.runs import DONE, RunSettings
-from ...ui.checklist import ACTION_ROWS, action_window
+from ...ui.assembly_tab import MARK_BAND, MARK_ICON, REOPEN_ICON, RUN_BAND, RUN_SETTINGS_BAND, TAB_BUTTONS_CSS
+from ...ui.phone import side_by_side_css
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
+from .writes import AGAIN_MARK, AGAIN_NEW_RUN
 
 if TYPE_CHECKING:
     from ...shared.assembly_run_contract import RunView
     from .plugin import AssemblyRunPlugin
 
-#: Shown in place of the robot for an action no robot acts in.
-BY_HAND = "by hand"
 #: The run buttons.
 CONTINUE_NEWEST, CONTINUE_MATCH, NEW_RUN = "Continue newest", "Continue match", "New run"
 
@@ -29,7 +31,7 @@ class PanelStatus(NamedTuple):
 
     Attributes:
         run: The run's name, or "".
-        prompt: The question waiting for Confirm or Cancel, or "".
+        again: The click waiting for its second one (`AssemblyRunPlugin.again`), or "".
         message: The last line of feedback, and whether it is a failure.
         save_error: The last write that failed, or "".
         robots: One line per configured robot, live or where it was recorded (the plugin's `robot_lines`).
@@ -37,7 +39,7 @@ class PanelStatus(NamedTuple):
     """
 
     run: str
-    prompt: str
+    again: str
     message: tuple[str, bool]
     save_error: str
     robots: tuple[str, ...]
@@ -48,59 +50,57 @@ class RunPanel:
     """The panel's widgets, built once, and what `draw` writes into them. Main thread."""
 
     def __init__(self, ctx: PluginContext, plugin: AssemblyRunPlugin):
-        """Build the panel; every click becomes one of the plugin's requests.
+        """Build the panel in the Assembly tab; every click becomes one of the plugin's requests.
 
         Args:
             ctx: The plugin's context.
             plugin: The plugin the buttons call.
         """
-        # The action shown in each row as last drawn, so a click is read against it.
-        self._actions: list[str | None] = [None] * ACTION_ROWS
         # The settings the widgets were last set to, and the refusals counted then.
         self._shown_settings: tuple[RunSettings, int] | None = None
-        with ctx.view.ui() as gui:
-            self._status = gui.add_html("")
-            self._title = gui.add_html(section("actions", SECTION_CTRL))
-            self._rows = [gui.add_button("·", color="gray") for _ in range(ACTION_ROWS)]
-            run = gui.add_button_group("Run", [CONTINUE_NEWEST, CONTINUE_MATCH, NEW_RUN],
-                                       hint="Continue the run used last, made on another export of this process, in a "
-                                            "new run; or write on in an older run made on these very files; or start "
-                                            "a new run, every action pending (asks first). Old runs are kept")
-            action = gui.add_button_group("Action", ["Mark done", "Reopen"],
-                                          hint="Mark the current action done, recording every live robot where it "
-                                               "is; or put it back to pending")
-            prompt = gui.add_button_group("Prompt", ["Confirm", "Cancel"], hint="Answer the question below")
-            self._prompt = gui.add_html("")
-            gui.add_html(section("settings", SECTION_TOOL))
+        with ctx.view.ui(band=MARK_BAND) as gui:
+            gui.add_html(section("action", SECTION_CTRL))
+            # * Draws nothing: the tab's big buttons, and Mark done and Reopen side by side once they exist.
+            pair = gui.add_html("")
+            self._mark = gui.add_button("Mark done", color="yellow", icon=MARK_ICON,
+                                        hint="Mark the current action done, recording every live robot where it is. "
+                                             "Its robot not live: click again within 10 s to record the export's "
+                                             "end, assumed")
+            reopen = gui.add_button("Reopen", color="gray", icon=REOPEN_ICON,
+                                    hint="Put the current action back to pending")
+            pair.content = (f"<style>{TAB_BUTTONS_CSS}{side_by_side_css([self._mark._impl.uuid, reopen._impl.uuid])}"
+                            f"</style>")
+            # ! Keep changing text BELOW the buttons.
+            self._details = gui.add_html("")
+        with ctx.view.ui(band=RUN_SETTINGS_BAND) as gui:
             self._split = gui.add_slider("Insert split mm", min=0.0, max=30.0, step=0.5, initial_value=5.0,
                                          hint="The insert's last millimetres run compliant")
             self._spiral = gui.add_checkbox("Spiral", False, hint="The insert's compliant part searches in a spiral")
             self._servo = gui.add_checkbox("Servo by bar", False,
                                            hint="Servo a grounded bar by its mocap fit instead of tool0")
-            # ! Keep changing text BELOW the buttons.
-            self._details = gui.add_html("")
+        with ctx.view.ui(band=RUN_BAND) as gui:
+            gui.add_html(section("run", SECTION_TOOL))
+            self._status = gui.add_html("")
+            self._run = gui.add_button_group("Run", [CONTINUE_NEWEST, CONTINUE_MATCH, NEW_RUN],
+                                             hint="Continue the run used last, made on another export of this "
+                                                  "process, in a new run; or write on in an older run made on these "
+                                                  "very files; or start a new run, every action pending (click again "
+                                                  "within 10 s). Old runs are kept")
+            self._robots = gui.add_html("")
 
-        for row, button in enumerate(self._rows):
-            button.on_click(ctx.defer("select action", lambda row=row: self._select(plugin, row)))
-        run.on_click(ctx.defer_value("run button", lambda label: self._run(plugin, label)))
-        action.on_click(ctx.defer_value("action button", lambda label: plugin.request_mark_done()
-                                        if label == "Mark done" else plugin.request_reopen()))
-        prompt.on_click(ctx.defer_value("prompt button", lambda label: plugin.answer(label == "Confirm")))
+        self._mark.on_click(ctx.defer("mark done", plugin.request_mark_done))
+        reopen.on_click(ctx.defer("reopen", plugin.request_reopen))
+        self._run.on_click(ctx.defer_value("run button", lambda label: self._on_run(plugin, label)))
         settings = ((self._split, "insert_split_mm", float), (self._spiral, "spiral", bool),
                     (self._servo, "servo_by_bar", bool))
         for widget, setting, kind in settings:
             widget.on_update(ctx.defer_value(setting, lambda value, setting=setting, kind=kind:
                                              plugin.request_settings(**{setting: kind(value)})))
 
-    def _select(self, plugin: AssemblyRunPlugin, row: int) -> None:
-        """Make the action in a row current; empty rows do nothing."""
-        if self._actions[row] is not None:
-            plugin.request_set_current(self._actions[row])
-
     @staticmethod
-    def _run(plugin: AssemblyRunPlugin, label: str) -> None:
-        """Ask for what a run button says."""
-        if label == NEW_RUN:
+    def _on_run(plugin: AssemblyRunPlugin, label: str) -> None:
+        """Ask for what a run button says; New run reads "New run: click again" while it waits for the second click."""
+        if label.startswith(NEW_RUN):
             plugin.request_new_run()
         elif label == CONTINUE_NEWEST:
             plugin.request_continue()
@@ -132,26 +132,15 @@ class RunPanel:
             chips += chip("save error", FAIL, status.save_error)
         self._status.content = chip_line(chips)
 
-        current = view.current
-        index = schedule.index(current[0]) if current is not None and current[0] in schedule else None
-        top = action_window(index or 0, len(schedule))
-        self._title.content = section("actions", SECTION_CTRL,
-                                      f"{index + 1}/{len(schedule)}" if index is not None else "")
-        for row, button in enumerate(self._rows):
-            at = top + row
-            self._actions[row] = schedule[at] if at < len(schedule) else None
-            if self._actions[row] is None:
-                button.label, button.color = "·", "gray"
-                continue
-            action = loaded.process.actions[schedule[at]]
-            robot = loaded.process.robots[action.robot].name if action.robot else BY_HAND
-            assumed = action.id in view.assumed
-            label = f"{at + 1}. {action.id} · {robot} · {view.statuses[action.id]}"
-            button.label = label + " (assumed)" if assumed else label
-            button.color = ("blue" if index == at else "orange" if assumed
-                            else "green" if view.statuses[action.id] == DONE else "gray")
-
-        self._prompt.content = block(_one_line(escape(status.prompt) or "&nbsp;", BUSY if status.prompt else NONE))
+        # * Mark done names the action it marks, e.g. "B20_J done" beside its check icon (short: a half-width button at
+        #   18 px); a click waiting for its second one says so on its button.
+        action = view.current[0] if view.current is not None else None
+        if action is not None and status.again == f"{AGAIN_MARK} {action}":
+            self._mark.label = "Click again"
+        else:
+            self._mark.label = f"{action} done" if action is not None else "Mark done"
+        self._run.options = (CONTINUE_NEWEST, CONTINUE_MATCH,
+                             f"{NEW_RUN}: click again" if status.again == AGAIN_NEW_RUN else NEW_RUN)
         if (view.settings, status.settings_refused) != self._shown_settings:
             # ? Only when the settings change or a change was refused: the operator's own accepted click comes back
             #   as a request for what is already set, which changes nothing.
@@ -160,9 +149,9 @@ class RunPanel:
             self._servo.value = view.settings.servo_by_bar
 
         message, failed = status.message
-        lines = [f"current   {_where(view)}", *status.robots]
-        self._details.content = block(values(*(_one_line(escape(line)) for line in lines))
+        self._details.content = block(values(_one_line(escape(f"current   {_where(view)}")))
                                       + _one_line(escape(message) or "&nbsp;", FAIL if failed else NONE))
+        self._robots.content = block(values(*(_one_line(escape(line)) for line in status.robots)))
 
 
 def _where(view: RunView) -> str:

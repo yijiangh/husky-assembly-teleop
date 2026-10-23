@@ -7,7 +7,7 @@ A part is a motion along a plan, a tool step (Robotiq open or close, a scaffoldi
 Routines not supported yet are refused, naming what is missing (`LATER`). While movement_exec has a robot's lease for
 a step, nothing that changes the step may change (`step_running`).
 
-Pure: any thread.
+Pure: any thread, but `step_running` (main thread only: it reads the robots' leases).
 """
 
 from __future__ import annotations
