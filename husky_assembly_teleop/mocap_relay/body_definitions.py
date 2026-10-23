@@ -6,6 +6,8 @@ orientation edit moves them all together; another body on the same streaming id 
 streaming ids are not part of a body: the same markers under another name or id are the same body.
 
 ! Not used by the relay yet: `scripts/mocap_body_definitions.py` tries it against Motive.
+! WIP: written for NatNet 4.1 (Motive 3.1+); the lab's Motive 3.0.3.1 streams NatNet 4.0, which it cannot read past
+  a description of another kind than marker set or rigid body.
 """
 
 from __future__ import annotations

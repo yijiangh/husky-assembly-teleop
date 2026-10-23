@@ -1,6 +1,11 @@
 """
 Watch Motive's rigid body definitions and report refines, pivot edits, bodies made again and other bodies on an id.
 
+! WIP, written for the wrong Motive version: it expects Motive 3.1 or later (NatNet 4.1, every description carries its
+  size), but the lab runs Motive 3.0.3.1 (NatNet 4.0). There it stops at the first description that is neither a
+  marker set nor a rigid body (kind 5) and reports no bodies. Its default server, 192.168.0.117, is not
+  the lab's Motive PC either: pass --server-ip 192.168.0.28.
+
     python3 scripts/mocap_body_definitions.py watch                        Motive at 192.168.0.117, every 2 s
     python3 scripts/mocap_body_definitions.py watch --ids 1850,1866 --log /tmp/definitions.jsonl
     python3 scripts/mocap_body_definitions.py compare /tmp/definitions.jsonl 3 17   readings 3 and 17 of a log
