@@ -6,6 +6,8 @@ Project-wide instructions for coding agents. Keep them generic: no personal path
 
 - Simplicity first: make every change as simple as possible and touch as little code as possible. Reuse existing functions instead of writing new ones.
 - Code is read by humans and agents: write comments, in plain language without jargon (no "no-op").
+- For an analysis or report that others will act on, a reviewer subagent loop often catches what you missed:
+  `doc/experiment_report_guide.md`, "Review before handing over". A suggestion, not a rule.
 
 ## Panels: nothing jumps
 

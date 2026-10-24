@@ -77,6 +77,25 @@ missing bar looks like zero error: label it.
 - The results prompt fixes the sections of `results.md` and its rules: only what the data shows, with its numbers; a
   difference within the spread is no difference.
 
+## Review before handing over
+
+A suggestion for any analysis or report that others will act on (an experiment's results, a calibration study, a layout
+proposal), not a rule: let a reviewer subagent grade it before you hand it over, and iterate. It catches overclaims
+before the reader does.
+
+- Brief a fresh reviewer with the work itself (the report, the scripts, the data), not your conclusions about it, and
+  ask for a grade, GOOD or NEEDS WORK, on fixed criteria:
+  - Is it easy to understand for its readers?
+  - Does it model the real system accurately?
+  - Does it answer the core question?
+  - What would improve it, and what did it miss?
+  - Which axes or sections to add, and which to merge or drop (keeping the work somewhere)?
+- Fix what it finds, then resume the same reviewer (it keeps its context) for the next round. Stop at GOOD, or at a
+  round budget agreed with the user.
+- Check every claimed test against what it actually rules out: "these four tests tell the causes apart" is an
+  overclaim if two of them exclude the same cause.
+- When a review shows an earlier answer in the conversation overclaimed, say so and correct it.
+
 ## Checklist
 
 - [ ] Why and What we measured hold no data-derived numbers or judgements.
