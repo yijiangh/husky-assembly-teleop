@@ -75,6 +75,23 @@ def test_newest_only_decodes_the_newest_unless_its_event_is_listened(recording):
     assert positions == ([0.0, 1.0, 2.0] if recording else [2.0])
 
 
+def test_a_message_the_executor_takes_is_stamped_and_decoded():
+    """One that arrives between the drain and the executor still counts for the rates, and updates the state."""
+    node, positions, stamps = _Node(), [], []
+    RosConnections(node).subscription(JointState, "j", lambda m: positions.append(m.position[0]), newest_only=True,
+                                      on_stamp=stamps.append)
+    node.subscriptions[0].callback(_joint_state(10, 1.0))
+    assert (stamps, positions) == ([pytest.approx(10.25)], [1.0])
+
+
+def test_a_garbled_message_is_dropped_not_fatal():
+    """Too short to hold a stamp: both steps fail inside their guards, and the drain goes on."""
+    node, stamps = _Node(), []
+    RosConnections(node).subscription(JointState, "j", print, newest_only=True, on_stamp=stamps.append)
+    node.subscriptions[0].queue.append(b"\x00\x01")
+    assert _drain(node) == 1 and stamps == []
+
+
 def test_on_stamp_needs_a_header_and_newest_only():
     """Refused for a message without a header, and for a subscription that decodes everything anyway."""
     ros = RosConnections(_Node())

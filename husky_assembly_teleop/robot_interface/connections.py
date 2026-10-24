@@ -61,15 +61,24 @@ class RosConnections:
         if on_stamp is not None and (not raw or next(iter(message_type.get_fields_and_field_types().items()))
                                      != ("header", "std_msgs/Header")):
             raise ValueError(f"on_stamp needs newest_only and a message starting with a std_msgs/Header ({topic})")
-        guarded = self._guarded(topic, (lambda data: callback(deserialize_message(data, message_type))) if raw
-                                else callback)
         if not raw:
-            entity = self._node.create_subscription(message_type, topic, guarded, qos)
+            entity = self._node.create_subscription(message_type, topic, self._guarded(topic, callback), qos)
         else:
-            entity = self._node.create_subscription(message_type, topic, guarded, qos, raw=True)
-            # * Read by the monitor's drain (`HuskyMonitor._drain_subscriptions`): whether to decode every message.
+            stamp = (None if on_stamp is None
+                     else self._guarded(f"{topic} stamps", lambda data: on_stamp(header_stamp(data))))
+            decode = self._guarded(topic, lambda data: callback(deserialize_message(data, message_type)))
+
+            def stamp_and_decode(data: bytes) -> None:
+                """A message the executor took (it arrived after the drain): note its stamp and decode it."""
+                if stamp is not None:
+                    stamp(data)
+                decode(data)
+
+            entity = self._node.create_subscription(message_type, topic, stamp_and_decode, qos, raw=True)
+            # * Read by the monitor's drain (`HuskyMonitor._drain_subscriptions`): whether to decode every message,
+            #   and the stamp and decode steps on their own, each taking the undecoded message.
             entity.decode_every = (lambda: False) if newest_only is True else (lambda: newest_only.listened)
-            entity.on_stamp = None if on_stamp is None else self._guarded(f"{topic} stamps", on_stamp)
+            entity.on_stamp, entity.decode = stamp, decode
         self._destroyers.append(lambda: self._node.destroy_subscription(entity))
         return entity
 
