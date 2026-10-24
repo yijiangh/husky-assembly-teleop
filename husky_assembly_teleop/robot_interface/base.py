@@ -262,8 +262,9 @@ class BaseInterface:
         namespace = f"/{self._config.ros_namespace}"
         self._cmd_vel = self._ros.publisher(Twist, f"{namespace}/cmd_vel")
         self._base_path = self._ros.publisher(BasePath, f"{namespace}/base_path")
+        # * Newest-only unless a recording listens: decoding is most of their cost.
         self._ros.subscription(BaseFollowerState, f"{namespace}/base_follower/state", self._on_follower,
-                               MESSAGE_QUEUE)
+                               MESSAGE_QUEUE, newest_only=self.follower_reports)
         # ? Best effort QoS, since the platform's publisher QoS is unknown.
         self._ros.subscription(Bool, f"{namespace}/platform/emergency_stop", self._on_estop,
                                qos_profile_sensor_data)
@@ -272,9 +273,9 @@ class BaseInterface:
         # ? The velocity controller's odometry from the wheels (Clearpath's topic).
         self._ros.subscription(Odometry, f"{namespace}/platform/odom", self._on_odometry,
                                QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST,
-                                          depth=MESSAGE_QUEUE))
+                                          depth=MESSAGE_QUEUE), newest_only=self.odometry_messages)
         self._ros.subscription(JointState, f"{namespace}/platform/joint_states", self._on_joint_states,
-                               qos_profile_sensor_data)
+                               qos_profile_sensor_data, newest_only=True, on_stamp=self._on_joint_states_stamp)
         if self._config.mocap_id is not None:
             subscribe_mocap(self._ros, self._config.mocap_id, self.state,
                             lambda: self._node.get_clock().now().nanoseconds * 1e-9, self.mocap_messages)
@@ -493,13 +494,15 @@ class BaseInterface:
         self.odometry_messages.fire(self.state.odometry)
 
     def _on_joint_states(self, message: JointState) -> None:
-        """Store the wheel joints, and note the message for the stream's rate, gaps and delay."""
-        now = self._node.get_clock().now().nanoseconds * 1e-9
+        """Store the wheel joints."""
         state = self.state
         state.wheel_positions.update(zip(message.name, map(float, message.position)))
         state.wheel_velocities.update(zip(message.name, map(float, message.velocity)))
-        state.joint_states_update_time = now
-        state.joint_states_stats.add(now, message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec)
+        state.joint_states_update_time = self._node.get_clock().now().nanoseconds * 1e-9
+
+    def _on_joint_states_stamp(self, stamp: float) -> None:
+        """Note one joint_states message, decoded or not, for the stream's rate, gaps and delay."""
+        self.state.joint_states_stats.add(self._node.get_clock().now().nanoseconds * 1e-9, stamp)
 
     def _on_battery(self, message: BatteryState) -> None:
         """Store the battery charge, voltage and health."""

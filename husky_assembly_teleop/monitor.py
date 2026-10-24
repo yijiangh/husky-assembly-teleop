@@ -35,7 +35,7 @@ from .world.clearance import TRIPS_KEPT, ClearanceChecker, ClearanceTrip, assuma
 from .world.kinematics import Kinematics
 from .plugin_api.plugin import HuskyPlugin, UnknownPluginError, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
-from .robot_interface.connections import RosConnections
+from .robot_interface.connections import RosConnections, header_stamp
 from .robot_interface.mocap import subscribe_mocap
 from .robot_interface.mocap_relay import MocapRelayInterface
 from .robot_interface.mocap_state import pose_lost
@@ -419,8 +419,10 @@ class HuskyMonitor(Node):
         return count
 
     def _drain_subscriptions(self) -> int:
-        """Run the callback of every queued message of every subscription, oldest first.
+        """Take every queued message of every subscription, oldest first, and run the callbacks.
 
+        A newest-only subscription (`RosConnections.subscription`) hands each message's stamp to its `on_stamp`, then
+        calls back with the newest message only, unless its `decode_every` says every message is wanted.
         ! The executor takes only one message per subscription per tick: a 100 Hz topic would be read at
           the tick rate, from the old end of its queue (measured: about 1 s behind with depth 100).
 
@@ -429,6 +431,7 @@ class HuskyMonitor(Node):
         """
         taken = 0
         for subscription in self.subscriptions:
+            messages = []
             while taken < ROS_CALLBACKS_PER_TICK:
                 try:
                     with subscription.handle:
@@ -444,8 +447,17 @@ class HuskyMonitor(Node):
                 if message_and_info is None:
                     break  # this queue is empty
                 taken += 1
+                messages.append(message_and_info[0])
+            decode_every = getattr(subscription, "decode_every", None)
+            if messages and decode_every is not None:
+                if subscription.on_stamp is not None:
+                    for data in messages:
+                        subscription.on_stamp(header_stamp(data))
+                if not decode_every():
+                    messages = messages[-1:]
+            for message in messages:
                 try:
-                    subscription.callback(message_and_info[0])
+                    subscription.callback(message)
                 except Exception as error:
                     self.log_error(f"ROS callback of {subscription.topic_name} failed:\n{error!r}")
         return taken

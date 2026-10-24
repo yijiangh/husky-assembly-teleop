@@ -476,7 +476,7 @@ class ScaffoldingV1(EndEffector):
         self._set_io = self._ros.client(SetIO, f"{self.arm_namespace}/io_and_status_controller/set_io")
         # Via the arm's rate limiter, like ArmInterface.
         self._ros.subscription(IOStates, f"{self.arm_namespace}/rate_limiter/io_and_status_controller/io_states",
-                               self._on_io_states, qos_profile_sensor_data)
+                               self._on_io_states, qos_profile_sensor_data, newest_only=True)
 
     def service_is_ready(self) -> bool:
         """Whether the arm's set_io service is discovered and reachable."""
