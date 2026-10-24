@@ -81,6 +81,9 @@ python3 -m pytest -m "" --old-scripts         # also the old calibration scripts
   commit or merge only when it passes. Run nothing bigger while iterating.
 - Tests run on 4 workers (pytest-xdist) and fail after 60 s (pytest-timeout); both are in `requirements.txt`. Starting
   the workers takes ~3 s: use `-n 0` when the selection runs in under ~10 s (a folder, a small plugin's group).
+- ! A monitor (often with a simulation) is usually running on the same machine, and test runs slow its ticks. The
+  tests lower their own priority (`conftest.py`); never raise `-n` above the default 4, and do not start a suite while
+  another one (another agent's) is still running.
 - ! A test must not depend on how fast the machine is: workers share the cores, so a search under a wall-clock limit gets time to spare (`test_base_planner_lattice.py`).
 - `test/` mirrors the package: `test/<area>/` for `monitor`, `robot_interface`, `world`, `ui`, `plugin_api`, `shared`, `config`, `mocap_relay`, `core` (the core's mirrors as used here), `experiments`, and `test/plugins/<plugin>/`. `test/structure/` holds the layer test and the linters.
 - Mark a test `safety` when it guards a command to a real robot, or the frames and models commands rely on; keep these

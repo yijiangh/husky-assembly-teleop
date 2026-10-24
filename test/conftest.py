@@ -4,6 +4,7 @@ Tests under experiments/ check offline analysis that no robot session runs, so t
 Tests under plugins/<name>/ are marked <name>: `pytest -m <name>` runs that plugin's tests, slow ones too.
 Tests marked old_scripts run only with `--old-scripts`, even under `-m ""`.
 Every test holds TEST_LEASE, which the fake robots in `robot_fakes.py` are leased to.
+Tests run at low priority (NICENESS), so a monitor running on the same machine keeps its ticks.
 ? Without pytest-xdist or pytest-timeout (requirements.txt), their settings in setup.cfg are accepted and ignored: the
   tests run in one process, with no time limit, and the header says so. Nothing is installed for it.
 """
@@ -14,6 +15,11 @@ from importlib.util import find_spec
 # ! Before numpy loads: one BLAS thread per process, or the parallel workers' thread pools fight over the cores.
 for _variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_variable, "1")
+
+#: Niceness of the test processes; the workers inherit it. Measured: tests no slower, a running monitor's late
+#: ticks 5x fewer.
+NICENESS = 10
+os.nice(max(NICENESS - os.nice(0), 0))
 
 from pathlib import Path  # noqa: E402
 
