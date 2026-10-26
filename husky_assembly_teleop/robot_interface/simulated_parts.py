@@ -2,8 +2,8 @@
 Which parts of a robot are simulated: each announces itself once a second on /<robot>/simulated_parts.
 
 The simulators send it (crl_husky.simulated_parts): husky_sim for the base, multi_arm_safety_sync for arms on fake
-hardware (it runs them as simulated when launched with use_fake_hardware:=true), a fake Motive (sim_motive) for
-"mocap".
+hardware (it runs them as simulated when launched with use_fake_hardware:=true), each simulated tool by its namespace
+("gripper", "left_gripper"), a fake Motive (sim_motive) for "mocap".
 ! A part counts as simulated only while its announcements keep coming; one not heard from is real, with every check.
 """
 
@@ -23,7 +23,8 @@ class SimulatedPart:
     """One part's last announcement.
 
     Attributes:
-        part: "base", "mocap", or an arm by its namespace under the robot's, e.g. "left_ur5e".
+        part: "base", "mocap", or an arm or a tool by its namespace under the robot's, e.g. "left_ur5e",
+            "left_gripper".
         node: The node that simulates it, e.g. "husky_sim"; its parameters describe the simulation.
         kind: How it is simulated, e.g. "base simulator", "ur fake hardware".
         heard_at: ROS time it was last heard, seconds.

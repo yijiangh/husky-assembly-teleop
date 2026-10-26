@@ -114,7 +114,6 @@ class BaseExperimentPlugin(HuskyPlugin):
 
     name = "base_exp"
     icon = viser.Icon.CHART_LINE
-    experimental = True
     #: Automation needs the lab's border (`ObstaclesContract.lab`).
     requires = ("obstacles", "collisions")
 

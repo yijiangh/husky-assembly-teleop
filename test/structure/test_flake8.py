@@ -29,7 +29,6 @@ EXCLUDE = [str(ROOT / "husky_assembly_teleop" / d) for d in ("old", "mocap_relay
 
 @pytest.mark.flake8
 @pytest.mark.linter
-@pytest.mark.safety
 def test_flake8():
     """No flake8 findings, with lines up to 120 characters."""
     rc, errors = main_with_errors(argv=['--linelength', '120', '--exclude', *EXCLUDE, '--', *PATHS,

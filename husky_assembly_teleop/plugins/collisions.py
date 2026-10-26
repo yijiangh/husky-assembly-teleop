@@ -72,7 +72,6 @@ class CollisionsPlugin(HuskyPlugin):
     """A panel of collision hits reported by other plugins; offers `CollisionsContract`."""
 
     name = "collisions"
-    experimental = True
     icon = viser.Icon.ALERT_TRIANGLE
 
     def __init__(self):

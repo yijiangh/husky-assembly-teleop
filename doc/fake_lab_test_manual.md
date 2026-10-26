@@ -3,7 +3,7 @@
 Tests the new monitor (`yh/core-port`: Jakob's newer code, merged on 2026-10-21, plus the Rhino obstacles box of
 2026-10-22, and since 2026-10-23 every panel in a tab of the side panel) against three simulated robots on this laptop.
 The robots come from Jakob's simulation (`launch/sim.launch.py robot:=all`, [simulation_manual.md](simulation_manual.md)),
-on crl-husky `jg/ros2` (934fc9a or later): a simulated base and the UR driver's fake hardware for the arms, parked, with a fake Motive
+on crl-husky `jg/ros2` (78041cf or later): a simulated base and the UR driver's fake hardware for the arms, parked, with a fake Motive
 that adds Motive's measured latency, jitter and marker errors, and the mocap relay that publishes each base as on the
 lab PC. Everything talks over Zenoh, as the lab does with the new monitor, through a Zenoh router of the fake lab's own.
 There is no robot, no real Motive and no tool. Plan about an hour.
@@ -13,10 +13,6 @@ moved into tabs of the side panel (**Assembly** › Run, Exec, Steps; **Plan** �
 results are the same. Also on 2026-10-23 the fake lab moved to Jakob's simulation: the robots start on their park
 row instead of 0.5 m behind it, with mocap. Sections 0–2 were run again then; the base plans of 4.1, 4.2 and 9.2 were
 not, and say so.
-Later on 2026-10-23 the assembly moved into one side-panel tab, **Assembly**, in place of Assembly › Run, Exec,
-Steps and the Process tab: the process panel at its top (its action list with the run's marks), then the step,
-Confirm, Mark done, the settings, the run and the plan's plots. The steps that use it (2, 3, 5–9, 11) are written for
-that layout and have not been run with it yet: tell me where the page differs.
 
 ## What you are testing, and whose it is
 
@@ -31,10 +27,10 @@ bar's steps.
 | **obstacles.** The lab's measured obstacles, from `data/lab/main.json`: the cabinet, tables, tripods, trusses and the border walls. They always count. | Jakob | 2, 4 |
 | **The planners.** **base_planner_panel**, in **Plan** › **Base**, plans a base path and sends it to the robot's follower, with a clearance watch while it drives. **Plan** › **Arm** plans one arm to a joint target, and the **Collisions** tab lists what blocked a plan. | Jakob | 4, 6, 9 |
 | **The simulated robots.** Jakob's simulation (`launch/sim.launch.py`): crl-husky's simulator, a fake Motive and the mocap relay, with the `SIM` chips. The fake-lab scripts around it are ours. | Jakob | 1, 2 |
-| **assembly_run (ours, M4).** The run record `runs/<date>_<time>/`: which actions are done, where each robot was left, an event log. Mark done, Reopen, New run (in the **Assembly** tab), and continue after a restart. The run's settings: insert split, spiral, servo by bar. Each action's mark shows in the process panel's action list, and the run follows the movement you pick there. | **Ours** | 3–7, 9, 11 |
+| **assembly_run (ours, M4).** The run record `runs/<date>_<time>/`: which actions are done, where each robot was left, an event log. Mark done, Reopen, New run, and continue after a restart. The run's settings, such as the transfer workaround. | **Ours** | 4–6, 11 |
 | **motion_planner (ours, M3–M4).** Plans a step's motion at the live base through tamp, solves goals by exact IK (ssik), checks collisions. One worker, which the other plugins ask. | **Ours** | 5–7, 9 |
-| **assembly_steps (ours, M5).** The run's current step, in the side panel's **Assembly** tab: Live IK (the old Check goal), Plan, Play, Exec, the plan's plots. A plan goes stale when anything moves, or when a setting changes. | **Ours** | 5–9 |
-| **movement_exec (ours, M5).** Runs a step's parts after Confirm (the **Assembly** tab or the phone's Exec tab). One motion at a time across all robots: it leases every robot while it runs, so Jakob's panels get no lease. Checks before every send: another robot moving, a silent link, the safety sync. Retimes paths to the arms' limits. Tool steps, by-hand steps, Cancel, and a record of every part. | **Ours** | 5–8, 10 |
+| **assembly_steps (ours, M5).** The operator's step panel: Check goal, Plan, Play, Exec, Prev / Next, Mark done. A plan goes stale when anything moves, or when a setting changes. | **Ours** | 5–9 |
+| **movement_exec (ours, M5).** Runs a step's parts after Confirm (desktop or the phone's Exec tab). One motion at a time across all robots: it leases every robot while it runs, so Jakob's panels get no lease. Checks before every send: another robot moving, a silent link, the safety sync. Retimes paths to the arms' limits. Tool steps, by-hand steps, Cancel, and a record of every part. | **Ours** | 5–8, 10 |
 | **Under the hood (ours, M2–M3, not visible as a panel).** Each movement mapped to a routine, steps grouped (with the transfer workaround), the planning scene per movement, swept collision checks, and the core's tool-vs-tool check (CC.6). | **Ours** | everywhere a step is planned |
 | **Not in this test:** insert, retreat and handoff (M6, compliance); the servo and the MoCap bar fit (M7); calibration (M10). | Specs, waiting for your OK | – |
 
@@ -46,25 +42,20 @@ bar's steps.
 | The PyBullet window. | The 3D view, on the left of the page. |
 | The obstacles in the PyBullet scene, from the export. | The process's Rhino obstacles (drawn; they collide only when **Rhino obstacles collide** is ticked), plus the measured lab obstacles (the **obstacles** panel). |
 | The compas_fab export: `BarActions/`, `ActionSchedule.json`. | A *process folder*: `process.json` plus `actions/`, from Rhino's RSExportProcess. You open it in the **process** panel. |
-| `progress.json` and its Reset. | **assembly_run**, in the **Assembly** tab: the run folders, with Mark done, Reopen and New run. Each action's mark (pending, done, done (assumed)) shows in the process panel's action list. An old run is never deleted. |
-| The action list and the movement slider. | The **process** panel: its action rows, Step slider and ◀ mv / mv ▶. The movement you pick there becomes the run's current step. |
-| Check goal, Plan and Exec for the current movement. | The **Assembly** tab: **Live IK** (the old Check goal), **Plan**, Play and **Exec** for the run's current step. |
-| The confirmation before each motion or tool action. | **movement_exec**, in the Assembly tab: one prompt at a time, with **Confirm** and **Cancel**. The phone page has the same prompt. |
-| The Movement Preview window's plots. | The plots at the bottom of the Assembly tab: every joint along the plan, and the largest joint step between its rows. |
-| Jog, stow and gripper buttons. | The side panel on the right: **Assembly** (above); **Control** has a tab per robot (Base, and Arm or Left / Right); **Plan** has the base planner (Base), motion_planner (Motion) and the arm planner (Arm); **Collisions** has a tab of its own. |
+| `progress.json` and its Reset. | **assembly_run**: the run folders, with Mark done, Reopen and New run. An old run is never deleted. |
+| Check goal, Plan and Exec for the current movement. | **assembly_steps**: the same buttons for the run's current step, plus Play, and Prev / Next. |
+| The confirmation before each motion or tool action. | **movement_exec**: one prompt at a time, with Confirm and Cancel. The phone page has the same prompt. |
+| Jog, stow and gripper buttons. | The side panel on the right: **Control** has a tab per robot (Base, and Arm or Left / Right); **Plan** has the base planner (Base), motion_planner (Motion) and the arm planner (Arm); **Collisions** has a tab of its own. |
 
-Each tab of the side panel on the right belongs to one plugin and is named after it; the planners share the **Plan**
-tab, and the assembly's four the **Assembly** tab, top to bottom: process (the process, its actions, the step
-slider), assembly_steps (the step, Live IK, Plan, the preview, Exec), movement_exec (the prompt, Confirm and Cancel),
-assembly_run (Mark done and Reopen), then the settings, the run, and the plan's plots. Its buttons are coloured by
-what they do: teal computes without moving, orange starts a motion, green lets a waiting step go on, red stops, yellow
-records. Health floats at the top left.
+Each tab of the side panel on the right belongs to one plugin and is named after it; the assembly's three share the
+**Assembly** tab (assembly_run is **Assembly** › **Run**, movement_exec **Exec**, assembly_steps **Steps**), the
+planners the **Plan** tab. Health floats at the top left.
 
 **Words used below:**
 - **Milestones M2–M10.** These are steps of the port plan, not the tool's M1/M2 motors (the grasp prompt also mentions
   those).
 - **Transfer workaround.** The same rule as in the old monitor since 2026-10-06: the transfer runs as a free move
-  without the bar, and you place the bar at its end. Here that is the place-bar and grasp prompts.
+  without the bar, and you mount the bar at its end. Here that is the place-bar and grasp prompts.
 - **F5.** Finding 5 of the safety review of M5: what one robot's silent link does to the other robots' motions. You
   decide its rule after this test (section 8).
 
@@ -102,7 +93,7 @@ Before the first real-lab run, check that the robots have the same Zenoh version
 
 This is Jakob's export of the two-module demo. Its first 18 actions are the three-robot sequence B20–B37.
 
-**0.3** Build the workspace from this branch, with crl-husky on `jg/ros2` (934fc9a or later): the fake lab runs the installed relay
+**0.3** Build the workspace from this branch, with crl-husky on `jg/ros2` (78041cf or later): the fake lab runs the installed relay
 and fake Motive, and `env.sh` refuses an install without them.
 
 ```shell
@@ -156,7 +147,7 @@ its calibrations (every robot on `crl-husky default`), and once the robots are u
 
 > **Why `monitor.sh` starts the monitor in an odd way.** It imports pytest first, as a workaround for a bug I found
 > while preparing this test. compas_fab closes stdout for a moment around every model it loads. Inside the monitor,
-> other threads open files at the same moment, so Check goal (now Live IK) and Plan failed with
+> other threads open files at the same moment, so Check goal and Plan failed with
 > `OSError(16, 'Device or resource busy')`. compas_fab skips that step when pytest is imported. The real fix is your
 > decision, and comes after this test. Side effect: PyBullet's own messages print in the monitor pane.
 
@@ -176,51 +167,44 @@ its calibrations (every robot on `crl-husky default`), and once the robots are u
   and a `mocap` chip: green for Alice and Cindy, amber for Belle, whose fake Motive body reports the 1.2 mm marker
   error measured in the lab (hover it).
 - **Top left:** health, with Stop all.
-- **Side panel on the right:** the tabs **Assembly**, **Collisions**, **Plan** (Base, Motion, Arm) and **Control** (one
-  tab per robot); **Obstacles** sits minimized at the right edge. Assembly is open: at the top the **PROCESS** section
-  (Folder, Load, the two boxes, an empty action list, the Step slider), then big buttons **Live IK (transfer or
-  approach only)**, **Plan** (teal), **Exec** (orange), **Confirm** | **Cancel** (green, red, side by side), **Mark
-  done** (yellow; once a process is loaded it is named after the current action, e.g. **B20_J done**) | **Reopen**;
-  the sliders **t** and **s** run across the whole row; two empty plots at the bottom.
+- **Side panel on the right:** the tabs **Process**, **Assembly** (Run, Exec, Steps: the order this manual uses them
+  in), **Plan** (Base, Motion, Arm), **Control** (one tab per robot) and **Collisions**; **Obstacles** sits minimized
+  at the right edge.
 
 **Expected in the simulation:**
-- `robotiq` and `scaffolding_v3` stay red: no tool drivers.
-- The top shows about `12 PROBLEMS`: the four tools, the seven `SIM` chips and Belle's `mocap`.
+- `robotiq` and `scaffolding_v3` are green, each followed by an amber `robotiq SIM` or `scaffolding_v3 SIM` chip.
+- The top shows about `12 PROBLEMS`: the eleven `SIM` chips (three bases, four arms, four tools) and Belle's `mocap`.
 - On a busy PC a base's `signal` chip may turn red (hover: a gap); see the known issues.
 
 ---
 
 ## 3. Load the process, the run, and the Rhino obstacles box
 
-**3.1** In the **process** panel, at the top of the **Assembly** tab, the folder is filled in. Click **Load** once, and
-wait 5–10 s.
+**3.1** In the **process** panel, the folder is filled in. Click **Load** once, and wait 5–10 s.
 
 It doesn't load by itself: the README says it does, but the code waits for this button.
 
 **Expect:**
 - **While it loads:** the chip shows the progress, such as `reading the robots' URDFs and meshes`.
 - **Then:**
-  - **process:** a green chip `261008_2ModulesDemo_purged_process`, `78 actions · 273 movements`, and an amber `robots
+  - **process:** a green chip `261008_2ModulesDemo_purged_process`, `78 actions · 306 movements`, and an amber `robots
     differ`. The amber chip is expected: this export used the old UR frames, and the monitor plans with the configured
     robots.
-  - **ACTIONS:** `1/78`, with `1. B20_J · cindy · 4 mv · pending` on top, in blue; every other row ends in
-    `· pending`, grey.
-  - **Assembly** tab: under ACTION, `current B20_J · B20_J_transfer (4/5)`; under RUN, `no run yet` and `0/78 done`,
-    and `alice`, `belle` and `cindy` each `live now`.
+  - **ACTIONS:** `1/78`, with `1. B20_J · cindy · 5 mv` on top.
+  - **assembly_run:** `no run yet` and `0/78 done`; `current B20_J · B20_J_transfer (4/5)`; `alice`, `belle` and
+    `cindy` each `live now`.
 
 **Open the page before you click Load, and keep that one page open.**
 - A page that opens or reloads after Load first receives the whole drawn process: about 200 bodies with their meshes.
   Until it has them, it shows the panel's starting state (`no process`, empty rows). That took about 20 s in my test.
 - Every Load draws everything again. So clicking Load again while a page catches up only sets it further back.
-- If the panel shows `no process` while the monitor pane says `[process] loaded … 78 actions, 273 movements`, wait
+- If the panel shows `no process` while the monitor pane says `[process] loaded … 78 actions, 306 movements`, wait
   about 30 s. Don't click Load again, and tell me if it doesn't recover.
 
-**The process panel chooses the run's current step.** Click an action row, drag the Step slider or click ◀ mv /
-mv ▶: the Assembly tab follows the movement you pick. Not while movement_exec has a robot's lease for a step (during an
-Exec): a pick then only shows that movement, the run stays on its step, and when the step ends the panel goes back to
-the run's step.
+**The process panel's Step slider** only changes which movement the 3D overlay shows. The run's current step is chosen
+in assembly_run (click an action) and assembly_steps (Prev / Next).
 
-**3.2** **The Rhino obstacles box (ours).** Under **Load** and **Transfer workaround**: **Rhino obstacles collide**.
+**3.2** **The Rhino obstacles box (ours).** Right under **Load**: **Rhino obstacles collide**.
 
 **Expect:**
 - unticked, with the grey chip `Rhino obstacles: drawn only` under it;
@@ -240,9 +224,6 @@ Untick it again.
 
 If a red `room unchecked` chip ever shows next to it, the measured obstacles are not loaded, and nothing in the room is
 checked. `monitor.sh` loads them; tell me if you see it.
-
-With **Transfer workaround** ticked (the default), B20_J is listed as `J_transit`, `J_M1`, `J_M2`, `J_M4` (B20 is a
-ground bar).
 
 ---
 
@@ -264,14 +245,14 @@ ground bar).
 6. Click **Clear**. Belle stays where she is.
 
 **4.2** **Cindy to her B20 base.** The base planner plans around the robots, the obstacles and whatever each robot
-holds at the movement the **process** panel shows. The run selects `B20_J_transfer` there. With the transfer workaround
-ticked, the panel shows it as the transit, from the action's start with empty tools: Cindy holds no bar yet.
+holds at the movement the **process** panel shows. The run selects `B20_J_transfer` there, and at that movement the
+design has Cindy *holding* bar B20. A held bar counts as part of Cindy, and from her start it sticks into the measured
+cabinet behind her, so her plan would be refused (`start is in collision with building cabinet`).
 
-**Expect:** in the **process** panel, `movement 1/4  B20_J_transfer` and the chip `J_transit`.
+So first show the action's start, before the bar is held: in the **process** panel, click **◀ action** once.
 
-(With the workaround unticked, the design has Cindy *holding* bar B20 at that movement. A held bar counts as part of
-Cindy, and from her start it sticks into the measured cabinet behind her, so her plan would be refused (`start is in
-collision with building cabinet`); click **◀ action** first to show the action's start.)
+**Expect:** `movement 1/5  B20_J_load`. This changes only the 3D overlay and the planners' loaded targets, not the
+run's current step.
 
 Then, in **base_planner_panel**:
 1. Pick Robot **a200-0806**.
@@ -299,49 +280,42 @@ The simulated base has a stand-in controller manager (crl-husky), so its `ctrl` 
 
 ## 5. B20_J on Cindy: the transfer, as the workaround runs it (ours)
 
-The **Assembly** tab shows at its top:
+The **assembly_steps** panel shows:
 
 ```
 B20_J · cindy (a200-0806) · step 1/2 · no plan
 B20_J_transfer (transfer_free) · then: B20_J_place_bar, B20_J_grasp · skipped: B20_J_load
 ```
 
-and the first button reads **Live IK: insert start**.
-
-**5.1** Click **Live IK: insert start** (the old Check goal). It takes about 10 s.
+**5.1** Click **Check goal**. It takes about 10 s.
 
 **Expect:**
 - **Monitor pane:** `check goal B20_J_transfer: goal found (ssik, rank 1 of 64), max |goal - authored| 0.07 rad`.
   - ssik is the exact IK solver; "rank 1 of 64" means it took its solution closest to the authored joints.
   - The 0.07 rad is because the base stopped about 2° off the design base.
-- **Assembly** tab, under ACTION: `run <date>_<time> started`. A run folder is created at the first thing it records.
-- In the **process** panel, click Show **Target**: Cindy's overlay stands at the goal just found, with the amber chip
-  `joints from live IK`. The same joints show at B20_J's later movements. Click Show **Start** again.
+- **assembly_run:** `run <date>_<time> started`. A run folder is created at the first thing it records.
 
 **5.2** Click **Plan**. It takes 20–40 s.
 
 **Expect:**
 - **Chip:** `plan ready`.
-- **Assembly** tab: `min … s by the arms' limits`, about 17 s. That is the 90°/s² acceleration cap at work.
+- **Panel:** `min … s by the arms' limits`, about 17 s. That is the 90°/s² acceleration cap at work.
 - **Monitor pane:** `transfer_free solved by tamp.plan_free_dual_arm: … waypoints, 1 tries`.
-- **Plots**, at the bottom of the Assembly tab:
-  - `joint values (deg)`: twelve lines, `L pan` … `R w3` (the right arm's dashed), over the preview's seconds;
-  - `joint step (deg)`: the largest joint change between two rows of the plan, per row.
 
 **5.3** Click **Play**.
 
-**Expect:** the preview runs as it will move. Drag the preview slider **t** to scrub through it.
+**Expect:** the preview runs as it will move. Drag `t s` to scrub through it.
 
 **5.4** Click **Exec**.
 
-**Expect:** under EXEC in the Assembly tab, `waiting for Confirm` and the whole sentence:
+**Expect:** the **movement_exec** panel shows `waiting for Confirm` and the whole sentence:
 
 > cindy (a200-0806): B20_J_transfer — move left_ur_arm, right_ur_arm along the planned path (Rhino obstacles not
 > checked), 17 s, largest joint travel …° (Play it first). Confirm to move.
 
 "(Rhino obstacles not checked)" is there because the box is unticked.
 
-Click **Confirm** (green, under the sentence), or on the phone's Exec tab.
+Click **Confirm** in movement_exec.
 
 **Expect:**
 - Both arms move.
@@ -360,27 +334,23 @@ Click **Confirm**.
 
 Click **Confirm**.
 
-**Expect:** the grasp is refused with `left_ur_arm: no tool status in the last 1 s; is its driver running?`. That is
-right for the simulation, which has no tool drivers.
+**Expect:** after about 2 s, `B20_J_grasp: every gripper screw STALLED: the bar is clamped`. The simulated tools stall
+a fixed time after the tighten, bar or no bar.
 
-**5.7** Step 2/2 is the insert. Don't run it: its Exec line says the insert is not supported yet, and **Plan** says
-why it makes no plan: `no plan: B20_J_insert: the insert is not supported yet`.
+**5.7** Step 2/2 is the insert. Don't run it: its Exec line says the insert is not supported yet.
 
-**5.8** Click **B20_J done** (Mark done: yellow, under ACTION).
+**5.8** In **assembly_run**, click Action **Mark done**.
 
 **Expect:**
 - `B20_J marked done in run …; recorded robots/a200-0804, robots/a200-0805, robots/a200-0806`;
-- the current action moves to `B20_R`;
-- in the process panel, `1. B20_J · cindy · 4 mv · done` turns green, and the B20_R row is blue.
+- the current action moves to `B20_R`.
 
 ---
 
 ## 6. B20_R: home, and one motion at a time (ours)
 
-**6.1** Step 1/2 is the retreat together with the ungrasp. Its Exec line says neither is supported yet. In the
-process panel, click **mv ▶** once (to `B20_R_home`).
-
-**Expect:** the Assembly tab shows step 2/2.
+**6.1** Step 1/2 is the retreat together with the ungrasp. Its Exec line says neither is supported yet. Click
+**Next ▶**.
 
 **6.2** Step 2/2 is `B20_R_home (free_home)`. Click **Plan**.
 
@@ -401,7 +371,7 @@ These are raw joint moves with no collision check (the panel says so), so use th
 
 **Expect:** `free_home solved by tamp.plan_free_dual_arm: … waypoints`.
 
-Then set the motion time **s** to **25**. The slow motion gives you time for 6.4.
+Then set **Motion s** to **25**. The slow motion gives you time for 6.4.
 
 **6.4** Click **Exec**, then **Confirm**. While Cindy moves:
 
@@ -411,19 +381,19 @@ Then set the motion time **s** to **25**. The slow motion gives you time for 6.4
 
 After about 25 s, **expect:** `B20_R_home: arrived, end within 0.00°` and `Exec B20_R_home: done — every part done`.
 
-**6.5** The Assembly tab now says `every step of B20_R done: Mark done below`. Click **B20_R done** (Mark done).
+**6.5** The step panel now has a button **Mark B20_R done**. Click it.
 
 **Expect:**
 - the current action becomes `B21_J`;
-- under RUN, `2/78 done`; in the process panel, the B20_R row is green.
+- **assembly_run** shows `2/78 done`.
 
 ---
 
 ## 7. Staleness, Cancel and Stop all (B20_J again)
 
-**7.1** In the process panel, click the row `1. B20_J · cindy · 4 mv · done`, then **Reopen** in the Assembly tab.
+**7.1** In **assembly_run**, click the row `1. B20_J · cindy · done`, then Action **Reopen**.
 
-**Expect:** `B20_J reopened in run …`, B20_J's transfer is the current step again, and its row ends in `· pending`.
+**Expect:** `B20_J reopened in run …`, and B20_J's transfer is the current step again.
 
 **7.2** Click **Plan**. It takes about 20 s, from Cindy's home pose.
 
@@ -444,12 +414,11 @@ This is ours.
 **Expect:**
 - **Monitor pane:** `Exec B20_J_transfer: refused — B20_J_transfer: the Rhino obstacles were switched on since
   planning`;
-- the Assembly tab: `plan stale: replan`.
+- the step panel: `plan stale: replan`.
 
 Untick the box again.
 
-**7.4** **Cancel during a motion (ours).** Plan, Exec, Confirm. While the arms move, click **Cancel** (red, next to
-Confirm).
+**7.4** **Cancel during a motion (ours).** Plan, Exec, Confirm. While the arms move, click **Cancel** in movement_exec.
 
 **Expect:**
 - **Monitor pane:** `cancelled: holding every arm`, and `Exec B20_J_transfer: cancelled — … (operator)`.
@@ -458,7 +427,7 @@ Confirm).
 **7.5** **Stop all during a motion (Jakob's button; our executor's reaction).**
 
 1. Plan again. The plan starts from where 7.4 stopped and is short.
-2. Set the motion time **s** to 20.
+2. Set **Motion s** to 20.
 3. Click Exec, then Confirm.
 4. While the arms move, click **Stop all (Esc)** at the top of the page (or press Esc).
 
@@ -494,7 +463,7 @@ it in a new pane: press Ctrl-b " to split, then `cd ~/Code/ros2_ws_next/src/husk
 **Expect:**
 - `link.sh: belle down (6 processes)`;
 - within about 2 s, health turns red for A200-0805;
-- **Assembly** tab, under RUN: `belle not live; last recorded live at …`.
+- **assembly_run:** `belle not live; last recorded live at …`.
 
 **8.2** Click **Exec**.
 
@@ -506,14 +475,14 @@ it in a new pane: press Ctrl-b " to split, then `cd ~/Code/ros2_ws_next/src/husk
 **8.3** Run `./link.sh belle up`.
 
 **Expect:**
-- within about 2 s, health turns green and the Assembly tab shows `belle live now`;
+- within about 2 s, health turns green and the run panel shows `belle live now`;
 - no Reconnect click is needed;
 - a burst of red `[rmw_zenoh_cpp] Query queue depth of 10 reached …` lines in the monitor pane: harmless (see the
   known issues).
 
 **8.4** **The link drops during a motion.**
 
-1. Plan if needed, then Exec, and Confirm, on Cindy.
+1. Plan if needed, then Exec and Confirm on Cindy.
 2. While her arms move, run `./link.sh belle down`.
 
 **Expect, within about 0.5 s:**
@@ -528,10 +497,10 @@ Note what you think. Is that right, or too strict for a robot that was standing 
 
 ## 9. The support robot: Alice at B21_H
 
-**9.1** In the process panel, click the row `4. B21_H · alice · 4 mv · pending`.
+**9.1** In **assembly_run**, click the row `4. B21_H · alice · pending`.
 
-**Expect:** the Assembly tab shows `B21_H · alice (a200-0804) · step 1/4 · B21_H_approach (support_approach)` and the
-button **Live IK: linear start**, and the process panel `movement 1/4  B21_H_approach`.
+**Expect:** the step panel shows `B21_H · alice (a200-0804) · step 1/4 · B21_H_approach (support_approach)`, and the
+process panel `movement 1/4  B21_H_approach`.
 
 **9.2** Drive Alice to her design base with **base_planner_panel** (Jakob's):
 1. Pick Robot **a200-0804**.
@@ -547,9 +516,9 @@ button **Live IK: linear start**, and the process panel `movement 1/4  B21_H_app
 - Alice drives in the 3D view, for about 50 s in the simulation.
 - **Control** → `0804` → `Base` shows `xyz ≈ +0.63 -1.56`, `yaw ≈ -32°`.
 
-**9.3** In the **Assembly** tab (ours), run the approach.
+**9.3** In **assembly_steps** (ours), run the approach.
 
-1. Click **Live IK: linear start**.
+1. Click **Check goal**.
    - **Expect:** `goal found (ssik, rank 1 of 8)`, about 0.07 rad from the authored goal, because the base stopped
      about 2° off.
 2. Click **Plan**.
@@ -560,8 +529,8 @@ button **Live IK: linear start**, and the process panel `movement 1/4  B21_H_app
 **9.4** Step 2/4 is `B21_H_open`. Click Exec; the prompt is `B21_H_open — OPEN the gripper (0.426). Confirm to send.`
 Click Confirm.
 
-**Expect:** it is refused with `/a200_0804/gripper: the gripper's action server is not available`. That is right: the
-simulation has no Robotiq driver. Stop the B21_H steps here.
+**Expect:** at once, `B21_H_open: at 0.426 rad`: the simulated Robotiq reaches every goal at once. Stop the B21_H steps
+here.
 
 ---
 
@@ -596,21 +565,16 @@ shows the same result as a desktop Confirm.
 
 **Expect:**
 - `continuing run <date>_<time>`;
-- the done actions are still done: green in the process panel's list;
+- the done actions are still done;
 - **Rhino obstacles collide** is unticked again: the box always starts off.
 
 The robots keep where they are across the restart, so there's no need to drive again.
 
-**11.3** In the Assembly tab, under RUN, click **New run**.
-
-**Expect:** the button reads **New run: click again**, and the line under Mark done says `New run: click New run again
-within 10 s to confirm; every action starts pending, the old run is kept`. After 10 s it reads **New run** again.
-
-Click it twice within 10 s.
+**11.3** In **assembly_run**, click Run **New run**. It asks in the panel's Prompt row (`Start a new run? Every action
+starts pending; the old run is kept.`); click **Confirm** there.
 
 **Expect:**
 - a new run folder, with `0/78 done` and current B20_J;
-- every row in the process panel ends in `· pending` again;
 - the old folder stays.
 
 ---
@@ -631,8 +595,7 @@ These are not mistakes on your side.
 |---|---|
 | The odd monitor start (pytest imported). | A workaround for compas_fab's stdout race (see section 1). It needs a real fix before any lab use: decision 1 afterwards. |
 | Rhino's cabinet `env39` is in a different place from the measured one. | Rhino's cabinet (y 1.63–2.23 m) is about 0.38 m nearer the park row (y = 1.35 m) than the probe-measured cabinet (`data/lab/main.json`, from y = 2.00 m). With **Rhino obstacles collide** ticked, the base planner refuses any start or target on the park row (4.1); unticked, the default, the row is fine, and the robots start on it. The Rhino file needs the fix for Rhino's own planning. |
-| Cindy's base path is refused while the process shows a movement where she holds a bar (4.2). | The base planner counts a held bar as part of the robot, and at `B20_J_transfer` the design has B20 in her grippers; from her start it reaches the measured cabinet. With **Transfer workaround** ticked, the process panel shows that movement without the bar, so this happens only with it unticked. Show the action's start (**◀ action**) first. |
-| Grasp and Robotiq steps are refused. | The simulation has no tool drivers. |
+| Cindy's base path is refused while the process shows a movement where she holds a bar (4.2). | The base planner counts a held bar as part of the robot, and at `B20_J_transfer` the design has B20 in her grippers; from her start it reaches the measured cabinet. With the transfer workaround, the bar isn't actually there while she drives, but the base planner doesn't know the workaround. Show the action's start (**◀ action**) first. |
 | Insert, retreat and handoff are refused; the servo logs "no servo correction (not supported yet)". | M6 and M7 are specified, not built. |
 | B20_R_home won't plan until Cindy's grippers are jogged off the bar (6.2). | In the simulation the insert and retreat never ran. |
 | Don't press **Cancel** in base_planner_panel right after a **Commit** while that robot is still driving an earlier path. | A race in Jakob's code (review finding M1, your decision 3a): within about one tick, the earlier path can keep driving with nothing watching it. Stop a driving base with **Stop all**. |
@@ -640,7 +603,6 @@ These are not mistakes on your side.
 | A base's `signal` chip turns red now and then (hover: a gap). | The monitor's own callbacks run late on a busy PC; the simulator publishes at a steady 50 Hz. Close other simulations and test runs, and run the monitor under the performance power profile. |
 | While a robot's link is down (8.1), its mocap pose keeps arriving, but ever older. | The fake Motive keeps publishing the frozen base, as Motive keeps tracking a robot whose WiFi dropped, but with the stamp of its last true pose. A fix in the fake Motive is Jakob's. |
 | A robot's arm stays red after `link.sh … up`. | The link was down for more than 60 s, and Zenoh's sessions expired (section 8). Restart the fake lab. |
-| During an Exec, the process panel shows a movement other than the run's current step. | A pick made while movement_exec has a robot's lease for a step only shows that movement; the run stays on its step. When the step ends, however it ends, the panel goes back to the run's step (its next one after a step done). To make another movement current, pick it after the Exec. |
 | process needs **Load**. | The README says it loads at start; the code waits for the button. A doc fix. |
 | A plan made in base_planner_panel or **Plan** → **Arm** before you change the Rhino obstacles box is kept. | Jakob's planners don't replan on a scene change (the same as when an obstacle is edited). Replan after changing the box. The assembly steps' plans do go stale (7.3). |
 | B20's transfer planned from Cindy's home failed 3 × 120 s once. | Alice and Belle stood next to Cindy with their arms straight out. With them away it solves in about 20 s. If Plan says "no path in 120 s", look at what stands in the way. |

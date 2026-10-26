@@ -592,12 +592,16 @@ class ArmInterface:
         sensor = qos_profile_sensor_data
 
         # --- --- measurements --- ---
-        self._ros.subscription(JointState, f"{measured}/joint_states", self._on_joint_state, RECORDED_QOS)
+        # * Newest-only: decoding is most of their cost, and the callbacks keep only the latest state.
+        self._ros.subscription(JointState, f"{measured}/joint_states", self._on_joint_state, RECORDED_QOS,
+                               newest_only=True, on_stamp=self._on_joint_state_stamp)
         # * The rate limiter extracts "tcp_pose" from dynamic_joint_states, which is large and slow to decode.
-        self._ros.subscription(PoseStamped, f"{measured}/tcp_pose", self._on_tcp_pose, RECORDED_QOS)
+        self._ros.subscription(PoseStamped, f"{measured}/tcp_pose", self._on_tcp_pose, RECORDED_QOS,
+                               newest_only=True)
         self._ros.subscription(IOStates, f"{measured}/io_and_status_controller/io_states",
-                               self._on_io_states, sensor)
-        self._ros.subscription(WrenchStamped, f"{measured}/ft_sensor_wrench", self._on_wrench, RECORDED_QOS)
+                               self._on_io_states, sensor, newest_only=True)
+        self._ros.subscription(WrenchStamped, f"{measured}/ft_sensor_wrench", self._on_wrench, RECORDED_QOS,
+                               newest_only=True)
 
         # --- --- commands --- ---
         self._trajectory = self._ros.publisher(
@@ -1200,8 +1204,10 @@ class ArmInterface:
         elif self.state.last_motion_time is None or now - self.state.last_motion_time > STILL_AFTER:
             self.state.is_executing = False
         self.state.last_update_time = now
-        stamp = message.header.stamp
-        self.state.joint_states_stats.add(now, stamp.sec + stamp.nanosec * 1e-9)
+
+    def _on_joint_state_stamp(self, stamp: float) -> None:
+        """Note one joint_states message, decoded or not, for the stream's rate, gaps and delay."""
+        self.state.joint_states_stats.add(self._now(), stamp)
 
     def _on_tcp_pose(self, message: PoseStamped) -> None:
         """Store the driver's "tcp_pose", raw (UR Base frame) and in the controller's `base_link`."""

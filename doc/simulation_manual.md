@@ -1,11 +1,13 @@
 # Simulation
 
 Simulated robots run on a PC beside the real system's own relay and monitor, unchanged: the monitor drives a simulated
-robot as it drives a real one, and health shows a `SIM` chip for a simulated base and each simulated arm. A simulation runs in a
-ROS domain of its own and refuses the robots' domain 80.
+robot as it drives a real one, and health shows a `SIM` chip for a simulated base, each simulated arm and each
+simulated tool. A simulation runs in a ROS domain of its own and refuses the robots' domain 80.
 
 - **The robot** (crl-husky): its base is `husky_sim`, a kinematic model of the skid-steer base driven by the real pure
-  pursuit follower; its arms run on the UR driver's fake hardware with their safety sync. It publishes what is truly
+  pursuit follower; its arms run on the UR driver's fake hardware with their safety sync; each arm carries the
+  robot's tool (crl-husky's `model.yaml`), simulated without motion: a Robotiq reaches every goal at once, a
+  scaffolding screw stalls `tighten_s` (2 s) after a tighten and loosens until stopped. It publishes what is truly
   there: the base's true pose and, with the calibration marker on an arm, that arm's true tool0.
 - **Motive** (teleop, optional): `sim_motive`, a fake Motive between the robot and the relay, adds Motive's
   imperfections to every true pose. It knows no robots or arms.
@@ -22,7 +24,7 @@ ROS domain of its own and refuses the robots' domain 80.
 
 Per rigid body the relay publishes the fake Motive's pose, else the truth, else Motive's, whichever streams; when one
 stops, the next comes back. Every simulated part announces itself on `/<robot>/simulated_parts` once a second
-(`base`, each arm, `mocap`); the monitor treats a part as simulated while it was heard within 3 s.
+(`base`, each arm, each tool, `mocap`); the monitor treats a part as simulated while it was heard within 3 s.
 
 ## Every terminal
 
@@ -57,7 +59,7 @@ ros2 launch husky_assembly_teleop sim.launch.py robot:=0805
 
 ## Several robots
 
-All of them, parked 1.4 m apart, without tools:
+All of them, parked 1.4 m apart, each arm with the robot's tool:
 
 ```bash
 ros2 launch husky_assembly_teleop sim.launch.py robot:=all fake_motive:=true
@@ -153,7 +155,7 @@ The robot (`sim_robot`):
 | `base`, `arms` | `true` | simulate the base, the arms |
 | `sim_model`, `controller_model` | the robot's `base_model` | how the base moves, what the follower assumes |
 | `start_x`, `start_y`, `start_yaw` | parked (park.yaml) | metres, radians |
-| `tool`, `tool_left`, `tool_right` | `none` | `calibration_marker` puts the marker on that arm |
+| `tool`, `tool_left`, `tool_right` | the robot's (`model.yaml`) | `robotiq_2F_85`, `scaffolding_v3` simulate that tool; `calibration_marker` puts the marker on that arm; `none` leaves it bare |
 | `marker_body` | 1866 | the marker's rigid body |
 | `joint_offsets` | 0 | the tool arms' encoder offsets, degrees ×6 shoulder_pan to wrist_3; `<arm namespace>:<values>` per arm |
 | `husky_urdf` | teleop's `data/husky_urdf` beside crl-husky | for the arms' mounts |
@@ -173,8 +175,9 @@ The fake Motive (`sim_mocap`, with `fake_motive:=true`); per-body values are `<v
 
 ## Not simulated
 
-- Grippers and the scaffolding tool (the calibration marker is only a tracked body), physics, contacts and forces
-  (the F/T sensor reads nothing), the UR dashboard, programs and protective stops.
+- The tools' motion and grip: they answer at once or after a fixed time, whatever is between the fingers; no Robotiq
+  reactivation, no tool buttons (so no free drive from them). Physics, contacts and forces (the F/T sensor reads
+  nothing), the UR dashboard, programs and protective stops.
 - The base's slip, accelerations and wheel dynamics; twist_mux and the joystick (husky_sim obeys `cmd_vel` itself).
 - Time: everything runs on the wall clock, never faster.
 

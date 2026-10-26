@@ -1,7 +1,8 @@
 """
 One module (or package) per feature, found by `plugin.discover`.
 
-Add a file with @register; run it with `-p plugins:="['<name>']"`.
+Add a file with @register; run it with `-p plugins:="['<name>']"`. Its tests go in `test/plugins/<name>/`, where
+`pytest -m <name>` runs them all, slow ones too (AGENTS.md).
 
 ! Everything that is not a real robot lives here; the runtime knows nothing about
   bars, racks or assembly steps. Plugins draw only into their own PluginView.

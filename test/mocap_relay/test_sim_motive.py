@@ -77,6 +77,7 @@ def test_per_body_values_need_their_count():
         body_values("7:0.1", 7, 2)
 
 
+@pytest.mark.slow
 def test_noise_has_the_asked_spread_and_no_bias():
     """Position noise per axis and the turn's rotation vector per axis have the given standard deviations."""
     rng = np.random.default_rng(3)

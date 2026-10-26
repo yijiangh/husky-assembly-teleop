@@ -19,10 +19,18 @@ from husky_assembly_teleop.shared.planner.rrt_connect import connect
 
 #: Paths per (dimensions, densified) case: 4 cases, 100 paths.
 SEEDS = range(25)
+#: The paths `searched_path` found, kept since each search takes up to a second. To search them again:
+#: `cd test && PYTHONPATH=.:$PYTHONPATH python3 shared/test_execution_retime.py`.
+RANDOM_PATHS = REPO / "test" / "retime_random_paths.json"
 
 
 @lru_cache(maxsize=None)
 def random_path(seed: int, dimensions: int) -> np.ndarray:
+    """The kept RRT-Connect path of this seed and number of joints (`searched_path`)."""
+    return np.array(json.loads(RANDOM_PATHS.read_text())[str(dimensions)][seed])
+
+
+def searched_path(seed: int, dimensions: int) -> np.ndarray:
     """An RRT-Connect path between random joint values around a few random balls, one across the straight line."""
     rng = np.random.default_rng(seed)
     start, goal = rng.uniform(-2.5, 2.5, (2, dimensions))
@@ -180,7 +188,7 @@ def assert_runs_within_limits(path: np.ndarray, timed) -> None:
 
 
 @pytest.mark.parametrize("dimensions", [6, 12])
-@pytest.mark.parametrize("dense", [False, True])
+@pytest.mark.parametrize("dense", [False, pytest.param(True, marks=pytest.mark.slow)])
 def test_the_executed_cubic_of_random_paths_keeps_the_limits(dimensions, dense):
     """At full speed and slower, the cubic between samples of 25 seeded paths keeps the limits and the path."""
     for seed in SEEDS:
@@ -227,6 +235,7 @@ def test_the_hard_check_measures_the_cubic_not_only_the_samples():
         _check(timed, _polyline(rows), samples, spacing)
 
 
+@pytest.mark.slow
 def test_a_short_move_is_stretched_until_its_cubic_keeps_the_split_acceleration():
     """A 1.94° single-joint move needs 97°/s^2 on 3 samples: it gets a 4th. Short straight moves up to 40° keep it."""
     path = np.zeros((2, 6))
@@ -238,3 +247,8 @@ def test_a_short_move_is_stretched_until_its_cubic_keeps_the_split_acceleration(
             path[1] = np.radians(degrees) * np.array(shape)
             for asked in (0.0, 1.0):
                 assert_runs_within_limits(path, retime(path, asked))
+
+
+if __name__ == "__main__":
+    RANDOM_PATHS.write_text(json.dumps({str(dimensions): [searched_path(seed, dimensions).tolist() for seed in SEEDS]
+                                        for dimensions in (6, 12)}) + "\n")

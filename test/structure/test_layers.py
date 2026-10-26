@@ -8,10 +8,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
 from repo_paths import REPO
-
-pytestmark = pytest.mark.safety
 
 PACKAGE = "husky_assembly_teleop"
 ROOT = REPO / PACKAGE

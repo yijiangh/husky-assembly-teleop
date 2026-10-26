@@ -36,6 +36,11 @@ class Event:
         if listener in self._listeners:
             self._listeners.remove(listener)
 
+    @property
+    def listened(self) -> bool:
+        """bool: Whether anything listens, so its topic must decode every message."""
+        return bool(self._listeners)
+
     def fire(self, record: Any) -> None:
         """Hand `record` to every listener, in the order they attached."""
         for listener in tuple(self._listeners):

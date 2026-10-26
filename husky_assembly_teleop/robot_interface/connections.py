@@ -2,16 +2,25 @@
 The ROS entities one interface created, so a reconnect can destroy and recreate them.
 
 Interfaces create every ROS entity through RosConnections, so plugins' references to the interface stay valid.
+A fast topic whose messages only update state can be read newest-only: the monitor takes its messages undecoded and
+decodes the newest one per tick (see `RosConnections.subscription`).
 """
 
 from __future__ import annotations
 
+import struct
 import traceback
 from typing import Callable
 
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
+from rclpy.serialization import deserialize_message
+
+from .event import Event
+
+#: Bytes before the first field of a serialized message: the CDR encapsulation header (its 2nd byte 1 = little endian).
+_CDR_HEADER = 4
 
 
 class RosConnections:
@@ -27,9 +36,49 @@ class RosConnections:
         #: One destroy function per entity created, in creation order.
         self._destroyers: list[Callable[[], None]] = []
 
-    def subscription(self, message_type, topic: str, callback, qos: QoSProfile | int = 10):
-        """Create a subscription, as `Node.create_subscription`, with a guarded callback."""
-        entity = self._node.create_subscription(message_type, topic, self._guarded(topic, callback), qos)
+    def subscription(self, message_type, topic: str, callback, qos: QoSProfile | int = 10,
+                     newest_only: bool | Event = False, on_stamp: Callable[[float], None] | None = None):
+        """Create a subscription, as `Node.create_subscription`, with a guarded callback.
+
+        Decoding is most of a message's cost, so a fast topic whose callback only stores state can be newest-only:
+        each tick the monitor takes all its messages undecoded and decodes and calls back only the newest.
+        - ! Only for callbacks that keep the latest state: they miss whatever lasts less than a tick.
+
+        Args:
+            message_type: The message class.
+            topic: The topic name.
+            callback: Called with each decoded message.
+            qos: Its QoS, or a queue depth.
+            newest_only: True for newest-only; an Event for newest-only while nothing listens to it, every message
+                while something does (a recording).
+            on_stamp: Called with the `header.stamp` (seconds) of every message, decoded or not, before the
+                callbacks; read straight from the bytes, so `message_type` must start with a `std_msgs/Header`.
+
+        Raises:
+            ValueError: If `on_stamp` is given for a type that does not start with a header, or without newest_only.
+        """
+        raw = newest_only is not False
+        if on_stamp is not None and (not raw or next(iter(message_type.get_fields_and_field_types().items()))
+                                     != ("header", "std_msgs/Header")):
+            raise ValueError(f"on_stamp needs newest_only and a message starting with a std_msgs/Header ({topic})")
+        if not raw:
+            entity = self._node.create_subscription(message_type, topic, self._guarded(topic, callback), qos)
+        else:
+            stamp = (None if on_stamp is None
+                     else self._guarded(f"{topic} stamps", lambda data: on_stamp(header_stamp(data))))
+            decode = self._guarded(topic, lambda data: callback(deserialize_message(data, message_type)))
+
+            def stamp_and_decode(data: bytes) -> None:
+                """A message the executor took (it arrived after the drain): note its stamp and decode it."""
+                if stamp is not None:
+                    stamp(data)
+                decode(data)
+
+            entity = self._node.create_subscription(message_type, topic, stamp_and_decode, qos, raw=True)
+            # * Read by the monitor's drain (`HuskyMonitor._drain_subscriptions`): whether to decode every message,
+            #   and the stamp and decode steps on their own, each taking the undecoded message.
+            entity.decode_every = (lambda: False) if newest_only is True else (lambda: newest_only.listened)
+            entity.on_stamp, entity.decode = stamp, decode
         self._destroyers.append(lambda: self._node.destroy_subscription(entity))
         return entity
 
@@ -94,3 +143,9 @@ class RosConnections:
         for destroy in reversed(self._destroyers):
             destroy()
         self._destroyers.clear()
+
+
+def header_stamp(data: bytes) -> float:
+    """The `header.stamp`, seconds, of a serialized message whose first field is a `std_msgs/Header`."""
+    sec, nanosec = struct.unpack_from("<iI" if data[1] == 1 else ">iI", data, _CDR_HEADER)
+    return sec + 1e-9 * nanosec
