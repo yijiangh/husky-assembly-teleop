@@ -1245,7 +1245,8 @@ def test_an_inserts_rigid_part_whose_hold_is_refused_is_hold_not_sent():
 def test_the_insert_settings_are_read_once_and_reach_its_plan():
     """Rigid-only reaches the plan (its prompt); a spiral too fast is refused before any prompt, nothing sent.
 
-    The spiral's seconds and turns reach the prompt; a split over 30 mm is taken as 30.
+    The spiral's seconds and turns reach B22's prompt (two mating joints); a split over 30 mm is taken as 30. B21, one
+    mating joint, drops the spiral asked for: its prompt says so, the setting is recorded, the plan has none.
     """
     lab = compliant_lab(("B21_J", 4), RunSettings(rigid_only=True))
     result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP), False)
@@ -1253,17 +1254,23 @@ def test_the_insert_settings_are_read_once_and_reach_its_plan():
     assert prompts(lab)[0].startswith("cindy (a200-0806): B21_J_insert — RIGID-ONLY insert: the whole ")
     assert lab.run.files()[-1]["command"]["settings"]["rigid_only"] is True
 
-    lab = compliant_lab(("B21_J", 4), RunSettings(spiral=True, spiral_seconds=3.0))
-    result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP))
+    lab = compliant_lab(("B22_J", 4), RunSettings(spiral=True, spiral_seconds=3.0))
+    result, _held = execute(lab, along(lab, "B22_J_insert", INSERT_STEP))
     assert result.status == REFUSED and "spiral too fast" in result.reason and "need ≥ 7.6 s" in result.reason
     assert [event for event, _fields in lab.run.records] == ["exec"] and lab.published() == 0
     assert all(not tool._command.messages for tool in lab.tools.values())
 
-    lab = compliant_lab(("B21_J", 4), RunSettings(spiral=True, spiral_seconds=30.0, spiral_turns=6,
+    lab = compliant_lab(("B22_J", 4), RunSettings(spiral=True, spiral_seconds=30.0, spiral_turns=6,
                                                   insert_split_mm=40.0))
-    result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP), False)
+    result, _held = execute(lab, along(lab, "B22_J_insert", INSERT_STEP), False)
     assert result.status == CANCELLED and "spiral 15 mm, 30 s, 6 turns, pitch 2.5 mm" in prompts(lab)[0]
     assert lab.run.files()[-1]["command"]["settings"]["split_mm"] == 30.0
+
+    lab = compliant_lab(("B21_J", 4), RunSettings(spiral=True, spiral_seconds=30.0, spiral_turns=6))
+    result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP), False)
+    assert result.status == CANCELLED and "straight line: no spiral for a bar with one mating joint" in prompts(lab)[0]
+    command = lab.run.files()[-1]["command"]
+    assert command["settings"]["spiral"] is True and command["plan"]["spiral"] is None
 
 
 @pytest.mark.parametrize("solved", [True, False])

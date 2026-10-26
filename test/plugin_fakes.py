@@ -82,7 +82,8 @@ class FakeGui:
 
         def add(label: str = "", *values: Any, **options: Any) -> FakeWidget:
             widget = FakeWidget(kind=name[4:], label=label, value=values[0] if values else options.get("initial_value"),
-                                content="", color=options.get("color"), options=options,
+                                content="", color=options.get("color"), disabled=options.get("disabled", False),
+                                options=options,
                                 _impl=SimpleNamespace(uuid=f"fake-{len(self.widgets)}", removed=False))
             self.widgets.append(widget)
             return widget

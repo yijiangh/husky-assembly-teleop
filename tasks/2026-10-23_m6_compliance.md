@@ -41,6 +41,8 @@ handoff W:6637-6869; M:242, BIO:854, BIO:885, R:837 as cited. New paths under
 - A6 Cancel during the handoff stops the fingers (M5's rule); the old code let them keep closing (W:6816-6819).
 - Q3 A failed retreat check only reports (log + record); the tail still runs (retreat step 9, §1.1).
 - Q5 No force stop during the compliant insert, as before: peak |F| is recorded and the UR's protective stop applies (§4).
+- M6b (2026-10-26, `tasks/2026-10-26_m6b_one_mate_bars.md`): a one-mate bar (one joint screw tightening, two arms)
+  never spirals, the Spiral box greyed then, and after its stall the holding arm finishes its line under compliance.
 
 ## 0. Math, ported unchanged
 ### 0.1 Frames and where each pose is measured
@@ -288,10 +290,11 @@ Lab acceptance (monitor + visual steps only; robots on Zenoh, e-stops in hand; a
    throughout; stall the screw by hand during the hold → STALLED, STOP.
 3. B21_R in the air, split 30 mm, traj time 30 s: Exec → M1 opens on both tools, F/T lines, compliant ~18 s; Cancel
    mid-way → hold, STOP, JTC. Plan again, Exec → the check lines, the tail runs.
-4. Spiral in the air: tick Spiral, run the insert (tools circle ≤ 15 mm); Cancel mid-spiral → safe ending; again to the
-   end without a stall → the warning prompt; Confirm → 2 s return, then the ceiling. Then "Spiral s" 30, "Spiral
-   turns" 6: the prompt reads 30 s, 6 turns, pitch 2.5 mm, and the circles are visibly tighter. "Spiral s" 3: Plan
-   refuses it ("spiral too fast … need ≥ 11.4 s"); set it back to 20.
+4. Spiral in the air, on a two-mate bar (B22_J, both screws; on B21 the Spiral box is greyed, M6b): tick Spiral, run
+   the insert (tools circle ≤ 15 mm); Cancel mid-spiral → safe ending; again to the end without a stall → the warning
+   prompt; Confirm → 2 s return, then the ceiling. Then "Spiral s" 30, "Spiral turns" 6: the prompt reads 30 s,
+   6 turns, pitch 2.5 mm, and the circles are visibly tighter. "Spiral s" 3: Plan refuses it ("spiral too fast … need
+   ≥ 11.4 s"); set it back to 20.
 5. Real run, MAN §7.2–7.4: B20 insert rigid (no screw, JTC stays) → fix-foundation prompt → Mark; B20_R retreat; B21
    insert (left screw only); Alice's §8 handoff on B21 (watch Cindy's tools); §9.2 B21_R with Alice holding.
 6. Send back: the terminal log, `runs/<name>/movements/*.json`, per step pass/fail, stall times, peak |F|, end errors,

@@ -11,13 +11,19 @@ from test_execution_stream import ARMS, Lab, assert_same_pose, world_target
 
 from husky_assembly_teleop.shared.execution.spiral import (SPIRAL_END_TEXT, SPIRAL_MAX_SPEED, SPIRAL_RADIUS,
                                                            SPIRAL_RETURN, Spiral, lateral_basis, run_spiral,
-                                                           spiral_problem)
+                                                           spiral_fits, spiral_problem)
 from husky_assembly_teleop.shared.execution.stream import END_WAIT, HOLD_FOR_STALL, Recorder, fk_tcp_gap, line_target
 
 pytestmark = pytest.mark.safety
 
 #: The insert's direction for the runs: down, leaning towards y.
 AXIS = (0.0, 0.3, -1.0)
+
+
+def test_a_spiral_fits_only_a_bar_with_two_mating_joints():
+    """One mating joint (or none) would let the spiral skew the bar; both arms mating may spiral."""
+    assert not spiral_fits(("left_ur_arm",)) and not spiral_fits(())
+    assert spiral_fits(ARMS)
 
 
 # --- --- --- --- --- geometry --- --- --- --- ---

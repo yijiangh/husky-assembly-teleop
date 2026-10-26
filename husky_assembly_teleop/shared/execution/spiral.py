@@ -12,7 +12,7 @@ or the operator's answer (`run_spiral`).
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Collection, Protocol, Sequence
 
 import numpy as np
 
@@ -131,6 +131,11 @@ class Spiral:
 def _speed(seconds: float, turns: int, radius: float) -> float:
     """A spiral's speed at full radius, metres per second: (R / T) √(1 + (2π n)²)."""
     return radius / seconds * math.sqrt(1.0 + (2.0 * math.pi * turns) ** 2)
+
+
+def spiral_fits(mating: Collection[str]) -> bool:
+    """Whether an insert may spiral: it needs two mating joints; about one joint the spiral skews the bar."""
+    return len(mating) >= 2
 
 
 def spiral_problem(seconds: float, turns: int) -> str:

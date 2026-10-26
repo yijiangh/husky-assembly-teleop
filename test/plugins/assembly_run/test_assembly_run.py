@@ -16,9 +16,11 @@ from husky_assembly_teleop.plugins.assembly_run.panel import RunPanel
 from husky_assembly_teleop.plugins.assembly_run.plugin import AssemblyRunPlugin
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, take_lease
+from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.assembly_planning.steps import first_step
 from husky_assembly_teleop.shared.execution.basis import basis_of, stale_reason
+from husky_assembly_teleop.shared.movement_exec_contract import INSERT_PART, PartPlan, part_plan
 from husky_assembly_teleop.shared.process_contract import Selection
 from husky_assembly_teleop.shared.runs.runs import (ASSUMED, DONE, LIVE, PENDING, RunSettings, find_runs, read_events,
                                                     read_run)
@@ -981,6 +983,39 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
     assert (settings.rigid_only, settings.spiral_seconds, settings.spiral_turns) == (True, 30.0, 6)
     assert type(settings.spiral_turns) is int and type(settings.spiral_seconds) is float
     assert (shown._rigid.value, shown._spiral_seconds.value, shown._spiral_turns.value) == (True, 30.0, 6)
+
+
+@pytest.mark.safety
+def test_the_spiral_box_is_greyed_unless_the_steps_insert_has_two_mating_joints(tmp_path, monkeypatch):
+    """The Spiral box is greyed at start, on a by-hand step and on a one-tool insert, shown unticked, the setting kept.
+
+    With the step's part a two-tool insert it is live and shows the setting, and a click on it reaches the plugin.
+    """
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        panel = plugin._panel = RunPanel(lab.ctx, plugin)
+        assert panel._spiral.disabled
+        plugin.request_settings(spiral=True)
+        await settle(plugin)
+        plugin.draw(lab.ctx)
+        assert plugin.view.current == ("B1_J_joint", 0)  # the mount, by hand
+        assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (True, False, True)
+        plugin.request_set_current("B1_J_joint", 2)  # the insert, one tool
+        plugin.draw(lab.ctx)
+        assert len(part_plan(plugin.view.process, "B1_J_joint", 2, lab.ctx.config.robots, True).tools) < 2
+        assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (True, False, True)
+        two_tools = PartPlan(2, "B1_M2_insert", Routine.INSERT, INSERT_PART, ("left_ur_arm", "right_ur_arm"), "insert")
+        monkeypatch.setattr("husky_assembly_teleop.plugins.assembly_run.plugin.part_plan", lambda *_args: two_tools)
+        plugin.draw(lab.ctx)
+        assert (panel._spiral.disabled, panel._spiral.value) == (False, True)
+        panel._spiral.callback(False)
+        await settle(plugin)
+        plugin.draw(lab.ctx)
+        assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (False, False, False)
+
+    asyncio.run(scenario())
 
 
 def test_a_step_picked_while_waiting_stops_the_automatic_selection(tmp_path):

@@ -6,7 +6,8 @@ Its mode, as the old monitor's (W:5385-5437):
 - rigid-only (a run setting): the whole path rigid with the mating screws tightening, then the joint controller holds
   the end until they stall; never compliant.
 - otherwise: rigid up to the split, then compliant to the end on a straight line or the spiral, the mating screws
-  tightening from the start; it ends when they stall.
+  tightening from the start; it ends when they stall. A one-mate bar (one arm of two mating) never spirals, and at
+  its stall only the mating arm goes back at once: the holding arm finishes its line under compliance first.
 
 ! Every ending, a cancel included, stops every tool and brings the arms back under joint control. Main thread, from a
 plugin task.
@@ -33,11 +34,11 @@ from .send import ARRIVED, ENDED, STOPPED, MotionCommand, motion_command, send_m
 from .send import DRY_RUN as SENT_DRY
 from .send import HOLD_NOT_SENT as SENT_NOT_HELD
 from .send import REFUSED as SENT_REFUSED
-from .spiral import SPIRAL_RADIUS, SPIRAL_RETURN, Spiral, run_spiral, spiral_problem
+from .spiral import SPIRAL_RADIUS, SPIRAL_RETURN, Spiral, run_spiral, spiral_fits, spiral_problem
 from .stream import (ARRIVAL, CANCELLED, DRY_RUN, FAILED, HOLD_FOR_STALL, HOLD_NOT_SENT, MAX_CLOCK_STEP, NO_STALL,
                      REFUSED, RIGID_DONE, STALLED, PartOutcome, Recorder, Segment, fk_tcp_gap, gap_record,
-                     measured_tool0, plan_stream, progress, split_rows, split_seconds, stream, target_problem,
-                     tool0_fk, zero_wrench)
+                     line_target, measured_tool0, plan_stream, progress, split_rows, split_seconds, stream,
+                     target_problem, tool0_fk, zero_wrench)
 from .tools import StallGate, stop_all, stop_and_clear
 
 if TYPE_CHECKING:
@@ -64,7 +65,8 @@ class InsertPlan:
         arms: The moving arms, in the robot's arm order.
         names: The path's joint names.
         rows: The path (N x joints); row 0 is where the arms were.
-        mating: The arms whose joint screw tightens; none for a ground bar.
+        mating: The arms whose joint screw tightens; none for a ground bar; one of two arms is a one-mate bar (no
+            spiral; the other arm finishes its line after the stall).
         grounded: A ground bar: the whole path rigid, no tighten.
         rigid_only: The whole path rigid with the mating screws tightening, then held until they stall.
         split_mm: The split asked for: the last millimetres compliant.
@@ -115,7 +117,7 @@ def plan_insert(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence
                 spiral: tuple[float, int] | None, traj_time: float) -> InsertPlan | str:
     """Work out an insert from its planned path: its mode, where it turns compliant, each part's time, its prompt.
 
-    - A ground bar ignores rigid-only; both ignore the split and the spiral.
+    - A ground bar ignores rigid-only; both ignore the split and the spiral; a one-mate bar ignores the spiral.
     - ! A spiral over SPIRAL_MAX_SPEED is refused here, before anything is sent.
 
     Args:
@@ -134,6 +136,9 @@ def plan_insert(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence
     """
     rigid_only = rigid_only and not grounded
     spiral = None if grounded or rigid_only else spiral
+    line = "straight line"
+    if spiral is not None and not spiral_fits(mating):
+        spiral, line = None, "straight line: no spiral for a bar with one mating joint"
     problem = "" if spiral is None else spiral_problem(*spiral)
     if problem:
         return problem
@@ -165,7 +170,6 @@ def plan_insert(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence
     except ValueError as error:
         return f"the insert can't be sent: {error}"
     axis = np.sum([in_husky(arm, ends[arm]) - in_husky(arm, starts[arm]) for arm in arms], axis=0)
-    line = "straight line"
     if spiral is not None and np.linalg.norm(axis) < MIN_AXIS:
         spiral, line = None, "straight line: the planned insert has no travel to spiral around"
     screws = " + ".join(mating)
@@ -232,6 +236,8 @@ async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
     phases: list[dict] = []
     record.update(phases=phases, switch={})
     gate: StallGate | None = None
+    #: The arms confirmed back under joint control before the end (a one-mate bar's mating arm).
+    back_early: set[str] = set()
 
     def phase(name: str, since: float, end: str) -> None:
         """Keep a phase in the record, its times from the insert's start."""
@@ -289,9 +295,7 @@ async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
         refused = zero_wrench(arms)
         if refused:
             return FAILED, f"{refused}; no target sent"
-        since = ctx.now()
-        ended = await _compliant(ctx, robot, plan, husky, gate, operator, recorder, record)
-        phase("compliant" if plan.spiral is None else "spiral", since, ended)
+        ended = await _compliant(ctx, robot, plan, husky, gate, operator, recorder, record, phase, back_early)
         if ended == "stalled":
             return STALLED, f"{gate.text} STALLED"
         if ended == "no_stall":
@@ -307,7 +311,9 @@ async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
             stop_all(tools)
         finally:
             since = ctx.now()
-            restored = await leave_compliance(ctx, arms, label=label)
+            # ! An arm already back must not be held again: under the joint controller a hold sends a trajectory.
+            restored = await leave_compliance(ctx, [arm for arm in arms if arm.config.name not in back_early],
+                                              label=label)
             record["switch"].update(back_s=ctx.now() - since, back_ok=restored)
     record.update(recorder.as_record(), stall_times=dict(gate.stall_times) if gate is not None else {})
     outcome = PartOutcome(status, reason, ctx.now() - started, record)
@@ -382,28 +388,49 @@ async def _hold_for_stall(ctx: PluginContext, gate: Gate, recorder: Recorder) ->
 
 
 async def _compliant(ctx: PluginContext, robot: HuskyRobotInterface, plan: InsertPlan, husky: Pose, gate: Gate,
-                     operator: Operator, recorder: Recorder, record: dict) -> str:
+                     operator: Operator, recorder: Recorder, record: dict, phase: Callable[[str, float, str], None],
+                     back_early: set[str]) -> str:
     """Stream the compliant part from each measured TCP to its end, straight or spiralling, until the screws stall.
 
-    The arms run the compliance controller. Keeps the spiral's state and each arm's end error in `record`.
+    The arms run the compliance controller. Keeps its phases, the spiral's state and each arm's end error in the
+    record. A one-mate bar stalled part way along its line goes on per arm (`_finish_holding`).
 
     Returns:
         str: "stalled", "no_stall", "cancelled" (the operator at the spiral's end) or why a stream stopped.
     """
+    since = ctx.now()
     start = {name: measured_tool0(robot, name) for name in plan.arms}
     if any(pose is None for pose in start.values()):
-        return "no measured TCP at the handover"
+        ended = "no measured TCP at the handover"
+        phase("spiral" if plan.spiral else "compliant", since, ended)
+        return ended
     segment = Segment(start, _line_ends(robot, plan, husky), plan.compliant_seconds, HOLD_FOR_STALL)
     spiral = _spiral(plan, husky)
-    since = ctx.now()
     if spiral is None:
+        stalled_at = math.inf
+
+        def going(elapsed: float) -> bool:
+            """No stall yet; keeps when it came, since `stream` does not return its elapsed."""
+            nonlocal stalled_at
+            if gate.all_stalled():
+                stalled_at = elapsed
+                return False
+            return True
+
         recorder.phase = "compliant"
-        ended = await stream(ctx, robot, segment, keep_going=lambda _elapsed: not gate.all_stalled(),
-                             recorder=recorder)
+        ended = await stream(ctx, robot, segment, keep_going=going, recorder=recorder)
         ended = {"ended": "stalled", "time": "no_stall"}.get(ended, ended)
+        phase("compliant", since, ended)
+        holding = [name for name in plan.arms if name not in plan.mating]
+        # ! Only a stall after the first compliant target and before the line's end: earlier, the holding arm would
+        #   push its whole line against a closed joint; later, both arms stand at the end already.
+        if ended == "stalled" and holding and 0.0 < stalled_at < segment.seconds:
+            ended = await _finish_holding(ctx, robot, plan, segment, stalled_at, holding, gate, recorder, phase,
+                                          back_early)
     else:
         ended = await run_spiral(ctx, robot, segment, spiral, gate, operator, recorder)
         record["spiral_text"] = spiral.text(ctx.now() - since)
+        phase("spiral", since, ended)
     # * Measured against the straight line's end: a spiral stopped part way reads short by up to its radius.
     errors = record["end_error_mm"] = progress(robot, segment)
     known = {name: error for name, error in errors.items() if error is not None}
@@ -414,6 +441,48 @@ async def _compliant(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
     else:
         ctx.log_info(f"{plan.serial}: insert: tool0 travelled {travelled}")
     return ended
+
+
+async def _finish_holding(ctx: PluginContext, robot: HuskyRobotInterface, plan: InsertPlan, segment: Segment,
+                          stalled_at: float, holding: Sequence[str], gate: Gate, recorder: Recorder,
+                          phase: Callable[[str, float, str], None], back_early: set[str]) -> str:
+    """End a one-mate bar's stall per arm: the mating arm back under joint control now, the holding arm's line on.
+
+    Switched at the stall, the holding arm, still settling against the force, left the bar skewed: it streams the rest
+    of its line under compliance until its end target went out; the caller's finally then holds it and brings it
+    back. The mating arm goes into `back_early` once confirmed back, so that finally does not hold it again.
+
+    Returns:
+        str: "stalled" (the holding arm's end target went out; or the mating arm's way back failed and the caller asks
+            every arm again), or why the rest's stream stopped.
+    """
+    label = f"{plan.serial}: insert"
+    mating, finishing = " + ".join(plan.mating), " + ".join(holding)
+    since = ctx.now()
+    back = await leave_compliance(ctx, [robot.arms[name] for name in plan.mating], label=label)
+    phase(f"{mating} back", since, "back" if back else "not back")
+    if not back:
+        return "stalled"
+    back_early.update(plan.mating)
+    rest = Segment({name: line_target(segment.start[name], segment.end[name], segment.seconds, stalled_at)
+                    for name in holding}, {name: segment.end[name] for name in holding},
+                   segment.seconds - stalled_at, 0.0)
+    end_sent = False
+
+    def to_the_end(elapsed: float) -> bool:
+        """Go on until the end target went out: the tick after the rest's seconds passed, nothing more."""
+        nonlocal end_sent
+        if end_sent:
+            return False
+        end_sent = elapsed >= rest.seconds
+        return True
+
+    since, recorder.phase = ctx.now(), f"compliant {finishing}"
+    ctx.log_info(f"{label}: {gate.text} STALLED at {stalled_at:.1f} of {segment.seconds:.1f} s; {mating} back under "
+                 f"joint control, {finishing} finish the line under compliance ({rest.seconds:.1f} s)")
+    ended = await stream(ctx, robot, rest, keep_going=to_the_end, recorder=recorder)
+    phase(recorder.phase, since, ended)
+    return "stalled" if ended == "ended" else ended
 
 
 def _end_gap(robot: HuskyRobotInterface, plan: InsertPlan) -> float:

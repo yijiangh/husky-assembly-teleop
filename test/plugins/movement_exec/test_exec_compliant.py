@@ -1,7 +1,8 @@
 """The compliant parts end to end through movement_exec, as the operator runs them: Exec, Confirm, the outcome.
 
-B21's insert with its screw stalling 2 s into the compliant part, B20's ground-bar insert with Rigid insert ticked, and
-B20's retreat with its tail replanned to the plan's goals, on the fake lab of `test_movement_exec` (Cindy following what
+B21's insert with its screw stalling 1 s into the compliant part (the right arm finishing its line before it goes back),
+B20's ground-bar insert with Rigid insert ticked, and B20's retreat with its tail replanned to the plan's goals, on the
+fake lab of `test_movement_exec` (Cindy following what
 she is sent, her tools' firmware answering, the clock the fake context's). Each checks the record the run writes and
 that every arm ends under the joint controller.
 """
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -26,8 +28,9 @@ from husky_assembly_teleop.shared.runs.runs import RunSettings
 pytestmark = [pytest.mark.slow, pytest.mark.safety]
 
 STOP, TIGHTEN_SCREW, OPEN_GRIPPER = (0, 0), (ScaffoldingV3.JOINT_MOTOR, 1), (ScaffoldingV3.GRIPPER_MOTOR, -1)
-#: Seconds into the compliant part the left screw stalls.
-STALL_AFTER = 2.0
+#: Seconds into the compliant part the left screw stalls: inside B21's 1.7 s line (the insert asked over 5 s), so
+#: the right arm finishes it.
+STALL_AFTER = 1.0
 
 
 def screw_driver(lab, arm: str):
@@ -46,11 +49,12 @@ def back_under_joint_control(lab) -> bool:
                for arm in lab.cindy.arms.values())
 
 
-def test_b21s_insert_ends_when_the_left_screw_stalls_2_s_into_the_compliant_part():
-    """B21_J_insert: rigid to the split, compliant to the stall; DONE, the record says STALLED, the arms back under JTC.
+def test_b21s_insert_ends_when_the_left_screw_stalls_1_s_into_the_compliant_part():
+    """B21_J_insert: rigid to the split, compliant to the stall, the right arm's line finished; DONE, STALLED, back.
 
-    The record holds the split achieved, the stall time (from TIGHTEN to the stall, the compliant part's last 2 s),
-    the switch to compliance and back; the left screw alone tightened.
+    The insert is asked over 5 s (the lab's requests take 2 s), so its line lasts 1.7 s and the stall at 1 s is inside
+    it. The record holds the split achieved, the stall time (from TIGHTEN to the stall), the left arm's early way back
+    and the right arm's rest of the line, the switch to compliance and back; the left screw alone tightened.
     """
     lab = compliant_lab(("B21_J", 4))
     left = screw_driver(lab, "left_ur_arm")
@@ -64,11 +68,12 @@ def test_b21s_insert_ends_when_the_left_screw_stalls_2_s_into_the_compliant_part
                 break
             await asyncio.sleep(0)
         seen["compliant"] = lab.ctx.t
-        while lab.ctx.t < seen["compliant"] + STALL_AFTER:
+        while lab.ctx.t < seen["compliant"] + STALL_AFTER and lab.plugin.active:
             await asyncio.sleep(0)
         left.screw = ScaffoldingV3.STALLED
 
-    result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP), True, during=stall_into_the_compliant_part)
+    request = replace(along(lab, "B21_J_insert", INSERT_STEP), traj_time=5.0)
+    result, _held = execute(lab, request, True, during=stall_into_the_compliant_part)
     assert result.status == DONE and result.done == (4,), result.reason
     assert prompts(lab)[0].startswith("cindy (a200-0806): B21_J_insert — INSERT: rigid ")
     record = record_of(lab)
@@ -78,10 +83,13 @@ def test_b21s_insert_ends_when_the_left_screw_stalls_2_s_into_the_compliant_part
     assert plan["mating"] == ["left_ur_arm"] and not plan["grounded"] and not plan["rigid_only"]
     assert plan["split_mm"] == 5.0 and plan["achieved_mm"] == pytest.approx(5.0) and 14.0 < plan["total_mm"] < 15.5
     assert plan["rigid_s"] > 0.0 and plan["compliant_s"] >= 0.5
-    rigid, switch, compliant = outcome["phases"]
-    assert [phase["name"] for phase in (rigid, switch, compliant)] == ["rigid", "switch", "compliant"]
+    rigid, switch, compliant, back, finish = outcome["phases"]
+    assert [phase["name"] for phase in outcome["phases"]] == [
+        "rigid", "switch", "compliant", "left_ur_arm back", "compliant right_ur_arm"]
     assert rigid["end"] in ("ARRIVED", "ENDED") and compliant["end"] == "stalled"
     assert STALL_AFTER <= compliant["t1"] - compliant["t0"] <= STALL_AFTER + 0.3
+    assert back["end"] == "back" and finish["end"] == "ended"
+    assert finish["t1"] - finish["t0"] >= plan["compliant_s"] - STALL_AFTER - 0.3
     # * The gate is made in the tick TIGHTEN goes out, the rigid part's first; the stall is counted in the tick that
     #   ends the compliant part.
     assert list(outcome["stall_times"]) == ["left_ur_arm"]
@@ -93,7 +101,7 @@ def test_b21s_insert_ends_when_the_left_screw_stalls_2_s_into_the_compliant_part
         assert arm.controllers.switches == [COMPLIANCE, JOINT]
         assert arm._target_frame.messages and arm._target_wrench.messages
     assert back_under_joint_control(lab)
-    assert set(sample["phase"] for sample in outcome["stream"]) >= {"rigid", "compliant"}
+    assert set(sample["phase"] for sample in outcome["stream"]) >= {"rigid", "compliant", "compliant right_ur_arm"}
     assert all(error["remaining_mm"] < 2.0 for error in outcome["end_error_mm"].values())
     assert outcome.get("base_drift_max_mm", 0.0) == pytest.approx(0.0, abs=1e-6)
     assert result.end is not None and len(result.end) == 12
