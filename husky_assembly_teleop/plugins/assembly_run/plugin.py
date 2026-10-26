@@ -20,7 +20,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Mapping
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 import viser
 
@@ -238,17 +239,23 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._spawn(self._ctx, "save settings", self._save_settings(self._ctx, changes))
 
     def request_record(self, event: str, *, action: str | None = None, movement: str | None = None,
-                       data: Mapping[str, Any] | None = None, file: Mapping[str, Any] | None = None) -> None:
-        """Record an event, `data` under its "data" key; `file` is written as a movement record the event names."""
+                       data: Mapping[str, Any] | None = None, file: Mapping[str, Any] | None = None,
+                       kind: str = "movements",
+                       figure: Callable[[Mapping[str, Any], Path], None] | None = None) -> None:
+        """Record an event, `data` under its "data" key; `file` is written as a `kind` record the event names.
+
+        `figure(payload, png path)` draws the record's plot beside it; a plot that fails is noted in the event's data
+        as `figure_error`, the record kept.
+        """
         refusal = self._not_open() or (
             "a file needs its action and movement" if file is not None and None in (action, movement) else "")
         if self._refused(f"Record {event}", refusal):
             return
         if self._run is not None:
-            self._queue_record(self._ctx, event, action, movement, data, file)
+            self._queue_record(self._ctx, event, action, movement, data, file, kind, figure)
         else:
             self._spawn(self._ctx, f"record {event}", self._record_later(self._ctx, event, action, movement, data,
-                                                                         file))
+                                                                         file, kind, figure))
 
     # --- --- --- --- --- HOOKS --- --- --- --- ---
 

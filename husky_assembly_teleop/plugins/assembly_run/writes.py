@@ -38,8 +38,9 @@ NO_PROCESS, OPENING, OPEN, NOT_OPENED = "", "opening", "open", "not opened"
 
 
 def _record_file(folder: Path, event: str, ros_time: float, action: str, movement: str,
-                 payload: Mapping[str, Any], data: Mapping[str, Any] | None) -> None:
-    """Write a movement record, then an event naming it. Writer thread.
+                 payload: Mapping[str, Any], data: Mapping[str, Any] | None, kind: str = "movements",
+                 figure: Callable[[Mapping[str, Any], Path], None] | None = None) -> None:
+    """Write a `kind` record, draw its figure beside it, then write an event naming it. Writer thread.
 
     Args:
         folder: The run's folder.
@@ -49,8 +50,16 @@ def _record_file(folder: Path, event: str, ros_time: float, action: str, movemen
         movement: The movement id.
         payload: The record's JSON values.
         data: The event's data, or None.
+        kind: A key of `runs.KINDS`: "movements" or "servo".
+        figure: Draws the record's plot, called as `figure(payload, <record>.png)`; None draws nothing.
     """
-    path = record_movement(folder, action, movement, payload)
+    path = record_movement(folder, action, movement, payload, kind)
+    if figure is not None:
+        try:
+            figure(payload, path.with_suffix(".png"))
+        except Exception as error:
+            # ! A failed plot never loses the record: the JSON stays, and the event's data says what went wrong.
+            data = {**(data or {}), "figure_error": repr(error)}
     record_event(folder, event, ros_time, action=action, movement=movement, file=str(path.relative_to(folder)),
                  **({"data": dict(data)} if data else {}))
 
@@ -201,17 +210,20 @@ class RunWrites:
         self._write(ctx, "record the settings", record_event, run.folder, "settings", ctx.now(), changes=dict(changes))
 
     async def _record_later(self, ctx: PluginContext, event: str, action: str | None, movement: str | None,
-                            data: Mapping[str, Any] | None, file: Mapping[str, Any] | None) -> None:
+                            data: Mapping[str, Any] | None, file: Mapping[str, Any] | None, kind: str,
+                            figure: Callable[[Mapping[str, Any], Path], None] | None) -> None:
         """Record once there is a run."""
         if await self._ensure_run(ctx) is not None:
-            self._queue_record(ctx, event, action, movement, data, file)
+            self._queue_record(ctx, event, action, movement, data, file, kind, figure)
 
     def _queue_record(self, ctx: PluginContext, event: str, action: str | None, movement: str | None,
-                      data: Mapping[str, Any] | None, file: Mapping[str, Any] | None) -> None:
-        """Queue a record's writes."""
+                      data: Mapping[str, Any] | None, file: Mapping[str, Any] | None, kind: str,
+                      figure: Callable[[Mapping[str, Any], Path], None] | None) -> None:
+        """Queue a record's writes: a `kind` record with its figure and the event naming it, or the event alone."""
         folder = self._run.folder
         if file is not None:
-            self._write(ctx, f"record {event}", _record_file, folder, event, ctx.now(), action, movement, file, data)
+            self._write(ctx, f"record {event}", _record_file, folder, event, ctx.now(), action, movement, file, data,
+                        kind, figure)
         else:
             self._write(ctx, f"record {event}", record_event, folder, event, ctx.now(), action=action,
                         movement=movement, **({"data": dict(data)} if data else {}))

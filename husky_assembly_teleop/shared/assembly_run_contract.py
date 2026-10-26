@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from scaffolding_assembly_core.process.plan_check import end_state
 from scaffolding_assembly_core.robot import RobotObject
@@ -83,8 +83,14 @@ class AssemblyRunContract(Protocol):
         """Change run settings (`RunSettings` fields); saved with the run."""
 
     def request_record(self, event: str, *, action: str | None = None, movement: str | None = None,
-                       data: Mapping[str, Any] | None = None, file: Mapping[str, Any] | None = None) -> None:
-        """Record an event, with `data` as its fields; `file` is written as a movement record the event names."""
+                       data: Mapping[str, Any] | None = None, file: Mapping[str, Any] | None = None,
+                       kind: str = "movements",
+                       figure: Callable[[Mapping[str, Any], Path], None] | None = None) -> None:
+        """Record an event, with `data` as its fields; `file` is written as a `kind` record the event names.
+
+        `figure(payload, png path)` draws the record's plot beside it; a plot that fails is noted in the event's data
+        as `figure_error`, the record kept.
+        """
 
 
 def is_live(robot: RobotObject, now: float) -> bool:

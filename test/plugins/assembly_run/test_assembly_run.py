@@ -406,6 +406,44 @@ def test_record_writes_an_event_and_a_movement_file(tmp_path):
     assert json.loads((plugin.view.folder / events[2]["file"]).read_text())["waypoints"] == 3
 
 
+def test_record_writes_a_servo_file_and_draws_its_figure_beside_it(tmp_path):
+    """A servo record goes under servo/ with its figure as .png; a figure that fails leaves the JSON and the event."""
+    lab = Lab(tmp_path)
+    drawn = []
+
+    def draw(payload, path):
+        drawn.append((payload, path))
+        path.write_text("png")
+
+    def fail(payload, path):
+        raise ValueError("no axes")
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        plugin.request_record("servo", action="B1_J_joint", movement="B1_M2_insert", file={"passes": 2}, kind="servo",
+                              figure=draw)
+        await settle(plugin)
+        plugin.request_record("servo", action="B1_J_joint", movement="B1_M2_insert", file={"passes": 1},
+                              data={"status": "failed"}, kind="servo", figure=fail)
+        await settle(plugin)
+        return plugin
+
+    plugin = asyncio.run(scenario())
+    folder = plugin.view.folder
+    events = read_events(folder)
+    assert events[1]["file"] == "servo/B1_J_joint/B1_M2_insert.1.json" and "data" not in events[1]
+    first = json.loads((folder / events[1]["file"]).read_text())
+    assert (first["kind"], first["passes"]) == ("servo", 2)
+    assert drawn == [({"passes": 2}, folder / "servo" / "B1_J_joint" / "B1_M2_insert.1.png")]
+    assert drawn[0][1].read_text() == "png"
+    # * The failed figure: the record and its event are still written, the event's data saying why there is no plot.
+    assert events[2]["file"] == "servo/B1_J_joint/B1_M2_insert.2.json"
+    assert json.loads((folder / events[2]["file"]).read_text())["passes"] == 1
+    assert events[2]["data"] == {"status": "failed", "figure_error": "ValueError('no axes')"}
+    assert not (folder / "servo" / "B1_J_joint" / "B1_M2_insert.2.png").exists()
+    assert not lab.ctx.lines("error") and not plugin._save_error
+
+
 def test_the_panel_and_the_process_rows_show_the_run_and_its_buttons_ask_the_plugin(tmp_path):
     """Mark done, Reopen, New run and a setting reach the plugin; each action's mark goes to the process panel's rows.
 
