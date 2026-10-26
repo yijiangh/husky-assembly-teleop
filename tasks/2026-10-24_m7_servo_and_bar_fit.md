@@ -1,8 +1,17 @@
-# M7: the MoCap servo and the bar fit (spec, AWAITING USER APPROVAL of §0 and the open questions §9)
+# M7: the MoCap servo and the bar fit (spec, IMPLEMENTED 2026-10-26 on yh/m7-servo; lab acceptance §7 pending; the relay half of task B (marker sizes) awaits the user's OK; the carried insert goal needs the M6 merge)
 
-> Paths are as of `yh/core-port` 2912470. If Jakob's newer `jg/viser-cleanup` commits are merged first
-> (`shared/planning` → `shared/planner`, one `*_contract.py` per plugin, tests in folders that mirror the package),
-> the implementer maps every path here onto that layout; the math and the behaviour do not change.
+> Paths are as of `yh/core-port` 2912470. Jakob's layout has landed since (at 59760fe): `shared/planning/*` →
+> `shared/assembly_planning/*` (route_result, route_search, tamp_route, movement, ik, joints, collision); `PlanRequest`
+> → `shared/planner/plan.py` and `shared/motion_planner_contract.py` (`MotionPlanRequest`); `run_plan` →
+> `plugins/motion_planner/work.py`; `shared/movement_exec.py` → `shared/movement_exec_contract.py`;
+> `shared/assembly_run.py` → `shared/assembly_run_contract.py`; `shared/runs.py` → `shared/runs/runs.py`; tests in
+> folders that mirror the package (`test/world/`, `test/shared/`, `test/plugins/<plugin>/`, `test/mocap_relay/`,
+> `test/robot_interface/`, `test/structure/test_layers.py`). The implementer maps every path here onto that layout; the
+> math and the behaviour do not change.
+>
+> The user settled A1–A8 and Q1–Q10 on 2026-10-23 (Decisions, below); the implementer asks nothing more about them.
+> One answer differs from the proposal: Q6, Motive's marker size is added to the relay so the old size filter stays
+> (§2.6). The marker cloud (O1) is not part of M7.
 
 One line: port the old servo loops (tool0 dual-arm, tool0 single-arm, the grounded-bar MoCap servo of 0e45758) and the
 user's bar fit (`bar_mocap_fit.py`) onto the new monitor, as one new step part (SERVO) run by `movement_exec` under the
@@ -13,18 +22,24 @@ TBF = test/test_bar_mocap_fit.py, SMK = scripts/headless_bar_servo_smoke.py, MB 
 MAN = doc/three_robot_assembly_test_manual.md. New paths are under `ros2_ws_next/src/husky-assembly-teleop/
 husky_assembly_teleop/` at 2912470. tamp = `external/husky_assembly_tamp` at 2306271.
 
-## Assumptions (defaults; the user decides in §9)
+## Decisions (the user, 2026-10-23; final)
 - A1 The servo is the last part of its step (kind SERVO), run right after the step's other parts in the same Exec.
   A servo that did not finish stays pending: Exec runs it again (old button 3b). No extra button.
-- A2 Done = converged, already on target, or nothing left to plan. Every other end is not done (8 passes without
+- A2 / Q3 Done = converged, already on target, or nothing left to plan. Every other end is not done (8 passes without
   converging, fit lost, load guard, IK or plan failed, cancel, interrupt): the step stays; Exec retries, Next ▶ skips.
-- A3 The bar is measured at the old origin, the bar START (§0.8 choice 1): the stop test is the code's, unchanged.
-- A4 After a grounded insert the servo runs whether "servo by bar" is on or off (tool0 when off), as the code does.
-- A5 Markers come from the bar's own Motive asset (Bxx streams as 10xx). Jakob's marker cloud is optional (§3, O1).
-- A6 A one-arm correction move is swept-checked for collisions (a guard added; the old code checked only its end).
-- A7 TRANSFER_HELD (M5: "LATER: M7") becomes a motion part with a servo after it; not lab-tested while the
-  workaround is in use.
-- A8 A servo move is timed by its travel (3°/s, at least 3 s), not by the step's traj time slider.
+- A3 / Q2 The bar is measured at the old origin, the bar START (§0.8 choice a): the stop test is the code's, unchanged.
+- A4 / Q1 After a grounded insert the servo runs whether "servo by bar" is on or off (tool0 when off), as the code does.
+- A5 Markers come from the bar's own Motive asset (Bxx streams as 10xx).
+- Q7 Jakob's marker cloud (O1) is not in M7: it comes later, with the relay work of M10 (§3).
+- A6 / Q5 A one-arm correction move is swept-checked for collisions (a guard added; the old code checked only its end).
+- A7 / Q9 TRANSFER_HELD (M5: "LATER: M7") becomes a motion part with a servo after it; not lab-tested until CDFM is
+  ready (the workaround stays in use).
+- A8 / Q10 A servo move is timed by its travel (3°/s, at least 3 s), not by the step's traj time slider; no preview
+  ghost (the prompt gives the travel and the flange mm).
+- Q4 Confirm on pass 1 always, and on a later pass only when it travels over 5° (warning), as the code does.
+- Q6 (changed from the proposal) Motive's marker size is added to the relay message, and the fit keeps the old
+  12–26 mm size filter (BMF:78, 896): §2.6.
+- Q8 One fit in the code: `mocap_bars` fits with the user's matcher; Jakob's `fit_markers` goes (task H).
 
 ## 0. Math (ported unchanged; the CODE is the reference)
 
@@ -41,7 +56,7 @@ husky_assembly_teleop/` at 2912470. tamp = `external/husky_assembly_tamp` at 230
 | B* | design bar: B* = F*_h·G | `get_movement_start_bar_pose` (W:2226-2230) | same formula; checked: B20 insert start = assembly pose + 15 mm z, insert end = assembly pose (0.0 mm) | – |
 | B_fk | FK bar: B_fk = F_h·G | W:1818-1819 | same | as F |
 | B̂ | MoCap bar: Kabsch of the layout points P_k (bar frame) onto the sensed markers m_k, min Σ‖R·P_k + t − m_k‖², R proper (never a mirror) | `match_and_fit` / `_fit_near_hint` (BMF:362-387, 679-833), around the hint B_fk (W:1820) | `world/bar_fit.py`, same code; hint B_fk | markers ≤ 0.5 s old (M:160) |
-| m_k | the bar's markers | Motive asset 10xx labeled markers, else unlabeled (M:10339-10369) | relay `MocapRigidBodyPose.marker_*` of rigid body 1000+xx (mocap_relay/node.py:455-510), only `measured`, residual ≤ 3 mm (BMF:74, 889-899) | capture time ≤ 0.5 s |
+| m_k | the bar's markers | Motive asset 10xx labeled markers, else unlabeled (M:10339-10369) | relay `MocapRigidBodyPose.marker_*` of rigid body 1000+xx (mocap_relay/node.py:455-510), only `measured`, residual ≤ 3 mm, size 12–26 mm (BMF:74, 78, 889-899) | capture time ≤ 0.5 s |
 | f_s | F/T force vector in its sensor frame, NOT zeroed (tool + bar weight) | `hi.arm_ft_sensor[i][:3]` (W:1714-1735) | `robot.arms[arm].state.wrench[:3]` (arm.py:898-901) | latest |
 
 ### 0.2 Errors (every reading, after a move: arrival + 2 s settle)
@@ -124,6 +139,7 @@ plan; move; reading. At most 8 passes. No bar, no load guard.
 | markers ≤ 0.5 s old | M:160 | `MARKER_MAX_AGE` |
 | Bxx → 1000 + xx | W:81-95 | `world/marker_layouts.BAR_ASSET_BASE`, `bar_asset_id` |
 | match 4 mm, track gate 20 mm, marker residual 3 mm, start triangle 15 mm high, sides 2 mm, ≤ 24 sensed, inliers max(4, ⌈0.75M⌉) | BMF:62-74, 650-659, 680-681 | `world/bar_fit.py`, same names |
+| marker size 12–26 mm (the plates' 19 mm balls; not a reflection or a merged blob) | BMF:76-78 | `world/bar_fit.py` `MARKER_SIZE_RANGE_M` |
 | ssik ≤ 8 branches | W:3436 | `ik.MAX_BRANCHES` (exists) |
 | linear step 5 mm / 0.05 rad | tamp api.py:1617-1618 defaults | tamp defaults (unchanged) |
 
@@ -169,7 +185,7 @@ plan; move; reading. At most 8 passes. No bar, no load guard.
 - D8 One arm: no planner, a two-row joint move.
 - D9 After a grounded insert the servo runs with the setting off too (tool0) — the brief says "behind the setting".
 
-Choice 1, where the bar error is measured (pros/cons; recommended: a):
+Choice 1, where the bar error is measured (pros/cons; decided: a, Q2):
 - a) the bar START (old origin, B·S). + the exact old stop test and records (20261001 comparison, the A/B); − an end
   chosen by the old export, not by the design.
 - b) the MIDDLE (process origin). + natural in the new data; − a 0.1° tilt then moves the ends up to L/2·0.1° = 1.6 mm
@@ -202,14 +218,15 @@ exists; until then it runs in tests only.
   @dataclass(frozen=True) class BarLayout: bar: str; names: tuple[str, ...]; points: np.ndarray; length: float; warnings: tuple[str, ...]
   def bar_layouts(process: Process) -> dict[str, BarLayout]            # marker_fit.bar_markers (reused, = Rhino's) + cylinder height; collinear → warning
   def bar_asset_id(bar: str) -> int | None                             # "bars/B20" -> 1020 (W:85-95)
-  @dataclass(frozen=True) class Sensed: points (n,3); ids; residuals; age: float; source: str ("asset" | "cloud" | "fake"); dropped: int; occluded: int
-  def sensed_from_raw(raw: RawMarkers, now: float) -> Sensed            # measured only, residual ≤ 3 mm
-  def sensed_near(cloud, layout, prior, now, radius=0.08) -> Sensed     # O1 only: cloud markers within 80 mm of the layout at the prior (cf80552's gate)
+  @dataclass(frozen=True) class Sensed: points (n,3); ids; residuals; age: float; source: str ("asset" | "fake"); dropped: int; occluded: int
+  def sensed_from_raw(raw: RawMarkers, now: float) -> Sensed            # measured only, residual ≤ 3 mm, size 12–26 mm
   def fit_bar(sensed: Sensed, layout: BarLayout, *, max_age: float | None, hint: np.ndarray | None, gate_m=0.02, **kwargs) -> BarFit   # BMF:850-915
-  def fake_sensed_markers(T, points, *, slide_m=0.03, roll_deg=2.0, noise_m=0.0005, seed=0) -> Sensed   # BMF:920-952, tests
+  def fake_sensed_markers(T, points, *, slide_m=0.03, roll_deg=2.0, noise_m=0.0005, seed=0) -> Sensed   # BMF:920-952, tests (size 19 mm)
   ```
-  ! Motive's marker size is not relayed, so the 12–26 mm size filter (BMF:78, 896) is gone (Q6). `measured` False
-  replaces the occluded flag (BMF:891-894).
+  `measured` False replaces the occluded flag (BMF:891-894). The size filter (BMF:78, 896) reads `RawMarkers.sizes`
+  (§2.6); when a message carries no sizes, the size check is skipped and the fit's reason says so once. A failed fit's
+  reason counts the markers dropped for size or residual, as BMF:906-913. `sensed_near` and the source "cloud" come
+  with O1 in M10 (Q7).
 - `world/marker_fit.py`: `bar_markers` and `bar_deviation` stay; `fit_markers`, `_fit`, `MarkerFit` are removed with
   their 2 tests once `mocap_bars` uses `fit_bar` (Q8). `world/__init__.py` file list updated.
 
@@ -301,10 +318,18 @@ exists; until then it runs in tests only.
 - `mocap_bars.py`: `fit_bar(sensed_from_raw(...), layout, max_age=0.5, hint=last ok fit (≤ 1 s) else the planned
   pose)` instead of `fit_markers`, at most every 0.1 s (old "follow live (10 Hz)"; the full search is ~20 ms).
 
-### 2.6 robot_interface (runtime edit E6)
-`robot_interface/mocap_state.py:20` `RawMarkers` + `residuals: np.ndarray | None = None`, `capture_time: float |
-None = None`; `robot_interface/mocap.py:52` fills them from `message.marker_residuals` and the header stamp (the
-relay already sends both; nothing in crl-husky changes).
+### 2.6 Marker sizes in the relay (Q6), and robot_interface (runtime edit E6)
+- crl-husky `crl_husky_msgs/msg/MocapRigidBodyPose.msg`: one field at the end, `float32[] marker_sizes  # metres,
+  Motive's marker diameter; same order as marker_ids`. ! The message changes for every node that uses it: the relay
+  and the monitor (this package), and in crl-husky the onboard `pure_pursuit_node.py` on every robot, the control PC's
+  `mocap_logger.py` and `sim/husky_sim.py`. Rebuild `crl_husky_msgs` from the same crl-husky commit on the control PC
+  and on Alice, Belle and Cindy before the lab (L0).
+- `mocap_relay/node.py`: `Marker` + `size: float` (metres); `_receive_labeled_markers` (:559-576) sets
+  `size=float(marker["size"][0])` (NatNet hands a 1-tuple, NatNetClient.py:558, 580-582); the publisher (:631-635)
+  fills `msg.marker_sizes`.
+- `robot_interface/mocap_state.py:25` `RawMarkers` + `residuals: np.ndarray | None = None`, `sizes: np.ndarray | None =
+  None`, `capture_time: float | None = None`; `robot_interface/mocap.py:61` fills them from `message.marker_residuals`,
+  `message.marker_sizes` and the header stamp. A list whose length differs from the ids (an older relay) → None.
 
 ### 2.7 One servo part, pass by pass (main thread, inside movement_exec's task, the robot leased)
 ```
@@ -360,12 +385,13 @@ passes}, `dry_run`. The part's own exec record (movements/) names the servo file
   positions, residuals, measured flag) to its `MocapRigidBodyPose` (mocap_relay/node.py:455-510; the message fields
   are in a24f198's `MocapRigidBodyPose.msg`). A bar set up as Motive asset 10xx therefore works: `ctx.track_object(…,
   1020)` gives `TrackedObject.markers`. Motive needs "Labeled Markers" on. Missing: residuals and capture time are
-  dropped on the monitor side → E6 (§2.6). This is the old "asset" source, the one the old servo used first.
-- Not on our branch: Jakob's unlabeled cloud. faeaaa1 (relay publishes `/mocap/markers`, monitor keeps
+  dropped on the monitor side, and the marker size is not relayed at all → §2.6. This is the old "asset" source, the
+  one the old servo used first.
+- Deferred to M10 (Q7), kept here as its starting notes. Not on our branch: Jakob's unlabeled cloud. faeaaa1 (relay publishes `/mocap/markers`, monitor keeps
   `world.markers`) imports `crl_husky_msgs/MocapMarkers` at startup, so merging it alone stops the monitor from
   starting. The message is crl-husky f3335c1 on `origin/jg/mocap-marker-cloud`, a sibling of a24f198 (both on 1addd5e):
   not in our crl-husky worktree. `git log --all -- '*MocapMarkers*'` finds only f3335c1.
-- Optional step O1 (not needed for acceptance): cherry-pick f3335c1 onto the ros2_ws_next crl-husky worktree
+- O1, for M10 (not in M7): cherry-pick f3335c1 onto the ros2_ws_next crl-husky worktree
   (1 msg + 1 CMake line; rebuild `crl_husky_msgs`); cherry-pick faeaaa1 into yh/core-port, resolving it against
   3275f2b9 (RawMarkers moved to robot_interface/mocap_state.py: `MarkerCloud` goes there too) and monitor.py; then
   `sensed_near` feeds the cloud as the fallback source "cloud" when the asset's markers are missing or older than
@@ -388,18 +414,19 @@ bar (skipped without the Drive), else kept as a constant in the new frame.
 | demo_sidecar_matches_bar_actions | becomes: the process B20 layout equals the old `261016_2ModulesDemo_YH/MoCapMarkers.json` B20 table shifted by L/2 (< 0.05 mm), read with `json`; skipped without the Drive |
 | old_rig_take_does_not_fit_a_t20_bar | unchanged, via a small cache → `Sensed` adapter in the test |
 | fake_markers_round_trip, cache_occluded_markers_dropped | on `Sensed` / `RawMarkers` (`measured` False instead of flag 0x01) |
-| cache_size_forms_and_filters | the residual and age parts kept; the size part dropped (no size relayed) |
+| cache_size_forms_and_filters | kept whole on `sensed_from_raw`: residual, age and size (12–26 mm) filters; the size forms (NatNet's 1-tuple) move to the relay's test |
 | tracked_fit_* (5) | unchanged on `fit_bar(…, hint=…)` |
 | pose_deviation, axis_endpoints | unchanged; endpoints now ±L/2 (`bar_ends`) |
 | bar_servo_correction…, apply_authored_move, one_servo_step_closes_on_the_bar | unchanged |
 New: `test_the_old_origin_is_the_bar_start` (deviation at B·S from process-frame poses = the old-frame deviation,
-1e-9) and `test_sensed_from_raw_drops_unmeasured_and_noisy_markers`.
+1e-9), `test_sensed_from_raw_drops_unmeasured_and_noisy_markers` (unmeasured, residual 3.1 mm, sizes 11 and 27 mm
+dropped; 12 and 26 mm kept) and `test_markers_without_sizes_skip_the_size_check` (said once in the reason).
 
 ## 5. Tasks
 | # | Title | Files | Depends |
 |---|---|---|---|
 | A | bar fit in world/ + its tests | world/{bar_fit,bar_pose,marker_layouts}.py, world/__init__.py; test/test_bar_fit.py | – |
-| B | E6 residuals and capture time | robot_interface/{mocap_state,mocap}.py; test/test_mocap_check.py (its `store_sample` tests) | – |
+| B | marker sizes in the relay (Q6); E6 residuals, sizes and capture time | crl-husky `crl_husky_msgs/msg/MocapRigidBodyPose.msg`; mocap_relay/node.py; robot_interface/{mocap_state,mocap}.py; test/mocap_relay/test_mocap_relay_node.py (markers carry a size, published as `marker_sizes`), test/world/test_mocap_check.py (its `store_sample` tests: sizes kept; a count that differs from the ids → None) | – |
 | C | servo math and records | shared/execution/{servo,servo_record}.py; test/test_servo_math.py | A |
 | D | servo step on the planner, carried insert goal | shared/planning/{service,servo_route,tamp_route,route_search}.py, plugins/motion_planner/plugin.py; test/test_servo_route.py (slow) | C (constants) |
 | E | servo records through assembly_run | shared/assembly_run.py, plugins/assembly_run/plugin.py; a test in test_assembly_run.py | C |
@@ -407,12 +434,12 @@ New: `test_the_old_origin_is_the_bar_start` (deviation at B·S from process-fram
 | G | carry in assembly_steps, exec_line | plugins/assembly_steps/{plugin,panel}.py | F |
 | H | mocap_bars on the user's fit; fit_markers removed | plugins/mocap_bars.py, world/marker_fit.py, test/test_marker_fit.py | A, B |
 | I | slow B20 chain, README + roadmap rows, spec status | test/test_servo_chain.py, README.md, doc/plugin_roadmap.md | all |
-| O1 | (optional) marker cloud | crl-husky f3335c1; faeaaa1; marker_layouts.sensed_near | A |
+O1 (the marker cloud) is not an M7 task: it goes with the relay work of M10 (Q7); the roadmap row says so.
 
 ## 6. Verification (headless; the new venv; never source ~/Code/ros2_ws/install)
 ```
 cd ~/Code/ros2_ws_next && source venv/bin/activate && source /opt/ros/humble/setup.bash && source install/setup.bash
-python3 -m colcon build --symlink-install --packages-select husky_assembly_teleop && source install/setup.bash
+python3 -m colcon build --symlink-install --packages-select crl_husky_msgs husky_assembly_teleop && source install/setup.bash
 cd src/husky-assembly-teleop
 export HUSKY_DRIVE_ROOT="/home/yijiangh/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly"
 python3 -m pytest test/test_bar_fit.py test/test_servo_math.py test/test_servo_part.py test/test_layers.py -q -p no:cacheprovider
@@ -426,6 +453,7 @@ Tests that never write into the Drive: quick ones use `FakeRun`; the chain copie
 | Test | Asserts |
 |---|---|
 | test_bar_fit (quick) | §4 |
+| test_mocap_relay_node, test_mocap_check (quick) | a labeled marker of size (0.019,) is published with `marker_sizes` [0.019], in the order of `marker_ids`; the monitor keeps sizes, residuals and the capture time with the markers; sizes of another length → None |
 | test_servo_math (quick) | every formula of §0 to 1e-12 on hand-made poses: e_s, per-axis angles, k_s, excursion (an out-and-back path reads 0 net, x > 0), T (3 s floor, 90 s cap), T_corr·B̂ = B*, `bar_targets` keep the flange-to-flange transform, the deviation at B·S, each gate reason at its threshold (rms 2.9/3.1 mm, 29/31 mm, 2.9/3.1°, fake, ambiguous, 5 of 8), `stop_after_move` order (force 20.1 N wins over converged), carried goal = authored move from the live flange, `insert_end_gap` 2.9/3.1 mm |
 | test_servo_part (quick; RobotLab, a stub planner solving with `ik.branches` (ssik, no PyBullet) and returning [live, goal]) | (1) Cindy at J_transfer's end, base measured 10 mm off: one pass, first-pass prompt, converged at pass 1 (< 0.2 mm), record `servo/B20_J/B20_J_transfer.1.json` with 2 readings; (2) bar servo on synthetic markers streamed from `E·B_fk` each tick: a flange-side E (3 mm / 0.1°) closes in 1 pass, a world-frame E in ≤ 3; every target = T_corr·F of the reading before; carry set; record `servo_feedback` mocap_bar; (3) markers older than 0.5 s, rms 3.1 mm, 31 mm off, a 5-of-8 fit → tool0, "not usable" said once; a fit lost after engaging stops; (4) Cancel at pass 1's prompt → nothing sent, CANCELLED, record only with a bar reading; (5) Cancel during pass 2's move → every arm held, CancelledError out, record with `outcome.status` cancelled and 2 readings, ExecResult done = (3, 1, 2) without SERVO_INDEX; Exec again runs only the servo part; (6) Belle starts moving during pass 1 → INTERRUPTED, held, record; Belle moved within 2 s before a pass → REFUSED; (7) base moved 3 mm after Confirm → REFUSED; (8) after-insert: gate 3.1 mm refused, 2.9 mm runs; force changing 25 N after pass 1 → stopped "force … changed by 25.0 N"; linear_only passed; (9) a later pass travelling 6° prompts with a warning, one of 4° does not; (10) dry run: one pass, DRY_RUN, never done; (11) Alice approach: one arm, two-row path, converged; (12) a plan made before a servo pass is refused at Exec |
 | test_servo_route (slow, real motion planner on the purged process) | at B20_J_insert's start (design scene, base +10 mm): IK at the live base, a straight bar-held plan whose last row puts both flanges within 0.2 mm of the authored targets; with a 0.1 mm target: `nothing_left`; at the insert END (ground halves on the floor) a 1 mm correction plans straight (the old smoke's KEY question, SMK check 3); B21_H_approach one arm: two rows, swept-checked |
@@ -434,7 +462,9 @@ Tests that never write into the Drive: quick ones use `FakeRun`; the chain copie
 Monitor smoke: as M5 (§8 of its spec): every plugin sets up, no "failed", clean teardown.
 
 ## 7. Lab acceptance (monitor and visual steps only; robots on Zenoh; e-stops in hand)
-L0 Set up. Relay running (`ros2 launch husky_assembly_teleop mocap.launch.py`), Motive streaming B20 as 1020 with
+L0 Set up. Before the lab day: `crl_husky_msgs` rebuilt from the same crl-husky commit on the control PC and on Alice,
+Belle and Cindy (their onboard pure pursuit reads `MocapRigidBodyPose`, §2.6); on each robot, a short base move under
+the follower shows it still gets its pose. Relay running (`ros2 launch husky_assembly_teleop mocap.launch.py`), Motive streaming B20 as 1020 with
 "Labeled Markers" on and its 8 balls visible. `ros2 daemon stop`, then `ros2 run husky_assembly_teleop husky_monitor
 --ros-args -p robots:="['alice','belle','cindy']" -p plugins:="['assembly_steps','robot_control','mocap_bars']"
 -p process_directory:=<the B20–B37 process>` 2>&1 | tee ~/m7_lab.log. New run. In mocap_bars pick B20, Mocap ID
@@ -469,7 +499,8 @@ L4 Send back: `~/m7_lab.log`, `runs/<run>/servo/` and `movements/`, `events.json
 ## 8. Safety: M5's §9 guards stay, and the servo adds
 | Hazard | Guard |
 |---|---|
-| a wrong marker match moves the arms | gates 30 mm / 3°, rms 3 mm, ≥ 6 of 8, no ambiguity, never "fake"; pass-1 Confirm; > 5° Confirm; the linear-only rule after an insert |
+| a wrong marker match moves the arms | marker size 12–26 mm and residual 3 mm per marker; gates 30 mm / 3°, rms 3 mm, ≥ 6 of 8, no ambiguity, never "fake"; pass-1 Confirm; > 5° Confirm; the linear-only rule after an insert |
+| a robot built with the old `MocapRigidBodyPose` (Q6) | every machine rebuilt from one crl-husky commit before the lab, and each robot's follower checked (L0) |
 | the servo moves from a stale state | every pass: live (base 1 s, joints 0.5 s), others not moving, plan basis re-checked after Confirm, row 0 = live (≤ 2°) |
 | a plan from before a servo pass replayed | `moved_at` guard (§2.5); the step panel drops plans on a step change |
 | another robot moves during a pass | `send_motion(watch=others_moving)` → INTERRUPTED, held |
@@ -477,7 +508,7 @@ L4 Send back: `~/m7_lab.log`, `runs/<run>/servo/` and `movements/`, `events.json
 | Cancel not reaching the arms | as M5 #5; the servo `finally` writes the record, untracks, never sends |
 | one-arm two-row path through something | swept check (A6) |
 
-## 9. Risks and open questions (recommended answers)
+## 9. Risks
 Risks, by severity:
 1. Mocap in the loop: a marker swap within the gates still steers (≤ 30 mm, then the next pass sees it). Pass-1
    Confirm and the excursion confirm are the backstop.
@@ -491,23 +522,20 @@ Risks, by severity:
 6. Files near the limit: assembly_steps/plugin.py 459 and assembly_run/plugin.py 719 lines (+~12 and +~10); the split
    stays in the post-M5 cleanup.
 7. runs/ sits in the Drive-synced process folder (decision 8 still open): one PNG (~100 kB) per servo.
-Open questions:
-- Q1 After a grounded insert with "servo by bar" off: run the tool0 servo (code, MB §10.3) or skip (brief)? → run it.
-- Q2 Where the bar error is measured (§0.8 choice 1)? → the bar start (a).
-- Q3 A servo that does not converge: done or not done (A2)? → not done; Exec retries, Next ▶ skips.
-- Q4 Confirm only on pass 1 and > 5° (M5 asks on every motion)? → yes, as the code and the plan.
-- Q5 Swept check of the one-arm two-row move (A6)? → yes.
-- Q6 The marker size filter is gone (not relayed): add size to the relay? → no; labeled asset markers suffice.
-- Q7 Marker cloud (O1) now? → later, with the relay work of M10.
-- Q8 mocap_bars on the user's fit and Jakob's `fit_markers` removed? → yes: one fit in the code.
-- Q9 TRANSFER_HELD executable in M7 (A7)? → yes, untested in the lab until CDFM is ready.
-- Q10 No preview ghost for servo moves (the prompt gives travel and flange mm), no slider override (A8)? → yes.
+8. The message change (Q6) reaches the robots: a robot left on the old `crl_husky_msgs` may not get its mocap pose
+   (L0 checks each one).
+9. With a = the bar start (Q2), a 0.1° tilt can leave B20's far end about 1.8 m × 0.1° ≈ 3.1 mm off while the servo
+   says converged (1.6 mm at either end for b, the middle). Accepted: the old stop test and records are kept.
+Open questions: none. Q1–Q10 were decided on 2026-10-23 (Decisions, at the top).
 Nothing blocks M7. The insert half of L3 (carried insert executed, the servo after it) needs M6 implemented.
 
 ## 10. Commit plan (small, one change each; run-mode flags never committed)
 1. `[feat] bar fit: the MoCap bar fit of the old monitor in world/, its layouts from the process markers, the bar frame at its middle` (A)
 2. `[test] bar fit: the 31 old checks on process markers, and the old origin at the bar start` (A)
-3. `[feat] mocap: a rigid body's marker residuals and capture time kept with its markers` (B)
+3. crl-husky, first and in its own repo (on a new branch; the ros2_ws_next worktree is a detached HEAD at 934fc9a):
+   `[feat] MocapRigidBodyPose: each labeled marker's size from Motive`; then here
+   `[feat] mocap: the relay sends each marker's size, and the monitor keeps sizes, residuals and capture time with the
+   markers` (B)
 4. `[feat] servo: errors, targets, stop tests and the record ported unchanged from the old monitor` (C)
 5. `[feat] motion_planner: a servo step, IK at the live base and the correction straight with the bar held, or one arm's two-row move` (D)
 6. `[feat] assembly_run: servo records and their plot under runs/<run>/servo/` (E)
@@ -522,7 +550,9 @@ Nothing blocks M7. The insert half of L3 (carried insert executed, the servo aft
 2. Three world/ modules (bar_fit, bar_pose, marker_layouts) instead of bar_fit + marker_layouts: BMF is 952 lines.
 3. Bar error measured at the old origin (D3), shown as a choice.
 4. Added guards: swept check of the one-arm move; the `moved_at` plan guard; the insert-end gate without M6's value.
-5. Dropped: the marker size filter (not relayed), the MoCapMarkers.json loader and its tests, the live tracker
-   window (the panel line and the PNG replace it), the slider override during the servo prompt.
+5. Dropped: the MoCapMarkers.json loader and its tests, the live tracker window (the panel line and the PNG replace
+   it), the slider override during the servo prompt.
+6. Added to the relay message: each marker's size (Q6), so the old 12–26 mm size filter stays; this changes a
+   crl-husky message.
 6. TRANSFER_HELD made executable (M5 listed it for M7).
 7. The test count is 31 at 0e45758 (the plan says 28: that is fe37618).
