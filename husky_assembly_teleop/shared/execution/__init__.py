@@ -7,6 +7,8 @@ Running a planned movement on the real robots: timing, sending, tools, the opera
   operator.py   the prompt the operator confirms or cancels, one at a time
   moving.py     whether any arm or base moves, so an automatic motion starts only while nothing else does
   basis.py      what a plan was made from, and why it no longer fits
+  servo.py      the servo's plan, each reading's errors, the MoCap bar's correction and the stop tests
+  servo_record.py  the servo run's JSON record and its four-panel PNG
 
 ! The functions that command a robot run on the main thread (as every robot command), from a plugin's task.
 """
