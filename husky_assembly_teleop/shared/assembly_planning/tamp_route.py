@@ -303,6 +303,8 @@ class _Route(RouteSearch):
             Refused: Why it is not, as the failed result's reason.
         """
         self.planner = "tamp.plan_constrained_dual_arm_linear"
+        # ? after the M6 merge: `self.goal_poses[part.flange]` where given (the carried MoCap-bar goal, M7 task G),
+        # ? else `part.target`, else the line.
         goals = {part: part.target for part in self.spec.arms}
         if None in goals.values():
             goals = self.line_goals()

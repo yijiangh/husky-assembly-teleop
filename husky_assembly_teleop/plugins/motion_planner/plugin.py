@@ -27,12 +27,13 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.assembly_planning.route_result import GoalCheck, RouteResult
+from ...shared.assembly_planning.servo_route import ServoStep
 from ...shared.motion_planner_contract import CollisionReport, MotionPlanRequest
 from ...shared.planner.planner_panel import PLAN_TAB
 from ...shared.planner.planner_search import with_guesses
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, chip_line, values
-from .work import run_collisions, run_ik, run_plan
+from .work import run_collisions, run_ik, run_plan, run_servo_step
 
 if TYPE_CHECKING:
     from ...shared.collisions_contract import CollisionsContract
@@ -42,7 +43,7 @@ if TYPE_CHECKING:
 Work = Callable[[MirrorPool, MotionPlanRequest, threading.Event, Callable[[str], None]], Any]
 
 
-def describe(answer: RouteResult | GoalCheck | CollisionReport) -> tuple[str, bool]:
+def describe(answer: RouteResult | GoalCheck | CollisionReport | ServoStep) -> tuple[str, bool]:
     """One line about an answer, and whether it failed.
 
     Args:
@@ -51,6 +52,13 @@ def describe(answer: RouteResult | GoalCheck | CollisionReport) -> tuple[str, bo
     Returns:
         tuple[str, bool]: The line, and True for a failure.
     """
+    if isinstance(answer, ServoStep):
+        correction = ", ".join(f"{flange.rsplit('/', 1)[-1]} {metres * 1e3:.2f} mm"
+                               for flange, metres in answer.correction.items())
+        if answer.nothing_left:
+            return f"servo: nothing left to plan ({correction})", False
+        line, failed = describe(answer.route)
+        return f"servo {line}" + (f"; correction {correction}" if correction else ""), failed
     if isinstance(answer, RouteResult):
         routine = answer.routine.value if answer.routine is not None else "unclassified"
         if answer.ok:
@@ -69,8 +77,10 @@ def describe(answer: RouteResult | GoalCheck | CollisionReport) -> tuple[str, bo
     return (f"collides: {pairs}" if pairs else "clear"), bool(pairs)
 
 
-def hits_of(label: str, answer: RouteResult | GoalCheck | CollisionReport) -> dict[str, CollisionHit]:
+def hits_of(label: str, answer: RouteResult | GoalCheck | CollisionReport | ServoStep) -> dict[str, CollisionHit]:
     """An answer's collision hits by label for the collisions panel, e.g. "plan B20_J_transfer: goal"."""
+    if isinstance(answer, ServoStep):
+        answer = answer.route
     found = answer.hits if isinstance(answer, (RouteResult, GoalCheck)) else (answer.hit,) if answer.hit else ()
     hits = {}
     for hit in found:
@@ -132,6 +142,10 @@ class MotionPlannerPlugin(HuskyPlugin):
     def request_collisions(self, request: MotionPlanRequest) -> asyncio.Future[CollisionReport]:
         """Check what the acting robot collides with in the movement's planning scene. Main thread."""
         return self._submit(run_collisions, request, "collisions of")
+
+    def request_servo_step(self, request: MotionPlanRequest) -> asyncio.Future[ServoStep]:
+        """Plan one servo pass, `request.servo`, from the snapshot's live joints (`plan_servo_step`). Main thread."""
+        return self._submit(run_servo_step, request, "servo step")
 
     def request_cancel(self) -> None:
         """Stop every request: queued ones answer "cancelled" unrun, the running one stops at its next try."""

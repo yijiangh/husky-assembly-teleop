@@ -16,10 +16,11 @@ from planning_fixtures import ALICE, BELLE, CINDY, DATA, design_scene, purged_pr
 from process_fixtures import build_process
 
 from husky_assembly_teleop.plugins.motion_planner import plugin as motion
-from husky_assembly_teleop.plugins.motion_planner.plugin import MotionPlannerPlugin
+from husky_assembly_teleop.plugins.motion_planner.plugin import MotionPlannerPlugin, describe, hits_of
 from husky_assembly_teleop.shared.assembly_planning.ik import ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import RouteResult
+from husky_assembly_teleop.shared.assembly_planning.servo_route import ServoStep
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.motion_planner_contract import MotionPlanRequest
@@ -209,6 +210,25 @@ def test_errors_come_back_as_failed_answers(tmp_path):
     plan, ik, collisions = asyncio.run(scenario())
     reason = "the planner raised RuntimeError('no mirror here')"
     assert plan.result.status == "failed" and (plan.result.reason, ik.reason, collisions.reason) == (reason,) * 3
+
+
+def test_describe_a_servo_step():
+    """A servo step's line: the route's line with each flange's correction in mm; nothing left; a failure fails."""
+    left, right = "robots/cindy/left_ur_arm_tool0", "robots/cindy/right_ur_arm_tool0"
+    moved = RouteResult(MovementResult("solved"), Routine.INSERT, planner="tamp.plan_constrained_dual_arm_linear",
+                        attempts=1, seconds=1.25, waypoints=4, hits=(SimpleNamespace(where="goal by IK"),))
+    step = ServoStep(moved, {left: 0.0103, right: 0.00981}, False)
+    assert describe(step) == ("servo insert solved by tamp.plan_constrained_dual_arm_linear: 4 waypoints, 1 tries, "
+                              "1.2 s; correction left_ur_arm_tool0 10.30 mm, right_ur_arm_tool0 9.81 mm", False)
+    nothing = ServoStep(RouteResult(MovementResult("not_planned", "nothing left to plan"), Routine.INSERT),
+                        {left: 0.0001, right: 0.00015}, True)
+    assert nothing.ok and describe(nothing) == ("servo: nothing left to plan (left_ur_arm_tool0 0.10 mm, "
+                                                "right_ur_arm_tool0 0.15 mm)", False)
+    failed = ServoStep(RouteResult(MovementResult("failed", "no IK for the servo target (ssik): out of reach"),
+                                   Routine.INSERT), {}, False)
+    assert not failed.ok and describe(failed) == ("servo insert failed: no IK for the servo target (ssik): out of "
+                                                  "reach", True)
+    assert list(hits_of("servo 1/8 B20_J_insert", step)) == ["servo 1/8 B20_J_insert: goal by IK"]
 
 
 def test_teardown_closes_the_pool_once():

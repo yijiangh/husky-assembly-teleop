@@ -1,7 +1,8 @@
 """
-The motion planner's work, run on its one worker thread, which owns the mirrors: plan, IK and collision checks.
+The motion planner's work, run on its one worker thread, which owns the mirrors: plan, IK, collisions, servo passes.
 
-- ! `run_plan`, `run_ik` and `run_collisions` run only on the worker, after the request's checks (`_acting`).
+- ! `run_plan`, `run_ik`, `run_collisions` and `run_servo_step` run only on the worker, after the request's checks
+  (`_acting`).
 - They never raise: any error, a cancel or a robot that can't be planned for gives a failed answer with the reason.
 """
 
@@ -18,6 +19,7 @@ from ...shared.assembly_planning.collision import collision_hit, in_process_term
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.assembly_planning.route_result import GoalCheck, RouteResult
 from ...shared.assembly_planning.scene_for import scene_for
+from ...shared.assembly_planning.servo_route import ServoStep, plan_servo_step
 from ...shared.assembly_planning.tamp_route import check_goal, plan_movement
 from ...shared.motion_planner_contract import CollisionReport, MotionPlanRequest
 from ...shared.process_scene.scene_bodies import live_ids
@@ -96,6 +98,32 @@ def run_collisions(pool: MirrorPool, request: MotionPlanRequest, abort: threadin
                                dict(planning.sources), planning.warnings, time.monotonic() - started, hit)
     except Exception as error:
         return CollisionReport(reason=_reason(error), seconds=time.monotonic() - started)
+
+
+def run_servo_step(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Event, log: Log) -> ServoStep:
+    """Plan one servo pass, `request.servo`, on the acting robot's mirror (`plan_servo_step`). Worker thread.
+
+    Args:
+        pool: The worker's mirrors.
+        request: The question; `servo` says what to aim at and how to move.
+        abort: Set to stop before a search.
+        log: Gets the IK fallback line.
+
+    Returns:
+        ServoStep: The correction move, nothing left to plan, or a failed step with the reason.
+    """
+    started = time.monotonic()
+    try:
+        serial = _acting(request, abort)
+        if request.servo is None:
+            raise _Refused("the request carries no servo ask")
+        return plan_servo_step(pool.mirror(serial), request.loaded, request.step, request.snapshot, request.robots,
+                               request.servo, transfer_as_free=request.transfer_as_free, beliefs=request.beliefs,
+                               ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide,
+                               abort=abort, log=log)
+    except Exception as error:
+        failed = RouteResult(MovementResult("failed", _reason(error)), None, seconds=time.monotonic() - started)
+        return ServoStep(failed, {}, False)
 
 
 class _Refused(Exception):

@@ -18,6 +18,7 @@ The process as steps, planning scenes, routines, IK and collision checks on a pl
                     fallback
   tamp_route.py     one process movement planned by its routine: tamp's dual-arm planners, the one-arm search or line
   route_search.py   the searches, checks and results a route is built of
+  servo_route.py    one servo pass: IK at the live base for the pass's targets, then the correction move
   route_result.py   RouteResult, what planning one movement gave; GoalCheck, its goal by IK; pose error and line goals
   mirrors.py        MirrorPool: a planner's compas_fab mirrors, one per robot, and the PyBullet window
 
