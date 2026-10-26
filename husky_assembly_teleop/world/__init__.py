@@ -15,5 +15,8 @@ What is in the world, and where.
   lab.py        the lab's obstacles and floor border as data, and their files
   model_check.py  whether two models of one robot agree (planned and real, URDF and UR calibration)
   calibration_sessions.py  base calibrations: crl-husky's default or a Drive session, and which one the relay applies
-  marker_fit.py   fitting known marker layouts to raw mocap markers
+  marker_fit.py   each bar's designed marker layout from the process, and a bar's deviation from its design
+  bar_fit.py      which sensed marker is which designed marker of a bar, and the bar pose that fits them
+  bar_pose.py     a bar's pose as a matrix: deviation from its design, the servo's correction, start and ends
+  marker_layouts.py  each bar's marker layout from the process, its sensed markers from the relay, and their fit
 """
