@@ -183,9 +183,12 @@ def test_retreat_moves_each_flange_along_its_line(purged, check):
     """B20's retreat: each flange 0.05 m along (0, -1, 0), turned the same."""
     row = check("B20_R_retreat")["B20_R_retreat"]
     assert row.route.ok and row.route.routine is Routine.RETREAT_LINEAR
-    for flange, (start, end) in _flanges(purged, row).items():
+    flanges = _flanges(purged, row)
+    assert set(row.route.goals) == set(flanges)
+    for flange, (start, end) in flanges.items():
         assert np.allclose(np.subtract(end.position, start.position), (0.0, -0.05, 0.0), atol=1e-4), flange
         assert pose_error(start, end)[1] <= 1e-3
+        assert pose_error(end, row.route.goals[flange])[0] <= POSE_TOL[0]
 
 
 @pytest.mark.slow
@@ -196,7 +199,7 @@ def test_home_ends_on_the_target_joints(purged, check):
     target = movement(purged, "B20_R_home")[1].target.joints["robots/cindy"]
     end = route.result.end["robots/cindy"]
     assert max(abs(end[name] - value) for name, value in target.items()) <= JOINT_TOL
-    assert route.joint_error <= JOINT_TOL
+    assert route.joint_error <= JOINT_TOL and route.goals == {}
 
 
 @pytest.mark.slow
@@ -322,6 +325,50 @@ def test_a_retreat_into_a_box_names_the_waypoint_and_the_pair(purged, configs, m
     assert row.status == "failed" and found and int(found.group(1)) > 1, row.reason
     assert ("tools/cindy/AT3L", "obstacles/box") in row.route.colliding
     assert not any("touches" in warning for warning in row.route.warnings)
+
+
+def _retreat_goals(purged, snapshot: Scene, distance: float) -> dict[str, Pose]:
+    """B20's retreat goals `distance` along each flange's line from where the snapshot has Cindy's tools."""
+    cindy = snapshot.robots[CINDY_ID]
+    spec = classify(purged.process, *movement(purged, "B20_R_retreat"))
+    return {part.flange: line_goal(link_pose(robot_config(CINDY).model.urdf, cindy.base, cindy.joints,
+                                             f"{part.arm}_tool0"), LineSpec(part.line.direction, distance))
+            for part in spec.arms}
+
+
+@pytest.mark.slow
+def test_a_retreat_goes_to_given_goal_poses_in_given_steps(purged, configs, mirrors, monkeypatch):
+    """B20's retreat to goal poses 3 cm along its lines in 1 mm steps: tamp gets the step, the path ends there."""
+    real, asked = tamp_route.plan_dual_arm_linear_independent, []
+
+    def plan(*args, **options):
+        asked.append(options)
+        return real(*args, **options)
+
+    monkeypatch.setattr(tamp_route, "plan_dual_arm_linear_independent", plan)
+    snapshot = design_scene(purged, "B20_R_retreat")
+    goals = _retreat_goals(purged, snapshot, 0.03)
+    route = plan_movement(_cindys(mirrors), purged, step(purged, "B20_R_retreat"), snapshot, configs, goal_poses=goals,
+                          linear_step=0.001, log=lambda _line: None)
+    assert route.ok, route.result.reason
+    assert asked[0]["max_step_distance"] == 0.001 and route.goals == goals and route.waypoints >= 31, route.waypoints
+    assert all(distance <= POSE_TOL[0] and angle <= POSE_TOL[1] for distance, angle in route.end_error.values())
+    asked.clear()
+    route = plan_movement(_cindys(mirrors), purged, step(purged, "B20_R_retreat"), snapshot, configs,
+                          log=lambda _line: None)
+    assert route.ok and "max_step_distance" not in asked[0] and route.waypoints == 12
+
+
+@pytest.mark.slow
+def test_a_retreat_missing_a_flanges_goal_pose_is_refused(purged, configs, mirrors, monkeypatch):
+    """Goal poses for the left flange only: refused naming the right one, tamp never asked."""
+    monkeypatch.setattr(tamp_route, "plan_dual_arm_linear_independent", lambda *_args, **_options: pytest.fail())
+    snapshot = design_scene(purged, "B20_R_retreat")
+    goals = {flange: goal for flange, goal in _retreat_goals(purged, snapshot, 0.03).items() if "left" in flange}
+    route = plan_movement(_cindys(mirrors), purged, step(purged, "B20_R_retreat"), snapshot, configs, goal_poses=goals,
+                          log=lambda _line: None)
+    assert route.result.status == "failed" and route.attempts == 0
+    assert route.result.reason == "no goal pose given for robots/cindy/right_ur_arm_tool0"
 
 
 @pytest.mark.slow

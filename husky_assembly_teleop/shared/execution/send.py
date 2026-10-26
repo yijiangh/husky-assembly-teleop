@@ -5,7 +5,8 @@ Send one motion to a robot's arms and watch it until it arrives, stops short, ti
 of a two-arm robot together, then waits until the time is up and every arm is at its end.
 
 - Every ending but arriving holds every arm of the robot: a timeout, a stop short of the end, something else moving
-  (`watch`), a cancel (re-raised). A hold an arm refuses (stale joints) makes the outcome HOLD_NOT_SENT, said loudly.
+  (`watch`), the caller's `until`, a cancel (re-raised). A hold an arm refuses (stale joints) makes the outcome
+  HOLD_NOT_SENT, said loudly.
 - A dry run builds each arm's trajectory, so every check the arm runs before sending runs, and sends nothing.
 - A send the robot refuses by raising (soft stopped, or no lease: `MotionRefused`) is REFUSED.
 - ! Main thread, from a plugin task.
@@ -40,8 +41,8 @@ STILL_SETTLE = 1.0
 LARGE_TRAVEL = math.pi / 3
 
 #: How a motion ended.
-ARRIVED, REFUSED, TIMEOUT, STOPPED, INTERRUPTED, HOLD_NOT_SENT, DRY_RUN = (
-    "ARRIVED", "REFUSED", "TIMEOUT", "STOPPED", "INTERRUPTED", "HOLD_NOT_SENT", "DRY_RUN")
+ARRIVED, REFUSED, TIMEOUT, STOPPED, INTERRUPTED, ENDED, HOLD_NOT_SENT, DRY_RUN = (
+    "ARRIVED", "REFUSED", "TIMEOUT", "STOPPED", "INTERRUPTED", "ENDED", "HOLD_NOT_SENT", "DRY_RUN")
 
 
 @dataclass(frozen=True)
@@ -93,8 +94,9 @@ class SendOutcome:
     """How a motion ended.
 
     Attributes:
-        status: ARRIVED, REFUSED (nothing sent), TIMEOUT, STOPPED, INTERRUPTED (something else moved), HOLD_NOT_SENT
-            (one of those, and an arm refused its hold: stop it with the pendant or the e-stop) or DRY_RUN.
+        status: ARRIVED, REFUSED (nothing sent), TIMEOUT, STOPPED, INTERRUPTED (something else moved), ENDED (the
+            caller's `until` came true), HOLD_NOT_SENT (one of those, and an arm refused its hold: stop it with the
+            pendant or the e-stop) or DRY_RUN.
         reason: One line saying what happened.
         seconds: From sending to the end of the wait.
         end: Arm name -> its measured joints at the end, or None if nothing was sent.
@@ -191,7 +193,8 @@ def motion_command(serial: str, arm_names: Sequence[str], joint_names: Sequence[
 
 async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: MotionCommand, *,
                       dry_run: bool = False, watch: Callable[[], str] | None = None,
-                      progress: SendProgress | None = None, on_sent: Callable[[], None] | None = None) -> SendOutcome:
+                      progress: SendProgress | None = None, on_sent: Callable[[], None] | None = None,
+                      until: Callable[[], bool] | None = None) -> SendOutcome:
     """Send a motion and wait until every arm is at its end once the duration is up; hold every arm otherwise.
 
     Args:
@@ -202,10 +205,11 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
         watch: Checked every tick while the arms move: why the motion must stop (e.g. another robot moves), or "".
         progress: Filled in when a cancel cuts the send short (where the arms were, the holds), or None.
         on_sent: Called once the trajectory went out, before the wait, e.g. to answer a commit.
+        until: Checked every tick while the arms move: True ends the motion early, every arm held (ENDED).
 
     Returns:
-        SendOutcome: ARRIVED, REFUSED (nothing sent), TIMEOUT, STOPPED or INTERRUPTED (all held), HOLD_NOT_SENT, or
-            DRY_RUN.
+        SendOutcome: ARRIVED, REFUSED (nothing sent), TIMEOUT, STOPPED, INTERRUPTED or ENDED (all held),
+            HOLD_NOT_SENT, or DRY_RUN.
 
     Raises:
         asyncio.CancelledError: When cancelled; every arm was held first (`progress` says whether each hold went out).
@@ -238,18 +242,19 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
     if on_sent is not None:
         on_sent()
     ends = {motion.arm: motion.positions[-1] for motion in command.arms}
-    lost, interrupted = False, ""
+    lost, interrupted, ended = False, "", False
 
     def errors() -> dict[str, float]:
         """Each moving arm's largest gap to its end, radians (infinite without joints)."""
         return {name: _gap(arm.joint_vector(), ends[name]) for name, arm in arms.items()}
 
     def finished() -> bool:
-        """Arrived, stopped short once the time is up, or interrupted; says once when the joint states stop coming."""
-        nonlocal lost, interrupted
+        """Arrived, stopped short once the time is up, interrupted or ended; says once when joint states stop coming."""
+        nonlocal lost, interrupted, ended
         now = ctx.now()
         interrupted = watch() if watch is not None else ""
-        if interrupted:
+        ended = not interrupted and until is not None and until()
+        if interrupted or ended:
             return True
         stale = [name for name, arm in arms.items()
                  if arm.state.last_update_time is None or now - arm.state.last_update_time > JOINT_STATE_MAX_AGE]
@@ -293,6 +298,8 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
         raise
     if interrupted:
         return held(INTERRUPTED, interrupted)
+    if ended:
+        return held(ENDED, "ended by the caller")
     gaps = errors()
     if max(gaps.values()) < ARRIVED_TOLERANCE:
         return _outcome(ARRIVED, f"arrived, end within {math.degrees(max(gaps.values())):.2f}°",

@@ -119,3 +119,15 @@ def test_the_rhino_obstacles_box_reaches_the_planning_scene(work, module, monkey
     answer = work(pool, asked, threading.Event(), print)
     assert "kept what scene_for was asked" in reason(answer)
     assert [call["obstacles_collide"] for call in calls] == [False]
+
+
+def test_a_retreats_goal_poses_and_step_reach_plan_movement(loaded, monkeypatch):
+    """`goal_poses` and `linear_step` of a request go to `plan_movement` unchanged."""
+    asked = {}
+    monkeypatch.setattr(work_module, "plan_movement", lambda *_args, **options: asked.update(options))
+    goals = {"robots/cindy/left_ur_arm_tool0": Pose((1.0, 2.0, 3.0))}
+    configs = (robot_config(CINDY),)
+    snapshot = Scene(robots={CINDY_ID: RobotObject(CINDY_ID, configs[0].model, Pose(), {})})
+    question = MotionPlanRequest(loaded, loaded.steps[2], snapshot, configs, goal_poses=goals, linear_step=0.001)
+    run_plan(SimpleNamespace(mirror=lambda _serial: None), question, threading.Event(), print)
+    assert asked["goal_poses"] is goals and asked["linear_step"] == 0.001

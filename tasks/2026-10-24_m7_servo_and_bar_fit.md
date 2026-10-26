@@ -1,4 +1,4 @@
-# M7: the MoCap servo and the bar fit (spec, IMPLEMENTED 2026-10-26 on yh/m7-servo; lab acceptance §7 pending; the relay half of task B (marker sizes) awaits the user's OK; the carried insert goal needs the M6 merge)
+# M7: the MoCap servo and the bar fit (spec, IMPLEMENTED 2026-10-26 on yh/m7-servo, merged with M6 the same day; lab acceptance §7 pending; the relay half of task B (marker sizes) awaits the user's OK)
 
 > Paths are as of `yh/core-port` 2912470. Jakob's layout has landed since (at 59760fe): `shared/planning/*` →
 > `shared/assembly_planning/*` (route_result, route_search, tamp_route, movement, ik, joints, collision); `PlanRequest`

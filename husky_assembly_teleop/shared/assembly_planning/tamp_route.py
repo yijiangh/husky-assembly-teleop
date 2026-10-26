@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Callable, Mapping
 from husky_assembly_tamp.motion_planner.api import (_arm_joint_names, plan_constrained_dual_arm,
                                                     plan_constrained_dual_arm_linear, plan_dual_arm_linear_independent)
 
+from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.mirrors.compas import frame_from_pose
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
@@ -61,6 +62,7 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
                   robots: tuple[RobotConfig, ...], *, transfer_as_free: bool = False,
                   beliefs: Mapping[str, RobotBelief] | None = None, ignore_built: bool = False,
                   obstacles_collide: bool = True, goal_joints: Mapping[str, float] | None = None,
+                  goal_poses: Mapping[str, Pose] | None = None, linear_step: float | None = None,
                   abort: threading.Event | None = None, log: Callable[[str], None] = print) -> RouteResult:
     """Plan one movement from where the snapshot has its robot, by its routine (`classify`).
 
@@ -75,6 +77,9 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
         ignore_built: Plan as if the built bars were not there (`scene_for`).
         obstacles_collide: Whether the process's obstacles from Rhino count (`scene_for`).
         goal_joints: Arm joints to plan to instead of solving the goal: a transfer, a travel to load, an approach.
+        goal_poses: Process flange id -> world pose a retreat goes to instead of along its line, one per moving
+            flange (`RouteResult.goals` of an earlier plan).
+        linear_step: A retreat's largest step between waypoints, metres; None: tamp's default (5 mm).
         abort: Set from another thread to stop between tries.
         log: Gets the IK and linear fallback lines.
 
@@ -91,8 +96,8 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
     if spec.routine is Routine.FREE_TO_LOAD and goal_joints is None and spec.goal_joints is None:
         return _not_planned(spec, "needs the transfer start, after M3", started)
     route = _route(mirror, loaded, step, snapshot, robots, spec, beliefs=beliefs, ignore_built=ignore_built,
-                   obstacles_collide=obstacles_collide, goal_joints=goal_joints, abort=abort or threading.Event(),
-                   log=log)
+                   obstacles_collide=obstacles_collide, goal_joints=goal_joints, goal_poses=goal_poses,
+                   linear_step=linear_step, abort=abort or threading.Event(), log=log)
     try:
         result = route.run()
     except Refused as refused:
@@ -160,7 +165,8 @@ def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snaps
 def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
            robots: tuple[RobotConfig, ...], spec: MovementSpec, *, beliefs: Mapping[str, RobotBelief] | None,
            ignore_built: bool, obstacles_collide: bool, goal_joints: Mapping[str, float] | None,
-           abort: threading.Event, log: Callable[[str], None]) -> _Route:
+           abort: threading.Event, log: Callable[[str], None], goal_poses: Mapping[str, Pose] | None = None,
+           linear_step: float | None = None) -> _Route:
     """A movement's route: its planning scene, and the scene its searches run in (without the bar for the workaround).
 
     Raises:
@@ -175,7 +181,8 @@ def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot:
     search = scene_for(loaded, step, snapshot, robots, hide_held=True, **options).scene \
         if spec.routine is Routine.TRANSFER_FREE else planning.scene
     config = next(config for config in robots if robot_id(config.serial) == planning.acting)
-    return _Route(mirror, loaded.process, step, spec, planning, search, config, goal_joints, abort, log)
+    return _Route(mirror, loaded.process, step, spec, planning, search, config, goal_joints, abort, log,
+                  goal_poses=goal_poses, linear_step=linear_step)
 
 
 def _sync_again(route: _Route) -> str:
@@ -195,6 +202,17 @@ def _not_planned(spec: MovementSpec, reason: str, started: float) -> RouteResult
 
 class _Route(RouteSearch):
     """One movement planned by its routine, after its start is checked once."""
+
+    def __init__(self, *args, goal_poses: Mapping[str, Pose] | None = None, linear_step: float | None = None):
+        """A route as `RouteSearch` makes it, with a retreat's own goals and step.
+
+        Args:
+            *args: `RouteSearch`'s.
+            goal_poses: Process flange id -> world pose a retreat goes to instead of along its line, or None.
+            linear_step: A retreat's largest step between waypoints, metres; None: tamp's default.
+        """
+        super().__init__(*args)
+        self.goal_poses, self.linear_step = goal_poses, linear_step
 
     # --- --- --- --- --- ROUTINES --- --- --- --- ---
 
@@ -294,7 +312,9 @@ class _Route(RouteSearch):
         raise Refused(f"{self.planner}: {'; '.join(failures)} ({ATTEMPTS} tries of {HELD['max_time']:.0f} s)")
 
     def _insert(self) -> RouteResult:
-        """The insert: tamp's straight move with the bar held, to the target poses, else along the line.
+        """The insert: tamp's straight move with the bar held, to the goal poses given, else the targets, else the line.
+
+        A transfer's MoCap-bar servo gives the goal poses (carried into this plan).
 
         Returns:
             RouteResult: Solved.
@@ -303,9 +323,8 @@ class _Route(RouteSearch):
             Refused: Why it is not, as the failed result's reason.
         """
         self.planner = "tamp.plan_constrained_dual_arm_linear"
-        # ? after the M6 merge: `self.goal_poses[part.flange]` where given (the carried MoCap-bar goal, M7 task G),
-        # ? else `part.target`, else the line.
-        goals = {part: part.target for part in self.spec.arms}
+        carried = self.goal_poses or {}
+        goals = {part: carried.get(part.flange, part.target) for part in self.spec.arms}
         if None in goals.values():
             goals = self.line_goals()
         frames = {part.side: frame_from_pose(goal) for part, goal in goals.items()}
@@ -314,19 +333,28 @@ class _Route(RouteSearch):
             planner, state, active_bar_id=bar, goal_ee_frames=frames, skip_env_collisions=False, report=report), goals)
 
     def _retreat_linear(self) -> RouteResult:
-        """The retreat: each flange along its line from where it is, tamp's straight move per arm.
+        """The retreat: tamp's straight move per arm, to the given goal poses, else along each line from the start.
+
+        Steps are `linear_step` long where given.
 
         Returns:
             RouteResult: Solved.
 
         Raises:
-            Refused: Why it is not, as the failed result's reason.
+            Refused: Why it is not, as the failed result's reason; a moving flange without a given goal pose.
         """
         self.planner = "tamp.plan_dual_arm_linear_independent"
-        goals = self.line_goals()
+        if self.goal_poses is None:
+            goals = self.line_goals()
+        else:
+            missing = [part.flange for part in self.spec.arms if part.flange not in self.goal_poses]
+            if missing:
+                raise Refused(f"no goal pose given for {', '.join(missing)}")
+            goals = {part: self.goal_poses[part.flange] for part in self.spec.arms}
         frames = {part.side: frame_from_pose(goal) for part, goal in goals.items()}
+        step = {} if self.linear_step is None else {"max_step_distance": self.linear_step}
         return self.linear(lambda planner, state, report: plan_dual_arm_linear_independent(
-            planner, state, goal_ee_frames=frames, skip_env_collisions=False, report=report), goals)
+            planner, state, goal_ee_frames=frames, skip_env_collisions=False, report=report, **step), goals)
 
     def _support_approach(self) -> RouteResult:
         """A support robot's approach: its target pose solved by IK at the live base, then the one-arm search.

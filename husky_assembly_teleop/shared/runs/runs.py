@@ -67,19 +67,36 @@ class RunError(ValueError):
     """A run file that can't be read (another schema, a missing key), or a change the run refuses."""
 
 
+#: The settings' ranges: the insert split, millimetres; the spiral's duration to full radius, seconds, and its whole
+#: turns (M:250-251).
+SPLIT_RANGE = (0.0, 30.0)
+SPIRAL_SECONDS_RANGE = (1.0, 60.0)
+SPIRAL_TURNS_RANGE = (1, 10)
+
+
 @dataclass(frozen=True)
 class RunSettings:
-    """How the run executes; kept in run.json. The transfer workaround is not one: it is the process plugin's.
+    """How the run executes; kept in run.json, where an older run without a setting reads its default.
+
+    The transfer workaround is not one: it is the process plugin's.
 
     Attributes:
-        insert_split_mm: The last part of an insert run compliant, millimetres (0 to 30).
+        insert_split_mm: The last part of an insert run compliant, millimetres (0 to 30); a retreat's compliant part
+            is as long, from its start.
         spiral: The insert's compliant part searches in a spiral.
         servo_by_bar: Servo a grounded bar by its mocap fit instead of tool0.
+        rigid_only: The whole insert runs under joint control, its screw tightening, never compliant; the split and
+            the spiral are ignored.
+        spiral_seconds: How long the spiral takes to reach its full radius, seconds (SPIRAL_SECONDS_RANGE).
+        spiral_turns: How many turns it makes on the way (SPIRAL_TURNS_RANGE).
     """
 
     insert_split_mm: float = 5.0
     spiral: bool = False
     servo_by_bar: bool = False
+    rigid_only: bool = False
+    spiral_seconds: float = 20.0
+    spiral_turns: int = 4
 
 
 @dataclass(frozen=True)

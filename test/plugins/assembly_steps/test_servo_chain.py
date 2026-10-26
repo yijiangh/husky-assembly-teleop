@@ -31,7 +31,7 @@ from husky_assembly_teleop.robot_interface.mocap_state import RawMarkers
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.execution.servo import flange_poses, servo_plan
-from husky_assembly_teleop.shared.movement_exec_contract import DONE, MOTION_PART, REFUSED_PART, SERVO_PART, serial_of
+from husky_assembly_teleop.shared.movement_exec_contract import DONE, INSERT_PART, MOTION_PART, SERVO_PART, serial_of
 from husky_assembly_teleop.shared.process_contract import Selection
 from husky_assembly_teleop.shared.runs.runs import RunSettings, read_events
 from husky_assembly_teleop.ui.ghost import RecentUse
@@ -255,7 +255,7 @@ def test_the_b20_servo_chain_on_the_real_plugins(tmp_path, monkeypatch):
         assert lab.run.view.current == ("B20_J", transfer) and lab.run.view.folder is None
         prompts = await lab.run_step(shift_at=3)
         assert prompts == 4, (lab.steps._message, lab.executor._last)
-        assert lab.steps.position == (2, 2) and lab.steps.parts()[0].kind == REFUSED_PART
+        assert lab.steps.position == (2, 2) and lab.steps.parts()[0].kind == INSERT_PART
         # * Back on the transfer step with its motion, mount and grasp done: Exec runs the servo alone, now by bar.
         lab.run.request_settings(servo_by_bar=True)
         lab.run.request_set_current("B20_J", transfer)
@@ -301,7 +301,7 @@ def test_the_b20_servo_chain_on_the_real_plugins(tmp_path, monkeypatch):
     assert carried is not None and carried.loaded is lab.run.view.process
     assert (carried.action, carried.insert, carried.serial) == ("B20_J", insert, SERIAL)
     assert "[servo] the MoCap-bar correction is carried into the plan of B20_J_insert." in lab.ctx.lines("info")
-    assert lab.steps.position == (2, 2) and "not supported yet" in lab.steps.parts()[0].text
+    assert lab.steps.position == (2, 2) and lab.steps.parts()[0].kind == INSERT_PART
     # ? after the M6 merge: the insert is a motion part then. Plan it here (keep the planner's request, e.g. by
     #   wrapping `lab.planner.request_plan`) and assert its `goal_poses` equal `apply_authored_move` from the live
     #   flanges to 1e-9, as test_assembly_steps' carry test checks them on the fake planner.

@@ -41,6 +41,7 @@ class RouteResult:
         seconds: Time taken: scenes, syncs, IK, searches and checks.
         waypoints: Rows of the path; 0 without one.
         end_error: Process flange id -> how far the path's end puts it from its goal pose: metres, radians.
+        goals: Process flange id -> the world pose its tool0 was planned to end at; empty for a joint goal.
         joint_error: The largest gap between the path's end and a joint goal, radians; None for a pose goal.
         goal_joints: The arm joints planned to, where the goal was in joints (given, or solved by IK).
         colliding: Colliding pairs found on the way, in process ids where mapped.
@@ -64,6 +65,7 @@ class RouteResult:
     ik: IkResult | None = None
     warnings: tuple[str, ...] = ()
     hits: tuple[CollisionHit, ...] = ()
+    goals: dict[str, Pose] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:

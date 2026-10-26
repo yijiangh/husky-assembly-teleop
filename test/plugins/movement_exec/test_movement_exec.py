@@ -1,6 +1,7 @@
 """The executor on the purged process with fake robots that follow what they are sent.
 
-Refusals, the lease, prompts, cancels, records, the transfer workaround's parts and the dry run.
+Refusals, the lease, prompts, cancels, records, the transfer workaround's parts, the dry run, and the compliant parts:
+the insert, the retreat with its ungrasp, the Robotiq handoff.
 """
 
 from __future__ import annotations
@@ -20,17 +21,27 @@ from husky_assembly_teleop.monitor import HuskyMonitor
 from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.plugins.movement_exec import plugin as exec_module
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
+from husky_assembly_teleop.plugins.movement_exec.sequences import PartOperator
 from husky_assembly_teleop.robot_interface.base import BaseState, FollowerState
+from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
 from husky_assembly_teleop.shared.execution.basis import basis_of
-from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT,
-                                                                 REFUSED, SERVO_INDEX, ExecRequest, step_parts)
+from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
+from husky_assembly_teleop.shared.execution.stream import arm_base_in_world, tool0_fk
+from husky_assembly_teleop.shared.execution.tools import ROBOTIQ_CLOSE
+from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DEFAULT_TRAJ_TIME, DONE, DRY_RUN, FAILED,
+                                                                 HANDOFF_PART, HOLD_NOT_SENT, INSERT_PART, LATER,
+                                                                 REFUSED, REFUSED_PART, RETREAT_PART, SERVO_INDEX,
+                                                                 SERVO_PART,
+                                                                 WITH_MOTION_PART, ExecRequest, PartPlan, part_plan,
+                                                                 step_parts)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import RouteResult
 from husky_assembly_teleop.shared.assembly_planning.servo_route import ServoStep
 from husky_assembly_teleop.shared.assembly_planning.steps import operator_steps
-from scaffolding_assembly_core.geometry import Pose
+from husky_assembly_teleop.shared.runs.runs import RunSettings
+from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
 
 
@@ -402,16 +413,17 @@ def test_a_dry_run_never_gives_done_and_sends_nothing():
 
 @pytest.mark.safety
 def test_robotiq_and_refused_parts():
-    """Belle's open is a Robotiq part that reaches 0.426; Cindy's retreat step, not supported yet, is refused."""
+    """Belle's open is a Robotiq part that reaches 0.426; B20_J's transfer with the bar held is a motion (M7)."""
     lab = Lab(current=("B35_H", 1))
     request = lab.request("B35_H_open", serial="a200-0805", route=None)
     assert [part.kind for part in request.parts] == ["robotiq_open"]
     result, _held = execute(lab, request, True)
     assert result.status == DONE and result.done == (1,) and lab.published() == 0
     assert lab.run.files()[0]["outcome"]["status"] == "reached"
-    lab = Lab(current=("B20_R", 1))
-    result, _held = execute(lab, lab.request("B20_R_retreat"))
-    assert result.status == REFUSED and "not supported yet" in result.reason and lab.published() == 0
+    lab = Lab(current=("B20_J", 3))
+    held = step_parts(lab.loaded, "B20_J", operator_steps(lab.loaded.process, lab.loaded.process.actions["B20_J"])[3],
+                      lab.configs, False)
+    assert (held[0].kind, held[0].routine) == ("motion", Routine.TRANSFER_HELD) and held[-1].kind == "servo"
 
 
 @pytest.mark.safety
@@ -1079,3 +1091,275 @@ def test_confirm_and_cancel_are_buttons_of_their_own_in_the_assembly_tab():
     assert lab.plugin._last == "nothing to answer"
     buttons[1].callback()
     assert lab.ctx.lines("info")[-1] == "Cancel: nothing to cancel"
+
+
+# --- --- --- --- --- the compliant parts: insert, retreat and its ungrasp, Robotiq handoff (M6) --- --- --- --- ---
+
+#: Cindy's joint names, left arm first; each insert's and retreat's path moves her elbows (as the shared tests').
+CINDY_NAMES = tuple(arm_joint_names("left_ur_arm") + arm_joint_names("right_ur_arm"))
+INSERT_STEP = np.array([0, 0, 0.03, 0, 0, 0, 0, 0, -0.03, 0, 0, 0])
+RETREAT_STEP = np.array([0.0, -0.03, 0.06, -0.03, 0.0, 0.0] * 2)
+
+
+def parts_of(lab: Lab, action: str, primary: int) -> tuple[PartPlan, ...]:
+    """The parts of an action's step, by its primary movement, with the transfer workaround."""
+    steps = operator_steps(lab.loaded.process, lab.loaded.process.actions[action], True)
+    return step_parts(lab.loaded, action, next(each for each in steps if each.primary == primary), lab.configs, True)
+
+
+def compliant_lab(current, settings: RunSettings | None = None) -> Lab:
+    """The lab at `current`, Cindy with her URDF frames, her base seen by mocap and her F/T sensors reading 0."""
+    lab = Lab(current=current)
+    lab.track("a200-0806")
+    for arm in lab.cindy.arms.values():
+        arm.state.wrench = np.zeros(6)
+    if settings is not None:
+        lab.run.view.settings = settings
+    return lab
+
+
+def along(lab: Lab, movement: str, step: np.ndarray, goals: bool = False) -> ExecRequest:
+    """Cindy's request for `movement`, its plan from her joints now along `step` in 20 rows.
+
+    With `goals`, the plan holds each flange's world goal (`RouteResult.goals`), as a retreat's does.
+    """
+    start = np.concatenate([arm.joint_vector() for arm in lab.cindy.arms.values()])
+    rows = np.linspace(start, start + step, 21)
+    route = RouteResult(MovementResult("solved", trajectory=Trajectory("robots/cindy", CINDY_NAMES,
+                                                                       tuple(map(tuple, rows.tolist())))),
+                        Routine.RETREAT_LINEAR if goals else Routine.INSERT, planner="fake",
+                        goals={f"robots/cindy/{arm}_tool0": compose(arm_base_in_world(lab.cindy, arm), tool0_fk(
+                            lab.cindy.config.model.urdf, arm, dict(zip(CINDY_NAMES, rows[-1]))))
+                            for arm in lab.cindy.arms} if goals else {})
+    return lab.request(movement, route=route)
+
+
+class TailPlanner:
+    """The motion planner as the retreat asks it for its tail: from Cindy's joints now to `end`, or a failure.
+
+    Attributes:
+        requests: Every request asked.
+    """
+
+    def __init__(self, lab: Lab, end: np.ndarray, solved: bool = True):
+        """Answer at once."""
+        self.lab, self.end, self.solved, self.requests = lab, end, solved, []
+
+    def request_plan(self, request):
+        """The tail, answered at once."""
+        self.requests.append(request)
+        future = asyncio.get_running_loop().create_future()
+        start = np.concatenate([arm.joint_vector() for arm in self.lab.cindy.arms.values()])
+        rows = np.linspace(start, self.end, 20)
+        result = MovementResult("solved", trajectory=Trajectory("robots/cindy", CINDY_NAMES, tuple(
+            map(tuple, rows.tolist())))) if self.solved else MovementResult("failed", "no tail")
+        future.set_result(RouteResult(result, Routine.RETREAT_LINEAR, planner="fake", waypoints=20))
+        return future
+
+
+def commands(lab: Lab, arm: str) -> list[tuple[int, int]]:
+    """(motor, direction) of every command sent to one of Cindy's tools."""
+    return [(command.motor, command.direction) for command in lab.tools[arm]._command.messages]
+
+
+def prompts(lab: Lab) -> list[str]:
+    """Every prompt's line, as recorded."""
+    return [fields["data"]["text"] for event, fields in lab.run.records if event == "prompt"]
+
+
+@pytest.mark.safety
+def test_the_purged_process_gives_each_compliant_part_its_arms():
+    """Each insert, retreat, ungrasp and Robotiq close of the purged process becomes its part, on its arms.
+
+    B20's insert is a ground bar's (no tool); B21's tightens the left screw, B22's both; B20_R's ungrasp goes with its
+    retreat on the same arms, any other arms refused; B21_H's close is the handoff; the ground bar's insert ends with
+    its servo (M7).
+    """
+    lab = Lab()
+    both = ("left_ur_arm", "right_ur_arm")
+    assert [(part.kind, part.tools) for part in parts_of(lab, "B20_J", 4)] == [(INSERT_PART, ()), (SERVO_PART, both)]
+    assert [(part.kind, part.tools) for part in parts_of(lab, "B21_J", 4)] == [(INSERT_PART, ("left_ur_arm",))]
+    assert [(part.kind, part.tools) for part in parts_of(lab, "B22_J", 4)] == [
+        (INSERT_PART, ("left_ur_arm", "right_ur_arm"))]
+    assert [(part.index, part.kind, part.tools) for part in parts_of(lab, "B20_R", 1)] == [
+        (1, RETREAT_PART, both), (0, WITH_MOTION_PART, both)]
+    left = PartPlan(1, "B20_R_retreat", Routine.RETREAT_LINEAR, RETREAT_PART, ("left_ur_arm",), "")
+    ungrasp = part_plan(lab.loaded, "B20_R", 0, lab.configs, True, during=left)
+    assert ungrasp.kind == REFUSED_PART and "but B20_R_retreat moves left_ur_arm" in ungrasp.text
+    assert [(part.kind, part.tools) for part in parts_of(lab, "B21_H", 3)] == [(HANDOFF_PART, ("ur_arm",))]
+    assert not LATER
+    assert DEFAULT_TRAJ_TIME[Routine.INSERT] == DEFAULT_TRAJ_TIME[Routine.RETREAT_LINEAR] == 5.0
+
+
+@pytest.mark.safety
+def test_b21s_insert_tightens_the_left_screw_only_and_ends_when_it_stalls():
+    """B21_J_insert: one prompt naming Cindy, the left joint screw tightens, rigid then compliant; the stall ends it.
+
+    The right screw only STOPs. The panel's live line shows the compliant part; the record is JSON.
+    """
+    lab = compliant_lab(("B21_J", 4))
+    next(driver for driver in lab.drivers if getattr(driver, "tool", None) is lab.tools["left_ur_arm"]) \
+        .screw_stall_after = 4.0
+    lines = []
+
+    async def watch_panel(lab):
+        while lab.plugin.active:
+            recorder = lab.plugin._job.recorder
+            if recorder is not None and recorder.phase == "compliant" and recorder.samples:
+                lab.plugin.draw(lab.ctx)
+                lines.append(lab.plugin._panel._live.content)
+                return
+            await asyncio.sleep(0)
+
+    result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP), True, during=watch_panel)
+    assert result.status == DONE and result.done == (4,), result.reason
+    assert prompts(lab)[0].startswith("cindy (a200-0806): B21_J_insert — INSERT: rigid ")
+    joint = ScaffoldingV3.JOINT_MOTOR
+    assert (joint, 1) in commands(lab, "left_ur_arm") and (joint, 1) not in commands(lab, "right_ur_arm")
+    assert commands(lab, "right_ur_arm")[0] == (0, 0)
+    record = json.loads(json.dumps(lab.run.files()[-1]))
+    assert record["part"]["kind"] == "insert" and record["outcome"]["status"] == "STALLED"
+    assert record["outcome"]["settings"] == record["command"]["settings"] == {
+        "split_mm": 5.0, "rigid_only": False, "spiral": False, "spiral_seconds": 20.0, "spiral_turns": 4}
+    assert [phase["name"] for phase in record["outcome"]["phases"]] == ["rigid", "switch", "compliant"]
+    assert record["plan"]["planner"] == "fake" and result.end is not None
+    line, = lines
+    assert "compliant · e " in line and "|F| left_ur_arm 0.0 N, right_ur_arm 0.0 N" in line
+    lab.plugin.draw(lab.ctx)
+    assert "no compliant part running" in lab.plugin._panel._live.content
+
+
+@pytest.mark.safety
+def test_an_inserts_rigid_part_whose_hold_is_refused_is_hold_not_sent():
+    """Cindy's joint states stop during B21's rigid part, then the screw stalls: the hold is refused on stale joints.
+
+    The result, the record and the panel say HOLD NOT SENT, as a motion's; the pendant line is logged once, then the
+    Exec banner.
+    """
+    lab = compliant_lab(("B21_J", 4))
+    next(driver for driver in lab.drivers if getattr(driver, "tool", None) is lab.tools["left_ur_arm"]) \
+        .screw_stall_after = 2.0
+
+    async def drop(lab):
+        while not lab.cindy._multi_arm.messages:
+            await asyncio.sleep(0)
+        for driver in lab.drivers:
+            if getattr(driver, "robot", None) is lab.cindy:
+                driver.silent_from = lab.ctx.t
+
+    result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP), True, during=drop)
+    assert result.status == HOLD_NOT_SENT and "HOLD NOT SENT on left_ur_arm, right_ur_arm" in result.reason
+    outcome = lab.run.files()[-1]["outcome"]
+    assert outcome["status"] == "HOLD_NOT_SENT" and outcome["phases"][0]["end"] == "HOLD_NOT_SENT"
+    lab.plugin.draw(lab.ctx)
+    assert any("HOLD NOT SENT" in widget.content for widget in lab.ctx.gui.of_kind("html"))
+    lines = [line for _level, line in lab.ctx.logs if "HOLD NOT SENT on" in line]
+    assert len(lines) == 2 and lines[0].startswith("HOLD NOT SENT on left_ur_arm, right_ur_arm: stop a200-0806")
+    assert lines[1].startswith("Exec ")
+
+
+@pytest.mark.safety
+def test_the_insert_settings_are_read_once_and_reach_its_plan():
+    """Rigid-only reaches the plan (its prompt); a spiral too fast is refused before any prompt, nothing sent.
+
+    The spiral's seconds and turns reach B22's prompt (two mating joints); a split over 30 mm is taken as 30. B21, one
+    mating joint, drops the spiral asked for: its prompt says so, the setting is recorded, the plan has none.
+    """
+    lab = compliant_lab(("B21_J", 4), RunSettings(rigid_only=True))
+    result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP), False)
+    assert result.status == CANCELLED and lab.published() == 0
+    assert prompts(lab)[0].startswith("cindy (a200-0806): B21_J_insert — RIGID-ONLY insert: the whole ")
+    assert lab.run.files()[-1]["command"]["settings"]["rigid_only"] is True
+
+    lab = compliant_lab(("B22_J", 4), RunSettings(spiral=True, spiral_seconds=3.0))
+    result, _held = execute(lab, along(lab, "B22_J_insert", INSERT_STEP))
+    assert result.status == REFUSED and "spiral too fast" in result.reason and "need ≥ 7.6 s" in result.reason
+    assert [event for event, _fields in lab.run.records] == ["exec"] and lab.published() == 0
+    assert all(not tool._command.messages for tool in lab.tools.values())
+
+    lab = compliant_lab(("B22_J", 4), RunSettings(spiral=True, spiral_seconds=30.0, spiral_turns=6,
+                                                  insert_split_mm=40.0))
+    result, _held = execute(lab, along(lab, "B22_J_insert", INSERT_STEP), False)
+    assert result.status == CANCELLED and "spiral 15 mm, 30 s, 6 turns, pitch 2.5 mm" in prompts(lab)[0]
+    assert lab.run.files()[-1]["command"]["settings"]["split_mm"] == 30.0
+
+    lab = compliant_lab(("B21_J", 4), RunSettings(spiral=True, spiral_seconds=30.0, spiral_turns=6))
+    result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP), False)
+    assert result.status == CANCELLED and "straight line: no spiral for a bar with one mating joint" in prompts(lab)[0]
+    command = lab.run.files()[-1]["command"]
+    assert command["settings"]["spiral"] is True and command["plan"]["spiral"] is None
+
+
+@pytest.mark.parametrize("solved", [True, False])
+@pytest.mark.safety
+def test_b20s_retreat_opens_the_screws_replans_its_tail_and_its_ungrasp_is_done(solved):
+    """B20_R's step: one prompt; the M1 screws open, the tail is replanned and run; the retreat and its ungrasp done.
+
+    The replan asks for the plan's goals in 1 mm steps. A tail not planned fails the retreat (A4): no tail, the
+    ungrasp not done.
+    """
+    lab = compliant_lab(("B20_R", 1))
+    request = along(lab, "B20_R_retreat", RETREAT_STEP, goals=True)
+    start = np.array(request.route.result.trajectory.positions[0])
+    planner = lab.ctx.plugins["motion_planner"] = TailPlanner(lab, start + RETREAT_STEP, solved)
+    result, _held = execute(lab, request, True)
+    asked, = planner.requests
+    assert asked.goal_poses == request.route.goals and asked.linear_step == TAIL_STEP
+    assert asked.step.movement.id == "B20_R_retreat" and asked.snapshot is not None
+    assert len(prompts(lab)) == 1 and prompts(lab)[0].startswith(
+        "cindy (a200-0806): B20_R_retreat — RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN")
+    for arm in lab.tools:
+        assert (ScaffoldingV3.GRIPPER_MOTOR, -1) in commands(lab, arm)
+    files = [json.loads(json.dumps(file)) for file in lab.run.files()]
+    if solved:
+        assert result.status == DONE and result.done == (1, 0), result.reason
+        assert [(file["movement"], file["outcome"]["status"]) for file in files] == [
+            ("B20_R_retreat", "RETREATED"), ("B20_R_ungrasp", "opened")]
+        assert files[0]["outcome"]["tail"]["planner"] == "fake" and files[0]["outcome"]["checks"]
+    else:
+        assert result.status == FAILED and result.done == () and "the tail's replan failed" in result.reason
+        assert [file["movement"] for file in files] == ["B20_R_retreat"] and "tail" not in files[0]["outcome"]
+
+
+@pytest.mark.safety
+def test_b21_hs_close_is_the_compliant_handoff():
+    """B21_H_close: the prompt names Alice and the handoff; Confirm closes the Robotiq with her arm compliant, CLOSED.
+
+    Cancel at the prompt sends nothing.
+    """
+    lab = Lab(current=("B21_H", 3))
+    lab.track("a200-0804")
+    request = lab.request("B21_H_close", serial="a200-0804", route=None)
+    gripper = lab.alice.arms["ur_arm"].end_effector
+    result, _held = execute(lab, request, False)
+    assert result.status == CANCELLED and gripper._action.goals == [] and lab.alice.arms["ur_arm"].controllers \
+        .switches == []
+    assert prompts(lab)[0].startswith("alice (a200-0804): B21_H_close — CLOSE + compliant handoff on ur_arm")
+    run_guarded(settle(lab))
+    result, _held = execute(lab, request, True)
+    assert result.status == DONE and result.done == (3,), result.reason
+    assert [goal.command.position for goal in gripper._action.goals] == [ROBOTIQ_CLOSE]
+    record = json.loads(json.dumps(lab.run.files()[-1]))
+    assert record["part"]["kind"] == "robotiq_handoff" and record["outcome"]["status"] == "CLOSED"
+
+
+def test_a_compliant_parts_question_names_the_robot_and_is_recorded():
+    """The spiral's warning, asked through the job's prompts, names the robot and the movement first.
+
+    The prompt and the Confirm are recorded once answered; closed unanswered, nothing more.
+    """
+    from husky_assembly_teleop.plugins.movement_exec.sequences import Job
+    lab = Lab()
+    events = []
+    job = Job(lab.ctx, lab.request(), lab.cindy, lab.run, lab.plugin._prompts, False,
+              lambda *args: events.append(args))
+    operator = PartOperator(job, "B21_J_insert")
+    prompt = operator.open("Spiral complete without a stall", warn=True)
+    assert prompt.line == "cindy (a200-0806): B21_J_insert — Spiral complete without a stall" and prompt.warn
+    assert operator.poll(prompt) is None
+    lab.ctx.t += 1.0
+    lab.plugin.request_confirm()
+    assert operator.poll(prompt) is True and lab.plugin.prompt is None
+    assert [event for event, _movement, _data in events] == ["prompt", "confirm"]
+    operator.close(operator.open("again"))
+    assert lab.plugin.prompt is None and len(events) == 3

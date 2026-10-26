@@ -9,8 +9,8 @@ import pytest
 from plugin_fakes import ArmDriver, FakeContext, fake_arm, fake_node, fake_robot, lease_to_test
 
 from husky_assembly_teleop.robot_interface.robot_lease import take_lease
-from husky_assembly_teleop.shared.execution.send import (ARRIVED, ARRIVE_MARGIN, DRY_RUN, HOLD_NOT_SENT, REFUSED,
-                                                         STOPPED, TIMEOUT, motion_command, send_motion)
+from husky_assembly_teleop.shared.execution.send import (ARRIVED, ARRIVE_MARGIN, DRY_RUN, ENDED, HOLD_NOT_SENT,
+                                                         REFUSED, STOPPED, TIMEOUT, motion_command, send_motion)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 
 pytestmark = pytest.mark.safety
@@ -191,6 +191,20 @@ def test_lost_joint_states_are_said_once_then_the_unsent_hold_is_the_outcome():
     assert sum("HOLD NOT SENT" in line for line in lab.ctx.lines("error")) >= 2
 
 
+def test_until_ends_the_motion_early_and_holds_every_arm():
+    """`until` true a second in: ENDED, both arms held though only the left one moves; never true: ARRIVED."""
+    lab = Lab()
+    names, rows = cindy_path(("left_ur_arm",))
+    command = motion_command("a200-0806", CINDY_ARMS, names, rows, 4.0)
+    start = lab.ctx.t
+    outcome = lab.run(lab.cindy, command, until=lambda: lab.ctx.t >= start + 0.95)
+    assert outcome.status == ENDED and not outcome.ok and outcome.reason.endswith("every arm held")
+    assert outcome.seconds == pytest.approx(1.0) and outcome.end_error["left_ur_arm"] > np.radians(1.0)
+    assert lab.holds(lab.cindy) == [1, 1]
+    lab = Lab()
+    assert lab.run(lab.cindy, command, until=lambda: False).status == ARRIVED and lab.holds(lab.cindy) == [0, 0]
+
+
 def test_a_cancel_holds_every_arm_and_is_raised():
     """Cancelling the waiting task holds both arms in the same step, then raises CancelledError."""
     lab = Lab()
@@ -199,7 +213,7 @@ def test_a_cancel_holds_every_arm_and_is_raised():
 
     async def scenario():
         task = asyncio.ensure_future(send_motion(lab.ctx, lab.cindy, command))
-        while lab.ctx.t < 11.0:
+        while lab.ctx.t < 11.0 and not task.done():
             await asyncio.sleep(0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

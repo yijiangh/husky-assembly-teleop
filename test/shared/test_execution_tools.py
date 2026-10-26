@@ -1,4 +1,7 @@
-"""The tool steps on fake tools: a Robotiq move watched to its answer, a scaffolding grasp watched to its stalls."""
+"""The tool steps on fake tools: a Robotiq move watched to its answer, a scaffolding grasp watched to its stalls.
+
+Also the scaffolding helpers the compliant parts use: the stall gate, the STOP that clears a stall, the fake firmware.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +12,10 @@ from plugin_fakes import (FakeContext, RobotiqDriver, ScaffoldingDriver, fake_no
                           lease_to_test)
 
 from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
-from husky_assembly_teleop.shared.execution.tools import (DRY_RUN, FELL_SHORT, REACHED, REFUSED, ROBOTIQ_CLOSE,
-                                                          ROBOTIQ_OPEN, STALLED, TIMEOUT, robotiq_move,
-                                                          scaffolding_grasp)
+from husky_assembly_teleop.shared.execution.tools import (CLEAR_TIMEOUT, DRY_RUN, FELL_SHORT, REACHED, REFUSED,
+                                                          ROBOTIQ_CLOSE, ROBOTIQ_OPEN, STALLED, STATUS_MAX_AGE,
+                                                          TIMEOUT, StallGate, robotiq_move, scaffolding_grasp,
+                                                          stop_and_clear)
 
 pytestmark = pytest.mark.safety
 
@@ -78,7 +82,7 @@ def test_a_cancelled_robotiq_move_is_stopped():
 
     async def scenario():
         task = asyncio.ensure_future(robotiq_move(lab.ctx, lab.gripper, ROBOTIQ_CLOSE))
-        while lab.ctx.t < 10.5:
+        while lab.ctx.t < 10.5 and not task.done():
             await asyncio.sleep(0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -110,8 +114,27 @@ class Tools:
         """(motor, direction) of every command sent to one tool."""
         return [(command.motor, command.direction) for command in self.tools[arm]._command.messages]
 
+    def stuck(self, arm: str, gripper: str, screw: str) -> None:
+        """One tool's firmware ignores every command from now on and keeps reporting these motor states."""
+        status = type("Status", (), dict(state_m1=gripper, state_m2=screw, current=0, pwm_pct=0, buttons_held=(),
+                                         buttons_pressed=()))()
+        self.drivers[list(self.tools).index(arm)].tick = lambda t: self.tools[arm]._on_status(status)
+
+    async def watch(self, gates: list[StallGate], seconds: float) -> list[float | None]:
+        """Ask every gate each tick for `seconds`; when each first said every tool stalled, or None."""
+        first: list[float | None] = [None] * len(gates)
+        end = self.ctx.t + seconds
+        while self.ctx.t < end:
+            for i, gate in enumerate(gates):
+                if gate.all_stalled() and first[i] is None:
+                    first[i] = self.ctx.t
+            await self.ctx.next_tick()
+        return first
+
 
 STOP, CLOSE = (0, 0), (ScaffoldingV3.GRIPPER_MOTOR, 1)
+JOINT = ScaffoldingV3.JOINT_MOTOR
+TIGHTEN_SCREW = (JOINT, 1)
 
 
 def test_a_grasp_clears_a_stall_closes_and_stops():
@@ -153,8 +176,7 @@ def test_a_tool_that_never_stalls_times_out_and_is_stopped():
 def test_a_stall_that_does_not_clear_tightens_nothing():
     """A tool still STALLED after STOP (its firmware ignores it): nothing tightened, every tool stopped."""
     lab = Tools()
-    lab.drivers[1].tick = lambda t: lab.tools["right_ur_arm"]._on_status(type("Status", (), dict(
-        state_m1="STALLED", state_m2="IDLE", current=0, pwm_pct=0, buttons_held=(), buttons_pressed=()))())
+    lab.stuck("right_ur_arm", "STALLED", "IDLE")
     outcome = run(lab.ctx, scaffolding_grasp(lab.ctx, lab.tools))
     assert outcome.status == TIMEOUT and "nothing tightened" in outcome.reason
     assert lab.commands("left_ur_arm") == [STOP, STOP]
@@ -166,7 +188,7 @@ def test_a_cancelled_grasp_stops_every_tool():
 
     async def scenario():
         task = asyncio.ensure_future(scaffolding_grasp(lab.ctx, lab.tools))
-        while lab.ctx.t < 11.0:
+        while lab.ctx.t < 11.0 and not task.done():
             await asyncio.sleep(0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -200,3 +222,122 @@ def test_a_silent_driver_is_refused():
     lab = Tools()
     assert run(lab.ctx, scaffolding_grasp(lab.ctx, lab.tools, dry_run=True)).status == DRY_RUN
     assert lab.commands("left_ur_arm") == []
+
+
+def test_the_fake_firmware_runs_one_motor_at_a_time():
+    """The fake firmware: one motor at a time, a stall its set time after the start, ignored starts until STOP.
+
+    The joint screw starting stops the loosening gripper screw; STOP idles both.
+    """
+    lab = Tools(left={"screw_stall_after": 0.5})
+    tool = lab.tools["left_ur_arm"]
+
+    def states() -> tuple[str, str]:
+        """What the left tool reports for M1 and M2."""
+        return tool.state.gripper_motor, tool.state.joint_motor
+
+    async def scenario():
+        tool.open()
+        await lab.ctx.next_tick()
+        assert states() == ("LOOSENING", "IDLE")
+        tool.drive_screw(1)
+        await lab.ctx.next_tick()
+        assert states() == ("IDLE", "TIGHTENING")
+        await lab.ctx.sleep(0.6)
+        assert states() == ("IDLE", "STALLED")
+        tool._publish(JOINT, -1)  # past the interface, which refuses it itself
+        await lab.ctx.next_tick()
+        assert states() == ("IDLE", "STALLED")
+        tool.stop()
+        await lab.ctx.next_tick()
+        assert states() == ("IDLE", "IDLE")
+
+    asyncio.run(scenario())
+
+
+def test_a_leftover_stall_does_not_count():
+    """A joint screw STALLED from before the gate never counts; cleared, tightened and stalled again, it does."""
+    lab = Tools(left={"screw": "STALLED"})
+    left = {"left_ur_arm": lab.tools["left_ur_arm"]}
+
+    async def scenario():
+        gate = StallGate(lab.ctx, left, JOINT)
+        assert await lab.watch([gate], 1.0) == [None]
+        assert await stop_and_clear(lab.ctx, left, JOINT) is None
+        lab.tools["left_ur_arm"].drive_screw(1)
+        return await lab.watch([gate], 2.0)
+
+    first, = asyncio.run(scenario())
+    assert first is not None and lab.commands("left_ur_arm") == [STOP, TIGHTEN_SCREW]
+
+
+def test_a_screw_that_stalls_before_the_first_poll_counts():
+    """The gate is made on a fresh IDLE status; the screw tightens and stalls before anyone asks: it counts."""
+    lab = Tools(left={"screw_stall_after": 0.3})
+    left = {"left_ur_arm": lab.tools["left_ur_arm"]}
+
+    async def scenario():
+        gate = StallGate(lab.ctx, left, JOINT)
+        lab.tools["left_ur_arm"].drive_screw(1)
+        await lab.ctx.sleep(0.6)
+        assert lab.tools["left_ur_arm"].state.joint_motor == "STALLED"
+        return gate.all_stalled()
+
+    assert asyncio.run(scenario())
+
+
+def test_a_one_sided_gate_waits_for_its_one_tool():
+    """Only the left screw tightens, as on a one-sided bar: its gate ends; a gate on both tools still waits.
+
+    The left gate ends 1.6 s after the tighten: a tick for the command, 1.5 s to stall.
+    """
+    lab = Tools(left={"screw_stall_after": 1.5})
+    left = {"left_ur_arm": lab.tools["left_ur_arm"]}
+
+    async def scenario():
+        assert await stop_and_clear(lab.ctx, lab.tools, JOINT) is None
+        gates = [StallGate(lab.ctx, left, JOINT), StallGate(lab.ctx, lab.tools, JOINT)]
+        lab.tools["left_ur_arm"].drive_screw(1)
+        return gates, lab.ctx.t, await lab.watch(gates, 3.0)
+
+    (one, both), tightened, (first_one, first_both) = asyncio.run(scenario())
+    assert first_both is None and first_one == pytest.approx(tightened + 1.6, abs=0.11)
+    assert one.stall_times == {"left_ur_arm": pytest.approx(first_one - tightened)}
+    assert both.stall_times == one.stall_times
+    assert one.text == "left_ur_arm joint screw" and both.text == "left_ur_arm + right_ur_arm joint screws"
+    assert lab.commands("left_ur_arm") == [STOP, TIGHTEN_SCREW] and lab.commands("right_ur_arm") == [STOP]
+
+
+def test_a_stale_status_never_counts_and_is_said_once():
+    """A driver silent for over a second after its screw stalled: the stall no longer counts, said once."""
+    lab = Tools(left={"screw_stall_after": 0.5})
+    left = {"left_ur_arm": lab.tools["left_ur_arm"]}
+
+    async def scenario():
+        gate = StallGate(lab.ctx, left, JOINT)
+        lab.tools["left_ur_arm"].drive_screw(1)
+        assert (await lab.watch([gate], 1.0))[0] is not None and gate.all_stalled()
+        lab.drivers[0].silent = True
+        await lab.ctx.sleep(STATUS_MAX_AGE + 0.2)
+        return [gate.all_stalled() for _ in range(3)]
+
+    assert asyncio.run(scenario()) == [False] * 3
+    said = [line for line in lab.ctx.lines("warn") if "no tool status" in line]
+    assert len(said) == 1 and said[0].startswith("left_ur_arm: ")
+
+
+def test_stop_and_clear_refuses_after_2_s():
+    """A joint screw still STALLED 2 s after STOP: TIMEOUT naming it, nothing but the STOPs sent.
+
+    A leftover stall that does clear is cleared in a tick.
+    """
+    lab = Tools(left={"screw": "STALLED"})
+    assert run(lab.ctx, stop_and_clear(lab.ctx, lab.tools, JOINT)) is None and lab.ctx.t == pytest.approx(10.1)
+    lab = Tools()
+    lab.stuck("right_ur_arm", "IDLE", "STALLED")
+    outcome = run(lab.ctx, stop_and_clear(lab.ctx, lab.tools, JOINT))
+    assert outcome.status == TIMEOUT and not outcome.ok and outcome.seconds >= CLEAR_TIMEOUT
+    assert outcome.reason.startswith("right_ur_arm: the joint screw still reports STALLED")
+    assert outcome.detail == {"left_ur_arm": "IDLE", "right_ur_arm": "STALLED"}
+    for arm in lab.tools:
+        assert lab.commands(arm) == [STOP]

@@ -17,13 +17,11 @@ import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, design_scene, purged_process, robot_config, step
 from robot_lab import FakeRun, RobotLab
 
-from husky_assembly_teleop.plugins.assembly_steps import plugin as steps_plugin
 from husky_assembly_teleop.plugins.assembly_steps.panel import StepsPanel, exec_line
 from husky_assembly_teleop.plugins.assembly_steps.plugin import AssemblyStepsPlugin
 from husky_assembly_teleop.plugins.motion_planner.plugin import MotionPlannerPlugin
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
-from husky_assembly_teleop.shared import movement_exec_contract
-from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, LATER, MOTION,
+from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED,
                                                                  SERVO_INDEX, SERVO_PART, Carried, ExecResult,
                                                                  serial_of)
 from husky_assembly_teleop.shared.assembly_planning.ik import IkResult
@@ -31,7 +29,7 @@ from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_name
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
 from husky_assembly_teleop.shared.assembly_planning.scene_for import RobotBelief
-from husky_assembly_teleop.shared.execution.servo import carried_insert_goals, flange_poses
+from husky_assembly_teleop.shared.execution.servo import flange_poses
 from husky_assembly_teleop.ui.ghost import RecentUse
 from husky_assembly_teleop.world.bar_pose import apply_authored_move
 from scaffolding_assembly_core.geometry import Pose
@@ -155,7 +153,7 @@ class Steps(RobotLab):
 def test_steps_follow_the_run():
     """B20_J (workaround): place and grasp after the transfer, the load skipped; the insert once the run is there.
 
-    The run follows the process panel's selection; the insert is refused: not supported yet. B20_R's ungrasp goes with
+    The run follows the process panel's selection; B20's insert runs rigid (a ground bar). B20_R's ungrasp goes with
     its move.
     """
     lab = Steps(("B20_J", 3))
@@ -165,12 +163,14 @@ def test_steps_follow_the_run():
     assert "moves left_ur_arm, right_ur_arm; then waits for B20_J_place_bar by hand; then tightens" in lab.html()
     lab.run.view.current = ("B20_J", 4)
     lab.update()
-    assert lab.plugin.position == (2, 2) and "refuses B20_J_insert: the insert is not supported yet" in lab.html()
+    assert lab.plugin.position == (2, 2) and "cindy (a200-0806) inserts rigid (ground bar)" in lab.html()
     lab.run.view.current = ("B20_J", 3)
     lab.update()
     assert lab.plugin.position == (1, 2) and lab.run.selected == []
     lab = Steps(("B20_R", 1))
     assert "with: B20_R_ungrasp" in lab.html()
+    assert ("retreats left_ur_arm, right_ur_arm, compliant first; then opens the gripper screws on left_ur_arm, "
+            "right_ur_arm in the retreat") in lab.html()
 
 
 def test_live_ik_says_which_start_it_solves():
@@ -435,20 +435,8 @@ def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch
 
     Logged, and recorded as `goal_carried`; a carry for another action or a process loaded again is not used.
     """
-    # ? after the M6 merge: drop these two patches (the insert is a motion part then) and read the goals from
-    #   `lab.planner.plans[0].goal_poses` instead of keeping them here.
-    monkeypatch.delitem(LATER, Routine.INSERT)
-    monkeypatch.setattr(movement_exec_contract, "MOTION", MOTION | {Routine.INSERT})
     insert = step(purged_process(), "B20_J_insert")
     lab = Steps(("B20_J", insert.movement_index))
-    goals = []
-
-    def kept(*args):
-        """The real goals, kept for the check: the plan request carries them only after the M6 merge."""
-        goals.append(carried_insert_goals(*args))
-        return goals[-1]
-
-    monkeypatch.setattr(steps_plugin, "carried_insert_goals", kept)
     lab.executor.carried = Carried(lab.loaded, "B20_J", insert.movement_index, "a200-0806", lab.ctx.t)
 
     async def scenario():
@@ -459,7 +447,8 @@ def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch
         await lab.plan()
 
     asyncio.run(scenario())
-    carried, = goals
+    carried, *uncarried = [plan.goal_poses for plan in lab.planner.plans]
+    assert uncarried == [None, None]
     starts = step(lab.loaded, "B20_J_transfer").movement.target.robots["robots/cindy"].link_poses
     ends = insert.movement.target.robots["robots/cindy"].link_poses
     live = flange_poses(lab.ctx.scene.snapshot.robots[robot_id("a200-0806")], ends)
@@ -636,11 +625,12 @@ def test_walking_b21_h_and_b20_j_with_the_real_planner_and_executor():
     """B21_H and B20_J's transfer step, planned for real, run on fake robots that follow, every part recorded.
 
     Alice's B21_H: approach (planned), its servo (the arm is on its target: nothing left to plan), open, to grasp
-    (planned), close, then Mark done offered. Cindy's B20_J transfer step with the workaround: the free transfer
-    (planned), placing the bar by hand, the grasp, the servo (nothing left, the bar recorded without markers); then
-    the insert, refused as not supported yet. Cindy ends where the transfer's plan ends.
+    (planned), the compliant close, then Mark done offered. Cindy's B20_J transfer step with the workaround: the free
+    transfer (planned), placing the bar by hand, the grasp, the servo (nothing left, the bar recorded without
+    markers); then the insert, a ground bar's. Cindy ends where the transfer's plan ends.
     """
     walk = Walk("B21_H_approach")
+    walk.track("a200-0804")  # * the handoff needs Alice's frames
 
     async def b21():
         prompts = [await walk.run_step() for _ in range(4)]
@@ -656,7 +646,7 @@ def test_walking_b21_h_and_b20_j_with_the_real_planner_and_executor():
     assert [file["movement"] for file in files] == ["B21_H_approach", "B21_H_approach", "B21_H_open",
                                                     "B21_H_to_grasp", "B21_H_close"]
     assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "nothing left", "reached", "ARRIVED",
-                                                             "reached"]
+                                                             "CLOSED"]
     assert files[1]["part"]["kind"] == "servo" and files[3]["plan"]["planner"].startswith("single_arm.plan_linear")
 
     walk = Walk("B20_J_transfer")
@@ -677,7 +667,7 @@ def test_walking_b21_h_and_b20_j_with_the_real_planner_and_executor():
     assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "confirmed", "stalled", "nothing left"]
     assert files[0]["plan"]["planner"] == "tamp.plan_free_dual_arm"
     assert len(servos) == 1 and servos[0]["servo_feedback"] == "tool0" and servos[0]["bar_name"] == "bars/B20"
-    assert position == (2, 2) and parts[0].kind == "refused" and "not supported yet" in parts[0].text
+    assert position == (2, 2) and (parts[0].kind, parts[0].tools) == ("insert", ())
     end = files[0]["plan"]["rows"][-1]
     names = files[0]["plan"]["joint_names"]
     measured = {name: value for arm in walk.cindy.arms.values()

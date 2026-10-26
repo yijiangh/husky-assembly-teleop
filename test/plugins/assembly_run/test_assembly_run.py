@@ -16,9 +16,11 @@ from husky_assembly_teleop.plugins.assembly_run.panel import RunPanel
 from husky_assembly_teleop.plugins.assembly_run.plugin import AssemblyRunPlugin
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, take_lease
+from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.assembly_planning.steps import first_step
 from husky_assembly_teleop.shared.execution.basis import basis_of, stale_reason
+from husky_assembly_teleop.shared.movement_exec_contract import INSERT_PART, PartPlan, part_plan
 from husky_assembly_teleop.shared.process_contract import Selection
 from husky_assembly_teleop.shared.runs.runs import (ASSUMED, DONE, LIVE, PENDING, RunSettings, find_runs, read_events,
                                                     read_run)
@@ -980,6 +982,78 @@ def test_settings_that_make_no_sense_are_refused_not_raised(tmp_path):
 
     asyncio.run(scenario())
     assert runs(lab) == []
+
+
+def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_path):
+    """Rigid-only and the spiral's seconds and turns: refused naming the range, else saved and shown back.
+
+    Out of range, turns not whole, or a bool for a number: refused. Set from their widgets under Spiral: saved, read
+    back after a restart and shown by a new panel.
+    """
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        for changes, words in (({"spiral_seconds": 0.5}, "the spiral's duration must be 1 to 60 s, not 0.5"),
+                               ({"spiral_seconds": 61}, "the spiral's duration must be 1 to 60 s, not 61"),
+                               ({"spiral_seconds": True}, "the spiral's duration must be 1 to 60 s, not True"),
+                               ({"spiral_turns": 0}, "the spiral's turns must be 1 to 10 whole turns, not 0"),
+                               ({"spiral_turns": 11}, "the spiral's turns must be 1 to 10 whole turns, not 11"),
+                               ({"spiral_turns": 4.5}, "the spiral's turns must be 1 to 10 whole turns, not 4.5"),
+                               ({"spiral_turns": True}, "the spiral's turns must be 1 to 10 whole turns, not True"),
+                               ({"rigid_only": 1}, "rigid_only must be True or False, not 1")):
+            plugin.request_settings(**changes)
+            assert plugin._message.startswith("Settings refused") and words in plugin._message
+            assert plugin.view.settings == RunSettings()
+        panel = plugin._panel = RunPanel(lab.ctx, plugin)
+        labels = [widget.label for widget in lab.ctx.gui.widgets if widget.kind in ("slider", "checkbox")]
+        assert labels == ["Insert split mm", "Spiral", "Rigid insert", "Spiral s", "Spiral turns", "Servo by bar"]
+        panel._rigid.callback(True)
+        panel._spiral_seconds.callback(30.0)
+        panel._spiral_turns.callback(6.0)
+        await settle(plugin)
+        again, _process = await opened(lab)
+        shown = again._panel = RunPanel(lab.ctx, again)
+        again.draw(lab.ctx)
+        return again.view.settings, shown
+
+    settings, shown = asyncio.run(scenario())
+    assert (settings.rigid_only, settings.spiral_seconds, settings.spiral_turns) == (True, 30.0, 6)
+    assert type(settings.spiral_turns) is int and type(settings.spiral_seconds) is float
+    assert (shown._rigid.value, shown._spiral_seconds.value, shown._spiral_turns.value) == (True, 30.0, 6)
+
+
+@pytest.mark.safety
+def test_the_spiral_box_is_greyed_unless_the_steps_insert_has_two_mating_joints(tmp_path, monkeypatch):
+    """The Spiral box is greyed at start, on a by-hand step and on a one-tool insert, shown unticked, the setting kept.
+
+    With the step's part a two-tool insert it is live and shows the setting, and a click on it reaches the plugin.
+    """
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        panel = plugin._panel = RunPanel(lab.ctx, plugin)
+        assert panel._spiral.disabled
+        plugin.request_settings(spiral=True)
+        await settle(plugin)
+        plugin.draw(lab.ctx)
+        assert plugin.view.current == ("B1_J_joint", 0)  # the mount, by hand
+        assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (True, False, True)
+        plugin.request_set_current("B1_J_joint", 2)  # the insert, one tool
+        plugin.draw(lab.ctx)
+        assert len(part_plan(plugin.view.process, "B1_J_joint", 2, lab.ctx.config.robots, True).tools) < 2
+        assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (True, False, True)
+        two_tools = PartPlan(2, "B1_M2_insert", Routine.INSERT, INSERT_PART, ("left_ur_arm", "right_ur_arm"), "insert")
+        monkeypatch.setattr("husky_assembly_teleop.plugins.assembly_run.plugin.part_plan", lambda *_args: two_tools)
+        plugin.draw(lab.ctx)
+        assert (panel._spiral.disabled, panel._spiral.value) == (False, True)
+        panel._spiral.callback(False)
+        await settle(plugin)
+        plugin.draw(lab.ctx)
+        assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (False, False, False)
+
+    asyncio.run(scenario())
 
 
 def test_a_step_picked_while_waiting_stops_the_automatic_selection(tmp_path):

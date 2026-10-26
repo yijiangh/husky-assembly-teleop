@@ -323,7 +323,8 @@ class RouteSearch:
                                 end={self.spec.robot: end},
                                 trajectory=Trajectory(self.spec.robot, tuple(self.names),
                                                       tuple(tuple(row) for row in rows.tolist())))
-        return self.route(result, len(rows), {part.flange: error for part, error in end_error.items()}, joint_error)
+        return self.route(result, len(rows), {part.flange: error for part, error in end_error.items()}, joint_error,
+                          {part.flange: goal for part, goal in (goals or {}).items()})
 
     def failed(self, reason: str) -> RouteResult:
         """The failed result, with the start it was planned from.
@@ -338,7 +339,7 @@ class RouteSearch:
         return self.route(MovementResult("failed", reason, start=start))
 
     def route(self, result: MovementResult, waypoints: int = 0, end_error: dict | None = None,
-              joint_error: float | None = None) -> RouteResult:
+              joint_error: float | None = None, goals: dict[str, Pose] | None = None) -> RouteResult:
         """A RouteResult with what this route found; `seconds` is filled in by `plan_movement`.
 
         Args:
@@ -346,13 +347,14 @@ class RouteSearch:
             waypoints: Rows of the path.
             end_error: Process flange id -> (metres, radians) from its goal pose.
             joint_error: The largest gap to a joint goal, radians, or None.
+            goals: Process flange id -> the world pose its tool0 was planned to end at, or None.
 
         Returns:
             RouteResult: The result with the planner, tries, goal, pairs, checks and warnings.
         """
         return RouteResult(result, self.spec.routine, self.planner, self.attempts, 0.0, waypoints, end_error or {},
                            joint_error, self.goal_joints, tuple(dict.fromkeys(self.colliding)), self.swept, self.ik,
-                           tuple(self.warnings), tuple(self.hits))
+                           tuple(self.warnings), tuple(self.hits), dict(goals or {}))
 
     def terms(self, pairs: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
         """Colliding pairs in process ids, where mapped.

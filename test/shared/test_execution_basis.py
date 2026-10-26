@@ -167,6 +167,23 @@ def test_a_cancel_wins_over_a_confirm_not_yet_taken():
     assert asyncio.run(scenario()) is False
 
 
+def test_poll_gives_an_answer_without_waiting_and_close_drops_a_prompt():
+    """`poll`: None until answered, then the answer once, the prompt closed; `close` leaves a newer prompt open."""
+    box = PromptBox()
+    first = box.ask("cindy (a200-0806)", "Spiral complete without a stall", 10.0, warn=True)
+    assert box.poll(first) is None and box.current is first
+    assert box.answer(True, 10.0 + PROMPT_ARM_S) == ""
+    assert box.poll(first) is True and box.current is None and box.poll(first) is None
+    second = box.ask("cindy (a200-0806)", "again", 11.0)
+    box.answer(False, 11.0)
+    box.close(first)
+    assert box.current is second and box.poll(second) is False and box.current is None
+    third = box.ask("cindy (a200-0806)", "once more", 12.0)
+    box.answer(False, 12.0)
+    box.close(third)
+    assert box.current is None and box.poll(third) is None and box.answer(False, 12.0) == "nothing to answer"
+
+
 def test_robots_in_the_world_fake_are_arms():
     """The fake world's arms are real arm interfaces, measured now."""
     ctx = FakeContext()
