@@ -3,7 +3,8 @@ A step's parts, run one at a time: a motion along its plan, a tool step, or a st
 
 Each part asks the operator first, the robot named, and checks the world again after Confirm. A motion is then rebuilt
 from the live joints and sent in the same tick, so nothing can change between the last check and the send; the other
-robots are frozen (`ctx.freeze`) until it ends.
+robots are frozen (`ctx.freeze`) until it ends. The servo part (`servo_part.py`) runs on the same `Job`, `PartRun`
+and checks; the plugin dispatches it.
 
 ! Main thread, inside the plugin's task.
 """
@@ -11,8 +12,8 @@ robots are frozen (`ctx.freeze`) until it ends.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -43,7 +44,8 @@ if TYPE_CHECKING:
     from ...shared.execution.operator import PromptBox
     from ...shared.execution.send import MotionCommand
     from ...shared.execution.tools import ToolOutcome
-    from ...shared.movement_exec_contract import ExecRequest, PartPlan
+    from ...shared.execution.basis import PlanBasis
+    from ...shared.movement_exec_contract import Carried, ExecRequest, PartPlan
     from ...world.freeze import Basis, Freeze
 
 #: Seconds the arms stand still after the travel to load before the force sensors are zeroed (old W:5781).
@@ -62,6 +64,8 @@ class Job:
         prompts: The plugin's prompt box.
         dry_run: Whether this request sends nothing (fixed when it starts).
         event: Records a run event: (name, movement id, data).
+        moved_at: Serial -> ROS time its arms last arrived (a motion, a servo pass); the plugin's dict, shared.
+        show: Writes the panel's servo line.
     """
 
     ctx: PluginContext
@@ -71,6 +75,8 @@ class Job:
     prompts: PromptBox
     dry_run: bool
     event: Callable[[str, str, Mapping[str, Any]], None]
+    moved_at: dict[str, float] = field(default_factory=dict)
+    show: Callable[[str], None] = lambda _line: None
 
     @property
     def who(self) -> str:
@@ -93,6 +99,8 @@ class PartRun:
         base: The acting robot's base then.
         progress: How far a motion's send got, for a cancel's record; None for other parts.
         freeze: The other robots' freeze while a motion runs; its `problem` says why it broke. None for other parts.
+        servo_file: The servo record's path in the run, once the servo part wrote one.
+        carry: What a transfer's bar servo leaves for its insert's plan, once it did.
     """
 
     part: PartPlan
@@ -105,6 +113,8 @@ class PartRun:
     base: Pose | None = None
     progress: SendProgress | None = None
     freeze: Freeze | None = None
+    servo_file: str | None = None
+    carry: Carried | None = None
 
     def ended(self, result: str, status: str, reason: str) -> None:
         """Say how the part ended."""
@@ -134,17 +144,19 @@ async def run_part(job: Job, run: PartRun) -> None:
     await runs[kind](job, run)
 
 
-def world_problem(job: Job, motion: bool) -> str:
+def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None) -> str:
     """Why a part may not run now; "" if it may.
 
     Every part: the process and the current action are still the request's, the robot is not soft stopped (Stop all,
     or a clearance tripped: its commands are refused until Resume), and nothing else moves (`others_moving`). A motion
     also: the robot is live, the safety sync vouches for each of its arms (`ArmInterface.safety_problem`:
-    else the arm refuses the trajectory anyway), and the plan is not stale (`stale_reason`).
+    else the arm refuses the trajectory anyway), the plan was made after the robot's arms last moved (`Job.moved_at`)
+    and is not stale (`stale_reason`).
 
     Args:
         job: The request being run.
         motion: Whether the part moves the arms.
+        basis: What the motion's plan was made from; None: the request's.
     """
     request, view, ctx = job.request, job.run.view, job.ctx
     if view.process is not request.loaded:
@@ -163,10 +175,13 @@ def world_problem(job: Job, motion: bool) -> str:
     for name, arm in job.robot.arms.items():
         if problem := arm.safety_problem():
             return f"{job.who} {name}: {problem}"
-    if request.basis is None:
+    basis = basis if basis is not None else request.basis
+    if basis is None:
         return "the plan has no basis to check it against"
+    if basis.time < job.moved_at.get(request.serial, -math.inf):
+        return "the arms moved since this plan was made: replan"
     transfer_as_free = request.transfer_as_free()
-    return stale_reason(request.basis, snapshot, loaded=view.process,
+    return stale_reason(basis, snapshot, loaded=view.process,
                         current=current_primary(view, transfer_as_free), transfer_as_free=transfer_as_free,
                         ignore_built=request.ignore_built(), statuses=view.statuses,
                         obstacles_collide=request.obstacles_collide())
@@ -200,19 +215,28 @@ def others_basis(job: Job) -> Basis:
 
 
 def live_command(job: Job) -> MotionCommand | str:
-    """The plan as a command, its first row replaced by the arms' joints now; or why it can't be.
-
-    Args:
-        job: The request being run.
-
-    Returns:
-        MotionCommand | str: The command, or the refusal (no plan, arms over STALE_ARM from its start, bad joints).
-    """
+    """The request's plan as a command at its motion time (`live_command_of`); or why it can't be (no plan, ...)."""
     route = job.request.route
     trajectory = route.result.trajectory if route is not None and route.ok else None
     if trajectory is None:
         return "no plan for this motion: Plan first"
-    names, rows = list(trajectory.joint_names), np.array(trajectory.positions, dtype=float)
+    return live_command_of(job, list(trajectory.joint_names), trajectory.positions, job.request.traj_time)
+
+
+def live_command_of(job: Job, names: Sequence[str], rows: Sequence[Sequence[float]],
+                    traj_time: float) -> MotionCommand | str:
+    """A path as a command, its first row replaced by the arms' joints now; or why it can't be.
+
+    Args:
+        job: The request being run.
+        names: The path's joint names.
+        rows: The path, radians, its first row where it was planned from.
+        traj_time: Seconds the motion should take.
+
+    Returns:
+        MotionCommand | str: The command, or the refusal (arms over STALE_ARM from the path's start, bad joints).
+    """
+    names, rows = list(names), np.array(rows, dtype=float)
     live = {}
     for name, arm in job.robot.arms.items():
         here = arm.joint_vector()
@@ -229,7 +253,7 @@ def live_command(job: Job) -> MotionCommand | str:
     # * Row 0 is where the arms are, so the trajectory starts without a jump.
     rows[0] = now
     try:
-        return motion_command(job.request.serial, list(job.robot.arms), names, rows, job.request.traj_time)
+        return motion_command(job.request.serial, list(job.robot.arms), names, rows, traj_time)
     except ValueError as error:
         return f"the plan can't be sent: {error}"
 
@@ -306,9 +330,7 @@ async def _motion(job: Job, run: PartRun) -> None:
                for name, value in zip(arm_joint_names(arm), joints)}
     snapshot = ctx.scene.snapshot.robots.get(robot_id(job.request.serial))
     run.base = snapshot.base if snapshot is not None else None
-    if part.routine in (Routine.TRANSFER_FREE, Routine.SUPPORT_APPROACH):
-        ctx.log_info(f"{job.who}: {part.movement}: no servo correction (not supported yet)")
-    elif part.routine is Routine.SUPPORT_LEAVE:
+    if part.routine is Routine.SUPPORT_LEAVE:
         ctx.log_info(f"{job.who}: {part.movement}: done; drive the base away by hand")
     elif part.routine is Routine.FREE_TO_LOAD:
         # * Tare the force sensors standing still, on the empty tools (old W:5807-5849).

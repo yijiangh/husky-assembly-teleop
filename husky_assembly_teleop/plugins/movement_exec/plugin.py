@@ -2,10 +2,10 @@
 Run one step of the assembly on the real robot: its motion along the plan, its tool steps, its steps done by hand.
 
 Requests come through `MovementExecContract`; each part runs after the operator's Confirm and is recorded in the
-assembly run. Every robot is leased from the request to its end, so nothing else here moves a robot, and every check
-runs again after Confirm, with the command rebuilt from the live joints in the same tick. Cancel or Stop all ends it
-with every arm held; so does another robot starting to move, or one displaced (`ctx.freeze`, pushes too) or lost to
-mocap while a motion runs.
+assembly run, the servo part (`servo_part.py`) pass by pass. Every robot is leased from the request to its end, so
+nothing else here moves a robot, and every check runs again after Confirm, with the command rebuilt from the live
+joints in the same tick. Cancel or Stop all ends it with every arm held; so does another robot starting to move, or
+one displaced (`ctx.freeze`, pushes too) or lost to mocap while a motion runs.
 
 - ! EXPERIMENTAL, the first plugin that runs process movements on the robots: keep the e-stops in hand.
 """
@@ -23,20 +23,26 @@ from scaffolding_assembly_core.ids import robot_id
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...robot_interface.robot_lease import NotLeased
+from ...shared.assembly_planning.movement import Routine
 from ...shared.assembly_planning.route_result import pose_error
 from ...shared.execution.basis import STALE_BASE
 from ...shared.execution.moving import moving_reason
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import INTERRUPTED, motion_command
 from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT, MAX_TRAJ_TIME,
-                                              MOTION_PART, REFUSED, REFUSED_PART, ExecRequest, ExecResult, serial_of)
+                                              MOTION_PART, REFUSED, REFUSED_PART, SERVO_PART, Carried, ExecRequest,
+                                              ExecResult, serial_of)
 from ...ui.assembly_tab import ASSEMBLY_TAB
 from .panel import ExecPanel
 from .sequences import Job, PartRun, run_part
+from .servo_part import run_servo
 
 if TYPE_CHECKING:
     from ...robot_interface.robot_lease import Lease
     from ...shared.execution.operator import Prompt
+
+#: The routines whose motion part (and servo) start a transfer anew: the carry of an earlier servo is dropped.
+TRANSFERS = (Routine.TRANSFER_FREE, Routine.TRANSFER_HELD)
 
 #: Why a request was cancelled when this plugin did not cancel it: the soft stop, or the plugin closing.
 STOP_ALL, CLOSED = "Stop all (the soft stop)", "the plugin stop or shutdown"
@@ -71,6 +77,11 @@ class MovementExecPlugin(HuskyPlugin):
         #: The last result as one line, and whether it failed; how many dry-run changes were refused.
         self._last, self._last_failed = "", False
         self._dry_run_refused = 0
+        #: Serial -> ROS time its arms last arrived (a motion or a servo pass): an older plan is refused.
+        self._moved_at: dict[str, float] = {}
+        #: What the last transfer's bar servo left for its insert's plan; the panel's servo line of the running part.
+        self._carried: Carried | None = None
+        self._servo_line = ""
 
     # --- --- --- --- --- WHAT OTHER PLUGINS CALL (MovementExecContract) --- --- --- --- ---
 
@@ -88,6 +99,13 @@ class MovementExecPlugin(HuskyPlugin):
     def dry_run(self) -> bool:
         """bool: Whether requests run every check and send nothing."""
         return self._dry_run
+
+    @property
+    def carried(self) -> Carried | None:
+        """Carried | None: What the last transfer's bar servo left for its insert's plan; dropped on a reload."""
+        if self._carried is not None and self._ctx.require("assembly_run").view.process is not self._carried.loaded:
+            self._carried = None
+        return self._carried
 
     def request_execute(self, request: ExecRequest) -> asyncio.Future[ExecResult]:
         """Run a step's parts, leasing every robot until done; a refusal resolves the future at once.
@@ -113,7 +131,8 @@ class MovementExecPlugin(HuskyPlugin):
             return future
         try:
             job = Job(ctx, request, ctx.world.robots[request.serial], ctx.require("assembly_run"), self._prompts,
-                      self._dry_run, lambda name, movement, data: self._event(job, name, movement, data))
+                      self._dry_run, lambda name, movement, data: self._event(job, name, movement, data),
+                      self._moved_at, lambda line: setattr(self, "_servo_line", line))
             self._active, self._cancel_reason = f"{request.robot_name} · {request.label}", ""
             ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
                          + (" (DRY RUN)" if job.dry_run else ""))
@@ -169,7 +188,7 @@ class MovementExecPlugin(HuskyPlugin):
         """Fill the panel."""
         if self._panel is not None:
             self._panel.draw(self.active, self.prompt, self._dry_run, (self._last, self._last_failed),
-                             self._dry_run_refused)
+                             self._dry_run_refused, self._servo_line)
 
     # --- --- --- --- --- RUNNING A REQUEST --- --- --- --- ---
 
@@ -192,8 +211,7 @@ class MovementExecPlugin(HuskyPlugin):
         motions = [part for part in request.parts if part.kind == MOTION_PART]
         return self._plan_refusal(ctx, request) if motions else ""
 
-    @staticmethod
-    def _plan_refusal(ctx: PluginContext, request: ExecRequest) -> str:
+    def _plan_refusal(self, ctx: PluginContext, request: ExecRequest) -> str:
         """Why the request's plan is not the step's motion on this robot at its base now; "" if it is."""
         motions = [part.index for part in request.parts if part.kind == MOTION_PART]
         route, basis, primary = request.route, request.basis, request.step.primary
@@ -210,6 +228,8 @@ class MovementExecPlugin(HuskyPlugin):
         planned_for = None if basis is None else (basis.serial, basis.action, basis.movement_index)
         if planned_for != (request.serial, request.action, primary):
             return "the plan was made for another robot or step"
+        if basis.time < self._moved_at.get(request.serial, -math.inf):
+            return "the arms moved since this plan was made: replan"
         live = ctx.scene.snapshot.robots.get(robot_id(request.serial))
         if live is None:
             return f"{request.serial} is not in the scene"
@@ -236,21 +256,31 @@ class MovementExecPlugin(HuskyPlugin):
         done: list[int] = []
         end = base = None
         result = ExecResult(FAILED, "ended before its first part")
+        if self._carried is not None and self._carried.action != request.action:
+            self._carried = None
         try:
             with lease.use():
                 for part in request.parts:
                     run = PartRun(part)
+                    if part.routine in TRANSFERS and part.kind in (MOTION_PART, SERVO_PART):
+                        self._carried = None  # the transfer runs anew: its servo sets the carry again when due
                     try:
-                        await run_part(job, run)
+                        await (run_servo if part.kind == SERVO_PART else run_part)(job, run)
                     except asyncio.CancelledError:
                         result = self._cancelled(job, run, tuple(done), end, base)
                         raise
                     except Exception as error:
                         result = self._raised(job, run, error, tuple(done), end, base)
                         raise
+                    finally:
+                        # * However the servo ended: the bar mode engaged, so the insert plans from where it left the
+                        #   flanges (W:2658-2662).
+                        if run.carry is not None:
+                            self._carried = run.carry
                     self._record_part(job, run)
                     if run.end is not None:
                         end, base = run.end, run.base
+                        self._moved_at[request.serial] = ctx.now()
                     if run.result == DONE:
                         done.append(part.index)
                     elif run.result != DRY_RUN:
@@ -264,6 +294,7 @@ class MovementExecPlugin(HuskyPlugin):
             #   robot_control, which needs the lease.
             lease.release()
             self._prompts.current = None
+            self._servo_line = ""
             if not future.done():
                 self._finished(ctx, request, result)
                 future.set_result(result)
@@ -367,5 +398,7 @@ class MovementExecPlugin(HuskyPlugin):
             "plan": plan, "command": run.command,
             "outcome": {**(run.outcome or {}), "result": run.result, "status": run.status, "reason": run.reason,
                         "dry_run": job.dry_run}}
+        if part.kind == SERVO_PART:
+            payload["servo_file"] = run.servo_file
         job.run.request_record("exec", action=request.action, movement=part.movement,
                                data={"status": run.status, "result": run.result}, file=payload)

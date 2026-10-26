@@ -47,6 +47,7 @@ class ExecPanel:
             pair.content = f"<style>{side_by_side_css([confirm._impl.uuid, cancel._impl.uuid])}</style>"
             # ! Keep changing text BELOW the buttons.
             self._details = gui.add_html("")
+            self._servo = gui.add_html("")
         with ctx.view.ui(band=EXEC_SETTINGS_BAND) as gui:
             self._dry = gui.add_checkbox("Dry run (every check, nothing sent)", False,
                                          hint="Exec runs every check and builds every trajectory, and sends nothing")
@@ -60,10 +61,12 @@ class ExecPanel:
             confirm = phone.add_button("Confirm", color="green", icon=CONFIRM_ICON)
             cancel = phone.add_button("Cancel", color="red", icon=CANCEL_ICON, hint=CANCEL_HINT)
             self._phone_last = phone.add_html("")
+            self._phone_servo = phone.add_html("")
         confirm.on_click(ctx.defer("exec confirm (phone)", plugin.request_confirm))
         cancel.on_click(ctx.defer("exec cancel (phone)", plugin.request_cancel))
 
-    def draw(self, active: str, prompt: Prompt | None, dry_run: bool, last: tuple[str, bool], refused: int) -> None:
+    def draw(self, active: str, prompt: Prompt | None, dry_run: bool, last: tuple[str, bool], refused: int,
+             servo: str = "") -> None:
         """Write the state into the widgets.
 
         Args:
@@ -72,6 +75,7 @@ class ExecPanel:
             dry_run: Whether the dry run is on.
             last: The last result as one line, and whether it failed.
             refused: How many dry-run changes were refused; a change puts the checkbox back.
+            servo: The servo part's line for its last reading, e.g. "servo 2/8 · tool0 L 0.31 R 0.27 mm"; "" idle.
         """
         chips = chip("DRY RUN", BUSY, "every check, nothing sent") if dry_run else ""
         chips += chip(escape(active), BUSY) if active else chip("idle", NONE)
@@ -91,6 +95,10 @@ class ExecPanel:
         # * On the phone the whole line, wrapped: a HOLD NOT SENT must be read in full next to the robot.
         self._phone_last.content = phone_text(block(f'<div style="color:{FAIL if failed else NONE}">'
                                                     f'{escape(message) or "&nbsp;"}</div>'))
+        # * One line high, always there: the servo's readings come and go without moving anything.
+        line = _one_line(escape(servo) or "&nbsp;", BUSY if servo else NONE)
+        self._servo.content = block(line)
+        self._phone_servo.content = phone_text(block(line))
 
 
 def _one_line(html: str, color: str) -> str:

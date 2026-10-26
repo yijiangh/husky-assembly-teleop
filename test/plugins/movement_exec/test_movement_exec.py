@@ -24,10 +24,11 @@ from husky_assembly_teleop.robot_interface.base import BaseState, FollowerState
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
 from husky_assembly_teleop.shared.execution.basis import basis_of
 from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT,
-                                                                 REFUSED, ExecRequest, step_parts)
+                                                                 REFUSED, SERVO_INDEX, ExecRequest, step_parts)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import RouteResult
+from husky_assembly_teleop.shared.assembly_planning.servo_route import ServoStep
 from husky_assembly_teleop.shared.assembly_planning.steps import operator_steps
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
@@ -42,6 +43,14 @@ def run_guarded(scenario):
     return asyncio.run(asyncio.wait_for(scenario, WALL_LIMIT))
 
 
+def nothing_left(request) -> asyncio.Future:
+    """A servo pass answered at once with nothing left to plan: a step's servo part is done without a move."""
+    future = asyncio.get_running_loop().create_future()
+    future.set_result(ServoStep(RouteResult(MovementResult("not_planned", "nothing left to plan"), None,
+                                            planner="stub"), {}, True))
+    return future
+
+
 class Lab(RobotLab):
     """The three robots live and following commands, the run at `current`, movement_exec set up on them."""
 
@@ -50,7 +59,8 @@ class Lab(RobotLab):
         super().__init__(**driver)
         self.loaded = purged_process()
         self.run = FakeRun(self.loaded, current)
-        self.ctx.plugins = {"assembly_run": self.run, "motion_planner": SimpleNamespace()}
+        self.ctx.plugins = {"assembly_run": self.run,
+                            "motion_planner": SimpleNamespace(request_servo_step=nothing_left)}
         self.plugin = MovementExecPlugin()
         self.plugin.setup(self.ctx)
 
@@ -343,21 +353,29 @@ def test_an_error_inside_holds_and_gives_the_robot_back(monkeypatch):
 
 
 def test_the_transfer_with_the_workaround_runs_motion_then_by_hand_then_grasp():
-    """B20_J's transfer step: parts (3, 1, 2); Cancel at placing the bar by hand leaves done = (3,)."""
+    """B20_J's transfer step: parts (3, 1, 2) then the servo; Cancel at placing the bar by hand leaves done = (3,)."""
     lab = Lab(current=("B20_J", 3))
     request = lab.request("B20_J_transfer")
-    assert [(part.index, part.kind) for part in request.parts] == [(3, "motion"), (1, "operator"), (2, "grasp")]
+    assert [(part.index, part.kind) for part in request.parts] == [(3, "motion"), (1, "operator"), (2, "grasp"),
+                                                                   (SERVO_INDEX, "servo")]
     result, _held = execute(lab, request, True, False)
     assert result.status == CANCELLED and result.done == (3,)
     assert [file["movement"] for file in lab.run.files()] == ["B20_J_transfer", "B20_J_place_bar"]
 
 
-def test_the_whole_transfer_step_ends_with_the_grasp():
-    """Confirm all three: the motion, placing the bar by hand, the grasp (both screws stalled); done (3, 1, 2)."""
+def test_the_whole_transfer_step_ends_with_the_grasp_and_its_servo():
+    """Confirm the motion, placing the bar by hand, the grasp (stalled); the servo has nothing left: done + SERVO_INDEX.
+
+    This lab's planner answers every servo pass with nothing left to plan, so the servo part is done without a move,
+    and still recorded.
+    """
     lab = Lab(current=("B20_J", 3))
     result, _held = execute(lab, lab.request("B20_J_transfer"), True, True, True)
-    assert result.status == DONE and result.done == (3, 1, 2), result.reason
-    assert lab.run.files()[-1]["outcome"]["status"] == "stalled"
+    assert result.status == DONE and result.done == (3, 1, 2, SERVO_INDEX), result.reason
+    files = lab.run.files()
+    assert files[2]["outcome"]["status"] == "stalled"
+    assert files[-2]["kind"] == "transfer" and files[-2]["outcome"]["status"] == DONE
+    assert files[-1]["part"]["kind"] == "servo" and files[-1]["outcome"]["status"] == "nothing left"
 
 
 @pytest.mark.safety

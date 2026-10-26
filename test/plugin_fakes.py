@@ -38,6 +38,7 @@ from husky_assembly_teleop.robot_interface.event import Event
 from husky_assembly_teleop.robot_interface.robot import HuskyRobotInterface
 from husky_assembly_teleop.robot_interface.robot_lease import LeaseSlot, leased
 from husky_assembly_teleop.robot_interface.soft_stop import SoftStopLatch
+from husky_assembly_teleop.world.measured import TrackedObject
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.scene import Scene
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
@@ -122,7 +123,7 @@ class FakeContext:
         self.config = SimpleNamespace(robots=tuple(robots), drive_root=drive_root)
         self.plugins = dict(plugins or {})
         self.scene = SimpleNamespace(snapshot=snapshot if snapshot is not None else Scene())
-        self.world = SimpleNamespace(robots={})
+        self.world = SimpleNamespace(robots={}, tracked_objects={})
         self.gui = FakeGui()
         self.view = SimpleNamespace(ui=lambda band=None: nullcontext(self.gui),
                                     phone=lambda *_tab: nullcontext(self.gui), scene_root="/plugin")
@@ -136,6 +137,22 @@ class FakeContext:
     def require(self, name: str) -> Any:
         """Another plugin, by name."""
         return self.plugins[name]
+
+    def track_object(self, name: str, mocap_id: int, geometry=None, touches: tuple = (),
+                     label: str = "") -> TrackedObject:
+        """Track a mocap body as `world.tracked_objects[name]`; a test fills its `markers` from its `step`.
+
+        Raises:
+            ValueError: If `name` is already tracked, as the real context does.
+        """
+        if name in self.world.tracked_objects:
+            raise ValueError(f"{name!r} is already tracked")
+        self.world.tracked_objects[name] = TrackedObject(name, mocap_id)
+        return self.world.tracked_objects[name]
+
+    def untrack_object(self, name: str) -> None:
+        """Stop tracking `name`; unknown names are ignored."""
+        self.world.tracked_objects.pop(name, None)
 
     def defer(self, label: str, run: Callable[[], Any], operator_only: bool = False) -> Callable[..., Any]:
         """A widget callback that runs `run` at once (no viser thread here); every call counts as the operator's."""
