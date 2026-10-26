@@ -1,18 +1,21 @@
 """
 Bar marker fitting: how far a bar the mocap sees is from where the process plans it.
 
-Pick a bar of the loaded process and the Motive rigid body made of its markers, and press Track. On every mocap
-message the bar's CAD markers are fitted to the measured ones without Motive's labels (`world/marker_fit.py`).
-The view shows the real bar (blue, the process bar and its mounted halves at the fitted pose) next to the planned
-one, and with "Show markers" the measured markers (green measured, orange filled in by Motive), the fitted markers
-(blue: markers, axis, a line per residual) and the planned markers (grey). The planned bar is the process body in
-the live scene (`process/bars/<id>`): a built bar at its assembly pose, a held one on the real robot's flange.
-Record writes a take of the fit, its residuals and the deviation to the Drive (`data_experiment/mocap_bars/`): a run
-folder per take with experiment.json and recording.npz (`shared/recordings/runs.py`).
+Pick a bar of the loaded process and the Motive rigid body made of its markers, and press Track. The bar's CAD
+markers are fitted to the measured ones without Motive's labels (`world/marker_layouts.fit_bar`, the old monitor's
+matcher) at most ten times a second: matched around the last good fit while it is fresh, else around the planned
+pose, else by a full search. The view shows the real bar (blue, the process bar and its mounted halves at the fitted
+pose) next to the planned one, and with "Show markers" the measured markers (green the trusted ones the fit used,
+orange filled in by Motive), the fitted markers (blue: markers, axis, a line per residual) and the planned markers
+(grey). The planned bar is the process body in the live scene (`process/bars/<id>`): a built bar at its assembly
+pose, a held one on the real robot's flange. Record writes a take of the fit, its residuals and the deviation to the
+Drive (`data_experiment/mocap_bars/`): a run folder per take with experiment.json and recording.npz
+(`shared/recordings/runs.py`).
 
 - ! Marker layouts come only from the process (`BodySpec.markers` of the halves mounted on a bar); old compas_fab
   exports converted on load have none.
-- ! The matching search grows quickly with the number of markers and runs on the main thread, once per message.
+- ! The fit runs on the main thread: a full search takes ~20 ms, the match around a hint ~1 ms.
+- * Markers dropped for their size or Motive residual are neither fitted nor drawn; a failed fit's reason counts them.
 - * The real bar and its halves are drawn only, in this plugin's view: not scene bodies, so they never collide (the
   planned ones already do), and hidden while there is no fit.
 
@@ -33,11 +36,15 @@ from ..drive import drive_folder, folder_name
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..plugin_api.trace import Signal
+from ..robot_interface.mocap_state import RawMarkers
 from ..shared.recordings.runs import run_folder, save_recording, write_description
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.scene_view import add_shape
 from ..ui.style import BUSY, NONE, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, note, section, values
-from ..world.marker_fit import BarDeviation, MarkerFit, bar_deviation, bar_markers, fit_markers
+from ..world.bar_fit import BarFit
+from ..world.bar_pose import transform_points
+from ..world.marker_fit import BarDeviation, bar_deviation
+from ..world.marker_layouts import BarLayout, Sensed, bar_layouts, fit_bar, sensed_from_raw
 from ..world.measured import TrackedObject
 from ..world.mocap import mocap_check
 from scaffolding_assembly_core.geometry import Pose, compose, invert
@@ -51,6 +58,12 @@ TRACKED_NAME = "fitted_bar"
 RECORDING_FOLDER = "data_experiment/mocap_bars"
 #: Bar dropdown entry while the process has no bar with markers.
 NO_BAR = "–"
+#: Fits run at most this often, seconds (the old "follow live (10 Hz)").
+FIT_PERIOD = 0.1
+#: A sample older than this is not fitted, seconds: is Motive streaming?
+MAX_MARKER_AGE = 0.5
+#: The last good fit guides the next one while it is younger than this, seconds; after that the planned pose does.
+HINT_MAX_AGE = 1.0
 #: Colours: measured markers, markers filled in by Motive, the fitted bar, the planned markers.
 MEASURED_COLOR = (40, 190, 80)
 FILLED_COLOR = (250, 140, 30)
@@ -61,6 +74,11 @@ FIT_COLOR_UNIT = tuple(c / 255 for c in FIT_COLOR)
 HALF_COLOR_UNIT = (0.1, 0.27, 0.6)
 #: Size of the drawn markers, metres.
 MARKER_POINT_SIZE = 0.02
+
+
+def matched_pairs(fit: BarFit) -> np.ndarray:
+    """The fit's matches as an (n, 2) int array of (sensed index, design index)."""
+    return np.array(list(fit.correspondences.items()), dtype=int).reshape(-1, 2)
 
 
 @register
@@ -75,14 +93,21 @@ class MocapBarsPlugin(HuskyPlugin):
     def __init__(self):
         """Start with nothing tracked or fitted."""
         self._object: TrackedObject | None = None
-        #: Bar id -> (marker names, CAD markers in the bar frame), from the loaded process.
-        self._layouts: dict[str, tuple[tuple[str, ...], np.ndarray]] = {}
+        #: Bar id -> its marker layout, from the loaded process.
+        self._layouts: dict[str, BarLayout] = {}
         #: The process object the layouts were read from.
         self._layouts_of = None
         self._bar_id: str | None = None
-        #: Latest fit, the mocap message it was made from, and the planned bar pose this tick.
-        self._fit: MarkerFit | None = None
+        #: The sample last fitted and its mocap message time; the fit and its pose when it succeeded, else why not.
+        self._sensed: Sensed | None = None
         self._fitted_update: float | None = None
+        self._fit: BarFit | None = None
+        self._pose: Pose | None = None
+        self._reason = ""
+        #: When the next fit may run, and the last good fit's (time, 4x4 pose): the hint the next fit starts from.
+        self._next_fit_at = 0.0
+        self._last_ok: tuple[float, np.ndarray] | None = None
+        #: The planned bar pose this tick, and the fit's deviation from it.
         self._planned: Pose | None = None
         self._deviation: BarDeviation | None = None
         #: What the scene last showed, so marker nodes are only resent when they change.
@@ -155,7 +180,7 @@ class MocapBarsPlugin(HuskyPlugin):
     def _choose(self, bar_id: str) -> None:
         """Fit this bar from now on."""
         self._bar_id = bar_id if bar_id in self._layouts else None
-        self._fit, self._fitted_update = None, None
+        self._forget_fit()
 
     def _track(self, ctx: PluginContext) -> None:
         """Track the rigid body in "Mocap ID", replacing the previous one."""
@@ -163,9 +188,14 @@ class MocapBarsPlugin(HuskyPlugin):
         ctx.untrack_object(TRACKED_NAME)
         # * No geometry: the process draws the bar; this is a frame and its markers.
         self._object = ctx.track_object(TRACKED_NAME, mocap_id, label=f"bar markers ({mocap_id})")
-        self._fit, self._fitted_update = None, None
+        self._forget_fit()
         self._message = f"tracking mocap id {mocap_id}"
         ctx.log_info(self._message)
+
+    def _forget_fit(self) -> None:
+        """Drop the fit and its hint: a new bar, rigid body or process starts from a full search."""
+        self._sensed = self._fitted_update = self._fit = self._pose = self._last_ok = None
+        self._reason = ""
 
     def _start_take(self, ctx: PluginContext) -> None:
         """Start recording a take, unless one runs or nothing is fitted yet."""
@@ -179,10 +209,10 @@ class MocapBarsPlugin(HuskyPlugin):
     async def _record_take(self, ctx: PluginContext) -> None:
         """Record the fit for the chosen seconds, then save it with the bar's layout and the plan's context."""
         bar_id, seconds = self._bar_id, float(self._seconds.value)
-        names, model = self._layouts[bar_id]
+        layout = self._layouts[bar_id]
         experiment = folder_name(self._experiment.value, "take")
         self._message = f"recording {bar_id} for {seconds:g} s"
-        with ctx.record(*self._signals(model)) as take:
+        with ctx.record(*self._signals(layout.points)) as take:
             await ctx.sleep(seconds)
         process: ProcessContract = ctx.require("process")
         selection = process.selection
@@ -191,7 +221,7 @@ class MocapBarsPlugin(HuskyPlugin):
                        "step": selection.movement.id if selection is not None else None, "seconds": seconds,
                        "frame": "world (mocap, Z-up), metres; quaternions (x, y, z, w); deviation in the planned "
                                 "bar's frame, its axis z"}
-        extra = {"model_markers": model, "model_marker_names": np.array(names)}
+        extra = {"model_markers": layout.points, "model_marker_names": np.array(layout.names)}
         file_format = ctx.config.recording_format
 
         def save() -> Path:
@@ -206,8 +236,11 @@ class MocapBarsPlugin(HuskyPlugin):
 
     def _signals(self, model: np.ndarray) -> list[Signal]:
         """What a take records each tick: the fit, its quality, the planned pose and the deviation."""
-        def fit() -> MarkerFit | None:
+        def fit() -> BarFit | None:
             return self._fit
+
+        def pose() -> Pose | None:
+            return self._pose
 
         def planned() -> Pose | None:
             return self._planned
@@ -216,11 +249,11 @@ class MocapBarsPlugin(HuskyPlugin):
             return self._deviation
 
         return [
-            Signal("fit_position", lambda: fit().pose.position if fit() else None, ("x", "y", "z"), "m"),
-            Signal("fit_orientation", lambda: fit().pose.orientation if fit() else None, ("qx", "qy", "qz", "qw")),
-            Signal("fit_rms", lambda: fit().rms if fit() else None, (), "m"),
-            Signal("fit_max", lambda: float(fit().residuals.max()) if fit() else None, (), "m"),
-            Signal("fit_count", lambda: len(fit().residuals) if fit() else None),
+            Signal("fit_position", lambda: pose().position if pose() else None, ("x", "y", "z"), "m"),
+            Signal("fit_orientation", lambda: pose().orientation if pose() else None, ("qx", "qy", "qz", "qw")),
+            Signal("fit_rms", lambda: fit().rms_m if fit() else None, (), "m"),
+            Signal("fit_max", lambda: fit().max_residual_m if fit() else None, (), "m"),
+            Signal("fit_count", lambda: fit().n_matched if fit() else None),
             Signal("planned_position", lambda: planned().position if planned() else None, ("x", "y", "z"), "m"),
             Signal("planned_orientation", lambda: planned().orientation if planned() else None,
                    ("qx", "qy", "qz", "qw")),
@@ -233,17 +266,18 @@ class MocapBarsPlugin(HuskyPlugin):
 
     def _matched(self, count: int) -> np.ndarray | None:
         """The measured marker matched to each CAD marker, flattened, NaN where none was; None without a fit."""
-        fit, obj = self._fit, self._object
-        if fit is None or obj is None or obj.markers is None:
+        fit, sensed = self._fit, self._sensed
+        if fit is None or sensed is None:
             return None
+        pairs = matched_pairs(fit)
         rows = np.full((count, 3), np.nan)
-        rows[fit.model_index] = obj.markers.positions[obj.markers.measured]
+        rows[pairs[:, 1]] = sensed.points[pairs[:, 0]]
         return rows.reshape(-1)
 
     # --- --- --- --- --- UPDATE --- --- --- --- ---
 
     def update(self, ctx: PluginContext) -> None:
-        """Follow the loaded process, refit on each new mocap message, and compare with the planned bar.
+        """Follow the loaded process, refit on a new mocap message at most every FIT_PERIOD, and compare with the plan.
 
         Args:
             ctx: This plugin's context.
@@ -253,22 +287,36 @@ class MocapBarsPlugin(HuskyPlugin):
         loaded = selection.process if selection is not None else None
         if loaded is not self._layouts_of:
             self._layouts_of = loaded
-            self._layouts = bar_markers(loaded) if loaded is not None else {}
+            self._layouts = bar_layouts(loaded) if loaded is not None else {}
             self._bar.options = list(self._layouts) or [NO_BAR]
             self._bar_id = next(iter(self._layouts), None)
             self._bar.value = self._bar_id or NO_BAR
-            self._fit, self._fitted_update = None, None
-        obj = self._object
-        if self._bar_id is None or obj is None or obj.markers is None:
-            self._fit = None
-        elif obj.last_update_time != self._fitted_update:
-            self._fitted_update = obj.last_update_time
-            self._fit = fit_markers(self._layouts[self._bar_id][1], obj.markers.positions[obj.markers.measured])
+            self._forget_fit()
         ids = selection.ids if selection is not None else None
         live_id = ids.get(self._bar_id) if ids is not None and self._bar_id else None
         self._planned = ctx.scene.snapshot.world_poses.get(live_id) if live_id else None
-        self._deviation = (bar_deviation(self._fit.pose, self._planned)
-                           if self._fit is not None and self._planned is not None else None)
+        obj, now = self._object, ctx.now()
+        if self._bar_id is None or obj is None or obj.markers is None:
+            self._fit = self._pose = None
+        elif obj.last_update_time != self._fitted_update and now >= self._next_fit_at:
+            self._fitted_update, self._next_fit_at = obj.last_update_time, now + FIT_PERIOD
+            self._refit(obj.markers, self._layouts[self._bar_id], now)
+        self._deviation = (bar_deviation(self._pose, self._planned)
+                           if self._pose is not None and self._planned is not None else None)
+
+    def _refit(self, markers: RawMarkers, layout: BarLayout, now: float) -> None:
+        """Fit the layout to this sample, matched around the last good fit while fresh, else around the planned pose."""
+        if self._last_ok is not None and now - self._last_ok[0] <= HINT_MAX_AGE:
+            hint = self._last_ok[1]
+        else:
+            hint = self._planned.matrix() if self._planned is not None else None
+        self._sensed = sensed_from_raw(markers, now)
+        fit = fit_bar(self._sensed, layout, max_age=MAX_MARKER_AGE, hint=hint)
+        self._fit = fit if fit.ok else None
+        self._pose = Pose.from_matrix(fit.T_world_from_bar) if fit.ok else None
+        self._reason = "" if fit.ok else fit.reason
+        if fit.ok:
+            self._last_ok = (now, fit.T_world_from_bar)
 
     # --- --- --- --- --- DRAW --- --- --- --- ---
 
@@ -296,19 +344,19 @@ class MocapBarsPlugin(HuskyPlugin):
         return lines + ["—"] * (3 - len(lines))
 
     def _readout(self) -> list[str]:
-        """Up to 3 lines: marker counts, the fit's error and the deviation from the plan."""
+        """Up to 3 lines: marker counts, the fit's error or why it failed, and the deviation from the plan."""
         if not self._layouts:
             return ["no bar with markers in the loaded process"]
         obj, fit, bar_id = self._object, self._fit, self._bar_id
-        layout = self._layouts.get(bar_id, ((), np.zeros((0, 3))))[1]
         if obj is None or obj.markers is None:
-            return [f"{bar_id}: {len(layout)} CAD markers; no mocap message yet"]
+            count = len(self._layouts[bar_id].points) if bar_id in self._layouts else 0
+            return [f"{bar_id}: {count} CAD markers; no mocap message yet"]
         lines = [f"markers {len(obj.markers.ids)}, measured {int(obj.markers.measured.sum())}"]
         if fit is None:
-            lines.append(f"{bar_id}: no fit; needs 3+ measured markers, all at CAD distances")
+            lines.append(f"{bar_id}: {self._reason or 'no fit yet'}")
             return lines
-        lines.append(f"fit {len(fit.residuals)}/{len(layout)}  rms {fit.rms * 1e3:.2f}  max "
-                     f"{fit.residuals.max() * 1e3:.2f} mm")
+        lines.append(f"fit {fit.n_matched}/{fit.n_design}  rms {fit.rms_m * 1e3:.2f}  max "
+                     f"{fit.max_residual_m * 1e3:.2f} mm")
         deviation = self._deviation
         lines.append("no planned pose: is the bar in the selected step?" if deviation is None else
                      f"across {deviation.across * 1e3:.1f}  along {deviation.along * 1e3:+.1f} mm  "
@@ -339,10 +387,9 @@ class MocapBarsPlugin(HuskyPlugin):
                     for index, shape in enumerate(half.geometry.visual):
                         add_shape(scene, f"{frame.name}/{index}", shape, HALF_COLOR_UNIT)
                     self._bar_nodes.append(frame)
-        fit = self._fit
-        self._bar_frame.visible = fit is not None and bool(self._bar_nodes)
+        pose = self._pose
+        self._bar_frame.visible = pose is not None and bool(self._bar_nodes)
         if self._bar_frame.visible:
-            pose = fit.pose
             self._bar_frame.position = pose.position
             self._bar_frame.wxyz = quaternion_to_wxyz(pose.orientation)
 
@@ -350,30 +397,34 @@ class MocapBarsPlugin(HuskyPlugin):
         """Show the measured markers, the fitted and the planned bar, resending them only when they changed."""
         obj = self._object
         markers = obj.markers if obj is not None and self._show_markers.value else None
+        sensed = self._sensed if markers is not None else None
         # ? Identity, not id(): a freed sample's id can be reused by the next one.
-        shown = (markers, self._fit, self._planned, self._bar_id)
+        shown = (markers, sensed, self._fit, self._planned, self._bar_id)
         if self._drawn is not None and all(a is b for a, b in zip(self._drawn, shown)):
             return
         self._drawn = shown
-        self._measured_cloud.visible = markers is not None and len(markers.ids) > 0
+        # * Green: the trusted markers the last fit used; orange: the ones Motive filled in from its own pose.
+        self._measured_cloud.visible = sensed is not None and len(markers.ids) > 0
         if self._measured_cloud.visible:
-            self._measured_cloud.points = markers.positions.astype(np.float32)
-            self._measured_cloud.colors = np.where(markers.measured[:, None], MEASURED_COLOR,
-                                                   FILLED_COLOR).astype(np.uint8)
-        layout = self._layouts[self._bar_id][1] if self._bar_id in self._layouts else None
+            filled = markers.positions[~markers.measured]
+            self._measured_cloud.points = np.concatenate([sensed.points, filled]).astype(np.float32)
+            self._measured_cloud.colors = np.array([MEASURED_COLOR] * len(sensed.points) + [FILLED_COLOR] * len(filled),
+                                                   dtype=np.uint8).reshape(-1, 3)
+        layout = self._layouts[self._bar_id].points if self._bar_id in self._layouts else None
         self._planned_cloud.visible = layout is not None and self._planned is not None and markers is not None
         if self._planned_cloud.visible:
-            matrix = self._planned.matrix()
-            self._planned_cloud.points = (layout @ matrix[:3, :3].T + matrix[:3, 3]).astype(np.float32)
+            self._planned_cloud.points = transform_points(self._planned.matrix(), layout).astype(np.float32)
         fit = self._fit
         self._fit_cloud.visible = self._fit_lines.visible = fit is not None and markers is not None
         if not self._fit_cloud.visible:
             return
-        self._fit_cloud.points = fit.transform(layout).astype(np.float32)
-        # * The bar axis over the markers' span, then one line from each measured marker to its fitted CAD marker.
+        world_from_bar = fit.T_world_from_bar
+        self._fit_cloud.points = transform_points(world_from_bar, layout).astype(np.float32)
+        # * The bar axis over the markers' span, then one line from each matched marker to its fitted CAD marker.
         span = layout[:, 2].min(), layout[:, 2].max()
-        axis = fit.transform(np.array([[0.0, 0.0, span[0]], [0.0, 0.0, span[1]]]))
-        measured = markers.positions[markers.measured]
-        residuals = np.stack([measured, fit.transform(layout[fit.model_index])], axis=1)
+        axis = transform_points(world_from_bar, np.array([[0.0, 0.0, span[0]], [0.0, 0.0, span[1]]]))
+        pairs = matched_pairs(fit)
+        residuals = np.stack([sensed.points[pairs[:, 0]], transform_points(world_from_bar, layout[pairs[:, 1]])],
+                             axis=1)
         self._fit_lines.points = np.concatenate([axis[None], residuals]).astype(np.float32)
         self._fit_lines.colors = np.full((len(residuals) + 1, 2, 3), FIT_COLOR, dtype=np.uint8)
