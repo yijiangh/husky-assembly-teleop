@@ -29,11 +29,19 @@ class RawMarkers:
         ids: 1-based member numbers in the Motive asset, shape (n,).
         positions: Shape (n, 3).
         measured: False where the marker was occluded and filled in from Motive's own pose, shape (n,).
+        residuals: Motive's fit residual of each marker, metres, shape (n,); None when the relay did not send them
+            (an older relay).
+        sizes: Motive's diameter of each marker, metres, shape (n,); None when the relay did not send them.
+        capture_time: ROS time the cameras captured the sample, seconds (the relay's stamp, else the arrival time);
+            None only for markers not stored from a relay message.
     """
 
     ids: np.ndarray
     positions: np.ndarray
     measured: np.ndarray
+    residuals: np.ndarray | None = None
+    sizes: np.ndarray | None = None
+    capture_time: float | None = None
 
 
 @dataclass(frozen=True)

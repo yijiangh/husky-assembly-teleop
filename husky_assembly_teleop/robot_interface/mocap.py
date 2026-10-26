@@ -6,7 +6,7 @@ Mocap on the ROS side: the relay topic of a rigid body, and how a sample is stor
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Sequence
 
 import numpy as np
 from crl_husky_msgs.msg import MocapRigidBodyPose
@@ -58,12 +58,17 @@ def store_sample(body: MocapBody, message: MocapRigidBodyPose, now: float) -> Mo
     # * Kept so the mocap chip can say why a pose is invalid.
     body.tracking_valid = bool(message.tracking_valid)
     body.marker_error = float(message.marker_error)
-    body.markers = RawMarkers(ids=np.array(message.marker_ids, dtype=int),
-                              positions=np.array([[p.x, p.y, p.z] for p in message.marker_positions]).reshape(-1, 3),
-                              measured=np.array(message.marker_measured, dtype=bool))
     stamp = message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec
     # ! Capture time, so speeds and tracking errors use when the pose was true, not when it arrived.
     captured = stamp if stamp > 0.0 else now
+    ids = np.array(message.marker_ids, dtype=int)
+    body.markers = RawMarkers(ids=ids,
+                              positions=np.array([[p.x, p.y, p.z] for p in message.marker_positions]).reshape(-1, 3),
+                              measured=np.array(message.marker_measured, dtype=bool),
+                              residuals=_per_marker(message.marker_residuals, len(ids)),
+                              # * `marker_sizes` joins the message with a newer relay; until then the message lacks it.
+                              sizes=_per_marker(getattr(message, "marker_sizes", None), len(ids)),
+                              capture_time=captured)
     position, orientation = np.full(3, np.nan), np.full(4, np.nan)
     if body.tracked:
         p, q = message.pose.position, message.pose.orientation
@@ -75,3 +80,15 @@ def store_sample(body: MocapBody, message: MocapRigidBodyPose, now: float) -> Mo
         body.marker_errors.popleft()
     body.last_update_time = now
     return MocapSample(body.tracked, position, orientation, body.marker_error, now, captured)
+
+
+def _per_marker(values: Sequence[float] | None, count: int) -> np.ndarray | None:
+    """One value per marker as a float array; None when the relay sent none, or not one per marker (an older relay).
+
+    Args:
+        values: The message's per-marker list, or None when the message has no such field.
+        count: How many markers the sample has (`len(marker_ids)`).
+    """
+    if values is None or len(values) != count:
+        return None
+    return np.array(values, dtype=float)
