@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Mapping, Protocol
 
 if TYPE_CHECKING:
+    from scaffolding_assembly_core.geometry import Pose
     from scaffolding_assembly_core.scene import Scene
 
     from ..config import RobotConfig
@@ -36,6 +37,9 @@ class MotionPlanRequest:
         ignore_built: Plan as if the built bars were not there (`scene_for`).
         obstacles_collide: Whether the process's obstacles from Rhino count (`scene_for`); the process plugin's box.
         goal_joints: Arm joints to plan to instead of solving the goal (`plan_movement`).
+        goal_poses: Process flange id -> world pose a retreat goes to instead of along its line, one per moving flange
+            (`RouteResult.goals`).
+        linear_step: A retreat's largest step between waypoints, metres; None: tamp's default (5 mm).
         joints: Acting robot joints to check collisions at (`request_collisions`); None: as in the snapshot.
         label: Names the request in the planner's panel and log; empty: the movement's id.
     """
@@ -49,6 +53,8 @@ class MotionPlanRequest:
     ignore_built: bool = False
     obstacles_collide: bool = True
     goal_joints: Mapping[str, float] | None = None
+    goal_poses: Mapping[str, Pose] | None = None
+    linear_step: float | None = None
     joints: Mapping[str, float] | None = None
     label: str = ""
 

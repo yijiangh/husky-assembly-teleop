@@ -29,7 +29,7 @@ from ...shared.execution.moving import moving_reason
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import INTERRUPTED, motion_command
 from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT, MAX_TRAJ_TIME,
-                                              MOTION_PART, REFUSED, REFUSED_PART, ExecRequest, ExecResult, serial_of)
+                                              MOTION_KINDS, REFUSED, REFUSED_PART, ExecRequest, ExecResult, serial_of)
 from ...ui.assembly_tab import ASSEMBLY_TAB
 from .panel import ExecPanel
 from .sequences import Job, PartRun, run_part
@@ -64,6 +64,7 @@ class MovementExecPlugin(HuskyPlugin):
         self._prompts = PromptBox()
         self._dry_run = False
         #: The running request, its task and its label for the panel.
+        self._job: Job | None = None
         self._task: asyncio.Task | None = None
         self._active = ""
         #: "operator" once Cancel cancelled the running task; else a cancel came from outside.
@@ -114,7 +115,7 @@ class MovementExecPlugin(HuskyPlugin):
         try:
             job = Job(ctx, request, ctx.world.robots[request.serial], ctx.require("assembly_run"), self._prompts,
                       self._dry_run, lambda name, movement, data: self._event(job, name, movement, data))
-            self._active, self._cancel_reason = f"{request.robot_name} · {request.label}", ""
+            self._job, self._active, self._cancel_reason = job, f"{request.robot_name} · {request.label}", ""
             ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
                          + (" (DRY RUN)" if job.dry_run else ""))
             self._task = ctx.spawn(f"exec {request.label}", self._run(job, lease, future))
@@ -168,8 +169,9 @@ class MovementExecPlugin(HuskyPlugin):
     def draw(self, ctx: PluginContext) -> None:
         """Fill the panel."""
         if self._panel is not None:
+            recorder = self._job.recorder if self.active and self._job is not None else None
             self._panel.draw(self.active, self.prompt, self._dry_run, (self._last, self._last_failed),
-                             self._dry_run_refused)
+                             self._dry_run_refused, recorder)
 
     # --- --- --- --- --- RUNNING A REQUEST --- --- --- --- ---
 
@@ -189,13 +191,13 @@ class MovementExecPlugin(HuskyPlugin):
             return f"{request.serial} is not connected"
         if not 0.0 < request.traj_time <= MAX_TRAJ_TIME:
             return f"the motion time must be over 0 and at most {MAX_TRAJ_TIME:.0f} s, not {request.traj_time}"
-        motions = [part for part in request.parts if part.kind == MOTION_PART]
+        motions = [part for part in request.parts if part.kind in MOTION_KINDS]
         return self._plan_refusal(ctx, request) if motions else ""
 
     @staticmethod
     def _plan_refusal(ctx: PluginContext, request: ExecRequest) -> str:
         """Why the request's plan is not the step's motion on this robot at its base now; "" if it is."""
-        motions = [part.index for part in request.parts if part.kind == MOTION_PART]
+        motions = [part.index for part in request.parts if part.kind in MOTION_KINDS]
         route, basis, primary = request.route, request.basis, request.step.primary
         if motions != [primary]:
             return f"the only motion of a step must be its primary, movement {primary}"
@@ -349,7 +351,7 @@ class MovementExecPlugin(HuskyPlugin):
     def _record_part(self, job: Job, run: PartRun) -> None:
         """Record one part in the run: what it was, what it was planned from, what was sent, and how it ended."""
         request, part = job.request, run.part
-        motion = part.kind == MOTION_PART
+        motion = part.kind in MOTION_KINDS
         route = request.route if motion else None
         trajectory = route.result.trajectory if route is not None else None
         plan = None if trajectory is None else {

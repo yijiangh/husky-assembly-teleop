@@ -34,7 +34,8 @@ from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, 
                                  file_hashes, find_runs, made_after, record_event, reopen, save_progress, with_current)
 from ...ui.assembly_tab import ASSEMBLY_TAB
 from .panel import PanelStatus, RunPanel
-from .writes import AGAIN_MARK, AGAIN_NEW_RUN, CONFIRM_AGAIN, NO_PROCESS, NOT_OPENED, OPEN, OPENING, RunWrites
+from .writes import (AGAIN_MARK, AGAIN_NEW_RUN, CONFIRM_AGAIN, NO_PROCESS, NOT_OPENED, OPEN, OPENING, SETTING_TYPES,
+                     RunWrites)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -228,8 +229,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             self._settings_refused += 1
             self._refused("Settings", refusal)
             return
-        settings = replace(self._settings, **{name: float(value) if name == "insert_split_mm" else value
-                                              for name, value in changes.items()})
+        settings = replace(self._settings, **{name: SETTING_TYPES[name](value) for name, value in changes.items()})
         if settings == self._settings:
             return
         self._again = None

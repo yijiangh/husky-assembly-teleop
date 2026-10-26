@@ -1,9 +1,10 @@
-# M6: compliant execution — insert, retreat, spiral, Robotiq handoff (spec, AWAITING USER APPROVAL)
+# M6: compliant execution — insert, retreat, spiral, Robotiq handoff (spec, IMPLEMENTED 2026-10-26 on yh/m6-compliance; lab test pending)
 
 Ported from 0e45758 onto Jakob's runtime: four behaviours → seven small modules in `shared/execution/` + four new part
 kinds in movement_exec. The math below is copied from the old code with line numbers. Every place the new runtime forces a
-difference, or where this spec adds a guard, is marked ⚑. **Do not implement before the user approves §0 and the
-assumptions A1–A6 / open questions.**
+difference, or where this spec adds a guard, is marked ⚑. The user settled A1–A6 and Q1–Q5 on 2026-10-23 (Decisions,
+below); the implementer asks nothing more about them. One answer differs from the proposal: A5, the rigid-only mode and
+the spiral's duration and turns are run settings again.
 
 Old code at 0e45758 (verified): W = husky_world.py, M = husky_monitor.py, R = husky_robot.py, BIO = bar_action_io.py,
 MAN = doc/three_robot_assembly_test_manual.md. Real locations: compliant insert `execute_planned_trajectory_compliant`
@@ -12,19 +13,34 @@ W:4703-4822, W:4962-5051, W:5437-5457; `retreat_guardrails` W:5054-5199; F/T zer
 handoff W:6637-6869; M:242, BIO:854, BIO:885, R:837 as cited. New paths under
 `ros2_ws_next/src/husky-assembly-teleop/husky_assembly_teleop/` at 145f72d.
 
-## Assumptions (defaults proposed; the user decides)
-- A1 Targets stay fixed in the WORLD: each tick the target is converted with the live mocap base, as the old code did
-  (W:3999 with M:13476-13481). ⚑ Added: the stream stops if the base moves > 2 mm / 0.5° from where it was at the stream
-  start. Alternative: freeze the base at the stream start (open question 1).
+> Paths moved since 145f72d (at 59760fe): `shared/planning/*` → `shared/assembly_planning/*` (route_result,
+> route_search, tamp_route, movement, ik, joints, collision); `PlanRequest` → `shared/planner/plan.py` and
+> `shared/motion_planner_contract.py` (`MotionPlanRequest`); `run_plan` → `plugins/motion_planner/work.py`;
+> `shared/movement_exec.py` → `shared/movement_exec_contract.py`; `shared/runs.py` → `shared/runs/runs.py`; tests sit
+> in `test/<area>/` (`test/shared/`, `test/plugins/<plugin>/`). The implementer maps every path here onto the current
+> layout; the math and the behaviour do not change.
+
+## Decisions (the user, 2026-10-23; final)
+- A1 / Q1 Targets stay fixed in the WORLD: each tick the target is converted with the live mocap base, as the old code
+  did (W:3999 with M:13476-13481). ⚑ Added: the stream stops if the base moves > 2 mm / 0.5° from where it was at the
+  stream start. The base is not frozen at the stream start.
 - A2 "Where the tool is" = the driver's measured TCP (`ArmState.tcp_position`). Before any switch to compliance, check
-  that URDF FK of the live joints agrees with it within 10 mm / 2° — the handoff's own check (W:6643-6757), now also for
-  the insert and the retreat.
-- A3 A straight-line insert with no stall within 30 s ends FAILED (not done); arms back under joint control; the operator
-  uses Next ▶ or Mark done. (The old code simply ended.)
+  that URDF FK of the live joints agrees with it within 10 mm / 2° — the handoff's own check (W:6643-6757), now on every
+  compliant part (insert, retreat, handoff).
+- A3 / Q2 A straight-line insert with no stall within 30 s ends FAILED (not done); arms back under joint control; the
+  operator uses Next ▶ or Mark done; no Confirm prompt like the spiral's (the old code simply ended). The rigid-only
+  insert's hold ends the same way (§0.5).
 - A4 A failed tail replan in the retreat ends FAILED, no fallback tail (the old fallback's first step jumped, W:5691-5706).
-- A5 Spiral settings are constants: 20 s, 4 turns, 15 mm (`RunSettings.spiral` is only a checkbox); the old rigid-only
-  toggle (M:786-791) is not ported.
+- A5 / Q4 (changed from the proposal) The old rigid-only mode and the spiral's duration and turns sliders come back as
+  run settings (M:786-798, sliders M:12931-12960): `RunSettings.rigid_only` (off), `spiral_seconds` 20 s (1–60 s,
+  M:250), `spiral_turns` 4 (1–10 whole turns, M:251). The spiral radius stays 15 mm. Rigid-only runs the whole insert
+  under joint control with the mating screws tightening, then holds there until they stall (§0.5); it ignores the split
+  and the spiral, a ground bar ignores rigid-only (it is rigid with no tighten anyway), and the retreat ignores it
+  (W:5385-5406, W:5432-5437).
+  ⚑ Added: a spiral faster than 50 mm/s at full radius is refused at Plan (§0.4).
 - A6 Cancel during the handoff stops the fingers (M5's rule); the old code let them keep closing (W:6816-6819).
+- Q3 A failed retreat check only reports (log + record); the tail still runs (retreat step 9, §1.1).
+- Q5 No force stop during the compliant insert, as before: peak |F| is recorded and the UR's protective stop applies (§4).
 
 ## 0. Math, ported unchanged
 ### 0.1 Frames and where each pose is measured
@@ -62,7 +78,13 @@ Tick: 50 ms in both (old W:110; new config.py:179).
 ### 0.4 Spiral (W:4721-4822; set up W:5437-5457)
 - Axis a = (pE_L − pS⁰_L) + (pE_R − pS⁰_R) from FK of the PLANNED q_0 and q_N (W:5441-5442); ‖a‖ < 1e-6 → straight line.
 - u = â×ẑ normalised (‖â×ẑ‖ < 1e-6 → â×x̂); v = â×u.
-- f = clamp(e/T_sp, 0, 1); r = 15 mm·f; φ = 2π·4·f; Δ = r(cos φ·u + sin φ·v); T_sp = 20 s replaces T_c (W:5448).
+- f = clamp(e/T_sp, 0, 1); r = R·f, R = 15 mm; φ = 2π·n·f; Δ = r(cos φ·u + sin φ·v); T_sp replaces T_c (W:5448).
+  T_sp = `spiral_seconds` (default 20 s), n = `spiral_turns` (default 4), read when the part starts (W:5448-5449);
+  pitch R/n (3.75 mm at 4 turns; the old note keeps it under the joint's ~5 mm catch, M:12947-12950).
+- ⚑ Speed at full radius v = (R/T_sp)·√(1 + (2πn)²): 18.9 mm/s at 20 s, 4 turns. `plan_insert` refuses v > 50 mm/s
+  (the retreat checks' speed limit) and names the shortest duration for those turns, T_sp ≥ 0.3 s·√(1 + (2πn)²):
+  1.91 s at 1 turn, 7.55 s at 4, 11.31 s at 6, 18.85 s at 10; the message rounds up to 0.1 s (2.0, 7.6, 11.4,
+  18.9). That bounds each 20 Hz step to 2.5 mm, under F1's 1 cm.
 - Segment A: T_wait = ∞ (W:5003). Segment B (after Confirm): from E + Δ(T_sp) to E over 2 s (W:4718), then wait ≤ 30 s
   (W:5038-5040).
 
@@ -70,6 +92,7 @@ Tick: 50 ms in both (old W:110; new config.py:179).
 | Phase | Ends when | Old |
 |---|---|---|
 | rigid part (insert) | every mating M2 stalled, or T_r + 1 tick | W:4665-4676 |
+| rigid-only insert (A5) | the whole path as the rigid part (T_r = T): every mating M2 stalled, or T + 1 tick; then the joint controller holds the last row while the stall gate waits: every mating M2 stalled → STALLED, or 30 s → NO_STALL (FAILED, A3). Compliance never engaged | W:5389-5406, W:5596-5603, W:4928-4958, `HOLD_FOR_STALL_TIMEOUT_S` W:4701 |
 | straight compliant line | every mating M2 stalled, or e > T_c + 30 + 1 | W:5501-5503, W:4701 |
 | spiral A | stall; Cancel; at f = 1 a prompt; Confirm → B | W:5006-5023 |
 | spiral B | stall; Cancel; e > 2 + 30 + 1 | W:5041-5051 |
@@ -94,7 +117,7 @@ Tick: 50 ms in both (old W:110; new config.py:179).
 ### 0.6 Forced (F) and added (+) differences
 | # | Old | New |
 |---|---|---|
-| F1 target checks | 5 cm per axis, 0.05 per quaternion component (≈5.7°) (R:850); a failed target was dropped and the stream went on | 5 cm per axis (arm.py:633), 5° (:636), reach 0.85 m (:640), unit quaternion, TCP ≤ 0.5 s old, and 1 cm / 3° from the previous target if sent within 0.5 s (:706-718); a refusal stops the stream, holds, fails the part. Worst steps at 20 Hz: insert 0.15 mm, widest spiral turn 0.94 mm, spiral return 0.38 mm, retreat ≤ 1 mm — all far under 10 mm |
+| F1 target checks | 5 cm per axis, 0.05 per quaternion component (≈5.7°) (R:850); a failed target was dropped and the stream went on | 5 cm per axis (arm.py:633), 5° (:636), reach 0.85 m (:640), unit quaternion, TCP ≤ 0.5 s old, and 1 cm / 3° from the previous target if sent within 0.5 s (:706-718); a refusal stops the stream, holds, fails the part. Worst steps at 20 Hz: insert 0.15 mm, widest spiral turn 0.94 mm at 20 s / 4 turns (≤ 2.5 mm for any accepted setting, §0.4), spiral return 0.38 mm, retreat ≤ 1 mm — all far under 10 mm |
 | F2 tool start | STOP and TIGHTEN back to back (W:5567-5571) | `_drive` refuses while cached STALLED (end_effectors.py:348): STOP, wait ≤ 2 s for a non-STALLED status newer than the STOP (as `scaffolding_grasp`, tools.py:146-153), then drive; never clears → refuse before anything moves |
 | F3 rigid part | dt = T/(n−1) (R:1040); by time; the switch cut the trajectory (W:4614-4618) | `motion_command` + `send_motion(until=gate)` (new: hold the arms before the switch); ARRIVED / STOPPED / ENDED all continue to compliance |
 | F4 F/T zero | waited for the service ≤ 2 s + 0.1 s (W:5243-5253) | `zero_ft_sensor()` keeps no future (arm.py:778-790): fixed 0.5 s wait; log |F| before/after |
@@ -103,7 +126,7 @@ Tick: 50 ms in both (old W:110; new config.py:179).
 | F7 Cancel | ignored during the straight compliant part (W:5578) | Cancel, Hold and Stop all always stop the part safely (§4) |
 | F8 ending | stop publishing, switch | hold (target = TCP, E1 arm.py:642), then switch, on every ending |
 | F9 tail replan | blocking cfab call (M:7855) + fallback tail | async `motion_planner.request_plan` with `goal_poses` and 1 mm steps; failure → FAILED (A4) |
-| + added | – | base-drift stop (A1); the stream's clock advances ≤ 0.1 s per tick (a late tick slows, never jumps); a zero target wrench right after each switch to compliance (robot_control may have left one, arm.py:745-746); `cartesian_test_mode` or `urdf_problem` → compliant parts refused |
+| + added | – | base-drift stop (A1); the stream's clock advances ≤ 0.1 s per tick (a late tick slows, never jumps); a zero target wrench right after each switch to compliance (robot_control may have left one, arm.py:745-746); `cartesian_test_mode` or `urdf_problem` → compliant parts refused; a spiral over 50 mm/s refused at Plan (§0.4) |
 
 ## 1. Files
 ### 1.1 New in `shared/execution/`
@@ -130,25 +153,32 @@ Tick: 50 ms in both (old W:110; new config.py:179).
   ≤ 0.1 s; (2) `not keep_going(e)` → "ended"; e > seconds + wait + 1 → "time"; base drifted → "base moved X mm";
   (3) per arm `arm.send_cartesian_target(*arm.from_husky(*robot.from_world(G)))` (False → "refused: <arm>");
   (4) `recorder.tick`, `await ctx.next_tick()` (pattern of robot_control `_stream_cartesian_move`, plugin.py:540-577).
-- `spiral.py` (~110): `lateral_basis(axis)` (W:4721-4747); `Spiral(axis, seconds=20.0, turns=4, radius=0.015)` with
-  `frac`, `offset`, `done`, `text` (W:4750-4822); `SPIRAL_RADIUS`, `SPIRAL_SECONDS`, `SPIRAL_TURNS`, `SPIRAL_RETURN=2.0`
-  (W:4708-4718); `async run_spiral(ctx, robot, segment, spiral, gate, operator, recorder) -> str` ("stalled" |
+- `spiral.py` (~120): `lateral_basis(axis)` (W:4721-4747); `Spiral(axis, seconds, turns, radius=SPIRAL_RADIUS)` with
+  `frac`, `offset`, `done`, `text` (W:4750-4822) and `speed` (m/s at full radius, §0.4); `SPIRAL_RADIUS=0.015`,
+  `SPIRAL_SECONDS=20.0`, `SPIRAL_TURNS=4` (the settings' defaults), `SPIRAL_RETURN=2.0` (W:4708-4718),
+  `SPIRAL_MAX_SPEED=0.05`; `spiral_problem(seconds, turns) -> str` ("" or, for 5 s, "spiral too fast: 75 mm/s at 15 mm, limit
+  50; 4 turns need ≥ 7.6 s", the shortest duration rounded up); `async run_spiral(ctx, robot, segment, spiral, gate, operator, recorder) -> str` ("stalled" |
   "cancelled" | "no_stall" | a stream failure): A then B; the warning prompt opens once via `operator.open(text,
   warn=True)` and is polled each tick BEFORE publishing.
 - `tools.py` additions (~60): `StallGate(tools, motor)` (W:4181-4226: `all_stalled()`, `stall_times`, `text`; a status
   older than `STATUS_MAX_AGE` never counts, logged once); `async stop_and_clear(ctx, tools, motor) -> ToolOutcome |
   None` (refactor `scaffolding_grasp` onto it); `stop_all(tools)`.
-- `insert.py` (~220): `GROUNDED_END_TOL = 0.003` (W:1659, for M7); `InsertPlan(serial, arms, names, rows, mating,
-  grounded, split_mm, achieved_mm, total_mm, rigid: MotionCommand | None, compliant_seconds, ends, spiral, text,
-  as_record)`; `plan_insert(robot, names, rows, *, mating, grounded, split_mm, spiral, traj_time) -> InsertPlan | str`;
-  `async run_insert(ctx, robot, plan, tools, *, operator, dry_run) -> PartOutcome`. Sequence (port W:5268-5775):
+- `insert.py` (~240): `GROUNDED_END_TOL = 0.003` (W:1659, for M7); `HOLD_FOR_STALL = 30.0` (W:4701);
+  `InsertPlan(serial, arms, names, rows, mating, grounded, rigid_only, split_mm, achieved_mm, total_mm, rigid:
+  MotionCommand | None, compliant_seconds, ends, spiral, text, as_record)`; `plan_insert(robot, names, rows, *, mating,
+  grounded, split_mm, rigid_only, spiral: tuple[float, int] | None (seconds, turns), traj_time) -> InsertPlan | str`
+  (str: `spiral_problem`, or why not); `async run_insert(ctx, robot, plan, tools, *, operator, dry_run) -> PartOutcome`.
+  Mode, as W:5385-5437: ground bar → rigid, no tighten; else rigid-only → the whole path rigid, the split and the spiral
+  ignored (logged once); else the split, then the straight line or the spiral. Sequence (port W:5268-5775):
   (1) prechecks: every arm under JTC, no `urdf_problem`, not test mode, FK-vs-TCP within tolerance, every tool status
-  fresh; (2) dry run stops here after `plan_stream` + `target_problem` on every target and `build_trajectory` on the
-  rigid part; (3) `stop_and_clear(all tools, JOINT)`, `drive_screw(1)` on the MATING tools only; (4) rigid part
-  `send_motion(rigid, until=gate.all_stalled)`; (5) ground bar: no tighten, the whole path rigid; record `end_gap_mm`;
-  log "<who>: servo after the insert: M7, not run"; (6) else `switch_arms(compliance)`, zero wrench, S = measured TCP,
-  straight line with `keep_going = not gate.all_stalled()` or `run_spiral`; `progress`; (7) `finally`:
-  `stop_all(all tools)`, `leave_compliance`.
+  fresh; (2) dry run stops here after `plan_stream` +
+  `target_problem` on every target and `build_trajectory` on the rigid part; (3) `stop_and_clear(all tools, JOINT)`,
+  `drive_screw(1)` on the MATING tools only; (4) rigid part `send_motion(rigid, until=gate.all_stalled)`; (5) ground
+  bar: no tighten, the whole path rigid; record `end_gap_mm`; log "<who>: servo after the insert: M7, not run";
+  (5b) rigid-only: no switch, no target sent; each tick until `gate.all_stalled()` → STALLED, or `HOLD_FOR_STALL` →
+  NO_STALL (FAILED, A3) (W:4928-4958); the joint controller holds the last row; (6) else `switch_arms(compliance)`, zero
+  wrench, S = measured TCP, straight line with `keep_going = not gate.all_stalled()` or `run_spiral` with
+  `Spiral(axis, seconds, turns)`; `progress`; (7) `finally`: `stop_all(all tools)`, `leave_compliance`.
 - `retreat.py` (~200): `CHECK_*` = W:5056-5065; `TAIL_STEP=0.001`, `TAIL_ANGLE=0.05` (M:257-258); `FT_SETTLE=0.5`;
   `plan_retreat(robot, names, rows, goals, *, split_mm, traj_time)`; `retreat_checks(...)` (pure);
   `async run_retreat(ctx, robot, plan, tools, *, replan: Callable[[], Awaitable[RouteResult]], dry_run)`. Sequence:
@@ -177,7 +207,10 @@ Tick: 50 ms in both (old W:110; new config.py:179).
 | planning/route_search.py:273 | `solved` stores `{part.flange: goal}` |
 | planning/service.py:37 | `PlanRequest.goal_poses`, `linear_step`, passed through `run_plan` → `plan_movement` (tamp_route.py:60) → `_Route` |
 | planning/tamp_route.py:310-323 | `_retreat_linear`: use `goal_poses` when given (every moving flange needs one, else Refused); `max_step_distance = linear_step` or tamp's default 0.005 |
-| shared/runs.py:75 | docstring: the split also sets the retreat's compliant part, from the start |
+| shared/runs/runs.py:71 | `RunSettings` + `rigid_only: bool = False`, `spiral_seconds: float = 20.0`, `spiral_turns: int = 4` (an older run.json without them loads these defaults: the reader keeps known keys only); `SPIRAL_SECONDS_RANGE = (1.0, 60.0)`, `SPIRAL_TURNS_RANGE = (1, 10)` beside it (M:250-251); docstring: the split also sets the retreat's compliant part, from the start; rigid-only ignores the split and the spiral |
+| plugins/assembly_run/panel.py (the settings section and its refresh) | under "Spiral": a checkbox "Rigid insert" (hint: the whole insert under joint control, the screw tightens, no compliance; the split and the spiral are ignored) and two sliders "Spiral s" (1–60, step 1, 20) and "Spiral turns" (1–10, step 1, 4), wired like the others and refreshed from `view.settings` |
+| plugins/assembly_run/writes.py `_settings_problem` | `_settings_problem`: each number setting in its range (the split as now; spiral seconds; spiral turns a whole number), every other setting a bool |
+| plugins/assembly_run/plugin.py `request_settings` | `request_settings` converts by the field's type (float for the split and the seconds, int for the turns), not by name |
 
 ### 1.3 movement_exec integration
 - `shared/movement_exec.py`: part kinds `INSERT_PART`, `RETREAT_PART`, `HANDOFF_PART`, `WITH_MOTION_PART`;
@@ -189,7 +222,7 @@ Tick: 50 ms in both (old W:110; new config.py:179).
   (its arms must equal the retreat's, else REFUSED).
 - `plugins/movement_exec/sequences.py`: `run_part` → `world_problem(job, motion=kind in MOTION_KINDS)`; `_insert`,
   `_retreat`, `_handoff`, `_with_motion`. `_insert`/`_retreat`: `live_command(job)` (row 0 = live, ≤ 2°); read run
-  settings once (split clamped 0–30, spiral; recorded); `plan_insert`/`plan_retreat` → prompt → `world_problem` again →
+  settings once (split clamped 0–30, rigid_only, spiral with its seconds and turns; recorded); `plan_insert`/`plan_retreat` → prompt → `world_problem` again →
   rebuild with `live_command` → run → set `run.end`, `run.base` (as `_motion`, :244-247). `_retreat` builds the replan
   callable (a `PlanRequest` from `ctx.scene.snapshot` with `goal_poses=route.goals`, `linear_step=TAIL_STEP`, awaited via
   `request_plan` in a 60 s timeout). `_with_motion` DONE once the retreat opened its arms (`job.opened`). `Job` gains
@@ -202,7 +235,8 @@ Tick: 50 ms in both (old W:110; new config.py:179).
 Prompts (each "<robot> (<serial>): <movement> — "):
 | Part | Text | Warn |
 |---|---|---|
-| insert, mating | INSERT: rigid {D−a′} mm ({T_r} s), then COMPLIANT {a′} mm (straight line \| spiral 15 mm, 20 s, 4 turns); the joint screw of {tools} TIGHTENS from the start until it stalls (≤ 30 s), then STOP and back to joint control. Watch the bar enter its joint and the held bars stay in their jaws. Confirm to start. | no |
+| insert, mating | INSERT: rigid {D−a′} mm ({T_r} s), then COMPLIANT {a′} mm (straight line \| spiral 15 mm, {T_sp} s, {n} turns, pitch {R/n} mm); the joint screw of {tools} TIGHTENS from the start until it stalls (≤ 30 s), then STOP and back to joint control. Watch the bar enter its joint and the held bars stay in their jaws. Confirm to start. | no |
+| insert, rigid-only | RIGID-ONLY insert: the whole {D} mm under joint control ({T} s); the joint screw of {tools} TIGHTENS from the start; the arms hold the end until it stalls (≤ 30 s), then STOP. Compliance is never engaged; the split and the spiral are ignored. Watch the bar enter its joint and the held bars stay in their jaws. Confirm to start. | no |
 | insert, ground bar | RIGID insert of a ground bar, no tighten, {T} s, largest joint travel {d}°. | no |
 | spiral end | Spiral complete without a stall: HOLDING its end under compliance. Confirm = back to the straight-line end over 2 s, then hold for the stall (≤ 30 s); Cancel = end the insert here. | yes |
 | retreat | RETREAT: the M1 screws of {tools} OPEN; force sensors zeroed; COMPLIANT break-out {c} mm ({T_c} s); joint control; the rest replanned from where the tools are and run at once ({T_tail} s, no second Confirm). Watch both tools let go and back off along their lines. | no |
@@ -210,7 +244,7 @@ Prompts (each "<robot> (<serial>): <movement> — "):
 | fix foundation | {label} by hand, then Confirm. | no |
 
 Record `outcome` = `PartOutcome.record`: `{status, reason, seconds, settings, plan (split achieved/total, T_r, T_c,
-T_tail, mating, grounded), phases [{name, t0, t1, end}], switch {to_s, back_s, ok}, stall_times {arm: s after TIGHTEN},
+T_tail, mating, grounded, rigid_only, spiral {seconds, turns, pitch_mm, speed_mm_s}), phases [{name, t0, t1, end}], switch {to_s, back_s, ok}, stall_times {arm: s after TIGHTEN},
 spiral_text, peak_force_N, end_error_mm {arm: travel/achieved/remaining}, fk_tcp_gap, base_drift_max_mm, checks [lines],
 tail {planner, waypoints, seconds}, end_gap_mm, stream [{t, phase, arms {target [p, q], tcp [p], wrench [6]}, motors
 {arm: [m1, m2]}}]}` (≤ ~1300 samples).
@@ -221,7 +255,7 @@ tail {planner, waypoints, seconds}, end_gap_mm, stream [{t, phase, arms {target 
 | A | controllers | controllers.py; `FakeControllers` in plugin_fakes.py; test_execution_controllers.py | – |
 | B | stream + spiral math | stream.py, spiral.py; test_execution_stream.py, test_execution_spiral.py | – |
 | C | tools: stall gate, clear, both motors in the fake | tools.py; `ScaffoldingDriver` gains M2 + one-motor-at-a-time; test_execution_tools.py | – |
-| D | small edits | send.py, operator.py, route_result.py, route_search.py, service.py, tamp_route.py, runs.py + tests | – |
+| D | small edits, and the three run settings (A5) | send.py, operator.py, route_result.py, route_search.py, service.py, tamp_route.py, runs/runs.py, assembly_run/{panel,writes,plugin}.py + tests (test/shared/test_runs.py, test/plugins/assembly_run/test_assembly_run.py) | – |
 | E | insert | insert.py; `ArmDriver` compliance mode (TCP follows the last target with a lag; under JTC TCP = FK(joints)); test_execution_insert.py | A–D |
 | F | retreat | retreat.py; test_execution_retreat.py | A–D |
 | G | handoff | handoff.py; test_execution_handoff.py | A, B |
@@ -234,13 +268,14 @@ Commands: as M5 §8 (default, slow, linters, monitor smoke on domain 70 localhos
 |---|---|
 | controllers | switch ok; already active → no request; service down / error / 5 s timeout / switch in flight → fail; `leave_compliance` still requests JTC when cancelled twice; a late compliance ack is switched back; 10 s → the loud error |
 | stream | `line_target` = §0.3 to 1e-12 at τ = 0, 0.37, 1, >1 (shortest slerp); a moving base shifts the arm-frame target by exactly B_t⁻¹·B_0; drift 2.1 mm stops, 1.9 mm not; a 0.6 s tick advances e by 0.1 s; a refused target → nothing more sent; the stop test before publishing. `split_rows`: 15 mm path, split 5 → T_r = 3.33 s, T_c = 1.67 s; split 0 → all rigid; split ≥ D − 0.5 → one mode; from the start; q_split on the path; < 2 rows |
-| spiral | basis orthonormal ⟂ axis; vertical fallback; offset(0) = 0; offset(T) = 15 mm; pitch 3.75 mm; every 20 Hz step < 1 mm; a stall in A → "stalled" + text; f = 1 → one prompt; B's first target = A's last; Cancel → "cancelled"; B ceiling 33 s |
+| spiral | basis orthonormal ⟂ axis; vertical fallback; offset(0) = 0; offset(T) = 15 mm; pitch 3.75 mm at 4 turns, 2.5 mm at 6; every 20 Hz step < 1 mm at 20 s / 4 turns; `speed` = §0.4 to 1e-12; `spiral_problem`: 4 turns 7.5 s refused, 7.6 s accepted, 10 turns 18.8 s refused, 18.9 s accepted; a stall in A → "stalled" + text; f = 1 → one prompt; B's first target = A's last; Cancel → "cancelled"; B ceiling 33 s |
+| settings | an older run.json without the three new keys loads rigid_only off, 20 s, 4 turns; spiral seconds 0.5 and 61, turns 0, 11 and 4.5, a bool for a number refused with the range; accepted changes saved and shown back by the panel |
 | tools | a leftover STALLED doesn't count; one-sided waits for one tool; a stale status never counts; `stop_and_clear` refuses after 2 s |
-| insert (fakes) | B21-like: STOP both, TIGHTEN left only; early stall → hold → switch; targets tick by tick = the formula (read from `_target_frame`); stall → STOP, hold, JTC; ceiling → NO_STALL; cancel during compliance → STOP, hold target = TCP, JTC, CancelledError; switch refused → no target; right arm fails after the left switched → left restored; FK-vs-TCP 11 mm → REFUSED, nothing sent; test mode → REFUSED; ground bar → no TIGHTEN, no switch; dry run publishes nothing |
+| insert (fakes) | B21-like: STOP both, TIGHTEN left only; early stall → hold → switch; targets tick by tick = the formula (read from `_target_frame`); stall → STOP, hold, JTC; ceiling → NO_STALL; cancel during compliance → STOP, hold target = TCP, JTC, CancelledError; switch refused → no target; right arm fails after the left switched → left restored; FK-vs-TCP 11 mm → REFUSED, nothing sent; test mode → REFUSED; ground bar → no TIGHTEN, no switch, rigid_only ignored; rigid-only: TIGHTEN the mating tool, the whole path one joint motion, no switch and no Cartesian target ever, stall during the motion or the hold → STALLED, no stall in 30 s → NO_STALL (FAILED), split and spiral ignored; spiral settings 30 s / 6 turns reach `Spiral`; a too-fast spiral → refused at Plan, nothing sent; dry run publishes nothing |
 | retreat | order (STOP, clear, LOOSEN M1 both, F/T zero both, switch, stream to FK(q_split), JTC, replan with goal_poses, checks, tail); early exit on arrival; replan None → FAILED, no tail; every `retreat_checks` threshold |
 | handoff | anchor gap 11 mm → STIFF; drift 10.5 mm → FAILED; stalled → CLOSED; 30 s → FAILED; cancel → fingers stopped, hold, JTC; switch refused → no close goal; anchor target sent before the close goal |
 | movement_exec | purged process: B20 insert ground, no tools; B21 (left_ur_arm,); B22 both; B20 retreat + its ungrasp both done; B21_H_close a HANDOFF; LATER only TRANSFER_HELD; every prompt starts with the robot; record survives `json.dumps` |
-| slow test_exec_compliant | B21 insert planned for real, run on a fake Cindy that follows Cartesian targets, tools stalling 2 s into the compliant part → DONE; B20 insert → rigid only, no TIGHTEN; B20 retreat → tamp tail replanned with goal_poses → DONE |
+| slow test_exec_compliant | B21 insert planned for real, run on a fake Cindy that follows Cartesian targets, tools stalling 2 s into the compliant part → DONE; B20 insert → rigid (ground bar), no TIGHTEN; B20 retreat → tamp tail replanned with goal_poses → DONE |
 
 Lab acceptance (monitor + visual steps only; robots on Zenoh, e-stops in hand; a Dry run of each part first):
 1. Handoff in the air, Belle then Alice (MAN §6:643-674), on B35_H / B21_H close: Exec, prompt names the robot, Confirm;
@@ -249,11 +284,14 @@ Lab acceptance (monitor + visual steps only; robots on Zenoh, e-stops in hand; a
 2. Cindy, no bar, Ignore built bars on, B21_J: transfer (workaround), Confirm the mount pause empty, grasp. Insert: Plan,
    Exec, read the prompt (rigid 10 mm, compliant 5 mm, left screw only), Confirm. Once "compliant", stall the left joint
    screw by hand (gloved, as on the bench) → "STALLED … STOP … joint control". Second run to the ceiling → NO_STALL after
-   ~31 s, JTC back.
+   ~31 s, JTC back. Third run with "Rigid insert" ticked: the prompt says RIGID-ONLY; the controller chip stays on JTC
+   throughout; stall the screw by hand during the hold → STALLED, STOP.
 3. B21_R in the air, split 30 mm, traj time 30 s: Exec → M1 opens on both tools, F/T lines, compliant ~18 s; Cancel
    mid-way → hold, STOP, JTC. Plan again, Exec → the check lines, the tail runs.
 4. Spiral in the air: tick Spiral, run the insert (tools circle ≤ 15 mm); Cancel mid-spiral → safe ending; again to the
-   end without a stall → the warning prompt; Confirm → 2 s return, then the ceiling.
+   end without a stall → the warning prompt; Confirm → 2 s return, then the ceiling. Then "Spiral s" 30, "Spiral
+   turns" 6: the prompt reads 30 s, 6 turns, pitch 2.5 mm, and the circles are visibly tighter. "Spiral s" 3: Plan
+   refuses it ("spiral too fast … need ≥ 11.4 s"); set it back to 20.
 5. Real run, MAN §7.2–7.4: B20 insert rigid (no screw, JTC stays) → fix-foundation prompt → Mark; B20_R retreat; B21
    insert (left screw only); Alice's §8 handoff on B21 (watch Cindy's tools); §9.2 B21_R with Alice holding.
 6. Send back: the terminal log, `runs/<name>/movements/*.json`, per step pass/fail, stall times, peak |F|, end errors,
@@ -272,15 +310,23 @@ Lab acceptance (monitor + visual steps only; robots on Zenoh, e-stops in hand; a
 | late tick | the stream clock advances ≤ 0.1 s per tick |
 | wrong frames (the 2026-09-29 e-stop) | FK-vs-TCP precheck; start = measured TCP; `urdf_problem` and test mode refuse the part |
 | a leftover target wrench from robot_control | a zero wrench after every switch to compliance |
+| a fast spiral set on the sliders | refused at Plan over 50 mm/s at full radius (§0.4); the prompt shows seconds, turns and pitch; the radius stays 15 mm (≈ 7.5 N) |
+| rigid-only: the screw pulls against arms under joint control | the old baseline (W:5385-5388); the stall gate and the 30 s ceiling; STOP in the finally; the peak force recorded; the UR's protective stop |
 Risks: (1) mocap in the loop (A1): a marker swap < 2 mm still moves the target that far; (2) a restore that never lands
 (controller_manager down, a second monitor): arms stay compliant at their last target — the manual must say how to switch
 back; (3) bar-weight sag under compliance (F/T not zeroed during the insert, W:5538): ~10–20 mm at 500 N/m — why the rigid
 split exists; (4) M5 under safety review: `send_motion`, `PromptBox`, `world_problem` signatures may change; (5) pinch
 hazard in lab step 2.
 
-## Open questions (for the user)
-1. A1: keep targets world-fixed (faithful, with the new drift stop), or freeze the base at the stream start?
-2. A3: a linear insert that never stalls: FAILED, or a Confirm prompt like the spiral's?
-3. Should a failed retreat check stop the tail instead of only reporting?
-4. A5: restore the old rigid-only mode and the spiral duration/turns sliders?
-5. Should the compliant insert stop on force, as the M7 servo does with its 20 N rise?
+## Open questions
+None: Q1–Q5 were decided on 2026-10-23 (Decisions, at the top).
+
+## Status (2026-10-26)
+- Built: `shared/execution/controllers.py`, `stream.py`, `spiral.py`, `insert.py`, `retreat.py`, `handoff.py`, the
+  `tools.py` additions, §1.2's edits and settings, §1.3's movement_exec parts; the tests of §3, the slow end-to-end
+  one in `test/plugins/movement_exec/test_exec_compliant.py`. All on fakes so far: the lab acceptance (§3, steps 1–6)
+  still has to show the real screw's stall ending an insert, the switches and the restore on the real controller
+  manager, the spiral's prompt and force, the retreat's checks and tail on a bar, the handoff's anchor gap and Cancel.
+- Deviations from the text: `HOLD_FOR_STALL` lives in `stream.py`; `StallGate(ctx, tools, motor)`; the run functions
+  take `watch` (the motion watch) and `recorder` (the panel's live line); the retreat's `replan` may answer None
+  (60 s) → FAILED; the stream also stops when mocap loses the base; the fake arm follows targets with its joints (IK).

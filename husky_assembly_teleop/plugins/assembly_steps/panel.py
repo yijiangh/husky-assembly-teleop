@@ -13,8 +13,9 @@ from html import escape
 from typing import TYPE_CHECKING
 
 from ...plugin_api.context import PluginContext
-from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CLOSE_PART, GRASP_PART, MAX_TRAJ_TIME,
-                                              MOTION_PART, OPEN_PART, PartPlan)
+from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, GRASP_PART, HANDOFF_PART, INSERT_PART,
+                                              MAX_TRAJ_TIME, MOTION_PART, OPEN_PART, RETREAT_PART, WITH_MOTION_PART,
+                                              PartPlan)
 from ...ui.assembly_tab import EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLOTS_BAND, SETTINGS_BAND, STEP_BAND
 from ...ui.phone import slim_labels_css
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
@@ -142,9 +143,12 @@ def exec_line(robot: str, parts: tuple[PartPlan, ...]) -> str:
     words = []
     for part in parts:
         tools = ", ".join(part.tools)
-        words.append({MOTION_PART: f"moves {tools}", OPEN_PART: f"opens the Robotiq on {tools}",
-                      CLOSE_PART: f"closes the Robotiq on {tools} (stiff)",
+        insert = f"inserts, the joint screw of {tools} tightening" if part.tools else "inserts rigid (ground bar)"
+        words.append({MOTION_PART: f"moves {tools}", INSERT_PART: insert,
+                      RETREAT_PART: f"retreats {tools}, compliant first", OPEN_PART: f"opens the Robotiq on {tools}",
+                      HANDOFF_PART: f"closes the Robotiq on {tools}, the arm compliant",
                       GRASP_PART: f"tightens the scaffolding gripper screws on {tools}",
+                      WITH_MOTION_PART: f"opens the gripper screws on {tools} in the retreat",
                       BY_HAND_PART: f"waits for {part.movement} by hand",
                       BASE_PART: f"waits for {part.movement} (base by hand)"}.get(
             part.kind, f"refuses {part.movement}: {part.text}"))

@@ -42,7 +42,8 @@ class RobotiqState:
         commanded_position: Last position sent, or None before the first command.
         commanded_effort: Force limit sent with it, or None.
         moving: Whether a command is still running.
-        last_result_ok: Whether the last finished command succeeded, or None.
+        last_result_ok: Whether the last command succeeded; None while it runs, once it was cancelled, or before
+            the first. ! Only True is a success.
         reactivating: Whether a reactivation request is waiting for its answer.
         reactivate_error: Why the last reactivation failed, or "" if it did not.
     """
@@ -266,6 +267,8 @@ class RobotiqGripper(EndEffector):
         self.state.commanded_position = position
         self.state.commanded_effort = effort
         self.state.moving = True
+        # * Cleared, so a goal that is cancelled or never answers can't be read as the previous goal's success.
+        self.state.last_result_ok = None
         self._goal, self._cancel_on_accept = None, False
         self._action.send_goal_async(goal).add_done_callback(self._on_goal_answer)
 

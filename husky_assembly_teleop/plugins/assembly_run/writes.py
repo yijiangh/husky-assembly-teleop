@@ -18,8 +18,9 @@ from ...shared.execution.operator import PROMPT_ARM_S
 from ...shared.assembly_planning.steps import first_step
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
-from ...shared.runs.runs import (DONE, Progress, RobotRecord, Run, RunError, RunSettings, mark_done, new_run,
-                                 record_event, record_movement, save_info, save_progress, stamp, with_current)
+from ...shared.runs.runs import (DONE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, Progress, RobotRecord,
+                                 Run, RunError, RunSettings, mark_done, new_run, record_event, record_movement,
+                                 save_info, save_progress, stamp, with_current)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -31,8 +32,12 @@ if TYPE_CHECKING:
 CONFIRM_AGAIN = 10.0
 #: What waits for its second click (`AssemblyRunPlugin.again`): a new run, or marking an action ("mark <action id>").
 AGAIN_NEW_RUN, AGAIN_MARK = "new run", "mark"
-#: The insert split's range, millimetres.
-SPLIT_RANGE = (0.0, 30.0)
+#: Each number setting: what a refusal calls it, its range and its unit.
+NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
+                   "spiral_seconds": ("the spiral's duration", SPIRAL_SECONDS_RANGE, "s"),
+                   "spiral_turns": ("the spiral's turns", SPIRAL_TURNS_RANGE, "whole turns")}
+#: Each setting's type, its default's: a request is converted to it.
+SETTING_TYPES = {each.name: type(each.default) for each in fields(RunSettings)}
 #: How far the loaded process's runs were read; only OPEN allows writes.
 NO_PROCESS, OPENING, OPEN, NOT_OPENED = "", "opening", "open", "not opened"
 
@@ -329,15 +334,15 @@ class RunWrites:
         return "" if self._run is not None else self._offered_first() or "no run yet: nothing is done"
 
     def _settings_problem(self, changes: Mapping[str, Any]) -> str:
-        """What is wrong with requested settings, or ""."""
-        names = {field.name for field in fields(RunSettings)}
+        """What is wrong with requested settings, or "": a number out of its range or not whole where it must be."""
         for name, value in changes.items():
-            if name not in names:
+            if name not in SETTING_TYPES:
                 return f"there is no setting {name!r}"
-            if name == "insert_split_mm":
-                if isinstance(value, bool) or not isinstance(value, (int, float)) \
-                        or not SPLIT_RANGE[0] <= value <= SPLIT_RANGE[1]:
-                    return f"the insert split must be {SPLIT_RANGE[0]:.0f} to {SPLIT_RANGE[1]:.0f} mm, not {value!r}"
+            if name in NUMBER_SETTINGS:
+                what, (low, high), unit = NUMBER_SETTINGS[name]
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high \
+                        or (SETTING_TYPES[name] is int and value != int(value)):
+                    return f"{what} must be {low:g} to {high:g} {unit}, not {value!r}"
             elif not isinstance(value, bool):
                 return f"{name} must be True or False, not {value!r}"
         return ""

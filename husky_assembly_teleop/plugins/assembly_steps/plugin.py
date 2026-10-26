@@ -36,7 +36,7 @@ from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
 from ...shared.execution.retime import RetimeError, retime
 from ...shared.motion_planner_contract import MotionPlanRequest
-from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_PART, REFUSED,
+from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_KINDS, REFUSED,
                                               REFUSED_PART, ExecRequest, ExecResult, PartPlan, current_primary,
                                               current_step, serial_of, step_parts)
 from ...shared.planner.planner_search import WAIT_MARGIN, PlanResult
@@ -309,9 +309,9 @@ class AssemblyStepsPlugin(PlannerPlugin):
             live = snapshot.robots.get(robot_id(self.serial)) if self.serial else None
             primary = next((part for part in self.parts() if part.index == op_step.primary), None)
             if primary is not None and primary.kind == REFUSED_PART:
-                # * Say why, e.g. "B20_J_insert: the insert is not supported yet".
+                # * Say why, e.g. "B20_J_transfer: the transfer with the bar held (M7) is not supported yet".
                 refusal = f"{step.label}: {primary.text}"
-            elif primary is None or primary.kind != MOTION_PART:
+            elif primary is None or primary.kind not in MOTION_KINDS:
                 refusal = f"{step.label} has no motion to plan"
             elif live is None or not is_live(live, now):
                 refusal = f"{self._robot_name} ({self.serial}) is not live: plans start from the live robot only"
@@ -414,7 +414,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return
         view, action, op_step, step = current
         parts = self.parts()
-        motion = any(part.kind == MOTION_PART for part in parts)
+        motion = any(part.kind in MOTION_KINDS for part in parts)
         if motion and self.plan_state != "ready":
             self._say(f"nothing to Exec: the plan is {self.plan_state}; Plan first", failed=True)
             return

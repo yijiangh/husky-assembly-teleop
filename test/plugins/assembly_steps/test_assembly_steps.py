@@ -147,7 +147,7 @@ class Steps(RobotLab):
 def test_steps_follow_the_run():
     """B20_J (workaround): place and grasp after the transfer, the load skipped; the insert once the run is there.
 
-    The run follows the process panel's selection; the insert is refused: not supported yet. B20_R's ungrasp goes with
+    The run follows the process panel's selection; B20's insert runs rigid (a ground bar). B20_R's ungrasp goes with
     its move.
     """
     lab = Steps(("B20_J", 3))
@@ -157,12 +157,14 @@ def test_steps_follow_the_run():
     assert "moves left_ur_arm, right_ur_arm; then waits for B20_J_place_bar by hand; then tightens" in lab.html()
     lab.run.view.current = ("B20_J", 4)
     lab.update()
-    assert lab.plugin.position == (2, 2) and "refuses B20_J_insert: the insert is not supported yet" in lab.html()
+    assert lab.plugin.position == (2, 2) and "cindy (a200-0806) inserts rigid (ground bar)" in lab.html()
     lab.run.view.current = ("B20_J", 3)
     lab.update()
     assert lab.plugin.position == (1, 2) and lab.run.selected == []
     lab = Steps(("B20_R", 1))
     assert "with: B20_R_ungrasp" in lab.html()
+    assert ("retreats left_ur_arm, right_ur_arm, compliant first; then opens the gripper screws on left_ur_arm, "
+            "right_ur_arm in the retreat") in lab.html()
 
 
 def test_live_ik_says_which_start_it_solves():
@@ -546,11 +548,12 @@ class Walk(RobotLab):
 def test_walking_b21_h_and_b20_j_with_the_real_planner_and_executor():
     """B21_H and B20_J's transfer step, planned for real, run on fake robots that follow, every part recorded.
 
-    Alice's B21_H: approach (planned), open, to grasp (planned), close, then Mark done offered. Cindy's B20_J transfer
-    step with the workaround: the free transfer (planned), placing the bar by hand, the grasp; then the insert,
-    refused as not supported yet. Cindy ends where the transfer's plan ends.
+    Alice's B21_H: approach (planned), open, to grasp (planned), the compliant close, then Mark done offered. Cindy's
+    B20_J transfer step with the workaround: the free transfer (planned), placing the bar by hand, the grasp; then the
+    insert, a ground bar's. Cindy ends where the transfer's plan ends.
     """
     walk = Walk("B21_H_approach")
+    walk.track("a200-0804")  # * the handoff needs Alice's frames
 
     async def b21():
         for prompts in (1, 1, 1, 1):
@@ -564,7 +567,7 @@ def test_walking_b21_h_and_b20_j_with_the_real_planner_and_executor():
     files = walk.run.files()
     assert offer == "B21_H", walk.steps._message
     assert [file["movement"] for file in files] == ["B21_H_approach", "B21_H_open", "B21_H_to_grasp", "B21_H_close"]
-    assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "reached", "ARRIVED", "reached"]
+    assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "reached", "ARRIVED", "CLOSED"]
     assert files[2]["plan"]["planner"].startswith("single_arm.plan_linear")
 
     walk = Walk("B20_J_transfer")
@@ -581,7 +584,7 @@ def test_walking_b21_h_and_b20_j_with_the_real_planner_and_executor():
     assert [file["movement"] for file in files] == ["B20_J_transfer", "B20_J_place_bar", "B20_J_grasp"]
     assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "confirmed", "stalled"]
     assert files[0]["plan"]["planner"] == "tamp.plan_free_dual_arm"
-    assert position == (2, 2) and parts[0].kind == "refused" and "not supported yet" in parts[0].text
+    assert position == (2, 2) and (parts[0].kind, parts[0].tools) == ("insert", ())
     end = files[0]["plan"]["rows"][-1]
     names = files[0]["plan"]["joint_names"]
     measured = {name: value for arm in walk.cindy.arms.values()

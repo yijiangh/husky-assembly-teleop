@@ -944,6 +944,45 @@ def test_settings_that_make_no_sense_are_refused_not_raised(tmp_path):
     assert runs(lab) == []
 
 
+def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_path):
+    """Rigid-only and the spiral's seconds and turns: refused naming the range, else saved and shown back.
+
+    Out of range, turns not whole, or a bool for a number: refused. Set from their widgets under Spiral: saved, read
+    back after a restart and shown by a new panel.
+    """
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        for changes, words in (({"spiral_seconds": 0.5}, "the spiral's duration must be 1 to 60 s, not 0.5"),
+                               ({"spiral_seconds": 61}, "the spiral's duration must be 1 to 60 s, not 61"),
+                               ({"spiral_seconds": True}, "the spiral's duration must be 1 to 60 s, not True"),
+                               ({"spiral_turns": 0}, "the spiral's turns must be 1 to 10 whole turns, not 0"),
+                               ({"spiral_turns": 11}, "the spiral's turns must be 1 to 10 whole turns, not 11"),
+                               ({"spiral_turns": 4.5}, "the spiral's turns must be 1 to 10 whole turns, not 4.5"),
+                               ({"spiral_turns": True}, "the spiral's turns must be 1 to 10 whole turns, not True"),
+                               ({"rigid_only": 1}, "rigid_only must be True or False, not 1")):
+            plugin.request_settings(**changes)
+            assert plugin._message.startswith("Settings refused") and words in plugin._message
+            assert plugin.view.settings == RunSettings()
+        panel = plugin._panel = RunPanel(lab.ctx, plugin)
+        labels = [widget.label for widget in lab.ctx.gui.widgets if widget.kind in ("slider", "checkbox")]
+        assert labels == ["Insert split mm", "Spiral", "Rigid insert", "Spiral s", "Spiral turns", "Servo by bar"]
+        panel._rigid.callback(True)
+        panel._spiral_seconds.callback(30.0)
+        panel._spiral_turns.callback(6.0)
+        await settle(plugin)
+        again, _process = await opened(lab)
+        shown = again._panel = RunPanel(lab.ctx, again)
+        again.draw(lab.ctx)
+        return again.view.settings, shown
+
+    settings, shown = asyncio.run(scenario())
+    assert (settings.rigid_only, settings.spiral_seconds, settings.spiral_turns) == (True, 30.0, 6)
+    assert type(settings.spiral_turns) is int and type(settings.spiral_seconds) is float
+    assert (shown._rigid.value, shown._spiral_seconds.value, shown._spiral_turns.value) == (True, 30.0, 6)
+
+
 def test_a_step_picked_while_waiting_stops_the_automatic_selection(tmp_path):
     """A step picked in the process panel while the run waits for Cindy is not overridden: it becomes current."""
     lab = Lab(tmp_path, live_from=None)

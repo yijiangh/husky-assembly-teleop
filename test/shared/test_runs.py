@@ -70,6 +70,21 @@ def test_an_older_run_json_with_the_transfer_workaround_reads(process, robots):
     assert read_run(run.folder).info.settings == RunSettings(spiral=True)
 
 
+def test_an_older_run_json_without_the_insert_settings_reads_their_defaults(process, robots):
+    """A run.json from before rigid-only and the spiral's duration and turns: rigid-only off, 20 s, 4 turns."""
+    run = new_run(process, robots, RunSettings(spiral=True, rigid_only=True, spiral_seconds=30.0, spiral_turns=6),
+                  now=NOW, transfer_as_free=True)
+    assert read_run(run.folder).info.settings.spiral_turns == 6
+    path = run.folder / "run.json"
+    info = json.loads(path.read_text())
+    older = {name: value for name, value in info["settings"].items()
+             if name not in ("rigid_only", "spiral_seconds", "spiral_turns")}
+    path.write_text(json.dumps({**info, "settings": older}))
+    settings = read_run(run.folder).info.settings
+    assert settings == RunSettings(spiral=True)
+    assert (settings.rigid_only, settings.spiral_seconds, settings.spiral_turns) == (False, 20.0, 4)
+
+
 def test_continue_run_picks_the_newest_matching(process, robots):
     """Of the runs on these files the newest is continued; a run on other files is not, another schema is a problem."""
     older = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)

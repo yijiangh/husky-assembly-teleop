@@ -335,6 +335,47 @@ def flange_from_reported(position: Sequence[float], quaternion: Sequence[float],
     return np.array(flange.position), np.array(flange.orientation)
 
 
+def cartesian_target_refusal(position: np.ndarray, orientation: np.ndarray,
+                             tcp: tuple[np.ndarray, np.ndarray] | None = None,
+                             previous: tuple[np.ndarray, np.ndarray] | None = None) -> str | None:
+    """Why a Cartesian target must not go out, by the checks that need no clock and no arm; None if it may.
+
+    - Always: 3 finite numbers and a finite unit quaternion.
+    - With `tcp`: within CARTESIAN_START_TOLERANCE per axis and CARTESIAN_START_ANGLE_TOLERANCE of it, and in reach.
+    - With `previous`: within CARTESIAN_MAX_STEP and CARTESIAN_MAX_STEP_ANGLE of it.
+
+    Args:
+        position: The target, metres, in the arm's base_link.
+        orientation: Its quaternion (x, y, z, w).
+        tcp: The measured TCP (position, quaternion), same frame; None skips the checks against it.
+        previous: The target sent just before (position, quaternion), same frame; None skips the step check.
+    """
+    if position.shape != (3,) or orientation.shape != (4,) or not (
+            np.all(np.isfinite(position)) and np.all(np.isfinite(orientation))):
+        return "position must be 3 finite numbers and orientation a finite quaternion"
+    if abs(np.linalg.norm(orientation) - 1.0) > 1e-3:
+        return "orientation is not a unit quaternion"
+    if tcp is None:
+        return None
+    if not np.allclose(tcp[0], position, atol=CARTESIAN_START_TOLERANCE):
+        return f"target too far from the TCP: {np.round(tcp[0], 3)} vs {np.round(position, 3)}"
+    turn = (Rotation.from_quat(tcp[1]).inv() * Rotation.from_quat(orientation)).magnitude()
+    if turn > CARTESIAN_START_ANGLE_TOLERANCE:
+        return (f"target is turned {np.degrees(turn):.1f} deg from the TCP, over "
+                f"{np.degrees(CARTESIAN_START_ANGLE_TOLERANCE):.0f} deg")
+    if np.linalg.norm(position - [0.0, 0.0, UR5E_SHOULDER_HEIGHT]) > UR5E_REACH:
+        return f"target is out of reach ({UR5E_REACH} m from the shoulder)"
+    if previous is None:
+        return None
+    step = float(np.linalg.norm(position - previous[0]))
+    turn = float((Rotation.from_quat(previous[1]).inv() * Rotation.from_quat(orientation)).magnitude())
+    if step > CARTESIAN_MAX_STEP or turn > CARTESIAN_MAX_STEP_ANGLE:
+        return (f"jumps {step * 1e3:.1f} mm / {np.degrees(turn):.1f} deg from the target sent "
+                f"just before; at most {CARTESIAN_MAX_STEP * 1e3:.0f} mm / "
+                f"{np.degrees(CARTESIAN_MAX_STEP_ANGLE):.0f} deg per step")
+    return None
+
+
 @dataclass
 class ArmState:
     """Measured state of one arm.
@@ -900,28 +941,16 @@ class ArmInterface:
             pass
         elif self.urdf_problem is not None and not hold:
             refusal = "the URDF breaks the stock UR frames (logged at startup, doc/ur_frames.md)"
-        elif position.shape != (3,) or orientation.shape != (4,) or not (
-                np.all(np.isfinite(position)) and np.all(np.isfinite(orientation))):
-            refusal = "position must be 3 finite numbers and orientation a finite quaternion"
-        elif abs(np.linalg.norm(orientation) - 1.0) > 1e-3:
-            refusal = "orientation is not a unit quaternion"
+        elif (refusal := cartesian_target_refusal(position, orientation)) is not None:
+            pass
         elif self.state.tcp_position is None:
             refusal = "no TCP pose yet"
         elif self._now() - self.state.tcp_update_time > JOINT_STATE_MAX_AGE:
             refusal = f"TCP pose is {self._now() - self.state.tcp_update_time:.1f} s old"
-        elif hold:
-            pass  # the target is where the TCP is
-        elif not np.allclose(self.state.tcp_position, position, atol=CARTESIAN_START_TOLERANCE):
-            refusal = (f"target too far from the TCP: {np.round(self.state.tcp_position, 3)} "
-                       f"vs {np.round(position, 3)}")
-        elif (turn := (Rotation.from_quat(self.state.tcp_orientation).inv()
-                       * Rotation.from_quat(orientation)).magnitude()) > CARTESIAN_START_ANGLE_TOLERANCE:
-            refusal = (f"target is turned {np.degrees(turn):.1f} deg from the TCP, over "
-                       f"{np.degrees(CARTESIAN_START_ANGLE_TOLERANCE):.0f} deg")
-        elif np.linalg.norm(position - [0.0, 0.0, UR5E_SHOULDER_HEIGHT]) > UR5E_REACH:
-            refusal = f"target is out of reach ({UR5E_REACH} m from the shoulder)"
-        else:
-            refusal = self._cartesian_step_refusal(position, orientation)
+        elif not hold:  # a hold's target is where the TCP is
+            refusal = cartesian_target_refusal(position, orientation,
+                                               (self.state.tcp_position, self.state.tcp_orientation),
+                                               self._recent_target())
         if refusal is not None:
             self._refused("target refused", f"not sending a cartesian target: {refusal}")
             return False
@@ -983,19 +1012,12 @@ class ArmInterface:
                 f"target p {np.round(target_p * 1e3, 1)} mm, reported p {np.round(raw_p * 1e3, 1)} mm, "
                 f"difference {distance:.2f} mm {angle:.3f} deg")
 
-    def _cartesian_step_refusal(self, position: np.ndarray, orientation: np.ndarray) -> str | None:
-        """Return why a target jumps too far from the one sent just before it, or None."""
+    def _recent_target(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """The target sent within CARTESIAN_STEP_WINDOW, (position, quaternion); else None: the TCP check covers it."""
         state = self.state
         if state.sent_target_time is None or self._now() - state.sent_target_time > CARTESIAN_STEP_WINDOW:
-            return None  # nothing sent just now: the TCP check covers it
-        step = float(np.linalg.norm(position - state.sent_target_position))
-        turn = float((Rotation.from_quat(state.sent_target_orientation).inv() * Rotation.from_quat(orientation))
-                     .magnitude())
-        if step > CARTESIAN_MAX_STEP or turn > CARTESIAN_MAX_STEP_ANGLE:
-            return (f"jumps {step * 1e3:.1f} mm / {np.degrees(turn):.1f} deg from the target sent "
-                    f"just before; at most {CARTESIAN_MAX_STEP * 1e3:.0f} mm / "
-                    f"{np.degrees(CARTESIAN_MAX_STEP_ANGLE):.0f} deg per step")
-        return None
+            return None
+        return state.sent_target_position, state.sent_target_orientation
 
     def _log_test_mode(self, what: str, detail: str) -> None:
         """Log a banner, at most once a second per command, that a command passed but was not sent.
