@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+from copy import copy
 from types import SimpleNamespace
 
 import numpy as np
@@ -16,17 +17,23 @@ import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, design_scene, purged_process, robot_config, step
 from robot_lab import FakeRun, RobotLab
 
-from husky_assembly_teleop.plugins.assembly_steps.panel import StepsPanel
+from husky_assembly_teleop.plugins.assembly_steps import plugin as steps_plugin
+from husky_assembly_teleop.plugins.assembly_steps.panel import StepsPanel, exec_line
 from husky_assembly_teleop.plugins.assembly_steps.plugin import AssemblyStepsPlugin
 from husky_assembly_teleop.plugins.motion_planner.plugin import MotionPlannerPlugin
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
-from husky_assembly_teleop.shared.movement_exec_contract import CANCELLED, DONE, DRY_RUN, ExecResult, serial_of
+from husky_assembly_teleop.shared import movement_exec_contract
+from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, LATER, MOTION,
+                                                                 SERVO_INDEX, SERVO_PART, Carried, ExecResult,
+                                                                 serial_of)
 from husky_assembly_teleop.shared.assembly_planning.ik import IkResult
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
 from husky_assembly_teleop.shared.assembly_planning.scene_for import RobotBelief
+from husky_assembly_teleop.shared.execution.servo import carried_insert_goals, flange_poses
 from husky_assembly_teleop.ui.ghost import RecentUse
+from husky_assembly_teleop.world.bar_pose import apply_authored_move
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
@@ -77,6 +84,7 @@ class FakeExecutor:
     """movement_exec: keeps each request; the test resolves its future."""
 
     active = ""
+    carried = None
 
     def __init__(self):
         """No request yet."""
@@ -389,6 +397,84 @@ def test_exec_needs_a_ready_plan_and_uses_it_once():
     assert lab.run.selected == [] and lab.plugin.path is None and lab.plugin.plan_state == "none"
 
 
+def test_the_exec_line_names_the_servo_after_the_motion():
+    """The transfer step ends with its servo onto the insert start, Alice's approach with one onto the approach pose."""
+    assert exec_line("cindy (a200-0806)", Steps(("B20_J", 3)).plugin.parts()).endswith(
+        "; then tightens the scaffolding gripper screws on left_ur_arm, right_ur_arm; then servos left_ur_arm, "
+        "right_ur_arm onto the insert start")
+    assert exec_line("alice (a200-0804)", Steps(("B21_H", 0)).plugin.parts()) == (
+        "Exec: alice (a200-0804) moves ur_arm; then servos ur_arm onto the approach pose")
+
+
+def test_a_servo_left_alone_runs_again_without_a_plan():
+    """The transfer step's motion, mount and grasp done, its servo not: Exec runs the servo alone, no plan asked for.
+
+    Not converged, the step stays; converged (SERVO_INDEX done), the next step is current.
+    """
+    lab = Steps(("B20_J", 3))
+    lab.plugin._done = {3, 1, 2}
+
+    async def scenario():
+        lab.plugin._commit(lab.ctx)
+        request, = lab.executor.requests
+        assert [part.kind for part in request.parts] == [SERVO_PART]
+        assert (request.route, request.route_movement, request.basis) == (None, None, None)
+        lab.executor.futures[0].set_result(ExecResult(FAILED, "ran all 8 passes without converging"))
+        await asyncio.sleep(0)
+        assert lab.run.selected == [] and [part.kind for part in lab.plugin.parts()] == [SERVO_PART]
+        lab.plugin._commit(lab.ctx)
+        lab.executor.futures[1].set_result(ExecResult(DONE, "every part done", (SERVO_INDEX,)))
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    assert lab.run.selected == [("B20_J", 4)] and lab.plugin.parts() == ()
+
+
+def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch):
+    """B20_J_insert after the transfer's bar servo: its goals are the authored move from the live flanges (spec 0.6).
+
+    Logged, and recorded as `goal_carried`; a carry for another action or a process loaded again is not used.
+    """
+    # ? after the M6 merge: drop these two patches (the insert is a motion part then) and read the goals from
+    #   `lab.planner.plans[0].goal_poses` instead of keeping them here.
+    monkeypatch.delitem(LATER, Routine.INSERT)
+    monkeypatch.setattr(movement_exec_contract, "MOTION", MOTION | {Routine.INSERT})
+    insert = step(purged_process(), "B20_J_insert")
+    lab = Steps(("B20_J", insert.movement_index))
+    goals = []
+
+    def kept(*args):
+        """The real goals, kept for the check: the plan request carries them only after the M6 merge."""
+        goals.append(carried_insert_goals(*args))
+        return goals[-1]
+
+    monkeypatch.setattr(steps_plugin, "carried_insert_goals", kept)
+    lab.executor.carried = Carried(lab.loaded, "B20_J", insert.movement_index, "a200-0806", lab.ctx.t)
+
+    async def scenario():
+        await lab.plan()
+        lab.executor.carried = Carried(lab.loaded, "B21_J", insert.movement_index, "a200-0806", lab.ctx.t)
+        await lab.plan()
+        lab.executor.carried = Carried(copy(lab.loaded), "B20_J", insert.movement_index, "a200-0806", lab.ctx.t)
+        await lab.plan()
+
+    asyncio.run(scenario())
+    carried, = goals
+    starts = step(lab.loaded, "B20_J_transfer").movement.target.robots["robots/cindy"].link_poses
+    ends = insert.movement.target.robots["robots/cindy"].link_poses
+    live = flange_poses(lab.ctx.scene.snapshot.robots[robot_id("a200-0806")], ends)
+    assert set(carried) == set(ends) == {"robots/cindy/left_ur_arm_tool0", "robots/cindy/right_ur_arm_tool0"}
+    for flange, goal in carried.items():
+        expected = apply_authored_move(starts[flange].matrix(), ends[flange].matrix(), live[flange].matrix())
+        assert np.allclose(goal.matrix(), expected, atol=1e-9)
+    assert [(event, fields["data"]["goal_carried"]) for event, fields in lab.run.records] == [
+        ("plan", True), ("plan", False), ("plan", False)]
+    lines = [line for line in lab.ctx.lines("info") if line.startswith("[insert plan]")]
+    line, = lines
+    assert line.startswith("[insert plan] MoCap-bar correction carried: B20_J_insert left goal ")
+    assert line.endswith(" from the authored end")
+
+
 # --- --- --- --- --- the goal check (from the goal_check plugin) --- --- --- --- ---
 
 def test_the_record_is_json():
@@ -518,69 +604,79 @@ class Walk(RobotLab):
         while self.ctx.t < until:
             await self.ctx.next_tick()
 
-    async def run_step(self, prompts: int) -> None:
-        """Plan the step's motion if it has one, Exec, Confirm every prompt; the step panel follows the run after."""
+    async def run_step(self) -> int:
+        """Plan the step's motion if it has one, Exec, Confirm every prompt until the Exec ends; how many there were.
+
+        The step panel follows the run after. A servo part may ask for its first pass, or have nothing left to plan.
+        """
         steps = self.steps
         if any(part.kind == "motion" for part in steps.parts()):
             steps._on_path(self.ctx, "Plan")
             await steps._plan_task
             assert steps.plan_state == "ready", steps._message
         steps._commit(self.ctx)
-        for _ in range(prompts):
-            while self.executor.prompt is None:
-                assert self.executor.active, f"no prompt: {self.executor._last}"
-                await asyncio.sleep(0)
-            prompt = self.executor.prompt
-            while self.ctx.t - prompt.opened_at < 0.6:
-                await self.ctx.next_tick()
-            self.executor.request_confirm()
-            while self.executor.prompt is prompt:
-                await asyncio.sleep(0)
+        confirmed = 0
         while steps._executing is not None:
+            prompt = self.executor.prompt
+            if prompt is not None:
+                while self.ctx.t - prompt.opened_at < 0.6:
+                    await self.ctx.next_tick()
+                self.executor.request_confirm()
+                confirmed += 1
+                while self.executor.prompt is prompt:
+                    await asyncio.sleep(0)
             await asyncio.sleep(0.01)
         await self.settle()
         steps.update(self.ctx)
+        return confirmed
 
 
 @pytest.mark.slow
 def test_walking_b21_h_and_b20_j_with_the_real_planner_and_executor():
     """B21_H and B20_J's transfer step, planned for real, run on fake robots that follow, every part recorded.
 
-    Alice's B21_H: approach (planned), open, to grasp (planned), close, then Mark done offered. Cindy's B20_J transfer
-    step with the workaround: the free transfer (planned), placing the bar by hand, the grasp; then the insert,
-    refused as not supported yet. Cindy ends where the transfer's plan ends.
+    Alice's B21_H: approach (planned), its servo (the arm is on its target: nothing left to plan), open, to grasp
+    (planned), close, then Mark done offered. Cindy's B20_J transfer step with the workaround: the free transfer
+    (planned), placing the bar by hand, the grasp, the servo (nothing left, the bar recorded without markers); then
+    the insert, refused as not supported yet. Cindy ends where the transfer's plan ends.
     """
     walk = Walk("B21_H_approach")
 
     async def b21():
-        for prompts in (1, 1, 1, 1):
-            await walk.run_step(prompts)
-        return walk.steps.offer
+        prompts = [await walk.run_step() for _ in range(4)]
+        return walk.steps.offer, prompts
 
     try:
-        offer = asyncio.run(b21())
+        offer, prompts = asyncio.run(b21())
     finally:
         walk.planner.teardown(None)
-    files = walk.run.files()
+    files = [file for file in walk.run.files() if "part" in file]
     assert offer == "B21_H", walk.steps._message
-    assert [file["movement"] for file in files] == ["B21_H_approach", "B21_H_open", "B21_H_to_grasp", "B21_H_close"]
-    assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "reached", "ARRIVED", "reached"]
-    assert files[2]["plan"]["planner"].startswith("single_arm.plan_linear")
+    assert prompts == [1, 1, 1, 1]
+    assert [file["movement"] for file in files] == ["B21_H_approach", "B21_H_approach", "B21_H_open",
+                                                    "B21_H_to_grasp", "B21_H_close"]
+    assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "nothing left", "reached", "ARRIVED",
+                                                             "reached"]
+    assert files[1]["part"]["kind"] == "servo" and files[3]["plan"]["planner"].startswith("single_arm.plan_linear")
 
     walk = Walk("B20_J_transfer")
 
     async def b20():
-        await walk.run_step(3)
-        return walk.steps.position, walk.steps.parts()
+        prompts = await walk.run_step()
+        return walk.steps.position, walk.steps.parts(), prompts
 
     try:
-        position, parts = asyncio.run(b20())
+        position, parts, prompts = asyncio.run(b20())
     finally:
         walk.planner.teardown(None)
-    files = walk.run.files()
-    assert [file["movement"] for file in files] == ["B20_J_transfer", "B20_J_place_bar", "B20_J_grasp"]
-    assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "confirmed", "stalled"]
+    files = [file for file in walk.run.files() if "part" in file]
+    servos = [file for file in walk.run.files() if "servoing_data" in file]
+    assert prompts == 3
+    assert [file["movement"] for file in files] == ["B20_J_transfer", "B20_J_place_bar", "B20_J_grasp",
+                                                    "B20_J_transfer"]
+    assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "confirmed", "stalled", "nothing left"]
     assert files[0]["plan"]["planner"] == "tamp.plan_free_dual_arm"
+    assert len(servos) == 1 and servos[0]["servo_feedback"] == "tool0" and servos[0]["bar_name"] == "bars/B20"
     assert position == (2, 2) and parts[0].kind == "refused" and "not supported yet" in parts[0].text
     end = files[0]["plan"]["rows"][-1]
     names = files[0]["plan"]["joint_names"]

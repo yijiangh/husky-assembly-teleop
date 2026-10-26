@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from ...plugin_api.context import PluginContext
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CLOSE_PART, GRASP_PART, MAX_TRAJ_TIME,
-                                              MOTION_PART, OPEN_PART, PartPlan)
+                                              MOTION_PART, OPEN_PART, SERVO_PART, PartPlan)
 from ...ui.assembly_tab import EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLOTS_BAND, SETTINGS_BAND, STEP_BAND
 from ...ui.phone import slim_labels_css
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
@@ -146,7 +146,8 @@ def exec_line(robot: str, parts: tuple[PartPlan, ...]) -> str:
                       CLOSE_PART: f"closes the Robotiq on {tools} (stiff)",
                       GRASP_PART: f"tightens the scaffolding gripper screws on {tools}",
                       BY_HAND_PART: f"waits for {part.movement} by hand",
-                      BASE_PART: f"waits for {part.movement} (base by hand)"}.get(
+                      BASE_PART: f"waits for {part.movement} (base by hand)",
+                      SERVO_PART: f"servos {tools} onto {part.text.split(' onto ')[-1]}"}.get(
             part.kind, f"refuses {part.movement}: {part.text}"))
     return f"Exec: {robot} " + "; then ".join(words)
 

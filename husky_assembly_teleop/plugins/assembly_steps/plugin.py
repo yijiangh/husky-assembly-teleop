@@ -13,6 +13,7 @@ becomes current, and after the action's last step Mark done (assembly_run's) is 
   (`ProcessContract.request_carry`); a new action drops them.
 - A plan is used once: Exec takes it, and it is cleared once the step ran; only a request refused before sending
   anything, or a dry run, gives it back (still checked for staleness).
+- An insert after its transfer's MoCap-bar servo is planned from where the servo left the flanges (`executor.carried`).
 - ! EXPERIMENTAL, with movement_exec the first plugins that run process movements on the robots.
 """
 
@@ -29,12 +30,13 @@ from scaffolding_assembly_core.ids import robot_id
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.assembly_planning.movement import Routine, UnknownMovement, classify
-from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
+from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line, pose_error
 from ...shared.assembly_planning.route_search import ATTEMPTS
 from ...shared.assembly_planning.tamp_route import FAR, IK_GOALS
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
 from ...shared.execution.retime import RetimeError, retime
+from ...shared.execution.servo import carried_insert_goals, flange_side
 from ...shared.motion_planner_contract import MotionPlanRequest
 from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_PART, REFUSED,
                                               REFUSED_PART, ExecRequest, ExecResult, PartPlan, current_primary,
@@ -303,7 +305,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
         """A search through the motion planner from the live robot; refused without a motion or a live robot."""
         current = self.current()
         refusal = "no current step" if current is None else ""
-        snapshot, now, request, goal_base = ctx.scene.snapshot, ctx.now(), None, None
+        snapshot, now, request, goal_base, goals = ctx.scene.snapshot, ctx.now(), None, None, None
         if current is not None:
             view, action, op_step, step = current
             live = snapshot.robots.get(robot_id(self.serial)) if self.serial else None
@@ -318,6 +320,16 @@ class AssemblyStepsPlugin(PlannerPlugin):
             else:
                 goal_joints = self._goal.joints_near(self._key_of_goal(), live.base)
                 goal_base = self._goal.of(self._key_of_goal()).base if goal_joints is not None else None
+                carried = ctx.require("movement_exec").carried if primary.routine is Routine.INSERT else None
+                if carried is not None and carried.loaded is view.process and (carried.action, carried.insert) == (
+                        action, step.movement_index):
+                    # * The transfer's bar servo left the flanges off the authored start: the insert goes from there.
+                    goals = carried_insert_goals(view.process, action, carried.insert, live)
+                    flange, ends = next(iter(goals)), step.movement.target.robots[step.action.robot].link_poses
+                    distance, turn = pose_error(goals[flange], ends[flange])
+                    ctx.log_info(f"[insert plan] MoCap-bar correction carried: {step.label} {flange_side(flange)} "
+                                 f"goal {distance * 1e3:.2f} mm / {math.degrees(turn):.3f}° from the authored end")
+                # ? after the M6 merge: pass `goal_poses=goals` to the MotionPlanRequest (D2 reads it in `_insert`).
                 request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots, beliefs=view.beliefs,
                                             transfer_as_free=self._transfer_as_free(ctx),
                                             ignore_built=self.ignore_built,
@@ -350,7 +362,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self._assembly_run(ctx).request_record("plan", action=action, movement=step.movement.id, data={
                 "planner": route.planner, "attempts": route.attempts, "seconds": route.seconds,
                 "waypoints": route.waypoints, "goal_reused": request.goal_joints is not None,
-                "warnings": list(route.warnings), "obstacles_collide": request.obstacles_collide})
+                "warnings": list(route.warnings), "obstacles_collide": request.obstacles_collide,
+                "goal_carried": goals is not None})
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
                                                    dict(zip(trajectory.joint_names, trajectory.positions[-1])),
                                                    "plan"))
