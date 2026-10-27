@@ -35,7 +35,7 @@ from .simulated_parts import SimulatedPart
 from .refusal import Refusal
 from .robot_lease import LeaseSlot, held_leases
 from .soft_stop import SoftStopLatch
-from .tool_step import tool_step_target
+from .tool_step import TOOL_JOG_LEAD, TOOL_JOG_MAX_JOINT_SPEED, tool_step_target
 from .ur_frames import BASE_LINK_FROM_UR_BASE
 
 # ? qos_profile_sensor_data but deeper, to hold one tick of samples: 100 covers 500 Hz for 200 ms.
@@ -825,6 +825,47 @@ class ArmInterface:
         if sent:
             log.info(f"arm {self.config.name}: hold sent")
         return sent
+
+    def send_jog_point(self, positions: Sequence[float], lead: float = TOOL_JOG_LEAD) -> bool:
+        """Send one joint point to reach in `lead` seconds, replacing the controller's goal: a jog while held.
+
+        Sent every tick while a tool0 jog button is held (`tool_jog_target`); the arm stops by itself once the points
+        stop, since each goal ends at rest. Its own guards, not `_check_trajectory`'s: the arm is moving.
+
+        Args:
+            positions: The joint angles, radians, UR_JOINT_NAMES order.
+            lead: Seconds the point lies ahead; at most 1.
+
+        Returns:
+            bool: True if sent. On False nothing was sent; the log and `last_refusal` say why.
+
+        Raises:
+            RobotStopped: If the robot is soft stopped.
+            NotLeased: If the running code does not have the robot's lease.
+        """
+        problem = self._motion_refusal(SCALED_JOINT_TRAJECTORY_CONTROLLER)
+        target = np.asarray(positions, dtype=float)
+        here = self.joint_vector()
+        if problem is None and (target.shape != (len(UR_JOINT_NAMES),) or not np.all(np.isfinite(target))):
+            problem = "the jog point is not six finite joint angles"
+        elif problem is None and not 0.0 < lead <= 1.0:
+            problem = f"a jog point {lead:g} s ahead; it must lie within 1 s"
+        elif problem is None and np.any(np.abs(target) > UR_JOINT_LIMITS):
+            problem = "the jog point is past a joint limit"
+        elif problem is None and (here is None or self._now() - self.state.last_update_time > JOINT_STATE_MAX_AGE):
+            problem = "the joint state is missing or stale"
+        elif problem is None and float(np.max(np.abs(target - here))) / lead > TOOL_JOG_MAX_JOINT_SPEED:
+            problem = (f"the jog point needs {np.degrees(np.max(np.abs(target - here)) / lead):.0f} °/s, over "
+                       f"{np.degrees(TOOL_JOG_MAX_JOINT_SPEED):.0f} °/s")
+        if problem is not None:
+            self._refused("jog refused", f"not jogging: {problem}")
+            return False
+        point = JointTrajectoryPoint()
+        point.positions = [float(value) for value in target]
+        point.time_from_start = Duration(sec=int(lead), nanosec=int((lead % 1.0) * 1e9))
+        self._publish_trajectory(JointTrajectory(joint_names=list(UR_JOINT_NAMES), points=[point]), lead, False)
+        self.mark_executing()
+        return True
 
     def _stop_point(self) -> tuple[np.ndarray, float] | None:
         """Where the arm comes to rest braking evenly from its measured speed, and how long that takes, seconds.

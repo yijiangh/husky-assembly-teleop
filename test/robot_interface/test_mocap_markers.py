@@ -34,6 +34,20 @@ def _stored(message: MocapRigidBodyPose, now: float) -> TrackedObject:
     return body
 
 
+def test_an_offset_shifts_the_stored_pose_and_the_sample_but_not_the_markers():
+    """A base's operator offset moves the pose it stores and fires; the orientation and the raw markers stay."""
+    message = MocapRigidBodyPose(pose_valid=True, tracking_valid=True, marker_ids=IDS, marker_positions=POSITIONS,
+                                 marker_residuals=RESIDUALS, marker_measured=MEASURED)
+    message.pose.position.x, message.pose.position.y, message.pose.position.z = 1.0, 2.0, 0.0
+    message.pose.orientation.w = 1.0
+    body = TrackedObject(name="base", mocap_id=1)
+    sample = store_sample(body, message, 5.0, np.array([0.05, -0.02, 0.0]))
+    np.testing.assert_allclose(body.position, [1.05, 1.98, 0.0])
+    np.testing.assert_allclose(sample.position, [1.05, 1.98, 0.0])
+    np.testing.assert_allclose(body.orientation, [0.0, 0.0, 0.0, 1.0])
+    np.testing.assert_allclose(body.markers.positions[0], [1.0, 0.0, 0.5])
+
+
 def test_residuals_sizes_and_capture_time_are_kept_with_the_markers():
     """Every per-marker list lands as a float array in marker order; the capture time is the header stamp."""
     message = MessageWithSizes([0.019, 0.021], marker_ids=IDS, marker_positions=POSITIONS,

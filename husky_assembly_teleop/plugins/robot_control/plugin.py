@@ -1,7 +1,8 @@
 """
 The robot control panel: the side panel's Control tab, holding a tab per robot with a tab per part.
 
-Each part's tab shows its state and basic control. Arms jog joint by joint; moving to a pose is the arm planner's job.
+Each part's tab shows its state and basic control. Arms jog joint by joint, or their tool0 along its own axes;
+moving to a pose is the arm planner's job.
 
 On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper and free drive while held.
 
@@ -30,6 +31,8 @@ from scipy.spatial.transform import Rotation
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
+from ...plugin_api.signals import force, torque
+from ...plugin_api.trace import Trace
 from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER, JOG_MAX_SPEED,
                                     MOVING_WITHIN, SCALED_JOINT_TRAJECTORY_CONTROLLER, TARGET_WRENCH_FRAME,
                                     ArmInterface, cartesian_move, joint_jog)
@@ -37,14 +40,16 @@ from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...robot_interface.end_effectors import EndEffectorState, RobotiqState, ScaffoldingV3, ScaffoldingV3State
 from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
+from ...robot_interface.tool_step import TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_LEAD, tool0_pose, tool_jog_target
 from ...ui.phone import big_buttons, phone_text
-from ...ui.style import REFUSAL_SHOWN, SECTION_SENSOR, block, numbers, section, values
+from ...ui.style import REFUSAL_SHOWN, SECTION_SENSOR, block, note, note_line, numbers, section, values
+from ...ui.trace_plot import TracePlot
 from ...shared.teleop.dpad import HOLD_TIMEOUT, PHONE_DPAD_STYLE, Hold, build_velocity_inputs
 from ...world.clearance import ALL_ARMS, STOP_DISTANCE, ClearanceRefused
 from scaffolding_assembly_core.geometry import Pose
-from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, build_compliance_inputs, build_free_drive_inputs,
-                        build_jog_inputs, build_phone_arm_inputs, build_tool_inputs, pose_from_sliders,
-                        pose_plan_line)
+from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, ToolJogInputs, build_compliance_inputs,
+                        build_free_drive_inputs, build_jog_inputs, build_phone_arm_inputs, build_tool_inputs,
+                        pose_from_sliders, pose_plan_line)
 from .markers import (add_force_arrows, add_frame_markers, add_target_gizmo, draw_markers, place_markers,
                       target_from_world)
 from .status import (ControllerPanel, arm_status, base_status, build_controller_panel, phone_arm_status,
@@ -55,6 +60,9 @@ from .teleop_lease import TeleopLeases
 FREE_DRIVE_RETRY = 1.0
 #: The part name of a robot's base in refusal keys; arms use their own names.
 BASE = "base"
+#: The F/T live plots: seconds shown, samples kept (twice that at 20 Hz), and ticks between redraws (viser resends
+#: the whole plot each time, so 4 Hz, not 20).
+FT_SECONDS, FT_SAMPLES, FT_PLOT_EVERY = 30.0, 1200, 5
 
 
 @dataclass
@@ -71,6 +79,9 @@ class _BaseWidgets:
     #: The same on the phone's Control tab, set once that tab is built.
     phone_status: viser.GuiHtmlHandle | None = None
     phone_speed: viser.GuiSliderHandle | None = None
+    #: The mocap offset's x, y, z inputs and the line showing what is applied.
+    offset: tuple[viser.GuiNumberHandle, ...] = ()
+    offset_note: viser.GuiHtmlHandle | None = None
 
 
 @dataclass
@@ -92,6 +103,29 @@ class _ArmWidgets:
     free_drive_keep: viser.GuiCheckboxHandle | None = None
     #: The arm's status line on the phone's Control tab, set once that tab is built.
     phone_status: viser.GuiHtmlHandle | None = None
+    #: The tool0 jog's speed slider and readout, in the joint controller's folder.
+    tool_jog: ToolJogInputs | None = None
+    #: The force and torque live plots in the Live plots folder, their trace and the note below them.
+    ft_plots: tuple[TracePlot, ...] = ()
+    ft_trace: Trace | None = None
+    ft_note: viser.GuiHtmlHandle | None = None
+
+
+@dataclass
+class _ToolJog:
+    """One press of a tool0 jog button, answered tick by tick until it is released."""
+
+    #: 0-2 moves along tool0's x, y, z; 3-5 turns about them; and the direction.
+    axis: int
+    sign: float
+    #: Tool0 at the press, 4x4 in the URDF's root: the jog runs along a line from it.
+    anchor: np.ndarray
+    #: Tool0's progress along the jog at the last tick, metres or radians.
+    travelled: float = 0.0
+    #: Whether any point went out, so a release holds the arm.
+    sent: bool = False
+    #: Whether the jog was stopped or refused: nothing more is sent until the button is released.
+    stopped: bool = False
 
 
 @register
@@ -124,6 +158,10 @@ class RobotControlPlugin(HuskyPlugin):
         self._jog_held: dict[tuple[str, str], tuple[int, float, float]] = {}
         #: Per arm, the press last answered: (joint index, direction, whether a jog was sent), until released.
         self._jogging: dict[tuple[str, str], tuple[int, float, bool]] = {}
+        #: Last report of each arm's held tool0 jog button, by (serial, arm name): (axis, direction, arrival time).
+        self._tool_jog_held: dict[tuple[str, str], tuple[int, float, float]] = {}
+        #: Per arm, the tool0 jog press being answered, until released.
+        self._tool_jogging: dict[tuple[str, str], _ToolJog] = {}
 
         #: Running Cartesian move task per arm, keyed by (serial, arm name).
         self._trajectory_tasks: dict[tuple[str, str], asyncio.Task] = {}
@@ -147,6 +185,8 @@ class RobotControlPlugin(HuskyPlugin):
         #: Per base serial, the task keeping a clearance while this plugin drives it, and why the last one tripped.
         self._base_guards: dict[str, asyncio.Task] = {}
         self._tripped: dict[str, str] = {}
+        #: Draws so far, to redraw the F/T plots every FT_PLOT_EVERY-th.
+        self._draws = 0
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -213,7 +253,34 @@ class RobotControlPlugin(HuskyPlugin):
                                               {PLATFORM_VELOCITY_CONTROLLER: velocity_inputs},
                                               partial(self._leased, ctx, (serial, BASE)))
         speed, clearance = built[PLATFORM_VELOCITY_CONTROLLER]
-        return _BaseWidgets(serial=serial, base=base, panel=panel, status=status, speed=speed, clearance=clearance)
+        # * The mocap offset, in a folder closed at start, last: a world shift of this base's mocap pose for the
+        #   session, for a base whose calibration is off by a known amount. No lease: it moves no robot.
+        with gui.add_folder("Mocap offset", expand_by_default=False):
+            gui.add_html(note("shifts this base's mocap pose for everyone: scene, planners, exec, records"))
+            offset = tuple(gui.add_number(f"Δ{axis} m", 0.0, step=0.001, hint=f"World {axis} shift, metres.")
+                           for axis in "xyz")
+            group = gui.add_button_group("Offset", ["Apply", "Reset"],
+                                         hint="Apply: shift the mocap pose by x, y, z. Reset: back to zero.")
+            offset_note = gui.add_html(note_line(""))
+        widgets = _BaseWidgets(serial=serial, base=base, panel=panel, status=status, speed=speed, clearance=clearance,
+                               offset=offset, offset_note=offset_note)
+        group.on_click(ctx.defer_value(f"mocap offset {serial}",
+                                       lambda clicked: self._set_offset(ctx, widgets, clicked == "Apply")))
+        return widgets
+
+    def _set_offset(self, ctx: PluginContext, widgets: _BaseWidgets, apply: bool) -> None:
+        """Apply the typed mocap offset to the base, or reset it and the inputs to zero; logged either way."""
+        if not apply:
+            for number in widgets.offset:
+                number.value = 0.0
+        xyz = [float(number.value) for number in widgets.offset]
+        try:
+            widgets.base.set_mocap_offset(xyz)
+        except ValueError as error:
+            self._refuse(ctx, (widgets.serial, BASE), "offset refused", str(error))
+            return
+        ctx.log_info(f"{widgets.serial}: mocap offset {'applied' if apply else 'reset'}: "
+                     f"{' '.join(f'{value:.3f}' for value in xyz)} m")
 
     def _build_arm(self, ctx: PluginContext, gui: viser.GuiApi, serial: str,
                    arm: ArmInterface) -> _ArmWidgets:
@@ -234,7 +301,8 @@ class RobotControlPlugin(HuskyPlugin):
 
         status = gui.add_html("")
         hold = partial(self._hold_arm, serial, arm)
-        jog_inputs = partial(build_jog_inputs, ctx, gui, label, partial(self._on_jog_hold, ctx, key), hold)
+        jog_inputs = partial(build_jog_inputs, ctx, gui, label, partial(self._on_jog_hold, ctx, key), hold,
+                             partial(self._on_tool_jog_hold, ctx, key))
         compliance_inputs = partial(build_compliance_inputs, ctx, gui, label, arm,
                                     load=partial(self._load_pose.add, key),
                                     start=partial(self._start_move, ctx, serial, arm, "cartesian move",
@@ -255,12 +323,23 @@ class RobotControlPlugin(HuskyPlugin):
 
         tool = None if arm.end_effector is None else build_tool_inputs(ctx, gui, label, arm,
                                                                        partial(self._leased, ctx, key))
+        # * The F/T watch: the raw force and torque, live, in a folder closed at start; last, so opening it moves
+        #   no button.
+        signals = (force(arm), torque(arm))
+        ft_trace = ctx.trace(*signals, max_samples=FT_SAMPLES)
+        with gui.add_folder("Live plots", expand_by_default=False), \
+                gui.add_tab_group().add_tab("F/T", viser.Icon.CHART_LINE):
+            ft_plots = tuple(TracePlot(gui, ft_trace, signal, seconds=FT_SECONDS, min_span=span)
+                             for signal, span in zip(signals, (1.0, 0.1)))
+            ft_note = gui.add_html(note_line(""))
+        jog_speed, tool_jog = built[SCALED_JOINT_TRAJECTORY_CONTROLLER]
         return _ArmWidgets(serial=serial, arm=arm, panel=panel, status=status, tool_status=tool,
-                           jog_speed=built[SCALED_JOINT_TRAJECTORY_CONTROLLER],
+                           jog_speed=jog_speed, tool_jog=tool_jog,
                            compliance=built[CARTESIAN_COMPLIANCE_CONTROLLER],
                            free_drive_keep=built[FREE_DRIVE_CONTROLLER],
                            frames=add_frame_markers(ctx, serial, arm), arrows=add_force_arrows(ctx, serial, arm),
-                           gizmo=add_target_gizmo(ctx, serial, arm, partial(self._dragged.__setitem__, key)))
+                           gizmo=add_target_gizmo(ctx, serial, arm, partial(self._dragged.__setitem__, key)),
+                           ft_plots=ft_plots, ft_trace=ft_trace, ft_note=ft_note)
 
     def teardown(self, ctx: PluginContext) -> None:
         """At shutdown, stop any base this plugin was driving, and hold any arm it jogs or left a force on.
@@ -275,7 +354,9 @@ class RobotControlPlugin(HuskyPlugin):
                 widgets.base.send_twist(0.0, 0.0)
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
-            if key in self._applied_force or (key in self._jogging and self._jogging[key][2]):
+            jog = self._tool_jogging.get(key)
+            if key in self._applied_force or (key in self._jogging and self._jogging[key][2]) \
+                    or (jog is not None and jog.sent):
                 self._hold_arm(widgets.serial, widgets.arm)
 
     # --- --- --- --- --- INTENTS (widget callbacks, run on the main thread) --- --- --- --- ---
@@ -291,6 +372,10 @@ class RobotControlPlugin(HuskyPlugin):
     def _on_jog_hold(self, ctx: PluginContext, key: tuple[str, str], joint: int, direction: float) -> None:
         """Record that an arm's jog button is still held."""
         self._jog_held[key] = (joint, direction, ctx.now())
+
+    def _on_tool_jog_hold(self, ctx: PluginContext, key: tuple[str, str], axis: int, direction: float) -> None:
+        """Record that an arm's tool0 jog button is still held."""
+        self._tool_jog_held[key] = (axis, direction, ctx.now())
 
     def _apply_force(self, ctx: PluginContext, key: tuple[str, str], arm: ArmInterface, force: np.ndarray) -> None:
         """Send a target force (N, tool frame) to the arm and remember it if accepted.
@@ -370,6 +455,7 @@ class RobotControlPlugin(HuskyPlugin):
                 self._driving.discard(widgets.serial)
         self._update_free_drive(ctx, now)
         self._update_jogs(ctx, now)
+        self._update_tool_jogs(ctx, now)
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             self._load_pose_sliders(widgets)
@@ -422,6 +508,7 @@ class RobotControlPlugin(HuskyPlugin):
             free_drive = self._free_drive_held.get(key)
             keep = widgets.free_drive_keep
             if (key in self._jog_held or key in self._jogging or key in self._free_driving
+                    or key in self._tool_jog_held or key in self._tool_jogging
                     or (free_drive is not None and now - free_drive[0] <= HOLD_TIMEOUT)
                     or (keep is not None and keep.value) or (task is not None and not task.done())
                     or (force is not None and np.any(force)) or widgets.arm.state.is_executing
@@ -511,6 +598,82 @@ class RobotControlPlugin(HuskyPlugin):
             if press is not None and jogging is None and (moved is None or now - moved >= MOVING_WITHIN):
                 self._jogging[key] = (*press, self._send_jog(ctx, widgets, *press))
 
+    def _update_tool_jogs(self, ctx: PluginContext, now: float) -> None:
+        """Stream one joint point per tick while a tool0 jog button is held, and hold the arm once it is released.
+
+        - The press pose is the anchor: every point lies on the line (or turn) from it, TOOL_JOG_LEAD ahead of the
+          arm's progress (`tool_jog_target`), so the arm never drifts off the axis.
+        - One arm at a time: a second arm's press is refused while one jogs.
+        - A stop (the solver gives up, the arm refuses a point) ends the press until the button is released.
+
+        Args:
+            ctx: This plugin's context.
+            now: This tick's time, as the hold reports use.
+        """
+        for widgets in self._arms:
+            key, arm = (widgets.serial, widgets.arm.config.name), widgets.arm
+            held = self._tool_jog_held.get(key)
+            dropped = None if held is None else self._drop_reason(ctx, widgets.serial, arm.soft_stopped)
+            if dropped is None and held is not None \
+                    and not arm.controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER):
+                dropped = "jog refused", "the joint controller is not running; switch to Joint"
+            if held is not None and (now - held[2] > HOLD_TIMEOUT or dropped is not None):
+                if dropped is not None:
+                    self._refuse(ctx, key, *dropped)
+                del self._tool_jog_held[key]
+                held = None
+            press = None if held is None else held[:2]
+            jog = self._tool_jogging.get(key)
+            if jog is not None and (jog.axis, jog.sign) != press:
+                del self._tool_jogging[key]
+                if jog.sent:
+                    arm.hold()
+                jog = None
+            if press is None:
+                continue
+            here = arm.joint_vector()
+            if jog is None:
+                other = next((other for other in self._tool_jogging if other != key), None)
+                if other is not None:
+                    self._refuse(ctx, key, "jog refused", f"{other[0]} {other[1]} is jogging; one arm at a time")
+                    continue
+                if here is None or arm.urdf is None:
+                    self._refuse(ctx, key, "jog refused", "not jogging: " + (
+                        "no joint state yet" if here is None else "no URDF to solve the jog on"))
+                    continue
+                jog = _ToolJog(*press, anchor=tool0_pose(arm.urdf, arm.config.name, here))
+                self._tool_jogging[key] = jog
+            if jog.stopped or here is None or widgets.tool_jog is None:
+                continue
+            mm_s = float(widgets.tool_jog.speed.value)
+            speed = jog.sign * (mm_s * 1e-3 if jog.axis < 3 else np.radians(mm_s * TOOL_JOG_DEG_PER_S_PER_MM_S))
+            try:
+                joints, jog.travelled = tool_jog_target(arm.urdf, arm.config.name, here, jog.anchor, jog.axis, speed,
+                                                        TOOL_JOG_LEAD, jog.travelled)
+            except ValueError as error:
+                self._refuse(ctx, key, "jog stopped", f"jog stopped: {error}")
+                jog.stopped = True
+                if jog.sent:
+                    arm.hold()
+                continue
+            # * A refusal by the arm's own checks shows through `arm.last_refusal`.
+            if self._leased(ctx, key, lambda: arm.send_jog_point(joints)):
+                jog.sent = True
+            else:
+                jog.stopped = True
+                if jog.sent:
+                    arm.hold()
+
+    def _tool_jog_readout(self, key: tuple[str, str], widgets: _ArmWidgets) -> str:
+        """What the tool0 jog of arm `key` is doing, for the line under its buttons; "" when idle."""
+        jog = self._tool_jogging.get(key)
+        if jog is None or jog.stopped or widgets.tool_jog is None:
+            return ""
+        name = "xyz"[jog.axis % 3]
+        progress = (f"{jog.travelled * 1e3:+.1f} mm" if jog.axis < 3 else f"{np.degrees(jog.travelled):+.1f}°")
+        return (f"jogging {'along' if jog.axis < 3 else 'about'} tool0 {name}: {progress} "
+                f"at {widgets.tool_jog.speed.value:g} mm/s")
+
     def _send_jog(self, ctx: PluginContext, widgets: _ArmWidgets, joint: int, direction: float) -> bool:
         """Send a jog of one joint at the speed slider's speed; whether the arm took it (if not, a chip says why)."""
         key = (widgets.serial, widgets.arm.config.name)
@@ -535,10 +698,14 @@ class RobotControlPlugin(HuskyPlugin):
             ctx: This plugin's context.
         """
         now = ctx.now()
+        self._draws += 1
         for widgets in self._bases:
             show_only_running(widgets.panel)
             refused = refusal_chip((self._refusals.get((widgets.serial, BASE)), widgets.base.last_refusal), now)
             widgets.status.content = base_status(widgets.base, now, refused)
+            if widgets.offset_note is not None:
+                widgets.offset_note.content = note_line(
+                    "applied " + " ".join(f"{value:.3f}" for value in widgets.base.mocap_offset) + " m")
             if widgets.phone_status is not None:
                 widgets.phone_status.content = phone_text(phone_base_status(widgets.base, refused))
         for widgets in self._arms:
@@ -549,6 +716,15 @@ class RobotControlPlugin(HuskyPlugin):
                                     None if tool is None else tool.last_refusal), now)
             widgets.status.content = arm_status(widgets.arm, now, refused)
             widgets.compliance.pose_plan.content = pose_plan_line(widgets.arm, widgets.compliance.pose)
+            if widgets.tool_jog is not None:
+                widgets.tool_jog.readout.content = note_line(self._tool_jog_readout(key, widgets))
+            if self._draws % FT_PLOT_EVERY == 0:
+                for plot in widgets.ft_plots:
+                    plot.draw()
+                if widgets.ft_note is not None:
+                    widgets.ft_note.content = note_line(
+                        "no F/T reading: the arm reports no wrench (fake hardware has none)"
+                        if widgets.arm.state.wrench is None else "raw: not zeroed, the tool's weight included")
             draw_markers(widgets.frames, widgets.arrows, widgets.gizmo, self._markers.get(key) or {})
             applied = self._applied_force.get(key)
             widgets.compliance.wrench_line.content = block(values(

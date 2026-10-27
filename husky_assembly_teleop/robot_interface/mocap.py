@@ -25,7 +25,8 @@ def mocap_topic(mocap_id: int) -> str:
 
 
 def subscribe_mocap(ros: RosConnections, mocap_id: int, body: MocapBody,
-                    now: Callable[[], float], event: Event | None = None) -> None:
+                    now: Callable[[], float], event: Event | None = None,
+                    offset: Callable[[], np.ndarray] | None = None) -> None:
     """Keep `body` updated from rigid body `mocap_id`.
 
     Args:
@@ -34,22 +35,25 @@ def subscribe_mocap(ros: RosConnections, mocap_id: int, body: MocapBody,
         body: The measured state to write into.
         now: Current ROS time in seconds, for when a sample arrived.
         event: Fired with each sample's `MocapSample` once `body` holds it, or None.
+        offset: Gives a world shift, metres, added to every pose stored (a base's operator offset), or None.
     """
     def on_sample(message: MocapRigidBodyPose) -> None:
-        sample = store_sample(body, message, now())
+        sample = store_sample(body, message, now(), None if offset is None else offset())
         if event is not None:
             event.fire(sample)
 
     ros.subscription(MocapRigidBodyPose, mocap_topic(mocap_id), on_sample, MESSAGE_QUEUE)
 
 
-def store_sample(body: MocapBody, message: MocapRigidBodyPose, now: float) -> MocapSample:
+def store_sample(body: MocapBody, message: MocapRigidBodyPose, now: float,
+                 offset: np.ndarray | None = None) -> MocapSample:
     """Write one mocap sample into `body`; an invalid one only clears `tracked`, keeping the last valid pose.
 
     Args:
         body: The body's measured state, changed in place.
         message: The relay's sample, stamped with when the cameras captured it.
         now: ROS time of arrival, seconds; also the capture time of a sample without a stamp.
+        offset: A world shift, metres, added to the pose stored and returned; the markers stay as measured.
 
     Returns:
         MocapSample: The sample, for the body's event.
@@ -72,7 +76,7 @@ def store_sample(body: MocapBody, message: MocapRigidBodyPose, now: float) -> Mo
     position, orientation = np.full(3, np.nan), np.full(4, np.nan)
     if body.tracked:
         p, q = message.pose.position, message.pose.orientation
-        body.position = position = np.array([p.x, p.y, p.z])
+        body.position = position = np.array([p.x, p.y, p.z]) + (0.0 if offset is None else offset)
         body.orientation = orientation = np.array([q.x, q.y, q.z, q.w])
         body.last_fix_time = captured
         body.marker_errors.append((now, body.marker_error))

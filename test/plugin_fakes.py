@@ -32,6 +32,7 @@ from sensor_msgs.msg import JointState
 from husky_assembly_teleop.config import ArmConfig
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugin_api.context import PluginContext
+from husky_assembly_teleop.plugin_api.trace import Trace
 from husky_assembly_teleop.robot_interface.arm import (ARM_CONTROLLERS, CARTESIAN_COMPLIANCE_CONTROLLER,
                                                        SCALED_JOINT_TRAJECTORY_CONTROLLER, ArmInterface, ArmState,
                                                        SentTarget)
@@ -61,12 +62,39 @@ class FakeWidget(SimpleNamespace):
 
     on_update = on_hold = on_click
 
+    def add_tab(self, label: str = "", icon: Any = None) -> FakeWidget:
+        """A tab group's tab: a folder, as far as a test cares."""
+        return FakeWidget(kind="tab", label=label, icon=icon)
+
     def __enter__(self) -> FakeWidget:
         """A folder or tab: widgets added inside land in the same list."""
         return self
 
     def __exit__(self, *_exc: Any) -> None:
         """Leave the folder."""
+
+
+class FakeScene:
+    """viser's scene api as plugins use it: each `add_*` call makes a node keeping what is written to it (`nodes`)."""
+
+    def __init__(self):
+        """No nodes yet."""
+        self.nodes: list[SimpleNamespace] = []
+
+    def __getattr__(self, name: str):
+        """`add_<kind>(name, ..., **options)`: a node with that kind, name and those options."""
+        if not name.startswith("add_"):
+            raise AttributeError(name)
+
+        def add(node_name: str, *args: Any, **options: Any) -> SimpleNamespace:
+            node = SimpleNamespace(kind=name[4:], name=node_name, args=args, remove=lambda: None, **options)
+            self.nodes.append(node)
+            return node
+        return add
+
+    def of_kind(self, kind: str) -> list[SimpleNamespace]:
+        """The nodes of one kind, e.g. "label", in order."""
+        return [node for node in self.nodes if node.kind == kind]
 
 
 class FakeGui:
@@ -142,6 +170,8 @@ class FakeContext:
                                     phone=lambda *_tab: nullcontext(self.gui), scene_root="/plugin")
         #: (level, message) per log line.
         self.logs: list[tuple[str, str]] = []
+        #: The traces `trace` records, sampled at every `next_tick`.
+        self._traces: list[Trace] = []
 
     def now(self) -> float:
         """ROS time, seconds."""
@@ -202,6 +232,8 @@ class FakeContext:
         """Advance 0.1 s, step the world, cancel the tasks whose freeze broke, let other tasks run."""
         self.t += 0.1
         self.step(self.t)
+        for trace in self._traces:
+            trace.sample(self.t)
         self._check_freezes()
         await asyncio.sleep(0)
 
@@ -218,6 +250,17 @@ class FakeContext:
         """Tick for `seconds`."""
         until = self.t + seconds
         await self.wait_until(lambda: self.t >= until)
+
+    def trace(self, *signals, max_samples: int = 1000) -> Trace:
+        """Record `signals` as the monitor would: sampled at every `next_tick`."""
+        trace = Trace(signals, max_samples)
+        self._traces.append(trace)
+        return trace
+
+    def untrace(self, trace: Trace) -> None:
+        """Stop recording `trace`."""
+        if trace in self._traces:
+            self._traces.remove(trace)
 
     def log_info(self, message: str, topic: str = "") -> None:
         """Keep the line; the topic is not kept."""
@@ -501,13 +544,12 @@ class ArmDriver:
                 first = next(iter(self.robot.arms)) == arm.config.name
                 message = multi[-1].trajectory1 if first else multi[-1].trajectory2
             self._seen = (len(single), len(multi))
-            self._take(message, t)
+            # * A trajectory arriving mid-motion starts from where the arm is at this moment, not where it was last
+            #   seen: a stream of one-point trajectories (a tool0 jog) then moves the arm.
+            self._take(message, t, self._along(t))
         if self.silent_from is not None and t >= self.silent_from:
             return
-        here = arm.joint_vector()
-        if self._times is not None:
-            elapsed = min((t - self._started) * self.speed, self._times[-1] * self.follow)
-            here = np.array([np.interp(elapsed, self._times, column) for column in self._points.T])
+        here = self._along(t)
         tool0 = None
         if arm.controllers.is_active(CARTESIAN_COMPLIANCE_CONTROLLER):
             tool0, moves = self._toward_target()
@@ -524,12 +566,19 @@ class ArmDriver:
         if tool0 is not None:
             self._report_tcp(tool0)
 
-    def _take(self, message, t: float) -> None:
-        """Start running a trajectory message from where the arm is (a hold has a single point, later than 0)."""
+    def _along(self, t: float) -> np.ndarray:
+        """Where the arm is at time `t`: along the running trajectory, else where it was last seen."""
+        if self._times is None:
+            return self.arm.joint_vector()
+        elapsed = min((t - self._started) * self.speed, self._times[-1] * self.follow)
+        return np.array([np.interp(elapsed, self._times, column) for column in self._points.T])
+
+    def _take(self, message, t: float, start: np.ndarray) -> None:
+        """Start running a trajectory message at `t` from `start` (a hold has a single point, later than 0)."""
         times = [point.time_from_start.sec + point.time_from_start.nanosec * 1e-9 for point in message.points]
         points = [list(point.positions) for point in message.points]
         if times[0] > 0.0:
-            times, points = [0.0, *times], [list(self.arm.joint_vector()), *points]
+            times, points = [0.0, *times], [list(start), *points]
         self._times, self._points, self._started = np.array(times), np.array(points), t
 
     def _on_target(self, target: SentTarget) -> None:

@@ -27,7 +27,8 @@ PATH = ([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 2.0], 0.3, 0.5)
 def _base() -> BaseInterface:
     """A base ready to follow at ROS time NOW: a live mocap pose, a live follower, the velocity controller running."""
     base = BaseInterface.__new__(BaseInterface)
-    base._node, base._config, base._latch = Node(NOW), SimpleNamespace(mocap_id=1), SoftStopLatch("0804")
+    base._node, base._config, base._latch = Node(NOW), SimpleNamespace(serial="0804", mocap_id=1), \
+        SoftStopLatch("0804")
     base._lease_slot = leased_slot("0804")
     base.state = BaseState(tracked=True, tracking_valid=True, marker_errors=deque([(NOW, 0.0)]),
                            last_update_time=NOW, last_fix_time=NOW, estopped=False)
@@ -100,6 +101,21 @@ def test_a_silent_follower_counts_as_none():
     base.state.follower.update_time -= FOLLOWER_SILENT_AFTER
     base.state.marker_errors.append((NOW, 0.0))
     assert "no follower" in base.follow_problem()
+
+
+def test_a_mocap_offset_is_taken_off_a_path_and_shifts_the_stored_pose():
+    """The follower reads the mocap world unshifted: x and y go out minus the offset; the pose moves at once."""
+    base = _base()
+    base.state.position = np.array([1.0, 2.0, 0.0])
+    base.set_mocap_offset([0.1, -0.2, 0.0])
+    np.testing.assert_allclose(base.state.position, [1.1, 1.8, 0.0])
+    base.send_path([1.0, 2.0], [3.0, 4.0], [0.0, 0.1])
+    message, = base._base_path.sent
+    assert list(message.x) == [0.9, 1.9] and list(message.y) == [3.2, 4.2] and list(message.yaw) == [0.0, 0.1]
+    base.set_mocap_offset([0.0, 0.0, 0.0])
+    np.testing.assert_allclose(base.state.position, [1.0, 2.0, 0.0])
+    with pytest.raises(ValueError, match="three finite"):
+        base.set_mocap_offset([math.nan, 0.0, 0.0])
 
 
 def test_finite_commands_go_out():

@@ -15,7 +15,7 @@ import viser.uplot
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 from ...shared.assembly_planning.joints import arm_side
-from ...ui.trace_plot import COLORS, MAX_POINTS
+from ...ui.trace_plot import BLANK, COLORS, MAX_POINTS
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.process.solutions import Trajectory
@@ -26,9 +26,6 @@ if TYPE_CHECKING:
 SHORT_NAMES = dict(zip(UR_JOINT_NAMES, ("pan", "lift", "elbow", "w1", "w2", "w3")))
 #: Each plot's height, px.
 PLOT_HEIGHT = 180
-#: An "empty" plot's data: one blank point.
-#: ! Never zero rows: a uPlot that viser 1.1.1 built, or was sent, with no rows never draws later data in an open page.
-BLANK = (np.zeros(1), np.full(1, np.nan))
 
 
 def joint_label(name: str) -> str:

@@ -12,7 +12,7 @@ Build it in `setup` inside `ctx.view.ui()`, call `draw` from the plugin's `draw`
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 import viser
@@ -26,13 +26,17 @@ COLORS = ("#e03131", "#2f9e44", "#4263eb", "#f08c00", "#ae3ec9", "#1098ad", "#86
 
 #: Most points sent per line; longer spans are thinned evenly.
 MAX_POINTS = 1000
+#: An "empty" plot's data: one blank point.
+#: ! Never zero rows: a uPlot that viser 1.1.1 built, or was sent, with no rows never draws later data in an open page.
+BLANK = (np.zeros(1), np.full(1, np.nan))
 
 
 class TracePlot:
     """One signal of a trace, plotted; redrawn only when the trace has new samples."""
 
     def __init__(self, gui: viser.GuiApi, trace: Trace, signal: Signal | str, seconds: float | None = 30.0,
-                 y_range: tuple[float, float] | None = None, aspect: float = 2.0, min_span: float = 1e-6):
+                 y_range: tuple[float, float] | None = None, aspect: float = 2.0, min_span: float = 1e-6,
+                 x_label: str = "t s", colors: Sequence[str] | None = None):
         """Add the plot to `gui`.
 
         Args:
@@ -43,6 +47,8 @@ class TracePlot:
             y_range: Fixed y axis, or None to fit the data.
             aspect: Width over height.
             min_span: Smallest fitted y span, so a flat or zero signal keeps a readable axis.
+            x_label: The x axis label; the trace's times are seconds unless its samples were added by hand.
+            colors: A line colour per channel, else COLORS in order.
         """
         self._trace = trace
         name = self._name = signal if isinstance(signal, str) else signal.key
@@ -51,15 +57,16 @@ class TracePlot:
         # * One unit for all channels goes into the title, mixed units onto each line.
         shared = len(set(signal.units)) == 1
         unit = f" [{signal.units[0]}]" if shared and signal.units[0] else ""
-        series = (viser.uplot.Series(label="t s"),
+        colors = COLORS if colors is None else tuple(colors)
+        series = (viser.uplot.Series(label=x_label),
                   *(viser.uplot.Series(label=label if shared or not each else f"{label} [{each}]",
-                                       stroke=COLORS[i % len(COLORS)], width=1.5)
+                                       stroke=colors[i % len(colors)], width=1.5)
                     for i, (label, each) in enumerate(zip(signal.channels, signal.units))))
         self._fixed = y_range is not None
         self._min_span = min_span
         self._y_range = tuple(y_range) if y_range else (-1.0, 1.0)
         self.handle: viser.GuiUplotHandle = gui.add_uplot(
-            data=tuple(np.zeros(0) for _ in series), series=series, title=f"{name}{unit}",
+            data=(BLANK[0], *(BLANK[1] for _ in series[1:])), series=series, title=f"{name}{unit}",
             scales=self._scales(), aspect=aspect)
         # (count, newest time) last sent, to skip unchanged redraws.
         self._shown: tuple[int, float | None] = (0, None)
@@ -72,6 +79,9 @@ class TracePlot:
             return
         self._shown = shown
         values = self._trace.values(self._name)
+        if len(t) == 0:
+            self.handle.data = (BLANK[0], *(BLANK[1] for _ in range(values.shape[1] if values.ndim == 2 else 1)))
+            return
         if self._seconds is not None and len(t):
             keep = t >= t[-1] - self._seconds
             t, values = t[keep], values[keep]
