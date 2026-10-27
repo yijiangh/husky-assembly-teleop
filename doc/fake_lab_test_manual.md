@@ -14,10 +14,11 @@ whose screws stall a fixed time after a tighten), a fake Motive with Motive's me
 errors, and the mocap relay, as on the lab PC. Everything talks over Zenoh through a router of the fake lab's own.
 Plan about two hours.
 
-Run on 2026-10-26 with this code (M6, M7 and Jakob's core-port of the same day merged): sections 1–6 as written, except
-the parts that need the compliance controller (the compliant insert, the retreat's break-out, the handoff) and Alice's
-Robotiq, which were not installed on this laptop yet (section 0 installs them). Those steps say "not run yet" and
-give what the code does; tell me where the page differs.
+Run on 2026-10-26 with this code (M6, M7 and Jakob's core-port of the same day merged): sections 1–6 as written;
+run again on 2026-10-27 (branch `yh/lab-tools`) with the Cartesian controllers built and the fake wrench on: the
+retreat's compliant break-out (4.4) and the compliant insert (5.2) as written below. The handoff (5.3 step 5) and
+Alice's open (5.3 step 3) still wait for `ros-humble-gripper-controllers` (section 0.1): those two say "not run yet"
+and give what the code does; tell me where the page differs.
 
 ## What you are testing, and whose it is
 
@@ -56,13 +57,16 @@ Steps are numbered so you can report them as, for example, "4.2 not OK: …".
 
 ## 0. Once, before the first test
 
-**0.1** Install the UR driver, the Robotiq description and controllers, Zenoh's ROS middleware and tmux. The
-simulated arms run on the UR driver's fake hardware; the simulated Robotiq on Alice and Belle needs its description
-and controllers, or `sim.launch.py robot:=all` stops at Alice with `package 'robotiq_description' not found`.
+**0.1** Install the UR driver, the Robotiq description and controllers, the gripper controllers, Zenoh's ROS
+middleware and tmux. The simulated arms run on the UR driver's fake hardware; the simulated Robotiq on Alice and Belle
+needs its description and controllers, or `sim.launch.py robot:=all` stops at Alice with `package
+'robotiq_description' not found`, and its `GripperActionController` comes from `ros-humble-gripper-controllers`, or
+its spawner dies (`spawner robotiq_gripper_controller … process has died`) and every Robotiq step is refused with
+`the gripper's action server is not available`.
 
 ```shell
 sudo apt install ros-humble-ur-robot-driver ros-humble-robotiq-description ros-humble-robotiq-controllers \
-    ros-humble-rmw-zenoh-cpp ros-humble-zenoh-cpp-vendor tmux
+    ros-humble-gripper-controllers ros-humble-rmw-zenoh-cpp ros-humble-zenoh-cpp-vendor tmux
 ```
 
 **0.2** Build the Cartesian controllers into the workspace. The insert's compliant part, the retreat's break-out and
@@ -77,6 +81,12 @@ cd ~/Code/ros2_ws_next && source venv/bin/activate && source /opt/ros/humble/set
 python3 -m colcon build --symlink-install --packages-select cartesian_controller_base cartesian_motion_controller \
     cartesian_force_controller cartesian_compliance_controller
 ```
+
+**0.2b** The simulated arms report no force (the fake hardware reads NaN), so `sim.launch.py` also starts
+`sim_wrench`, a near-zero force/torque reading per simulated arm, by default: the F/T plots, the retreat's contact
+check and the servo's load guard then read something. `wrench_bias:=0,0,-5,0,0,0` adds a standing reading,
+`contact_n:=8` a push along the tool's z while a simulated screw is stalled; keep both small, the compliance
+controller reads the same topic and moves the arm by it.
 
 **0.3** Copy the test process into the scratch Drive root. `--fresh` also deletes the runs of an earlier test.
 
@@ -258,16 +268,16 @@ scaffolding gripper screws on left_ur_arm, right_ur_arm; then servos left_ur_arm
    sensors zeroed; COMPLIANT break-out 5.0 mm (0.5 s); joint control; the rest replanned from where the tools are and
    run at once (4.5 s, no second Confirm). Watch both tools let go and back off along their lines.`
 3. Click **Confirm**.
-   - **Expect:** `retreat: the gripper screws of left_ur_arm + right_ur_arm OPEN`; `force sensors zeroed: |F|
-     left_ur_arm no reading -> no reading, …`; the switch to `cartesian_compliance_controller` and the 0.5 s stream
-     (not run yet here: the switch failed without section 0.2, `controller manager rejected the switch`); back under
-     `scaled_joint_trajectory_controller`; the tail replanned (`retreat tail B20_R_retreat: … 52 waypoints`); the
-     checks, two of them failing in the simulation: `check FAIL contact: |F| … no reading (limit 20 N)` and
-     `check FAIL grippers: left_ur_arm LOOSENING, right_ur_arm LOOSENING (want STALLED = fully open)` (the simulated
-     screws loosen until a STOP and never stall), `PASS` for both tool0 paths (50.0 mm, ends 0.1 mm from the goal),
-     the joints and the speed; `running the tail now (52 rows, 5.0 s); 2 check(s) FAILED`; after 5 s `retreat:
-     RETREATED: retreated; 2 check(s) FAILED` and `Exec B20_R_retreat: done — every part done`. The ungrasp counts as
-     done with it.
+   - **Expect:** `retreat: the gripper screws of left_ur_arm + right_ur_arm OPEN`; `force sensors zeroed`; the
+     switch to `cartesian_compliance_controller` (`left_ur_arm, right_ur_arm: cartesian_compliance_controller running
+     (0.3 s)`) and the 0.5 s stream; `back under scaled_joint_trajectory_controller (0.1 s)`; the tail replanned
+     (`retreat tail B20_R_retreat: … 48 waypoints`); the checks: `PASS start`, `PASS break-out: worst tool0 1.6 mm
+     short of its end (limit 3), travelled 3.5 / 3.4 mm`, `PASS contact: |F| left_ur_arm 0.1 N, right_ur_arm 0.0 N
+     (limit 20 N)` (the fake wrench), one failing: `check FAIL grippers: left_ur_arm LOOSENING, right_ur_arm LOOSENING
+     (want STALLED = fully open)` (the simulated screws loosen until a STOP and never stall), `PASS` for both tool0
+     paths (46 mm, ends 0.1 mm from the goal), the joints and the speed; `running the tail now (48 rows, 4.6 s); 1
+     check(s) FAILED`; after 5 s `retreat: RETREATED: retreated; 1 check(s) FAILED` and `Exec B20_R_retreat: done —
+     every part done`. The ungrasp counts as done with it. The **Plots** tab shows the force and torque of the part.
 
 **4.5 B20_R, step 2/2: home.** Click **mv ▶** in the process section; the step line reads `B20_R_home (free_home)`.
 
@@ -294,9 +304,13 @@ follower sometimes never starts a short path (`base path … timed out: still fo
 - The insert has a mating joint on the left: the prompt reads `B21_J_insert — INSERT: rigid 10.0 mm (3.3 s), then
   COMPLIANT 5.0 mm (straight line); the joint screw of left_ur_arm TIGHTENS from the start until it stalls (≤ 30 s),
   then STOP and back to joint control. Watch the bar enter its joint and the held bars stay in their jaws. Confirm to
-  start.` (not run yet here). After Confirm: `insert: left_ur_arm joint screw TIGHTENING`, the rigid part, the switch
-  to the compliance controller, the compliant line until the screw stalls (2 s after the tighten here, or your
-  `tighten_s`), `STALLED`, STOP, back under joint control, `Exec B21_J_insert: done`.
+  start.` After Confirm: `insert: left_ur_arm joint screw TIGHTENING`, the rigid part (3.4 s), `cartesian_compliance_controller
+  running (0.3 s)`, and, since the simulated screw stalls 2 s after the tighten (3.4), at the switch itself:
+  `left_ur_arm joint screw STALLED at 0.0 of 1.7 s; left_ur_arm back under joint control, right_ur_arm finish the line
+  under compliance`, a warning `the arms did NOT reach the line's end: left_ur_arm 0.1 of 8.0 mm, … right_ur_arm 7.8 of
+  8.1 mm`, `insert: STALLED: left_ur_arm joint screw STALLED; peak |F| left_ur_arm 0.2 N, right_ur_arm 0.2 N` and `Exec
+  B21_J_insert: done`. Once in the pane the first switch back was `rejected` and taken 0.2 s later: a retry, not a
+  fault. With `tighten_s 8` (3.4) the left arm runs its compliant line before the stall.
   - Run so far here with **Rigid insert** ticked: `RIGID-ONLY insert: the whole 15.0 mm under joint control (5.0 s);
     the joint screw of left_ur_arm TIGHTENS from the start; the arms hold the end until it stalls (≤ 30 s), then
     STOP. Compliance is never engaged; …`, then after 2 s `ended by the caller: holding every arm` and `insert:
@@ -318,13 +332,14 @@ follower sometimes never starts a short path (`base path … timed out: still fo
      B21_H_approach: done — every part done`. The jaws stop short of B21.
 3. **Step 2/4, open.** Click **Exec**, then **Confirm** on `B21_H_open — OPEN the gripper (0.426). Confirm to send.`
    - **Expect:** at once, `B21_H_open: at 0.426 rad`: the simulated Robotiq reaches every goal at once (not run yet
-     here: without section 0.1's packages it is refused with `/a200_0804/gripper: the gripper's action server is not
-     available`).
+     here: without `ros-humble-gripper-controllers` (section 0.1) it is refused with `/a200_0804/gripper: the
+     gripper's action server is not available`; the step stays, mv ▶ goes on).
 4. **Step 3/4, to grasp.** **Plan** (`support_linear`), **Exec**, **Confirm** on `B21_H_to_grasp — move ur_arm …, 5 s,
    largest joint travel 22°`. **Expect:** `arrived, end within 0.00°`.
 5. **Step 4/4, the close: the handoff.** Click **Exec**. **Expect:** `B21_H_close — CLOSE + compliant handoff on
    ur_arm: the arm goes COMPLIANT before the close (gives way ≤ 10 mm); jaws 0.8, effort 0.1, ≤ 30 s; then joint
-   control. Watch Cindy's tools are not pulled; hand on the e-stop.` Click **Confirm** (not run yet here).
+   control. Watch Cindy's tools are not pulled; hand on the e-stop.` Click **Confirm** (not run yet here: refused
+   as the open, `REFUSED: /a200_0804/gripper: the gripper's action server is not available; nothing sent`).
    - **Expect:** in order, the joint controller confirmed, the force sensor zeroed, the anchor gap, the switch to the
      compliance controller, the close, `gripper done`, back under joint control; the arm does not move.
 6. Click **B21_H done**: `4/78 done`, the current step `B21_R · B21_R_ungrasp (1/3)`.
@@ -396,8 +411,8 @@ These are not mistakes on your side.
 | PyBullet's lines in the monitor pane. | `monitor.sh` imports pytest before the monitor: compas_fab closes stdout for a moment around every model it loads, other threads then fail with `OSError(16, 'Device or resource busy')`, and compas_fab skips that only under pytest. A real fix is your decision. |
 | `robots differ` after Load. | The export used the old UR frames; the monitor plans with the configured robots. |
 | The grasp's screws stall after 2 s whatever the arms do; an insert's path is held 40 % in. | The simulated tool's `tighten_s`, 2 s by default (3.4 sets it). |
-| A retreat reports `2 check(s) FAILED`: contact and grippers. | No F/T reading in the simulation, and its screws loosen until a STOP instead of stalling fully open. The retreat still runs. |
-| `no force reading: the servo's load guard is OFF` after a grounded insert. | No F/T sensor in the simulation. |
+| A retreat reports `1 check(s) FAILED`: grippers. | The simulated screws loosen until a STOP instead of stalling fully open. The contact check reads the fake wrench (section 0.2b) and passes near zero. |
+| A base's `xyz` flickers between two poses, the relay pane says `rigid body 18xx: now from …` again and again. | A simulator of an earlier launch is still alive in the same domain (`pgrep -af husky_sim`: two with the same `__ns`); stop the old one. |
 | `no marker sample of bars/B20 (asset 1020)`. | The fake Motive streams no bar markers; the servo runs on tool0 and records that the bar could not be measured. |
 | A short base path `timed out: still following`. | The simulated follower sometimes never starts a path of a few decimetres. Plan and Commit again. |
 | An arm's chips stay red after start. | Its spawners timed out while three robots started at once (`Failed loading controller joint_state_broadcaster` in the top pane). Restart `sim.sh`. |

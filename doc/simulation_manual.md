@@ -9,6 +9,10 @@ simulated tool. A simulation runs in a ROS domain of its own and refuses the rob
   robot's tool (crl-husky's `model.yaml`), simulated without motion: a Robotiq reaches every goal at once, a
   scaffolding screw stalls `tighten_s` (2 s) after a tighten and loosens until stopped. It publishes what is truly
   there: the base's true pose and, with the calibration marker on an arm, that arm's true tool0.
+- **Force/torque** (teleop, on by default): `sim_wrench`, a near-zero wrench per simulated arm on its
+  `ft_sensor_wrench` (the fake hardware's sensor reads NaN), so the F/T plots, the retreat's contact check and the
+  servo's load guard read something; `wrench_bias:=` (six values) and `contact_n:=` (a push along the tool's z while
+  a simulated screw is stalled) add to it. ! The compliance controller reads the same topic: keep them small.
 - **Motive** (teleop, optional): `sim_motive`, a fake Motive between the robot and the relay, adds Motive's
   imperfections to every true pose. It knows no robots or arms.
 - **The relay**: the same relay as in the lab. Outside the robots' domain it also takes the simulated poses, in place

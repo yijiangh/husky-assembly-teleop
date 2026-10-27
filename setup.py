@@ -34,6 +34,7 @@ setup(
             'husky_monitor = husky_assembly_teleop.monitor:main',
             'husky_mocap_relay = husky_assembly_teleop.mocap_relay.node:main',
             'husky_sim_motive = husky_assembly_teleop.mocap_relay.sim_motive:main',
+            'husky_sim_wrench = husky_assembly_teleop.mocap_relay.sim_wrench:main',
         ],
     },
 )

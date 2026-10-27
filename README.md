@@ -360,6 +360,7 @@ ros2 launch husky_assembly_teleop mocap.launch.py                               
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['belle']" -p plugins:="['robot_control']"  # once
 ros2 launch husky_assembly_teleop sim.launch.py robot:=0805                        # one robot, base and arms
 ros2 launch husky_assembly_teleop sim.launch.py robot:=all fake_motive:=true       # every robot, a fake Motive
+# (and a fake force/torque reading per arm, sim_wrench, on by default: fake_wrench:=false turns it off)
 ```
 
 - `sim.launch.py` starts crl-husky's `sim_robot.launch.py` (`sim_all.launch.py` for `robot:=all`) and, with

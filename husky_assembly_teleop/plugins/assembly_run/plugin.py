@@ -335,7 +335,10 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         if self._run.folder != self._offsets_run:
             self._offsets, self._offsets_run = {}, self._run.folder
         for serial, robot in ctx.world.robots.items():
-            xyz = tuple(float(value) for value in robot.base.mocap_offset)
+            offset = getattr(robot.base, "mocap_offset", None)
+            if offset is None:
+                continue
+            xyz = tuple(float(value) for value in offset)
             if xyz != self._offsets.get(serial, (0.0, 0.0, 0.0)):
                 self._offsets[serial] = xyz
                 self._write(ctx, "record the mocap offset", record_event, self._run.folder, "mocap_offset",
