@@ -131,6 +131,8 @@ class RobotConfig:
             built with the calibration applied, so it always matches the robot's driver.
         source_urdf: The URDF in the data directory the model's copy was made from (relative mesh paths, the same
             file on every PC), or None.
+        base_model: The robot model its base follower assumes, a name in crl-husky's config/base_models; from
+            model.yaml, as the onboard follower and the sims read it. The base planner plans with it.
     """
 
     serial: str
@@ -144,6 +146,7 @@ class RobotConfig:
     park_pose: tuple[float, float, float] | None = None
     ur_calibration: tuple[UrCalibrationCheck, ...] = ()
     source_urdf: Path | None = None
+    base_model: str = "ideal"
 
     @property
     def default_orientation(self) -> tuple[float, float, float, float]:
@@ -201,10 +204,11 @@ class MonitorConfig:
 
 
 # --- --- --- --- --- WHAT EACH ROBOT IS --- --- --- --- ---
-# * Name, URDF, SRDF and each arm's tool come from crl-husky (`get_robot_model`, its config/robots/<serial>/model.yaml),
-#   and so do the parked base pose and arm joints (`get_park`, park.yaml); the simulators start from the same. The
-#   arms and their namespaces are here. Each arm of the URDF is checked against its UR calibration in crl-husky
-#   at startup (`_apply_ur_calibrations`), its stock UR base frames by test (doc/ur_frames.md).
+# * Name, URDF, SRDF, each arm's tool and the base model come from crl-husky (`get_robot_model`, its
+#   config/robots/<serial>/model.yaml), and so do the parked base pose and arm joints (`get_park`, park.yaml); the
+#   simulators start from the same. The arms and their namespaces are here. Each arm of the URDF is checked against
+#   its UR calibration in crl-husky at startup (`_apply_ur_calibrations`), its stock UR base frames by test
+#   (doc/ur_frames.md).
 # ? TODO consolidate a robot's config further: it is spread over crl-husky's robot.yaml, env/setup.bash,
 #   mocap_config.json, model.yaml and this table.
 #: Where crl-husky's model paths start, below the data directory.
@@ -231,7 +235,8 @@ def robot_config_from_serial(token: str, data_directory: Path,
                              tools: tuple[EndEffectorKind | None, ...] | None = None) -> RobotConfig:
     """Build one RobotConfig from a serial ("0806", "a200-0806", "/a200_0806") or name ("cindy").
 
-    Arms come from `_ROBOTS_BY_SERIAL`; URDF, SRDF, tools, parked poses and mocap id from crl_husky's config_resolver.
+    Arms come from `_ROBOTS_BY_SERIAL`; URDF, SRDF, tools, base model, parked poses and mocap id from crl_husky's
+    config_resolver.
 
     Args:
         token: The serial or name as typed on the command line.
@@ -308,6 +313,7 @@ def robot_config_from_serial(token: str, data_directory: Path,
         park_pose=park,
         ur_calibration=checks,
         source_urdf=urdf_file,
+        base_model=model["base_model"],
     )
 
 

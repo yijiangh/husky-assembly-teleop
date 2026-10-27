@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import argparse
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from crl_husky.base_model import load_model
@@ -26,7 +26,7 @@ from crl_husky.base_model import load_model
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.drive import drive_folder, drive_root
 from husky_assembly_teleop.plugins.base_planner.algorithms import ALGORITHMS, Debug
-from husky_assembly_teleop.plugins.base_planner.follow import model_groups
+from husky_assembly_teleop.plugins.base_planner.follow import XICR_SPREAD, model_groups
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED
 from husky_assembly_teleop.plugins.base_planner.recording import (RECORDING_FOLDER, attempt_folder, load_plan_arrays,
                                                                   save_plan, save_simulated)
@@ -80,7 +80,7 @@ def main() -> None:
                 algorithm = kind()
                 for repeat in range(1 if algorithm.label in DETERMINISTIC else args.repeats):
                     world.sync(snapshot)  # the last search moved the robot around
-                    folder = _attempt(world, own, task, algorithm, args.experiment, recordings)
+                    folder = _attempt(world, own, task, algorithm, config.base_model, args.experiment, recordings)
                     print(f"{task.name:16s} {algorithm.label:20s} {repeat + 1}: {folder.name}")
     finally:
         world.close()
@@ -101,9 +101,10 @@ def _scene(task, config, root: Path) -> tuple[Scene, str]:
     return stowed(scene, own, config)[0], own
 
 
-def _attempt(world: PlanningWorld, own: str, task, algorithm, experiment: str, recordings: Path) -> Path:
-    """Plan the task once, record the attempt, and simulate the follower on the path found; returns its folder."""
-    settings, debug = algorithm.settings(), Debug()
+def _attempt(world: PlanningWorld, own: str, task, algorithm, follower_model: str, experiment: str,
+             recordings: Path) -> Path:
+    """Plan the task once with `follower_model`, record the attempt, and simulate the follower on the path found."""
+    settings, debug = replace(algorithm.settings(), follower_model=follower_model), Debug()
     start, goal = task.start_in_lab(), task.target_in_lab()
     result = algorithm.plan(world, own, start, goal, threading.Event(), settings, debug)
     setup = {"experiment": experiment, "task": task.name, "robot": "a200-0804", "environment": "offline",
@@ -122,9 +123,11 @@ def simulate(folder: Path) -> None:
     """Drive an attempt's path with the follower's model exact and deviated (`follow.model_groups`), and save it."""
     description = load_description(folder)
     model_name = description["settings"]["follower_model"]
+    # Attempts from before the spread setting checked an absolute range: they get the default spread.
+    spread = description["settings"].get("x_icr_spread", XICR_SPREAD)
     poses = load_plan_arrays(folder)["path_poses"]
     save_simulated(folder, model_name,
-                   model_groups(poses, load_model(model_name), MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED))
+                   model_groups(poses, load_model(model_name), MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED, spread))
 
 
 if __name__ == "__main__":

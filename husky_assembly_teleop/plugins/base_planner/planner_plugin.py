@@ -144,6 +144,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         # * The robot is planned as it is: its arms, and what it holds.
         snapshot, guessed = with_guesses(ctx.scene.snapshot, robot_id(serial))
         config = next(robot for robot in ctx.config.robots if robot.serial == serial)
+        # * Without a follower model chosen, plan with the one the robot's follower assumes.
+        settings = replace(settings, follower_model=settings.follower_model or config.base_model)
         away = from_stow(snapshot.robots[robot_id(serial)], config)
         if request.record and away > STOW_TOLERANCE:
             guessed = guessed + [f"arm {math.degrees(away):.0f}° from its stow pose, where experiments hold it"]

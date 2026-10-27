@@ -19,12 +19,12 @@ from crl_husky.base_model import load_model
 
 from ....shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ....shared.planner.rrt_connect import connect
-from ..follow import XICR_RANGE
+from ..follow import XICR_SPREAD, xicr_range
 from ..path import (ARC_STEP, BasePath, densify, driven, move_margins, round_corners, steer, steer_cost, steer_points,
                     timed_path)
 from ..world import COLLISION_MARGIN, PlanningWorld
 from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, Algorithm, Debug, add_follower_settings,
-                   add_margin_setting, yaw_step)
+                   add_margin_setting, follower_model, yaw_step)
 
 #: Arc radii tried in place of a turn on the spot, widest first, metres.
 ARC_RADII = (2.0, 1.0, 0.5)
@@ -48,15 +48,16 @@ class Settings:
     """The RRT's settings for one search.
 
     Attributes:
-        x_icr: Lowest and highest xICR the robot may have, metres.
-        follower_model: The robot model the onboard follower runs with (`model:=`), as in crl_husky config/base_models.
+        x_icr_spread: How far the robot's true xICR may be from the follower model's, either way, metres.
+        follower_model: The robot model the onboard follower runs with (`model:=`), as in crl_husky config/base_models;
+            "" for the planned robot's own, which the planner plugin fills in (FOLLOWER_MODEL without a robot).
         lead: Straight drive off the start and onto the target, metres; 0 for none.
         arcs: Whether corners become arcs.
         margin: Keep at least this far from everything else, metres.
     """
 
-    x_icr: tuple[float, float] = XICR_RANGE
-    follower_model: str = FOLLOWER_MODEL
+    x_icr_spread: float = XICR_SPREAD
+    follower_model: str = ""
     lead: float = LEAD
     arcs: bool = True
     margin: float = COLLISION_MARGIN
@@ -72,7 +73,7 @@ class RrtArcs(Algorithm):
         self._widgets = None
 
     def add_settings(self, gui) -> None:
-        """Add the xICR range, follower model, lead, arcs and margin."""
+        """Add the xICR spread, follower model, lead, arcs and margin."""
         self._widgets = (
             *add_follower_settings(gui),
             gui.add_slider("Lead m", min=0.0, max=1.5, step=0.05, initial_value=LEAD,
@@ -84,8 +85,8 @@ class RrtArcs(Algorithm):
         """The widgets' values, or the defaults."""
         if self._widgets is None:
             return Settings()
-        x_icr, model, lead, arcs, margin = (widget.value for widget in self._widgets)
-        return Settings(tuple(float(value) for value in x_icr), str(model), float(lead), bool(arcs), float(margin))
+        spread, model, lead, arcs, margin = (widget.value for widget in self._widgets)
+        return Settings(float(spread), follower_model(model), float(lead), bool(arcs), float(margin))
 
     def plan(self, world, own, start, goal, abort, settings, debug) -> PlanResult[BasePath]:
         """See `plan`."""
@@ -129,10 +130,10 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
                               hit=world.collision_hit(own, margin, name, pose))
 
     try:
-        x_model = load_model(settings.follower_model)["xICR"]
+        x_model = load_model(settings.follower_model or FOLLOWER_MODEL)["xICR"]
     except (FileNotFoundError, ValueError) as error:
         return PlanResult(None, f"follower model: {error}", time.time() - started)
-    low_icr, high_icr = min(settings.x_icr), max(settings.x_icr)
+    low_icr, high_icr = xicr_range(x_model, settings.x_icr_spread)
     icrs = np.linspace(low_icr, high_icr, max(int(math.ceil((high_icr - low_icr) / XICR_STEP)), 1) + 1)
     # The worst case, for the search: the farthest the turning centre may be from base_footprint.
     farthest = max(abs(low_icr), abs(high_icr))

@@ -94,7 +94,7 @@ def test_request_settings_reach_the_planner_unchanged():
     """The planner turns the panel's settings back into the settings the panel's algorithm shows."""
     panel = panel_for(None)
     algorithm = panel._algorithms[1]
-    algorithm._widgets = tuple(SimpleNamespace(value=value) for value in ((-0.2, 0.05), "ideal", 0.3, False, 0.1))
+    algorithm._widgets = tuple(SimpleNamespace(value=value) for value in (0.08, "ideal", 0.3, False, 0.1))
     _, settings = BasePlannerPlugin()._algorithm(panel.make_request(None))
     assert settings == algorithm.settings() and settings.lead == 0.3 and not settings.arcs
 
