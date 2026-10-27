@@ -7,7 +7,8 @@ Its mode, as the old monitor's (W:5385-5437):
   the end until they stall; never compliant.
 - otherwise: rigid up to the split, then compliant to the end on a straight line or the spiral, the mating screws
   tightening from the start; it ends when they stall. A one-mate bar (one arm of two mating) never spirals, and at
-  its stall only the mating arm goes back at once: the holding arm finishes its line under compliance first.
+  its stall only the mating arm goes back at once: the holding arm first finishes its line under compliance and
+  settles against the force there (SETTLE_CEILING at most).
 
 ! Every ending, a cancel included, stops every tool and brings the arms back under joint control. Main thread, from a
 plugin task.
@@ -36,9 +37,9 @@ from .send import HOLD_NOT_SENT as SENT_NOT_HELD
 from .send import REFUSED as SENT_REFUSED
 from .spiral import SPIRAL_RADIUS, SPIRAL_RETURN, Spiral, run_spiral, spiral_fits, spiral_problem
 from .stream import (ARRIVAL, CANCELLED, DRY_RUN, FAILED, HOLD_FOR_STALL, HOLD_NOT_SENT, MAX_CLOCK_STEP, NO_STALL,
-                     REFUSED, RIGID_DONE, STALLED, PartOutcome, Recorder, Segment, fk_tcp_gap, gap_record,
-                     line_target, measured_tool0, plan_stream, progress, split_rows, split_seconds, stream,
-                     target_problem, tool0_fk, zero_wrench)
+                     REFUSED, RIGID_DONE, SETTLE_CEILING, SETTLE_WINDOW, STALLED, PartOutcome, Recorder, Segment,
+                     Settling, fk_tcp_gap, gap_record, line_target, measured_tool0, plan_stream, progress, split_rows,
+                     split_seconds, stream, target_problem, tool0_fk, zero_wrench)
 from .tools import StallGate, stop_all, stop_and_clear
 
 if TYPE_CHECKING:
@@ -424,8 +425,8 @@ async def _compliant(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
         # ! Only a stall after the first compliant target and before the line's end: earlier, the holding arm would
         #   push its whole line against a closed joint; later, both arms stand at the end already.
         if ended == "stalled" and holding and 0.0 < stalled_at < segment.seconds:
-            ended = await _finish_holding(ctx, robot, plan, segment, stalled_at, holding, gate, recorder, phase,
-                                          back_early)
+            ended = await _finish_holding(ctx, robot, plan, segment, stalled_at, holding, gate, recorder, record,
+                                          phase, back_early)
     else:
         ended = await run_spiral(ctx, robot, segment, spiral, gate, operator, recorder)
         record["spiral_text"] = spiral.text(ctx.now() - since)
@@ -443,17 +444,18 @@ async def _compliant(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
 
 
 async def _finish_holding(ctx: PluginContext, robot: HuskyRobotInterface, plan: InsertPlan, segment: Segment,
-                          stalled_at: float, holding: Sequence[str], gate: Gate, recorder: Recorder,
+                          stalled_at: float, holding: Sequence[str], gate: Gate, recorder: Recorder, record: dict,
                           phase: Callable[[str, float, str], None], back_early: set[str]) -> str:
     """End a one-mate bar's stall per arm: the mating arm back under joint control now, the holding arm's line on.
 
     Switched at the stall, the holding arm, still settling against the force, left the bar skewed: it streams the rest
-    of its line under compliance until its end target went out; the caller's finally then holds it and brings it
-    back. The mating arm goes into `back_early` once confirmed back, so that finally does not hold it again.
+    of its line under compliance, then keeps its end target until its TCP stands still (`Settling`; SETTLE_CEILING
+    after the end target at most, said loudly when it is still moving then); the caller's finally then holds it and
+    brings it back. The mating arm goes into `back_early` once confirmed back, so that finally does not hold it again.
 
     Returns:
-        str: "stalled" (the holding arm's end target went out; or the mating arm's way back failed and the caller asks
-            every arm again), or why the rest's stream stopped.
+        str: "stalled" (the holding arm settled or the ceiling passed; or the mating arm's way back failed and the
+            caller asks every arm again), or why the rest's stream stopped.
     """
     label = f"{plan.serial}: insert"
     mating, finishing = " + ".join(plan.mating), " + ".join(holding)
@@ -465,22 +467,43 @@ async def _finish_holding(ctx: PluginContext, robot: HuskyRobotInterface, plan: 
     back_early.update(plan.mating)
     rest = Segment({name: line_target(segment.start[name], segment.end[name], segment.seconds, stalled_at)
                     for name in holding}, {name: segment.end[name] for name in holding},
-                   segment.seconds - stalled_at, 0.0)
-    end_sent = False
+                   segment.seconds - stalled_at, SETTLE_CEILING)
+    settling = Settling(robot, holding)
+    line_done: float | None = None
+    settled: bool | None = None
 
-    def to_the_end(elapsed: float) -> bool:
-        """Go on until the end target went out: the tick after the rest's seconds passed, nothing more."""
-        nonlocal end_sent
-        if end_sent:
-            return False
-        end_sent = elapsed >= rest.seconds
-        return True
+    def keep_going(elapsed: float) -> bool:
+        """The line to its end, then the end target again each tick until the arm settled or the ceiling passed.
+
+        ! The ceiling ends the stream here: its "time" comes END_WAIT later than the Segment's wait.
+        """
+        nonlocal line_done, settled
+        if elapsed < rest.seconds:
+            return True
+        if line_done is None:
+            line_done, recorder.phase = ctx.now(), f"settle {finishing}"
+        settled = settling.tick(ctx.now())
+        return settled is None
 
     since, recorder.phase = ctx.now(), f"compliant {finishing}"
     ctx.log_info(f"{label}: {gate.text} STALLED at {stalled_at:.1f} of {segment.seconds:.1f} s; {mating} back under "
                  f"joint control, {finishing} finish the line under compliance ({rest.seconds:.1f} s)")
-    ended = await stream(ctx, robot, rest, keep_going=to_the_end, recorder=recorder)
-    phase(recorder.phase, since, ended)
+    ended = await stream(ctx, robot, rest, keep_going=keep_going, recorder=recorder)
+    phase(f"compliant {finishing}", since, ended)
+    if line_done is not None:
+        # * A stream failure during the settle keeps its reason as the settle's end.
+        phase(f"settle {finishing}", line_done, {True: "settled", False: "not settled"}.get(settled, ended))
+    if settled is not None:
+        record["settle"] = {"arms": list(holding), "seconds": settling.seconds, "moved_mm": settling.moved_mm,
+                            "settled": settled}
+        if settled:
+            ctx.log_info(f"{label}: {finishing} settled after {settling.seconds:.1f} s (moved {settling.moved_mm:.2f} "
+                         f"mm in the last {SETTLE_WINDOW:g} s), held")
+        else:
+            moving = ("its move unknown (no TCP)" if settling.moved_mm is None
+                      else f"still moving {settling.moved_mm:.2f} mm per {SETTLE_WINDOW:g} s")
+            ctx.log_warn(f"{label}: {finishing} NOT settled {SETTLE_CEILING:g} s after its last target, {moving}; "
+                         f"held anyway")
     return "stalled" if ended == "ended" else ended
 
 

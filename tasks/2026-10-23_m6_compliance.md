@@ -333,3 +333,6 @@ None: Q1–Q5 were decided on 2026-10-23 (Decisions, at the top).
 - Deviations from the text: `HOLD_FOR_STALL` lives in `stream.py`; `StallGate(ctx, tools, motor)`; the run functions
   take `watch` (the motion watch) and `recorder` (the panel's live line); the retreat's `replan` may answer None
   (60 s) → FAILED; the stream also stops when mocap loses the base; the fake arm follows targets with its joints (IK).
+- M6c settle rule (2026-10-27): after a one-mate bar's stall the holding arm keeps its end target under compliance
+  until its TCP stands still (`stream.Settling`: under 0.5 mm over 0.5 s, 3 s at most, said loudly when not), then
+  holds and switches back; `tasks/2026-10-26_m6b_one_mate_bars.md` D2.

@@ -57,6 +57,12 @@ MIN_LEADING_MM = 0.5
 MIN_PART_SECONDS = 0.5
 #: Samples a `Recorder` keeps, the last ones: about a minute at 20 Hz.
 MAX_SAMPLES = 1300
+#: An arm has settled against the force once its measured TCP moved less than this, metres ...
+SETTLE_TOL = 0.0005
+#: ... over this long, seconds: the move is this tick's TCP against the one a window ago.
+SETTLE_WINDOW = 0.5
+#: Seconds after an arm's last target before it is switched back anyway, settled or not.
+SETTLE_CEILING = 3.0
 
 #: How a compliant part ended: ok, then not. HOLD_NOT_SENT is a rigid part's (`send.HOLD_NOT_SENT`), passed through.
 STALLED, RIGID_DONE, RETREATED, CLOSED = "STALLED", "RIGID_DONE", "RETREATED", "CLOSED"
@@ -385,6 +391,50 @@ class Recorder:
 def _rounded(values) -> list[float]:
     """Values rounded to a micrometre (or a millionth), for the record."""
     return np.round(np.asarray(values, dtype=float), 6).tolist()
+
+
+# --- --- --- --- --- SETTLE --- --- --- --- ---
+
+class Settling:
+    """Whether every watched arm's measured TCP stopped moving (settled against the force) before the ceiling passed.
+
+    Attributes:
+        moved_mm: The furthest any arm's TCP moved against its sample a window earlier, millimetres; None while that
+            sample is not there yet, or for an arm without a TCP (it never settles).
+        seconds: Since the first tick.
+    """
+
+    def __init__(self, robot: HuskyRobotInterface, arms: Collection[str], tol: float = SETTLE_TOL,
+                 window: float = SETTLE_WINDOW, ceiling: float = SETTLE_CEILING):
+        """Watch `arms` of `robot`: settled once each moved under `tol` metres over `window` seconds."""
+        self.robot, self.tol, self.window, self.ceiling = robot, tol, window, ceiling
+        self.moved_mm: float | None = None
+        self.seconds = 0.0
+        self._first: float | None = None
+        #: Arm name -> (ROS time, TCP position) samples: the newest at least a window old, and all since.
+        self._kept: dict[str, deque[tuple[float, np.ndarray]]] = {name: deque() for name in arms}
+
+    def tick(self, now: float) -> bool | None:
+        """Keep every arm's TCP at ROS time `now`: True once all settled, False at the ceiling, None before either."""
+        self._first = now if self._first is None else self._first
+        self.seconds = now - self._first
+        moved: list[float | None] = []
+        for name, kept in self._kept.items():
+            tcp = self.robot.arms[name].state.tcp_position
+            if tcp is None:
+                moved.append(None)
+                continue
+            kept.append((now, np.asarray(tcp, dtype=float)))
+            # * The pair compared spans a whole window whatever the tick times: ROS ticks are not on a grid.
+            while len(kept) > 1 and kept[1][0] <= now - self.window:
+                kept.popleft()
+            full = now - kept[0][0] >= self.window
+            moved.append(float(np.linalg.norm(kept[-1][1] - kept[0][1])) if full else None)
+        worst = None if None in moved else max(moved)
+        self.moved_mm = None if worst is None else worst * 1e3
+        if worst is not None and worst < self.tol:
+            return True
+        return False if self.seconds >= self.ceiling else None
 
 
 # --- --- --- --- --- STREAM --- --- --- --- ---
