@@ -1,4 +1,4 @@
-# M6b: one-mate bars: no spiral, the holding arm finishes its line (spec, 2026-10-26)
+# M6b: one-mate bars: no spiral, the holding arm finishes its line (spec, 2026-10-26; M6c settle rule 2026-10-27)
 
 Follows M6 (`tasks/2026-10-23_m6_compliance.md`, 2b8aa26 on `yh/m6-compliance`). A one-mate bar is an insert held by
 two arms where one arm's joint screw tightens (`InsertPlan.mating` one name, `arms` two): B21 and the vertical bars
@@ -11,12 +11,15 @@ right after the ground bars. A two-mate bar has both arms mating; a ground bar n
   insert has two mating joints; the stored `spiral` setting is kept; a one-mate bar's `plan_insert` runs the straight
   line and its prompt says "straight line: no spiral for a bar with one mating joint".
 - D2 A one-mate bar's compliant part ends per arm: at the stall the MATING arm holds at its TCP and goes back to the
-  joint controller at once (as today); the HOLDING arm streams the rest of its planned line under compliance until its
-  end target has gone out (elapsed ≥ T_c; no timer, no new constant), then holds and goes back. In the lab the abrupt
-  switch of the holding arm, still settling against the force, left the bar skewed. A stall after T_c (during the
-  hold) or before the first compliant target (during the rigid part or the switch) ends both at once, as today.
+  joint controller at once (as today); the HOLDING arm streams the rest of its planned line under compliance, then
+  keeps sending its end target until it has settled against the force (M6c, the user's decision of 2026-10-27): its
+  measured TCP moved less than SETTLE_TOL (0.5 mm) over the last SETTLE_WINDOW (0.5 s), or SETTLE_CEILING (3 s)
+  after the end target went out, said loudly; then it holds and goes back. In the lab the abrupt switch of the holding
+  arm, still settling against the force, left the bar skewed; the compliance controller is a spring, so one tick after
+  the last target the arm is still short of where the spring balances the contact force. A stall after T_c (during
+  the hold) or before the first compliant target (during the rigid part or the switch) ends both at once, as today.
   NO_STALL, Cancel, Stop all: as today. Two-mate and ground bars: unchanged. The record keeps each arm's switch back
-  as phases.
+  and the settle as phases.
 
 ## 0. Behaviour, with the code
 ### 0.1 The rule (`shared/execution/spiral.py`, next to `spiral_problem`)
@@ -45,19 +48,30 @@ still records what was asked. `plugins/movement_exec/sequences.py:_insert` is un
      not ok → return "stalled" (the finally asks every arm again; the loud error was logged; FAILED via `restored`).
   2. `back_early.update(plan.mating)`.
   3. `rest = Segment({n: line_target(start[n], end[n], seconds, stalled_at) for n in holding}, {n: end[n]},
-     segment.seconds - stalled_at, 0.0)`: the holding arm's line goes on from the point reached at the stall tick.
-  4. `to_the_end(elapsed)`: False once the end target went out (`elapsed >= rest.seconds` seen on the previous call);
-     the stream ends one tick after τ = 1, nothing more.
+     segment.seconds - stalled_at, SETTLE_CEILING)`: the holding arm's line goes on from the point reached at the
+     stall tick; the wait is the ceiling, so `stream`'s own "time" (END_WAIT later) never fires first.
+  4. `keep_going(elapsed)` (M6c): True while `elapsed < rest.seconds` (the line); then the end target goes out again
+     each tick while `Settling(robot, holding).tick(now)` (`stream.py`) answers None, and the stream ends once it
+     answers True (every holding arm's TCP moved < SETTLE_TOL against its newest sample at least SETTLE_WINDOW old,
+     so the pair spans a window whatever the tick times; None until it has one) or False (SETTLE_CEILING since the
+     first end target; an arm without a TCP never settles).
   5. `recorder.phase = "compliant <holding>"`; one `log_info`: "<serial>: insert: <gate.text> STALLED at X of T_c s;
      <mating> back under joint control, <holding> finish the line under compliance (Y s)"; `ended = await stream(ctx,
-     robot, rest, keep_going=to_the_end, recorder=recorder)`; `phase(recorder.phase, since, ended)`; return "stalled"
-     if ended == "ended" else ended (a base drift or refused target here fails the insert as any stream failure).
+     robot, rest, keep_going=keep_going, recorder=recorder)`; `phase("compliant <holding>", since, ended)`; once the
+     line finished (`recorder.phase` is "settle <holding>" from its first end target on): `phase("settle <holding>",
+     <the first end target>, "settled" | "not settled" | the stream's failure)`; when the settle finished:
+     `record["settle"] = {"arms", "seconds", "moved_mm" (None when unknown: no TCP), "settled"}` and one log line
+     (info "<holding> settled after X s (moved Y mm in the last 0.5 s), held"; warn "<holding> NOT settled 3 s after
+     its last target, still moving Y mm per 0.5 s | its move unknown (no TCP); held anyway"); return "stalled" if
+     ended == "ended" else ended (a base drift or refused target here, during the line or the settle, fails the insert
+     as any stream failure).
 - Cancel during the rest: CancelledError out of `stream` → the finally: STOP, `leave_compliance([holding])`; the mating
   arm is in `back_early`, no second hold. Cancel during the early leave: not yet in `back_early` → asked again in the
   finally (a duplicate restore task, harmless). `_dry_run` unchanged.
 - Record: `phases` = rigid, switch, compliant ("stalled", t1 = the stall), "<mating> back", "compliant <holding>"
-  ("ended"); `switch.back_s/back_ok` = the holding arm's; the samples' `phase` names the arm; the movement_exec live
-  line shows `recorder.phase`.
+  ("ended"; it spans the line and the settle), "settle <holding>" ("settled" | "not settled" | a failure; its tail,
+  from the first end target: the two overlap); `settle` = {arms, seconds, moved_mm, settled}; `switch.back_s/back_ok`
+  = the holding arm's; the samples' `phase` names the arm; the movement_exec live line shows `recorder.phase`.
 
 ### 0.4 Panel (`plugins/assembly_run/panel.py`, `plugins/assembly_run/plugin.py`)
 - `PanelStatus` + `spiral_fits: bool`. `RunPanel.__init__`: the Spiral box `disabled=True` at start (no step yet), hint
@@ -80,9 +94,10 @@ still records what was asked. `plugins/movement_exec/sequences.py:_insert` is un
 |---|---|
 | shared/execution/spiral.py | `spiral_fits` (§0.1) |
 | shared/execution/insert.py | §0.2, §0.3; module / InsertPlan docstrings one line each |
+| shared/execution/stream.py | `SETTLE_TOL`, `SETTLE_WINDOW`, `SETTLE_CEILING`, `Settling` (M6c, §0.3 step 4) |
 | plugins/assembly_run/panel.py, plugin.py | §0.4 |
 | test/plugin_fakes.py `FakeGui.add` | the widget also gets `disabled=options.get("disabled", False)` |
-| README.md movement_exec row | "a bar with one mating joint runs the straight line whatever Spiral says (the box is greyed then), and after its stall the other arm finishes its line under compliance before switching back" |
+| README.md movement_exec row | "a bar with one mating joint runs the straight line whatever Spiral says (the box is greyed then), and after its stall the other arm finishes its line under compliance, settles against the force (≤ 3 s) and switches back" |
 | tasks/2026-10-23_m6_compliance.md Decisions | one bullet pointing here; lab step 4 (the spiral) needs a two-mate bar (B22), not B21 |
 
 ## 2. Tests (all `safety`; the fake clock, never wall time; 0.15 s = three ticks of margin)
@@ -120,3 +135,6 @@ still records what was asked. `plugins/movement_exec/sequences.py:_insert` is un
 - The rest stream's base-drift reference restarts at its own start; the Recorder's `base_drift_max_mm` spans the
   insert. A base drift or refused target during the rest ends FAILED although the screw stalled (the record shows
   it); the operator uses Next ▶ / Mark done (A3's rule).
+- The ceiling (SETTLE_CEILING, 3 s) is a safety net, not the rule: an arm still creeping then is held where it is and
+  the insert ends STALLED all the same; `record["settle"]["moved_mm"]` and the warn line say how much it still moved
+  per window. If the lab's settles take longer, raise the ceiling, not the tolerance.

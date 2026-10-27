@@ -17,10 +17,10 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
 from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.robot_interface.frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from husky_assembly_teleop.robot_interface.mocap_state import POSE_TIMEOUT
-from husky_assembly_teleop.shared.execution.stream import (ARRIVAL, FK_TCP_TOL, MAX_SAMPLES, Recorder, Segment,
-                                                           fk_tcp_gap, line_target, measured_tool0, plan_stream,
-                                                           progress, split_rows, split_seconds, stream,
-                                                           target_problem, tool0_fk)
+from husky_assembly_teleop.shared.execution.stream import (ARRIVAL, FK_TCP_TOL, MAX_SAMPLES, SETTLE_CEILING,
+                                                           SETTLE_WINDOW, Recorder, Segment, Settling, fk_tcp_gap,
+                                                           line_target, measured_tool0, plan_stream, progress,
+                                                           split_rows, split_seconds, stream, target_problem, tool0_fk)
 from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
@@ -279,6 +279,71 @@ def test_the_recorder_keeps_a_sample_per_tick_and_each_arms_peak_force():
     for _ in range(MAX_SAMPLES + 2):
         lab.recorder.tick(lab.ctx.t)
     assert len(lab.recorder.samples) == MAX_SAMPLES and lab.recorder.as_record()["stream_dropped"] == 5
+
+
+# --- --- --- --- --- settling --- --- --- --- ---
+
+def test_settling_waits_for_a_full_window_then_says_that_still_arms_settled():
+    """Both TCPs standing still: None for the first 0.4 s, True at 0.5 s with 0 mm moved."""
+    lab = Lab()
+    settling = Settling(lab.robot, ARMS)
+    assert [settling.tick(10.0 + k * 0.1) for k in range(5)] == [None] * 5 and settling.moved_mm is None
+    assert settling.tick(10.5) is True
+    assert settling.moved_mm == 0.0 and settling.seconds == pytest.approx(SETTLE_WINDOW)
+
+
+def test_settling_compares_with_the_tcp_a_window_ago():
+    """A 0.6 mm step at 0.3 s keeps the left arm unsettled until the step has left the window: True from 0.8 s."""
+    lab = Lab()
+    left = lab.robot.arms["left_ur_arm"]
+    settling = Settling(lab.robot, ARMS)
+    answers = []
+    for k in range(10):
+        if k == 3:
+            left.state.tcp_position = np.add(left.state.tcp_position, [0.0006, 0.0, 0.0])
+        answers.append(settling.tick(10.0 + k * 0.1))
+        if k == 7:
+            assert settling.moved_mm == pytest.approx(0.6)
+    assert answers == [None] * 8 + [True, True] and settling.moved_mm == 0.0
+
+
+def test_settling_gives_up_at_the_ceiling_while_an_arm_keeps_moving():
+    """The left TCP moves 1 mm a tick: None through 2.9 s, False at 3 s, 5 mm moved in the last window."""
+    lab = Lab()
+    left = lab.robot.arms["left_ur_arm"]
+    settling = Settling(lab.robot, ARMS)
+    answers = []
+    for k in range(31):
+        left.state.tcp_position = np.add(left.state.tcp_position, [0.0, 0.0, 0.001])
+        answers.append(settling.tick(10.0 + k * 0.1))
+    assert answers == [None] * 30 + [False]
+    assert settling.moved_mm == pytest.approx(5.0) and settling.seconds == pytest.approx(SETTLE_CEILING)
+
+
+def test_an_arm_without_a_tcp_never_settles():
+    """The right TCP unknown, the left standing still: None until the ceiling, then False; the move unknown."""
+    lab = Lab()
+    lab.robot.arms["right_ur_arm"].state.tcp_position = None
+    settling = Settling(lab.robot, ARMS)
+    assert all(settling.tick(10.0 + k * 0.1) is None for k in range(30)) and settling.moved_mm is None
+    assert settling.tick(13.0) is False and settling.moved_mm is None
+
+
+def test_settling_works_off_the_tick_grid():
+    """Ticks every 0.07 s: True at 0.56 s with still arms; the left moving 1 mm a tick from then on, False at 3.01 s.
+
+    The pair compared spans a whole window whatever the tick times: the ceiling's spans 8 ticks, so 8 mm moved.
+    """
+    lab = Lab()
+    left = lab.robot.arms["left_ur_arm"]
+    settling = Settling(lab.robot, ARMS)
+    answers = [settling.tick(10.0 + k * 0.07) for k in range(9)]
+    assert answers == [None] * 8 + [True] and settling.seconds == pytest.approx(0.56)
+    for k in range(9, 44):
+        left.state.tcp_position = np.add(left.state.tcp_position, [0.001, 0.0, 0.0])
+        answers.append(settling.tick(10.0 + k * 0.07))
+    assert answers[9:] == [None] * 34 + [False]
+    assert settling.moved_mm == pytest.approx(8.0) and settling.seconds == pytest.approx(3.01)
 
 
 # --- --- --- --- --- the fake arm's TCP --- --- --- --- ---
