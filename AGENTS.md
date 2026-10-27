@@ -79,6 +79,9 @@ python3 -m pytest -m "" --old-scripts         # also the old calibration scripts
 
 - ! Run the default set (`pytest`) before every commit, and everything (`-m ""`) before merging into `core-port`;
   commit or merge only when it passes. Run nothing bigger while iterating.
+- Test from small to large: while changing code, run only the smallest set that covers it (the test file, its area,
+  or its marker: `-m <plugin>`, `-m safety`); the commit or merge set comes last, when the work is done.
+- When that set fails, fix it and rerun only the failing tests; run the set again only once they pass.
 - Tests run on 4 workers (pytest-xdist) and fail after 60 s (pytest-timeout); both are in `requirements.txt`. Starting
   the workers takes ~3 s: use `-n 0` when the selection runs in under ~10 s (a folder, a small plugin's group).
 - ! A monitor (often with a simulation) is usually running on the same machine, and test runs slow its ticks. The
