@@ -16,6 +16,10 @@ from scaffolding_assembly_core.process import write
 class _Drawing(SimpleNamespace):
     """The overlay, keeping the joints of every `show`."""
 
+    def set_bar_lines(self, on: bool) -> None:
+        """Keep the switch, as the real drawing does."""
+        self.bar_lines = on
+
     def show(self, state, joints, everything: bool = False, reference: frozenset[str] = frozenset()) -> None:
         """Keep the joints it was asked to draw."""
         self.shown.append(joints)

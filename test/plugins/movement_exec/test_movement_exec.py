@@ -164,6 +164,9 @@ def test_a_motion_is_confirmed_sent_arrives_and_is_recorded():
     assert json.loads(json.dumps(record))["outcome"]["status"] == "ARRIVED"
     assert record["basis"]["serial"] == "a200-0806" and record["plan"]["planner"] == "fake"
     assert np.allclose(result.end["left_ur_arm_shoulder_pan_joint"], LEFT[0] + 0.2, atol=1e-3)
+    # * Where the robot stood and when, at the part's start and end.
+    assert record["exec"]["ros_time_start"] < record["exec"]["ros_time_end"]
+    assert len(record["exec"]["base_at_start"]) == 7 and len(record["exec"]["base_at_end"]) == 7
 
 
 @pytest.mark.safety

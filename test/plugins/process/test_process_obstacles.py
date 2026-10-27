@@ -196,6 +196,10 @@ class _Drawing(SimpleNamespace):
     def set_ghost(self, ghost: bool) -> None:
         """Nothing to fade."""
 
+    def set_bar_lines(self, on: bool) -> None:
+        """Keep the switch, as the real drawing does."""
+        self.bar_lines = on
+
     def show(self, state, joints, everything: bool = False, reference: frozenset[str] = frozenset()) -> None:
         """Keep what it was asked to draw see-through where it stands."""
         self.references.append(reference)

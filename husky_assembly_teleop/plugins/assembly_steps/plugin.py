@@ -25,7 +25,9 @@ import threading
 from typing import TYPE_CHECKING
 
 import viser
-from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.ids import robot_id, split_link_id
+from scaffolding_assembly_core.robot import FLANGE_SUFFIX
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
@@ -36,7 +38,8 @@ from ...shared.assembly_planning.tamp_route import FAR, IK_GOALS
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
 from ...shared.execution.retime import RetimeError, retime
-from ...shared.execution.servo import carried_insert_goals, flange_side
+from ...shared.execution.servo import authored_start, carried_insert_goals, flange_poses, flange_side, tool0_errors
+from ...shared.execution.stream import tool0_world_path
 from ...shared.motion_planner_contract import MotionPlanRequest
 from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_KINDS, REFUSED,
                                               REFUSED_PART, ExecRequest, ExecResult, PartPlan, current_primary,
@@ -46,6 +49,7 @@ from ...shared.planner.timed_path import TimedPath
 from ...shared.process_contract import Carry
 from ...ui.assembly_tab import ASSEMBLY_TAB
 from ...ui.ghost import RobotGhost
+from .diagnosis import StepDiagnosis, path_line, tool0_line
 from .goal import StepGoal, same_step
 from .panel import StepsPanel
 from .step_panel_base import PlannerPlugin, Search
@@ -60,6 +64,8 @@ if TYPE_CHECKING:
 
 #: Seconds to wait for a plan: every try of tamp's longest search, the first plan's model loading, and a margin.
 PLAN_TIME_LIMIT = ATTEMPTS * FAR["max_time"] + 60.0 + WAIT_MARGIN
+#: Opacity of the real robots while the visual diagnosis is on (the old monitor's VISUAL_DIAG_ROBOT_ALPHA).
+DIAGNOSIS_OPACITY = 0.3
 
 
 @register
@@ -98,6 +104,10 @@ class AssemblyStepsPlugin(PlannerPlugin):
         self._basis: PlanBasis | None = None
         #: The step key an Exec runs for, until its result comes back.
         self._executing: tuple | None = None
+        #: Visual diagnosis: the real robots see-through and each insert or retreat plan's tool0 path drawn.
+        self.visual_diagnosis = False
+        #: The diagnostic drawings (Check tool0, the plan's path), made on first use.
+        self._diagnosis_nodes: StepDiagnosis | None = None
         #: The shortest motion time the arms' limits allow for the plan, seconds; NaN without a plan.
         self.minimum = math.nan
 
@@ -121,12 +131,19 @@ class AssemblyStepsPlugin(PlannerPlugin):
         super().update(ctx)
 
     def draw(self, ctx: PluginContext) -> None:
-        """Fill the panel, the slider and the ghosts."""
+        """Fill the panel, the slider and the ghosts; the diagnostic drawings show while the panel is in use."""
         if self.idle or self._panel is None:
             return
         self._panel.draw(ctx, self)
         self._draw_slider()
         self._draw_ghosts(ctx)
+        if self._diagnosis_nodes is not None and self._used is not None:
+            self._diagnosis_nodes.visible = self._used.active
+
+    def teardown(self, ctx: PluginContext) -> None:
+        """Put the real robots back solid, then as the base."""
+        self._fade_robots(ctx, False)
+        super().teardown(ctx)
 
     def _follow(self, ctx: PluginContext) -> None:
         """Take the run's current step; a new one starts clean. A toggled workaround moves to its step's primary."""
@@ -153,6 +170,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         Another action also drops the joints carried forward in the process panel.
         """
         self._clear()
+        if self._diagnosis_nodes is not None:
+            self._diagnosis_nodes.clear()
         if key is None or self._key is None or key[1] != self._key[1]:
             self._process(ctx).request_carry(None)
         self._key, self._done, self._offer = key, set(), None
@@ -228,6 +247,89 @@ class AssemblyStepsPlugin(PlannerPlugin):
             if isinstance(timed, TimedPath):
                 self.path = timed
                 self._t = min(self._t, timed.duration)
+
+    def set_visual_diagnosis(self, ctx: PluginContext, on: bool) -> None:
+        """Switch the visual diagnosis: fade the real robots, and draw a ready insert or retreat plan's path."""
+        self.visual_diagnosis = on
+        self._used.touch()
+        self._fade_robots(ctx, on)
+        if on:
+            self._draw_plan_path(ctx)
+        elif self._diagnosis_nodes is not None:
+            self._diagnosis_nodes.clear("path")
+
+    def _fade_robots(self, ctx: PluginContext, on: bool) -> None:
+        """Every configured robot with arms see-through, or solid again."""
+        for config in ctx.config.robots:
+            if config.arms:
+                ctx.view.set_robot_opacity(config.serial, DIAGNOSIS_OPACITY if on else None)
+
+    def _diagnosis(self, ctx: PluginContext) -> StepDiagnosis:
+        """The diagnostic drawings, made on first use."""
+        if self._diagnosis_nodes is None:
+            self._diagnosis_nodes = StepDiagnosis(ctx)
+        return self._diagnosis_nodes
+
+    def check_tool0(self, ctx: PluginContext) -> None:
+        """Draw each flange's live tool0 against the step's authored target, say the gap, and record it."""
+        self._used.touch()
+        current = self.current()
+        if current is None:
+            self._say("Check tool0: no current step", failed=True)
+            return
+        view, action, _op_step, step = current
+        target = step.movement.target
+        targets = target.robots[step.action.robot].link_poses if target is not None and step.action.robot in \
+            target.robots else {}
+        targets = {flange: pose for flange, pose in targets.items() if flange.endswith(FLANGE_SUFFIX)}
+        if not targets:
+            self._say(f"Check tool0: {step.label} has no authored tool0 target", failed=True)
+            return
+        live = ctx.scene.snapshot.robots.get(robot_id(self.serial)) if self.serial else None
+        if live is None or not is_live(live, ctx.now()):
+            self._say(f"Check tool0: {self._robot_name} ({self.serial}) is not live", failed=True)
+            return
+        poses = flange_poses(live, targets)
+        errors = tool0_errors(poses, targets)
+        self._diagnosis(ctx).show_tool0(poses, targets)
+        line = tool0_line(errors)
+        self._say(line)
+        ctx.log_info(f"[tool0 check] {step.label}: {line}")
+        self._assembly_run(ctx).request_record("check_tool0", action=action, movement=step.movement.id, data={
+            side: {key: error[key] for key in ("pos_err_mm", "pos_norm_mm", "rot_err_deg")}
+            for side, error in errors.items()})
+
+    def _draw_plan_path(self, ctx: PluginContext) -> None:
+        """With the visual diagnosis on and a ready insert or retreat plan: its tool0 path and the frames, logged."""
+        current = self.current()
+        if not self.visual_diagnosis or current is None or self._route is None or self._basis is None:
+            return
+        if self.routine() not in (Routine.INSERT, Routine.RETREAT_LINEAR):
+            return
+        view, action, _op_step, step = current
+        robot = ctx.scene.snapshot.robots.get(robot_id(self.serial)) if self.serial else None
+        if robot is None:
+            return
+        trajectory = self._route.result.trajectory
+        arms = sorted({name[:-len(suffix) - 1] for name in trajectory.joint_names for suffix in UR_JOINT_NAMES
+                       if name.endswith(f"_{suffix}")})
+        paths = tool0_world_path(robot.model.urdf, self._basis.base, trajectory.joint_names, trajectory.positions,
+                                 arms)
+        target = step.movement.target
+        ends = target.robots[step.action.robot].link_poses if target is not None else {}
+        rhino_target, rhino_start = {}, {}
+        for flange, pose in ends.items():
+            link = split_link_id(flange)[1]
+            if not link.endswith(FLANGE_SUFFIX):
+                continue
+            arm = link[:-len(FLANGE_SUFFIX)]
+            rhino_target[arm] = pose
+            try:
+                rhino_start[arm] = authored_start(view.process.process.actions[action], step.movement_index, flange)
+            except ValueError:
+                pass
+        self._diagnosis(ctx).show_path(paths, rhino_start, rhino_target)
+        ctx.log_info(path_line(step.label, paths, rhino_start, rhino_target))
 
     def set_ignore_built(self, ignore: bool) -> None:
         """Plan as if the built bars were not there (for tests in the air); a plan made otherwise goes stale."""
@@ -366,6 +468,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
                                                    dict(zip(trajectory.joint_names, trajectory.positions[-1])),
                                                    "plan"))
+            self._draw_plan_path(ctx)
             return (f"{route.planner}: {route.waypoints} waypoints in {route.seconds:.1f} s; the motion takes "
                     f"{self.path.duration:.1f} s"), bool(route.warnings)
 
@@ -385,8 +488,10 @@ class AssemblyStepsPlugin(PlannerPlugin):
                             obstacles_collide=self._obstacles_collide(ctx))
 
     def forget_plan(self) -> None:
-        """Drop the route and its basis with the path."""
+        """Drop the route and its basis with the path, and the path's diagnostic drawing."""
         self._route = self._basis = None
+        if self._diagnosis_nodes is not None:
+            self._diagnosis_nodes.clear("path")
 
     def show_target(self, ctx: PluginContext, ghost: RobotGhost) -> None:
         """The acting arms at the goal check's IK joints, else at the movement's authored target, where it stands."""

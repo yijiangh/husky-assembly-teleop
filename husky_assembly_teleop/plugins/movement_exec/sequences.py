@@ -87,6 +87,7 @@ class Job:
         show: Writes the panel's servo line.
         opened: The arms whose gripper screws a retreat of this request opened (its ungrasp is then done).
         recorder: The samples of the compliant part running (insert, retreat, handoff), for the panel; else None.
+        measured: Gets each servo reading as it is taken, for the Plots tab.
     """
 
     ctx: PluginContext
@@ -100,6 +101,7 @@ class Job:
     show: Callable[[str], None] = lambda _line: None
     opened: set[str] = field(default_factory=set)
     recorder: Recorder | None = None
+    measured: Callable[[Mapping[str, Any]], None] = lambda _reading: None
 
     @property
     def who(self) -> str:
@@ -124,6 +126,8 @@ class PartRun:
         freeze: The other robots' freeze while a motion runs; its `problem` says why it broke. None for other parts.
         servo_file: The servo record's path in the run, once the servo part wrote one.
         carry: What a transfer's bar servo leaves for its insert's plan, once it did.
+        started_at: ROS time the part started, after its checks; `ended_at` when it ended, however.
+        base_at_start: The acting robot's base when the part started.
     """
 
     part: PartPlan
@@ -138,6 +142,9 @@ class PartRun:
     freeze: Freeze | None = None
     servo_file: str | None = None
     carry: Carried | None = None
+    started_at: float | None = None
+    ended_at: float | None = None
+    base_at_start: Pose | None = None
 
     def ended(self, result: str, status: str, reason: str) -> None:
         """Say how the part ended."""
@@ -165,7 +172,18 @@ async def run_part(job: Job, run: PartRun) -> None:
     runs = {MOTION_PART: _motion, INSERT_PART: _insert, RETREAT_PART: _retreat, OPEN_PART: _robotiq,
             HANDOFF_PART: _handoff, GRASP_PART: _grasp, WITH_MOTION_PART: _with_motion, BY_HAND_PART: _by_hand,
             BASE_PART: _by_hand}
-    await runs[kind](job, run)
+    part_started(job, run)
+    try:
+        await runs[kind](job, run)
+    finally:
+        run.ended_at = job.ctx.now()
+
+
+def part_started(job: Job, run: PartRun) -> None:
+    """Note when a part starts and where the acting robot's base is then, for its record."""
+    run.started_at = job.ctx.now()
+    snapshot = job.ctx.scene.snapshot.robots.get(robot_id(job.request.serial))
+    run.base_at_start = snapshot.base if snapshot is not None else None
 
 
 def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None) -> str:

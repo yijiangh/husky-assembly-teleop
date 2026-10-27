@@ -15,3 +15,9 @@ def body_color(body_id: str) -> tuple[int, int, int]:
     if body_id.startswith("ground/"):
         return GROUND_COLOR
     return JOINT_COLOR
+
+
+#: The Rhino bar lines (the process panel's box, mocap_bars' planned bar): the old monitor's pink, and their width in
+#: screen pixels.
+BAR_LINE_COLOR = (227, 119, 194)
+BAR_LINE_WIDTH = 8.0

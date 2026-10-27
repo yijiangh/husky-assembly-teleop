@@ -37,12 +37,13 @@ from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..plugin_api.trace import Signal
 from ..robot_interface.mocap_state import RawMarkers
+from ..shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH
 from ..shared.recordings.runs import run_folder, save_recording, write_description
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.scene_view import add_shape
 from ..ui.style import BUSY, NONE, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, note, section, values
 from ..world.bar_fit import BarFit
-from ..world.bar_pose import transform_points
+from ..world.bar_pose import bar_ends, transform_points
 from ..world.marker_fit import BarDeviation, bar_deviation
 from ..world.marker_layouts import BarLayout, Sensed, bar_layouts, fit_bar, sensed_from_raw
 from ..world.measured import TrackedObject
@@ -161,6 +162,11 @@ class MocapBarsPlugin(HuskyPlugin):
         self._planned_cloud = scene.add_point_cloud(f"{root}/planned", points=np.zeros((0, 3)), colors=PLANNED_COLOR,
                                                     point_size=MARKER_POINT_SIZE, point_shape="circle",
                                                     precision="float32", visible=False)
+        # * The planned bar's centre line and name, the pink of the process panel's Rhino bar lines.
+        self._planned_line = scene.add_line_segments(f"{root}/planned_line", points=np.zeros((1, 2, 3)),
+                                                     colors=BAR_LINE_COLOR, thickness=BAR_LINE_WIDTH,
+                                                     thickness_units="screen", visible=False)
+        self._planned_label = scene.add_label(f"{root}/planned_label", "", visible=False)
 
         # ! Callbacks run on a viser thread: hand every action to the main thread.
         self._bar.on_update(ctx.defer_value("choose bar", self._choose))
@@ -410,10 +416,16 @@ class MocapBarsPlugin(HuskyPlugin):
             self._measured_cloud.points = np.concatenate([sensed.points, filled]).astype(np.float32)
             self._measured_cloud.colors = np.array([MEASURED_COLOR] * len(sensed.points) + [FILLED_COLOR] * len(filled),
                                                    dtype=np.uint8).reshape(-1, 3)
-        layout = self._layouts[self._bar_id].points if self._bar_id in self._layouts else None
+        bar_layout = self._layouts.get(self._bar_id)
+        layout = bar_layout.points if bar_layout is not None else None
         self._planned_cloud.visible = layout is not None and self._planned is not None and markers is not None
+        self._planned_line.visible = self._planned_label.visible = self._planned_cloud.visible
         if self._planned_cloud.visible:
-            self._planned_cloud.points = transform_points(self._planned.matrix(), layout).astype(np.float32)
+            planned = self._planned.matrix()
+            self._planned_cloud.points = transform_points(planned, layout).astype(np.float32)
+            self._planned_line.points = bar_ends(planned, bar_layout.length).astype(np.float32).reshape(1, 2, 3)
+            self._planned_label.text = f"{self._bar_id[len('bars/'):]} Rhino"
+            self._planned_label.position = tuple(float(v) for v in planned[:3, 3])
         fit = self._fit
         self._fit_cloud.visible = self._fit_lines.visible = fit is not None and markers is not None
         if not self._fit_cloud.visible:

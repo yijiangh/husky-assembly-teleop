@@ -16,7 +16,8 @@ from ...plugin_api.context import PluginContext
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, GRASP_PART, HANDOFF_PART, INSERT_PART,
                                               MAX_TRAJ_TIME, MOTION_PART, OPEN_PART, RETREAT_PART, SERVO_PART,
                                               WITH_MOTION_PART, PartPlan)
-from ...ui.assembly_tab import EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLOTS_BAND, SETTINGS_BAND, STEP_BAND
+from ...ui.assembly_tab import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLOTS_BAND, SETTINGS_BAND,
+                                STEP_BAND)
 from ...ui.phone import slim_labels_css
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
 from .plan_plots import PlanPlots
@@ -49,6 +50,9 @@ class StepsPanel:
                                               "transfer, the linear move's start after an approach) by IK at the live "
                                               "base, and show it as the target ghost; nothing moves. Only a transfer "
                                               "or an approach has such a goal")
+            check_tool0 = gui.add_button("Check tool0", color="teal", icon=CHECK_ICON,
+                                         hint="Draw each flange's live tool0 (mocap base + FK, red) against the "
+                                              "step's authored target (blue) and say the gap; nothing moves")
             plan = gui.add_button("Plan", color="teal", icon=PLAN_ICON,
                                   hint="Plan the step's motion from where the robot is now")
             path = gui.add_button_group("Path", ["Play", "Clear"],
@@ -72,16 +76,26 @@ class StepsPanel:
             gui.add_html(section("settings", SECTION_TOOL))
             self._ignore = gui.add_checkbox("Ignore built bars", False,
                                             hint="Plan as if the built bars were not there: for tests in the air")
+            self._diagnosis = gui.add_checkbox("Visual diagnosis", False,
+                                               hint="The real robots see-through, and after each insert or retreat "
+                                                    "plan its tool0 path with the Rhino and planned start and end "
+                                                    "frames; the log says the gaps")
         with ctx.view.ui(band=PLOTS_BAND) as gui:
             gui.add_html(section("plan", SECTION_CTRL))
             self._plots = PlanPlots(gui)
         self._check.on_click(ctx.defer("live IK", lambda: plugin.check_goal(ctx)))
+        check_tool0.on_click(ctx.defer("check tool0", lambda: plugin.check_tool0(ctx)))
         plan.on_click(ctx.defer("plan", lambda: plugin._on_path(ctx, "Plan")))
         path.on_click(ctx.defer_value("path button", lambda label: plugin._on_path(ctx, label)))
         plugin._slider.on_update(ctx.defer_value("scrub", lambda value: plugin._scrub(float(value))))
         commit.on_click(ctx.defer("exec", lambda: plugin._commit(ctx)))
         self._time.on_update(ctx.defer_value("motion time", lambda value: plugin.set_traj_time(float(value))))
         self._ignore.on_update(ctx.defer_value("ignore built bars", lambda value: plugin.set_ignore_built(bool(value))))
+        # ! Operator clicks only: draw writes the box back, and viser calls back for that too, which could undo a
+        #   click queued in the same tick.
+        self._diagnosis.on_update(ctx.defer_value("visual diagnosis",
+                                                  lambda value: plugin.set_visual_diagnosis(ctx, bool(value)),
+                                                  operator_only=True))
 
     def draw(self, ctx: PluginContext, plugin: AssemblyStepsPlugin) -> None:
         """Write the current step, its plan and its parts into the widgets, and the plan into the plots.
@@ -123,6 +137,7 @@ class StepsPanel:
         minimum = "—" if math.isnan(plugin.minimum) else f"{plugin.minimum:.1f}"
         self._minimum.content = block(values(f"min {minimum} s by the arms' limits"))
         self._ignore.value = plugin.ignore_built
+        self._diagnosis.value = plugin.visual_diagnosis
         self._details.content = block(plugin._message_html())
         if plugin.path is not self._plotted:
             # * A new plan, a retime after a motion-time change, or none (Clear, Exec, a new step).

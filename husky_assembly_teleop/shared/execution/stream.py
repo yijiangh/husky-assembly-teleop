@@ -18,7 +18,7 @@ import math
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Collection, Mapping, Sequence
+from typing import TYPE_CHECKING, Callable, Collection, Iterable, Mapping, Sequence
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -183,6 +183,29 @@ def tool0_fk(urdf: Path, arm: str, joints: Mapping[str, float]) -> Pose:
     """
     return compose(invert(link_pose(urdf, Pose(), joints, f"{arm}_base_link")),
                    link_pose(urdf, Pose(), joints, f"{arm}{FLANGE_SUFFIX}"))
+
+
+def tool0_world_path(urdf: Path, base: Pose, names: Sequence[str], rows: Sequence[Sequence[float]],
+                     arms: Iterable[str]) -> dict[str, list[Pose]]:
+    """Each arm's tool0 in the world at every row of a joint path, the robot's base at `base`.
+
+    Args:
+        urdf: The robot's URDF.
+        base: The base pose the path was planned at.
+        names: The path's joint names.
+        rows: The path's joint rows.
+        arms: The arms wanted, e.g. "left_ur_arm".
+
+    Returns:
+        dict[str, list[Pose]]: Arm name -> its tool0 at each row.
+    """
+    arms = tuple(arms)
+    paths: dict[str, list[Pose]] = {arm: [] for arm in arms}
+    for row in rows:
+        joints = dict(zip(names, (float(value) for value in row)))
+        for arm in arms:
+            paths[arm].append(link_pose(urdf, base, joints, f"{arm}{FLANGE_SUFFIX}"))
+    return paths
 
 
 def arm_base_in_world(robot: HuskyRobotInterface, arm: str) -> Pose | None:

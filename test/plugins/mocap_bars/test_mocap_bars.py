@@ -12,19 +12,9 @@ from husky_assembly_teleop.world.bar_pose import bar_slide_roll, transform_point
 from husky_assembly_teleop.world.marker_layouts import bar_layouts, fake_sensed_markers
 from husky_assembly_teleop.world.measured import TrackedObject
 from planning_fixtures import purged_process
-from plugin_fakes import FakeContext
+from plugin_fakes import FakeContext, FakeScene
 
 BAR = "bars/B20"
-
-
-class FakeScene:
-    """viser's scene api as the plugin uses it: every `add_*` call makes a node that keeps what is written to it."""
-
-    def __getattr__(self, name: str):
-        """`add_<kind>(name, ..., **options)`: a node with that name and those options."""
-        if not name.startswith("add_"):
-            raise AttributeError(name)
-        return lambda node_name, *_args, **options: SimpleNamespace(name=node_name, remove=lambda: None, **options)
 
 
 def bench() -> tuple[MocapBarsPlugin, FakeContext, TrackedObject]:

@@ -484,7 +484,7 @@ def stop_after_move(reading: Mapping, plan: ServoPlan, engaged: bool) -> tuple[s
 
 # * ================================================================ carried into the insert, and the gate after it
 
-def _authored_start(action: Action, insert: int, flange: str) -> Pose:
+def authored_start(action: Action, insert: int, flange: str) -> Pose:
     """A flange's authored pose at the insert's start: its target in the nearest earlier movement that gives one.
 
     Raises:
@@ -516,7 +516,7 @@ def carried_insert_goals(loaded: LoadedProcess, action_id: str, insert: int, rob
     movement = action.movements[insert]
     ends = movement.target.robots[action.robot].link_poses
     live = flange_poses(robot, movement.arms)
-    return {flange: Pose.from_matrix(apply_authored_move(_authored_start(action, insert, flange).matrix(),
+    return {flange: Pose.from_matrix(apply_authored_move(authored_start(action, insert, flange).matrix(),
                                                          ends[flange].matrix(), live[flange].matrix()))
             for flange in movement.arms}
 

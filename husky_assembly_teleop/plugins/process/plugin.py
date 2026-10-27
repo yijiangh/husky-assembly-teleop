@@ -169,6 +169,8 @@ class ProcessPlugin(HuskyPlugin):
         self._visible = True
         #: Draw the overlay see-through; on at start (View Ghost toggles it), so the real robots show through it.
         self._ghost = True
+        #: Draw every bar's pink line and name at its assembly pose (View's "Rhino bar lines" box); off at start.
+        self._bar_lines = False
         # Overlay the bodies that do not stand in the state (absent ones) too.
         self._everything = False
         # True when the drawing is out of date and draw must re-pose it.
@@ -248,6 +250,9 @@ class ProcessPlugin(HuskyPlugin):
                                              "obstacles while they don't collide; other standing bodies are scene "
                                              "bodies, always drawn); ghost (on at start) makes it see-through; all "
                                              "also overlays absent bodies, see-through")
+            bar_lines = gui.add_checkbox("Rhino bar lines", initial_value=False,
+                                         hint="Every bar's centre line and name, pink, where the design puts it "
+                                              "once built: a ruler of the Rhino poses.")
             # ! Keep changing text BELOW the buttons, so they never move mid-click; and keep its height fixed: the
             #   Assembly tab's buttons are below it.
             self._details = gui.add_html("")
@@ -267,6 +272,7 @@ class ProcessPlugin(HuskyPlugin):
         go.on_click(ctx.defer_value("step button", self._on_go))
         show.on_click(ctx.defer_value("show", lambda label: self._set_at_target(label == "Target")))
         view.on_click(ctx.defer_value("view", self._on_view))
+        bar_lines.on_update(ctx.defer_value("Rhino bar lines", lambda value: setattr(self, "_bar_lines", bool(value))))
         for row, button in enumerate(self._action_rows):
             button.on_click(ctx.defer("select action", lambda row=row: self._on_action_row(row)))
 
@@ -490,6 +496,7 @@ class ProcessPlugin(HuskyPlugin):
         watch = Stopwatch()
         drawing = ProcessDrawing(ctx.view, f"{ctx.view.scene_root}/overlay", self.process, self._models)
         drawing.set_ghost(self._ghost)
+        drawing.set_bar_lines(self._bar_lines)
         try:
             for _ in drawing.build():
                 await ctx.next_tick()
@@ -511,6 +518,7 @@ class ProcessPlugin(HuskyPlugin):
             self._put_obstacles(ctx)
         if self._drawing is not None:
             self._drawing.set_ghost(self._ghost)
+            self._drawing.set_bar_lines(self._bar_lines)
             return
         if self.process is None:
             return

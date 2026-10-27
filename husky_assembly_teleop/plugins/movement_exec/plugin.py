@@ -18,6 +18,7 @@ import traceback
 from typing import TYPE_CHECKING, Any, Mapping
 
 import viser
+from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 
 from ...plugin_api.context import PluginContext
@@ -29,11 +30,13 @@ from ...shared.execution.basis import STALE_BASE
 from ...shared.execution.moving import moving_reason
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import INTERRUPTED, motion_command
-from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT, MAX_TRAJ_TIME,
-                                              MOTION_KINDS, MOTION_PART, REFUSED, REFUSED_PART, SERVO_PART, Carried,
-                                              ExecRequest, ExecResult, serial_of)
+from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HANDOFF_PART, HOLD_NOT_SENT,
+                                              INSERT_PART, MAX_TRAJ_TIME, MOTION_KINDS, MOTION_PART, REFUSED,
+                                              REFUSED_PART, RETREAT_PART, SERVO_PART, Carried, ExecRequest,
+                                              ExecResult, serial_of)
 from ...ui.assembly_tab import ASSEMBLY_TAB
 from .panel import ExecPanel
+from .plots import ExecPlots
 from .sequences import Job, PartRun, run_part
 from .servo_part import run_servo
 
@@ -51,6 +54,10 @@ STOP_ALL, CLOSED = "Stop all (the soft stop)", "the plugin stop or shutdown"
 def cancelled_by(ctx: PluginContext) -> str:
     """Who cancelled a task this plugin did not: the plugin closing (stopped or shut down), else the soft stop."""
     return CLOSED if ctx.closed else STOP_ALL
+
+
+#: The parts that run partly under the compliance controller, whose force and torque the Plots tab shows.
+COMPLIANT_KINDS = (INSERT_PART, RETREAT_PART, HANDOFF_PART)
 
 
 @register
@@ -83,6 +90,9 @@ class MovementExecPlugin(HuskyPlugin):
         #: What the last transfer's bar servo left for its insert's plan; the panel's servo line of the running part.
         self._carried: Carried | None = None
         self._servo_line = ""
+        #: The Plots tab, and the time of the compliant sample last plotted.
+        self._plots: ExecPlots | None = None
+        self._plotted_t: float | None = None
 
     # --- --- --- --- --- WHAT OTHER PLUGINS CALL (MovementExecContract) --- --- --- --- ---
 
@@ -133,7 +143,8 @@ class MovementExecPlugin(HuskyPlugin):
         try:
             job = Job(ctx, request, ctx.world.robots[request.serial], ctx.require("assembly_run"), self._prompts,
                       self._dry_run, lambda name, movement, data: self._event(job, name, movement, data),
-                      self._moved_at, lambda line: setattr(self, "_servo_line", line))
+                      self._moved_at, lambda line: setattr(self, "_servo_line", line),
+                      measured=self._plots.servo_reading if self._plots is not None else (lambda _reading: None))
             self._job, self._active, self._cancel_reason = job, f"{request.robot_name} · {request.label}", ""
             ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
                          + (" (DRY RUN)" if job.dry_run else ""))
@@ -181,16 +192,24 @@ class MovementExecPlugin(HuskyPlugin):
     # --- --- --- --- --- HOOKS --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
-        """Keep the context for the requests; build the panel and the phone's Exec tab."""
+        """Keep the context for the requests; build the panel, the phone's Exec tab and the Plots tab."""
         self._ctx = ctx
         self._panel = ExecPanel(ctx, self)
+        # * A top-level tab beside Assembly, so the operator can drag it out into a window of its own.
+        with ctx.view.tab("Plots", viser.Icon.CHART_LINE, top=True) as gui:
+            self._plots = ExecPlots(gui)
 
     def draw(self, ctx: PluginContext) -> None:
-        """Fill the panel."""
+        """Fill the panel, and the Plots tab with the running compliant part's newest sample."""
         if self._panel is not None:
             recorder = self._job.recorder if self.active and self._job is not None else None
             self._panel.draw(self.active, self.prompt, self._dry_run, (self._last, self._last_failed),
                              self._dry_run_refused, recorder, self._servo_line)
+            if self._plots is not None:
+                if recorder is not None and recorder.samples and recorder.samples[-1]["t"] != self._plotted_t:
+                    self._plotted_t = recorder.samples[-1]["t"]
+                    self._plots.compliant_sample(recorder.samples[-1])
+                self._plots.draw()
 
     # --- --- --- --- --- RUNNING A REQUEST --- --- --- --- ---
 
@@ -266,6 +285,11 @@ class MovementExecPlugin(HuskyPlugin):
                     run = PartRun(part)
                     if part.routine in TRANSFERS and part.kind in (MOTION_PART, SERVO_PART):
                         self._carried = None  # the transfer runs anew: its servo sets the carry again when due
+                    if self._plots is not None and part.kind == SERVO_PART:
+                        self._plots.start_servo(f"{part.movement} on {request.serial}")
+                    elif self._plots is not None and part.kind in COMPLIANT_KINDS:
+                        self._plots.start_compliant(list(job.robot.arms), f"{part.movement} on {request.serial}")
+                        self._plotted_t = None
                     try:
                         await (run_servo if part.kind == SERVO_PART else run_part)(job, run)
                     except asyncio.CancelledError:
@@ -398,9 +422,17 @@ class MovementExecPlugin(HuskyPlugin):
             "part": {"index": part.index, "kind": part.kind, "tools": list(part.tools), "text": part.text},
             "basis": request.basis.as_record() if motion and request.basis is not None else None,
             "plan": plan, "command": run.command,
+            # * Where the robot stood and when, at the part's start and end, as measured then.
+            "exec": {"ros_time_start": run.started_at, "ros_time_end": run.ended_at,
+                     "base_at_start": _pose_record(run.base_at_start), "base_at_end": _pose_record(run.base)},
             "outcome": {**(run.outcome or {}), "result": run.result, "status": run.status, "reason": run.reason,
                         "dry_run": job.dry_run}}
         if part.kind == SERVO_PART:
             payload["servo_file"] = run.servo_file
         job.run.request_record("exec", action=request.action, movement=part.movement,
                                data={"status": run.status, "result": run.result}, file=payload)
+
+
+def _pose_record(pose: Pose | None) -> list[float] | None:
+    """A pose as [x, y, z, qx, qy, qz, qw] for the record, or None."""
+    return None if pose is None else [*map(float, pose.position), *map(float, pose.orientation)]

@@ -43,6 +43,8 @@ PLOTS_BAND = 700.0
 # * Button icons, so the CSS and the buttons agree.
 #: Live IK.
 GOAL_ICON = viser.Icon.FOCUS_2
+#: Check tool0: the live tool0 against the step's authored target.
+CHECK_ICON = viser.Icon.RULER_MEASURE
 #: Plan.
 PLAN_ICON = viser.Icon.ROUTE_2
 #: Exec.
@@ -54,5 +56,6 @@ CONFIRM_ICON, CANCEL_ICON = viser.Icon.CHECK, viser.Icon.X
 
 #: CSS that makes the tab's buttons big, for the whole desktop page; assembly_run adds it, since assembly_steps and
 #: movement_exec load it.
-TAB_BUTTONS_CSS = big_buttons([GOAL_ICON, PLAN_ICON, EXEC_ICON, MARK_ICON, REOPEN_ICON, CONFIRM_ICON, CANCEL_ICON], 40,
+TAB_BUTTONS_CSS = big_buttons([GOAL_ICON, CHECK_ICON, PLAN_ICON, EXEC_ICON, MARK_ICON, REOPEN_ICON, CONFIRM_ICON,
+                               CANCEL_ICON], 40,
                               18, scope="")

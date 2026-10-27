@@ -286,6 +286,7 @@ class ServoLoop:
             reading["bar"] = self._bar(flanges, k)
         self.readings.append(reading)
         job.show(line(k, reading, plan))
+        job.measured(reading)
         return reading
 
     def _bar(self, flanges: dict, k: int) -> dict:

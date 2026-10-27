@@ -445,3 +445,19 @@ def test_a_path_under_two_rows_is_one_part():
     leading, trailing, achieved, total = split_rows(PATH[:1], two_arms, 5.0)
     assert leading is None and np.array_equal(trailing, PATH[:1]) and (achieved, total) == (0.0, 0.0)
     assert split_seconds(5.0, achieved, total) == (0.0, 5.0)
+
+
+def test_tool0_world_path_gives_each_arms_tool0_at_every_row():
+    """A 3-row plan gives 3 poses per arm; row 0 is the FK at the base given, and the rows move tool0."""
+    from husky_assembly_teleop.shared.execution.stream import tool0_world_path
+    urdf = robot_config(CINDY).model.urdf
+    arms = ["left_ur_arm", "right_ur_arm"]
+    names = [f"{arm}_{joint}" for arm in arms for joint in UR_JOINT_NAMES]
+    start = np.radians([10.0, -100.0, 90.0, -80.0, -90.0, 30.0] * 2)
+    base = Pose((1.0, 2.0, 0.0))
+    paths = tool0_world_path(urdf, base, names, [start, start + 0.01, start + 0.02], arms)
+    assert set(paths) == set(arms) and all(len(path) == 3 for path in paths.values())
+    for arm, path in paths.items():
+        expected = link_pose(urdf, base, dict(zip(names, start)), f"{arm}_tool0")
+        np.testing.assert_allclose(path[0].position, expected.position, atol=1e-9)
+        assert np.linalg.norm(np.subtract(path[2].position, path[0].position)) > 1e-4

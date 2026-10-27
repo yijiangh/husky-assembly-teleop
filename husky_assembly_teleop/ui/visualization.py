@@ -9,11 +9,11 @@ The user interface: the desktop and phone pages, the world drawn each tick, and 
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from html import escape
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Callable, Iterator, Mapping
 
 import numpy as np
 import trimesh
@@ -287,6 +287,12 @@ class _DrawnRobot:
     urdf: FastViserUrdf
     joint_names: tuple[str, ...]
     values: np.ndarray | None = None
+    #: The tools on its flanges, for the see-through twin; the twin (single-colour meshes, made on first fade) and
+    #: its opacity, None while the robot is drawn solid.
+    tools: Mapping[str, Tool] = field(default_factory=dict)
+    urdf_file: Path | None = None
+    twin: FastViserUrdf | None = None
+    opacity: float | None = None
 
 
 def pinned_server(port: int, parameter: str, label: str) -> viser.ViserServer:
@@ -468,14 +474,44 @@ class Visualization:
         drawn.add_tools(config.model.tools)
         self._show_robot_collision(drawn, self._collision_shown)
         self._robots[config.serial] = _DrawnRobot(
-            base=base, urdf=drawn, joint_names=tuple(drawn.get_actuated_joint_names()))
+            base=base, urdf=drawn, joint_names=tuple(drawn.get_actuated_joint_names()), tools=config.model.tools,
+            urdf_file=config.model.urdf)
 
     @staticmethod
-    def _show_robot_collision(urdf: FastViserUrdf, collision: bool) -> None:
-        """Show a robot's collision meshes or its visual ones. A URDF without collision meshes stays visual."""
+    def _show_robot_collision(urdf: FastViserUrdf, collision: bool, faded: bool = False) -> None:
+        """Show a robot's collision meshes or its visual ones; a faded robot's visual ones stay hidden (its twin shows).
+
+        A URDF without collision meshes stays visual.
+        """
         # ? viser warns instead of hiding when a URDF has no collision meshes.
         if urdf._collision_root_frame is not None:
-            urdf.show_visual, urdf.show_collision = not collision, collision
+            urdf.show_visual, urdf.show_collision = not collision and not faded, collision
+
+    def set_robot_opacity(self, serial: str, opacity: float | None) -> None:
+        """Draw a robot see-through at `opacity`, or solid again (None).
+
+        The GLB meshes take no opacity, so a single-colour twin of the robot and its tools (made on the first fade,
+        about a second) shows in their place under the same base frame, posed with them in `draw`.
+
+        Args:
+            serial: The robot's serial; an unknown one is ignored.
+            opacity: 0 to 1, or None for the textured robot.
+        """
+        drawn = self._robots.get(serial)
+        if drawn is None or drawn.opacity == opacity:
+            return
+        if opacity is not None and drawn.twin is None:
+            twin = add_simple_urdf(self._server, shared_urdf(drawn.urdf_file), f"/robots/{serial}/twin")
+            twin.add_tools(drawn.tools)
+            if drawn.values is not None:
+                twin.update_cfg(drawn.values)
+            drawn.twin = twin
+        drawn.opacity = opacity
+        if drawn.twin is not None:
+            for mesh in drawn.twin._meshes:
+                mesh.opacity = opacity
+            drawn.twin.show_visual = opacity is not None
+        self._show_robot_collision(drawn.urdf, self._collision_shown, faded=opacity is not None)
 
     def view_for(self, plugin_name: str, hidden: bool = False, tab_path: tuple[str, ...] = (),
                  icon: viser.IconName | None = None) -> PluginView:
@@ -491,7 +527,7 @@ class Visualization:
             PluginView: The plugin's slice of the UI.
         """
         return PluginView(self._server, plugin_name, self._header, self._phone, (self._side, self._hidden_side),
-                          hidden, tab_path, icon)
+                          hidden, tab_path, icon, fade=self.set_robot_opacity)
 
     def atomic(self) -> AbstractContextManager[None]:
         """Batch every scene change made inside the block into one update.
@@ -566,7 +602,7 @@ class Visualization:
         if collision != self._collision_shown:
             self._collision_shown = collision
             for drawn in self._robots.values():
-                self._show_robot_collision(drawn.urdf, collision)
+                self._show_robot_collision(drawn.urdf, collision, faded=drawn.opacity is not None)
         for object_id, entry in snapshot.robots.items():
             drawn = self._robots.get(object_id.split("/", 1)[1])  # ? measured robots are "robots/<serial>"
             if drawn is None:
@@ -576,6 +612,8 @@ class Visualization:
             values = np.array([entry.joints.get(name, 0.0) for name in drawn.joint_names])
             if joints_changed(values, drawn.values):
                 drawn.urdf.update_cfg(values)
+                if drawn.twin is not None:
+                    drawn.twin.update_cfg(values)
                 drawn.values = values
         self._scene_view.sync(snapshot, collision)
 
@@ -595,7 +633,7 @@ class PluginView:
 
     def __init__(self, server: viser.ViserServer, plugin_name: str, header: viser.GuiFolderHandle, phone: PhonePage,
                  sides: tuple[SidePanel, SidePanel], hidden: bool, tab_path: tuple[str, ...],
-                 icon: viser.IconName | None):
+                 icon: viser.IconName | None, fade: Callable[[str, float | None], None] = lambda _s, _o: None):
         """Create the plugin's scene root; its header, tabs and phone tab come on first use.
 
         Args:
@@ -607,8 +645,10 @@ class PluginView:
             hidden: Whether `ui()` goes in the minimized panel.
             tab_path: Where `ui()` goes, a label per level; empty for a tab named after the plugin.
             icon: The plugin's icon, on its own tabs.
+            fade: Fades a real robot's drawing (`Visualization.set_robot_opacity`).
         """
         self._server = server
+        self._fade, self._faded = fade, set()
         self._name = plugin_name
         self._header_parent = header
         self._header: viser.GuiFolderHandle | None = None
@@ -679,7 +719,7 @@ class PluginView:
         with self._folder:
             yield self._server.gui
 
-    def tab(self, label: str, icon: viser.IconName | None = None, hidden: bool = False
+    def tab(self, label: str, icon: viser.IconName | None = None, hidden: bool = False, top: bool = False
             ) -> AbstractContextManager[viser.GuiApi]:
         """Add widgets inside a further tab of this plugin, inside a tab named after it, so its owner shows.
 
@@ -687,11 +727,19 @@ class PluginView:
             label: The tab's label.
             icon: The tab's icon, free to choose (nested in the plugin's tab); read when the tab is made.
             hidden: Whether the tab goes in the minimized panel at the right edge, for what is not needed every time.
+            top: Whether the tab goes at the top level, beside Assembly and Control, instead of inside the plugin's
+                own tab: for a tab the operator drags out into a window of its own. ! Its label must be unique.
 
         Returns:
             AbstractContextManager[viser.GuiApi]: The GUI api, with the tab as parent.
         """
-        return self._side_tab(((self._label, self._icon), (label, icon)), hidden, 0)
+        path = ((label, icon),) if top else ((self._label, self._icon), (label, icon))
+        return self._side_tab(path, hidden, 0)
+
+    def set_robot_opacity(self, serial: str, opacity: float | None) -> None:
+        """Draw a real robot see-through at `opacity`, or solid again (None); `clear` puts back every one faded."""
+        self._fade(serial, opacity)
+        (self._faded.add if opacity is not None else self._faded.discard)(serial)
 
     @contextmanager
     def _side_tab(self, path: TabPath, hidden: bool, shared: int, band: float | None = None
@@ -774,6 +822,8 @@ class PluginView:
 
     def clear(self) -> None:
         """Remove all this plugin added: scene nodes, header, folder, panels, bands and tabs, phone tab and header."""
+        for serial in list(self._faded):
+            self.set_robot_opacity(serial, None)
         self._root.remove()
         if self._folder is not None:
             self._folder.remove()

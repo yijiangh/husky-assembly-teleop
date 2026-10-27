@@ -17,6 +17,7 @@ import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, design_scene, purged_process, robot_config, step
 from robot_lab import FakeRun, RobotLab
 
+from husky_assembly_teleop.plugins.assembly_steps.diagnosis import tool0_line
 from husky_assembly_teleop.plugins.assembly_steps.panel import StepsPanel, exec_line
 from husky_assembly_teleop.plugins.assembly_steps.plugin import AssemblyStepsPlugin
 from husky_assembly_teleop.plugins.motion_planner.plugin import MotionPlannerPlugin
@@ -29,7 +30,7 @@ from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_name
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
 from husky_assembly_teleop.shared.assembly_planning.scene_for import RobotBelief
-from husky_assembly_teleop.shared.execution.servo import flange_poses
+from husky_assembly_teleop.shared.execution.servo import flange_poses, tool0_errors
 from husky_assembly_teleop.ui.ghost import RecentUse
 from husky_assembly_teleop.world.bar_pose import apply_authored_move
 from scaffolding_assembly_core.geometry import Pose
@@ -462,6 +463,82 @@ def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch
     line, = lines
     assert line.startswith("[insert plan] MoCap-bar correction carried: B20_J_insert left goal ")
     assert line.endswith(" from the authored end")
+
+
+# --- --- --- --- --- Check tool0 and the visual diagnosis --- --- --- --- ---
+
+def test_check_tool0_draws_the_live_flanges_against_the_targets_and_records_the_gap():
+    """On B20_J's transfer with Cindy tracked: the line, two frames and a gap line per flange, and the record."""
+    lab = Steps(("B20_J", 3))
+    lab.track("a200-0806")
+    lab.update()
+    lab.plugin.check_tool0(lab.ctx)
+    lab.update()
+    step_ = step(lab.loaded, "B20_J_transfer")
+    targets = step_.movement.target.robots["robots/cindy"].link_poses
+    live = flange_poses(lab.ctx.scene.snapshot.robots[robot_id("a200-0806")], targets)
+    expected = tool0_line(tool0_errors(live, targets))
+    assert lab.plugin._message == expected and expected.startswith("tool0 live minus target: left ")
+    assert any(line == f"[tool0 check] B20_J_transfer: {expected}" for line in lab.ctx.lines("info"))
+    scene = lab.ctx.view.scene
+    assert len([node for node in scene.of_kind("frame") if "/diagnosis/tool0/" in node.name
+                and node.name.endswith(("/target", "/live"))]) == 4
+    assert len([node for node in scene.of_kind("label") if "/diagnosis/tool0/" in node.name]) == 4
+    assert len([node for node in scene.of_kind("line_segments") if node.name.endswith("/gap")]) == 2
+    (event, fields), = [(event, fields) for event, fields in lab.run.records if event == "check_tool0"]
+    assert fields["movement"] == "B20_J_transfer" and set(fields["data"]) == {"left", "right"}
+    assert fields["data"]["left"]["pos_norm_mm"] == pytest.approx(
+        tool0_errors(live, targets)["left"]["pos_norm_mm"])
+    lab.bases["a200-0806"] = Pose(tuple(np.add(lab.bases["a200-0806"].position, (0.01, 0.0, 0.0))),
+                                  lab.bases["a200-0806"].orientation)
+    lab.tick(lab.ctx.t + 0.1)
+    lab.plugin.check_tool0(lab.ctx)
+    moved = tool0_errors(flange_poses(lab.ctx.scene.snapshot.robots[robot_id("a200-0806")], targets), targets)
+    assert moved["left"]["pos_err_mm"][0] - tool0_errors(live, targets)["left"]["pos_err_mm"][0] == \
+        pytest.approx(10.0, abs=1e-6)
+
+
+def test_check_tool0_refuses_without_a_live_robot():
+    """Cindy not live: refused with a red line, nothing drawn, nothing recorded."""
+    lab = Steps(("B20_J", 3))
+    lab.live = False
+    lab.tick(lab.ctx.t + 0.1)
+    lab.plugin.check_tool0(lab.ctx)
+    assert lab.plugin._message_failed and "not live" in lab.plugin._message
+    assert not [node for node in lab.ctx.view.scene.of_kind("frame") if "/diagnosis/" in node.name]
+    assert not [event for event, _fields in lab.run.records if event == "check_tool0"]
+
+
+def test_the_visual_diagnosis_fades_the_robots_and_draws_an_insert_plans_tool0_path():
+    """On: every robot with arms at 0.3; an insert plan then draws its path, frames and gaps, and logs them."""
+    insert = step(purged_process(), "B20_J_insert")
+    lab = Steps(("B20_J", insert.movement_index))
+    lab.track("a200-0806")
+    lab.plugin.set_visual_diagnosis(lab.ctx, True)
+    with_arms = [config.serial for config in lab.ctx.config.robots if config.arms]
+    assert sorted(lab.ctx.view.faded) == sorted((serial, 0.3) for serial in with_arms)
+    asyncio.run(lab.plan())
+    lab.update()
+    scene = lab.ctx.view.scene
+    path_nodes = [node for node in scene.of_kind("line_segments") if node.name.endswith("/path")]
+    assert len(path_nodes) == 2 and all(node.points.shape == (2, 2, 3) for node in path_nodes), "3 rows, 2 segments"
+    frames = [node.name.rsplit("/", 1)[-1] for node in scene.of_kind("frame") if "/diagnosis/path/" in node.name]
+    assert frames.count("plan_start") == 2 and frames.count("plan_end") == 2
+    assert frames.count("rhino_end") == 2 and frames.count("rhino_start") == 2
+    line, = [line for line in lab.ctx.lines("info") if line.startswith("[visual diagnosis] B20_J_insert")]
+    assert "left_ur_arm: Rhino start→plan start" in line and line.endswith("; 3 waypoints")
+    lab.plugin.set_visual_diagnosis(lab.ctx, False)
+    assert ("a200-0806", None) in lab.ctx.view.faded[-3:]
+
+
+def test_the_visual_diagnosis_draws_nothing_for_a_free_move():
+    """A plan of a free move (B20_R_home) draws no path: only inserts and retreats have one."""
+    lab = Steps(("B20_R", 2))
+    lab.track("a200-0806")
+    lab.plugin.set_visual_diagnosis(lab.ctx, True)
+    asyncio.run(lab.plan())
+    assert not [line for line in lab.ctx.lines("info") if line.startswith("[visual diagnosis]")]
+    assert not [node for node in lab.ctx.view.scene.of_kind("line_segments") if node.name.endswith("/path")]
 
 
 # --- --- --- --- --- the goal check (from the goal_check plugin) --- --- --- --- ---

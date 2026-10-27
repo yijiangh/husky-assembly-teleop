@@ -6,6 +6,8 @@ Drawn from the process alone, with forward kinematics from each robot's yourdfpy
 - * Bodies that `stand` are scene bodies, drawn by the runtime, except the Rhino obstacles switched out of collision
   checks (`reference`). The overlay draws those, see-through; the robots, their tools and the bodies they carry; and,
   when asked, every other body (absent ones), always see-through.
+- The Rhino bar lines: every bar's centre line at its assembly pose with its name, pink, for a ruler of where the
+  design puts the bars (`set_bar_lines`; the process panel's "Rhino bar lines" box).
 - `load_robot_models` is slow: run it on the loading thread.
 - `ProcessDrawing` is main thread only; a new state only changes poses, joint values and colours.
 - ? Robots are single-colour meshes (`add_simple_urdf`), so "Ghost" only changes their opacity.
@@ -24,8 +26,10 @@ from scaffolding_assembly_core.process import Holder, Process, State
 from scaffolding_assembly_core.process.relations import is_present, placement
 from scaffolding_assembly_core.geometry import Geometry, Pose, compose, shape_mesh
 from scaffolding_assembly_core.ids import split_link_id
+from scaffolding_assembly_core.process.types import BAR_PREFIX
 from ...ui.visualization import FastViserUrdf, add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
-from ...shared.process_scene.colors import body_color
+from ...shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH, body_color
+from ...world.bar_pose import bar_ends
 
 #: Colours, RGB 0-255. Held bodies stand out; other bodies use `colors.body_color`.
 ATTACHED_COLOR = (240, 120, 30)
@@ -36,6 +40,24 @@ GHOST_OPACITY = 0.4
 
 #: Bodies added per tick while building, so a large process never stalls one tick.
 BODIES_PER_TICK = 20
+
+
+def bar_lines(process: Process) -> tuple[np.ndarray, list[tuple[str, np.ndarray]]]:
+    """Every bar's centre line at its assembly pose, (n, 2, 3) metres, and (bar name, middle) per bar for the labels.
+
+    A bar's frame is at its middle, z along it; its length is its collision cylinder's height.
+    """
+    segments, labels = [], []
+    for body_id, body in process.bodies.items():
+        if not body_id.startswith(BAR_PREFIX) or not body.geometry.collision:
+            continue
+        length = float(getattr(body.geometry.collision[0], "height", 0.0))
+        if length <= 0.0:
+            continue
+        matrix = body.assembly_pose.matrix()
+        segments.append(bar_ends(matrix, length))
+        labels.append((body_id[len(BAR_PREFIX):], matrix[:3, 3].copy()))
+    return np.array(segments, dtype=float).reshape(-1, 2, 3), labels
 
 
 def load_robot_models(process: Process) -> dict[str, yourdfpy.URDF]:
@@ -82,6 +104,9 @@ class ProcessDrawing:
         #: Body id -> (colour, opacity) its meshes have, so unchanged ones are not sent again.
         self._looks: dict[str, tuple[tuple[int, int, int], float | None]] = {}
         self._ghost = False
+        #: The Rhino bar lines and labels, hidden until `set_bar_lines(True)`; None before `build` reached them.
+        self._bar_lines: list = []
+        self._bar_lines_on = False
 
     def build(self) -> Iterator[None]:
         """Add every node: one robot with its tools per tick, then BODIES_PER_TICK bodies per tick.
@@ -107,6 +132,15 @@ class ProcessDrawing:
                                               body_color(body_id))
             if count % BODIES_PER_TICK == 0:
                 yield
+        segments, labels = bar_lines(self._process)
+        if len(segments):  # viser needs at least one segment
+            path = f"{self._root_path}/bar_lines"
+            self._bar_lines = [self._view.scene.add_line_segments(
+                f"{path}/lines", points=segments.astype(np.float32), colors=BAR_LINE_COLOR,
+                thickness=BAR_LINE_WIDTH, thickness_units="screen", visible=self._bar_lines_on)]
+            self._bar_lines += [self._view.scene.add_label(f"{path}/{index}", name, position=tuple(map(float, middle)),
+                                                           visible=self._bar_lines_on)
+                                for index, (name, middle) in enumerate(labels)]
 
     def _add(self, path: str, geometry: Geometry, color: tuple[int, int, int]):
         """A hidden frame at `path` with a geometry's visual shapes below it, coloured RGB 0-255.
@@ -200,6 +234,14 @@ class ProcessDrawing:
         for robot in self._robots.values():
             for mesh in robot.urdf._meshes:
                 mesh.opacity = opacity
+
+    def set_bar_lines(self, on: bool) -> None:
+        """Show or hide every bar's pink line and label at its assembly pose; kept for nodes `build` adds later."""
+        if on == self._bar_lines_on:
+            return
+        self._bar_lines_on = on
+        for node in self._bar_lines:
+            node.visible = on
 
     def remove(self) -> None:
         """Remove every node of the drawing."""
