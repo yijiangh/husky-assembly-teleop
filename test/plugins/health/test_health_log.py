@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 from plugin_fakes import FakeContext
 
-from husky_assembly_teleop.plugins.health import CHIPS_TOPIC, LOG_HOLD, HealthPlugin
-from husky_assembly_teleop.world.checks import BAD, GOOD, WARN, Check
+from husky_assembly_teleop.plugins.health import CHIPS_TOPIC, LOG_HOLD, SIM_LABEL, HealthPlugin
+from husky_assembly_teleop.world.checks import BAD, GOOD, INFO, WARN, Check
 
 
 def _run(levels_at: list[tuple[float, list[int]]], until: float) -> FakeContext:
@@ -74,3 +74,13 @@ def test_changes_of_one_row_share_a_line_at_the_level_of_the_worst():
     """Two chips of the row changing together: one line, an error when one of them turned red."""
     assert _run([(0.0, [GOOD, GOOD]), (1.0, [WARN, BAD])], until=5.0).logs == [
         ("error", "0804 base: chip0 green -> amber: why 1; chip1 green -> red: why 2")]
+
+
+def test_a_sim_chip_appearing_in_front_shifts_no_other_chip():
+    """The sim chip comes and goes before a part's chips: no other chip counts as changed."""
+    health, ctx = HealthPlugin(), FakeContext()
+    signal = Check("signal", GOOD)
+    health._note_changes("0804 base", [signal, Check("mocap", BAD, "lost")], 0.0)
+    health._note_changes("0804 base", [Check(SIM_LABEL, INFO, "husky_sim"), signal, Check("mocap", BAD, "lost")], 1.0)
+    health._log_changes(ctx, 10.0)
+    assert ctx.logs == []

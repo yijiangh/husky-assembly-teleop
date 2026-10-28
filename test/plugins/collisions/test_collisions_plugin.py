@@ -58,7 +58,8 @@ def make_ctx(server: viser.ViserServer) -> SimpleNamespace:
     async def run_in_thread(function, *args):
         return function(*args)
 
-    view = SimpleNamespace(ui=tab, scene=server.scene, scene_root=ROOT)
+    shown = []
+    view = SimpleNamespace(ui=tab, scene=server.scene, scene_root=ROOT, show_collision=shown.append, shown=shown)
     return SimpleNamespace(view=view, defer=defer, defer_value=defer_value, spawn=spawn, run_in_thread=run_in_thread,
                            clearance_trips=())
 
@@ -92,6 +93,18 @@ def test_ticked_hits_draw_and_unticked_ones_go(server):
     plugin._sources["calibration"].list._boxes["take 1"].value = False
     plugin.draw(plugin._ctx)
     assert plugin._drawn == {} and nodes(server, root) == []
+
+
+def test_collision_shapes_switch_the_whole_view_and_teardown_switches_back(server):
+    """Ticking Collision shapes draws collision meshes in the 3D view; unticking or a teardown draws visual ones."""
+    plugin, ctx = CollisionsPlugin(), make_ctx(server)
+    plugin.setup(ctx)
+    for value in (True, False):
+        event = SimpleNamespace(client=object(), target=SimpleNamespace(value=value))
+        for callback in plugin._shapes._impl.update_cb:
+            asyncio.run(callback(event))
+    plugin.teardown(ctx)
+    assert ctx.view.shown == [True, False, False]
 
 
 def test_replace_drops_a_sources_old_hits_and_clear_drops_the_source(server):

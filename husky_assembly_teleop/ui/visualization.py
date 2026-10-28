@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, partial
 from html import escape
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Callable, Iterator, Mapping
 
 import numpy as np
 import trimesh
@@ -52,6 +52,8 @@ JOINT_TOLERANCE = 1e-4
 
 #: Starting width of the side panel, pixels. Fits an arm's joint row, the widest line.
 SIDE_PANEL_WIDTH = 420
+#: The main panel's width, pixels: the narrowest at which a robot's health line with simulated parts does not scroll.
+MAIN_PANEL_WIDTH = 330
 
 #: Where a tab goes in a side panel: (label, icon) per level, outermost first.
 TabPath = tuple[tuple[str, viser.IconName | None], ...]
@@ -427,11 +429,9 @@ class Visualization:
         self._pause.on_click(self._toggle_pause)
         self._show_pause_state()
 
-        # * Read by `draw` each tick, so the switch is applied on the main thread.
-        self._show_collision = self._server.gui.add_checkbox(
-            "Collision", initial_value=False,
-            hint="Draw what collision checks use instead of what things look like: robots in red, "
-                 "scene bodies and tracked objects in their own colour.")
+        #: Whether to draw collision shapes instead of visual ones, set by a plugin (`PluginView.show_collision`);
+        #: `draw` applies it, and what it last applied.
+        self.show_collision = False
         self._collision_shown = False
 
         #: Plugins' header folders (`PluginView.header`), under Stop all. Unlabelled: no title or border.
@@ -439,6 +439,7 @@ class Visualization:
         # * This panel floats in the top left corner. The plugins' tabs (`PluginView.tab`) are docked on the right,
         #   and those hidden by default in a minimized strip at the right edge.
         self._server.gui.main_panel.float(x=15, y=15)
+        self._server.gui.main_panel.set_width(MAIN_PANEL_WIDTH)
         self._side = SidePanel(self._server)
         self._hidden_side = SidePanel(self._server, minimized=True)
 
@@ -491,7 +492,7 @@ class Visualization:
             PluginView: The plugin's slice of the UI.
         """
         return PluginView(self._server, plugin_name, self._header, self._phone, (self._side, self._hidden_side),
-                          hidden, tab_path, icon)
+                          hidden, tab_path, icon, partial(setattr, self, "show_collision"))
 
     def atomic(self) -> AbstractContextManager[None]:
         """Batch every scene change made inside the block into one update.
@@ -562,7 +563,7 @@ class Visualization:
         Args:
             snapshot: The tick's copy of the world.
         """
-        collision = self._show_collision.value
+        collision = self.show_collision
         if collision != self._collision_shown:
             self._collision_shown = collision
             for drawn in self._robots.values():
@@ -595,7 +596,7 @@ class PluginView:
 
     def __init__(self, server: viser.ViserServer, plugin_name: str, header: viser.GuiFolderHandle, phone: PhonePage,
                  sides: tuple[SidePanel, SidePanel], hidden: bool, tab_path: tuple[str, ...],
-                 icon: viser.IconName | None):
+                 icon: viser.IconName | None, set_collision: Callable[[bool], None] = lambda _on: None):
         """Create the plugin's scene root; its header, tabs and phone tab come on first use.
 
         Args:
@@ -607,8 +608,10 @@ class PluginView:
             hidden: Whether `ui()` goes in the minimized panel.
             tab_path: Where `ui()` goes, a label per level; empty for a tab named after the plugin.
             icon: The plugin's icon, on its own tabs.
+            set_collision: Switches the 3D view to collision shapes, or back (`show_collision`).
         """
         self._server = server
+        self._set_collision = set_collision
         self._name = plugin_name
         self._header_parent = header
         self._header: viser.GuiFolderHandle | None = None
@@ -635,6 +638,13 @@ class PluginView:
         self._folder: viser.GuiFolderHandle | None = None
         #: Separate panels made through `panel()`, removed with everything else.
         self._panels: list[viser.PanelHandle] = []
+
+    def show_collision(self, on: bool) -> None:
+        """Draw what collision checks use instead of what things look like, for every robot and body, or switch back.
+
+        ! One switch for the whole 3D view: the collisions plugin owns it. Main thread only.
+        """
+        self._set_collision(on)
 
     @property
     def scene(self) -> viser.SceneApi:
