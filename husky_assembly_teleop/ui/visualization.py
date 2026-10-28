@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from functools import cache, partial
 from html import escape
 from pathlib import Path
-from typing import Callable, Iterator, Mapping
+from typing import Callable, Iterable, Iterator, Mapping
 
 import numpy as np
 import trimesh
@@ -23,7 +23,7 @@ import viser.transforms
 import yourdfpy
 
 from ..config import RobotConfig
-from scaffolding_assembly_core.robot import Tool
+from scaffolding_assembly_core.robot import RobotObject, Tool
 from scaffolding_assembly_core.scene import Scene
 from .phone import PHONE_TITLE, PhonePage
 from .quaternion import quaternion_to_wxyz
@@ -49,6 +49,9 @@ TOOL_COLOR = (0.27, 0.27, 0.31)
 
 #: Joint change (rad or m) below which a robot is not re-posed.
 JOINT_TOLERANCE = 1e-4
+
+#: Opacity of a robot part the checks only assume (`world/stand_ins.py`): a base not tracked, an arm not measured.
+GUESSED_OPACITY = 0.35
 
 #: Starting width of the side panel, pixels. Fits an arm's joint row, the widest line.
 SIDE_PANEL_WIDTH = 420
@@ -252,26 +255,41 @@ def mesh_color(mesh: trimesh.Trimesh) -> tuple[int, int, int]:
     return tuple(int(c) for c in mesh.visual.material.baseColorFactor[:3])
 
 
-def add_simple_urdf(target, model: yourdfpy.URDF, root: str) -> FastViserUrdf:
+def add_simple_urdf(target, model: yourdfpy.URDF, root: str, **options) -> FastViserUrdf:
     """Draw a URDF below `root` as single-colour meshes, each in its own material's colour.
 
-    ! Only the real robots (`Visualization.load_robot`) are drawn as GLB, with textures. Everything else uses
-      this: single-colour meshes build faster and take `.opacity` at any time; GLB nodes have no opacity.
+    ? Our robots' meshes come split by colour, so they look the same as textured GLB; unlike GLB, single-colour
+      meshes take `.opacity` at any time.
 
     Args:
         target: The viser server, or a plugin's view (PluginView).
         model: The URDF, from `load_urdf`.
         root: Scene path to draw it below.
+        options: More `ViserUrdf` arguments, e.g. `load_collision_meshes`.
 
     Returns:
         FastViserUrdf: The drawn URDF; pose it with `update_cfg`, fade it through its meshes' `.opacity`.
     """
     # * A colour override makes ViserUrdf add single-colour meshes; each then gets its own colour back.
-    urdf = FastViserUrdf(target, model, root_node_name=root, mesh_color_override=_DEFAULT_MESH_COLOR[:3])
+    urdf = FastViserUrdf(target, model, root_node_name=root, mesh_color_override=_DEFAULT_MESH_COLOR[:3], **options)
     # ? ViserUrdf adds one mesh node per visual mesh, in `scene.geometry` order.
     for handle, mesh in zip(urdf._meshes, model.scene.geometry.values()):
         handle.color = mesh_color(mesh)
     return urdf
+
+
+def robot_parts(urdf: FastViserUrdf, arms: Iterable[str]) -> dict[str | None, list[viser.SceneNodeHandle]]:
+    """A drawn robot's meshes by part: each arm's (its links and tool, named "<arm>_..."), the base's under None."""
+    parts: dict[str | None, list[viser.SceneNodeHandle]] = {None: [], **{arm: [] for arm in arms}}
+    for handle in urdf._meshes:
+        parts[next((arm for arm in parts if arm is not None and f"/{arm}_" in handle.name), None)].append(handle)
+    return parts
+
+
+def guessed_parts(robot: RobotObject, arms: Iterable[str]) -> frozenset[str | None]:
+    """The parts of a robot the checks only assume: None for a base not tracked, each arm with a joint not measured."""
+    guessed = {arm for arm in arms if any(name.startswith(f"{arm}_") for name in robot.unmeasured)}
+    return frozenset(guessed | ({None} if not robot.base_tracked else set()))
 
 
 @dataclass
@@ -282,13 +300,17 @@ class _DrawnRobot:
         base: Parent frame carrying the base pose; moves the whole robot.
         urdf: The mesh set, updated through `update_cfg`.
         joint_names: Actuated joint names, in `update_cfg` order.
+        parts: Its meshes by part (`robot_parts`).
         values: Joint values last drawn, or None before the first draw.
+        guessed: The parts drawn see-through (`guessed_parts`), as last drawn.
     """
 
     base: viser.FrameHandle
     urdf: FastViserUrdf
     joint_names: tuple[str, ...]
+    parts: dict[str | None, list[viser.SceneNodeHandle]]
     values: np.ndarray | None = None
+    guessed: frozenset[str | None] = frozenset()
 
 
 def pinned_server(port: int, parameter: str, label: str) -> viser.ViserServer:
@@ -464,12 +486,13 @@ class Visualization:
         base.wxyz = quaternion_to_wxyz(config.default_orientation)
 
         model = shared_urdf(config.model.urdf)
-        drawn = FastViserUrdf(self._server, model, root_node_name=root, load_collision_meshes=True,
-                              collision_mesh_color_override=COLLISION_COLOR)
+        drawn = add_simple_urdf(self._server, model, root, load_collision_meshes=True,
+                                collision_mesh_color_override=COLLISION_COLOR)
         drawn.add_tools(config.model.tools)
         self._show_robot_collision(drawn, self._collision_shown)
         self._robots[config.serial] = _DrawnRobot(
-            base=base, urdf=drawn, joint_names=tuple(drawn.get_actuated_joint_names()))
+            base=base, urdf=drawn, joint_names=tuple(drawn.get_actuated_joint_names()),
+            parts=robot_parts(drawn, [arm.name for arm in config.arms]))
 
     @staticmethod
     def _show_robot_collision(urdf: FastViserUrdf, collision: bool) -> None:
@@ -559,6 +582,7 @@ class Visualization:
 
         ! Only the snapshot taken this tick: the real robots and their tools must always show the newest
           measurement, never a copy a planner kept.
+        - A robot part the checks only assume (`guessed_parts`) is drawn see-through, at GUESSED_OPACITY.
 
         Args:
             snapshot: The tick's copy of the world.
@@ -578,6 +602,12 @@ class Visualization:
             if joints_changed(values, drawn.values):
                 drawn.urdf.update_cfg(values)
                 drawn.values = values
+            guessed = guessed_parts(entry, [arm for arm in drawn.parts if arm is not None])
+            if guessed != drawn.guessed:
+                for part, handles in drawn.parts.items():
+                    for handle in handles:
+                        handle.opacity = GUESSED_OPACITY if part in guessed else None
+                drawn.guessed = guessed
         self._scene_view.sync(snapshot, collision)
 
     @property
