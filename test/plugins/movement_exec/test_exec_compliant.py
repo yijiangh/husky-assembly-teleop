@@ -1,4 +1,4 @@
-"""The compliant parts end to end through movement_exec, as the operator runs them: Exec, Confirm, the outcome.
+"""The compliant parts end to end through movement_exec, as the operator runs them: Exec, the outcome.
 
 B21's insert with its screw stalling 1 s into the compliant part (the right arm finishing its line and settling before
 it goes back),
@@ -16,7 +16,8 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from test_movement_exec import INSERT_STEP, RETREAT_STEP, TailPlanner, along, commands, compliant_lab, execute, prompts
+from test_movement_exec import (INSERT_STEP, RETREAT_STEP, TailPlanner, along, commands, compliant_lab, execute,
+                                prompts, said)
 
 from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER as COMPLIANCE
 from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER as JOINT
@@ -69,14 +70,15 @@ def test_b21s_insert_ends_when_the_left_screw_stalls_1_s_into_the_compliant_part
                 break
             await asyncio.sleep(0)
         seen["compliant"] = lab.ctx.t
-        while lab.ctx.t < seen["compliant"] + STALL_AFTER and lab.plugin.active:
+        # * A hair under: the clock is summed in 0.1 s steps, and a rounding error must not cost an extra tick.
+        while lab.ctx.t < seen["compliant"] + STALL_AFTER - 1e-6 and lab.plugin.active:
             await asyncio.sleep(0)
         left.screw = ScaffoldingV3.STALLED
 
     request = replace(along(lab, "B21_J_insert", INSERT_STEP), traj_time=5.0)
-    result, _held = execute(lab, request, True, during=stall_into_the_compliant_part)
+    result, _held = execute(lab, request, during=stall_into_the_compliant_part)
     assert result.status == DONE and result.done == (4,), result.reason
-    assert prompts(lab)[0].startswith("cindy (a200-0806): B21_J_insert — INSERT: rigid ")
+    assert not prompts(lab) and said(lab)[0].startswith("cindy (a200-0806): B21_J_insert — INSERT: rigid ")
     record = record_of(lab)
     outcome = record["outcome"]
     assert record["part"]["kind"] == "insert" and outcome["status"] == STALLED and "STALLED" in outcome["reason"]
@@ -105,7 +107,9 @@ def test_b21s_insert_ends_when_the_left_screw_stalls_1_s_into_the_compliant_part
     assert back_under_joint_control(lab)
     assert set(sample["phase"] for sample in outcome["stream"]) >= {
         "rigid", "compliant", "compliant right_ur_arm", "settle right_ur_arm"}
-    assert all(error["remaining_mm"] < 2.0 for error in outcome["end_error_mm"].values())
+    # * The left arm stops about 1.1 s into its 1.7 s line, some 2 mm short; the right arm finishes its line.
+    assert all(error["remaining_mm"] < 2.5 for error in outcome["end_error_mm"].values())
+    assert outcome["end_error_mm"]["right_ur_arm"]["remaining_mm"] < 0.1
     assert outcome.get("base_drift_max_mm", 0.0) == pytest.approx(0.0, abs=1e-6)
     assert result.end is not None and len(result.end) == 12
 
@@ -113,12 +117,12 @@ def test_b21s_insert_ends_when_the_left_screw_stalls_1_s_into_the_compliant_part
 def test_b20s_ground_bar_insert_is_rigid_with_no_tighten_whatever_rigid_insert_says():
     """B20_J_insert with Rigid insert ticked: a ground bar, so RIGID_DONE; no TIGHTEN on any tool, no switch, DONE.
 
-    The prompt says so, the record keeps the setting and the end gap; the servo after it (M7) finds nothing left.
+    Its line says so, the record keeps the setting and the end gap; the servo after it (M7) finds nothing left.
     """
     lab = compliant_lab(("B20_J", 4), RunSettings(rigid_only=True))
-    result, _held = execute(lab, along(lab, "B20_J_insert", INSERT_STEP), True)
+    result, _held = execute(lab, along(lab, "B20_J_insert", INSERT_STEP))
     assert result.status == DONE and result.done == (4, SERVO_INDEX), result.reason
-    assert prompts(lab)[0].startswith("cindy (a200-0806): B20_J_insert — RIGID insert of a ground bar, no tighten, ")
+    assert said(lab)[0].startswith("cindy (a200-0806): B20_J_insert — RIGID insert of a ground bar, no tighten, ")
     # * The servo's records come after the insert's.
     record = json.loads(json.dumps(next(file for file in reversed(lab.run.files())
                                         if file.get("part", {}).get("kind") == "insert")))
@@ -152,9 +156,9 @@ def test_b20s_retreat_breaks_out_compliant_then_runs_the_tail_replanned_to_the_g
     request = along(lab, "B20_R_retreat", RETREAT_STEP, goals=True)
     start = np.array(request.route.result.trajectory.positions[0])
     planner = lab.ctx.plugins["motion_planner"] = TailPlanner(lab, start + RETREAT_STEP)
-    result, _held = execute(lab, request, True)
+    result, _held = execute(lab, request)
     assert result.status == DONE and result.done == (1, 0), result.reason
-    assert prompts(lab) == [prompts(lab)[0]] and prompts(lab)[0].startswith(
+    assert not prompts(lab) and said(lab) == [said(lab)[0]] and said(lab)[0].startswith(
         "cindy (a200-0806): B20_R_retreat — RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN; force sensors "
         "zeroed; COMPLIANT break-out ")
     asked, = planner.requests

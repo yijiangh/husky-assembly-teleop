@@ -1,6 +1,6 @@
 """The B20 servo chain end to end: the real run, planner, executor and step panel on fake robots, in a scratch copy.
 
-Spec §6 "test_servo_chain". B20_J's transfer step is planned on tamp and run with every part confirmed, the tools
+Spec §6 "test_servo_chain". B20_J's transfer step is planned on tamp and run with its prompts confirmed, the tools
 stalling and Cindy's base measured 10 mm off: the servo converges on tool0 and is recorded in the run; then, with
 "Servo by bar" and synthetic markers of B20 streamed from a world-frame error, it converges on the MoCap bar and
 carries the correction for the insert. The run is written into a copy of the purged process: the Drive's folder is
@@ -180,8 +180,9 @@ class Chain(RobotLab):
     async def run_step(self, shift_at: int | None = None) -> int:
         """Plan the step's motion if it has one, Exec, Confirm every prompt until the Exec ends; how many there were.
 
-        As prompt `shift_at` (from 1) opens, Cindy's base is measured 10 mm off: at the grasp's prompt the motion has
-        arrived, so only the servo after it sees the shift. The step panel and the run follow after.
+        As prompt `shift_at` (from 1) opens, Cindy's base is measured 10 mm off: at the bar's prompt (placed and
+        clamped) the motion has arrived, so only the servo after it sees the shift. The step panel and the run follow
+        after.
         """
         steps = self.steps
         if any(part.kind == MOTION_PART for part in steps.parts()):
@@ -233,8 +234,9 @@ class Chain(RobotLab):
 def test_the_b20_servo_chain_on_the_real_plugins(tmp_path, monkeypatch):
     """B20_J's transfer step with the real run, planner, executor and step panel: the servo on tool0, then by bar.
 
-    Plan (tamp), Exec, Confirm the motion, the mount and the grasp (it stalls), Cindy's base measured 10 mm off: the
-    servo's pass 1 is confirmed and converges on tool0, recorded as `servo/B20_J/B20_J_transfer.1.json` with its
+    Plan (tamp), Exec (the motion runs at once), Confirm the bar placed and clamped (one prompt; the tools stall),
+    Cindy's base measured 10 mm off: the servo's pass 1 is confirmed and converges on tool0, recorded as
+    `servo/B20_J/B20_J_transfer.1.json` with its
     .png; the run's events hold new_run, plan, prompt, confirm, exec and servo. Then, "Servo by bar" on and B20's
     markers streamed 3 mm / 0.1° off in the world, Exec runs the servo alone: it converges on the MoCap bar within
     3 passes and carries the correction for B20_J_insert. The Drive's process folder is never written.
@@ -253,8 +255,8 @@ def test_the_b20_servo_chain_on_the_real_plugins(tmp_path, monkeypatch):
     async def scenario():
         await lab.opened()
         assert lab.run.view.current == ("B20_J", transfer) and lab.run.view.folder is None
-        prompts = await lab.run_step(shift_at=3)
-        assert prompts == 4, (lab.steps._message, lab.executor._last)
+        prompts = await lab.run_step(shift_at=1)
+        assert prompts == 2, (lab.steps._message, lab.executor._last)
         assert lab.steps.position == (2, 2) and lab.steps.parts()[0].kind == INSERT_PART
         # * Back on the transfer step with its motion, mount and grasp done: Exec runs the servo alone, now by bar.
         lab.run.request_settings(servo_by_bar=True)
@@ -278,12 +280,12 @@ def test_the_b20_servo_chain_on_the_real_plugins(tmp_path, monkeypatch):
     events, files = lab.records()
     names = [event["event"] for event in events]
     assert names[0] == "new_run" and {"plan", "prompt", "confirm", "exec", "servo", "settings"} <= set(names)
-    assert [file["movement"] for file in files] == [MOVEMENT, "B20_J_place_bar", "B20_J_grasp", MOVEMENT, MOVEMENT]
-    assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "confirmed", "stalled", "converged",
-                                                             "converged"]
-    assert files[0]["plan"]["planner"] == "tamp.plan_free_dual_arm"
-    assert files[3]["servo_file"] == f"servo/B20_J/{MOVEMENT}.1.json"
-    assert files[4]["servo_file"] == f"servo/B20_J/{MOVEMENT}.2.json"
+    # * The bar placed and clamped is one record, named after the first of the two movements.
+    assert [file["movement"] for file in files] == [MOVEMENT, "B20_J_place_bar", MOVEMENT, MOVEMENT]
+    assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "confirmed", "converged", "converged"]
+    assert files[0]["plan"]["planner"] == "tamp.plan_free_dual_arm" and files[1]["part"]["also"] == [2]
+    assert files[2]["servo_file"] == f"servo/B20_J/{MOVEMENT}.1.json"
+    assert files[3]["servo_file"] == f"servo/B20_J/{MOVEMENT}.2.json"
     assert json.loads((lab.run.view.folder / "run.json").read_text())["settings"]["servo_by_bar"] is True
 
     tool0 = lab.servo_record(1)

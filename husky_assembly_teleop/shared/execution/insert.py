@@ -53,7 +53,7 @@ GROUNDED_END_TOL = 0.003
 #: Arms whose tool0 travels sum to less than this, metres, give no axis to spiral around: the straight line runs.
 MIN_AXIS = 1e-6
 #: The end of every insert prompt but the ground bar's.
-WATCH = "Watch the bar enter its joint and the held bars stay in their jaws. Confirm to start."
+WATCH = "Watch the bar enter its joint and the held bars stay in their jaws."
 JOINT_MOTOR = ScaffoldingV3.JOINT_MOTOR
 
 

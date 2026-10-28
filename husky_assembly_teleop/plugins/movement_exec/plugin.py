@@ -1,11 +1,12 @@
 """
 Run one step of the assembly on the real robot: its motion along the plan, its tool steps, its steps done by hand.
 
-Requests come through `MovementExecContract`; each part runs after the operator's Confirm and is recorded in the
-assembly run, the servo part (`servo_part.py`) pass by pass. Every robot is leased from the request to its end, so
-nothing else here moves a robot, and every check runs again after Confirm, with the command rebuilt from the live
-joints in the same tick. Cancel or Stop all ends it with every arm held; so does another robot starting to move, or
-one displaced (`ctx.freeze`, pushes too) or lost to mocap while a motion runs.
+Requests come through `MovementExecContract`; a motion runs on Exec, a tool step or a step by hand after the
+operator's Confirm, and each is recorded in the assembly run, the servo part (`servo_part.py`) pass by pass. Every
+robot is leased from the request to its end, so nothing else here moves a robot, and every check runs again right
+before a send, with the command rebuilt from the live joints in the same tick. Cancel or Stop all ends it with every
+arm held; so does another robot starting to move, or one displaced (`ctx.freeze`, pushes too) or lost to mocap while
+a motion runs.
 
 - ! EXPERIMENTAL, the first plugin that runs process movements on the robots: keep the e-stops in hand.
 """
@@ -34,7 +35,7 @@ from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, 
                                               INSERT_PART, MAX_TRAJ_TIME, MOTION_KINDS, MOTION_PART, REFUSED,
                                               REFUSED_PART, RETREAT_PART, SERVO_PART, Carried, ExecRequest,
                                               ExecResult, serial_of)
-from ...ui.assembly_tab import ASSEMBLY_TAB
+from ...ui.assembly_tab import ASSEMBLY_TAB, EXEC_PLOTS_X, PLOTS_HEIGHT, PLOTS_WIDTH, PLOTS_Y
 from .panel import ExecPanel
 from .plots import ExecPlots
 from .sequences import Job, PartRun, run_part
@@ -56,13 +57,13 @@ def cancelled_by(ctx: PluginContext) -> str:
     return CLOSED if ctx.closed else STOP_ALL
 
 
-#: The parts that run partly under the compliance controller, whose force and torque the Plots tab shows.
+#: The parts that run partly under the compliance controller, whose force and torque the Exec plots window shows.
 COMPLIANT_KINDS = (INSERT_PART, RETREAT_PART, HANDOFF_PART)
 
 
 @register
 class MovementExecPlugin(HuskyPlugin):
-    """Runs one step's parts at a time on its robot, each after the operator's Confirm, and records them."""
+    """Runs one step's parts in order on its robot (a motion on Exec, the rest after Confirm) and records them."""
 
     name = "movement_exec"
     requires = ("motion_planner", "assembly_run")
@@ -87,10 +88,11 @@ class MovementExecPlugin(HuskyPlugin):
         self._dry_run_refused = 0
         #: Serial -> ROS time its arms last arrived (a motion or a servo pass): an older plan is refused.
         self._moved_at: dict[str, float] = {}
-        #: What the last transfer's bar servo left for its insert's plan; the panel's servo line of the running part.
+        #: What the last transfer's bar servo left for its insert's plan; the panel's servo line: the running servo's
+        #: last reading, or how the last one ended, until the next request.
         self._carried: Carried | None = None
         self._servo_line = ""
-        #: The Plots tab, and the time of the compliant sample last plotted.
+        #: The Exec plots window's plots, and the time of the compliant sample last plotted.
         self._plots: ExecPlots | None = None
         self._plotted_t: float | None = None
 
@@ -192,15 +194,19 @@ class MovementExecPlugin(HuskyPlugin):
     # --- --- --- --- --- HOOKS --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
-        """Keep the context for the requests; build the panel, the phone's Exec tab and the Plots tab."""
+        """Keep the context for the requests; build the panel, the phone's Exec tab and the Exec plots window."""
         self._ctx = ctx
         self._panel = ExecPanel(ctx, self)
-        # * A top-level tab beside Assembly, so the operator can drag it out into a window of its own.
-        with ctx.view.tab("Plots", viser.Icon.CHART_LINE, top=True) as gui:
-            self._plots = ExecPlots(gui)
+        # * A window at the bottom left, beside the plan plots, minimized to its bar until a servo or a compliant
+        #   part starts (`ExecPlots`).
+        panel = ctx.view.panel()
+        with panel.add_tab("Exec plots", viser.Icon.CHART_DOTS):
+            self._plots = ExecPlots(ctx.view.gui, panel)
+        panel.float(x=EXEC_PLOTS_X, y=PLOTS_Y, width=PLOTS_WIDTH, height=PLOTS_HEIGHT)
+        panel.minimize()
 
     def draw(self, ctx: PluginContext) -> None:
-        """Fill the panel, and the Plots tab with the running compliant part's newest sample."""
+        """Fill the panel, and the Exec plots with the running compliant part's newest sample."""
         if self._panel is not None:
             recorder = self._job.recorder if self.active and self._job is not None else None
             self._panel.draw(self.active, self.prompt, self._dry_run, (self._last, self._last_failed),
@@ -279,6 +285,7 @@ class MovementExecPlugin(HuskyPlugin):
         result = ExecResult(FAILED, "ended before its first part")
         if self._carried is not None and self._carried.action != request.action:
             self._carried = None
+        self._servo_line = ""
         try:
             with lease.use():
                 for part in request.parts:
@@ -308,7 +315,7 @@ class MovementExecPlugin(HuskyPlugin):
                         end, base = run.end, run.base
                         self._moved_at[request.serial] = ctx.now()
                     if run.result == DONE:
-                        done.append(part.index)
+                        done.extend((part.index, *part.also))
                     elif run.result != DRY_RUN:
                         result = ExecResult(run.result, f"{part.movement}: {run.reason}", tuple(done), end, base)
                         break
@@ -320,7 +327,6 @@ class MovementExecPlugin(HuskyPlugin):
             #   robot_control, which needs the lease.
             lease.release()
             self._prompts.current = None
-            self._servo_line = ""
             if not future.done():
                 self._finished(ctx, request, result)
                 future.set_result(result)
@@ -415,11 +421,15 @@ class MovementExecPlugin(HuskyPlugin):
             "goal_joints": route.goal_joints, "end_error": {flange: list(error) for flange, error in
                                                             route.end_error.items()},
             "warnings": list(route.warnings)}
+        # * A folded part (the bar placed and clamped) is one record, named after its first movement.
+        movement = request.loaded.process.actions[request.action].movements[part.index].id if part.also \
+            else part.movement
         payload = {
-            "movement": part.movement, "routine": part.routine.value if part.routine is not None else None,
+            "movement": movement, "routine": part.routine.value if part.routine is not None else None,
             "robot": request.robot_name, "serial": request.serial,
             "step": {"primary": request.step.primary, "indices": list(request.step.indices)},
-            "part": {"index": part.index, "kind": part.kind, "tools": list(part.tools), "text": part.text},
+            "part": {"index": part.index, "also": list(part.also), "kind": part.kind, "tools": list(part.tools),
+                     "text": part.text},
             "basis": request.basis.as_record() if motion and request.basis is not None else None,
             "plan": plan, "command": run.command,
             # * Where the robot stood and when, at the part's start and end, as measured then.
@@ -429,7 +439,7 @@ class MovementExecPlugin(HuskyPlugin):
                         "dry_run": job.dry_run}}
         if part.kind == SERVO_PART:
             payload["servo_file"] = run.servo_file
-        job.run.request_record("exec", action=request.action, movement=part.movement,
+        job.run.request_record("exec", action=request.action, movement=movement,
                                data={"status": run.status, "result": run.result}, file=payload)
 
 

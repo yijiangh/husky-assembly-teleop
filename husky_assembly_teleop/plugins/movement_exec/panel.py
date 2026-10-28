@@ -83,7 +83,8 @@ class ExecPanel:
             last: The last result as one line, and whether it failed.
             refused: How many dry-run changes were refused; a change puts the checkbox back.
             recorder: The samples of the compliant part running, or None.
-            servo: The servo part's line for its last reading, e.g. "servo 2/8 · tool0 L 0.31 R 0.27 mm"; "" idle.
+            servo: The running servo's last reading, e.g. "servo 2/8 · tool0 L 0.31 R 0.27 mm", or how the last servo
+                ended (grey once the request is over); "" for none.
         """
         chips = chip("DRY RUN", BUSY, "every check, nothing sent") if dry_run else ""
         chips += chip(escape(active), BUSY) if active else chip("idle", NONE)
@@ -108,7 +109,7 @@ class ExecPanel:
         self._phone_last.content = phone_text(block(f'<div style="color:{FAIL if failed else NONE}">'
                                                     f'{escape(message) or "&nbsp;"}</div>'))
         # * One line high, always there: the servo's readings come and go without moving anything.
-        line = _one_line(escape(servo) or "&nbsp;", BUSY if servo else NONE)
+        line = _one_line(escape(servo) or "&nbsp;", BUSY if servo and active else NONE)
         self._servo.content = block(line)
         self._phone_servo.content = phone_text(block(line))
 

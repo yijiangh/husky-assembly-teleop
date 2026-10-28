@@ -1,11 +1,12 @@
 """
 A step's parts, run one at a time: a motion along its plan, a tool step, or a step done by hand.
 
-Each part asks the operator first, the robot named, and checks the world again after Confirm. A motion is then rebuilt
-from the live joints and sent in the same tick, so nothing can change between the last check and the send; the other
-robots are frozen (`ctx.freeze`) until it ends. An insert, a retreat (both motions along the plan) and the Robotiq
-handoff run partly compliant (`shared/execution/`), with the run's settings read once when the part starts. The servo
-part (`servo_part.py`) runs on the same `Job`, `PartRun` and checks; the plugin dispatches it.
+A motion along the plan (plain, an insert, a retreat) runs on Exec without a prompt, as in the old monitor: its line is
+logged, the world checked again and the command rebuilt from the live joints and sent in the same tick, so nothing can
+change between the last check and the send; the other robots are frozen (`ctx.freeze`) until it ends. The Robotiq
+steps and the steps done by hand ask the operator first, the robot named. An insert, a retreat and the Robotiq handoff
+run partly compliant (`shared/execution/`), with the run's settings read once when the part starts. The servo part
+(`servo_part.py`) runs on the same `Job`, `PartRun` and checks; the plugin dispatches it.
 
 ! Main thread, inside the plugin's task.
 """
@@ -36,14 +37,13 @@ from ...shared.execution.send import DRY_RUN as SENT_DRY, HOLD_NOT_SENT as SENT_
 from ...shared.execution.stream import CANCELLED as PART_CANCELLED, DRY_RUN as PART_DRY, REFUSED as PART_REFUSED
 from ...shared.execution.stream import HOLD_NOT_SENT as PART_NOT_HELD
 from ...shared.execution.stream import Recorder
-from ...shared.execution.tools import (FELL_SHORT, GRASP_TIMEOUT, REACHED, ROBOTIQ_CLOSE, ROBOTIQ_EFFORT, ROBOTIQ_OPEN,
-                                       STALLED, robotiq_move, scaffolding_grasp)
+from ...shared.execution.tools import (FELL_SHORT, REACHED, ROBOTIQ_CLOSE, ROBOTIQ_EFFORT, ROBOTIQ_OPEN, STALLED,
+                                       robotiq_move)
 from ...shared.execution.tools import DRY_RUN as TOOL_DRY, REFUSED as TOOL_REFUSED
 from ...shared.motion_planner_contract import MotionPlanRequest
-from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, DONE, DRY_RUN, FAILED, GRASP_PART,
-                                              HANDOFF_PART, HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART,
-                                              OPEN_PART, REFUSED, REFUSED_PART, RETREAT_PART, WITH_MOTION_PART,
-                                              current_primary)
+from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, DONE, DRY_RUN, FAILED, HANDOFF_PART,
+                                              HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART, OPEN_PART, REFUSED,
+                                              REFUSED_PART, RETREAT_PART, WITH_MOTION_PART, current_primary)
 from ...shared.runs.runs import SPLIT_RANGE
 from ...world.freeze import WorldMoved, take_basis
 
@@ -87,7 +87,7 @@ class Job:
         show: Writes the panel's servo line.
         opened: The arms whose gripper screws a retreat of this request opened (its ungrasp is then done).
         recorder: The samples of the compliant part running (insert, retreat, handoff), for the panel; else None.
-        measured: Gets each servo reading as it is taken, for the Plots tab.
+        measured: Gets each servo reading as it is taken, for the Exec plots window.
     """
 
     ctx: PluginContext
@@ -152,7 +152,7 @@ class PartRun:
 
 
 async def run_part(job: Job, run: PartRun) -> None:
-    """Run one part, asking the operator first; `run` says how it ended.
+    """Run one part; `run` says how it ended.
 
     Args:
         job: The request being run.
@@ -170,8 +170,7 @@ async def run_part(job: Job, run: PartRun) -> None:
         run.ended(REFUSED, "refused", problem)
         return
     runs = {MOTION_PART: _motion, INSERT_PART: _insert, RETREAT_PART: _retreat, OPEN_PART: _robotiq,
-            HANDOFF_PART: _handoff, GRASP_PART: _grasp, WITH_MOTION_PART: _with_motion, BY_HAND_PART: _by_hand,
-            BASE_PART: _by_hand}
+            HANDOFF_PART: _handoff, WITH_MOTION_PART: _with_motion, BY_HAND_PART: _by_hand, BASE_PART: _by_hand}
     part_started(job, run)
     try:
         await runs[kind](job, run)
@@ -232,9 +231,10 @@ def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None) -> str
 def others_moving(job: Job) -> str:
     """Why the part must not move now: another robot moves, or this robot's base moves; else "".
 
-    ! One motion at a time across every robot: checked before the prompt, after Confirm and, for a motion, every tick
-      while the arms move (`send_motion`'s watch, next to the freeze). The request leases every robot, so only motion
-      this monitor did not send (the pendant, a node on the robot) can show up here.
+    ! One motion at a time across every robot: checked as the part starts, again right before the send (after a
+      prompt, when the part has one) and, for a motion, every tick while the arms move (`send_motion`'s watch, next to
+      the freeze). The request leases every robot, so only motion this monitor did not send (the pendant, a node on
+      the robot) can show up here.
     """
     serial, now = job.request.serial, job.ctx.now()
     return moving_reason(job.ctx.world, now, besides=serial) or base_moving(job.robot.base.state, f"{serial} base", now)
@@ -341,6 +341,11 @@ def _ask(job: Job, movement: str, text: str, warn: bool) -> Prompt:
     return prompt
 
 
+def _say(job: Job, text: str, warn: bool = False) -> None:
+    """Log what a motion does, after the robot's name ("DRY RUN — " first in a dry run), as a warning if `warn`."""
+    (job.ctx.log_warn if warn else job.ctx.log_info)(f"{job.who}: {'DRY RUN — ' if job.dry_run else ''}{text}")
+
+
 @dataclass(frozen=True)
 class PartOperator:
     """The operator as a compliant part asks it without waiting (`spiral.Operator`): prompts as `confirmed`'s.
@@ -396,7 +401,7 @@ async def confirmed(job: Job, run: PartRun, text: str, warn: bool = False) -> bo
 # --- --- --- --- --- PARTS --- --- --- --- ---
 
 async def _motion(job: Job, run: PartRun) -> None:
-    """Move the arms along the plan: prompt with its time and largest joint travel, check again, send, watch."""
+    """Move the arms along the plan: log its time and largest joint travel, check again, send, watch."""
     ctx, part = job.ctx, run.part
     command = live_command(job)
     if isinstance(command, str):
@@ -409,11 +414,9 @@ async def _motion(job: Job, run: PartRun) -> None:
     basis = job.request.basis
     ignored = " (built bars ignored)" if basis is not None and basis.ignore_built else ""
     ignored += " (Rhino obstacles not checked)" if basis is not None and not basis.obstacles_collide else ""
-    text = (f"{part.movement} — move {arms} along the planned path{ignored}, {command.duration:.0f} s, largest joint "
-            f"travel {math.degrees(command.travel):.0f}° (Play it first). Confirm to move.")
-    if not await confirmed(job, run, text, warn=command.travel > LARGE_TRAVEL):
-        return
-    # ! Checked again after Confirm; the command is rebuilt from the joints now and sent in this same tick.
+    _say(job, f"{part.movement} — move {arms} along the planned path{ignored}, {command.duration:.0f} s, largest "
+              f"joint travel {math.degrees(command.travel):.0f}°", warn=command.travel > LARGE_TRAVEL)
+    # ! Checked again right before the send; the command is rebuilt from the joints now and sent in this same tick.
     command = world_problem(job, motion=True) or live_command(job)
     if isinstance(command, str):
         run.ended(REFUSED, "refused", command)
@@ -501,7 +504,7 @@ async def _retreat(job: Job, run: PartRun) -> None:
 
 async def _along_plan(job: Job, run: PartRun, settings: dict, plan_of: Callable[[list[str], np.ndarray], Any],
                       start: Callable[[Any, Recorder], Awaitable[PartOutcome]]) -> PartOutcome | None:
-    """Run a compliant part along the plan as `_motion` runs a motion: plan, prompt, check and plan again, run.
+    """Run a compliant part along the plan as `_motion` runs a motion: plan, log, check and plan again, run.
 
     Args:
         job: The request being run.
@@ -526,9 +529,8 @@ async def _along_plan(job: Job, run: PartRun, settings: dict, plan_of: Callable[
     run.command = {"settings": settings, "plan": plan.as_record()}
     ctx.log_info(f"{job.who}: the teach pendant's speed slider must be at 100 %: slower, the motion times out and "
                  f"is held mid-path")
-    if not await confirmed(job, run, f"{part.movement} — {plan.text}"):
-        return None
-    # ! Checked again after Confirm; planned again from the joints now and started in this same tick.
+    _say(job, f"{part.movement} — {plan.text}")
+    # ! Checked again right before the start; planned again from the joints now and started in this same tick.
     plan = world_problem(job, motion=True) or planned()
     if isinstance(plan, str):
         run.ended(REFUSED, "refused", plan)
@@ -633,27 +635,6 @@ def _robotiq_of(job: Job, run: PartRun) -> RobotiqGripper | None:
         return gripper
     run.ended(REFUSED, "refused", f"{job.who} has no Robotiq on {arm}")
     return None
-
-
-async def _grasp(job: Job, run: PartRun) -> None:
-    """Clamp the bar in the scaffolding tools: STOP, tighten the M1 screws until STALLED, STOP."""
-    part = run.part
-    tools = {arm: job.robot.arms[arm].end_effector for arm in part.tools if arm in job.robot.arms}
-    if len(tools) != len(part.tools) or not all(isinstance(tool, ScaffoldingV3) for tool in tools.values()):
-        run.ended(REFUSED, "refused", f"{job.who} has no scaffolding tool on {', '.join(part.tools)}")
-        return
-    run.command = {"tool": "scaffolding_v3", "arms": list(tools), "motor": "gripper (M1) tighten",
-                   "timeout": GRASP_TIMEOUT}
-    text = (f"{part.movement} — GRASP: STOP, then the M1 screw of {', '.join(tools)} TIGHTENS until STALLED "
-            f"(≤{GRASP_TIMEOUT:.0f} s), then STOP. Confirm to send.")
-    if not await confirmed(job, run, text):
-        return
-    problem = world_problem(job, motion=False)
-    if problem:
-        run.ended(REFUSED, "refused", problem)
-        return
-    _tool_ended(job, run, await scaffolding_grasp(job.ctx, tools, dry_run=job.dry_run,
-                                                  ready=lambda: world_problem(job, motion=False)))
 
 
 async def _by_hand(job: Job, run: PartRun) -> None:

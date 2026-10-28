@@ -526,7 +526,7 @@ def test_cancel_during_the_second_pass_holds_every_arm_and_exec_again_runs_the_s
     """
     lab = ServoLab(shift=(0.0, 0.0, 0.0))
     request = lab.step_request()
-    assert [part.kind for part in request.parts] == ["motion", "operator", "grasp", SERVO_PART]
+    assert [part.kind for part in request.parts] == ["motion", "operator", SERVO_PART]
 
     async def cut_pass_two(lab):
         await sent(lab, 2)  # the step's motion, then servo pass 1
@@ -534,7 +534,8 @@ def test_cancel_during_the_second_pass_holds_every_arm_and_exec_again_runs_the_s
         await sent(lab, 3)
         lab.plugin.request_cancel()
 
-    result = execute(lab, request, True, True, True, True, during=cut_pass_two)
+    # * Two prompts: the bar placed and clamped, then servo pass 1 (the motion runs on Exec).
+    result = execute(lab, request, True, True, during=cut_pass_two)
     assert result.status == CANCELLED and "operator" in result.reason, result.reason
     assert result.done == lab.operator_step().indices == (3, 1, 2) and lab.holds() == [1, 1] and lab.free()
     record = lab.servo_record()
@@ -709,5 +710,5 @@ def test_a_plan_made_before_a_servo_pass_is_refused_at_exec():
     result = execute(lab, stale)
     assert result.status == REFUSED and result.reason == "the arms moved since this plan was made: replan"
     assert lab.published() == 1
-    fresh = execute(lab, request, True, False)
+    fresh = execute(lab, request, False)  # * the motion runs on Exec; Cancel at the bar's prompt
     assert fresh.status == CANCELLED and fresh.done == (3,)

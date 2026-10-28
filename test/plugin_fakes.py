@@ -16,7 +16,7 @@ test hands it the lease every test holds (`lease_to_test`). Freezes are the real
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Iterator, Sequence
@@ -72,6 +72,30 @@ class FakeWidget(SimpleNamespace):
 
     def __exit__(self, *_exc: Any) -> None:
         """Leave the folder."""
+
+
+class FakePanel:
+    """A floating window (`ctx.view.panel()`): keeps where it was floated (`placed`) and each minimize and expand."""
+
+    def __init__(self, gui: FakeGui):
+        """Not placed yet, nothing called."""
+        self.gui, self.placed, self.calls = gui, None, []
+
+    def add_tab(self, label: str = "", icon: Any = None) -> AbstractContextManager[FakeGui]:
+        """The window's tab: widgets added inside land in the fake gui."""
+        return nullcontext(self.gui)
+
+    def float(self, **place: Any) -> None:
+        """Keep where the window was put."""
+        self.placed = place
+
+    def minimize(self) -> None:
+        """Note the call."""
+        self.calls.append("minimize")
+
+    def expand(self) -> None:
+        """Note the call."""
+        self.calls.append("expand")
 
 
 class FakeScene:
@@ -166,10 +190,12 @@ class FakeContext:
         self.scene = SimpleNamespace(snapshot=snapshot if snapshot is not None else Scene())
         self.world = SimpleNamespace(robots={}, tracked_objects={})
         self.gui = FakeGui()
+        #: The floating windows made with `view.panel()`, in order.
+        self.panels: list[FakePanel] = []
         self.view = SimpleNamespace(ui=lambda band=None: nullcontext(self.gui),
                                     phone=lambda *_tab: nullcontext(self.gui),
-                                    tab=lambda *_tab, **_options: nullcontext(self.gui), scene=FakeScene(),
-                                    scene_root="/plugin", faded=[])
+                                    tab=lambda *_tab, **_options: nullcontext(self.gui), gui=self.gui,
+                                    panel=self._panel, scene=FakeScene(), scene_root="/plugin", faded=[])
         #: `ctx.view.set_robot_opacity` as the runtime's: every call is kept in `view.faded`.
         self.view.set_robot_opacity = lambda serial, opacity: self.view.faded.append((serial, opacity))
         #: (level, message) per log line.
@@ -180,6 +206,11 @@ class FakeContext:
     def now(self) -> float:
         """ROS time, seconds."""
         return self.t
+
+    def _panel(self) -> FakePanel:
+        """A floating window (`ctx.view.panel()`), kept in `panels`."""
+        self.panels.append(FakePanel(self.gui))
+        return self.panels[-1]
 
     def require(self, name: str) -> Any:
         """Another plugin, by name."""

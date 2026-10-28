@@ -156,8 +156,7 @@ def plan_retreat(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequenc
         steps += ["force sensors zeroed", f"COMPLIANT break-out {total - achieved:.1f} mm ({compliant_s:.1f} s)",
                   "joint control"]
     if trailing is not None:
-        steps.append(f"the rest replanned from where the tools are and run at once ({tail_s:.1f} s, no second "
-                     f"Confirm)")
+        steps.append(f"the rest replanned from where the tools are and run at once ({tail_s:.1f} s)")
     both = len(arms) > 1
     text = (f"RETREAT: {'; '.join(steps)}. Watch {'both tools' if both else 'the tool'} let go and back off along "
             f"{'their lines' if both else 'its line'}.")

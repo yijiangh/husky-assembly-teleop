@@ -3,10 +3,10 @@ The SERVO part: the arms brought onto the authored targets pass by pass, the rob
 
 It runs after a transfer, a support robot's approach or a grounded insert (W:2373-2668 two arms, W:6128-6193 one
 arm). Each pass: the checks of every part again (process and action unchanged, others still, the robot live), a plan
-on the motion planner (`request_servo_step`), the operator's Confirm on the first pass and on any later one
-travelling over CONFIRM_TRAVEL, the move, a settle, a reading. With "Servo by bar" the loop steers on the MoCap bar
-once a usable fit comes (`bar_reading`), else on tool0. Done = converged, already on target, or nothing left to plan;
-every other end leaves the step pending (spec A1, A2).
+on the motion planner (`request_servo_step`), the operator's Confirm on the first pass (plain) and on any later one
+travelling over CONFIRM_TRAVEL (a warning), the move, a settle, a reading. With "Servo by bar" the loop steers on the
+MoCap bar once a usable fit comes (`bar_reading`), else on tool0. Done = converged, already on target, or nothing left
+to plan; every other end leaves the step pending (spec A1, A2).
 
 ! Main thread, inside the plugin's task. A cancel during a move leaves every arm held (`send_motion`); `run_servo`'s
   `finally` still untracks the bar and writes the record, then the cancel goes on.
@@ -97,6 +97,9 @@ async def run_servo(job: Job, run: PartRun) -> None:
         raise
     finally:
         loop.close()
+        # * Left on the panel after the request ends: a servo that moved nothing still says what it found.
+        if run.result:
+            job.show(f"servo {run.result}: {run.reason}")
 
 
 class ServoLoop:
@@ -189,7 +192,7 @@ class ServoLoop:
         if isinstance(command, str):
             return REFUSED, "refused", command
         run.command = command.as_record()
-        warn = travel > CONFIRM_TRAVEL
+        warn = travel > CONFIRM_TRAVEL and k > 1  # * the first pass asks plainly, whatever its travel (old W:2484)
         move = {"planner": route.planner, "attempts": route.attempts, "rows": waypoints, "ik": ik_record(route.ik),
                 "correction_mm": correction, "excursion_deg": math.degrees(travel), "net_deg": math.degrees(net),
                 "traj_time": traj_time, "duration": None, "prompted": k == 1 or warn, "outcome": None}
@@ -234,7 +237,7 @@ class ServoLoop:
         return None
 
     def _prompt(self, k: int, route: RouteResult, move: dict, flanges_move: str) -> str:
-        """The question before a move: the first pass, or a later one travelling over CONFIRM_TRAVEL (spec §2.7)."""
+        """The question before a move: the first pass, plain; a later one travelling over CONFIRM_TRAVEL, a warning."""
         plan = self.plan
         path = (f"travels {move['excursion_deg']:.1f}° (ends {move['net_deg']:.1f}° from where it starts), "
                 f"{move['traj_time']:.0f} s; flanges move {flanges_move}")

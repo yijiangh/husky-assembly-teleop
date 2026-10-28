@@ -211,8 +211,8 @@ def test_the_plan_cuts_the_break_out_from_the_start_and_shares_the_time():
     assert set(plan.goals) == set(ARMS)
     assert plan.text == ("RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN; force sensors zeroed; COMPLIANT "
                          f"break-out 5.0 mm ({plan.compliant_seconds:.1f} s); joint control; the rest replanned from "
-                         f"where the tools are and run at once ({plan.tail_seconds:.1f} s, no second Confirm). Watch "
-                         "both tools let go and back off along their lines.")
+                         f"where the tools are and run at once ({plan.tail_seconds:.1f} s). Watch both tools let go "
+                         "and back off along their lines.")
     assert json.loads(json.dumps(plan.as_record()))["compliant_mm"] == pytest.approx(5.0, abs=1e-3)
 
 

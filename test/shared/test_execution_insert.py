@@ -164,7 +164,7 @@ def test_the_plan_splits_5_mm_off_the_end_and_says_so():
     assert plan.text == (f"INSERT: rigid {total - 5.0:.1f} mm ({plan.rigid.duration:.1f} s), then COMPLIANT 5.0 mm "
                          f"(straight line); the joint screw of left_ur_arm TIGHTENS from the start until it stalls "
                          f"(≤ 30 s), then STOP and back to joint control. Watch the bar enter its joint and the held "
-                         f"bars stay in their jaws. Confirm to start.")
+                         f"bars stay in their jaws.")
     for arm in ARMS:
         assert_same_pose(plan.ends[arm], tool0_fk(URDF, arm, dict(zip(NAMES, ROWS[-1]))))
 

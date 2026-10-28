@@ -1,9 +1,12 @@
-"""The Plots tab: a servo reading adds one point per pass, a compliant part's samples one per tick."""
+"""The Exec plots window: a servo reading adds one point per pass, a compliant part's samples one per tick.
+
+A part starting shows its kind's folder and brings the window forward.
+"""
 
 from __future__ import annotations
 
 import numpy as np
-from plugin_fakes import FakeGui
+from plugin_fakes import FakeGui, FakePanel
 
 from husky_assembly_teleop.plugins.movement_exec.plots import ExecPlots
 
@@ -16,10 +19,11 @@ class FakeUplot:
         self.data, self.scales = fields.get("data"), fields.get("scales")
 
 
-def _plots() -> tuple[ExecPlots, FakeGui]:
+def _plots() -> tuple[ExecPlots, FakeGui, FakePanel]:
     gui = FakeGui()
     gui.add_uplot = lambda **fields: FakeUplot(**fields)
-    return ExecPlots(gui), gui
+    window = FakePanel(gui)
+    return ExecPlots(gui, window), gui, window
 
 
 def _reading(k: int) -> dict:
@@ -32,8 +36,18 @@ def _reading(k: int) -> dict:
 
 
 def test_a_servo_reading_is_one_point_per_pass_and_a_new_servo_starts_over():
-    """Two readings make rows at x = 0 and 1 with the errors by side; `start_servo` empties the trace."""
-    plots, _gui = _plots()
+    """Two readings make rows at x = 0 and 1 with the errors by side; `start_servo` empties the trace.
+
+    The servo starting shows the servo folder, hides the compliant one and opens the window; a compliant part the
+    other way round. Nothing minimizes the window: the operator does.
+    """
+    plots, _gui, window = _plots()
+    plots.start_servo("B20_J_transfer on a200-0806")
+    assert window.calls == ["expand"]
+    assert plots._servo_folder.visible and not plots._compliant_folder.visible
+    plots.start_compliant(["left_ur_arm"], "B21_J_insert on a200-0806")
+    assert window.calls == ["expand", "expand"]
+    assert plots._compliant_folder.visible and not plots._servo_folder.visible
     plots.start_servo("B20_J_transfer on a200-0806")
     plots.servo_reading(_reading(0))
     plots.servo_reading(_reading(1))
@@ -50,7 +64,7 @@ def test_a_servo_reading_is_one_point_per_pass_and_a_new_servo_starts_over():
 
 def test_a_one_arm_reading_leaves_the_other_family_blank():
     """A support robot's reading fills the first family; the second is NaN, never zero."""
-    plots, _gui = _plots()
+    plots, _gui, _window = _plots()
     reading = _reading(3)
     reading["tool0"] = {"arm": reading["tool0"]["left"]}
     plots.servo_reading(reading)
@@ -64,7 +78,7 @@ def test_a_one_arm_reading_leaves_the_other_family_blank():
 
 def test_compliant_samples_split_force_and_torque_per_arm_and_say_when_a_wrench_is_missing():
     """A recorder sample with both wrenches fills six values each; a missing wrench plots zeros and a note."""
-    plots, gui = _plots()
+    plots, gui, _window = _plots()
     plots.start_compliant(["left_ur_arm", "right_ur_arm"], "B21_J_insert on a200-0806")
     sample = {"t": 0.5, "arms": {"left_ur_arm": {"wrench": [0, 1, 2, 3, 4, 5]},
                                  "right_ur_arm": {"wrench": [6, 7, 8, 9, 10, 11]}}}

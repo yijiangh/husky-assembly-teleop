@@ -101,7 +101,7 @@ The old "Draw tool0: live (mocap + FK) vs target (Rhino)".
    - **If not:** `Check tool0: … is not live` (mocap or joints missing), `… has no authored tool0 target` (a step
      without one).
 2. Drive the base 10 mm (D-pad, a tap) and click again: the x gap grows by about 10 mm. **(sim: by the base offset.)**
-3. The frames go when you change the step or after the ghost timeout (20 s without using the panel).
+3. The frames go when you change the step, or while another panel's ghosts show.
 
 ## 6. Visual diagnosis (Assembly › settings)
 
@@ -118,18 +118,20 @@ The old "Visual diagnosis" box: the real robots see-through, and each insert or 
 3. **Clear**, a new step or unticking the box removes the drawing; unticking also draws the robots solid again.
 4. A free move's plan draws nothing: only inserts and retreats have a tool0 path worth looking at.
 
-## 7. The Plots tab (beside Assembly)
+## 7. The Exec plots window (bottom left)
 
-Drag the **Plots** tab out of the side panel for a window of its own, as the old Servoing Live Tracker and
-Compliant Exec Force windows. It holds seven plots and a chip line saying whose curves they are.
+The **Exec plots** window starts minimized to its bar at the bottom left, beside the Plan plots' bar, and opens by
+itself when a servo or a compliant part starts, as the old Servoing Live Tracker and Compliant Exec Force windows
+did; close it with the control at its bar's right end (nothing closes it for you). It holds a chip line saying
+whose curves they are, and the running kind's plots: the servo's five or the compliant part's two.
 
-1. **A servo.** Run B20_J's transfer step (fake lab manual 4.2) and keep the Plots tab in view. **Expect:** when the
-   servo starts, the chip `servo: B20_J_transfer on a200-0806`, and per pass one point on `tool0_pos_err [mm]` (L
+1. **A servo.** Run B20_J's transfer step (fake lab manual 4.2). **Expect:** when the servo starts, the window
+   opens with the chip `servo: B20_J_transfer on a200-0806`, and per pass one point on `tool0_pos_err [mm]` (L
    x/y/z/|d| in reds, R in greens), `tool0_rot_err [deg]`, `base_pos_diff [mm]` and `base_rot_diff [deg]` (blues),
    and `bar` (MoCap vs design, FK vs design) when a bar is tracked; x is the pass number. The points stay until the
    next servo.
 2. **A compliant part.** Run an insert with a mating joint (B21_J's, fake lab manual 5.2) or a retreat. **Expect:**
-   the chip `compliant: B21_J_insert on a200-0806`, then `force [N]` and `torque [Nm]` filling every tick, L reds and
+   the window opens, the servo's plots hidden, with the chip `compliant: B21_J_insert on a200-0806`, then `force [N]` and `torque [Nm]` filling every tick, L reds and
    R greens, x in seconds since the part started; in the simulation the fake wrench's noise around zero, and the
    contact force (`contact_n`) while a screw is stalled. Without a wrench the lines are zero and a chip says `no force
    reading: the arms report no wrench`.
@@ -148,7 +150,7 @@ With the Cartesian controllers built and the fake wrench on, the fake lab manual
   without it as `/a200_0804/gripper: the gripper's action server is not available`.
 
 On the robot these are the fake lab manual's own steps, B20 first with **Rigid insert** ticked, then the compliant
-insert on B21 with the Plots tab open.
+insert on B21 with the Exec plots window open.
 
 Run on 2026-10-27 in the simulation: 4.4 and 5.2 as above; 5.3 waits for the package.
 

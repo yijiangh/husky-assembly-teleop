@@ -111,7 +111,7 @@ event in `events.jsonl` has the numbers, not the rows).
 
 A servo's record (`servo_payload`): the mode (tool0 or the MoCap bar), the bar, every pass's reading (tool0 errors
 per side, the base's drift, the wrenches, the bar's deviation from its design pose by MoCap and by FK), the moves
-made, the settings and the outcome; the picture plots the readings pass by pass, as the Plots tab shows them live.
+made, the settings and the outcome; the picture plots the readings pass by pass, as the Exec plots window shows them live.
 
 ## 3. Who writes, and when
 

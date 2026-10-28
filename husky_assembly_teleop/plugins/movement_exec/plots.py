@@ -1,8 +1,9 @@
 """
-The Plots tab beside Assembly: the servo's readings pass by pass, and a compliant part's force and torque each tick.
+The Exec plots window: the servo's readings pass by pass, and a compliant part's force and torque each tick.
 
 Fed by the executor (`servo_reading`, `compliant_sample`), drawn each tick; the curves of a part stay until the next
-part of its kind starts. Drag the tab out of the side panel for a window of its own.
+part of its kind starts. When a part starts, its kind's folder shows, the other's hides, and the window comes forward
+(`expand`), as the old monitor's windows opened; only the operator closes it.
 """
 
 from __future__ import annotations
@@ -33,10 +34,10 @@ def _nothing() -> None:
 
 
 class ExecPlots:
-    """The Plots tab's traces and plots."""
+    """The Exec plots window's traces and plots: the servo's in one folder, the compliant part's in another."""
 
-    def __init__(self, gui: viser.GuiApi):
-        """Build the plots inside `gui` (the tab): the servo's five, then the compliant part's two."""
+    def __init__(self, gui: viser.GuiApi, panel: viser.PanelHandle):
+        """Build the plots inside `gui` (the window's tab); `panel` is the window, brought forward as a part starts."""
         per_side = tuple(f"{side[0].upper()} {axis}" for side in SIDES for axis in ("x", "y", "z", "|d|"))
         per_axis = tuple(f"{side[0].upper()} {axis}" for side in SIDES for axis in "xyz")
         self._servo = Trace((
@@ -47,29 +48,41 @@ class ExecPlots:
             Signal("bar", _nothing, ("mocap vs design", "FK vs design"), ("mm", "mm"))), SERVO_SAMPLES)
         self._compliant = Trace((Signal("force", _nothing, per_axis, "N"),
                                  Signal("torque", _nothing, per_axis, "Nm")), COMPLIANT_SAMPLES)
+        self._panel = panel
         self._note = gui.add_html(chip_line(""))
         arms = FIRST_ARM + SECOND_ARM
-        self._plots = [
-            TracePlot(gui, self._servo, "tool0_pos_err", seconds=None, min_span=0.1, x_label="pass", colors=arms),
-            TracePlot(gui, self._servo, "tool0_rot_err", seconds=None, min_span=0.01, x_label="pass",
-                      colors=FIRST_ARM[:3] + SECOND_ARM[:3]),
-            TracePlot(gui, self._servo, "base_pos_diff", seconds=None, min_span=0.1, x_label="pass", colors=BASE),
-            TracePlot(gui, self._servo, "base_rot_diff", seconds=None, min_span=0.01, x_label="pass",
-                      colors=BASE[:3]),
-            TracePlot(gui, self._servo, "bar", seconds=None, min_span=0.1, x_label="pass", colors=BASE[:2]),
-            TracePlot(gui, self._compliant, "force", seconds=None, min_span=1.0, x_label="s",
-                      colors=FIRST_ARM[:3] + SECOND_ARM[:3]),
-            TracePlot(gui, self._compliant, "torque", seconds=None, min_span=0.1, x_label="s",
-                      colors=FIRST_ARM[:3] + SECOND_ARM[:3])]
+        self._servo_folder = gui.add_folder("servo")
+        with self._servo_folder:
+            self._plots = [
+                TracePlot(gui, self._servo, "tool0_pos_err", seconds=None, min_span=0.1, x_label="pass", colors=arms),
+                TracePlot(gui, self._servo, "tool0_rot_err", seconds=None, min_span=0.01, x_label="pass",
+                          colors=FIRST_ARM[:3] + SECOND_ARM[:3]),
+                TracePlot(gui, self._servo, "base_pos_diff", seconds=None, min_span=0.1, x_label="pass", colors=BASE),
+                TracePlot(gui, self._servo, "base_rot_diff", seconds=None, min_span=0.01, x_label="pass",
+                          colors=BASE[:3]),
+                TracePlot(gui, self._servo, "bar", seconds=None, min_span=0.1, x_label="pass", colors=BASE[:2])]
+        self._compliant_folder = gui.add_folder("force and torque")
+        with self._compliant_folder:
+            self._plots += [
+                TracePlot(gui, self._compliant, "force", seconds=None, min_span=1.0, x_label="s",
+                          colors=FIRST_ARM[:3] + SECOND_ARM[:3]),
+                TracePlot(gui, self._compliant, "torque", seconds=None, min_span=0.1, x_label="s",
+                          colors=FIRST_ARM[:3] + SECOND_ARM[:3])]
         self._arms: tuple[str, ...] = ()
         self._label = ""
         self._no_wrench = False
+
+    def _show(self, servo: bool) -> None:
+        """Show the running kind's folder, hide the other, and bring the window forward."""
+        self._servo_folder.visible, self._compliant_folder.visible = servo, not servo
+        self._panel.expand()
 
     def start_servo(self, label: str) -> None:
         """Forget the last servo's points: a new servo part starts; its curves stay until the next."""
         self._servo.clear()
         self._label = label
         self._note.content = chip_line(chip(f"servo: {label}", NONE))
+        self._show(servo=True)
 
     def servo_reading(self, reading: Mapping) -> None:
         """One point per pass at x = the pass: tool0 errors per side, the base's drift, the bar's deviation."""
@@ -87,6 +100,7 @@ class ExecPlots:
         self._compliant.clear()
         self._arms, self._label, self._no_wrench = tuple(arms), label, False
         self._note.content = chip_line(chip(f"compliant: {label}", NONE))
+        self._show(servo=False)
 
     def compliant_sample(self, sample: Mapping) -> None:
         """One point at x = the sample's seconds: force [N] and torque [Nm] per arm; no wrench plots 0 and says so."""

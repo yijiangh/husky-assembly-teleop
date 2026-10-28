@@ -5,10 +5,10 @@ Other plugins ask with an `ExecRequest`; `part_plan` says how a step's movements
 after the step's primary movement where it gets one (`servo_kind`).
 
 A part is a motion along a plan (a plain one, an insert or a retreat: `MOTION_KINDS`), a tool step (Robotiq open, the
-compliant Robotiq handoff, a scaffolding grasp), an ungrasp its retreat runs, a step done by hand, or the servo
-(SERVO_PART, index SERVO_INDEX: it is no movement of its own). Routines not supported yet are refused, naming what is
-missing (`LATER`). While movement_exec has a robot's lease for a step, nothing that changes the step may change
-(`step_running`). A transfer's bar servo leaves `Carried` for its insert's plan.
+compliant Robotiq handoff), an ungrasp its retreat runs, a step done by hand (placing the bar, the scaffolding grasp),
+or the servo (SERVO_PART, index SERVO_INDEX: it is no movement of its own). Routines not supported yet are refused,
+naming what is missing (`LATER`). While movement_exec has a robot's lease for a step, nothing that changes the step may
+change (`step_running`). A transfer's bar servo leaves `Carried` for its insert's plan.
 
 Pure: any thread, but `step_running` (main thread only: it reads the robots' leases).
 """
@@ -16,7 +16,7 @@ Pure: any thread, but `step_running` (main thread only: it reads the robots' lea
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable, Mapping, Protocol
 
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX
@@ -53,8 +53,8 @@ LATER: dict[Routine, str] = {}
 STEP_RUNNER = "movement_exec"
 
 #: What a part does.
-MOTION_PART, OPEN_PART, GRASP_PART, BY_HAND_PART, BASE_PART, REFUSED_PART, SERVO_PART = (
-    "motion", "robotiq_open", "grasp", "operator", "base", "refused", "servo")
+MOTION_PART, OPEN_PART, BY_HAND_PART, BASE_PART, REFUSED_PART, SERVO_PART = (
+    "motion", "robotiq_open", "operator", "base", "refused", "servo")
 INSERT_PART, RETREAT_PART, HANDOFF_PART, WITH_MOTION_PART = "insert", "retreat", "robotiq_handoff", "with_motion"
 #: The parts that move the arms along the step's plan.
 MOTION_KINDS = frozenset({MOTION_PART, INSERT_PART, RETREAT_PART})
@@ -77,11 +77,13 @@ class PartPlan:
         index: The movement's index in its action; SERVO_INDEX for the servo after the primary movement.
         movement: Its id (the primary's, for the servo).
         routine: Its routine; None if it can't be classified.
-        kind: MOTION_PART, INSERT_PART, RETREAT_PART, OPEN_PART, HANDOFF_PART, GRASP_PART, WITH_MOTION_PART,
-            BY_HAND_PART, BASE_PART, REFUSED_PART or SERVO_PART.
+        kind: MOTION_PART, INSERT_PART, RETREAT_PART, OPEN_PART, HANDOFF_PART, WITH_MOTION_PART, BY_HAND_PART,
+            BASE_PART, REFUSED_PART or SERVO_PART.
         tools: The arms whose tools it drives; for a motion, a retreat or the servo, the arms it moves; for an
             insert, the arms whose joint screw tightens (none: a ground bar, rigid).
         text: What it does; for a refused part, why.
+        also: The indices of the movements folded into this one (steps by hand that follow each other run as one
+            prompt, e.g. the bar placed and clamped): done with it, its record named after `index`'s movement.
     """
 
     index: int
@@ -90,6 +92,7 @@ class PartPlan:
     kind: str
     tools: tuple[str, ...]
     text: str
+    also: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -275,7 +278,7 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
     if routine in LATER:
         return part(routine, REFUSED_PART, f"{LATER[routine]} is not supported yet")
     if routine is Routine.OPERATOR:
-        return part(routine, BY_HAND_PART, f"do {movement.label or movement.id} by hand")
+        return part(routine, BY_HAND_PART, f"{movement.label or movement.id} by hand")
     if routine is Routine.BASE_ONLY:
         return part(routine, BASE_PART, f"drive the base for {movement.label or movement.id} by hand")
     if routine is Routine.RETREAT_LINEAR:
@@ -326,7 +329,9 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
     if kind == "robotiq":
         return part(routine, HANDOFF_PART, "Robotiq close, the arm compliant (handoff)", tuple(arms))
     if kind == "scaffolding_v3" and grip == "closed":
-        return part(routine, GRASP_PART, "scaffolding grasp", tuple(arms))
+        # * The operator clamps the bar with the tools' own buttons; the monitor sends the tools nothing.
+        return part(routine, BY_HAND_PART, f"clamp it: tighten the gripper screws of {', '.join(arms)} with the "
+                                           f"tools' buttons until they stall", tuple(arms))
     if kind == "scaffolding_v3" and during is not None and during.kind == RETREAT_PART:
         if set(arms) != set(during.tools):
             return part(routine, REFUSED_PART, f"opens the tools on {', '.join(arms)}, but {during.movement} moves "
@@ -364,8 +369,9 @@ def step_parts(loaded: LoadedProcess, action_id: str, step: OperatorStep, robots
                transfer_as_free: bool) -> tuple[PartPlan, ...]:
     """Every movement a step runs, as parts in order, then its servo where the primary gets one.
 
-    One run during the motion is refused (not supported yet), unless it is the ungrasp its retreat runs
-    (WITH_MOTION_PART).
+    - One run during the motion is refused (not supported yet), unless it is the ungrasp its retreat runs
+      (WITH_MOTION_PART).
+    - Steps by hand that follow each other are one part (`PartPlan.also`), so the bar placed and clamped is one prompt.
     """
     movements = loaded.process.actions[action_id].movements
     primary = part_plan(loaded, action_id, step.primary, robots, transfer_as_free)
@@ -378,10 +384,17 @@ def step_parts(loaded: LoadedProcess, action_id: str, step: OperatorStep, robots
         return PartPlan(index, movements[index].id, None, REFUSED_PART, (),
                         "running during the motion is not supported yet")
 
-    parts = (primary, *(during(index) for index in step.with_motion),
-             *(part_plan(loaded, action_id, index, robots, transfer_as_free) for index in step.after_motion))
+    parts: list[PartPlan] = []
+    for part in (primary, *(during(index) for index in step.with_motion),
+                 *(part_plan(loaded, action_id, index, robots, transfer_as_free) for index in step.after_motion)):
+        if parts and part.kind == parts[-1].kind == BY_HAND_PART:
+            last = parts[-1]
+            parts[-1] = replace(last, movement=f"{last.movement} + {part.movement}", text=f"{last.text}; {part.text}",
+                                tools=tuple(dict.fromkeys(last.tools + part.tools)), also=(*last.also, part.index))
+        else:
+            parts.append(part)
     servo = servo_part(loaded, action_id, step.primary, transfer_as_free)
-    return parts if servo is None else (*parts, servo)
+    return tuple(parts) if servo is None else (*parts, servo)
 
 
 def current_step(view: RunView, transfer_as_free: bool) -> tuple[str, list[OperatorStep], int] | None:
