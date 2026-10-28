@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING
 from ...plugin_api.context import PluginContext
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CLOSE_PART, GRASP_PART, MAX_TRAJ_TIME,
                                               MOTION_PART, OPEN_PART, PartPlan)
+from ...shared.planner.planner_panel import unknown_robots_chip
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
+from scaffolding_assembly_core.ids import robot_id
 
 if TYPE_CHECKING:
     from .plugin import AssemblyStepsPlugin
@@ -89,7 +91,8 @@ class StepsPanel:
                      + chip(f"step {number}/{count}", NONE) + plugin._plan_chip())
             if executor.active:
                 chips += chip(escape(f"exec: {executor.active}"), BUSY)
-            self._status.content = chip_line(chips)
+            acting = [robot_id(plugin.serial)] if plugin.serial else []
+            self._status.content = chip_line(chips + unknown_robots_chip(ctx.scene.snapshot, acting))
             movements = view.process.process.actions[action].movements
             routine = plugin.routine()
             text = f"{primary.label} ({routine.value if routine is not None else 'unclassified'})"

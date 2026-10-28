@@ -23,9 +23,12 @@ from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.phone import columns_css
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
+from ...world.stand_ins import unknown_parts, unknown_robots
 from .plan import Plan, PlannerContract
 
 if TYPE_CHECKING:
+    from scaffolding_assembly_core.scene import Scene
+
     from ...config import RobotConfig
     from ..process_contract import ProcessContract, Selection
 
@@ -297,3 +300,22 @@ class PlannerPanel(HuskyPlugin):
                 f'style="font-size:11px;color:{FAIL if self._message_failed else NONE};'
                 f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
                 f'{escape(self._message) or "&nbsp;"}</div>')
+
+
+def unknown_robots_chip(snapshot: Scene, acting: Iterable[str]) -> str:
+    """An amber chip counting the other robots not measured, each named on hover (`unknown_lines`); "" if none.
+
+    Args:
+        snapshot: The tick's snapshot.
+        acting: Ids of the robots the panel plans for; not counted.
+    """
+    unknown = unknown_robots(snapshot, set(acting))
+    if not unknown:
+        return ""
+    return chip(f"{len(unknown)} robot{'s' if len(unknown) > 1 else ''} unknown", BUSY,
+                "\n".join(unknown_lines(snapshot, unknown)))
+
+
+def unknown_lines(snapshot: Scene, unknown: Iterable[str]) -> list[str]:
+    """One short line per robot not measured, e.g. "a200-0805: base, ur_arm unknown"."""
+    return [f"{key.split('/', 1)[1]}: {unknown_parts(snapshot.robots[key])} unknown" for key in sorted(unknown)]

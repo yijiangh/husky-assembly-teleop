@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from robot_fakes import lease_test_robots, wait_ticks_until
 
-from husky_assembly_teleop.shared.planner.planner_panel import PlannerPanel
+from husky_assembly_teleop.shared.planner.planner_panel import PlannerPanel, unknown_robots_chip
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import PlannerContract
@@ -18,6 +18,9 @@ from husky_assembly_teleop.shared.planner.planner_search import Search
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, leased
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
 from husky_assembly_teleop.shared.planner.planner_service import PlannerService
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Scene
 
 PATH = TimedPath(times=np.array([0.0, 1.0]), points=np.array([[0.0], [1.0]]))
 
@@ -408,3 +411,14 @@ def test_cancel_commit_stops_the_running_motion():
     planner.execute = execute
     idle, cancelled, plan, again = run(planner, scenario)
     assert not idle and cancelled and stopped == [plan.id] and not again
+
+
+def test_the_unknown_robots_chip_counts_the_others_and_hides_at_zero():
+    """No chip while every other robot is live; else a red count, each robot named on hover; the planned one never."""
+    model = SimpleNamespace(movable_joints=())
+    live, lost = (RobotObject(f"robots/{name}", model, Pose(), {}, base_time=1.0) for name in ("a", "b"))
+    lost.base_tracked = False
+    acting = RobotObject("robots/me", model, Pose(), {}, base_tracked=False)
+    assert unknown_robots_chip(Scene(robots={robot.id: robot for robot in (live, acting)}), ["robots/me"]) == ""
+    found = unknown_robots_chip(Scene(robots={robot.id: robot for robot in (live, lost, acting)}), ["robots/me"])
+    assert ">1 robot unknown<" in found and 'title="b: base unknown"' in found and "me" not in found

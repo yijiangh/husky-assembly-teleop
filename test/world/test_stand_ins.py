@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from planning_fixtures import ALICE, BELLE, CINDY, robot_config
 
-from husky_assembly_teleop.world.stand_ins import DEFAULT, LAST_SEEN, LIVE, with_stand_ins
+from husky_assembly_teleop.world.stand_ins import DEFAULT, LAST_SEEN, LIVE, unknown_parts, with_stand_ins
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject
@@ -47,3 +47,10 @@ def test_last_seen_and_never_seen_robots_stand_where_the_snapshot_has_them():
     assert cindy_line.startswith(f"{CINDY_ID} is not measured (joints not known: left_ur_arm_")
     assert cindy_line.endswith("checked at its default pose or stowed")
     assert not snapshot.robots[BELLE_ID].base_tracked and snapshot.robots[CINDY_ID].unmeasured == arms
+
+
+def test_unknown_parts_name_the_base_and_each_arm_short():
+    """A lost base and Cindy's left arm not measured: "base, left_ur_arm"; a measured robot: nothing."""
+    arm = frozenset(name for name in CONFIGS[2].model.movable_joints if name.startswith("left_ur_arm_"))
+    assert unknown_parts(_robot(CONFIGS[2], 0.0, base_tracked=False, unmeasured=arm)) == "base, left_ur_arm"
+    assert unknown_parts(_robot(CONFIGS[2], 0.0)) == ""

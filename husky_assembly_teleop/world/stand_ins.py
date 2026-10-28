@@ -18,6 +18,7 @@ from typing import Collection
 
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 #: Where a robot's base and joints come from, from measured to guessed; a robot's source is the most guessed it uses.
 SOURCES = ("live", "last seen", "default")
@@ -58,6 +59,19 @@ def with_stand_ins(snapshot: Scene, acting: Collection[str]) -> StandIns:
     if not warnings:
         return StandIns(snapshot, sources, ())
     return StandIns(replace(snapshot, robots=robots), sources, tuple(warnings))
+
+
+def unknown_robots(snapshot: Scene, acting: Collection[str]) -> frozenset[str]:
+    """Ids of the robots present but not measured now, besides `acting`: those `with_stand_ins` would stand in."""
+    return frozenset(key for key, robot in snapshot.robots.items()
+                     if key not in acting and robot.enabled and robot.acting_problems())
+
+
+def unknown_parts(robot: RobotObject) -> str:
+    """Its parts not measured, short, e.g. "base, ur_arm"; arms by name (joints "<arm>_<UR joint>")."""
+    arms = sorted({next((name[:-len(joint) - 1] for joint in UR_JOINT_NAMES if name.endswith(f"_{joint}")), name)
+                   for name in robot.unmeasured})
+    return ", ".join((["base"] if not robot.base_tracked else []) + arms)
 
 
 def stand_in_source(robot: RobotObject) -> str:
