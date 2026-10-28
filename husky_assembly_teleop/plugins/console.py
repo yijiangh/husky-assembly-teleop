@@ -4,9 +4,11 @@ The console: a window at the bottom right of the page with the newest log lines,
 It starts minimized to its bar; the control at the bar's right end opens it.
 
 - Show "Plugins" (the default) leaves out health's colour changes and the late-tick reports, "Warnings" shows warnings
-  and errors from every source but the ticks, "All" every line. Errors always show. Source narrows to one source.
+  and errors from every source but the ticks, "All" every line. Errors always show. Source narrows to one source;
+  Hide leaves out the sources listed in it, whatever Show says.
 - The list is rewritten when a line comes in: pause the page (Live) to read or select it.
-- stdout and the ROS log still get every line; a tick report or traceback shows in full on hover.
+- stdout and the ROS log still get every line; a message's first line wraps, a tick report or traceback shows in full
+  on hover.
 
 Loaded by default (config.DEFAULT_PLUGINS).
 """
@@ -29,6 +31,9 @@ SHOW_PLUGINS, SHOW_WARNINGS, SHOW_ALL = "Plugins", "Warnings", "All"
 EVERY_SOURCE = "all"
 #: Sources "Plugins" leaves out: health's colour changes (its "chips" topic) and the late-tick reports.
 NOISY_SOURCES = ("health/chips", TICKS)
+#: What Hide says when empty.
+HIDE_HINT = ("Sources to leave out, comma-separated, whatever Show says; a name without a / also hides its topics "
+             "(health hides health/chips). E.g. health/chips, runtime")
 
 #: The window's size, and the height of the list in it, pixels.
 WIDTH, HEIGHT, LIST_HEIGHT = 900, 360, 220
@@ -49,6 +54,7 @@ LIST_STYLE = (
     'white-space:nowrap} '
     '.console .line:hover {background:var(--mantine-color-default-hover)} '
     '.console .text {overflow:hidden; text-overflow:ellipsis} '
+    '.console .message {white-space:normal; overflow-wrap:anywhere} '
     '.console .dim {color:var(--mantine-color-dimmed)} '
     '.console .count {margin-left:6px; padding:0 4px; border-radius:3px; font-size:10px; '
     'background:var(--mantine-color-default-hover); color:var(--mantine-color-dimmed)}</style>')
@@ -65,6 +71,7 @@ class ConsolePlugin(HuskyPlugin):
         """Start with no widgets; setup builds them."""
         self._show = SHOW_PLUGINS
         self._source: viser.GuiDropdownHandle | None = None
+        self._hide: viser.GuiTextHandle | None = None
         self._status: viser.GuiHtmlHandle | None = None
         self._list: viser.GuiHtmlHandle | None = None
         #: The sources offered under Source, what the list was last drawn from, and how many lines it hid.
@@ -87,6 +94,7 @@ class ConsolePlugin(HuskyPlugin):
                                              "ticks. All: every line. Errors always show.")
             show.on_click(ctx.defer_value("console show", self._set_show))
             self._source = gui.add_dropdown("Source", [EVERY_SOURCE], initial_value=EVERY_SOURCE)
+            self._hide = gui.add_text("Hide", initial_value="", hint=HIDE_HINT)
             self._status = gui.add_html("")
             self._list = gui.add_html("")
         panel.float(x=-15, y=-15, width=WIDTH, height=HEIGHT)
@@ -102,9 +110,9 @@ class ConsolePlugin(HuskyPlugin):
             ctx: This plugin's context.
         """
         log = ctx.console_log
-        source = self._source.value
+        source, hidden = self._source.value, hidden_sources(self._hide.value)
         # * The version before the lines: a line added in between only costs one more redraw, never a missed one.
-        drawn = (log.version, self._show, source)
+        drawn = (log.version, self._show, source, hidden)
         if drawn != self._drawn:
             self._drawn = drawn
             entries = log.entries()
@@ -112,7 +120,7 @@ class ConsolePlugin(HuskyPlugin):
             if sources != self._sources:
                 self._sources = sources
                 self._source.options = [EVERY_SOURCE, *sources]
-            kept = [entry for entry in entries if shown(entry, self._show, source)]
+            kept = [entry for entry in entries if shown(entry, self._show, source, hidden)]
             self._hidden = len(entries) - len(kept)
             self._list.content = render(kept[-SHOWN_LINES:])
         late = log.late_share()
@@ -125,9 +133,16 @@ class ConsolePlugin(HuskyPlugin):
             + f'<span style="font-size:11px;color:{NONE}">{self._hidden} hidden</span>')
 
 
-def shown(entry: Entry, show: str, source: str) -> bool:
-    """Whether the list shows `entry` with Show at `show` and Source at `source`."""
+def hidden_sources(hide: str) -> tuple[str, ...]:
+    """The sources Hide names, comma-separated, as typed; "" and spaces dropped."""
+    return tuple(name.strip() for name in hide.split(",") if name.strip())
+
+
+def shown(entry: Entry, show: str, source: str, hidden: tuple[str, ...] = ()) -> bool:
+    """Whether the list shows `entry` with Show at `show`, Source at `source` and Hide naming `hidden`."""
     if source != EVERY_SOURCE and entry.source != source:
+        return False
+    if any(entry.source == name or entry.source.startswith(name + "/") for name in hidden):
         return False
     if entry.level >= LoggingSeverity.ERROR or show == SHOW_ALL:
         return True
@@ -145,7 +160,7 @@ def render(entries: list[Entry]) -> str:
 
 
 def render_line(entry: Entry) -> str:
-    """One line: time, severity, source and the message's first line; the whole message on hover."""
+    """One line: time, severity, source and the message's first line, wrapped; the whole message on hover."""
     stamp = time.strftime("%H:%M:%S", time.localtime(entry.time)) + f".{int(entry.time * 10) % 10}"
     name, color = LEVEL_STYLES.get(entry.level, ("?", NONE))
     first, *rest = entry.text.splitlines() or [""]
@@ -156,4 +171,4 @@ def render_line(entry: Entry) -> str:
     return (f'<div class="line" title="{escape(entry.text, quote=True)}"><span class="dim">{stamp}</span>'
             f'<span style="color:{color};font-weight:600">{name}</span>'
             f'<span class="text" style="font-weight:600">{escape(entry.source)}</span>'
-            f'<span class="text" style="color:{text_color}">{escape(first)}{more}{count}</span></div>')
+            f'<span class="message" style="color:{text_color}">{escape(first)}{more}{count}</span></div>')

@@ -19,6 +19,17 @@ exec env -i HOME="$HOME" USER="$USER" PATH=/usr/local/bin:/usr/bin:/bin TERM="${
     LANG="${LANG:-C.UTF-8}" "${settings[@]}" \
     bash --noprofile --norc -c '
         source "$0/env.sh" || exit 1
+        # ! A start that died part way leaves its nodes running. A second controller manager of the same name then
+        #   answers for an arm at random, and the spawners of the new start set up the wrong one: refuse until stopped.
+        nodes="ros2_control_node|/crl_husky|robot_state_publisher|husky_sim_motive|husky_sim_wrench"
+        left=$(for pid in $(pgrep -f "$nodes"); do
+            tr "\0" "\n" < /proc/$pid/environ 2>/dev/null | grep -qx "ROS_DOMAIN_ID=$ROS_DOMAIN_ID" && echo $pid
+        done)
+        if [ -n "$left" ]; then
+            echo "fake lab: $(echo $left | wc -w) simulator nodes of an earlier start still run on domain" \
+                "$ROS_DOMAIN_ID; stop them first with:  kill -INT" $left >&2
+            exit 1
+        fi
         mkdir -p "$FAKE_LAB_HOME" && cd "$FAKE_LAB_HOME"  # out of any checkout
         echo "fake lab: alice, belle and cindy on ROS domain $ROS_DOMAIN_ID, Zenoh router 127.0.0.1:$FAKE_LAB_ZENOH_PORT"
         exec ros2 launch "$FAKE_LAB_REPO/launch/sim.launch.py" robot:=all fake_motive:=true delay_sec:=0.006 \

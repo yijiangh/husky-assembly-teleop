@@ -8,18 +8,19 @@ from rclpy.logging import LoggingSeverity
 
 from husky_assembly_teleop.plugin_api.console_log import ROBOTS, RUNTIME, TICKS, ConsoleLog, Entry
 from husky_assembly_teleop.plugins.console import (EVERY_SOURCE, LIST_HEIGHT, SHOW_ALL, SHOW_PLUGINS, SHOW_WARNINGS,
-                                                   ConsolePlugin, render, shown)
+                                                   ConsolePlugin, hidden_sources, render, shown)
 
 DEBUG, INFO, WARN, ERROR = (LoggingSeverity.DEBUG, LoggingSeverity.INFO, LoggingSeverity.WARN,
                             LoggingSeverity.ERROR)
 
 
-def _shown_sources(show: str, source: str = EVERY_SOURCE) -> list[tuple[str, str]]:
+def _shown_sources(show: str, source: str = EVERY_SOURCE, hide: str = "") -> list[tuple[str, str]]:
     """Which of a mixed set of lines `show` lets through, as (source, level name)."""
     entries = [Entry(0.0, level, name, "text") for name in ("robot_control", RUNTIME, ROBOTS, "health", "health/chips",
                                                             TICKS)
                for level in (DEBUG, INFO, WARN, ERROR)]
-    return [(entry.source, entry.level.name) for entry in entries if shown(entry, show, source)]
+    return [(entry.source, entry.level.name) for entry in entries
+            if shown(entry, show, source, hidden_sources(hide))]
 
 
 def test_plugins_leaves_out_health_changes_and_ticks_but_never_an_error():
@@ -43,12 +44,24 @@ def test_a_source_narrows_to_its_own_lines():
     assert _shown_sources(SHOW_ALL, TICKS) == [(TICKS, level) for level in ("DEBUG", "INFO", "WARN", "ERROR")]
 
 
+def test_hide_leaves_out_its_sources_even_their_errors_and_a_name_covers_its_topics():
+    """All but health/chips and the runtime, nothing of theirs; "health" hides health and health/chips."""
+    assert _shown_sources(SHOW_ALL, hide=" health/chips, runtime ,") == [
+        (name, level) for name in ("robot_control", ROBOTS, "health", TICKS)
+        for level in ("DEBUG", "INFO", "WARN", "ERROR")]
+    assert _shown_sources(SHOW_PLUGINS, hide="health") == [
+        (name, level) for name in ("robot_control", RUNTIME, ROBOTS) for level in ("INFO", "WARN", "ERROR")
+    ] + [(TICKS, "ERROR")]
+    assert hidden_sources("") == () and hidden_sources("a, ,b") == ("a", "b")
+
+
 def test_the_list_is_newest_first_escaped_at_a_fixed_height_with_the_whole_message_on_hover():
     """Newest on top; HTML in a message is shown, not run; a traceback shows its first line and the rest on hover."""
     html = render([Entry(1.0, INFO, "a", "first"), Entry(2.0, ERROR, "b", "failed <x>\nTraceback\n  line")])
     assert html.index("failed &lt;x&gt;") < html.index("first")
     assert "(+2 lines)" in html and 'title="failed &lt;x&gt;\nTraceback\n  line"' in html
     assert f"height:{LIST_HEIGHT}px" in html and "nothing to show" in render([])
+    assert ".message {white-space:normal" in html and 'class="message"' in html, "the message wraps"
 
 
 def _console() -> tuple[ConsolePlugin, FakeContext, ConsoleLog, list]:
@@ -79,6 +92,9 @@ def test_the_plugin_draws_the_filtered_lines_and_offers_each_source():
     ctx.gui.of_kind("button_group")[0].callback(SHOW_ALL)
     console.draw(ctx)
     assert "mocap" in lines.content
+    ctx.gui.of_kind("text")[0].value = "health"
+    console.draw(ctx)
+    assert "mocap" not in lines.content and "1 hidden" in status.content
 
 
 def test_a_line_added_while_the_list_is_drawn_shows_at_the_next_draw():
