@@ -136,6 +136,55 @@ def slim_labels_css(uuids: Iterable[str], width_em: float = 2.5) -> str:
     return "".join(f'div:has(> p > label[for="{uuid}"]) {{ width: {width_em}em !important; }}' for uuid in uuids)
 
 
+def group_buttons(uuid: str, index: int | None = None) -> str:
+    """The CSS selector of a button group's buttons (`add_button_group`), or of its `index`-th button only.
+
+    ? viser 1.1.1's button groups take no colour or size of their own. The group is found by its label, as in
+      `slim_labels_css`; its buttons are the children of one flex row.
+
+    Args:
+        uuid: The button group's uuid, `handle._impl.uuid`.
+        index: Which button, from 0, left to right; None for every one.
+
+    Returns:
+        str: A CSS selector.
+    """
+    buttons = f'div:has(> div > p > label[for="{uuid}"]) button'
+    return buttons if index is None else f"{buttons}:nth-child({index + 1})"
+
+
+def one_row_css(uuid: str) -> str:
+    """CSS that keeps a button group's buttons on one row: a row too wide for the panel scrolls sideways, without a bar.
+
+    * viser wraps them onto more rows instead, and the rows below then move.
+
+    Args:
+        uuid: The button group's uuid, `handle._impl.uuid`.
+
+    Returns:
+        str: CSS rules, without the <style> element.
+    """
+    group = f'div:has(> div > p > label[for="{uuid}"])'
+    # ? The input's box (beside the label's) may then shrink below its buttons' width, so their flex row scrolls.
+    row = f"{group} div:has(> button)"
+    return (f"{group} > div:last-child {{ min-width: 0; }}"
+            f"{row} {{ flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; }}"
+            f"{row}::-webkit-scrollbar {{ display: none; }}")
+
+
+def button_group_color_css(uuid: str, color: str) -> str:
+    """CSS that draws a button group's buttons in `color`, outline and label, instead of viser's blue.
+
+    Args:
+        uuid: The button group's uuid, `handle._impl.uuid`.
+        color: A CSS colour, e.g. `ui.style.SECTION_TOOL`.
+
+    Returns:
+        str: CSS rules, without the <style> element.
+    """
+    return f"{group_buttons(uuid)} {{ color: {color} !important; border-color: {color} !important; }}"
+
+
 #: The phone page's CSS, in order: no 3D canvas; the sheet fills the screen; a long press must not select text, open
 #: the browser menu or scroll (a scroll cancels a hold); finger-sized buttons; icons beside their label; chips
 #: readable at arm's length (`phone_text`), with chip lines high enough for them; a big Stop all.

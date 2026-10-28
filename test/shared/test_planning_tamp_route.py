@@ -18,6 +18,7 @@ from husky_assembly_teleop.shared.assembly_planning import route_search, tamp_ro
 from husky_assembly_teleop.shared.assembly_planning.ik import ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine, classify
 from husky_assembly_teleop.shared.assembly_planning.route_result import aims_at_line, line_goal, pose_error
+from husky_assembly_teleop.shared.assembly_planning.route_search import FreeSearch
 from husky_assembly_teleop.shared.assembly_planning.tamp_route import check_goal, plan_movement
 from husky_assembly_teleop.world.kinematics import stow_joints
 from scaffolding_assembly_core.geometry import Pose, box_geometry
@@ -336,6 +337,69 @@ def _retreat_goals(purged, snapshot: Scene, distance: float) -> dict[str, Pose]:
             for part in spec.arms}
 
 
+def test_free_search_gives_tamp_its_three_settings():
+    """The time, the iterations and the joint step go to tamp; the tries and the swept check are the route's own."""
+    asked = FreeSearch(7.0, 9, 0.05, tries=2, swept_check=False).tamp()
+    assert asked == {"max_time": 7.0, "max_iterations": 9, "joint_resolution": 0.05}
+    assert FreeSearch().tamp() == {"max_time": 120.0, "max_iterations": 50, "joint_resolution": 0.1}
+
+
+@pytest.mark.slow
+def test_the_search_settings_reach_tamps_free_search(purged, configs, mirrors, monkeypatch):
+    """B20's way home: tamp gets the settings' three, each of the tries; without the swept check a path is taken as is.
+
+    The default settings reach tamp too; every try without a path says tamp's reason, and the tries.
+    """
+    asked, answer = [], [None, {"failure_reason": "birrt_failed"}]
+
+    def plan(_planner, _state, goal, **options):
+        asked.append(options)
+        return answer[0](goal) if callable(answer[0]) else answer[0], answer[1]
+
+    monkeypatch.setattr(route_search, "plan_free_dual_arm", plan)
+    snapshot = design_scene(purged, "B20_R_home")
+    home = step(purged, "B20_R_home")
+    search = FreeSearch(7.0, 9, 0.05, tries=2, swept_check=False)
+    route = plan_movement(_cindys(mirrors), purged, home, snapshot, configs, search=search, log=lambda _line: None)
+    assert not route.ok and route.attempts == 2 and "(tamp: birrt_failed)" in route.result.reason
+    assert "(2 tries)" in route.result.reason and asked == [search.tamp()] * 2
+    asked.clear()
+    start = snapshot.robots[CINDY_ID].joints
+    answer[0] = lambda goal: [[start[name] for name in goal], [goal[name] for name in goal]]
+    route = plan_movement(_cindys(mirrors), purged, home, snapshot, configs, search=search, log=lambda _line: None)
+    assert route.ok and route.swept is None and route.waypoints == 2 and asked == [search.tamp()]
+    asked.clear()
+    answer[0] = None
+    plan_movement(_cindys(mirrors), purged, home, snapshot, configs, log=lambda _line: None)
+    assert asked == [FreeSearch().tamp()] * 3
+
+
+@pytest.mark.slow
+def test_a_box_on_the_straight_transfer_is_its_first_hit(purged, configs, mirrors, monkeypatch):
+    """A search that finds no path (tamp's reason kept) is diagnosed: a box halfway along B20's transfer is its hit.
+
+    The transfer without the bar, from the stowed arms, whose straight path is otherwise clear: the hit names the box
+    and Cindy, and where along the straight path it is.
+    """
+    monkeypatch.setattr(route_search, "plan_free_dual_arm", lambda *_args, **_options: (None, {
+        "failure_reason": "birrt_failed"}))
+    cindy = design_scene(purged, "B20_J_transfer").robots[CINDY_ID]
+    target = movement(purged, "B20_J_transfer")[1].target.joints["robots/cindy"]
+    stowed = stow_joints(robot_config(CINDY), list(target))
+    midway = {name: (stowed[name] + value) / 2 for name, value in target.items()}
+    wrist = link_pose(robot_config(CINDY).model.urdf, cindy.base, {**cindy.joints, **midway}, "left_ur_arm_tool0")
+    box = Body("obstacles/box", box_geometry((0.1, 0.1, 0.1)), wrist)
+    row, = run_check(purged, configs, ["B20_J"], only=["B20_J_transfer"], extra_bodies=(box,), mirrors=mirrors,
+                     verbose=False, log=lambda _line: None)
+    assert row.status == "failed" and "birrt_failed" in row.reason and row.route.attempts == 3
+    assert "start and goal clear; the straight path first hits" in row.reason, row.reason
+    hit, = [hit for hit in row.route.hits if hit.where.startswith("the straight path at")]
+    share = re.fullmatch(r"the straight path at (\d+)%", hit.where)
+    assert share and 0 < int(share.group(1)) < 50 and hit.robot == CINDY_ID
+    assert any("obstacles/box" in pair and any(side.startswith(("robots/a200-0806/", "tools/a200-0806/"))
+                                               for side in pair) for pair in hit.pairs), hit.pairs
+
+
 @pytest.mark.slow
 def test_a_retreat_goes_to_given_goal_poses_in_given_steps(purged, configs, mirrors, monkeypatch):
     """B20's retreat to goal poses 3 cm along its lines in 1 mm steps: tamp gets the step, the path ends there."""
@@ -404,8 +468,11 @@ def test_abort_cancels_before_a_try(purged, configs, mirrors):
 
 
 @pytest.mark.slow
-def test_the_workaround_searches_without_the_bar(purged, configs, mirrors, monkeypatch):
-    """B20's transfer: the goal is solved with the bar held, the search runs with it and its halves hidden."""
+def test_the_workaround_searches_without_the_bar(purged, configs, mirrors, monkeypatch, capsys):
+    """B20's transfer: the goal is solved with the bar held, the search runs with it and its halves hidden.
+
+    Every try prints its settings and how it ended; no path in any of them ends with the straight path's verdict.
+    """
     bar = "process/bars/B20"
     held = [bar, *(f"process/{half}" for half in purged.process.halves_of("bars/B20"))]
     real_ik, seen = tamp_route.solve_ik, {}
@@ -426,6 +493,13 @@ def test_the_workaround_searches_without_the_bar(purged, configs, mirrors, monke
     assert seen["ik"] == (False, "left_ur_arm_tool0")
     assert len(seen["search"]) > 1 and all(seen["search"])
     assert row.status == "failed" and row.route.attempts == 3 and row.route.ik.joints is not None
+    # ? Printed (`plan_movement`'s default log), which pytest keeps at the sys level: `Row.output` has it only outside.
+    lines = capsys.readouterr().out.splitlines()
+    assert any(line.endswith("try 1/3: max_time 120 s, max_iterations 50, joint_resolution 0.1 rad") for line in lines)
+    assert len([line for line in lines if "no path in" in line and "(tamp: birrt_failed)" in line]) == 3
+    verdict = "start, goal and the straight path between them are clear: the search found no way in 3×120 s"
+    assert row.reason.endswith(f"(3 tries); {verdict}"), row.reason
+    assert lines[-3:] == [f"B20_J_transfer: {line}" for line in ("start clear", "goal clear", verdict)]
 
 
 @pytest.mark.slow

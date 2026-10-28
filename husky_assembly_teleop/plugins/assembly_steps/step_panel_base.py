@@ -101,7 +101,7 @@ class PlannerPlugin(HuskyPlugin):
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=self.worker_name)
         #: The subclass's planning world. ! Worker thread only, from its first use on.
         self._world: PlanningWorld | None = None
-        #: When the operator last used this panel; ghosts show only while it counts (`_add_ghosts`).
+        #: When the operator last used this panel, for what the subclass shows only while it counts (its diagnosis).
         self._used: RecentUse | None = None
         #: Nothing to plan for (e.g. no robots configured): the panel says why, and the hooks do nothing.
         self.idle = False
@@ -146,7 +146,7 @@ class PlannerPlugin(HuskyPlugin):
     # --- --- --- --- --- SETUP HELPERS --- --- --- --- ---
 
     def _add_ghosts(self, ctx: PluginContext, robots: Iterable[RobotConfig]) -> None:
-        """Build a target ghost and a path ghost per robot, shown only while the panel is in use.
+        """Build a target ghost and a path ghost per robot, and start counting the panel's use (`_used`).
 
         ! Call in setup (loading meshes is too slow for a tick). Ghosts live under "ghosts/": keep subclass
           nodes elsewhere, since removing a node removes everything below it.
@@ -245,7 +245,7 @@ class PlannerPlugin(HuskyPlugin):
 
     def _scrub(self, t: float) -> None:
         """Show the path at time `t`."""
-        # ! Keep this check: draw writes the slider back, which would otherwise loop.
+        # * The same time again is not a use of the panel.
         if abs(t - self._t) > 1e-9:
             self._t = t
             self._used.touch()
@@ -306,10 +306,12 @@ class PlannerPlugin(HuskyPlugin):
         self._slider.value = round(self._t, 3)
 
     def _draw_ghosts(self, ctx: PluginContext) -> None:
-        """Show the target and path ghosts while the panel is in use; hide every other ghost."""
-        in_use = self._used.active
-        target = self.serial if in_use and self._has_target else None
-        planned = self._path_serial if in_use and self.path is not None else None
+        """Show the target ghost while there is a target and the path ghost while there is a plan; hide every other.
+
+        * No timeout: a Live IK answer or a plan is no click, and the operator looks at them for minutes.
+        """
+        target = self.serial if self._has_target else None
+        planned = self._path_serial if self.path is not None else None
         for serial, ghost in self._target_ghosts.items():
             self.show_target(ctx, ghost) if serial == target else ghost.hide()
         for serial, ghost in self._path_ghosts.items():

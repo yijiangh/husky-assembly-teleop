@@ -126,7 +126,8 @@ class MovementLabel:
     """A movement as the operator knows it.
 
     Attributes:
-        code: Short, for a row of chips: the old code ("J_M3", "J_M4+5"), or the action letter and the id's ending
+        code: Short, for the process panel's movement buttons: the old code ("J_M3", "J_M4+5"), or the action
+            letter and the id's ending
             ("HR_leave") for a movement the old monitor did not have; "J_transit" for the workaround's transit.
         old_name: The old monitor's name, e.g. "J_M3_CDFM_transfer_to_approach"; "" if it had none.
         kinds: The flowchart's kinds, the arm part first; a tool part that runs through it comes second.

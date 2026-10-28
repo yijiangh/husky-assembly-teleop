@@ -15,6 +15,7 @@ from husky_assembly_teleop.plugins.motion_planner.work import run_collisions, ru
 from husky_assembly_teleop.shared.assembly_planning import servo_route, tamp_route
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
+from husky_assembly_teleop.shared.assembly_planning.route_search import FreeSearch
 from husky_assembly_teleop.shared.motion_planner_contract import MotionPlanRequest, ServoAsk
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
@@ -121,13 +122,15 @@ def test_the_rhino_obstacles_box_reaches_the_planning_scene(work, module, monkey
     assert [call["obstacles_collide"] for call in calls] == [False]
 
 
-def test_a_retreats_goal_poses_and_step_reach_plan_movement(loaded, monkeypatch):
-    """`goal_poses` and `linear_step` of a request go to `plan_movement` unchanged."""
+def test_a_requests_goal_poses_step_and_search_reach_plan_movement(loaded, monkeypatch):
+    """`goal_poses`, `linear_step` and `search` of a request go to `plan_movement` unchanged."""
     asked = {}
     monkeypatch.setattr(work_module, "plan_movement", lambda *_args, **options: asked.update(options))
     goals = {"robots/cindy/left_ur_arm_tool0": Pose((1.0, 2.0, 3.0))}
     configs = (robot_config(CINDY),)
     snapshot = Scene(robots={CINDY_ID: RobotObject(CINDY_ID, configs[0].model, Pose(), {})})
-    question = MotionPlanRequest(loaded, loaded.steps[2], snapshot, configs, goal_poses=goals, linear_step=0.001)
+    search = FreeSearch(tries=1)
+    question = MotionPlanRequest(loaded, loaded.steps[2], snapshot, configs, goal_poses=goals, linear_step=0.001,
+                                 search=search)
     run_plan(SimpleNamespace(mirror=lambda _serial: None), question, threading.Event(), print)
-    assert asked["goal_poses"] is goals and asked["linear_step"] == 0.001
+    assert asked["goal_poses"] is goals and asked["linear_step"] == 0.001 and asked["search"] is search

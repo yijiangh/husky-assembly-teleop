@@ -53,7 +53,8 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   may drive from it; a reading is stale past its age limit (`STALE_AFTER`, `JOINT_STATE_MAX_AGE`).
   `robot_interface/mocap_state.py`, `world/checks.py`.
 - **ghost**: a see-through robot copy for a target, a plan or a preview, shown only while its panel was the last one
-  used. `ui/ghost.py`.
+  used: blue where a robot should go, green where a plan has it (the old monitor's colours; only the live robots show
+  their true colours). `ui/ghost.py`.
 
 ## Safety
 

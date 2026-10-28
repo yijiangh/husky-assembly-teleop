@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from ..world.collision_hit import CollisionHit
     from .assembly_planning.process_steps import LoadedProcess, Step
     from .assembly_planning.route_result import GoalCheck, RouteResult
+    from .assembly_planning.route_search import FreeSearch
     from .assembly_planning.scene_for import RobotBelief
     from .assembly_planning.servo_route import ServoStep
 
@@ -61,6 +62,7 @@ class MotionPlanRequest:
         goal_poses: Process flange id -> world pose a retreat goes to instead of along its line, one per moving flange
             (`RouteResult.goals`).
         linear_step: A retreat's largest step between waypoints, metres; None: tamp's default (5 mm).
+        search: The free searches' settings, the run's Advanced planning ones (`FreeSearch`); None: the defaults.
         joints: Acting robot joints to check collisions at (`request_collisions`); None: as in the snapshot.
         servo: The servo pass to plan (`request_servo_step`); None for the other requests.
         label: Names the request in the planner's panel and log; empty: the movement's id.
@@ -77,6 +79,7 @@ class MotionPlanRequest:
     goal_joints: Mapping[str, float] | None = None
     goal_poses: Mapping[str, Pose] | None = None
     linear_step: float | None = None
+    search: FreeSearch | None = None
     joints: Mapping[str, float] | None = None
     servo: ServoAsk | None = None
     label: str = ""

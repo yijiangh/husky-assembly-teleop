@@ -71,18 +71,19 @@ def test_an_older_run_json_with_the_transfer_workaround_reads(process, robots):
 
 
 def test_an_older_run_json_without_the_insert_settings_reads_their_defaults(process, robots):
-    """A run.json from before rigid-only and the spiral's duration and turns: rigid-only off, 20 s, 4 turns."""
-    run = new_run(process, robots, RunSettings(spiral=True, rigid_only=True, spiral_seconds=30.0, spiral_turns=6),
-                  now=NOW, transfer_as_free=True)
+    """A run.json from before rigid-only, the spiral's duration and turns, and the plan_* settings: their defaults."""
+    run = new_run(process, robots, RunSettings(spiral=True, rigid_only=True, spiral_seconds=30.0, spiral_turns=6,
+                                               plan_tries=1), now=NOW, transfer_as_free=True)
     assert read_run(run.folder).info.settings.spiral_turns == 6
     path = run.folder / "run.json"
     info = json.loads(path.read_text())
     older = {name: value for name, value in info["settings"].items()
-             if name not in ("rigid_only", "spiral_seconds", "spiral_turns")}
+             if name not in ("rigid_only", "spiral_seconds", "spiral_turns") and not name.startswith("plan_")}
     path.write_text(json.dumps({**info, "settings": older}))
     settings = read_run(run.folder).info.settings
     assert settings == RunSettings(spiral=True)
     assert (settings.rigid_only, settings.spiral_seconds, settings.spiral_turns) == (False, 20.0, 4)
+    assert (settings.plan_max_time, settings.plan_tries, settings.plan_swept_check) == (120.0, 3, True)
 
 
 def test_continue_run_picks_the_newest_matching(process, robots):

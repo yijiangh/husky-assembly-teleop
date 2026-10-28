@@ -253,8 +253,8 @@ def mesh_color(mesh: trimesh.Trimesh) -> tuple[int, int, int]:
 def add_simple_urdf(target, model: yourdfpy.URDF, root: str) -> FastViserUrdf:
     """Draw a URDF below `root` as single-colour meshes, each in its own material's colour.
 
-    ! Only the real robots (`Visualization.load_robot`) are drawn as GLB, with textures. Everything else uses
-      this: single-colour meshes build faster and take `.opacity` at any time; GLB nodes have no opacity.
+    ! Only the real robots (`Visualization.load_robot`) are drawn as GLB, with textures; their see-through twins
+      use this. Single-colour meshes build faster and take `.opacity` at any time; GLB nodes have no opacity.
 
     Args:
         target: The viser server, or a plugin's view (PluginView).

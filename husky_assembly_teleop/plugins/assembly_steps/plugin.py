@@ -4,13 +4,16 @@ The operator's steps in the Assembly tab: the current step, its goal checked, it
 The current step follows the run (`assembly_run`), which follows the process panel: its action, the step holding its
 movement (`operator_steps`, the process plugin's transfer workaround). Plan asks the motion planner from the live robot
 (only when it is live); the plan goes stale when anything it was made from changes (`shared/execution/basis.py`). Exec
-hands the step to `movement_exec`, which asks the operator to Confirm each part; once every part is done the next step
-becomes current, and after the action's last step Mark done (assembly_run's) is suggested.
+hands the step to `movement_exec`, which runs a motion at once and asks the operator to Confirm the bar mount, a
+Robotiq step and the servo's first pass; once every part is done the next step becomes current, and after the
+action's last step Mark done (assembly_run's) is suggested.
 
 - Live IK: the goal by IK at the live base, logged, shown as the target ghost and recorded; a plan of the same step
   reuses it while the base stays within 2 mm / 0.5° and the process plugin's "Rhino obstacles collide" is unchanged.
-- After Live IK or a plan, the process panel draws the action's later movements with the joints found
-  (`ProcessContract.request_carry`); a new action drops them.
+- After Live IK or a plan, the process panel draws the action's later movements with the joints found, on the live
+  base they were found at, and turns to the step's target (`ProcessContract.request_carry`); a new action drops them.
+- Plan on a movement with nothing to plan (an ungrasp, a grasp, an operator step) says so and selects the next robot
+  movement instead (`_move_on`): the operator clicks Plan again.
 - A plan is used once: Exec takes it, and it is cleared once the step ran; only a request refused before sending
   anything, or a dry run, gives it back (still checked for staleness).
 - An insert after its transfer's MoCap-bar servo is planned from where the servo left the flanges (`executor.carried`).
@@ -33,8 +36,8 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.assembly_planning.movement import Routine, UnknownMovement, classify
 from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line, pose_error
-from ...shared.assembly_planning.route_search import ATTEMPTS
-from ...shared.assembly_planning.tamp_route import FAR, IK_GOALS
+from ...shared.assembly_planning.route_search import ATTEMPTS, FreeSearch
+from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
 from ...shared.execution.retime import RetimeError, retime
@@ -62,8 +65,8 @@ if TYPE_CHECKING:
     from ...shared.movement_exec_contract import MovementExecContract
     from ...shared.process_contract import ProcessContract
 
-#: Seconds to wait for a plan: every try of tamp's longest search, the first plan's model loading, and a margin.
-PLAN_TIME_LIMIT = ATTEMPTS * FAR["max_time"] + 60.0 + WAIT_MARGIN
+#: Seconds to wait for a plan beyond its tries: the first plan's model loading, and a margin.
+PLAN_TIME_MARGIN = 60.0 + WAIT_MARGIN
 #: Opacity of the real robots while the visual diagnosis is on (the old monitor's VISUAL_DIAG_ROBOT_ALPHA).
 DIAGNOSIS_OPACITY = 0.3
 
@@ -331,6 +334,12 @@ class AssemblyStepsPlugin(PlannerPlugin):
         self._diagnosis(ctx).show_path(paths, rhino_start, rhino_target)
         ctx.log_info(path_line(step.label, paths, rhino_start, rhino_target))
 
+    def free_search(self, ctx: PluginContext) -> FreeSearch:
+        """The free searches' settings for a plan (`MotionPlanRequest.search`): the run's Advanced planning ones."""
+        settings = self._assembly_run(ctx).view.settings
+        return FreeSearch(settings.plan_max_time, settings.plan_max_iterations, settings.plan_joint_resolution,
+                          settings.plan_tries, settings.plan_swept_check)
+
     def set_ignore_built(self, ignore: bool) -> None:
         """Plan as if the built bars were not there (for tests in the air); a plan made otherwise goes stale."""
         self.ignore_built = bool(ignore)
@@ -395,7 +404,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self._say(goal_line(check), failed=not check.ok)
         if still and check.ok and check.goal_joints:
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
-                                                   dict(check.goal_joints)))
+                                                   dict(check.goal_joints), base=check.base))
         self._assembly_run(ctx).request_record("check_goal", action=action, movement=step.movement.id,
                                                data={**check.as_record(),
                                                      "obstacles_collide": request.obstacles_collide})
@@ -403,11 +412,59 @@ class AssemblyStepsPlugin(PlannerPlugin):
 
     # --- --- --- --- --- PLANNER PLUGIN --- --- --- --- ---
 
+    def _plan(self, ctx: PluginContext) -> None:
+        """Plan the step's motion; on a movement with nothing to plan, say so and select the next robot movement.
+
+        ! Never plans that next movement by itself: the operator clicks Plan again, on it.
+        """
+        moved_on = self._move_on(ctx)
+        if moved_on:
+            self._say(moved_on, failed=True)
+            ctx.log_warn(moved_on)
+            return
+        super()._plan(ctx)
+
+    def _move_on(self, ctx: PluginContext) -> str:
+        """When the selected movement has no motion of its own to plan, select the next robot movement and say so.
+
+        The next robot movement is the step's own when the selected one runs with it or is skipped for it (an ungrasp
+        during its retreat, the travel to load before the transit), else the next step's that moves an arm.
+
+        Returns:
+            str: What to tell the operator; "" to plan as usual (the step's motion is selected, or an Exec or a plan
+                runs).
+        """
+        current = self.current()
+        if current is None or self._busy(ctx):
+            return ""
+        view, action, op_step, _step = current
+        selected = view.current[1]
+        undone = {part.index for part in self.parts()}
+        moves = op_step.primary in undone and self._moves(view, action, op_step)
+        if selected == op_step.primary and moves:
+            return ""
+        if selected in (*op_step.with_motion, *op_step.skipped) and moves:
+            following = op_step.primary
+        else:
+            following = next((later.primary for later in self._steps[self._index + 1:]
+                              if self._moves(view, action, later)), None)
+        movements = view.process.process.actions[action].movements
+        if following is None:
+            return f"{movements[selected].id}: nothing to plan, and no robot movement follows in {action}"
+        self._assembly_run(ctx).request_set_current(action, following)
+        return f"{movements[selected].id}: nothing to plan; moved on to {movements[following].id}: click Plan again"
+
+    def _moves(self, view: RunView, action: str, step: OperatorStep) -> bool:
+        """Whether a step's primary movement moves an arm (a plan's to make), or is refused (Plan says why)."""
+        parts = step_parts(view.process, action, step, self._ctx.config.robots, self._transfer_as_free(self._ctx))
+        return any(part.index == step.primary and part.kind in (*MOTION_KINDS, REFUSED_PART) for part in parts)
+
     def make_search(self, ctx: PluginContext, abort: threading.Event) -> Search:
         """A search through the motion planner from the live robot; refused without a motion or a live robot."""
         current = self.current()
         refusal = "no current step" if current is None else ""
         snapshot, now, request, goal_base, goals = ctx.scene.snapshot, ctx.now(), None, None, None
+        search = self.free_search(ctx)
         if current is not None:
             view, action, op_step, step = current
             live = snapshot.robots.get(robot_id(self.serial)) if self.serial else None
@@ -435,7 +492,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
                                             transfer_as_free=self._transfer_as_free(ctx),
                                             ignore_built=self.ignore_built,
                                             obstacles_collide=self._obstacles_collide(ctx), goal_joints=goal_joints,
-                                            goal_poses=goals, label=f"plan {step.label}")
+                                            goal_poses=goals, search=search, label=f"plan {step.label}")
         found: dict[str, RouteResult] = {}
 
         async def run() -> PlanResult:
@@ -467,13 +524,16 @@ class AssemblyStepsPlugin(PlannerPlugin):
                 "goal_carried": goals is not None})
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
                                                    dict(zip(trajectory.joint_names, trajectory.positions[-1])),
-                                                   "plan"))
+                                                   "plan", self._basis.base))
             self._draw_plan_path(ctx)
             return (f"{route.planner}: {route.waypoints} waypoints in {route.seconds:.1f} s; the motion takes "
                     f"{self.path.duration:.1f} s"), bool(route.warnings)
 
         label = current[3].label if current is not None else "nothing"
-        return Search(self.serial or "", f"plan {label}", f"planning {label}…", None, PLAN_TIME_LIMIT, accepted,
+        # * Long enough for every try of the free search at the run's settings.
+        # * A held transfer (workaround off) runs HELD's own tries and time, whatever the settings say.
+        limit = max(search.tries * search.max_time, ATTEMPTS * HELD["max_time"]) + PLAN_TIME_MARGIN
+        return Search(self.serial or "", f"plan {label}", f"planning {label}…", None, limit, accepted,
                       run=run)
 
     def stale_reason(self, ctx: PluginContext) -> str:
@@ -552,7 +612,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self.plan_state = "sent"  # ! used once: never sent again
         executor: MovementExecContract = ctx.require("movement_exec")
         key = self._executing = self._key
-        self._say(f"Exec {step.label}: Confirm each part below, or on the phone")
+        self._say(f"Exec {step.label}: running; Confirm below or on the phone when asked (the bar mount, a Robotiq "
+                  f"step, the servo's first pass)")
         executor.request_execute(request).add_done_callback(
             lambda future: self._executed(ctx, key, motion, future))
 

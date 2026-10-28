@@ -72,11 +72,17 @@ class RunError(ValueError):
 SPLIT_RANGE = (0.0, 30.0)
 SPIRAL_SECONDS_RANGE = (1.0, 60.0)
 SPIRAL_TURNS_RANGE = (1, 10)
+#: The free searches' ranges (`route_search.FreeSearch`): seconds and iterations per try, the joint step of the
+#: checks (rad), tries.
+PLAN_TIME_RANGE = (5.0, 600.0)
+PLAN_ITERATIONS_RANGE = (1, 1000)
+PLAN_RESOLUTION_RANGE = (0.01, 0.5)
+PLAN_TRIES_RANGE = (1, 10)
 
 
 @dataclass(frozen=True)
 class RunSettings:
-    """How the run executes; kept in run.json, where an older run without a setting reads its default.
+    """How the run executes and plans; kept in run.json, where an older run without a setting reads its default.
 
     The transfer workaround is not one: it is the process plugin's.
 
@@ -89,6 +95,11 @@ class RunSettings:
             the spiral are ignored.
         spiral_seconds: How long the spiral takes to reach its full radius, seconds (SPIRAL_SECONDS_RANGE).
         spiral_turns: How many turns it makes on the way (SPIRAL_TURNS_RANGE).
+        plan_max_time: Seconds per try of tamp's free search (PLAN_TIME_RANGE); `FreeSearch`'s defaults, the five.
+        plan_max_iterations: Iterations per try of it (PLAN_ITERATIONS_RANGE).
+        plan_joint_resolution: The joint step of its collision checks, radians (PLAN_RESOLUTION_RANGE).
+        plan_tries: Tries of a free or one-arm search before giving up (PLAN_TRIES_RANGE).
+        plan_swept_check: Check a found path between its waypoints before taking it.
     """
 
     insert_split_mm: float = 5.0
@@ -97,6 +108,11 @@ class RunSettings:
     rigid_only: bool = False
     spiral_seconds: float = 20.0
     spiral_turns: int = 4
+    plan_max_time: float = 120.0
+    plan_max_iterations: int = 50
+    plan_joint_resolution: float = 0.1
+    plan_tries: int = 3
+    plan_swept_check: bool = True
 
 
 @dataclass(frozen=True)

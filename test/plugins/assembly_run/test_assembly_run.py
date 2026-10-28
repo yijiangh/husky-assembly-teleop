@@ -1001,6 +1001,8 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
                                ({"spiral_turns": 11}, "the spiral's turns must be 1 to 10 whole turns, not 11"),
                                ({"spiral_turns": 4.5}, "the spiral's turns must be 1 to 10 whole turns, not 4.5"),
                                ({"spiral_turns": True}, "the spiral's turns must be 1 to 10 whole turns, not True"),
+                               ({"plan_tries": 0}, "the search's tries must be 1 to 10 whole tries, not 0"),
+                               ({"plan_max_time": 1000}, "the search's time per try must be 5 to 600 s, not 1000"),
                                ({"rigid_only": 1}, "rigid_only must be True or False, not 1")):
             plugin.request_settings(**changes)
             assert plugin._message.startswith("Settings refused") and words in plugin._message

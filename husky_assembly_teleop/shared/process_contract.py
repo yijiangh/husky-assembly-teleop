@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Protocol
 
+from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import IdMap
 from scaffolding_assembly_core.process import Action, Movement, Process
 
@@ -27,8 +28,8 @@ MARK_PENDING, MARK_DONE, MARK_ASSUMED = "pending", "done", "assumed"
 class Carry:
     """Joints found live for one robot of an action: from `movement_id`'s end on, the panel draws `robot` at `joints`.
 
-    Every later movement of the action shows them too, as the old monitor carried a solved goal forward. Only the
-    drawing: plans, runs and records never read it.
+    Every later movement of the action shows them too, on `base` when given, as the old monitor carried a solved goal
+    forward. Only the drawing: plans, runs and records never read it.
 
     Attributes:
         action_id: The action.
@@ -36,6 +37,7 @@ class Carry:
         robot: The process robot id, e.g. "robots/cindy".
         joints: Joint name -> value, radians.
         source: Where they came from, for the panel: "live IK" or "plan".
+        base: The live base they were found at, drawn in place of the authored one; None keeps the authored base.
     """
 
     action_id: str
@@ -43,6 +45,7 @@ class Carry:
     robot: str
     joints: Mapping[str, float]
     source: str = "live IK"
+    base: Pose | None = None
 
 
 @dataclass(frozen=True)
@@ -112,5 +115,6 @@ class ProcessContract(Protocol):
     def request_carry(self, carry: Carry | None) -> None:
         """Draw an action's later movements with joints found live (`Carry`); None draws them as authored again.
 
-        Replaces the carry given before; a new process starts without one. ! Main thread only.
+        Replaces the carry given before; a new process starts without one. A carry for the selected movement turns
+        the panel to its target, so the goal found shows at once. ! Main thread only.
         """

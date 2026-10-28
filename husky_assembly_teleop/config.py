@@ -10,6 +10,7 @@ import math
 import re
 import tempfile
 from dataclasses import dataclass, replace
+from functools import cache
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -179,8 +180,8 @@ class MonitorConfig:
         shutdown_grace: Seconds each plugin's cancelled tasks get to clean up at shutdown.
         lab: The lab file the `obstacles` plugin loads: a name under `data_directory/lab/`, or a .json path;
             empty for its default.
-        ghost_timeout: Seconds a plugin's ghost robots stay shown after the last input in it;
-            0 keeps them. Ghosts appear only after an input in their plugin.
+        ghost_timeout: Seconds a plugin's ghost robots stay shown after the last input in it; 0 (the default)
+            keeps them until another plugin's ghosts show. Ghosts appear only after an input in their plugin.
     """
 
     robots: tuple[RobotConfig, ...]
@@ -197,7 +198,7 @@ class MonitorConfig:
     late_tick_warn_period: float = 5.0
     shutdown_grace: float = 2.0
     lab: str = ""
-    ghost_timeout: float = 20.0
+    ghost_timeout: float = 0.0
 
 
 # --- --- --- --- --- WHAT EACH ROBOT IS --- --- --- --- ---
@@ -473,13 +474,26 @@ def _robots(serials: tuple[str, ...], data_directory: Path,
                  for serial in serials)
 
 
+@cache
+def _robot_names() -> dict[str, str]:
+    """Each robot's name in lower case (crl-husky's CRL_HUSKY_NAME) -> its four-digit serial, read once.
+
+    ? crl-husky reads its YAML files again on every call, about 5 ms, and panels look serials up every tick.
+    """
+    names = {}
+    for serial, model in get_robot_models().items():
+        if model["name"]:
+            names.setdefault(model["name"].lower(), serial[-4:])
+    return names
+
+
 def _serial_digits(token: str) -> str | None:
     """The four-digit serial in "0806", "a200-0806", "/a200_0806", "Cindy" and the like, or None."""
     name = token.strip().strip("/")
     # The robots' names (crl-husky's CRL_HUSKY_NAME) work anywhere a serial does, in any letter case.
-    for serial, model in get_robot_models().items():
-        if model["name"] and model["name"].lower() == name.lower():
-            return serial[-4:]
+    serial = _robot_names().get(name.lower())
+    if serial is not None:
+        return serial
     digits = re.search(r"(\d{4})\s*$", name)
     return None if digits is None else digits.group(1)
 

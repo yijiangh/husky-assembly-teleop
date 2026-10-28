@@ -10,6 +10,7 @@ from process_fixtures import build_process
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.plugins.process.plugin import ProcessPlugin
 from husky_assembly_teleop.shared.process_contract import MARK_ASSUMED, MARK_DONE, MARK_PENDING, Carry
+from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.process import write
 
 
@@ -21,7 +22,8 @@ class _Drawing(SimpleNamespace):
         self.bar_lines = on
 
     def show(self, state, joints, everything: bool = False, reference: frozenset[str] = frozenset()) -> None:
-        """Keep the joints it was asked to draw."""
+        """Keep the state and the joints it was asked to draw."""
+        self.states.append(state)
         self.shown.append(joints)
 
 
@@ -34,7 +36,7 @@ def _set_up(tmp_path) -> tuple[ProcessPlugin, FakeContext]:
     plugin.setup(ctx)
     plugin.transfer_as_free = False
     plugin._take(load_process(tmp_path / "process", tmp_path))
-    plugin._drawing = _Drawing(shown=[])
+    plugin._drawing = _Drawing(shown=[], states=[])
     return plugin, ctx
 
 
@@ -71,3 +73,29 @@ def test_the_carry_is_drawn_at_and_after_its_movement_and_dropped_on_load(tmp_pa
     assert cindy("B2_M3_insert")["left_joint1"] == 0.9 and "joints from live IK" in plugin._details.content
     plugin._take(plugin.process)
     assert cindy("B2_M3_insert")["left_joint1"] == 0.3 and "joints from live IK" not in plugin._details.content
+
+
+def test_the_carry_is_drawn_on_its_live_base_and_turns_its_movement_to_its_target(tmp_path):
+    """Carried with the base it was found at: Cindy drawn there wherever the joints show, the others as authored.
+
+    A carry for the selected movement turns the panel to its target, so the goal shows at once; one for another
+    movement leaves the panel as it was.
+    """
+    plugin, ctx = _set_up(tmp_path)
+    index = {movement.id: number for number, (_action, movement) in enumerate(plugin._movements)}
+    live = Pose((2.0, -1.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    plugin.select(index["B2_M1_grasp"])
+    plugin.request_carry(Carry("B2_J_joint", "B2_M2_transfer", "robots/cindy", {"left_joint1": 0.9}, base=live))
+    assert not plugin.at_target, "not the selected movement"
+    plugin.select(index["B2_M2_transfer"])
+    plugin.request_carry(Carry("B2_J_joint", "B2_M2_transfer", "robots/cindy", {"left_joint1": 0.9}, base=live))
+    assert plugin.at_target
+    plugin.draw(ctx)
+    state = plugin._drawing.states[-1]
+    assert state.robots["robots/cindy"].base == live and plugin._drawing.shown[-1]["robots/cindy"]["left_joint1"] == 0.9
+    assert "drawn at the joints and base found for B2_M2_transfer" in plugin._details.content, "the chip says so"
+    authored = plugin._movements[index["B2_M2_transfer"]][1].start
+    assert all(state.robots[robot] == authored.robots[robot] for robot in authored.robots if robot != "robots/cindy")
+    plugin.at_target, plugin._stale = False, True
+    plugin.draw(ctx)
+    assert plugin._drawing.states[-1] is authored, "at its start the carry does not show"

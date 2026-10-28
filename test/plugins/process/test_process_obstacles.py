@@ -376,4 +376,5 @@ def test_bar_placed_by_hand(tmp_path):
     panel = ProcessPlugin()
     panel._take(process)
     panel.select(len(panel._movements) - 1)
-    assert BY_HAND_LABEL in panel._details_html(*panel.selected)
+    action, movement = panel.selected
+    assert BY_HAND_LABEL in panel._details_html(action, movement, panel._labels(action))[0]

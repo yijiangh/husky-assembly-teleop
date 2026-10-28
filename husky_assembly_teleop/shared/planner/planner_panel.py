@@ -21,7 +21,7 @@ from ...config import find_robot_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
-from ...ui.phone import columns_css
+from ...ui.phone import button_group_color_css, columns_css
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
 from .plan import Plan, PlannerContract
 
@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 SLIDER_STEP = 0.05
 #: The side panel tab every planner panel's tab goes in: `tab_path = (PLAN_TAB, label)`.
 PLAN_TAB = "Plan"
+#: The Path buttons' colour: Mantine's teal for outlines, as viser's teal buttons.
+PATH_BUTTONS_COLOR = "var(--mantine-color-teal-outline)"
 #: Lays out the Run folder as Commit and Cancel side by side, for an html widget outside that folder.
 COMMIT_STYLE = f"<style>{columns_css(viser.Icon.SEND, 2)}</style>"
 
@@ -110,8 +112,10 @@ class PlannerPanel(HuskyPlugin):
         """
         gui.add_html(section("path", SECTION_CTRL))
         plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
-        self._slider = gui.add_slider("t s", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
-                                      hint="Scrub through the planned path")
+        # * Teal, as Plan in the Assembly tab (computes without moving), so it never passes for Load's Step above.
+        gui.add_html(f"<style>{button_group_color_css(plan._impl.uuid, PATH_BUTTONS_COLOR)}</style>")
+        self._slider = gui.add_slider("Preview time", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
+                                      hint="Scrub through the planned path: seconds from its start")
         # * Cancel beside Commit: a folder of its own, laid out in two columns (found by Commit's icon).
         gui.add_html(COMMIT_STYLE)
         with gui.add_folder("Run"):
@@ -119,7 +123,9 @@ class PlannerPanel(HuskyPlugin):
             cancel = gui.add_button("Cancel", color="red", icon=viser.Icon.PLAYER_STOP,
                                     hint="Stop the motion Commit started: the planner stops the robot")
         plan.on_click(ctx.defer_value("path button", lambda label: self._on_path(ctx, label)))
-        self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value))))
+        # ! Operator drags only: draw writes the slider every tick, and viser calls back for that too, late, which
+        #   would set the preview back.
+        self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value)), operator_only=True))
         commit.on_click(ctx.defer("commit", lambda: self._commit(ctx)))
         cancel.on_click(ctx.defer("cancel commit", lambda: self._cancel_commit()))
 
@@ -176,7 +182,7 @@ class PlannerPanel(HuskyPlugin):
 
     def _scrub(self, t: float) -> None:
         """Show the path at time `t`."""
-        # ! Keep this check: draw writes the slider back, which would otherwise loop.
+        # * The same time again is not a use of the panel.
         if abs(t - self._t) > 1e-9:
             self._t = t
             self._used.touch()

@@ -12,7 +12,8 @@ from robot_fakes import lease_context
 from husky_assembly_teleop.shared.teleop.dpad import HOLD_TIMEOUT, MAX_LINEAR_SPEED, Hold
 from husky_assembly_teleop.plugins.robot_control.plugin import FREE_DRIVE_RETRY, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.robot_interface.arm import FREE_DRIVE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER
-from husky_assembly_teleop.ui.phone import SHEET, big_buttons, side_by_side_css, slim_labels_css
+from husky_assembly_teleop.ui.phone import (SHEET, big_buttons, button_group_color_css, group_buttons, one_row_css,
+                                            side_by_side_css, slim_labels_css)
 from husky_assembly_teleop.ui.visualization import Visualization
 
 SERIAL = "a200-0804"
@@ -232,3 +233,13 @@ def test_side_by_side_buttons_share_a_row_by_their_ids():
     css = side_by_side_css(["u1", "u2"])
     assert css.count("display: inline-block; width: calc(50% - 2 * var(--mantine-spacing-xs))") == 2
     assert 'div:has(> button[id="u1"])' in css and 'div:has(> button[id="u2"])' in css
+
+
+def test_a_button_group_is_found_by_its_label_coloured_and_kept_on_one_row():
+    """Its buttons by the label's `for`, one of them by its place from 0; a colour overrides viser's blue."""
+    group = 'div:has(> div > p > label[for="g1"])'
+    assert group_buttons("g1") == f"{group} button" and group_buttons("g1", 2) == f"{group} button:nth-child(3)"
+    assert button_group_color_css("g1", "#f08c00") == (f"{group} button {{ color: #f08c00 !important; "
+                                                       "border-color: #f08c00 !important; }")
+    css = one_row_css("g1")
+    assert f"{group} > div:last-child {{ min-width: 0; }}" in css and "flex-wrap: nowrap !important" in css

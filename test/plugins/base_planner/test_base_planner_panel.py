@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from plugin_fakes import FakeGui
 from robot_fakes import lease_test_robots
 
 from husky_assembly_teleop.plugins.base_planner.panel_plugin import NO_TASK, BasePlannerPanel
@@ -176,3 +177,16 @@ def test_park_loads_the_robots_parked_pose(park):
     ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial=SERIAL, park_pose=park)]))
     panel._load_target(ctx, "Park")
     assert targets == ([park] if park else []) and said == [park is None]
+
+
+def test_the_preview_slider_follows_only_the_operator():
+    """Draw writes the Preview time slider every tick, and viser calls back for that too: only a drag scrubs."""
+    asked = {}
+
+    def defer_value(label, run, operator_only=False):
+        asked[label] = operator_only
+        return run
+
+    ctx = SimpleNamespace(defer_value=defer_value, defer=lambda _label, run, operator_only=False: run)
+    BasePlannerPanel()._add_path_controls(ctx, FakeGui(), "plan hint", "commit hint")
+    assert asked["scrub"] is True

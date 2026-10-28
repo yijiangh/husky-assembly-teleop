@@ -18,9 +18,10 @@ from ...shared.execution.operator import PROMPT_ARM_S
 from ...shared.assembly_planning.steps import first_step
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
-from ...shared.runs.runs import (DONE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, Progress, RobotRecord,
-                                 Run, RunError, RunSettings, mark_done, new_run, record_event, record_movement,
-                                 save_info, save_progress, stamp, with_current)
+from ...shared.runs.runs import (DONE, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
+                                 SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, Progress, RobotRecord, Run,
+                                 RunError, RunSettings, mark_done, new_run, record_event, record_movement, save_info,
+                                 save_progress, stamp, with_current)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -35,7 +36,11 @@ AGAIN_NEW_RUN, AGAIN_MARK = "new run", "mark"
 #: Each number setting: what a refusal calls it, its range and its unit.
 NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
                    "spiral_seconds": ("the spiral's duration", SPIRAL_SECONDS_RANGE, "s"),
-                   "spiral_turns": ("the spiral's turns", SPIRAL_TURNS_RANGE, "whole turns")}
+                   "spiral_turns": ("the spiral's turns", SPIRAL_TURNS_RANGE, "whole turns"),
+                   "plan_max_time": ("the search's time per try", PLAN_TIME_RANGE, "s"),
+                   "plan_max_iterations": ("the search's iterations", PLAN_ITERATIONS_RANGE, "whole iterations"),
+                   "plan_joint_resolution": ("the search's joint resolution", PLAN_RESOLUTION_RANGE, "rad"),
+                   "plan_tries": ("the search's tries", PLAN_TRIES_RANGE, "whole tries")}
 #: Each setting's type, its default's: a request is converted to it.
 SETTING_TYPES = {each.name: type(each.default) for each in fields(RunSettings)}
 #: How far the loaded process's runs were read; only OPEN allows writes.

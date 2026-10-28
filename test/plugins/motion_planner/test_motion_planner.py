@@ -6,6 +6,7 @@ The slow test asks the real service about B20's transfer on the purged process.
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -189,6 +190,35 @@ def test_a_callers_timeout_stops_the_search(monkeypatch):
 
     asyncio.run(scenario())
     assert stopped == [True]
+
+
+def test_what_the_worker_prints_goes_to_the_tamp_log(monkeypatch, capfd):
+    """Python's and C's stdout on the worker reach `_log_tamp` line by line; fd 1 is as before once the work is done.
+
+    Outside pytest's capture, as in the monitor: `print` goes through fd 1 there.
+    """
+    def work(_pool, _request, _abort, _log):
+        print("[ssik] hello")
+        os.write(1, b"b3Printf\n")
+        return SOLVED
+
+    monkeypatch.setattr(motion, "run_plan", work)
+    lines = []
+
+    async def scenario():
+        plugin = planner()
+        plugin._log_tamp = lines.append
+        answer = await plugin.request_plan(request("plan"))
+        await idle(plugin)
+        plugin.teardown(None)
+        return answer
+
+    with capfd.disabled():
+        before = os.fstat(1)
+        answer = asyncio.run(scenario())
+        after = os.fstat(1)
+    assert answer is SOLVED and sorted(lines) == ["[ssik] hello", "b3Printf"]
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
 
 
 def test_errors_come_back_as_failed_answers(tmp_path):

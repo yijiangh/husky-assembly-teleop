@@ -1,6 +1,7 @@
 """
 The side panel's Assembly tab, shared by process, assembly_steps, movement_exec and assembly_run: bands and icons.
 
+The plot windows of assembly_steps and movement_exec float at the bottom left; where is set here too.
 Each of them sets `tab_path = (ASSEMBLY_TAB,)` and adds its widgets in its own bands, `with ctx.view.ui(band=STEP_BAND)
 as gui:`; the bands sort top to bottom by these numbers, whichever plugin starts first.
 
@@ -37,8 +38,15 @@ RUN_SETTINGS_BAND = 510.0
 EXEC_SETTINGS_BAND = 520.0
 #: assembly_run: the run's chips, Continue newest / Continue match / New run, where the robots are.
 RUN_BAND = 600.0
-#: assembly_steps: the plan's plots.
-PLOTS_BAND = 700.0
+#: assembly_steps: the Advanced planning folder, closed by default; last, below every button, so opening it moves none.
+PLAN_SETTINGS_BAND = 650.0
+
+# * The plot windows float at the bottom left (the console is at the bottom right), minimized to their bars until
+#   there is something to plot: assembly_steps' Plan plots, then movement_exec's Exec plots to their right.
+#: Each window's size, px.
+PLOTS_WIDTH, PLOTS_HEIGHT = 460, 560
+#: Where each window sits: x from the page's left edge, y from its bottom (negative, as viser's `float` counts it).
+PLAN_PLOTS_X, EXEC_PLOTS_X, PLOTS_Y = 15, 15 + PLOTS_WIDTH + 10, -15
 
 # * Button icons, so the CSS and the buttons agree.
 #: Live IK.

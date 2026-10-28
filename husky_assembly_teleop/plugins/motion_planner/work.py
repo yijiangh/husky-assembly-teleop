@@ -46,7 +46,7 @@ def run_plan(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Even
                              transfer_as_free=request.transfer_as_free, beliefs=request.beliefs,
                              ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide,
                              goal_joints=request.goal_joints, goal_poses=request.goal_poses,
-                             linear_step=request.linear_step, abort=abort, log=log)
+                             linear_step=request.linear_step, search=request.search, abort=abort, log=log)
     except Exception as error:
         return RouteResult(MovementResult("failed", _reason(error)), None, seconds=time.monotonic() - started)
 

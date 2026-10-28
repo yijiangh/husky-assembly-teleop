@@ -18,9 +18,11 @@ The "Rhino obstacles collide" box (off at start) decides whether the process's o
 count in every collision check; while off they are disabled scene bodies, drawn see-through by the overlay.
 
 The panel is the top of the side panel's Assembly tab (`ui/assembly_tab.py`), above the steps planned and run from
-it. It lists a window of the schedule's actions around the selected one (`action_window`); click a row to jump.
+it. It lists a window of the schedule's actions around the selected one (`action_window`); click a row to jump. The
+selected action's movements are buttons coloured by kind, the selected one ringed: click one to select it.
 Each row shows the mark the run gives its action (`request_marks`: pending, done, done with its end assumed). After a
-Live IK or a plan, the action's later movements are drawn with the joints found (`request_carry`), the drawing only.
+Live IK or a plan, the action's later movements are drawn with the joints found, on the live base they were found at,
+and the panel turns to the target of the movement they are for (`request_carry`); the drawing only.
 
 Process folders are given relative to the Drive root (`drive.py`), e.g. "data_design_study/<process>", or absolute.
 Loading an old compas_fab export converts it into `<export>_process` (reused while up to date) and loads that.
@@ -34,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import traceback
+from dataclasses import replace
 from html import escape
 from pathlib import Path
 
@@ -44,15 +47,17 @@ from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.assembly_tab import ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
-from ...ui.style import (BUSY, FAIL, NONE, OK, REFUSAL_SHOWN, SECTION_CTRL, block, chip, chip_line, section,
+from ...ui.phone import group_buttons, one_row_css
+from ...ui.style import (BUSY, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line, section,
                          swatch_chip, values)
 from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
-from scaffolding_assembly_core.process import Action, Movement, Process, assumed_start_all, joints_at
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.process import Action, Movement, Process, State, assumed_start_all, joints_at
 from scaffolding_assembly_core.process.scenes import process_model
 from ...shared.process_contract import MARK_ASSUMED, MARK_DONE, Carry, Selection
-from ...shared.assembly_planning.labels import Kind, label_movement
+from ...shared.assembly_planning.labels import Kind, MovementLabel, label_movement
 from ...shared.assembly_planning.movement import mating_drives
 from ...shared.assembly_planning.steps import as_run
 from ...shared.movement_exec_contract import step_running
@@ -70,6 +75,9 @@ LOAD_TIMEOUT = 300.0
 
 #: Shown in place of the robot for a `bar_placing` action, which no robot acts in.
 BY_HAND_LABEL = "by hand"
+
+#: The movement buttons' only button before a load.
+NO_MOVEMENT = "—"
 
 #: Whether the transfer workaround is on when the monitor starts: Cindy's transfer runs as a free move with empty tools.
 TRANSFER_AS_FREE = True
@@ -253,8 +261,14 @@ class ProcessPlugin(HuskyPlugin):
             bar_lines = gui.add_checkbox("Rhino bar lines", initial_value=False,
                                          hint="Every bar's centre line and name, pink, where the design puts it "
                                               "once built: a ruler of the Rhino poses.")
-            # ! Keep changing text BELOW the buttons, so they never move mid-click; and keep its height fixed: the
-            #   Assembly tab's buttons are below it.
+            # ! The selected movement's details change with it, so they keep a fixed height: the movement buttons
+            #   and the Assembly tab's buttons are below them.
+            self._which = gui.add_html("")
+            # * The selected action's movements by their old codes, in their kinds' colours (`_movement_css`).
+            self._moves = gui.add_button_group("Movement", [NO_MOVEMENT],
+                                               hint="Select this movement of the action. Coloured by kind as in the "
+                                                    "action flowchart; the selected one is ringed")
+            self._moves_style = gui.add_html("")
             self._details = gui.add_html("")
             self._error_text = gui.add_html("")
 
@@ -268,8 +282,12 @@ class ProcessPlugin(HuskyPlugin):
         self._collide.on_update(ctx.defer_value("Rhino obstacles collide",
                                                 lambda value: self.set_obstacles_collide(ctx, bool(value)),
                                                 operator_only=True))
-        self._slider.on_update(ctx.defer_value("select step", lambda value: self.select(int(value))))
+        # ! Operator drags only: draw writes the slider back, and viser calls back for that too, late, which could
+        #   select an older movement after quick clicks on ◀ mv / mv ▶.
+        self._slider.on_update(ctx.defer_value("select step", lambda value: self.select(int(value)),
+                                               operator_only=True))
         go.on_click(ctx.defer_value("step button", self._on_go))
+        self._moves.on_click(ctx.defer_value("select movement", lambda code: self._on_movement(str(code))))
         show.on_click(ctx.defer_value("show", lambda label: self._set_at_target(label == "Target")))
         view.on_click(ctx.defer_value("view", self._on_view))
         bar_lines.on_update(ctx.defer_value("Rhino bar lines", lambda value: setattr(self, "_bar_lines", bool(value))))
@@ -320,6 +338,11 @@ class ProcessPlugin(HuskyPlugin):
             carry: The joints, the robot and from which movement on; or None.
         """
         self._carry = carry
+        # * Found for the selected movement: show its target, the goal they are, as the old monitor's goal ghost did.
+        selected = self.selected
+        found_for = (carry.action_id, carry.movement_id) if carry is not None else None
+        if selected is not None and found_for == (selected[0].id, selected[1].id):
+            self.at_target = True
         self._stale = True
 
     def select(self, index: int) -> None:
@@ -327,7 +350,7 @@ class ProcessPlugin(HuskyPlugin):
         if not self._movements:
             return
         index = max(0, min(int(index), len(self._movements) - 1))
-        # ! Keep this check: draw writes the slider back, which would otherwise loop.
+        # * The same movement again changes nothing: the scene bodies are not put again.
         if index == self.index:
             return
         self.index = index
@@ -399,6 +422,18 @@ class ProcessPlugin(HuskyPlugin):
             later = [first for first in self._first_of.values() if first > self.index]
             if later:
                 self.select(min(later))
+
+    def _on_movement(self, code: str) -> None:
+        """Select the movement of the selected action with this code (a movement button); any other does nothing.
+
+        ? Read against the action selected when it runs: a click in the same tick as a jump to another action selects
+          that action's movement with the code, if it has one.
+        """
+        if not self._movements:
+            return
+        codes = [label.code for label in self._labels(self._movements[self.index][0])]
+        if code in codes:
+            self.select(self._first_of[self._action_of[self.index]] + codes.index(code))
 
     def _on_action_row(self, row: int) -> None:
         """Jump to the first movement of the action shown in a row of the list; empty rows and actions do nothing."""
@@ -562,12 +597,15 @@ class ProcessPlugin(HuskyPlugin):
         self._error_text.content = block(values(_one_line(escape(error) or "&nbsp;", error)))
         self._draw_action_list()
         if selected is None:
-            self._details.content = _empty_details()
+            self._which.content, self._details.content = _empty_details()
+            self._draw_movements([], 0)
             return
         action, movement = selected
         self._slider.max = max(len(self._movements) - 1, 1)
         self._slider.value = self.index
-        self._details.content = self._details_html(action, movement)
+        labels = self._labels(action)
+        self._which.content, self._details.content = self._details_html(action, movement, labels)
+        self._draw_movements(labels, action.movements.index(movement))
 
         drawing = self._drawing
         if not self._stale or drawing is None:
@@ -578,12 +616,12 @@ class ProcessPlugin(HuskyPlugin):
             return
         try:
             joints = joints_at(self._shown, action.id, movement.id, self.at_target, self._assumed)
-            carry = self._carry
+            carry, state = self._carry, movement.start
             if self._carry_applies(action, movement):
                 joints[carry.robot] = {**joints.get(carry.robot, {}), **carry.joints}
+                state = _with_base(state, carry.robot, carry.base)
             # * Left out of collision checks, the Rhino obstacles are drawn by the overlay, not the runtime.
-            drawing.show(movement.start, joints, self._everything,
-                         frozenset() if self.obstacles_collide else self._obstacles)
+            drawing.show(state, joints, self._everything, frozenset() if self.obstacles_collide else self._obstacles)
         except Exception as failure:
             # ! A state that does not fit its process is a data problem: report it, do not raise.
             self._error = f"cannot draw {movement.id}: {type(failure).__name__}: {failure}"
@@ -672,9 +710,37 @@ class ProcessPlugin(HuskyPlugin):
                                                       "plugins, or nothing in the room is checked")
         return chip_line(chips)
 
-    def _details_html(self, action: Action, movement: Movement) -> str:
-        """Three rows of chips, four lines of text and a two-line description of the selected movement."""
-        labels = [label_movement(self.process, action, each, self.transfer_as_free) for each in action.movements]
+    def _labels(self, action: Action) -> list[MovementLabel]:
+        """The labels of an action's movements, in order, as shown (`label_movement`).
+
+        Args:
+            action: An action of the shown process.
+        """
+        return [label_movement(self.process, action, each, self.transfer_as_free) for each in action.movements]
+
+    def _draw_movements(self, labels: list[MovementLabel], current: int) -> None:
+        """Label the movement buttons with the action's movements, coloured by kind, the `current`-th ringed.
+
+        Args:
+            labels: The action's movement labels, in order; none before a load.
+            current: Index of the selected movement in `labels`.
+        """
+        self._moves.options = tuple(label.code for label in labels) or (NO_MOVEMENT,)
+        kinds = [label.kinds[0] for label in labels]
+        self._moves_style.content = f"<style>{_movement_css(self._moves._impl.uuid, kinds, current)}</style>"
+
+    def _details_html(self, action: Action, movement: Movement, labels: list[MovementLabel]) -> tuple[str, str]:
+        """The selected movement's details, split around the movement buttons.
+
+        Args:
+            action: The selected action, as shown.
+            movement: The selected movement.
+            labels: The action's movement labels, in order.
+
+        Returns:
+            tuple[str, str]: Above the buttons, a row of chips; below them, a row of chips, four lines of text and a
+                two-line description.
+        """
         number = action.movements.index(movement)
         label = labels[number]
         which = chip(f"{self.index + 1}/{len(self._movements)}", OK)
@@ -684,11 +750,6 @@ class ProcessPlugin(HuskyPlugin):
             which += chip(BY_HAND_LABEL, SECTION_CTRL, "a bar_placing action: the operator places the bar")
         # * Its kinds in the action flowchart's colours: FM, LM, CDFM, CDLM, Manual, TM (dashed: runs through).
         which += "".join(_kind_chip(kind, f"{kind.name}; Rhino: {movement.label}") for kind in label.kinds)
-        # * The action's movements by their old codes, coloured by kind, this one marked: robot and operator steps
-        #   at a glance.
-        strip = "".join(_kind_chip(other.kinds[0], f"{other.old_name or each.id}: {each.label}", other.code,
-                                   current=each is movement)
-                        for each, other in zip(action.movements, labels))
 
         # ! Say so when the drawn start is not authored.
         target = movement.target.joints.get(action.robot) if movement.target is not None else None
@@ -708,7 +769,8 @@ class ProcessPlugin(HuskyPlugin):
             carries += chip("showing target" if target else "no target: start", OK if target else BUSY)
         if self._carry_applies(action, movement):
             carry = self._carry
-            title = f"{escape(carry.robot)} drawn at the joints found for {escape(carry.movement_id)}'s end"
+            found = "joints and base" if carry.base is not None else "joints"
+            title = f"{escape(carry.robot)} drawn at the {found} found for {escape(carry.movement_id)}'s end"
             carries += chip(f"joints from {escape(carry.source)}", BUSY, title)
         carries += chip(movement.controller or "no arm moves", NONE)
         carries += chip(f"ends on {movement.ends_on}", NONE)
@@ -725,19 +787,54 @@ class ProcessPlugin(HuskyPlugin):
                  f"old name {label.old_name or '- (not in the old monitor)'}",
                  f"moves    {', '.join(moves) or '-'}"]
         text = values(*(_one_line(escape(line)) for line in lines))
-        return block(_one_line(which) + _one_line(strip) + _one_line(carries) + text + _description(label.text))
+        return block(_one_line(which)), block(_one_line(carries) + text + _description(label.text))
 
 
-def _kind_chip(kind: Kind, title: str, text: str = "", current: bool = False) -> str:
-    """A chip in a flowchart kind's colours.
+def _kind_chip(kind: Kind, title: str) -> str:
+    """A chip in a flowchart kind's colours, labelled with its abbreviation.
 
     Args:
         kind: The movement kind.
         title: Hover text.
-        text: The label; the kind's abbreviation if empty.
-        current: Mark it as the selected movement of a row.
     """
-    return swatch_chip(escape(text or kind.short), kind.fill, kind.border, title, kind.fill_to, kind.dashed, current)
+    return swatch_chip(escape(kind.short), kind.fill, kind.border, title, kind.fill_to, kind.dashed)
+
+
+def _movement_css(uuid: str, kinds: list[Kind], current: int) -> str:
+    """CSS for the movement buttons: one row (`one_row_css`) of tall buttons in their kinds' colours, one ringed.
+
+    Args:
+        uuid: The button group's uuid.
+        kinds: Each button's movement kind, left to right; empty for the one button before a load.
+        current: Index of the selected movement's button.
+
+    Returns:
+        str: CSS rules, without the <style> element.
+    """
+    css = (one_row_css(uuid)
+           + f"{group_buttons(uuid)} {{ height: 30px !important; font-size: 13px !important; font-weight: 700; }}"
+           f"{group_buttons(uuid)}:hover {{ filter: brightness(0.93); }}")
+    for index, kind in enumerate(kinds):
+        fill = f"linear-gradient(90deg,{kind.fill},{kind.fill_to})" if kind.fill_to else kind.fill
+        ring = f" box-shadow: inset 0 0 0 2px {RING};" if index == current else ""
+        # * Dark text on the light fills, in either theme, as `swatch_chip`.
+        css += (f"{group_buttons(uuid, index)} {{ background: {fill} !important; color: #212529 !important; "
+                f"border: 1px {'dashed' if kind.dashed else 'solid'} {kind.border} !important;{ring} }}")
+    return css
+
+
+def _with_base(state: State, robot: str, base: Pose | None) -> State:
+    """`state` with `robot`'s base at `base`, e.g. where joints carried forward were found; as it is for None.
+
+    Args:
+        state: A process state.
+        robot: The process robot id.
+        base: Its base pose in the world, or None.
+    """
+    robot_state = state.robots.get(robot)
+    if base is None or robot_state is None:
+        return state
+    return replace(state, robots={**state.robots, robot: replace(robot_state, base=base)})
 
 
 def _description(text: str) -> str:
@@ -782,11 +879,11 @@ def _one_line(html: str, title: str = "") -> str:
     return f'<div{hover} style="white-space:pre;overflow:hidden;text-overflow:ellipsis">{html}</div>'
 
 
-def _empty_details() -> str:
+def _empty_details() -> tuple[str, str]:
     """The details before a load: the same rows as `_details_html`, empty, so the first Load moves nothing below."""
     def hidden(html: str) -> str:
         return f'<span style="visibility:hidden">{html}</span>'
 
     swatch, plain = hidden(swatch_chip("-", NONE, NONE)), hidden(chip("-", NONE))
-    return block(_one_line(chip("no process loaded", NONE) + swatch) + _one_line(swatch) + _one_line(plain)
-                 + values(*[_one_line("&nbsp;")] * 4) + _description(""))
+    return (block(_one_line(chip("no process loaded", NONE) + swatch)),
+            block(_one_line(plain) + values(*[_one_line("&nbsp;")] * 4) + _description("")))

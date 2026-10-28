@@ -14,7 +14,7 @@ from planning_fixtures import action, movement, purged_process
 from process_fixtures import build_process
 
 from husky_assembly_teleop.plugins.process.loading import load_process
-from husky_assembly_teleop.plugins.process.plugin import ProcessPlugin
+from husky_assembly_teleop.plugins.process.plugin import ProcessPlugin, _movement_css
 from husky_assembly_teleop.shared.assembly_planning import labels as labels_module
 from husky_assembly_teleop.shared.assembly_planning.labels import (BASE, CDFM, CDLM, FM, INSERT_GROUND, INSERT_TIGHTEN,
                                                                    LM, MANUAL, TM, TM_THROUGH, kinds_of,
@@ -30,7 +30,7 @@ GOLDEN = {
     "bar_holding": ("H_M0_free_to_approach", "H_M1_gripper_open", "H_M2_LM_to_grasp", "H_M3_gripper_close"),
     "bar_holding_release": ("HR_M0_gripper_open", "HR_M1_LM_retreat", ""),
 }
-#: Their codes, for the panel's row of chips.
+#: Their codes, for the panel's movement buttons.
 CODES = {
     "bar_jointing": ("J_M0", "J_M1", "J_M2", "J_M3", None),
     "bar_release": ("R_M0", "R_M1", "R_M2"),
@@ -90,7 +90,7 @@ def test_the_panel_says_which_drives_are_never_sent(purged):
     panel._take(purged.process)
     for movement_id, marked in (("B20_J_insert", True), ("B22_J_insert", False)):
         panel.select(next(index for index, (_, one) in enumerate(panel._movements) if one.id == movement_id))
-        assert ("tighten (not sent)" in panel._details_html(*panel.selected)) == marked, movement_id
+        assert ("tighten (not sent)" in _details(panel)) == marked, movement_id
 
 
 def test_a_bar_on_the_ground_at_one_end_that_tightens_at_the_other(purged, monkeypatch):
@@ -140,22 +140,24 @@ def test_an_insert_with_nothing_to_tighten_is_not_called_a_ground_bar(purged):
 
 
 def test_the_process_panel_shows_the_old_name_the_row_and_the_sentence(purged):
-    """At a screwed insert: its kinds' chips, the action's codes with this one ringed, the old name and the sentence.
+    """At a screwed insert: its kinds' chips, the old name and the sentence; the action's codes, this one ringed.
 
     The transfer workaround is on at start: the row is in run order, the transit first, no travel to load.
     """
     panel = ProcessPlugin()
     panel._take(purged.process)
     panel.select(next(index for index, (_, one) in enumerate(panel._movements) if one.id == "B22_J_insert"))
-    html = panel._details_html(*panel.selected)
+    html = _details(panel)
     assert f"old name {INSERT_TIGHTEN}" in html and "Straight-line insert 15 mm" in html
-    for code in ("J_transit", "J_M1", "J_M2", "J_M4+5"):
-        assert f">{code}</span>" in html
-    assert ">J_M0</span>" not in html and ">J_M3</span>" not in html
     assert "1px dashed #666666" in html and "linear-gradient(90deg,#d5e8d4,#e6d0de)" in html
-    # * Only the selected movement is ringed, and every chip keeps one weight, so nothing moves as the ring moves.
-    assert html.count("box-shadow:inset 0 0 0 2px #212529;") == 1
-    assert "font-weight:800" not in html
+    action, movement = panel.selected
+    labels = panel._labels(action)
+    codes = [label.code for label in labels]
+    assert codes[0] == "J_transit" and {"J_M1", "J_M2", "J_M4+5"} <= set(codes)
+    assert "J_M0" not in codes and "J_M3" not in codes
+    # * Only the selected movement's button is ringed, and every button keeps one weight, so nothing moves.
+    css = _movement_css("u", [label.kinds[0] for label in labels], action.movements.index(movement))
+    assert css.count("box-shadow") == 1 and css.count("font-weight") == 1
 
 
 # --- --- --- --- --- WITHOUT THE DRIVE --- --- --- --- ---
@@ -221,5 +223,11 @@ def test_the_panel_escapes_rhino_labels(small):
     panel = ProcessPlugin()
     panel._take(replace(small, actions={**small.actions, first_id: odd}))
     panel.select(0)
-    html = panel._details_html(*panel.selected)
+    html = _details(panel)
     assert "<b>mount</b>" not in html and "&lt;b&gt;mount&lt;/b&gt; &amp; go" in html
+
+
+def _details(panel: ProcessPlugin) -> str:
+    """The selected movement's details as the panel shows them, above and below its movement buttons."""
+    action, movement = panel.selected
+    return "".join(panel._details_html(action, movement, panel._labels(action)))

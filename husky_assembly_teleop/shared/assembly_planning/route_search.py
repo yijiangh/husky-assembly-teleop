@@ -7,6 +7,8 @@ The searches, checks and results a movement's route is built of, on the acting r
 from __future__ import annotations
 
 import threading
+import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 
 import numpy as np
@@ -31,12 +33,36 @@ if TYPE_CHECKING:
     from ...config import RobotConfig
     from ...world.collision_hit import CollisionHit
 
-#: Tries of a search before giving up, each a new random search.
+#: Tries of the held transfer's search before giving up, each a new random search.
 ATTEMPTS = 3
 #: Seconds per try of a support robot's one-arm search.
 SUPPORT_TIME = 30.0
 #: Goals given in joints: the result says how far its end is from them.
 _JOINT_GOALS = (GoalSource.JOINTS, GoalSource.NEXT_START, GoalSource.STOW)
+
+
+@dataclass(frozen=True)
+class FreeSearch:
+    """The operator's settings of the free searches (Advanced planning): tamp's free dual-arm search and the one-arm one.
+
+    Attributes:
+        max_time: Seconds per try of tamp's free search.
+        max_iterations: Iterations per try of it.
+        joint_resolution: The joint step of its collision checks, radians.
+        tries: Tries before giving up, each a new random search; the one-arm search's too.
+        swept_check: Check a found path between its waypoints (`swept_check`); off, the path is taken as found.
+    """
+
+    max_time: float = 120.0
+    max_iterations: int = 50
+    joint_resolution: float = 0.1
+    tries: int = 3
+    swept_check: bool = True
+
+    def tamp(self) -> dict:
+        """The keyword arguments of tamp's `plan_free_dual_arm`."""
+        return {"max_time": self.max_time, "max_iterations": self.max_iterations,
+                "joint_resolution": self.joint_resolution}
 
 
 class Refused(Exception):
@@ -47,8 +73,8 @@ class RouteSearch:
     """One movement being planned: its scenes, robot and start, the searches it may run, and what they found."""
 
     def __init__(self, mirror: CompasFabMirror, process: Process, step: Step, spec: MovementSpec,
-                 planning: PlanningScene, search: Scene, config: RobotConfig, goal_joints: Mapping[str, float] | None,
-                 abort: threading.Event, log: Callable[[str], None]):
+                 planning: PlanningScene, scene: Scene, config: RobotConfig, goal_joints: Mapping[str, float] | None,
+                 abort: threading.Event, log: Callable[[str], None], search: FreeSearch = FreeSearch()):
         """Hold what every routine needs; `names` and `start` are set once the mirror is synced.
 
         Args:
@@ -57,14 +83,16 @@ class RouteSearch:
             step: The movement's step.
             spec: Its classification.
             planning: Its planning scene, anything held by the robot shown.
-            search: The scene the searches run in (the planning scene, or it without the held bar).
+            scene: The scene the searches run in (the planning scene, or it without the held bar).
             config: The acting robot's config.
             goal_joints: Joints to plan to instead of solving the goal, or None.
             abort: Stops between tries.
-            log: Gets the fallback lines of IK and the straight moves.
+            log: Gets the lines of every try, the checks, and the fallbacks of IK and the straight moves.
+            search: The free searches' settings.
         """
         self.mirror, self.process, self.step, self.spec = mirror, process, step, spec
-        self.planning, self.scene, self.config, self.abort, self.log = planning, search, config, abort, log
+        self.planning, self.scene, self.config, self.abort, self.log = planning, scene, config, abort, log
+        self.search = search
         self.override = dict(goal_joints) if goal_joints is not None else None
         self.robot = planning.scene.robots[planning.acting]
         self.names: list[str] = []
@@ -137,33 +165,35 @@ class RouteSearch:
 
     # --- --- --- --- --- SEARCHES --- --- --- --- ---
 
-    def free(self, goal: dict[str, float], settings: dict, goals: dict[ArmPart, Pose] | None = None) -> RouteResult:
-        """The free dual-arm search of tamp, swept-checked; tried again on no path or a swept hit.
+    def free(self, goal: dict[str, float], goals: dict[ArmPart, Pose] | None = None) -> RouteResult:
+        """The free dual-arm search of tamp with the `search` settings, swept-checked; tried again on no path or a hit.
 
         Args:
             goal: Goal values by joint name, one per name in `names` (a plain dict: tamp fails on numpy arrays).
-            settings: tamp's search settings (`max_time`, `joint_resolution`, ...).
             goals: Moving arm -> the pose its tool0 should end at, to report the end's error; None for a joint goal.
 
         Returns:
             RouteResult: Solved, with the first path clear between its waypoints.
 
         Raises:
-            Refused: If the start or goal collides, or no try gives a clear path.
+            Refused: If the start or goal collides, or no try gives a clear path (with the straight path's verdict).
         """
         self.goal_joints = goal
-        failures = []
-        for _ in range(ATTEMPTS):
+        search, failures = self.search, []
+        for _ in range(search.tries):
             self.next_attempt()
+            self.note(f"max_time {search.max_time:.0f} s, max_iterations {search.max_iterations}, joint_resolution "
+                      f"{search.joint_resolution} rad")
+            started = time.monotonic()
             with self.mirror.lend() as planner, world_frame_fk(planner):
-                path, info = plan_free_dual_arm(planner, self.mirror.state, goal, **settings)
+                path, info = plan_free_dual_arm(planner, self.mirror.state, goal, **search.tamp())
             self.mirror.sync(self.scene)
             if path is None and info.get("failure_reason") == "start_or_goal_in_collision":
                 self.refuse_endpoints(goal)
-            failures.append(f"no path in {settings['max_time']:.0f} s" if path is None else self.swept_failure(path))
+            failures.append(self.ended(path, started, f"tamp: {info.get('failure_reason', 'no reason')}"))
             if not failures[-1]:
                 return self.solved(path, goals)
-        raise Refused(f"{self.planner}: {'; '.join(failures)} ({ATTEMPTS} tries)")
+        raise Refused(self.gave_up(failures, search.tries))
 
     def one_arm(self, part: ArmPart, goal: dict[str, float], goals: dict[ArmPart, Pose] | None = None) -> RouteResult:
         """The one-arm search (`arm.plan_arm`), swept-checked; tried again on no path or a swept hit.
@@ -178,14 +208,16 @@ class RouteSearch:
 
         Raises:
             Refused: If the start or goal collides or is outside the URDF limits, the search is cancelled, or no try
-                gives a clear path.
+                gives a clear path (then with the straight path's verdict).
         """
         self.goal_joints = goal
         self.check_limits(goal)
         limits = joint_limits(self.robot.model.urdf, self.names)
         failures = []
-        for _ in range(ATTEMPTS):
+        for _ in range(self.search.tries):
             self.next_attempt()
+            self.note(f"max_time {SUPPORT_TIME:.0f} s")
+            started = time.monotonic()
             found = plan_arm(self.mirror, part.arm, [goal[name] for name in self.names], self.abort, limits=limits,
                              label=self.label, time_limit=SUPPORT_TIME)
             self.mirror.sync(self.scene)
@@ -193,10 +225,73 @@ class RouteSearch:
                 self.refuse_endpoints(goal)
             if found.path is None and not found.reason.startswith("no path"):
                 raise Refused(f"{self.planner}: {found.reason}")
-            failures.append(found.reason if found.path is None else self.swept_failure(found.path.points))
+            failures.append(self.ended(found.path.points if found.path is not None else None, started, found.reason))
             if not failures[-1]:
                 return self.solved(found.path.points, goals)
-        raise Refused(f"{self.planner}: {'; '.join(failures)} ({ATTEMPTS} tries)")
+        raise Refused(self.gave_up(failures, self.search.tries))
+
+    def ended(self, path: Sequence[Sequence[float]] | None, started: float, reason: str) -> str:
+        """Log how a try ended; a path is checked between its waypoints when `search.swept_check` is on.
+
+        Args:
+            path: The try's waypoints in `names` order, or None.
+            started: When the try started, `time.monotonic()`.
+            reason: Why there is no path: tamp's reason as "tamp: …", or the one-arm search's whole line.
+
+        Returns:
+            str: Why the try is refused, starting "no path" when the search found none; "" when its path is clear.
+        """
+        seconds = time.monotonic() - started
+        if path is None:
+            failure = reason if reason.startswith("no path") else f"no path in {seconds:.0f} s ({reason})"
+        else:
+            self.note(f"path of {len(path)} waypoints in {seconds:.1f} s")
+            failure = self.swept_failure(path) if self.search.swept_check else ""
+        if failure:
+            self.note(failure)
+        return failure
+
+    def gave_up(self, failures: Sequence[str], tries: int) -> str:
+        """Why the search is refused after its tries; no path in any of them adds the straight path's verdict."""
+        reason = f"{self.planner}: {'; '.join(failures)} ({tries} tries)"
+        if all(failure.startswith("no path") for failure in failures):
+            reason += f"; {self.straight_line(self.goal_joints)}"
+        return reason
+
+    def straight_line(self, goal: Mapping[str, float]) -> str:
+        """The verdict on a search that found no path: a colliding endpoint, else the straight joint path's first hit.
+
+        Both endpoints are checked in full and the straight path between them swept (`swept_check`); each hit is
+        kept (`hit`), so the collisions panel draws the first one.
+
+        Args:
+            goal: Goal values by joint name, one per name in `names`.
+
+        Returns:
+            str: The verdict, logged too.
+        """
+        for where, joints in (("start", None), ("goal", goal)):
+            pairs = self.endpoint(where, joints)
+            if pairs:
+                return f"the {where} collides: {pairs_text(pairs)}"
+        self.mirror.sync(self.scene)
+        start = [self.start[name] for name in self.names]
+        report = swept_check(self.mirror, self.names, [start, [goal[name] for name in self.names]])
+        self.mirror.sync(self.scene)
+        budget = f"{self.search.tries}×{self.search.max_time:.0f} s"
+        if report.ok:
+            verdict = f"start, goal and the straight path between them are clear: the search found no way in {budget}"
+        elif report.error:
+            verdict = f"the straight path could not be checked: {report.error}"
+        else:
+            first = report.colliding_joints
+            share = (max(abs(first[name] - self.start[name]) for name in self.names)
+                     / max(abs(goal[name] - self.start[name]) for name in self.names))
+            pairs = self.hit(f"the straight path at {share:.0%}", first)
+            verdict = (f"start and goal clear; the straight path first hits {pairs_text(pairs)} at {share:.0%} — the "
+                       f"search found no way around in {budget}")
+        self.log(f"{self.step.label}: {verdict}")
+        return verdict
 
     def linear(self, plan: Callable, goals: dict[ArmPart, Pose]) -> RouteResult:
         """One of tamp's straight dual-arm moves, run once on the lent mirror.
@@ -237,6 +332,7 @@ class RouteSearch:
         """
         self.swept = swept_check(self.mirror, self.names, path)
         if self.swept.ok:
+            self.note(f"swept check: {self.swept.samples} samples between {len(path)} waypoints, clear")
             return ""
         if self.swept.error:
             return f"the swept check failed: {self.swept.error}"
@@ -258,10 +354,24 @@ class RouteSearch:
             Refused: Always; "the goal collides: …", else "the start collides: …", else too close for the search.
         """
         for where, joints in (("goal", goal), ("start", None)):
-            pairs = self.hit(where, joints)
+            pairs = self.endpoint(where, joints)
             if pairs:
                 raise Refused(f"the {where} collides: {pairs_text(pairs)}")
         raise Refused("the start or the goal is too close to something for the search's checks")
+
+    def endpoint(self, where: str, joints: Mapping[str, float] | None) -> list[tuple[str, str]]:
+        """Check the start or the goal in full (`hit`), and log whether it is clear or what it collides with.
+
+        Args:
+            where: "start" or "goal".
+            joints: The goal's values by joint name; None for the start (the synced state).
+
+        Returns:
+            list[tuple[str, str]]: The pairs in process ids, empty if clear.
+        """
+        pairs = self.hit(where, joints)
+        self.log(f"{self.step.label}: " + (f"the {where} collides: {pairs_text(pairs)}" if pairs else f"{where} clear"))
+        return pairs
 
     def hit(self, where: str, joints: Mapping[str, float] | None, scene: Scene | None = None) -> list[tuple[str, str]]:
         """Keep what a configuration collides with as a hit, and its pairs in process ids, from the synced mirror.
@@ -297,6 +407,15 @@ class RouteSearch:
             raise Refused("cancelled")
         self.attempts += 1
         self.mirror.sync(self.scene)
+
+    def note(self, text: str, tries: int | None = None) -> None:
+        """Log a line of the try running, so a long search shows its progress.
+
+        Args:
+            text: What happened, e.g. "no path in 5 s (tamp: birrt_failed)".
+            tries: How many tries the search makes; None: the free searches' (`search.tries`).
+        """
+        self.log(f"{self.step.label}: {self.planner} try {self.attempts}/{tries or self.search.tries}: {text}")
 
     # --- --- --- --- --- RESULTS --- --- --- --- ---
 

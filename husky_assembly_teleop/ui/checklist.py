@@ -88,6 +88,12 @@ class CheckList:
         if box is not None:
             box.remove()
 
+    def deselect(self, key: Hashable) -> None:
+        """Untick an item; unknown keys are ignored. Call on the main thread."""
+        box = self._boxes.get(key)
+        if box is not None:
+            box.value = False
+
     def selected(self) -> list[Hashable]:
         """The ticked items' keys, in list order."""
         return [key for key, box in self._boxes.items() if box.value]

@@ -1,5 +1,5 @@
 """
-The plan's two plots in the Assembly tab: every joint along the preview, and the largest joint step between plan rows.
+The Plan plots window's two plots: every joint along the preview, and the largest joint step between plan rows.
 
 Built once, empty; `show` fills them from a plan or empties them. Joints are labelled short, "L pan" … "R w3", each
 joint in its own colour, the right arm's dashed.
@@ -82,7 +82,7 @@ class PlanPlots:
         """Add both plots to `gui`, empty.
 
         Args:
-            gui: Where to add them, e.g. a band of the Assembly tab.
+            gui: Where to add them, e.g. the window's tab.
         """
         # * x in plain numbers, not times of day; the legend shows the labels only (12 lines in a narrow panel).
         options = {"scales": {"x": viser.uplot.Scale(time=False)}, "legend": viser.uplot.Legend(live=False),

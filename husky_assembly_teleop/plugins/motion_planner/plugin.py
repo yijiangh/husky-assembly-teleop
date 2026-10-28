@@ -5,7 +5,8 @@ Other plugins declare `requires = ("motion_planner",)` and type it as `MotionPla
 (`shared/motion_planner_contract.py`). Every request runs on one worker thread (`work.py`), which owns a compas_fab
 mirror per robot (`MirrorPool`, made on its first request: loading the models takes up to a minute). The panel shows
 what runs and the last answer, cancels everything, and opens PyBullet's own window on a robot's planning world; the
-collisions panel shows what the last answer collided with.
+collisions panel shows what the last answer collided with. What the planners print on the worker (tamp's `[ssik]`
+lines, PyBullet's) is logged under source "motion_planner/tamp".
 
 ! EXPERIMENTAL: requests and answers may still change.
 ! The worker is the only thread that touches the mirrors, the PyBullet window's included.
@@ -14,6 +15,7 @@ collisions panel shows what the last answer collided with.
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from html import escape
@@ -28,6 +30,7 @@ from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.assembly_planning.route_result import GoalCheck, RouteResult
 from ...shared.assembly_planning.servo_route import ServoStep
+from ...shared.assembly_planning.stdout_lines import captured_lines
 from ...shared.motion_planner_contract import CollisionReport, MotionPlanRequest
 from ...shared.planner.planner_panel import PLAN_TAB
 from ...shared.planner.planner_search import with_guesses
@@ -114,8 +117,10 @@ class MotionPlannerPlugin(HuskyPlugin):
         # The last answer's hits by label, and the ones the collisions panel shows.
         self._hits: dict[str, CollisionHit] = {}
         self._reported: dict[str, CollisionHit] | None = None
-        # Gets the planners' lines; the ROS logger is safe to call from the worker.
+        # Gets the planners' lines, and what they print (tamp's, PyBullet's) under source "motion_planner/tamp"; the
+        # ROS logger is safe to call from the worker. ! Neither may print: the worker's stdout is captured.
         self._log: Callable[[str], None] = print
+        self._log_tamp: Callable[[str], None] = lambda line: print(line, file=sys.stderr)
         # The robot whose world the PyBullet window shows when it opens.
         self._serial: str | None = None
 
@@ -174,10 +179,14 @@ class MotionPlannerPlugin(HuskyPlugin):
         return answer
 
     def _work(self, work: Work, request: MotionPlanRequest, abort: threading.Event, label: str) -> Any:
-        """Run one request on the worker, its label shown while it runs."""
+        """Run one request on the worker, its label shown while it runs; what the planners print goes to `_log_tamp`.
+
+        The whole request runs with stdout captured (`captured_lines`), the first request's model loading included.
+        """
         self._running = label
         try:
-            return work(self._pool, request, abort, self._log)
+            with captured_lines(self._log_tamp):
+                return work(self._pool, request, abort, self._log)
         finally:
             self._running = ""
             self._worlds = self._pool.serials
@@ -197,6 +206,7 @@ class MotionPlannerPlugin(HuskyPlugin):
     def setup(self, ctx: PluginContext) -> None:
         """Build the panel: status, Cancel, and the PyBullet window on a chosen robot's world."""
         self._log = self._pool.log = ctx.log_info
+        self._log_tamp = lambda line: ctx.log_info(line, "tamp")
         serials = [config.serial for config in ctx.config.robots if config.arms]
         self._serial = serials[0] if serials else None
         with ctx.view.ui() as gui:

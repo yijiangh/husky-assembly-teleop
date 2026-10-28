@@ -22,10 +22,11 @@ if TYPE_CHECKING:
     from ..plugin_api.context import PluginContext
     from scaffolding_assembly_core.geometry import Pose
 
-#: Colours (r, g, b, alpha from 0 to 1) shared by the plugins.
-TARGET_COLOR = (1.0, 0.78, 0.0, 0.35)   # yellow: where it should go
-PATH_COLOR = (0.35, 0.6, 1.0, 0.35)     # blue: where the plan has it at the slider time
-GOAL_COLOR = (0.1, 0.25, 0.9, 0.45)     # dark blue: a goal solved at the live base
+#: Colours (r, g, b, alpha from 0 to 1) shared by the plugins, the old monitor's: blue where a robot should go, green
+#: where a plan has it; only the live robots show their true colours.
+GOAL_COLOR = (0.0, 0.2, 0.5, 0.5)       # blue: a goal, e.g. solved at the live base (the old GOAL_BLUE)
+TARGET_COLOR = GOAL_COLOR               # blue: where it should go
+PATH_COLOR = (0.0, 0.5, 0.2, 0.5)       # green: where the plan has it at the slider time (the old TRAJECTORY_GREEN)
 #: Colour per kind; the kind is also the scene subcategory.
 KIND_COLORS = {"target": TARGET_COLOR, "path": PATH_COLOR, "goal": GOAL_COLOR}
 

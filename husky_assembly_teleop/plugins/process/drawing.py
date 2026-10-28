@@ -10,7 +10,8 @@ Drawn from the process alone, with forward kinematics from each robot's yourdfpy
   design puts the bars (`set_bar_lines`; the process panel's "Rhino bar lines" box).
 - `load_robot_models` is slow: run it on the loading thread.
 - `ProcessDrawing` is main thread only; a new state only changes poses, joint values and colours.
-- ? Robots are single-colour meshes (`add_simple_urdf`), so "Ghost" only changes their opacity.
+- Robots and their tools are drawn in the goal blue (`ui.ghost.GOAL_COLOR`), as the old monitor drew a movement's
+  state: only the live robots show their true colours. "Ghost" only changes their opacity.
 """
 
 from __future__ import annotations
@@ -27,13 +28,13 @@ from scaffolding_assembly_core.process.relations import is_present, placement
 from scaffolding_assembly_core.geometry import Geometry, Pose, compose, shape_mesh
 from scaffolding_assembly_core.ids import split_link_id
 from scaffolding_assembly_core.process.types import BAR_PREFIX
-from ...ui.visualization import FastViserUrdf, add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
+from ...ui.ghost import GOAL_COLOR
+from ...ui.visualization import FastViserUrdf, joints_changed, load_urdf, quaternion_to_wxyz
 from ...shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH, body_color
 from ...world.bar_pose import bar_ends
 
-#: Colours, RGB 0-255. Held bodies stand out; other bodies use `colors.body_color`.
+#: Colour of held bodies, RGB 0-255, so they stand out; other bodies use `colors.body_color`.
 ATTACHED_COLOR = (240, 120, 30)
-TOOL_COLOR = (70, 70, 80)
 
 #: Opacity of robots, tools and held bodies when "Ghost" is on, and always of bodies that do not stand.
 GHOST_OPACITY = 0.4
@@ -117,10 +118,11 @@ class ProcessDrawing:
         for robot_id, model in self._models.items():
             path = f"{self._root_path}/{robot_id}"
             frame = self._view.scene.add_frame(path, show_axes=False, visible=False)
-            urdf = add_simple_urdf(self._view, model, path)
+            urdf = FastViserUrdf(self._view, model, root_node_name=path, mesh_color_override=GOAL_COLOR[:3])
             # * Tools hang on their flanges, so they move, hide and fade with their robot.
             urdf.add_tools({flange: self._process.tools[tool_id]
-                            for flange, tool_id in self._process.robots[robot_id].tools.items()}, color=TOOL_COLOR)
+                            for flange, tool_id in self._process.robots[robot_id].tools.items()},
+                           color=GOAL_COLOR[:3])
             if self._ghost:
                 for mesh in urdf._meshes:
                     mesh.opacity = GHOST_OPACITY
