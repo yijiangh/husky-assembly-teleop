@@ -17,6 +17,8 @@ from scaffolding_assembly_core.scene import Body, Scene, world_poses
 
 pytestmark = [pytest.mark.safety, pytest.mark.slow]
 
+#: Alice and Belle.
+CONFIGS = tuple(robot_config_from_serial(serial, DATA) for serial in ("0804", "0805"))
 #: A wall across the floor at x = 1 m.
 WALL = Body("obstacles/wall", box_geometry((0.2, 4.0, 1.0)), Pose((1.0, 0.0, 0.5)), label="wall")
 
@@ -30,9 +32,10 @@ def snapshot(config, x: float, unmeasured: frozenset = frozenset()) -> Scene:
         bodies, robots, lambda robot, link: link_pose(robot.model.urdf, robot.base, robot.joints, link)))
 
 
-def found(checker: ClearanceChecker, scene: Scene, own: str, assumable: frozenset = frozenset()) -> list:
-    """Check `own` in `scene`, these joints allowed to be unknown, and wait for the answer."""
-    assert checker.check(scene, [("drive", own, STOP_DISTANCE, assumable)])
+def found(checker: ClearanceChecker, scene: Scene, own: str, assumable: frozenset = frozenset(),
+          allowed: frozenset = frozenset()) -> list:
+    """Check `own` in `scene`, these joints and other robots allowed to be unknown, and wait for the answer."""
+    assert checker.check(scene, [("drive", own, STOP_DISTANCE, assumable, allowed)])
     for _ in range(600):
         answer = checker.finished()
         if answer is not None:
@@ -56,8 +59,8 @@ def test_a_robot_at_the_wall_is_too_close_and_one_in_the_open_is_not():
         assert contact.pair[0].startswith(f"{own}/") and contact.pair[1] == WALL.id
         assert contact.depth < STOP_DISTANCE and contact.point_b[0] == pytest.approx(0.9, abs=1e-3)
         assert hit.concave == frozenset() and hit.message.startswith("clearance: ")
-        assert checker.check(snapshot(config, -2.0), [("drive", own, STOP_DISTANCE, frozenset())])
-        assert not checker.check(snapshot(config, -2.0), [("drive", own, STOP_DISTANCE, frozenset())])
+        assert checker.check(snapshot(config, -2.0), [("drive", own, STOP_DISTANCE, frozenset(), frozenset())])
+        assert not checker.check(snapshot(config, -2.0), [("drive", own, STOP_DISTANCE, frozenset(), frozenset())])
     finally:
         checker.close()
 
@@ -80,5 +83,27 @@ def test_an_unknown_arm_trips_a_strict_clearance_and_counts_as_stowed_in_a_lenie
         (_key, why, _hit), = found(checker, snapshot(config, -2.0, unknown), own,
                                    assumable_joints(config.model.movable_joints, ["left_ur_arm"]))
         assert why.startswith("cannot be checked")
+    finally:
+        checker.close()
+
+
+def test_another_robot_that_lost_mocap_trips_unless_allowed_then_stands_where_last_seen():
+    """Belle's base is not tracked: not allowed, Alice cannot be checked; allowed, Belle stands where last seen."""
+    alice, belle = CONFIGS
+    own, other = robot_id(alice.serial), robot_id(belle.serial)
+
+    def scene(x: float) -> Scene:
+        robots = {own: RobotObject(own, alice.model, Pose((x, -3.0, 0.0)), {}),
+                  other: RobotObject(other, belle.model, Pose((0.0, -3.0, 0.0)), {}, base_tracked=False,
+                                     base_time=1.0)}
+        return Scene(robots=robots, world_poses={})
+
+    checker = ClearanceChecker()
+    try:
+        (_key, why, hit), = found(checker, scene(-3.0), own)
+        assert why == f"cannot be checked: {other} is not measured (its base is not tracked)" and hit is None
+        assert found(checker, scene(-3.0), own, allowed=frozenset({other})) == []
+        (_key, why, hit), = found(checker, scene(-0.8), own, allowed=frozenset({other}))
+        assert why == f"came within 10 cm of {other}" and hit is not None
     finally:
         checker.close()

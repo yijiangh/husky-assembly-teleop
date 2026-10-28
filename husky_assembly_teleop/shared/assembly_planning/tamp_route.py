@@ -35,7 +35,7 @@ from .joints import arm_joint_names, joint_limits, unwrap_to_nearest
 from .movement import GoalSource, MovementSpec, Routine, classify
 from .route_result import GoalCheck, RouteResult, aims_at_line, line_goal, pose_error
 from .route_search import ATTEMPTS, Refused, RouteSearch, pairs_text
-from .scene_for import RobotBelief, scene_for
+from .scene_for import scene_for
 from .single_arm import plan_linear
 
 if TYPE_CHECKING:
@@ -59,7 +59,7 @@ IK_GOALS = (Routine.TRANSFER_FREE, Routine.TRANSFER_HELD, Routine.SUPPORT_APPROA
 
 def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
                   robots: tuple[RobotConfig, ...], *, transfer_as_free: bool = False,
-                  beliefs: Mapping[str, RobotBelief] | None = None, ignore_built: bool = False,
+                  ignore_built: bool = False,
                   obstacles_collide: bool = True, goal_joints: Mapping[str, float] | None = None,
                   abort: threading.Event | None = None, log: Callable[[str], None] = print) -> RouteResult:
     """Plan one movement from where the snapshot has its robot, by its routine (`classify`).
@@ -71,7 +71,6 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
         snapshot: The world to plan in; the acting robot's joints in it are the start.
         robots: The configured robots.
         transfer_as_free: The transfer workaround: the coupled free movement runs without the bar.
-        beliefs: Live robot id -> where an unmeasured robot is believed to be (`scene_for`).
         ignore_built: Plan as if the built bars were not there (`scene_for`).
         obstacles_collide: Whether the process's obstacles from Rhino count (`scene_for`).
         goal_joints: Arm joints to plan to instead of solving the goal: a transfer, a travel to load, an approach.
@@ -90,7 +89,7 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
         return _not_planned(spec, "no arm moves", started)
     if spec.routine is Routine.FREE_TO_LOAD and goal_joints is None and spec.goal_joints is None:
         return _not_planned(spec, "needs the transfer start, after M3", started)
-    route = _route(mirror, loaded, step, snapshot, robots, spec, beliefs=beliefs, ignore_built=ignore_built,
+    route = _route(mirror, loaded, step, snapshot, robots, spec, ignore_built=ignore_built,
                    obstacles_collide=obstacles_collide, goal_joints=goal_joints, abort=abort or threading.Event(),
                    log=log)
     try:
@@ -108,7 +107,7 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
 
 def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
                robots: tuple[RobotConfig, ...], *, transfer_as_free: bool = False,
-               beliefs: Mapping[str, RobotBelief] | None = None, ignore_built: bool = False,
+               ignore_built: bool = False,
                obstacles_collide: bool = True, log: Callable[[str], None] = print) -> GoalCheck:
     """Solve a movement's goal by IK at the live base, as `plan_movement` would before searching, and plan nothing.
 
@@ -122,7 +121,6 @@ def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snaps
         snapshot: The world; the acting robot's base and joints in it are the base and the start.
         robots: The configured robots.
         transfer_as_free: The transfer workaround (`classify`).
-        beliefs: Live robot id -> where an unmeasured robot is believed to be (`scene_for`).
         ignore_built: Solve as if the built bars were not there (`scene_for`).
         obstacles_collide: Whether the process's obstacles from Rhino count (`scene_for`).
         log: Gets the IK fallback line.
@@ -136,7 +134,7 @@ def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snaps
         spec = classify(loaded.process, step.action, step.movement, transfer_as_free)
         if spec.routine not in IK_GOALS:
             return GoalCheck(movement, spec.routine, False, "goal not solved by IK", seconds=time.monotonic() - started)
-        route = _route(mirror, loaded, step, snapshot, robots, spec, beliefs=beliefs, ignore_built=ignore_built,
+        route = _route(mirror, loaded, step, snapshot, robots, spec, ignore_built=ignore_built,
                        obstacles_collide=obstacles_collide, goal_joints=None, abort=threading.Event(), log=log)
         route.prepare()
         goal, reason = route.ik_goal(unwrap=spec.routine is not Routine.SUPPORT_APPROACH), ""
@@ -158,15 +156,14 @@ def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snaps
 
 
 def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
-           robots: tuple[RobotConfig, ...], spec: MovementSpec, *, beliefs: Mapping[str, RobotBelief] | None,
-           ignore_built: bool, obstacles_collide: bool, goal_joints: Mapping[str, float] | None,
-           abort: threading.Event, log: Callable[[str], None]) -> _Route:
+           robots: tuple[RobotConfig, ...], spec: MovementSpec, *, ignore_built: bool, obstacles_collide: bool,
+           goal_joints: Mapping[str, float] | None, abort: threading.Event, log: Callable[[str], None]) -> _Route:
     """A movement's route: its planning scene, and the scene its searches run in (without the bar for the workaround).
 
     Raises:
         ValueError: If the mirror plans for another robot than the movement's, or `scene_for` refuses the step.
     """
-    options = {"beliefs": beliefs, "ignore_built": ignore_built, "obstacles_collide": obstacles_collide,
+    options = {"ignore_built": ignore_built, "obstacles_collide": obstacles_collide,
                "end_contacts": True}
     planning = scene_for(loaded, step, snapshot, robots, **options)
     if mirror.robot_id != planning.acting:

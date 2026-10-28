@@ -41,7 +41,7 @@ def run_plan(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Even
     try:
         serial = _acting(request, abort)
         return plan_movement(pool.mirror(serial), request.loaded, request.step, request.snapshot, request.robots,
-                             transfer_as_free=request.transfer_as_free, beliefs=request.beliefs,
+                             transfer_as_free=request.transfer_as_free,
                              ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide,
                              goal_joints=request.goal_joints, abort=abort, log=log)
     except Exception as error:
@@ -64,7 +64,7 @@ def run_ik(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Event,
     try:
         serial = _acting(request, abort)
         return check_goal(pool.mirror(serial), request.loaded, request.step, request.snapshot, request.robots,
-                          transfer_as_free=request.transfer_as_free, beliefs=request.beliefs,
+                          transfer_as_free=request.transfer_as_free,
                           ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide, log=log)
     except Exception as error:
         return GoalCheck(request.step.movement.id, None, False, _reason(error), seconds=time.monotonic() - started)
@@ -85,7 +85,7 @@ def run_collisions(pool: MirrorPool, request: MotionPlanRequest, abort: threadin
     started = time.monotonic()
     try:
         mirror = pool.mirror(_acting(request, abort))
-        planning = scene_for(request.loaded, request.step, request.snapshot, request.robots, beliefs=request.beliefs,
+        planning = scene_for(request.loaded, request.step, request.snapshot, request.robots,
                              ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide,
                              end_contacts=True)
         mirror.sync(planning.scene)

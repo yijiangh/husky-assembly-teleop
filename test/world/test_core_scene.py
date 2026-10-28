@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.robot import RobotObject, robot_model
 from scaffolding_assembly_core.scene import Attachment, Body, Scene, world_poses
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.world.kinematics import Kinematics
 from husky_assembly_teleop.world.scene import take_snapshot, tracked_body
@@ -122,7 +124,7 @@ def test_monitor_snapshot_has_robot_objects_and_tracked_bodies(cindy):
     A body held by a tracked object follows it.
     """
     kinematics = Kinematics((cindy,), log_warn=print)
-    base = SimpleNamespace(state=SimpleNamespace(tracked=False, last_fix_time=None))
+    base = SimpleNamespace(mocap_id=None, state=SimpleNamespace(tracked=False, last_fix_time=None))
     robot = SimpleNamespace(config=cindy, base=base, arms={})
     probe = SimpleNamespace(position=np.array([1.0, 2.0, 3.0]), orientation=np.array([0.0, 0.0, 0.0, 1.0]),
                             tracked=True, last_fix_time=None)
@@ -143,3 +145,32 @@ def test_monitor_snapshot_has_robot_objects_and_tracked_bodies(cindy):
     # * The copy is not the live scene: editing one never reaches the other.
     snapshot.bodies["t/tip"].enabled = False
     assert scene.bodies["t/tip"].enabled and snapshot.bodies["t/tip"] is not scene.bodies["t/tip"]
+
+
+def test_lost_mocap_and_stale_joint_states_are_unknown(cindy):
+    """A base whose mocap pose is lost is untracked, and an arm whose joint states went stale is unmeasured.
+
+    Both keep their last value; the other arm, never measured, stays unmeasured too.
+    """
+    kinematics = Kinematics((cindy,), log_warn=print)
+    left = {f"left_ur_arm_{name}": 0.5 for name in UR_JOINT_NAMES}
+    kinematics.update(SimpleNamespace(robots={cindy.serial: SimpleNamespace(state=SimpleNamespace(
+        base=SimpleNamespace(tracked=True, position=(1.0, 2.0, 0.0), orientation=(0.0, 0.0, 0.0, 1.0)),
+        joint_positions=left))}))
+    # * A valid sample at t = 10 s, captured then; the left arm reported then too.
+    state = SimpleNamespace(tracked=True, tracking_valid=True, last_update_time=10.0, last_fix_time=10.0,
+                            marker_errors=deque([(10.0, 0.001)]))
+    arms = {"left_ur_arm": SimpleNamespace(state=SimpleNamespace(last_update_time=10.0)),
+            "right_ur_arm": SimpleNamespace(state=SimpleNamespace(last_update_time=None))}
+    world = SimpleNamespace(robots={cindy.serial: SimpleNamespace(
+        config=cindy, base=SimpleNamespace(mocap_id=3, state=state), arms=arms)}, tracked_objects={})
+    right = frozenset(name for name in cindy.model.movable_joints if name.startswith("right_ur_arm_"))
+
+    fresh = take_snapshot(Scene(), world, kinematics, tick=1, time=10.1).robots["robots/a200-0806"]
+    assert fresh.base_tracked and fresh.unmeasured == right
+
+    # * The relay goes silent: `tracked` stays True, but the pose is lost and the joint states are old.
+    old = take_snapshot(Scene(), world, kinematics, tick=2, time=15.0).robots["robots/a200-0806"]
+    assert not old.base_tracked and old.base.position == pytest.approx((1.0, 2.0, 0.0)) and old.base_time == 10.0
+    assert old.unmeasured == frozenset(cindy.model.movable_joints)
+    assert all(old.joints[name] == 0.5 for name in left), "the last value is kept"

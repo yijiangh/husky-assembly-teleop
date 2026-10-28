@@ -30,7 +30,10 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`. Its tests go 
 * Clearances (optional, `ctx.clearance`): while a task drives a robot, the robot is soft stopped and the task
   cancelled once it comes within a margin of anything in the scene. Plugins only provide bodies; the runtime checks.
   Strict by default: unknown arm joints trip it too. Manual moves pass `unknown_arms=ALL_ARMS` (or arm names): those
-  arms count as stowed. The base pose must always be known.
+  arms count where last seen, or stowed. The base pose must always be known. Other robots not measured are checked
+  as their stand-ins.
+* Stand-ins (`world/stand_ins.py`): every collision check treats another robot that is not measured the same way:
+  where it was last seen, else at its default pose with its arms stowed. ! Show its warnings to the operator.
   The last trips, with what came too close, are in `ctx.clearance_trips`; the `collisions` plugin draws them.
 
 * Panels never jump (AGENTS.md, "Panels: nothing jumps"): chips that can appear go on a line that is always there

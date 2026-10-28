@@ -16,6 +16,7 @@ from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan
 from husky_assembly_teleop.shared.planner.planner_search import Search
 from husky_assembly_teleop.shared.planner.planner_service import PlannerService
+from scaffolding_assembly_core.scene import Scene
 
 SERIAL = "alice"
 GOAL = (1.0, 2.0, 0.5)
@@ -114,7 +115,8 @@ def test_the_panel_plans_and_commits_through_the_api():
     planner, ctx = Planner(), SimpleNamespace(submit=lambda _label, run: run(), now=lambda: 0.0,
                                               spawn=lambda _label, work: asyncio.get_running_loop().create_task(work),
                                               log_info=lambda _text: None, lease_robots=lease_test_robots,
-                                              world=SimpleNamespace(robots={}))
+                                              world=SimpleNamespace(robots={}),
+                                              scene=SimpleNamespace(snapshot=Scene()))
     planner.setup(ctx)
 
     async def scenario():

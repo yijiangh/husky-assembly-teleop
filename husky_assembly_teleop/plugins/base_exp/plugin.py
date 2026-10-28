@@ -55,6 +55,8 @@ from ...ui.trace_plot import TracePlot
 from ...world.clearance import STOP_DISTANCE, Clearance, ClearanceRefused
 from ...world.checks import STALE_AFTER
 from ...world.collision_hit import CollisionHit
+from ...world.stand_ins import unknown_robots
+from scaffolding_assembly_core.ids import robot_id
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, PathCollisionCheck, Sampler, StandardSet
 from .plan import Plan, plan_from
@@ -241,6 +243,11 @@ class BaseExperimentPlugin(HuskyPlugin):
         """Set Auto runs to one round of the chosen automation."""
         self._auto_runs.value = AUTO_RUNS[str(paths)]
 
+    @staticmethod
+    def _others(ctx: PluginContext, plan: Plan) -> frozenset[str]:
+        """The other robots not measured as a run starts: its clearance may take them as stand-ins, no robot else."""
+        return unknown_robots(ctx.scene.snapshot, {robot_id(plan.serial)})
+
     def _tracking_signals(self) -> list[Signal]:
         """The monitor's tracking errors of the current run, and their context; unknown outside a run.
 
@@ -393,7 +400,7 @@ class BaseExperimentPlugin(HuskyPlugin):
                             signals.follower_position_error(robot), signals.follower_yaw_error(robot),
                             signals.follower_command(robot), signals.follower_progress(robot),
                             *_message_signals(robot, follower=True)) as rec, \
-                    ctx.clearance([plan.serial], STOP_DISTANCE) as clearance:
+                    ctx.clearance([plan.serial], STOP_DISTANCE, unknown_robots=self._others(ctx, plan)) as clearance:
                 self._record = rec
                 path_id = experiment["path_id"] = base.send_path(*plan.poses.T, plan.t, *plan.speed_caps)
                 sent_at = self._sent_at = ctx.now()
@@ -467,7 +474,7 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._sent_at = ctx.now()
             with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(), signals.follower_progress(robot),
                             *_message_signals(robot, follower=False)) as rec, \
-                    ctx.clearance([plan.serial], STOP_DISTANCE) as clearance:
+                    ctx.clearance([plan.serial], STOP_DISTANCE, unknown_robots=self._others(ctx, plan)) as clearance:
                 self._record = rec
                 self._phase = FOLLOWING
                 step_at = ctx.now() + TWIST_LEAD
@@ -652,7 +659,8 @@ class BaseExperimentPlugin(HuskyPlugin):
                                  chooser: Sampler | StandardSet | TwistGrid) -> tuple[Plan | None, int]:
         """The chooser's first path that, placed where the robot stands, keeps PATH_CLEARANCE from everything."""
         anchor = self._robot_pose(ctx, serial)
-        if anchor is None or not ctx.world.robots[serial].base.state.tracked:
+        base = ctx.world.robots[serial].base
+        if anchor is None or pose_lost(base.mocap_id, base.state, ctx.now()):
             return None, 0
         snapshot = ctx.scene.snapshot
         tries = 0
@@ -786,7 +794,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         """Chips on one line: robot, mocap, follower, velocity controller, run."""
         base = ctx.world.robots[self.serial].base
         chips = chip(escape(self.serial), SECTION_CTRL)
-        chips += chip("tracked", OK) if base.state.tracked else chip("not tracked", FAIL)
+        lost = pose_lost(base.mocap_id, base.state, ctx.now())
+        chips += chip("not tracked", FAIL, lost) if lost else chip("tracked", OK)
         follower = self._follower(ctx)
         if follower is None:
             chips += chip("no follower", FAIL, "start crl_husky pure_pursuit (or pure_pursuit_sim.launch.py)")

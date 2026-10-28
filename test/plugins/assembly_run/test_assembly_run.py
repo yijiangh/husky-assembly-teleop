@@ -286,7 +286,7 @@ def test_new_run_after_confirm_keeps_the_old_one(tmp_path):
 
 
 def test_a_restart_continues_the_run(tmp_path):
-    """A new plugin on the same process continues its run: statuses, beliefs and the current action kept."""
+    """A new plugin on the same process continues its run: statuses, robot records and the current action kept."""
     lab = Lab(tmp_path)
 
     async def scenario():
@@ -300,7 +300,7 @@ def test_a_restart_continues_the_run(tmp_path):
     plugin, again, process = asyncio.run(scenario())
     assert again.view.folder == plugin.view.folder and again.view.statuses["B1_J_joint"] == DONE
     assert again.view.current == plugin.view.current and process.selected == [first_index(process, "B1_H_hold")]
-    assert set(again.view.beliefs) == {CINDY}
+    assert set(again._progress().robots) == {CINDY}
     assert [event["event"] for event in read_events(again.view.folder)][-1] == "session"
 
 

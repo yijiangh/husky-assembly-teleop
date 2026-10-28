@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import math
 from collections import deque
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from planning_fixtures import ALICE, BELLE, CINDY, robot_config
 from plugin_fakes import ArmDriver, FakeContext, fake_arm, fake_node, fake_robot
 from robot_fakes import lease_test_robots, wait_ticks_until
 
@@ -21,7 +23,11 @@ from husky_assembly_teleop.shared.arm_planner_contract import ArmPlanRequest
 from husky_assembly_teleop.shared.execution.send import ARRIVED_TOLERANCE
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
+from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE
+from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Scene
 
 SERIAL, ARM = "0806", "left_ur_arm"
 NAMES = arm_joint_names(ARM)
@@ -72,6 +78,11 @@ class FakeCtx:
 
     lease_robots = staticmethod(lease_test_robots)
     wait_until = staticmethod(wait_ticks_until)
+
+    @contextmanager
+    def clearance(self, _serials, _margin, unknown_arms=(), unknown_robots=()):
+        """Keep no clearance: nothing here could trip one."""
+        yield
 
     def log_info(self, _text):
         """Ignore the line."""
@@ -218,11 +229,13 @@ def _held(arm) -> bool:
 
 @pytest.mark.safety
 def test_execute_sends_the_path_and_waits_until_the_arm_is_at_its_end():
-    """The plan's path goes to the request's arm, the commit is answered once sent, and it ends with the arm there."""
+    """The plan's path goes to the arm under a 1 cm clearance, answered once sent; it ends with the arm there."""
     (ctx, arm), answers = _driven(), []
     ended = _commit(ctx, answers)
     assert answers == [(True, f"sent to {SERIAL} {ARM}")] and len(arm._trajectory.messages) == 1
     assert np.allclose(ended, GOAL, atol=1e-3)
+    clearance, = ctx.clearances
+    assert (clearance.serials, clearance.margin) == ((SERIAL,), ARM_STOP_DISTANCE) and ARM_STOP_DISTANCE == 0.01
 
 
 @pytest.mark.safety
@@ -354,13 +367,20 @@ def test_a_plan_refused_for_a_collision_shows_its_hit_until_the_next_plan(monkey
     assert found == {}
 
 
+def _with_others(ctx: FakeCtx, *others: RobotObject) -> None:
+    """Give `ctx` a real snapshot: the planned robot (not configured here, so a stand-in model) and `others`."""
+    acting = RobotObject(robot_id(SERIAL), robot_config(CINDY).model, Pose(), {})
+    ctx.scene.snapshot = Scene(robots={robot.id: robot for robot in (acting, *others)})
+
+
 @pytest.mark.safety
-def test_a_plan_warns_about_other_robots_it_could_not_check(found_path):
-    """Another robot present with an untracked base is left out of the check: the plan says so, as a warning."""
+def test_a_plan_warns_about_other_robots_that_stand_in(found_path):
+    """Belle lost mocap: she is checked where last seen, and the plan says so, as a warning. An absent robot is not."""
     ctx = FakeCtx()
-    blind = SimpleNamespace(enabled=True, acting_problems=lambda: ["its base is not tracked"])
-    absent = SimpleNamespace(enabled=False, acting_problems=lambda: ["it is not in the scene"])
-    ctx.scene.snapshot.robots.update({robot_id("a200-0805"): blind, robot_id("a200-0804"): absent})
+    belle, alice = robot_config(BELLE), robot_config(ALICE)
+    _with_others(ctx, RobotObject(robot_id(belle.serial), belle.model, Pose((3.0, 0.0, 0.0)), {}, base_tracked=False,
+                                  base_time=1.0, joints_time=1.0),
+                 RobotObject(robot_id(alice.serial), alice.model, Pose(), {}, enabled=False))
     planner = make_planner(ctx)
 
     async def scenario():
@@ -368,18 +388,19 @@ def test_a_plan_warns_about_other_robots_it_could_not_check(found_path):
 
     plan = run(planner, ctx, scenario)
     assert plan.state == "ready" and plan.warning
-    assert "not checked against a200-0805: its base is not tracked" in plan.message
+    assert "robots/a200-0805 is not measured (its base is not tracked): checked where last seen" in plan.message
     assert "a200-0804" not in plan.message
 
 
-def test_a_plan_with_every_robot_checked_has_no_such_warning(found_path):
+def test_a_plan_with_every_robot_measured_has_no_such_warning(found_path):
     """Robots present and measured, or absent, need no warning."""
     ctx = FakeCtx()
-    ctx.scene.snapshot.robots[robot_id("a200-0805")] = SimpleNamespace(enabled=True, acting_problems=lambda: [])
+    belle = robot_config(BELLE)
+    _with_others(ctx, RobotObject(robot_id(belle.serial), belle.model, Pose((3.0, 0.0, 0.0)), {}))
     planner = make_planner(ctx)
 
     async def scenario():
         return await planner.request_plan(REQUEST)
 
     plan = run(planner, ctx, scenario)
-    assert plan.state == "ready" and not plan.warning and "not checked" not in plan.message
+    assert plan.state == "ready" and not plan.warning and "not measured" not in plan.message

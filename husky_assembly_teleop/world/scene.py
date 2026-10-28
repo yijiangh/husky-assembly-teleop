@@ -8,6 +8,9 @@ The copy is taken before plugins run, so it holds one ROS pump's measurements an
 the previous tick. Each measured robot is a `RobotObject` "robots/<serial>"; each tracked object a `Body`
 "tracked/<name>", disabled until its first mocap fix.
 
+- Missing measurements are unknown: a base is untracked once its mocap pose is lost (`pose_lost`), an arm's joints
+  are unmeasured once its joint states are older than JOINT_STATE_MAX_AGE. They keep their last value.
+
 - ! Main thread only: the live scene, its `Body` objects and `take_snapshot`. A copy can be read from any thread;
   treat it as read-only.
 - ! Never hand the live scene to a plugin or a thread: plugins get a `PluginScene`, threads its `snapshot`.
@@ -21,6 +24,9 @@ from scaffolding_assembly_core.geometry import Geometry, Pose
 from scaffolding_assembly_core.ids import ROBOTS, TRACKED, robot_id, tracked_id
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Attachment, Body, Scene, world_poses
+
+from ..robot_interface.arm import JOINT_STATE_MAX_AGE
+from ..robot_interface.mocap_state import pose_lost
 
 if TYPE_CHECKING:
     from .kinematics import Kinematics
@@ -61,11 +67,15 @@ def take_snapshot(scene: Scene, world: WorldState, kinematics: Kinematics, tick:
     for serial, robot in world.robots.items():
         model = robot.config.model
         arm_times = [arm.state.last_update_time for arm in robot.arms.values()]
+        stale = {name for name, arm in robot.arms.items()
+                 if arm.state.last_update_time is not None and time - arm.state.last_update_time > JOINT_STATE_MAX_AGE}
         # ! Only movable joints count as unmeasured: wheels and gripper fingers are never measured.
         robots[robot_id(serial)] = RobotObject(
             id=robot_id(serial), model=model, base=kinematics.base_pose(serial),
-            joints=dict(kinematics.joints(serial)), base_tracked=robot.base.state.tracked,
-            unmeasured=kinematics.unmeasured(serial).intersection(model.movable_joints),
+            joints=dict(kinematics.joints(serial)),
+            base_tracked=not pose_lost(robot.base.mocap_id, robot.base.state, time),
+            unmeasured=frozenset(name for name in model.movable_joints if name in kinematics.unmeasured(serial)
+                                 or any(name.startswith(f"{arm}_") for arm in stale)),
             base_time=robot.base.state.last_fix_time,
             joints_time=None if None in arm_times else min(arm_times, default=None))
     scene.robots = robots

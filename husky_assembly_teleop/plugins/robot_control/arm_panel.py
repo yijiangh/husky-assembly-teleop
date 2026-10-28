@@ -57,8 +57,9 @@ class ComplianceInputs:
 # --- --- --- --- --- BUILDERS --- --- --- --- ---
 
 def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold: Callable[[int, float], None],
-                     hold: Callable[[], None]) -> viser.GuiSliderHandle:
-    """Add the inputs for the joint trajectory controller: a speed slider, a - and + hold button per joint, and Hold.
+                     hold: Callable[[], None], stop_distance: float
+                     ) -> tuple[viser.GuiSliderHandle, viser.GuiCheckboxHandle]:
+    """Add the inputs for the joint trajectory controller: speed, Clearance, a - and + hold button per joint, Hold.
 
     Args:
         ctx: The plugin's context.
@@ -66,14 +67,21 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
         label: "<serial> <arm name>", for intent names.
         on_hold: Called every report of a held button, with the joint's index and the direction (-1 or +1).
         hold: Holds the arm where it is.
+        stop_distance: The clearance a jog keeps, metres, for the hint.
 
     Returns:
-        viser.GuiSliderHandle: The speed slider, a fraction of JOG_MAX_SPEED.
+        tuple[viser.GuiSliderHandle, viser.GuiCheckboxHandle]: The speed slider, a fraction of JOG_MAX_SPEED, and
+            the Clearance box.
     """
-    gui.add_html(warning("no collision checking · moves while held"))
+    gui.add_html(warning("moves while held · never checked against its own robot"))
     gui.add_html(note("to move to a pose: plan it in Plan › Arm"))
     speed = gui.add_slider("Speed", min=0.05, max=1.0, step=0.05, initial_value=0.5,
                            hint=f"Fraction of the full speed, {np.degrees(JOG_MAX_SPEED):.0f} °/s.")
+    clearance = gui.add_checkbox(
+        "Clearance", initial_value=True,
+        hint=f"While jogging, soft stop the robot once it comes within {stop_distance * 100:.0f} cm of anything in "
+             f"the scene; the base pose and this arm's joints must be known. Untick to jog without it, e.g. without "
+             f"mocap or out of a tight spot.")
     gui.add_html(JOG_STYLE)
     with gui.add_folder("Jog"):
         for joint, name in enumerate(JOINT_SLIDER_NAMES):
@@ -86,7 +94,7 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
     move_group = gui.add_button_group("Move", ["Hold"],
                                       hint="Brake to a standstill where the arm is, also during a planned path.")
     move_group.on_click(ctx.defer(f"hold {label}", hold))
-    return speed
+    return speed, clearance
 
 
 def build_compliance_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,

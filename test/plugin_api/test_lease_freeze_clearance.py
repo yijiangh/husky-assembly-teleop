@@ -39,7 +39,8 @@ def _context(unmeasured: frozenset = frozenset()) -> tuple[PluginContext, WorldS
     monitor = SimpleNamespace(world=world, now=lambda: NOW, log_warn=lambda text, _source: log.warning(text),
                               log_info=lambda text, _source: log.info(text),
                               log_error=lambda text, _source: log.error(text),
-                              timer=SimpleNamespace(timed_task=lambda _name, work: work), clearance_trips=())
+                              timer=SimpleNamespace(timed_task=lambda _name, work: work), clearance_trips=(),
+                              config=SimpleNamespace(robots=()))
     monitor.clearance_tripped = lambda trip: setattr(monitor, "clearance_trips", (*monitor.clearance_trips, trip))
     robot = RobotObject(robot_id("0805"), SimpleNamespace(movable_joints=ARM_JOINTS), Pose(), {},
                         unmeasured=unmeasured)
@@ -184,3 +185,28 @@ def test_a_clearance_refuses_to_start_on_a_robot_it_cannot_check():
     strict, lenient = asyncio.run(scenario())
     assert isinstance(strict, ClearanceRefused) and "joints not known: ur_arm_elbow_joint" in str(strict)
     assert lenient is None and ran == [{"unknown_arms": ALL_ARMS}]
+
+
+def test_another_robot_not_measured_refuses_a_clearance_unless_allowed():
+    """Robot 0804 was never seen: refused; allowed, the clearance starts, logs that it stands at its default pose."""
+    ctx, _world, log = _context()
+    other = RobotObject(robot_id("0804"), SimpleNamespace(movable_joints=ARM_JOINTS), Pose(), {}, base_tracked=False)
+    ctx.scene.snapshot.robots[other.id] = other
+    kept = []
+
+    async def drive(**allowed) -> None:
+        with ctx.clearance(["0805"], **allowed) as clearance:
+            kept.extend(clearance.stand_ins)
+
+    async def scenario():
+        refused = await asyncio.gather(ctx.spawn("strict", drive()), return_exceptions=True)
+        await ctx.spawn("allowed", drive(unknown_robots={other.id}))
+        return refused
+
+    (refused,) = asyncio.run(scenario())
+    assert isinstance(refused, ClearanceRefused)
+    assert str(refused) == ("robot 0805 cannot be checked against the others: robots/0804 is not measured "
+                            "(its base is not tracked)")
+    line, = kept
+    assert line == "robots/0804 is not measured (its base is not tracked): checked at its default pose or stowed"
+    assert f"clearance on 0805: {line}" in log.text("warning")

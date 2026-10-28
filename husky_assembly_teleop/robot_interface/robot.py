@@ -158,7 +158,7 @@ class HuskyRobotInterface:
     def to_world(self, position, orientation) -> tuple[np.ndarray, np.ndarray] | None:
         """Convert a husky-frame pose to the world; None before the first mocap fix.
 
-        ! The mocap pose may be stale: check `state.base.tracked` before acting.
+        ! The mocap pose may be stale: check `pose_lost` before acting; `tracked` stays True if the relay goes silent.
         """
         husky = self.husky_in_world()
         if husky is None:

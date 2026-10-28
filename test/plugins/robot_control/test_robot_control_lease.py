@@ -104,7 +104,7 @@ class Lab:
     def free_drive_arm(self) -> None:
         """robot_control drives only Alice's arm, free drive's Keep on unticked."""
         self.plugin._arms = [SimpleNamespace(serial=SERIAL, arm=self.arm, free_drive_keep=SimpleNamespace(value=False),
-                                             jog_speed=SimpleNamespace(value=0.5))]
+                                             jog_speed=SimpleNamespace(value=0.5), jog_clearance=None)]
 
     def commits(self) -> list[tuple[bool, str]]:
         """Commit a ready plan for Alice in each planner, through its API (`commit(plan_id)`), as a panel would."""

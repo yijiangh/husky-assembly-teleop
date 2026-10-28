@@ -50,8 +50,15 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **tracked object**: a mocap rigid body that is not a robot, scene id `tracked/<name>`, never put in the scene by a
   plugin (`ctx.track_object`). ! Its `tracked` flag stays true when the relay goes silent: check `pose_lost`.
 - **fix / pose_lost / stale reading**: a fix is one valid mocap sample; `pose_lost` means none for 0.3 s, so nothing
-  may drive from it; a reading is stale past its age limit (`STALE_AFTER`, `JOINT_STATE_MAX_AGE`).
-  `robot_interface/mocap_state.py`, `world/checks.py`.
+  may drive from it; a reading is stale past its age limit (`STALE_AFTER`, `JOINT_STATE_MAX_AGE`). In the snapshot a
+  lost base is untracked and stale joints are unmeasured: missing means unknown. `robot_interface/mocap_state.py`,
+  `world/checks.py`, `world/scene.py`.
+- **stand-in**: how a collision check takes another robot that is not measured: where it was last seen, else at its
+  default pose with its arms stowed (the values the snapshot keeps); the process planner lays the step's design over
+  it first. Each one is a warning for the operator: the 3D view draws an assumed base or arm see-through, and each
+  planner shows an amber count chip, named on hover, and asks for a second press of Commit within 2 s, which lets
+  those robots be unknown during the motion (`unknown_robots` of a clearance). `world/stand_ins.py`,
+  `shared/assembly_planning/scene_for.py`.
 - **ghost**: a see-through robot copy for a target, a plan or a preview, shown only while its panel was the last one
   used. `ui/ghost.py`.
 
@@ -73,10 +80,12 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   `world/freeze.py`. Not the panels' **Live/Paused** button, and not a frozen dataclass.
 - **clearance**: the distance kept from everything else. `ctx.clearance` is the runtime's guard: while a task drives a
   robot, it soft stops that robot and cancels the task once the robot comes within the margin (0.1 m by default) of
-  anything in the snapshot; unknown arm joints trip it unless `unknown_arms` says to assume them stowed. A **trip**
-  is one firing (`ctx.clearance_trips`). robot_control's Clearance box turns it on for D-pad driving.
-  `world/clearance.py`. The base planner's **path clearance** is a measured number instead: a planned path's nearest
-  distance to anything, recorded in `experiment.json`.
+  anything in the snapshot. Another robot not measured trips it unless it is in `unknown_robots` (unknown when the
+  motion was committed or started; then a stand-in); unknown arm joints of its own robot trip it unless
+  `unknown_arms` lets them count where last seen, or stowed. A **trip** is one firing (`ctx.clearance_trips`).
+  robot_control's Clearance boxes turn it on for D-pad driving and, at 1 cm (`ARM_STOP_DISTANCE`), for arm joint
+  jogs; the arm planner's commits always keep 1 cm. `world/clearance.py`. The base planner's **path clearance** is a
+  measured number instead: a planned path's nearest distance to anything, recorded in `experiment.json`.
 - **hold**: the arm command "stop where you are and stay" (`arm.hold()`, the Hold button), which needs no lease and is
   refused only without a fresh measurement. Also: a D-pad **hold button** (counts as released 0.25 s after its last
   report), a support robot's **bar hold** (`bar_holding`), and a guided step's precondition that **holds** (below).
@@ -120,7 +129,8 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **lead / portal**: the lead is the straight drive onto the target with no turn on the spot; a portal is a narrow
   place the lattice crosses in one move, lined up `PORTAL_LEAD` before it.
 - **park / stow**: park is the base's parked floor pose (`park_pose`); stow is the arm's rest joints (`stow_joints`);
-  both come from crl-husky's `park.yaml`. Inside a mirror, **parked** means moved far away because absent or unknown.
+  both come from crl-husky's `park.yaml`. Inside a mirror, **parked** means moved far away because absent or
+  unknown (a stand-in).
 
 ## Assembly runs
 
@@ -177,3 +187,16 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **temporary / virtual obstacles**: temporary obstacles are the operator's, kept in a local file until promoted into
   the lab file; virtual obstacles belong to a base planner experiment task and are never saved. Both are drawn purple
   and stop nothing physical. `plugins/obstacles/`, `plugins/base_planner/tasks.py`.
+
+## To clean up
+
+Words that overlap or mean too much; settle each on one name across the runtime, the core and the panels.
+
+- **tracked / measured / known**: `base_tracked` and `unmeasured` (core `RobotObject`) both mean "not known now", one
+  for the base, one per joint; the relay's `tracked` flag only means the last sample was valid and stays true when
+  the relay goes silent (`pose_lost` is the real test). One word, e.g. "known", for all three.
+- **guess / stand-in / default pose**: `with_guesses` fills in the acting robot, `with_stand_ins` the others, from
+  the same values; the default pose is `default_position`, which is the park pose unless configured.
+- **parked**: the park pose (`park.yaml`), a robot a mirror moves far away, and a parked robot in a base planner task.
+- **belief / record**: the assembly run's robot records are still called beliefs inside `shared/runs/runs.py`;
+  planning no longer uses them.

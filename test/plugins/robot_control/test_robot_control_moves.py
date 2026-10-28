@@ -22,8 +22,10 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_LIMITS)
 from husky_assembly_teleop.robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, take_lease
-from husky_assembly_teleop.world.clearance import ALL_ARMS, STOP_DISTANCE, Clearance
+from husky_assembly_teleop.world.clearance import (ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, Clearance,
+                                                   ClearanceRefused)
 from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.scene import Scene
 
 pytestmark = pytest.mark.safety
 
@@ -41,6 +43,7 @@ class Context:
         """Share `arm`'s clock; every robot's lease is free."""
         self.arm, self.follow, self.lines = arm, follow, []
         self.world = SimpleNamespace(robots=FreeRobots())
+        self.scene = SimpleNamespace(snapshot=Scene())
 
     def take_lease(self, serials, label):
         """Lease robots of the fake world, as the monitor does."""
@@ -184,7 +187,8 @@ def test_hold_also_removes_an_applied_force():
 def _jogged_arm(joints=None):
     """A plugin with one arm under the joint controller, at full jog speed, and a context sharing its clock."""
     arm, plugin = fake_arm(joints=joints), RobotControlPlugin()
-    plugin._arms = [SimpleNamespace(serial="0804", arm=arm, jog_speed=SimpleNamespace(value=1.0), free_drive_keep=None)]
+    plugin._arms = [SimpleNamespace(serial="0804", arm=arm, jog_speed=SimpleNamespace(value=1.0), jog_clearance=None,
+                                    free_drive_keep=None)]
     return arm, plugin, Context(arm)
 
 
@@ -229,6 +233,63 @@ def test_a_jog_is_held_when_the_robot_stops_or_the_controller_changes(stop):
         arm.state.controllers.active = None
     _jog_ticks(arm, plugin, ctx, 3, press=(0, 1.0))
     assert len(arm._trajectory.sent) == 2 and "hold sent" in arm._node.log.text("info")
+
+
+class JogContext(Context):
+    """The jog context with clearances kept for the test, or refused with `refuse` as the reason."""
+
+    wait_until = staticmethod(wait_ticks_until)
+
+    def __init__(self, arm, refuse: str = ""):
+        """As `Context`; no clearance kept yet."""
+        super().__init__(arm)
+        self.clearances, self.refuse = [], refuse
+
+    @contextmanager
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
+        """Keep the clearance, or refuse it."""
+        if self.refuse:
+            raise ClearanceRefused(self.refuse)
+        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms))
+        yield self.clearances[-1]
+
+
+def test_a_jog_waits_for_its_clearance_which_keeps_one_centimetre():
+    """With Clearance ticked, the jog goes out only once a 1 cm clearance checks the robot; unticking ends it."""
+    arm, plugin, _ctx = _jogged_arm()
+    plugin._arms[0].jog_clearance = SimpleNamespace(value=True)
+    ctx = JogContext(arm)
+
+    async def scenario() -> None:
+        _jog_ticks(arm, plugin, ctx, 1, press=(0, 1.0))
+        assert not arm._trajectory.sent, "the clearance comes first"
+        await asyncio.sleep(0)
+        _jog_ticks(arm, plugin, ctx, 1, press=(0, 1.0))
+        assert len(arm._trajectory.sent) == 1
+        clearance, = ctx.clearances
+        assert (clearance.serials, clearance.margin, clearance.unknown_arms) == (("0804",), ARM_STOP_DISTANCE, [])
+        plugin._arms[0].jog_clearance.value = False
+        await plugin._jog_guards[("0804", "ur_arm")]
+
+    asyncio.run(scenario())
+    assert ARM_STOP_DISTANCE == 0.01 and not plugin._jog_checked
+
+
+def test_a_jog_whose_clearance_cannot_check_is_refused_until_the_next_press():
+    """Base not tracked: nothing is sent, the chip says to untick Clearance, and the held press is not retried."""
+    arm, plugin, _ctx = _jogged_arm()
+    plugin._arms[0].jog_clearance = SimpleNamespace(value=True)
+    ctx = JogContext(arm, refuse="robot 0804 cannot be checked for clearance: its base is not tracked")
+
+    async def scenario() -> None:
+        _jog_ticks(arm, plugin, ctx, 1, press=(0, 1.0))
+        await asyncio.sleep(0)
+        _jog_ticks(arm, plugin, ctx, 3, press=(0, 1.0))
+
+    asyncio.run(scenario())
+    refusal = plugin._refusals[("0804", "ur_arm")]
+    assert not arm._trajectory.sent and refusal.label == "cannot check" and "untick Clearance" in refusal.reason
+    assert len(plugin._jog_guards) == 1 and plugin._jog_guards[("0804", "ur_arm")].done()
 
 
 def test_a_jog_leases_the_robot_until_it_is_idle():
@@ -335,6 +396,7 @@ class BaseContext:
     def __init__(self):
         """At ROS time 0; every robot's lease is free."""
         self.world, self.clearances, self.lines = SimpleNamespace(robots=FreeRobots()), [], []
+        self.scene = SimpleNamespace(snapshot=Scene())
 
     wait_until = staticmethod(wait_ticks_until)
 
@@ -351,7 +413,7 @@ class BaseContext:
         return asyncio.get_running_loop().create_task(work, name=label)
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=()):
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
         """Keep the clearance; the test trips it."""
         self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms))
         yield self.clearances[-1]
