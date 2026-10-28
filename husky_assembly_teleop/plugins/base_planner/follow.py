@@ -11,11 +11,9 @@ import math
 import numpy as np
 from crl_husky.follow_sim import followed
 
-#: Where the turning centre may be along the body, metres, as crl_husky's xICR (negative: ahead of base_footprint);
-#: around Alice's fitted -0.13 m (config/base_models in crl_husky). The planners' default range.
-XICR_RANGE = (-0.20, -0.10)
-#: The deviated models: the follower's model with the true xICR at the ends and middle of XICR_RANGE, metres.
-DEVIATED_XICRS = (XICR_RANGE[0], sum(XICR_RANGE) / 2.0, XICR_RANGE[1])
+#: How far the true turning centre may be from the follower model's, either way, metres, as crl_husky's xICR. The
+#: planners' default; the deviated models put the true xICR at both ends.
+XICR_SPREAD = 0.05
 #: The model groups, in report order.
 EXACT, DEVIATED = "exact model", "deviated models"
 
@@ -32,20 +30,28 @@ def thinned(trace: np.ndarray, position_step: float, yaw_step: float) -> np.ndar
     return np.array(kept)
 
 
-def model_groups(poses, model: dict, linear_speed: float, angular_speed: float) -> list[tuple]:
-    """Drive `poses` with the robot exactly as the follower's model says, then with each deviated xICR.
+def xicr_range(x_model: float, spread: float) -> tuple[float, float]:
+    """The lowest and highest xICR a path is checked for: `spread` metres either side of the follower model's."""
+    return x_model - spread, x_model + spread
+
+
+def model_groups(poses, model: dict, linear_speed: float, angular_speed: float,
+                 spread: float = XICR_SPREAD) -> list[tuple]:
+    """Drive `poses` with the robot exactly as the follower's model says, then with the true xICR `spread` either side.
 
     Args:
         poses: (x, y, yaw) waypoints as sent to the follower.
         model: The follower's robot model (crl_husky `load_model`).
         linear_speed: The path's speed cap, m/s.
         angular_speed: The path's turn rate cap, rad/s.
+        spread: How far the deviated models' xICR is from the model's, metres.
 
     Returns:
-        list: (group, true xICR, trace, "" if finished else why not) per drive: EXACT first, then DEVIATED_XICRS.
+        list: (group, true xICR, trace, "" if finished else why not) per drive: EXACT first, then DEVIATED low and high.
     """
     out = []
-    for group, x_icr in [(EXACT, model["xICR"])] + [(DEVIATED, value) for value in DEVIATED_XICRS]:
+    deviated = [(DEVIATED, value) for value in xicr_range(model["xICR"], spread)]
+    for group, x_icr in [(EXACT, model["xICR"])] + deviated:
         trace, why = followed(poses, x_icr, model, linear_speed, angular_speed)
         out.append((group, float(x_icr), trace, why))
     return out

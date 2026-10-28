@@ -212,7 +212,7 @@ def plot_plan(folder: str | Path) -> Path:
 
 
 def settings_line(settings: dict) -> str:
-    """A plan's settings as one short line, e.g. "x_icr -0.2..-0.1  follower_model alice_tiles_2  margin 0.05"."""
+    """A plan's settings as one short line, e.g. "x_icr_spread 0.05  follower_model alice_tiles_2  margin 0.05"."""
     def value(item):
         if isinstance(item, (list, tuple)):
             return "..".join(f"{part:g}" if isinstance(part, float) else str(part) for part in item)
