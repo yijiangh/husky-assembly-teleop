@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Collection, Generic, Protocol, TypeVar, runtime_checkable
 
 from .timed_path import TimedPath
 
@@ -71,8 +71,12 @@ class PlannerContract(Protocol[R]):
     def clear(self) -> None:
         """End a search in progress and forget the plan. ! A sent plan's motion goes on: `cancel_commit` stops it."""
 
-    def commit(self, plan_id: int) -> asyncio.Future[tuple[bool, str]]:
-        """Send plan `plan_id` to the robot if it is still the latest and ready; resolves with (sent, message)."""
+    def commit(self, plan_id: int, unknown_robots: Collection[str] = ()) -> asyncio.Future[tuple[bool, str]]:
+        """Send plan `plan_id` to the robot if it is still the latest and ready; resolves with (sent, message).
+
+        `unknown_robots`: ids of other robots the operator lets be unknown during the motion; any other robot not
+        measured soft stops it.
+        """
 
     def cancel_commit(self) -> bool:
         """Stop every motion a commit started that still runs (the planner's `execute` stops the robot); main thread.

@@ -10,7 +10,8 @@ import numpy as np
 import pytest
 from robot_fakes import lease_test_robots, wait_ticks_until
 
-from husky_assembly_teleop.shared.planner.planner_panel import PlannerPanel, unknown_robots_chip
+from husky_assembly_teleop.shared.planner.planner_panel import (COMMIT_CONFIRM_SECONDS, CommitConfirm, PlannerPanel,
+                                                                unknown_robots_chip)
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import PlannerContract
@@ -37,9 +38,10 @@ class Ctx:
     """A plugin context whose intents run at once and whose tasks are plain asyncio tasks."""
 
     def __init__(self):
-        """No log yet; no robots (`world`)."""
+        """No log yet; no robots (`world`, `scene`)."""
         self.log = []
         self.world = SimpleNamespace(robots={})
+        self.scene = SimpleNamespace(snapshot=Scene())
 
     def submit(self, _label, run):
         """Run the intent now."""
@@ -253,6 +255,27 @@ def test_a_commit_holds_the_robots_lease_from_the_send_until_the_motion_ends():
 
 
 @pytest.mark.safety
+def test_a_commit_hands_execute_the_robots_the_operator_let_be_unknown():
+    """`commit(plan_id, unknown_robots)` is what `unknown_allowed` gives `execute`; none by default."""
+    seen = []
+
+    async def execute(ctx, plan, answer):
+        seen.append(planner.unknown_allowed(plan))
+        answer(True, "sent")
+
+    async def scenario(planner, ctx):
+        first = await planner.request_plan(Request("alice"))
+        await planner.commit(first.id, {"robots/b"})
+        second = await planner.request_plan(Request("alice"))
+        await planner.commit(second.id)
+
+    planner = Planner()
+    planner.execute = execute
+    run(planner, scenario)
+    assert seen == [{"robots/b"}, frozenset()]
+
+
+@pytest.mark.safety
 def test_a_commit_to_a_robot_leased_elsewhere_sends_nothing():
     """Another plugin has the robot's lease: nothing is sent, the answer names the holder, and the plan stays ready."""
     guard = LeaseSlot("alice")
@@ -422,3 +445,29 @@ def test_the_unknown_robots_chip_counts_the_others_and_hides_at_zero():
     assert unknown_robots_chip(Scene(robots={robot.id: robot for robot in (live, acting)}), ["robots/me"]) == ""
     found = unknown_robots_chip(Scene(robots={robot.id: robot for robot in (live, lost, acting)}), ["robots/me"])
     assert ">1 robot unknown<" in found and 'title="b: base unknown"' in found and "me" not in found
+
+
+def test_commit_asks_for_a_second_press_within_two_seconds_while_a_robot_is_unknown():
+    """Robot b lost mocap: the first press asks and turns Commit amber; a second within 2 s sends, letting b be unknown.
+
+    Later it asks again. The robot the commit moves is not counted.
+    """
+    model = SimpleNamespace(movable_joints=())
+    lost = RobotObject("robots/b", model, Pose(), {}, base_tracked=False, base_time=1.0)
+    ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={lost.id: lost})), t=10.0)
+    ctx.now = lambda: ctx.t
+    confirm = CommitConfirm()
+    confirm.button = SimpleNamespace(color="blue")
+    asked, allowed = confirm.asks(ctx, ["robots/me"], "Commit")
+    assert asked == "press Commit again within 2 s to move with b: base unknown"
+    assert allowed == frozenset()
+    confirm.draw(ctx.t)
+    assert confirm.button.color == "orange" and COMMIT_CONFIRM_SECONDS == 2.0
+    ctx.t += 1.5
+    assert confirm.asks(ctx, ["robots/me"], "Commit") == ("", {"robots/b"}), "the second press lets b be unknown"
+    confirm.draw(ctx.t)
+    assert confirm.button.color == "blue"
+    assert confirm.asks(ctx, ["robots/me"], "Commit")[0]
+    ctx.t += 2.5
+    assert confirm.asks(ctx, ["robots/me"], "Commit")[0], "too late: it asks again"
+    assert confirm.asks(ctx, ["robots/b"], "Commit") == ("", frozenset()), "the robot it moves is not counted"

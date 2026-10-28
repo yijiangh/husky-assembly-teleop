@@ -41,7 +41,9 @@ from ...ui.phone import big_buttons, phone_text
 from ...ui.style import REFUSAL_SHOWN, SECTION_SENSOR, block, numbers, section, values
 from ...shared.teleop.dpad import HOLD_TIMEOUT, PHONE_DPAD_STYLE, Hold, build_velocity_inputs
 from ...world.clearance import ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, ClearanceRefused
+from ...world.stand_ins import unknown_robots
 from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.ids import robot_id
 from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, build_compliance_inputs, build_free_drive_inputs,
                         build_jog_inputs, build_phone_arm_inputs, build_tool_inputs, pose_from_sliders,
                         pose_plan_line)
@@ -400,11 +402,13 @@ class RobotControlPlugin(HuskyPlugin):
         """Keep a clearance on the base while this plugin holds its lease and Clearance stays ticked.
 
         A trip soft stops the base (`ctx.clearance`); the status line then says what it came too close to. Driving
-        by hand, an arm whose joints are not known is checked at its stow pose; the base pose must be known.
+        by hand, an arm whose joints are not known is checked where last seen, or stowed; the base pose must be known.
+        Other robots unknown when it starts may stay unknown; any other robot lost trips it.
         """
         serial, clearance = widgets.serial, None
         try:
-            with ctx.clearance([serial], unknown_arms=ALL_ARMS) as clearance:
+            with ctx.clearance([serial], unknown_arms=ALL_ARMS,
+                               unknown_robots=unknown_robots(ctx.scene.snapshot, {robot_id(serial)})) as clearance:
                 await ctx.wait_until(lambda: not self._leases.held(serial) or not widgets.clearance.value)
         except ClearanceRefused as refused:
             # ! The drive streams its twists apart from this guard: stop the robot, as a trip would.
@@ -536,13 +540,15 @@ class RobotControlPlugin(HuskyPlugin):
     async def _guard_jog(self, ctx: PluginContext, widgets: _ArmWidgets) -> None:
         """Keep an ARM_STOP_DISTANCE clearance on the robot while this plugin holds its lease and Clearance is ticked.
 
-        The jogged arm and the base must be known; the robot's other arms may not be (where last seen, or stowed). Not a
-        check of the robot against itself.
+        The jogged arm and the base must be known; the robot's other arms may not be (where last seen, or stowed).
+        Other robots unknown when it starts may stay unknown; any other robot lost trips it. Not a check of the robot
+        against itself.
         """
         serial, key, clearance = widgets.serial, (widgets.serial, widgets.arm.config.name), None
         others = [arm.arm.config.name for arm in self._arms if arm.serial == serial and arm is not widgets]
         try:
-            with ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others) as clearance:
+            with ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others,
+                               unknown_robots=unknown_robots(ctx.scene.snapshot, {robot_id(serial)})) as clearance:
                 self._jog_checked.add(key)
                 await ctx.wait_until(lambda: not self._leases.held(serial) or not widgets.jog_clearance.value)
         except ClearanceRefused as refused:

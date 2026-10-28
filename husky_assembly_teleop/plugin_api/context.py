@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Collection, Coroutin
 from ..robot_interface.robot_lease import Lease, LeaseSlot, leased, take_lease
 from ..robot_interface.soft_stop import MotionRefused
 from ..world.clearance import (STOP_DISTANCE, Clearance, ClearanceRefused, ClearanceTrip, assumable_joints,
-                               clearance_problem)
+                               clearance_problem, others_problem)
 from scaffolding_assembly_core.ids import robot_id
 from ..world.freeze import Basis, Freeze, Tolerance, WorldMoved, basis_problem
 from ..world.stand_ins import with_stand_ins
@@ -281,7 +281,8 @@ class PluginContext:
 
     @contextmanager
     def clearance(self, serials: Iterable[str], margin: float = STOP_DISTANCE,
-                  unknown_arms: Collection[str] | Literal["all"] = ()) -> Iterator[Clearance]:
+                  unknown_arms: Collection[str] | Literal["all"] = (),
+                  unknown_robots: Collection[str] = ()) -> Iterator[Clearance]:
         """While the `with` block runs, stop robots that come too close to anything in the scene. Optional.
 
         - Checked against the whole scene: obstacles, process bodies, tracked objects and the other robots. Allowed
@@ -291,8 +292,9 @@ class PluginContext:
         - Checked on a worker, a tick or two behind: keep `margin` above what the robot covers meanwhile.
         - Strict by default: a robot whose arm joints are not known trips it. Manual moves may name `unknown_arms`
           (or ALL_ARMS): those are checked where last seen, or stowed. A base pose must always be known.
-        - Other robots not measured are checked as stand-ins (`stand_ins.py`); those at the start are logged as a
-          warning and kept in `stand_ins`, for the plugin to show.
+        - Other robots must be measured too, except those in `unknown_robots`: the operator's permission, usually the
+          robots unknown when a motion was committed (`stand_ins.unknown_robots`). Those are checked as stand-ins
+          (`stand_ins.py`), logged at the start and kept in `stand_ins`; any other robot not measured trips it.
         - ! A robot it cannot check right now refuses it: ClearanceRefused before the block runs, so enter it before
           sending anything.
         - ! Only inside a task of this plugin (`spawn`). Not an emergency stop.
@@ -301,10 +303,12 @@ class PluginContext:
             serials: The robots to keep clear, e.g. the one this task drives.
             margin: Distance below which it trips, metres.
             unknown_arms: Arms whose joints may be unknown, or ALL_ARMS (`world.clearance`).
+            unknown_robots: Ids of other robots that may be unknown.
 
         Raises:
             RuntimeError: Outside a task of this plugin.
-            ClearanceRefused: If a robot cannot be checked now (`clearance_problem`), e.g. its arm joints are unknown.
+            ClearanceRefused: If a robot cannot be checked now (`clearance_problem`), e.g. its arm joints are unknown,
+                or another robot is not measured and not in `unknown_robots`.
 
         Example:
             >>> with ctx.clearance([serial]) as clearance:
@@ -318,10 +322,14 @@ class PluginContext:
             assumable = assumable_joints(robot.model.movable_joints, unknown_arms) if robot is not None else frozenset()
             if problem := clearance_problem(robot, assumable):
                 raise ClearanceRefused(f"robot {serial} cannot be checked for clearance: {problem}")
-        guessed = with_stand_ins(snapshot, {robot_id(serial) for serial in serials}).warnings
+        own = {robot_id(serial) for serial in serials}
+        if problem := others_problem(snapshot, own, unknown_robots):
+            raise ClearanceRefused(f"robot {', '.join(serials)} cannot be checked against the others: {problem}")
+        guessed = with_stand_ins(snapshot, own).warnings
         for line in guessed:
             self.log_warn(f"clearance on {', '.join(serials)}: {line}")
-        clearance = Clearance(serials, margin, unknown_arms=unknown_arms, stand_ins=guessed)
+        clearance = Clearance(serials, margin, unknown_arms=unknown_arms, unknown_robots=frozenset(unknown_robots),
+                              stand_ins=guessed)
         self._clearances[clearance] = task
         try:
             yield clearance

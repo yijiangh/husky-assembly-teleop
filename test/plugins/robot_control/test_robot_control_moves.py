@@ -25,6 +25,7 @@ from husky_assembly_teleop.robot_interface.robot_lease import Lease, take_lease
 from husky_assembly_teleop.world.clearance import (ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, Clearance,
                                                    ClearanceRefused)
 from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.scene import Scene
 
 pytestmark = pytest.mark.safety
 
@@ -42,6 +43,7 @@ class Context:
         """Share `arm`'s clock; every robot's lease is free."""
         self.arm, self.follow, self.lines = arm, follow, []
         self.world = SimpleNamespace(robots=FreeRobots())
+        self.scene = SimpleNamespace(snapshot=Scene())
 
     def take_lease(self, serials, label):
         """Lease robots of the fake world, as the monitor does."""
@@ -244,7 +246,7 @@ class JogContext(Context):
         self.clearances, self.refuse = [], refuse
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=()):
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
         """Keep the clearance, or refuse it."""
         if self.refuse:
             raise ClearanceRefused(self.refuse)
@@ -394,6 +396,7 @@ class BaseContext:
     def __init__(self):
         """At ROS time 0; every robot's lease is free."""
         self.world, self.clearances, self.lines = SimpleNamespace(robots=FreeRobots()), [], []
+        self.scene = SimpleNamespace(snapshot=Scene())
 
     wait_until = staticmethod(wait_ticks_until)
 
@@ -410,7 +413,7 @@ class BaseContext:
         return asyncio.get_running_loop().create_task(work, name=label)
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=()):
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
         """Keep the clearance; the test trips it."""
         self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms))
         yield self.clearances[-1]

@@ -194,13 +194,13 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
 
         - An ARM_STOP_DISTANCE clearance starts first: one that cannot check refuses the commit (nothing sent), a
           trip soft stops the robot and cancels this. The robot's other arms may be unknown (where last seen, or
-          stowed).
+          stowed), and the other robots unknown at the commit (`unknown_allowed`).
         - ! Arrival is judged on the joints, not `is_executing`, which clears during a slow move (the pendant's speed
           slider): the lease would go back mid-motion.
         """
         serial, arm_name, path = plan.request.serial, plan.request.arm, plan.path
         others = [name for name in ctx.world.robots[serial].arms if name != arm_name]
-        with ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others):
+        with ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others, unknown_robots=self.unknown_allowed(plan)):
             ctx.log_info(f"{serial} {arm_name}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
             outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
                                         on_sent=lambda: answer(True, f"sent to {serial} {arm_name}"))

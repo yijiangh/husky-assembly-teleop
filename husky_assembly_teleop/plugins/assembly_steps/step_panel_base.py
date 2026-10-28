@@ -24,10 +24,12 @@ from async_timeout import timeout
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
+from ...shared.planner.planner_panel import CommitConfirm
 from ...shared.planner.planner_search import PlanningWorld
 from ...shared.planner.timed_path import TimedPath
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
+from scaffolding_assembly_core.ids import robot_id
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
@@ -104,6 +106,9 @@ class PlannerPlugin(HuskyPlugin):
         self._used: RecentUse | None = None
         #: Nothing to plan for (e.g. no robots configured): the panel says why, and the hooks do nothing.
         self.idle = False
+        #: Commit's second press while other robots are not measured, and the button's label for the message.
+        self._confirm = CommitConfirm()
+        self._commit_label = "Commit"
 
     # --- --- --- --- --- FOR THE SUBCLASS TO SUPPLY --- --- --- --- ---
 
@@ -159,7 +164,9 @@ class PlannerPlugin(HuskyPlugin):
         plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
         self._slider = gui.add_slider("t s", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
                                       hint="Scrub through the planned path")
-        commit = gui.add_button(commit_label, color="blue", icon=viser.Icon.SEND, hint=commit_hint)
+        commit = self._confirm.button = gui.add_button(commit_label, color="blue", icon=viser.Icon.SEND,
+                                                       hint=f"{commit_hint} {CommitConfirm.HINT}")
+        self._commit_label = commit_label
         plan.on_click(ctx.defer_value("path button", lambda label: self._on_path(ctx, label)))
         self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value))))
         commit.on_click(ctx.defer("commit", lambda: self._commit(ctx)))
@@ -274,6 +281,11 @@ class PlannerPlugin(HuskyPlugin):
         if self.plan_state != "ready":
             self._say(f"nothing to commit: the plan is {self.plan_state}", failed=True)
             return
+        acting = [robot_id(serial) for serial in (self._path_serial or self.serial,) if serial]
+        asked, _unknown = self._confirm.asks(ctx, acting, self._commit_label)
+        if asked:
+            self._say(asked, failed=True)
+            return
         sent, message = self.send_plan(ctx)
         if sent:
             self.plan_state = "sent"
@@ -303,6 +315,7 @@ class PlannerPlugin(HuskyPlugin):
         now = ctx.now()
         elapsed = 0.0 if self._last_tick is None else now - self._last_tick
         self._last_tick = now
+        self._confirm.draw(now)
         if self.path is None:
             return
         if self._playing:

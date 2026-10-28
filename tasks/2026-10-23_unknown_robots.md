@@ -33,6 +33,20 @@ How each part treated another robot whose state is not measured:
   without it, e.g. without mocap), and every arm planner commit.
 - Terminology to settle later: `doc/glossary.md`, "To clean up".
 
+## Visibility and permission (JG, 28 Oct)
+
+- The 3D view draws the real robots as one-colour meshes (each keeps its own colour); a base not tracked and each
+  arm not measured are drawn see-through.
+- Each planner (base, arm, process steps) shows an amber "N robots unknown" chip, hidden at zero, named on hover. The
+  base and arm planners show the robot and whether its base is tracked in one chip.
+- Commit with other robots unknown asks for a second press within 2 s (Commit turns amber). The second press is the
+  operator's permission: the robots unknown then may stay unknown during the motion (stand-ins, live again once
+  measured, no new warning when lost again); any other robot that is not measured soft stops it. Without the
+  permission a clearance refuses to start, or trips, on any other robot not measured.
+- The D-pad, jog and base experiment clearances allow the robots unknown when they start (no second press there).
+- Process execution (`movement_exec`) keeps no clearance: its Exec asks the same second press, but the permission
+  is not passed on; its freeze and motion watch stay as they are.
+
 ## Not changed
 
 - The acting robot's own guesses (`with_guesses`) and the lenient own-arm rule of the base D-pad (`ALL_ARMS`).

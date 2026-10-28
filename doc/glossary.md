@@ -55,7 +55,10 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   `world/checks.py`, `world/scene.py`.
 - **stand-in**: how a collision check takes another robot that is not measured: where it was last seen, else at its
   default pose with its arms stowed (the values the snapshot keeps); the process planner lays the step's design over
-  it first. Each one is a warning for the operator. `world/stand_ins.py`, `shared/assembly_planning/scene_for.py`.
+  it first. Each one is a warning for the operator: the 3D view draws an assumed base or arm see-through, and each
+  planner shows an amber count chip, named on hover, and asks for a second press of Commit within 2 s, which lets
+  those robots be unknown during the motion (`unknown_robots` of a clearance). `world/stand_ins.py`,
+  `shared/assembly_planning/scene_for.py`.
 - **ghost**: a see-through robot copy for a target, a plan or a preview, shown only while its panel was the last one
   used. `ui/ghost.py`.
 
@@ -77,7 +80,8 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   `world/freeze.py`. Not the panels' **Live/Paused** button, and not a frozen dataclass.
 - **clearance**: the distance kept from everything else. `ctx.clearance` is the runtime's guard: while a task drives a
   robot, it soft stops that robot and cancels the task once the robot comes within the margin (0.1 m by default) of
-  anything in the snapshot, other robots as their stand-ins; unknown arm joints of its own robot trip it unless
+  anything in the snapshot. Another robot not measured trips it unless it is in `unknown_robots` (unknown when the
+  motion was committed or started; then a stand-in); unknown arm joints of its own robot trip it unless
   `unknown_arms` lets them count where last seen, or stowed. A **trip** is one firing (`ctx.clearance_trips`).
   robot_control's Clearance boxes turn it on for D-pad driving and, at 1 cm (`ARM_STOP_DISTANCE`), for arm joint
   jogs; the arm planner's commits always keep 1 cm. `world/clearance.py`. The base planner's **path clearance** is a

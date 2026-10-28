@@ -256,7 +256,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                             signals.follower_state(robot, every_message=True),
                             signals.base_floor_pose(robot, every_message=True),
                             signals.wheel_odometry(robot, every_message=True)) as rec, \
-                    ctx.clearance([serial], margin) as clearance:
+                    ctx.clearance([serial], margin, unknown_robots=self.unknown_allowed(plan)) as clearance:
                 try:
                     sent_id = send_to_onboard_follower(robot.base, path)
                 except ValueError as error:

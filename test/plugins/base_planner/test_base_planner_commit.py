@@ -130,7 +130,7 @@ class CommitCtx:
         yield []
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE):
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_robots=()):
         """Never trip."""
         yield Clearance(tuple(serials), margin)
 
@@ -312,7 +312,7 @@ class FakeClock:
                 event.detach(listener)
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE):
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_robots=()):
         """Keep the clearance asked for; the test trips it by setting its problem and cancelling the run."""
         self.clearances.append(Clearance(tuple(serials), margin))
         yield self.clearances[-1]

@@ -12,6 +12,7 @@ panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers.
 from __future__ import annotations
 
 import asyncio
+import math
 from html import escape
 from typing import TYPE_CHECKING, Iterable
 
@@ -24,6 +25,7 @@ from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.phone import columns_css
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
 from ...world.stand_ins import unknown_parts, unknown_robots
+from scaffolding_assembly_core.ids import robot_id
 from .plan import Plan, PlannerContract
 
 if TYPE_CHECKING:
@@ -36,6 +38,8 @@ if TYPE_CHECKING:
 SLIDER_STEP = 0.05
 #: The side panel tab every planner panel's tab goes in: `tab_path = (PLAN_TAB, label)`.
 PLAN_TAB = "Plan"
+#: Seconds a Commit waits for its second press while other robots are not measured (`CommitConfirm`).
+COMMIT_CONFIRM_SECONDS = 2.0
 #: Lays out the Run folder as Commit and Cancel side by side, for an html widget outside that folder.
 COMMIT_STYLE = f"<style>{columns_css(viser.Icon.SEND, 2)}</style>"
 
@@ -68,6 +72,8 @@ class PlannerPanel(HuskyPlugin):
         self._last_tick: float | None = None
         #: One line of feedback on the last action, and whether it was a failure.
         self._message, self._message_failed = "", False
+        #: Commit's second press while other robots are not measured.
+        self._confirm = CommitConfirm()
         #: The planner's plan whose message the panel shows; a new or changed plan replaces the message.
         self._shown: Plan | None = None
         #: How the panel's target differs from the ready plan's, or "": the chip then asks for a replan.
@@ -118,7 +124,8 @@ class PlannerPanel(HuskyPlugin):
         # * Cancel beside Commit: a folder of its own, laid out in two columns (found by Commit's icon).
         gui.add_html(COMMIT_STYLE)
         with gui.add_folder("Run"):
-            commit = gui.add_button("Commit", color="blue", icon=viser.Icon.SEND, hint=commit_hint)
+            commit = self._confirm.button = gui.add_button(
+                "Commit", color="blue", icon=viser.Icon.SEND, hint=f"{commit_hint} {CommitConfirm.HINT}")
             cancel = gui.add_button("Cancel", color="red", icon=viser.Icon.PLAYER_STOP,
                                     hint="Stop the motion Commit started: the planner stops the robot")
         plan.on_click(ctx.defer_value("path button", lambda label: self._on_path(ctx, label)))
@@ -195,7 +202,11 @@ class PlannerPanel(HuskyPlugin):
         if change:
             self._say(f"not committed: {change}; replan", failed=True)
             return
-        ctx.spawn(f"commit plan {plan.id}", self._report(self._api.commit(plan.id)))
+        asked, unknown = self._confirm.asks(ctx, [robot_id(plan.request.serial)], "Commit")
+        if asked:
+            self._say(asked, failed=True)
+            return
+        ctx.spawn(f"commit plan {plan.id}", self._report(self._api.commit(plan.id, unknown)))
 
     def _cancel_commit(self) -> None:
         """Stop the motion a commit started, and say so."""
@@ -260,6 +271,7 @@ class PlannerPanel(HuskyPlugin):
         if moved and moved != self._target_moved:
             self._say(moved)
         self._target_moved = moved
+        self._confirm.draw(now)
 
     # --- --- --- --- --- DRAW HELPERS --- --- --- --- ---
 
@@ -300,6 +312,49 @@ class PlannerPanel(HuskyPlugin):
                 f'style="font-size:11px;color:{FAIL if self._message_failed else NONE};'
                 f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
                 f'{escape(self._message) or "&nbsp;"}</div>')
+
+
+class CommitConfirm:
+    """Commit's second press: while other robots are not measured, the first press only asks, and Commit turns amber.
+
+    The second press lets the robots unknown then be unknown during the motion: its clearance checks them as
+    stand-ins, and soft stops for any other robot that is not measured (`ctx.clearance`, `unknown_robots`).
+    """
+
+    #: For Commit's hover text.
+    HINT = (f"While other robots are not measured, press it twice within {COMMIT_CONFIRM_SECONDS:g} s: they may then "
+            f"stay unknown during the motion; any other robot lost stops it.")
+
+    def __init__(self):
+        """Wait for nothing yet; set `button` once it is built."""
+        self.button: viser.GuiButtonHandle | None = None
+        #: ROS time until which a second press sends; -inf while none is awaited.
+        self.until = -math.inf
+
+    def asks(self, ctx: PluginContext, acting: Iterable[str], label: str) -> tuple[str, frozenset[str]]:
+        """What to tell the operator instead of sending ("" to send now), and the robots the commit lets be unknown.
+
+        Args:
+            ctx: The plugin's context.
+            acting: Ids of the robots the commit moves; not counted.
+            label: The button's label, for the message.
+
+        Returns:
+            tuple[str, frozenset[str]]: The question, or ""; the ids of the other robots not measured now.
+        """
+        unknown = unknown_robots(ctx.scene.snapshot, set(acting))
+        if unknown and ctx.now() > self.until:
+            self.until = ctx.now() + COMMIT_CONFIRM_SECONDS
+            return (f"press {label} again within {COMMIT_CONFIRM_SECONDS:g} s to move with "
+                    f"{'; '.join(unknown_lines(ctx.scene.snapshot, unknown))}"), frozenset()
+        self.until = -math.inf
+        return "", unknown
+
+    def draw(self, now: float) -> None:
+        """Make the button amber while it waits for its second press, blue otherwise."""
+        color = "orange" if now <= self.until else "blue"
+        if self.button is not None and self.button.color != color:
+            self.button.color = color
 
 
 def unknown_robots_chip(snapshot: Scene, acting: Iterable[str]) -> str:

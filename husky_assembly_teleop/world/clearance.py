@@ -4,7 +4,9 @@ Clearances: while a task drives a robot, stop it once it comes too close to anyt
 Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, tracked objects) need not know.
 
 - Checked against the whole tick snapshot, other robots included; allowed contacts (`Body.touches`, what a robot
-  holds) are skipped. Other robots not measured are checked as their stand-ins (`stand_ins.py`).
+  holds) are skipped.
+- ! Other robots must be measured too, except those in `Clearance.unknown_robots` (unknown when it was committed,
+  checked as their stand-ins, `stand_ins.py`): any other robot not measured trips it, and refuses it at the start.
 - ! What cannot be checked counts as too close: a lost base pose, or a robot the mirror cannot place. Only arms named
   in `Clearance.unknown_arms` may be unknown (manual moves): they are checked where last seen, or stowed. A robot
   that cannot be checked when a clearance starts refuses it (`ClearanceRefused`), so nothing is sent.
@@ -25,7 +27,7 @@ from scaffolding_assembly_core.scene import Scene
 from ..robot_interface.soft_stop import MotionRefused
 from .base_collision import BaseCollisionWorld
 from .collision_hit import CollisionHit
-from .stand_ins import with_stand_ins
+from .stand_ins import unknown_robots, with_stand_ins
 
 #: Default distance, metres, below which a clearance trips.
 STOP_DISTANCE = 0.1
@@ -49,6 +51,7 @@ class Clearance:
         unknown_arms: Arms whose joints may be unknown, checked where last seen or stowed, or ALL_ARMS; none by
             default.
             The base pose must always be known.
+        unknown_robots: Other robots that may be unknown, by id: checked as their stand-ins, live once measured again.
         stand_ins: Other robots not measured when it started, and how they are checked (`StandIns.warnings`).
     """
 
@@ -57,6 +60,7 @@ class Clearance:
     problem: str | None = None
     hit: CollisionHit | None = None
     unknown_arms: Collection[str] | Literal["all"] = ()
+    unknown_robots: frozenset[str] = frozenset()
     stand_ins: tuple[str, ...] = ()
 
 
@@ -76,6 +80,18 @@ def clearance_problem(robot: RobotObject | None, assumable: frozenset[str] = fro
     if robot is None:
         return "it is not in the scene"
     return "; ".join(replace(robot, unmeasured=robot.unmeasured - assumable).acting_problems())
+
+
+def others_problem(snapshot: Scene, own: Collection[str], allowed: Collection[str]) -> str:
+    """Why a clearance cannot check its robots against the others: those not measured it may not stand in; or "".
+
+    Args:
+        snapshot: The tick's snapshot.
+        own: Ids of the robots the clearance keeps clear.
+        allowed: Ids of the other robots that may be unknown (`Clearance.unknown_robots`).
+    """
+    return "; ".join(f"{key} is not measured ({'; '.join(snapshot.robots[key].acting_problems())})"
+                     for key in sorted(unknown_robots(snapshot, own) - set(allowed)))
 
 
 def assumable_joints(joints: Iterable[str], unknown_arms: Collection[str] | Literal["all"]) -> frozenset[str]:
@@ -118,8 +134,10 @@ class ClearanceChecker:
         self._world = BaseCollisionWorld()
         self._pending: Future | None = None
 
-    def check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str]]]) -> bool:
-        """Start checking each (key, robot id, margin, joints that may be unknown) in `snapshot`, unless one runs.
+    def check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str], frozenset[str]]]) -> bool:
+        """Start checking each (key, robot id, margin, joints and other robots that may be unknown) in `snapshot`.
+
+        Skipped while the last check runs.
 
         Returns:
             bool: Whether the check started; False while the last one runs (this snapshot is skipped).
@@ -145,12 +163,13 @@ class ClearanceChecker:
         self._executor.submit(self._world.close)
         self._executor.shutdown(wait=True)
 
-    def _check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str]]]
+    def _check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str], frozenset[str]]]
                ) -> list[tuple[Any, str, CollisionHit | None]]:
         """Sync the world to `snapshot` and say why each robot that is too close, or cannot be checked, is. Worker."""
         found, checked = [], []
-        for key, own, margin, assumable in asked:
-            if problem := clearance_problem(snapshot.robots.get(own), assumable):
+        for key, own, margin, assumable, allowed in asked:
+            problem = clearance_problem(snapshot.robots.get(own), assumable) or others_problem(snapshot, {own}, allowed)
+            if problem:
                 found.append((key, f"cannot be checked: {problem}", None))
             else:
                 checked.append((key, own, margin))

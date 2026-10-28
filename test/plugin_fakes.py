@@ -136,9 +136,11 @@ class FakeContext:
         return self.t
 
     @contextmanager
-    def clearance(self, serials, margin: float = STOP_DISTANCE, unknown_arms=()) -> Iterator[Clearance]:
+    def clearance(self, serials, margin: float = STOP_DISTANCE, unknown_arms=(),
+                  unknown_robots=()) -> Iterator[Clearance]:
         """Keep the clearance asked for in `clearances`; nothing checks it."""
-        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms))
+        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms,
+                                         unknown_robots=frozenset(unknown_robots)))
         yield self.clearances[-1]
 
     def require(self, name: str) -> Any:

@@ -17,7 +17,7 @@ import itertools
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from typing import Callable, Generic
+from typing import Callable, Collection, Generic
 
 from async_timeout import timeout
 
@@ -50,6 +50,8 @@ class PlannerService(HuskyPlugin, Generic[R]):
         self._ctx: PluginContext | None = None
         #: The task of the last commit to each robot, by serial, and the ones a newer commit is replacing.
         self._executions: dict[str, asyncio.Task] = {}
+        #: Per committed plan id, the other robots the operator let be unknown during its motion (`unknown_allowed`).
+        self._unknown: dict[int, frozenset[str]] = {}
         self._replaced: set[asyncio.Task] = set()
 
     # --- --- --- --- --- FOR THE SUBCLASS TO SUPPLY --- --- --- --- ---
@@ -74,6 +76,7 @@ class PlannerService(HuskyPlugin, Generic[R]):
         - Call `answer(True, message)` once the robot took the plan, or `answer(False, why)` and return if it did not.
           Raising MotionRefused before answering answers that nothing was sent.
         - ! Cancelled by Stop all, the plugin stopping, or a newer commit (`replaced`): stop the motion unless replaced.
+        - Pass `unknown_allowed(plan)` to a clearance as its `unknown_robots`.
         """
         raise NotImplementedError
 
@@ -106,14 +109,22 @@ class PlannerService(HuskyPlugin, Generic[R]):
             self.forget(self._plan)
         self._plan = None
 
-    def commit(self, plan_id: int) -> asyncio.Future[tuple[bool, str]]:
+    def commit(self, plan_id: int, unknown_robots: Collection[str] = ()) -> asyncio.Future[tuple[bool, str]]:
         """Send plan `plan_id` if it is still the latest and ready; resolves with (sent, message) once sent.
 
         The motion is then watched until it is over, holding the robot's lease.
+
+        Args:
+            plan_id: The plan.
+            unknown_robots: Ids of other robots the operator lets be unknown during the motion (`unknown_allowed`).
         """
         future = asyncio.get_running_loop().create_future()
-        self._ctx.submit(f"commit plan {plan_id}", lambda: self._commit(plan_id, future))
+        self._ctx.submit(f"commit plan {plan_id}", lambda: self._commit(plan_id, future, frozenset(unknown_robots)))
         return future
+
+    def unknown_allowed(self, plan: Plan[R]) -> frozenset[str]:
+        """Ids of the other robots the operator let be unknown when committing `plan`; for `execute`'s clearance."""
+        return self._unknown.get(plan.id, frozenset())
 
     def cancel_commit(self) -> bool:
         """Stop every motion a commit started that still runs: its task is cancelled, and `execute` stops the robot."""
@@ -194,7 +205,7 @@ class PlannerService(HuskyPlugin, Generic[R]):
         if not future.done():
             future.set_result(plan)
 
-    def _commit(self, plan_id: int, future: asyncio.Future[tuple[bool, str]]) -> None:
+    def _commit(self, plan_id: int, future: asyncio.Future[tuple[bool, str]], unknown_robots: frozenset[str]) -> None:
         """Start executing plan `plan_id` if it is the latest and ready; otherwise answer why not."""
         plan = self._plan
         if plan is None or plan.id != plan_id:
@@ -214,6 +225,7 @@ class PlannerService(HuskyPlugin, Generic[R]):
         if running is not None:
             self._replaced.add(running)
             running.cancel()
+        self._unknown[plan.id] = unknown_robots
         self._executions[serial] = self._ctx.spawn(f"plan {plan.id} on {serial}", self._execute(plan, running, future))
 
     async def _execute(self, plan: Plan[R], replacing: asyncio.Task | None,

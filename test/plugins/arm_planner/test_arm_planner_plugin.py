@@ -80,7 +80,7 @@ class FakeCtx:
     wait_until = staticmethod(wait_ticks_until)
 
     @contextmanager
-    def clearance(self, _serials, _margin, unknown_arms=()):
+    def clearance(self, _serials, _margin, unknown_arms=(), unknown_robots=()):
         """Keep no clearance: nothing here could trip one."""
         yield
 

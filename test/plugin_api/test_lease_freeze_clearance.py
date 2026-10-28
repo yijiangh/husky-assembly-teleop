@@ -187,21 +187,26 @@ def test_a_clearance_refuses_to_start_on_a_robot_it_cannot_check():
     assert lenient is None and ran == [{"unknown_arms": ALL_ARMS}]
 
 
-def test_a_clearance_names_the_other_robots_it_checks_as_stand_ins():
-    """Robot 0804 was never seen: the clearance starts, logs that it stands at its default pose, keeps the line."""
+def test_another_robot_not_measured_refuses_a_clearance_unless_allowed():
+    """Robot 0804 was never seen: refused; allowed, the clearance starts, logs that it stands at its default pose."""
     ctx, _world, log = _context()
     other = RobotObject(robot_id("0804"), SimpleNamespace(movable_joints=ARM_JOINTS), Pose(), {}, base_tracked=False)
     ctx.scene.snapshot.robots[other.id] = other
     kept = []
 
-    async def drive() -> None:
-        with ctx.clearance(["0805"]) as clearance:
+    async def drive(**allowed) -> None:
+        with ctx.clearance(["0805"], **allowed) as clearance:
             kept.extend(clearance.stand_ins)
 
-    async def scenario() -> None:
-        await ctx.spawn("drive", drive())
+    async def scenario():
+        refused = await asyncio.gather(ctx.spawn("strict", drive()), return_exceptions=True)
+        await ctx.spawn("allowed", drive(unknown_robots={other.id}))
+        return refused
 
-    asyncio.run(scenario())
+    (refused,) = asyncio.run(scenario())
+    assert isinstance(refused, ClearanceRefused)
+    assert str(refused) == ("robot 0805 cannot be checked against the others: robots/0804 is not measured "
+                            "(its base is not tracked)")
     line, = kept
     assert line == "robots/0804 is not measured (its base is not tracked): checked at its default pose or stowed"
     assert f"clearance on 0805: {line}" in log.text("warning")
