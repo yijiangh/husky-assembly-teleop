@@ -143,14 +143,15 @@ CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 # DESIGN_PROBLEM_NAME = '260811_RobArch_demo'
 # * Override per run with the environment variable DESIGN_PROBLEM_NAME, e.g.
 # *   export DESIGN_PROBLEM_NAME=260920_RobArch_demo_revamp_backup
-DESIGN_PROBLEM_NAME = os.environ.get('DESIGN_PROBLEM_NAME', '261006_3bar_holding_test')
+# * 2026-10-23: the three-robot test runs 261023_2ModulesDemo (76 actions, B20..B59 + B165..B169;
+# * exported from 261019_2ModulesDemo.3dm). Before: 261006_3bar_holding_test (B20..B37, 18 actions).
+DESIGN_PROBLEM_NAME = os.environ.get('DESIGN_PROBLEM_NAME', '261023_2ModulesDemo')
 # * Where MoCapMarkers.json (the bars' MoCap ball table) is read from when the design
 # * problem above has none of its own (a problem's own file always wins).
-# ! For now 261016_2ModulesDemo_YH: 261006_3bar_holding_test has no MoCapMarkers.json, and
-# ! its B20 / B21 sit at the same poses as in 261016 (checked 2026-10-20). Remove this
-# ! borrowing once the running problem's Rhino export writes its own file.
+# * 261023_2ModulesDemo writes its own (B20, B21, B25, B34, B35, B39, B46, B47, B50), so nothing is
+# * borrowed now; the default only names that same problem. (261006 borrowed 261019's until 2026-10-23.)
 # *   export MOCAP_MARKERS_PROBLEM_NAME=<problem> to borrow from another problem.
-MOCAP_MARKERS_PROBLEM_NAME = os.environ.get('MOCAP_MARKERS_PROBLEM_NAME', '261016_2ModulesDemo_YH')
+MOCAP_MARKERS_PROBLEM_NAME = os.environ.get('MOCAP_MARKERS_PROBLEM_NAME', '261023_2ModulesDemo')
 # DESIGN_PROBLEM_NAME = '2026-05-19_reoriented2'
 
 # Rhino .3dm whose "Environment Obstacles" layer is drawn as the layout-diagram

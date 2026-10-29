@@ -164,7 +164,7 @@ Something wrong at any point: Part 7. What the first as-built run (2026-10-20) s
 | this PC | `CRLRobotxPC`, user `su` | runs the monitor and the checks |
 | workspace | `~/ros2_ws` (venv `~/ros2_ws/venv`, ssik 4.1 installed) | |
 | shared drive | `~/Insync/2025-03 Husky Assembly` | the package's built-in data paths already point here; `progress.json` lives here (1.d) |
-| robot network | this PC's built-in ethernet port **`eno1`**, DHCP from the router `192.168.0.1` (this PC was `192.168.0.25` on 2026-10-07) | the Wi-Fi `wlp9s0` (+ Tailscale) is for the internet; ROS does not use them |
+| robot network | this PC's built-in ethernet port **`eno1`**, DHCP from the router `192.168.0.1` (this PC is `192.168.0.201` since 2026-10-22, `192.168.0.25` before) | the Wi-Fi `wlp9s0` (+ Tailscale) is for the internet; ROS does not use them |
 | DDS (how ROS talks) | `~/.cyclonedds.xml` pins CycloneDDS to `eno1`; `~/.bashrc` exports `CYCLONEDDS_URI` but **not** `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION` | the monitor start blocks (5.1) set those two |
 | Cindy's PC | `192.168.0.115`, user `administrator` | this PC's ssh key is accepted |
 | Alice's PC | `192.168.0.113`, user `administrator` | password `clearpath` if asked (`doc/husky_ros2.md`) |
@@ -178,7 +178,7 @@ Something wrong at any point: Part 7. What the first as-built run (2026-10-20) s
   Motive PC 192.168.0.28 ---- mocap stream (robot base poses) ----+
                                                                    |
   Cindy's PC .115 --+                                              v
-  Alice's PC .113 --+--- robot router 192.168.0.1 --- this PC (eno1, 192.168.0.25)
+  Alice's PC .113 --+--- robot router 192.168.0.1 --- this PC (eno1, 192.168.0.201)
   Belle's PC .114 --+                                  runs the monitor + checks;
                                                        ssh into each robot PC
   Each robot PC runs its own "launch": the arm, gripper / tool and base drivers.
@@ -376,7 +376,7 @@ ip -4 -brief addr show eno1        # this PC's address on the robot network
 ```
 
 **Expect:** the uncommented `CLIENT_IP` line is this PC's `eno1` address (`# husky PC`,
-`192.168.0.25` on 2026-10-07; the Razer laptop's `192.168.0.29` stays a comment), and
+`192.168.0.201` since 2026-10-22, `192.168.0.25` before; the Razer laptop's `192.168.0.29` stays a comment), and
 `MOCAP_IP = '192.168.0.28'` (the Motive PC).
 
 **If not:** (both addresses are DHCP leases and can move: `doc/calibration_manual.md` section 1.4),

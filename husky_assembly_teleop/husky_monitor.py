@@ -336,7 +336,7 @@ EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
 DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
-CLIENT_IP = '192.168.0.25' # husky PC Set to your own IP
+CLIENT_IP = '192.168.0.201' # husky PC Set to your own IP
 # CLIENT_IP = '192.168.0.29' # Razor laptop Set to your own IP
 # * Any PC can set its own address without editing this file: export MOCAP_CLIENT_IP
 # * (doc/mocap_bar_pose_test_manual.md section 1 reads it off the mocap network port).

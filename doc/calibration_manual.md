@@ -109,12 +109,12 @@ The workstation must be on the same network as the OptiTrack PC to receive strea
 
 | Device | IP Address |
 |--------|-----------|
-| Workstation (your PC) | your own IP (e.g. `192.168.0.25`) |
+| Workstation (your PC) | your own IP (this PC: `192.168.0.201` since 2026-10-22) |
 | OptiTrack PC (`DESKTOP-T1HDH98`) | `192.168.0.28` |
 
-These are configured in the code at [`husky_monitor.py:289-293`](../husky_assembly_teleop/husky_monitor.py#L289-L293):
+These are configured in the code at [`husky_monitor.py`](../husky_assembly_teleop/husky_monitor.py) (`CLIENT_IP`, `MOCAP_IP`):
 ```python
-CLIENT_IP = '192.168.0.25'
+CLIENT_IP = '192.168.0.201'
 MOCAP_IP = '192.168.0.28'
 ```
 
@@ -251,7 +251,7 @@ This section covers starting up the Husky robot and the UR5e arm ROS2 drivers. M
    > If nothing arrives, stop the driver and relaunch with (b). If (b) still shows
    > nothing, Wi-Fi is dropping the discovery multicast; give Belle the
    > workstation's address as well:
-   > `...</Interfaces></General><Discovery><Peers><Peer address="192.168.0.25"/></Peers></Discovery></Domain></CycloneDDS>`.
+   > `...</Interfaces></General><Discovery><Peers><Peer address="192.168.0.201"/></Peers></Discovery></Domain></CycloneDDS>`.
    > The export only lasts for that terminal; nothing is changed on Belle permanently.
 
    > For calibration use `gripper:=none`, also on Alice and Belle (the calib tool
@@ -278,7 +278,7 @@ ros2 daemon stop          # drop the topic list cached from an earlier domain
 > **Workstation Cyclone config (already set, nothing to type).** Since
 > 2026-07-22 the workstation's `~/.bashrc` sets
 > `export CYCLONEDDS_URI=file://$HOME/.cyclonedds.xml`, which pins Cyclone to
-> `eno1`, the wired lab network (192.168.0.25). Check it with
+> `eno1`, the wired lab network (192.168.0.201 since 2026-10-22). Check it with
 > `echo $CYCLONEDDS_URI`. This is the workstation half; the robot half is the
 > `CYCLONEDDS_URI` export in Belle's launch (b) ([§2.3](#23-start-the-ur5e-ros2-driver-on-the-husky)).
 >

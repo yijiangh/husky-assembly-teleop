@@ -2,7 +2,7 @@ import sys, time
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 from husky_assembly_teleop.optitrack.Utils import print_configuration
 
-CLIENT_IP = '192.168.0.25' # Set to your own IP
+CLIENT_IP = '192.168.0.201' # husky PC (eno1); set to your own IP
 MOCAP_IP = '192.168.0.28'  # mocap PC; see doc/calibration_manual.md section 1.4
 
 def receive_rigid_body_frame( new_id, position, rotation ):
