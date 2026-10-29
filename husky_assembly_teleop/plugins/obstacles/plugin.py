@@ -6,6 +6,7 @@ under z = 0 out to the border walls, not drawn: arms, tools and what they hold c
 links (wheels, chassis) may touch it.
 
 - Lab obstacles come from `data/lab/<lab>.json` (`-p lab:=<name>`, default "main"), in git and the same for everyone.
+  One may be drawn as meshes from `data/lab/meshes/` (furniture, screens); it still collides as its shape.
   Edits stay in memory until Save; Revert goes back to the file; an amber chip shows unsaved changes.
 - Temporary obstacles (purple, "obstacles/temporary/<n>") are kept in a local file (`world/lab.TEMPORARY_FILE`),
   written at once, never in the lab file. Promote moves one into the lab, saved with the next Save.
@@ -34,8 +35,8 @@ from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import link_id, robot_id
 from scaffolding_assembly_core.scene import Body
 from ...world.lab import (DEFAULT_LAB, GROUPS, LAB_COLOR, TEMPORARY_COLOR, Border, Lab, Shape, border_bodies,
-                          floor_body, lab_file, platform_links, read_lab, read_temporary, shape_id, slug, write_lab,
-                          write_temporary)
+                          floor_body, lab_file, mesh_directory_of, platform_links, read_lab, read_temporary, shape_id,
+                          slug, write_lab, write_temporary)
 
 #: Dropdown entry while there is nothing to edit.
 NONE_ENTRY = "(none)"
@@ -330,7 +331,7 @@ class ObstaclesPlugin(HuskyPlugin):
     def _body(self, body_id: str, shape: Shape) -> Body:
         """The scene body of one obstacle."""
         color = TEMPORARY_COLOR if self._temporary_number(body_id) is not None else LAB_COLOR
-        return Body(body_id, shape.geometry(), shape.pose, label=shape.name, color=color)
+        return Body(body_id, shape.geometry(mesh_directory_of(self.path)), shape.pose, label=shape.name, color=color)
 
     def _temporary_id(self, number: int) -> str:
         """The id of temporary obstacle `number`."""

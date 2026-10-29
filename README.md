@@ -8,8 +8,10 @@ This is a python package for controlling huskies in the mocap space.
 ## Clone and update submodules
 Install this library from source by cloning this repo to local and install from source.
 ```
+sudo apt install git-lfs && git lfs install   # once per machine: the lab's obstacle meshes are in Git LFS
 git clone --recursive git@github.com:yijiangh/husky-assembly-teleop.git
 ```
+A clone made before installing Git LFS draws the obstacles as plain shapes: run `git lfs pull` in it.
 > ⚠️ The monitor depends on [crl-husky](https://gitlab.inf.ethz.ch/crl/robot-control/crl-husky) (robot configs, the onboard launch files with the safety sync, `crl_husky_msgs`), cloned next to this repo as `src/crl-husky`, on branch `jg/ros2` at ceba934 or later (the mocap relay's NatNet client lives here, husky_sim publishes only true poses, and model.yaml names each arm's tool and the base's follower model). **Whenever you pull this repo, pull and rebuild crl-husky too**: the two change together.
 
 The `--recursive` flag when cloning above is used for initializing all the git submodules. You can learn more about submodules [here](https://github.com/CGAL/cgal-swig-bindings/wiki/Installation).
