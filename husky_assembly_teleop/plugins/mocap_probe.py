@@ -1183,7 +1183,8 @@ class MocapProbePlugin(HuskyPlugin):
         rate = coverage.tracked_rate()
         smoothed = coverage.smoothed()
         here = smoothed.at(*probe.position[:2]) if probe is not None and probe.position is not None else None
-        state = chip("mapping", INFO) if self._mapping.value else chip("off", NONE)
+        state = (chip("mapping", INFO, "Every probe message goes into the coverage map; untick Map coverage to stop.")
+                 if self._mapping.value else chip("off", NONE, "Tick Map coverage to map where the probe is tracked."))
         return block(state + values(
             f"{coverage.count} samples, {smoothed.seen.sum() * COVERAGE_BIN ** 2:.0f} m², "
             f"tracked {'–' if rate is None else f'{rate:.0%}'}", f"err {_error_mm(coverage.total_error())}",

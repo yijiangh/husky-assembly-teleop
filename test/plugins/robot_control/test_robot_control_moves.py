@@ -13,9 +13,10 @@ from robot_fakes import TCP_ORIENTATION, TCP_POSITION, FreeRobots, fake_arm, lea
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
-from husky_assembly_teleop.shared.teleop.dpad import HOLD_TIMEOUT, Hold
+from husky_assembly_teleop.shared.teleop.dpad import BLOCKED_COLOR, HOLD_TIMEOUT, UNGUARDED_COLOR, Hold, color_dpad
 from husky_assembly_teleop.plugins.robot_control.markers import place_markers, target_from_world
-from husky_assembly_teleop.plugins.robot_control.plugin import BASE, START_RETRY, RobotControlPlugin, _BaseWidgets
+from husky_assembly_teleop.plugins.robot_control.plugin import (BASE, STANDING_EVERY, START_RETRY,
+                                                                RobotControlPlugin, _BaseWidgets)
 from husky_assembly_teleop.plugins.robot_control.status import refusal_chip
 from husky_assembly_teleop.plugins.robot_control.teleop_lease import IDLE_AFTER
 from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, MOVING_WITHIN,
@@ -517,3 +518,48 @@ def test_a_drive_that_starts_too_close_is_refused_with_an_amber_chip_and_tried_a
     assert not sent and not plugin._bases[0].base.soft_stopped and "0804" not in plugin._tripped
     chips = plugin._base_warnings(ctx, "0804", now[0])
     assert "starts in collision" in chips and BUSY in chips and "Untick Clearance" in chips
+
+
+class StandingChecker:
+    """Stands in for the plugin's ClearanceChecker: keeps what it is asked, answers `found` once."""
+
+    def __init__(self):
+        """Nothing asked or found."""
+        self.asked, self.found = [], None
+
+    def check(self, _snapshot, asked) -> bool:
+        """Keep what is asked."""
+        self.asked.append(asked)
+        return True
+
+    def finished(self):
+        """Hand out `found` once."""
+        found, self.found = self.found, None
+        return found
+
+
+def test_a_base_standing_too_close_shows_the_chip_and_a_gray_dpad_before_any_press():
+    """Checked every STANDING_EVERY: too close shows amber and grays the D-pad; Clearance off makes it orange."""
+    plugin, _sent, _controller = _driven_base()
+    widgets = plugin._bases[0]
+    widgets.clearance, widgets.dpad = SimpleNamespace(value=True), (SimpleNamespace(color=None),)
+    plugin._standing, now = StandingChecker(), [0.0]
+    ctx = BaseContext()
+    ctx.now = lambda: now[0]
+    ctx.config = SimpleNamespace(robots=[SimpleNamespace(serial="0804", arms=())])
+    ctx.scene.snapshot = Scene(robots={robot_id("0804"): RobotObject(
+        robot_id("0804"), SimpleNamespace(movable_joints=()), Pose(), {})})
+    plugin._check_standing(ctx, now[0])
+    plugin._check_standing(ctx, now[0] + STANDING_EVERY / 2)
+    assert len(plugin._standing.asked) == 1 and plugin._standing.asked[0][0][:2] == ("0804", robot_id("0804"))
+    plugin._standing.found = [("0804", "came within 10 cm of wall", SimpleNamespace())]
+    plugin._check_standing(ctx, now[0] + STANDING_EVERY)
+    chips = plugin._base_warnings(ctx, "0804", now[0])
+    assert "starts in collision" in chips and "came within 10 cm of wall" in chips
+    assert plugin._starts_in_collision("0804", now[0])
+    plugin._standing.found = [("0804", "cannot be checked: base not measured", None)]
+    plugin._check_standing(ctx, now[0] + 2 * STANDING_EVERY)
+    assert not plugin._starts_in_collision("0804", now[0]), "a robot it cannot check shows nothing"
+    buttons = [SimpleNamespace(color=None)]
+    color_dpad(buttons, BLOCKED_COLOR)
+    assert buttons[0].color == "gray" and UNGUARDED_COLOR == "orange"

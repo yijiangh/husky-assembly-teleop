@@ -262,7 +262,8 @@ def test_a_procedure_waits_for_go_and_keeps_how_it_ended():
         procedure.cancel()
         with pytest.raises(asyncio.CancelledError):
             await procedure._task
-        assert procedure.outcome == Check("check cancelled", PENDING) and procedure.prompt == ""
+        outcome = procedure.outcome
+        assert outcome.label == "check cancelled" and outcome.level == PENDING and procedure.prompt == ""
 
     asyncio.run(scenario())
 

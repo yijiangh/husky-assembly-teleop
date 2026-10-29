@@ -29,6 +29,11 @@ DPAD_STYLE = f"<style>{grid_css(_GRID, 3)}</style>"
 PHONE_DPAD_STYLE = f"<style>{big_buttons(_ICONS, 84, 40, labels=False)}</style>"
 #: How often the browser reports a held button, Hz. Matches the 20 Hz tick.
 HOLD_CALLBACK_HZ = 20.0
+#: D-pad colours: gray while Clearance would refuse a drive (too close already), orange while Clearance is off.
+#: ! Only a colour: the buttons stay pressable, and a refused press says why.
+BLOCKED_COLOR, UNGUARDED_COLOR = "gray", "orange"
+#: The D-pad buttons' hover text.
+DPAD_HINT = "Drives while held. Gray: too close to start with Clearance on. Orange: Clearance is off."
 #: A hold counts as released after this long without a report, seconds.
 #: ! viser never reports a release: this timeout is what stops the base, also on disconnect.
 HOLD_TIMEOUT = 0.25
@@ -59,8 +64,8 @@ class Hold:
         return self.linear * self.speed.value * MAX_LINEAR_SPEED, self.angular * self.speed.value * MAX_ANGULAR_SPEED
 
 
-def build_velocity_inputs(ctx: PluginContext, gui: viser.GuiApi, serial: str,
-                          on_hold: Callable[[Hold], None]) -> viser.GuiSliderHandle:
+def build_velocity_inputs(ctx: PluginContext, gui: viser.GuiApi, serial: str, on_hold: Callable[[Hold], None]
+                          ) -> tuple[viser.GuiSliderHandle, list[viser.GuiButtonHandle]]:
     """Add the inputs for platform_velocity_controller: a speed slider and the D-pad.
 
     Args:
@@ -70,13 +75,14 @@ def build_velocity_inputs(ctx: PluginContext, gui: viser.GuiApi, serial: str,
         on_hold: Called with a `Hold` every report of a held button.
 
     Returns:
-        viser.GuiSliderHandle: The speed slider, a fraction of the full speed.
+        tuple[viser.GuiSliderHandle, list[viser.GuiButtonHandle]]: The speed slider, a fraction of the full speed,
+            and the D-pad's buttons (`color_dpad`).
     """
     speed = gui.add_slider("Speed", min=0.05, max=1.0, step=0.05, initial_value=0.5,
                            hint=f"Fraction of the full speed ({MAX_LINEAR_SPEED} m/s, {MAX_ANGULAR_SPEED} rad/s).")
     grid = gui.add_html("")
     with gui.add_folder("Drive"):
-        buttons = [gui.add_button(label, icon=icon, hint="Drives while held.") for label, icon, _, _ in HOLD_BUTTONS]
+        buttons = [gui.add_button(label, icon=icon, hint=DPAD_HINT) for label, icon, _, _ in HOLD_BUTTONS]
     grid.content = DPAD_STYLE
     for button, (label, _, linear, angular) in zip(buttons, HOLD_BUTTONS):
         # ! Bind loop values as defaults, or every button drives like the last.
@@ -84,4 +90,11 @@ def build_velocity_inputs(ctx: PluginContext, gui: viser.GuiApi, serial: str,
                                  lambda linear=linear, angular=angular: on_hold(
                                      Hold(linear, angular, speed, ctx.now()))),
                        callback_hz=HOLD_CALLBACK_HZ)
-    return speed
+    return speed, buttons
+
+
+def color_dpad(buttons: list[viser.GuiButtonHandle], color: str | None) -> None:
+    """Colour the D-pad's buttons, e.g. BLOCKED_COLOR; None for the theme's own. Sends only a change."""
+    for button in buttons:
+        if button.color != color:
+            button.color = color

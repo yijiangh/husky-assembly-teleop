@@ -22,6 +22,7 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Coroutine
@@ -45,8 +46,10 @@ from ...robot_interface.tool_step import TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_L
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import BUSY, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, note, note_line, numbers, section, values
 from ...ui.trace_plot import TracePlot
-from ...shared.teleop.dpad import HOLD_TIMEOUT, PHONE_DPAD_STYLE, Hold, build_velocity_inputs
-from ...world.clearance import ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, Clearance, ClearanceRefused
+from ...shared.teleop.dpad import (BLOCKED_COLOR, HOLD_TIMEOUT, PHONE_DPAD_STYLE, UNGUARDED_COLOR, Hold,
+                                   build_velocity_inputs, color_dpad)
+from ...world.clearance import (ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, Clearance, ClearanceChecker,
+                                ClearanceRefused, assumable_joints)
 from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import unknown_robots
 from scaffolding_assembly_core.geometry import Pose
@@ -66,6 +69,8 @@ FREE_DRIVE_RETRY = 1.0
 BASE = "base"
 #: Seconds between tries of a held drive refused for starting too close, so it is not checked every tick.
 START_RETRY = 1.0
+#: Seconds between checks of every base standing, as a drive's clearance would check it (about 5 ms each).
+STANDING_EVERY = 0.5
 #: The F/T live plots: seconds shown, samples kept (twice that at 20 Hz), and ticks between redraws (viser resends
 #: the whole plot each time, so 4 Hz, not 20).
 FT_SECONDS, FT_SAMPLES, FT_PLOT_EVERY = 30.0, 1200, 5
@@ -85,6 +90,8 @@ class _BaseWidgets:
     #: The same on the phone's Control tab, set once that tab is built.
     phone_status: viser.GuiHtmlHandle | None = None
     phone_speed: viser.GuiSliderHandle | None = None
+    #: The D-pad's buttons on the laptop and on the phone, coloured by Clearance (`color_dpad`).
+    dpad: tuple[viser.GuiButtonHandle, ...] = ()
     #: The mocap offset's x, y, z inputs and the line showing what is applied.
     offset: tuple[viser.GuiNumberHandle, ...] = ()
     offset_note: viser.GuiHtmlHandle | None = None
@@ -198,6 +205,11 @@ class RobotControlPlugin(HuskyPlugin):
         self._tripped: dict[str, str] = {}
         #: Per base serial, why its drive was refused at the start, too close (no soft stop), and when.
         self._start_refused: dict[str, tuple[str, float]] = {}
+        #: Checks every base standing, so a start too close shows before a press; built in setup. Per serial, what
+        #: the last check found it too close to, and when it last started one.
+        self._standing: ClearanceChecker | None = None
+        self._too_close: dict[str, str] = {}
+        self._standing_at = -math.inf
         #: Per arm, the task keeping a clearance while this plugin jogs it; arms in `_jog_checked` once it checks.
         self._jog_guards: dict[tuple[str, str], asyncio.Task] = {}
         self._jog_checked: set[tuple[str, str]] = set()
@@ -212,6 +224,7 @@ class RobotControlPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
+        self._standing = ClearanceChecker()
         with ctx.view.ui() as gui:
             robots = gui.add_tab_group()
             for serial, robot in ctx.world.robots.items():
@@ -231,8 +244,9 @@ class RobotControlPlugin(HuskyPlugin):
             for widgets in self._bases:
                 with robots.add_tab(widgets.serial.split("-")[-1], icon=viser.Icon.ROBOT):
                     widgets.phone_status = phone.add_html("")
-                    widgets.phone_speed = build_velocity_inputs(
+                    widgets.phone_speed, buttons = build_velocity_inputs(
                         ctx, phone, widgets.serial, partial(self._on_hold, widgets.serial))
+                    widgets.dpad += tuple(buttons)
                     for arm_widgets in (arm for arm in self._arms if arm.serial == widgets.serial):
                         name = arm_widgets.arm.config.name
                         with phone.add_folder(arm_widgets.arm.config.label):
@@ -255,9 +269,11 @@ class RobotControlPlugin(HuskyPlugin):
             _BaseWidgets: The handles.
         """
         status = gui.add_html("")
+        dpad: list[viser.GuiButtonHandle] = []
 
         def velocity_inputs() -> tuple[viser.GuiSliderHandle, viser.GuiCheckboxHandle]:
-            speed = build_velocity_inputs(ctx, gui, serial, partial(self._on_hold, serial))
+            speed, buttons = build_velocity_inputs(ctx, gui, serial, partial(self._on_hold, serial))
+            dpad.extend(buttons)
             clearance = gui.add_checkbox(
                 "Clearance", initial_value=True,
                 hint=f"Soft stop the base within {STOP_DISTANCE * 100:.0f} cm of anything; arms not measured count as "
@@ -279,6 +295,7 @@ class RobotControlPlugin(HuskyPlugin):
             offset_note = gui.add_html(note_line(""))
         widgets = _BaseWidgets(serial=serial, base=base, panel=panel, status=status, speed=speed, clearance=clearance,
                                offset=offset, offset_note=offset_note)
+        widgets.dpad = tuple(dpad)
         group.on_click(ctx.defer_value(f"mocap offset {serial}",
                                        lambda clicked: self._set_offset(ctx, widgets, clicked == "Apply")))
         return widgets
@@ -367,6 +384,8 @@ class RobotControlPlugin(HuskyPlugin):
         for widgets in self._bases:
             if widgets.serial in self._driving:
                 widgets.base.send_twist(0.0, 0.0)
+        if self._standing is not None:
+            self._standing.close()
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             jog = self._tool_jogging.get(key)
@@ -467,6 +486,7 @@ class RobotControlPlugin(HuskyPlugin):
                 # Just released: send one stop now.
                 widgets.base.send_twist(0.0, 0.0)
                 self._driving.discard(widgets.serial)
+        self._check_standing(ctx, now)
         self._update_free_drive(ctx, now)
         self._update_jogs(ctx, now)
         self._update_tool_jogs(ctx, now)
@@ -532,13 +552,41 @@ class RobotControlPlugin(HuskyPlugin):
                              f"{clearance.problem}: soft stopped.\nCollisions shows the hit; Resume in Health.")
             raise
 
-    def _base_warnings(self, ctx: PluginContext, serial: str, now: float) -> str:
-        """Amber chips for driving the base: a drive refused at its start, too close; an arm out of its stow pose."""
-        chips = ""
+    def _check_standing(self, ctx: PluginContext, now: float) -> None:
+        """Every STANDING_EVERY, check each base as a drive's clearance would, so a start too close shows unpressed.
+
+        On the plugin's own worker; robots it cannot check are left out (a press says why).
+        """
+        if self._standing is None:
+            return
+        found = self._standing.finished()
+        if found is not None:
+            self._too_close = {serial: why for serial, why, hit in found if hit is not None}
+        if now - self._standing_at < STANDING_EVERY:
+            return
+        snapshot, asked = ctx.scene.snapshot, []
+        for widgets in self._bases:
+            own = robot_id(widgets.serial)
+            robot = snapshot.robots.get(own)
+            if robot is not None:
+                assumable = assumable_joints(robot.model.movable_joints, ALL_ARMS)
+                asked.append((widgets.serial, own, STOP_DISTANCE, assumable, unknown_robots(snapshot, {own})))
+        if asked and self._standing.check(snapshot, asked):
+            self._standing_at = now
+
+    def _starts_in_collision(self, serial: str, now: float) -> str:
+        """Why a drive of base `serial` would start too close: a press just refused, else the standing check; or ""."""
         refused = self._start_refused.get(serial)
         if refused is not None and (serial in self._held or now - refused[1] <= REFUSAL_SHOWN):
-            chips += chip("starts in collision", BUSY, f"{refused[0]}: nothing sent.\nUntick Clearance to drive out; "
-                                                       f"Collisions shows the hit.")
+            return refused[0]
+        return "" if serial in self._driving else self._too_close.get(serial, "")
+
+    def _base_warnings(self, ctx: PluginContext, serial: str, now: float) -> str:
+        """Amber chips for driving the base: a start too close (pressed or not); an arm out of its stow pose."""
+        chips = ""
+        if why := self._starts_in_collision(serial, now):
+            chips += chip("starts in collision", BUSY, f"{why}: Clearance refuses the D-pad (gray).\nUntick Clearance "
+                                                       f"to drive out; Collisions shows a refused press's hit.")
         config = next(robot for robot in ctx.config.robots if robot.serial == serial)
         away = from_stow(ctx.scene.snapshot.robots[robot_id(serial)], config)
         if away > STOW_TOLERANCE:
@@ -802,6 +850,9 @@ class RobotControlPlugin(HuskyPlugin):
             refused = refusal_chip((self._refusals.get((widgets.serial, BASE)), widgets.base.last_refusal), now) \
                 + self._base_warnings(ctx, widgets.serial, now)
             widgets.status.content = base_status(widgets.base, now, refused)
+            guarded = widgets.clearance is None or widgets.clearance.value
+            color_dpad(widgets.dpad, None if guarded and not self._starts_in_collision(widgets.serial, now)
+                       else BLOCKED_COLOR if guarded else UNGUARDED_COLOR)
             if widgets.offset_note is not None:
                 widgets.offset_note.content = note_line(
                     "applied " + " ".join(f"{value:.3f}" for value in widgets.base.mocap_offset) + " m")

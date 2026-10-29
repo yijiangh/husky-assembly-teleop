@@ -290,7 +290,7 @@ class GuidePanel:
         # * A failing result is accepted as it stands; one missing or out of date is only skipped.
         anyway = "Accept as is" if state.label == "fails" else "Skip"
         procedure = self.procedure
-        status = chip(procedure.doing, BUSY) if procedure.doing else ""
+        status = chip(procedure.doing, BUSY, "The step's action runs; Cancel stops it.") if procedure.doing else ""
         if procedure.outcome is not None:
             status += check_chip(procedure.outcome)
         ready = step.ready(ctx)

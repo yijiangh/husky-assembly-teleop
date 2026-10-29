@@ -82,7 +82,7 @@ class Procedure:
             self.outcome = Check(f"{label} failed", BAD, str(error))
             ctx.log_warn(f"{label}: {error}")
         except asyncio.CancelledError:
-            self.outcome = Check(f"{label} cancelled", PENDING)
+            self.outcome = Check(f"{label} cancelled", PENDING, "Stopped before it finished; run it again when ready.")
             raise
         finally:
             self.doing, self.prompt = "", ""

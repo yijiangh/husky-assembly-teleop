@@ -175,7 +175,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             if not serials:
-                self._status.content = block(chip("no robots configured", NONE))
+                self._status.content = block(chip("no robots configured", NONE,
+                                                  "The monitor's robots parameter names none: nothing to drive."))
                 return
             self.serial = serials[0]
             self._robot = gui.add_dropdown("Robot", options=serials, initial_value=self.serial)
@@ -790,9 +791,10 @@ class BaseExperimentPlugin(HuskyPlugin):
     def _status_html(self, ctx: PluginContext) -> str:
         """Chips on one line: robot, mocap, follower, velocity controller, run."""
         base = ctx.world.robots[self.serial].base
-        chips = chip(escape(self.serial), SECTION_CTRL)
+        chips = chip(escape(self.serial), SECTION_CTRL, "The robot the experiment drives.")
         lost = pose_lost(base.mocap_id, base.state, ctx.now())
-        chips += chip("not tracked", FAIL, lost) if lost else chip("tracked", OK)
+        chips += (chip("not tracked", FAIL, lost) if lost
+                  else chip("tracked", OK, "Mocap tracks the base; a run needs it."))
         follower = self._follower(ctx)
         if follower is None:
             chips += chip("no follower", FAIL, "start crl_husky pure_pursuit (or pure_pursuit_sim.launch.py)")
@@ -801,7 +803,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         if not base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
             chips += chip("velocity controller off", BUSY, "the base will not move (fine in the simulator)")
         if self.running:
-            chips += chip("running", BUSY)
+            chips += chip("running", BUSY, "A run drives the base; Stop ends it.")
         elif self._outcome:
             failed = self._outcome.startswith(("aborted", "timed out", "not started", "not driven", "not sent",
                                                "robot not changed", "soft stopped", E_STOPPED))

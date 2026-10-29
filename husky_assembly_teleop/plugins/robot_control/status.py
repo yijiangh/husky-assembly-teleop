@@ -95,12 +95,14 @@ def _controller_chip(controllers: ControllerManagerInterface) -> str:
     """The running controller, coloured by what the last switch did."""
     state = controllers.state
     if state.switch_in_flight:
-        return chip(f"→ {CONTROLLER_LABELS.get(state.switch_in_flight, state.switch_in_flight)}", BUSY)
+        return chip(f"→ {CONTROLLER_LABELS.get(state.switch_in_flight, state.switch_in_flight)}", BUSY,
+                    "Switching to this controller; waiting for the controller manager's answer.")
     if state.switch_error:
         return chip("switch failed", FAIL, hover(f"{state.switch_error}. See the console."))
     if state.active is None:
         return chip("no ctrl", NONE, "no controller running, or no answer yet")
-    return chip(CONTROLLER_LABELS.get(state.active, state.active), OK)
+    return chip(CONTROLLER_LABELS.get(state.active, state.active), OK,
+                "The controller running now; the Run buttons in Robot control switch it.")
 
 
 def refusal_chip(refusals: Iterable[Refusal | None], now: float) -> str:
@@ -115,8 +117,12 @@ def refusal_chip(refusals: Iterable[Refusal | None], now: float) -> str:
 def phone_base_status(base: BaseInterface, refused: str = "") -> str:
     """The phone's line for a base: whether its D-pad drives (else switch on the laptop), and `refused`."""
     if base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
-        return chip_line(chip("D-pad drives", OK) + refused)
-    return chip_line(_controller_chip(base.controllers) + chip("D-pad off: switch on the laptop", BUSY) + refused)
+        return chip_line(chip("D-pad drives", OK, "The velocity controller runs: holding an arrow drives the base.")
+                         + refused)
+    off = chip("D-pad off: switch on the laptop", BUSY,
+               "The velocity controller is off, so the D-pad does nothing. Switch to Vel in Robot control on the "
+               "laptop.")
+    return chip_line(_controller_chip(base.controllers) + off + refused)
 
 
 def phone_arm_status(arm: ArmInterface, refused: str = "") -> str:
@@ -160,7 +166,7 @@ def arm_status(arm: ArmInterface, now: float, refused: str = "") -> str:
     state = arm.state
     chips = _controller_chip(arm.controllers) + freshness_chip("joints", state.last_update_time, now)
     if state.is_executing:
-        chips += chip("moving", BUSY)
+        chips += chip("moving", BUSY, "The arm runs a trajectory; Hold or Stop all stops it.")
     chips += refused
     joints = arm.joint_vector()
     stale = state.last_update_time is None or now - state.last_update_time >= STALE_AFTER
@@ -187,17 +193,18 @@ def tool_status(state: object, now: float) -> str:
     if isinstance(state, RobotiqState):
         chips = freshness_chip("joints", state.last_update_time, now)
         if state.reactivating:
-            chips += chip("reactivating", BUSY)
+            chips += chip("reactivating", BUSY, "The gripper opens and closes once; hold nothing in it.")
         elif state.reactivate_error:
             chips += chip("reactivate failed", FAIL, state.reactivate_error)
         if state.moving:
-            chips += chip("moving", BUSY)
+            chips += chip("moving", BUSY, "The fingers move to their target.")
         elif state.last_result_ok is False:
             chips += chip("short of target", FAIL, "the last command did not reach its target")
         # The target until the first joint state arrives.
         shown = state.position if state.position is not None else state.commanded_position
         if shown is not None:
-            chips += chip("closed" if shown > RobotiqGripper.CLOSED_POSITION / 2 else "open", NONE)
+            chips += chip("closed" if shown > RobotiqGripper.CLOSED_POSITION / 2 else "open", NONE,
+                          "From the finger position: past halfway counts as closed.")
         stale = state.last_update_time is None or now - state.last_update_time >= STALE_AFTER
         measured = None if state.position is None else [state.position]
         commanded = None if state.commanded_position is None else [state.commanded_position]
@@ -221,7 +228,8 @@ def tool_status(state: object, now: float) -> str:
             chips += chip("set_io failed", FAIL, "the arm refused the last output change")
         # Outputs as the UR reports them; the tool itself reports nothing.
         if state.gripper_closed is not None:
-            chips += chip("grip closed" if state.gripper_closed else "grip open", NONE)
+            chips += chip("grip closed" if state.gripper_closed else "grip open", NONE,
+                          "The tool's gripper output as the arm reports it; the tool itself reports nothing.")
         return chip_line(chips)
     return ""
 

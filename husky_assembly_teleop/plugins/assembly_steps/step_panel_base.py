@@ -40,8 +40,11 @@ if TYPE_CHECKING:
 SLIDER_STEP = 0.05
 
 #: Chip text and colour of each plan state.
-_STATE_CHIPS = {"none": ("no plan", NONE), "planning": ("planning…", BUSY), "ready": ("plan ready", OK),
-                "stale": ("plan stale: replan", BUSY), "sent": ("sent", OK)}
+_STATE_CHIPS = {"none": ("no plan", NONE, "Press Plan for the current step."),
+                "planning": ("planning…", BUSY, "The planner searches; the line below the buttons says how it goes."),
+                "ready": ("plan ready", OK, "Exec runs it."),
+                "stale": ("plan stale: replan", BUSY, "The robot or the step changed since planning; Plan again."),
+                "sent": ("sent", OK, "Sent to the robot.")}
 
 
 @dataclass

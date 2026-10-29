@@ -151,7 +151,8 @@ class ConsolePlugin(HuskyPlugin):
             self._list.content = render(kept[-SHOWN_LINES:])
         late = log.late_share()
         self._status.content = chip_line(
-            chip(f"showing {self._show.lower()}", INFO)
+            chip(f"showing {self._show.lower()}", INFO, "Which lines show; Show below changes it, Hide leaves out "
+                                                        "sources.")
             + chip(f"late ticks {late:.0%}", BUSY if late > LATE_TICKS_WARN else NONE,
                    "Share of the last minute's tick periods that were late, a freeze counting for every period it "
                    "lasted; Show All lists where the time went. Often the power profile: run the monitor under "

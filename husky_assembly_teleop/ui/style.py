@@ -193,5 +193,5 @@ def freshness_chip(label: str, last_update_time: float | None, now: float) -> st
     if last_update_time is None:
         return chip(label, NONE, "no data yet")
     if now - last_update_time < STALE_AFTER:
-        return chip(label, OK)
+        return chip(label, OK, "messages arriving")
     return chip(label, BUSY, f"last message {now - last_update_time:.0f}s ago")

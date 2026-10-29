@@ -47,9 +47,14 @@ COMMIT_STYLE = f"<style>{columns_css(viser.Icon.SEND, 2)}</style>"
 
 
 #: Chip text and colour of each state of the planner's latest plan, and of no plan.
-_PLAN_CHIPS = {None: ("no plan", NONE), "planning": ("planning…", BUSY), "ready": ("plan ready", OK),
-               "stale": ("plan stale: replan", BUSY), "sent": ("sent", OK), "failed": ("no plan found", FAIL),
-               "cancelled": ("cancelled", NONE)}
+_PLAN_CHIPS = {None: ("no plan", NONE, "Set a target and press Plan."),
+               "planning": ("planning…", BUSY, "The planner searches; the line below the buttons says how it goes."),
+               "ready": ("plan ready", OK, "Play previews it; Commit sends it."),
+               "stale": ("plan stale: replan", BUSY, "The robot moved since planning; the line below says how. "
+                                                     "Plan again."),
+               "sent": ("sent", OK, "Sent to the robot; Cancel stops it."),
+               "failed": ("no plan found", FAIL, "The line below the buttons says why."),
+               "cancelled": ("cancelled", NONE, "Planning was stopped; Plan tries again.")}
 
 
 class PlannerPanel(HuskyPlugin):
@@ -324,7 +329,7 @@ class PlannerPanel(HuskyPlugin):
         """The state of the planner's latest plan as a chip."""
         plan = self._api.plan
         if self._target_moved:
-            return chip("target moved: replan", BUSY)
+            return chip("target moved: replan", BUSY, "The target changed since planning; Plan again before Commit.")
         return chip(*_PLAN_CHIPS[plan.state if plan is not None else None])
 
     def _message_html(self) -> str:

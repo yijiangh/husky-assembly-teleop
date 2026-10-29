@@ -255,7 +255,8 @@ class ArmPlannerPanel(PlannerPanel):
         tracked = ctx.scene.snapshot.robots[robot_id(self.serial)].base_tracked
         robot = chip(escape(f"{self.serial} {self.arm} {'tracked' if tracked else 'not tracked'}"),
                      OK if tracked else BUSY,
-                     "" if tracked else "plans from where the base was last seen; a commit needs it tracked by mocap")
+                     "mocap tracks the base: plans start from its live pose" if tracked
+                     else "plans from where the base was last seen; a commit needs it tracked by mocap")
         self._status.content = chip_line(robot + self._plan_chip()
                                          + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
         # Loading a target from the step can switch the robot or arm; show that here.
