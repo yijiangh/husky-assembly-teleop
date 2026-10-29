@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+import random
 import re
 import threading
 from contextlib import suppress
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -14,12 +16,15 @@ from planning_fixtures import ALICE, BELLE, CINDY, design_scene, movement, purge
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.experiments.assembly_plan_check import perturbed, run_check, select_actions, write_solutions
-from husky_assembly_teleop.shared.assembly_planning import route_search, tamp_route
+from husky_assembly_teleop.shared.assembly_planning import route_search, search_tree, tamp_route
 from husky_assembly_teleop.shared.assembly_planning.ik import ssik_unavailable
+from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine, classify
 from husky_assembly_teleop.shared.assembly_planning.route_result import aims_at_line, line_goal, pose_error
 from husky_assembly_teleop.shared.assembly_planning.route_search import FreeSearch
+from husky_assembly_teleop.shared.assembly_planning.search_tree import GOAL_TREE, START_TREE, SearchTree
 from husky_assembly_teleop.shared.assembly_planning.tamp_route import check_goal, plan_movement
+from husky_assembly_teleop.shared.planner.rrt_connect import MAX_ITERATIONS, RESTARTS
 from husky_assembly_teleop.world.kinematics import stow_joints
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
@@ -372,6 +377,80 @@ def test_the_search_settings_reach_tamps_free_search(purged, configs, mirrors, m
     answer[0] = None
     plan_movement(_cindys(mirrors), purged, home, snapshot, configs, log=lambda _line: None)
     assert asked == [FreeSearch().tamp()] * 3
+
+
+@pytest.mark.slow
+def test_the_free_search_draws_each_node_at_its_tool0s_in_the_world(purged, configs, mirrors, monkeypatch):
+    """B20's way home: tamp's draw_fn calls reach the tree, each node located where the core's FK puts its tool0s.
+
+    A sample, the two roots, and a node grown from the start; the search fails, so its tree stays, ended. A check
+    tamp runs meanwhile is recorded at the tool0s it checked; the planner's own check is back afterwards.
+    """
+    monkeypatch.setattr(search_tree, "RECORD_PERIOD", 0.0)
+    drawn, mirror = {}, _cindys(mirrors)
+    before = vars(mirror.planner).get("check_collision")
+
+    def plan(planner, state, goal, draw_fn, **_options):
+        names = list(goal)
+        start = [float(state.robot_configuration[name]) for name in names]
+        drawn.update(names=names, start=start, child=[value + 0.1 for value in start])
+        planner.check_collision(state)
+        drawn["checks"] = tree.probes()
+        draw_fn([0.5] * len(names), [])
+        draw_fn(start, [])
+        draw_fn([goal[name] for name in names], [])
+        draw_fn(drawn["child"], [drawn["child"], start], True, True)
+        return None, {"failure_reason": "birrt_failed"}
+
+    monkeypatch.setattr(route_search, "plan_free_dual_arm", plan)
+    snapshot = design_scene(purged, "B20_R_home")
+    tree = SearchTree()
+    route = plan_movement(mirror, purged, step(purged, "B20_R_home"), snapshot, configs,
+                          search=FreeSearch(5.0, 3, 0.1, tries=1), log=lambda _line: None, tree=tree)
+    assert vars(mirror.planner).get("check_collision") is before
+    view = tree.view
+    assert not route.ok and view.over and not view.found and view.label == "try 1/1"
+    assert list(view.trees) == [START_TREE, GOAL_TREE, START_TREE] and list(view.parents) == [-1, -1, 0]
+    robot, urdf = snapshot.robots[CINDY_ID], robot_config(CINDY).model.urdf
+    for index, values in ((0, drawn["start"]), (2, drawn["child"])):
+        joints = {**robot.joints, **dict(zip(drawn["names"], values))}
+        expected = [link_pose(urdf, robot.base, joints, f"{arm}_tool0").position for arm in ("left_ur_arm",
+                                                                                             "right_ur_arm")]
+        np.testing.assert_allclose(view.points[index], expected, atol=1e-5)
+        if index == 0:
+            points, collided = drawn["checks"]
+            assert list(collided) == [False]
+            np.testing.assert_allclose(points[0], expected, atol=1e-5)
+
+
+@pytest.mark.slow
+def test_the_one_arm_search_draws_its_trees_at_alices_tool0(purged, configs, mirrors, monkeypatch):
+    """Alice's leave round a box halfway along her way: birrt's nodes reach the tree, each at her tool0 by the core's FK.
+
+    Every iteration recorded; the path is found, so the last one stays, found. No check is kept for this search.
+    """
+    monkeypatch.setattr(search_tree, "RECORD_PERIOD", 0.0)
+    alice = robot_id(f"a200-{ALICE}")
+    mirror = mirrors.setdefault(alice, CompasFabMirror(alice))
+    snapshot = design_scene(purged, "B21_HR_leave")
+    robot, urdf, names = snapshot.robots[alice], robot_config(ALICE).model.urdf, arm_joint_names("ur_arm")
+    stowed = stow_joints(robot_config(ALICE), names)
+    halfway = {name: (robot.joints[name] + value) / 2 for name, value in stowed.items()}
+    box = Body("obstacles/box", box_geometry((0.09, 0.09, 0.09)),
+               link_pose(urdf, robot.base, {**robot.joints, **halfway}, "ur_arm_tool0"))
+    random.seed(0)
+    np.random.seed(0)
+    tree = SearchTree()
+    route = plan_movement(mirror, purged, step(purged, "B21_HR_leave"), replace(snapshot, bodies={
+        **snapshot.bodies, box.id: box}), configs, log=lambda _line: None, tree=tree)
+    view = tree.view
+    assert route.ok and route.planner == "arm.plan_arm" and view.over and view.found and view.label == "try 1/3"
+    assert len(view.trees) > 2 and (view.max_iterations, view.runs) == (MAX_ITERATIONS, RESTARTS + 1)
+    assert len(tree.probes()[1]) == 0
+    for index in (0, len(view.trees) - 1):
+        joints = {**robot.joints, **dict(zip(names, view.configs[index]))}
+        np.testing.assert_allclose(view.points[index], [link_pose(urdf, robot.base, joints, "ur_arm_tool0").position],
+                                   atol=1e-5)
 
 
 @pytest.mark.slow

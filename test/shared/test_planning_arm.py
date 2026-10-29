@@ -21,7 +21,7 @@ def test_the_search_samples_within_the_urdf_and_ur_limits(monkeypatch):
     upper = -lower
     samples = []
 
-    def connect(_start, _goal, _distance, sample, *_args):
+    def connect(_start, _goal, _distance, sample, *_args, **_options):
         samples.extend(sample() for _ in range(2000))
         return SimpleNamespace(states=None, reason="no path")
 

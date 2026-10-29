@@ -8,11 +8,14 @@ The arm planner and the motion planner each keep one.
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 from scaffolding_assembly_core.scene import Scene
+
+if TYPE_CHECKING:
+    from .search_tree import SearchTree
 
 
 class MirrorPool:
@@ -27,6 +30,8 @@ class MirrorPool:
         self.gui = False
         #: Given to each mirror: logs each full rebuild of its cell, and why. Set by the plugin.
         self.log: Callable[[str], None] | None = None
+        #: Records the free searches' trees while they run (`run_plan`), for drawing; set by the plugin, or None.
+        self.tree: SearchTree | None = None
 
     @property
     def serials(self) -> tuple[str, ...]:

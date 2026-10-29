@@ -44,7 +44,7 @@ class Corners:
 def connect(start: State, goal: State, distance: Callable[[State, State], float], sample: Callable[[], State],
             extend: Callable[[State, State], Sequence[State]], collides: Callable[[State], bool],
             abort: threading.Event, time_limit: float = TIME_LIMIT, attempts: int = 1,
-            improve_time: float = 0.0) -> Corners:
+            improve_time: float = 0.0, draw_fn: Callable | None = None) -> Corners:
     """Find a collision-free path from `start` to `goal`, trying the straight move first.
 
     Args:
@@ -59,6 +59,7 @@ def connect(start: State, goal: State, distance: Callable[[State, State], float]
         time_limit: Give up searching after this long, seconds.
         attempts: Searches to keep the shortest path of, by `distance` between corners; more avoid the odd detour.
         improve_time: Seconds after which no further search starts once a path is found.
+        draw_fn: birrt's hook for each sample and node (`SearchTree.draw_fn`), or None.
 
     Returns:
         Corners: The path's corners, or why there is none ("cancelled" when aborted).
@@ -79,7 +80,7 @@ def connect(start: State, goal: State, distance: Callable[[State, State], float]
             if elapsed >= time_limit or (best is not None and elapsed >= improve_time):
                 break
             path = birrt(start, goal, distance, sample, extend, collision_fn, max_time=time_limit - elapsed,
-                         max_iterations=MAX_ITERATIONS, restarts=RESTARTS, smooth=SMOOTHING)
+                         max_iterations=MAX_ITERATIONS, restarts=RESTARTS, smooth=SMOOTHING, draw_fn=draw_fn)
             if path is None:
                 break
             # birrt returns every small step, maybe without the start: keep the corners, ending exactly at the goal.

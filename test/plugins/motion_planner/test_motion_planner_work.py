@@ -31,6 +31,8 @@ ASK = ServoAsk({}, 0.0002, False, True)
 class Pool:
     """A pool whose mirror fails, to show the work never raises; counts the mirrors asked for."""
 
+    tree = None
+
     def __init__(self):
         """Ask for none yet."""
         self.asked = []
@@ -116,7 +118,7 @@ def test_the_rhino_obstacles_box_reaches_the_planning_scene(work, module, monkey
     configs = tuple(robot_config(serial) for serial in (ALICE, BELLE, CINDY))
     asked = MotionPlanRequest(purged, step(purged, "B20_J_transfer"), design_scene(purged, "B20_J_transfer"), configs,
                               transfer_as_free=True, obstacles_collide=False, servo=ASK)
-    pool = SimpleNamespace(mirror=lambda serial: SimpleNamespace(robot_id=robot_id(serial)))
+    pool = SimpleNamespace(mirror=lambda serial: SimpleNamespace(robot_id=robot_id(serial)), tree=None)
     answer = work(pool, asked, threading.Event(), print)
     assert "kept what scene_for was asked" in reason(answer)
     assert [call["obstacles_collide"] for call in calls] == [False]
@@ -132,5 +134,5 @@ def test_a_requests_goal_poses_step_and_search_reach_plan_movement(loaded, monke
     search = FreeSearch(tries=1)
     question = MotionPlanRequest(loaded, loaded.steps[2], snapshot, configs, goal_poses=goals, linear_step=0.001,
                                  search=search)
-    run_plan(SimpleNamespace(mirror=lambda _serial: None), question, threading.Event(), print)
+    run_plan(SimpleNamespace(mirror=lambda _serial: None, tree=None), question, threading.Event(), print)
     assert asked["goal_poses"] is goals and asked["linear_step"] == 0.001 and asked["search"] is search

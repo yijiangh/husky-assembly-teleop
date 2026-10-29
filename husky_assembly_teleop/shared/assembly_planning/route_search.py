@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Callable, Iterator, Mapping, Sequence
 
 import numpy as np
+import pybullet as p
 from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
 
 from scaffolding_assembly_core.geometry import Pose
@@ -21,6 +23,7 @@ from scaffolding_assembly_core.process import Process
 from scaffolding_assembly_core.process.solutions import CHAIN_TOLERANCE, MovementResult, Trajectory
 from scaffolding_assembly_core.scene import Scene
 
+from ..planner.rrt_connect import MAX_ITERATIONS, RESTARTS
 from .process_steps import Step
 from .arm import plan_arm
 from .collision import collision_hit, in_process_terms, swept_check, world_frame_fk
@@ -28,8 +31,11 @@ from .joints import joint_limits, outside_limits
 from .movement import ArmPart, GoalSource, MovementSpec
 from .route_result import RouteResult, line_goal, pose_error
 from .scene_for import PlanningScene
+from .search_tree import RUNS, SearchTree
 
 if TYPE_CHECKING:
+    from compas_fab.backends import PyBulletPlanner
+
     from ...config import RobotConfig
     from ...world.collision_hit import CollisionHit
 
@@ -74,7 +80,8 @@ class RouteSearch:
 
     def __init__(self, mirror: CompasFabMirror, process: Process, step: Step, spec: MovementSpec,
                  planning: PlanningScene, scene: Scene, config: RobotConfig, goal_joints: Mapping[str, float] | None,
-                 abort: threading.Event, log: Callable[[str], None], search: FreeSearch = FreeSearch()):
+                 abort: threading.Event, log: Callable[[str], None], search: FreeSearch = FreeSearch(),
+                 tree: SearchTree | None = None):
         """Hold what every routine needs; `names` and `start` are set once the mirror is synced.
 
         Args:
@@ -89,10 +96,11 @@ class RouteSearch:
             abort: Stops between tries.
             log: Gets the lines of every try, the checks, and the fallbacks of IK and the straight moves.
             search: The free searches' settings.
+            tree: Records the free searches' trees while they run (`SearchTree`), or None.
         """
         self.mirror, self.process, self.step, self.spec = mirror, process, step, spec
         self.planning, self.scene, self.config, self.abort, self.log = planning, scene, config, abort, log
-        self.search = search
+        self.search, self.tree = search, tree
         self.override = dict(goal_joints) if goal_joints is not None else None
         self.robot = planning.scene.robots[planning.acting]
         self.names: list[str] = []
@@ -184,9 +192,14 @@ class RouteSearch:
             self.next_attempt()
             self.note(f"max_time {search.max_time:.0f} s, max_iterations {search.max_iterations}, joint_resolution "
                       f"{search.joint_resolution} rad")
-            started = time.monotonic()
-            with self.mirror.lend() as planner, world_frame_fk(planner):
-                path, info = plan_free_dual_arm(planner, self.mirror.state, goal, **search.tamp())
+            started, path = time.monotonic(), None
+            with self.mirror.lend() as planner, world_frame_fk(planner), \
+                    self.recorded(goal, search.max_iterations, RUNS, planner) as drawn:
+                try:
+                    path, info = plan_free_dual_arm(planner, self.mirror.state, goal, **search.tamp(), **drawn)
+                finally:
+                    if self.tree is not None:
+                        self.tree.end(found=path is not None)
             self.mirror.sync(self.scene)
             if path is None and info.get("failure_reason") == "start_or_goal_in_collision":
                 self.refuse_endpoints(goal)
@@ -194,6 +207,60 @@ class RouteSearch:
             if not failures[-1]:
                 return self.solved(path, goals)
         raise Refused(self.gave_up(failures, search.tries))
+
+    @contextmanager
+    def recorded(self, goal: dict[str, float], max_iterations: int, runs: int,
+                 planner: PyBulletPlanner | None = None) -> Iterator[dict]:
+        """Record a birrt search into `tree`, begun for this try: yields the search's `draw_fn`; {} without a tree.
+
+        - With tamp's `planner`, every check it runs is recorded too (`SearchTree.checked`), by wrapping this
+          instance's `check_collision`, as `world_frame_fk` wraps its kinematics; put back on exit.
+        - * Tool0s are read in the mirror's own PyBullet world, placed at the robot's base. A check leaves the arms
+          where it checked them; the next one sets the searched joints again, so posing them changes nothing.
+        """
+        if self.tree is None:
+            yield {}
+            return
+        tree, client = self.tree, self.mirror.client
+        robot, client_id = client.robot_puid, client.client_id
+        joints = [client.robot_joint_puids[name] for name in self.names]
+        links = [client.robot_link_puids[f"{part.arm}_tool0"] for part in self.spec.arms]
+
+        def tool0s() -> np.ndarray:
+            return np.array([p.getLinkState(robot, link, computeForwardKinematics=True,
+                                            physicsClientId=client_id)[4] for link in links])
+
+        def locate(config) -> np.ndarray:
+            for joint, value in zip(joints, config):
+                p.resetJointState(robot, joint, float(value), physicsClientId=client_id)
+            return tool0s()
+
+        start = [float(self.mirror.state.robot_configuration[name]) for name in self.names]
+        tree.begin(f"try {self.attempts}/{self.search.tries}", start, [goal[name] for name in self.names], locate,
+                   max_iterations, runs)
+        if planner is None:
+            yield {"draw_fn": tree.draw_fn}
+            return
+        check = planner.check_collision
+
+        def checking(*args, **options):
+            collided = True
+            try:
+                answer = check(*args, **options)
+                collided = False
+                return answer
+            finally:
+                tree.checked(tool0s(), collided)
+
+        had_own = "check_collision" in vars(planner)
+        planner.check_collision = checking
+        try:
+            yield {"draw_fn": tree.draw_fn}
+        finally:
+            if had_own:
+                planner.check_collision = check
+            else:
+                del planner.check_collision
 
     def one_arm(self, part: ArmPart, goal: dict[str, float], goals: dict[ArmPart, Pose] | None = None) -> RouteResult:
         """The one-arm search (`arm.plan_arm`), swept-checked; tried again on no path or a swept hit.
@@ -217,9 +284,14 @@ class RouteSearch:
         for _ in range(self.search.tries):
             self.next_attempt()
             self.note(f"max_time {SUPPORT_TIME:.0f} s")
-            started = time.monotonic()
-            found = plan_arm(self.mirror, part.arm, [goal[name] for name in self.names], self.abort, limits=limits,
-                             label=self.label, time_limit=SUPPORT_TIME)
+            started, found = time.monotonic(), None
+            with self.recorded(goal, MAX_ITERATIONS, RESTARTS + 1) as drawn:
+                try:
+                    found = plan_arm(self.mirror, part.arm, [goal[name] for name in self.names], self.abort,
+                                     limits=limits, label=self.label, time_limit=SUPPORT_TIME, **drawn)
+                finally:
+                    if self.tree is not None:
+                        self.tree.end(found=found is not None and found.path is not None)
             self.mirror.sync(self.scene)
             if found.path is None and found.reason.startswith(("target is in collision", "start is in collision")):
                 self.refuse_endpoints(goal)

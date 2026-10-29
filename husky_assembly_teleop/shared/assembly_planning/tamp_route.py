@@ -37,6 +37,7 @@ from .movement import GoalSource, MovementSpec, Routine, classify
 from .route_result import GoalCheck, RouteResult, aims_at_line, line_goal, pose_error
 from .route_search import ATTEMPTS, FreeSearch, Refused, RouteSearch, pairs_text
 from .scene_for import RobotBelief, scene_for
+from .search_tree import SearchTree
 from .single_arm import plan_linear
 
 if TYPE_CHECKING:
@@ -60,7 +61,7 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
                   obstacles_collide: bool = True, goal_joints: Mapping[str, float] | None = None,
                   goal_poses: Mapping[str, Pose] | None = None, linear_step: float | None = None,
                   search: FreeSearch | None = None, abort: threading.Event | None = None,
-                  log: Callable[[str], None] = print) -> RouteResult:
+                  log: Callable[[str], None] = print, tree: SearchTree | None = None) -> RouteResult:
     """Plan one movement from where the snapshot has its robot, by its routine (`classify`).
 
     Args:
@@ -80,6 +81,7 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
         search: The free searches' settings (`MotionPlanRequest.search`); None: the defaults.
         abort: Set from another thread to stop between tries.
         log: Gets a line per try and check, and the IK and linear fallback lines.
+        tree: Records the free search's trees while it runs, for drawing; None records nothing.
 
     Returns:
         RouteResult: Solved, failed with the reason, or not planned (no arm moves, no goal yet).
@@ -95,7 +97,7 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
         return _not_planned(spec, "needs the transfer start, after M3", started)
     route = _route(mirror, loaded, step, snapshot, robots, spec, beliefs=beliefs, ignore_built=ignore_built,
                    obstacles_collide=obstacles_collide, goal_joints=goal_joints, goal_poses=goal_poses,
-                   linear_step=linear_step, search=search, abort=abort or threading.Event(), log=log)
+                   linear_step=linear_step, search=search, abort=abort or threading.Event(), log=log, tree=tree)
     try:
         result = route.run()
     except Refused as refused:
@@ -164,7 +166,8 @@ def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot:
            robots: tuple[RobotConfig, ...], spec: MovementSpec, *, beliefs: Mapping[str, RobotBelief] | None,
            ignore_built: bool, obstacles_collide: bool, goal_joints: Mapping[str, float] | None,
            abort: threading.Event, log: Callable[[str], None], goal_poses: Mapping[str, Pose] | None = None,
-           linear_step: float | None = None, search: FreeSearch | None = None) -> _Route:
+           linear_step: float | None = None, search: FreeSearch | None = None,
+           tree: SearchTree | None = None) -> _Route:
     """A movement's route: its planning scene, and the scene its searches run in (without the bar for the workaround).
 
     Raises:
@@ -180,7 +183,7 @@ def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot:
         if spec.routine is Routine.TRANSFER_FREE else planning.scene
     config = next(config for config in robots if robot_id(config.serial) == planning.acting)
     return _Route(mirror, loaded.process, step, spec, planning, search_scene, config, goal_joints, abort, log,
-                  goal_poses=goal_poses, linear_step=linear_step, search=search)
+                  goal_poses=goal_poses, linear_step=linear_step, search=search, tree=tree)
 
 
 def _sync_again(route: _Route) -> str:
@@ -202,7 +205,7 @@ class _Route(RouteSearch):
     """One movement planned by its routine, after its start is checked once."""
 
     def __init__(self, *args, goal_poses: Mapping[str, Pose] | None = None, linear_step: float | None = None,
-                 search: FreeSearch | None = None):
+                 search: FreeSearch | None = None, tree: SearchTree | None = None):
         """A route as `RouteSearch` makes it, with a retreat's own goals and step, and the free searches' settings.
 
         Args:
@@ -210,8 +213,9 @@ class _Route(RouteSearch):
             goal_poses: Process flange id -> world pose a retreat goes to instead of along its line, or None.
             linear_step: A retreat's largest step between waypoints, metres; None: tamp's default.
             search: The free searches' settings (`MotionPlanRequest.search`); None: the defaults.
+            tree: Records the free search's trees, or None.
         """
-        super().__init__(*args, search=search or FreeSearch())
+        super().__init__(*args, search=search or FreeSearch(), tree=tree)
         self.goal_poses, self.linear_step = goal_poses, linear_step
 
     # --- --- --- --- --- ROUTINES --- --- --- --- ---

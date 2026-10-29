@@ -121,6 +121,13 @@ class MotionPlannerContract(Protocol):
     def running(self) -> str:
         """str: The label of the request running now, or ""."""
 
+    @property
+    def progress(self) -> str:
+        """str: The running free search's progress in one line, refreshed every few seconds; "" when none runs.
+
+        Its try, birrt's run and iteration, the gap between its two trees (rad), and their nodes.
+        """
+
     def request_plan(self, request: MotionPlanRequest) -> asyncio.Future[RouteResult]:
         """Plan the movement from the snapshot's start (`plan_movement`)."""
 

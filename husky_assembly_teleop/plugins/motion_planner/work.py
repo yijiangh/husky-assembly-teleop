@@ -40,13 +40,18 @@ def run_plan(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Even
         RouteResult: The plan, or a failed result with the reason (routine None if it failed before classifying).
     """
     started = time.monotonic()
+    # * The pool's tree records this plan's free searches; the last plan's trees go now.
+    tree = pool.tree
+    if tree is not None:
+        tree.clear()
     try:
         serial = _acting(request, abort)
         return plan_movement(pool.mirror(serial), request.loaded, request.step, request.snapshot, request.robots,
                              transfer_as_free=request.transfer_as_free, beliefs=request.beliefs,
                              ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide,
                              goal_joints=request.goal_joints, goal_poses=request.goal_poses,
-                             linear_step=request.linear_step, search=request.search, abort=abort, log=log)
+                             linear_step=request.linear_step, search=request.search, abort=abort, log=log,
+                             tree=tree)
     except Exception as error:
         return RouteResult(MovementResult("failed", _reason(error)), None, seconds=time.monotonic() - started)
 

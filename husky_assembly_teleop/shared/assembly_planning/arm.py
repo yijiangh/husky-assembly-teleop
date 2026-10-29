@@ -71,7 +71,7 @@ def _distance(q1: Sequence[float], q2: Sequence[float]) -> float:
 
 def plan_arm(mirror: CompasFabMirror, arm_name: str, goal: Sequence[float], abort: threading.Event, *,
              limits: tuple[Sequence[float], Sequence[float]], label: Callable[[str], str] = str,
-             time_limit: float = TIME_LIMIT) -> PlanResult[ArmPath]:
+             time_limit: float = TIME_LIMIT, draw_fn: Callable | None = None) -> PlanResult[ArmPath]:
     """Plan a collision-free joint path for one arm, from where it is in the synced world to `goal`.
 
     Args:
@@ -83,6 +83,7 @@ def plan_arm(mirror: CompasFabMirror, arm_name: str, goal: Sequence[float], abor
             within them and within UR_JOINT_LIMITS.
         label: Display text for a scene id, for the reasons.
         time_limit: Give up searching after this long, seconds.
+        draw_fn: birrt's hook for each sample and node (`SearchTree.draw_fn`), or None.
 
     Returns:
         PlanResult[ArmPath]: The path, or why there is none.
@@ -107,7 +108,7 @@ def plan_arm(mirror: CompasFabMirror, arm_name: str, goal: Sequence[float], abor
 
     lower, upper = np.maximum(limits[0], -UR_JOINT_LIMITS), np.minimum(limits[1], UR_JOINT_LIMITS)
     corners = connect(start, goal, _distance, lambda: tuple(np.random.uniform(lower, upper)), _extend,
-                      lambda q: check(q) is not None, abort, time_limit)
+                      lambda q: check(q) is not None, abort, time_limit, draw_fn=draw_fn)
     if corners.states is None:
         return PlanResult(None, corners.reason, time.time() - started)
     path = ArmPath.at_preview_speed(names, np.array(corners.states, dtype=float))

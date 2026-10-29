@@ -11,9 +11,11 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from async_timeout import timeout
 from planning_fixtures import ALICE, BELLE, CINDY, DATA, design_scene, purged_process, robot_config, step
+from plugin_fakes import FakeScene
 from process_fixtures import build_process
 
 from husky_assembly_teleop.plugins.motion_planner import plugin as motion
@@ -21,6 +23,7 @@ from husky_assembly_teleop.plugins.motion_planner.plugin import MotionPlannerPlu
 from husky_assembly_teleop.shared.assembly_planning.ik import ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import RouteResult
+from husky_assembly_teleop.shared.assembly_planning.search_tree import TreeView
 from husky_assembly_teleop.shared.assembly_planning.servo_route import ServoStep
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
@@ -39,6 +42,7 @@ class Pool:
     """A mirror pool that fails to make a mirror, counting what it is asked."""
 
     serials = ()
+    tree = None
 
     def __init__(self):
         """Nothing asked yet."""
@@ -157,6 +161,7 @@ def test_cancel_answers_queued_requests_unrun(monkeypatch):
         await asyncio.get_running_loop().run_in_executor(None, started.wait, 5.0)
         assert plugin.running == "first"
         plugin._status, plugin._details = SimpleNamespace(content=""), SimpleNamespace(content="")
+        plugin._search, plugin._show_tree = SimpleNamespace(content=""), SimpleNamespace(value=True)
         plugin.draw(None)
         assert plugin._status.content.count('class="chip-line"') == 1 and "2 queued" in plugin._status.content
         plugin.request_cancel()
@@ -295,3 +300,44 @@ def test_the_service_on_the_purged_process():
     assert plan.ok and plan.routine is Routine.TRANSFER_FREE and plan.planner == "tamp.plan_free_dual_arm"
     assert report.reason == "" and report.pairs == ()
     assert worlds == ("a200-0806",) and plugin._pool.serials == ()
+
+
+def test_a_free_searchs_trees_are_drawn_every_two_seconds_and_go_when_a_path_is_found(monkeypatch):
+    """Each tree's edges at both tool0s, the gap and its label; a newer iteration waits TREE_PERIOD; a path clears."""
+    plugin, scene, now = planner(), FakeScene(), [100.0]
+    monkeypatch.setattr(motion.time, "monotonic", lambda: now[0])
+    plugin._status, plugin._details = SimpleNamespace(content=""), SimpleNamespace(content="")
+    plugin._search, plugin._show_tree = SimpleNamespace(content=""), SimpleNamespace(value=True)
+    ctx = SimpleNamespace(view=SimpleNamespace(scene=scene, scene_root="/plugin"))
+
+    def view(nodes: int, found: bool = False) -> TreeView:
+        """The start, the goal, and `nodes` - 2 nodes grown from the start in a line; two arms, 0.5 m apart."""
+        configs = np.array([[0.1 * k, 0.0] for k in range(nodes - 1)] + [[2.0, 0.0]])[[0, -1, *range(1, nodes - 1)]]
+        points = np.stack([np.column_stack([configs[:, 0], np.full(nodes, side), np.zeros(nodes)])
+                           for side in (0.0, 0.5)], axis=1)
+        parents, trees = np.array([-1, -1, 0, *range(2, nodes - 1)]), np.array([0, 1] + [0] * (nodes - 2))
+        return TreeView("try 1/3", 1, 3, nodes, 50, configs, points, parents, trees, over=found, found=found)
+
+    plugin._running, plugin._tree.view = "plan B20_J_transfer", view(3)
+    plugin._tree._probes = [(np.zeros((2, 3)), False), (np.ones((2, 3)), True)]
+    plugin.draw(ctx)
+    checks, = scene.of_kind("point_cloud")
+    assert checks.args[0].shape == (4, 3) and checks.args[1].tolist() == [[*motion.CHECK_COLOR]] * 2 + [
+        [*motion.HIT_COLOR]] * 2, "each check at both tool0s, red where it collided"
+    edges, gap = scene.of_kind("line_segments")
+    assert edges.name == "/plugin/tree/0" and edges.args[0].shape == (2, 2, 3), "one edge, at each arm's tool0"
+    assert gap.name == "/plugin/tree/gap" and np.allclose(gap.args[0][:, 0, 0], 0.1)
+    assert scene.of_kind("label")[0].args == ("trees 1.90 rad apart",)
+    assert plugin.progress == "try 1/3 · run 1/3 · it 3/50 · gap 1.90 rad · 2+1 nodes · 2 checks"
+    assert "gap 1.90 rad" in plugin._search.content
+    plugin._tree.view, plugin._tree._probes = view(4), []
+    plugin.draw(ctx)
+    assert len(scene.nodes) == 4 and "it 3/50" in plugin.progress, "a newer iteration waits for TREE_PERIOD"
+    now[0] += motion.TREE_PERIOD
+    plugin.draw(ctx)
+    assert len(scene.nodes) == 7 and plugin.progress.endswith("it 4/50 · gap 1.80 rad · 3+1 nodes")
+    plugin._tree.view = view(4, found=True)
+    plugin.draw(ctx)
+    assert plugin._tree_nodes == plugin._check_nodes == [] and len(scene.nodes) == 7, "a found path clears at once"
+    plugin._running = ""
+    assert plugin.progress == ""
