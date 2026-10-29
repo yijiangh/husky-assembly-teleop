@@ -15,7 +15,7 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
 * A robot is leased while in use (`teleop_lease.py`): a jog or drive is refused while another plugin holds it.
 * Clearance (ticked by default): while driving the base or jogging an arm, the robot is soft stopped once it comes
   too close to anything in the scene (`ctx.clearance`); a jog waits until its clearance checks. A drive waits for its
-  first clear check: one that starts too close is refused, with an amber chip, and never soft stopped.
+  first clear check: one that starts too close is refused, with a red chip, and never soft stopped.
 * ! Every button that does nothing says why: a refusal chip on its part's status line (`_refuse`, `refusal_chip`).
 """
 
@@ -44,7 +44,7 @@ from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
 from ...robot_interface.tool_step import TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_LEAD, tool0_pose, tool_jog_target
 from ...ui.phone import big_buttons, phone_text
-from ...ui.style import BUSY, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, note, note_line, numbers, section, values
+from ...ui.style import FAIL, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, note, note_line, numbers, section, values
 from ...ui.trace_plot import TracePlot
 from ...shared.teleop.dpad import (BLOCKED_COLOR, HOLD_TIMEOUT, PHONE_DPAD_STYLE, UNGUARDED_COLOR, Hold,
                                    build_velocity_inputs, color_dpad)
@@ -528,7 +528,7 @@ class RobotControlPlugin(HuskyPlugin):
         """Keep a clearance on the base while this plugin holds its lease and Clearance stays ticked.
 
         A trip soft stops the base (`ctx.clearance`); the status line then says what it came too close to. Too close
-        at the first check, nothing was sent: it is only refused, with an amber chip. Driving by hand, an arm whose
+        at the first check, nothing was sent: it is only refused, with a red chip. Driving by hand, an arm whose
         joints are not known is checked where last seen, or stowed; the base pose must be known. Other robots unknown
         when it starts may stay unknown; any other robot lost trips it.
         """
@@ -582,15 +582,15 @@ class RobotControlPlugin(HuskyPlugin):
         return "" if serial in self._driving else self._too_close.get(serial, "")
 
     def _base_warnings(self, ctx: PluginContext, serial: str, now: float) -> str:
-        """Amber chips for driving the base: a start too close (pressed or not); an arm out of its stow pose."""
+        """Red chips for driving the base: a start too close (pressed or not); an arm out of its stow pose."""
         chips = ""
         if why := self._starts_in_collision(serial, now):
-            chips += chip("starts in collision", BUSY, f"{why}: Clearance refuses the D-pad (gray).\nUntick Clearance "
+            chips += chip("starts in collision", FAIL, f"{why}: Clearance refuses the D-pad (gray).\nUntick Clearance "
                                                        f"to drive out; Collisions shows a refused press's hit.")
         config = next(robot for robot in ctx.config.robots if robot.serial == serial)
         away = from_stow(ctx.scene.snapshot.robots[robot_id(serial)], config)
         if away > STOW_TOLERANCE:
-            chips += chip("arm not stowed", BUSY, f"An arm is {np.degrees(away):.0f}° from its stow pose: the base "
+            chips += chip("arm not stowed", FAIL, f"An arm is {np.degrees(away):.0f}° from its stow pose: the base "
                                                   f"drives with it out.\nStow it in Plan › Arm (Load Stow).")
         return chips
 

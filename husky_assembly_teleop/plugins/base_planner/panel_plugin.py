@@ -359,7 +359,7 @@ class BasePlannerPanel(PlannerPanel):
                      "mocap tracks the base: plans start from its live pose" if tracked
                      else "plans from where it was last seen; a commit needs the base tracked by mocap")
         if out := self._out_of_stow(ctx, self.serial):
-            chips += chip("arm not stowed", BUSY, f"{out}: the base would drive with it out, so Commit asks twice.\n"
+            chips += chip("arm not stowed", FAIL, f"{out}: the base would drive with it out, so Commit asks twice.\n"
                                                   "Stow it in Plan › Arm (Load Stow).")
         # * The run's chip replaces "sent", and stays while the next plan is made.
         plan, planner = self._api.plan, self._planner

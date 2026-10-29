@@ -25,7 +25,7 @@ from husky_assembly_teleop.robot_interface.base import PLATFORM_VELOCITY_CONTROL
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, take_lease
 from husky_assembly_teleop.world.clearance import (ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, Clearance,
                                                    ClearanceRefused)
-from husky_assembly_teleop.ui.style import BUSY
+from husky_assembly_teleop.ui.style import FAIL
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject
@@ -486,7 +486,7 @@ def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
     assert "0804" not in plugin._held and sent[-1] == (0.0, 0.0)
 
 
-def test_a_drive_that_starts_too_close_is_refused_with_an_amber_chip_and_tried_again_later():
+def test_a_drive_that_starts_too_close_is_refused_with_a_red_chip_and_tried_again_later():
     """Too close at the first check: nothing sent, no soft stop, a "starts in collision" chip; retried later."""
     plugin, sent, _controller = _driven_base()
     plugin._bases[0].clearance = SimpleNamespace(value=True)
@@ -517,7 +517,7 @@ def test_a_drive_that_starts_too_close_is_refused_with_an_amber_chip_and_tried_a
     asyncio.run(drive())
     assert not sent and not plugin._bases[0].base.soft_stopped and "0804" not in plugin._tripped
     chips = plugin._base_warnings(ctx, "0804", now[0])
-    assert "starts in collision" in chips and BUSY in chips and "Untick Clearance" in chips
+    assert "starts in collision" in chips and FAIL in chips and "Untick Clearance" in chips
 
 
 class StandingChecker:
@@ -539,7 +539,7 @@ class StandingChecker:
 
 
 def test_a_base_standing_too_close_shows_the_chip_and_a_gray_dpad_before_any_press():
-    """Checked every STANDING_EVERY: too close shows amber and grays the D-pad; Clearance off makes it orange."""
+    """Checked every STANDING_EVERY: too close shows red and grays the D-pad; Clearance off makes it orange."""
     plugin, _sent, _controller = _driven_base()
     widgets = plugin._bases[0]
     widgets.clearance, widgets.dpad = SimpleNamespace(value=True), (SimpleNamespace(color=None),)
