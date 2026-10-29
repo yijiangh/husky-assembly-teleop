@@ -17,7 +17,6 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from scaffolding_assembly_core.process.plan_check import end_state
 from scaffolding_assembly_core.robot import RobotObject
 
-from .assembly_planning.scene_for import RobotBelief
 from .assembly_planning.process_steps import LoadedProcess
 from .runs.runs import (ASSUMED, DONE, LIVE, LIVE_BASE_AGE, LIVE_JOINTS_AGE, ActionRecord, Progress, RobotRecord,
                         RunSettings)
@@ -33,8 +32,6 @@ class RunView:
         statuses: Action id -> PENDING or DONE, every scheduled action.
         assumed: Actions marked done with their robot's end assumed from the export.
         current: (action id, movement index) the operator is at, or None.
-        beliefs: Live robot id -> where it was last recorded, for planning scenes (`scene_for` uses them only for
-            robots not measured).
         settings: The run's settings.
         offer: The name of the run used last while it is offered (made on another export, or used after `match`;
             `match` itself while a newer run folder can't be read), else "".
@@ -47,7 +44,6 @@ class RunView:
     statuses: Mapping[str, str]
     assumed: frozenset[str]
     current: tuple[str, int] | None
-    beliefs: Mapping[str, RobotBelief]
     settings: RunSettings
     offer: str
     match: str
@@ -130,11 +126,6 @@ def exported_end(loaded: LoadedProcess, action_id: str, at: str = "") -> RobotRe
     if state is None or state.base is None or state.joints is None:
         return None
     return RobotRecord(state.base, dict(state.joints), ASSUMED, at)
-
-
-def beliefs_of(progress: Progress) -> dict[str, RobotBelief]:
-    """Every recorded robot as a planning belief, by live id."""
-    return {live: RobotBelief(record.base, dict(record.joints)) for live, record in progress.robots.items()}
 
 
 def first_pending(progress: Progress, schedule: Sequence[str]) -> str | None:

@@ -19,6 +19,7 @@ from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan
 from husky_assembly_teleop.shared.planner.planner_search import Search
 from husky_assembly_teleop.shared.planner.planner_service import PlannerService
+from scaffolding_assembly_core.scene import Scene
 
 SERIAL = "alice"
 GOAL = (1.0, 2.0, 0.5)
@@ -112,7 +113,7 @@ def test_request_settings_reach_the_planner_unchanged():
     """The planner turns the panel's settings back into the settings the panel's algorithm shows."""
     panel = panel_for(None)
     algorithm = panel._algorithms[1]
-    algorithm._widgets = tuple(SimpleNamespace(value=value) for value in ((-0.2, 0.05), "ideal", 0.3, False))
+    algorithm._widgets = tuple(SimpleNamespace(value=value) for value in (0.08, "ideal", 0.3, False))
     _, settings = BasePlannerPlugin()._algorithm(panel.make_request(None))
     assert settings == replace(algorithm.settings(), margin=0.07) and settings.lead == 0.3 and not settings.arcs
 
@@ -133,7 +134,8 @@ def test_the_panel_plans_and_commits_through_the_api():
     planner, ctx = Planner(), SimpleNamespace(submit=lambda _label, run: run(), now=lambda: 0.0,
                                               spawn=lambda _label, work: asyncio.get_running_loop().create_task(work),
                                               log_info=lambda _text: None, lease_robots=lease_test_robots,
-                                              world=SimpleNamespace(robots={}))
+                                              world=SimpleNamespace(robots={}),
+                                              scene=SimpleNamespace(snapshot=Scene()))
     planner.setup(ctx)
 
     async def scenario():

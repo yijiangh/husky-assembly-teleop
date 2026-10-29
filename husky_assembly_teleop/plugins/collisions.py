@@ -100,6 +100,11 @@ class CollisionsPlugin(HuskyPlugin):
         """Build the panel's fixed part; each source adds its own group below it."""
         self._ctx = ctx
         with self._ctx.view.ui() as gui:
+            self._shapes = gui.add_checkbox(
+                "Collision shapes", initial_value=False,
+                hint="Draw what collision checks use instead of what things look like, in the whole 3D view: robots "
+                     "in red, scene bodies and tracked objects in their own colour.")
+            self._shapes.on_update(ctx.defer_value("collision shapes", ctx.view.show_collision))
             self._as_checked = gui.add_checkbox(
                 "As checked", initial_value=True,
                 hint="Draw meshes as the check tested them (compas_fab: each mesh's convex hull); untick for the "
@@ -107,6 +112,10 @@ class CollisionsPlugin(HuskyPlugin):
             self._focus = gui.add_dropdown("Focus", options=[NO_FOCUS], initial_value=NO_FOCUS,
                                            hint="Also show every robot as it was checked for this ticked hit, faint")
             self._empty = gui.add_html(note("no collisions reported"))
+
+    def teardown(self, ctx: PluginContext) -> None:
+        """Draw what things look like again, if the collision shapes were on."""
+        ctx.view.show_collision(False)
 
     # --- --- --- --- --- CONTRACT --- --- --- --- ---
 

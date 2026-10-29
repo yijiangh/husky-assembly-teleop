@@ -19,6 +19,7 @@ from ...plugin_api.context import PluginContext
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, HANDOFF_PART, INSERT_PART, MAX_TRAJ_TIME,
                                               MOTION_PART, OPEN_PART, RETREAT_PART, SERVO_PART, WITH_MOTION_PART,
                                               PartPlan)
+from ...shared.planner.planner_panel import CommitConfirm, unknown_robots_chip
 from ...shared.runs.runs import (PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
                                  RunSettings)
 from ...ui.assembly_tab import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLAN_PLOTS_X,
@@ -26,6 +27,7 @@ from ...ui.assembly_tab import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOAL_ICON, PLA
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
 from .plan_plots import PlanPlots
 from .step_panel_base import SLIDER_STEP
+from scaffolding_assembly_core.ids import robot_id
 
 if TYPE_CHECKING:
     from ...shared.assembly_planning.route_result import RouteResult
@@ -73,9 +75,11 @@ class StepsPanel:
                                         hint="How long the motion takes, seconds; the arms' limits may need longer")
             self._minimum = gui.add_html("")
         with ctx.view.ui(band=EXEC_BAND) as gui:
-            commit = gui.add_button("Exec", color="orange", icon=EXEC_ICON,
-                                    hint="Run the step's parts on the robot: a motion at once; the bar mount, a "
-                                         "Robotiq step and the servo's first pass after Confirm below or on the phone")
+            # * Blue like the planners' Commit; amber while it waits for its second press (`CommitConfirm.draw`).
+            commit = plugin._confirm.button = gui.add_button(
+                "Exec", color="blue", icon=EXEC_ICON,
+                hint="Run the step's parts on the robot: a motion at once; the bar mount, a Robotiq step and the "
+                     f"servo's first pass after Confirm below or on the phone. {CommitConfirm.HINT}")
             # ! Keep changing text BELOW the buttons.
             self._details = gui.add_html("")
         with ctx.view.ui(band=SETTINGS_BAND) as gui:
@@ -147,8 +151,10 @@ class StepsPanel:
         """
         current = plugin.current()
         executor = ctx.require("movement_exec")
+        acting = [robot_id(plugin.serial)] if plugin.serial else []
+        unknown = unknown_robots_chip(ctx.scene.snapshot, acting)
         if current is None:
-            self._status.content = chip_line(chip("no current step", NONE) + plugin._plan_chip())
+            self._status.content = chip_line(chip("no current step", NONE) + plugin._plan_chip() + unknown)
             self._step.content = block(values("—"))
             self._moves.content = block(values("Exec: —"))
         else:
@@ -159,7 +165,7 @@ class StepsPanel:
                      + chip(f"step {number}/{count}", NONE) + plugin._plan_chip())
             if executor.active:
                 chips += chip(escape(f"exec: {executor.active}"), BUSY)
-            self._status.content = chip_line(chips)
+            self._status.content = chip_line(chips + unknown)
             movements = view.process.process.actions[action].movements
             routine = plugin.routine()
             text = f"{primary.label} ({routine.value if routine is not None else 'unclassified'})"

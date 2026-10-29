@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 from matplotlib.figure import Figure
 
-from ...plugins.base_planner.follow import DEVIATED, DEVIATED_XICRS, EXACT
+from ...plugins.base_planner.follow import DEVIATED, EXACT
 from ...plugins.base_planner.path import densify
 from ...plugins.base_planner.recording import load_plan_arrays
 from ...plugins.base_planner.tasks import BY_NAME, TASK_ORIGIN, TASKS
@@ -249,7 +249,8 @@ def _header(experiment: Path, attempts: list[Attempt], planners: list[str]) -> l
         "Offline attempts (scripts/benchmark_base_planner.py) plan in the same planning world and drive each path "
         "found in a simulation of the onboard follower (crl_husky pure pursuit with its robot model) in two model "
         "groups: **exact model**, the simulated robot exactly as the follower's model; **deviated models**, the same "
-        "with the true xICR at " + ", ".join(f"{x:.2f}" for x in DEVIATED_XICRS) + " m, one drive each.",
+        "with the true xICR the plan's xICR spread either side of the model's (values under "
+        "[Driving, simulated](#driving-simulated)), one drive each.",
         "",
         f"Held fixed: the task frame at {_pose(TASK_ORIGIN)} in the lab (virtual tasks), the planning speeds, "
         "each planner's default settings (listed under [Planning](#planning)).",

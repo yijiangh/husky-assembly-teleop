@@ -258,8 +258,8 @@ def test_the_b20_servo_chain_on_the_real_plugins(tmp_path, monkeypatch):
         prompts = await lab.run_step(shift_at=1)
         assert prompts == 2, (lab.steps._message, lab.executor._last)
         assert lab.steps.position == (2, 2) and lab.steps.parts()[0].kind == INSERT_PART
-        # * Back on the transfer step with its motion, mount and grasp done: Exec runs the servo alone, now by bar.
-        lab.run.request_settings(servo_by_bar=True)
+        # * Back on the transfer step with its motion, mount and grasp done: Exec runs the servo alone, by bar (the
+        #   default).
         lab.run.request_set_current("B20_J", transfer)
         lab.steps.update(lab.ctx)
         _view, _action, op_step, _primary = lab.steps.current()
@@ -279,7 +279,7 @@ def test_the_b20_servo_chain_on_the_real_plugins(tmp_path, monkeypatch):
 
     events, files = lab.records()
     names = [event["event"] for event in events]
-    assert names[0] == "new_run" and {"plan", "prompt", "confirm", "exec", "servo", "settings"} <= set(names)
+    assert names[0] == "new_run" and {"plan", "prompt", "confirm", "exec", "servo"} <= set(names)
     # * The bar placed and clamped is one record, named after the first of the two movements.
     assert [file["movement"] for file in files] == [MOVEMENT, "B20_J_place_bar", MOVEMENT, MOVEMENT]
     assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "confirmed", "converged", "converged"]

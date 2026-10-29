@@ -16,6 +16,7 @@ from __future__ import annotations
 from html import escape
 
 from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
+from ..world.checks import INFO as INFO_LEVEL
 
 #: The ring that marks the selected one of a row (the process panel's movement buttons); a colour no swatch fill uses.
 RING = "#212529"
@@ -26,7 +27,7 @@ INFO = "#1c7ed6"
 SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL = "#4263eb", "#1098ad", "#f08c00"
 
 #: Chip colour for each severity.
-LEVEL_COLORS = {GOOD: OK, WARN: BUSY, BAD: FAIL}
+LEVEL_COLORS = {INFO_LEVEL: INFO, GOOD: OK, WARN: BUSY, BAD: FAIL}
 
 #: Seconds the chip saying why a button did nothing stays up.
 REFUSAL_SHOWN = 3.0

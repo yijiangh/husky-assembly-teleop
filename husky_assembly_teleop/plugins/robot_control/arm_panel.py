@@ -75,9 +75,9 @@ class ComplianceInputs:
 # --- --- --- --- --- BUILDERS --- --- --- --- ---
 
 def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold: Callable[[int, float], None],
-                     hold: Callable[[], None], on_tool_hold: Callable[[int, float], None]
-                     ) -> tuple[viser.GuiSliderHandle, ToolJogInputs]:
-    """Add the inputs for the joint trajectory controller: joint jog buttons with their speed, Hold, the tool0 jog.
+                     hold: Callable[[], None], on_tool_hold: Callable[[int, float], None], stop_distance: float
+                     ) -> tuple[viser.GuiSliderHandle, viser.GuiCheckboxHandle, ToolJogInputs]:
+    """Add the joint controller's inputs: speed, Clearance, a - and + hold button per joint, Hold, and the tool0 jog.
 
     Args:
         ctx: The plugin's context.
@@ -86,15 +86,21 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
         on_hold: Called every report of a held jog button, with the joint's index and the direction (-1 or +1).
         hold: Holds the arm where it is.
         on_tool_hold: Called every report of a held tool0 jog button, with the axis (0-5) and the direction.
+        stop_distance: The clearance a jog keeps, metres, for the hint.
 
     Returns:
-        tuple[viser.GuiSliderHandle, ToolJogInputs]: The joint jog speed slider, a fraction of JOG_MAX_SPEED, and
-            the tool0 jog's handles.
+        tuple[viser.GuiSliderHandle, viser.GuiCheckboxHandle, ToolJogInputs]: The joint jog speed slider, a fraction
+            of JOG_MAX_SPEED, the Clearance box, and the tool0 jog's handles.
     """
-    gui.add_html(warning("no collision checking · moves while held"))
+    gui.add_html(warning("moves while held · never checked against its own robot"))
     gui.add_html(note("to move to a pose: plan it in Plan › Arm"))
     speed = gui.add_slider("Speed", min=0.05, max=1.0, step=0.05, initial_value=0.5,
                            hint=f"Fraction of the full speed, {np.degrees(JOG_MAX_SPEED):.0f} °/s.")
+    clearance = gui.add_checkbox(
+        "Clearance", initial_value=True,
+        hint=f"While jogging a joint or tool0, soft stop the robot once it comes within {stop_distance * 100:.0f} cm "
+             f"of anything in the scene; the base pose and this arm's joints must be known. Untick to jog without "
+             f"it, e.g. without mocap or out of a tight spot.")
     gui.add_html(JOG_STYLE)
     with gui.add_folder("Jog"):
         for joint, name in enumerate(JOINT_SLIDER_NAMES):
@@ -107,7 +113,7 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
     move_group = gui.add_button_group("Move", ["Hold"],
                                       hint="Brake to a standstill where the arm is, also during a planned path.")
     move_group.on_click(ctx.defer(f"hold {label}", hold))
-    return speed, build_tool_jog_inputs(ctx, gui, label, on_tool_hold)
+    return speed, clearance, build_tool_jog_inputs(ctx, gui, label, on_tool_hold)
 
 
 def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str,

@@ -9,11 +9,11 @@ The user interface: the desktop and phone pages, the world drawn each tick, and 
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, field
-from functools import cache
+from dataclasses import dataclass
+from functools import cache, partial
 from html import escape
 from pathlib import Path
-from typing import Callable, Iterator, Mapping
+from typing import Callable, Iterable, Iterator, Mapping
 
 import numpy as np
 import trimesh
@@ -23,7 +23,7 @@ import viser.transforms
 import yourdfpy
 
 from ..config import RobotConfig
-from scaffolding_assembly_core.robot import Tool
+from scaffolding_assembly_core.robot import RobotObject, Tool
 from scaffolding_assembly_core.scene import Scene
 from .phone import PHONE_TITLE, PhonePage
 from .quaternion import quaternion_to_wxyz
@@ -50,8 +50,13 @@ TOOL_COLOR = (0.27, 0.27, 0.31)
 #: Joint change (rad or m) below which a robot is not re-posed.
 JOINT_TOLERANCE = 1e-4
 
+#: Opacity of a robot part the checks only assume (`world/stand_ins.py`): a base not tracked, an arm not measured.
+GUESSED_OPACITY = 0.35
+
 #: Starting width of the side panel, pixels. Fits an arm's joint row, the widest line.
 SIDE_PANEL_WIDTH = 420
+#: The main panel's width, pixels: the narrowest at which a robot's health line with simulated parts does not scroll.
+MAIN_PANEL_WIDTH = 330
 #: The tab every planner panel's tab goes in (Base, Motion, Arm). It is a window of its own, not a side panel tab.
 PLAN_TAB = "Plan"
 #: Where the Plan window floats, pixels: at the top, right of the main panel (Stop all, health), which it never covers.
@@ -254,26 +259,41 @@ def mesh_color(mesh: trimesh.Trimesh) -> tuple[int, int, int]:
     return tuple(int(c) for c in mesh.visual.material.baseColorFactor[:3])
 
 
-def add_simple_urdf(target, model: yourdfpy.URDF, root: str) -> FastViserUrdf:
+def add_simple_urdf(target, model: yourdfpy.URDF, root: str, **options) -> FastViserUrdf:
     """Draw a URDF below `root` as single-colour meshes, each in its own material's colour.
 
-    ! Only the real robots (`Visualization.load_robot`) are drawn as GLB, with textures; their see-through twins
-      use this. Single-colour meshes build faster and take `.opacity` at any time; GLB nodes have no opacity.
+    ? Our robots' meshes come split by colour, so they look the same as textured GLB; unlike GLB, single-colour
+      meshes take `.opacity` at any time.
 
     Args:
         target: The viser server, or a plugin's view (PluginView).
         model: The URDF, from `load_urdf`.
         root: Scene path to draw it below.
+        options: More `ViserUrdf` arguments, e.g. `load_collision_meshes`.
 
     Returns:
         FastViserUrdf: The drawn URDF; pose it with `update_cfg`, fade it through its meshes' `.opacity`.
     """
     # * A colour override makes ViserUrdf add single-colour meshes; each then gets its own colour back.
-    urdf = FastViserUrdf(target, model, root_node_name=root, mesh_color_override=_DEFAULT_MESH_COLOR[:3])
+    urdf = FastViserUrdf(target, model, root_node_name=root, mesh_color_override=_DEFAULT_MESH_COLOR[:3], **options)
     # ? ViserUrdf adds one mesh node per visual mesh, in `scene.geometry` order.
     for handle, mesh in zip(urdf._meshes, model.scene.geometry.values()):
         handle.color = mesh_color(mesh)
     return urdf
+
+
+def robot_parts(urdf: FastViserUrdf, arms: Iterable[str]) -> dict[str | None, list[viser.SceneNodeHandle]]:
+    """A drawn robot's meshes by part: each arm's (its links and tool, named "<arm>_..."), the base's under None."""
+    parts: dict[str | None, list[viser.SceneNodeHandle]] = {None: [], **{arm: [] for arm in arms}}
+    for handle in urdf._meshes:
+        parts[next((arm for arm in parts if arm is not None and f"/{arm}_" in handle.name), None)].append(handle)
+    return parts
+
+
+def guessed_parts(robot: RobotObject, arms: Iterable[str]) -> frozenset[str | None]:
+    """The parts of a robot the checks only assume: None for a base not tracked, each arm with a joint not measured."""
+    guessed = {arm for arm in arms if any(name.startswith(f"{arm}_") for name in robot.unmeasured)}
+    return frozenset(guessed | ({None} if not robot.base_tracked else set()))
 
 
 @dataclass
@@ -284,18 +304,18 @@ class _DrawnRobot:
         base: Parent frame carrying the base pose; moves the whole robot.
         urdf: The mesh set, updated through `update_cfg`.
         joint_names: Actuated joint names, in `update_cfg` order.
+        parts: Its meshes by part (`robot_parts`).
         values: Joint values last drawn, or None before the first draw.
+        guessed: The parts drawn see-through (`guessed_parts`), as last drawn.
+        opacity: The opacity a plugin set for the whole robot (`set_robot_opacity`); None leaves it to `guessed`.
     """
 
     base: viser.FrameHandle
     urdf: FastViserUrdf
     joint_names: tuple[str, ...]
+    parts: dict[str | None, list[viser.SceneNodeHandle]]
     values: np.ndarray | None = None
-    #: The tools on its flanges, for the see-through twin; the twin (single-colour meshes, made on first fade) and
-    #: its opacity, None while the robot is drawn solid.
-    tools: Mapping[str, Tool] = field(default_factory=dict)
-    urdf_file: Path | None = None
-    twin: FastViserUrdf | None = None
+    guessed: frozenset[str | None] = frozenset()
     opacity: float | None = None
 
 
@@ -442,11 +462,9 @@ class Visualization:
         self._pause.on_click(self._toggle_pause)
         self._show_pause_state()
 
-        # * Read by `draw` each tick, so the switch is applied on the main thread.
-        self._show_collision = self._server.gui.add_checkbox(
-            "Collision", initial_value=False,
-            hint="Draw what collision checks use instead of what things look like: robots in red, "
-                 "scene bodies and tracked objects in their own colour.")
+        #: Whether to draw collision shapes instead of visual ones, set by a plugin (`PluginView.show_collision`);
+        #: `draw` applies it, and what it last applied.
+        self.show_collision = False
         self._collision_shown = False
 
         #: Plugins' header folders (`PluginView.header`), under Stop all. Unlabelled: no title or border.
@@ -455,6 +473,7 @@ class Visualization:
         #   (`PluginView.tab`) are docked on the right, and those hidden by default in a minimized strip at the right
         #   edge.
         self._server.gui.main_panel.float(x=15, y=15)
+        self._server.gui.main_panel.set_width(MAIN_PANEL_WIDTH)
         self._plan = SidePanel(self._server, at=(PLAN_WINDOW_X, PLAN_WINDOW_Y))
         self._side = SidePanel(self._server)
         self._hidden_side = SidePanel(self._server, minimized=True)
@@ -480,49 +499,41 @@ class Visualization:
         base.wxyz = quaternion_to_wxyz(config.default_orientation)
 
         model = shared_urdf(config.model.urdf)
-        drawn = FastViserUrdf(self._server, model, root_node_name=root, load_collision_meshes=True,
-                              collision_mesh_color_override=COLLISION_COLOR)
+        drawn = add_simple_urdf(self._server, model, root, load_collision_meshes=True,
+                                collision_mesh_color_override=COLLISION_COLOR)
         drawn.add_tools(config.model.tools)
         self._show_robot_collision(drawn, self._collision_shown)
         self._robots[config.serial] = _DrawnRobot(
-            base=base, urdf=drawn, joint_names=tuple(drawn.get_actuated_joint_names()), tools=config.model.tools,
-            urdf_file=config.model.urdf)
+            base=base, urdf=drawn, joint_names=tuple(drawn.get_actuated_joint_names()),
+            parts=robot_parts(drawn, [arm.name for arm in config.arms]))
 
     @staticmethod
-    def _show_robot_collision(urdf: FastViserUrdf, collision: bool, faded: bool = False) -> None:
-        """Show a robot's collision meshes or its visual ones; a faded robot's visual ones stay hidden (its twin shows).
-
-        A URDF without collision meshes stays visual.
-        """
+    def _show_robot_collision(urdf: FastViserUrdf, collision: bool) -> None:
+        """Show a robot's collision meshes or its visual ones. A URDF without collision meshes stays visual."""
         # ? viser warns instead of hiding when a URDF has no collision meshes.
         if urdf._collision_root_frame is not None:
-            urdf.show_visual, urdf.show_collision = not collision and not faded, collision
+            urdf.show_visual, urdf.show_collision = not collision, collision
 
     def set_robot_opacity(self, serial: str, opacity: float | None) -> None:
-        """Draw a robot see-through at `opacity`, or solid again (None).
-
-        The GLB meshes take no opacity, so a single-colour twin of the robot and its tools (made on the first fade,
-        about a second) shows in their place under the same base frame, posed with them in `draw`.
+        """Draw a whole robot see-through at `opacity`, or (None) again only the parts the checks assume, as `draw` does.
 
         Args:
             serial: The robot's serial; an unknown one is ignored.
-            opacity: 0 to 1, or None for the textured robot.
+            opacity: 0 to 1, or None.
         """
         drawn = self._robots.get(serial)
         if drawn is None or drawn.opacity == opacity:
             return
-        if opacity is not None and drawn.twin is None:
-            twin = add_simple_urdf(self._server, shared_urdf(drawn.urdf_file), f"/robots/{serial}/twin")
-            twin.add_tools(drawn.tools)
-            if drawn.values is not None:
-                twin.update_cfg(drawn.values)
-            drawn.twin = twin
         drawn.opacity = opacity
-        if drawn.twin is not None:
-            for mesh in drawn.twin._meshes:
-                mesh.opacity = opacity
-            drawn.twin.show_visual = opacity is not None
-        self._show_robot_collision(drawn.urdf, self._collision_shown, faded=opacity is not None)
+        self._apply_opacity(drawn)
+
+    @staticmethod
+    def _apply_opacity(drawn: _DrawnRobot) -> None:
+        """Set every part's meshes to the robot's opacity, or without one to GUESSED_OPACITY on the parts guessed."""
+        for part, handles in drawn.parts.items():
+            guessed = GUESSED_OPACITY if part in drawn.guessed else None
+            for handle in handles:
+                handle.opacity = guessed if drawn.opacity is None else drawn.opacity
 
     def view_for(self, plugin_name: str, hidden: bool = False, tab_path: tuple[str, ...] = (),
                  icon: viser.IconName | None = None) -> PluginView:
@@ -538,7 +549,8 @@ class Visualization:
             PluginView: The plugin's slice of the UI.
         """
         return PluginView(self._server, plugin_name, self._header, self._phone, (self._side, self._hidden_side),
-                          hidden, tab_path, icon, fade=self.set_robot_opacity, windows={PLAN_TAB: self._plan})
+                          hidden, tab_path, icon, partial(setattr, self, "show_collision"),
+                          fade=self.set_robot_opacity, windows={PLAN_TAB: self._plan})
 
     def atomic(self) -> AbstractContextManager[None]:
         """Batch every scene change made inside the block into one update.
@@ -605,15 +617,17 @@ class Visualization:
 
         ! Only the snapshot taken this tick: the real robots and their tools must always show the newest
           measurement, never a copy a planner kept.
+        - A robot part the checks only assume (`guessed_parts`) is drawn see-through, at GUESSED_OPACITY, unless a
+          plugin fades the whole robot (`set_robot_opacity`).
 
         Args:
             snapshot: The tick's copy of the world.
         """
-        collision = self._show_collision.value
+        collision = self.show_collision
         if collision != self._collision_shown:
             self._collision_shown = collision
             for drawn in self._robots.values():
-                self._show_robot_collision(drawn.urdf, collision, faded=drawn.opacity is not None)
+                self._show_robot_collision(drawn.urdf, collision)
         for object_id, entry in snapshot.robots.items():
             drawn = self._robots.get(object_id.split("/", 1)[1])  # ? measured robots are "robots/<serial>"
             if drawn is None:
@@ -623,9 +637,11 @@ class Visualization:
             values = np.array([entry.joints.get(name, 0.0) for name in drawn.joint_names])
             if joints_changed(values, drawn.values):
                 drawn.urdf.update_cfg(values)
-                if drawn.twin is not None:
-                    drawn.twin.update_cfg(values)
                 drawn.values = values
+            guessed = guessed_parts(entry, [arm for arm in drawn.parts if arm is not None])
+            if guessed != drawn.guessed:
+                drawn.guessed = guessed
+                self._apply_opacity(drawn)
         self._scene_view.sync(snapshot, collision)
 
     @property
@@ -644,7 +660,8 @@ class PluginView:
 
     def __init__(self, server: viser.ViserServer, plugin_name: str, header: viser.GuiFolderHandle, phone: PhonePage,
                  sides: tuple[SidePanel, SidePanel], hidden: bool, tab_path: tuple[str, ...],
-                 icon: viser.IconName | None, fade: Callable[[str, float | None], None] = lambda _s, _o: None,
+                 icon: viser.IconName | None, set_collision: Callable[[bool], None] = lambda _on: None,
+                 fade: Callable[[str, float | None], None] = lambda _s, _o: None,
                  windows: dict[str, SidePanel] | None = None):
         """Create the plugin's scene root; its header, tabs and phone tab come on first use.
 
@@ -657,10 +674,12 @@ class PluginView:
             hidden: Whether `ui()` goes in the minimized panel.
             tab_path: Where `ui()` goes, a label per level; empty for a tab named after the plugin.
             icon: The plugin's icon, on its own tabs.
+            set_collision: Switches the 3D view to collision shapes, or back (`show_collision`).
             fade: Fades a real robot's drawing (`Visualization.set_robot_opacity`).
             windows: Panels of their own for some top-level tabs, by label, e.g. Plan's window; the rest go in `sides`.
         """
         self._server = server
+        self._set_collision = set_collision
         self._windows = windows or {}
         self._fade, self._faded = fade, set()
         self._name = plugin_name
@@ -691,6 +710,13 @@ class PluginView:
         self._folder: viser.GuiFolderHandle | None = None
         #: Separate panels made through `panel()`, removed with everything else.
         self._panels: list[viser.PanelHandle] = []
+
+    def show_collision(self, on: bool) -> None:
+        """Draw what collision checks use instead of what things look like, for every robot and body, or switch back.
+
+        ! One switch for the whole 3D view: the collisions plugin owns it. Main thread only.
+        """
+        self._set_collision(on)
 
     @property
     def scene(self) -> viser.SceneApi:
@@ -751,7 +777,7 @@ class PluginView:
         return self._side_tab(path, hidden, 0)
 
     def set_robot_opacity(self, serial: str, opacity: float | None) -> None:
-        """Draw a real robot see-through at `opacity`, or solid again (None); `clear` puts back every one faded."""
+        """Draw a real robot see-through at `opacity`, or as measured (None); `clear` puts back every one faded."""
         self._fade(serial, opacity)
         (self._faded.add if opacity is not None else self._faded.discard)(serial)
 

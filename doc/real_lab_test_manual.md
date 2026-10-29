@@ -190,7 +190,7 @@ Something wrong at any point: Part 8.
 | **movement**, **step** | one part of an action: a free move, a straight move, a gripper or tool step, a step by hand. The process panel picks one; the step line under the buttons names it |
 | **run** | the record of one assembly: `runs/<date>_<time>/` in the process folder on the Drive: which actions are done, where each robot was left, every part executed, the servo readings |
 | **Mark done** | the yellow button (it reads `B20_J done`): records the action done and where every live robot stands |
-| **Live IK / Plan / Play / Exec** | where the next movement starts, by IK at the live base (teal) / plan the step from the live robot (teal) / preview it (`Preview time`) / run it (orange) |
+| **Live IK / Plan / Play / Exec** | where the next movement starts, by IK at the live base (teal) / plan the step from the live robot (teal) / preview it (`Preview time`) / run it (blue) |
 | **Confirm / Cancel** | answer a step that waits (green / red); its prompt names the robot |
 | **Zenoh, router, domain 80** | how ROS talks here: every robot and control PC runs Zenoh on ROS domain 80, meeting through a router on each machine |
 | **relay** | `relay.sh`: Motive's rigid bodies on ROS, each robot's as its calibrated base pose; the monitor and the robots' followers read it. One per domain |
@@ -280,7 +280,7 @@ Open in Chrome on this laptop: http://localhost:8080 (4.b). One page at a time.
   `Rhino obstacles collide`, the ACTIONS list, the `Step` slider, `◀ mv` / `mv ▶`, the movement buttons), the step line
   and the Exec line, the big buttons, the prompt line, the settings, the run (its chips, `Continue newest` /
   `Continue match` / `New run`, where each robot is), the closed `Advanced planning` folder.
-- Buttons are coloured by what they do: teal computes without moving (Live IK, Plan), orange starts a motion (Exec),
+- Buttons are coloured by what they do: teal computes without moving (Live IK, Plan), blue starts a motion (Exec; amber while it asks for a second press with other robots unknown),
   green lets a waiting step go on (Confirm), red stops (Cancel), yellow records (Mark done).
 - **Control** tab: a tab per robot (`0804`, `0805`, `0806`), each with its Base and its arms: their controllers (the
   `Run` buttons: `Vel` for a base; `Joint`, `Cart`, `Free` for an arm), the drive and jog buttons, the tool buttons

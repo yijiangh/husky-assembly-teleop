@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import numpy as np
@@ -15,6 +16,7 @@ from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTR
 from husky_assembly_teleop.robot_interface.robot_lease import Lease
 from husky_assembly_teleop.robot_interface.tool_step import _difference, tool0_pose
 from husky_assembly_teleop.shared.teleop.dpad import HOLD_TIMEOUT
+from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 pytestmark = pytest.mark.safety
@@ -31,7 +33,7 @@ class Bench:
     """A robot_control plugin over one or two robots with a real arm each, run by an ArmDriver, on Belle's URDF."""
 
     def __init__(self, robots: tuple[str, ...] = (SERIAL,), mm_s: float = 5.0):
-        """Every arm at JOINTS under the joint controller, the jog speed at `mm_s`."""
+        """Every arm at JOINTS under the joint controller, the jog speed at `mm_s`, Clearance not built."""
         self.ctx = FakeContext(name="robot_control", step=self._step)
         node = fake_node(self.ctx.now, self.ctx.logs)
         self.plugin, self.arms, self.drivers = RobotControlPlugin(), {}, []
@@ -40,7 +42,7 @@ class Bench:
             arm.urdf = URDF
             self.ctx.world.robots[serial] = robot = fake_robot(node, serial, [arm])
             self.arms[serial], widgets = arm, SimpleNamespace(
-                serial=serial, arm=arm, jog_speed=SimpleNamespace(value=1.0), free_drive_keep=None,
+                serial=serial, arm=arm, jog_speed=SimpleNamespace(value=1.0), jog_clearance=None, free_drive_keep=None,
                 tool_jog=SimpleNamespace(speed=SimpleNamespace(value=mm_s), readout=SimpleNamespace(content="")))
             self.plugin._arms.append(widgets)
             self.drivers.append(ArmDriver(arm, robot))
@@ -103,6 +105,27 @@ def test_a_release_holds_the_arm_once_and_the_lease_goes_back_when_idle():
         bench.arms[SERIAL].state.is_executing = False
         bench.plugin._leases.release_idle(bench.ctx, lambda serial: bench.plugin._busy(bench.ctx.now(), serial))
     assert not bench.plugin._leases.held(SERIAL)
+
+
+def test_a_press_with_clearance_ticked_streams_only_once_its_clearance_checks():
+    """With Clearance ticked, the first tick starts a 1 cm clearance and sends nothing; points stream once it checks."""
+    bench = Bench()
+    bench.plugin._arms[0].jog_clearance = SimpleNamespace(value=True)
+
+    async def scenario() -> None:
+        bench.ticks(1, press=(0, 1.0))
+        assert not bench.sent(), "the clearance comes first"
+        await asyncio.sleep(0)
+        assert (SERIAL, ARM) in bench.plugin._jog_checked
+        bench.ticks(3, press=(0, 1.0))
+        assert len(bench.sent()) == 3
+        clearance, = bench.ctx.clearances
+        assert (clearance.serials, clearance.margin) == ((SERIAL,), ARM_STOP_DISTANCE)
+        bench.plugin._arms[0].jog_clearance.value = False
+        await bench.plugin._jog_guards[(SERIAL, ARM)]
+
+    asyncio.run(scenario())
+    assert not bench.plugin._jog_checked
 
 
 def test_a_press_under_the_compliance_controller_is_refused_and_sends_nothing():

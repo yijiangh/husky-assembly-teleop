@@ -31,7 +31,6 @@ from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_name
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
 from husky_assembly_teleop.shared.assembly_planning.route_search import FreeSearch
-from husky_assembly_teleop.shared.assembly_planning.scene_for import RobotBelief
 from husky_assembly_teleop.shared.execution.servo import flange_poses, tool0_errors
 from husky_assembly_teleop.ui.ghost import RecentUse
 from husky_assembly_teleop.world.bar_pose import apply_authored_move
@@ -312,12 +311,11 @@ def test_a_plan_asks_with_the_runs_advanced_planning_settings():
 
 
 def test_a_plan_request_carries_the_run_and_the_checked_goal():
-    """Alice's approach: the run's beliefs, the workaround, Ignore built bars, and the goal checked at this base.
+    """Alice's approach: the run's workaround, Ignore built bars, and the goal checked at this base.
 
     A base moved 3 mm since the check solves the goal again.
     """
     lab = Steps(("B21_H", 0))
-    lab.run.view.beliefs = {"robots/a200-0805": RobotBelief(Pose())}
     lab.plugin.set_ignore_built(True)
     goal = dict(zip(arm_joint_names("ur_arm"), [1.0, -1.0, 1.0, -1.0, 1.0, 0.0]))
     lab.planner.check = GoalCheck("B21_H_approach", Routine.SUPPORT_APPROACH, True, base=lab.bases["a200-0804"],
@@ -332,7 +330,7 @@ def test_a_plan_request_carries_the_run_and_the_checked_goal():
 
     asyncio.run(scenario())
     first, second = lab.planner.plans
-    assert first.beliefs == lab.run.view.beliefs and first.transfer_as_free and first.ignore_built
+    assert first.transfer_as_free and first.ignore_built
     assert first.goal_joints == goal and second.goal_joints is None
     assert lab.plugin.traj_time == 15.0 and lab.plugin.plan_state == "ready"
     assert [event for event, _fields in lab.run.records] == ["check_goal", "plan", "plan"]
@@ -489,6 +487,26 @@ def test_exec_needs_a_ready_plan_and_uses_it_once():
 
     asyncio.run(scenario())
     assert lab.run.selected == [] and lab.plugin.path is None and lab.plugin.plan_state == "none"
+
+
+def test_exec_asks_for_a_second_press_while_another_robot_is_unknown():
+    """Alice's base lost: the first Exec only asks and turns Exec amber, the chip counts her; a second press sends."""
+    lab = Steps(("B20_R", 2))
+
+    async def scenario():
+        await lab.plan()
+        lab.ctx.scene.snapshot.robots[robot_id(lab.alice.config.serial)].base_tracked = False
+        lab.plugin._commit(lab.ctx)
+        assert lab.executor.requests == [] and lab.plugin.plan_state == "ready"
+        assert lab.plugin._message == "press Exec again within 2 s to move with a200-0804: base unknown"
+        lab.update()
+        assert lab.plugin._confirm.button.color == "orange" and ">1 robot unknown<" in lab.html()
+        lab.plugin._commit(lab.ctx)
+        assert len(lab.executor.requests) == 1 and lab.plugin.plan_state == "sent"
+        lab.update()
+        assert lab.plugin._confirm.button.color == "blue"
+
+    asyncio.run(scenario())
 
 
 def test_the_exec_line_names_the_servo_after_the_motion():
@@ -662,17 +680,16 @@ def test_the_log_line():
 
 
 def test_check_goal_asks_with_the_run_and_records_the_answer():
-    """The request carries the run's beliefs, the workaround and the tick's snapshot; the answer is logged and recorded.
+    """The request carries the run's workaround and the tick's snapshot; the answer is logged and recorded.
 
     The process panel draws it, at the live base it was solved at, through the carry.
     """
     lab = Steps(("B20_J", 3))
-    lab.run.view.beliefs = {"robots/a200-0805": RobotBelief(Pose())}
     lab.planner.check = cindy_check()
     answer = asyncio.run(lab.plugin.checked_goal(lab.ctx))
     request, = lab.planner.goals
     assert request.loaded is lab.loaded and request.step.movement.id == "B20_J_transfer"
-    assert request.snapshot is lab.ctx.scene.snapshot and request.beliefs == lab.run.view.beliefs
+    assert request.snapshot is lab.ctx.scene.snapshot
     assert request.transfer_as_free and request.label == "check goal B20_J_transfer"
     (event, fields), = lab.run.records
     assert event == "check_goal" and (fields["action"], fields["movement"]) == ("B20_J", "B20_J_transfer")

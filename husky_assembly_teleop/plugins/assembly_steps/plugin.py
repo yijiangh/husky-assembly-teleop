@@ -384,7 +384,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return None
         view, action, _step, step = current
         # * The snapshot is taken here, on the main thread; the planner's worker makes the scene from it.
-        request = MotionPlanRequest(view.process, step, ctx.scene.snapshot, ctx.config.robots, beliefs=view.beliefs,
+        request = MotionPlanRequest(view.process, step, ctx.scene.snapshot, ctx.config.robots,
                                     transfer_as_free=self._transfer_as_free(ctx), ignore_built=self.ignore_built,
                                     obstacles_collide=self._obstacles_collide(ctx), label=f"check goal {step.label}")
         solving = f"solving the goal of {step.label}…"
@@ -489,7 +489,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
                     distance, turn = pose_error(goals[flange], ends[flange])
                     ctx.log_info(f"[insert plan] MoCap-bar correction carried: {step.label} {flange_side(flange)} "
                                  f"goal {distance * 1e3:.2f} mm / {math.degrees(turn):.3f}° from the authored end")
-                request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots, beliefs=view.beliefs,
+                request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots,
                                             transfer_as_free=self._transfer_as_free(ctx),
                                             ignore_built=self.ignore_built,
                                             obstacles_collide=self._obstacles_collide(ctx), goal_joints=goal_joints,
@@ -586,6 +586,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
             #   before the update's check.
             self.plan_state = "stale"
             self._say(f"Exec refused, the plan is stale: {stale}", failed=True)
+            return
+        if self._asks_second_press(ctx):
             return
         request = ExecRequest(view.process, action, op_step, parts, self.serial or "", self._robot_name,
                               self._route if motion else None, op_step.primary if motion else None,

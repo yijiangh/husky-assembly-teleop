@@ -5,9 +5,9 @@ assembly_steps' own planner panel base; the other planners use `shared/planner/`
 
 Plan states: none -> planning -> ready -> sent; a ready plan goes stale when the robot or target moves.
 
-* Subclasses implement `make_search`, `stale_reason`, `send_plan` and `show_path`, build their own
-  panel (its time slider is `_slider`, its buttons call `_on_path`, `_scrub` and `_commit`), and use `_add_ghosts` and
-  the `_draw_*` helpers.
+* Subclasses implement `make_search`, `stale_reason`, `send_plan` and `show_path`, build their own panel (its time
+  slider is `_slider`, its Exec button `_confirm.button`; its buttons call `_on_path`, `_scrub` and `_commit`), and
+  use `_add_ghosts` and the `_draw_*` helpers. A `_commit` of their own calls `_asks_second_press` before the send.
 ! The planning world is the subclass's, created on the worker thread; the base only closes it at teardown.
 """
 
@@ -24,11 +24,13 @@ from async_timeout import timeout
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
+from ...shared.planner.planner_panel import CommitConfirm
 from ...shared.planner.planner_search import PlanningWorld
 from ...shared.planner.timed_path import TimedPath
 from ...ui.assembly_tab import STEP_BAND
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, note
+from scaffolding_assembly_core.ids import robot_id
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
@@ -105,6 +107,8 @@ class PlannerPlugin(HuskyPlugin):
         self._used: RecentUse | None = None
         #: Nothing to plan for (e.g. no robots configured): the panel says why, and the hooks do nothing.
         self.idle = False
+        #: Exec's second press while other robots are not measured; the panel sets its `button`.
+        self._confirm = CommitConfirm()
 
     # --- --- --- --- --- FOR THE SUBCLASS TO SUPPLY --- --- --- --- ---
 
@@ -252,10 +256,23 @@ class PlannerPlugin(HuskyPlugin):
         if self.plan_state != "ready":
             self._say(f"nothing to commit: the plan is {self.plan_state}", failed=True)
             return
+        if self._asks_second_press(ctx):
+            return
         sent, message = self.send_plan(ctx)
         if sent:
             self.plan_state = "sent"
         self._say(message, failed=not sent)
+
+    def _asks_second_press(self, ctx: PluginContext) -> bool:
+        """Whether Exec only asked: while other robots are not measured, the first press says to press it again.
+
+        ! Call it last before the send, after every other refusal, so the second press is never asked for in vain.
+        """
+        acting = [robot_id(serial) for serial in (self._path_serial or self.serial,) if serial]
+        asked, _unknown = self._confirm.asks(ctx, acting, "Exec")
+        if asked:
+            self._say(asked, failed=True)
+        return bool(asked)
 
     def _clear(self) -> None:
         """Forget the plan, and end a search in progress."""
@@ -281,6 +298,7 @@ class PlannerPlugin(HuskyPlugin):
         now = ctx.now()
         elapsed = 0.0 if self._last_tick is None else now - self._last_tick
         self._last_tick = now
+        self._confirm.draw(now)
         if self.path is None:
             return
         if self._playing:

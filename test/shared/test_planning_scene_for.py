@@ -8,9 +8,8 @@ import numpy as np
 import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, movement, purged_process, robot_config, step
 
-from husky_assembly_teleop.shared.assembly_planning.scene_for import RobotBelief, ground_mated_halves, scene_for
+from husky_assembly_teleop.shared.assembly_planning.scene_for import ground_mated_halves, scene_for
 from husky_assembly_teleop.shared.process_scene.scene_bodies import process_obstacles, scene_bodies
-from husky_assembly_teleop.world.kinematics import stow_joints
 from husky_assembly_teleop.world.lab import floor_body
 from scaffolding_assembly_core.geometry import Pose, box_geometry, compose
 from scaffolding_assembly_core.ids import robot_id
@@ -114,40 +113,39 @@ def test_unmeasured_robot_stands_where_the_design_has_it(purged):
     assert abs(abs(np.dot(held.orientation, b21.orientation)) - 1.0) < 1e-4
 
 
-def test_a_belief_beats_the_design_and_no_design_parks(purged):
-    """A belief places Cindy; Belle, not measured and absent from the design, is parked with a warning."""
-    belief = Pose((1.0, 2.0, 0.0))
-    joints = movement(purged, "B21_H_close")[1].start.robots["robots/cindy"].joints
-    planning = _alice_close(purged, CINDY, BELLE, beliefs={CINDY_ID: RobotBelief(belief, {**joints})})
-    assert planning.sources == {CINDY_ID: "belief", BELLE_ID: "parked"}
-    assert planning.scene.robots[CINDY_ID].base == belief
-    assert planning.scene.robots[BELLE_ID].acting_problems()
-    assert any(BELLE_ID in warning and "parked" in warning for warning in planning.warnings)
+def test_without_a_design_a_robot_stands_where_the_snapshot_has_it(purged):
+    """Belle, not measured and absent from the design, stands at her default pose: checked, with a warning."""
+    planning = _alice_close(purged, CINDY, BELLE)
+    assert planning.sources == {CINDY_ID: "design", BELLE_ID: "default"}
+    belle = planning.scene.robots[BELLE_ID]
+    assert belle.enabled and not belle.acting_problems() and belle.base == Pose()
+    assert any(warning.startswith(f"{CINDY_ID} is not measured") and warning.endswith("where the design has it")
+               for warning in planning.warnings)
+    assert any(warning.startswith(f"{BELLE_ID} is not measured") and warning.endswith("default pose or stowed")
+               for warning in planning.warnings)
 
 
-def test_design_base_without_joints_stows_the_arms(purged):
-    """A design that places Cindy but leaves her joints open: she stands there with her arms stowed."""
+def test_a_design_base_without_joints_leaves_the_arms_where_the_snapshot_has_them(purged):
+    """A design that places Cindy but leaves her joints open: she stands there, her arms as the snapshot has them."""
     base = movement(purged, "B21_H_close")[1].start.robots["robots/cindy"].base
     open_joints = _with_robot_state(step(purged, "B21_H_close"), "robots/cindy", RobotState(base, None))
     snapshot = _snapshot(_measured(purged, "B21_H_close", ALICE, "robots/alice"), _unmeasured(CINDY))
     planning = scene_for(purged, open_joints, snapshot, (robot_config(ALICE), robot_config(CINDY)))
-    config, cindy = robot_config(CINDY), planning.scene.robots[CINDY_ID]
-    assert planning.sources == {CINDY_ID: "design (stowed arms)"}
-    assert cindy.base == base and cindy.joints == stow_joints(config, config.model.movable_joints)
-    assert not cindy.acting_problems()
+    cindy = planning.scene.robots[CINDY_ID]
+    assert planning.sources == {CINDY_ID: "default"}
+    assert cindy.base == base and cindy.joints == snapshot.robots[CINDY_ID].joints and not cindy.acting_problems()
 
 
-def test_bodies_held_by_a_parked_robot_are_disabled(purged):
-    """Cindy holds B21 but is parked (not measured, no design base): B21 and its halves are disabled, with a warning."""
+def test_bodies_held_by_a_robot_without_a_design_stay_with_it(purged):
+    """Cindy holds B21 but has no design state: she stands where the snapshot has her, B21 and its halves with her."""
     transfer = _with_robot_state(step(purged, "B21_J_transfer"), "robots/cindy", RobotState(None, None))
     alice_acting = replace(step(purged, "B21_H_approach"), movement=transfer.movement)
     snapshot = _snapshot(_measured(purged, "B21_H_approach", ALICE, "robots/alice"), _unmeasured(CINDY))
     planning = scene_for(purged, alice_acting, snapshot, (robot_config(ALICE), robot_config(CINDY)))
-    assert planning.sources == {CINDY_ID: "parked"}
+    assert planning.sources == {CINDY_ID: "default"}
     held = [f"process/{body_id}" for body_id in ("bars/B21", *purged.process.halves_of("bars/B21"))]
     assert all(planning.scene.bodies[body_id].placement.parent == CINDY_ID for body_id in held)
-    assert not any(planning.scene.bodies[body_id].enabled for body_id in held)
-    assert f"{B21} is held by parked {CINDY_ID}: disabled" in planning.warnings
+    assert all(planning.scene.bodies[body_id].enabled and body_id in planning.scene.world_poses for body_id in held)
 
 
 def test_bodies_without_a_world_pose_are_removed(purged):

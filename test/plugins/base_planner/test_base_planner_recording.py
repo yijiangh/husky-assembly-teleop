@@ -11,7 +11,7 @@ from husky_assembly_teleop.plugins.base_planner.algorithms import ALGORITHMS, De
 from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import Settings, plan
 from husky_assembly_teleop.experiments.base_planner.analysis import analyse
 from husky_assembly_teleop.plugins.base_planner.algorithms.base import FOLLOWER_MODEL
-from husky_assembly_teleop.plugins.base_planner.follow import DEVIATED, DEVIATED_XICRS, EXACT, model_groups
+from husky_assembly_teleop.plugins.base_planner.follow import DEVIATED, EXACT, XICR_SPREAD, model_groups
 from husky_assembly_teleop.plugins.base_planner.recording import (attempt_folder, load_description,
                                                                   load_plan_arrays, save_plan)
 from husky_assembly_teleop.plugins.base_planner.tasks import BY_NAME, TASKS, to_lab
@@ -94,9 +94,9 @@ def test_report_compares_the_planners_on_a_task(tmp_path, world, robots, alice):
 
 
 def test_model_groups_drive_the_exact_model_first_then_the_deviated_ones():
-    """One drive with the follower's own xICR, then one per deviated xICR; a straight drive finishes in all."""
+    """One drive with the follower's own xICR, then the spread either side of it; a straight drive finishes in all."""
     model = load_model(FOLLOWER_MODEL)
     drives = model_groups([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], model, 0.2, 0.3)
     assert [(group, x_icr) for group, x_icr, _, _ in drives] == \
-        [(EXACT, model["xICR"])] + [(DEVIATED, x_icr) for x_icr in DEVIATED_XICRS]
+        [(EXACT, model["xICR"]), (DEVIATED, model["xICR"] - XICR_SPREAD), (DEVIATED, model["xICR"] + XICR_SPREAD)]
     assert all(why == "" and trace[-1][0] > 0.9 for _, _, trace, why in drives)

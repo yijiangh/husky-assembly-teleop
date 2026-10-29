@@ -27,19 +27,20 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.base_planner_contract import BasePlanRequest
 from ...shared.collisions_contract import CollisionsContract
-from ...shared.planner.planner_panel import PlannerPanel
+from ...shared.planner.planner_panel import PlannerPanel, unknown_robots_chip
 from ...shared.planner.plan import Plan
 from ...ui.base_markers import Markers
 from ...ui.ghost import RobotGhost
 from ...ui.phone import group_buttons
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import (BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, check_chip, chip, chip_line, section,
+from ...ui.style import (BUSY, OK, SECTION_TOOL, block, check_chip, chip, chip_line, section,
                          values)
 from ...ui.visualization import PLAN_TAB
 from ...robot_interface.base import live_report
 from ...world.follower import path_check
 from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.ids import robot_id
 from .algorithms import ALGORITHMS, Algorithm
 from .algorithms.base import add_margin_setting
 from .debug_view import DebugView
@@ -336,11 +337,10 @@ class BasePlannerPanel(PlannerPanel):
         return self._preview[1]
 
     def _status_html(self, ctx: PluginContext) -> str:
-        """One line of chips: the robot, whether it is tracked, the plan's state and the last run's."""
-        tracked = ctx.world.robots[self.serial].base.state.tracked
-        chips = chip(escape(self.serial), SECTION_CTRL)
-        chips += chip("tracked" if tracked else "not tracked", OK if tracked else BUSY,
-                      "" if tracked else "planning needs the base tracked by mocap")
+        """One line of chips: the robot and whether it is tracked, the plan's state and the last run's."""
+        tracked = ctx.scene.snapshot.robots[robot_id(self.serial)].base_tracked
+        chips = chip(escape(f"{self.serial} {'tracked' if tracked else 'not tracked'}"), OK if tracked else BUSY,
+                     "" if tracked else "plans from where it was last seen; a commit needs the base tracked by mocap")
         # * The run's chip replaces "sent", and stays while the next plan is made.
         plan, planner = self._api.plan, self._planner
         if plan is None or plan.state != "sent":
@@ -348,7 +348,7 @@ class BasePlannerPanel(PlannerPanel):
         if planner._sent_id is not None:
             follower = ctx.world.robots[planner._sent_serial].base.state.follower
             chips += check_chip(path_check(follower, planner._sent_id, planner._sent_at, ctx.now()))
-        return chip_line(chips)
+        return chip_line(chips + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
 
     def _details_html(self) -> str:
         """Numbers of the target and the plan, and the last message, in a fixed number of rows."""

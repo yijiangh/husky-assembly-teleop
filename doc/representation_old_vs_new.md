@@ -56,7 +56,7 @@ are laid out in its §2; this note puts the data models side by side and says wh
 | Event | Old: what was overwritten, where, by what | New: what is kept where, who reads it |
 |---|---|---|
 | Load an action | The file (sidecar first) becomes the working copy; `_backfill_m0_target_from_m1` (M:6706-6721) gives the travel to load the transfer's start as its target | `process._take` (`process/plugin.py:502-508`) keeps the frozen process, drops marks and carry; `assembly_steps._new_step` (`plugin.py:170-193`) starts the step clean: no plan, no goal, no offer |
-| Plan clicked | `_apply_live_base_to_movement` (M:3013-3068) writes the mocap base into `mv.start_state.robot_base_frame`, and the other robots' beliefs into the same state, on every Plan | `make_search` (`assembly_steps/plugin.py:462-501`) builds `MotionPlanRequest(loaded, step, snapshot, robots, beliefs, goal_joints, goal_poses)` (`motion_planner_contract.py:49-81`) from this tick's snapshot; nothing is written |
+| Plan clicked | `_apply_live_base_to_movement` (M:3013-3068) writes the mocap base into `mv.start_state.robot_base_frame`, and the other robots' beliefs into the same state, on every Plan | `make_search` (`assembly_steps/plugin.py:462-501`) builds `MotionPlanRequest(loaded, step, snapshot, robots, goal_joints, goal_poses)` (`motion_planner_contract.py:49-81`) from this tick's snapshot; nothing is written |
 | Plan accepted | `_accept_trajectory` (M:6190-6300): sets `mv.trajectory`; a free move's traj[0] goes into `start_state.robot_configuration`; an insert or retreat starting >1e-3 off the propagated start is rejected; traj[-1] is written into the next arm movement's start and the stationary steps before it (`_carry_configuration_forward`, M:6429-6460) | `accepted` (`plugin.py:511-531`) keeps `_route` and `_basis` (`PlanBasis`, `basis.py:36-82`: start joints, base when planned, other robots, statuses, time, `goal_base`, `transfer_as_free`), records a `plan` event and posts `Carry(..., "plan", basis.base)` for the drawing; stale past 2° on the arm, 2 mm / 0.5° on the base, 1 cm / 1° on another robot (`basis.py:27-32`) |
 | Live IK | `ik_live_base_for_selected_movement` (M:9893-10049): IK at the live base to the previous movement's authored targets; sets `goal_arm_pose` and `goal_base_pose` = the live base (M:10044-10049); `mv.trajectory` untouched | `check_goal` / `checked_goal` (`plugin.py:360-411`): `StepGoal` (`goal.py:37-92`) keeps one `GoalCheck` (the goal joints and the base solved at; `route_result.py:77-95`) per step; Plan reuses it while the base stays within `STALE_BASE` (`basis.py:30`); posts `Carry(..., base=check.base)`; records `check_goal` |
 | Exec done | `_exec_then_propagate` (M:6556-6602), then `_propagate_live_end` (M:6468-6509): measured joints and mocap base written into the following start states; the next plan dropped if >1e-3 off (`_drop_movement_trajectory`, M:6775-6790); `_save_live_belief` (M:6511-6553) writes `progress.json` after every step | `_executed` (`plugin.py:620-636`) clears the plan, used once (it comes back only when nothing was sent); `_record_part` (`movement_exec/plugin.py:412-443`) writes the movement record; nothing is carried: the next Plan starts from the live robot again |
@@ -72,8 +72,9 @@ the process (`process/plugin.py:11`). The joints the old monitor carried forward
 (`process_contract.py:27-48`), and only in the drawing: `_carry_applies` (`process/plugin.py:658-680`) lays its joints
 and base over the authored state at the carry's movement (shown at its target) and at the action's later movements;
 without a carry the panel draws the authored joints, `null` ones assumed by `assumed_start_all` and `joints_at`
-(`carry.py:31, 94`). Plans, runs and records never read it. The other robots come from the snapshot when measured, else
-from the run's beliefs (`beliefs_of`, `assembly_run_contract.py:135-137`), else the design, else parked (`scene_for.py:1-10`).
+(`carry.py:31, 94`). Plans, runs and records never read it. The other robots come from the snapshot when measured; an
+unmeasured field takes the step's design, else the runtime's stand-in: where last seen, else the default pose with the
+arms stowed (`scene_for.py`, `world/stand_ins.py`). The run's recorded robots are never planned from.
 
 ## 5. Recorded on disk
 
@@ -111,11 +112,11 @@ from the run's beliefs (`beliefs_of`, `assembly_run_contract.py:135-137`), else 
 | `.live-solved.json` sidecar | none: nothing is written into the process; the run folder keeps what was planned and run |
 | `progress.json` per problem, shared by the three monitors | `runs/<run>/progress.json` per run |
 | `ActionStatus(status, marked_at, marked_by_robot, run_id)` | `ActionRecord(status, seq, marked_at, assumed, ends)` |
-| `RobotBelief(base_frame, configuration, source, at, after_entry)` | `RobotRecord(base, joints, source, at, after_action)`; `RobotBelief(base, joints)` lives on as the planning belief (`scene_for.py`, `beliefs_of`) |
+| `RobotBelief(base_frame, configuration, source, at, after_entry)` | `RobotRecord(base, joints, source, at, after_action)`: for the report only; planning takes an unmeasured robot as a stand-in (`world/stand_ins.py`) |
 | `current_index` | `current {action, movement}` |
 | `skeleton_fingerprint` | `process_hash` and `action_hashes` in `run.json` |
 | `LIVE_BELIEF_MAX_AGE_S` = 1 s (M:286) | `LIVE_BASE_AGE` 1 s, `LIVE_JOINTS_AGE` 0.5 s (`runs.py:58-59`); `is_live` (`assembly_run_contract.py:96`) |
-| `_carry_configuration_forward`, `_propagate_live_end` | nothing carried: `MotionPlanRequest.snapshot` for the acting robot, `beliefs_of` for the others; `Carry` for the drawing |
+| `_carry_configuration_forward`, `_propagate_live_end` | nothing carried: `MotionPlanRequest.snapshot` for the acting robot, stand-ins for the others; `Carry` for the drawing |
 | `_accept_trajectory` | `_route` and `PlanBasis` |
 | IK Live Base (`ik_live_base_for_selected_movement`; `goal_arm_pose`, `goal_base_pose`) | Live IK (`check_goal`; `StepGoal`, `GoalCheck`) |
 | the servo loop's tool0 readout (`measure_servo_tool0_error`) | Check tool0 (`check_tool0`) |

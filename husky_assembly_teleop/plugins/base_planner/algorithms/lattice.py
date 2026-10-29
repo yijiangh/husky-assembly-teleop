@@ -31,12 +31,12 @@ from scipy.sparse.csgraph import dijkstra
 
 from ....shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ....world.collision_hit import CollisionHit
-from ..follow import XICR_RANGE, followed, thinned
+from ..follow import XICR_SPREAD, followed, thinned, xicr_range
 from ..path import (MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE, BasePath, densify, driven, steer,
                     timed_path)
 from ..world import CLEARANCE_LIMIT, CLEARANCE_STEP, COLLISION_MARGIN, FLOOR_BOTTOM, PlanningWorld
 from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, Algorithm, Debug, add_follower_settings,
-                   yaw_step)
+                   follower_model, yaw_step)
 
 #: Search grid: the first pose to reach a cell and heading bin keeps it. Cell size, metres (also of the cost map's fine
 #: maps), and heading bin, radians.
@@ -155,16 +155,17 @@ class Settings:
     """The lattice search's settings for one search.
 
     Attributes:
-        x_icr: Lowest and highest xICR the robot may have, metres.
-        follower_model: The robot model the onboard follower runs with (`model:=`), as in crl_husky config/base_models.
+        x_icr_spread: How far the robot's true xICR may be from the follower model's, either way, metres.
+        follower_model: The robot model the onboard follower runs with (`model:=`), as in crl_husky config/base_models;
+            "" for the planned robot's own, which the planner plugin fills in (FOLLOWER_MODEL without a robot).
         lead: Straight drive onto the target, metres, from where the robot has room; 0 for none.
         turn_weight: Metres of driving one radian of turning on the spot is worth.
         margin: Keep at least this far from everything else, metres.
         curves: Whether the path may drive curves; else it turns on the spot only.
     """
 
-    x_icr: tuple[float, float] = XICR_RANGE
-    follower_model: str = FOLLOWER_MODEL
+    x_icr_spread: float = XICR_SPREAD
+    follower_model: str = ""
     lead: float = LEAD
     turn_weight: float = TURN_WEIGHT
     margin: float = COLLISION_MARGIN
@@ -181,7 +182,7 @@ class Lattice(Algorithm):
         self._widgets = None
 
     def add_settings(self, gui) -> None:
-        """Add the xICR range, follower model, lead, turn weight and curves; the margin is the panel's."""
+        """Add the xICR spread, follower model, lead, turn weight and curves; the margin is the panel's."""
         self._widgets = (
             *add_follower_settings(gui),
             gui.add_slider("Lead m", min=0.0, max=1.5, step=0.05, initial_value=LEAD,
@@ -195,9 +196,8 @@ class Lattice(Algorithm):
         """The widgets' values, or the defaults."""
         if self._widgets is None:
             return Settings()
-        x_icr, model, lead, turn_weight, curves = (widget.value for widget in self._widgets)
-        return Settings(tuple(float(value) for value in x_icr), str(model), float(lead), float(turn_weight),
-                        curves=bool(curves))
+        spread, model, lead, turn_weight, curves = (widget.value for widget in self._widgets)
+        return Settings(float(spread), follower_model(model), float(lead), float(turn_weight), curves=bool(curves))
 
     def plan(self, world, own, start, goal, abort, settings, debug) -> PlanResult[BasePath]:
         """See `plan`."""
@@ -243,17 +243,17 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
             return failed(f"{name} is in collision with {other}", world.collision_hit(own, margin, name, pose))
 
     try:
-        model = load_model(settings.follower_model)
+        model = load_model(settings.follower_model or FOLLOWER_MODEL)
     except (FileNotFoundError, ValueError) as error:
         return failed(f"follower model: {error}")
     x_model = model["xICR"]
     # * Plan the follower's turning centre: `ahead` metres ahead of base_footprint along its heading.
     ahead = -x_model
-    low_icr, high_icr = min(settings.x_icr), max(settings.x_icr)
+    low_icr, high_icr = xicr_range(x_model, settings.x_icr_spread)
     icrs = np.linspace(low_icr, high_icr, max(int(math.ceil((high_icr - low_icr) / XICR_STEP)), 1) + 1)
-    # The search checks the ends of the range only; the path as followed is checked at the ends and the middle.
+    # The search checks the ends of the range only; the path as followed is checked at the ends and the model's.
     ends = (low_icr, high_icr) if high_icr > low_icr else (low_icr,)
-    simulated = sorted({low_icr, (low_icr + high_icr) / 2.0, high_icr})
+    simulated = sorted({low_icr, x_model, high_icr})
     # How far the true turning centre may be from the follower's: a turn may leave the base this far off the path per
     # unit of chord turned.
     swing = max(abs(x_model - low_icr), abs(x_model - high_icr))

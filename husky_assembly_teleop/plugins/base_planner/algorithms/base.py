@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from ament_index_python.packages import get_package_share_directory
 
-from ..follow import XICR_RANGE
+from ..follow import XICR_SPREAD
 from ..world import COLLISION_MARGIN
 
 if TYPE_CHECKING:
@@ -28,8 +28,10 @@ if TYPE_CHECKING:
 
 #: Largest gap between the xICR values a path is checked with, metres.
 XICR_STEP = 0.025
-#: The robot model the onboard follower runs with (its `model:=`), from crl_husky config/base_models.
+#: The follower model planned with when no robot gives one (offline, tests); a planned robot's is its `base_model`.
 FOLLOWER_MODEL = "alice_tiles_2"
+#: The Follower model dropdown's entry for the planned robot's own model (its `base_model`, crl-husky's model.yaml).
+ROBOTS_MODEL = "robot's"
 #: Straight drive onto the target (and off the start, for the RRT), metres: no turn on the spot there.
 LEAD = 0.5
 #: Collision-checking resolution along a move: metres driven, and at most radians turned (`yaw_step`).
@@ -148,15 +150,19 @@ def follower_models() -> list[str]:
 
 
 def add_follower_settings(gui: viser.GuiApi) -> tuple:
-    """Add the xICR range and follower model widgets every algorithm checks its path with, in that order."""
-    models = follower_models()
-    return (gui.add_multi_slider("xICR m", min=-0.30, max=0.10, step=0.01, initial_value=XICR_RANGE,
-                                 hint="Where the turning centre may really be, as crl_husky's xICR (negative: ahead "
-                                      "of base_footprint); the path is checked for all of them"),
-            gui.add_dropdown("Follower model", options=models,
-                             initial_value=FOLLOWER_MODEL if FOLLOWER_MODEL in models else models[0],
+    """Add the xICR spread and follower model widgets every algorithm checks its path with, in that order."""
+    return (gui.add_slider("xICR ± m", min=0.0, max=0.15, step=0.01, initial_value=XICR_SPREAD,
+                           hint="How far the true turning centre may be from the follower model's, either way; the "
+                                "path is checked for all of them"),
+            gui.add_dropdown("Follower model", options=[ROBOTS_MODEL] + follower_models(), initial_value=ROBOTS_MODEL,
                              hint="The robot model the onboard follower runs with (its model:=), from crl_husky "
-                                  "config/base_models; the path is checked as that follower drives it"))
+                                  "config/base_models; robot's: its base_model in crl-husky's model.yaml. The path is "
+                                  "checked as that follower drives it"))
+
+
+def follower_model(widget_value: str) -> str:
+    """The settings' follower model for the dropdown's value: "" for the robot's own."""
+    return "" if widget_value == ROBOTS_MODEL else str(widget_value)
 
 
 def add_margin_setting(gui: viser.GuiApi):

@@ -35,6 +35,7 @@ from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...world.checks import WARN, Check
 from ...world.follower import path_check
+from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.ids import robot_id
 from .path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, BasePath
 from .algorithms import ALGORITHMS, Algorithm, Debug
@@ -143,6 +144,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         # * The robot is planned as it is: its arms, and what it holds.
         snapshot, guessed = with_guesses(ctx.scene.snapshot, robot_id(serial))
         config = next(robot for robot in ctx.config.robots if robot.serial == serial)
+        # * Without a follower model chosen, plan with the one the robot's follower assumes.
+        settings = replace(settings, follower_model=settings.follower_model or config.base_model)
         away = from_stow(snapshot.robots[robot_id(serial)], config)
         if request.record and away > STOW_TOLERANCE:
             guessed = guessed + [f"arm {math.degrees(away):.0f}° from its stow pose, where experiments hold it"]
@@ -166,6 +169,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 ctx.log_error(f"base planner: attempt not recorded: {error}")
         # The worker's error saving the attempt, for the main thread to log.
         not_saved: list[str] = []
+        # The other robots not measured and their stand-ins, from the worker (`with_stand_ins`).
+        others: list[str] = []
 
         def work() -> PlanResult:
             # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
@@ -173,9 +178,13 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             if problems:
                 result, world = PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0), None
             else:
-                self._world.sync(snapshot)
+                stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
+                others[:] = setup["stand_ins"] = list(stand_ins.warnings)
+                self._world.sync(stand_ins.scene)
                 result, world = algorithm.plan(self._world, robot_id(serial), start, goal, abort, settings,
                                                debug), self._world
+                if result.path is None and others:
+                    result = replace(result, reason=f"{result.reason} (other robots not measured: {'; '.join(others)})")
             if folder is not None:
                 try:
                     save_plan(folder, world, robot_id(serial), setup, result, debug.notes)
@@ -185,6 +194,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
 
         def finished() -> None:
             self._debug = debug
+            for line in others:
+                ctx.log_warn(f"planning for {serial}: {line}")
             if not_saved:
                 ctx.log_error(f"base planner: plan not saved: {not_saved[0]}")
 
@@ -192,8 +203,9 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             self._plan_record = {"folder": folder, "setup": setup, "seconds": result.seconds}
             self._start_joints = (result.path, dict(snapshot.robots[robot_id(serial)].joints))
             path, how = result.path, algorithm.label + (" (straight)" if result.direct else "")
+            stand_ins = f" (other robots not measured: {'; '.join(others)})" if others else ""
             return (f"{how}: {path.length:.2f} m, {path.duration:.1f} s, "
-                    f"found in {result.seconds:.1f} s{guess}"), bool(guessed)
+                    f"found in {result.seconds:.1f} s{guess}{stand_ins}"), bool(guessed or others)
 
         return Search(label=f"plan {serial}", message=f"planning for {serial}…{guess}", work=work,
                       time_limit=TIME_LIMIT + WAIT_MARGIN, accepted=accepted, finished=finished)
@@ -246,7 +258,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                             signals.follower_state(robot, every_message=True),
                             signals.base_floor_pose(robot, every_message=True),
                             signals.wheel_odometry(robot, every_message=True)) as rec, \
-                    ctx.clearance([serial], margin) as clearance:
+                    ctx.clearance([serial], margin, unknown_robots=self.unknown_allowed(plan)) as clearance:
                 try:
                     sent_id = send_to_onboard_follower(robot.base, path)
                 except ValueError as error:

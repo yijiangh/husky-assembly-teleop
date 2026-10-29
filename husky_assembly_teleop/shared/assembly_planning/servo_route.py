@@ -32,7 +32,7 @@ from .joints import joint_limits, unwrap_to_nearest
 from .movement import classify
 from .route_result import RouteResult, pose_error
 from .route_search import Refused, pairs_text
-from .scene_for import RobotBelief, scene_for
+from .scene_for import scene_for
 from .tamp_route import GRASP_MISMATCH, HELD, _Route, _sync_again
 
 if TYPE_CHECKING:
@@ -68,8 +68,7 @@ class ServoStep:
 
 def plan_servo_step(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
                     robots: tuple[RobotConfig, ...], ask: ServoAsk, *, transfer_as_free: bool = False,
-                    beliefs: Mapping[str, RobotBelief] | None = None, ignore_built: bool = False,
-                    obstacles_collide: bool = True, abort: threading.Event | None = None,
+                    ignore_built: bool = False, obstacles_collide: bool = True, abort: threading.Event | None = None,
                     log: Callable[[str], None] = print) -> ServoStep:
     """Plan one servo pass from where the snapshot has the step's robot: IK for the targets, then the correction.
 
@@ -81,7 +80,6 @@ def plan_servo_step(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, 
         robots: The configured robots.
         ask: The targets and how to move to them.
         transfer_as_free: The transfer workaround (`classify`); the step's routine does not change with it.
-        beliefs: Live robot id -> where an unmeasured robot is believed to be (`scene_for`).
         ignore_built: Plan as if the built bars were not there (`scene_for`).
         obstacles_collide: Whether the process's obstacles from Rhino count (`scene_for`).
         abort: Set from another thread to stop before a search.
@@ -96,7 +94,7 @@ def plan_servo_step(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, 
     started = time.monotonic()
     spec = classify(loaded.process, step.action, step.movement, transfer_as_free)
     # * The planning scene itself is searched: the bar is in the tools, so it is never hidden.
-    planning = scene_for(loaded, step, snapshot, robots, beliefs=beliefs, ignore_built=ignore_built,
+    planning = scene_for(loaded, step, snapshot, robots, ignore_built=ignore_built,
                          obstacles_collide=obstacles_collide, end_contacts=True)
     if mirror.robot_id != planning.acting:
         raise ValueError(f"{step.label}: the mirror plans for {mirror.robot_id}, the step is {planning.acting}'s")

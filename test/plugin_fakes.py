@@ -46,6 +46,7 @@ from husky_assembly_teleop.robot_interface.robot import HuskyRobotInterface
 from husky_assembly_teleop.robot_interface.robot_lease import LeaseSlot, leased
 from husky_assembly_teleop.robot_interface.soft_stop import SoftStopLatch
 from husky_assembly_teleop.robot_interface.ur_frames import BASE_LINK_FROM_UR_BASE
+from husky_assembly_teleop.world.clearance import STOP_DISTANCE, Clearance
 from husky_assembly_teleop.world.measured import TrackedObject
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.kinematics import link_pose
@@ -182,6 +183,8 @@ class FakeContext:
         #: The tasks spawned, and the freezes being watched with the task each cancels.
         self._tasks: set[asyncio.Task] = set()
         self._freezes: dict = {}
+        #: The clearances asked for, in order; nothing checks them.
+        self.clearances: list[Clearance] = []
         self.t, self.step = 10.0, step
         #: Whether the plugin was stopped or torn down (`PluginContext.closed`).
         self.closed = False
@@ -211,6 +214,14 @@ class FakeContext:
         """A floating window (`ctx.view.panel()`), kept in `panels`."""
         self.panels.append(FakePanel(self.gui))
         return self.panels[-1]
+
+    @contextmanager
+    def clearance(self, serials, margin: float = STOP_DISTANCE, unknown_arms=(),
+                  unknown_robots=()) -> Iterator[Clearance]:
+        """Keep the clearance asked for in `clearances`; nothing checks it."""
+        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms,
+                                         unknown_robots=frozenset(unknown_robots)))
+        yield self.clearances[-1]
 
     def require(self, name: str) -> Any:
         """Another plugin, by name."""

@@ -67,7 +67,8 @@ Rewritten (atomically: a temp file, then a rename) whenever something changes, s
 - An action's `status` is `pending` or `done`; `seq` numbers the marks; `assumed` says the robot was not live at
   Mark done and the export's end was written instead (the second click).
 - `ends` is where every live robot stood when the action was marked: its base pose and every joint, as measured
-  then (`live_record`). `robots` keeps the newest end per robot: the run's **beliefs** (section 4).
+  then (`live_record`). `robots` keeps the newest end per robot, where it was last recorded, for the report
+  (section 4).
 
 The old `progress.json` had the same three parts (actions, robots, the current index) plus `skipped` and the support
 robots' `holds`; the new one drops both: a hold is now a movement like any other, and nothing is skipped.
@@ -152,16 +153,16 @@ else parked.
 2. **The goal of a transfer or an approach** is solved by IK at the live base (**Live IK**), and that goal is reused
    by the plan while the base stays within 2 mm / 0.5° of where it was solved. After a transfer's MoCap-bar servo,
    the insert's goal is the authored move applied from where the servo left the flanges (`carried_insert_goals`).
-3. **The other robots** come from the snapshot when they are measured; a robot that is not live comes from the run's
-   **beliefs**: the newest `ends` of `progress.json` (`beliefs_of`), which Mark done wrote; a robot without a belief
-   is placed where the export has it at that step, else parked (`scene_for`: live, then belief, then design, then
-   parked).
+3. **The other robots** come from the snapshot when they are measured; a robot that is not measured stands where
+   the export has it at that step, else as the runtime's stand-in: where it was last seen, else its default pose with
+   the arms stowed (`scene_for`, `world/stand_ins.py`). The run's `robots` (the newest `ends` of `progress.json`,
+   which Mark done wrote) are kept for the report only; nothing plans from them.
 4. **The process panel's drawing** is the only place the carried-forward joints still exist: after Live IK or a plan,
    the action's later movements are drawn with the joints found (`Carry`, the "joints from live IK / plan" chip).
    Plans, runs and records never read them; a new action drops them.
 
-So the old monitor's "state propagation" became three things: the live robot for the acting one, Mark done's ends
-for the others, and a drawing aid. Nothing is written back into the process files, which is why the hashes in
+So the old monitor's "state propagation" became three things: the live robot for the acting one, the export and the
+stand-ins for the others, and a drawing aid. Nothing is written back into the process files, which is why the hashes in
 `run.json` stay valid through a whole run.
 
 ## 5. Reading a run back

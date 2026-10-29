@@ -1,11 +1,13 @@
 """
 The health panel: a banner, a row per robot (with Unlock, Resume, Reconnect) and one for tracked objects.
 
-The banner sits under Stop all (`ctx.view.header()`), so it shows whichever tabs are open.
+The banner sits under Stop all (`ctx.view.header()`), so it shows whichever tabs are open: an overall chip, then
+one per robot and one for tracked objects.
 
 A robot's row has a line of chips for its base and one for each arm with its tool.
 
-Green is fine, amber needs a look, red is broken or silent; hover a chip for detail.
+Green is fine, amber needs a look, red is broken or silent, blue is a fact to know (a "sim" chip before the simulated
+part's chips); hover a chip for detail.
 Loaded by default (config.DEFAULT_PLUGINS).
 
 ! Checks never command or block: each is a pure function of measured state and the clock.
@@ -36,8 +38,8 @@ from ..robot_interface.base import BaseState
 from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManagerState
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
 from ..ui.phone import phone_text
-from ..ui.style import BUSY, LEVEL_COLORS, NONE, OK, block, check_chip, chip, chip_line, section
-from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
+from ..ui.style import BUSY, LEVEL_COLORS, NONE, block, check_chip, chip, chip_line, section
+from ..world.checks import BAD, GOOD, INFO, STALE_AFTER, WARN, Check
 
 # --- --- --- --- --- THRESHOLDS --- --- --- --- ---
 
@@ -143,7 +145,8 @@ class HealthPlugin(HuskyPlugin):
         # * The banner sits under Stop all, so a problem shows whichever tabs are open.
         with ctx.view.header() as gui:
             self._banner = gui.add_html("")
-        with ctx.view.folder() as gui:
+        # * Starts collapsed: the banner above says enough until something needs a look.
+        with ctx.view.folder(expanded=False) as gui:
             for serial in ctx.world.robots:
                 self._robot_rows[serial] = gui.add_html("")
                 # ? A button group: the only way in viser 1.1 to put buttons side by side.
@@ -195,8 +198,9 @@ class HealthPlugin(HuskyPlugin):
 
         A chip's first level is not noted: at start every chip is still waiting for its robot.
         """
-        # * Keyed by position, not label: combined chips change their label with their colour.
-        for index, check in enumerate(checks):
+        # * Keyed by position, not label: combined chips change their label with their colour. Sim chips, which come
+        #   and go in front of a part, are left out, so they shift no other chip.
+        for index, check in enumerate(check for check in checks if check.label != SIM_LABEL):
             key = (row, index)
             before = self._levels.get(key)
             self._levels[key] = check.level
@@ -229,10 +233,11 @@ class HealthPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        every_check = [check for lines in self._robot_checks.values() for _name, checks in lines for check in checks]
         stops = {serial: stop for serial in self._robot_checks
                  if (stop := soft_stop_check(ctx.world.robots[serial])) is not None}
-        banner = render_banner(every_check + list(stops.values()) + self._object_checks)
+        # * The banner: the soft stop first, so it heads the robot's hover text.
+        banner = render_banner({serial: [*([("", [stops[serial]])] if serial in stops else []), *lines]
+                                for serial, lines in self._robot_checks.items()}, self._object_checks)
         self._banner.content = banner
         rows = []
         for serial, lines in self._robot_checks.items():
@@ -251,7 +256,7 @@ class HealthPlugin(HuskyPlugin):
 
 
 #: Chip colours by level, for the log.
-LEVEL_NAMES = {GOOD: "green", WARN: "amber", BAD: "red"}
+LEVEL_NAMES = {INFO: "blue", GOOD: "green", WARN: "amber", BAD: "red"}
 
 
 @dataclass
@@ -307,39 +312,41 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
     """
     state = robot.base.state
     base = state.joint_states_stats.quality(now)
-    lines = [("base", [stream_check("signal", base, BASE_RATE) if base.seen else
-                       Check("signal", WARN, "no platform joint_states yet"),
-                       mocap_check("mocap", robot.config.mocap_id, state, now),
-                       estop_check(state),
-                       battery_check(state, now),
-                       controller_check("ctrl", state.controllers, now)] + simulated_check(robot.base.simulation))]
+    # * Each part's sim chip comes first, then its own chips: base; arm up to its tcp; then the tool.
+    lines = [("base", simulated_check(robot.base.simulation)
+              + [stream_check("signal", base, BASE_RATE) if base.seen else
+                 Check("signal", WARN, "no platform joint_states yet"),
+                 mocap_check("mocap", robot.config.mocap_id, state, now),
+                 estop_check(state),
+                 battery_check(state, now),
+                 controller_check("ctrl", state.controllers, now)])]
     for arm in robot.arms.values():
-        checks = [stream_check("signal", arm.state.joint_states_stats.quality(now), ARM_RATE), arm_check(arm, now)]
-        checks += simulated_check(arm.simulation)
-        # * The tool gets its own chip: its driver fails independently of the arm.
-        tool = tool_check(arm, now)
-        if tool is not None:
-            checks.append(tool)
-            # * Named for the tool: a second plain SIM on the arm's line would not say whose it is.
-            checks += simulated_check(robot.simulated.get(arm.config.end_effector_namespace), f"{tool.label} SIM")
+        checks = simulated_check(arm.simulation) + [
+            stream_check("signal", arm.state.joint_states_stats.quality(now), ARM_RATE), arm_check(arm, now)]
         checks.append((tcp_checks or {}).get((robot.config.serial, arm.config.name),
                                              Check("tcp", WARN, "not checked yet: waiting for the arm to be still")))
         # * Only when out of date: the monitor uses the calibration, but the URDF file other tools read does not.
         stale = [c for c in robot.config.ur_calibration if c.arm == arm.config.name and c.out_of_date]
         if stale:
             checks.append(Check("URDF", WARN, stale[0].describe()))
+        # * The tool gets its own chips: its driver fails independently of the arm.
+        tool = tool_check(arm, now)
+        if tool is not None:
+            checks += simulated_check(robot.simulated.get(arm.config.end_effector_namespace)) + [tool]
         lines.append((arm.config.label.lower(), checks))
     return lines
 
 
-def simulated_check(simulation: SimulatedPart | None, label: str = "SIM") -> list[Check]:
-    """A green SIM chip (`label`) while a part announces itself as simulated, else none.
+#: The label of a simulated part's chip.
+SIM_LABEL = "sim"
 
-    * Green, not a problem: a simulated part is what the operator asked for; the chip only says which it is.
-    """
+
+def simulated_check(simulation: SimulatedPart | None) -> list[Check]:
+    """A blue "sim" chip while a part announces itself as simulated, else none: checks on it are relaxed."""
     if simulation is None:
         return []
-    return [Check(label, GOOD, f"{simulation.kind} ({simulation.node}): simulated, so some safety checks are skipped")]
+    return [Check(SIM_LABEL, INFO,
+                  f"{simulation.kind} ({simulation.node}): simulated, so some safety checks are skipped")]
 
 
 def stream_check(label: str, quality: StreamQuality, rate: float = ARM_RATE) -> Check:
@@ -445,11 +452,11 @@ def battery_check(state: BaseState, now: float) -> Check:
         Check: Labelled with the charge when known.
     """
     if state.battery_update_time is None:
-        return Check("battery", WARN, "no bms/state message yet")
+        return Check("bat", WARN, "no bms/state message yet")
     percentage = state.battery_percentage
     known = percentage is not None and math.isfinite(percentage)
     # * 5 % steps, no voltage: a jittering label would rebuild the row.
-    label = f"battery {round(percentage * 20) * 5}%" if known else "battery"
+    label = f"bat {round(percentage * 20) * 5}%" if known else "bat"
     detail = "charging" if state.battery_charging else "discharging"
     if now - state.battery_update_time > BATTERY_STALE_AFTER:
         return Check(label, WARN, f"no bms/state for over {BATTERY_STALE_AFTER:g}s")
@@ -614,19 +621,39 @@ def soft_stop_check(robot: HuskyRobotInterface) -> Check | None:
     return Check("SOFT STOPPED", BAD, f"{latch.reason or 'soft stopped'}; press Resume to move it again")
 
 
-def render_banner(checks: list[Check]) -> str:
-    """The banner's HTML: green when every check is, else how many are not.
+def render_banner(robots: dict[str, list[tuple[str, list[Check]]]], objects: list[Check]) -> str:
+    """The banner's HTML, one line: an overall chip, then one per robot and one for tracked objects (if any).
+
+    Each chip is red if any of its checks is, else amber if any is, else green; its hover text lists what is not green.
 
     Args:
-        checks: Every check on the panel.
+        robots: Per serial, its lines as (part name, checks), e.g. from `robot_checks`.
+        objects: The tracked objects' checks.
     """
-    problems = [check for check in checks if check.level > GOOD]
-    if not checks:
-        return block(chip("NOTHING TO CHECK", BUSY, "no robots and no tracked objects"))
-    if not problems:
-        return block(chip("ALL GREEN", OK))
-    return block(chip(f"{len(problems)} PROBLEM{'S' if len(problems) > 1 else ''}",
-                      LEVEL_COLORS[worst_level(problems)]))
+    if not robots and not objects:
+        return chip_line(chip("NOTHING TO CHECK", BUSY, "no robots and no tracked objects"))
+    groups = {serial.split("-")[-1]: [(f"{name} " if name else "", check) for name, checks in lines
+                                      for check in checks]
+              for serial, lines in robots.items()}
+    if objects:
+        groups["objects"] = [("", check) for check in objects]
+    every = [(f"{label} {part}", check) for label, checks in groups.items() for part, check in checks]
+    level = worst_level([check for _part, check in every])
+    chips = chip(BANNER_LABELS[level], LEVEL_COLORS[level], _not_green(every) or "every chip is green")
+    for label, checks in groups.items():
+        chips += chip(label, LEVEL_COLORS[worst_level([check for _part, check in checks])],
+                      _not_green(checks) or "all green")
+    return chip_line(chips)
+
+
+#: The overall chip's text by level.
+BANNER_LABELS = {GOOD: "ALL GREEN", WARN: "CHECK", BAD: "PROBLEMS"}
+
+
+def _not_green(checks: list[tuple[str, Check]]) -> str:
+    """One hover line per check that is not green: "<part> <label>: <detail>", worst first."""
+    shown = sorted((item for item in checks if item[1].level > GOOD), key=lambda item: -item[1].level)
+    return "\n".join(f"{part}{check.label}: {check.detail}" for part, check in shown)
 
 
 def worst_level(checks: list[Check]) -> int:

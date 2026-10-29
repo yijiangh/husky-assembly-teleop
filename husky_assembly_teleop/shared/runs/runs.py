@@ -158,7 +158,7 @@ class Progress:
     Attributes:
         actions: Action id -> its record, one per scheduled action.
         current: (action id, movement index) to carry on from, or None.
-        robots: Live id -> where it was last seen (the beliefs).
+        robots: Live id -> where it was last seen, for the report; nothing plans from it.
         updated_at: When this changed last.
     """
 
@@ -305,9 +305,9 @@ def with_current(run: Run, current: tuple[str, int] | None, *, now: datetime | N
 
 
 def reopen(run: Run, action_id: str, *, now: datetime | None = None) -> Run:
-    """The run with a done action pending again; a robot believed at its end goes back to its latest earlier end.
+    """The run with a done action pending again; a robot last seen at its end goes back to its latest earlier end.
 
-    A robot with no earlier end (in an action marked before) loses its belief.
+    A robot with no earlier end (in an action marked before) is dropped from `robots`.
 
     Args:
         run: The run.
@@ -325,8 +325,8 @@ def reopen(run: Run, action_id: str, *, now: datetime | None = None) -> Run:
         raise RunError(f"{action_id} is not done: nothing to reopen")
     actions = {**progress.actions, action_id: ActionRecord()}
     robots = dict(progress.robots)
-    for live, belief in progress.robots.items():
-        if belief.after_action != action_id:
+    for live, record in progress.robots.items():
+        if record.after_action != action_id:
             continue
         earlier = [record for record in actions.values() if record.status == DONE and live in record.ends]
         if earlier:
@@ -343,7 +343,7 @@ def new_run(process: Process, robots: tuple[RobotConfig, ...], settings: RunSett
             transfer_as_free: bool) -> Run:
     """Start a run in the process folder: its folder, run.json, progress.json and a first event.
 
-    Continuing an earlier run carries its statuses, ends, beliefs and current action by action id; actions no longer
+    Continuing an earlier run carries its statuses, ends, robots and current action by action id; actions no longer
     scheduled are dropped (named in the first event), and `changed_since` lists what differs from it. A current
     movement the action no longer has becomes the action's first step (`current_moved` in the first event).
 
@@ -364,7 +364,7 @@ def new_run(process: Process, robots: tuple[RobotConfig, ...], settings: RunSett
     at = stamp(now)
     process_hash, action_hashes = file_hashes(process)
     actions = {action_id: ActionRecord() for action_id in process.schedule}
-    current, beliefs, changed, event = None, {}, (), {}
+    current, last_seen, changed, event = None, {}, (), {}
     if continued_from is not None:
         old, old_info = continued_from.progress, continued_from.info
         actions.update((action_id, record) for action_id, record in old.actions.items() if action_id in actions)
@@ -376,7 +376,7 @@ def new_run(process: Process, robots: tuple[RobotConfig, ...], settings: RunSett
             action = process.actions[current[0]]
             current = (action.id, first_step(process, action, transfer_as_free))
             event["current_moved"] = [list(old.current), list(current)]
-        beliefs = dict(old.robots)
+        last_seen = dict(old.robots)
         changed = (*((PROCESS_FILE,) if process_hash != old_info.process_hash else ()),
                    *(action_id for action_id in process.schedule
                      if action_hashes[action_id] != old_info.action_hashes.get(action_id)))
@@ -390,7 +390,7 @@ def new_run(process: Process, robots: tuple[RobotConfig, ...], settings: RunSett
     folder = _new_folder(Path(process.folder) / RUNS, now.strftime("%Y%m%d_%H%M%S"))
     info = RunInfo(folder.name, at, process_path, process_hash, action_hashes, entries, made_by, settings,
                    continued_from.info.name if continued_from is not None else None, changed)
-    run = Run(folder, info, Progress(actions, current, beliefs, stamp(now, precise=True)))
+    run = Run(folder, info, Progress(actions, current, last_seen, stamp(now, precise=True)))
     save_info(run)
     save_progress(run)
     record_event(folder, "continue" if continued_from is not None else "new_run", None, **event)

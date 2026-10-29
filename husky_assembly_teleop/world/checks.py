@@ -11,8 +11,9 @@ from dataclasses import dataclass
 #: Age in seconds after which a measurement counts as stale.
 STALE_AFTER = 1.0
 
-# Severity levels of a Check, ordered so the worst is `max`.
-GOOD, WARN, BAD = 0, 1, 2
+# Severity levels of a Check, ordered so the worst is `max`. INFO is a fact to know, no problem: below GOOD, so it
+# never makes a row or the banner worse.
+INFO, GOOD, WARN, BAD = -1, 0, 1, 2
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,7 @@ class Check:
 
     Attributes:
         label: Short chip text, e.g. "mocap" or "left_ur_arm joints".
-        level: GOOD, WARN or BAD.
+        level: INFO, GOOD, WARN or BAD.
         detail: What is wrong, or a short fact when all is well; the chip's tooltip.
     """
 

@@ -29,7 +29,7 @@ import viser
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...shared.assembly_run_contract import RunView, beliefs_of, first_pending, is_live
+from ...shared.assembly_run_contract import RunView, first_pending, is_live
 from ...shared.assembly_planning.process_steps import LoadedProcess, loaded_process
 from ...shared.execution.spiral import spiral_fits
 from ...shared.movement_exec_contract import INSERT_PART, current_step, part_plan
@@ -147,7 +147,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
                 {action_id: progress.actions.get(action_id, ActionRecord()).status for action_id in schedule},
                 frozenset(action_id for action_id, record in progress.actions.items()
                           if record.status == DONE and record.assumed),
-                self._current, beliefs_of(progress), self._settings,
+                self._current, self._settings,
                 self._offer.info.name if self._offer is not None else "",
                 self._match.info.name if self._match is not None else "", self._revision)
         return self._view

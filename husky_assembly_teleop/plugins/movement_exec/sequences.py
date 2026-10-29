@@ -562,7 +562,7 @@ async def _replan(job: Job, part: PartPlan) -> RouteResult | None:
     ctx, request = job.ctx, job.request
     loaded = request.loaded
     asked = MotionPlanRequest(loaded, loaded.steps[loaded.index_of(request.action, part.index)], ctx.scene.snapshot,
-                              ctx.config.robots, beliefs=job.run.view.beliefs,
+                              ctx.config.robots,
                               transfer_as_free=request.transfer_as_free(), ignore_built=request.ignore_built(),
                               obstacles_collide=request.obstacles_collide(), goal_poses=request.route.goals,
                               linear_step=TAIL_STEP, label=f"retreat tail {part.movement}")

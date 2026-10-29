@@ -123,7 +123,7 @@ def test_mark_done_records_ends_and_beliefs(process, robots):
 
 
 def test_reopen_restores_the_earlier_end_or_drops_it(process, robots):
-    """Reopening the latest mark puts a robot back at its latest earlier end; a robot with none loses its belief."""
+    """Reopening the latest mark puts a robot back at its latest earlier end; a robot with none is dropped."""
     run = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
     run = mark_done(run, "B1_J_joint", {CINDY: record(1.0)}, False)
     run = mark_done(run, "B1_H_hold", {CINDY: record(2.0), ALICE: record(3.0)}, False)

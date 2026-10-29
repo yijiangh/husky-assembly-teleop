@@ -156,7 +156,8 @@ def test_the_process_panel_shows_the_old_name_the_row_and_the_sentence(purged):
     assert codes[0] == "J_transit" and {"J_M1", "J_M2", "J_M4+5"} <= set(codes)
     assert "J_M0" not in codes and "J_M3" not in codes
     # * Only the selected movement's button is ringed, and every button keeps one weight, so nothing moves.
-    css = _movement_css("u", [label.kinds[0] for label in labels], action.movements.index(movement))
+    css = _movement_css("u", [label.kinds[0] for label in labels], action.movements.index(movement),
+                        [None] * len(labels))
     assert css.count("box-shadow") == 1 and css.count("font-weight") == 1
 
 

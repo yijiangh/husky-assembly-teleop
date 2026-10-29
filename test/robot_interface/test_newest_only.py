@@ -84,12 +84,21 @@ def test_a_message_the_executor_takes_is_stamped_and_decoded():
     assert (stamps, positions) == ([pytest.approx(10.25)], [1.0])
 
 
-def test_a_garbled_message_is_dropped_not_fatal():
-    """Too short to hold a stamp: both steps fail inside their guards, and the drain goes on."""
-    node, stamps = _Node(), []
-    RosConnections(node).subscription(JointState, "j", print, newest_only=True, on_stamp=stamps.append)
-    node.subscriptions[0].queue.append(b"\x00\x01")
-    assert _drain(node) == 1 and stamps == []
+def test_a_failing_step_drops_the_message_not_the_drain():
+    """Both steps raise inside their guards, and the next subscription is still drained.
+
+    Real messages only: garbage bytes would test the RMW's decoder, which segfaults under Cyclone.
+    """
+    def fail(_):
+        raise RuntimeError("step failed")
+
+    node, positions = _Node(), []
+    ros = RosConnections(node)
+    ros.subscription(JointState, "bad", fail, newest_only=True, on_stamp=fail)
+    ros.subscription(JointState, "good", lambda m: positions.append(m.position[0]), newest_only=True)
+    node.subscriptions[0].queue.append(_joint_state(10, 1.0))
+    node.subscriptions[1].queue.append(_joint_state(11, 2.0))
+    assert _drain(node) == 2 and positions == [2.0]
 
 
 def test_on_stamp_needs_a_header_and_newest_only():

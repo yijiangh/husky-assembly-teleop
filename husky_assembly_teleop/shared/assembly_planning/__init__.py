@@ -9,7 +9,7 @@ The process as steps, planning scenes, routines, IK and collision checks on a pl
   labels.py         a movement as the operator knows it: its old monitor name, the action flowchart's kind and
                     colours, one sentence on what it does
   steps.py          an action's movements grouped into the operator's steps; the process in that order, for display
-  scene_for.py      a process step's planning scene on the real robots; unmeasured robots from a belief or the design
+  scene_for.py      a process step's planning scene on the real robots; unmeasured robots from the design
   collision.py      checks on a synced compas_fab mirror: a state, a path swept between waypoints, what a check hit
                     (`collision_hit`); world-frame FK
   ik.py             exact ssik IK at the live base, nearest collision-free branch first; PyBullet IK as fallback

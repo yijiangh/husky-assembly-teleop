@@ -4,7 +4,8 @@ The headless arm planner: plans a collision-free path for one arm to a joint goa
 Others use it through `ArmPlannerContract`; its panel is `arm_planner_panel`. The first plan for a robot loads its
 models in a compas_fab world (several seconds).
 
-! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`).
+! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`), under an
+  ARM_STOP_DISTANCE clearance on the robot (`ctx.clearance`), so the base pose must be known to send.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+from dataclasses import replace
 from typing import Callable, Sequence
 
 import numpy as np
@@ -29,6 +31,8 @@ from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
+from ...world.clearance import ARM_STOP_DISTANCE
+from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.ids import robot_id
 from .planner import ArmPath, path_hit, plan_arm
 
@@ -90,32 +94,41 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         notes = f" (guessed: {'; '.join(guessed)})" if guessed else ""
         if guessed:
             ctx.log_warn(f"planning for {serial} {arm} from a guess: {'; '.join(guessed)}")
-        unchecked = unchecked_robots(live, robot_id(serial))
-        if unchecked:
-            notes += f" (not checked against {'; '.join(unchecked)})"
-            ctx.log_warn(f"planning for {serial} {arm} without checking against {'; '.join(unchecked)}")
         tracked = live.robots[robot_id(serial)].base_tracked
         base = floor_pose(snapshot.robots[robot_id(serial)].base)
         loading = serial not in self._loaded
+        # The other robots not measured and their stand-ins, from the worker (`with_stand_ins`).
+        others: list[str] = []
 
         def work() -> PlanResult:
             # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
                 return PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0)
-            return plan_arm(self._world.sync(snapshot, serial), snapshot, arm, goal, abort)
+            stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
+            others[:] = stand_ins.warnings
+            result = plan_arm(self._world.sync(stand_ins.scene, serial), stand_ins.scene, arm, goal, abort)
+            if result.path is None and others:
+                result = replace(result, reason=f"{result.reason} (other robots not measured: {'; '.join(others)})")
+            return result
+
+        def finished() -> None:
+            self._loaded.add(serial)
+            for line in others:
+                ctx.log_warn(f"planning for {serial} {arm}: {line}")
 
         def accepted(result: PlanResult) -> tuple[str, bool]:
             self._start_base = (result.path, base, tracked)
             how = "straight" if result.direct else "RRT"
+            stand_ins = f" (other robots not measured: {'; '.join(others)})" if others else ""
             return (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
-                    f"found in {result.seconds:.1f} s{notes}"), bool(guessed or unchecked)
+                    f"found in {result.seconds:.1f} s{notes}{stand_ins}"), bool(guessed or others)
 
         return Search(label=f"plan {serial} {arm}",
                       message=f"planning for {serial} {arm}…{notes}"
                       + (" (loading the models first)" if loading else ""),
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
-                      accepted=accepted, finished=lambda: self._loaded.add(serial))
+                      accepted=accepted, finished=finished)
 
     def check_path(self, serial: str, arm: str,
                    waypoints: Sequence[Sequence[float]]) -> asyncio.Future[CollisionHit | None]:
@@ -134,7 +147,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
                 raise ValueError(f"{serial} can't be checked: {'; '.join(problems)}")
-            result = path_hit(self._world.sync(snapshot, serial), snapshot, arm, waypoints)
+            scene = with_stand_ins(snapshot, {robot_id(serial)}).scene
+            result = path_hit(self._world.sync(scene, serial), scene, arm, waypoints)
             self._loaded.add(serial)
             return result
 
@@ -178,13 +192,18 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       answer: Callable[[bool, str], None]) -> None:
         """Send the plan to the arm and watch it until it is at the end; else hold it (`send_motion`).
 
-        ! Arrival is judged on the joints, not `is_executing`, which clears during a slow move (the pendant's speed
+        - An ARM_STOP_DISTANCE clearance starts first: one that cannot check refuses the commit (nothing sent), a
+          trip soft stops the robot and cancels this. The robot's other arms may be unknown (where last seen, or
+          stowed), and the other robots unknown at the commit (`unknown_allowed`).
+        - ! Arrival is judged on the joints, not `is_executing`, which clears during a slow move (the pendant's speed
           slider): the lease would go back mid-motion.
         """
         serial, arm_name, path = plan.request.serial, plan.request.arm, plan.path
-        ctx.log_info(f"{serial} {arm_name}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
-        outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
-                                    on_sent=lambda: answer(True, f"sent to {serial} {arm_name}"))
+        others = [name for name in ctx.world.robots[serial].arms if name != arm_name]
+        with ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others, unknown_robots=self.unknown_allowed(plan)):
+            ctx.log_info(f"{serial} {arm_name}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
+            outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
+                                        on_sent=lambda: answer(True, f"sent to {serial} {arm_name}"))
         if outcome.status == REFUSED:
             answer(False, outcome.reason)
         else:
@@ -193,22 +212,6 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
     def forget(self, plan: Plan[ArmPlanRequest]) -> None:
         """Drop the base position the plan was for."""
         self._start_base = None
-
-
-def unchecked_robots(snapshot, acting: str) -> list[str]:
-    """Other robots in the scene a plan is not checked against, each with why: base not tracked or joints not known.
-
-    ! The planning world parks them far away (`CompasFabCell.parked`), so a plan may pass through them: warn.
-
-    Args:
-        snapshot: The scene planned in.
-        acting: The id of the robot planned for.
-
-    Returns:
-        list[str]: E.g. "a200-0805: its base is not tracked"; empty if every robot present is checked.
-    """
-    return [f"{key.split('/', 1)[1]}: {'; '.join(robot.acting_problems())}" for key, robot in snapshot.robots.items()
-            if key != acting and robot.enabled and robot.acting_problems()]
 
 
 def floor_pose(pose) -> tuple[float, float, float]:

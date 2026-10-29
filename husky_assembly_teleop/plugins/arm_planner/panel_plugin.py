@@ -18,13 +18,13 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.arm_planner_contract import ArmPlanRequest
 from ...shared.collisions_contract import CollisionsContract
-from ...shared.planner.planner_panel import PlannerPanel
+from ...shared.planner.planner_panel import PlannerPanel, unknown_robots_chip
 from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import with_guesses
 from ...ui.ghost import RobotGhost
 from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_joint_sliders
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
+from ...ui.style import BUSY, OK, SECTION_TOOL, block, chip, chip_line, section, values
 from ...ui.visualization import PLAN_TAB
 from scaffolding_assembly_core.ids import robot_id
 from ...shared.assembly_planning.joints import arm_joint_names
@@ -246,7 +246,12 @@ class ArmPlannerPanel(PlannerPanel):
         """Pose the ghosts and fill the panel."""
         if self.idle:
             return
-        self._status.content = chip_line(chip(escape(f"{self.serial} {self.arm}"), SECTION_CTRL) + self._plan_chip())
+        tracked = ctx.scene.snapshot.robots[robot_id(self.serial)].base_tracked
+        robot = chip(escape(f"{self.serial} {self.arm} {'tracked' if tracked else 'not tracked'}"),
+                     OK if tracked else BUSY,
+                     "" if tracked else "plans from where the base was last seen; a commit needs it tracked by mocap")
+        self._status.content = chip_line(robot + self._plan_chip()
+                                         + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
         # Loading a target from the step can switch the robot or arm; show that here.
         self._robot.value = self.serial
         if tuple(self._arm.options) != tuple(self._arms[self.serial]):

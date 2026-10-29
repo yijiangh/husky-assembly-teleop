@@ -3,6 +3,7 @@
 import asyncio
 import json
 import math
+import threading
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import replace
@@ -13,6 +14,7 @@ import numpy as np
 import pytest
 from crl_husky.follower_path import FollowerPath
 from robot_fakes import Node, lease_test_robots, wait_ticks_until
+from robot_lab import RobotLab
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugin_api.trace import Signal, Trace
@@ -24,6 +26,7 @@ from husky_assembly_teleop.plugins.base_planner.tasks import BY_NAME
 from husky_assembly_teleop.plugins.base_planner.world import COLLISION_MARGIN
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
+from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.world.checks import WARN
 from husky_assembly_teleop.world.clearance import STOP_DISTANCE, Clearance
 
@@ -130,7 +133,7 @@ class CommitCtx:
         yield []
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE):
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_robots=()):
         """Never trip."""
         yield Clearance(tuple(serials), margin)
 
@@ -224,6 +227,22 @@ def test_request_settings_become_the_algorithms_settings():
             planner._algorithm(request)
 
 
+@pytest.mark.parametrize("chosen", ["", "ideal"])
+def test_the_search_plans_with_the_chosen_follower_model_else_the_robots(chosen):
+    """A follower model chosen in the request is planned with; none ("") is the robot's (base_model, model.yaml)."""
+    lab, planner, seen = RobotLab(), BasePlannerPlugin(), []
+    rrt = planner._algorithms[1]
+    rrt.plan = lambda *args: seen.append(args[5]) or PlanResult(None, "not planned", 0.0)
+    # What the search reads besides the robots: Cindy's base pose, whether it is simulated, the process step.
+    lab.ctx.kinematics = SimpleNamespace(base_pose=lambda _serial: SimpleNamespace(
+        position=np.array([3.0, 1.0, 0.0]), orientation=np.array([0.0, 0.0, 0.0, 1.0])))
+    lab.cindy.base.simulation, lab.ctx.plugins["process"] = None, SimpleNamespace(selection=None)
+    config = lab.configs[2]
+    request = BasePlanRequest(config.serial, (4.0, 1.0, 0.0), rrt.label, (("follower_model", chosen),))
+    planner.make_search(lab.ctx, request, threading.Event()).work()
+    assert config.base_model != "ideal" and seen[0].follower_model == (chosen or config.base_model)
+
+
 #: A recorded request of experiment "trial".
 REQUEST = BasePlanRequest(SERIAL, (1.0, 1.0, 0.0), record=True, experiment="trial")
 
@@ -312,7 +331,7 @@ class FakeClock:
                 event.detach(listener)
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE):
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_robots=()):
         """Keep the clearance asked for; the test trips it by setting its problem and cancelling the run."""
         self.clearances.append(Clearance(tuple(serials), margin))
         yield self.clearances[-1]

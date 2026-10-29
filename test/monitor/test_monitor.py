@@ -383,7 +383,7 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
         found = ctx.spawn("drive r0", drive("r0"))
         await asyncio.sleep(0)
         await monitor._tick()
-        (key, own, margin, assumable), = monitor._clearances.asked[-1]
+        (key, own, margin, assumable, _allowed), = monitor._clearances.asked[-1]
         assert own == robot_id("r0") and margin == STOP_DISTANCE and assumable == frozenset()
         monitor._clearances.found = [(key, "came within 10 cm of wall", None)]
         await monitor._tick()

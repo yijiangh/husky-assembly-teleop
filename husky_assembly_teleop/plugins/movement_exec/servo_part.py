@@ -173,7 +173,7 @@ class ServoLoop:
         planner: MotionPlannerContract = ctx.require("motion_planner")
         async with timeout(PLAN_TIME):
             step = await planner.request_servo_step(MotionPlanRequest(
-                loaded, loaded.steps[plan.step_index], snapshot, ctx.config.robots, beliefs=view.beliefs,
+                loaded, loaded.steps[plan.step_index], snapshot, ctx.config.robots,
                 transfer_as_free=as_free, ignore_built=ignore_built, obstacles_collide=obstacles, servo=ask,
                 label=f"servo {k}/{MAX_PASSES} {plan.target}"))
         route = step.route

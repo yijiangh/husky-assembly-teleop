@@ -29,6 +29,7 @@ from scaffolding_assembly_core.scene import Scene
 
 from ...world.base_collision import BaseCollisionWorld
 from ...world.collision_hit import CollisionHit
+from ...world.stand_ins import with_stand_ins
 
 #: A path must keep this far from everything, metres: tracking error plus a safety margin.
 PATH_CLEARANCE = 0.3
@@ -205,7 +206,10 @@ class PathCollisionCheck:
 
     async def path_hit(self, snapshot: Scene, serial: str, poses: np.ndarray,
                        margin: float = PATH_CLEARANCE) -> CollisionHit | None:
-        """What the robot would come within `margin` of along `poses` (n x 3), or None if the path is clear."""
+        """What the robot would come within `margin` of along `poses` (n x 3), or None if the path is clear.
+
+        Other robots not measured are checked as their stand-ins (`with_stand_ins`).
+        """
         return await self._run(self._path_hit, snapshot, serial, check_poses(poses), margin)
 
     def close(self) -> None:
@@ -219,5 +223,5 @@ class PathCollisionCheck:
 
     def _path_hit(self, snapshot: Scene, serial: str, poses: np.ndarray, margin: float) -> CollisionHit | None:
         """Worker: sync the world to the snapshot and say what the robot comes too close to first along the poses."""
-        self._world.sync(snapshot)
+        self._world.sync(with_stand_ins(snapshot, {robot_id(serial)}).scene)
         return self._world.path_hit(robot_id(serial), poses, margin)

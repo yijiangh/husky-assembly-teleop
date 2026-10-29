@@ -58,13 +58,14 @@ furniture, the tripods and Belle parked at (1.7, 1.3). ! Keep that area clear; i
 ### The method
 
 - **Varies:** the planner. **Held fixed:** the tasks, Alice's arm stowed (`ArmConfig.stow_joints`), the planners'
-  default settings, the planning speeds, the task origin, the follower model (`alice_tiles_2`; older runs used `alice_tiles`). All are recorded with
-  every attempt.
+  default settings, the planning speeds, the task origin, the follower model (Alice's `base_model` in crl-husky's
+  model.yaml, `alice_tiles_2`; older runs used `alice_tiles`). All are recorded with every attempt.
 - **Measured independently of the planner:** clearance in the planning world; deviation and end from mocap (robot)
   or the simulated pose against the path sent, the same for both planners.
 - **Model groups (offline):** each path found is driven by the simulated follower (crl_husky pure pursuit with
   `alice_tiles_2`) twice over: **exact model**, the simulated robot exactly as the follower's model (xICR −0.126 m),
-  and **deviated models**, the same with the true xICR at −0.20, −0.15 and −0.10 m (the planners' xICR range). The
+  and **deviated models**, the same with the true xICR the planners' xICR spread (0.05 m) either side of the model's,
+  −0.176 and −0.076 m (older runs: −0.20, −0.15 and −0.10 m). The
   report gives finished, deviation and end per group; a deviated group's numbers are the worst of its drives.
 - **Unit:** one attempt = one plan from the task's start. An attempt counts for a task only when it starts within
   10 cm and 10° of the task's start and aims at its target (the panel checks); driving to the start is a free
@@ -145,8 +146,8 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" \
 > **Safety.** The obstacles are virtual: nothing stops Alice but the follower and the e-stop. Clear the area around
 > `TASK_ORIGIN`, keep the e-stop in reach, watch every run.
 
-Fleet settings (`rmw_zenoh_cpp`, `ROS_DOMAIN_ID=80`). On the robot, the follower with Alice's model:
-`ros2 launch crl_husky pure_pursuit.launch.py model:=alice_tiles_2`. On the control PC, the mocap relay and the
+Fleet settings (`rmw_zenoh_cpp`, `ROS_DOMAIN_ID=80`). On the robot, the follower, which assumes Alice's model (her
+`base_model`, as the planner does): `ros2 launch crl_husky pure_pursuit.launch.py`. On the control PC, the mocap relay and the
 monitor with `plugins:="['robot_control', 'base_planner_panel']"`; for C also `-p process_directory:=` the process folder.
 Switch Alice's `platform_velocity_controller` on in `robot_control`.
 

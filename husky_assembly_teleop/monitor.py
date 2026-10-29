@@ -503,7 +503,8 @@ class HuskyMonitor(Node):
                     robot = snapshot.robots.get(robot_id(serial))
                     assumable = (assumable_joints(robot.model.movable_joints, clearance.unknown_arms)
                                  if robot is not None else frozenset())
-                    asked.append(((loaded.ctx, clearance, serial), robot_id(serial), clearance.margin, assumable))
+                    asked.append(((loaded.ctx, clearance, serial), robot_id(serial), clearance.margin, assumable,
+                                  clearance.unknown_robots))
         if asked:
             self._clearances.check(snapshot, asked)
 

@@ -9,7 +9,10 @@ import viser
 
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.ui.visualization import COLLISION_COLOR, FastViserUrdf, shared_urdf
+from husky_assembly_teleop.ui.visualization import (COLLISION_COLOR, FastViserUrdf, add_simple_urdf, guessed_parts,
+                                                    robot_parts, shared_urdf)
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.urdf import urdf_links
 
 
@@ -72,3 +75,27 @@ def test_tool_follows_the_joints(server, alice):
     assert tuple(wrist.wxyz) != before
     tool_nodes = [mesh for mesh in drawn._meshes if mesh.name.endswith("/tool_0")]
     assert tool_nodes and all(wrist.name in mesh.name for mesh in tool_nodes)
+
+
+def test_robot_parts_split_the_base_from_each_arm_and_its_tool(server):
+    """Cindy: every mesh is the base's or one arm's, each arm's with its tool, and the colours are each mesh's own."""
+    cindy = robot_config_from_serial("0806", DATA)
+    model = shared_urdf(cindy.model.urdf)
+    drawn = add_simple_urdf(server, model, "/cindy_parts", load_collision_meshes=True,
+                            collision_mesh_color_override=COLLISION_COLOR)
+    drawn.add_tools(cindy.model.tools)
+    parts = robot_parts(drawn, ["left_ur_arm", "right_ur_arm"])
+    assert sum(len(handles) for handles in parts.values()) == len(drawn._meshes) and all(parts.values())
+    assert all("_ur_arm_" not in handle.name for handle in parts[None])
+    assert any("/tool_" in handle.name for handle in parts["left_ur_arm"])
+    assert len({tuple(handle.color) for handle in parts["left_ur_arm"]}) > 2, "blue caps, grey tubes, black rings"
+
+
+def test_guessed_parts_are_the_untracked_base_and_each_arm_not_measured():
+    """A lost base and one arm with a joint not measured: those two; a fully measured robot: none."""
+    cindy = robot_config_from_serial("0806", DATA)
+    arms = ["left_ur_arm", "right_ur_arm"]
+    robot = RobotObject("robots/a200-0806", cindy.model, Pose(), {}, base_tracked=False,
+                        unmeasured=frozenset({"right_ur_arm_elbow_joint"}))
+    assert guessed_parts(robot, arms) == {None, "right_ur_arm"}
+    assert guessed_parts(RobotObject("robots/a200-0806", cindy.model, Pose(), {}), arms) == frozenset()

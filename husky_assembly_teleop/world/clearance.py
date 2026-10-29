@@ -5,9 +5,11 @@ Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, 
 
 - Checked against the whole tick snapshot, other robots included; allowed contacts (`Body.touches`, what a robot
   holds) are skipped.
+- ! Other robots must be measured too, except those in `Clearance.unknown_robots` (unknown when it was committed,
+  checked as their stand-ins, `stand_ins.py`): any other robot not measured trips it, and refuses it at the start.
 - ! What cannot be checked counts as too close: a lost base pose, or a robot the mirror cannot place. Only arms named
-  in `Clearance.unknown_arms` may be unknown (manual moves): they are checked at their stow pose. A robot that
-  cannot be checked when a clearance starts refuses it (`ClearanceRefused`), so nothing is sent.
+  in `Clearance.unknown_arms` may be unknown (manual moves): they are checked where last seen, or stowed. A robot
+  that cannot be checked when a clearance starts refuses it (`ClearanceRefused`), so nothing is sent.
 - One worker thread checks one snapshot at a time, a tick or two behind the robot. Not an emergency stop.
 - On a trip, `PluginContext.clearance` soft stops the robot (Resume needed) and cancels the task. The monitor keeps
   the last TRIPS_KEPT trips with what came too close (`ClearanceTrip`), for the collisions plugin.
@@ -25,9 +27,12 @@ from scaffolding_assembly_core.scene import Scene
 from ..robot_interface.soft_stop import MotionRefused
 from .base_collision import BaseCollisionWorld
 from .collision_hit import CollisionHit
+from .stand_ins import unknown_robots, with_stand_ins
 
 #: Default distance, metres, below which a clearance trips.
 STOP_DISTANCE = 0.1
+#: Distance kept while an arm moves (jogs, planned paths), metres: tight, so it can still reach close to things.
+ARM_STOP_DISTANCE = 0.01
 #: How many trips the monitor keeps.
 TRIPS_KEPT = 10
 #: For `unknown_arms`: every arm of the robot.
@@ -43,8 +48,11 @@ class Clearance:
         margin: Distance below which it trips, metres.
         problem: Why it tripped, or None while it holds.
         hit: What came too close, once tripped; None while it holds, or when it could not be checked.
-        unknown_arms: Arms whose joints may be unknown, checked at their stow pose, or ALL_ARMS; none by default.
+        unknown_arms: Arms whose joints may be unknown, checked where last seen or stowed, or ALL_ARMS; none by
+            default.
             The base pose must always be known.
+        unknown_robots: Other robots that may be unknown, by id: checked as their stand-ins, live once measured again.
+        stand_ins: Other robots not measured when it started, and how they are checked (`StandIns.warnings`).
     """
 
     serials: tuple[str, ...]
@@ -52,6 +60,8 @@ class Clearance:
     problem: str | None = None
     hit: CollisionHit | None = None
     unknown_arms: Collection[str] | Literal["all"] = ()
+    unknown_robots: frozenset[str] = frozenset()
+    stand_ins: tuple[str, ...] = ()
 
 
 class ClearanceRefused(MotionRefused):
@@ -70,6 +80,18 @@ def clearance_problem(robot: RobotObject | None, assumable: frozenset[str] = fro
     if robot is None:
         return "it is not in the scene"
     return "; ".join(replace(robot, unmeasured=robot.unmeasured - assumable).acting_problems())
+
+
+def others_problem(snapshot: Scene, own: Collection[str], allowed: Collection[str]) -> str:
+    """Why a clearance cannot check its robots against the others: those not measured it may not stand in; or "".
+
+    Args:
+        snapshot: The tick's snapshot.
+        own: Ids of the robots the clearance keeps clear.
+        allowed: Ids of the other robots that may be unknown (`Clearance.unknown_robots`).
+    """
+    return "; ".join(f"{key} is not measured ({'; '.join(snapshot.robots[key].acting_problems())})"
+                     for key in sorted(unknown_robots(snapshot, own) - set(allowed)))
 
 
 def assumable_joints(joints: Iterable[str], unknown_arms: Collection[str] | Literal["all"]) -> frozenset[str]:
@@ -112,8 +134,10 @@ class ClearanceChecker:
         self._world = BaseCollisionWorld()
         self._pending: Future | None = None
 
-    def check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str]]]) -> bool:
-        """Start checking each (key, robot id, margin, joints that may be unknown) in `snapshot`, unless one runs.
+    def check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str], frozenset[str]]]) -> bool:
+        """Start checking each (key, robot id, margin, joints and other robots that may be unknown) in `snapshot`.
+
+        Skipped while the last check runs.
 
         Returns:
             bool: Whether the check started; False while the last one runs (this snapshot is skipped).
@@ -139,16 +163,17 @@ class ClearanceChecker:
         self._executor.submit(self._world.close)
         self._executor.shutdown(wait=True)
 
-    def _check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str]]]
+    def _check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str], frozenset[str]]]
                ) -> list[tuple[Any, str, CollisionHit | None]]:
         """Sync the world to `snapshot` and say why each robot that is too close, or cannot be checked, is. Worker."""
         found, checked = [], []
-        for key, own, margin, assumable in asked:
-            if problem := clearance_problem(snapshot.robots.get(own), assumable):
+        for key, own, margin, assumable, allowed in asked:
+            problem = clearance_problem(snapshot.robots.get(own), assumable) or others_problem(snapshot, {own}, allowed)
+            if problem:
                 found.append((key, f"cannot be checked: {problem}", None))
             else:
                 checked.append((key, own, margin))
-        # * The unknown joints left may be: take them as known, at the stow pose the kinematics filled in.
+        # * The unknown joints left may be: take them as known, where the kinematics has them (last seen, or stowed).
         #   A strict clearance on the same robot failed above already.
         lenient = {own for _key, own, _margin in checked if snapshot.robots.get(own) is not None
                    and snapshot.robots[own].unmeasured}
@@ -156,6 +181,7 @@ class ClearanceChecker:
             snapshot = replace(snapshot, robots={object_id: replace(robot, unmeasured=frozenset())
                                                  if object_id in lenient else robot
                                                  for object_id, robot in snapshot.robots.items()})
+        snapshot = with_stand_ins(snapshot, {own for _key, own, _margin in checked}).scene
         self._world.sync(snapshot)
         for key, own, margin in checked:
             try:

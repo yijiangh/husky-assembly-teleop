@@ -1,4 +1,4 @@
-"""The runtime's see-through robots: a fade hides the textured robot and shows a single-colour twin at its opacity."""
+"""The runtime's see-through robots: a plugin fades a whole robot, over the parts the checks only assume."""
 
 from __future__ import annotations
 
@@ -6,35 +6,43 @@ import pytest
 from repo_paths import DATA
 
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.ui.visualization import Visualization
+from husky_assembly_teleop.ui.visualization import GUESSED_OPACITY, Visualization
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Scene
 
 SERIAL = "a200-0804"
 
 
 @pytest.fixture
 def viz():
-    """Both servers on free ports."""
+    """Both servers on free ports, with Alice loaded."""
     viz = Visualization(port=0, phone_port=0)
+    viz.load_robot(robot_config_from_serial("0804", DATA))
     yield viz
     viz.stop()
 
 
-def test_a_faded_robot_shows_its_twin_and_comes_back_solid(viz):
-    """0.3 hides the GLB visual meshes and shows a twin at 0.3; None hides the twin and shows the GLB again."""
-    viz.load_robot(robot_config_from_serial("0804", DATA))
-    drawn = viz._robots[SERIAL]
-    assert drawn.twin is None and drawn.urdf.show_visual
+def opacities(viz: Visualization) -> dict[str | None, set[float | None]]:
+    """The opacities Alice's meshes are at, by part."""
+    return {part: {handle.opacity for handle in handles} for part, handles in viz._robots[SERIAL].parts.items()}
+
+
+def test_a_faded_robot_is_all_at_its_opacity_and_comes_back_to_its_guessed_parts(viz):
+    """The arm not measured: 0.3 fades every part; None puts the arm back at GUESSED_OPACITY and the base solid."""
+    model = robot_config_from_serial("0804", DATA).model
+    robot = RobotObject(f"robots/{SERIAL}", model, Pose(), {}, unmeasured=frozenset({"ur_arm_elbow_joint"}))
+    viz.draw(Scene(robots={robot.id: robot}))
+    assert opacities(viz) == {None: {None}, "ur_arm": {GUESSED_OPACITY}}
     viz.set_robot_opacity(SERIAL, 0.3)
-    assert drawn.twin is not None and drawn.opacity == 0.3 and not drawn.urdf.show_visual
-    assert drawn.twin.show_visual and all(mesh.opacity == 0.3 for mesh in drawn.twin._meshes)
+    assert opacities(viz) == {None: {0.3}, "ur_arm": {0.3}}
     viz.set_robot_opacity(SERIAL, None)
-    assert drawn.opacity is None and drawn.urdf.show_visual and not drawn.twin.show_visual
+    assert opacities(viz) == {None: {None}, "ur_arm": {GUESSED_OPACITY}}
     viz.set_robot_opacity("a200-9999", 0.3)  # unknown: ignored
 
 
 def test_a_plugin_view_puts_back_what_it_faded_when_cleared(viz):
-    """A plugin's view fades a robot; `clear` (the plugin stopping) draws it solid again."""
-    viz.load_robot(robot_config_from_serial("0804", DATA))
+    """A plugin's view fades a robot; `clear` (the plugin stopping) draws it as measured again."""
     view = viz.view_for("a_plugin")
     view.set_robot_opacity(SERIAL, 0.3)
     assert viz._robots[SERIAL].opacity == 0.3
