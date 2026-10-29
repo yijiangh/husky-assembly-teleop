@@ -103,6 +103,36 @@ BASE_CALIBRATION_DATE_BY_ROBOT = {
     'Cindy': '20261016',
 }
 
+# * The measured lab floor in the MoCap world (mocap_floor.py): a plane fitted to
+# * probe points on the floor, saved as <stamp>_mocap_floor_calibration.json in
+# * MOCAP_FLOOR_DIRECTORY. The floor is a property of the lab, not of a design, so
+# * every problem's collision floor, the PyBullet floor grid and the viewer pages'
+# * grid use it. A missing file falls back to the exported WalkableGround height.
+# * 2026-10-27 (since then): 0.26 deg tilt, about -1 mm at the MoCap origin; 22 points,
+# * 1.6 mm rms; its x, y and origin are fitted to the fixed floor points of
+# * main_floor_points.json. The file also carries the cameras, the fixed points and a
+# * relay-frame correction marked 'untrusted': the loader (mocap_floor.load_mocap_floor)
+# * reads only kind, floor_from_mocap, the floor samples and the plane's rms / tilt.
+# * Before: 20261022_161428 (0.49 deg, -2.5 mm at the origin, 10 points, 2.0 mm rms),
+# * the floor the 2026-10-23 test and its as-built pages were built on.
+MOCAP_FLOOR_DIRECTORY = os.path.join(CALIBRATION_DATA_DIRECTORY, 'mocap_floor')
+MOCAP_FLOOR_CALIBRATION_FILE = os.path.join(
+    MOCAP_FLOOR_DIRECTORY, '20261027_160043_mocap_floor_calibration.json')
+# * Place the Rhino design on that floor (mocap_floor.MocapFloor.world_from_design): the
+# * live monitor tilts and lifts every Rhino pose it reads (bars, joints, targets, the
+# * room) so the design's flat WalkableGround lies on the measured floor, and the ground
+# * bars' footers touch it. Poses measured by MoCap (robot bases, progress.json, markers)
+# * never move. Off: export DESIGN_ON_MEASURED_FLOOR=0 (the design as exported).
+DESIGN_ON_MEASURED_FLOOR = os.environ.get('DESIGN_ON_MEASURED_FLOOR', '1') != '0'
+# * How far the design's ground (WalkableGround) is raised before it is laid on the floor,
+# * mm: the whole design then sits this much LOWER against the real floor. 2026-10-23,
+# * 261023: the feeler gauge read ~23 mm under B20's footers (the model said 15.5 mm), so
+# * 23 brings them onto the real floor; by the model they sit 7.5 mm into it (the floor
+# * there is lower than its fitted plane, or the bar sits lower in the tools). 0 = as
+# * exported. Per run: export DESIGN_GROUND_RAISE_MM=<mm>. ! Re-check all three ground
+# * bars (G20, G34, G46) after a change: the rigid insert has no force limit.
+DESIGN_GROUND_RAISE_MM = float(os.environ.get('DESIGN_GROUND_RAISE_MM', '23.0'))
+
 # Used by the OFFLINE SCRIPTS in data/calibration_data/ (0_ ... 4_ and the
 # export/visualise helpers). config_loader.py re-exports this as its
 # DEFAULT_DATE_FOLDER, which is the folder every load_config() call reads.

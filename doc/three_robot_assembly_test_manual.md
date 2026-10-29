@@ -1089,7 +1089,55 @@ action's number.
 - [ ] slider [Step]: 5 (already loaded by the second servo in d)) → button [Load Movement]
   - **Expect:** readout `step 6/6: <bar>_J_M5_manual_fix_foundation ...`.
 - [ ] button [Operator done (manual step) -> then Confirm Exec]
-- [ ] by hand: fix the bar to the foundation → button [Confirm Exec]
+- [ ] **Floor check, before fixing anything** (the bar still held by Cindy): feeler gauge at the four
+      corners of each ground joint's footer (`<bar>`'s two ground joints, e.g. B20: G20-T20-0 and
+      G20-T20-1), between the footer's bottom and the floor; write the 8 gaps (mm) in the run notes
+  - **Expect:** every gap **0–2 mm** (footers touching or just above the floor), at B20, B34 and B46:
+    the design is laid on the measured floor with its ground raised by 23 mm (start line
+    `design on the measured floor: ON (... WalkableGround raised by DESIGN_GROUND_RAISE_MM = 23.0 mm ...)`,
+    6.c), set from B20's measured ~23 mm gap on 2026-10-23. **B34 and B46 are the first test of that
+    number at other spots**: the floor is uneven by up to ~3 mm and was fitted to 2 mm rms, so their
+    gaps can differ by a few mm. With `DESIGN_GROUND_RAISE_MM=0` the gap is ~23 mm at B20 (the
+    earlier safe setting); without the placement it is uneven (~9–10 / ~17–18 / ~26–27 mm at
+    B20 / B34 / B46 by the model).
+  - **Expect** (optional cross-check): button [MoCap bar: measure + draw] → pane 1 line
+    `[mocap bar] bar ends (world, mm): Rhino start [...] end [...], above the floor a / b | MoCap ...,
+    above the floor c / d`: the bar's lower end has about the same `above the floor` number in Rhino
+    and MoCap (within ~3 mm).
+  - **If not**, a footer **pressed** into the floor (the bar or the footer bends, the wrist force
+    jumps, no gauge fits under any corner while the insert still had travel left): **stop**, do not
+    fix; Cindy may be pushing the bar into the floor. Note the corners, take a photo, and next time
+    start the monitor with a smaller raise (e.g. `export DESIGN_GROUND_RAISE_MM=15`).
+  - **If not**, gaps above ~5 mm: note them per corner; the raise may need to grow at that bar's spot
+    (tell the lead, do not change it mid-action).
+  - **If not**, gaps of ~9–10 mm at B20 / ~17–18 mm at B34 / ~26–27 mm at B46: the start lines (6.c)
+    say `design on the measured floor: OFF (...)`: note the reason; quit and restart the monitor
+    without `DESIGN_ON_MEASURED_FLOOR=0` (and with the floor file on the drive, 1.c), or carry on
+    with the uneven gap noted.
+  - **If not**, one footer high on one side and pressed on the other (tilted): the bar sits turned in
+    the tools; note which corners, take a photo, do not force it down with the arms.
+  - **If not**, every footer off by the same amount but the start line says ON: the floor may have
+    moved since its probe (2026-10-22), or the robot's base calibration is off: look at Cindy's
+    `[floor] Cindy: base_footprint ... above the measured floor` line (6.c, ~0 mm expected), note
+    both, and tell whoever re-probes the floor.
+  **Final footer height** (footer bottom above the real floor, each corner; `DESIGN_GROUND_RAISE_MM`
+  = 23, the start line in 6.c says which value ran):
+
+  | ground bar (joints) | expected gap | tolerance | how it is set | with `DESIGN_GROUND_RAISE_MM=0` |
+  |---|---|---|---|---|
+  | B20 (G20-T20-0 / -1) | **0 mm** (touching) | **+2 / −0 mm**: 0–2 mm OK; pressed = stop | measured: ~23 mm gap on 2026-10-23 with raise 0 | ~23 mm |
+  | B34 (G34-T20-0 / -1) | **0 mm** | **± 3 mm**: up to +3 mm OK; pressed = stop | B20's offset; the floor there is untested | ~23 mm if the floor is as at B20 |
+  | B46 (G46-T20-0 / -1) | **0 mm** | **± 3 mm**: up to +3 mm OK; pressed = stop | B20's offset; the floor there is untested | ~23 mm if the floor is as at B20 |
+
+  - The model places every footer 7.45 mm below the **fitted** floor plane (15.55 − 23); B20's
+    gauge showed the real floor there is that much lower than the plane. The ± is the floor fit
+    (2 mm rms, up to ~3 mm uneven between probe points); B20's 0 mm is measured, B34 / B46 are the
+    first test of it.
+  - Write the 4 corner gaps per joint in the run notes; if B34 / B46 read more than +3 mm or are
+    pressed, the raise needs a per-spot value (tell the lead; do not change it mid-action).
+- [ ] by hand: fix the bar to the foundation **at the height it is held**: fill whatever gap is
+      left under a footer (a shim, or as the lead decides on site) instead of pushing the bar down →
+      button [Confirm Exec]
 
 **f) Mark**
 - [ ] button [Mark action done]

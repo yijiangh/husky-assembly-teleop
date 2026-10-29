@@ -23,7 +23,7 @@ from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_by_name, robot_from_env
 from husky_assembly_teleop.bar_action_io import (
     COMPLIANT_KINDS, STATIONARY_KINDS, MovementKind, held_ground_joints, mating_arm_sides, tool_event,
-    tool_runs_with_next_motion,
+    tool_runs_with_next_motion, get_world_from_design,
 )
 from husky_assembly_teleop.bar_mocap_fit import bar_servo_correction, pose_deviation
 from husky_assembly_teleop.plan_skeleton_io import load_plan_skeleton, problem_root
@@ -1320,6 +1320,11 @@ def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
             'bar_start_quaternion': bar_pose[1] if bar_pose is not None else None,
             'bar_dimensions': bar_dims,
             'mocap_markers_file': mocap_markers.path if mocap_markers is not None else None,
+            # * How this run placed the Rhino design on the measured floor (4x4, or None = as
+            # * exported): the stamped bar pose above is in that frame, and an offline re-parse
+            # * of the action (1_compare_to_cell_state.py) must place it the same way.
+            'world_from_design': (None if get_world_from_design() is None
+                                  else get_world_from_design().tolist()),
             'raw_data': monitor.marker_set_data,
         }
         json.dump(payload, f, indent=4)

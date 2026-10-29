@@ -22,7 +22,7 @@
 // ! viewer_common.js already declares (see the rules in its header).
 
 import * as THREE from 'three';
-import { groups, hex, css, MARKER_R, BAR_RADIUS, PICK_RADIUS, BAR_OPACITY, BAR_STEPS, NODATA, colourFor, vertexColour, addEnvironment, labelSprite, rodBetween, paintRod, footprintFor, addCameras, unpackLinkGeometries, armGroup, clearGroup, decimalsFor, drawLegend, fmt, row, strong, block, formulasHtml, openDetail, closeDetail, wirePicking, wirePicker, wireLayers, resetView, resize, startRenderLoop } from './viewer_common.js';
+import { groups, hex, css, MARKER_R, BAR_RADIUS, PICK_RADIUS, BAR_OPACITY, BAR_STEPS, NODATA, colourFor, vertexColour, addEnvironment, placeFloor, labelSprite, rodBetween, paintRod, footprintFor, addCameras, unpackLinkGeometries, armGroup, clearGroup, decimalsFor, drawLegend, fmt, row, strong, block, formulasHtml, openDetail, closeDetail, wirePicking, wirePicker, wireLayers, resetView, resize, startRenderLoop } from './viewer_common.js';
 
 const DATA = JSON.parse(document.getElementById('scene-data').textContent);
 
@@ -74,6 +74,7 @@ const POINT_COLOUR = 0x33425c;
 // ---------------------------------------------------------------------------
 
 addEnvironment(DATA.env);
+placeFloor(DATA.floor);
 addCameras(DATA.cameras, DATA.cone);
 
 // One thin rod per bar at its seat, kept for the whole page: a step only

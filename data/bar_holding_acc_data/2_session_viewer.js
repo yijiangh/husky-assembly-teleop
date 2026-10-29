@@ -11,7 +11,7 @@
 // ! viewer_common.js already declares (see the rules in its header).
 
 import * as THREE from 'three';
-import { groups, hex, MARKER_R, BAR_RADIUS, PICK_RADIUS, BAR_OPACITY, BAR_STEPS, colourFor, vertexColour, addEnvironment, labelSprite, rodBetween, dashedRod, paintRod, footprintFor, addCameras, unpackLinkGeometries, armGroup, decimalsFor, drawLegend, fmt, row, strong, block, formulasHtml, openDetail, closeDetail, wirePicking, wirePicker, wireLayers, resetView, resize, startRenderLoop } from './viewer_common.js';
+import { groups, hex, MARKER_R, BAR_RADIUS, PICK_RADIUS, BAR_OPACITY, BAR_STEPS, colourFor, vertexColour, addEnvironment, placeFloor, labelSprite, rodBetween, dashedRod, paintRod, footprintFor, addCameras, unpackLinkGeometries, armGroup, decimalsFor, drawLegend, fmt, row, strong, block, formulasHtml, openDetail, closeDetail, wirePicking, wirePicker, wireLayers, resetView, resize, startRenderLoop } from './viewer_common.js';
 
 const DATA = JSON.parse(document.getElementById('scene-data').textContent);
 
@@ -40,6 +40,7 @@ function valueOf(bar) { return valueFor(bar, metric); }
 // ---------------------------------------------------------------------------
 
 addEnvironment(DATA.env);
+placeFloor(DATA.floor);
 
 const pickable = [];
 for (const bar of DATA.bars) {

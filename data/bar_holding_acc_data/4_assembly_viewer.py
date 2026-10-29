@@ -311,23 +311,28 @@ def timeline(skeleton) -> list:
     return out
 
 
-def assembled_bars(problem_dir: str) -> dict:
+def assembled_bars(problem_dir: str, world_from_design=None) -> dict:
     """Every bar's assembled (seat) pose and length.
 
     Args:
         problem_dir (str): The design problem folder.
+        world_from_design (array-like | None): The 4x4 a record's monitor placed the
+            Rhino design with (the record's ``world_from_design``: the design on the
+            measured floor), so the seats compare with that record's poses; None =
+            as exported (records before 2026-10-23).
 
     Returns:
         dict: ``{bar id: {'T': 4x4, 'length': m, 'ends': [[start], [end]]}}``.
     """
     state = _find_populated_cell_state(problem_dir) or {}
     lengths = _bar_lengths_from_robot_cell(problem_dir)
+    placement = np.eye(4) if world_from_design is None else np.asarray(world_from_design, dtype=float)
     out = {}
     for name, frame in (state.get('bar_frames') or {}).items():
         if name not in lengths:
             print(f"[assembly] ! {name}: no length in RobotCell.json; it is not drawn.")
             continue
-        T = matrix_from_frame(frame)
+        T = placement @ matrix_from_frame(frame)
         out[bar_id_of_body(name)] = {'T': T, 'length': lengths[name],
                                      'ends': design_bar_axis_endpoints(T, lengths[name]).tolist()}
     return out
@@ -814,7 +819,22 @@ def collect_assembly(day: str, problem: str = None, with_robots: bool = True, ru
     except Exception as e:  # the page still shows the authored bars
         print(f"[assembly] ! no marker table ({e}); markers and plates are not drawn.")
         markers = None
-    seats = assembled_bars(problem_dir)
+    # * The seats in each record's own frame: a monitor with the design on the measured
+    # * floor wrote its reference poses there (its record's world_from_design). The page
+    # * draws the day's last frame.
+    seats_by_placement = {}
+
+    def seats_of(record: dict) -> dict:
+        """The seats in the frame ``record``'s monitor used (built once per frame)."""
+        key = json.dumps(record.get('world_from_design'))
+        if key not in seats_by_placement:
+            seats_by_placement[key] = assembled_bars(problem_dir, record.get('world_from_design'))
+        return seats_by_placement[key]
+
+    seats = seats_of(records[-1])
+    if len({json.dumps(r.get('world_from_design')) for r in records}) > 1:
+        print("[assembly] ! the day mixes records with and without the design on the measured floor; "
+              "each record is compared in its own frame, the page draws the last one's.")
     servos = servo_files(day, runs_dir)
     models = RobotModels() if with_robots else None
     print(f"[assembly] {len(records)} records from {path}; problem {problem}, {len(skeleton.actions)} actions, "
@@ -838,7 +858,7 @@ def collect_assembly(day: str, problem: str = None, with_robots: bool = True, ru
             starts[key] = epoch
         bars = []
         for entry in (record.get('bars') or {}).values():
-            seat = seats.get(entry.get('bar_id'))
+            seat = seats_of(record).get(entry.get('bar_id'))
             if seat is None:
                 continue
             design = markers.bars.get(f"bar_{entry.get('bar_id')}") if markers is not None else None

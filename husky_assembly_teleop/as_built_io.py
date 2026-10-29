@@ -180,7 +180,7 @@ def milestone_of(action_kind: Optional[str], step_kinds: list, step_index: Optio
 def build_as_built_record(*, problem: str, run_id: str, robot: str, action: Optional[dict],
                           action_file: Optional[str], step: Optional[dict], bars: dict, robot_state: dict,
                           beliefs: dict, instrumented_bars: list, mocap_markers_path: Optional[str],
-                          now: Optional[datetime] = None) -> dict:
+                          world_from_design=None, now: Optional[datetime] = None) -> dict:
     """One as-built record from plain pieces, ready for `append_as_built_record`.
 
     Args:
@@ -199,6 +199,10 @@ def build_as_built_record(*, problem: str, run_id: str, robot: str, action: Opti
         instrumented_bars (list): Every bar that carries markers (a bar missing
             from ``bars`` could not be measured at that moment).
         mocap_markers_path (str | None): The marker table the fits used.
+        world_from_design (array-like | None): The 4x4 that placed the Rhino design on
+            the measured floor for this run (``bar_action_io.get_world_from_design``),
+            so the reference poses here are in its frame; None = the design as
+            exported (every record before 2026-10-23).
         now (datetime | None): The time stamp (now by default).
 
     Returns:
@@ -226,6 +230,7 @@ def build_as_built_record(*, problem: str, run_id: str, robot: str, action: Opti
         'step': step if step is not None else {'phase': 'manual', 'outcome': None},
         'instrumented_bars': list(instrumented_bars),
         'mocap_markers_path': mocap_markers_path,
+        'world_from_design': world_from_design,
         'bars': bars,
         'robot_state': robot_state,
         'beliefs': beliefs,

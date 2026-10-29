@@ -16,7 +16,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 from contextlib import contextmanager
@@ -45,6 +44,7 @@ import rs_data_structure  # noqa: F401
 
 from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY
 from husky_assembly_teleop.bar_action_io import find_bar_body, is_ground_joint_body
+from husky_assembly_teleop.mocap_floor import MocapFloor, load_mocap_floor, walkable_ground_faces
 from husky_assembly_teleop.robot_registry import ROBOTS, robot_by_name
 
 # * Robot description files now come from the robot registry (one RobotSpec per
@@ -73,7 +73,8 @@ SINGLE_ARM_GROUP = 'base_arm_manipulator'
 # blanks the ground: it must stay collision-checked in every BarAction.
 GROUND_RIGID_BODY_NAME = 'obstacle_ground'
 # Robot links allowed to touch the ground (GROUND_RIGID_BODY_NAME). The floor is
-# modelled honestly at z=0, and the husky's wheels rest exactly on it: the URDF
+# modelled honestly (the measured MoCap floor, see mocap_floor.py), and the
+# husky's wheels rest exactly on it: the URDF
 # puts base_footprint->base_link at 0.13228 m and base_link->wheel at 0.03282 m,
 # so each wheel centre is at 0.1651 m -- exactly the wheel radius. The wheels are
 # therefore permanently tangent to the floor, while the chassis clears it by
@@ -84,8 +85,8 @@ GROUND_TOUCH_LINKS = (
     'front_left_wheel_link', 'front_right_wheel_link',
     'rear_left_wheel_link', 'rear_right_wheel_link',
 )
-# The floor sits at z=0 (faithful to reality) and is extruded DOWNWARD by this
-# much. A flat, zero-thickness polygon would collapse into a zero-volume convex
+# The floor's top face is the floor surface, and the slab is extruded DOWNWARD by
+# this much. A flat, zero-thickness polygon would collapse into a zero-volume convex
 # hull in PyBullet (compas_fab adds rigid bodies with concavity=False), which is
 # useless for collision -- hence the slab.
 GROUND_SLAB_THICKNESS = 0.05  # meters
@@ -93,9 +94,6 @@ GROUND_SLAB_THICKNESS = 0.05  # meters
 # WalkableGround.json. Large enough to cover any cell workspace, so the arms and
 # tools can never reach the real-world floor.
 GROUND_FALLBACK_HALF_SIZE = 20.0  # meters (=> 40 x 40 m slab)
-# Coordinates above this magnitude are treated as millimetres and scaled to
-# metres. Same heuristic as mocap_experiment._walkable_ground_polygons.
-_GROUND_MM_THRESHOLD = 50.0
 
 
 def _slab_mesh_from_polygon(points_xy, thickness=GROUND_SLAB_THICKNESS, top_z=0.0):
@@ -108,10 +106,13 @@ def _slab_mesh_from_polygon(points_xy, thickness=GROUND_SLAB_THICKNESS, top_z=0.
         points_xy (Sequence): Polygon corners as ``(x, y)`` pairs in metres,
             in order and without repeating the first point.
         thickness (float): Slab depth in metres.
-        top_z (float): Height of the floor surface in metres. The design
-            exports put their ground a little below zero (260921: -15.55 mm);
-            a floor left at z=0 would then report the feet of a ground bar,
-            authored to stand on the real ground, as buried in the floor.
+        top_z (float | Sequence[float]): Height of the floor surface in metres,
+            one value for a level floor or one per corner for a tilted one (the
+            measured MoCap floor; the corners must then lie on one plane, so
+            the slab stays a convex prism). The design exports put their ground
+            a little below zero (260921: -15.55 mm); a floor left at z=0 would
+            then report the feet of a ground bar, authored to stand on the real
+            ground, as buried in the floor.
 
     Returns:
         Mesh: Closed mesh (top face, bottom face, and one quad per side), or
@@ -121,9 +122,10 @@ def _slab_mesh_from_polygon(points_xy, thickness=GROUND_SLAB_THICKNESS, top_z=0.
     n = len(pts)
     if n < 3:
         return None
+    tops = [float(z) for z in np.broadcast_to(np.asarray(top_z, dtype=float), (n,))]
     # Vertices 0..n-1 are the top ring (z=top_z), n..2n-1 the bottom ring.
-    vertices = [[x, y, float(top_z)] for x, y in pts]
-    vertices += [[x, y, float(top_z) - float(thickness)] for x, y in pts]
+    vertices = [[x, y, z] for (x, y), z in zip(pts, tops)]
+    vertices += [[x, y, z - float(thickness)] for (x, y), z in zip(pts, tops)]
     # Top face as given; bottom face reversed so both wind outward.
     faces = [list(range(n)), list(range(2 * n - 1, n - 1, -1))]
     # Side quads stitching the two rings.
@@ -133,45 +135,43 @@ def _slab_mesh_from_polygon(points_xy, thickness=GROUND_SLAB_THICKNESS, top_z=0.
     return Mesh.from_vertices_and_faces(vertices, faces)
 
 
-def _walkable_ground_slabs(problem_name):
-    """Slab meshes (metres) for every patch in a problem's WalkableGround.json.
+def walkable_ground_path(problem_name: str) -> str:
+    """Where a design problem's WalkableGround.json lives.
 
     Args:
         problem_name (str): Design-study problem folder name.
 
     Returns:
+        str: ``<DESIGN_DATA_DIRECTORY>/<problem_name>/WalkableGround.json``.
+    """
+    return os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'WalkableGround.json')
+
+
+def _walkable_ground_slabs(problem_name, floor: Optional[MocapFloor] = None):
+    """Slab meshes (metres) for every patch in a problem's WalkableGround.json.
+
+    Args:
+        problem_name (str): Design-study problem folder name.
+        floor (MocapFloor | None): The measured floor. When given, each patch
+            keeps its exported outline but its corners sit on this floor, not at
+            the exported height. None keeps the exported height.
+
+    Returns:
         list: One slab Mesh per ground face, empty when the file is missing or
         carries no usable polygon.
     """
-    path = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'WalkableGround.json')
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, 'r') as f:
-            raw = json.load(f)
-    except Exception as exc:
-        print(f"[ground] WARN: could not read {path}: {exc}")
-        return []
-    data = raw.get('data', raw)
     slabs = []
-    for ground in (data.get('grounds') or {}).values():
-        md = ground.get('data', ground)
-        vertex = md.get('vertex') or {}
-        if not vertex:
-            continue
-        # Rhino exports these in millimetres; scale only when they look like it.
-        coords = np.array(
-            [[v.get('x', 0.0), v.get('y', 0.0)] for v in vertex.values()], dtype=float)
-        scale = 0.001 if np.abs(coords).max() > _GROUND_MM_THRESHOLD else 1.0
-        for face_vertices in (md.get('face') or {}).values():
-            ring = [(vertex[str(i)].get('x', 0.0) * scale,
-                     vertex[str(i)].get('y', 0.0) * scale) for i in face_vertices]
+    for ring, heights in walkable_ground_faces(walkable_ground_path(problem_name)):
+        if floor is not None:
+            # * The real floor under each corner (the floor is a property of
+            # * the lab; the export's height is only the designer's guess).
+            top_z = [floor.z_at(x, y) for x, y in ring]
+        else:
             # The patch is flat: its mean height is the floor surface.
-            top_z = float(np.mean([vertex[str(i)].get('z', 0.0) * scale
-                                   for i in face_vertices]))
-            slab = _slab_mesh_from_polygon(ring, top_z=top_z)
-            if slab is not None:
-                slabs.append(slab)
+            top_z = float(np.mean(heights))
+        slab = _slab_mesh_from_polygon(ring, top_z=top_z)
+        if slab is not None:
+            slabs.append(slab)
     return slabs
 
 
@@ -181,7 +181,9 @@ def build_ground_rigid_body(problem_name):
     Prefers the problem's exported ``WalkableGround.json`` patches. When that
     file is absent the robot would otherwise be free to drive its arms and tools
     straight through the real-world floor, so a large fallback slab is
-    synthesized instead (with a warning).
+    synthesized instead (with a warning). Either way the slab's top lies on the
+    measured MoCap floor (``mocap_floor.load_mocap_floor``) when its calibration
+    file is there, else at the exported height (z=0 for the fallback).
 
     Every patch becomes its own mesh inside ONE RigidBody: compas_fab's
     ``_add_rigid_body`` turns each mesh into a separate PyBullet body (so
@@ -195,7 +197,11 @@ def build_ground_rigid_body(problem_name):
     Returns:
         RigidBody: The floor, already in metres (``native_scale=1.0``).
     """
-    slabs = _walkable_ground_slabs(problem_name)
+    floor = load_mocap_floor()
+    if floor is not None:
+        print(f"[ground] floor on the measured MoCap floor ({floor.tilt_deg:.2f} deg tilt, "
+              f"{floor.z_at(0.0, 0.0) * 1000:.1f} mm at the origin) from {os.path.basename(floor.path)}.")
+    slabs = _walkable_ground_slabs(problem_name, floor)
     if slabs:
         print(f"[ground] {len(slabs)} walkable-ground patch(es) loaded as "
               f"{GROUND_RIGID_BODY_NAME!r} collision geometry.")
@@ -204,8 +210,9 @@ def build_ground_rigid_body(problem_name):
         print(f"[ground] WARN: no usable WalkableGround.json for problem "
               f"{problem_name!r}; falling back to a {2 * half:.0f} x {2 * half:.0f} m "
               f"ground slab so the arms/tools cannot reach the real floor.")
+        corners = [(-half, -half), (half, -half), (half, half), (-half, half)]
         slabs = [_slab_mesh_from_polygon(
-            [(-half, -half), (half, -half), (half, half), (-half, half)])]
+            corners, top_z=[floor.z_at(x, y) for x, y in corners] if floor is not None else 0.0)]
     return RigidBody(visual_meshes=slabs, collision_meshes=slabs, native_scale=1.0)
 
 

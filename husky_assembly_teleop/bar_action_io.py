@@ -4,7 +4,10 @@ The data classes live in `rs_data_structure.bar_action`. compas's
 `json_load` reconstructs them faithfully (including nested
 `RobotCellState`, `Frame`, `Configuration`, etc.). This module exposes:
 
-- `parse_bar_action(path)`  → any BarSceneAction (jointing, release, legacy)
+- `parse_bar_action(path)`  → any BarSceneAction (jointing, release, legacy),
+  its Rhino poses placed on the measured floor when the monitor asked for it
+  (`set_world_from_design`, `place_design_poses`)
+- `write_bar_action(action, path)` → the monitor's save, back in the file's frame
 - `load_action_cycle(path)` → both halves of one bar's cycle, in order
 - `list_bar_actions(dir)`   → sorted list of *.json filenames
 - `find_movement(action, key)` → (index, movement)
@@ -58,7 +61,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Container, Iterable, Optional, Union
 
-from compas.data import json_load
+import numpy as np
+from compas.data import json_dump, json_load
+from compas.geometry import Transformation
 
 # Importing the movement classes registers their compas dtypes so json_load
 # can rebuild them (the package import also registers the support robots'
@@ -117,14 +122,129 @@ CINDY_ACTION_TYPES = (BarAssemblyJointingAction, BarAssemblyReleaseAction,
                       _bar_action_module.BarAssemblyAction)
 
 
+# * ---------------------------------------------------------------------------
+# * The Rhino design placed on the measured floor (mocap_floor.world_from_design)
+# * ---------------------------------------------------------------------------
+# Design -> MoCap world, 4x4. parse_bar_action applies it to the Rhino poses of every
+# action it reads, write_bar_action undoes it. None (the default: every offline
+# script, every test) reads and writes the files as they are; the live monitor sets
+# it once at start-up (HuskyMonitor.__init__, DESIGN_ON_MEASURED_FLOOR).
+_world_from_design: Optional[np.ndarray] = None
+
+# The floor body the monitor adds to every state (= cfab_session.GROUND_RIGID_BODY_NAME,
+# which cannot be imported here: cfab_session imports this module). Already in the
+# MoCap world, so it is never moved.
+MONITOR_GROUND_BODY = 'obstacle_ground'
+
+
+def set_world_from_design(matrix: Optional[np.ndarray]) -> None:
+    """Place every action read from now on on the measured floor (None: as in the files).
+
+    Args:
+        matrix (np.ndarray | None): 4x4, design -> MoCap world
+            (``MocapFloor.world_from_design``), or None to turn it off.
+    """
+    global _world_from_design
+    _world_from_design = None if matrix is None else np.array(matrix, dtype=float)
+
+
+def get_world_from_design() -> Optional[np.ndarray]:
+    """The design -> MoCap world placement in use.
+
+    Returns:
+        np.ndarray | None: A copy of the 4x4, or None when the files are read as they are.
+    """
+    return None if _world_from_design is None else _world_from_design.copy()
+
+
+def place_design_poses(action: BarSceneAction, matrix: np.ndarray, *, sidecar: bool) -> None:
+    """Move an action's Rhino poses by ``matrix``, in place; MoCap-sourced poses never move.
+
+    Rhino poses (moved): every rigid body's frame (bars, joints, the room's
+    ``obstacle_env*``), every movement's ``target_ee_frames`` and its
+    ``notes['retreat_axes_world']`` (turned only). In a clean export also the robot
+    base and the free tools (the other robots' ``ObstacleRobot*`` guesses).
+
+    ! In a ``.live-solved`` sidecar the monitor has written the robot base (the live
+    ! MoCap base) and the free tools (the other robots from progress.json): those are
+    ! MoCap-sourced and stay as they are, and so does the monitor's floor body
+    ! (``MONITOR_GROUND_BODY``). Everything else in a sidecar is the export's (checked
+    ! 2026-10-23 on 261006: bars, joints and targets identical to the clean file).
+    ! The same set is moved by the inverse on save (``write_bar_action``), so a
+    ! sidecar reads back exactly what the monitor had.
+
+    Args:
+        action (BarSceneAction): The action, changed in place.
+        matrix (np.ndarray): 4x4 to apply.
+        sidecar (bool): True for a monitor-written ``.live-solved`` file.
+    """
+    T = Transformation.from_matrix(np.asarray(matrix, dtype=float).tolist())
+    rotation = np.asarray(matrix, dtype=float)[:3, :3]
+    for mv in action.movements:
+        state = mv.start_state
+        if state is not None:
+            if not sidecar and state.robot_base_frame is not None:
+                state.robot_base_frame.transform(T)
+            for name, rb in state.rigid_body_states.items():
+                if name != MONITOR_GROUND_BODY and rb.frame is not None:
+                    rb.frame.transform(T)
+            if not sidecar:
+                for tool in state.tool_states.values():
+                    # A tool on the robot follows its flange; only a free one has a world pose.
+                    if tool.frame is not None and not tool.attached_to_group:
+                        tool.frame.transform(T)
+        for frame in (getattr(mv, 'target_ee_frames', None) or {}).values():
+            if frame is not None:
+                frame.transform(T)
+        axes = (getattr(mv, 'notes', None) or {}).get('retreat_axes_world')
+        if isinstance(axes, dict):
+            for side, axis in axes.items():
+                if axis is not None:
+                    axes[side] = (rotation @ np.asarray(axis, dtype=float)).tolist()
+
+
 def parse_bar_action(path: str) -> BarSceneAction:
-    """Load a bar action (jointing, release or legacy all-in-one) from JSON."""
+    """Load a bar action (jointing, release or legacy all-in-one) from JSON.
+
+    With a placement set (``set_world_from_design``, the live monitor), its Rhino
+    poses come back placed on the measured floor (``place_design_poses``).
+
+    Args:
+        path (str): The action file (clean export or ``.live-solved`` sidecar).
+
+    Returns:
+        BarSceneAction: The action.
+
+    Raises:
+        TypeError: The file holds something else.
+    """
     obj = json_load(path)
     if not isinstance(obj, BarSceneAction):
         raise TypeError(
             f"Expected a bar action at {path!r}, got {type(obj).__name__}"
         )
+    if _world_from_design is not None:
+        place_design_poses(obj, _world_from_design, sidecar=clean_action_path(path) != path)
     return obj
+
+
+def write_bar_action(action: BarSceneAction, path: str) -> None:
+    """Save an action the monitor holds, its Rhino poses back in the file's (design) frame.
+
+    The inverse of what ``parse_bar_action`` did, on a copy (the loaded action
+    keeps its placed poses), and always as a sidecar: the monitor only writes
+    ``.live-solved`` files, whose base and free tools are MoCap-sourced.
+
+    Args:
+        action (BarSceneAction): The action in the monitor (Rhino poses placed on the floor).
+        path (str): Where to write it.
+    """
+    if _world_from_design is None:
+        json_dump(action, path)
+        return
+    copy = action.copy()
+    place_design_poses(copy, np.linalg.inv(_world_from_design), sidecar=True)
+    json_dump(copy, path)
 
 
 def slot_of_index(slots: list, idx: int):

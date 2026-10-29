@@ -98,6 +98,12 @@ const grid = new THREE.GridHelper(24, 24, 0xc4ccd6, 0xe4e8ee);
 grid.rotateX(Math.PI / 2);
 scene.add(grid);
 
+/** Lay the grid on the measured lab floor. `matrix` is floor frame -> world, 16
+ *  numbers column by column (DATA.floor); null leaves the grid at z = 0. */
+export function placeFloor(matrix) {
+  if (matrix) grid.applyMatrix4(new THREE.Matrix4().fromArray(matrix));
+}
+
 // * One group per kind of thing, so a tick box can show or hide a whole kind
 // * at once and a page can clear one kind without touching the others.
 export const groups = {};

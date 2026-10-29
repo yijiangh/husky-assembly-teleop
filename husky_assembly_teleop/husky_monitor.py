@@ -32,7 +32,7 @@ from rclpy.node import Node
 import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE, MOCAP_MARKERS_PROBLEM_NAME
+from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE, MOCAP_MARKERS_PROBLEM_NAME, DESIGN_ON_MEASURED_FLOOR, DESIGN_GROUND_RAISE_MM
 import husky_assembly_teleop.husky_world as world
 from husky_assembly_teleop.husky_world import (
     M2_SPIRAL_DURATION_S_DEFAULT, M2_SPIRAL_MAX_RADIUS_MM, M2_SPIRAL_TURNS_DEFAULT,
@@ -70,7 +70,7 @@ from husky_assembly_teleop.bar_action_io import (
     movement_kind, step_kind, kind_fits_robot, is_free_home, check_action_kinds,
     default_trajectory_time, is_built_assembly_body, bar_body_name, find_bar_body,
     clean_action_path, operator_steps, step_index_of, held_ground_joints, mating_arm_sides,
-    bar_id_of_body, joints_on_bar,
+    bar_id_of_body, joints_on_bar, set_world_from_design, get_world_from_design, write_bar_action,
 )
 from husky_assembly_teleop.bar_mocap_fit import (
     MOCAP_MARKERS_FILENAME, BarFit, BarMarkers, MoCapMarkersError, PoseDeviation, apply_authored_move,
@@ -88,10 +88,11 @@ from husky_assembly_teleop.cfab_session import (
     CfabSession, build_default_robot_cell, plan_free_motion, plan_linear_motion,
     arm_joint_names_for_group, SINGLE_ARM_GROUP,
     HUSKY_DUAL_URDF_PATH, HUSKY_DUAL_SRDF_PATH,
-    GROUND_RIGID_BODY_NAME,
+    GROUND_RIGID_BODY_NAME, walkable_ground_path,
     inject_ground_rigid_body_state, apply_obstacle_robot_beliefs,
 )
 from husky_assembly_teleop.robot_registry import ROBOTS, RobotSpec, robot_by_name
+from husky_assembly_teleop.mocap_floor import design_ground_height, load_mocap_floor
 from husky_assembly_teleop.progress_io import (
     BELIEF_ASSUMED, BELIEF_LIVE, STATUS_PENDING, RobotBelief, archive_progress_and_saved_plans,
     belief_after, belief_from_live, load_progress, new_run_id, obstacle_tool_states,
@@ -109,7 +110,7 @@ from husky_assembly_teleop.plan_skeleton_ui import (
 from husky_assembly_teleop import common as _common
 from husky_assembly_teleop.ui_backend import make_backend, DearPyGuiBackend, bind_default_font
 
-from compas.data import json_load, json_dump
+from compas.data import json_load
 from compas.geometry import Frame, Transformation
 from compas_fab.backends import CollisionCheckError
 from compas_fab.robots import JointTrajectory, RobotCellState
@@ -830,6 +831,14 @@ class HuskyMonitor(Node):
         self.plan_traj_seg = None
         self.planned_base_trajectory = (None, None)
 
+        # * The measured lab floor (mocap_floor.py; None without its calibration file):
+        # * the floor grid in the 3D view, the bar ends' height above the floor in the
+        # * 'MoCap bar' log, and the once-per-robot base check in receive_mocap_frame.
+        self.mocap_floor = load_mocap_floor()
+        self._floor_checked_huskies = set()
+        # ! Before any action is read: every parse from here on places the Rhino design on that floor.
+        self._place_design_on_floor()
+
         # call setup code
         self.start_pybullet()
         if self.USE_MOCAP:
@@ -916,6 +925,7 @@ class HuskyMonitor(Node):
                 with pp.HideOutput():
                     if self.plan_traj_seg is not None:
                        pp.remove_all_debug()
+                       self._draw_mocap_floor()
                     self.plan_traj_seg = pp.add_segments(points)
     
     def set_arm_trajectory(self, arm_trajectory, index=0):
@@ -1018,6 +1028,8 @@ class HuskyMonitor(Node):
             line['ids'] = {}
         for draw in (getattr(self, '_mocap_bar_draws', None) or {}).values():
             draw['items'] = {}
+        # The floor grid is debug lines too; it should never disappear.
+        self._draw_mocap_floor()
 
     def toggle_show_goal_state(self):
         """Flip the ghost robot between the goal conf and the planned trajectory.
@@ -6879,7 +6891,8 @@ class HuskyMonitor(Node):
                 continue
             out_path = self._bar_action_write_path(path)
             try:
-                json_dump(bar_action, out_path)
+                # Rhino poses back in the file's (design) frame, MoCap ones as they are.
+                write_bar_action(bar_action, out_path)
             except Exception as e:
                 self.get_logger().error(
                     f"[{tag}] failed to write {out_path}: {e}")
@@ -10703,7 +10716,9 @@ class HuskyMonitor(Node):
         residual, the deviation from the Rhino pose (also in the bar frame:
         dz is along the bar); (2) every matched marker's residual by name, the
         missing names and the number of stray markers; (3) the bar's two ends
-        in world, Rhino and MoCap (z = height above the floor), for a tape measure.
+        in world, Rhino and MoCap, each with its height above the measured floor
+        (mocap_floor.py; world z is NOT that height: the floor is tilted), for a
+        tape measure.
 
         Args:
             bar_name (str): The bar's rigid-body name.
@@ -10735,11 +10750,17 @@ class HuskyMonitor(Node):
         self.get_logger().info(f"[mocap bar] residuals (mm): {residuals or 'none'} | missing: {missing or 'none'} "
                                f"| stray sensed: {len(fit.unmatched_sensed)}")
 
+        floor = getattr(self, 'mocap_floor', None)
+
         def ends(T: np.ndarray) -> str:
-            """The bar's start and end in world, mm, for the log line."""
-            start, end = bar_end_points(T, z_range) * 1000.0
-            return (f"start [{start[0]:.0f} {start[1]:.0f} {start[2]:.0f}] "
-                    f"end [{end[0]:.0f} {end[1]:.0f} {end[2]:.0f}]")
+            """The bar's start and end in world, mm, and their height above the floor, for the log line."""
+            start, end = bar_end_points(T, z_range)
+            text = (f"start [{start[0] * 1000:.0f} {start[1] * 1000:.0f} {start[2] * 1000:.0f}] "
+                    f"end [{end[0] * 1000:.0f} {end[1] * 1000:.0f} {end[2] * 1000:.0f}]")
+            if floor is not None:
+                h_start, h_end = floor.height_above([start, end]) * 1000.0
+                text += f", above the floor {h_start:.0f} / {h_end:.0f}"
+            return text
         mocap_ends = ends(fit.T_world_from_bar) if fit.ok else '-'
         self.get_logger().info(f"[mocap bar] bar ends (world, mm): Rhino {ends(T_design)} | MoCap {mocap_ends}")
 
@@ -10992,7 +11013,8 @@ class HuskyMonitor(Node):
                 step=step, bars=bars, robot_state=self._as_built_robot_state(mv, tool_ft),
                 beliefs=self._as_built_beliefs(),
                 instrumented_bars=list(self._mocap_markers.bars),
-                mocap_markers_path=getattr(self._mocap_markers, 'path', None))
+                mocap_markers_path=getattr(self._mocap_markers, 'path', None),
+                world_from_design=get_world_from_design())
             # ! Read the folder at call time: the headless smokes point it at a scratch folder.
             path = append_as_built_record(as_built_path(world.BAR_ACTION_LIVE_REPLAN_EXE_DIR, DESIGN_PROBLEM_NAME),
                                           record_out)
@@ -12574,7 +12596,69 @@ class HuskyMonitor(Node):
         
         # draw world frame
         pp.draw_pose(pp.unit_pose(), 1)
-        
+        self._draw_mocap_floor()
+
+    def _place_design_on_floor(self) -> None:
+        """Place the Rhino design on the measured floor for this run, and say so in colour.
+
+        The design was drawn on a flat ground (its WalkableGround, -15.55 mm in the
+        2026-10 exports); the real floor is tilted 0.5 deg and up to ~2 cm off it, so
+        the ground bars' footers would float above it. With ``DESIGN_ON_MEASURED_FLOOR``,
+        a floor file and a flat WalkableGround, every action parsed from now on has
+        its Rhino poses moved by ``MocapFloor.world_from_design`` (bar_action_io;
+        MoCap-sourced poses never move). Green = on, yellow = off and why.
+        """
+        floor = getattr(self, 'mocap_floor', None)
+        ground_z = design_ground_height(walkable_ground_path(DESIGN_PROBLEM_NAME))
+        if ground_z is not None:
+            # * Raised before it is laid on the floor: the design then sits that much lower.
+            ground_z += DESIGN_GROUND_RAISE_MM / 1000.0
+        matrix, why_off = None, None
+        if not DESIGN_ON_MEASURED_FLOOR:
+            why_off = 'DESIGN_ON_MEASURED_FLOOR=0'
+        elif floor is None:
+            why_off = 'no floor calibration file'
+        elif ground_z is None:
+            why_off = f'{DESIGN_PROBLEM_NAME} has no flat WalkableGround.json'
+        else:
+            matrix = floor.world_from_design(ground_z)
+        set_world_from_design(matrix)
+        if matrix is None:
+            self.get_logger().info(
+                f"{self._ANSI_YELLOW}design on the measured floor: OFF{self._ANSI_RESET} ({why_off}; "
+                f"the Rhino design is used as exported, on a flat ground)")
+            return
+        # How far the design's ground moves up or down, at the MoCap origin and over the probed floor.
+        ground_points = [(0.0, 0.0)] + [(x, y) for x, y, _z in floor.samples]
+        dz_mm = [(matrix @ np.array([x, y, ground_z, 1.0]))[2] * 1000.0 - ground_z * 1000.0
+                 for x, y in ground_points]
+        self.get_logger().info(
+            f"{self._ANSI_GREEN}design on the measured floor: ON{self._ANSI_RESET} (the Rhino ground at "
+            f"{ground_z * 1000:.2f} mm (WalkableGround raised by DESIGN_GROUND_RAISE_MM = "
+            f"{DESIGN_GROUND_RAISE_MM:.1f} mm) laid on the floor: {floor.tilt_deg:.2f} deg tilt, {dz_mm[0]:+.1f} mm at "
+            f"the MoCap origin, {min(dz_mm):+.0f} to {max(dz_mm):+.0f} mm over the probed floor; MoCap poses "
+            f"unchanged; export DESIGN_ON_MEASURED_FLOOR=0 to turn it off)")
+
+    def _draw_mocap_floor(self) -> None:
+        """Draw the measured floor in the 3D view: a 1 m grid on it, and its probed points.
+
+        The grid lies ON the measured floor (0.5 deg tilted against the MoCap XY
+        plane, see mocap_floor.py), so the robots' wheels should touch it
+        everywhere and a grounded bar's feet should stand on it. Each probed
+        point is a small orange cross; how far it sits off the grid is how
+        uneven the floor is there (2 mm rms). Nothing without a floor file.
+        ! Debug lines: ``pp.remove_all_debug()`` deletes them too, so every
+        ! caller of it draws the floor again.
+        """
+        floor = getattr(self, 'mocap_floor', None)
+        if floor is None:
+            return
+        with pp.LockRenderer():
+            for start, end in floor.grid_segments():
+                pp.add_line(start, end, color=(0.55, 0.62, 0.72, 1.0), width=1)
+            for point in floor.samples:
+                pp.draw_point(point, size=0.06, color=(1.0, 0.5, 0.0, 1.0), width=2)
+
     def load_goal_model(self):
         """
         Load goal robot model that mirrors the actual robot loaded in world.init.
@@ -13653,6 +13737,7 @@ class HuskyMonitor(Node):
     # --- --- --- --- --- MOCAP --- --- --- --- ---
     _ANSI_GREEN = '\033[92m'
     _ANSI_RED = '\033[91m'
+    _ANSI_YELLOW = '\033[93m'
     _ANSI_RESET = '\033[0m'
 
     def start_mocap(self):
@@ -13735,6 +13820,36 @@ class HuskyMonitor(Node):
             if np.any(pos):
                 self._mocap_rigidbody_stamp[name] = time.monotonic()
     
+    def _check_base_on_floor(self, husky, position, quat) -> None:
+        """Log, once per robot, how its MoCap base sits on the measured floor.
+
+        A check of the floor and the base calibration against each other: the
+        wheels stand on the floor and ``base_footprint`` is their contact plane,
+        so its height above the floor should be ~0 mm and its z axis should
+        lean ~0 deg from the floor's up. The two come from separate
+        measurements (floor probe points vs. the robot's base calibration), so
+        agreement is a real test. More than 10 mm or 1 deg is logged as a
+        warning: re-probe the floor or check that robot's base calibration.
+
+        Args:
+            husky: The husky whose MoCap base just arrived.
+            position (np.ndarray): Its calibrated ``base_footprint`` position, world.
+            quat (Sequence[float]): Its ``base_footprint`` orientation (x, y, z, w).
+        """
+        floor = getattr(self, 'mocap_floor', None)
+        checked = getattr(self, '_floor_checked_huskies', None)
+        if floor is None or checked is None or husky.name in checked:
+            return
+        checked.add(husky.name)
+        height_mm = float(floor.height_above(position)) * 1000.0
+        lean_deg = floor.angle_to_normal_deg(np.asarray(pp.matrix_from_quat(quat), dtype=float)[:, 2])
+        line = (f"[floor] {husky.name}: base_footprint {height_mm:+.1f} mm above the measured floor, "
+                f"leaning {lean_deg:.2f} deg from its up (both ~0 when floor and base calibration agree)")
+        if abs(height_mm) > 10.0 or lean_deg > 1.0:
+            self.get_logger().warn(line)
+        else:
+            self.get_logger().info(line)
+
     def receive_mocap_frame(self, data):
         ts = data['timestamp']
         with self._mocap_cache_lock:
@@ -13763,6 +13878,7 @@ class HuskyMonitor(Node):
             # World-frame XYZ offset; rebind from UI thread is atomic in CPython.
             pos_with_offset = np.array(calibrated_pose[0]) + h.mocap_base_offset_xyz
             h.interface.mocap_callback(pos_with_offset, np.array(calibrated_pose[1]), ts)
+            self._check_base_on_floor(h, pos_with_offset, calibrated_pose[1])
 
         for o in self.tracked_objects:
             if o.name not in raw_snapshot:

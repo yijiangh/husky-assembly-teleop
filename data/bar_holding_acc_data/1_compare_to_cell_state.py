@@ -29,7 +29,7 @@ from husky_assembly_teleop import (
 )
 from husky_assembly_teleop.utils import pose_from_frame
 from husky_assembly_teleop.bar_action_io import (
-    find_movement, load_action_cycle, slot_of_index,
+    find_movement, load_action_cycle, set_world_from_design, slot_of_index,
 )
 # The old M0..M4 roles live on only in the legacy module, for old takes.
 from husky_assembly_teleop.legacy_bar_action_io import cycle_roles, resolve_take_movement
@@ -47,6 +47,30 @@ from husky_assembly_teleop.mocap_experiment import (
     latest_batch_folder,
     env_3dm_for_bar_action,
 )
+
+
+def _resolve_take_movement_placed(bar_action_path, movement_key, world_from_design=None):
+    """``_resolve_take_movement``, with the Rhino design placed as the take's monitor placed it.
+
+    Since 2026-10-23 the monitor places the Rhino design on the measured floor
+    (``world_from_design`` in the take file) and stamps the bar pose in that
+    frame; a re-parse of the action has to do the same, or the goal is up to
+    ~2 cm off. Takes without the field (older ones) read the file as it is.
+
+    Args:
+        bar_action_path (str): The action file.
+        movement_key: Movement id or index.
+        world_from_design (list | None): The take's 4x4, or None.
+
+    Returns:
+        tuple: ``(idx, mv, action, bar_action_path)``, as ``_resolve_take_movement``.
+    """
+    set_world_from_design(None if world_from_design is None else np.asarray(world_from_design, dtype=float))
+    try:
+        return _resolve_take_movement(bar_action_path, movement_key)
+    finally:
+        # Never leak a placement into the next take's parse.
+        set_world_from_design(None)
 
 
 def goal_bar_pose_from_movement(mv, bar_name):
@@ -273,8 +297,8 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
         key = movement_id if movement_id else (
             data.get('movement_index') if data.get('movement_index') is not None else 2)
         try:
-            idx, mv, action, bar_action_path = _resolve_take_movement(
-                bar_action_path, key)
+            idx, mv, action, bar_action_path = _resolve_take_movement_placed(
+                bar_action_path, key, data.get('world_from_design'))
         except Exception as e:
             print(f"  SKIP {basename}: could not resolve movement {key!r} in "
                   f"{os.path.basename(bar_action_path)} ({e})")
@@ -402,10 +426,14 @@ def _problem_name_from_bar_action_path(bar_action_path):
     return DESIGN_PROBLEM_NAME
 
 
-def open_pp_viewer_for_goal(bar_action_path, movement_key, takes=None):
+def open_pp_viewer_for_goal(bar_action_path, movement_key, takes=None, world_from_design=None):
     """Open a cfab pybullet GUI, set the movement's start_state, draw the
     goal bar OCF, and (optionally) overlay each take's marker points + fitted
     bar line.
+
+    world_from_design: the takes' design placement (their file's
+    ``world_from_design``), so the scene and goal match their markers; None =
+    the design as exported.
 
     takes: optional list of dicts with keys:
         - 'label'   : str (e.g. "<file>#<i>")
@@ -415,8 +443,8 @@ def open_pp_viewer_for_goal(bar_action_path, movement_key, takes=None):
     from husky_assembly_teleop.cfab_session import CfabSession
 
     problem_name = _problem_name_from_bar_action_path(bar_action_path)
-    idx, mv, action, bar_action_path = _resolve_take_movement(
-        bar_action_path, movement_key)
+    idx, mv, action, bar_action_path = _resolve_take_movement_placed(
+        bar_action_path, movement_key, world_from_design)
     bar_name = f"bar_{action.active_bar_id}"
     goal_bar_pose, side = goal_bar_pose_from_movement(mv, bar_name)
 
@@ -540,7 +568,8 @@ def main():
                 {'label': label, 'fit': fit, 'markers': marker_pts}
                 for (label, fit, _goal, _dev, marker_pts, _bap, _bn) in all_fits
             ]
-            open_pp_viewer_for_goal(ba_path, mv_key, takes=takes)
+            open_pp_viewer_for_goal(ba_path, mv_key, takes=takes,
+                                    world_from_design=first.get('world_from_design'))
 
     if args.export:
         out_path = os.path.join(data_folder, 'compared_to_cell_state.json')

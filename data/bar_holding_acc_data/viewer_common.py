@@ -31,6 +31,7 @@ from husky_assembly_teleop.mocap_experiment import (
     read_env_obstacles_3dm,
     read_mocap_cameras_3dm,
 )
+from husky_assembly_teleop.mocap_floor import load_mocap_floor
 
 # ! Imported lazily inside load_kinematics(): loading the URDF pulls in pybullet
 # ! and costs a couple of seconds, which a --no-robots run should not pay.
@@ -647,6 +648,10 @@ def write_page(scene: dict, out_path: str, vendor: str, viewer_js: str,
         controls (str): Extra html laid over the scene (a slider, say); end it
             with a newline. Empty leaves the page exactly as before.
     """
+    # * The grid is drawn on the measured lab floor (tilted 0.5 deg against the
+    # * MoCap XY plane), not at z = 0: floor frame -> world, or None for z = 0.
+    floor = load_mocap_floor()
+    scene = {**scene, 'floor': flatten(floor.world_from_floor) if floor is not None else None}
     if vendor == 'inline':
         # One ordinary script, nothing imported or fetched: the only form that
         # survives being served inside someone else's page.
