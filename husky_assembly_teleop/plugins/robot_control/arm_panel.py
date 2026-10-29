@@ -47,6 +47,8 @@ TOOL_JOG_BUTTONS = tuple(
     for index, axis in enumerate("xyz"))
 #: Lays out the Tool0 folder as a row per axis: move -, move +, turn -, turn +.
 TOOL_JOG_STYLE = f"<style>{columns_css(TOOL_JOG_BUTTONS[0][0][1], 4)}</style>"
+#: The jog buttons' colours, for their hover text.
+JOG_COLORS = "Gray: too close to start with Clearance on. Orange: Clearance is off."
 #: Hint on the Grip buttons, per end effector kind.
 GRIP_HINTS = {"robotiq": "Stop holds the fingers where they are.",
               "scaffolding_v1": "The gripper is only ever open or closed.",
@@ -56,10 +58,30 @@ GRIP_HINTS = {"robotiq": "Stop holds the fingers where they are.",
 
 @dataclass
 class ToolJogInputs:
-    """Handles of the tool0 jog: the speed slider, mm/s, and the readout line below the buttons."""
+    """Handles of the tool0 jog: the speed slider, mm/s, its buttons, and the readout line below them."""
 
     speed: viser.GuiSliderHandle
     readout: viser.GuiHtmlHandle
+    buttons: tuple[viser.GuiButtonHandle, ...] = ()
+
+
+@dataclass
+class JogInputs:
+    """Handles of the joint controller's inputs (`build_jog_inputs`).
+
+    Attributes:
+        speed: The joint jog speed slider, a fraction of JOG_MAX_SPEED.
+        clearance: The Clearance box.
+        tool: The tool0 jog's handles.
+        buttons: The joint jog's buttons; with the tool0 jog's, coloured by Clearance (`jog_clearance_note`).
+        note: The line above them saying what Clearance checks.
+    """
+
+    speed: viser.GuiSliderHandle
+    clearance: viser.GuiCheckboxHandle
+    tool: ToolJogInputs
+    buttons: tuple[viser.GuiButtonHandle, ...]
+    note: viser.GuiHtmlHandle
 
 
 @dataclass
@@ -76,7 +98,7 @@ class ComplianceInputs:
 
 def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold: Callable[[int, float], None],
                      hold: Callable[[], None], on_tool_hold: Callable[[int, float], None], stop_distance: float
-                     ) -> tuple[viser.GuiSliderHandle, viser.GuiCheckboxHandle, ToolJogInputs]:
+                     ) -> JogInputs:
     """Add the joint controller's inputs: speed, Clearance, a - and + hold button per joint, Hold, and the tool0 jog.
 
     Args:
@@ -89,10 +111,9 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
         stop_distance: The clearance a jog keeps, metres, for the hint.
 
     Returns:
-        tuple[viser.GuiSliderHandle, viser.GuiCheckboxHandle, ToolJogInputs]: The joint jog speed slider, a fraction
-            of JOG_MAX_SPEED, the Clearance box, and the tool0 jog's handles.
+        JogInputs: The handles.
     """
-    gui.add_html(warning("moves while held · never checked against its own robot"))
+    clearance_note = gui.add_html(jog_clearance_note(True, stop_distance))
     gui.add_html(note("to move to a pose: plan it in Plan › Arm"))
     speed = gui.add_slider("Speed", min=0.05, max=1.0, step=0.05, initial_value=0.5,
                            hint=f"Fraction of the full speed, {np.degrees(JOG_MAX_SPEED):.0f} °/s.")
@@ -102,18 +123,29 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
              f"of anything in the scene; the base pose and this arm's joints must be known. Untick to jog without "
              f"it, e.g. without mocap or out of a tight spot.")
     gui.add_html(JOG_STYLE)
+    buttons = []
     with gui.add_folder("Jog"):
         for joint, name in enumerate(JOINT_SLIDER_NAMES):
             for icon, direction in JOG_BUTTONS:
-                button = gui.add_button(name, icon=icon, hint=f"Turns {name} while held, at most "
-                                                              f"{np.degrees(JOG_DISTANCE):.0f}° per press.")
+                hint = f"Turns {name} while held, at most {np.degrees(JOG_DISTANCE):.0f}° per press. {JOG_COLORS}"
+                button = gui.add_button(name, icon=icon, hint=hint)
+                buttons.append(button)
                 # ! Bind loop values as defaults, or every button jogs like the last.
                 button.on_hold(ctx.defer(f"jog {name} {label}", lambda joint=joint, direction=direction:
                                          on_hold(joint, direction)), callback_hz=HOLD_CALLBACK_HZ)
     move_group = gui.add_button_group("Move", ["Hold"],
                                       hint="Brake to a standstill where the arm is, also during a planned path.")
     move_group.on_click(ctx.defer(f"hold {label}", hold))
-    return speed, clearance, build_tool_jog_inputs(ctx, gui, label, on_tool_hold)
+    return JogInputs(speed, clearance, build_tool_jog_inputs(ctx, gui, label, on_tool_hold), tuple(buttons),
+                     clearance_note)
+
+
+def jog_clearance_note(ticked: bool, stop_distance: float) -> str:
+    """The line above the jog buttons: what Clearance checks while ticked, a warning while unticked."""
+    if ticked:
+        return note(f"moves while held · Clearance keeps {stop_distance * 100:.0f} cm from the scene and other "
+                    f"robots, not from its own robot")
+    return warning("Clearance off: nothing is checked · moves while held")
 
 
 def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str,
@@ -134,15 +166,18 @@ def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str,
                            initial_value=TOOL_JOG_SPEED_DEFAULT,
                            hint=f"mm/s along an axis; a turn runs at {TOOL_JOG_DEG_PER_S_PER_MM_S:g} °/s per mm/s.")
     gui.add_html(TOOL_JOG_STYLE)
+    buttons = []
     with gui.add_folder("Tool0"):
         for row in TOOL_JOG_BUTTONS:
             for name, icon, axis, direction in row:
                 what = "Moves along" if axis < 3 else "Turns about"
-                button = gui.add_button(name, icon=icon, hint=f"{what} tool0's {name[-2]} axis while held.")
+                hint = f"{what} tool0's {name[-2]} axis while held. {JOG_COLORS}"
+                button = gui.add_button(name, icon=icon, hint=hint)
+                buttons.append(button)
                 # ! Bind loop values as defaults, or every button jogs like the last.
                 button.on_hold(ctx.defer(f"tool jog {name} {label}", lambda axis=axis, direction=direction:
                                          on_hold(axis, direction)), callback_hz=HOLD_CALLBACK_HZ)
-    return ToolJogInputs(speed=speed, readout=gui.add_html(note_line("")))
+    return ToolJogInputs(speed=speed, readout=gui.add_html(note_line("")), buttons=tuple(buttons))
 
 
 def build_compliance_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,

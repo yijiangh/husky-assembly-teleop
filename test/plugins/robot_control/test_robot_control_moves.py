@@ -14,6 +14,7 @@ from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.shared.teleop.dpad import BLOCKED_COLOR, HOLD_TIMEOUT, UNGUARDED_COLOR, Hold, color_dpad
+from husky_assembly_teleop.plugins.robot_control.arm_panel import jog_clearance_note
 from husky_assembly_teleop.plugins.robot_control.markers import place_markers, target_from_world
 from husky_assembly_teleop.plugins.robot_control.plugin import (BASE, STANDING_EVERY, START_RETRY,
                                                                 RobotControlPlugin, _BaseWidgets)
@@ -250,16 +251,17 @@ class JogContext(Context):
         self.clearances, self.refuse = [], refuse
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
-        """Keep the clearance, or refuse it."""
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False):
+        """Keep the clearance, or refuse it; the test checks or trips it."""
         if self.refuse:
             raise ClearanceRefused(self.refuse)
-        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms))
+        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms,
+                                         refuse_first=refuse_first))
         yield self.clearances[-1]
 
 
 def test_a_jog_waits_for_its_clearance_which_keeps_one_centimetre():
-    """With Clearance ticked, the jog goes out only once a 1 cm clearance checks the robot; unticking ends it."""
+    """With Clearance ticked, the jog goes out only once a 1 cm clearance found the robot clear; unticking ends it."""
     arm, plugin, _ctx = _jogged_arm()
     plugin._arms[0].jog_clearance = SimpleNamespace(value=True)
     ctx = JogContext(arm)
@@ -269,6 +271,9 @@ def test_a_jog_waits_for_its_clearance_which_keeps_one_centimetre():
         assert not arm._trajectory.sent, "the clearance comes first"
         await asyncio.sleep(0)
         _jog_ticks(arm, plugin, ctx, 1, press=(0, 1.0))
+        assert not arm._trajectory.sent and ctx.clearances[0].refuse_first, "not before its first clear check"
+        ctx.clearances[0].checked = True
+        _jog_ticks(arm, plugin, ctx, 1, press=(0, 1.0))
         assert len(arm._trajectory.sent) == 1
         clearance, = ctx.clearances
         assert (clearance.serials, clearance.margin, clearance.unknown_arms) == (("0804",), ARM_STOP_DISTANCE, [])
@@ -276,7 +281,30 @@ def test_a_jog_waits_for_its_clearance_which_keeps_one_centimetre():
         await plugin._jog_guards[("0804", "ur_arm")]
 
     asyncio.run(scenario())
-    assert ARM_STOP_DISTANCE == 0.01 and not plugin._jog_checked
+    assert ARM_STOP_DISTANCE == 0.01
+
+
+def test_a_jog_that_starts_too_close_is_refused_until_the_next_press_without_a_soft_stop():
+    """Too close at the first check: nothing sent, no soft stop, a red "starts in collision" chip."""
+    arm, plugin, _ctx = _jogged_arm()
+    plugin._arms[0].jog_clearance = SimpleNamespace(value=True)
+    ctx = JogContext(arm)
+
+    async def scenario() -> None:
+        _jog_ticks(arm, plugin, ctx, 1, press=(0, 1.0))
+        await asyncio.sleep(0)
+        clearance, = ctx.clearances
+        clearance.problem, clearance.refused = "robot 0804 came within 1 cm of the rack", True  # as the monitor's
+        guard = plugin._jog_guards[("0804", "ur_arm")]
+        guard.cancel()
+        await asyncio.gather(guard, return_exceptions=True)
+        _jog_ticks(arm, plugin, ctx, 3, press=(0, 1.0))
+
+    asyncio.run(scenario())
+    assert not arm._trajectory.sent and len(ctx.clearances) == 1, "the press is answered: not retried"
+    assert "0804" not in plugin._tripped
+    chip_html = plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog")
+    assert "starts in collision" in chip_html and "within 1 cm of the rack" in chip_html and FAIL in chip_html
 
 
 def test_a_jog_whose_clearance_cannot_check_is_refused_until_the_next_press():
@@ -563,3 +591,18 @@ def test_a_base_standing_too_close_shows_the_chip_and_a_gray_dpad_before_any_pre
     buttons = [SimpleNamespace(color=None)]
     color_dpad(buttons, BLOCKED_COLOR)
     assert buttons[0].color == "gray" and UNGUARDED_COLOR == "orange"
+
+
+def test_the_jog_buttons_and_their_note_follow_clearance_as_the_dpad_does():
+    """Ticked: theme colour and a gray note; too close to start: gray; unticked: orange and an orange warning."""
+    plugin, key = RobotControlPlugin(), ("0804", "ur_arm")
+    buttons = [SimpleNamespace(color=None)]
+    plugin._color_buttons(buttons, True, key, 0.0)
+    assert buttons[0].color is None
+    plugin._too_close[key] = "came within 1 cm of the rack"
+    plugin._color_buttons(buttons, True, key, 0.0)
+    assert buttons[0].color == BLOCKED_COLOR
+    plugin._color_buttons(buttons, False, key, 0.0)
+    assert buttons[0].color == UNGUARDED_COLOR
+    assert "Clearance keeps 1 cm" in jog_clearance_note(True, ARM_STOP_DISTANCE)
+    assert "Clearance off" in jog_clearance_note(False, ARM_STOP_DISTANCE)

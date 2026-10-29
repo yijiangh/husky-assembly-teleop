@@ -14,8 +14,9 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
 * Robots are commanded and read only through their interfaces; no topic names here.
 * A robot is leased while in use (`teleop_lease.py`): a jog or drive is refused while another plugin holds it.
 * Clearance (ticked by default): while driving the base or jogging an arm, the robot is soft stopped once it comes
-  too close to anything in the scene (`ctx.clearance`); a jog waits until its clearance checks. A drive waits for its
-  first clear check: one that starts too close is refused, with a red chip, and never soft stopped.
+  too close to anything in the scene (`ctx.clearance`). A drive or jog waits for its first clear check: one that
+  starts too close is refused, with a red chip, and never soft stopped. Checked standing too: its buttons turn gray
+  while a start would be refused, orange while Clearance is off.
 * ! Every button that does nothing says why: a refusal chip on its part's status line (`_refuse`, `refusal_chip`).
 """
 
@@ -54,9 +55,9 @@ from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import unknown_robots
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
-from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, ToolJogInputs, build_compliance_inputs,
+from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, JogInputs, ToolJogInputs, build_compliance_inputs,
                         build_free_drive_inputs, build_jog_inputs, build_phone_arm_inputs, build_tool_inputs,
-                        pose_from_sliders, pose_plan_line)
+                        jog_clearance_note, pose_from_sliders, pose_plan_line)
 from .markers import (add_force_arrows, add_frame_markers, add_target_gizmo, draw_markers, place_markers,
                       target_from_world)
 from .status import (ControllerPanel, arm_status, base_status, build_controller_panel, phone_arm_status,
@@ -121,6 +122,9 @@ class _ArmWidgets:
     phone_status: viser.GuiHtmlHandle | None = None
     #: The tool0 jog's speed slider and readout, in the joint controller's folder.
     tool_jog: ToolJogInputs | None = None
+    #: The joint and tool0 jog buttons, coloured by Clearance, and the line above them saying what it checks.
+    jog_buttons: tuple[viser.GuiButtonHandle, ...] = ()
+    jog_note: viser.GuiHtmlHandle | None = None
     #: The force and torque live plots in the Live plots folder, their trace and the note below them.
     ft_plots: tuple[TracePlot, ...] = ()
     ft_trace: Trace | None = None
@@ -203,16 +207,17 @@ class RobotControlPlugin(HuskyPlugin):
         self._base_guards: dict[str, asyncio.Task] = {}
         self._base_clearances: dict[str, Clearance] = {}
         self._tripped: dict[str, str] = {}
-        #: Per base serial, why its drive was refused at the start, too close (no soft stop), and when.
-        self._start_refused: dict[str, tuple[str, float]] = {}
-        #: Checks every base standing, so a start too close shows before a press; built in setup. Per serial, what
-        #: the last check found it too close to, and when it last started one.
+        #: Per base serial or arm (serial, arm name), why its drive or jog was refused at the start, too close (no
+        #: soft stop), and when.
+        self._start_refused: dict[str | tuple[str, str], tuple[str, float]] = {}
+        #: Checks every base and arm standing, so a start too close shows before a press; built in setup. Per base
+        #: serial or arm, what the last check found it too close to; and when it last started one.
         self._standing: ClearanceChecker | None = None
-        self._too_close: dict[str, str] = {}
+        self._too_close: dict[str | tuple[str, str], str] = {}
         self._standing_at = -math.inf
-        #: Per arm, the task keeping a clearance while this plugin jogs it; arms in `_jog_checked` once it checks.
+        #: Per arm, the task keeping a clearance while this plugin jogs it, and that clearance.
         self._jog_guards: dict[tuple[str, str], asyncio.Task] = {}
-        self._jog_checked: set[tuple[str, str]] = set()
+        self._jog_clearances: dict[tuple[str, str], Clearance] = {}
         #: Draws so far, to redraw the F/T plots every FT_PLOT_EVERY-th.
         self._draws = 0
 
@@ -364,9 +369,10 @@ class RobotControlPlugin(HuskyPlugin):
             ft_plots = tuple(TracePlot(gui, ft_trace, signal, seconds=FT_SECONDS, min_span=span)
                              for signal, span in zip(signals, (1.0, 0.1)))
             ft_note = gui.add_html(note_line(""))
-        jog_speed, jog_clearance, tool_jog = built[SCALED_JOINT_TRAJECTORY_CONTROLLER]
+        jog: JogInputs = built[SCALED_JOINT_TRAJECTORY_CONTROLLER]
         return _ArmWidgets(serial=serial, arm=arm, panel=panel, status=status, tool_status=tool,
-                           jog_speed=jog_speed, jog_clearance=jog_clearance, tool_jog=tool_jog,
+                           jog_speed=jog.speed, jog_clearance=jog.clearance, tool_jog=jog.tool,
+                           jog_buttons=jog.buttons + jog.tool.buttons, jog_note=jog.note,
                            compliance=built[CARTESIAN_COMPLIANCE_CONTROLLER],
                            free_drive_keep=built[FREE_DRIVE_CONTROLLER],
                            frames=add_frame_markers(ctx, serial, arm), arrows=add_force_arrows(ctx, serial, arm),
@@ -553,7 +559,7 @@ class RobotControlPlugin(HuskyPlugin):
             raise
 
     def _check_standing(self, ctx: PluginContext, now: float) -> None:
-        """Every STANDING_EVERY, check each base as a drive's clearance would, so a start too close shows unpressed.
+        """Every STANDING_EVERY, check each base and arm as its clearance would, so a start too close shows unpressed.
 
         On the plugin's own worker; robots it cannot check are left out (a press says why).
         """
@@ -571,22 +577,45 @@ class RobotControlPlugin(HuskyPlugin):
             if robot is not None:
                 assumable = assumable_joints(robot.model.movable_joints, ALL_ARMS)
                 asked.append((widgets.serial, own, STOP_DISTANCE, assumable, unknown_robots(snapshot, {own})))
+        for widgets in self._arms:
+            own = robot_id(widgets.serial)
+            robot = snapshot.robots.get(own)
+            if robot is not None and widgets.jog_clearance is not None:
+                assumable = assumable_joints(robot.model.movable_joints, self._other_arms(widgets))
+                asked.append(((widgets.serial, widgets.arm.config.name), own, ARM_STOP_DISTANCE, assumable,
+                              unknown_robots(snapshot, {own})))
         if asked and self._standing.check(snapshot, asked):
             self._standing_at = now
 
-    def _starts_in_collision(self, serial: str, now: float) -> str:
-        """Why a drive of base `serial` would start too close: a press just refused, else the standing check; or ""."""
-        refused = self._start_refused.get(serial)
-        if refused is not None and (serial in self._held or now - refused[1] <= REFUSAL_SHOWN):
+    def _starts_in_collision(self, key: str | tuple[str, str], now: float) -> str:
+        """Why a drive of base `key` (a serial), or a jog of arm `key`, would start too close; or "".
+
+        A press just refused says it; otherwise the standing check, unless the base drives or the arm's jog guard runs.
+        """
+        refused = self._start_refused.get(key)
+        held = key in self._held or key in self._jog_held or key in self._tool_jog_held
+        if refused is not None and (held or now - refused[1] <= REFUSAL_SHOWN):
             return refused[0]
-        return "" if serial in self._driving else self._too_close.get(serial, "")
+        guard = self._jog_guards.get(key)
+        moving = key in self._driving or (guard is not None and not guard.done())
+        return "" if moving else self._too_close.get(key, "")
+
+    def _start_chip(self, key: str | tuple[str, str], now: float, buttons: str) -> str:
+        """A red "starts in collision" chip while a start of `key` would be refused (`_starts_in_collision`); or ""."""
+        why = self._starts_in_collision(key, now)
+        if not why:
+            return ""
+        return chip("starts in collision", FAIL, f"{why}: Clearance refuses the {buttons} (gray).\nUntick Clearance to "
+                                                 f"move out; Collisions shows a refused press's hit.")
+
+    def _color_buttons(self, buttons, ticked: bool, key: str | tuple[str, str], now: float) -> None:
+        """Gray while Clearance would refuse a start, orange while it is unticked, else the theme's colour."""
+        blocked = ticked and self._starts_in_collision(key, now)
+        color_dpad(buttons, BLOCKED_COLOR if blocked else None if ticked else UNGUARDED_COLOR)
 
     def _base_warnings(self, ctx: PluginContext, serial: str, now: float) -> str:
         """Red chips for driving the base: a start too close (pressed or not); an arm out of its stow pose."""
-        chips = ""
-        if why := self._starts_in_collision(serial, now):
-            chips += chip("starts in collision", FAIL, f"{why}: Clearance refuses the D-pad (gray).\nUntick Clearance "
-                                                       f"to drive out; Collisions shows a refused press's hit.")
+        chips = self._start_chip(serial, now, "D-pad")
         config = next(robot for robot in ctx.config.robots if robot.serial == serial)
         away = from_stow(ctx.scene.snapshot.robots[robot_id(serial)], config)
         if away > STOW_TOLERANCE:
@@ -775,50 +804,63 @@ class RobotControlPlugin(HuskyPlugin):
                 f"at {widgets.tool_jog.speed.value:g} mm/s")
 
     def _jog_clear(self, ctx: PluginContext, widgets: _ArmWidgets) -> bool:
-        """Whether a jog may go out now: Clearance unticked, or its clearance checks; else start that clearance.
+        """Whether a jog may go out now: Clearance unticked, or its clearance found the arm clear; else start it.
 
-        The clearance starts within a tick, or refuses this press with a chip saying why (`_guard_jog`).
+        A start too close, or one it cannot check, ends this press with a chip saying why (`_guard_jog`).
         """
         key = (widgets.serial, widgets.arm.config.name)
-        if widgets.jog_clearance is None or not widgets.jog_clearance.value or key in self._jog_checked:
+        if widgets.jog_clearance is None or not widgets.jog_clearance.value:
             return True
-        guard = self._jog_guards.get(key)
+        guard, clearance = self._jog_guards.get(key), self._jog_clearances.get(key)
+        if guard is not None and not guard.done():
+            if clearance is None or not clearance.checked:
+                return False
+            self._start_refused.pop(key, None)
+            return True
         # * Leased first, so the guard does not end at once for want of a lease.
-        if (guard is None or guard.done()) and self._leased(ctx, key, lambda: True):
+        if self._leased(ctx, key, lambda: True):
+            self._jog_clearances.pop(key, None)  # ! the last guard's, checked: never jog under it
             self._jog_guards[key] = ctx.spawn(f"clearance {widgets.serial} {key[1]}", self._guard_jog(ctx, widgets))
         return False
+
+    def _other_arms(self, widgets: _ArmWidgets) -> list[str]:
+        """The names of the other arms on the robot of arm `widgets`: a jog's clearance may take them as last seen."""
+        return [arm.arm.config.name for arm in self._arms if arm.serial == widgets.serial and arm is not widgets]
+
+    def _end_press(self, key: tuple[str, str]) -> None:
+        """Answer the held jog of arm `key`: no jog until the next press."""
+        held = self._jog_held.get(key)
+        if held is not None:
+            self._jogging[key] = (*held[:2], False)
+        tool_jog = self._tool_jogging.get(key)
+        if tool_jog is not None:
+            tool_jog.stopped = True
 
     async def _guard_jog(self, ctx: PluginContext, widgets: _ArmWidgets) -> None:
         """Keep an ARM_STOP_DISTANCE clearance on the robot while this plugin holds its lease and Clearance is ticked.
 
         The jogged arm and the base must be known; the robot's other arms may not be (where last seen, or stowed).
         Other robots unknown when it starts may stay unknown; any other robot lost trips it. Not a check of the robot
-        against itself.
+        against itself. Too close at the first check, nothing was sent: the press is only refused, with a red chip.
         """
         serial, key, clearance = widgets.serial, (widgets.serial, widgets.arm.config.name), None
-        others = [arm.arm.config.name for arm in self._arms if arm.serial == serial and arm is not widgets]
         try:
-            with ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others,
+            with ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=self._other_arms(widgets), refuse_first=True,
                                unknown_robots=unknown_robots(ctx.scene.snapshot, {robot_id(serial)})) as clearance:
-                self._jog_checked.add(key)
+                self._jog_clearances[key] = clearance
                 await ctx.wait_until(lambda: not self._leases.held(serial) or not widgets.jog_clearance.value)
         except ClearanceRefused as refused:
-            # * This press is answered: no jog until the next one.
-            held = self._jog_held.get(key)
-            if held is not None:
-                self._jogging[key] = (*held[:2], False)
-            tool_jog = self._tool_jogging.get(key)
-            if tool_jog is not None:
-                tool_jog.stopped = True
+            self._end_press(key)
             self._refuse(ctx, key, "cannot check", f"{refused}; untick Clearance to jog without it")
         except asyncio.CancelledError:
-            if clearance is not None and clearance.problem:
+            if clearance is not None and clearance.refused:
+                self._end_press(key)
+                self._start_refused[key] = clearance.problem, ctx.now()
+            elif clearance is not None and clearance.problem:
                 self._tripped[serial] = clearance.problem
                 self._refuse(ctx, key, "too close",
                              f"{clearance.problem}: soft stopped.\nCollisions shows the hit; Resume in Health.")
             raise
-        finally:
-            self._jog_checked.discard(key)
 
     def _send_jog(self, ctx: PluginContext, widgets: _ArmWidgets, joint: int, direction: float) -> bool:
         """Send a jog of one joint at the speed slider's speed; whether the arm took it (if not, a chip says why)."""
@@ -850,9 +892,7 @@ class RobotControlPlugin(HuskyPlugin):
             refused = refusal_chip((self._refusals.get((widgets.serial, BASE)), widgets.base.last_refusal), now) \
                 + self._base_warnings(ctx, widgets.serial, now)
             widgets.status.content = base_status(widgets.base, now, refused)
-            guarded = widgets.clearance is None or widgets.clearance.value
-            color_dpad(widgets.dpad, None if guarded and not self._starts_in_collision(widgets.serial, now)
-                       else BLOCKED_COLOR if guarded else UNGUARDED_COLOR)
+            self._color_buttons(widgets.dpad, widgets.clearance is None or widgets.clearance.value, widgets.serial, now)
             if widgets.offset_note is not None:
                 widgets.offset_note.content = note_line(
                     "applied " + " ".join(f"{value:.3f}" for value in widgets.base.mocap_offset) + " m")
@@ -864,7 +904,14 @@ class RobotControlPlugin(HuskyPlugin):
             tool = widgets.arm.end_effector
             refused = refusal_chip((self._refusals.get(key), widgets.arm.last_refusal,
                                     None if tool is None else tool.last_refusal), now)
+            refused += self._start_chip(key, now, "jog")
             widgets.status.content = arm_status(widgets.arm, now, refused)
+            if widgets.jog_clearance is not None:
+                ticked = bool(widgets.jog_clearance.value)
+                self._color_buttons(widgets.jog_buttons, ticked, key, now)
+                note = jog_clearance_note(ticked, ARM_STOP_DISTANCE)
+                if widgets.jog_note.content != note:
+                    widgets.jog_note.content = note
             widgets.compliance.pose_plan.content = pose_plan_line(widgets.arm, widgets.compliance.pose)
             if widgets.tool_jog is not None:
                 widgets.tool_jog.readout.content = note_line(self._tool_jog_readout(key, widgets))
