@@ -29,7 +29,9 @@ Data flow:
 
 1. OptiTrack/Motive streams NatNet rigid body data.
 2. `mocap_relay` receives callbacks at mocap frequency.
-3. Relay turns coordinates Z-up ('rhino' convention, below: raw), then into the lab frame by the floor calibration.
+3. Relay turns coordinates Z-up ('rhino' convention, below: raw), then into the lab frame by the floor calibration
+   ([Lab Frame](#lab-frame-layers-anchors-refits), made with the probe:
+   [floor_calibration_manual.md](floor_calibration_manual.md)).
 4. Relay resolves calibration for each mocap ID and applies it.
 5. Relay caches latest pose/validity per rigid body ID.
 6. Relay republishes at timer rate (`publish_rate_hz`) on per-ID topics.
@@ -210,24 +212,13 @@ Three layers, each a small rigid correction on the one below (`world/mocap_frame
 3. **Robot base calibrations** on top (above). The calibration plugin takes them back off (`Reading.base`), so it
    works on floor-calibrated body poses.
 
-The **lab frame** is defined by ideal positions in git, `data/lab/main_frame.json` (`world/lab_frame.py`, written by
-hand). They only fix the lab frame across floor calibrations, through the probe's fit; the relay never reads them, and
-works from what was measured: the anchors and truss cameras stored, raw, with the floor calibration. The file holds the marks on the floor (`"marks": {"origin": [x, y], ...}`) and Motive's anchor markers (`"anchors": {"A1": [x,
-y, z], ...}`, z up from the floor). The mocap probe's floor calibration works raw (it takes the relay's floor
-calibration off the poses), fits a plane to the floor points, and places the frame on it by a least-squares fit of the
-marks probed and the anchors read to their ideal (x, y); marks only and anchors only are fitted too, and the
-panel and the export say how far the two place the lab apart, each one's residuals, and each anchor's height against
-its ideal z. **Anchor** in the probe records the tip like any point, named after the lab frame's anchor stored
-nearest it, else the next free A<n>; it needs no marker in view, as the probe often hides it. The tip is only a hint:
-the anchor is the unlabeled marker nearest it, within 10 cm (from `/mocap_relay/unlabeled_markers`), and every fit and
-the export use that marker, never the tip. All anchors come together from the relay's newest reading, live and at
-export (one rigid set; presses minutes apart under Motive's drifting frame are not), taken 3 s or more after the probe
-was last within 0.5 m of each (it and the hand hide or shift the marker). An anchor over 2 mm from its stored place
-has moved: it is left out of the fit (one at a time, the farthest first) and still exported, its new place in
-`anchors_in_floor`. An anchor not read is left out too, and the export is refused while one is not read, or while the
-relay announces no cameras (it passes over a floor calibration without them). The probe takes the markers back to raw by
-`lab_from_raw`, so it skips any the relay took (their `time`) before its `~/frame` with a new `lab_from_raw`. Its file holds `floor_from_raw` and, raw as
-they were then, the marks, the anchors and the cameras; it is written whole (a temporary file renamed over it).
+The **lab frame** is defined by the marks on the floor and Motive's anchor markers stored in git,
+`data/lab/main_frame.json`; the mocap probe makes each floor calibration against them. How to make one and what its
+numbers mean: [floor_calibration_manual.md](floor_calibration_manual.md). The relay never reads the lab frame file: it
+works from what the newest floor calibration file holds, raw as measured then: `floor_from_raw`, the anchors and the
+cameras. It passes over a file without cameras. The probe in turn reads from the relay: the unlabeled markers (its
+anchors), `~/frame` (the frame in use, shown as chips) and the services behind **Use refit** and **Apply floor
+calibration**.
 
 - **Anchors**: Motive streams them as unlabeled markers (model 0, "Unlabeled Markers" on in its streaming settings),
   with no name. Every `definitions_period_sec` (a look) the relay takes each unlabeled marker's mean over the frames
