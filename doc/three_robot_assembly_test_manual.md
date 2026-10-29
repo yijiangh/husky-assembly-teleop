@@ -2599,6 +2599,14 @@ floor: in the model it is floor-independent (the design ground always lands on t
 the plane itself sits 15-23 mm higher at the bars in the new file than in the old one, so **re-check
 the gauge under B20's footers (5.2 e) before trusting the raise** on the new floor.
 
+Since 2026-10-29: `20261028_152335_mocap_floor_calibration.json` (13 points: origin / mark1-3, 3-4
+probes each, 0.37 deg tilt, 0.8 mm rms; x, y and origin fitted to the marks and anchors of
+`main_frame.json`). The relay's new format calls the map `floor_from_raw` (from Motive's own
+coordinates, each sample's `raw_position`: what the monitor reads); the loader takes either name.
+This floor is 2-5 mm lower than the 27 Oct one where the bars stand (B20 -2.1, B34 -3.4, B46
+-4.8 mm), so the placed design sits that much lower too. **!** The gauge check above still applies.
+The monitor reads the file at start: restart it to use the new floor.
+
 ### 11.4 Open points
 
 - [x] The screw rate: `RETREAT_SCREW_RPM` = 72 (2.4 mm/s) since 2026-10-28, from the three release

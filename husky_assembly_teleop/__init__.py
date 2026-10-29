@@ -108,16 +108,19 @@ BASE_CALIBRATION_DATE_BY_ROBOT = {
 # * MOCAP_FLOOR_DIRECTORY. The floor is a property of the lab, not of a design, so
 # * every problem's collision floor, the PyBullet floor grid and the viewer pages'
 # * grid use it. A missing file falls back to the exported WalkableGround height.
-# * 2026-10-27 (since then): 0.26 deg tilt, about -1 mm at the MoCap origin; 22 points,
-# * 1.6 mm rms; its x, y and origin are fitted to the fixed floor points of
-# * main_floor_points.json. The file also carries the cameras, the fixed points and a
-# * relay-frame correction marked 'untrusted': the loader (mocap_floor.load_mocap_floor)
-# * reads only kind, floor_from_mocap, the floor samples and the plane's rms / tilt.
-# * Before: 20261022_161428 (0.49 deg, -2.5 mm at the origin, 10 points, 2.0 mm rms),
-# * the floor the 2026-10-23 test and its as-built pages were built on.
+# * 2026-10-28 15:23 (since 2026-10-29): 0.37 deg tilt, about -3.5 mm at the MoCap origin;
+# * 13 points (origin, mark1..3, 3-4 probes each), 0.8 mm rms; x, y and origin fitted to
+# * the marks and anchors of main_frame.json. Its map is called floor_from_raw (from
+# * Motive's own coordinates, what this monitor reads); the loader
+# * (mocap_floor.load_mocap_floor) reads only kind, that map, the marks' raw samples
+# * and the plane's rms / tilt (anchors, cameras and the relay's frame are ignored).
+# * 2 to 5 mm lower than the 27 Oct floor where the bars stand.
+# * Before: 20261027_160043 (0.26 deg, -1 mm at the origin, 22 points, 1.6 mm rms),
+# * the 27 / 28 Oct tests; 20261022_161428 (0.49 deg, -2.5 mm, 10 points, 2.0 mm rms),
+# * the 2026-10-23 test and its as-built pages.
 MOCAP_FLOOR_DIRECTORY = os.path.join(CALIBRATION_DATA_DIRECTORY, 'mocap_floor')
 MOCAP_FLOOR_CALIBRATION_FILE = os.path.join(
-    MOCAP_FLOOR_DIRECTORY, '20261027_160043_mocap_floor_calibration.json')
+    MOCAP_FLOOR_DIRECTORY, '20261028_152335_mocap_floor_calibration.json')
 # * Place the Rhino design on that floor (mocap_floor.MocapFloor.world_from_design): the
 # * live monitor tilts and lifts every Rhino pose it reads (bars, joints, targets, the
 # * room) so the design's flat WalkableGround lies on the measured floor, and the ground

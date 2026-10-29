@@ -37,10 +37,12 @@ RELEASE_FILES = {'261006_3bar_holding_test': ('B20__R.json', 'B34__R.json'),
                  '261019_2ModulesDemo': ('B20__R.json', 'B34__R.json', 'B46__R.json')}
 # Footer bottoms above the measured floor with the design as exported, mm, per floor file:
 # on the 22 Oct floor (checked 2026-10-23) the design floated 6 / 14 / 23 mm high; on the
-# 27 Oct floor (fitted to the fixed floor points, 0.26 deg) it sits 0-10 mm LOW, most at B20.
+# 27 Oct floor (fitted to the fixed floor points, 0.26 deg) it sits 0-10 mm LOW, most at B20;
+# the 28 Oct floor (marks + anchors, 0.37 deg) is 2-5 mm lower there: -6 mm at B20 to +9 mm at B46.
 EXPORTED_GAP_MM = {
     '20261022_161428_mocap_floor_calibration.json': {'G20': (5.0, 7.0), 'G34': (13.5, 15.5), 'G46': (21.5, 24.0)},
     '20261027_160043_mocap_floor_calibration.json': {'G20': (-9.6, -6.1), 'G34': (-6.1, -2.6), 'G46': (-2.6, 0.9)},
+    '20261028_152335_mocap_floor_calibration.json': {'G20': (-6.2, -0.1), 'G34': (-1.4, 4.7), 'G46': (3.5, 9.6)},
 }.get(os.path.basename(MOCAP_FLOOR_CALIBRATION_FILE), {})
 CELL_PROBLEM = '261019_2ModulesDemo'
 SIDECAR = os.path.join(DESIGN_DATA_DIRECTORY, '261006_3bar_holding_test', 'BarActions',

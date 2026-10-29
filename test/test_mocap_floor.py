@@ -88,6 +88,29 @@ def test_made_up_floor_is_read_back_exactly(tmp_path):
     assert floor.angle_to_normal_deg([0, 0, 1]) == pytest.approx(TILT_DEG, abs=1e-9)
 
 
+def test_relay_file_is_read_from_its_raw_coordinates(tmp_path):
+    # * Since 2026-10-28 the relay writes 'floor_from_raw' and keeps each sample's Motive
+    # * coordinates as 'raw_position' ('position' is its own corrected copy); the floor
+    # * points are labelled by the names in 'marks', and the anchors (up on the truss) are not.
+    path, probes = _write_made_up_floor(str(tmp_path), [(0, 0), (3, -4), (-2, 1)])
+    with open(path) as f:
+        raw = json.load(f)
+    raw['floor_from_raw'] = raw.pop('floor_from_mocap')
+    raw['marks'] = {'origin': {}, 'mark1': {}}
+    raw['samples'] = [{'name': f'{label}_1', 'label': label, 'raw_position': p.tolist(),
+                       'position': (p + [0.0, 0.0, 0.004]).tolist()}
+                      for label, p in zip(('origin', 'mark1', 'floor'), probes)]
+    raw['samples'].append({'name': 'A1_1', 'label': 'anchor', 'raw_position': [0.0, 2.0, 1.15],
+                           'position': [0.0, 2.0, 1.15]})
+    with open(path, 'w') as f:
+        json.dump(raw, f)
+    floor = load_mocap_floor(path)
+    assert floor is not None
+    assert np.allclose(floor.samples, probes)    # raw positions, the anchor left out
+    assert np.allclose(floor.height_above(probes), 0.0, atol=1e-12)
+    assert floor.z_at(0.0, 0.0) == pytest.approx(HEIGHT_AT_ORIGIN, abs=1e-12)
+
+
 def test_grid_lies_on_the_floor_and_covers_the_probes(tmp_path):
     path, probes = _write_made_up_floor(str(tmp_path), [(0, 0), (3, -4), (-2, 1)])
     floor = load_mocap_floor(path)

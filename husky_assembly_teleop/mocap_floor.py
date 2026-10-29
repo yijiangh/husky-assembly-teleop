@@ -14,7 +14,8 @@ probe session writes a ``<stamp>_mocap_floor_calibration.json``::
 ``floor_from_mocap`` maps a MoCap (world, Z-up, metres) point into the floor
 frame: z along the floor's normal, the origin the MoCap origin dropped onto the
 floor, x the MoCap x laid onto the floor. So the floor-frame z of a point is its
-height above the floor.
+height above the floor. Files since 2026-10-28 call it ``floor_from_raw`` (from
+Motive's own coordinates, each sample's ``raw_position``); the loader reads either.
 
 The world of the monitor stays the MoCap world: nothing measured by MoCap is
 moved (robot bases, progress.json, markers). Things that ARE the floor (the
@@ -261,16 +262,23 @@ def load_mocap_floor(path: Optional[str] = None) -> Optional[MocapFloor]:
             raw = json_load_std(f)
         if raw.get('kind') != FLOOR_CALIBRATION_KIND:
             raise ValueError(f"kind is {raw.get('kind')!r}, not {FLOOR_CALIBRATION_KIND!r}")
-        matrix = np.array(raw['floor_from_mocap']['matrix'], dtype=float)
+        # * Since 2026-10-28 the relay names the map floor_from_raw: it starts from Motive's
+        # * own coordinates (each sample's raw_position), which is what this monitor reads
+        # * over NatNet. A sample's 'position' there is the relay's corrected copy: not used.
+        key = 'floor_from_mocap' if 'floor_from_mocap' in raw else 'floor_from_raw'
+        matrix = np.array(raw[key]['matrix'], dtype=float)
         if matrix.shape != (4, 4):
-            raise ValueError(f"floor_from_mocap is {matrix.shape}, not 4x4")
+            raise ValueError(f"{key} is {matrix.shape}, not 4x4")
         # ! A rotation that is not orthonormal would make height_above lie.
         if not np.allclose(matrix[:3, :3] @ matrix[:3, :3].T, np.eye(3), atol=1e-6):
-            raise ValueError("floor_from_mocap's rotation is not orthonormal")
+            raise ValueError(f"{key}'s rotation is not orthonormal")
         # * The points the plane was fitted to: the floor probes, plus (since 2026-10-27)
-        # * the probes of the fixed floor points (origin, mark1..), labelled by their name.
-        on_floor = {'floor'} | set((raw.get('fixed_points') or {}).keys())
-        samples = np.array([s['position'] for s in raw.get('samples', [])
+        # * the probes of the fixed floor points (origin, mark1..), labelled by their name
+        # * ('fixed_points' on 10-27, 'marks' since 10-28). The anchors are not on the floor.
+        on_floor = ({'floor'} | set((raw.get('fixed_points') or {}).keys())
+                    | set((raw.get('marks') or {}).keys()))
+        position = 'raw_position' if key == 'floor_from_raw' else 'position'
+        samples = np.array([s.get(position, s['position']) for s in raw.get('samples', [])
                             if s.get('label') in on_floor], dtype=float).reshape(-1, 3)
         plane = raw.get('plane', {})
     except Exception as exc:
