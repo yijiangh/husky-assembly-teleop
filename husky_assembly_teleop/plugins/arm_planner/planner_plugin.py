@@ -21,7 +21,7 @@ import numpy as np
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.mocap_state import pose_lost
-from ...shared.arm_planner_contract import ArmPlanRequest
+from ...shared.arm_planner_contract import MAX_SLOWDOWN, ArmPlanRequest
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.execution.send import REFUSED, ArmMotion, MotionCommand, send_motion
@@ -58,7 +58,7 @@ def arm_command(serial: str, arm_name: str, path: ArmPath) -> MotionCommand:
     points = path.points[:, order]
     travel = float(np.max(np.sum(np.abs(np.diff(points, axis=0)), axis=0)))
     return MotionCommand(serial, (ArmMotion(arm_name, points, path.velocities[:, order]),), path.duration,
-                         path.duration, path.duration, travel)
+                         path.fastest, path.duration, travel)
 
 
 @register
@@ -107,8 +107,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                 return PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0)
             stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
             others[:] = stand_ins.warnings
-            result = plan_arm(self._world.sync(stand_ins.scene, serial), stand_ins.scene, arm, goal, abort,
-                              request.slowdown)
+            result = plan_arm(self._world.sync(stand_ins.scene, serial), stand_ins.scene, arm, goal, abort)
             if result.path is None and others:
                 result = replace(result, reason=f"{result.reason} ({unmeasured(others)})")
             return result
@@ -122,8 +121,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             self._start_base = (result.path, base, tracked)
             how = "straight" if result.direct else "RRT"
             stand_ins = f" ({unmeasured(others)})" if others else ""
-            slower = f" (×{request.slowdown:g} slower)" if request.slowdown > 1.0 else ""
-            return (f"{how}: {result.path.duration:.1f} s{slower}, {result.path.rests} rests on the way, "
+            return (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
                     f"found in {result.seconds:.1f} s{notes}{stand_ins}"), bool(guessed or others)
 
         return Search(label=f"plan {serial} {arm}",
@@ -131,6 +129,18 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       + (" (loading the models first)" if loading else ""),
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
                       accepted=accepted, finished=finished)
+
+    def set_duration(self, plan_id: int, seconds: float) -> None:
+        """Re-time the latest plan to take `seconds`, without replanning (`ArmPlannerContract`)."""
+        plan = self._plan
+        if plan is None or plan.id != plan_id or plan.state != "ready":
+            return
+        path = plan.path
+        slowed = path.slowed(min(max(seconds / path.fastest, 1.0), MAX_SLOWDOWN))
+        # * The base kept for `stale_reason` belongs to the path by identity.
+        if self._start_base is not None and self._start_base[0] is path:
+            self._start_base = (slowed, *self._start_base[1:])
+        self._plan = replace(plan, path=slowed)
 
     def check_path(self, serial: str, arm: str,
                    waypoints: Sequence[Sequence[float]]) -> asyncio.Future[CollisionHit | None]:

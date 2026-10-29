@@ -147,13 +147,16 @@ def test_the_preview_follows_the_cosine_profile_sent():
 
 
 @pytest.mark.safety
-def test_a_slowdown_stretches_the_path_and_slows_every_joint():
-    """Slowed 3 times, the same path takes 3 times as long (to a waypoint step) at a third of the peak speed."""
+def test_slowing_a_path_stretches_its_times_and_divides_its_speeds():
+    """The same samples, 2.5 times as long at 1/2.5 the speed; slowing again is relative to the fastest timing."""
     corners = np.array([[0.0] * 6, [1.0, 0.5, 0, 0, 0, 0], [1.5, -0.5, 0.3, 0, 0, 0]])
-    fast, slow = ArmPath.along(NAMES, corners, [1]), ArmPath.along(NAMES, corners, [1], slowdown=3.0)
-    assert slow.duration == pytest.approx(3 * fast.duration, abs=2 * 0.2)
-    assert np.max(np.abs(slow.velocities)) <= np.max(np.abs(fast.velocities)) / 3 * 1.05
-    np.testing.assert_allclose(slow.goal, fast.goal)
+    fast = ArmPath.along(NAMES, corners, [1])
+    slow = fast.slowed(2.5)
+    np.testing.assert_allclose(slow.points, fast.points)
+    assert slow.duration == pytest.approx(2.5 * fast.duration) and slow.fastest == pytest.approx(fast.duration)
+    np.testing.assert_allclose(slow.velocities, fast.velocities / 2.5)
+    np.testing.assert_allclose(slow.sample(slow.duration / 2), fast.sample(fast.duration / 2))
+    assert slow.slowed(1.0).duration == pytest.approx(fast.duration)
 
 
 def test_window_without_display_raises(config, monkeypatch):

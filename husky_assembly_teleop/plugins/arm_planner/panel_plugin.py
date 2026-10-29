@@ -30,6 +30,9 @@ from scaffolding_assembly_core.ids import robot_id
 from ...shared.assembly_planning.joints import arm_joint_names
 from .planner_plugin import STALE_JOINT
 
+#: The Duration slider's step, seconds.
+DURATION_STEP = 0.1
+
 
 @register
 class ArmPlannerPanel(PlannerPanel):
@@ -52,6 +55,8 @@ class ArmPlannerPanel(PlannerPanel):
         self._load_now = True
         #: The plan whose collision, if any, the collisions panel shows.
         self._reported: Plan | None = None
+        #: How many times its fastest timing a plan takes, as last set on the Duration slider; new plans take it too.
+        self._slowdown = 1.0
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -77,16 +82,13 @@ class ArmPlannerPanel(PlannerPanel):
             load = gui.add_button_group("Load", ["Now", "Stow", "Step"],
                                         hint="Set the target to where the arm is now, to its stow pose, or to "
                                              "the arm's target in the step selected in the process plugin")
-            self._slowdown = gui.add_slider("Duration ×", min=1.0, max=MAX_SLOWDOWN, step=0.5, initial_value=1.0,
-                                            hint="Slow the path down: 1 is the fastest the arm is allowed, "
-                                                 f"{MAX_SLOWDOWN:g} takes {MAX_SLOWDOWN:g} times as long. Replan "
-                                                 "after a change.")
 
             self._add_path_controls(ctx, gui,
                                     plan_hint="Plan from the arm's pose to the target around itself, the robots and "
                                               "the scene; Play previews; Clear drops it. Hold or Stop all stops a "
                                               "sent path.",
-                                    commit_hint="Send the path to the arm; it stops at every waypoint")
+                                    commit_hint="Send the path to the arm; it stops at every waypoint",
+                                    before_commit=lambda gui: self._add_duration(ctx, gui))
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -112,7 +114,30 @@ class ArmPlannerPanel(PlannerPanel):
 
         self._add_ghosts(ctx, (config for config in ctx.config.robots if config.serial in arms))
 
+    def _add_duration(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
+        """Add the Duration slider below the preview: the plan's seconds, its fastest timing to MAX_SLOWDOWN times."""
+        self._duration = gui.add_slider(
+            "Duration", min=0.0, max=1.0, step=DURATION_STEP, initial_value=0.0,
+            hint=f"Seconds the plan takes, from its planned (fastest) time to {MAX_SLOWDOWN:g}x that. Re-times it "
+                 f"without replanning; Play and Commit follow it.")
+        # ! Operator drags only: draw writes the slider every tick.
+        self._duration.on_update(ctx.defer_value("duration", lambda value: self._set_duration(float(value)),
+                                                 operator_only=True))
+
     # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
+
+    def _set_duration(self, seconds: float) -> None:
+        """Stretch the ready plan to `seconds`; the preview keeps its place along the path."""
+        self._used.touch()
+        plan = self._api.plan
+        if plan is None or plan.state != "ready":
+            self._say("nothing to re-time: plan first", FAIL)
+            return
+        before = plan.path.duration
+        self._api.set_duration(plan.id, seconds)
+        path = self._api.plan.path
+        self._slowdown = path.slowdown
+        self._t *= path.duration / before
 
     def _choose(self, serial: str, arm: str | None) -> None:
         """Plan for another robot or arm; the old plan no longer applies.
@@ -185,8 +210,7 @@ class ArmPlannerPanel(PlannerPanel):
 
     def make_request(self, ctx: PluginContext) -> ArmPlanRequest:
         """Plan the chosen arm to the slider target."""
-        return ArmPlanRequest(self.serial, self.arm, tuple(float(value) for value in self._target()),
-                              float(self._slowdown.value))
+        return ArmPlanRequest(self.serial, self.arm, tuple(float(value) for value in self._target()))
 
     def target_change(self, ctx: PluginContext, plan: Plan[ArmPlanRequest]) -> str:
         """How the chosen arm or the sliders differ from the plan's request."""
@@ -195,8 +219,6 @@ class ArmPlannerPanel(PlannerPanel):
             return "the robot or arm changed since planning"
         if np.max(np.abs(self._target() - np.array(request.goal))) > STALE_JOINT:
             return "the target changed since planning"
-        if float(self._slowdown.value) != request.slowdown:
-            return "the duration changed since planning"
         return ""
 
     def show_target(self, ctx: PluginContext, ghost: RobotGhost) -> None:
@@ -239,6 +261,10 @@ class ArmPlannerPanel(PlannerPanel):
             self._load = None
         super().update(ctx)
         plan = self._api.plan
+        # * A new plan takes the slowdown last set; the preview starts at 0 anyway.
+        if plan is not None and plan.state == "ready" and abs(plan.path.slowdown - self._slowdown) > 1e-6:
+            self._api.set_duration(plan.id, plan.path.fastest * self._slowdown)
+            plan = self._api.plan
         if plan is not self._reported:
             # * A plan refused for a collision shows it at once; any newer plan takes it away.
             self._reported = plan
@@ -266,7 +292,24 @@ class ArmPlannerPanel(PlannerPanel):
         self._arm.value = self.arm
         self._details.content = self._details_html()
         self._draw_slider()
+        self._draw_duration()
         self._draw_ghosts(ctx)
+
+    def _draw_duration(self) -> None:
+        """Fit the Duration slider to the plan: its fastest time up to MAX_SLOWDOWN times that, at its duration."""
+        plan = self._api.plan
+        path = None if plan is None else plan.path
+        if path is None:
+            low, high, value = 0.0, 1.0, 0.0
+        else:
+            low, high, value = path.fastest, path.fastest * MAX_SLOWDOWN, path.duration
+        slider = self._duration
+        # ! Never let min pass max, even between the two writes.
+        if low >= slider.max:
+            slider.max, slider.min = high, low
+        else:
+            slider.min, slider.max = low, high
+        slider.value = round(value, 3)
 
     def _details_html(self) -> str:
         """The plan, the joints at the slider time, and the last message, in a fixed number of rows."""
@@ -274,6 +317,7 @@ class ArmPlannerPanel(PlannerPanel):
         if plan is None or plan.path is None:
             path, at = "path    —", "at t    —"
         else:
-            path = f"path    {plan.path.duration:5.1f} s  {plan.path.rests} rests on the way"
+            path = (f"path    {plan.path.duration:5.1f} s (x{plan.path.slowdown:.1f})  {plan.path.rests} rests on "
+                    f"the way")
             at = "at t    " + " ".join(f"{math.degrees(v):+6.1f}" for v in plan.path.sample(self._t))
         return block(values(path, at) + self._message_html())

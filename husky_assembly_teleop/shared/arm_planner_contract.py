@@ -13,7 +13,7 @@ from typing import Protocol, Sequence
 from ..world.collision_hit import CollisionHit
 from .planner.plan import PlannerContract
 
-#: Slowest timing a plan may ask for: this many times longer than the fastest the arm is allowed.
+#: Slowest timing a plan may be stretched to (`set_duration`): this many times its fastest.
 MAX_SLOWDOWN = 5.0
 
 
@@ -25,17 +25,22 @@ class ArmPlanRequest:
         serial: The robot.
         arm: Which of its arms, e.g. "left_ur_arm".
         goal: The six joint values to reach, radians, in the UR driver's order.
-        slowdown: How many times longer the path takes than its fastest timing, 1 to MAX_SLOWDOWN.
     """
 
     serial: str
     arm: str
     goal: tuple[float, ...]
-    slowdown: float = 1.0
 
 
 class ArmPlannerContract(PlannerContract[ArmPlanRequest], Protocol):
-    """What `ctx.require("arm_planner")` offers: the planner contract, and path checks."""
+    """What `ctx.require("arm_planner")` offers: the planner contract, re-timing, and path checks."""
+
+    def set_duration(self, plan_id: int, seconds: float) -> None:
+        """Re-time the latest plan to take `seconds`, without replanning: the same path, its fastest timing stretched.
+
+        Clamped to its fastest timing up to MAX_SLOWDOWN times that; only a ready plan changes. Play and Commit follow
+        it. The plan is replaced, keeping its id.
+        """
 
     def check_path(self, serial: str, arm: str,
                    waypoints: Sequence[Sequence[float]]) -> asyncio.Future[CollisionHit | None]:

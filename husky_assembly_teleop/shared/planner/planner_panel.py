@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import math
 from html import escape
-from typing import TYPE_CHECKING, Iterable, Sequence
+from typing import TYPE_CHECKING, Callable, Iterable, Sequence
 
 import viser
 
@@ -121,7 +121,8 @@ class PlannerPanel(HuskyPlugin):
         """Take the planner's API. ! Call first in setup."""
         self._api = ctx.require(self.planner)
 
-    def _add_path_controls(self, ctx: PluginContext, gui: viser.GuiApi, plan_hint: str, commit_hint: str) -> None:
+    def _add_path_controls(self, ctx: PluginContext, gui: viser.GuiApi, plan_hint: str, commit_hint: str,
+                           before_commit: Callable[[viser.GuiApi], None] | None = None) -> None:
         """Add the "path" section: Plan/Play/Clear, the time slider and Commit, with their callbacks.
 
         Args:
@@ -129,6 +130,7 @@ class PlannerPanel(HuskyPlugin):
             gui: GUI api, inside `ctx.view.ui()`.
             plan_hint: Hover text of the Plan/Play/Clear buttons.
             commit_hint: Hover text of Commit.
+            before_commit: Adds a subclass's own inputs between the time slider and Commit, e.g. the plan's duration.
         """
         gui.add_html(section("path", SECTION_CTRL))
         plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
@@ -141,6 +143,8 @@ class PlannerPanel(HuskyPlugin):
                      f"{group_buttons(uuid, 0)}:hover {{ background: {PLAN_BUTTON_HOVER} !important; }}</style>")
         self._slider = gui.add_slider("Preview time", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
                                       hint="Scrub through the planned path: seconds from its start")
+        if before_commit is not None:
+            before_commit(gui)
         # * Cancel beside Commit: a folder of its own, laid out in two columns (found by Commit's icon).
         gui.add_html(COMMIT_STYLE)
         with gui.add_folder("Run"):
