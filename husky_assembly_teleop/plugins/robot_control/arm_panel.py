@@ -99,7 +99,7 @@ class ComplianceInputs:
 def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold: Callable[[int, float], None],
                      hold: Callable[[], None], on_tool_hold: Callable[[int, float], None], stop_distance: float
                      ) -> JogInputs:
-    """Add the joint controller's inputs: speed, Clearance, a - and + hold button per joint, Hold, and the tool0 jog.
+    """Add the joint controller's inputs: speed, a - and + hold button per joint, Clearance, Hold, and the tool0 jog.
 
     Args:
         ctx: The plugin's context.
@@ -117,11 +117,6 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
     gui.add_html(note("to move to a pose: plan it in Plan › Arm"))
     speed = gui.add_slider("Speed", min=0.05, max=1.0, step=0.05, initial_value=0.5,
                            hint=f"Fraction of the full speed, {np.degrees(JOG_MAX_SPEED):.0f} °/s.")
-    clearance = gui.add_checkbox(
-        "Clearance", initial_value=True,
-        hint=f"While jogging a joint or tool0, soft stop the robot once it comes within {stop_distance * 100:.0f} cm "
-             f"of anything in the scene; the base pose and this arm's joints must be known. Untick to jog without "
-             f"it, e.g. without mocap or out of a tight spot.")
     gui.add_html(JOG_STYLE)
     buttons = []
     with gui.add_folder("Jog"):
@@ -133,6 +128,12 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
                 # ! Bind loop values as defaults, or every button jogs like the last.
                 button.on_hold(ctx.defer(f"jog {name} {label}", lambda joint=joint, direction=direction:
                                          on_hold(joint, direction)), callback_hz=HOLD_CALLBACK_HZ)
+    # * Below the buttons it guards, as the D-pad's.
+    clearance = gui.add_checkbox(
+        "Clearance", initial_value=True,
+        hint=f"While jogging a joint or tool0, soft stop the robot once it comes within {stop_distance * 100:.0f} cm "
+             f"of anything in the scene; the base pose and this arm's joints must be known. Untick to jog without "
+             f"it, e.g. without mocap or out of a tight spot.")
     move_group = gui.add_button_group("Move", ["Hold"],
                                       hint="Brake to a standstill where the arm is, also during a planned path.")
     move_group.on_click(ctx.defer(f"hold {label}", hold))
