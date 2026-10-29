@@ -160,7 +160,7 @@ for ROBOT in "${ROBOTS[@]}"; do
     fi
     ok "robot PC $IP answers ping"
     # * Anything from this robot at all? Nothing = its launch is not running, or its ROS traffic
-    # * leaves through the wrong network port (Alice and Belle on 2026-10-19).
+    # * leaves through the wrong network port (Alice and Belle on 2026-10-19, Cindy on 2026-10-27).
     if ! ros2 topic list --no-daemon --spin-time 4 2>/dev/null | grep -q "^$NS/"; then
         fail "no topics at all from $NS, although its PC answers" \
              "is the launch running in pane $PANE? If it is, this PC does not receive its traffic: Ctrl-C the launch and start it again with the CYCLONEDDS_URI lines of Part 2. Skipping her other checks"
