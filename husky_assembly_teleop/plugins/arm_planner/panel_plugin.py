@@ -34,6 +34,20 @@ from .planner_plugin import STALE_JOINT
 DURATION_STEP = 0.1
 
 
+def gray_slider_css(uuid: str) -> str:
+    """CSS that draws one slider in gray, track, thumb, marks and number, so a rarely used one stays in the background.
+
+    * Found by its label (`label[for=<uuid>]`) as `ui.phone`'s helpers find inputs; only colours change.
+    """
+    row, gray = f'div:has(> div > p > label[for="{uuid}"])', "var(--mantine-color-gray-5)"
+    return (f"{row} .mantine-Slider-root {{ --slider-color: {gray}; }} "
+            f"{row} .mantine-Slider-bar, {row} .mantine-Slider-thumb {{ background: {gray} !important; }} "
+            f"{row} .mantine-Slider-mark[data-filled] {{ border-color: {gray} !important; "
+            f"background: {gray} !important; }} "
+            f"{row} label, {row} .mantine-Slider-markLabel, {row} input "
+            f"{{ color: var(--mantine-color-dimmed) !important; }}")
+
+
 @register
 class ArmPlannerPanel(PlannerPanel):
     """Joint sliders and the arm choice for the arm planner, with its plan, preview and commit controls."""
@@ -120,6 +134,7 @@ class ArmPlannerPanel(PlannerPanel):
             "Duration", min=0.0, max=1.0, step=DURATION_STEP, initial_value=0.0,
             hint=f"Seconds the plan takes, from its planned (fastest) time to {MAX_SLOWDOWN:g}x that. Re-times it "
                  f"without replanning; Play and Commit follow it.")
+        gui.add_html(f"<style>{gray_slider_css(self._duration._impl.uuid)}</style>")
         # ! Operator drags only: draw writes the slider every tick.
         self._duration.on_update(ctx.defer_value("duration", lambda value: self._set_duration(float(value)),
                                                  operator_only=True))
