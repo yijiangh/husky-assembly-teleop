@@ -143,7 +143,7 @@ holding.
 | 2 | settings, problem folder, network | 1 | 1 | — | no | no |
 | 3 | pendants, robot launches, mocap | 2 | 2–4 | all | no | no |
 | 4 | robot checks | 3 | 5 | all | no | no |
-| 5 | in-air test: Belle, then Alice | 4 | 1 + monitor window | Belle, Alice | gripper; controller switch (the arm should stay still) | no |
+| 5 | tests without a bar: gripper (Belle, then Alice), spiral (Cindy) | 4.1, 4.2 | 1 + monitor window | Belle, Alice, Cindy | gripper; controller switch (the arm should stay still); Cindy's arms: to a bar-holding pose, 15 mm forward with the spiral, back | no |
 | 6 | run 1: actions 0–2 | 5.6 | 1 + monitor window | Cindy | arms (+ base when driven) | yes |
 | 7 | run 2: action 3 | 5.7 | 1 + monitor window | Alice | base, arm, gripper | yes |
 | 8 | run 3: actions 4–9 | 5.8 | 1 + monitor window | Cindy | arms, base | yes |
@@ -696,18 +696,26 @@ What it checks and what a `FAIL` means:
 
 ---
 
-## 4. Test the support robots in the air  [TEST — arm / gripper move, no bar, nothing recorded]
+## 4. Test  [no bar, nothing recorded]
+
+Two tests **once, before the assembly starts** (before Part 5 and its first action, action 0:
+Cindy jointing B20; table in 0.1). Both run with **no bar** and a clear workspace, so a problem
+shows up before a bar depends on it. Nothing is saved: `progress.json` and the as-built record
+stay as they are.
+
+| | test | robot | what moves |
+|---|---|---|---|
+| 4.1 | gripper movement of the support robots (the grip handoff) | Belle, then Alice | gripper; controller switch (the arm should stay still) |
+| 4.2 | spiral movement of the assembly robot (the insert's spiral search) | Cindy | both arms: to a bar-holding pose, 15 mm forward with the spiral, back |
+
+**!** **Do not `Mark action done` here**: these are tests.
+
+### 4.1 Support robots: gripper movement  [TEST — arm / gripper move, no bar, nothing recorded]
 
 Alice and Belle take over a bar from Cindy with a **grip handoff**: the arm goes soft (compliance
 controller) and the gripper closes, so the arm follows the bar instead of pulling it. **Belle's**
 handoff has never run on hardware. **Alice's** ran on 2026-10-12; its tuning is still open
 (`tasks/2026-10-12_alice_grip_handoff_tuning.md`).
-
-So test both **once, before the assembly starts** (before Part 5 and its first action, action 0:
-Cindy jointing B20; table in 0.1). A problem then shows up before Cindy holds a bar for them. No
-bar, clear workspace.
-
-**!** **Do not `Mark action done` here**: these are tests.
 
 Do steps a)–g) for **Belle first**, then again for Alice. Where they differ:
 
@@ -844,6 +852,155 @@ ROS_DOMAIN_ID=85 ros2 service call /a200_0805/ur5e/controller_manager/list_contr
   - Or button [Switch to Alice] (top of the PLAN SKELETON section) instead of `Ctrl-C` + her
     block: the monitor restarts for Alice by itself.
 - [ ] After Belle: a)–g) again for Alice, starting with Alice's block in a).
+- [ ] After Alice: 4.2 with Cindy.
+
+### 4.2 Assembly robot: spiral movement  [TEST — both arms move, no bar, nothing recorded]
+
+The insert's **spiral search** (6.f) has never run on Cindy: on 2026-10-20 and 10-21 every insert
+used the straight line. This test runs it once with empty tools, the way a screwed bar's insert
+runs it:
+1. a free move to a **bar-holding pose**: both tools as if holding B21 at its insertion start,
+   about 0.9 m in front of Cindy, 641 mm apart, both tool axes pointing forward;
+2. the **insert**: both tools push **15 mm forward** along their axis (away from Cindy). The first
+   10 mm are stiff (joint controller). The last 5 mm are compliant with the spiral: one sideways
+   circle on both tools, growing from 0 to 15 mm (default 4 turns over 20 s);
+3. with no bar nothing stalls, so the spiral **holds** its end until you click. The tools then
+   go back to the straight line's end and **out** along the same line to the bar-holding pose.
+
+Nothing is tightened (no scaffolding motor runs) and nothing is recorded. Both force sensors are
+zeroed at the bar-holding pose (tools empty, arms still), as at the mount pause, so the compliant
+part does not drift on an old zero.
+
+**Needs:** Cindy's launch (2.b) and mocap (her base); **about 1 m clear in front of her** at tool
+height; a hand on Cindy's e-stop the whole time.
+
+**a) Start Cindy's monitor**
+- [ ] pane 1: paste Cindy's block (the same as in 5.1; it only sets the terminal up, nothing starts)
+
+**▶ pane 1 · MONITOR**
+```bash
+cd ~/ros2_ws && source venv/bin/activate && source install/setup.bash
+export ROS_DOMAIN_ID=86
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file://$HOME/.cyclonedds.xml   # already in ~/.bashrc; pins DDS to eno1
+export DESIGN_PROBLEM_NAME=261023_2ModulesDemo
+ros2 daemon stop >/dev/null 2>&1
+echo "[cindy env] domain $ROS_DOMAIN_ID via $(ip -4 -brief addr show eno1 | awk '{print $1, $2, $3}') | problem $DESIGN_PROBLEM_NAME"
+```
+
+  - **Expect:** one line, `[cindy env] domain 86 via eno1 UP 192.168.0.201/24 | problem 261023_2ModulesDemo`,
+    and a `(venv)` prefix on the prompt.
+  - **If not** (another domain, or no `eno1` address): paste the block again; ! never paste another
+    robot's block or a check block into this pane (5.1, "Which robot will the monitor drive?").
+- [ ] pane 1: start the monitor
+
+**▶ pane 1 · MONITOR**
+```bash
+ros2 daemon stop      # ! every time, or the monitor may miss Cindy's topics
+ros2 run husky_assembly_teleop husky_monitor
+```
+
+  - **Expect:** `[Plan skeleton] robot Cindy (domain 86) | problem 261023_2ModulesDemo | progress k/76 done`,
+    `mocap client connected: True`, and under it `insert spiral search: n/a (box greyed: no step loaded; ...)` and
+    `servo feedback: tool0 (box greyed: no bar loaded; ...)` in yellow (all start lines: 6.c; the
+    boxes follow the loaded step, 6.f / 6.e).
+  - **If not** `robot Cindy`: `Ctrl-C`, paste Cindy's block again, start again.
+- [ ] pane 5: check that both arms are up and on the joint controller (Part 3)
+
+**▶ pane 5 · CHECKS**
+```bash
+~/ros2_ws/src/husky-assembly-teleop/scripts/husky/check_robots.sh Cindy
+```
+
+  - **Expect:** under `=== Cindy (domain 86, ...) ===` only `OK` lines (both arms' joints arriving,
+    `scaled_joint_trajectory_controller` active on both), ending with `[check_robots] all OK`.
+  - **If not** (`FAIL ...` lines, each with its `-> ...` fix, then `[check_robots] N FAIL:`): fix it
+    as that line and Part 3 say before pressing anything in the panel.
+- [ ] panel: read the `Now:` line
+  - **Expect:** action 0 (`B20_J_joint`) loads by itself (`[Plan skeleton] auto-load ...`). The
+    test plans its moves in the loaded step's scene (the room, the other robots, the built bars),
+    at Cindy's real base.
+  - **If not:** slider [Action (idx)]: 0 → button [Load action].
+
+**b) Find the knobs** (MOVEMENT EXE section, under the `Insert:` sliders; map in 0.8)
+- [ ] box [Insert compliant part: SPIRAL search ...] and box [Servo feedback: MoCap bar markers ...]
+  - **Expect:** both boxes **orange**, like [Exec Selected Mv Traj (auto)]; both **greyed** until a
+    step is loaded (they follow the loaded step: 6.f, 6.e).
+  - The test always runs the spiral, ticked, greyed or not, and changes neither box.
+- [ ] slider [Insert: rigid->compliant split (mm to goal)]: 5; slider [Insert spiral: duration (s)]:
+      20; slider [Insert spiral: turns ...]: 4
+  - The test reads them, like the real insert.
+- [ ] button [Spiral test (no bar)] (orange), right under the two boxes.
+
+**c) To the bar-holding pose** (tools empty)
+- [ ] button [Spiral test (no bar)]
+  - **Expect:** `[spiral test] planned N waypoints at 0.1 rad; verifying swept path...`,
+    `[movement preview] 'spiral test 1/2': N waypoints, joint range [...] deg.`, then
+    `[spiral test] 1/2: the arms move to the test pose, as if holding a bar at its insertion start (both tools about 0.9 m in front of Cindy; N waypoints, T s). Preview it with 'Traj viz time'; set its speed with 'traj time' (higher = slower). No bar in the tools; keep 1 m in front of her clear. 'Confirm Exec' to move, 'Cancel Exec' to stop.`
+  - **Expect:** slider [traj time] jumps to T (8–60 s, about 10 deg/s per joint; the DPG panel
+    only, a PyBullet slider stays where it was) and the joint plot shows the planned move.
+  - **If not:** `[spiral test] no free path to the test pose from here; ...`: something is in the
+    way in the 3D view (the room, another robot). Drive Cindy to open space (6.a), press again.
+  - **If not:** `Load any action first ...` → a) again. `Spiral test refused: ...` → another step
+    still runs or waits for `Confirm Exec`: finish it or `Cancel Exec`.
+- [ ] slider [Traj viz time]: scrub it from 0 to 1
+  - **Expect:** the ghost robot plays the move to the bar-holding pose: nothing in its way, both
+    tools ending about 0.9 m in front of Cindy. **If not:** [Cancel Exec].
+- [ ] slider [traj time]: higher = slower (first run: keep T or slower) → hand on Cindy's e-stop →
+      button [Confirm Exec]
+  - **Expect:** `[spiral test] 1/2: moving to the test pose over T s.` with the slider's value read
+    at the click, then `[spiral test] rigid chunk: N waypoints over T s`: both arms move and stop
+    with both tools in front of Cindy, pointing forward.
+  - This move is stiff and cannot be cancelled from the panel: e-stop if needed.
+
+**d) The insert with the spiral**
+  - **Expect:** 2 s later, both force sensors zeroed (the arms stay still):
+    `[spiral test] force sensors zeroed at the test pose (tools empty) (|F| a/b -> c/d N).`
+    (left / right before and after; after ≈ 0).
+  - **If not:** `[spiral test] could not zero the force sensors at the test pose (tools empty); ...`
+    or `[spiral test] the force sensor zero was not confirmed ...`: the test goes on, and the next
+    prompt says `2/2 (! force sensors NOT zeroed: the arms may drift when compliance switches on)`.
+    Click [Cancel Exec] there to stop before anything moves, or go on and watch for drift.
+  - **Expect:** then `[movement preview] 'spiral test 2/2': N waypoints, ...` and
+    `[spiral test] 2/2 (force sensors just zeroed): both tools push 15 mm forward along their axis (x, y, z) like a screwed bar's insert: the first part stiff, the last 5 mm compliant with the SPIRAL search (4 turns over 20s, up to 15 mm sideways), then back out. The straight 15 mm line takes 5s ('traj time'; preview with 'Traj viz time'). 'Confirm Exec' to run, 'Cancel Exec' to stop.`
+    Slider [traj time] is back at 5 (the insert's default).
+  - **If not:** `[spiral test] no straight 15 mm line from the test pose; stopping here.` after a
+    `[spiral test diag]` block (7.c): note it; the arms stay at the test pose.
+- [ ] slider [Traj viz time]: scrub it → the ghost's tools move 15 mm forward, straight
+- [ ] slider [traj time]: higher = slower for the straight line (5 = the real insert's default; the
+      spiral's own duration is its slider in b)) → button [Confirm Exec]
+  - **Expect:** `[spiral test] 10.0 mm RIGID (3.3s), then 5.0 mm COMPLIANT with the SPIRAL search: radius 0 -> 15 mm over 20.0s and 4 turns about the insertion axis.`
+    (3.3 s = 10/15 of a traj time of 5 s; it scales with the slider.)
+  - **Expect:** the tools move 10 mm forward, stiff. The controllers switch to compliance (the
+    arms stay put). Both tools then circle **together**, the circle growing to 15 mm while they
+    move the last 5 mm forward.
+  - **Expect:** at the spiral's end, the warning `[spiral test] spiral complete (spiral 100% (20.0/20.0 s, radius 15.0 mm, 4.0 of 4 turns)): HOLDING its end under compliance. 'Confirm Exec' = back to the straight line's end, then out to the start; 'Cancel Exec' = stop here.`
+    The arms hold still, soft.
+- [ ] button [Confirm Exec]
+  - **Expect:** the tools glide back onto the line's end (2 s); the joint controller comes back;
+    the tools go 15 mm back out along the line, stiff:
+    `[spiral test] done: back at the start of the line (nothing tightened, nothing recorded).`
+- **Cancel:** button [Cancel Exec] at a prompt: nothing more moves. During the spiral (or its
+  hold): it stops there, `'Cancel Exec' at spiral ...; stopping here.`, and the joint controller
+  takes over and holds the arms where they are. Either way the arms stay in front of Cindy (press
+  the test button again: it plans from there).
+
+**e) What to note**
+- Both tools trace the same circle (as one bar)? Either arm sagging or drifting while compliant?
+- A controller switch failure: `the arms are NOT under the compliance controller ...` (nothing
+  more is sent), or `ARMS LEFT UNDER cartesian_compliance_controller ...` → button
+  [Switch to Joint (BOTH)] (6.b).
+
+**f) Finish**
+- [ ] The arms stay at the bar-holding pose. Keep this monitor for run 1 (5.6): its first step,
+      the free move to load, plans from where the arms are. Or quit it:
+
+**▶ pane 1 · MONITOR**
+```text
+Ctrl-C
+```
+
+  - The arms keep holding the bar-holding pose (joint controller); do not touch Cindy's launch pane.
 
 ---
 
@@ -851,7 +1008,7 @@ ROS_DOMAIN_ID=85 ros2 service call /a200_0805/ur5e/controller_manager/list_contr
 
 ### 5.1 Every monitor run: which robot it drives, start, switch, quit  [REAL RUN — recorded]
 
-Part 4's in-air test starts its monitors the same way.
+Part 4's tests start their monitors the same way.
 
 #### Which robot will the monitor drive?
 
@@ -870,9 +1027,9 @@ talk to: it prints **one line** and starts nothing.
 
 | block | paste it whenever the monitor should drive | used in |
 |---|---|---|
-| Cindy's | Cindy | 5.6, 5.8, 5.10 |
-| Alice's | Alice | Part 4 (in-air test), 5.7, 5.11 |
-| Belle's | Belle | Part 4 (in-air test), 5.9, 5.12 |
+| Cindy's | Cindy | 4.2 (spiral test), 5.6, 5.8, 5.10 |
+| Alice's | Alice | 4.1 (gripper test), 5.7, 5.11 |
+| Belle's | Belle | 4.1 (gripper test), 5.9, 5.12 |
 
 **Cindy's block:**
 
@@ -1263,7 +1420,7 @@ handoff. `<b>` = the bar (B21 Alice, B35 Belle).
 **f) Gripper close + handoff** (`<b>_H_M3_gripper_close`)
 - [ ] slider [Step]: 3 → button [Load Movement] → button [Exec gripper step: CLOSE + compliant handoff]
 - [ ] hand on the robot's e-stop → button [Confirm Exec]
-  - **Expect:** the phase lines of Part 4 e). The arm is compliant for the whole close: it gives way while
+  - **Expect:** the phase lines of 4.1 e). The arm is compliant for the whole close: it gives way while
     the jaws centre on the bar, then `gripper done: position ..., stalled True, ...` and the joint
     controller is back.
   - **!** Watch Cindy's tools: they must not be pulled.
@@ -1809,7 +1966,7 @@ Without the script, log pane 1 by hand (once per session; it keeps logging acros
 | Alice / Belle: `no ssik solver (alice, belle) fits the planner's robot: PyBullet IK instead` | not expected: the planning cell is not the robot's calibrated model (PyBullet IK, 1 mm only); note it |
 | Alice / Belle: `FK tool0 and the arm-reported TCP disagree ...` | no compliant handoff: the gripper closed with the arm stiff. The bar is still clamped; note the numbers. Belle, constant offset along tool Z: her pendant tool setting (2.d) |
 | Alice / Belle: `switch to cartesian_compliance_controller FAILED: the gripper was NOT closed` | nothing closed: check the robot's controllers (Part 3; `Switch to Joint (BOTH)` if needed), then run the close step again |
-| Belle's arm moves when the handoff goes compliant | e-stop; her controller frame may differ from Alice's (Part 4). Note how far and which way, close stiff with `Close Gripper for Bar` instead |
+| Belle's arm moves when the handoff goes compliant | e-stop; her controller frame may differ from Alice's (4.1). Note how far and which way, close stiff with `Close Gripper for Bar` instead |
 | the jaws not centred on the bar after the free approach | that robot's base calibration is off (1.c): stop before the straight approach; recalibrate it |
 | `Base calibration file not found for robot 0805` (Belle) / `0804` (Alice) | the robot's file is not in the folder its `BASE_CALIBRATION_DATE_BY_ROBOT` entry names (1.c), or Insync has not synced it |
 | no topics / `Unknown topic` | the robot is not visible: `eno1` on `192.168.0.x` and the robot pings (1.e); the right domain + CycloneDDS in this pane (5.1); the robot's launch still running with its domain + CycloneDDS (Part 2); or the base driver is down |
@@ -1859,7 +2016,7 @@ Without the script, log pane 1 by hand (once per session; it keeps logging acros
 - **Actions 0 and 7:** how the rigid insert ended (the `grounded bar` lines; the bar's final fit
   before fixing the foundation).
 - **Action 15:** how many tries the free move home took.
-- **Alice and Belle** (Part 4, 5.7, 5.9, 5.11, 5.12):
+- **Alice and Belle** (4.1, 5.7, 5.9, 5.11, 5.12):
   - the phase lines and any "no handoff" warning;
   - how the arm behaved while compliant (Belle: did it stay still when going compliant?);
   - the `[live goal]` line and the servo's iterations;

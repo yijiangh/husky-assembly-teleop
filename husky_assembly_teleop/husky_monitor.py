@@ -257,6 +257,19 @@ M2_COMPLIANT_SPLIT_MM_MAX = 30.0
 M2_SPIRAL_DURATION_S_MAX = 60.0
 M2_SPIRAL_TURNS_MAX = 10
 
+# * The spiral test (no bar; button 'Spiral test (no bar)'): the arms as they held B21
+# * at its insertion start on 2026-10-21 (B21__J.live-solved.json): both tools ~0.87 m in
+# * front of Cindy, 641 mm apart, both tool axes straight forward -- a held bar, minus the bar.
+SPIRAL_TEST_CONF_12 = (-1.3403, -3.2396, -0.8937, -2.1514, -1.3139, 2.3579,
+                       -0.8773, -2.5095, -0.8748, -2.8833, -0.876, 0.7821)
+# How far it pushes forward along the tools' axis (the real insert's 15 mm), and in how
+# long (the insert's default traj time); the free move there goes at about this joint speed.
+# * Both are only the defaults put on the 'traj time' slider: the operator previews each
+# * move ('Traj viz time') and may change the slider before 'Confirm Exec'.
+SPIRAL_TEST_DEPTH_MM = 15.0
+SPIRAL_TEST_LINE_S = 5.0
+SPIRAL_TEST_JOINT_SPEED_DEG_S = 10.0
+
 # The retreat backs off along each tool's live -z (encoders); past this angle from the
 # export's Rhino axis it warns before Exec (_live_retreat_targets).
 RETREAT_AXIS_WARN_DEG = 20.0
@@ -4720,6 +4733,206 @@ class HuskyMonitor(Node):
             self._servo_bar_feedback = bool(ticked)
         return bool(getattr(self, '_servo_bar_feedback', False))
 
+    def _read_insert_sliders(self) -> None:
+        """Re-read the insert's sliders live: the rigid->compliant split, the spiral's duration and turns.
+
+        A slider rebuilt by reset_ui can miss its next drag's callback while its
+        widget still holds the real position, so whoever runs an insert reads them
+        here instead of trusting the cached values: the insert's exec and the
+        spiral test (no bar). The handover distance decides where position control
+        stops holding the bar on target.
+        """
+        sld = getattr(self, 'm2_split_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None and float(v) != self.m2_compliant_split_mm:
+                self.m2_compliant_split_mm = float(v)
+                print(f"[Exec] insert split from slider: "
+                      f"{self.m2_compliant_split_mm:.1f} mm to goal")
+        sld = getattr(self, 'm2_spiral_duration_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None and float(v) != self.m2_spiral_duration_s:
+                self.m2_spiral_duration_s = float(v)
+                print(f"[Exec] insert spiral duration from slider: {self.m2_spiral_duration_s:.1f}s")
+        sld = getattr(self, 'm2_spiral_turns_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None and int(round(float(v))) != self.m2_spiral_turns:
+                self.m2_spiral_turns = int(round(float(v)))
+                print(f"[Exec] insert spiral turns from slider: {self.m2_spiral_turns}")
+
+    def spiral_test_no_bar(self) -> None:
+        """'Spiral test (no bar)' button: queue ``_spiral_test_task`` (Cindy, real arms, an action loaded)."""
+        if self._refuse_while_tasks_run('Spiral test'):
+            return
+        if self._connected_robot().n_arms != 2:
+            self.get_logger().warn('The spiral test is for Cindy (two arms).')
+            return
+        if self.FAKE_HARDWARE:
+            self.get_logger().warn('The spiral test needs the real arms (FAKE_HARDWARE is on).')
+            return
+        mv = getattr(self, 'current_movement', None)
+        if mv is None or mv.start_state is None or self.cfab is None:
+            self.get_logger().warn('Load any action first: the spiral test plans its moves in that '
+                                   'scene (the built bars, the room, the other robots).')
+            return
+        self.tasks.append(self._spiral_test_task(mv))
+
+    def _read_trajectory_time_slider(self, tag: str) -> float:
+        """The 'traj time' slider's LIVE position, kept in ``self.trajectory_time``.
+
+        'Load Movement' rebuilds this widget (reset_ui), and a freshly rebuilt
+        widget can miss its next drag callback, so whoever is about to move the
+        arms reads the widget itself rather than the cached value.
+
+        Args:
+            tag (str): Log tag, printed when the slider moved.
+
+        Returns:
+            float: Seconds for the whole trajectory.
+        """
+        sld = getattr(self, 'trajectory_time_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None and float(v) != self.trajectory_time:
+                self.trajectory_time = float(v)
+                print(f"[{tag}] traj time from slider: {self.trajectory_time:.0f}s")
+        return float(self.trajectory_time)
+
+    def _preview_dual_arm_path(self, path12: list, default_time_s: float, label: str) -> None:
+        """Show a planned dual-arm path like any planned movement, before it runs.
+
+        The ghost robot plays it (slider 'Traj viz time'), the joint plot shows
+        it, and the 'traj time' slider is set to ``default_time_s``, so the
+        operator can scrub it and slow it down (or speed it up) before 'Confirm
+        Exec'; the run then reads the slider live (``_read_trajectory_time_slider``).
+
+        Args:
+            path12 (list): Waypoints, 12-vectors (left arm then right arm), radians.
+            default_time_s (float): The suggested duration, seconds.
+            label (str): Log tag.
+        """
+        self.trajectory_time = float(min(max(default_time_s, 1.0), self.trajectory_time_max))
+        sld = getattr(self, 'trajectory_time_slider', None)
+        if sld is not None:
+            sld.set_value(self.trajectory_time)    # ! no effect on the PyBullet panel: read live anyway
+        arr = np.asarray(path12, dtype=float)
+        self.set_arm_trajectory((arr[:, :6], None, self.trajectory_time, None), index=0)
+        self.set_arm_trajectory((arr[:, 6:], None, self.trajectory_time, None), index=1)
+        self.set_to_show_traj_state()
+        self.show_planned_joint_values(list(arr), label=label)
+
+    def _spiral_test_task(self, mv) -> Generator[None, None, None]:
+        """The spiral search tried without a bar: a bar-holding pose, then a screwed bar's insert motion.
+
+        1. A free move (BiRRT + swept check, ``_plan_free_and_validate``) from the live
+           arms to ``SPIRAL_TEST_CONF_12``, planned in the loaded step's scene at the live
+           base with every held body let go and hidden (as the transfer workaround
+           plans), after 'Confirm Exec'.
+        2. Both force sensors are zeroed at the test pose, tools empty and arms still
+           (``world._zero_force_sensors``, as at the transfer's mount pause), so the
+           compliant part does not drift on an old zero.
+        3. From there, each tool's straight line ``SPIRAL_TEST_DEPTH_MM`` forward along
+           the two tools' mean axis (``plan_dual_arm_linear_independent``), run like a
+           screwed bar's insert with the spiral search (``world.spiral_insert_dry_run``),
+           after a second 'Confirm Exec'; then back out to the test pose.
+
+        Nothing is tightened; no as-built record and no progress.json are written.
+
+        Args:
+            mv: The loaded step, whose start state is the scene to plan in.
+
+        Yields:
+            None: One yield per monitor tick.
+        """
+        tag = 'spiral test'
+        log = self.get_logger()
+        self._read_insert_sliders()
+
+        # * 1. To the test pose: a free path in the step's scene, without any held body.
+        self._apply_live_base_to_movement(mv)
+        state = mv.start_state.copy()
+        self._inject_live_conf_into_state(state)
+        for rb in state.rigid_body_states.values():
+            if rb.attached_to_link or rb.attached_to_tool:
+                rb.attached_to_link = None
+                rb.attached_to_tool = None
+                rb.attachment_frame = None
+                rb.is_hidden = True
+        start12 = vec12_from_conf(state.robot_configuration)
+        names_12 = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        goal12 = unwrap_to_nearest(np.asarray(SPIRAL_TEST_CONF_12, dtype=float), start12,
+                                   *arm_joint_limits(self.cfab.planner, names_12))
+        jt = self._plan_free_and_validate(mv, tag, conf_from_12vec(goal12), state=state,
+                                          max_time=60.0, max_iterations=50)
+        if jt is None:
+            log.warn(f"[{tag}] no free path to the test pose from here; give Cindy about 1 m of "
+                     f"open space in front and try again.")
+            return
+        path = [np.asarray(q, dtype=float) for q in path_12_from_joint_trajectory(jt)]
+        travel_rad = float(np.max(np.sum(np.abs(np.diff(np.asarray(path), axis=0)), axis=0)))
+        t_move = float(np.clip(travel_rad / np.radians(SPIRAL_TEST_JOINT_SPEED_DEG_S), 8.0, 60.0))
+        # * Like any planned move: the ghost plays it ('Traj viz time'), and 'traj time' sets its speed.
+        self._preview_dual_arm_path(path, t_move, f'{tag} 1/2')
+        if not (yield from world.wait_for_operator_confirm(
+                self, f"[{tag}] 1/2: the arms move to the test pose, as if holding a bar at its "
+                      f"insertion start (both tools about 0.9 m in front of Cindy; {len(path)} waypoints, "
+                      f"{self.trajectory_time:.0f}s). Preview it with 'Traj viz time'; set its speed with "
+                      f"'traj time' (higher = slower). No bar in the tools; keep 1 m in front of her clear. "
+                      f"'Confirm Exec' to move, 'Cancel Exec' to stop.")):
+            return
+        t_move = self._read_trajectory_time_slider(tag)
+        log.info(f"[{tag}] 1/2: moving to the test pose over {t_move:.0f}s.")
+        if not (yield from world._execute_rigid_chunk(self, path, t_move, label=tag)):
+            return
+        settle_until = time.time() + world.SERVO_SETTLE_SECONDS
+        while time.time() < settle_until:
+            yield
+
+        # * 2. Zero both force sensors here: the tools are empty and the arms still, the
+        # * same condition as the mount pause. Without it the compliant part acts on
+        # * whatever force an old zero leaves, and its drift looks like the spiral.
+        # ? A failed zero does not stop the test: the 2/2 prompt says so and the
+        # ? operator decides (Cancel Exec stops before anything moves).
+        zeroed = yield from world._zero_force_sensors(self, tag, why='at the test pose (tools empty)')
+
+        # * 3. The insert's line: SPIRAL_TEST_DEPTH_MM forward along the tools' mean axis.
+        self._inject_live_conf_into_state(state)
+        tool0 = {side: _fk_link_frame(self.cfab.planner, state, link)
+                 for side, link in (('left', TOOL_LINK_LEFT), ('right', TOOL_LINK_RIGHT))}
+        axis = np.asarray(tool0['left'].zaxis, dtype=float) + np.asarray(tool0['right'].zaxis, dtype=float)
+        axis = axis / np.linalg.norm(axis)
+        depth_m = SPIRAL_TEST_DEPTH_MM / 1000.0
+        goals = {side: Frame((np.asarray(f.point, dtype=float) + axis * depth_m).tolist(), f.xaxis, f.yaxis)
+                 for side, f in tool0.items()}
+        report = {}
+        with pp.LockRenderer():
+            jt_line = plan_dual_arm_linear_independent(
+                self.cfab.planner, state, goal_conf=None, goal_ee_frames=goals,
+                skip_env_collisions=False, report=report)
+        if jt_line is None:
+            self._diagnose_cartesian_plan_failure(tag, state, report)
+            log.warn(f"[{tag}] no straight {SPIRAL_TEST_DEPTH_MM:.0f} mm line from the test pose; "
+                     f"stopping here.")
+            return
+        line = path_12_from_joint_trajectory(jt_line)
+        end_poses = (pose_from_frame(goals['left']), pose_from_frame(goals['right']))
+        self._preview_dual_arm_path(line, SPIRAL_TEST_LINE_S, f'{tag} 2/2')
+        zero_note = (' (force sensors just zeroed)' if zeroed else
+                     ' (! force sensors NOT zeroed: the arms may drift when compliance switches on)')
+        if not (yield from world.wait_for_operator_confirm(
+                self, f"[{tag}] 2/2{zero_note}: both tools push {SPIRAL_TEST_DEPTH_MM:.0f} mm forward along "
+                      f"their axis ({axis[0]:+.2f}, {axis[1]:+.2f}, {axis[2]:+.2f}) like a screwed bar's insert: "
+                      f"the first part stiff, the last {self.m2_compliant_split_mm:.0f} mm compliant with the "
+                      f"SPIRAL search ({self.m2_spiral_turns} turns over {self.m2_spiral_duration_s:.0f}s, "
+                      f"up to 15 mm sideways), then back out. The straight {SPIRAL_TEST_DEPTH_MM:.0f} mm line "
+                      f"takes {self.trajectory_time:.0f}s ('traj time'; preview with 'Traj viz time'). "
+                      f"'Confirm Exec' to run, 'Cancel Exec' to stop.")):
+            return
+        t_line = self._read_trajectory_time_slider(tag)
+        yield from world.spiral_insert_dry_run(self, line, axis, end_poses, t_line, label=tag)
+
     def _plan_transfer_as_free_move(self, mv: Movement) -> Optional[JointTrajectory]:
         """Workaround: plan the transfer as a plain dual-arm free move, without the bar.
 
@@ -6021,24 +6234,11 @@ class HuskyMonitor(Node):
         # can miss its next drag callback -- so an operator who slowed the move
         # down before pressing execute would otherwise be ignored, and the arms
         # would run at the default speed. Same hazard as the BarAction sliders.
-        sld = getattr(self, 'trajectory_time_slider', None)
-        if sld is not None:
-            v = sld.value
-            if v is not None and float(v) != self.trajectory_time:
-                self.trajectory_time = float(v)
-                print(f"[Exec] traj time from slider: {self.trajectory_time:.0f}s")
+        self._read_trajectory_time_slider('Exec')
 
-        # Same live re-read for M2's rigid->compliant handover distance: it
-        # decides where position control stops holding the bar on target, so a
-        # missed drag callback would silently run the operator's last-but-one
-        # setting.
-        sld = getattr(self, 'm2_split_slider', None)
-        if sld is not None:
-            v = sld.value
-            if v is not None and float(v) != self.m2_compliant_split_mm:
-                self.m2_compliant_split_mm = float(v)
-                print(f"[Exec] insert split from slider: "
-                      f"{self.m2_compliant_split_mm:.1f} mm to goal")
+        # Same live re-read for the insert's handover distance and the spiral's
+        # duration and turns (_read_insert_sliders).
+        self._read_insert_sliders()
 
         # Rigid-only is a whole different execution mode, so read it live too.
         sld = getattr(self, 'm2_rigid_only_slider', None)
@@ -6049,22 +6249,10 @@ class HuskyMonitor(Node):
                 print(f"[Exec] insert mode from slider: "
                       f"{'RIGID ONLY' if self.m2_exec_rigid_only else 'rigid+compliant split'}")
 
-        # The spiral search is another execution mode for the compliant part, with
-        # its own duration and number of turns: read all three live, same reason.
+        # The spiral search is another execution mode for the compliant part (its
+        # duration and turns were re-read above): read the box live, same reason.
         if self._m2_spiral_search():
             print("[Exec] insert compliant part: SPIRAL search (box ticked)")
-        sld = getattr(self, 'm2_spiral_duration_slider', None)
-        if sld is not None:
-            v = sld.value
-            if v is not None and float(v) != self.m2_spiral_duration_s:
-                self.m2_spiral_duration_s = float(v)
-                print(f"[Exec] insert spiral duration from slider: {self.m2_spiral_duration_s:.1f}s")
-        sld = getattr(self, 'm2_spiral_turns_slider', None)
-        if sld is not None:
-            v = sld.value
-            if v is not None and int(round(float(v))) != self.m2_spiral_turns:
-                self.m2_spiral_turns = int(round(float(v)))
-                print(f"[Exec] insert spiral turns from slider: {self.m2_spiral_turns}")
 
         deviations = self._arms_at_trajectory_start()
         if deviations and not self.FAKE_HARDWARE:
@@ -13464,6 +13652,10 @@ class HuskyMonitor(Node):
                     lambda v: setattr(self, 'm2_spiral_turns', int(round(float(v)))),
                     1, M2_SPIRAL_TURNS_MAX, int(self.m2_spiral_turns), integer=True,
                 )
+                # * Try the spiral without a bar: a bar-holding pose, then 15 mm forward with
+                # * the spiral (spiral_test_no_bar; manual section 4). Nothing is recorded.
+                self.buttons.append(Button('Spiral test (no bar)', self.spiral_test_no_bar,
+                                           color=BUTTON_MOVE_RGB))
             else:
                 self.m2_split_slider = None
                 self.m2_rigid_only_slider = None

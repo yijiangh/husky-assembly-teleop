@@ -5057,6 +5057,101 @@ def _execute_spiral_search(monitor, cartesian_trajectories, spiral: SpiralSearch
                  f'the nominal end pose; ending the insert (the straight line\'s ceiling).')
 
 
+def spiral_insert_dry_run(monitor, path12: list, axis, end_poses: tuple, t_total: float,
+                          label: str = 'spiral test') -> Generator[None, None, None]:
+    """A screwed bar's insert without the bar: rigid, then compliant with the spiral search, then back out.
+
+    Built from the same pieces as the real insert (``execute_planned_trajectory_compliant``):
+    the first part of ``path12`` under the joint controller, the last
+    ``m2_compliant_split_mm`` under the cartesian compliance controller with the spiral
+    (``SpiralSearch``, the panel's duration and turns) added to both arms' targets.
+    Nothing is tightened and nothing is recorded (no as-built record, no progress.json).
+    With no bar nothing stalls, so the spiral runs to its end and holds there until
+    'Confirm Exec' (back to the straight line's end, then out along the same line to the
+    start under the joint controller) or 'Cancel Exec' (stop there, the joint controller
+    holding the arms).
+
+    Args:
+        monitor: The HuskyMonitor node.
+        path12 (list): The planned straight line, 12-vectors, from the start to the insert's end.
+        axis (Sequence[float]): The insertion direction, world frame.
+        end_poses (tuple): ``(left, right)`` pybullet poses at the straight line's end.
+        t_total (float): Seconds for the whole straight line; the rigid part takes its share by distance.
+        label (str): Log tag.
+
+    Yields:
+        None: One yield per monitor tick.
+    """
+    log = monitor.get_logger()
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    requested_mm = float(getattr(monitor, 'm2_compliant_split_mm', M2_COMPLIANT_SPLIT_MM_DEFAULT))
+    rigid_path, _tail, split_mm, total_mm = split_path_by_distance_to_goal(monitor, path12, requested_mm)
+    t_rigid = t_total * (total_mm - split_mm) / total_mm if rigid_path is not None and total_mm > 0 else 0.0
+    t_spiral = float(getattr(monitor, 'm2_spiral_duration_s', M2_SPIRAL_DURATION_S_DEFAULT))
+    turns = float(getattr(monitor, 'm2_spiral_turns', M2_SPIRAL_TURNS_DEFAULT))
+    spiral = SpiralSearch(axis, t_spiral, turns=turns)
+    log.info(f"[{label}] {total_mm - split_mm:.1f} mm RIGID ({t_rigid:.1f}s), then {split_mm:.1f} mm "
+             f"COMPLIANT with the SPIRAL search: radius 0 -> {M2_SPIRAL_MAX_RADIUS_MM:.0f} mm over "
+             f"{t_spiral:.1f}s and {turns:g} turns about the insertion axis.")
+
+    monitor._servo_abort = False
+    switched, finished = False, False
+    try:
+        if rigid_path is not None:
+            if not (yield from _execute_rigid_chunk(monitor, rigid_path, t_rigid, label=label)):
+                return
+        starts = _live_tool0_poses(monitor)
+        switched = yield from switch_dual_arm_controller(monitor, 'cartesian_compliance_controller')
+        if not switched:
+            log.error(f'[{label}] the arms are NOT under the compliance controller; nothing more was sent.')
+            return
+
+        # * The spiral, then its end held until Confirm / Cancel (as the real insert holds it).
+        seg_a = [[start, end, t_spiral, float('inf')] for start, end in zip(starts, end_poses)]
+        prompted = {'done': False}
+
+        def _spiral_continue():
+            if getattr(monitor, '_servo_abort', False):
+                return False
+            if not spiral.done():
+                return True
+            if not prompted['done']:
+                prompted['done'] = True
+                # A stale click must not wave the return through.
+                monitor._servo_exec_confirmed = False
+                log.warn(f"[{label}] spiral complete ({spiral.text()}): HOLDING its end under compliance. "
+                         f"'Confirm Exec' = back to the straight line's end, then out to the start; "
+                         f"'Cancel Exec' = stop here.")
+            return not getattr(monitor, '_servo_exec_confirmed', False)
+
+        yield from execute_cartesian_linear_dual(
+            monitor, seg_a, should_continue=_spiral_continue, lateral_offset_fn=spiral.offset)
+        if getattr(monitor, '_servo_abort', False):
+            log.warn(f"[{label}] 'Cancel Exec' at {spiral.text()}; stopping here.")
+            return
+        back = spiral.offset(spiral.t_move)
+        seg_b = [[(tuple(np.asarray(end[0], dtype=float) + back), end[1]), end, M2_SPIRAL_RETURN_S, 0.5]
+                 for end in end_poses]
+        yield from execute_cartesian_linear_dual(monitor, seg_b)
+        finished = True
+    finally:
+        monitor._servo_abort = False
+        if switched:
+            restored = yield from switch_dual_arm_controller(monitor, 'scaled_joint_trajectory_controller')
+            if not restored:
+                log.error('ARMS LEFT UNDER cartesian_compliance_controller -- the switch back to '
+                          'scaled_joint_trajectory_controller failed. Do NOT run another movement '
+                          'until the controller is restored (see the Switch to Joint (BOTH) button).')
+    if not finished:
+        return
+
+    # * Out along the same line under the joint controller: from where the arms are to the start.
+    live12 = np.concatenate([np.asarray(hi.arm_joint_pose[i], dtype=float) for i in range(2)])
+    back_path = [live12] + [np.asarray(q, dtype=float) for q in reversed(path12)]
+    if (yield from _execute_rigid_chunk(monitor, back_path, t_total, label=label)):
+        log.info(f'[{label}] done: back at the start of the line (nothing tightened, nothing recorded).')
+
+
 # * Retreat (user decision 2026-10-22): no force zero before its compliant part. The
 # * last zero is the mount pause (tools empty, since 2026-10-21), so the compliance now
 # * acts on the bar's own load -- its weight and the mount's preload -- and lets the
@@ -5219,7 +5314,7 @@ FT_ZERO_TIMEOUT_S = 2.0
 def _zero_force_sensors(monitor, tag: str, why: str = 'before the compliant part'):
     """Zero every arm's force/torque sensor and wait for the driver to confirm it.
 
-    Called at two moments:
+    Called at three moments:
 
     * Right before the retreat's compliant part, only with ``RETREAT_ZERO_FT``
       (off since 2026-10-22, the mount-pause zero below being the reference then). The compliance controller
@@ -5234,6 +5329,8 @@ def _zero_force_sensors(monitor, tag: str, why: str = 'before the compliant part
     * At the transfer's mount pause, with the tools still EMPTY and the wrists
       already turned the way they will hold the bar: from then on the readings
       are the bar's own load (its weight, the mount's preload).
+    * At the spiral test's pose (``HuskyMonitor._spiral_test_task``), tools empty,
+      before its compliant part: the same condition as the mount pause.
 
     A confirmed zero is remembered on the monitor (``monitor._ft_zero``: when and
     why), so the as-built record can say what its force readings are relative to.
