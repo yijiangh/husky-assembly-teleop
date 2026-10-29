@@ -214,7 +214,7 @@ def absorbed_tool_note(mv: Movement, mating_sides: Optional[list] = None) -> str
 
     Same rule as ``step_button_label`` and ``husky_world.run_scaffolding_tool_step``:
     the compliant insert sends the joint tighten (only to the MATING arms), the
-    compliant retreat sends the gripper loosen, and the untighten is never sent.
+    retreat sends the gripper loosen, and the untighten is never sent.
 
     Args:
         mv (Movement): One of the step's absorbed tool steps
@@ -231,7 +231,7 @@ def absorbed_tool_note(mv: Movement, mating_sides: Optional[list] = None) -> str
     # ! Tool action first: an ungrasp / untighten exported with overlaps_next is
     # ! still not a tighten.
     if tool_action == 'ungrasp':
-        return f"{head} the compliant retreat sends it (gripper motors LOOSENING)."
+        return f"{head} the retreat sends it (gripper motors LOOSENING)."
     if tool_action == 'untighten':
         return (f"{head} nothing is sent (use the manual 'Loosen Joint' button "
                 f"if the tool must back off).")

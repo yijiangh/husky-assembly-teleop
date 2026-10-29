@@ -843,6 +843,9 @@ class HuskyMonitor(Node):
         self.m2_spiral_search = False
         self.m2_spiral_duration_s = M2_SPIRAL_DURATION_S_DEFAULT
         self.m2_spiral_turns = M2_SPIRAL_TURNS_DEFAULT
+        # The retreat's screw-out under compliance (checkbox, for testing) instead of the
+        # stiff default (2026-10-28). See world._retreat_stiff_screw_out.
+        self.m3_compliant_screw_out = False
         self.traj_viz_time = 1.0  # trajectory preview scrub position (0..1)
 
         # list of conf, velocity, total time, attachment other than the ee
@@ -4857,6 +4860,49 @@ class HuskyMonitor(Node):
         """Print the execution options an operator can easily miss, next to the mocap check at start-up."""
         self._log_spiral_mode()
         self._log_servo_feedback_mode()
+        self._log_retreat_screw_out_mode()
+
+    def _m3_compliant_screw_out(self) -> bool:
+        """Whether the retreat's 'COMPLIANT screw-out' box is ticked (else the stiff default).
+
+        Same shape as ``_m2_spiral_search``: the widget is read once and the flag
+        re-synced, because a checkbox rebuilt by reset_ui can miss its next click's
+        callback. Read with a default for headless harnesses built without __init__.
+
+        Returns:
+            bool: True when the retreat's screw-out runs under compliance.
+        """
+        toggle = getattr(self, 'm3_compliant_toggle', None)
+        ticked = toggle.value if toggle is not None else None
+        if ticked is not None:
+            self.m3_compliant_screw_out = bool(ticked)
+        return bool(getattr(self, 'm3_compliant_screw_out', False))
+
+    def _set_m3_compliant_screw_out(self, ticked: bool) -> None:
+        """'Retreat screw-out: COMPLIANT' clicked: keep the flag and say the new mode.
+
+        Args:
+            ticked (bool): The box's new state.
+        """
+        self.m3_compliant_screw_out = bool(ticked)
+        self._log_retreat_screw_out_mode()
+
+    def _log_retreat_screw_out_mode(self) -> None:
+        """Say in colour how the retreat's screw-out will run: stiff (green, the default) or compliant."""
+        if getattr(self, 'm3_compliant_screw_out', False):
+            hold = (f"{world.RETREAT_COMPLIANT_HOLD_S:g} s hold, then "
+                    if world.RETREAT_COMPLIANT_HOLD_S > 0 else "")
+            self.get_logger().info(
+                f"{self._ANSI_YELLOW}retreat screw-out: COMPLIANT{self._ANSI_RESET} (test mode: {hold}"
+                f"{world.retreat_screw_out_distance_m() * 1000.0:.0f} mm out at the screw rate under "
+                f"compliance; untick 'Retreat screw-out: COMPLIANT' for the stiff default)")
+        else:
+            rate = (f"{world.RETREAT_SCREW_RPM:g} rpm" if world.RETREAT_SCREW_RPM
+                    else "rate UNKNOWN: the retreat will refuse")
+            self.get_logger().info(
+                f"{self._ANSI_GREEN}retreat screw-out: STIFF{self._ANSI_RESET} (joint controller, both tools "
+                f"straight out {world.retreat_screw_out_distance_m() * 1000.0:.0f} mm at the screw rate, "
+                f"{rate})")
 
     def _set_m2_spiral_search(self, ticked: bool) -> None:
         """'Insert compliant part: SPIRAL search' clicked: keep the flag and say the new mode.
@@ -6415,6 +6461,10 @@ class HuskyMonitor(Node):
         # duration and turns were re-read above): read the box live, same reason.
         if self._m2_spiral_search():
             print("[Exec] insert compliant part: SPIRAL search (box ticked)")
+        # The retreat's screw-out mode is one too: stiff (default) or compliant (box).
+        compliant_screw_out = self._m3_compliant_screw_out()
+        if kind is MovementKind.DUAL_INDEPENDENT_LINEAR:
+            print(f"[Exec] retreat screw-out: {'COMPLIANT (box ticked)' if compliant_screw_out else 'STIFF'}")
 
         deviations = self._arms_at_trajectory_start()
         if deviations and not self.FAKE_HARDWARE:
@@ -6443,8 +6493,10 @@ class HuskyMonitor(Node):
         # * a one-sided bar such as B3 (bar_action_io.mating_arm_sides).
         sides = (mating_arm_sides(mv.start_state)
                  if kind is MovementKind.DUAL_CONSTRAINED_LINEAR and not grounded else None)
+        # * A stiff retreat (the default screw-out) runs joint tracking too.
+        stiff_retreat = kind is MovementKind.DUAL_INDEPENDENT_LINEAR and not compliant_screw_out
         runs = (CONTROLLER_CARTESIAN_COMPLIANT if kind in COMPLIANT_KINDS and not grounded
-                else CONTROLLER_JOINT_TRACKING)
+                and not stiff_retreat else CONTROLLER_JOINT_TRACKING)
         self._warn_controller_mismatch(mv, runs)
         # * Plan skeleton mode: the operator does not stop on the tool steps that run
         # * with this movement, so say here what happens to each of them.
@@ -6927,9 +6979,11 @@ class HuskyMonitor(Node):
                              source: str = 'Exec') -> Generator[None, None, None]:
         """Run one step's execution, then carry where the robot really is forward (``_propagate_live_end``).
 
-        Nothing is carried after 'Cancel Exec' (``_cancel_exec``), nor, with
-        ``check_end``, when the arms did not reach the end of the trajectory that
-        was sent (a motion that failed or was stopped).
+        Nothing is carried after 'Cancel Exec' (``_cancel_exec``), nor after an
+        execution that stopped itself before moving (``_exec_stopped``, e.g. a failed
+        controller switch in the retreat), nor, with ``check_end``, when the arms did
+        not reach the end of the trajectory that was sent (a motion that failed or
+        was stopped).
 
         Args:
             idx (int): Index in ``_loaded_movements`` of the step being run.
@@ -6944,6 +6998,7 @@ class HuskyMonitor(Node):
             None: One yield per monitor tick.
         """
         self._exec_cancelled = False
+        self._exec_stopped = False
         n_arms = self._connected_robot().n_arms
         # Read before the run: an execution may clear the staged trajectory.
         ends = ([np.asarray(self.planned_arm_trajectory[i][0][-1], dtype=float) for i in range(n_arms)]
@@ -6952,7 +7007,8 @@ class HuskyMonitor(Node):
         self._as_built_record(idx, 'start')
         yield from run
         mv_id = self._loaded_movements[idx].movement_id
-        outcome, off = ('cancelled' if self._exec_cancelled else 'ok'), None
+        outcome, off = ('cancelled' if self._exec_cancelled
+                        else 'stopped' if getattr(self, '_exec_stopped', False) else 'ok'), None
         if outcome == 'ok' and ends is not None:
             hi = self.huskies[self.selected_robot_id].interface
             off = max(float(np.abs(np.asarray(hi.arm_joint_pose[i], dtype=float) - ends[i]).max())
@@ -6964,6 +7020,10 @@ class HuskyMonitor(Node):
         self._as_built_record(idx, 'end', outcome, off_rad=off, commanded_end=ends)
         if outcome == 'cancelled':
             self.get_logger().info(f"[Exec] {mv_id}: 'Cancel Exec' -- nothing carried forward.")
+            return
+        if outcome == 'stopped':
+            self.get_logger().warn(f"[Exec] {mv_id}: the step stopped before moving -- nothing "
+                                   f"carried forward (progress.json unchanged); fix the cause and run it again.")
             return
         if outcome == 'off_target':
             self.get_logger().warn(
@@ -13832,6 +13892,17 @@ class HuskyMonitor(Node):
                     )
                 else:
                     self.servo_bar_feedback_toggle = None
+                # * The retreat's screw-out: unticked (default since 2026-10-28) the arms stay
+                # * STIFF and both tools back straight out at the screws' rate; ticked, the 10-27
+                # * compliant screw-out, kept for testing. Read live at execution time
+                # * (_m3_compliant_screw_out); seeded from the flag so a reset_ui rebuild keeps it.
+                self.m3_compliant_toggle = Toggle(
+                    'Retreat screw-out: COMPLIANT (unticked = stiff: joint controller, '
+                    'straight out at the screw rate)',
+                    self._set_m3_compliant_screw_out,
+                    bool(getattr(self, 'm3_compliant_screw_out', False)),
+                    color=BUTTON_MOVE_RGB,
+                )
                 # * The greyed states, which the rebuild from the flags alone would lose.
                 self._apply_insert_option_boxes()
                 # * Try the spiral without a bar: a bar-holding pose, then 15 mm forward with
@@ -13845,6 +13916,7 @@ class HuskyMonitor(Node):
                 self.m2_spiral_duration_slider = None
                 self.m2_spiral_turns_slider = None
                 self.servo_bar_feedback_toggle = None
+                self.m3_compliant_toggle = None
             # 0 disables the dense swept collision re-check that gates the free moves'
             # plans. Faster planning, unverified paths.
             self.fm_swept_validation_slider = Slider(

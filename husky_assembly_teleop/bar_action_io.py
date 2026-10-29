@@ -823,10 +823,10 @@ def tool_runs_with_next_motion(mv: Movement) -> bool:
 
     - 'tighten' with ``overlaps_next`` (the joint tighten before the insert):
       the compliant insert starts the joint motors TIGHTENING;
-    - 'ungrasp' (the release's gripper loosen): the compliant retreat starts the
+    - 'ungrasp' (the release's gripper loosen): the retreat starts the
       gripper motors LOOSENING;
     - 'untighten' (the release's joint loosen): never sent, on purpose. The
-      compliant retreat does not reverse the joint motor, since that may back
+      retreat does not reverse the joint motor, since that may back
       the just-tightened screw off the bar; the operator has the manual
       'Loosen Joint' button if the tool must back off.
 

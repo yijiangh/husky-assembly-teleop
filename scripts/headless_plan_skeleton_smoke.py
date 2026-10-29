@@ -876,9 +876,15 @@ def dispatch_check(results: Results, problem: str, root: str, skeleton) -> None:
                     # A two-waypoint path where the stub arms stand: exec's "arms at
                     # the trajectory start" check passes, as after 'Move Arms to
                     # Movement Start'.
+                    # ! The stiff retreat refuses a path shorter than its 12 mm screw-out,
+                    # ! so the retreat's path goes on to its target instead of standing still.
+                    end12 = (vec12_from_conf(mv.target_configuration)
+                             if monitor._kind_of(mv) is MovementKind.DUAL_INDEPENDENT_LINEAR
+                             and mv.target_configuration is not None else None)
                     for i, q in enumerate(iface.arm_joint_pose):
+                        q_end = q if end12 is None else end12[6 * i:6 * (i + 1)]
                         monitor.set_arm_trajectory(
-                            (np.asarray([q, q]), None, monitor.trajectory_time, None), i)
+                            (np.asarray([q, q_end]), None, monitor.trajectory_time, None), i)
                     called.clear()
                     monitor.exec_selected_movement_traj()
                     run_tasks(monitor, iface)
@@ -1374,19 +1380,21 @@ def transfer_free_move_check(results: Results, problem: str, root: str, skeleton
 # * Inserts on the stub: grounded bars (Rhino note D9), one-sided bars (D10)
 # * ---------------------------------------------------------------------------
 
-def load_insert(monitor, iface: StubInterface, action) -> tuple:
-    """'Load action', load its insert, stamp a straight joint path, stand the stub arms at its start.
+def load_insert(monitor, iface: StubInterface, action,
+                kind: MovementKind = MovementKind.DUAL_CONSTRAINED_LINEAR) -> tuple:
+    """'Load action', load its insert (or retreat), stamp a straight joint path, stand the stub arms at its start.
 
     Args:
         monitor (HuskyMonitor): The headless monitor.
-        iface (StubInterface): The stub; its arms are put at the insert's start.
-        action (SkeletonAction): One of Cindy's jointing actions.
+        iface (StubInterface): The stub; its arms are put at the step's start.
+        action (SkeletonAction): One of Cindy's jointing (or release) actions.
+        kind (MovementKind): The step to load: the insert (default) or the retreat.
 
     Returns:
-        tuple: ``(the insert, its (n, 12) path)``.
+        tuple: ``(the step, its (n, 12) path)``.
     """
     monitor.load_action(action.index)
-    mv = select_movement(monitor, monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_LINEAR))
+    mv = select_movement(monitor, monitor._loaded_index_of(kind))
     path = np.linspace(vec12_from_conf(mv.start_state.robot_configuration),
                        vec12_from_conf(mv.target_configuration), INSERT_PATH_WAYPOINTS)
     monitor.trajectory_time = INSERT_TRAJ_TIME_S
@@ -1926,6 +1934,262 @@ def spiral_insert_check(results: Results, problem: str, root: str, skeleton) -> 
             f"controllers {iface.active_controller}")
     finally:
         husky_world.M2_SPIRAL_RETURN_S = saved_return_s
+        monitor.tasks.clear()
+        monitor.cfab.close()
+
+
+# The retreat's screw-out in the smoke: the grasp screws turn at ~72 rpm on the robot
+# (0.83 s per turn, the 12 mm screw-out in 5 s); sped up so the check runs in a second.
+SCREW_OUT_SMOKE_TURN_S = 0.05
+# The compliant box's hold before the line (4 s on the robot), shortened the same way
+# (above the 1.1 s that its move and end wait take anyway).
+SCREW_OUT_SMOKE_HOLD_S = 1.3
+
+
+def retreat_screw_out_check(results: Results, problem: str, root: str, skeleton) -> None:
+    """The retreat's screw-out: the jaws LOOSEN while the tools back out at the screws' rate.
+
+    The fixture's action 1 is B1's release; its retreat gets a straight joint
+    path and runs the REAL ``husky_world.execute_planned_trajectory_compliant``
+    on the stub, pumped tick by tick. With the box 'Retreat screw-out: COMPLIANT'
+    ticked, up to the end of the screw-out (the rigid run back is not checked):
+    (a) at the screws' rate: both grippers get LOOSEN and the first compliance
+        target in the same tick; the targets then advance along the retreat
+        axis to exactly the screw-out distance, no motor is stopped before the
+        screw-out is done, and the log says the distance, speed and turns;
+    (b) with the rate unknown (``RETREAT_SCREW_TURN_S`` None): the tools hold
+        their pose for the head start and a warning says the screws push the bar.
+    (a) and (b) run with ``RETREAT_COMPLIANT_HOLD_S`` = 0 (no hold), and
+    (e) with the hold: LOOSEN, then every target at the live pose until the
+        hold is done, then the same line from there; the log says both.
+    Stiff (the default since 2026-10-28), on the export's own retreat path:
+    (c) never a switch to compliance; both grippers get LOOSEN in one tick, right
+        before the first of two dual-arm joint trajectories (the screw-out,
+        re-sampled at 1 mm and timed so the tools move at the screws' rate; then
+        the rest), and both tools get Stop All only at the end;
+    (d) the arms 1.1 deg off the plan's start: nothing is sent (no LOOSEN, no
+        motion) and an error says to re-plan.
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder (unused; same signature as the other runs).
+        skeleton (PlanSkeleton): The scratch plan skeleton.
+    """
+    cindy = robot_by_name(ASSEMBLY_ROBOT)
+    action = skeleton.action(1)
+    assert action.kind == 'R', \
+        f"the retreat screw-out check needs release action 1, got {action.action_id}"
+    print(f"\n{'=' * 30} RETREAT SCREW-OUT CHECK {'=' * 30}")
+    export = skeleton.load_bar_action(action, prefer_sidecar=False)
+    base = export.movements[-1].start_state.robot_base_frame
+    monitor, iface, log = make_monitor(cindy, base, problem)
+    add_viz_huskies(monitor, cindy)
+    ready_for_compliant_exec(monitor)
+    robot = monitor.cfab.client.robot_puid
+    monitor.huskies[0].object = SimpleNamespace(robot=robot)
+    iface.tcp_fn = lambda i: _live_tool0_in_arm_base(monitor, i)
+    pump = partial(pump_exec, iface)
+    saved = (husky_world.RETREAT_SCREW_RPM, husky_world.RETREAT_SCREW_TURN_S,
+             husky_world.RETREAT_COMPLIANT_HOLD_S)
+    d_out_mm = husky_world.retreat_screw_out_distance_m() * 1000.0
+    # * The export's own retreat, start -> target: what an earlier run carries forward into
+    # * the start state must not shorten the stiff runs' path (they refuse under 12 mm).
+    export_retreat = next(m for m in export.movements
+                          if monitor._kind_of(m) is MovementKind.DUAL_INDEPENDENT_LINEAR)
+    export_path = np.linspace(vec12_from_conf(export_retreat.start_state.robot_configuration),
+                              vec12_from_conf(export_retreat.target_configuration), INSERT_PATH_WAYPOINTS)
+
+    def world_targets(calls, arm: int) -> list:
+        """One arm's recorded compliance targets, back in the world frame (metres)."""
+        world_from_base = pp.get_link_pose(robot, pp.link_from_name(robot, cindy.arm_base_links[arm]))
+        return [np.asarray(pp.tform_point(world_from_base, c[3]), dtype=float)
+                for c in calls if c[0] == 'cartesian' and c[1] == arm]
+
+    def stamp_export_path() -> None:
+        """Give the loaded retreat the export's own start -> target path, the stub arms at its start.
+
+        An earlier run carries its end state forward into the start state, which can
+        leave the loaded path with no length (so no retreat axis); this keeps it.
+        """
+        for i in range(iface.n_arms):
+            arm_path = export_path[:, 6 * i:6 * (i + 1)]
+            monitor.set_arm_trajectory((arm_path, None, INSERT_TRAJ_TIME_S, None), i)
+            iface.arm_joint_pose[i] = arm_path[0].copy()
+
+    def run_screw_out(turn_s, hold_s: float = 0.0) -> tuple:
+        """Load the retreat and run its compliant exec: note where the screw-out ends, then let the rest run out.
+
+        The exec cannot be closed mid-way (its ``finally`` yields while it restores the
+        joint controller), so the rigid run back runs too; nothing of it is checked here.
+
+        Args:
+            turn_s (float | None): Seconds per screw turn (None = unknown).
+            hold_s (float): The compliant hold before the line (0 = none).
+
+        Returns:
+            tuple: ``(the retreat, ended on its own, stub calls before, stub calls at the
+            screw-out's end, log lines before, stub calls at the hold's end)``.
+        """
+        husky_world.RETREAT_SCREW_TURN_S = turn_s
+        husky_world.RETREAT_COMPLIANT_HOLD_S = hold_s
+        monitor.m3_compliant_screw_out = True   # the box ticked
+        mv, _path = load_insert(monitor, iface, action, kind=MovementKind.DUAL_INDEPENDENT_LINEAR)
+        stamp_export_path()
+        n_calls, n_log = len(iface.calls), len(log.msgs)
+        monitor.exec_selected_movement_traj()
+        assert len(monitor.tasks) == 1, f"exec queued {len(monitor.tasks)} tasks"
+        task = monitor.tasks[0]
+        if hold_s > 0:
+            pump(task, lambda: bool(log.since(n_log, 'info', 'hold done after')))
+        n_hold = len(iface.calls)
+        pump(task, lambda: bool(log.since(n_log, 'info', 'screw-out done')))
+        n_after = len(iface.calls)
+        ended = pump(task, lambda: False)
+        monitor.tasks.clear()
+        return mv, ended, n_calls, n_after, n_log, n_hold
+
+    def run_stiff(offset_rad: float = 0.0) -> tuple:
+        """Load the retreat, stamp the export's own path, and run its stiff exec to the end (box unticked).
+
+        Args:
+            offset_rad (float): Added to every joint of the left stub arm, so the arms
+                stand off the plan's start.
+
+        Returns:
+            tuple: ``(the retreat, ended on its own, stub calls during the exec, log lines before)``.
+        """
+        husky_world.RETREAT_SCREW_TURN_S = SCREW_OUT_SMOKE_TURN_S
+        monitor.m3_compliant_screw_out = False
+        mv, _path = load_insert(monitor, iface, action, kind=MovementKind.DUAL_INDEPENDENT_LINEAR)
+        stamp_export_path()
+        iface.arm_joint_pose[0] = iface.arm_joint_pose[0] + offset_rad
+        n_calls, n_log = len(iface.calls), len(log.msgs)
+        monitor.exec_selected_movement_traj()
+        assert len(monitor.tasks) == 1, f"exec queued {len(monitor.tasks)} tasks"
+        ended = pump(monitor.tasks[0], lambda: False)
+        monitor.tasks.clear()
+        return mv, ended, iface.calls[n_calls:], n_log
+
+    try:
+        monitor._load_skeleton_state()
+
+        # * --- (a) compliant box ticked, at the screws' rate
+        mv, ended, n_calls, n_after, n_log, _ = run_screw_out(SCREW_OUT_SMOKE_TURN_S)
+        calls = iface.calls[n_calls:n_after]
+        i_loosen = next((k for k, c in enumerate(calls) if c[0] == 'scaffolding' and c[1] == -1), None)
+        i_cart = next((k for k, c in enumerate(calls) if c[0] == 'cartesian'), None)
+        between = ([c for c in calls[i_loosen:i_cart] if c[0] != 'scaffolding']
+                   if i_loosen is not None and i_cart is not None and i_loosen < i_cart else None)
+        stops_during = [c for c in calls[i_loosen:] if c[0] == 'scaffolding' and c[1] == 0] \
+            if i_loosen is not None else []
+        pts = world_targets(calls, 0)
+        dist = [float(np.linalg.norm(p - pts[0])) * 1000.0 for p in pts] if pts else []
+        rising = all(b >= a - 1e-6 for a, b in zip(dist, dist[1:]))
+        line = log.since(n_log, 'info', 'screw-out: both jaws LOOSEN while the tools back out')
+        v_out = husky_world.RETREAT_SCREW_PITCH_MM / SCREW_OUT_SMOKE_TURN_S
+        results.check(
+            f"retreat, compliant box: {mv.movement_id} sends LOOSEN to both grippers and the first "
+            f"compliance target in the same tick; the targets then advance {d_out_mm:.0f} mm along "
+            f"the retreat axis (at {v_out:.0f} mm/s here) with no motor STOP before the screw-out "
+            f"is done, and the log says so",
+            ended and sorted(c[1:] for c in calls if c[0] == 'scaffolding' and c[1] != 0)
+            == [(-1, GRIPPER_MOTOR, 0), (-1, GRIPPER_MOTOR, 1)]
+            and between == [] and not stops_during and len(line) == 1
+            and len(dist) >= 5 and rising and abs(dist[-1] - d_out_mm) < 0.05
+            and bool(log.since(n_log, 'info', 'screw-out done')),
+            f"ended {ended}, tool commands {tool_cmds(iface, n_calls)}, calls between the LOOSEN and "
+            f"the first target {between}, stops during {stops_during}, {len(dist)} targets to "
+            f"{dist[-1] if dist else float('nan'):.2f} mm (rising {rising}), log {line}")
+
+        # * --- (b) compliant box ticked, rate unknown: hold still for the head start, and warn
+        mv, ended, n_calls, n_after, n_log, _ = run_screw_out(None)
+        pts = world_targets(iface.calls[n_calls:n_after], 0)
+        spread = max(float(np.linalg.norm(p - pts[0])) for p in pts) * 1000.0 if pts else float('nan')
+        warns = log.since(n_log, 'warn', 'RETREAT_SCREW_TURN_S is not measured')
+        results.check(
+            "retreat, compliant box: with the screw rate unknown the tools hold their pose under "
+            "compliance for the head start, and a warning says the screws push the bar meanwhile",
+            ended and len(warns) == 1 and len(pts) >= 5 and spread < POSE_NOISE_MM,
+            f"ended {ended}, warnings {warns}, {len(pts)} targets, spread {spread:.2e} mm")
+
+        # * --- (e) compliant box ticked, with the hold before the line
+        mv, ended, n_calls, n_after, n_log, n_hold = run_screw_out(SCREW_OUT_SMOKE_TURN_S,
+                                                                   SCREW_OUT_SMOKE_HOLD_S)
+        calls = iface.calls[n_calls:n_after]
+        i_loosen = next((k for k, c in enumerate(calls) if c[0] == 'scaffolding' and c[1] == -1), None)
+        i_cart = next((k for k, c in enumerate(calls) if c[0] == 'cartesian'), None)
+        between = ([c for c in calls[i_loosen:i_cart] if c[0] != 'scaffolding']
+                   if i_loosen is not None and i_cart is not None and i_loosen < i_cart else None)
+        hold_pts = world_targets(iface.calls[n_calls:n_hold], 0)
+        line_pts = world_targets(iface.calls[n_hold:n_after], 0)
+        spread = (max(float(np.linalg.norm(p - hold_pts[0])) for p in hold_pts) * 1000.0
+                  if hold_pts else float('nan'))
+        dist = [float(np.linalg.norm(p - hold_pts[0])) * 1000.0 for p in line_pts] if hold_pts else []
+        rising = all(b >= a - 1e-6 for a, b in zip(dist, dist[1:]))
+        said = (log.since(n_log, 'info', 'the tools hold still under compliance for'),
+                log.since(n_log, 'info', 'hold done after'),
+                log.since(n_log, 'info', 'COMPLIANT hold, then'))
+        found = re.search(r'hold done after ([0-9.]+) s', said[1][0]) if said[1] else None
+        held_s = float(found.group(1)) if found else float('nan')
+        results.check(
+            f"retreat, compliant box with the hold: {mv.movement_id} sends LOOSEN to both grippers and "
+            f"the first target in the same tick; every target stays at the live pose until the hold "
+            f"is done ({SCREW_OUT_SMOKE_HOLD_S:g} s here, measured {held_s:g} s), then the same "
+            f"{d_out_mm:.0f} mm line from "
+            f"there; the log says the hold, its end and the split",
+            ended and between == [] and len(hold_pts) >= 5 and spread < POSE_NOISE_MM
+            and len(dist) >= 5 and rising and abs(dist[-1] - d_out_mm) < 0.05
+            and [len(x) for x in said] == [1, 1, 1] and abs(held_s - SCREW_OUT_SMOKE_HOLD_S) < 0.3,
+            f"ended {ended}, calls between the LOOSEN and the first target {between}, "
+            f"{len(hold_pts)} hold targets (spread {spread:.2e} mm), {len(dist)} line targets to "
+            f"{dist[-1] if dist else float('nan'):.2f} mm (rising {rising}), log {said}")
+
+        # * --- (c) stiff (the default), on the export's own path
+        mv, ended, calls, n_log = run_stiff()
+        lead, _rest, _rest_mm, _total_mm = husky_world.split_path_by_distance_to_goal(
+            monitor, list(export_path), d_out_mm, from_start=True)
+        # The waypoint count comes from the lead's travel; its time from the re-sampled path's.
+        lead_mm = float(husky_world._path_travel_mm(monitor, lead)[-1])
+        n_lead = int(np.ceil(lead_mm)) + 1    # re-sampled at 1 mm
+        even_mm = float(husky_world._path_travel_mm(monitor, husky_world._evenly_spaced_path(monitor, lead))[-1])
+        t_out = even_mm / (husky_world.RETREAT_SCREW_PITCH_MM / SCREW_OUT_SMOKE_TURN_S)
+        i_loosen = next((k for k, c in enumerate(calls) if c[0] == 'scaffolding' and c[1] == -1), None)
+        first3 = calls[i_loosen:i_loosen + 3] if i_loosen is not None else []
+        dual = [(k, c) for k, c in enumerate(calls) if c[0] == 'dual_arm']
+        stops_between = ([c for c in calls[i_loosen:dual[-1][0] + 1] if c[0] == 'scaffolding' and c[1] == 0]
+                         if i_loosen is not None and dual else None)
+        last_stops = [c[1:] for c in calls if c[0] == 'scaffolding'][-4:]
+        results.check(
+            f"retreat, stiff (default): {mv.movement_id} never switches to compliance; LOOSEN to both "
+            f"grippers in one tick, right before the first of two dual-arm joint trajectories (the "
+            f"screw-out: {lead_mm:.1f} mm of path in {n_lead} waypoints over {t_out:.2f} s here, i.e. at "
+            f"the screws' rate; then the rest); Stop All on both tools only at the end",
+            ended and not [c for c in calls if c[0] == 'switch' and c[2] == COMPLIANCE_CTRL]
+            and first3[:2] == [('scaffolding', -1, GRIPPER_MOTOR, 0), ('scaffolding', -1, GRIPPER_MOTOR, 1)]
+            and len(first3) == 3 and first3[2][0] == 'dual_arm'
+            and len(dual) == 2 and abs(dual[0][1][2] - t_out) < 1e-6
+            and dual[0][1][1][0] == n_lead and stops_between == []
+            and sorted(last_stops) == sorted([(0, GRIPPER_MOTOR, 0), (0, JOINT_MOTOR, 0),
+                                              (0, GRIPPER_MOTOR, 1), (0, JOINT_MOTOR, 1)])
+            and len(log.since(n_log, 'info', 'stiff screw-out: both jaws LOOSEN')) == 1
+            and bool(log.since(n_log, 'info', '[stiff screw-out]')),
+            f"ended {ended}, first after the LOOSEN {first3}, dual-arm {[c for _, c in dual]}, "
+            f"stops between {stops_between}, last stops {last_stops}")
+
+        # * --- (d) stiff, the arms off the plan's start: nothing is sent
+        mv, ended, calls, n_log = run_stiff(offset_rad=0.02)
+        sent = [c for c in calls if c[0] in ('dual_arm', 'cartesian', 'switch')
+                or (c[0] == 'scaffolding' and c[1] != 0)]
+        errors = log.since(n_log, 'error', 'from the planned retreat start')
+        results.check(
+            "retreat, stiff: with the arms 1.1 deg off the planned start nothing is sent (no LOOSEN, "
+            "no motion) and an error says to re-plan",
+            ended and not sent and len(errors) == 1,
+            f"ended {ended}, sent {sent}, errors {errors}")
+    finally:
+        (husky_world.RETREAT_SCREW_RPM, husky_world.RETREAT_SCREW_TURN_S,
+         husky_world.RETREAT_COMPLIANT_HOLD_S) = saved
         monitor.tasks.clear()
         monitor.cfab.close()
 
@@ -3282,7 +3546,7 @@ def main(argv: Optional[list] = None) -> int:
         skeleton = load_plan_skeleton(root)
         for run in (dispatch_check, carry_check, transfer_start_check, operator_steps_check,
                     transfer_free_move_check, grounded_insert_check, one_sided_insert_check,
-                    spiral_insert_check, transfer_servo_check,
+                    spiral_insert_check, retreat_screw_out_check, transfer_servo_check,
                     cindy_run, alice_run,
                     cindy_restart_run, exec_propagation_check):
             try:

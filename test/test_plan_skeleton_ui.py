@@ -222,7 +222,7 @@ def test_absorbed_tool_note():
     ungrasp = ScaffoldingToolMovement(movement_id='B1_R_M1_tool_ungrasp_bar', tool_action='ungrasp')
     assert absorbed_tool_note(ungrasp) == (
         "B1_R_M1_tool_ungrasp_bar ('ungrasp') runs with this movement: "
-        "the compliant retreat sends it (gripper motors LOOSENING).")
+        "the retreat sends it (gripper motors LOOSENING).")
     untighten = ScaffoldingToolMovement(movement_id='B1_R_M0_tool_untighten_joint',
                                         tool_action='untighten')
     assert absorbed_tool_note(untighten) == (

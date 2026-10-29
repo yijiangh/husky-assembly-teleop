@@ -308,7 +308,12 @@ the **3D view** (PyBullet). The panel, top to bottom (some sections depend on th
 │    step: OPEN, Operator done (manual step) -> then Confirm Exec>]     │
 │   [Confirm Exec] [Cancel Exec] [Zero Force Sensor (BOTH)]             │
 │   [Toggle Servoing Tracker]  Insert: ... sliders                      │
-│   [ ] Insert compliant part: SPIRAL search (...)                      │
+│   [ ] Insert compliant part: SPIRAL search (...)    orange box (6.f)  │
+│   [ ] Servo feedback: MoCap bar markers (...)       orange box (6.e)  │
+│        both set by Load Movement; greyed when the step does not fit  │
+│   [ ] Retreat screw-out: COMPLIANT (unticked = stiff ...)  (5.3 a)    │
+│        unticked = the default; ticked only to test (5.3 a')          │
+│   [Spiral test (no bar)]  (Cindy, Part 4.2)                           │
 │   [Move Arms to Movement Start (offline target)]                      │
 │ CONTROLLERS                                                           │
 │   [Switch to Compliance (BOTH)] [Switch to Joint (BOTH)]              │
@@ -1327,18 +1332,96 @@ Two steps: the retreat (the ungrasp runs with it), then the free move home.
   - **If not:** no path: read the `[<bar>_R_M1_LM_retreat diag]` block (7.c).
 - [ ] slider [Traj viz time]: preview
   - **Expect:** starts at the live arms.
+- [ ] box [Retreat screw-out: COMPLIANT (unticked = stiff ...)]: unticked (the default since 2026-10-28)
+  - **Expect:** at start-up and on every click, in green:
+    `retreat screw-out: STIFF (joint controller, both tools straight out 12 mm at the screw rate, 72 rpm)`.
+  - **?** Ticked runs the 10-27 compliant screw-out, only to test it: a') below.
 - [ ] button [Exec Selected Mv Traj (auto)]
-  - **Expect:** the ungrasp runs with it (gripper motors LOOSENING), and once
+  - **Expect:** `[Exec] retreat screw-out: STIFF`, and no force sensor zero (since 2026-10-22).
+  - **Expect:** in this order (the ungrasp runs inside it), the arms stiff the whole time (joint
+    controller, no switch):
+    1. `[<bar>_R_M1_LM_retreat] stiff screw-out: both jaws LOOSEN while both tools back straight out 12.0 mm at 2.40 mm/s (5.0 s, joint controller), then 38 mm rigid (3.8 s).`
+    2. `[scaffolding] <bar>_R_M1_LM_retreat: LOOSEN gripper motor on L arm (arm 0)` and `... on R arm (arm 1)`,
+       sent in one call; then a line each time the motors' states change:
+       `[<bar>_R_M1_LM_retreat] screw-out t=0.3s: gripper motors L/R LOOSENING/LOOSENING`.
+       Both tools back off along the planned line at the screws' own rate (8 mm of thread + 4 mm
+       margin), so the screws neither push nor pull the bar, and the tools stay on their axes:
+       nothing catches in the joint on the way out;
+    3. `[<bar>_R_M1_LM_retreat] screw-out done after 5.x s (gripper motors L/R <state>/<state>, still loosening); now the rest of the way out.`
+       The motors keep loosening until the end (user decision 2026-10-27); on Cindy they never
+       report `STALLED` after a loosen. **Note the states in the run notes**;
+    4. `[<bar>_R_M1_LM_retreat] rigid chunk: N waypoints over 3.8s`: the rest of the 50 mm, at its
+       share of slider [traj time];
+    5. `[scaffolding] L Stop All: gripper + joint motor (arm 0)` and `R ...`, then
+       `Compliant exec done for <bar>_R_M1_LM_retreat (dual_independent_linear) [stiff screw-out]; N wrench samples, peak |F| ...`.
+  - **Expect:** the force plot: the axial force stays about flat during the first 5 s.
+  - **If not:** it grows during the screw-out: the tools push (too slow) or pull (too fast) on the
+    screws, the speed does not match them. Note it in the run notes: `RETREAT_SCREW_RPM` (72, from
+    the 2026-10-28 release-test videos) may need a change.
+  - **If not:** `stiff screw-out: the arms are N deg from the planned retreat start (limit 0.57 deg); nothing was sent. Re-plan the retreat (Plan Movement).`:
+    the arms moved since the plan (a servo, a button). Button [Plan Movement] again, then Exec;
+  - **If not:** `stiff screw-out: the planned retreat (N mm) is not longer than the 12 mm screw-out; nothing was sent.`
+    → button [Plan Movement] again;
+  - **If not:** `stiff screw-out: the screw rate is unknown (RETREAT_SCREW_RPM is None); nothing was sent.`
+    → set it in `husky_world.py` (or tick the box for the compliant screw-out);
+  - **If not:** after any of these, `[Exec] <bar>_R_M1_LM_retreat: the step stopped before moving -- nothing carried forward ...`:
+    the as-built record says `stopped`, `progress.json` is unchanged; nothing was loosened. Fix the
+    cause, then run the retreat again;
+  - **!** [Cancel Exec] cannot stop a joint trajectory already sent: pressed during the screw-out, it
+    keeps the rest from being sent (`'Cancel Exec' during the screw-out: the rest of the way out is not sent; ...`),
+    the motors stop, the step counts as stopped. In danger use the e-stop.
+
+**a') The same step with the box ticked** (compliant screw-out, test only)
+
+Why it is not the default: on 2026-10-27 (B20_R, video `doc/IMG_5753.MOV`) the compliant tools went
+3.4 of the 10 mm out and ~3.6 mm sideways; the screws pushed B20 ~6 mm away, and the rigid run then
+dragged it 7-18 mm (B20 3.2 mm / 0.76° off at the end, its left end 14 mm).
+Since 2026-10-28 (evening) the box first HOLDS the tools still under compliance for 4 s after the
+LOOSEN, so the screws push the tools back instead of the bar (the 10-23 way: B20 0.6 mm off), then
+runs the same 12 mm line. `RETREAT_COMPLIANT_HOLD_S` in `husky_world.py`: 4 = the hold, 0 = the
+10-27 line right away (run 2 of 2026-10-28); restart the monitor after changing it.
+- [ ] box [Retreat screw-out: COMPLIANT (unticked = stiff ...)]: ticked
+  - **Expect:** `retreat screw-out: COMPLIANT (test mode: 4 s hold, then 12 mm out at the screw rate under compliance; ...)`
+    in yellow (without the hold: `(test mode: 12 mm out at the screw rate ...)`).
+- [ ] button [Exec Selected Mv Traj (auto)]
+  - **Expect:** once
     `'<bar>_R_M1_LM_retreat': the export asks for the joint_tracking controller; the monitor runs this dual_independent_linear movement under ...`
     (expected);
-  - **Expect:** before the compliant part both force sensors are zeroed:
-    `force sensors zeroed before the compliant part (|F| a/b -> c/d N)` (the left / right reading
-    before and after; a leftover force would otherwise push the tools into the joint);
-  - **Expect:** after the compliant part the monitor prints its checks of the rigid part,
-    `[<bar>_R_M1_LM_retreat] check PASS / FAIL ...` (replan, start, compliant part, contact,
-    grippers, left / right tool0 path, joints, speed), then runs the rigid part at once, **no
-    `Confirm Exec`**: `running the rigid part now (N waypoints over T s); every check passed.` Or
-    `N check(s) FAILED, see the "check FAIL" lines above`: note them (7.c);
+  - **Expect:** no force sensor zero (since 2026-10-22): the compliance reads the forces against
+    the mount-pause zero (5.2 b, tools empty), so it lets the arms give up the bar's own load
+    (its weight, the mount's preload) instead of springing the bar;
+  - **Expect:** in this order (the ungrasp runs inside it):
+    1. both arms switch to compliance while still gripping: they stay put;
+    2. the screw-out: `[scaffolding] <bar>_R_M1_LM_retreat: LOOSEN gripper motor on L arm (arm 0)` (and R), and
+       `[<bar>_R_M1_LM_retreat] screw-out: both jaws LOOSEN; the tools hold still under compliance for 4.0 s (the screws push them back), then back out 12 mm along the retreat axis at 2.40 mm/s (5 s = 6.0 turns of a 2 mm pitch), under compliance.`
+       4 s later: `[<bar>_R_M1_LM_retreat] hold done after 4.0 s: the tools went L +x.x / R +x.x mm out along the retreat axis (a / b mm sideways); now 12 mm out from there.`
+       **Note these numbers in the run notes**: how far the screws pushed each tool back.
+       (Without the hold: `screw-out: both jaws LOOSEN while the tools back out 12 mm along the retreat axis ...`.)
+       The tools are asked to back out at the screws' rate (8 mm + 4 mm margin). (On 2026-10-23 the
+       tools held still for 2 s, then sat 11 s in front of the bar while the screws turned: 44-47 N
+       on the bar at every release, video `doc/IMG_5692.MOV`.) A line each time the tool's motor
+       states change: `[<bar>_R_M1_LM_retreat] screw-out t=0.3s: gripper motors L/R LOOSENING/LOOSENING`;
+    3. `[<bar>_R_M1_LM_retreat] screw-out done after 9.x s; the gripper motors report L/R <state>/<state> and keep loosening until the retreat ends.`
+       (5.x s without the hold.)
+    4. the rigid part (next lines), replanned from where the screw-out left the tools:
+       `[<bar>_R_M1_LM_retreat] split at 5.0 mm from the assembled pose: a 4 s COMPLIANT hold, then 12 mm COMPLIANT screw-out (5 s at 2.40 mm/s) along the first 5.0 mm, then 45.0 mm RIGID (N waypoints, Ts, replanned from where the screw-out ends).`
+       The 5 mm is the insert's slider [Insert: rigid->compliant split (mm to goal)], mirrored; it
+       only says where the rigid tail starts, the screw-out's length is fixed by the thread;
+  - **If not:** `screw-out: RETREAT_SCREW_TURN_S is not measured, so the tools hold still ... 2.0 s ...`
+    (a WARN): the screw rate is unset in `husky_world.py` (`RETREAT_SCREW_RPM`): the old 2 s
+    hold-still runs and the bar gets pushed;
+  - **If not:** the jaws are still visibly closed on the bar when the rigid part starts: button
+    [Cancel Exec] at once (during the screw-out it stops there: `'Cancel Exec' during the screw-out;
+    not moving out.`); the step is recorded as cancelled and nothing is carried forward. Open the
+    jaws with button [Loosen Grippers (BOTH)], then button [Exec Selected Mv Traj (auto)] again;
+  - **If not:** `[Exec] <bar>_R_M1_LM_retreat: the step stopped before moving -- nothing carried forward ...`
+    (a controller switch failed): the as-built record says `stopped`, `progress.json` is unchanged;
+    fix the controller (6.b), then run the retreat again;
+  - **Expect:** after the screw-out the monitor prints its checks of the rigid part,
+    `[<bar>_R_M1_LM_retreat] check PASS / FAIL ...` (replan, start, compliant part = the screw-out's
+    travel, contact, grippers (report only), left / right tool0 path, joints, speed), then runs the
+    rigid part at once, **no `Confirm Exec`**: `running the rigid part now (N waypoints over T s); every check passed.`
+    Or `N check(s) FAILED, see the "check FAIL" lines above`: note them (7.c);
   - **Expect:** joint controller restored afterwards.
 
 **b) Free move home** (`<bar>_R_M2_free_home`, may be skipped)
@@ -2033,9 +2116,13 @@ Without the script, log pane 1 by hand (once per session; it keeps logging acros
   - the `[tool0 check] ... minus target (Rhino)` line from `Draw tool0: ...` after the transfer;
   - whether the mounted bar sat in the tools at the insertion start;
   - how the insert finished (stall time, any rigid / compliant warnings).
-- **Per release action:** the `[..._LM_retreat] check ...` lines (which passed, the numbers of any
-  FAIL), and whether the arms backed off cleanly (actions 4, 11: clear of the support robot's
-  gripper).
+- **The spiral test (4.2):** its `[spiral test]` lines and what you saw (4.2 e).
+- **Per release action:** the `screw-out t=...: gripper motors L/R ...` lines and the `screw-out
+  done after ...` line (what the tool reports when its jaws open), whether the axial force stayed
+  flat during the screw-out (stiff default), the `[retreat live] ... deg from the Rhino axis`
+  numbers, with the compliant box ticked the `[..._LM_retreat] check ...` lines (which passed, the
+  numbers of any FAIL), and whether the arms backed off cleanly without moving the bar (actions
+  4, 11: clear of the support robot's gripper).
 - **Actions 0 and 7:** how the rigid insert ended (the `grounded bar` lines; the bar's final fit
   before fixing the foundation).
 - **Action 15:** how many tries the free move home took.

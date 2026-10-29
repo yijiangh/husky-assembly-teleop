@@ -4184,13 +4184,15 @@ def _scaffolding_joint_motor_stalled(hi, index):
 
 
 class _JointStallGate:
-    """Answers "has every MATING arm's joint motor stalled since TIGHTEN was sent?".
+    """Answers "has every watched arm's motor stalled since it was commanded?".
 
     One gate serves a whole insert: the rigid approach's early exit, the
     rigid-only hold and the compliant tail's exit all ask the same question. The
     arms are the ones whose joint motor was told to tighten
     (``bar_action_io.mating_arm_sides``): both on a normal bar, one on a
-    one-sided bar such as B3.
+    one-sided bar such as B3. With ``motor='gripper'`` it watches the gripper
+    motor instead: the retreat's screw-out, which stalls once the jaws are fully
+    open.
 
     ! An arm counts only once it has shown NOT stalled since the command (the
     ! same latch ``run_scaffolding_tool_step`` uses for the grasp): the driver
@@ -4198,37 +4200,43 @@ class _JointStallGate:
     ! still be the old STALLED, which would end the insert on its first tick.
     """
 
-    def __init__(self, hi: HuskyRobotInterface, arms: list):
-        """Start watching the joint motors of ``arms``.
+    def __init__(self, hi: HuskyRobotInterface, arms: list, motor: str = 'joint'):
+        """Start watching the joint (or gripper) motors of ``arms``.
 
         Args:
             hi (HuskyRobotInterface): Interface carrying ``scaffolding_status``.
-            arms (list[int]): Arm indices whose joint motor tightens (0 = left, 1 = right).
+            arms (list[int]): Arm indices whose motor was commanded (0 = left, 1 = right).
+            motor (str): ``'joint'`` (the screw, msg field ``state_m2``) or
+                ``'gripper'`` (the jaws, ``state_m1``).
         """
         self.hi = hi
         self.arms = list(arms)
+        self.motor = motor
+        self._field = 'state_m1' if motor == 'gripper' else 'state_m2'
         self._moved = {i: False for i in self.arms}
 
     @property
     def text(self) -> str:
-        """str: The watched motors for log lines, e.g. ``'L joint motor'`` or ``'L+R joint motors'``."""
+        """str: The watched motors for log lines, e.g. ``'L joint motor'`` or ``'L+R gripper motors'``."""
         return '+'.join('LR'[i] for i in self.arms) + (
-            ' joint motor' if len(self.arms) == 1 else ' joint motors')
+            f' {self.motor} motor' if len(self.arms) == 1 else f' {self.motor} motors')
 
     def all_stalled(self) -> bool:
-        """Read the arms' status once; True when every watched joint motor has run and now stalls.
+        """Read the arms' status once; True when every watched motor has run and now stalls.
 
         Returns:
             bool: True once every arm in ``arms`` has shown NOT stalled since the
             gate was made and now reports STALLED. False while one has not, and
             always False with no arm.
         """
-        for i in self.arms:
+        def _state(i):
             s = self.hi.scaffolding_status[i]
-            if s is not None and s.state_m2 != 'STALLED':
+            return getattr(s, self._field, None) if s is not None else None
+        for i in self.arms:
+            state = _state(i)
+            if state is not None and state != 'STALLED':
                 self._moved[i] = True
-        return bool(self.arms) and all(
-            self._moved[i] and _scaffolding_joint_motor_stalled(self.hi, i) for i in self.arms)
+        return bool(self.arms) and all(self._moved[i] and _state(i) == 'STALLED' for i in self.arms)
 
 
 def _scaffolding_gripper_motor_stalled(hi: HuskyRobotInterface, index: int) -> bool:
@@ -4530,6 +4538,63 @@ def split_path_by_distance_to_goal(monitor, path12, split_mm, from_start=False):
     actual_mm = max(float(np.linalg.norm(lefts[-1] - split_l[0])),
                     float(np.linalg.norm(rights[-1] - split_r[0]))) * 1000.0
     return leading, trailing, actual_mm, total_mm
+
+
+def _path_travel_mm(monitor, path12) -> np.ndarray:
+    """How far the tools have travelled at every waypoint of a joint path, mm.
+
+    Per segment the larger of the two tool0 moves (FK), like
+    ``split_path_by_distance_to_goal``, summed along the path.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        path12 (Sequence): Waypoints, each a 12-vec (left 6 then right 6).
+
+    Returns:
+        np.ndarray: One cumulative travel per waypoint, starting at 0.
+    """
+    path12 = [np.asarray(q, dtype=float) for q in path12]
+    if len(path12) < 2:
+        return np.zeros(len(path12))
+    lefts, rights = _tool0_points_along_path(monitor, path12)
+    seg_mm = [max(float(np.linalg.norm(lefts[i + 1] - lefts[i])),
+                  float(np.linalg.norm(rights[i + 1] - rights[i]))) * 1000.0
+              for i in range(len(path12) - 1)]
+    return np.concatenate([[0.0], np.cumsum(seg_mm)])
+
+
+def _evenly_spaced_path(monitor, path12, step_mm: float = 1.0) -> list:
+    """The same joint path, re-sampled so its waypoints are evenly spaced along the tools' travel.
+
+    ``to_trajectory_msg`` gives every waypoint the same time, so only an evenly
+    spaced path runs at a constant tool speed. The travel is ``_path_travel_mm``;
+    the new waypoints are joint-space interpolations between the old ones
+    (segments of a few mm, so the tools stay on the planned line).
+
+    Args:
+        monitor: The HuskyMonitor node.
+        path12 (Sequence): Waypoints, each a 12-vec (left 6 then right 6).
+        step_mm (float): Spacing of the new waypoints along the travel, mm.
+
+    Returns:
+        list: The re-sampled waypoints (12-vecs), first and last kept exactly; the
+        input unchanged when it has under 2 waypoints or no travel.
+    """
+    path12 = [np.asarray(q, dtype=float) for q in path12]
+    if len(path12) < 2:
+        return path12
+    cum_mm = _path_travel_mm(monitor, path12)
+    total_mm = float(cum_mm[-1])
+    if total_mm <= 1e-6:
+        return path12
+    out = []
+    for s in np.linspace(0.0, total_mm, max(int(np.ceil(total_mm / step_mm)), 1) + 1):
+        # The old segment that holds travel s, and how far along it.
+        i = int(min(np.searchsorted(cum_mm, s, side='right') - 1, len(path12) - 2))
+        span = cum_mm[i + 1] - cum_mm[i]
+        frac = 0.0 if span <= 1e-9 else min(max((s - cum_mm[i]) / span, 0.0), 1.0)
+        out.append(path12[i] + (path12[i + 1] - path12[i]) * frac)
+    return out
 
 
 # Default handover distance for M2, in millimetres from the assembled pose.
@@ -4920,16 +4985,6 @@ def _tool0_pose_errors(monitor, cartesian_trajectories):
     return out
 
 
-def _both_arms_arrived(monitor, cartesian_trajectories, tol_m=LINEAR_ARRIVAL_TOL_M):
-    """True when BOTH tool0s are within ``tol_m`` of their commanded end pose."""
-    try:
-        return all(e['remaining_mm'] <= tol_m * 1000.0
-                   for e in _tool0_pose_errors(monitor, cartesian_trajectories))
-    except Exception:
-        # Never let an FK hiccup end the motion early -- keep driving.
-        return False
-
-
 def _hold_until_joint_motors_stall(monitor, timeout_s, stall_gate: _JointStallGate,
                                    on_tick=None, label: str = 'insert'):
     """Tick in place until every mating joint motor stalls, or the ceiling expires.
@@ -5158,13 +5213,344 @@ def spiral_insert_dry_run(monitor, path12: list, axis, end_poses: tuple, t_total
 # * same compliance without a zero pushed both tools ~12 mm INTO the joint; True zeroes
 # * again right before it (bar still gripped, _zero_force_sensors).
 RETREAT_ZERO_FT = False
+# * The retreat's screw-out: the GRIPPER motors loosen the grasp screws (2 mm pitch,
+# * 8 mm of thread engaged = 4 turns, user 2026-10-27) while the tools back out along
+# * the retreat axis at the screws' own rate, v_out = pitch / seconds per turn: no
+# * faster (the tool pulls the bar), no slower (the tool sits on the screws while they
+# * push the bar away: 23 Oct B20_R, tool still for 11 s after the LOOSEN, |F| 44-47 N,
+# * every bar moved at its release). The gripper motors keep loosening until the
+# * retreat ends (user decision 2026-10-27); on Cindy they never report STALLED.
+# * Since 2026-10-28 the arms stay STIFF for it by default (_retreat_stiff_screw_out):
+# * under compliance (box ticked) the 10-27 B20_R tools did not follow the line (3.4 of
+# * 10 mm, ~3.6 mm sideways) and, caught in the joints, made the rigid run drag B20.
+RETREAT_SCREW_PITCH_MM = 2.0          # thread pitch of the grasp screws
+RETREAT_SCREW_ENGAGEMENT_MM = 8.0     # thread engaged at a full grasp (4 turns)
+# Backed out past the engagement, so the thread is clear: 12 mm in all (user 2026-10-28,
+# 8 + 8/2). The 10-27 video showed the threads free after ~7-8 mm.
+RETREAT_SCREW_OUT_MARGIN_MM = 4.0
+# * The gripper motor's speed: 72 rpm = 2.4 mm/s, 5 s for 12 mm (user 2026-10-28).
+# * Measured in the three release tests of 2026-10-28 (B20, videos doc/IMG_5761-5763.MOV):
+# * once its thread lets go, the bar ticks once per screw turn, every 0.81-0.84 s =
+# * 71-74 rpm. The tool's own display reads 73.7 rpm (the firmware computes it from a
+# * configured gear ratio; the motor holds a current, not a speed). While the thread was
+# * still in, the screws pushed B20 away for ~2 s at about 2 mm/s (video scale +-20 %).
+# ! Don't copy the rates the release test prints: it looks for the push in the wrist
+# ! force, and B20 (on footers only placed, not fixed) slid away with less than 3 N.
+# ! None = rate unknown: the old head start below, with a warning at every retreat.
+RETREAT_SCREW_RPM = 72.0
+RETREAT_SCREW_TURN_S = 60.0 / RETREAT_SCREW_RPM if RETREAT_SCREW_RPM else None
+# The fallback while the rate is unknown: how long the arms hold still under
+# compliance while the jaws start to open, before the rigid run back. ! Not a wait for
+# "fully open": the gripper motors never report STALLED after a loosen on Cindy.
+RETREAT_SCREW_OUT_HEAD_START_S = 2.0
+# * Box 'Retreat screw-out: COMPLIANT' only (a test mode): after the LOOSEN the tools first
+# * hold still under compliance this long, so the screws push the tools back instead of
+# * the bar (the 10-23 way: B20 ended 0.6 mm off), then run the same 12 mm line at the
+# * screw rate. 4 s: the 10-28 release tests' push lasted 1.9-2.3 s (user 2026-10-28).
+# * 0 = no hold: the line starts with the LOOSEN (the 10-27 way, 10-28 run 2).
+RETREAT_COMPLIANT_HOLD_S = 4.0
+
+
+def retreat_screw_out_distance_m() -> float:
+    """How far the tools back out during the screw-out: the engaged thread plus the margin, metres."""
+    return (RETREAT_SCREW_ENGAGEMENT_MM + RETREAT_SCREW_OUT_MARGIN_MM) / 1000.0
+
+
+def retreat_screw_out_seconds() -> float:
+    """How long the screw-out takes at the screws' rate, seconds; 0.1 while the rate is unknown.
+
+    Returns:
+        float: ``distance / (pitch / turn)``; the hold-still fallback (``RETREAT_SCREW_TURN_S``
+        None) streams a 0.1 s "line" of zero length, as before.
+    """
+    if RETREAT_SCREW_TURN_S is None:
+        return 0.1
+    v_out_m_s = RETREAT_SCREW_PITCH_MM / 1000.0 / float(RETREAT_SCREW_TURN_S)
+    return retreat_screw_out_distance_m() / v_out_m_s
+
+
+def _pose_along(start, end, dist_m: float):
+    """The pose ``dist_m`` from ``start`` toward ``end``'s point, with ``end``'s orientation.
+
+    Args:
+        start (tuple): PyBullet ``(point, quat)`` pose, the live tool0.
+        end (tuple): The planned pose that gives the direction (the retreat axis).
+        dist_m (float): Distance along it, metres.
+
+    Returns:
+        tuple: The pose; ``start`` itself when the two points coincide.
+    """
+    p0 = np.asarray(pp.point_from_pose(start), dtype=float)
+    p1 = np.asarray(pp.point_from_pose(end), dtype=float)
+    axis = p1 - p0
+    length = float(np.linalg.norm(axis))
+    if length < 1e-9:
+        return start
+    return pp.Pose(p0 + axis / length * float(dist_m), pp.euler_from_quat(pp.quat_from_pose(end)))
+
+
+def _gripper_motor_states(hi: HuskyRobotInterface) -> list:
+    """Each tool's gripper motor (M1) state: IDLE, TIGHTENING, LOOSENING, STALLED, or 'no status'.
+
+    Args:
+        hi (HuskyRobotInterface): Interface carrying ``scaffolding_status``.
+
+    Returns:
+        list[str]: Left, right.
+    """
+    return [getattr(hi.scaffolding_status[i], 'state_m1', None) or 'no status'
+            if hi.scaffolding_status[i] is not None else 'no status' for i in range(2)]
+
+
+# * ----------------------------------------------- both tools together
+# ! While both tools hold a bar, one tool letting go (or stopping) first loads the bar
+# ! between them and bends it (user, 2026-10-28): both get their command in one call.
+
+def loosen_grippers_both(hi: HuskyRobotInterface, tag: str) -> None:
+    """LOOSEN both gripper motors in one call, so a bar held by both tools is never let go by one alone.
+
+    Args:
+        hi (HuskyRobotInterface): Cindy's interface.
+        tag (str): Log tag (the movement id, or the button).
+    """
+    for i in (0, 1):
+        print(f'[scaffolding] {tag}: LOOSEN gripper motor on {"LR"[i]} arm (arm {i})')
+        hi.send_scaffolding_cmd(-1, GRIPPER_MOTOR, i)
+
+
+def stop_all_tools_both(hi: HuskyRobotInterface) -> None:
+    """STOP both motors (gripper + joint) of both tools in one call: the 'L/R Stop All' buttons together.
+
+    Args:
+        hi (HuskyRobotInterface): Cindy's interface.
+    """
+    for i in (0, 1):
+        print(f'[scaffolding] {"LR"[i]} Stop All: gripper + joint motor (arm {i})')
+        hi.send_scaffolding_cmd(0, GRIPPER_MOTOR, i)
+        hi.send_scaffolding_cmd(0, JOINT_MOTOR, i)
+
+
+def _gripper_state_logger(hi: HuskyRobotInterface, tag: str, t0: float, on_tick=None):
+    """A tick function that logs both gripper motors' states whenever they change.
+
+    Args:
+        hi (HuskyRobotInterface): Cindy's interface.
+        tag (str): Log tag (the movement id).
+        t0 (float): When the LOOSEN went out (``time.time()``), for the ``t=`` in the lines.
+        on_tick (callable): Also called every tick, e.g. the wrench recorder.
+
+    Returns:
+        callable: ``fn(hi, robot)`` for ``on_tick``.
+    """
+    seen = {'states': None}
+
+    def _tick(hi_, robot) -> None:
+        """Record the wrench as before, and log the gripper motor states whenever they change."""
+        if on_tick is not None:
+            on_tick(hi_, robot)
+        states = _gripper_motor_states(hi)
+        if states != seen['states']:
+            seen['states'] = states
+            print(f'[{tag}] screw-out t={time.time() - t0:.1f}s: gripper motors L/R {states[0]}/{states[1]}')
+
+    return _tick
+
+
+def _retreat_screw_out_under_compliance(monitor, tag: str, cartesian_trajectories,
+                                        on_tick=None) -> Generator[None, None, bool]:
+    """The retreat's screw-out: both jaws LOOSEN while the tools back out at the screws' rate.
+
+    The arms are already under ``cartesian_compliance_controller``. In the same tick
+    as the LOOSEN the tools start along ``cartesian_trajectories`` (built by the
+    caller: live tool0 -> ``retreat_screw_out_distance_m`` along the retreat axis over
+    ``retreat_screw_out_seconds``), so the thread unscrews without pushing or pulling
+    the bar; the compliance absorbs the difference. Every change of the gripper
+    motor states is logged; the motors are NOT stopped here (they keep loosening
+    until the retreat ends). 'Cancel Exec' stops it there.
+
+    * With ``RETREAT_COMPLIANT_HOLD_S`` > 0 the tools first hold their pose under
+    * compliance for that long after the LOOSEN (the screws push them back), and the
+    * line then starts from wherever they are, along the same axis, same length.
+
+    ! While ``RETREAT_SCREW_TURN_S`` is unknown the segment is the old hold-still:
+    ! the tools keep their live pose for ``RETREAT_SCREW_OUT_HEAD_START_S`` and a
+    ! warning says the bar gets pushed meanwhile.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        tag (str): Log tag (the movement id).
+        cartesian_trajectories (list): Per arm ``[live_start, screw_out_end, t_out, t_wait]``.
+        on_tick (callable): Optional ``fn(hi, robot)`` called every tick (the wrench recorder).
+
+    Yields:
+        None: One yield per monitor tick.
+
+    Returns:
+        bool: True to go on with the rigid run back; False on 'Cancel Exec'.
+    """
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    log = monitor.get_logger()
+    gate = _JointStallGate(hi, [0, 1], motor='gripper')
+    d_out_mm = retreat_screw_out_distance_m() * 1000.0
+    if RETREAT_SCREW_TURN_S is None:
+        # * The fallback: hold the live pose (zero-length "line") for the head start.
+        for seg in cartesian_trajectories:
+            seg[1], seg[2], seg[3] = seg[0], 0.1, RETREAT_SCREW_OUT_HEAD_START_S
+        log.warn(f'[{tag}] screw-out: RETREAT_SCREW_TURN_S is not measured, so the tools hold '
+                 f'still under compliance for {RETREAT_SCREW_OUT_HEAD_START_S:.1f} s while the '
+                 f'jaws start to open (the screws push the bar meanwhile); measure the gripper '
+                 f"motor's seconds per turn and set it (husky_world.RETREAT_SCREW_TURN_S).")
+    else:
+        v_out = RETREAT_SCREW_PITCH_MM / float(RETREAT_SCREW_TURN_S)
+        t_out = cartesian_trajectories[0][2]
+        line = (f'{d_out_mm:.0f} mm along the retreat axis at {v_out:.2f} mm/s ({t_out:.0f} s = '
+                f'{d_out_mm / RETREAT_SCREW_PITCH_MM:.1f} turns of a {RETREAT_SCREW_PITCH_MM:.0f} mm '
+                f'pitch), under compliance.')
+        if RETREAT_COMPLIANT_HOLD_S > 0:
+            log.info(f'[{tag}] screw-out: both jaws LOOSEN; the tools hold still under compliance for '
+                     f'{RETREAT_COMPLIANT_HOLD_S:.1f} s (the screws push them back), then back out {line}')
+        else:
+            log.info(f'[{tag}] screw-out: both jaws LOOSEN while the tools back out {line}')
+
+    def keep_going() -> bool:
+        """Until both gripper motors report STALLED (never seen on Cindy) or 'Cancel Exec'."""
+        return not (gate.all_stalled() or getattr(monitor, '_servo_abort', False))
+
+    loosen_grippers_both(hi, tag)
+    t0 = time.time()
+    tick = _gripper_state_logger(hi, tag, t0, on_tick)
+    if RETREAT_SCREW_TURN_S is not None and RETREAT_COMPLIANT_HOLD_S > 0:
+        # * The hold: each tool's live pose as a zero-length "line", held for the hold time.
+        # ! Every segment also runs its 0.1 s move and PROBE_END_WAIT_TIME after its wait,
+        # ! so both come off the wait (the 10-23 "2 s" hold really lasted 3.1 s).
+        t_wait = max(RETREAT_COMPLIANT_HOLD_S - 0.1 - PROBE_END_WAIT_TIME, 0.0)
+        held = [[seg[0], seg[0], 0.1, t_wait] for seg in cartesian_trajectories]
+        yield from execute_cartesian_linear_dual(monitor, held, on_tick=tick, should_continue=keep_going)
+        if getattr(monitor, '_servo_abort', False):
+            log.warn(f"[{tag}] 'Cancel Exec' during the hold; not moving out.")
+            return False
+        # * The line from where the screws pushed the tools: same axis, same length.
+        pushed = []
+        for seg, live in zip(cartesian_trajectories, _live_tool0_poses(monitor)):
+            p0 = np.asarray(pp.point_from_pose(seg[0]), dtype=float)
+            axis = np.asarray(pp.point_from_pose(seg[1]), dtype=float) - p0
+            unit = axis / max(float(np.linalg.norm(axis)), 1e-9)
+            moved = np.asarray(pp.point_from_pose(live), dtype=float) - p0
+            back = float(np.dot(moved, unit))
+            pushed.append((back * 1000.0, float(np.linalg.norm(moved - back * unit)) * 1000.0))
+            seg[0] = live
+            seg[1] = pp.Pose(np.asarray(pp.point_from_pose(live), dtype=float) + axis,
+                             pp.euler_from_quat(pp.quat_from_pose(seg[1])))
+        log.info(f'[{tag}] hold done after {time.time() - t0:.1f} s: the tools went L {pushed[0][0]:+.1f} / '
+                 f'R {pushed[1][0]:+.1f} mm out along the retreat axis ({pushed[0][1]:.1f} / '
+                 f'{pushed[1][1]:.1f} mm sideways); now {d_out_mm:.0f} mm out from there.')
+    yield from execute_cartesian_linear_dual(
+        monitor, cartesian_trajectories, on_tick=tick, should_continue=keep_going)
+    if getattr(monitor, '_servo_abort', False):
+        log.warn(f"[{tag}] 'Cancel Exec' during the screw-out; not moving out.")
+        return False
+    states = _gripper_motor_states(hi)
+    log.info(f'[{tag}] screw-out done after {time.time() - t0:.1f} s; the gripper motors report '
+             f'L/R {states[0]}/{states[1]} and keep loosening until the retreat ends.')
+    return True
+
+
+def _retreat_stiff_screw_out(monitor, path12, t_total: float, tag: str,
+                             on_tick=None) -> Generator[None, None, bool]:
+    """The retreat with the arms STIFF (default since 2026-10-28): LOOSEN both, back straight out.
+
+    No compliance at all. Both jaws LOOSEN in one call and, in the same tick, both
+    tools run the first ``retreat_screw_out_distance_m`` of the PLANNED retreat line
+    under the joint controller at the screws' own rate (``retreat_screw_out_seconds``),
+    then the rest of the line at its share of the traj time. So the tools back off as
+    fast as the screws come out (nothing pushes or pulls the bar) and stay on their
+    axes (nothing to catch in the joint on the way out). The gripper motors keep
+    loosening until the caller's Stop All.
+
+    ! Both parts are re-sampled evenly along the tools' travel: every waypoint gets
+    ! the same time (``to_trajectory_msg``), and the 12 mm cut leaves a short last
+    ! segment, so without it the speed would jump around the screw rate.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        path12 (list): The planned retreat, 12-vector waypoints (left arm, right arm).
+        t_total (float): The traj time of the whole line, seconds; the rest after the
+            screw-out runs at its share by distance.
+        tag (str): Log tag (the movement id).
+        on_tick (callable): Optional ``fn(hi, robot)`` every tick (the wrench recorder).
+
+    Yields:
+        None: One yield per monitor tick.
+
+    Returns:
+        bool: True when both parts ran; False when nothing was sent (rate unknown, the
+        plan too short or not starting where the arms are, or no joint controller).
+    """
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    log = monitor.get_logger()
+    if RETREAT_SCREW_TURN_S is None:
+        log.error(f'[{tag}] stiff screw-out: the screw rate is unknown (RETREAT_SCREW_RPM is None); '
+                  f'nothing was sent. Set it, or tick the compliant screw-out box.')
+        return False
+    d_out_mm = retreat_screw_out_distance_m() * 1000.0
+    if len(path12) < 2:
+        log.error(f'[{tag}] stiff screw-out: the planned retreat has {len(path12)} waypoint(s); '
+                  f'nothing was sent. Re-plan the retreat.')
+        return False
+    lead, rest, rest_mm, total_mm = split_path_by_distance_to_goal(
+        monitor, path12, d_out_mm, from_start=True)
+    if lead is None or rest is None:
+        log.error(f'[{tag}] stiff screw-out: the planned retreat ({total_mm:.0f} mm) is not longer than '
+                  f'the {d_out_mm:.0f} mm screw-out; nothing was sent. Re-plan the retreat.')
+        return False
+    # * Start from the live arms. Plan Movement planned from them, so this only absorbs
+    # * noise; anything bigger means the plan is stale, and a stiff jump holding a bar is
+    # * exactly what must not happen.
+    live12 = np.concatenate([np.asarray(hi.arm_joint_pose[i], dtype=float) for i in range(2)])
+    dev = float(np.abs(live12 - np.asarray(path12[0], dtype=float)).max())
+    if dev > RETREAT_GUARD_START_TOL_RAD:
+        log.error(f'[{tag}] stiff screw-out: the arms are {np.degrees(dev):.2f} deg from the planned '
+                  f'retreat start (limit {np.degrees(RETREAT_GUARD_START_TOL_RAD):.2f} deg); nothing was '
+                  f'sent. Re-plan the retreat (Plan Movement).')
+        return False
+    lead = _evenly_spaced_path(monitor, [live12] + [np.asarray(q, dtype=float) for q in lead[1:]])
+    rest = _evenly_spaced_path(monitor, rest)
+    # * Timed by the path's own length, so the tools move at the screws' rate even where the
+    # * planned line bends a little (12 mm straight-line can be a touch more along the path).
+    v_out = RETREAT_SCREW_PITCH_MM / float(RETREAT_SCREW_TURN_S)
+    lead_mm = float(_path_travel_mm(monitor, lead)[-1])
+    t_out = max(lead_mm / v_out, 0.1)
+    t_rest = max(t_total * rest_mm / total_mm, 0.5) if total_mm > 0 else 0.5
+    # ! The joint controller BEFORE the LOOSEN: with no arm moving, the screws would push the bar.
+    if not (yield from switch_dual_arm_controller(monitor, 'scaled_joint_trajectory_controller')):
+        log.error(f'[{tag}] stiff screw-out: the arms are NOT under scaled_joint_trajectory_controller; '
+                  f'nothing was sent.')
+        return False
+    log.info(f'[{tag}] stiff screw-out: both jaws LOOSEN while both tools back straight out '
+             f'{lead_mm:.1f} mm at {v_out:.2f} mm/s ({t_out:.1f} s, joint controller), then '
+             f'{rest_mm:.0f} mm rigid ({t_rest:.1f} s).')
+    loosen_grippers_both(hi, tag)
+    t0 = time.time()
+    if not (yield from _execute_rigid_chunk(monitor, lead, t_out, label=tag,
+                                            on_tick=_gripper_state_logger(hi, tag, t0, on_tick))):
+        return False
+    # * 'Cancel Exec' cannot stop a sent joint trajectory, but it keeps the rest from being sent.
+    if getattr(monitor, '_servo_abort', False):
+        log.warn(f"[{tag}] 'Cancel Exec' during the screw-out: the rest of the way out is not sent; "
+                 f"the tools stand {lead_mm:.0f} mm out, the gripper motors stop now.")
+        return False
+    states = _gripper_motor_states(hi)
+    log.info(f'[{tag}] screw-out done after {time.time() - t0:.1f} s (gripper motors L/R '
+             f'{states[0]}/{states[1]}, still loosening); now the rest of the way out.')
+    return (yield from _execute_rigid_chunk(monitor, rest, t_rest, on_tick=on_tick, label=tag))
+
+
 # * Retreat checks (retreat_guardrails): printed right before the rigid part,
 # * which runs whatever they say (no 'Confirm Exec'). First guesses, to tune.
 RETREAT_GUARD_START_TOL_RAD = 0.01      # first waypoint vs the live joints
 RETREAT_GUARD_ARRIVAL_MM = 3.0          # compliant part: worst tool0 short of its end
 RETREAT_GUARD_LR_SPREAD_MM = 3.0        # compliant part: |left - right| travelled
 RETREAT_GUARD_FORCE_N = 20.0            # |F| per arm after the compliant part
-RETREAT_GUARD_GRIPPER_WAIT_S = 3.0      # wait for a gripper still LOOSENING
 RETREAT_GUARD_LENGTH_TOL_MM = 5.0       # tool0 path length vs distance to the goal
 RETREAT_GUARD_BACKTRACK_MM = 2.0        # tool0 moving back toward the structure
 RETREAT_GUARD_ROT_DEG = 3.0             # tool0 orientation change along the tail
@@ -5185,8 +5571,9 @@ def retreat_guardrails(monitor, tail, *, replanned: bool, compliant_errs,
     3. compliant part: each tool0 got close to the compliant end, and left and
        right travelled about the same (? gravity sag may trip this; to watch).
     4. contact: the force/torque sensors read low (the tools let go).
-    5. grippers: both gripper motors report STALLED, i.e. the loosen ran to its
-       end and the grippers are open (waits a little while one still LOOSENs).
+    5. grippers: what the gripper motors report, as a note only (Cindy's tools never
+       report STALLED after a loosen, and the screw-out already backed the tools
+       out of the thread; nothing waits for them any more).
     6. path, per arm (FK of the tail): its length matches the distance to the
        retreat goal, it ends at the goal, never moves back toward the structure,
        keeps the tool orientation, and no joint travels far (no branch flip).
@@ -5201,9 +5588,6 @@ def retreat_guardrails(monitor, tail, *, replanned: bool, compliant_errs,
         compliant_errs (list[dict] | None): ``_tool0_pose_errors`` measured right
             after the compliant part (None when it was not measured).
         t_rigid (float): Duration of the rigid part, seconds.
-
-    Yields:
-        None: One yield per monitor tick while waiting for the grippers.
 
     Returns:
         tuple: ``(all_passed, lines)``: bool, and one "PASS ..." / "FAIL ..." line
@@ -5246,18 +5630,12 @@ def retreat_guardrails(monitor, tail, *, replanned: bool, compliant_errs,
     note(max(forces) <= RETREAT_GUARD_FORCE_N,
          f'contact: |F| L/R {forces[0]:.1f}/{forces[1]:.1f} N (limit {RETREAT_GUARD_FORCE_N})')
 
-    # 5. The grippers are open (the loosen ran until the motor stalled).
-    def gripper_states():
-        """Each tool's gripper motor state (M1), or 'no status'."""
-        return [getattr(hi.scaffolding_status[i], 'state_m1', None) or 'no status'
-                if hi.scaffolding_status[i] is not None else 'no status' for i in range(2)]
-    # Give a gripper still opening a moment to finish before the arms pull back.
-    deadline = time.time() + RETREAT_GUARD_GRIPPER_WAIT_S
-    while 'LOOSENING' in gripper_states() and time.time() < deadline:
-        yield
-    states = gripper_states()
-    note(all(st == 'STALLED' for st in states),
-         f'grippers: motor states L/R {states[0]}/{states[1]} (want STALLED = fully open)')
+    # 5. What the grippers report: a note only. Nothing waits for a STALLED here any
+    # more (the tools never report it after a loosen; the screw-out backed the tools
+    # out of the thread at the screws' own rate).
+    states = _gripper_motor_states(hi)
+    note(True, f'grippers: motor states L/R {states[0]}/{states[1]} (report only: the tools '
+               f'do not report STALLED after a loosen)')
 
     # 6. + 7. The tail's tool0 path, per arm.
     try:
@@ -5387,8 +5765,17 @@ def execute_planned_trajectory_compliant(monitor):
     """Execute the loaded insert (DUAL_CONSTRAINED_LINEAR) or retreat
     (DUAL_INDEPENDENT_LINEAR) movement as linear cartesian motion.
 
-    M3 (retreat) runs entirely under ``cartesian_compliance_controller``, as one
-    linear segment between the planned path's endpoints.
+    M3 (retreat), by default (since 2026-10-28): the arms stay STIFF. Both jaws
+    LOOSEN and both tools back straight out along the planned line at the screws'
+    own rate (the screw-out, ``_retreat_stiff_screw_out``, ``RETREAT_SCREW_*``),
+    then the rest of the line runs rigid at its share of the traj time; no
+    compliance, no replan. With the box 'Retreat screw-out: COMPLIANT' ticked
+    (``monitor.m3_compliant_screw_out``, kept for testing) it is the 10-27 flow: the
+    arms switch to ``cartesian_compliance_controller`` first, then the jaws LOOSEN
+    while the tools back out under compliance (``_retreat_screw_out_under_compliance``),
+    then the rest of the move out runs rigid, replanned from where the screw-out
+    ended; the split slider only says where that rigid tail starts. No force zero
+    by default (``RETREAT_ZERO_FT``).
 
     M2 (mate) is SPLIT in two, because running it wholly compliant does not
     work: the instant compliance takes over, the arms sag under gravity and pull
@@ -5436,6 +5823,8 @@ def execute_planned_trajectory_compliant(monitor):
     # * The insert tightens the joint screws; the retreat loosens the grippers.
     is_insert = kind is MovementKind.DUAL_CONSTRAINED_LINEAR
     is_retreat = kind is MovementKind.DUAL_INDEPENDENT_LINEAR
+    # * The retreat's screw-out runs stiff unless the operator ticked the compliant box.
+    stiff_retreat = is_retreat and not getattr(monitor, 'm3_compliant_screw_out', False)
     # * A GROUNDED bar (B1, B5) is held on its ground joints: there is no female
     # * joint to screw into, so its insert runs rigid (joint tracking only) and the
     # * joint motors never tighten; it ends when the motion is done. A tighten step
@@ -5587,7 +5976,7 @@ def execute_planned_trajectory_compliant(monitor):
             f"[{tag}] compliant part: STRAIGHT line (box 'Insert compliant part: SPIRAL search' "
             f"unticked).")
     # Tags the end-of-move lines so linear and spiral runs can be told apart.
-    mode_note = ('' if not is_insert
+    mode_note = ((' [stiff screw-out]' if stiff_retreat else ' [compliant screw-out]') if is_retreat
                  else ' [spiral mode]' if spiral is not None else ' [linear mode]')
 
     # M3 is the SAME split MIRRORED. The compliant zone is the stretch nearest
@@ -5605,6 +5994,8 @@ def execute_planned_trajectory_compliant(monitor):
         path12 = [np.concatenate([np.asarray(l, dtype=float),
                                   np.asarray(r, dtype=float)])
                   for l, r in zip(left_path, right_path)]
+    # * The stiff screw-out (default) cuts the planned line itself (_retreat_stiff_screw_out).
+    if is_retreat and not stiff_retreat:
         compliant_path, trailing, at_goal_mm, total_mm = split_path_by_distance_to_goal(
             monitor, path12, requested_mm, from_start=True)
         if compliant_path is not None and trailing is not None:
@@ -5616,11 +6007,18 @@ def execute_planned_trajectory_compliant(monitor):
             t_m3_rigid = max(t_total - t_compliant, 0.5)
             t_total = max(t_compliant, 0.5)
             m3_rigid_tail = trailing
+            d_out_mm = retreat_screw_out_distance_m() * 1000.0
+            hold = (f'a {RETREAT_COMPLIANT_HOLD_S:.0f} s COMPLIANT hold, then '
+                    if RETREAT_COMPLIANT_HOLD_S > 0 else '')
+            how = (f'{hold}{d_out_mm:.0f} mm COMPLIANT screw-out ({retreat_screw_out_seconds():.0f} s at '
+                   f'{RETREAT_SCREW_PITCH_MM / RETREAT_SCREW_TURN_S:.2f} mm/s)'
+                   if RETREAT_SCREW_TURN_S is not None else
+                   f'a {RETREAT_SCREW_OUT_HEAD_START_S:.0f} s COMPLIANT hold-still (screw rate unknown)')
             monitor.get_logger().info(
-                f"[{tag}] split at {compliant_mm:.1f} mm from the assembled pose: "
-                f"{compliant_mm:.1f} mm COMPLIANT ({t_total:.1f}s) then "
-                f"{at_goal_mm:.1f} mm RIGID ({len(trailing)} waypoints, "
-                f"{t_m3_rigid:.1f}s).")
+                f"[{tag}] split at {compliant_mm:.1f} mm from the assembled pose: {how} along "
+                f"the first {compliant_mm:.1f} mm, then {at_goal_mm:.1f} mm RIGID "
+                f"({len(trailing)} waypoints, {t_m3_rigid:.1f}s, replanned from where the "
+                f"screw-out ends).")
 
     # The M2 movement holds the end pose under compliance while the JOINT motor
     # tightens the screw against the scaffold; the loop must NOT terminate on
@@ -5628,43 +6026,16 @@ def execute_planned_trajectory_compliant(monitor):
     # keeps publishing the end pose, and exit only when every MATING arm's joint
     # motor reports STALLED (the gate; a one-sided bar waits for one arm). Large
     # t_wait (HOLD_FOR_STALL_TIMEOUT_S) is a hard ceiling fallback if firmware
-    # never reports stall.
-    if is_insert:
-        t_wait = HOLD_FOR_STALL_TIMEOUT_S
-        should_continue_fn = lambda: not stall_gate.all_stalled()
-    else:
-        # M3: keep republishing the end pose for a settle window so a lagging
-        # arm can catch up, and end it as soon as BOTH arms have arrived rather
-        # than always burning the whole window. Mirrors M2's structure, with
-        # "arrived" in place of "stalled" as the exit condition.
-        t_wait = LINEAR_SETTLE_SECONDS
-        # ! Anchor the nominal-motion deadline on the FIRST tick, not here: the
-        # ! controller switch runs in between and can take a second or more, so
-        # ! a deadline set now would open the settle gate mid-motion.
-        _motion = {}
-
-        def should_continue_fn():
-            if 'deadline' not in _motion:
-                _motion['deadline'] = time.time() + t_total
-                return True
-            if time.time() < _motion['deadline']:
-                return True    # still driving the nominal segment
-            # Settling: stop as soon as both arms are on their end pose.
-            return not _both_arms_arrived(monitor, cartesian_trajectories)
+    # never reports stall. M3's compliant part is the screw-out below
+    # (_retreat_screw_out_under_compliance): its segment is rebuilt there, so
+    # this t_wait is only the settle window after it (0 today).
+    t_wait = HOLD_FOR_STALL_TIMEOUT_S if is_insert else LINEAR_SETTLE_SECONDS
+    should_continue_fn = lambda: not stall_gate.all_stalled()
 
     cartesian_trajectories = [
         [L_start, L_end, t_total, t_wait],
         [R_start, R_end, t_total, t_wait],
     ]
-
-    def _stop_all_both_arms():
-        # mirror of the 'L/R Stop All' buttons: STOP both tool motors on both arms.
-        print('[scaffolding] L Stop All: gripper + joint motor (arm 0)')
-        hi.send_scaffolding_cmd(0, GRIPPER_MOTOR, 0)
-        hi.send_scaffolding_cmd(0, JOINT_MOTOR, 0)
-        print('[scaffolding] R Stop All: gripper + joint motor (arm 1)')
-        hi.send_scaffolding_cmd(0, GRIPPER_MOTOR, 1)
-        hi.send_scaffolding_cmd(0, JOINT_MOTOR, 1)
 
     # ! important: DO NOT zero when the robot is holding the bar
     # the only good time to zero is when the robot is holding nothing but the tool
@@ -5688,27 +6059,54 @@ def execute_planned_trajectory_compliant(monitor):
         wrench_profile_right.append(right)
         monitor.push_compliant_wrench(time.time() - exec_start_time, left, right)
 
+    def _log_exec_done() -> None:
+        """Roll the recorded wrench up into the completion line, so the terminal reports
+        the peak load even when the operator was not watching the plot. Peak |force|
+        per arm over the whole move; see the zeroing caveat above -- this includes the
+        standing tool + bar weight."""
+        def _peak_force(profile):
+            if not profile:
+                return float('nan')
+            return max(float(np.linalg.norm(w[:3])) for w in profile)
+
+        monitor.get_logger().info(
+            f"Compliant exec done for {monitor.current_movement.movement_id} "
+            f"({kind.value}){mode_note}; {len(wrench_profile_left)} wrench samples, "
+            f"peak |F| L={_peak_force(wrench_profile_left):.1f} N / "
+            f"R={_peak_force(wrench_profile_right):.1f} N")
+
     # Pre-exec scaffolding tool commands, per movement role:
     #   M2 (mate)    -> Stop All + TIGHTEN the joint motor on every MATING arm
     #                   (screws the bar down against the scaffold); a one-sided
     #                   bar's other arm and a grounded bar get the Stop All only
     #                   (no screw to drive).
-    #   M3 (retreat) -> Stop All + LOOSEN the gripper motor on both arms
-    #                   (releases the bar before backing away).
-    _stop_all_both_arms()
+    #   M3 (retreat) -> Stop All only: its LOOSEN goes out with the screw-out
+    #                   (_retreat_stiff_screw_out, or once the arms are under
+    #                   compliance: _retreat_screw_out_under_compliance).
+    stop_all_tools_both(hi)
     if is_insert and not grounded:
         for i in mating_arms:
             print(f'[scaffolding] {tag}: TIGHTEN joint motor on {"LR"[i]} arm (arm {i})')
             hi.send_scaffolding_cmd(1, JOINT_MOTOR, i)
-    elif is_retreat:
-        print(f'[scaffolding] {tag}: LOOSEN gripper motor on L arm (arm 0)')
-        hi.send_scaffolding_cmd(-1, GRIPPER_MOTOR, 0)
-        print(f'[scaffolding] {tag}: LOOSEN gripper motor on R arm (arm 1)')
-        hi.send_scaffolding_cmd(-1, GRIPPER_MOTOR, 1)
 
-    # * 'Cancel Exec' ends the spiral search's hold (nothing else here reads it):
+    # * 'Cancel Exec' ends the spiral search's hold and the retreat's screw-out:
     # * clear a stale click first, as every executor that reads the flag does.
     monitor._servo_abort = False
+
+    # * The stiff retreat (default since 2026-10-28): no compliance, so no controller
+    # * switch to undo; both tools stop in one call whatever happens.
+    if stiff_retreat:
+        try:
+            ran = yield from _retreat_stiff_screw_out(monitor, path12, t_total, tag,
+                                                      on_tick=_record_wrench)
+            if not ran:
+                monitor._exec_stopped = True    # recorded as 'stopped', nothing carried forward
+        finally:
+            stop_all_tools_both(hi)
+            monitor._servo_abort = False
+        _log_exec_done()
+        return
+
     switched_to_compliance = False
     try:
         # --- Chunk 1: the rigid approach (M2 only) ---
@@ -5761,9 +6159,28 @@ def execute_planned_trajectory_compliant(monitor):
                 f'{monitor.current_movement.movement_id} ({kind.value}): the arms '
                 f'are NOT under the compliance controller, so no motion was '
                 f'commanded. Fix the controller switch and re-run this movement.')
+            monitor._exec_stopped = True    # recorded as 'stopped', nothing carried forward
             return
 
-        if spiral is None:
+        # * Retreat: compliance first, then the screw-out: the jaws open while the
+        # * tools back out at the screws' own rate (_retreat_screw_out_under_compliance).
+        # * That IS the retreat's compliant part; the rigid run back is replanned
+        # * from wherever it ends.
+        if is_retreat:
+            L_start, R_start = _live_tool0_poses(monitor)
+            d_out = retreat_screw_out_distance_m()
+            for seg, start in zip(cartesian_trajectories, (L_start, R_start)):
+                # ! Along the planned retreat axis (live start -> planned split end),
+                # ! exactly the screw-out distance, however long the split was.
+                seg[0], seg[1] = start, _pose_along(start, seg[1], d_out)
+                seg[2] = retreat_screw_out_seconds()
+            if not (yield from _retreat_screw_out_under_compliance(
+                    monitor, tag, cartesian_trajectories, on_tick=_record_wrench)):
+                return
+
+        if is_retreat:
+            pass     # streamed by the screw-out above
+        elif spiral is None:
             yield from execute_cartesian_linear_dual(
                 monitor, cartesian_trajectories, on_tick=_record_wrench,
                 should_continue=should_continue_fn)
@@ -5807,6 +6224,7 @@ def execute_planned_trajectory_compliant(monitor):
                 monitor.get_logger().error(
                     f'[{tag}] cannot start the retreat: the arms are NOT under '
                     'scaled_joint_trajectory_controller. Nothing was commanded.')
+                monitor._exec_stopped = True    # recorded as 'stopped', nothing carried forward
                 return
             switched_to_compliance = False   # the finally has nothing to restore
 
@@ -5850,7 +6268,7 @@ def execute_planned_trajectory_compliant(monitor):
 
             # * The checks are a report only: the rigid part runs right after them,
             # * no 'Confirm Exec' (the operator confirmed every time anyway).
-            all_ok, check_lines = yield from retreat_guardrails(
+            all_ok, check_lines = retreat_guardrails(
                 monitor, tail, replanned=replanned, compliant_errs=compliant_errs,
                 t_rigid=t_m3_rigid)
             for line in check_lines:
@@ -5870,7 +6288,7 @@ def execute_planned_trajectory_compliant(monitor):
                 stall_gate=None, label=tag)
     finally:
         # Always stop motors first, then restore the joint controller.
-        _stop_all_both_arms()
+        stop_all_tools_both(hi)
         monitor._servo_abort = False   # consumed here; nothing after us may read it
 
         # Only worth restoring if we actually left the joint controller. If this
@@ -5890,20 +6308,7 @@ def execute_planned_trajectory_compliant(monitor):
                     'Do NOT run another movement until the controller is '
                     'restored (see the Switch to Joint (BOTH) button).')
 
-    # Roll the recorded wrench up into the completion line so the terminal
-    # reports the peak load even when the operator was not watching the plot.
-    # Peak |force| per arm over the whole move; see the zeroing caveat above --
-    # this includes the standing tool + bar weight.
-    def _peak_force(profile):
-        if not profile:
-            return float('nan')
-        return max(float(np.linalg.norm(w[:3])) for w in profile)
-
-    monitor.get_logger().info(
-        f"Compliant exec done for {monitor.current_movement.movement_id} "
-        f"({kind.value}){mode_note}; {len(wrench_profile_left)} wrench samples, "
-        f"peak |F| L={_peak_force(wrench_profile_left):.1f} N / "
-        f"R={_peak_force(wrench_profile_right):.1f} N")
+    _log_exec_done()
 
 
 # Seconds to let the arms come to rest after a trajectory before taring the FT
@@ -7091,10 +7496,10 @@ def run_scaffolding_tool_step(monitor: 'HuskyMonitor',
       - 'tighten' with ``overlaps_next`` (the joint tighten before the insert)
         and 'ungrasp' (the release's gripper loosen):
         ``execute_planned_trajectory_compliant`` already sends them: the
-        compliant insert starts the joint motors TIGHTENING, the compliant
-        retreat starts the gripper motors LOOSENING.
+        compliant insert starts the joint motors TIGHTENING, the retreat
+        starts the gripper motors LOOSENING.
       - 'untighten' (the release's joint loosen): on purpose (user decision
-        2026-09-30). The proven compliant retreat never reverses the JOINT
+        2026-09-30). The retreat never reverses the JOINT
         motor, and doing so may back the just-tightened joint screw off the
         bar. If the tool has to back off, the operator uses the manual
         'Loosen Joint' button.
@@ -7119,8 +7524,8 @@ def run_scaffolding_tool_step(monitor: 'HuskyMonitor',
     if tool_runs_with_next_motion(mv):
         if overlaps_next or tool_action == 'ungrasp':
             runs_in = ('the compliant insert that follows' if overlaps_next
-                       else 'the compliant retreat')
-            log.info(f"{tag} '{tool_action}' is issued by the compliant insert/retreat "
+                       else 'the retreat')
+            log.info(f"{tag} '{tool_action}' is issued by the insert/retreat "
                      f"execution ({runs_in}); marked done here, nothing sent.")
         else:
             # ! The untighten is mark only (see the docstring): the joint motor
@@ -7149,7 +7554,7 @@ def run_scaffolding_tool_step(monitor: 'HuskyMonitor',
                 monitor, f"{prompt} Click 'Confirm Exec' to send it, 'Cancel Exec' to skip.")):
             return
 
-        # ! STOP first, as Cindy's compliant flow does (_stop_all_both_arms):
+        # ! STOP first, as Cindy's compliant flow does (stop_all_tools_both):
         # ! STOP clears the tool's stall flag, and the firmware refuses to
         # ! start a STALLED motor ("ERR 2 STALLED", see crl_husky
         # ! onboard/protocol.md) -- e.g. a gripper motor left STALLED by a

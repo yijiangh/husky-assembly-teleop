@@ -43,7 +43,8 @@ AS_BUILT_FILE_PREFIX = 'as_built_'
 # * When a record was taken: just before a step ran, right after it, or on a click.
 PHASES = ('start', 'end', 'manual')
 # * How the step ended (None for 'start' and 'manual').
-OUTCOMES = (None, 'ok', 'cancelled', 'off_target')
+# 'stopped': the execution stopped itself before moving (e.g. a failed controller switch).
+OUTCOMES = (None, 'ok', 'cancelled', 'off_target', 'stopped')
 
 # * The moments of a bar's life the page puts first (see `milestone_of`).
 MILESTONES = (
