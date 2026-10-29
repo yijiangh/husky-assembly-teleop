@@ -29,8 +29,6 @@ if TYPE_CHECKING:
     from ...shared.assembly_planning.process_steps import LoadedProcess
     from ...shared.process_contract import ProcessContract
 
-#: Seconds (ROS time) in which a second click confirms New run, or Mark done with the action's robot not live.
-CONFIRM_AGAIN = 10.0
 #: What waits for its second click (`AssemblyRunPlugin.again`): a new run, or marking an action ("mark <action id>").
 AGAIN_NEW_RUN, AGAIN_MARK = "new run", "mark"
 #: Each number setting: what a refusal calls it, its range and its unit.
@@ -394,14 +392,14 @@ class RunWrites:
             self._changed()
 
     def _arm(self, ctx: PluginContext, key: str, message: str) -> None:
-        """Wait CONFIRM_AGAIN s for the second click of `key` (`again`), and say what it will do.
+        """Wait, with no time limit, for the second click of `key` (`again`), and say what it will do.
 
         Args:
             ctx: The plugin's context, for the clock.
             key: What waits: AGAIN_NEW_RUN, or AGAIN_MARK and the action id.
             message: What the second click does, for the message line.
         """
-        self._again = (key, ctx.now() + CONFIRM_AGAIN)
+        self._again = (key, ctx.now())
         self._say(message)
 
     def _clicked_again(self, ctx: PluginContext, key: str, message: str) -> bool:
@@ -420,7 +418,7 @@ class RunWrites:
         if self.again != key:
             self._arm(ctx, key, message)
             return False
-        if ctx.now() - (self._again[1] - CONFIRM_AGAIN) < PROMPT_ARM_S:
+        if ctx.now() - self._again[1] < PROMPT_ARM_S:
             self._say(f"ignored: clicked again within {PROMPT_ARM_S} s (a double click?). {message}")
             return False
         self._again = None

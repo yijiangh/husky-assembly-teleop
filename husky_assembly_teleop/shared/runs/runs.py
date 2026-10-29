@@ -90,9 +90,8 @@ class RunSettings:
         insert_split_mm: The last part of an insert run compliant, millimetres (0 to 30); a retreat's compliant part
             is as long, from its start.
         spiral: The insert's compliant part searches in a spiral.
-        servo_by_bar: Servo a grounded bar by its mocap fit instead of tool0.
-        rigid_only: The whole insert runs under joint control, its screw tightening, never compliant; the split and
-            the spiral are ignored.
+        servo_by_bar: Servo a grounded bar by its MoCap fit instead of tool0; on by default. Other bars always
+            servo on tool0 (`servo_plan`).
         spiral_seconds: How long the spiral takes to reach its full radius, seconds (SPIRAL_SECONDS_RANGE).
         spiral_turns: How many turns it makes on the way (SPIRAL_TURNS_RANGE).
         plan_max_time: Seconds per try of tamp's free search (PLAN_TIME_RANGE); `FreeSearch`'s defaults, the five.
@@ -104,8 +103,7 @@ class RunSettings:
 
     insert_split_mm: float = 5.0
     spiral: bool = False
-    servo_by_bar: bool = False
-    rigid_only: bool = False
+    servo_by_bar: bool = True
     spiral_seconds: float = 20.0
     spiral_turns: int = 4
     plan_max_time: float = 120.0

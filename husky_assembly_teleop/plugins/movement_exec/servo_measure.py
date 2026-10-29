@@ -29,13 +29,14 @@ NAMED: dict[tuple[str, str], int] = {}
 
 
 def say_feedback(job: Job, plan: ServoPlan) -> None:
-    """Log what the loop steers on (W:2243-2252); "Servo by bar" ticked but not usable here is a warning."""
+    """Log what the loop steers on (W:2243-2252); "Servo by bar" ticked but not usable for a grounded bar warns."""
     ctx, settings = job.ctx, job.run.view.settings
     if plan.by_bar:
         ctx.log_info(f"[servo] feedback: the MoCap bar {plan.bar} (converges at {BAR_TOL[0] * 1e3:.1f} mm / "
                      f"{math.degrees(BAR_TOL[1]):.1f} deg).")
         return
-    if settings.servo_by_bar:
+    # * Only a grounded bar held in the tools servos by bar; for any other the box is no promise, so no warning.
+    if settings.servo_by_bar and plan.held and plan.grounded:
         ctx.log_warn(f"[servo] 'Servo by bar' is ticked, but this run aims tool0: {plan.why_tool0}.")
     if plan.layout is not None and plan.holder is not None:
         ctx.log_info(f"[servo] feedback: tool0 ({TOOL0_TOL * 1e3:.1f} mm); the MoCap bar {plan.bar} is recorded "

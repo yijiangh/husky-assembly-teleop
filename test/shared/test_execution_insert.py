@@ -90,8 +90,7 @@ class Lab:
 
     def plan(self, rows: np.ndarray = ROWS, **settings) -> InsertPlan:
         """The insert of `rows`: by default ROWS, B21-like (the left screw mates), split 5 mm, a straight line, 5 s."""
-        defaults = dict(mating=("left_ur_arm",), grounded=False, split_mm=5.0, rigid_only=False, spiral=None,
-                        traj_time=5.0)
+        defaults = dict(mating=("left_ur_arm",), grounded=False, split_mm=5.0, spiral=None, traj_time=5.0)
         plan = plan_insert(self.robot, NAMES, rows, **{**defaults, **settings})
         assert isinstance(plan, InsertPlan), plan
         return plan
@@ -172,23 +171,17 @@ def test_the_plan_splits_5_mm_off_the_end_and_says_so():
 def test_a_spiral_too_fast_is_refused_at_plan():
     """A two-mate bar's spiral of 5 s at 4 turns runs 75 mm/s at full radius: refused, with the shortest duration."""
     lab = Lab()
-    refused = plan_insert(lab.robot, NAMES, ROWS, mating=ARMS, grounded=False, split_mm=5.0, rigid_only=False,
-                          spiral=(5.0, 4), traj_time=5.0)
+    refused = plan_insert(lab.robot, NAMES, ROWS, mating=ARMS, grounded=False, split_mm=5.0, spiral=(5.0, 4),
+                          traj_time=5.0)
     assert refused == "spiral too fast: 75 mm/s at 15 mm, limit 50; 4 turns need ≥ 7.6 s" and lab.nothing_sent()
 
 
-def test_the_rigid_only_and_ground_bar_prompts():
-    """Rigid-only ignores the split and the spiral; a ground bar ignores rigid-only too."""
+def test_the_ground_bar_prompt():
+    """A ground bar runs the whole path rigid: it ignores the split and the spiral."""
     lab = Lab()
-    total = insert_length()
-    plan = lab.plan(rigid_only=True, spiral=(5.0, 4))
-    assert plan.rigid_only and plan.spiral is None and plan.achieved_mm == 0.0 and plan.compliant_seconds == 0.0
-    assert plan.text.startswith(f"RIGID-ONLY insert: the whole {total:.1f} mm under joint control "
-                                f"({plan.rigid.duration:.1f} s); the joint screw of left_ur_arm TIGHTENS from the "
-                                f"start")
-    assert "Compliance is never engaged; the split and the spiral are ignored." in plan.text
-    ground = lab.plan(mating=(), grounded=True, rigid_only=True, spiral=(30.0, 6))
-    assert not ground.rigid_only and ground.spiral is None and ground.mating == ()
+    ground = lab.plan(mating=(), grounded=True, spiral=(30.0, 6))
+    assert ground.spiral is None and ground.mating == () and not ground.compliant
+    assert ground.achieved_mm == 0.0 and ground.compliant_seconds == 0.0
     assert ground.text == (f"RIGID insert of a ground bar, no tighten, {ground.rigid.duration:.1f} s, largest joint "
                            f"travel {math.degrees(0.03):.1f}°.")
 
@@ -547,8 +540,7 @@ def test_every_refusal_sends_nothing(change, why):
     assert outcome.status == REFUSED and why in outcome.reason and lab.nothing_sent()
 
 
-@pytest.mark.parametrize("settings", [{}, {"mating": ARMS, "spiral": (20.0, 4)}, {"rigid_only": True},
-                                      {"mating": (), "grounded": True}])
+@pytest.mark.parametrize("settings", [{}, {"mating": ARMS, "spiral": (20.0, 4)}, {"mating": (), "grounded": True}])
 def test_a_dry_run_publishes_nothing(settings):
     """Every check runs (the rigid trajectory built, each compliant target checked); nothing goes out."""
     lab = Lab()
@@ -559,38 +551,17 @@ def test_a_dry_run_publishes_nothing(settings):
         assert any("every compliant target passed" in line for line in lab.ctx.lines("warn"))
 
 
-# --- --- --- --- --- rigid modes --- --- --- --- ---
+# --- --- --- --- --- the ground bar --- --- --- --- ---
 
 def test_a_ground_bar_runs_rigid_without_tighten_or_switch():
-    """No screw tightens, no switch, no Cartesian target, rigid-only ignored; it ends with the motion."""
+    """No screw tightens, no switch, no Cartesian target; it ends with the motion."""
     lab = Lab()
-    outcome = lab.run(lab.plan(mating=(), grounded=True, rigid_only=True))
+    outcome = lab.run(lab.plan(mating=(), grounded=True))
     assert outcome.status == RIGID_DONE and outcome.ok
     assert lab.commands("left_ur_arm") == lab.commands("right_ur_arm") == [STOP, STOP]
     assert lab.switches("left_ur_arm") == lab.switches("right_ur_arm") == []
     assert not lab.sent["left_ur_arm"] and not lab.sent["right_ur_arm"]
     assert outcome.record["end_gap_mm"] < 1e-6
-
-
-@pytest.mark.parametrize("stall_after, status, phase", [(1.0, STALLED, "rigid"), (8.0, STALLED, "hold"),
-                                                        (None, NO_STALL, "hold")])
-def test_rigid_only_tightens_runs_the_whole_path_and_holds_for_the_stall(stall_after, status, phase):
-    """One joint motion over the whole path, the left screw tightening; then held until it stalls, or 30 s.
-
-    Never compliant: no switch, no Cartesian target; the split and the spiral are ignored.
-    """
-    lab = Lab(left={"screw_stall_after": stall_after})
-    outcome = lab.run(lab.plan(rigid_only=True, spiral=(5.0, 4)))
-    assert outcome.status == status and outcome.record["phases"][-1]["name"] == phase
-    message, = lab.robot._multi_arm.messages
-    np.testing.assert_allclose(message.trajectory1.points[-1].positions, ROWS[-1, :6], atol=1e-12)
-    np.testing.assert_allclose(message.trajectory2.points[-1].positions, ROWS[-1, 6:], atol=1e-12)
-    assert lab.commands("left_ur_arm") == [STOP, TIGHTEN_SCREW, STOP] and lab.commands("right_ur_arm") == [STOP, STOP]
-    assert lab.switches("left_ur_arm") == lab.switches("right_ur_arm") == []
-    assert not lab.sent["left_ur_arm"] and not lab.sent["right_ur_arm"]
-    if status == NO_STALL:
-        hold = outcome.record["phases"][-1]
-        assert not outcome.ok and HOLD_FOR_STALL <= hold["t1"] - hold["t0"] <= HOLD_FOR_STALL + 0.15
 
 
 def test_the_axis_is_the_planned_travel_in_the_husky_frame():

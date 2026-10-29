@@ -31,6 +31,8 @@ handoff W:6637-6869; M:242, BIO:854, BIO:885, R:837 as cited. New paths under
   operator uses Next ▶ or Mark done; no Confirm prompt like the spiral's (the old code simply ended). The rigid-only
   insert's hold ends the same way (§0.5).
 - A4 A failed tail replan in the retreat ends FAILED, no fallback tail (the old fallback's first step jumped, W:5691-5706).
+- ! 2026-10-28, the user: rigid-only is removed again (`RunSettings.rigid_only` and the Rigid insert box gone). The
+  rule is fixed: a ground bar inserts rigid, every other bar rigid then compliant. The rest of A5 stands.
 - A5 / Q4 (changed from the proposal) The old rigid-only mode and the spiral's duration and turns sliders come back as
   run settings (M:786-798, sliders M:12931-12960): `RunSettings.rigid_only` (off), `spiral_seconds` 20 s (1–60 s,
   M:250), `spiral_turns` 4 (1–10 whole turns, M:251). The spiral radius stays 15 mm. Rigid-only runs the whole insert

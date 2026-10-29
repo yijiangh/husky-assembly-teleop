@@ -329,7 +329,7 @@ def run_settings(job: Job) -> dict:
     """The run's settings a compliant part runs with, read once as it starts, the split clamped to SPLIT_RANGE."""
     settings = job.run.view.settings
     return {"split_mm": min(max(float(settings.insert_split_mm), SPLIT_RANGE[0]), SPLIT_RANGE[1]),
-            "rigid_only": settings.rigid_only, "spiral": settings.spiral,
+            "spiral": settings.spiral,
             "spiral_seconds": settings.spiral_seconds, "spiral_turns": settings.spiral_turns}
 
 
@@ -467,7 +467,7 @@ async def _insert(job: Job, run: PartRun) -> None:
 
     def plan_of(names: list[str], rows: np.ndarray) -> InsertPlan | str:
         return plan_insert(robot, names, rows, mating=part.tools, grounded=not part.tools,
-                           split_mm=settings["split_mm"], rigid_only=settings["rigid_only"], spiral=spiral,
+                           split_mm=settings["split_mm"], spiral=spiral,
                            traj_time=job.request.traj_time)
 
     def start(plan: InsertPlan, recorder: Recorder) -> Awaitable[PartOutcome]:

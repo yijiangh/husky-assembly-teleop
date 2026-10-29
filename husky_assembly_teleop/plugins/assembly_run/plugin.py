@@ -7,7 +7,8 @@ selected once the action's robot is live. Other plugins read and change it throu
 
 Its part of the Assembly tab is Mark done and Reopen, the settings and the run. The run follows the process panel: a
 movement picked there becomes current, except while movement_exec has a robot's lease for a step; each action's mark
-shows in the panel's rows. New run, and Mark done with the action's robot not live, take a second click within 10 s.
+shows in the panel's rows. New run, and Mark done with the action's robot not live, take a second click; it waits with
+no time limit, until any other request.
 
 - ! Nothing is written until the runs were read: an open that fails or is stopped is tried again.
 - ! Runs are written into the process folder (`runs/`), in order on a writer thread; the state here changes first.
@@ -37,7 +38,7 @@ from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, 
                                  file_hashes, find_runs, made_after, record_event, reopen, save_progress, with_current)
 from ...ui.assembly_tab import ASSEMBLY_TAB
 from .panel import PanelStatus, RunPanel
-from .writes import (AGAIN_MARK, AGAIN_NEW_RUN, CONFIRM_AGAIN, NO_PROCESS, NOT_OPENED, OPEN, OPENING, SETTING_TYPES,
+from .writes import (AGAIN_MARK, AGAIN_NEW_RUN, NO_PROCESS, NOT_OPENED, OPEN, OPENING, SETTING_TYPES,
                      RunWrites)
 
 if TYPE_CHECKING:
@@ -109,7 +110,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._selected: int | None = None
         #: Whether movement_exec had a robot's lease for a step at the last update, to notice the step ending.
         self._step_ran = False
-        #: The click waiting for its second one (`again`): (AGAIN_NEW_RUN or "mark <action id>", ROS time it ends).
+        #: The click waiting for its second one (`again`): (AGAIN_NEW_RUN or "mark <action id>", ROS time it came).
         self._again: tuple[str, float] | None = None
         #: When the current followed from the process panel was last changed without writing it; None: written.
         self._unsaved_at: float | None = None
@@ -160,7 +161,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._set_current(self._ctx, action_id, movement_index)
 
     def request_mark_done(self, action_id: str | None = None) -> None:
-        """Mark an action (the current one if None) done; its robot not live, on a second click within 10 s."""
+        """Mark an action (the current one if None) done; its robot not live, on a second click."""
         ctx = self._ctx
         action_id = action_id or self._current_action()
         if self._refused("Mark done", self._mark_refusal(ctx, action_id)):
@@ -178,8 +179,8 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
                 self._spawn(ctx, f"mark {action_id} done", self._mark(ctx, action_id, ends, False))
             return
         robot = self._loaded.process.robots[self._loaded.process.actions[action_id].robot].name
-        if not self._clicked_again(ctx, key, f"{action_id}: {robot} is not live; click Mark done again within "
-                                             f"{CONFIRM_AGAIN:.0f} s to record the export's end (assumed)"):
+        if not self._clicked_again(ctx, key, f"{action_id}: {robot} is not live; click Mark done again to record "
+                                             f"the export's end (assumed)"):
             return
         self._spawn(ctx, f"mark {action_id} done", self._mark_assumed(ctx, action_id, acting, robot))
 
@@ -204,13 +205,12 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         ctx.log_info(f"{action_id} reopened in run {run.info.name}")
 
     def request_new_run(self) -> None:
-        """Start a new run on a second click within 10 s; every action pending, the old run kept."""
+        """Start a new run on a second click; every action pending, the old run kept."""
         if self._refused("New run", self._busy() or self._step_running(self._ctx)):
             self._again = None  # ! a refused click never waits for a second one
             return
-        if not self._clicked_again(self._ctx, AGAIN_NEW_RUN, f"New run: click New run again within "
-                                                             f"{CONFIRM_AGAIN:.0f} s to confirm; every action starts "
-                                                             f"pending, the old run is kept"):
+        if not self._clicked_again(self._ctx, AGAIN_NEW_RUN, "New run: click New run again to confirm; every action "
+                                                             "starts pending, the old run is kept"):
             return
         self._stop_auto()
         self._spawn(self._ctx, "new run", self._new_run(self._ctx))
@@ -315,9 +315,6 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             if self._run is not None:
                 self._write(ctx, "save the progress", save_progress, self._run)
         self._record_offsets(ctx)
-        if self._again is not None and ctx.now() > self._again[1]:
-            self._say(f"not confirmed: no second click within {CONFIRM_AGAIN:.0f} s")
-            self._again = None
         if self._state == NOT_OPENED and ctx.now() >= self._retry_at:
             self._open_now(ctx)
         view = self.view
@@ -362,9 +359,11 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
 
     @property
     def again(self) -> str:
-        """str: The click waiting for its second one, AGAIN_NEW_RUN or "mark <action id>"; "" after CONFIRM_AGAIN s."""
-        waiting = self._again is not None and self._ctx.now() <= self._again[1]
-        return self._again[0] if waiting else ""
+        """str: The click waiting for its second one, AGAIN_NEW_RUN or "mark <action id>"; "" for none.
+
+        * No time limit: the operator may take as long as they need. Any other request forgets it.
+        """
+        return self._again[0] if self._again is not None else ""
 
     def robot_lines(self, ctx: PluginContext) -> list[str]:
         """One line per configured robot: live now, or when and where it was last recorded."""

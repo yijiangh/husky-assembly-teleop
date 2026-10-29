@@ -227,7 +227,7 @@ def test_mark_done_live_starts_the_run_and_moves_on(tmp_path):
 
 
 def test_mark_done_not_live_needs_a_second_click(tmp_path):
-    """Cindy not live: one click only says so; 11 s later a click only asks again; a second within 10 s marks it.
+    """Cindy not live: one click only says so and waits, a minute too; another request forgets it; a second marks it.
 
     Marked with the export's end, assumed.
     """
@@ -238,9 +238,12 @@ def test_mark_done_not_live_needs_a_second_click(tmp_path):
         plugin.request_mark_done()
         await settle(plugin)
         assert runs(lab) == [] and plugin.view.statuses["B1_J_joint"] == PENDING
-        assert "click Mark done again within 10 s" in plugin._message and plugin.again == "mark B1_J_joint"
-        lab.ctx.t += 11.0
-        assert plugin.again == ""
+        assert "click Mark done again to record" in plugin._message and plugin.again == "mark B1_J_joint"
+        lab.ctx.t += 60.0
+        plugin.update(lab.ctx)
+        assert plugin.again == "mark B1_J_joint", "the second click waits with no time limit"
+        plugin.request_set_current("B1_J_joint")
+        assert plugin.again == "", "another request forgets it"
         plugin.request_mark_done()
         await settle(plugin)
         assert runs(lab) == [] and plugin.again == "mark B1_J_joint"
@@ -277,7 +280,7 @@ def test_reopen_puts_the_action_back(tmp_path):
 
 
 def test_new_run_on_a_second_click_keeps_the_old_one(tmp_path):
-    """New run: one click, 11 s, one more only asks; a double click doesn't count; a later one starts a new folder.
+    """New run: one click waits, a minute too; a double click doesn't count; a later one starts a new folder.
 
     Every action pending in it; the first run's files unchanged.
     """
@@ -290,12 +293,15 @@ def test_new_run_on_a_second_click_keeps_the_old_one(tmp_path):
         first, = runs(lab)
         before = (first / "progress.json").read_bytes()
         plugin.request_new_run()
-        lab.ctx.t += 11.0
+        lab.ctx.t += 60.0
         plugin.update(lab.ctx)
-        assert "not confirmed" in plugin._message
-        plugin.request_new_run()
         await settle(plugin)
-        assert len(runs(lab)) == 1 and "click New run again within 10 s" in plugin._message
+        assert len(runs(lab)) == 1 and "click New run again to confirm" in plugin._message
+        assert plugin.again == "new run", "the second click waits with no time limit"
+        plugin.request_continue()  # * another request forgets it
+        await settle(plugin)
+        assert plugin.again == ""
+        plugin.request_new_run()
         plugin.request_new_run()  # * a double click: too soon to count
         await settle(plugin)
         assert len(runs(lab)) == 1 and "a double click" in plugin._message and plugin.again == "new run"
@@ -985,7 +991,7 @@ def test_settings_that_make_no_sense_are_refused_not_raised(tmp_path):
 
 
 def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_path):
-    """Rigid-only and the spiral's seconds and turns: refused naming the range, else saved and shown back.
+    """Servo by bar and the spiral's seconds and turns: refused naming the range, else saved and shown back.
 
     Out of range, turns not whole, or a bool for a number: refused. Set from their widgets under Spiral: saved, read
     back after a restart and shown by a new panel.
@@ -1003,14 +1009,16 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
                                ({"spiral_turns": True}, "the spiral's turns must be 1 to 10 whole turns, not True"),
                                ({"plan_tries": 0}, "the search's tries must be 1 to 10 whole tries, not 0"),
                                ({"plan_max_time": 1000}, "the search's time per try must be 5 to 600 s, not 1000"),
-                               ({"rigid_only": 1}, "rigid_only must be True or False, not 1")):
+                               ({"servo_by_bar": 1}, "servo_by_bar must be True or False, not 1"),
+                               ({"rigid_only": True}, "rigid_only")):
             plugin.request_settings(**changes)
             assert plugin._message.startswith("Settings refused") and words in plugin._message
             assert plugin.view.settings == RunSettings()
         panel = plugin._panel = RunPanel(lab.ctx, plugin)
         labels = [widget.label for widget in lab.ctx.gui.widgets if widget.kind in ("slider", "checkbox")]
-        assert labels == ["Insert split mm", "Spiral", "Rigid insert", "Spiral s", "Spiral turns", "Servo by bar"]
-        panel._rigid.callback(True)
+        # * No Rigid insert: a ground bar always inserts rigid, every other bar rigid then compliant.
+        assert labels == ["Insert split mm", "Spiral", "Spiral s", "Spiral turns", "Servo by bar"]
+        panel._servo.callback(False)
         panel._spiral_seconds.callback(30.0)
         panel._spiral_turns.callback(6.0)
         await settle(plugin)
@@ -1020,9 +1028,9 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
         return again.view.settings, shown
 
     settings, shown = asyncio.run(scenario())
-    assert (settings.rigid_only, settings.spiral_seconds, settings.spiral_turns) == (True, 30.0, 6)
+    assert (settings.servo_by_bar, settings.spiral_seconds, settings.spiral_turns) == (False, 30.0, 6)
     assert type(settings.spiral_turns) is int and type(settings.spiral_seconds) is float
-    assert (shown._rigid.value, shown._spiral_seconds.value, shown._spiral_turns.value) == (True, 30.0, 6)
+    assert (shown._servo.value, shown._spiral_seconds.value, shown._spiral_turns.value) == (False, 30.0, 6)
 
 
 @pytest.mark.safety

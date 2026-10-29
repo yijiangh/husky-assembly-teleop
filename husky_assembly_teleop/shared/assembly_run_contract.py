@@ -68,13 +68,13 @@ class AssemblyRunContract(Protocol):
         """Make an action (at a movement, else its first step) current and select it in the process plugin."""
 
     def request_mark_done(self, action_id: str | None = None) -> None:
-        """Mark an action (the current one if None) done; its robot not live, only on a second request within 10 s."""
+        """Mark an action (the current one if None) done; its robot not live, only on a second request."""
 
     def request_reopen(self, action_id: str | None = None) -> None:
         """Put a done action (the current one if None) back to pending, and make it current."""
 
     def request_new_run(self) -> None:
-        """Start a new run on a second request within 10 s; the old one is kept."""
+        """Start a new run on a second request; the old one is kept."""
 
     def request_continue(self, run_name: str | None = None) -> None:
         """Continue an offered run: the one used last if None; one made on another export goes on in a new run."""

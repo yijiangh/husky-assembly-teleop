@@ -40,8 +40,9 @@ and give what the code does; tell me where the page differs.
   nothing to plan to), so the process cannot run its load, place, grasp and held transfer yet. When an export has the
   loading pose, untick the box and the five movements run in order.
 - **Servo.** After a transfer, a support approach or a grounded insert, the executor measures the flanges and moves
-  them onto the authored targets, pass by pass, until they are within 0.2 mm. On tool0 here: the fake Motive streams
-  no bar markers, so **Servo by bar** stays off. The last line of the exec section shows each reading, and after the
+  them onto the authored targets, pass by pass, until they are within 0.2 mm. On tool0 here: **Servo by bar** is on
+  (the default; it steers only a grounded bar, B20 here, and every other bar servos on tool0), but the fake Motive
+  streams no bar markers, so B20's servo warns once that the MoCap bar is not usable and aims tool0. The last line of the exec section shows each reading, and after the
   Exec ends how the servo ended, e.g. `servo done: nothing left to plan (correction L 0.13 mm, R 0.18 mm, under 0.2
   mm)`, until the next Exec.
 - **Split.** The last millimetres of an insert, and the first of a retreat, run under the compliance controller
@@ -157,11 +158,12 @@ starve one; the arm's health chips then stay red), press Ctrl-C in the `sim` pan
 - **3D view:** three robots side by side on their park row, y = 1.35 m (Alice at x = 0.3, Belle at 1.7, Cindy at
   3.1), facing +y, arms stowed; the measured lab (cabinet, tables, tripods, trusses, the orange border).
 - **Health, top left:** every base shows `signal`, `mocap`, `estop`, `battery 90%`, `ctrl` and `SIM`; every arm
-  `signal`, `arm`, `SIM` and its tool: `robotiq` green followed by an amber `robotiq SIM` on Alice and Belle,
-  `scaffolding_v3` and `scaffolding_v3 SIM` on each of Cindy's arms. Belle's `mocap` is amber: her fake Motive body
-  reports the 1.2 mm marker error measured in the lab (hover it). About `12 PROBLEMS`: the eleven `SIM` chips and
-  Belle's `mocap`.
-- **Side panel, right:** the tabs **Assembly**, **Collisions**, **Plan** (Base, Motion, Arm) and **Control** (a tab per
+  `signal`, `arm`, `SIM` and its tool: `robotiq` and `robotiq SIM` on Alice and Belle, `scaffolding_v3` and
+  `scaffolding_v3 SIM` on each of Cindy's arms. The `SIM` chips are green: a simulated part is no problem, the chip
+  only says which it is (hover it for the simulator). Belle's `mocap` is amber: her fake Motive body reports the
+  1.2 mm marker error measured in the lab (hover it). So `1 PROBLEM`: Belle's `mocap`.
+- **Plan window, top, right of health:** the tabs **Base**, **Motion** and **Arm**, one per planner panel.
+- **Side panel, right:** the tabs **Assembly**, **Collisions** and **Control** (a tab per
   robot); **Obstacles** minimized at the right edge; three minimized bars at the bottom: **Plan plots** and **Exec
   plots** at the left, the **Console** at the right (each opens by itself when it has something to show, and the
   control at a bar's right end opens or closes it). Assembly is open: the **PROCESS** section at the top (Folder,
@@ -196,8 +198,10 @@ the step under the buttons follows, except while an Exec holds the robots' lease
   drawn see-through and left out of every collision check. Leave it: it sits 0.38 m nearer the park row than the
   measured cabinet, and ticked it refuses any base pose on the row.
 
-**3.3** The settings, under Mark done: **Ignore built bars** off, **Insert split mm** 5, **Spiral** off, **Rigid
-insert** off, **Spiral s** 20, **Spiral turns** 4, **Servo by bar** off, **Dry run** off. Leave them so.
+**3.3** The settings, under Mark done: **Ignore built bars** off, **Insert split mm** 5, **Spiral** off, **Spiral s**
+20, **Spiral turns** 4, **Servo by bar** on, **Dry run** off. Leave them so. A run started before 2026-10-28 keeps the
+Servo by bar it saved (off): tick it. There is no Rigid insert box: a ground bar always inserts rigid, every other bar
+rigid then compliant.
 
 **3.4** Optional: the simulated screws stall 2 s after a tighten whatever the arms do, so an insert's 5 s path is held
 40 % in. To see an insert reach its end and stall in the hold, give the screws more time, in a terminal of the
@@ -323,10 +327,6 @@ follower sometimes never starts a short path (`base path … timed out: still fo
   8.1 mm`, `insert: STALLED: left_ur_arm joint screw STALLED; peak |F| left_ur_arm 0.2 N, right_ur_arm 0.2 N` and `Exec
   B21_J_insert: done`. Once in the pane the first switch back was `rejected` and taken 0.2 s later: a retry, not a
   fault. With `tighten_s 8` (3.4) the left arm runs its compliant line before the stall.
-  - Run so far here with **Rigid insert** ticked: `RIGID-ONLY insert: the whole 15.0 mm under joint control (5.0 s);
-    the joint screw of left_ur_arm TIGHTENS from the start; the arms hold the end until it stalls (≤ 30 s), then
-    STOP. Compliance is never engaged; …`, then after 2 s `ended by the caller: holding every arm` and `insert:
-    STALLED: left_ur_arm joint screw STALLED during the motion`. Untick the box again afterwards.
 - No servo after this insert: it is not a ground bar.
 - Click **B21_J done**: `3/78 done`, the current step `B21_H · B21_H_approach (1/4)`.
 
@@ -389,7 +389,7 @@ reload the page and click **Load**.
 **Expect:** `continuing run <date>_<time>`; the done actions are still green; the settings are the run's (the
 workaround box is on, Rhino obstacles off). The robots keep where they are across the restart.
 
-**7.3** Under the run, **New run** twice within 10 s makes a new run folder (`0/78 done`, every row pending); the old
+**7.3** Under the run, **New run** twice (the second click waits as long as you need) makes a new run folder (`0/78 done`, every row pending); the old
 folder stays.
 
 ---

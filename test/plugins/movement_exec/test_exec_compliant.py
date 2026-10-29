@@ -2,7 +2,7 @@
 
 B21's insert with its screw stalling 1 s into the compliant part (the right arm finishing its line and settling before
 it goes back),
-B20's ground-bar insert with Rigid insert ticked, and B20's retreat with its tail replanned to the plan's goals, on the
+B20's ground-bar insert (always rigid), and B20's retreat with its tail replanned to the plan's goals, on the
 fake lab of `test_movement_exec` (Cindy following what
 she is sent, her tools' firmware answering, the clock the fake context's). Each checks the record the run writes and
 that every arm ends under the joint controller.
@@ -83,7 +83,7 @@ def test_b21s_insert_ends_when_the_left_screw_stalls_1_s_into_the_compliant_part
     outcome = record["outcome"]
     assert record["part"]["kind"] == "insert" and outcome["status"] == STALLED and "STALLED" in outcome["reason"]
     plan = outcome["plan"]
-    assert plan["mating"] == ["left_ur_arm"] and not plan["grounded"] and not plan["rigid_only"]
+    assert plan["mating"] == ["left_ur_arm"] and not plan["grounded"]
     assert plan["split_mm"] == 5.0 and plan["achieved_mm"] == pytest.approx(5.0) and 14.0 < plan["total_mm"] < 15.5
     assert plan["rigid_s"] > 0.0 and plan["compliant_s"] >= 0.5
     rigid, switch, compliant, back, finish, settle = outcome["phases"]
@@ -114,12 +114,12 @@ def test_b21s_insert_ends_when_the_left_screw_stalls_1_s_into_the_compliant_part
     assert result.end is not None and len(result.end) == 12
 
 
-def test_b20s_ground_bar_insert_is_rigid_with_no_tighten_whatever_rigid_insert_says():
-    """B20_J_insert with Rigid insert ticked: a ground bar, so RIGID_DONE; no TIGHTEN on any tool, no switch, DONE.
+def test_b20s_ground_bar_insert_is_rigid_with_no_tighten():
+    """B20_J_insert: a ground bar, so RIGID_DONE whatever the split and the spiral; no TIGHTEN, no switch, DONE.
 
-    Its line says so, the record keeps the setting and the end gap; the servo after it (M7) finds nothing left.
+    Its line says so, the record keeps the end gap; the servo after it (M7) finds nothing left.
     """
-    lab = compliant_lab(("B20_J", 4), RunSettings(rigid_only=True))
+    lab = compliant_lab(("B20_J", 4), RunSettings(spiral=True))
     result, _held = execute(lab, along(lab, "B20_J_insert", INSERT_STEP))
     assert result.status == DONE and result.done == (4, SERVO_INDEX), result.reason
     assert said(lab)[0].startswith("cindy (a200-0806): B20_J_insert — RIGID insert of a ground bar, no tighten, ")
@@ -128,9 +128,9 @@ def test_b20s_ground_bar_insert_is_rigid_with_no_tighten_whatever_rigid_insert_s
                                         if file.get("part", {}).get("kind") == "insert")))
     outcome = record["outcome"]
     assert record["part"]["kind"] == "insert" and outcome["status"] == RIGID_DONE
-    assert outcome["settings"]["rigid_only"] is True
+    assert "rigid_only" not in outcome["settings"] and outcome["settings"]["spiral"] is True
     plan = outcome["plan"]
-    assert plan["grounded"] and not plan["rigid_only"] and plan["mating"] == [] and plan["spiral"] is None
+    assert plan["grounded"] and plan["mating"] == [] and plan["spiral"] is None
     assert plan["achieved_mm"] == 0.0 and plan["compliant_s"] == 0.0 and plan["rigid_s"] > 0.0
     assert [(phase["name"], phase["end"]) for phase in outcome["phases"]] == [("rigid", "ARRIVED")]
     assert outcome["end_gap_mm"] < 0.5 and outcome["stall_times"] == {}

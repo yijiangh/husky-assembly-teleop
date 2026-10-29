@@ -5,7 +5,7 @@ It starts minimized to its bar; the control at the bar's right end opens it.
 
 - Show "Plugins" (the default) leaves out health's colour changes and the late-tick reports, "Warnings" shows warnings
   and errors from every source but the ticks, "All" every line. Errors always show. Source narrows to one source;
-  Hide leaves out the sources listed in it, whatever Show says.
+  Hide leaves out the sources ticked in it (DEFAULT_HIDDEN at start), whatever Show says.
 - The list is rewritten when a line comes in: pause the page (Live) to read or select it.
 - stdout and the ROS log still get every line; a message's first line wraps, a tick report or traceback shows in full
   on hover.
@@ -21,7 +21,7 @@ from html import escape
 import viser
 from rclpy.logging import LoggingSeverity
 
-from ..plugin_api.console_log import TICKS, Entry
+from ..plugin_api.console_log import RUNTIME, TICKS, Entry
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..ui.style import BUSY, FAIL, INFO, NONE, chip, chip_line
@@ -31,9 +31,12 @@ SHOW_PLUGINS, SHOW_WARNINGS, SHOW_ALL = "Plugins", "Warnings", "All"
 EVERY_SOURCE = "all"
 #: Sources "Plugins" leaves out: health's colour changes (its "chips" topic) and the late-tick reports.
 NOISY_SOURCES = ("health/chips", TICKS)
-#: What Hide says when empty.
-HIDE_HINT = ("Sources to leave out, comma-separated, whatever Show says; a name without a / also hides its topics "
-             "(health hides health/chips). E.g. health/chips, runtime")
+#: Sources Hide leaves out at start: the late-tick reports and the runtime's own lines.
+DEFAULT_HIDDEN = (TICKS, RUNTIME)
+#: How Hide marks a source it leaves out, and one it shows; picking either turns it to the other.
+HIDDEN_MARK, SHOWN_MARK = "☑ ", "☐ "
+HIDE_HINT = ("Pick a source to hide it (☑), pick it again to show it; several can be hidden. Hidden whatever Show "
+             "says; a name without a / also hides its topics (health hides health/chips)")
 
 #: The window's size, and the height of the list in it, pixels.
 WIDTH, HEIGHT, LIST_HEIGHT = 900, 360, 220
@@ -71,7 +74,9 @@ class ConsolePlugin(HuskyPlugin):
         """Start with no widgets; setup builds them."""
         self._show = SHOW_PLUGINS
         self._source: viser.GuiDropdownHandle | None = None
-        self._hide: viser.GuiTextHandle | None = None
+        self._hide: viser.GuiDropdownHandle | None = None
+        #: The sources Hide leaves out.
+        self._hidden_names: tuple[str, ...] = DEFAULT_HIDDEN
         self._status: viser.GuiHtmlHandle | None = None
         self._list: viser.GuiHtmlHandle | None = None
         #: The sources offered under Source, what the list was last drawn from, and how many lines it hid.
@@ -94,7 +99,11 @@ class ConsolePlugin(HuskyPlugin):
                                              "ticks. All: every line. Errors always show.")
             show.on_click(ctx.defer_value("console show", self._set_show))
             self._source = gui.add_dropdown("Source", [EVERY_SOURCE], initial_value=EVERY_SOURCE)
-            self._hide = gui.add_text("Hide", initial_value="", hint=HIDE_HINT)
+            # * A dropdown whose first choice sums up what is hidden; picking a source ticks or unticks it.
+            self._hide = gui.add_dropdown("Hide", [hide_summary(self._hidden_names)],
+                                          initial_value=hide_summary(self._hidden_names), hint=HIDE_HINT)
+            self._hide.on_update(ctx.defer_value("console hide", self._toggle_hidden))
+            self._offer_hide()
             self._status = gui.add_html("")
             self._list = gui.add_html("")
         panel.float(x=-15, y=-15, width=WIDTH, height=HEIGHT)
@@ -103,6 +112,23 @@ class ConsolePlugin(HuskyPlugin):
     def _set_show(self, show: str) -> None:
         self._show = show
 
+    def _toggle_hidden(self, choice: str) -> None:
+        """Hide the source picked under Hide, or show it again; the summary picked (or written back) changes nothing."""
+        for mark in (HIDDEN_MARK, SHOWN_MARK):
+            if choice.startswith(mark):
+                name = choice[len(mark):]
+                names = self._hidden_names
+                self._hidden_names = tuple(each for each in names if each != name) if name in names else (*names, name)
+                self._offer_hide()
+                return
+
+    def _offer_hide(self) -> None:
+        """Write Hide's choices: the summary first (shown when closed), then every source marked hidden or shown."""
+        summary = hide_summary(self._hidden_names)
+        self._hide.options = [summary, *(f"{HIDDEN_MARK if name in self._hidden_names else SHOWN_MARK}{name}"
+                                         for name in sorted(set(self._sources) | set(self._hidden_names)))]
+        self._hide.value = summary
+
     def draw(self, ctx: PluginContext) -> None:
         """Redraw the list and the Source choices when a line came in or a filter changed, and the status line.
 
@@ -110,7 +136,7 @@ class ConsolePlugin(HuskyPlugin):
             ctx: This plugin's context.
         """
         log = ctx.console_log
-        source, hidden = self._source.value, hidden_sources(self._hide.value)
+        source, hidden = self._source.value, self._hidden_names
         # * The version before the lines: a line added in between only costs one more redraw, never a missed one.
         drawn = (log.version, self._show, source, hidden)
         if drawn != self._drawn:
@@ -120,6 +146,7 @@ class ConsolePlugin(HuskyPlugin):
             if sources != self._sources:
                 self._sources = sources
                 self._source.options = [EVERY_SOURCE, *sources]
+                self._offer_hide()
             kept = [entry for entry in entries if shown(entry, self._show, source, hidden)]
             self._hidden = len(entries) - len(kept)
             self._list.content = render(kept[-SHOWN_LINES:])
@@ -133,9 +160,9 @@ class ConsolePlugin(HuskyPlugin):
             + f'<span style="font-size:11px;color:{NONE}">{self._hidden} hidden</span>')
 
 
-def hidden_sources(hide: str) -> tuple[str, ...]:
-    """The sources Hide names, comma-separated, as typed; "" and spaces dropped."""
-    return tuple(name.strip() for name in hide.split(",") if name.strip())
+def hide_summary(hidden: tuple[str, ...]) -> str:
+    """Hide's first choice, shown while it is closed: what it leaves out."""
+    return f"hiding {', '.join(hidden)}" if hidden else "hiding nothing"
 
 
 def shown(entry: Entry, show: str, source: str, hidden: tuple[str, ...] = ()) -> bool:

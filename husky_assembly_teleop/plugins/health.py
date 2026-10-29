@@ -333,10 +333,13 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
 
 
 def simulated_check(simulation: SimulatedPart | None, label: str = "SIM") -> list[Check]:
-    """An amber SIM chip (`label`) while a part announces itself as simulated, else none: checks on it are relaxed."""
+    """A green SIM chip (`label`) while a part announces itself as simulated, else none.
+
+    * Green, not a problem: a simulated part is what the operator asked for; the chip only says which it is.
+    """
     if simulation is None:
         return []
-    return [Check(label, WARN, f"{simulation.kind} ({simulation.node}): simulated, so some safety checks are skipped")]
+    return [Check(label, GOOD, f"{simulation.kind} ({simulation.node}): simulated, so some safety checks are skipped")]
 
 
 def stream_check(label: str, quality: StreamQuality, rate: float = ARM_RATE) -> Check:

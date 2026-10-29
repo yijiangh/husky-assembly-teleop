@@ -149,7 +149,7 @@ With the Cartesian controllers built and the fake wrench on, the fake lab manual
 - **5.3 step 5** B21_H's handoff: needs the Robotiq's action server (`ros-humble-gripper-controllers`); refused
   without it as `/a200_0804/gripper: the gripper's action server is not available`.
 
-On the robot these are the fake lab manual's own steps, B20 first with **Rigid insert** ticked, then the compliant
+On the robot these are the fake lab manual's own steps, B20 first (a ground bar: always rigid), then the compliant
 insert on B21 with the Exec plots window open.
 
 Run on 2026-10-27 in the simulation: 4.4 and 5.2 as above; 5.3 waits for the package.

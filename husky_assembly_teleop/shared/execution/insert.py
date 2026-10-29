@@ -1,11 +1,9 @@
 """
 The insert: a held bar into its joint, rigid under joint control, then compliant while the mating screws tighten.
 
-Its mode, as the old monitor's (W:5385-5437):
+! Its mode follows from the bar, never from a setting (W:5385-5437):
 - a ground bar: the whole path rigid; no screw tightens; it ends with the motion.
-- rigid-only (a run setting): the whole path rigid with the mating screws tightening, then the joint controller holds
-  the end until they stall; never compliant.
-- otherwise: rigid up to the split, then compliant to the end on a straight line or the spiral, the mating screws
+- every other bar: rigid up to the split, then compliant to the end on a straight line or the spiral, the mating screws
   tightening from the start; it ends when they stall. A one-mate bar (one arm of two mating) never spirals, and at
   its stall only the mating arm goes back at once: the holding arm first finishes its line under compliance and
   settles against the force there (SETTLE_CEILING at most).
@@ -69,7 +67,6 @@ class InsertPlan:
         mating: The arms whose joint screw tightens; none for a ground bar; one of two arms is a one-mate bar (no
             spiral; the other arm finishes its line after the stall).
         grounded: A ground bar: the whole path rigid, no tighten.
-        rigid_only: The whole path rigid with the mating screws tightening, then held until they stall.
         split_mm: The split asked for: the last millimetres compliant.
         achieved_mm: The compliant part's length as cut on the path; 0 when the insert is not compliant.
         total_mm: The path's length: the furthest any arm's tool0 travels.
@@ -87,7 +84,6 @@ class InsertPlan:
     rows: np.ndarray
     mating: tuple[str, ...]
     grounded: bool
-    rigid_only: bool
     split_mm: float
     achieved_mm: float
     total_mm: float
@@ -100,13 +96,13 @@ class InsertPlan:
 
     @property
     def compliant(self) -> bool:
-        """bool: Whether the insert ends under compliance: neither a ground bar nor rigid-only."""
-        return not (self.grounded or self.rigid_only)
+        """bool: Whether the insert ends under compliance: every bar but a ground bar."""
+        return not self.grounded
 
     def as_record(self) -> dict:
         """The plan as JSON values; the rows are left out (the rigid command's record has them)."""
         return {"serial": self.serial, "arms": list(self.arms), "mating": list(self.mating),
-                "grounded": self.grounded, "rigid_only": self.rigid_only, "split_mm": self.split_mm,
+                "grounded": self.grounded, "split_mm": self.split_mm,
                 "achieved_mm": self.achieved_mm, "total_mm": self.total_mm,
                 "rigid_s": 0.0 if self.rigid is None else self.rigid.duration,
                 "compliant_s": self.compliant_seconds, "axis": self.axis.tolist(),
@@ -114,11 +110,11 @@ class InsertPlan:
 
 
 def plan_insert(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence[Sequence[float]], *,
-                mating: Collection[str], grounded: bool, split_mm: float, rigid_only: bool,
-                spiral: tuple[float, int] | None, traj_time: float) -> InsertPlan | str:
+                mating: Collection[str], grounded: bool, split_mm: float, spiral: tuple[float, int] | None,
+                traj_time: float) -> InsertPlan | str:
     """Work out an insert from its planned path: its mode, where it turns compliant, each part's time, its prompt.
 
-    - A ground bar ignores rigid-only; both ignore the split and the spiral; a one-mate bar ignores the spiral.
+    - A ground bar ignores the split and the spiral; a one-mate bar ignores the spiral.
     - ! A spiral over SPIRAL_MAX_SPEED is refused here, before anything is sent.
 
     Args:
@@ -128,15 +124,13 @@ def plan_insert(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence
         mating: The arms whose joint screw tightens (the kept tighten drives); none for a ground bar.
         grounded: The bar stands on the ground.
         split_mm: The run setting: the last millimetres compliant.
-        rigid_only: The run setting: the whole insert under joint control.
         spiral: (seconds, turns) to spiral the compliant part, or None for the straight line.
         traj_time: Seconds for the whole path.
 
     Returns:
         InsertPlan | str: The plan, or why not (a spiral too fast, a path the arms can't run).
     """
-    rigid_only = rigid_only and not grounded
-    spiral = None if grounded or rigid_only else spiral
+    spiral = None if grounded else spiral
     line = "straight line"
     if spiral is not None and not spiral_fits(mating):
         spiral, line = None, "straight line: no spiral for a bar with one mating joint"
@@ -159,7 +153,7 @@ def plan_insert(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence
         return np.asarray(compose(robot.arms[arm].base_in_husky, pose).position)
 
     starts, ends = tool0(rows[0]), tool0(rows[-1])
-    if grounded or rigid_only:
+    if grounded:
         leading, achieved, rigid_s, compliant_s = rows, 0.0, traj_time, 0.0
         total = 1e3 * max(float(np.linalg.norm(np.subtract(ends[arm].position, starts[arm].position))) for arm in arms)
     else:
@@ -177,11 +171,6 @@ def plan_insert(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence
     if grounded:
         text = (f"RIGID insert of a ground bar, no tighten, {rigid.duration:.1f} s, largest joint travel "
                 f"{math.degrees(rigid.travel):.1f}°.")
-    elif rigid_only:
-        text = (f"RIGID-ONLY insert: the whole {total:.1f} mm under joint control ({rigid.duration:.1f} s); the joint "
-                f"screw of {screws} TIGHTENS from the start; the arms hold the end until it stalls "
-                f"(≤ {HOLD_FOR_STALL:.0f} s), then STOP. Compliance is never engaged; the split and the spiral are "
-                f"ignored. {WATCH}")
     else:
         if spiral is not None:
             line = (f"spiral {SPIRAL_RADIUS * 1e3:.0f} mm, {spiral[0]:g} s, {spiral[1]} turns, pitch "
@@ -189,14 +178,14 @@ def plan_insert(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence
         text = (f"INSERT: rigid {total - achieved:.1f} mm ({0.0 if rigid is None else rigid.duration:.1f} s), then "
                 f"COMPLIANT {achieved:.1f} mm ({line}); the joint screw of {screws} TIGHTENS from the start until it "
                 f"stalls (≤ {HOLD_FOR_STALL:.0f} s), then STOP and back to joint control. {WATCH}")
-    return InsertPlan(serial, arms, names, rows, tuple(mating), grounded, rigid_only, float(split_mm), achieved, total,
-                      rigid, compliant_s, ends, axis, spiral, text)
+    return InsertPlan(serial, arms, names, rows, tuple(mating), grounded, float(split_mm), achieved, total, rigid,
+                      compliant_s, ends, axis, spiral, text)
 
 
 async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: InsertPlan,
                      tools: Mapping[str, ScaffoldingV3], *, operator: Operator, dry_run: bool,
                      watch: Callable[[], str] | None = None, recorder: Recorder | None = None) -> PartOutcome:
-    """Run an insert (port of W:5268-5775): checks, the screws, the rigid part, then the hold or the compliant part.
+    """Run an insert (port of W:5268-5775): checks, the screws, the rigid part, then the compliant part.
 
     - Refused, nothing sent, unless every check of `part_problem` passes.
     - The compliant line runs from each arm's measured TCP at the handover to its planned end, fixed in the world with
@@ -228,8 +217,6 @@ async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
     if problem:
         ctx.log_warn(f"{label} refused: {problem}; nothing sent")
         return PartOutcome(REFUSED, f"{problem}; nothing sent", record=record)
-    if plan.rigid_only:
-        ctx.log_info(f"{label}: RIGID-ONLY: the whole path under joint control; the split and the spiral are ignored")
     if dry_run:
         return await _dry_run(ctx, robot, plan, record)
     started, husky = ctx.now(), robot.husky_in_world()
@@ -251,7 +238,7 @@ async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
         return gate.all_stalled()
 
     async def steps() -> tuple[str, str]:
-        """Clear and start the screws, the rigid part, then the hold or the compliant part; how it ended."""
+        """Clear and start the screws, the rigid part, then the compliant part; how it ended."""
         nonlocal gate
         not_cleared = await stop_and_clear(ctx, tools, JOINT_MOTOR)
         if not_cleared is not None:
@@ -277,15 +264,6 @@ async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
         if plan.grounded:
             gap = record["end_gap_mm"] = _end_gap(robot, plan) * 1e3
             return RIGID_DONE, f"ground bar in, no tighten; the flanges stopped {gap:.1f} mm from the planned end"
-        if plan.rigid_only:
-            if sent.status == ENDED:
-                return STALLED, f"{gate.text} STALLED during the motion"
-            since, recorder.phase = ctx.now(), "hold"
-            held = await _hold_for_stall(ctx, gate, recorder)
-            phase("hold", since, "stalled" if held else "no stall")
-            if held:
-                return STALLED, f"{gate.text} STALLED; the rigid-only hold is complete"
-            return NO_STALL, f"no {gate.text} stall within {HOLD_FOR_STALL:.0f} s of the end, held under joint control"
         since = ctx.now()
         switch = await switch_arms(ctx, arms, CARTESIAN_COMPLIANCE_CONTROLLER)
         record["switch"].update(to_s=switch.seconds, ok=switch.ok)
@@ -370,21 +348,6 @@ async def _dry_run(ctx: PluginContext, robot: HuskyRobotInterface, plan: InsertP
                     previous[name] = target
         ctx.log_warn(f"DRY RUN {plan.serial}: insert: every compliant target passed the arm's checks, NOT SENT")
     return PartOutcome(DRY_RUN, "every check passed; nothing sent (dry run)", record=record)
-
-
-async def _hold_for_stall(ctx: PluginContext, gate: Gate, recorder: Recorder) -> bool:
-    """Wait while the joint controller holds the end, until every mating screw stalls (W:4928-4958).
-
-    Returns:
-        bool: True once they stalled; False after HOLD_FOR_STALL.
-    """
-    held = ctx.now()
-    while not gate.all_stalled():
-        if ctx.now() - held >= HOLD_FOR_STALL:
-            return False
-        recorder.tick(ctx.now())
-        await ctx.next_tick()
-    return True
 
 
 async def _compliant(ctx: PluginContext, robot: HuskyRobotInterface, plan: InsertPlan, husky: Pose, gate: Gate,

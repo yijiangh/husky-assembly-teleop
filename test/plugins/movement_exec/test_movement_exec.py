@@ -1204,7 +1204,7 @@ def test_b21s_insert_tightens_the_left_screw_only_and_ends_when_it_stalls():
     record = json.loads(json.dumps(lab.run.files()[-1]))
     assert record["part"]["kind"] == "insert" and record["outcome"]["status"] == "STALLED"
     assert record["outcome"]["settings"] == record["command"]["settings"] == {
-        "split_mm": 5.0, "rigid_only": False, "spiral": False, "spiral_seconds": 20.0, "spiral_turns": 4}
+        "split_mm": 5.0, "spiral": False, "spiral_seconds": 20.0, "spiral_turns": 4}
     assert [phase["name"] for phase in record["outcome"]["phases"]] == ["rigid", "switch", "compliant"]
     assert record["plan"]["planner"] == "fake" and result.end is not None
     line, = lines
@@ -1244,7 +1244,7 @@ def test_an_inserts_rigid_part_whose_hold_is_refused_is_hold_not_sent():
 
 @pytest.mark.safety
 def test_the_insert_settings_are_read_once_and_reach_its_plan():
-    """Rigid-only reaches the plan (its line, in a dry run); a spiral too fast is refused before it, nothing sent.
+    """The split reaches the plan (its line, in a dry run); a spiral too fast is refused before it, nothing sent.
 
     The spiral's seconds and turns reach B22's line (two mating joints); a split over 30 mm is taken as 30. B21, one
     mating joint, drops the spiral asked for: its line says so, the setting is recorded, the plan has none.
@@ -1254,11 +1254,12 @@ def test_the_insert_settings_are_read_once_and_reach_its_plan():
         lab.plugin.request_dry_run(True)
         return lab
 
-    lab = dry(("B21_J", 4), RunSettings(rigid_only=True))
+    lab = dry(("B21_J", 4), RunSettings(insert_split_mm=8.0))
     result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP))
     assert result.status == DRY_RUN and lab.published() == 0 and not prompts(lab)
-    assert said(lab)[0].startswith("cindy (a200-0806): DRY RUN — B21_J_insert — RIGID-ONLY insert: the whole ")
-    assert lab.run.files()[-1]["command"]["settings"]["rigid_only"] is True
+    assert said(lab)[0].startswith("cindy (a200-0806): DRY RUN — B21_J_insert — INSERT: rigid ")
+    assert "then COMPLIANT 8.0 mm" in said(lab)[0]
+    assert lab.run.files()[-1]["command"]["settings"]["split_mm"] == 8.0
 
     lab = compliant_lab(("B22_J", 4), RunSettings(spiral=True, spiral_seconds=3.0))
     result, _held = execute(lab, along(lab, "B22_J_insert", INSERT_STEP))
