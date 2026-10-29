@@ -761,6 +761,10 @@ ros2 run husky_assembly_teleop husky_monitor
   - **Expect:** `[Plan skeleton] others: Cindy <- parked | Alice <- parked` (Alice: `Cindy <- parked | Belle <- parked`):
     nothing is done yet;
   - **Expect:** `mocap client connected: True`;
+  - **Expect:** right under it, the two modes that are easy to miss: `insert spiral search: n/a (box greyed: no step loaded; ...)`
+    and `servo feedback: tool0 (box greyed: no bar loaded; ...)` in yellow. Both boxes follow the
+    loaded step (6.f, 6.e): green `ON` for an insert mating on both arms, green `MoCap bar` for a
+    bar with markers; a click on either box prints its line again;
   - **Expect:** two windows open: the panel and the 3D view.
   - **If not:** the wrong robot name → `Ctrl-C` and paste the right block. `mocap client connected: False`:
     the monitor listens for mocap on the wrong address: fix `CLIENT_IP` as in 1.b, then restart.
@@ -1211,13 +1215,15 @@ action's number.
 - [ ] slider [Traj viz time]: preview
   - **Expect:** for a ground bar no ground-joint ↔ floor collision is reported.
 - [ ] optional, a bar that tightens: box [Insert compliant part: SPIRAL search (...)]: ticked (6.f)
+  - **Expect** at the insert: `compliant part: STRAIGHT line (box 'Insert compliant part: SPIRAL search' unticked).`,
+    or the `SPIRAL search for the compliant part: ...` line when ticked.
 - [ ] slider [traj time]: higher = slower (first run; the rigid insert has no force limit) →
       button [Exec Selected Mv Traj (auto)]
   - **Expect:** depends on the bar (table below).
 - [ ] ground bar only: nothing to click; the same exec goes on into a **second servo**, which puts
       the bar on its assembled pose (the fix step's start) and loads the fix step by itself
   - **Expect:** `[insert <bar>_J_M4_LM_insert] servo to the start of <bar>_J_M5_manual_fix_foundation (the insert's end), feedback: tool0; straight-line corrections only.`
-    (`feedback: MoCap bar` when box [Servo: aim grounded bar by MoCap (else tool0)] is ticked), then
+    (`feedback: MoCap bar` when box [Servo feedback: MoCap bar markers (unticked = tool0)] is ticked), then
     the lines of c): `[apply live base] '<bar>_J_M5_manual_fix_foundation': ...`,
     `[transfer plan] OK (2 waypoints, bar-held, LINEAR).` (each correction is planned like a short
     transfer; it is **not** a second transfer) and the pause
@@ -1701,7 +1707,20 @@ ROS_DOMAIN_ID=84 ros2 service call /a200_0804/ur5e/controller_manager/switch_con
   yet (1.c): stop before that robot's actions.
 - [ ] `[Plan skeleton] robot <Cindy (domain 86) | Alice (domain 84) | Belle (domain 85)> | problem 261006_3bar_holding_test | progress k/18 done`,
       `[Plan skeleton] others: ...`, the 18-action roster, and `mocap client connected: True`
-      (`False`: `CLIENT_IP`, 1.b).
+      (`False`: `CLIENT_IP`, 1.b), followed by `insert spiral search: OFF (...)` and
+      `servo feedback: tool0 (...)` (yellow; green when the box is ticked).
+- [ ] The floor lines (the design placed on the measured floor, since 2026-10-23):
+  - green `design on the measured floor: ON (the Rhino ground at 7.45 mm (WalkableGround raised by DESIGN_GROUND_RAISE_MM = 23.0 mm) laid on the floor: 0.49 deg tilt,
+    -10.0 mm at the MoCap origin, -45 to -10 mm over the probed floor; MoCap poses unchanged; ...)`:
+    every Rhino pose (bars, joints, targets, the room) is tilted and moved so Rhino's ground, raised
+    by 23 mm, lies on the real floor; in 261023 the ground bars' footers then just touch it (5.2 e);
+    robot bases, `progress.json` and the markers are not moved. `7.45 mm` / `23.0 mm` differ when
+    `DESIGN_GROUND_RAISE_MM` was exported (0 = the earlier safe 15.5 mm gap).
+    Yellow `... OFF (<why>)` = the design as exported (footers ~9 / 17 / 26 mm above the floor at B20 / B34 / B46):
+    `DESIGN_ON_MEASURED_FLOOR=0` was exported, or the floor file is missing (1.c).
+  - once per robot, as soon as its mocap base arrives:
+    `[floor] Cindy: base_footprint +x.x mm above the measured floor, leaning y.yy deg from its up`:
+    ~0 mm and ~0 deg; a warning past 10 mm or 1 deg (the floor file or that robot's base calibration is off).
 - [ ] Within a few seconds: `[Plan skeleton] auto-load at start-up: action k (<id>, <robot>), the first pending one.`,
       then the action's movement roster; the `Now:` line names action k. After 15 s without the
       robot's joints or mocap base it loads anyway with a warning
@@ -1956,6 +1975,10 @@ Without the script, log pane 1 by hand (once per session; it keeps logging acros
 | `not planning: joint value(s) outside the URDF limits` (right away, no search) | the start or goal has a joint the arm cannot reach (the UR5e elbow turns only +/- pi); the message names it. Should not happen for the transfer any more (its goal keeps every joint in range): note the line in the log |
 | `Plan for '..._LM_retreat'` / `'..._LM_insert' ... FAILED` (a straight-line plan) | read the `[<movement> diag]` block after it (7.c). A START collision the ACM does not allow = an export gap or the arms are not where the export expects: note the pair in the log. The retreat's replan during exec prints the same block, then runs the planned tail instead (its first step jumps; no pause) |
 | the retreat's rigid part ran with `N check(s) FAILED` | the checks only report (no pause); note the `check FAIL` lines (7.c). Remote e-stop if the arms pull on the bar |
+| `[<bar>_R_M1_LM_retreat] the full 50 mm retreat has no collision-free straight line (see the diag above); planned a SHORTER one: 40 mm back.` (Plan Movement) | expected when the room is tight (B35 on 2026-10-23: Cindy's left forearm reached her chassis at 45 mm): the retreat tries 45, 40 ... 25 mm (`RETREAT_SHORTEN_STEP_MM`, `RETREAT_MIN_DISTANCE_MM`; 25 mm still leaves the tools 10 mm clear of the 15 mm joint) and the free move home starts from there. `no straight retreat of 25-50 mm either: nothing planned.`: drive the base (6.a) or free the room, plan again |
+| the spiral box is greyed on the insert you loaded | the bar is a ground bar or mates on one arm only: the insert runs the straight line on purpose (6.f); nothing to do |
+| the servo box is greyed | the action's bar carries no MoCap markers (`[mocap bars] N instrumented bar(s): ...` at the load): the servo aims tool0 (6.e); nothing to do |
+| `'Servo feedback: MoCap bar markers' UNTICKED for <bar> ... GROUND bar ...` (WARN) | you unticked the servo box on a ground bar: tick it again unless the untick was on purpose |
 | `plan_free_dual_arm failed: birrt_failed` (both ends collision-free, no path found) | read the `[... diag]` lines after it (7.c). A tight pocket at the GOAL: drive the base to give the arms room, IK check, plan again. Otherwise plan again (action 15's free move home: expected on the first try) |
 | `Plan end of '..._transfer_to_approach' differs from existing '..._LM_insert'.start by max 6.2832 rad/m` | one joint a full turn from the export's: same tool poses, harmless |
 | `Cancel Exec` at the transfer's mount pause | no correction; the insert starts where the transfer ended (re-running the transfer is refused: the arms stand at its end, not its start). Mount and clamp the bar, then plan and run the insert as usual |

@@ -109,7 +109,9 @@ class UIBackend:
         raise NotImplementedError
 
     def add_checkbox(self, label: str, default: bool,
-                     on_change: Callable[[bool], None]) -> int:
+                     on_change: Callable[[bool], None],
+                     color: Optional[Sequence[int]] = None) -> int:
+        """A checkbox; ``color`` (RGB 0-255, Dear PyGui only) fills its box, None = default look."""
         raise NotImplementedError
 
     def add_combo(self, label: str, options: List[str], default_idx: int,
@@ -213,6 +215,13 @@ class UIBackend:
         """
         return
 
+    def set_enabled(self, handle: int, enabled: bool) -> None:
+        """Grey a widget out (``enabled`` False: shown, but it takes no clicks) or make it live again.
+
+        Does nothing on backends whose widgets cannot be greyed (the PyBullet shim).
+        """
+        return
+
     def clear(self) -> None:
         """Remove all widgets created so far so the UI can be rebuilt without
         duplicates (used by HuskyMonitor.reset_ui)."""
@@ -278,7 +287,8 @@ class PyBulletBackend(UIBackend):
         # legacy returns a list of N handles; here we return [h]*N to keep callers happy
         return [h] * len(dbgs)
 
-    def add_checkbox(self, label, default, on_change):
+    def add_checkbox(self, label, default, on_change, color=None):
+        # PyBullet debug sliders cannot be coloured; ``color`` is ignored.
         self._warn_once("checkbox",
                         "checkbox in legacy mode degraded to 0..1 slider; consider USE_DPG_UI=1")
         dbg = p.addUserDebugParameter(label, 0.0, 1.0, 1.0 if default else 0.0)
@@ -565,6 +575,41 @@ class DearPyGuiBackend(UIBackend):
             self._button_themes[key] = theme
         return self._button_themes[key]
 
+    def _checkbox_theme(self, color: Sequence[int]) -> int:
+        """A checkbox theme whose box is filled with ``color`` (white tick), built once per colour.
+
+        Same colour rules as ``_button_theme``, so a checkbox can wear the colour of the
+        button it belongs with.
+
+        Args:
+            color (Sequence[int]): RGB (0-255) fill colour of the box.
+
+        Returns:
+            int: The DPG theme id.
+        """
+        key = ('checkbox',) + tuple(int(c) for c in color[:3])
+        if key not in self._button_themes:
+            dpg = self.dpg
+            rgb = key[1:]
+            lighter = tuple(min(255, int(c * 1.25 + 25)) for c in rgb)   # mouse over it
+            darker = tuple(int(c * 0.7) for c in rgb)                     # while pressed
+            with dpg.theme() as theme:
+                with dpg.theme_component(dpg.mvCheckbox):
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBg, rgb)
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, lighter)
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, darker)
+                    dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (255, 255, 255))
+                # * Greyed out (set_enabled False): DPG only draws a disabled item
+                # * differently when a theme says how, so a grey box and grey text.
+                with dpg.theme_component(dpg.mvCheckbox, enabled_state=False):
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (70, 70, 70))
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, (70, 70, 70))
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, (70, 70, 70))
+                    dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (120, 120, 120))
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, (120, 120, 120))
+            self._button_themes[key] = theme
+        return self._button_themes[key]
+
     def add_slider_float(self, label, vmin, vmax, default, on_change):
         dpg = self.dpg
         # Label ABOVE the slider: DPG draws the slider's own label inline on the
@@ -619,11 +664,13 @@ class DearPyGuiBackend(UIBackend):
         self._handles[h] = {"kind": "slider_group", "tags": tags}
         return [h] * len(tags)
 
-    def add_checkbox(self, label, default, on_change):
+    def add_checkbox(self, label, default, on_change, color=None):
         dpg = self.dpg
         tag = dpg.add_checkbox(label=label, default_value=bool(default),
                                parent=self._current_parent,
                                callback=lambda s, app_data, u: on_change(bool(app_data)))
+        if color is not None:
+            dpg.bind_item_theme(tag, self._checkbox_theme(color))
         h = self._new_handle()
         self._handles[h] = {"kind": "checkbox", "tag": tag}
         return h
@@ -1108,6 +1155,16 @@ class DearPyGuiBackend(UIBackend):
         if tag is None or not self.dpg.does_item_exist(tag):
             return
         self.dpg.set_value(tag, value)
+
+    def set_enabled(self, handle, enabled):
+        """Grey a widget out or make it live again (a disabled DPG item takes no clicks)."""
+        rec = self._handles.get(handle)
+        if rec is None:
+            return
+        tag = rec.get("tag")
+        if tag is None or not self.dpg.does_item_exist(tag):
+            return
+        self.dpg.configure_item(tag, enabled=bool(enabled))
 
     def clear(self) -> None:
         # Delete only the root window's child widgets so a rebuild doesn't stack a

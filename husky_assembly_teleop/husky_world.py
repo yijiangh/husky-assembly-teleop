@@ -2174,9 +2174,10 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         log_label (str): File name prefix of that record, e.g.
             ``'B3_J_M5_LM_insert_servoing'``.
         bar_feedback (bool): Aim the held bar by MoCap instead of tool0 (the
-            panel's 'Servo: aim grounded bar by MoCap' box). Only with
-            ``use_transfer`` on a grounded bar's step whose bar can be measured;
-            otherwise the loop says why and aims tool0.
+            panel's 'Servo feedback: MoCap bar markers' box). Only with
+            ``use_transfer`` on a step whose held bar can be measured (any bar
+            with a marker table, grounded or screwed); otherwise the loop says
+            why and aims tool0.
         linear_only (bool): With ``use_transfer``, every correction is a straight
             line or nothing (no sampling planner): for the servo after a grounded
             insert, where the bar stands on the floor. Forced on that step,
@@ -2240,14 +2241,12 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
     if bar_feedback:
         if not use_transfer:
             why_off = 'this loop plans free moves (no bar held)'
-        elif not held_ground_joints(mv.start_state):
-            why_off = f'{mv.movement_id} does not hold a grounded bar (a normal bar must mate with its joints)'
         elif T_design_bar is None:
             why_off = why_no_bar
         else:
             bar_fb = True
         if not bar_fb:
-            log.warn(f"[servo] 'Servo: aim grounded bar by MoCap' is ticked, but this run aims "
+            log.warn(f"[servo] 'Servo feedback: MoCap bar markers' is ticked, but this run aims "
                      f"tool0: {why_off}.")
     if bar_fb:
         log.info(f"[servo] feedback: the MoCap bar {bar_name} (converges at {SERVO_BAR_POS_TOL_MM} mm / "
@@ -5553,7 +5552,15 @@ def execute_planned_trajectory_compliant(monitor):
     # * keeps its own). Rigid-only and grounded inserts ignore the box, like
     # * they ignore the split slider.
     spiral = None
-    if is_insert and not rigid_only and getattr(monitor, 'm2_spiral_search', False):
+    # * The real guard for a one-mate bar is here (the greyed box is only the
+    # * operator's cue): with one joint correcting, the spiral turns the bar about
+    # * that joint and skews it; it only makes sense when both ends search together.
+    if is_insert and not rigid_only and len(mating_arms) == 1 \
+            and getattr(monitor, 'm2_spiral_search', False):
+        monitor.get_logger().info(
+            f"[{tag}] straight line: no spiral for a bar with one mating joint (box ticked, "
+            f"ignored).")
+    elif is_insert and not rigid_only and getattr(monitor, 'm2_spiral_search', False):
         # ! The axis is the PLANNED straight segment (first -> last waypoint,
         # ! both arms), never the live re-derived start taken after the rigid
         # ! chunk: an early stall there can leave that one ~0 mm long.
@@ -5574,6 +5581,11 @@ def execute_planned_trajectory_compliant(monitor):
                 f"bar's orientation are kept; this duration replaces the compliant part's "
                 f"share of the traj time). A spiral with no stall holds its end until "
                 f"'Confirm Exec', then returns to the nominal end pose.")
+    elif is_insert and not rigid_only:
+        # * Said at every insert, so a forgotten box shows up in the log.
+        monitor.get_logger().info(
+            f"[{tag}] compliant part: STRAIGHT line (box 'Insert compliant part: SPIRAL search' "
+            f"unticked).")
     # Tags the end-of-move lines so linear and spiral runs can be told apart.
     mode_note = ('' if not is_insert
                  else ' [spiral mode]' if spiral is not None else ' [linear mode]')
@@ -6076,7 +6088,7 @@ def execute_grounded_insert_then_servo(monitor):
     the servo loop on it (``servo_to_movement_start_live``): straight-line
     corrections only, and a load guard (``SERVO_CONTACT_MAX_LOAD_RISE_N``)
     because the bar touches the floor. It aims the MoCap bar when the panel's
-    'Servo: aim grounded bar by MoCap' box is ticked, else tool0.
+    'Servo feedback: MoCap bar markers' box is ticked, else tool0.
 
     The servo is skipped, with a log line, after 'Cancel Exec', when the flanges
     stopped more than ``GROUNDED_INSERT_END_TOL_MM`` from the insert's end,

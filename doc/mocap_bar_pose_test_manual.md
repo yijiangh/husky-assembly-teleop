@@ -273,8 +273,9 @@ ros2 run husky_assembly_teleop husky_monitor
 - [ ] Panel, section **`MoCap bar (joint markers)`** (above `CONTROLLERS`):
       `Rhino bar lines (pink)` (a checkbox, ticked), `MoCap bar: measure + draw (streaming bars)`,
       `MoCap bar: follow live (10 Hz)` (a checkbox), `MoCap bar: clear drawing`,
-      `MoCap bar: record take`, `As-built: record now`, `Servo: aim grounded bar by MoCap (else tool0)`
-      (a checkbox, only used with Cindy in section 10). `As-built: record now` writes one line of
+      `MoCap bar: record take`, `As-built: record now`. The servo's checkbox
+      `Servo feedback: MoCap bar markers (unticked = tool0)` sits under `MOVEMENT EXE`, below the
+      spiral box (only used with Cindy in section 10). `As-built: record now` writes one line of
       the as-built record of an assembly run (`doc/three_robot_assembly_test_manual.md` section 9);
       this test does not need it.
 
@@ -514,14 +515,17 @@ grep -nE "^    (FAKE_HARDWARE|USE_MOCAP|MOCAP_BAR_FAKE_MARKERS) *=" "$F"     # e
 
 - [ ] Motive streams B20's asset (1020) with its 8 balls (0.3). B20 is on its loading spot, its four
       mocap plates mounted (0.4), and nothing will cover the balls while the arms hold it.
-- [ ] Start the monitor (section 3). The `MoCap bar (joint markers)` panel section now also has the
-      checkbox **`Servo: aim grounded bar by MoCap (else tool0)`**, unticked by default.
+- [ ] Start the monitor (section 3). Under `MOVEMENT EXE`, below the spiral box, is the checkbox
+      **`Servo feedback: MoCap bar markers (unticked = tool0)`**, unticked by default; the start-up
+      log says `servo feedback: tool0` in yellow. Since 2026-10-22 the box also works for a screwed
+      bar that carries markers (B21, B35); that use has not run on Cindy yet.
 - [ ] Tick `Workaround: plan the transfer as a free move (no bar, from the live arms)`, as in the
       three-robot manual's 5.2 a).
 
 ### 10.2 Run 1: box ticked (the servo aims the bar)
 
-Tick `Servo: aim grounded bar by MoCap (else tool0)`, then run action 0 as the three-robot manual's
+Tick `Servo feedback: MoCap bar markers (unticked = tool0)` (the log says `servo feedback: MoCap bar`
+in green), then run action 0 as the three-robot manual's
 5.2 describes: IK check, `Plan Movement`, `Exec Selected Mv Traj (auto)` on the transfer, then the
 mount pause. What is new:
 
@@ -627,8 +631,7 @@ parts of the error side by side. See `doc/three_robot_assembly_test_manual.md` s
 
 | the log says | do |
 |---|---|
-| `'Servo: aim grounded bar by MoCap' is ticked, but this run aims tool0: bar_B20 carries no MoCap markers.` | no marker table for B20: neither `DESIGN_PROBLEM_NAME` nor `MOCAP_MARKERS_PROBLEM_NAME` (default `261016_2ModulesDemo_YH`) has a `MoCapMarkers.json` with B20 (0.2; three-robot manual 9.1) |
-| `... aims tool0: B20_J_M4_LM_insert does not hold a grounded bar ...` | not a grounded bar's action; expected for every bar but B20 / B34 |
+| `'Servo feedback: MoCap bar markers' is ticked, but this run aims tool0: bar_B20 carries no MoCap markers.` | no marker table for B20: neither `DESIGN_PROBLEM_NAME` nor `MOCAP_MARKERS_PROBLEM_NAME` (default `261019_2ModulesDemo`) has a `MoCapMarkers.json` with B20 (0.2; three-robot manual 9.1) |
 | `[servo N] bar bar_B20: ... not usable: fit failed: only k of 8 design markers matched (need 6)` | balls hidden by the arms or the tools: look at Motive; the loop aims tool0 until the fit is good |
 | `... not usable: fake markers (desk rehearsal; Motive does not stream the bar), never steered on` | `MOCAP_BAR_FAKE_MARKERS` is 1 and Motive's B20 balls are missing: set it to 0 (10.1), check the asset |
 | `... not usable: MoCap-vs-design ... is beyond the 30 mm / 3 deg gate ...` | the fit found another bar, or B20 sits far off its target (e.g. a wrong mount): check the cyan copy against the real bar (4.2) |

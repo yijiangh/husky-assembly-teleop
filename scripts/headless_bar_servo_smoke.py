@@ -602,7 +602,8 @@ def run(results: Results, problem: str, root: str, servo_root: str) -> None:
             f"pre-insert: exec of {transfer.movement_id} (workaround {'ticked' if monitor.TRANSFER_AS_FREE_MOVE else 'unticked'}) "
             f"runs the transfer, the mount pause, then the servo on {insert.movement_id} aiming the MoCap bar",
             error is None and len(prompts) == int(bool(monitor.TRANSFER_AS_FREE_MOVE))
-            and len(log.since(n_log, 'info', 'servo feedback: MoCap bar')) == 1
+            # The transfer's own line (Load Movement prints the mode line too since 2026-10-27).
+            and len(log.since(n_log, 'info', f'[transfer {transfer.movement_id}] servo feedback: MoCap bar')) == 1
             and len(log.since(n_log, 'info', f"[servo] feedback: the MoCap bar {BAR}")) == 1
             and monitor.current_movement is insert,
             f"error {error}, mount prompts {len(prompts)}, loaded {monitor.current_movement.movement_id}")
@@ -890,8 +891,9 @@ def run(results: Results, problem: str, root: str, servo_root: str) -> None:
         # * 4. Box unticked: tool0 mode, the MoCap bar recorded alongside
         # * =====================================================================
         print(f"\n{'=' * 30} 4. BOX UNTICKED (tool0 mode, exec {transfer.movement_id}) {'=' * 30}")
-        monitor._servo_bar_feedback = False
         stage_transfer(monitor, iface, action, authored_position, base_shift_m=TOOL0_RUN_BASE_SHIFT_M)
+        # ! After the load: Load Movement ticks the box for a bar with markers (2026-10-27).
+        monitor._servo_bar_feedback = False
         transfer = monitor._loaded_movements[ti]
         bar.error = E
         n_ik, n_saved = len(ik_calls), len(saved)

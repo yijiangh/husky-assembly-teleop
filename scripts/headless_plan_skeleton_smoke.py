@@ -1686,6 +1686,26 @@ def one_sided_insert_check(results: Results, problem: str, root: str, skeleton) 
         monitor.cfab.close()
 
 
+def first_two_mate_action(skeleton):
+    """The fixture's first jointing action whose insert mates on BOTH arms (the spiral's only case).
+
+    Args:
+        skeleton (PlanSkeleton): The scratch plan skeleton.
+
+    Returns:
+        SkeletonAction | None: The action, or None when no bar mates on both arms.
+    """
+    for action in skeleton.actions:
+        if action.kind != 'J' or action.robot != ASSEMBLY_ROBOT:
+            continue
+        movements = skeleton.load_bar_action(action, prefer_sidecar=False).movements
+        insert = next((m for m in movements if movement_kind(m) is MovementKind.DUAL_CONSTRAINED_LINEAR), None)
+        if (insert is not None and not held_ground_joints(insert.start_state)
+                and len(mating_arm_sides(insert.start_state)) == 2):
+            return action
+    return None
+
+
 # The spiral search's timing in the smoke: 20 s and 2 s on the robot, shortened
 # so the check runs in a couple of seconds.
 SPIRAL_SMOKE_S = 0.5
@@ -1700,11 +1720,13 @@ FRAC_NOISE = 1e-3     # the same noise over a ~10 mm compliant segment
 def spiral_insert_check(results: Results, problem: str, root: str, skeleton) -> None:
     """The insert's spiral search: one sideways offset on both arms, hold for Confirm Exec, return.
 
-    Same fixture and flow as ``one_sided_insert_check`` (action 2, the one-sided
-    B3, a straight 11-waypoint joint path) with the spiral box ticked
-    (``m2_spiral_search``), a 0.5 s spiral and a 0.2 s return so the run stays
-    short. The REAL ``husky_world.execute_planned_trajectory_compliant`` runs
-    on the stub, pumped tick by tick:
+    Same flow as ``one_sided_insert_check``, on the fixture's first jointing
+    action whose bar mates on BOTH arms (B4, action 5: the spiral only runs for
+    a two-mate bar since 2026-10-27), a straight 11-waypoint joint path, the
+    spiral box ticked (``m2_spiral_search``), a 0.5 s spiral and a 0.2 s return
+    so the run stays short. The REAL
+    ``husky_world.execute_planned_trajectory_compliant`` runs on the stub,
+    pumped tick by tick (a stall = BOTH mating motors stalled):
     (a) a stall mid-spiral ends the insert like the straight line does: every
         motor stopped, the joint controller back, and the log says where the
         spiral stood (radius under 15 mm, under 4 turns) and that it was the
@@ -1724,10 +1746,12 @@ def spiral_insert_check(results: Results, problem: str, root: str, skeleton) -> 
         skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     cindy = robot_by_name(ASSEMBLY_ROBOT)
-    action = skeleton.action(2)
-    assert action.kind == 'J', \
-        f"the spiral insert check needs jointing action 2, got {action.action_id}"
+    action = first_two_mate_action(skeleton)
     print(f"\n{'=' * 30} SPIRAL INSERT CHECK {'=' * 30}")
+    if action is None:
+        results.check('spiral insert: the fixture has a jointing action whose bar mates on both arms',
+                      False, 'none found; the spiral check needs one')
+        return
     base = skeleton.load_bar_action(action, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, iface, log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
@@ -1793,16 +1817,22 @@ def spiral_insert_check(results: Results, problem: str, root: str, skeleton) -> 
     try:
         monitor._load_skeleton_state()
         mv, path = load_insert(monitor, iface, action)
-        arm = cindy.side_keys.index(mating_arm_sides(mv.start_state)[0])
+        arms = [cindy.side_keys.index(s) for s in mating_arm_sides(mv.start_state)]
+        assert len(arms) == 2, f"{mv.movement_id} does not mate on both arms: {arms}"
+
+        def motors(state: str) -> None:
+            """Both mating arms' joint motors report ``state``."""
+            for a in arms:
+                iface.scaffolding_status[a] = motor_status(state)
 
         # * --- (a) a stall mid-spiral ends the insert; the log says where the spiral stood
-        iface.scaffolding_status[arm] = motor_status('RUNNING')
+        motors('RUNNING')
         n_calls, n_log = len(iface.calls), len(log.msgs)
         monitor.exec_selected_movement_traj()
         assert len(monitor.tasks) == 1, f"exec queued {len(monitor.tasks)} tasks"
         task = monitor.tasks[0]
         pump(task, lambda: len(world_targets(iface.calls[n_calls:], 0)) >= 10)
-        iface.scaffolding_status[arm] = motor_status('STALLED')
+        motors('STALLED')
         ended = pump(task, lambda: False)
         where = log.since(n_log, 'info', 'STALLED at spiral')
         found = re.search(r'radius ([\d.]+) mm, ([\d.]+) of', where[0]) if where else None
@@ -1823,8 +1853,9 @@ def spiral_insert_check(results: Results, problem: str, root: str, skeleton) -> 
 
         # * --- (b) no stall: the same offset on both arms, growing to 15 mm along the line
         mv, path = load_insert(monitor, iface, action)   # the start may have moved: re-read the geometry
+        monitor.m2_spiral_search = True                  # the load re-seeds the box (ticked for B4 anyway)
         axis, ends = planned_geometry()
-        iface.scaffolding_status[arm] = motor_status('RUNNING')
+        motors('RUNNING')
         n_calls, n_log = len(iface.calls), len(log.msgs)
         monitor.exec_selected_movement_traj()
         task = monitor.tasks[0]
@@ -1875,7 +1906,7 @@ def spiral_insert_check(results: Results, problem: str, root: str, skeleton) -> 
         back_fracs, back_offsets = spiral_parts(world_targets(iface.calls[n_back:], 0),
                                                 starts[0], ends[0], axis)
         back_radii = [float(np.linalg.norm(d)) * 1000.0 for d in back_offsets]
-        iface.scaffolding_status[arm] = motor_status('STALLED')
+        motors('STALLED')
         ended = pump(task, lambda: False)
         stops = {c[1:] for c in iface.calls[n_calls:] if c[0] == 'scaffolding' and c[1] == 0}
         results.check(

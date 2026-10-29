@@ -606,7 +606,7 @@ class HuskyMonitor(Node):
         self.mocap_bar_follow_toggle = None
         # * Servo on the MoCap bar (husky_world.servo_to_movement_start_live). Read via getattr too.
         self._servo_ee_target_override = None   # side -> bar-corrected tool0 target Frame, while a bar loop runs
-        self._servo_bar_feedback = False        # 'Servo: aim grounded bar by MoCap' ticked
+        self._servo_bar_feedback = False        # 'Servo feedback: MoCap bar markers' ticked (else tool0)
         self._servo_bar_carry = None            # movement id of the insert whose plan carries the bar correction
         self._mocap_bar_reference = {}          # bar name -> 4x4 pose the running servo aims at (the pink copy)
         self.servo_bar_feedback_toggle = None
@@ -865,6 +865,8 @@ class HuskyMonitor(Node):
         self.start_pybullet()
         if self.USE_MOCAP:
             self.start_mocap()
+        # * Right under the mocap check: the spiral search and the servo feedback, easy to miss in the panel.
+        self._announce_exec_options()
 
         # Load punch tool config before world.init so cone dimensions match the offset
         if self.PUNCH_CALIB_VALIDATION:
@@ -1026,6 +1028,7 @@ class HuskyMonitor(Node):
         self._transfer_as_free_move()
         self._visual_diagnosis()
         self._m2_spiral_search()
+        self.servo_bar_feedback_ticked()
         if _common._global_backend is not None:
             _common._global_backend.clear()
         self.buttons.clear()
@@ -2655,6 +2658,7 @@ class HuskyMonitor(Node):
         self.movement_start_state = mv.start_state
         self.target_ee_frames = mv.target_ee_frames or None
         self.active_bar_name = self._active_bar_body_name(mv.start_state, bar_action.active_bar_id)
+        self._default_insert_options(mv)
 
         # Read grasp (= attachment_frame of the active bar in the gripper
         # link's frame). Same info already lives in start_state; we cache
@@ -4267,6 +4271,11 @@ class HuskyMonitor(Node):
         self.target_ee_frames = mv.target_ee_frames or None
         bar_id = getattr(self._loaded_bar_action, 'active_bar_id', None) if self._loaded_bar_action else None
         self.active_bar_name = self._active_bar_body_name(mv.start_state, bar_id)
+        # * The insert's option boxes follow the step: spiral for a two-mate insert,
+        # * MoCap-bar servo for a bar with markers. Set BEFORE the reset_ui() below,
+        # * which rebuilds the boxes from these flags (the marker table is already
+        # * loaded: _finish_action_load reads it before calling this).
+        self._default_insert_options(mv)
 
         # Point the "traj time" slider at this movement's default duration. Set it
         # BEFORE the reset_ui() below, which rebuilds the slider with
@@ -4711,13 +4720,81 @@ class HuskyMonitor(Node):
             bool: True when the insert's compliant part runs the spiral search.
         """
         toggle = getattr(self, 'm2_spiral_toggle', None)
-        ticked = toggle.value if toggle is not None else None
+        # * A greyed box (ground bar, one-mate bar) shows a tick that is only a
+        # * display: never let it overwrite the flag the load just set.
+        ticked = toggle.value if toggle is not None and getattr(toggle, 'enabled', True) else None
         if ticked is not None:
             self.m2_spiral_search = bool(ticked)
         return bool(getattr(self, 'm2_spiral_search', False))
 
+    def _spiral_fits(self, mv) -> bool:
+        """Whether the spiral search fits a step: an insert whose bar mates on BOTH arms.
+
+        With one joint correcting (a one-mate bar) the spiral turns the bar about that
+        joint and skews it; a ground bar's insert runs rigid and never searches. The
+        executor has the same guard (husky_world.execute_planned_trajectory_compliant);
+        this one only greys the box.
+
+        Args:
+            mv: The loaded movement (None = nothing loaded).
+
+        Returns:
+            bool: True for a two-mate insert.
+        """
+        if mv is None or getattr(mv, 'start_state', None) is None:
+            return False
+        if self._kind_of(mv) is not MovementKind.DUAL_CONSTRAINED_LINEAR:
+            return False
+        return (not held_ground_joints(mv.start_state)
+                and len(mating_arm_sides(mv.start_state)) == 2)
+
+    def _bar_has_mocap_markers(self) -> bool:
+        """Whether the loaded action's bar carries MoCap markers the servo can aim.
+
+        Returns:
+            bool: True when MoCap is in use and the marker table lists the active bar.
+        """
+        if not (getattr(self, 'USE_MOCAP', False) or getattr(self, 'MOCAP_BAR_FAKE_MARKERS', False)):
+            return False
+        return self._mocap_bar_design(getattr(self, 'active_bar_name', None)) is not None
+
+    def _default_insert_options(self, mv) -> None:
+        """Seed the insert's two option boxes for the step just loaded, and say what they are.
+
+        * Spiral search: ON and live for an insert mating on both arms; OFF and greyed
+          for a ground bar, a one-mate bar, or any other step.
+        * Servo feedback: MoCap bar ON when the bar carries markers (a ground bar first
+          of all: its MoCap feedback is what places the structure); OFF and greyed
+          when it carries none, so the servo aims tool0.
+
+        The operator can still untick a live box; the next load re-seeds it.
+
+        Args:
+            mv: The movement just loaded.
+        """
+        self.m2_spiral_search = self._spiral_fits(mv)
+        self._servo_bar_feedback = self._bar_has_mocap_markers()
+        self._apply_insert_option_boxes()
+        self._log_spiral_mode()
+        self._log_servo_feedback_mode()
+
+    def _apply_insert_option_boxes(self) -> None:
+        """Write the two flags and their greyed state into the boxes (the live widgets, old or just rebuilt).
+
+        Also called right after build_ui makes the boxes, because reset_ui rebuilds
+        them from the flags alone and would lose the greying.
+        """
+        tgl = getattr(self, 'm2_spiral_toggle', None)
+        if tgl is not None:
+            tgl.set_value(bool(getattr(self, 'm2_spiral_search', False)))
+            tgl.set_enabled(self._spiral_fits(getattr(self, 'current_movement', None)))
+        tgl = getattr(self, 'servo_bar_feedback_toggle', None)
+        if tgl is not None:
+            tgl.set_value(bool(getattr(self, '_servo_bar_feedback', False)))
+            tgl.set_enabled(self._bar_has_mocap_markers())
+
     def servo_bar_feedback_ticked(self) -> bool:
-        """Whether the 'Servo: aim grounded bar by MoCap' box is ticked (aim the bar, not tool0).
+        """Whether the 'Servo feedback: MoCap bar markers' box is ticked (aim the bar, not tool0).
 
         Same shape as ``_transfer_as_free_move``: the widget is read ONCE and
         the flag re-synced, because a checkbox rebuilt by reset_ui can miss its
@@ -4725,13 +4802,98 @@ class HuskyMonitor(Node):
         harnesses build the monitor without its __init__.
 
         Returns:
-            bool: True when the servo loop of a grounded bar aims the MoCap bar.
+            bool: True when the servo aims the held bar's MoCap markers instead of tool0.
         """
         toggle = getattr(self, 'servo_bar_feedback_toggle', None)
-        ticked = toggle.value if toggle is not None else None
+        # * A greyed box (bar without markers) shows no tick that means anything.
+        ticked = toggle.value if toggle is not None and getattr(toggle, 'enabled', True) else None
         if ticked is not None:
             self._servo_bar_feedback = bool(ticked)
         return bool(getattr(self, '_servo_bar_feedback', False))
+
+    def _log_spiral_mode(self) -> None:
+        """Say in colour how the insert's compliant part will run: straight line or spiral search.
+
+        Green = the spiral search is on; yellow = off, the straight line, or n/a (the
+        box is greyed: no step loaded, or one the spiral does not fit).
+        """
+        mv = getattr(self, 'current_movement', None)
+        if not self._spiral_fits(mv):
+            why = ('no step loaded; set at every Load Movement, ON for an insert mating on both arms'
+                   if mv is None else 'the loaded step is not an insert mating on both arms')
+            self.get_logger().info(
+                f"{self._ANSI_YELLOW}insert spiral search: n/a{self._ANSI_RESET} (box greyed: {why}; "
+                f"the compliant part drives a straight line)")
+        elif getattr(self, 'm2_spiral_search', False):
+            self.get_logger().info(
+                f"{self._ANSI_GREEN}insert spiral search: ON{self._ANSI_RESET} (the compliant part spirals "
+                f"out to {M2_SPIRAL_MAX_RADIUS_MM:.0f} mm; box 'Insert compliant part: SPIRAL search')")
+        else:
+            self.get_logger().info(
+                f"{self._ANSI_YELLOW}insert spiral search: OFF{self._ANSI_RESET} (the compliant part drives a "
+                f"straight line; tick 'Insert compliant part: SPIRAL search' to use it)")
+
+    def _log_servo_feedback_mode(self) -> None:
+        """Say in colour what the servo aims at: the flanges (tool0) or the held bar's MoCap markers.
+
+        Green = the MoCap bar (the default for a bar with markers); yellow = tool0.
+        """
+        if not self._bar_has_mocap_markers():
+            bar = getattr(self, 'active_bar_name', None)
+            why = f'{bar} carries no MoCap markers' if bar else 'no bar loaded'
+            self.get_logger().info(
+                f"{self._ANSI_YELLOW}servo feedback: tool0{self._ANSI_RESET} (box greyed: {why}; the "
+                f"flanges go to their Rhino targets)")
+        elif getattr(self, '_servo_bar_feedback', False):
+            self.get_logger().info(
+                f"{self._ANSI_GREEN}servo feedback: MoCap bar{self._ANSI_RESET} (the held bar's markers to its "
+                f"Rhino pose; box 'Servo feedback: MoCap bar markers')")
+        else:
+            self.get_logger().info(
+                f"{self._ANSI_YELLOW}servo feedback: tool0{self._ANSI_RESET} (the flanges to their Rhino "
+                f"targets; tick 'Servo feedback: MoCap bar markers' to aim the bar by its markers)")
+
+    def _announce_exec_options(self) -> None:
+        """Print the execution options an operator can easily miss, next to the mocap check at start-up."""
+        self._log_spiral_mode()
+        self._log_servo_feedback_mode()
+
+    def _set_m2_spiral_search(self, ticked: bool) -> None:
+        """'Insert compliant part: SPIRAL search' clicked: keep the flag and say the new mode.
+
+        Args:
+            ticked (bool): The box's new state.
+        """
+        self.m2_spiral_search = bool(ticked)
+        self._log_spiral_mode()
+
+    def _set_servo_bar_feedback(self, ticked: bool) -> None:
+        """'Servo feedback: MoCap bar markers' clicked: keep the flag and say the new mode.
+
+        Unticking it for a bar that has markers is said loudly: the servo then aims
+        tool0 (the flanges) and only records the bar; for a GROUND bar louder still,
+        its MoCap feedback is what places the whole structure.
+
+        Args:
+            ticked (bool): The box's new state.
+        """
+        self._servo_bar_feedback = bool(ticked)
+        if not ticked and self._bar_has_mocap_markers():
+            bar = getattr(self, 'active_bar_name', None)
+            mv = getattr(self, 'current_movement', None)
+            grounded = (mv is not None and getattr(mv, 'start_state', None) is not None
+                        and bool(held_ground_joints(mv.start_state)))
+            if grounded:
+                self.get_logger().warn(
+                    f"'Servo feedback: MoCap bar markers' UNTICKED for {bar}, a GROUND bar, the "
+                    f"foundation of every bar after it: its MoCap feedback is what places the "
+                    f"structure. The servo will aim tool0 (the flanges) and only record the bar. "
+                    f"Untick only on purpose.")
+            else:
+                self.get_logger().warn(
+                    f"'Servo feedback: MoCap bar markers' UNTICKED for {bar}, which has markers: "
+                    f"the servo will aim tool0 (the flanges) and only record the bar.")
+        self._log_servo_feedback_mode()
 
     def _read_insert_sliders(self) -> None:
         """Re-read the insert's sliders live: the rigid->compliant split, the spiral's duration and turns.
@@ -13630,13 +13792,16 @@ class HuskyMonitor(Node):
                     0, 1, int(bool(self.m2_exec_rigid_only)), integer=True,
                 )
                 # The compliant part as a spiral search around the planned line
-                # (ticked) or the straight line (unticked, today's behaviour), so
-                # the two can be compared run by run. Read live at execution time.
+                # (ticked) or the straight line (unticked). Seeded per loaded step
+                # (_default_insert_options): ticked for an insert mating on both
+                # arms, greyed for a ground bar or a one-mate bar. Read live at
+                # execution time.
                 self.m2_spiral_toggle = Toggle(
                     f"Insert compliant part: SPIRAL search (unticked = straight line; "
                     f"radius 0->{M2_SPIRAL_MAX_RADIUS_MM:.0f} mm, bar-centric)",
-                    lambda v: setattr(self, 'm2_spiral_search', bool(v)),
+                    self._set_m2_spiral_search,
                     bool(self.m2_spiral_search),
+                    color=BUTTON_MOVE_RGB,
                 )
                 # How long the spiral takes to reach full radius (it replaces the
                 # compliant part's share of the traj time), and how many turns it
@@ -13652,6 +13817,23 @@ class HuskyMonitor(Node):
                     lambda v: setattr(self, 'm2_spiral_turns', int(round(float(v)))),
                     1, M2_SPIRAL_TURNS_MAX, int(self.m2_spiral_turns), integer=True,
                 )
+                # * The servo's feedback, next to the insert's options: ticked, the servo after a
+                # * transfer (and after a grounded insert) moves the held bar's MoCap markers onto
+                # * its Rhino pose; unticked, tool0 onto the authored flange targets (the MoCap bar
+                # * is recorded alongside either way). Needs MoCap. Read once per run
+                # * (servo_bar_feedback_ticked); seeded from the flag so a reset_ui rebuild keeps
+                # * the tick: ticked per loaded step when the bar has markers, greyed when not.
+                if self.USE_MOCAP or self.MOCAP_BAR_FAKE_MARKERS:
+                    self.servo_bar_feedback_toggle = Toggle(
+                        'Servo feedback: MoCap bar markers (unticked = tool0)',
+                        self._set_servo_bar_feedback,
+                        bool(getattr(self, '_servo_bar_feedback', False)),
+                        color=BUTTON_MOVE_RGB,
+                    )
+                else:
+                    self.servo_bar_feedback_toggle = None
+                # * The greyed states, which the rebuild from the flags alone would lose.
+                self._apply_insert_option_boxes()
                 # * Try the spiral without a bar: a bar-holding pose, then 15 mm forward with
                 # * the spiral (spiral_test_no_bar; manual section 4). Nothing is recorded.
                 self.buttons.append(Button('Spiral test (no bar)', self.spiral_test_no_bar,
@@ -13662,6 +13844,7 @@ class HuskyMonitor(Node):
                 self.m2_spiral_toggle = None
                 self.m2_spiral_duration_slider = None
                 self.m2_spiral_turns_slider = None
+                self.servo_bar_feedback_toggle = None
             # 0 disables the dense swept collision re-check that gates the free moves'
             # plans. Faster planning, unverified paths.
             self.fm_swept_validation_slider = Slider(
@@ -13764,18 +13947,8 @@ class HuskyMonitor(Node):
             # * line every executed step writes at its start and end (AS_BUILT_RECORD).
             if self.AS_BUILT_RECORD:
                 self.buttons.append(Button('As-built: record now', self.record_as_built_now))
-            # * Ticked: the servo after a grounded bar's transfer and after its insert
-            # * aims the bar by its MoCap fit; unticked: tool0 on the authored targets
-            # * (the MoCap bar is recorded alongside either way). Read once per run
-            # * (servo_bar_feedback_ticked). Seeded from the flag so a reset_ui rebuild keeps the tick.
-            self.servo_bar_feedback_toggle = Toggle(
-                'Servo: aim grounded bar by MoCap (else tool0)',
-                lambda v: setattr(self, '_servo_bar_feedback', bool(v)),
-                bool(getattr(self, '_servo_bar_feedback', False)),
-            )
         else:
             self.mocap_bar_follow_toggle = None
-            self.servo_bar_feedback_toggle = None
 
         if self.CONNECT_COMPLIANT_CONTROLLER:
             # self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda: None))

@@ -603,13 +603,46 @@ class SliderGroup:
 
 class Toggle:
     """Boolean checkbox (DPG-only - degrades to a 0..1 slider in legacy mode)."""
-    def __init__(self, name, action, current=False):
+    def __init__(self, name, action, current=False, color=None):
+        """A checkbox.
+
+        Args:
+            name (str): The label.
+            action (Callable[[bool], None]): Called with the new state on each click.
+            current (bool): Ticked at creation.
+            color (Sequence[int] | None): Optional RGB (0-255) fill colour of the box
+                (Dear PyGui only), e.g. to match the button it belongs with; None = default look.
+        """
         self.name = name
         self.action = action
-        self._handle = _backend().add_checkbox(name, bool(current), action)
+        self.enabled = True
+        self._handle = _backend().add_checkbox(name, bool(current), action, color=color)
 
     def update(self):
         _backend().poll(self._handle, "checkbox", self.action)
+
+    def set_value(self, value: bool) -> None:
+        """Tick or untick the box from code (the action callback does NOT fire).
+
+        Same as `Slider.set_value`. ! On the PyBullet backend nothing changes
+        (a debug slider cannot be written; reset_ui rebuilds it from the flag).
+
+        Args:
+            value (bool): Ticked or not.
+        """
+        _backend().set_value(self._handle, bool(value))
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Grey the box out (it keeps its tick but takes no clicks) or make it live again.
+
+        `enabled` is kept on the Toggle, so readers of `value` can tell a greyed
+        box from a live one (a greyed box's tick is only a display).
+
+        Args:
+            enabled (bool): Live (True) or greyed (False).
+        """
+        self.enabled = bool(enabled)
+        _backend().set_enabled(self._handle, self.enabled)
 
     @property
     def value(self):
