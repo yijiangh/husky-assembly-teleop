@@ -22,7 +22,7 @@ from ...robot_interface.tool_step import (TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_
                                           TOOL_JOG_SPEED_MIN)
 from ...ui.joint_sliders import JOINT_SLIDER_NAMES
 from ...ui.phone import columns_css
-from ...ui.style import FAIL, SECTION_CTRL, SECTION_TOOL, block, note, note_line, section, values, warning
+from ...ui.style import BUSY, FAIL, SECTION_CTRL, SECTION_TOOL, block, note, note_line, section, values, warning
 from ...shared.teleop.dpad import HOLD_CALLBACK_HZ
 from .markers import marker_legend
 
@@ -141,11 +141,14 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
 
 
 def jog_clearance_note(ticked: bool, stop_distance: float) -> str:
-    """The line above the jog buttons: what Clearance checks while ticked, a warning while unticked."""
+    """The line above the jog buttons: what Clearance checks while ticked, a warning while unticked.
+
+    ! One line either way (`note_line`), so ticking Clearance moves no button.
+    """
     if ticked:
-        return note(f"moves while held · Clearance keeps {stop_distance * 100:.0f} cm from the scene and other "
-                    f"robots, not from its own robot")
-    return warning("Clearance off: nothing is checked · moves while held")
+        return note_line(f"moves while held · Clearance keeps {stop_distance * 100:.0f} cm from the scene and other "
+                         f"robots, not from its own robot")
+    return note_line("⚠ Clearance off: nothing is checked · moves while held", BUSY)
 
 
 def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str,

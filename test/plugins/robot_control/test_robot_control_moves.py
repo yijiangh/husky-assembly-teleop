@@ -604,5 +604,6 @@ def test_the_jog_buttons_and_their_note_follow_clearance_as_the_dpad_does():
     assert buttons[0].color == BLOCKED_COLOR
     plugin._color_buttons(buttons, False, key, 0.0)
     assert buttons[0].color == UNGUARDED_COLOR
-    assert "Clearance keeps 1 cm" in jog_clearance_note(True, ARM_STOP_DISTANCE)
-    assert "Clearance off" in jog_clearance_note(False, ARM_STOP_DISTANCE)
+    ticked, unticked = jog_clearance_note(True, ARM_STOP_DISTANCE), jog_clearance_note(False, ARM_STOP_DISTANCE)
+    assert "Clearance keeps 1 cm" in ticked and "Clearance off" in unticked
+    assert "white-space:nowrap" in ticked and "white-space:nowrap" in unticked, "one line either way: nothing jumps"
