@@ -318,8 +318,13 @@ the **3D view** (PyBullet). The panel, top to bottom (some sections depend on th
 │ CONTROLLERS                                                           │
 │   [Switch to Compliance (BOTH)] [Switch to Joint (BOTH)]              │
 │ GRIPPER (Alice, Belle)   [Open Gripper Full] [Close Gripper for Bar]  │
-│ SCAFFOLDING V3 (Cindy)   L / R: Stop All, Tighten / Loosen Gripper,   │
+│ SCAFFOLDING V3 (Cindy)   [Loosen Grippers (BOTH)] [Stop All (BOTH)]   │
+│                          [Release test (BOTH)]  (doc/screw_rate_push_ │
+│                          test.md)                                     │
+│                          L / R: Stop All, Tighten / Loosen Gripper,   │
 │                          Tighten / Loosen Joint                       │
+│   ! a bar held by BOTH tools: only the (BOTH) buttons; one tool       │
+│     letting go or stopping alone bends the bar                        │
 │ DEBUG utils              [Remove all drawing]                         │
 └───────────────────────────────────────────────────────────────────────┘
 ```

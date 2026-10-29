@@ -143,8 +143,10 @@ takes under a minute (most of it Cindy's R_M3 free plan to home).
 """
 
 import argparse
+import glob
 import hashlib
 import io
+import json
 import os
 import re
 import shutil
@@ -166,7 +168,8 @@ import pybullet_planning as pp
 from headless_live_monitor_test import StubLogger, _bypass_init_monitor
 from smoke_single_arm_plan import collision_lines
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
-from husky_assembly_teleop import cfab_session, husky_monitor, husky_world
+from husky_assembly_teleop import cfab_session, husky_monitor, husky_world, screw_rate_test
+from husky_assembly_teleop.as_built_io import as_built_dir
 from husky_assembly_teleop.bar_action_io import (
     FEMALE_JOINT_SUFFIXES, STATIONARY_KINDS, MovementKind, OperatorStep, held_ground_joints,
     is_built_assembly_body, mating_arm_sides,
@@ -2242,6 +2245,98 @@ def retreat_screw_out_check(results: Results, problem: str, root: str, skeleton)
         monitor.cfab.close()
 
 
+def release_test_check(results: Results, problem: str, root: str, skeleton) -> None:
+    """'Release test (BOTH)': both tools LOOSEN and STOP in one call, and all its timing is in the code.
+
+    Runs the REAL ``HuskyMonitor._release_test_task`` on the stub at the release's
+    start (B1's), its timing shortened (``screw_rate_test.BASELINE_S`` etc.):
+    (a) both gripper motors get LOOSEN back to back, no motor stops during the
+        window, then all four motors of both tools get Stop All back to back; no arm
+        is moved;
+    (b) the log has one result line per tool and the summary, and the run (samples
+        + result) is saved as JSON + PNG next to the day's as-built file (removed
+        again here, so the run's as-built check still sees only real records);
+    (c) the helpers behind 'Loosen Grippers (BOTH)' / 'Stop All (BOTH)' send arm 0's
+        and arm 1's commands back to back.
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder (unused; same signature as the other runs).
+        skeleton (PlanSkeleton): The scratch plan skeleton.
+    """
+    cindy = robot_by_name(ASSEMBLY_ROBOT)
+    action = skeleton.action(1)
+    print(f"\n{'=' * 30} RELEASE TEST CHECK {'=' * 30}")
+    base = skeleton.load_bar_action(action, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    monitor, iface, log = make_monitor(cindy, base, problem)
+    add_viz_huskies(monitor, cindy)
+    saved = (screw_rate_test.BASELINE_S, screw_rate_test.WINDOW_S, screw_rate_test.SETTLE_S)
+    folder = as_built_dir(husky_world.BAR_ACTION_LIVE_REPLAN_EXE_DIR)
+    folder_existed = os.path.isdir(folder)
+    try:
+        monitor._load_skeleton_state()
+        monitor.load_action(action.index)
+        screw_rate_test.BASELINE_S, screw_rate_test.WINDOW_S, screw_rate_test.SETTLE_S = 0.05, 0.3, 0.05
+        iface.scaffolding_status = [SimpleNamespace(state_m1='LOOSENING', state_m2='IDLE', current=120,
+                                                    pwm_pct=60) for _ in range(2)]
+        n_calls, n_log = len(iface.calls), len(log.msgs)
+        monitor.release_test_both()
+        assert len(monitor.tasks) == 1, f"the button queued {len(monitor.tasks)} tasks"
+        ended = pump_exec(iface, monitor.tasks[0], lambda: False)
+        monitor.tasks.clear()
+
+        # * --- (a) both tools together; the arms never move
+        calls = iface.calls[n_calls:]
+        tool = [(k, c[1:]) for k, c in enumerate(calls) if c[0] == 'scaffolding']
+        moved = [c for c in calls if c[0] in ('arm', 'dual_arm', 'cartesian')]
+        loosen = [(-1, GRIPPER_MOTOR, 0), (-1, GRIPPER_MOTOR, 1)]
+        stops = [(0, GRIPPER_MOTOR, 0), (0, JOINT_MOTOR, 0), (0, GRIPPER_MOTOR, 1), (0, JOINT_MOTOR, 1)]
+        back_to_back = all(b[0] == a[0] + 1 for a, b in zip(tool, tool[1:]) if a[1][0] == b[1][0])
+        results.check(
+            "release test: both gripper motors get LOOSEN back to back, nothing stops during the "
+            "window, then all four motors of both tools get Stop All back to back; no arm moves",
+            ended and [c for _, c in tool] == loosen + stops and back_to_back and not moved,
+            f"ended {ended}, tool commands {[c for _, c in tool]}, arm commands {moved}")
+
+        # * --- (b) the result lines, the summary, the saved run
+        lines = [m for lvl, m in log.msgs[n_log:] if lvl == 'info' and m.startswith('[release test]')]
+        per_tool = [m for m in lines if m.startswith('[release test] left:') or m.startswith('[release test] right:')]
+        summary = [m for m in lines if 'run(s)' in m]
+        saved_json = sorted(glob.glob(os.path.join(folder, 'release_test_*.json')))
+        saved_png = sorted(glob.glob(os.path.join(folder, 'release_test_*.png')))
+        content = {}
+        if saved_json:
+            with open(saved_json[-1]) as f:
+                content = json.load(f)
+        n_samples = len(((content.get('run') or {}).get('samples') or {}).get('t') or [])
+        results.check(
+            "release test: one result line per tool and the summary in the log; the run (samples + "
+            "result) saved as JSON + PNG next to the day's as-built file",
+            len(per_tool) == 2 and len(summary) == 1 and len(saved_json) == 1 and len(saved_png) == 1
+            and set((content.get('result') or {}).get('tools') or {}) == {'left', 'right'} and n_samples > 3,
+            f"per-tool lines {per_tool}, summary {summary}, files {saved_json + saved_png}, "
+            f"{n_samples} samples")
+
+        # * --- (c) the BOTH buttons' helpers
+        n_calls = len(iface.calls)
+        husky_world.loosen_grippers_both(iface, 'smoke')
+        husky_world.stop_all_tools_both(iface)
+        sent = [c[1:] for c in iface.calls[n_calls:]]
+        results.check(
+            "'Loosen Grippers (BOTH)' / 'Stop All (BOTH)': arm 0's and arm 1's commands back to back",
+            sent == loosen + stops, f"sent {sent}")
+    finally:
+        screw_rate_test.BASELINE_S, screw_rate_test.WINDOW_S, screw_rate_test.SETTLE_S = saved
+        monitor.tasks.clear()
+        monitor.cfab.close()
+        # ! The run's last check counts as-built folders: leave only what the records wrote.
+        for path in glob.glob(os.path.join(folder, 'release_test_*')):
+            os.remove(path)
+        if not folder_existed and os.path.isdir(folder) and not os.listdir(folder):
+            os.rmdir(folder)
+
+
 # * ---------------------------------------------------------------------------
 # * Transfer servo: the visual-servo correction after the transfer
 # * ---------------------------------------------------------------------------
@@ -3594,7 +3689,7 @@ def main(argv: Optional[list] = None) -> int:
         skeleton = load_plan_skeleton(root)
         for run in (dispatch_check, carry_check, transfer_start_check, operator_steps_check,
                     transfer_free_move_check, grounded_insert_check, one_sided_insert_check,
-                    spiral_insert_check, transfer_servo_check,
+                    spiral_insert_check, retreat_screw_out_check, release_test_check, transfer_servo_check,
                     cindy_run, alice_run,
                     cindy_restart_run, exec_propagation_check):
             try:

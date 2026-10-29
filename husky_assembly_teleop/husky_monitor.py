@@ -39,6 +39,7 @@ from husky_assembly_teleop.husky_world import (
     _solve_bar_action_goal_ik, arm_joint_limits, solve_goal_ik_generic, unwrap_to_nearest,
 )
 import husky_assembly_teleop.mocap_experiment as mocap_experiment
+import husky_assembly_teleop.screw_rate_test as screw_rate_test
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset, bar_deviation_from_goal, draw_marker_take_in_pp,
 )
@@ -4986,6 +4987,151 @@ class HuskyMonitor(Node):
                                    'scene (the built bars, the room, the other robots).')
             return
         self.tasks.append(self._spiral_test_task(mv))
+
+    # * ---------------------------------------------------------------------
+    # * Release test (doc/screw_rate_push_test.md): how fast the grasp screws back
+    # * out, so the stiff screw-out can match them (husky_world.RETREAT_SCREW_RPM).
+    # * ---------------------------------------------------------------------
+
+    def release_test_both(self) -> None:
+        """'Release test (BOTH)' button: queue ``_release_test_task`` (Cindy, a bar held in both tools)."""
+        if self._refuse_while_tasks_run('Release test'):
+            return
+        if self._connected_robot().n_arms != 2:
+            self.get_logger().warn('The release test is for Cindy (two tools).')
+            return
+        self.tasks.append(self._release_test_task())
+
+    def _release_test_task(self) -> Generator[None, None, None]:
+        """With a bar held in both tools: record it, LOOSEN both, a timed window, Stop both, record it again.
+
+        The arms stay stiff and still while both gripper motors LOOSEN in one call, so
+        the screws push the bar off the tools at their own rate. Everything timed is
+        done here, the operator only presses the button: the force baseline
+        (``screw_rate_test.BASELINE_S``), the window (``WINDOW_S``), the Stop of both
+        tools in one call, the settle (``SETTLE_S``). The two as-built records (before /
+        after) give how far the bar moved at each tool; the samples give when each
+        screw pushed (``screw_rate_test.analyse_run``). The result lines, and the
+        speed to set over this session's runs, go to the log; the samples and a plot
+        are saved next to the day's as-built file. 'Cancel Exec' ends the window early
+        (both tools are stopped, the after-record is still taken).
+
+        Yields:
+            None: One yield per monitor tick.
+        """
+        tag = 'release test'
+        log = self.get_logger()
+        hi = self.huskies[self.selected_robot_id].interface
+        # * Stiff and still: the joint controller holds the arms where they are.
+        if not (yield from world.switch_dual_arm_controller(self, 'scaled_joint_trajectory_controller')):
+            log.error(f'[{tag}] the arms are NOT under scaled_joint_trajectory_controller; nothing was sent.')
+            return
+        idx = getattr(self, 'current_movement_index', None)
+        log.info(f'[{tag}] before: recording the bar (as-built, MoCap).')
+        before = self._as_built_record(idx, 'manual')
+        bar = self._release_test_bar(before)
+        samples = {'t': []}
+        for side in screw_rate_test.SIDES:
+            samples[side] = {'wrench': [], 'state': [], 'current': [], 'pwm': [], 'joints': []}
+        self._servo_abort = False   # a stale 'Cancel Exec' must not end the window at once
+        try:
+            t_end = time.time() + screw_rate_test.BASELINE_S
+            while time.time() < t_end:
+                self._release_test_sample(hi, samples)
+                yield
+            # ! Both in one call: one tool letting go first would bend the bar.
+            world.loosen_grippers_both(hi, tag)
+            t_loosen = time.time()
+            log.info(f'[{tag}] LOOSEN both sent; sampling {screw_rate_test.WINDOW_S:g} s, the arms stay still.')
+            while time.time() < t_loosen + screw_rate_test.WINDOW_S and not self._servo_abort:
+                self._release_test_sample(hi, samples)
+                yield
+        finally:
+            world.stop_all_tools_both(hi)
+        t_stop = time.time()
+        if self._servo_abort:
+            log.warn(f"[{tag}] 'Cancel Exec': both tools stopped {t_stop - t_loosen:.1f} s after the LOOSEN.")
+        self._servo_abort = False
+        log.info(f'[{tag}] stop both sent; settling {screw_rate_test.SETTLE_S:g} s, then the after-record.')
+        t_end = t_stop + screw_rate_test.SETTLE_S
+        while time.time() < t_end:
+            self._release_test_sample(hi, samples)
+            yield
+        after = self._as_built_record(idx, 'manual')
+
+        def _fit(record: Optional[dict]) -> Optional[list]:
+            """The bar's MoCap pose in an as-built record, when its fit is good."""
+            fit = (((record or {}).get('bars') or {}).get(bar) or {}).get('bar_fit') or {}
+            return fit.get('T_world_from_bar') if fit.get('ok') else None
+
+        arms = ((before or {}).get('robot_state') or {}).get('arms') or {}
+        run = {
+            'stamp': time.strftime('%Y-%m-%dT%H:%M:%S'), 'bar': bar,
+            'retreat_screw_rpm_then': world.RETREAT_SCREW_RPM,
+            't_loosen': t_loosen, 't_stop': t_stop, 'samples': samples,
+            'before': {'T_world_from_bar': _fit(before),
+                       'tool0_fk': {side: (arms.get(side) or {}).get('tool0_fk')
+                                    for side in screw_rate_test.SIDES}},
+            'after': {'T_world_from_bar': _fit(after)},
+        }
+        result = screw_rate_test.analyse_run(run, design_travel_mm=world.RETREAT_SCREW_ENGAGEMENT_MM)
+        for line in screw_rate_test.tool_lines(result):
+            log.info(f'[{tag}] {line}')
+        self._release_test_results = getattr(self, '_release_test_results', []) + [result]
+        summary = screw_rate_test.summarise(self._release_test_results, world.RETREAT_SCREW_PITCH_MM)
+        log.info(f'[{tag}] {screw_rate_test.summary_line(summary)}')
+        try:
+            folder = os.path.dirname(as_built_path(world.BAR_ACTION_LIVE_REPLAN_EXE_DIR, DESIGN_PROBLEM_NAME))
+            os.makedirs(folder, exist_ok=True)
+            stem = os.path.join(folder, f"release_test_{time.strftime('%H%M%S')}")
+            screw_rate_test.save_run(f'{stem}.json', run, result)
+            screw_rate_test.plot_run(f'{stem}.png', run, result)
+            log.info(f'[{tag}] saved {stem}.json and .png')
+        except Exception as e:
+            log.error(f'[{tag}] the run was NOT saved: {e!r}')
+
+    def _release_test_bar(self, record: Optional[dict]) -> Optional[str]:
+        """Which bar the release test measures: the loaded action's, else the only one MoCap fitted.
+
+        Args:
+            record (dict | None): The as-built record taken before the LOOSEN.
+
+        Returns:
+            str | None: The bar's body name (e.g. ``'bar_B20'``); None (warned) when unclear.
+        """
+        if record is None:
+            self.get_logger().warn('[release test] no as-built record before the LOOSEN (MoCap off, or no '
+                                   'marker table): the travel falls back to the design.')
+            return None
+        bars = record.get('bars') or {}
+        action = getattr(self, '_loaded_action', None)
+        if action is not None:
+            for name, entry in bars.items():
+                if entry.get('bar_id') == action.bar_id:
+                    return name
+        fitted = [name for name, entry in bars.items() if (entry.get('bar_fit') or {}).get('ok')]
+        if len(fitted) == 1:
+            return fitted[0]
+        self.get_logger().warn(f'[release test] which bar? Load its action first (MoCap fitted: '
+                               f'{", ".join(fitted) or "none"}); the travel falls back to the design.')
+        return None
+
+    def _release_test_sample(self, hi, samples: dict) -> None:
+        """One tick of the release test: the time and, per tool, wrench, gripper state, current, PWM, joints.
+
+        Args:
+            hi (HuskyRobotInterface): Cindy's interface.
+            samples (dict): The task's sample lists (``t`` and one dict per side), appended to.
+        """
+        samples['t'].append(time.time())
+        for i, side in enumerate(screw_rate_test.SIDES):
+            status = hi.scaffolding_status[i]
+            rec = samples[side]
+            rec['wrench'].append([float(v) for v in hi.arm_ft_sensor[i]])
+            rec['state'].append(getattr(status, 'state_m1', None) or 'no status')
+            rec['current'].append(None if getattr(status, 'current', None) is None else float(status.current))
+            rec['pwm'].append(None if getattr(status, 'pwm_pct', None) is None else float(status.pwm_pct))
+            rec['joints'].append([float(v) for v in hi.arm_joint_pose[i]])
 
     def _read_trajectory_time_slider(self, tag: str) -> float:
         """The 'traj time' slider's LIVE position, kept in ``self.trajectory_time``.
@@ -11386,7 +11532,7 @@ class HuskyMonitor(Node):
         self._as_built_record(getattr(self, 'current_movement_index', None), 'manual')
 
     def _as_built_record(self, idx: Optional[int], phase: str, outcome: Optional[str] = None, *,
-                         off_rad: Optional[float] = None, commanded_end: Optional[list] = None) -> None:
+                         off_rad: Optional[float] = None, commanded_end: Optional[list] = None) -> Optional[dict]:
         """Measure every streaming MoCap bar and append one as-built record (start / end of a step, or a click).
 
         Measures like 'MoCap bar: record take' (`measure_mocap_bars`: every bar
@@ -11408,9 +11554,13 @@ class HuskyMonitor(Node):
                 ``'off_target'``); None for 'start' and 'manual'.
             off_rad (float | None): How far the arms stopped from the sent trajectory's end.
             commanded_end (list | None): The sent trajectory's last waypoint per arm.
+
+        Returns:
+            dict | None: The record it appended (the release test reads the bar fits and
+            tool0 poses from it); None when nothing was recorded.
         """
         if not self.AS_BUILT_RECORD or getattr(self, '_mocap_markers', None) is None:
-            return
+            return None
         movements = getattr(self, '_loaded_movements', None) or []
         mv = movements[idx] if idx is not None and 0 <= idx < len(movements) else None
         mv_id = mv.movement_id if mv is not None else '(no step loaded)'
@@ -11482,8 +11632,10 @@ class HuskyMonitor(Node):
             for line in lines or ["no bar measured"]:
                 self.get_logger().info(f"{head}: {line}")
             print(f"{head}: recorded -> {path}")
+            return record_out
         except Exception as e:
             self.get_logger().error(f"[as-built] {phase} of {mv_id} NOT recorded: {e!r}")
+            return None
 
     def _as_built_bar_reference(self, bar_name: str, idx: Optional[int], phase: str) -> tuple:
         """Where a bar should be at an as-built record: its authored pose at that moment.
@@ -14184,6 +14336,17 @@ class HuskyMonitor(Node):
 
                 def send_scaffolding_cmd_motor(direction, motor, arm_index):
                     self.huskies[self.selected_robot_id].interface.send_scaffolding_cmd(direction, motor, arm_index)
+
+                # * Both tools in ONE call: while both hold a bar, one tool letting go or stopping
+                # * first bends it (user, 2026-10-28). These are the buttons to use with a bar held.
+                if has_scaffold_left and has_scaffold_right and active_husky.dual_arm:
+                    self.buttons.append(Button('Loosen Grippers (BOTH)', lambda: world.loosen_grippers_both(
+                        self.huskies[self.selected_robot_id].interface, 'Loosen Grippers (BOTH)')))
+                    self.buttons.append(Button('Stop All (BOTH)', lambda: world.stop_all_tools_both(
+                        self.huskies[self.selected_robot_id].interface)))
+                    # * The screw-rate test (doc/screw_rate_push_test.md): with a bar in both tools,
+                    # * both grippers LOOSEN while the arms stay still; all its timing is in the code.
+                    self.buttons.append(Button('Release test (BOTH)', self.release_test_both))
 
                 if has_scaffold_left:
                     self.buttons.append(Button('- L Stop All', lambda: send_scaffolding_cmd_both_motors(0, 0)))
