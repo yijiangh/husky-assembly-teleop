@@ -9,12 +9,13 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from plugin_fakes import FakeGui
 from robot_fakes import TCP_ORIENTATION, TCP_POSITION, FreeRobots, fake_arm, lease_context, wait_ticks_until
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.shared.teleop.dpad import BLOCKED_COLOR, HOLD_TIMEOUT, UNGUARDED_COLOR, Hold
-from husky_assembly_teleop.plugins.robot_control.arm_panel import jog_clearance_note
+from husky_assembly_teleop.plugins.robot_control.arm_panel import build_jog_inputs, jog_clearance_note
 from husky_assembly_teleop.plugins.robot_control.markers import place_markers, target_from_world
 from husky_assembly_teleop.plugins.robot_control.plugin import BASE, START_RETRY, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.plugins.robot_control.status import refusal_chip
@@ -614,3 +615,23 @@ def test_the_jog_buttons_and_their_note_follow_clearance_as_the_dpad_does():
     ticked, unticked = jog_clearance_note(True, ARM_STOP_DISTANCE), jog_clearance_note(False, ARM_STOP_DISTANCE)
     assert "Clearance keeps 1 cm" in ticked and "Clearance off" in unticked
     assert "white-space:nowrap" in ticked and "white-space:nowrap" in unticked, "one line either way: nothing jumps"
+
+
+def test_each_jog_has_its_clearance_box_below_its_buttons_and_the_two_are_one_setting():
+    """Below the joint jog buttons and below the tool0 buttons, as the D-pad's; unticking either unticks both."""
+    gui = FakeGui()
+    ctx = SimpleNamespace(defer=lambda _label, run, operator_only=False: lambda *_event: run(),
+                          defer_value=lambda _label, run, operator_only=False: run)
+    inputs = build_jog_inputs(ctx, gui, "0804 ur_arm", lambda *_args: None, lambda: None, lambda *_args: None,
+                              ARM_STOP_DISTANCE)
+    order = [widget.kind for widget in gui.widgets]
+    boxes = [index for index, kind in enumerate(order) if kind == "checkbox"]
+    buttons = [index for index, kind in enumerate(order) if kind == "button"]
+    joint, tool = buttons[:len(inputs.buttons)], buttons[len(inputs.buttons):]
+    assert len(boxes) == 2 and max(joint) < boxes[0] < min(tool) and max(tool) < boxes[1]
+    inputs.tool.clearance.value = False
+    inputs.tool.clearance.callback(False)
+    assert inputs.clearance.value is False
+    inputs.clearance.value = True
+    inputs.clearance.callback(True)
+    assert inputs.tool.clearance.value is True

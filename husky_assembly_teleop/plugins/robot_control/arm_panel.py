@@ -58,11 +58,12 @@ GRIP_HINTS = {"robotiq": "Stop holds the fingers where they are.",
 
 @dataclass
 class ToolJogInputs:
-    """Handles of the tool0 jog: the speed slider, mm/s, its buttons, and the readout line below them."""
+    """Handles of the tool0 jog: speed slider (mm/s), buttons, readout line, and Clearance (the joint jog's again)."""
 
     speed: viser.GuiSliderHandle
     readout: viser.GuiHtmlHandle
     buttons: tuple[viser.GuiButtonHandle, ...] = ()
+    clearance: viser.GuiCheckboxHandle | None = None
 
 
 @dataclass
@@ -129,16 +130,18 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
                 button.on_hold(ctx.defer(f"jog {name} {label}", lambda joint=joint, direction=direction:
                                          on_hold(joint, direction)), callback_hz=HOLD_CALLBACK_HZ)
     # * Below the buttons it guards, as the D-pad's.
-    clearance = gui.add_checkbox(
-        "Clearance", initial_value=True,
-        hint=f"While jogging a joint or tool0, soft stop the robot once it comes within {stop_distance * 100:.0f} cm "
-             f"of anything in the scene; the base pose and this arm's joints must be known. Untick to jog without "
-             f"it, e.g. without mocap or out of a tight spot.")
+    clearance = gui.add_checkbox("Clearance", initial_value=True, hint=jog_clearance_hint(stop_distance))
     move_group = gui.add_button_group("Move", ["Hold"],
                                       hint="Brake to a standstill where the arm is, also during a planned path.")
     move_group.on_click(ctx.defer(f"hold {label}", hold))
-    return JogInputs(speed, clearance, build_tool_jog_inputs(ctx, gui, label, on_tool_hold), tuple(buttons),
-                     clearance_note)
+    return JogInputs(speed, clearance, build_tool_jog_inputs(ctx, gui, label, on_tool_hold, clearance, stop_distance),
+                     tuple(buttons), clearance_note)
+
+
+def jog_clearance_hint(stop_distance: float) -> str:
+    """The hover text of a jog's Clearance box."""
+    return (f"While jogging a joint or tool0, soft stop the robot once it comes within {stop_distance * 100:.0f} cm "
+            f"of anything, itself included. Untick to jog without it, e.g. without mocap or out of a tight spot.")
 
 
 def jog_clearance_note(ticked: bool, stop_distance: float) -> str:
@@ -152,15 +155,19 @@ def jog_clearance_note(ticked: bool, stop_distance: float) -> str:
     return note_line("⚠ Clearance off: nothing is checked · moves while held", BUSY)
 
 
-def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str,
-                          on_hold: Callable[[int, float], None]) -> ToolJogInputs:
-    """Add the tool0 jog: a speed slider in mm/s, a hold button per axis and direction, and a readout line below.
+def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold: Callable[[int, float], None],
+                          clearance: viser.GuiCheckboxHandle, stop_distance: float) -> ToolJogInputs:
+    """Add the tool0 jog: a speed slider in mm/s, a hold button per axis and direction, Clearance, and a readout line.
+
+    Its Clearance box is the joint jog's `clearance` shown again below its buttons: ticking either ticks both.
 
     Args:
         ctx: The plugin's context.
         gui: The GUI api, inside the joint trajectory controller's folder.
         label: "<serial> <arm name>", for intent names.
         on_hold: Called every report of a held button, with the axis (0-2 moves, 3-5 turns) and the direction.
+        clearance: The joint jog's Clearance box.
+        stop_distance: The clearance a jog keeps, metres, for the hint.
 
     Returns:
         ToolJogInputs: The handles.
@@ -181,7 +188,13 @@ def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str,
                 # ! Bind loop values as defaults, or every button jogs like the last.
                 button.on_hold(ctx.defer(f"tool jog {name} {label}", lambda axis=axis, direction=direction:
                                          on_hold(axis, direction)), callback_hz=HOLD_CALLBACK_HZ)
-    return ToolJogInputs(speed=speed, readout=gui.add_html(note_line("")), buttons=tuple(buttons))
+    # * The same Clearance again, below the buttons it guards; an operator's tick on either sets the other.
+    again = gui.add_checkbox("Clearance", initial_value=clearance.value, hint=jog_clearance_hint(stop_distance))
+    clearance.on_update(ctx.defer_value(f"clearance {label}", lambda value: setattr(again, "value", value),
+                                        operator_only=True))
+    again.on_update(ctx.defer_value(f"tool clearance {label}", lambda value: setattr(clearance, "value", value),
+                                    operator_only=True))
+    return ToolJogInputs(speed=speed, readout=gui.add_html(note_line("")), buttons=tuple(buttons), clearance=again)
 
 
 def build_compliance_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,
