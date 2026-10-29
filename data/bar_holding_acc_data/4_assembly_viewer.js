@@ -36,7 +36,7 @@ let recordIndex = -1;          // -1 = the action's default record
 const chosenRecord = {};       // action index -> the record pill picked there (kept until another is picked)
 let selectedId = null;
 let showAllRecords = false;
-let stripBar = '';             // '' = each action's worst bar, else one bar id
+let stripBar = '';             // '' = each action's own bar, '*worst' = its worst bar, else one bar id
 
 const metricByKey = key => DATA.metrics.find(m => m.key === key);
 const placementMetric = metricByKey('placement');
@@ -502,11 +502,6 @@ function showDetail(id) {
     };
     html += block('placement', 'placement error', 'MoCap bar vs where it should be',
       threeRows([bar.tip_start, bar.tip_middle, bar.tip_end]), dataMetric.key);
-    html += block('placement_seat', 'placement error vs the seat',
-      'MoCap bar vs its final place in the design (its seat). The same as the placement error once the bar is '
-      + 'placed; they differ only while it is held on its way in (before the insert it should be 15 mm above '
-      + 'its seat)',
-      threeRows([bar.seat_start, bar.seat_middle, bar.seat_end]), dataMetric.key);
     const dev = bar.vs_reference;
     const turn = dev ? dev.rotvec_bar_deg : null;
     html += block('rotation', 'rotation error', 'how the measured bar is turned against where it should be',
@@ -609,11 +604,13 @@ function arcArrow(centre, axis, start, angle, radius, colour) {
     points.push(centre.clone().addScaledVector(start.clone().applyAxisAngle(axis, angle * k / n), radius));
   }
   const material = new THREE.MeshBasicMaterial({ color: colour });
-  groups.notes.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), n * 2, 0.001, 6), material));
-  // * Its head, pointing on along the turn (never longer than half the arc).
+  // * A thin line (as thin as the faint axes), so a short arc still reads as an arrow.
+  groups.notes.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), n * 2, 0.0004, 6), material));
+  // * Its head, pointing on along the turn (never longer than half the arc), and slim: its width
+  // * follows its length, so a short head is not a flat disc hiding the arc.
   const tangent = points[n].clone().sub(points[n - 1]).normalize();
   const head = Math.min(0.014, 0.5 * radius * Math.abs(angle));
-  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.005, head, 12), material);
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(Math.max(0.0008, 0.35 * head), head, 12), material);
   cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tangent);
   cone.position.copy(points[n]).addScaledVector(tangent, head / 2);
   groups.notes.add(cone);
@@ -793,7 +790,6 @@ function drawFlanges(record, key) {
 
 // * The measurements drawn on the bars themselves; for the others the number goes on the bar's name label.
 const DRAWN_ON_BAR = { placement: bar => drawPlacement(bar, bar.reference, [bar.tip_start, bar.tip_middle, bar.tip_end]),
-  placement_seat: bar => drawPlacement(bar, bar.seat, [bar.seat_start, bar.seat_middle, bar.seat_end]),
   rotation: drawRotation, bend: drawBow, pair_length: drawPairs, spacing: drawSpacing, fit_residual: drawFit };
 // The measurements of the record's robot, written at its two flanges.
 const DRAWN_AT_FLANGES = ['tool0', 'servo', 'load'];
@@ -850,10 +846,31 @@ function setRecord(i) {
 
 /** The value one action shows in the strip. */
 function stripValue(a) {
-  if (!stripBar) return a.worst;
+  if (stripBar === '*worst') return a.worst;
+  // * Read at the action's last record that ended well (the pill the page shows first): by
+  // * default the action's own bar, so a bystander placed badly earlier does not colour it.
   const record = a.records.length ? a.records[defaultRecord(a)] : null;
-  const bar = record ? record.bars.find(b => b.bar === stripBar && b.ok) : null;
+  const id = stripBar || a.bar_id;
+  const bar = record ? record.bars.find(b => b.bar === id && b.ok) : null;
   return bar ? bar.placement_seat : null;
+}
+
+/** Text made safe for innerHTML (the reasons quote the monitor's log). */
+const escapeHtml = text => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+/** The tick boxes of the shown record's step: ✓ used, or ✗ not used, how the box was set and why. A box
+ *  that cannot act on this kind of step is left out unless it was ticked (step_options in the .py). */
+function optionsHtml(record) {
+  if (!record || !record.options) return '';
+  const shown = record.options.filter(o => o.shown);
+  if (!shown.length) return '<span class="muted">tick boxes: none acts on this step</span>';
+  return '<span class="muted">tick boxes at this step:</span> ' + shown.map(o => {
+    const box = o.box === true ? 'ticked' : o.box === false ? 'unticked' : 'box not known';
+    const mark = o.used === true ? '&#10003; used' : o.used === false ? '&#10007; not used' : '? not known';
+    return `<span class="opt ${o.used ? 'used' : 'unused'}"><b>${mark}</b> ${escapeHtml(o.label)} `
+      + `<span class="muted">(${box}${o.why ? ': ' + escapeHtml(o.why) : ''})</span></span>`;
+  }).join(' ');
 }
 
 /** Redraw the slider's label, the record pills and the strip of every action. */
@@ -866,6 +883,9 @@ function drawControls() {
     + ` · ${a.robot} <span class="muted">· plan action ${a.index} ${a.action_id} · ${a.exists.length} bars`
     + `${held ? ' · ' + held : ''}</span>`;
   const shown = currentRecord();
+  // * A release run under another bar's R (the record was moved to the bar it let go of).
+  document.getElementById('options').innerHTML = (shown && shown.note
+    ? `<span class="opt note">⚠ ${escapeHtml(shown.note)}</span>` : '') + optionsHtml(shown);
   const pills = visibleRecords(a).map(i => {
     const r = a.records[i];
     const cls = ['rec'];
@@ -916,7 +936,8 @@ document.getElementById('prev').onclick = () => setAction(actionIndex - 1);
 document.getElementById('next').onclick = () => setAction(actionIndex + 1);
 document.getElementById('all-records').onchange = e => { showAllRecords = e.target.checked; drawControls(); };
 const stripPicker = document.getElementById('strip-by');
-stripPicker.innerHTML = '<option value="">worst bar of each action</option>'
+stripPicker.innerHTML = '<option value="">each action\'s own bar, at its last step</option>'
+  + '<option value="*worst">worst bar of each action</option>'
   + Object.keys(DATA.history).map(id => `<option value="${id}">${id} (vs its seat)</option>`).join('');
 stripPicker.onchange = () => { stripBar = stripPicker.value; drawControls(); };
 

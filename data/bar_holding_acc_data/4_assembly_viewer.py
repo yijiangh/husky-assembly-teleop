@@ -10,10 +10,14 @@ writes a single offline page (three.js inside, no server):
 - a slider over the plan skeleton's actions (J / R / H / HR), in the plan's
   order; at each action every bar that exists then is drawn as a thin line where
   it was designed (placed, held by a support robot, or the one being built), the
-  MoCap bars see-through where they were measured, their markers sensed (filled)
+  MoCap bars see-through where they were measured (from their first milestone
+  on: a bar still on its loading spot is not drawn), their markers sensed (filled)
   and authored (hollow), and the "data by" measurement drawn on them;
 - under the slider, that action's records (``before insert``, ``after insert``,
-  ``after retreat``, ``grasped``, ...) and a strip of every action's worst error;
+  ``after retreat``, ``grasped``, ...), the tick boxes of the picked record's
+  step (the free-move transfer, the MoCap-bar servo feedback, the spiral
+  search: used or not, and why; read from the monitor's log, `step_options`)
+  and a strip of every action's own bar's error at its last step (or its worst bar, or one bar);
 - click a bar: its placement at the start / middle / end of the bar, rotation
   (with its axes drawn), the bar's shape and fit from its balls (ball pairs,
   plate spacing, bow, and a verdict: bad ball, plate off the table, bending, or
@@ -35,6 +39,7 @@ import glob
 import json
 import math
 import os
+import re
 import sys
 import webbrowser
 from datetime import datetime
@@ -52,8 +57,8 @@ from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTO
 from husky_assembly_teleop.as_built_io import AS_BUILT_DIR_SUFFIX, AS_BUILT_FILE_PREFIX, read_as_built  # noqa: E402
 from husky_assembly_teleop.bar_action_io import bar_id_of_body  # noqa: E402
 from husky_assembly_teleop.bar_mocap_fit import (  # noqa: E402
-    axis_angle_deg, design_bar_axis_endpoints, load_mocap_markers, marker_match, mocap_markers_root, pair_geometry,
-    pose_deviation,
+    MOCAP_MARKERS_FILENAME, axis_angle_deg, design_bar_axis_endpoints, fit_bar_from_cache, load_mocap_markers,
+    marker_match, mocap_markers_root, pair_geometry, pose_deviation,
 )
 from husky_assembly_teleop.mocap_experiment import (  # noqa: E402
     _bar_lengths_from_robot_cell, _find_populated_cell_state, env_3dm_for_bar_action, tip_distances,
@@ -79,6 +84,36 @@ SERVO_MATCH_SLACK_S = 2.0
 # * Records of one action further apart than this, or from another monitor run, are a redo ("run 2").
 REDO_GAP_S = 600.0
 
+# * The monitor's terminal log (scripts/husky/open_terminals.sh writes pane 1 into it). The as-built
+# * records do not keep the panel's tick boxes; this log is where the monitor says how each was set
+# * and what a step did with it (spiral or straight insert, which servo feedback).
+MONITOR_LOG = os.path.expanduser('~/husky_real/monitor.log')
+# * The tick boxes that change what a step does, as the panel names them.
+OPTION_BOXES = {
+    'free_move': 'Transfer as a free move (workaround)',
+    'servo_bar': 'Servo feedback: MoCap bar markers',
+    'spiral': 'Insert compliant part: SPIRAL search',
+}
+# * The monitor's log lines about those boxes: (kind, pattern). The groups end with the value.
+OPTION_LINES = (
+    # The spiral box, said at start-up and on every click.
+    ('spiral_box', re.compile(r'insert spiral search: (ON|OFF)')),
+    # The servo feedback box: the start-up / click line, and the one each transfer reads at its start.
+    ('servo_box', re.compile(r'servo feedback: (MoCap bar|tool0)')),
+    # The box as the servo after a grounded bar's insert reads it.
+    ('servo_box_insert', re.compile(r'\[insert (\S+)\] servo to .*?, feedback: (MoCap bar|tool0)')),
+    # What an insert's compliant part did.
+    ('spiral_ran', re.compile(r'\[(\S+)\] SPIRAL search for the compliant part')),
+    ('straight_ran', re.compile(r'\[(\S+)\] compliant part: STRAIGHT line')),
+    # Why a servo with the box ticked aimed tool0 after all.
+    ('servo_no_markers', re.compile(r'\[servo\] feedback: tool0 .*\((\S+ carries no MoCap markers)\)')),
+    ('servo_unusable', re.compile(r'the MoCap bar is not usable \((.*?)\); the loop aims tool0')),
+    # The transfer's pause with empty tools: only a transfer planned as a free move has it.
+    ('mount_pause', re.compile(r'\[transfer (\S+)\] the arms stand at the insertion start with EMPTY tools')),
+)
+_ANSI = re.compile(r'\x1b\[[0-9;?]*[A-Za-z]')
+_ROS_STAMP = re.compile(r'\[(\d{10})\.\d+\]')
+
 # * The verdict on a bar's balls (`ball_findings`). Starting values from the first run (2026-10-20, B20):
 # * a plate's two balls measured within +-0.3 mm of the design between records (Motive's noise), one
 # * plate read 0.7 mm short in every record (a ball off its spot), and the plates sat 0.6-1.2 mm off the
@@ -103,10 +138,6 @@ METRICS = [
      'help': 'the worst of the distances at the start, the middle and the end of the bar, between the MoCap bar '
              'and where it should be at that moment (the step target)',
      'formula': 'max over start / middle / end of | MoCap - target |'},
-    {'key': 'placement_seat', 'label': 'placement vs seat', 'unit': 'mm', 'high': 5.0,
-     'help': 'the same, against the bar\'s assembled (seat) pose in the design; differs from the placement error '
-             'only while the bar is held on its way in (e.g. 15 mm above the seat before the insert)',
-     'formula': 'max over start / middle / end of | MoCap - seat |'},
     {'key': 'rotation', 'label': 'rotation error', 'unit': 'deg', 'high': 0.25,
      'help': 'the angle between the MoCap bar\'s centre line and the target\'s',
      'formula': 'arccos | z_MoCap . z_target |'},
@@ -241,6 +272,40 @@ def servo_files(day: str, runs_dir: str = RUNS_DIR) -> list:
     return sorted(out)
 
 
+def option_events(day: str, log_path: str = MONITOR_LOG):
+    """The day's lines about the tick boxes in the monitor's log, each with its time.
+
+    * A line without a ROS stamp (a plain print) takes the time of the last
+    * stamped line before it, the way the terminal shows them.
+
+    Args:
+        day (str): ``YYYYMMDD``.
+        log_path (str): The monitor's terminal log (`MONITOR_LOG`).
+
+    Returns:
+        list | None: ``[(epoch seconds, kind, groups)]`` in time order (kinds and
+        groups as in `OPTION_LINES`); None when there is no log.
+    """
+    if not log_path or not os.path.exists(log_path):
+        return None
+    with open(log_path, 'rb') as f:
+        text = f.read().decode('utf-8', 'replace')
+    events, last = [], None
+    for line in text.split('\n'):
+        line = _ANSI.sub('', line)
+        stamp = _ROS_STAMP.search(line)
+        if stamp:
+            last = int(stamp.group(1))
+        if last is None or datetime.fromtimestamp(last).strftime('%Y%m%d') != day:
+            continue
+        for kind, pattern in OPTION_LINES:
+            hit = pattern.search(line)
+            if hit:
+                events.append((float(last), kind, hit.groups()))
+                break
+    return events
+
+
 def markers_root(problem_dir: str) -> str:
     """The folder whose ``MoCapMarkers.json`` the monitor used: the problem's own, else the borrowed one.
 
@@ -251,6 +316,49 @@ def markers_root(problem_dir: str) -> str:
         str: ``problem_dir``, or ``MOCAP_MARKERS_PROBLEM_NAME``'s folder when the problem has no file.
     """
     return mocap_markers_root(problem_dir, problem_root(MOCAP_MARKERS_PROBLEM_NAME, DESIGN_DATA_DIRECTORY))
+
+
+def day_markers_root(day: str, problem_dir: str, runs_dir: str = RUNS_DIR) -> str:
+    """The folder of the marker table for one lab day: the day's own, else the one the monitor used.
+
+    * A day folder (``<day>-asbuilt``) holds its own ``MoCapMarkers.json`` when the physical bars
+    * differed from the export that day. 28 Oct: B34 still carried J34-56_mocap, while the 261023
+    * export had moved that plate to M34-T20-0_mocap, so the monitor's fits of B34 failed.
+
+    Args:
+        day (str): ``YYYYMMDD``.
+        problem_dir (str): The recorded design problem's folder.
+        runs_dir (str): The assembly runs' folder.
+
+    Returns:
+        str: The day folder when it holds the file, else `markers_root`.
+    """
+    folder = os.path.join(runs_dir, f"{day}{AS_BUILT_DIR_SUFFIX}")
+    if os.path.isfile(os.path.join(folder, MOCAP_MARKERS_FILENAME)):
+        return folder
+    return markers_root(problem_dir)
+
+
+def refit_on_new_layout(entry: dict, design) -> dict:
+    """Fit a recorded bar again from its recorded balls when its layout differs from the monitor's.
+
+    Args:
+        entry (dict): ``record['bars'][body name]``, with the monitor's ``design_markers`` and fit.
+        design (BarMarkers | None): The bar's markers in the table the page uses.
+
+    Returns:
+        dict: ``entry`` itself when the layouts agree (or nothing can be compared), else a copy
+        with ``bar_fit`` and ``design_markers`` from ``design`` and ``refit`` True.
+    """
+    used = [m.get('bar_m') for m in entry.get('design_markers') or []]
+    if design is None or not used:
+        return entry
+    if len(used) == len(design.markers) and np.allclose(np.asarray(used, dtype=float), design.points(), atol=1e-6):
+        return entry
+    snapshot = entry.get(entry.get('markerset_key')) or {}
+    fit = fit_bar_from_cache(snapshot, design)
+    authored = [{'name': m.name, 'joint': m.joint, 'label': m.label, 'bar_m': list(m.bar_m)} for m in design.markers]
+    return dict(entry, bar_fit=fit.to_json(), design_markers=authored, refit=True)
 
 
 def resolve_env_3dm(problem_dir: str, markers, override: str = None):
@@ -553,6 +661,106 @@ def load_numbers(record: dict):
             'imbalance': abs(ft['left_force_N'] - ft['right_force_N']), 'zero': ft.get('zero')}
 
 
+def step_options(events, action_kind: str, step: dict, t0: float, t1: float, servo) -> list:
+    """Each tick box that could change one executed step: how it was set, and whether the step used it.
+
+    * What can act where: the free-move workaround on a transfer, the servo
+    * feedback on the servo that ends a transfer or a grounded bar's insert (a
+    * support robot's servo aims tool0 only), the spiral on a screwed bar's
+    * insert (a grounded bar's insert is rigid, and a retreat never spirals). A
+    * box ticked at a step it cannot act on is listed too, as not used, because
+    * the monitor still prints it there (e.g. '[Exec] ... SPIRAL search (box
+    * ticked)' before a retreat).
+
+    Args:
+        events (list | None): `option_events` of the day (None = no monitor log).
+        action_kind (str): ``'J'``, ``'R'``, ``'H'`` or ``'HR'``.
+        step (dict): The record's ``step`` (``movement_id``, ``kind``).
+        t0 (float): The step's start record (epoch seconds).
+        t1 (float): Its end record (``t0`` when it has none).
+        servo (dict | None): `servo_numbers` of the servo that ran inside the step.
+
+    Returns:
+        list: ``[{key, label, box (True / False / None = unknown), applies, used (True / False / None),
+        why, shown}]``, one per box in `OPTION_BOXES`; ``shown``: the page lists it at this step (it can
+        act here, the step is an insert, or the box was ticked).
+    """
+    mv, kind = step.get('movement_id') or '', step.get('kind')
+    inside = [e for e in events or [] if t0 - SERVO_MATCH_SLACK_S <= e[0] <= t1 + SERVO_MATCH_SLACK_S]
+
+    def clicked(kinds: tuple, box, after: float) -> str:
+        """A click on the box during the step, after the step had read it: ' (ticked at HH:MM:SS ...)'."""
+        for e_t, e_kind, groups in inside:
+            state = groups[-1] in ('ON', 'MoCap bar')
+            if e_kind in kinds and e_t > after and box is not None and state != box:
+                return (f" (box {'ticked' if state else 'unticked'} at {datetime.fromtimestamp(e_t):%H:%M:%S}, "
+                        "after the step had read it)")
+        return ''
+
+    def box_at(kinds: tuple, t: float):
+        """The box as its latest line at or before ``t`` says (None = no line yet)."""
+        state = None
+        for e_t, e_kind, groups in events or []:
+            if e_t > t:
+                break
+            if e_kind in kinds:
+                state = groups[-1] in ('ON', 'MoCap bar')
+        return state
+
+    def first(kinds: tuple, movement: str = None):
+        """The step's first line of these kinds (for this movement, when one is given): ``(time, groups)``."""
+        return next(((t, g) for t, k, g in inside if k in kinds and (movement is None or g[0] == movement)), None)
+
+    is_transfer = action_kind == 'J' and kind == 'dual_constrained_free'
+    is_insert = action_kind == 'J' and kind == 'dual_constrained_linear'
+    out = []
+
+    # * The free-move workaround: only its transfer pauses with empty tools for the mount.
+    used = None if events is None else first(('mount_pause',), mv) is not None
+    out.append({'key': 'free_move', 'box': used if is_transfer else None, 'applies': is_transfer,
+                'used': used if is_transfer else None,
+                'why': ('planned from the live arms without the bar; the bar is mounted by hand at the '
+                        'insertion start' if used else 'the transfer carried a bar already in the tools')
+                if is_transfer and used is not None else '', 'shown': is_transfer})
+
+    # * The servo feedback: the transfer reads the box at its start, the servo after a grounded bar's
+    # * insert reads it again ('[insert ...] servo to ...'); elsewhere the box as it stood at the start.
+    said = (first(('servo_box',)) if is_transfer else first(('servo_box_insert',), mv) if is_insert else None)
+    box = (said[1][-1] == 'MoCap bar') if said else box_at(('servo_box', 'servo_box_insert'), t0)
+    runs_servo = servo is not None
+    used = runs_servo and servo.get('feedback') == 'mocap_bar'
+    reason = first(('servo_no_markers', 'servo_unusable'))
+    if used:
+        why = 'the servo aimed the bar\'s MoCap fit at its Rhino pose'
+    elif runs_servo and action_kind == 'H':
+        why = 'a support robot\'s servo aims its flange (tool0) only'
+    elif runs_servo:
+        why = ('the servo aimed tool0' if box else 'the servo aimed the flanges (tool0) at their Rhino targets') \
+            + (f": {reason[1][0]}" if reason else '')
+    else:
+        why = 'no servo runs in this step'
+    if said and runs_servo:
+        why += clicked(('servo_box',), box, said[0])
+    out.append({'key': 'servo_bar', 'box': box, 'applies': runs_servo, 'used': used if runs_servo else False,
+                'why': why, 'shown': runs_servo or bool(box)})
+
+    # * The spiral: said at every screwed bar's insert (spiral or straight); a grounded insert is rigid.
+    if is_insert and first(('spiral_ran',), mv):
+        spiral = {'box': True, 'applies': True, 'used': True,
+                  'why': 'the compliant part circled the bar about the insertion line while the joint tightened'}
+    elif is_insert and first(('straight_ran',), mv):
+        spiral = {'box': False, 'applies': True, 'used': False, 'why': 'the compliant part drove a straight line'}
+    else:
+        box = None if events is None else bool(box_at(('spiral_box',), t0))
+        why = ('this insert ran rigid all the way (a grounded bar): the box does not act on it' if is_insert
+               else 'the box acts on a screwed bar\'s insert only')
+        spiral = {'box': box, 'applies': False, 'used': False if events is not None else None, 'why': why}
+    out.append({'key': 'spiral', **spiral, 'shown': is_insert or bool(spiral['box'])})
+    for option in out:
+        option['label'] = OPTION_BOXES[option['key']]
+    return out
+
+
 # * ---------------------------------------------------------------------------
 # * A bar through the day: its history, and the verdict on its balls
 # * ---------------------------------------------------------------------------
@@ -574,7 +782,10 @@ def add_history(history: dict, bar: dict, entry: dict) -> bool:
         bool: True when the entry was kept.
     """
     slot = history.setdefault(bar['bar'], {'entries': [], 'skipped': 0})
-    if not slot['entries'] and bar.get('milestone') in (None, 'bystander'):
+    # ! A cancelled step's milestone does not count: B20's first transfer on 2026-10-23 was cancelled
+    # ! with the bar still on its loading spot, 880 mm from its seat.
+    if not slot['entries'] and (bar.get('milestone') in (None, 'bystander')
+                                or entry.get('outcome') not in (None, 'ok')):
         slot['skipped'] += 1
         return False
     slot['entries'].append(entry)
@@ -790,7 +1001,43 @@ def record_robots(record: dict, models: RobotModels) -> list:
 # * The whole day
 # * ---------------------------------------------------------------------------
 
-def collect_assembly(day: str, problem: str = None, with_robots: bool = True, runs_dir: str = RUNS_DIR) -> dict:
+def release_as_run(record: dict, actions: list, holding: dict):
+    """Which R action a release record really was: the one of the bar in the robot's tools.
+
+    * An R lets go of the bar the same robot's last J left in its tools. The monitor loads
+    * the next R it finds not done, so it can name another bar: on 23 Oct no R was marked
+    * done and Cindy ran "B20_R" at 18:12 while she held B34. Such a record is moved to the
+    * held bar's R, with the release moments handed from the named bar to the held one.
+
+    Args:
+        record (dict): An as-built record of an R action.
+        actions (list): `timeline`'s actions.
+        holding (dict): Robot name -> the bar its last J left in its tools.
+
+    Returns:
+        tuple: ``(action index, record, note)``; the record and index unchanged and the note
+        None when the R names the held bar (or the held bar has no R action).
+    """
+    k = record['action']['index']
+    named, held = actions[k]['bar_id'], holding.get(record.get('robot'))
+    real = next((a for a in actions if a['kind'] == 'R' and a['bar_id'] == held), None)
+    if held in (None, named) or real is None:
+        return k, record, None
+    record = dict(record, bars={key: dict(entry) for key, entry in (record.get('bars') or {}).items()})
+    moment = None
+    for entry in record['bars'].values():
+        if entry.get('bar_id') == named:
+            moment, entry['milestone'] = entry.get('milestone'), 'bystander'
+    for entry in record['bars'].values():
+        if entry.get('bar_id') == held:
+            entry['milestone'] = moment
+    note = (f"loaded as {actions[k]['action_id']}, but {record.get('robot')}'s tools held {held} "
+            f"(the last bar it inserted): this is {held}'s release")
+    return real['index'], record, note
+
+
+def collect_assembly(day: str, problem: str = None, with_robots: bool = True, runs_dir: str = RUNS_DIR,
+                     monitor_log: str = MONITOR_LOG) -> dict:
     """Read one day's as-built records and shape them for the page.
 
     Args:
@@ -798,12 +1045,15 @@ def collect_assembly(day: str, problem: str = None, with_robots: bool = True, ru
         problem (str | None): The design problem (default: the records').
         with_robots (bool): Draw the robots (loads the URDF meshes).
         runs_dir (str): The assembly runs' folder (``--runs-dir``).
+        monitor_log (str): The monitor's terminal log, for the tick boxes of each step
+            (`step_options`); a missing file leaves them unknown.
 
     Returns:
         dict: The page's ``DATA`` without the environment, the cameras and the page text:
         ``{problem, day, assembled {bar id: {start, end, length}}, actions [{index, action_id, kind,
         bar_id, robot, exists, held, worst, records [...]}] (in the plan skeleton's order),
-        history {bar id: {entries [...], skipped}}, ball_check {bar id: `ball_check`}, robot_models}``.
+        history {bar id: {entries [...], skipped}}, ball_check {bar id: `ball_check`}, robot_models,
+        monitor_log}``; each record has its step's ``options`` (`step_options`).
     """
     path = as_built_file(day, problem, runs_dir)
     records = sorted(read_as_built(path), key=lambda r: r.get('stamp_epoch') or 0.0)
@@ -814,8 +1064,14 @@ def collect_assembly(day: str, problem: str = None, with_robots: bool = True, ru
     skeleton = load_plan_skeleton(problem_dir)
     if skeleton is None:
         raise SystemExit(f"{problem_dir} has no ActionSchedule.json.")
+    # * Only a day with its own table is fitted again: other days keep the monitor's fits.
+    own_table = False
     try:
-        markers = load_mocap_markers(markers_root(problem_dir))
+        markers = load_mocap_markers(day_markers_root(day, problem_dir, runs_dir))
+        own_table = os.path.dirname(markers.path) == os.path.dirname(path)
+        if own_table:
+            print(f"[assembly] the day's own marker table: {markers.path}; bars whose layout differs from the "
+                  "monitor's are fitted again from their recorded balls.")
     except Exception as e:  # the page still shows the authored bars
         print(f"[assembly] ! no marker table ({e}); markers and plates are not drawn.")
         markers = None
@@ -836,22 +1092,38 @@ def collect_assembly(day: str, problem: str = None, with_robots: bool = True, ru
         print("[assembly] ! the day mixes records with and without the design on the measured floor; "
               "each record is compared in its own frame, the page draws the last one's.")
     servos = servo_files(day, runs_dir)
+    events = option_events(day, monitor_log)
     models = RobotModels() if with_robots else None
     print(f"[assembly] {len(records)} records from {path}; problem {problem}, {len(skeleton.actions)} actions, "
           f"{len(seats)} bars, {len(servos)} servo files.")
+    print(f"[assembly] tick boxes: {len(events)} lines of {day} in {monitor_log}" if events is not None
+          else f"[assembly] ! no monitor log at {monitor_log}: the tick boxes of each step are unknown.")
 
     actions = timeline(skeleton)
     history = {}
     pairs_of_day = {}    # bar id -> its plates in every record of its history (for ball_check)
+    placed = set()    # bars past their first milestone (mounted on the robot): drawn from then on
     starts = {}    # (run_id, action, step) -> the step's start record's time
+    start_records = {}    # the same key -> the start record as shaped for the page
     last_of_action = {}
+    holding = {}    # robot -> the bar its last J left in its tools (until its R ends)
     for record in records:
         action = record.get('action') or {}
         k = action.get('index')
         if k is None or not 0 <= k < len(actions):
             continue    # outside the plan skeleton (a click with nothing loaded): not on the slider
-        act = actions[k]
         step = record.get('step') or {}
+        # * Which bar an R really let go of (see `release_as_run`).
+        note = None
+        if actions[k]['kind'] == 'J':
+            holding[record.get('robot')] = actions[k]['bar_id']
+        elif actions[k]['kind'] == 'R':
+            k, record, note = release_as_run(record, actions, holding)
+            if note and step.get('phase') == 'start':
+                print(f"[assembly] {record['stamp']}: {note}")
+            if step.get('phase') == 'end' and step.get('outcome') in (None, 'ok'):
+                holding.pop(record.get('robot'), None)
+        act = actions[k]
         key = (record.get('run_id'), k, step.get('index'))
         epoch = record.get('stamp_epoch') or 0.0
         if step.get('phase') == 'start':
@@ -862,7 +1134,19 @@ def collect_assembly(day: str, problem: str = None, with_robots: bool = True, ru
             if seat is None:
                 continue
             design = markers.bars.get(f"bar_{entry.get('bar_id')}") if markers is not None else None
-            bars.append(shape_bar(entry, record, seat, design))
+            if own_table:
+                entry = refit_on_new_layout(entry, design)
+            bar = shape_bar(entry, record, seat, design)
+            # * A bar is drawn from its first milestone on (mounted on the robot, then placed), in a
+            # * step that ended well. Before that it lies on its loading spot, metres away: not drawn,
+            # * not in the action's worst error, only counted in its history (the same rule as `add_history`).
+            if bar['milestone'] not in (None, 'bystander') and step.get('outcome') in (None, 'ok'):
+                placed.add(bar['bar'])
+            if bar['bar'] not in placed:
+                if bar['ok']:
+                    history.setdefault(bar['bar'], {'entries': [], 'skipped': 0})['skipped'] += 1
+                continue
+            bars.append(bar)
         # * The servo that ran inside this step: saved between its start and end records.
         servo = None
         if step.get('phase') == 'end' and key in starts:
@@ -879,7 +1163,7 @@ def collect_assembly(day: str, problem: str = None, with_robots: bool = True, ru
         worst_tool0 = max((v['fk_vs_target']['dpos_mm'] for v in tool0.values() if v['fk_vs_target']), default=None)
         shaped = {
             'stamp': record.get('stamp'), 'time': (record.get('stamp') or 'T')[11:19], 'run_id': record.get('run_id'),
-            'robot': record.get('robot'), 'redo': redo,
+            'robot': record.get('robot'), 'redo': redo, 'note': note,
             'step': {'index': step.get('index'), 'movement_id': step.get('movement_id'), 'kind': step.get('kind'),
                      'phase': step.get('phase'), 'outcome': step.get('outcome')},
             'milestone': next((b['milestone'] for b in bars if b['milestone'] not in (None, 'bystander')), None),
@@ -889,6 +1173,13 @@ def collect_assembly(day: str, problem: str = None, with_robots: bool = True, ru
         }
         shaped['label'] = (MILESTONE_LABEL.get(shaped['milestone'])
                            or f"{(step.get('movement_id') or 'click').split('_', 3)[-1]} · {step.get('phase')}")
+        # * The step's tick boxes, worked out at its end from all of its log lines and given to its
+        # * start record too; a start that never got an end keeps what its own moment says.
+        shaped['options'] = step_options(events, act['kind'], step, starts.get(key, epoch), epoch, servo)
+        if step.get('phase') == 'start':
+            start_records[key] = shaped
+        elif step.get('phase') == 'end' and key in start_records:
+            start_records.pop(key)['options'] = shaped['options']
         act.setdefault('records', []).append(shaped)
         for bar in bars:
             if not bar['ok']:
@@ -919,6 +1210,7 @@ def collect_assembly(day: str, problem: str = None, with_robots: bool = True, ru
                       for bar_id, s in seats.items()},
         'actions': actions, 'history': history, 'ball_check': checks,
         'robot_models': models.payload() if models is not None else {},
+        'monitor_log': monitor_log if events is not None else None,
     }
 
 
@@ -944,10 +1236,14 @@ def main(argv: list = None) -> int:
     parser.add_argument('--runs-dir', default=RUNS_DIR,
                         help='the folder holding <date>-asbuilt/ and <date>-servoing/ (default: the drive\'s '
                              'bar_action_live_replan_exe; a headless smoke\'s scratch folder for a rehearsal)')
+    parser.add_argument('--monitor-log', default=MONITOR_LOG,
+                        help='the monitor\'s terminal log, for which tick boxes each step used (default: '
+                             '~/husky_real/monitor.log, written by scripts/husky/open_terminals.sh)')
     args = parser.parse_args(argv)
 
     day = args.day or latest_as_built_day(args.runs_dir)
-    scene = collect_assembly(day, args.problem, with_robots=not args.no_robots, runs_dir=args.runs_dir)
+    scene = collect_assembly(day, args.problem, with_robots=not args.no_robots, runs_dir=args.runs_dir,
+                             monitor_log=args.monitor_log)
     problem_dir = problem_root(scene['problem'], DESIGN_DATA_DIRECTORY)
     try:
         markers = load_mocap_markers(markers_root(problem_dir))
@@ -984,6 +1280,12 @@ PAGE_CSS = """#steps { left:364px; right:14px; bottom:14px; width:auto; padding:
 #steps-head button { width:auto; margin:0; padding:1px 8px; }
 #action { flex:1; accent-color:#1763b8; }
 #action-label { margin:5px 0 2px; font-size:12px; }
+#options { margin:2px 0 4px; font-size:11px; line-height:1.55; }
+#options .opt { display:block; padding-left:8px; }
+#options .opt b { display:inline-block; min-width:66px; white-space:nowrap; }
+#options .opt.used b { color:#1a7f37; }
+#options .opt.unused b { color:#6b7686; }
+#options .opt.note { color:#9a6700; padding-left:0; }
 #records { display:flex; flex-wrap:wrap; gap:4px; margin:4px 0; }
 .rec { width:auto; margin:0; padding:2px 8px; font-size:11px; border-radius:11px; }
 .rec.on { background:#1763b8; color:#fff; border-color:#1763b8; }
@@ -1001,6 +1303,7 @@ PAGE_CONTROLS = """    <div class="card" id="steps">
         <input type="range" id="action" min="0" max="0" value="0"><button id="next" title="next action (right arrow)">&#9654;</button></div>
       <div id="action-label"></div>
       <div id="records"></div>
+      <div id="options"></div>
       <div id="steps-foot"><label><input type="checkbox" id="all-records"> all records</label>
         <span>[ and ] step through them</span><span style="margin-left:auto">strip by</span><select id="strip-by"></select></div>
       <div id="timeline"></div>

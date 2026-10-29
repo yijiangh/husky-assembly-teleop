@@ -58,6 +58,66 @@ def test_history_leaves_out_records_before_the_bar_was_placed(viewer):
     assert [e['milestone'] for e in history['B20']['entries']] == ['before_insert', None, 'bystander', 'after_retreat']
 
 
+def test_history_leaves_out_a_cancelled_step_before_the_bar_was_placed(viewer):
+    """A cancelled transfer's milestone does not place the bar (B20 on 2026-10-23 was not mounted yet)."""
+    history = {}
+    kept = [viewer.add_history(history, {'bar': 'B20', 'milestone': m}, {'milestone': m, 'outcome': o})
+            for m, o in (('before_insert', 'cancelled'), (None, None), ('before_insert', 'ok'), (None, None))]
+    assert kept == [False, False, True, True]
+    assert history['B20']['skipped'] == 2
+
+
+def test_a_release_run_under_another_bars_r_goes_to_the_held_bar(viewer):
+    """23 Oct 18:12: Cindy ran "B20_R" while she held B34; the record belongs to B34's R."""
+    actions = [{'index': 0, 'action_id': 'B20_R_release', 'kind': 'R', 'bar_id': 'B20'},
+               {'index': 1, 'action_id': 'B34_R_release', 'kind': 'R', 'bar_id': 'B34'}]
+    record = {'robot': 'Cindy', 'action': {'index': 0},
+              'bars': {'bar_B20': {'bar_id': 'B20', 'milestone': 'after_retreat'},
+                       'bar_B34': {'bar_id': 'B34', 'milestone': 'bystander'}}}
+    k, moved, note = viewer.release_as_run(record, actions, {'Cindy': 'B34'})
+    assert k == 1 and 'B34' in note
+    assert moved['bars']['bar_B34']['milestone'] == 'after_retreat'
+    assert moved['bars']['bar_B20']['milestone'] == 'bystander'
+    assert record['bars']['bar_B20']['milestone'] == 'after_retreat'    # the read record is left as it was
+    # * The R of the held bar itself stays where it is.
+    assert viewer.release_as_run(record, actions, {'Cindy': 'B20'}) == (0, record, None)
+
+
+def test_step_options_say_which_tick_box_each_step_used(viewer):
+    """The monitor's log lines and the servo file decide each tick box, the way 2026-10-23 ran."""
+    events = [(0.0, 'spiral_box', ('ON',)), (0.0, 'servo_box', ('MoCap bar',)),
+              (10.0, 'servo_box', ('MoCap bar',)),    # the transfer reads the box at its start
+              (12.0, 'mount_pause', ('B20_J_M3_CDFM_transfer_to_approach',)),
+              (40.0, 'servo_box_insert', ('B20_J_M4_LM_insert', 'MoCap bar')),
+              (60.0, 'spiral_ran', ('B21_J_M5_LM_insert',))]
+
+    def options(log, kind, movement_id, step_kind, t0, t1, servo):
+        """The step's boxes by key."""
+        out = viewer.step_options(log, kind, {'movement_id': movement_id, 'kind': step_kind}, t0, t1, servo)
+        return {o['key']: o for o in out}
+
+    transfer = options(events, 'J', 'B20_J_M3_CDFM_transfer_to_approach', 'dual_constrained_free', 10.0, 20.0,
+                       {'feedback': 'mocap_bar'})
+    assert transfer['free_move']['used'] and transfer['servo_bar']['used']
+    # * A grounded insert: the servo after it aims the bar; the ticked spiral box does nothing (rigid insert).
+    grounded = options(events, 'J', 'B20_J_M4_LM_insert', 'dual_constrained_linear', 38.0, 45.0,
+                       {'feedback': 'mocap_bar'})
+    assert grounded['servo_bar']['used']
+    assert grounded['spiral']['box'] and grounded['spiral']['used'] is False and grounded['spiral']['shown']
+    screwed = options(events, 'J', 'B21_J_M5_LM_insert', 'dual_constrained_linear', 59.0, 70.0, None)
+    assert screwed['spiral']['used'] and not screwed['servo_bar']['used']
+    # * A retreat never spirals, but a ticked box is still listed, as not used.
+    retreat = options(events, 'R', 'B20_R_M1_LM_retreat', 'dual_independent_linear', 80.0, 90.0, None)
+    assert retreat['spiral']['shown'] and retreat['spiral']['used'] is False and not retreat['free_move']['shown']
+    support = options([(0.0, 'servo_box', ('tool0',))], 'H', 'B21_H_M0_free_to_approach', 'single_free', 5.0, 9.0,
+                      {'feedback': 'tool0'})
+    assert support['servo_bar']['shown'] and not support['servo_bar']['used']
+    assert 'aims its flange' in support['servo_bar']['why']
+    # * No monitor log: nothing is claimed.
+    unknown = options(None, 'J', 'B21_J_M5_LM_insert', 'dual_constrained_linear', 0.0, 1.0, None)
+    assert unknown['spiral']['used'] is None and unknown['spiral']['box'] is None
+
+
 def _plate(joint, z, err, shift, bow=None):
     """One plate row as `pair_geometry` writes it (only the fields the verdict reads)."""
     return {'joint': joint, 'n_seen': 2, 'z_mm': z, 'length_mm': 48.3 + err, 'length_err_mm': err,
@@ -157,7 +217,7 @@ def test_bar_numbers_from_a_record(viewer):
 def test_metrics_follow_the_card(viewer):
     """The pickers list the measurements in the card's order, each one a key the page can read."""
     assert [m['key'] for m in viewer.METRICS] == [
-        'placement', 'placement_seat', 'rotation', 'tool0', 'servo', 'pair_length', 'spacing', 'bend',
+        'placement', 'rotation', 'tool0', 'servo', 'pair_length', 'spacing', 'bend',
         'fit_residual', 'load']
 
 

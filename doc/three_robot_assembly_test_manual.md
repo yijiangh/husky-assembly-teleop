@@ -2251,10 +2251,32 @@ python src/husky-assembly-teleop/data/bar_holding_acc_data/4_assembly_viewer.py 
 - **Expect:** `[assembly] 261008_2ModulesDemo_YH.3dm has no 'env' solids; the lab room and the camera rig come from 260929_phase1_retest.3dm (same Motive frame).`
 - **Expect:** `[assembly] wrote .../bar_action_live_replan_exe/20261020-asbuilt-result/assembly_20261020.html (1.x MB)`
 
+- **Expect:** `[assembly] tick boxes: N lines of 20261020 in /home/su/husky_real/monitor.log` (the
+  page reads which tick boxes each step used from the monitor's log; without the log: `! no monitor
+  log at ...` and the tick boxes show as not known)
+
 One page per lab day, rebuilt in place each time the script runs (records written since appear).
 Leave out the date for the newest day. Other options: `--problem NAME` (when one day recorded two
 problems), `--no-robots`, `--no-cameras`, `--env-3dm PATH`, `--out PATH`, `--runs-dir PATH` (a
-headless smoke's scratch folder, for a desk rehearsal).
+headless smoke's scratch folder, for a desk rehearsal), `--monitor-log PATH` (another copy of the
+monitor's log).
+
+**Shared copies online** (a Claude artifact: colleagues open the link in their own browser, nothing
+to install; private until shared from the page's **Share** menu):
+
+| Lab day | Problem | Link |
+|---|---|---|
+| 2026-10-20 | 261006_3bar_holding_test (B20) | https://claude.ai/artifact/1UzzufFCprw3AksFuRXEi8 |
+| 2026-10-21 | 261006_3bar_holding_test (B20, B21, B22) | https://claude.ai/artifact/UXrEGhpfvqRhAyRpuR5RVD |
+| 2026-10-23 | 261023_2ModulesDemo (B20–B37) | https://claude.ai/artifact/FxWwsbhnkZiK4br4BtV9qx |
+
+Step-accuracy reports made from these records (which step changed each bar's error, what the servo
+did, which tick boxes each step used): 20–21 Oct https://claude.ai/artifact/8uv8YGUqsaUMoseEnANqL5,
+23 Oct https://claude.ai/artifact/FFPBiLaM5Jw6AVAedK7FXz (a copy beside the day's page:
+`20261023-asbuilt-result/as_built_report_20261023.html`).
+
+The link does not follow the drive: after a rebuild, ask Claude to republish the page to the same
+link (it keeps the URL).
 
 ### 9.4 Reading the page
 
@@ -2264,8 +2286,9 @@ headless smoke's scratch folder, for a desk rehearsal).
 |---|---|
 | slider `action` (or ← / →) | the action, in the plan's order. Its label reads the bar first, e.g. `B20 · R (release) · Cindy`, then the plan's action number, how many bars exist and who holds which |
 | the pills under it | that action's records, milestones first (`before insert`, `after insert`, ...); `[` / `]` step through them; struck through = a step that was cancelled or stopped short; ↻ = redone. **The pill you pick stays picked**: go to another action and back (e.g. `before retreat` at B20 R, then B20 J, then B20 R again) and it is still the one shown |
+| `tick boxes at this step` (under the pills) | the panel's tick boxes that could change the picked record's step, one line each: `✓ used` or `✗ not used`, how the box was set (`ticked` / `unticked`) and why. Transfers: `Transfer as a free move (workaround)` and `Servo feedback: MoCap bar markers` (used only when the servo really aimed the bar: e.g. `unticked ... bar_B37 carries no MoCap markers`); inserts: `Insert compliant part: SPIRAL search` (a grounded bar's insert is rigid, so the box never acts there) and, for a grounded bar, the servo after the insert; a support robot's servo aims tool0 only. A box ticked at a step it cannot act on is listed as not used (the monitor still prints `[Exec] ... SPIRAL search (box ticked)` before a retreat). Read from `~/husky_real/monitor.log` |
 | `all records` | also lists the step starts and the free moves |
-| the strip at the bottom | one cell per action in the same order, coloured by its worst placement error (grey: recorded but not measured; pale: not executed); click a cell to jump there. `strip by <bar>` shows one bar's error against its seat through the whole run |
+| the strip at the bottom | one cell per action in the same order, coloured by the placement error of the action's own bar at its last step that ended well (grey: recorded, but that bar has no MoCap markers or no fit; pale: not executed); click a cell to jump there. `strip by` → `worst bar of each action` colours by the worst bar in the scene instead, and `<bar>` shows one bar's error against its seat through the whole run |
 | left click a bar or a ball | its card; Esc or × closes it |
 
 **What the drawing means**
@@ -2281,7 +2304,7 @@ headless smoke's scratch folder, for a desk rehearsal).
 | robots | the one whose monitor recorded, as measured; the others as last saved in `progress.json` (`(saved)`, paler) |
 
 **What the `data by` picker draws on the bars.** Both pickers list the measurements in the card's order
-(placement, vs the seat, rotation, tool0, servo, plate length, spacing, bending, fit residual, load). With no bar clicked, on every measured bar; once a
+(placement, rotation, tool0, servo, plate length, spacing, bending, fit residual, load). With no bar clicked, on every measured bar; once a
 bar is clicked, on that bar only (nothing of another measurement or another bar on top of it). Every
 arrow is drawn **20× longer** than the error it shows (a millimetre on a 2 m bar cannot be seen); the
 numbers beside them are the true values. The bar's name label then shows only its name.
@@ -2289,7 +2312,6 @@ numbers beside them are the true values. The bar's name label then shows only it
 | `data by` | drawn |
 |---|---|
 | placement error | a small ball at the start, middle and end of the authored bar (dark) and of the measured one (coloured by its error), an arrow from each authored ball towards its measured one, and the distance there (`2.54 mm`). None when the step has no target for the bar (e.g. before the mount) |
-| placement vs seat | the same against the seat |
 | rotation error | at the bar's start, thin axes: the authored bar's x (red) / y (green) / z (blue, along the bar) faint, the measured bar's solid; each measured axis with its letter `X` / `Y` / `Z` at its tip and, just above the letter, the turn **about** it: `about Z: 1.79°` (the bar's roll; the Z labels sit just above the bar), `about Y: -0.02°`, `about X: -0.02°`; around each axis near its tip, a small **purple** arc sweeping that turn (20×; none when too small to see); and `centre lines 0.027° apart` under the z axis. Against the step target, else the seat. The start is not an anchor: a rigid bar's turn is the same wherever it is measured; the axes sit there because the bar's own frame does |
 | bending | every plate named (`J20-22`, `J20-21`, ...); at each inner plate a red arrow the way the bar bows there, and `J20-21 · bow 1.51 mm` |
 | plate length error | at each plate, its name and how far its two balls' distance is off the design (`J20-25 · balls off -0.68 mm`) |
@@ -2308,7 +2330,6 @@ Plate labels alternate below and above the bar, so neighbouring plates' labels n
 |---|---|
 | header | line 1: the step and the robot, `B20_R_M1_LM_retreat / Cindy (17:29:48)`; line 2: when the record was taken (`at the start of the step` / `at the end of the step` / `recorded by a click`) and the moment of the bar's life (`after the retreat`, ...). A step that did not end well gets a red line under it |
 | placement error | the MoCap bar vs where it should be (the step's target), at the start, the middle and the end, the largest in bold |
-| placement error vs the seat | the MoCap bar vs its **final** place in the design (its seat). The same as the placement error once the bar is placed; the two differ only while the bar is held on its way in (before the insert it should be 15 mm above its seat, so there the placement error is small and the one vs the seat about 15 mm) |
 | rotation error | the angle between the centre lines, then the turn split into a tilt about the bar's x and y and a roll about its own axis z (the colours of the axes in the view with `data by: rotation error`), and the offset at the bar's start. One value for the whole bar: it is rigid, so it turns as one piece, the angle is the same wherever it is measured, and there is no anchor and no start / middle / end |
 | robot: tool0 vs target, servo residual | each flange by FK against the step's target (`tool0 vs target, left / right`); the servo's last iteration (`servo residual, left / right`, on the end records of a transfer and of a grounded bar's insert only); then **where the error comes from**: `FK bar vs target` is what the robot can see (its servo drives it to ~0.2 mm), `MoCap vs target` the total, `MoCap vs FK` what the robot cannot see (base calibration, arm, TCP, the bar in the jaws). `data by: tool0 vs target` or `servo residual` marks this block |
 | bar shape & fit | from its balls: is a ball off, is the bar bent, does the fit hold? In mm, as `measured / design (off by)`. A **plate** is one T20 MoCap joint's plate with its two balls, 48.3 mm apart by design: one row per plate (`J20-25  47.6 / 48.3 (off -0.68)`); one row per pair of neighbouring plates, their distance (`J20-22 → J20-21  333.7 / 335.1 (off -1.37)`); the **bow** at every inner plate, the largest in bold (`J20-21: 1.51, J20-169: 0.69`); **Motive noise this day** (how much a plate's ball distance wanders between records); then the fit: balls found, the typical mismatch (rms: the root-mean-square distance between each seen ball and its design spot after the best rigid fit), the worst ball, hidden balls, extra balls near the bar. Ends with the **verdict** (below) |
