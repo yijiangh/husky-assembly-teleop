@@ -86,11 +86,13 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   motion was committed or started; then a stand-in); unknown arm joints of its own robot trip it unless
   `unknown_arms` lets them count where last seen, or stowed. A **trip** is one firing (`ctx.clearance_trips`).
   robot_control's Clearance boxes turn it on for D-pad driving and, at 1 cm (`ARM_STOP_DISTANCE`), for arm joint
-  jogs; the arm planner's commits always keep 1 cm. A robot never counts against itself. With `refuse_first`, one
-  too close at its first check is only refused, nothing sent (robot_control's drives and jogs). A **clearance watch**
-  (`ctx.watch_clearance`) is checked the same way, every 0.5 s, and only reports: robot_control's gray buttons and
-  "starts in collision" chip. `world/clearance.py`. The base planner's **path clearance** is a
-  measured number instead: a planned path's nearest distance to anything, recorded in `experiment.json`.
+  jogs; the arm planner's commits always keep 1 cm. A robot is also kept 1 cm from itself (`SELF_DISTANCE`): its
+  links, tools and what it holds, but not pairs that touch by design (joined links, the SRDF's, a tool's flange
+  links). With `refuse_first`, one too close at its first check is only refused, nothing sent (robot_control's drives
+  and jogs). A **clearance watch** (`ctx.watch_clearance`) is checked the same way, every 0.5 s, and only reports:
+  robot_control's gray buttons and "starts in collision" chip. `world/clearance.py`. The base planner's **path
+  clearance** is a measured number instead: a planned path's nearest distance to anything, recorded in
+  `experiment.json`.
 - **hold**: the arm command "stop where you are and stay" (`arm.hold()`, the Hold button), which needs no lease and is
   refused only without a fresh measurement. Also: a D-pad **hold button** (counts as released 0.25 s after its last
   report), a support robot's **bar hold** (`bar_holding`), and a guided step's precondition that **holds** (below).

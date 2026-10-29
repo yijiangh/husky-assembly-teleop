@@ -8,12 +8,15 @@ import pytest
 from repo_paths import DATA
 
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.world.clearance import ALL_ARMS, STOP_DISTANCE, ClearanceChecker, assumable_joints
+from husky_assembly_teleop.world.base_collision import BaseCollisionWorld
+from husky_assembly_teleop.world.clearance import (ALL_ARMS, SELF_DISTANCE, STOP_DISTANCE, ClearanceChecker,
+                                                   assumable_joints)
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.robot import RobotObject
-from scaffolding_assembly_core.scene import Body, Scene, world_poses
+from scaffolding_assembly_core.scene import Attachment, Body, Scene, world_poses
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 pytestmark = [pytest.mark.safety, pytest.mark.slow]
 
@@ -105,5 +108,52 @@ def test_another_robot_that_lost_mocap_trips_unless_allowed_then_stands_where_la
         assert found(checker, scene(-3.0), own, allowed=frozenset({other})) == []
         (_key, why, hit), = found(checker, scene(-0.8), own, allowed=frozenset({other}))
         assert why == f"came within 10 cm of {other}" and hit is not None
+    finally:
+        checker.close()
+
+
+def stowed(config) -> dict[str, float]:
+    """Every arm of a robot at its stow pose, by joint name."""
+    return {f"{arm.name}_{name}": value for arm in config.arms for name, value in zip(UR_JOINT_NAMES, arm.stow_joints)}
+
+
+def alone(config, joints: dict[str, float], bodies=()) -> Scene:
+    """One robot at the origin with these joints, and bodies (some held), nothing else."""
+    own = robot_id(config.serial)
+    robots = {own: RobotObject(own, config.model, Pose(), joints)}
+    bodies = {body.id: body for body in bodies}
+    return Scene(bodies=bodies, robots=robots, world_poses=world_poses(
+        bodies, robots, lambda robot, link: link_pose(robot.model.urdf, robot.base, robot.joints, link)))
+
+
+@pytest.mark.parametrize("serial", ["0804", "0805", "0806"])
+def test_every_robot_stowed_is_clear_of_itself(serial):
+    """Stowed, no link, tool or arm comes within SELF_DISTANCE of the same robot: no false hit on any robot."""
+    config = robot_config_from_serial(serial, DATA)
+    world = BaseCollisionWorld()
+    try:
+        world.sync(alone(config, stowed(config)))
+        assert world.self_hit(robot_id(config.serial), SELF_DISTANCE, "stowed") is None
+    finally:
+        world.close()
+
+
+def test_an_arm_folded_into_itself_and_a_bar_into_its_robot_are_found_and_named():
+    """Elbow folded: arm links against each other; a 1 m bar held at tool0 when stowed: the bar against the rack."""
+    config = robot_config_from_serial("0804", DATA)
+    own = robot_id(config.serial)
+    folded = {**stowed(config), "ur_arm_elbow_joint": 2.8}
+    bar = Body("bars/b", box_geometry((0.03, 0.03, 1.0)), Attachment(own, "ur_arm_tool0", Pose((0.0, 0.0, 0.5))),
+               label="the bar")
+    checker = ClearanceChecker()
+    try:
+        (_key, why, hit), = found(checker, alone(config, folded), own)
+        assert why == "came within 1 cm of itself: ur_arm_upper_arm_link with ur_arm_wrist_1_link"
+        assert hit.robot == own and hit.contacts[0] is not None
+        (_key, why, hit), = found(checker, alone(config, stowed(config), (bar,)), own)
+        assert why.startswith("came within 1 cm of itself: the bar with ") and hit.pairs[0][0] == bar.id
+        short = Body("bars/s", box_geometry((0.03, 0.03, 0.05)), Attachment(own, "ur_arm_tool0", Pose()),
+                     label="a short bar")
+        assert found(checker, alone(config, stowed(config), (short,)), own) == [], "held at the flange: allowed"
     finally:
         checker.close()

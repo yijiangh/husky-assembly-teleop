@@ -4,7 +4,8 @@ BaseCollisionWorld: what a robot base at a floor pose comes near, in a private P
 * Used by every plugin that drives a base: planners check their moves, experiments their paths. Each keeps its own
   world on its own worker thread; a planner may subclass it for more checks. Clearances (`clearance.py`) use one too.
 * What a robot holds (`held_bodies`) moves with it and is checked with it; contact between the two is left out, as
-  driving never changes it.
+  driving never changes it. `self_hit` checks a robot against itself instead: link against link, tool against arm,
+  and what it holds against the rest of it.
 ! Worker thread only: construct it anywhere, but sync, check and close on one worker. A mirror belongs to one thread.
 ! Use raw `p` calls with `physicsClientId`: `pp.CLIENT` is one global shared by the whole process.
 """
@@ -12,6 +13,9 @@ BaseCollisionWorld: what a robot base at a floor pose comes near, in a private P
 from __future__ import annotations
 
 import math
+import xml.etree.ElementTree as ET
+from itertools import combinations
+from pathlib import Path
 
 import numpy as np
 import pybullet as p
@@ -19,6 +23,7 @@ import pybullet as p
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.ids import TRACKED, link_id
 from scaffolding_assembly_core.mirrors.pybullet import PyBulletMirror
+from scaffolding_assembly_core.robot import RobotModel
 from scaffolding_assembly_core.scene import Attachment, Scene
 
 from .collision_hit import CollisionHit, Contact
@@ -59,6 +64,8 @@ class BaseCollisionWorld:
         self._held: dict[str, dict[str, tuple[Pose, Pose]]] = {}
         # Robots whose held bodies a check moved: the mirror never moves a body back, so `sync` does.
         self._moved: set[str] = set()
+        # Per robot model, its link pairs `self_hit` checks: (link index, link index) by PyBullet index.
+        self._self_pairs: dict[RobotModel, list[tuple[int, int]]] = {}
 
     def sync(self, snapshot: Scene) -> None:
         """Make the world match a snapshot, and refresh footprints, reach and what each robot holds.
@@ -264,8 +271,104 @@ class BaseCollisionWorld:
                 return self.collision_hit(own, margin, f"pose {index + 1} of {len(poses)}", pose)
         return None
 
+    def self_hit(self, own: str, margin: float, where: str) -> CollisionHit | None:
+        """Where robot `own` comes within `margin` of itself, where the last `sync` put it: links, tools, held bodies.
+
+        Pairs that touch by design are left out: links joined to each other, the SRDF's `disable_collisions`, a tool
+        and the links its flange lets it touch (`RobotModel.tool_touches`), and a held body and its holder's (with
+        `Body.touches`).
+
+        Args:
+            own: The robot, by id.
+            margin: Distance below which a pair counts, metres.
+            where: What the robot was doing, for the hit's message.
+
+        Returns:
+            CollisionHit | None: Every such pair, as our ids (links, tools, bodies), with its closest contact; None if
+                clear.
+        """
+        robot, body, client = self.snapshot.robots[own], self.mirror.robot(own), self.mirror.client_id
+        pairs, contacts = [], []
+
+        def add(body_a: int, link_a: int, body_b: int, link_b: int, sides: tuple[str, str]) -> None:
+            points = p.getClosestPoints(body_a, body_b, margin, linkIndexA=link_a, linkIndexB=link_b,
+                                        physicsClientId=client)
+            if points:
+                closest = min(points, key=lambda point: point[8])
+                pairs.append(sides)
+                contacts.append(Contact(sides, tuple(closest[5]), tuple(closest[6]), float(closest[8])))
+
+        for link_a, link_b in self._self_pair_indices(robot.model, body):
+            add(body, link_a, body, link_b, (self._names(own, body, link_a)[-1], self._names(own, body, link_b)[-1]))
+        for held in self._held.get(own, {}):
+            for part in self.mirror.body_ids(held):
+                touched = {link for point in p.getClosestPoints(part, body, margin, physicsClientId=client)
+                           for link in [point[4]] if not self._may_hold_touch(own, held, body, link)}
+                for link in sorted(touched):
+                    add(part, -1, body, link, (held, self._names(own, body, link)[-1]))
+        if not pairs:
+            return None
+        return CollisionHit(self.snapshot, own, where, tuple(pairs), tuple(contacts), margin=margin)
+
+    def _self_pair_indices(self, model: RobotModel, body: int) -> list[tuple[int, int]]:
+        """The link pairs of a robot model that `self_hit` checks, by PyBullet link index; worked out once per model."""
+        pairs = self._self_pairs.get(model)
+        if pairs is not None:
+            return pairs
+        client = self.mirror.client_id
+        names = {-1: p.getBodyInfo(body, physicsClientId=client)[0].decode()}
+        parents = {}
+        for index in range(p.getNumJoints(body, physicsClientId=client)):
+            info = p.getJointInfo(body, index, physicsClientId=client)
+            names[index], parents[index] = info[12].decode(), info[16]
+        allowed = {frozenset((names[index], names[parent])) for index, parent in parents.items()}
+        allowed |= srdf_allowed_pairs(model.srdf)
+        for flange, links in model.tool_touches.items():
+            allowed |= {frozenset((f"{flange}_tool", link)) for link in links}
+        shaped = [index for index in names if p.getCollisionShapeData(body, index, physicsClientId=client)]
+        pairs = self._self_pairs[model] = [(a, b) for a, b in combinations(sorted(shaped), 2)
+                                           if frozenset((names[a], names[b])) not in allowed]
+        return pairs
+
+    def _may_hold_touch(self, own: str, held: str, body: int, link: int) -> bool:
+        """Whether a held body may touch a link (or tool) of its robot: near its holder link, or by its own `touches`.
+
+        Near: the holder link, that link's tool, and the links the tool may touch.
+        """
+        names = self._names(own, body, link)
+        if any(self.mirror.allowed(held, name) for name in names):
+            return True
+        holder = self._holder_link(held)
+        if holder is None:
+            return False
+        model = self.snapshot.robots[own].model
+        near = {holder, f"{holder}_tool", *model.tool_touches.get(holder, ())}
+        return any(name.removeprefix(f"{own}/") in near for name in names) or (
+            holder in model.tools and model.tools[holder].id in names)
+
+    def _holder_link(self, held: str) -> str | None:
+        """The robot link a held body hangs from, through any bodies it is fixed to; None for the robot's base."""
+        seen = set()
+        while held in self.snapshot.bodies and held not in seen:
+            seen.add(held)
+            placement = self.snapshot.bodies[held].placement
+            if not isinstance(placement, Attachment):
+                return None
+            if placement.parent in self.snapshot.robots:
+                return placement.link
+            held = placement.parent
+        return None
+
     def close(self) -> None:
         """Disconnect the world. On the worker, once no search is running."""
         if self.mirror is not None:
             self.mirror.close()
             self.mirror = None
+
+
+def srdf_allowed_pairs(srdf: Path | None) -> set[frozenset[str]]:
+    """The link pairs an SRDF says never need checking (`disable_collisions`); empty without one."""
+    if srdf is None:
+        return set()
+    return {frozenset((entry.get("link1"), entry.get("link2")))
+            for entry in ET.parse(srdf).getroot().iter("disable_collisions")}

@@ -146,8 +146,8 @@ def jog_clearance_note(ticked: bool, stop_distance: float) -> str:
     ! One line either way (`note_line`), so ticking Clearance moves no button.
     """
     if ticked:
-        return note_line(f"moves while held · Clearance keeps {stop_distance * 100:.0f} cm from the scene and other "
-                         f"robots, not from its own robot")
+        return note_line(f"moves while held · Clearance keeps {stop_distance * 100:.0f} cm from the scene, other "
+                         f"robots and itself")
     return note_line("⚠ Clearance off: nothing is checked · moves while held", BUSY)
 
 

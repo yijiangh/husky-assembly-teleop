@@ -812,8 +812,8 @@ class RobotControlPlugin(HuskyPlugin):
         """Keep an ARM_STOP_DISTANCE clearance on the robot while this plugin holds its lease and Clearance is ticked.
 
         The jogged arm and the base must be known; the robot's other arms may not be (where last seen, or stowed).
-        Other robots unknown when it starts may stay unknown; any other robot lost trips it. Not a check of the robot
-        against itself. Too close at the first check, nothing was sent: the press is only refused, with a red chip.
+        Other robots unknown when it starts may stay unknown; any other robot lost trips it. The robot is checked
+        against itself too. Too close at the first check, nothing was sent: the press is only refused, with a red chip.
         """
         serial, key, clearance = widgets.serial, (widgets.serial, widgets.arm.config.name), None
         try:

@@ -10,6 +10,8 @@ Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, 
 - ! What cannot be checked counts as too close: a lost base pose, or a robot the mirror cannot place. Only arms named
   in `Clearance.unknown_arms` may be unknown (manual moves): they are checked where last seen, or stowed. A robot
   that cannot be checked when a clearance starts refuses it (`ClearanceRefused`), so nothing is sent.
+- A robot is also checked against itself, within SELF_DISTANCE: links, tools and what it holds; pairs that touch by
+  design (joined links, the SRDF's, a tool's flange links) are left out (`BaseCollisionWorld.self_hit`).
 - One worker thread checks one snapshot at a time, a tick or two behind the robot. Not an emergency stop.
 - On a trip, `PluginContext.clearance` soft stops the robot (Resume needed) and cancels the task. The monitor keeps
   the last TRIPS_KEPT trips with what came too close (`ClearanceTrip`), for the collisions plugin.
@@ -37,6 +39,8 @@ STOP_DISTANCE = 0.1
 ARM_STOP_DISTANCE = 0.01
 #: How many trips the monitor keeps.
 TRIPS_KEPT = 10
+#: A robot keeps this far from itself (links, tools, what it holds), metres; the SRDF's and tools' allowed pairs aside.
+SELF_DISTANCE = ARM_STOP_DISTANCE
 #: For `unknown_arms`: every arm of the robot.
 ALL_ARMS = "all"
 #: Seconds between checks of the watches (`ClearanceWatch`).
@@ -126,6 +130,16 @@ def others_problem(snapshot: Scene, own: Collection[str], allowed: Collection[st
     """
     return "; ".join(f"{key.split('/', 1)[1]}: {unknown_parts(snapshot.robots[key])} not measured"
                      for key in sorted(unknown_robots(snapshot, own) - set(allowed)))
+
+
+def self_text(snapshot: Scene, pair: tuple[str, str]) -> str:
+    """A pair of one robot's parts, short, e.g. "left_ur_arm_wrist_3_link with right_ur_arm tool"."""
+    def short(object_id: str) -> str:
+        if object_id in snapshot.bodies:
+            return snapshot.label(object_id)
+        kind, *_robot, name = object_id.split("/")
+        return f"{name} tool" if kind == "tools" else name
+    return f"{short(pair[0])} with {short(pair[1])}"
 
 
 def assumable_joints(joints: Iterable[str], unknown_arms: Collection[str] | Literal["all"]) -> frozenset[str]:
@@ -225,4 +239,11 @@ class ClearanceChecker:
                 continue
             if hit is not None:
                 found.append((key, f"came within {margin * 100:.0f} cm of {snapshot.label(hit.pairs[0][1])}", hit))
+                continue
+            # * Itself only within SELF_DISTANCE: links of one robot sit close by design.
+            self_margin = min(margin, SELF_DISTANCE)
+            hit = self._world.self_hit(own, self_margin, "clearance")
+            if hit is not None:
+                why = f"came within {self_margin * 100:.0f} cm of itself: {self_text(snapshot, hit.pairs[0])}"
+                found.append((key, why, hit))
         return found
