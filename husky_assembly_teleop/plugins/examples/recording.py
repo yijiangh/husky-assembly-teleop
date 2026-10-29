@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...drive import drive_folder
+from ...drive import drive_folder, environment
 from ...plugin_api import signals
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
@@ -88,7 +88,8 @@ class ExampleRecordingPlugin(HuskyPlugin):
             await ctx.sleep(RECORD_SECONDS)
         serial = self._robot.config.serial
         folder = run_folder(self._recordings, "default", serial, "example")
-        write_description(folder, {"robot": serial, "seconds": RECORD_SECONDS})
+        write_description(folder, {"robot": serial, "seconds": RECORD_SECONDS,
+                                   **environment(self._robot.base.simulation is not None)})
         path = save_recording(folder, rec, serial, file_format=ctx.config.recording_format)
         self._result = f"{len(rec)} samples -> {path}"
         ctx.log_info(f"recording saved: {self._result}")

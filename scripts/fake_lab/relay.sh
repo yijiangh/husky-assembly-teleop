@@ -3,8 +3,8 @@
 # simulated base (the fake Motive's pose, else husky_sim's truth) as the robot's mocap pose; without it the monitor
 # sees no base.
 #
-# ! Its Motive is 127.0.0.1, where none runs: it never reaches the lab's Motive, even on the mocap network, and tries
-#   to reconnect only every 30 s, so its log stays readable. Calibrations come from the scratch Drive (env.sh), which has none: crl-husky's defaults.
+# ! sim:=true: it reads only the simulation's inputs, never the lab's Motive, even on the mocap network. Calibrations
+#   come from the scratch Drive (env.sh), which has none: crl-husky's defaults.
 #
 # Usage: relay.sh [<argument>:=<value> ...]    more arguments for mocap.launch.py
 
@@ -20,6 +20,5 @@ exec env -i HOME="$HOME" USER="$USER" PATH=/usr/local/bin:/usr/bin:/bin TERM="${
         source "$0/env.sh" || exit 1
         mkdir -p "$FAKE_LAB_HOME" && cd "$FAKE_LAB_HOME"  # out of any checkout
         echo "fake lab: mocap relay on ROS domain $ROS_DOMAIN_ID, Zenoh router 127.0.0.1:$FAKE_LAB_ZENOH_PORT, no Motive"
-        exec ros2 launch "$FAKE_LAB_REPO/launch/mocap.launch.py" server_ip:=127.0.0.1 client_ip:=127.0.0.1 \
-            reconnect_min_interval_sec:=30 "${@:1}"
+        exec ros2 launch "$FAKE_LAB_REPO/launch/mocap.launch.py" sim:=true "${@:1}"
     ' "$here" "$@"

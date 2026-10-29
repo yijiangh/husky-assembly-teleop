@@ -5,7 +5,7 @@ body's true pose (each base, and the marker of an arm carrying tool:=calibration
 would, which the relay then takes in their place:
 
     export ROS_DOMAIN_ID=70
-    ros2 launch husky_assembly_teleop mocap.launch.py
+    ros2 launch husky_assembly_teleop mocap.launch.py sim:=true
     ros2 launch crl_husky sim_robot.launch.py robot:=0805 tool:=calibration_marker
     ros2 launch husky_assembly_teleop sim_mocap.launch.py offsets:="1850:0.004,-0.003,0.002,0,0,0.5"
 
@@ -13,8 +13,9 @@ would, which the relay then takes in their place:
 - `offsets`: where Motive's body frame sits from the true pose, as a calibration gives it (x,y,z m, roll,pitch,yaw
   deg); for a robot's base, how far its true calibration is from crl-husky's default, so a calibration in the
   simulation has something to find.
-- The other imperfections (delay, noise, dropouts, marker errors, drifts) are all off by default: see the arguments
-  and doc/calibration_manual.md, "Testing in a simulation".
+- The other imperfections (delay, noise, dropouts, marker errors, drifts) are all off by default: see the arguments.
+- It also announces what Motive's model descriptions give the relay: a body definition per faked body (`refines`
+  nudges one, as a refine in Motive) and the lab's cameras (`cameras_file`).
 """
 
 
@@ -39,6 +40,9 @@ PER_BODY = (
     ("marker_error", "0.0003", "Reported mean marker error, m"),
     ("drift", "", "The body frame creeping: x,y,z m/min, rotation vector deg/min"),
     ("offsets", "", "The true pose in Motive's body frame: x,y,z m, roll,pitch,yaw deg; a base's over the default"),
+    ("refines", "", "Refines per body (markers nudged); also: ros2 param set /sim_motive refines \"1850:1\""),
+    ("cameras_file", "", "Cameras to announce, JSON as /mocap_relay/cameras; empty: the lab's, none: none"),
+    ("recalibration", "", "Motive's frame moved: x,y,z m, roll,pitch,yaw deg; also ros2 param set while running"),
 )
 
 

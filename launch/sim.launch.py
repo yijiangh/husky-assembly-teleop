@@ -1,6 +1,7 @@
 """A simulation in one launch: crl-husky's simulated robot (sim_robot, or sim_all), and with it a fake Motive.
 
-The relay (mocap.launch.py) and the monitor start once, as with the real robots; this comes and goes beside them:
+The relay (mocap.launch.py sim:=true) and the monitor start once, as with the real robots; this comes and goes beside
+them:
 
     export ROS_DOMAIN_ID=70
     ros2 launch husky_assembly_teleop sim.launch.py robot:=0805

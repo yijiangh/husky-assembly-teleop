@@ -2,7 +2,8 @@
 The lab's obstacles as data: shapes on the floor and the border of the usable area, read from and written to a file.
 
 A lab file (`data/lab/<name>.json`, in git) holds resolved shapes: type, name, centre, size, yaw and a free `source`
-note. Temporary obstacles live in a local file instead (`TEMPORARY_FILE`), never in the lab file.
+note, and optionally meshes drawn in place of the shape (`MeshPart`, files in `meshes/` beside the lab file); collisions
+always use the shape. Temporary obstacles live in a local file instead (`TEMPORARY_FILE`), never in the lab file.
 The floor is not in the file: a slab under the border (`floor_body`). Pure data, files and scene bodies; no UI.
 """
 
@@ -12,9 +13,13 @@ import json
 import math
 import re
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 
-from scaffolding_assembly_core.geometry import BoxShape, Geometry, Pose, box_geometry, cylinder_geometry
+import numpy as np
+
+from scaffolding_assembly_core.geometry import (BoxShape, Geometry, Pose, TriMesh, box_geometry, cylinder_geometry,
+                                                read_mesh)
 from scaffolding_assembly_core.kinematics import chain_joints
 from scaffolding_assembly_core.robot import RobotModel
 from scaffolding_assembly_core.scene import Body
@@ -23,6 +28,9 @@ from scaffolding_assembly_core.scene import Body
 LAB_DIRECTORY = "lab"
 #: The lab loaded without a `lab` parameter.
 DEFAULT_LAB = "main"
+#: Obstacle meshes, beside the lab file: `meshes/<name>.obj`. Rhino exports in millimetres, Y up, each with its origin
+#: at the centre of where it stands on the floor.
+MESH_DIRECTORY = "meshes"
 #: Where temporary obstacles are kept between runs, outside the repo.
 TEMPORARY_FILE = Path.home() / "husky_obstacles_temporary.json"
 #: Where the debug gizmo kept them before; read once if TEMPORARY_FILE is missing.
@@ -38,13 +46,29 @@ FLOOR_THICKNESS = 0.05
 FLOOR_WITHOUT_BORDER = 20.0
 #: File format name and version.
 FORMAT, VERSION = "husky_lab", 1
-UNITS = ("world frame (mocap, Z-up), metres; yaw in degrees about Z. size: box sides; cylinder (diameter, diameter, "
-         "height); truss column (side, side, height) on a 0.8 m ground plate")
+UNITS = ("lab frame (as the mocap relay publishes poses), metres; yaw in degrees about Z. size: box sides; cylinder "
+         "(diameter, diameter, height); truss column (side, side, height) on a 0.8 m ground plate. meshes: drawn "
+         "only, never collide; at: metres from the shape's bottom centre in its frame, yaw in degrees")
 
 
 def slug(name: str) -> str:
     """Turn a display name into an id segment, e.g. "main pc table" -> "main_pc_table"."""
     return re.sub(r"[^A-Za-z0-9_.\-]+", "_", name)
+
+
+@dataclass(frozen=True)
+class MeshPart:
+    """A mesh drawn for an obstacle in place of its shape; collisions still use the shape.
+
+    Attributes:
+        mesh: File name in MESH_DIRECTORY, without ".obj".
+        at: (x, y, z) of the mesh origin from the shape's bottom centre, metres, in the shape's frame.
+        yaw: Turn about Z in the shape's frame, radians.
+    """
+
+    mesh: str
+    at: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    yaw: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -54,10 +78,11 @@ class Shape:
     Attributes:
         type: "box", "cylinder" or "truss".
         name: Label, shown in collision messages; its slug is the last part of the id.
-        center: (x, y, z) of the shape's middle, metres, world frame.
+        center: (x, y, z) of the shape's middle, metres, lab frame.
         size: Box sides; a cylinder's (diameter, diameter, height); a truss column's (side, side, height). Metres.
         yaw: Turn about Z, radians.
         source: Where the numbers came from, e.g. "probe 2026-09-30" or "by hand".
+        meshes: What is drawn in place of the shape; none draws the shape.
     """
 
     type: str
@@ -66,6 +91,7 @@ class Shape:
     size: tuple[float, float, float]
     yaw: float = 0.0
     source: str = ""
+    meshes: tuple[MeshPart, ...] = ()
 
     @property
     def pose(self) -> Pose:
@@ -77,17 +103,29 @@ class Shape:
         """bool: Whether its x and y size must stay equal (a cylinder's diameter, a truss column)."""
         return self.type != "box"
 
-    def geometry(self) -> Geometry:
-        """Geometry: The shape, for drawing and collisions. ! A new object per call: keep it while the size holds."""
+    def geometry(self, mesh_directory: Path | None = None) -> Geometry:
+        """The shape for collisions, drawn as its meshes if it has any. ! A new object per call: keep it while it holds.
+
+        Args:
+            mesh_directory: Where its meshes are (`mesh_directory_of` the lab file); unused without meshes.
+        """
         sx, sy, sz = self.size
         if self.type == "box":
-            return box_geometry(self.size)
-        if self.type == "cylinder":
-            return cylinder_geometry(sx / 2, sz)
-        shapes = (BoxShape((sx, sy, sz)),
-                  BoxShape((TRUSS_PLATE, TRUSS_PLATE, TRUSS_PLATE_THICKNESS),
-                           Pose((0.0, 0.0, (TRUSS_PLATE_THICKNESS - sz) / 2))))
-        return Geometry(shapes, shapes)
+            geometry = box_geometry(self.size)
+        elif self.type == "cylinder":
+            geometry = cylinder_geometry(sx / 2, sz)
+        else:
+            shapes = (BoxShape((sx, sy, sz)),
+                      BoxShape((TRUSS_PLATE, TRUSS_PLATE, TRUSS_PLATE_THICKNESS),
+                               Pose((0.0, 0.0, (TRUSS_PLATE_THICKNESS - sz) / 2))))
+            geometry = Geometry(shapes, shapes)
+        if not self.meshes:
+            return geometry
+        visual = tuple(placed_mesh(Path(mesh_directory) / f"{part.mesh}.obj", part, sz) for part in self.meshes)
+        # * A mesh read empty (a Git LFS pointer, in a clone without Git LFS) leaves the shape drawn.
+        if not all(len(mesh.faces) for mesh in visual):
+            return geometry
+        return Geometry(visual, geometry.collision)
 
     def moved(self, pose: Pose) -> Shape:
         """The same shape at `pose`, upright: roll and pitch are dropped, only the yaw is kept."""
@@ -108,8 +146,8 @@ class Border:
     """Walls just outside a floor rectangle, drawn as a shaded band on the floor but colliding up to `height`.
 
     Attributes:
-        x: (min, max) of the free area, metres, world frame.
-        y: (min, max) of the free area, metres, world frame.
+        x: (min, max) of the free area, metres, lab frame.
+        y: (min, max) of the free area, metres, lab frame.
         width: Band width, metres, outward from the free area.
         height: Collision height, metres, from the floor.
         source: Where the numbers came from.
@@ -172,6 +210,30 @@ def lab_file(data_directory: Path, lab: str) -> Path:
     return path if path.suffix == ".json" else data_directory / LAB_DIRECTORY / f"{lab}.json"
 
 
+def mesh_directory_of(path: Path) -> Path:
+    """The meshes of the lab file at `path`: MESH_DIRECTORY beside it."""
+    return Path(path).parent / MESH_DIRECTORY
+
+
+# --- --- --- --- --- MESHES --- --- --- --- ---
+
+@lru_cache(maxsize=None)
+def read_obstacle_mesh(path: Path) -> TriMesh:
+    """A mesh file of MESH_DIRECTORY in metres, Z up. ? Cached: each file is read once per run."""
+    mesh = read_mesh(path)
+    vertices = mesh.vertices / 1000.0
+    return TriMesh.from_arrays(np.column_stack((vertices[:, 0], -vertices[:, 2], vertices[:, 1])), mesh.faces)
+
+
+@lru_cache(maxsize=None)
+def placed_mesh(path: Path, part: MeshPart, height: float) -> TriMesh:
+    """The mesh of `part` in the frame of a shape `height` high, whose origin is its centre. ? Cached."""
+    mesh, c, s = read_obstacle_mesh(path), math.cos(part.yaw), math.sin(part.yaw)
+    turn = np.array(((c, -s, 0.0), (s, c, 0.0), (0.0, 0.0, 1.0)))
+    offset = np.array(part.at) - (0.0, 0.0, height / 2)
+    return TriMesh.from_arrays(mesh.vertices @ turn.T + offset, mesh.faces)
+
+
 # --- --- --- --- --- FILES --- --- --- --- ---
 
 def shape_from_json(data: dict) -> Shape:
@@ -181,21 +243,28 @@ def shape_from_json(data: dict) -> Shape:
         ValueError: If a field is missing or wrong.
     """
     try:
+        meshes = tuple(MeshPart(str(item["mesh"]), tuple(float(v) for v in item.get("at", (0.0, 0.0, 0.0))),
+                                math.radians(float(item.get("yaw", 0.0)))) for item in data.get("meshes", ()))
         shape = Shape(type=str(data["type"]), name=str(data["name"]),
                       center=tuple(float(v) for v in data["center"]), size=tuple(float(v) for v in data["size"]),
-                      yaw=math.radians(float(data.get("yaw", 0.0))), source=str(data.get("source", "")))
-    except (KeyError, TypeError, ValueError) as error:
+                      yaw=math.radians(float(data.get("yaw", 0.0))), source=str(data.get("source", "")),
+                      meshes=meshes)
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
         raise ValueError(f"bad obstacle {data!r}: {error}") from error
     if shape.type not in GROUPS or len(shape.center) != 3 or len(shape.size) != 3:
         raise ValueError(f"bad obstacle {data!r}: type must be one of {sorted(GROUPS)}, center and size 3 numbers")
+    if any(len(part.at) != 3 or part.mesh != slug(part.mesh) for part in meshes):
+        raise ValueError(f"bad obstacle {data!r}: a mesh needs a plain file name and `at` 3 numbers")
     return shape
 
 
 def shape_to_json(shape: Shape) -> dict:
     """A shape as the files write it: millimetre and centidegree precision."""
+    meshes = [{"mesh": part.mesh, **({"at": [round(v, 4) for v in part.at]} if any(part.at) else {}),
+               **({"yaw": round(math.degrees(part.yaw), 2)} if part.yaw else {})} for part in shape.meshes]
     return {"type": shape.type, "name": shape.name, "center": [round(v, 4) for v in shape.center],
             "size": [round(v, 4) for v in shape.size], "yaw": round(math.degrees(shape.yaw), 2),
-            **({"source": shape.source} if shape.source else {})}
+            **({"source": shape.source} if shape.source else {}), **({"meshes": meshes} if meshes else {})}
 
 
 def read_lab(path: Path) -> Lab:
@@ -203,7 +272,7 @@ def read_lab(path: Path) -> Lab:
 
     Raises:
         OSError: If it cannot be read.
-        ValueError: If it is not a lab file or an entry is wrong.
+        ValueError: If it is not a lab file, an entry is wrong or a mesh file is missing.
     """
     data = json.loads(Path(path).read_text())
     if not isinstance(data, dict) or data.get("format") != FORMAT:
@@ -220,6 +289,10 @@ def read_lab(path: Path) -> Lab:
     names = [slug(shape.name) for shape in shapes]
     if len(set(names)) != len(names):
         raise ValueError(f"{path}: two obstacles share a name")
+    missing = sorted({part.mesh for shape in shapes for part in shape.meshes
+                      if not (mesh_directory_of(path) / f"{part.mesh}.obj").is_file()})
+    if missing:
+        raise ValueError(f"{path}: no mesh file for {missing} in {mesh_directory_of(path)}")
     return Lab(shapes, border)
 
 
@@ -231,7 +304,7 @@ def write_lab(lab: Lab, path: Path) -> None:
          **({"source": lab.border.source} if lab.border.source else {})})
     text = (f'{{\n  "format": "{FORMAT}",\n  "version": {VERSION},\n  "units": {json.dumps(UNITS)},\n'
             f'  "obstacles": [\n    ' + ",\n    ".join(lines) + f'\n  ],\n  "border": {border}\n}}\n')
-    _replace(Path(path), text)
+    replace_text(Path(path), text)
 
 
 def read_temporary(path: Path | None = None, old_path: Path | None = None) -> dict[int, Shape]:
@@ -263,10 +336,10 @@ def read_temporary(path: Path | None = None, old_path: Path | None = None) -> di
 def write_temporary(shapes: dict[int, Shape], path: Path | None = None) -> None:
     """Write the temporary obstacles to `path` (None for TEMPORARY_FILE); replaced whole, never half written."""
     data = {"shapes": [{"number": number, **shape_to_json(shape)} for number, shape in sorted(shapes.items())]}
-    _replace(Path(path or TEMPORARY_FILE), json.dumps(data, indent=2) + "\n")
+    replace_text(Path(path or TEMPORARY_FILE), json.dumps(data, indent=2) + "\n")
 
 
-def _replace(path: Path, text: str) -> None:
+def replace_text(path: Path, text: str) -> None:
     """Write `text` beside `path`, then swap it in: a kill mid-write cannot leave half a file."""
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(text)

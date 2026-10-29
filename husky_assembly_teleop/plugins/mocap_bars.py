@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import viser
 
-from ..drive import drive_folder, folder_name
+from ..drive import drive_folder, environment, folder_name
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..plugin_api.trace import Signal
@@ -222,7 +222,9 @@ class MocapBarsPlugin(HuskyPlugin):
             await ctx.sleep(seconds)
         process: ProcessContract = ctx.require("process")
         selection = process.selection
+        relay = ctx.world.mocap_relay
         description = {"bar": bar_id, "mocap_id": self._object.mocap_id if self._object else None,
+                       **environment(relay is not None and relay.state.simulated),
                        "process": str(selection.process.folder) if selection is not None else None,
                        "step": selection.movement.id if selection is not None else None, "seconds": seconds,
                        "frame": "world (mocap, Z-up), metres; quaternions (x, y, z, w); deviation in the planned "

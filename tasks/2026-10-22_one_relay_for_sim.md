@@ -21,7 +21,7 @@ with the same id while it streams.
   fake Motive, then truth, then NatNet. A source not heard for `streaming_stale_timeout_sec` gives way to the next, so
   Motive's body comes back when a simulation stops.
 - Calibrations per source: NatNet bodies get the robots' sessions (`calibration_data/`), fake Motive bodies the
-  simulated ones (`calibration_data_sim/domain_<id>/`), truth bodies none: they already are the base_footprint. So a
+  simulated ones (`sim/calibration_data/domain_<id>/`), truth bodies none: they already are the base_footprint. So a
   plain simulation never depends on a calibration applied earlier in the domain.
 - ! In the fleet's domain the relay reads NatNet only: it never looks for simulated inputs there.
 - base_exp records the fake Motive's delay and noise as the sim model's mocap values (0 without a fake Motive), so old

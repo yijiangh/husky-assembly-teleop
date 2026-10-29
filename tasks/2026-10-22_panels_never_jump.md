@@ -1,8 +1,12 @@
 # Panels never jump (2026-10-22)
 
-Status: the plain fixes are done (1–6, 8, 11, 12, 13's one-line summary, 15–18, 20–25 in place, phone chip lines
-24 px high). Waiting on the user, because they move or rebuild things (user: ask first when a case differs from the
-plain pattern): 7, 9, 10, 13's folder reuse, 14, 16's warnings, 19. 26 waits for the other session's calibration work.
+Status: done. The user's decisions on the cases that move things (22 Oct):
+- done: 13 (collisions keeps a source's folder in place), 16 (base_exp's alerts at the top of its details, below the
+  controls), 26 (calibration's laptop chips in a 76 px box, Tip offset and Punch readouts on fixed lines, Validate's
+  rows on chip lines);
+- left as they are: 7 (a controller change is rare, and its controls are needed next), 9 (a small shift, nothing to
+  click there), 10 (the broken banner is meant to be in the way), 14;
+- 19: to do in the roadmap, the coverage map as a plugin of its own.
 Shared helpers: `ui.style.chip_line`, and `ui.style.note_line` for a gray message that comes and goes.
 
 ## Goal

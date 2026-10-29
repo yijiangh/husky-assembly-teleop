@@ -91,15 +91,45 @@ Phones have no hover, so a chip's detail is only on the laptop. Unlock, Resume a
 
 For recording points with the mocap probe (`mocap_probe`); choose its rigid body on the laptop.
 
-- **Big status**: one colour and one word (TRACKED, NOISY, NO FIX) and the probe's x y z; it flashes RECORDED
-  with the point's name.
+- **Big status**: one colour and one word (TRACKED, NOISY, NO FIX), the probe's x y z and its marker error; it
+  flashes RECORDED with the point's name. Below it two tabs, **Points** and **Floor**.
 - **Label** and **Record point**: points are numbered per label (`table_1`, `table_2`, …). Refused while the probe
   has no fix; a noisy fix records, with its marker error.
-- **Map coverage**: the same switch as on the laptop. While it is on, a top-down map shows the floor in 1 m cells
-  (grey until visited, then red to green by how often the probe was tracked there), obstacles in dark grey, robots
+- **Delete all points**: deletes every recorded point. The first tap turns it red ("Tap again: delete N"); a second
+  tap within 3 s deletes. Export and delete single points on the laptop.
+- **Map coverage**: the same switch as in the laptop's Debug folder. While it is on, a top-down map shows the coverage map with 1 m grid lines
+  (light grey until visited, then by mean marker error: green up to 1 mm, deeper the lower,
+  amber to deep orange up to 2 mm, red above, greyer where often lost, grey if never tracked), obstacles in dark grey, robots
   in blue, recorded points in pink and the probe as a white dot (grey without a fix); +x right, +y up. It is redrawn
   at most twice a second.
-- The last points. Export and delete them on the laptop.
+- The last points.
+- **Floor** (floor calibration): **Floor point** records a `floor` sample; spread them over the area. The plane is
+  refitted after each one: points, rms and max (the point farthest from the plane), tilt from the mocap z and how
+  well the normal is known (± per axis). The chip turns green from 6 points with the normal known to 0.02° per
+  axis, and red (no export) while the points sit in one spot or on a line. **Mark** (Origin, Mark 1–3) records the
+  mark on the floor under the tip; it is fitted into the plane too, and probed again it averages. The lab frame is
+  fitted to the marks probed and the anchors read, against their places stored in git (two at least); the
+  chip shows how many, and turns red when a mark lands more than 2 mm from where it is stored (hit badly,
+  or the mark moved). The anchors stored in git are found by themselves, each the marker within 10 cm of its stored
+  place, read once the probe is 0.5 m away, while the relay applies a floor calibration. **Anchor**: only for one the
+  "anchors mm" line asks for ("point": not found near its stored place) or a new one: point the tip at the marker and
+  press; the tip is recorded, and the anchor is the marker nearest it (within 10 cm), fitted with the marks. An
+  anchor over 2 mm from where it is stored has moved: it is left out of the fit (amber chip, "moved"), and the export
+  keeps it for the relay, with its new place in `anchors_in_floor` for updating the lab frame file. The "marks mm"
+  line shows each mark's distance from where it is stored, on the floor ("new" when probed but not stored), "anchors
+  mm" each anchor's, in 3D ("–" while not read, "point" to point at it). "marks vs
+  anchors" says how far the marks alone and the anchors alone place the lab apart. "poses off mm" checks the frame
+  the relay applies, at the lab volume's worst corner: how far the marks alone place the lab from it ("marks"), how
+  far the relay's trusted fit does ("relay", its drift estimate); "marks vs relay" how far those two are apart. To
+  sanity check the calibration, probe a few floor points and the four marks (no export needed): "marks vs relay"
+  should stay under about a millimetre. The last line shows the probe's height above the plane, live. **Export floor calibration** saves `floor_from_raw` to today's calibration session
+  on the Drive (`data_experiment/calibration_data/<YYYYMMDD>/`), on a second tap within 3 s like the delete buttons;
+  refused (saying why) while the frame cannot be placed or the relay announces no cameras. With a warning (a mark or
+  anchor off, an anchor not read) it says why and turns orange: a second press within 2 s exports anyway, on the
+  laptop too.
+  The last result shows in full at the bottom of the tab. To drop a bad floor point, select only it in the laptop's
+  list and Delete: the plane refits. **Delete floor points** deletes the floor points, marks and anchors only, with
+  the same second tap.
 
 ### Exec
 

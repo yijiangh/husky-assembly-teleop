@@ -86,11 +86,10 @@ every simulator terminal, also:
 export ROS_DOMAIN_ID=70          # the simulation domain; never 80
 ```
 
-**Terminal 1: mocap relay**, once, as with the real robots; it publishes the simulated robot's true pose in place of
-Motive's body (in the lab the rest still comes from Motive):
+**Terminal 1: mocap relay**, once; with `sim:=true` it publishes only the simulated robot's poses, never Motive's:
 
 ```bash
-ros2 launch husky_assembly_teleop mocap.launch.py
+ros2 launch husky_assembly_teleop mocap.launch.py sim:=true
 ```
 
 **Terminal 2: simulator and follower** (Alice, mocap id 1840, starting in open floor):
