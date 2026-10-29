@@ -1155,9 +1155,12 @@ Two steps: the retreat (the ungrasp runs with it), then the free move home.
 - [ ] button [Plan Movement]
   - **Expect:** it plans from where the arms **are** (the insert leaves them a little off its planned end):
     - `[<bar>_R_M1_LM_retreat] start_state resynced to the live arms (max joint drift ... deg)` and
-    - `[retreat live] <bar>_R_M1_LM_retreat: goals = the live tool0 poses moved 50 mm back: left along (...), N mm from the exported goal; right ...`.
-  - Each tool0 backs off 50 mm along its exported retreat axis, orientation kept; scene collisions
-    are checked.
+    - `[retreat live] <bar>_R_M1_LM_retreat: goals = the live tool0 poses moved 50 mm back along their own -z (encoders): left along (...), 0.1 deg from the Rhino axis, N mm from the exported goal; right ...`.
+  - Each tool0 backs off 50 mm along its **own** −z as the encoders read it now (since 2026-10-22;
+    before, the Rhino retreat axis), orientation kept; scene collisions are checked. The two agreed
+    within 0.2° in all six retreats of 2026-10-21.
+  - **If not:** `[retreat live] ...: the left tool axis is N deg from the Rhino retreat axis; check the tool before Exec.`
+    (past 20°): the tool sits turned on the bar, or the export's axis is wrong; look before Exec.
   - **If not:** no path: read the `[<bar>_R_M1_LM_retreat diag]` block (7.c).
 - [ ] slider [Traj viz time]: preview
   - **Expect:** starts at the live arms.
@@ -2066,8 +2069,9 @@ two instrumented bars (this manual's problem `261006_3bar_holding_test`, markers
   (`load` block). Where the zeros happen:
   - **the mount pause** (5.2 b), tools empty: from then on the J records read the bar's own load
     (since 2026-10-21; before that nothing zeroed in a J action with the workaround);
-  - **the retreat's start**, with the bar still gripped (so its compliant part reacts only to new
-    forces): the retreat's end record therefore reads **minus** the load the bar put on the arms;
+  - **the retreat's start**, with the bar still gripped, **until 2026-10-21** only: those
+    retreats' end records read **minus** the load the bar put on the arms. Since 2026-10-22 the
+    retreat does not zero, so its records read against the mount-pause zero too;
   - the panel button `Zero Force Sensor (BOTH)`.
   On 2026-10-20 the bar's own load at the end, just before the release, was about 25 N along the
   bar at each arm, equal and opposite (the mount's preload), and about 10 N down in total (its
@@ -2113,8 +2117,8 @@ numbers below are from the second (17:07).
   points straight down (the bar's weight), the left − right difference lies along the bar, equal
   and opposite at the two arms (the mount's preload: the arms squeeze or pull the bar; which one
   depends on the UR wrench's sign convention, not checked).
-- The retreat zeroes the sensors at its start with the bar still gripped, so its end record reads
-  minus the bar's load: about **25 N along the bar** at each arm and about **10 N down** in total.
+- The retreat then zeroed the sensors at its start with the bar still gripped (it no longer does
+  since 2026-10-22), so its end record reads minus the bar's load: about **25 N along the bar** at each arm and about **10 N down** in total.
 - The preload was larger right after the mount (about 55–60 N at the first servo reading, about
   38 N after that servo) and eased by about 2 N with every servo correction, while the right flange
   drifted 1–3 mm off its target: the closed chain settling.

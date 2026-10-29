@@ -5057,6 +5057,13 @@ def _execute_spiral_search(monitor, cartesian_trajectories, spiral: SpiralSearch
                  f'the nominal end pose; ending the insert (the straight line\'s ceiling).')
 
 
+# * Retreat (user decision 2026-10-22): no force zero before its compliant part. The
+# * last zero is the mount pause (tools empty, since 2026-10-21), so the compliance now
+# * acts on the bar's own load -- its weight and the mount's preload -- and lets the
+# * arms give it up before the jaws open. ! Before the mount-pause zero existed, the
+# * same compliance without a zero pushed both tools ~12 mm INTO the joint; True zeroes
+# * again right before it (bar still gripped, _zero_force_sensors).
+RETREAT_ZERO_FT = False
 # * Retreat checks (retreat_guardrails): printed right before the rigid part,
 # * which runs whatever they say (no 'Confirm Exec'). First guesses, to tune.
 RETREAT_GUARD_START_TOL_RAD = 0.01      # first waypoint vs the live joints
@@ -5214,7 +5221,8 @@ def _zero_force_sensors(monitor, tag: str, why: str = 'before the compliant part
 
     Called at two moments:
 
-    * Right before the retreat's compliant part. The compliance controller
+    * Right before the retreat's compliant part, only with ``RETREAT_ZERO_FT``
+      (off since 2026-10-22, the mount-pause zero below being the reference then). The compliance controller
       moves each tool until stiffness x offset balances the force it reads, so a
       force left in the reading -- a sensor bias, or the contact preload left by
       the insert -- drives the tool on its own: on the real robot both tools
@@ -5625,9 +5633,9 @@ def execute_planned_trajectory_compliant(monitor):
             cartesian_trajectories[1][0] = R_start
 
         # --- Chunk 2: the compliant phase (all of M3; M2's final split_mm) ---
-        # * Retreat: tare the force sensors first, while the arms are still under
-        # * joint control and at rest (see _zero_force_sensors).
-        if is_retreat:
+        # * Retreat: no zero by default (RETREAT_ZERO_FT): the compliance acts on the
+        # * bar's load measured since the mount pause.
+        if is_retreat and RETREAT_ZERO_FT:
             yield from _zero_force_sensors(monitor, tag, why="before the retreat's compliant part (bar still gripped)")
         # wait until the switch is completely (yield will go back to top level monitor to get updated state)
         switched_to_compliance = yield from switch_dual_arm_controller(

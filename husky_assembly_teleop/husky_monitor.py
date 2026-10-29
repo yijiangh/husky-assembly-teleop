@@ -257,6 +257,15 @@ M2_COMPLIANT_SPLIT_MM_MAX = 30.0
 M2_SPIRAL_DURATION_S_MAX = 60.0
 M2_SPIRAL_TURNS_MAX = 10
 
+# The retreat backs off along each tool's live -z (encoders); past this angle from the
+# export's Rhino axis it warns before Exec (_live_retreat_targets).
+RETREAT_AXIS_WARN_DEG = 20.0
+# When the full retreat line (the export's 50 mm) has no collision-free path, 'Plan
+# Movement' retries this much shorter each time, down to the minimum (the joint is 15 mm
+# deep: 25 mm still leaves the tools 10 mm clear of it).
+RETREAT_SHORTEN_STEP_MM = 5.0
+RETREAT_MIN_DISTANCE_MM = 25.0
+
 # Cartesian path density for M3's replanned retreat -- how finely the straight
 # line from the arms' ACTUAL tool0 poses to the movement's authored goal frames
 # is sampled before each waypoint is IK'd. Same units and defaults as the
@@ -9805,6 +9814,32 @@ class HuskyMonitor(Node):
         if jt is None:
             # Say (and draw) why no straight line was found.
             self._diagnose_cartesian_plan_failure(tag, mv.start_state, report)
+            # * Live: retry shorter. The jaws let go at the retreat's start and the joint is
+            # * 15 mm deep, so the last part of the line only gains clearance; it can run
+            # * into the robot itself (2026-10-23, B35: Cindy's left forearm reached her own
+            # * chassis at ~45 mm of 50). The free move home is planned from wherever it ends.
+            full_mm = (mv.notes or {}).get('lm_distance_mm')
+            if getattr(self, 'huskies', None) and full_mm is not None:
+                for dist in np.arange(float(full_mm) - RETREAT_SHORTEN_STEP_MM,
+                                      RETREAT_MIN_DISTANCE_MM - 1e-6, -RETREAT_SHORTEN_STEP_MM):
+                    goal_short = self._live_retreat_targets(mv, distance_mm=float(dist))
+                    if goal_short is None:
+                        break
+                    report = {}
+                    with pp.LockRenderer():
+                        jt = plan_dual_arm_linear_independent(
+                            self.cfab.planner, mv.start_state, goal_conf=None,
+                            goal_ee_frames=goal_short, skip_env_collisions=False, report=report)
+                    if jt is not None:
+                        self.get_logger().warn(
+                            f"[{tag}] the full {float(full_mm):.0f} mm retreat has no collision-free "
+                            f"straight line (see the diag above); planned a SHORTER one: {dist:.0f} mm "
+                            f"back. The free move home starts from there.")
+                        break
+                if jt is None:
+                    self.get_logger().error(
+                        f"[{tag}] no straight retreat of {RETREAT_MIN_DISTANCE_MM:.0f}-{float(full_mm):.0f} mm "
+                        f"either: nothing planned.")
         self._record_cartesian_viz(mv, tag, report)
         return jt
 
@@ -9822,14 +9857,17 @@ class HuskyMonitor(Node):
             return live_goals['frames']
         return getattr(mv, 'target_ee_frames', None) or None
 
-    def _live_retreat_targets(self, mv) -> Optional[dict]:
-        """Each arm's retreat goal: its live tool0 moved back along the export's retreat axis.
+    def _live_retreat_targets(self, mv, distance_mm: Optional[float] = None) -> Optional[dict]:
+        """Each arm's retreat goal: its live tool0 moved back along its own tool axis (encoders).
 
-        The export describes the retreat in the movement's notes:
-        ``retreat_axes_world`` (one world-frame unit vector per arm, along the joint
-        axis the tool pulls off) and ``lm_distance_mm``. The goal keeps the tool0
-        orientation; only its position moves. ``mv.start_state`` must already hold the
-        live arms (``_resync_start_state_to_live``).
+        The distance is the export's (``lm_distance_mm`` in the movement's notes); the
+        axis is each arm's live -tool0 z, read from the encoders by FK, the direction
+        the tool pulls off its joint (user decision 2026-10-22: the export's
+        ``retreat_axes_world`` is the Rhino tool's, which the servo and the compliant
+        insert may have turned away from; it is only compared, and warned about past
+        ``RETREAT_AXIS_WARN_DEG``). The goal keeps the tool0 orientation; only its
+        position moves. ``mv.start_state`` must already hold the live arms
+        (``_resync_start_state_to_live``).
 
         ! Derived from FK on purpose, unlike the other targets (the authored
         ! target_ee_frames are the source of truth elsewhere): the retreat has to
@@ -9841,6 +9879,8 @@ class HuskyMonitor(Node):
 
         Args:
             mv: The loaded retreat (DUAL_INDEPENDENT_LINEAR).
+            distance_mm (float | None): How far back, mm; None = the export's
+                ``lm_distance_mm`` (a shorter retry, see ``_plan_M3_dispatch``).
 
         Returns:
             dict | None: ``{"left": Frame, "right": Frame}`` (world), or None when the
@@ -9848,26 +9888,36 @@ class HuskyMonitor(Node):
         """
         self._retreat_live_targets = None
         notes = getattr(mv, 'notes', None) or {}
-        axes = notes.get('retreat_axes_world') or {}
-        dist_mm = notes.get('lm_distance_mm')
-        if dist_mm is None or any(axes.get(s) is None for s in ('left', 'right')):
+        rhino_axes = notes.get('retreat_axes_world') or {}
+        dist_mm = notes.get('lm_distance_mm') if distance_mm is None else distance_mm
+        if dist_mm is None:
             self.get_logger().warn(
-                f"[retreat live] {mv.movement_id}: its notes have no retreat_axes_world / "
-                f"lm_distance_mm; planning to the exported target frames instead.")
+                f"[retreat live] {mv.movement_id}: its notes have no lm_distance_mm; "
+                f"planning to the exported target frames instead.")
             return None
         exported = mv.target_ee_frames or {}
         targets, parts = {}, []
         for side, link in (('left', TOOL_LINK_LEFT), ('right', TOOL_LINK_RIGHT)):
             tool0 = _fk_link_frame(self.cfab.planner, mv.start_state, link)
-            axis = np.asarray(axes[side], dtype=float)
+            # * Back along the live tool axis: -tool0 z, from the encoders.
+            axis = -np.asarray(tool0.zaxis, dtype=float)
             axis = axis / np.linalg.norm(axis)
             point = np.asarray(tool0.point, dtype=float) + axis * float(dist_mm) / 1000.0
             targets[side] = Frame(point.tolist(), tool0.xaxis, tool0.yaxis)
+            vs_rhino = ''
+            if rhino_axes.get(side) is not None:
+                rhino = np.asarray(rhino_axes[side], dtype=float)
+                deg = float(np.degrees(np.arccos(np.clip(axis @ (rhino / np.linalg.norm(rhino)), -1.0, 1.0))))
+                vs_rhino = f", {deg:.1f} deg from the Rhino axis"
+                if deg > RETREAT_AXIS_WARN_DEG:
+                    self.get_logger().warn(
+                        f"[retreat live] {mv.movement_id}: the {side} tool axis is {deg:.1f} deg from "
+                        f"the Rhino retreat axis; check the tool before Exec.")
             gap = (f", {1000.0 * np.linalg.norm(point - np.asarray(exported[side].point)):.1f} mm "
                    f"from the exported goal" if exported.get(side) is not None else '')
-            parts.append(f"{side} along ({axis[0]:+.2f}, {axis[1]:+.2f}, {axis[2]:+.2f}){gap}")
+            parts.append(f"{side} along ({axis[0]:+.2f}, {axis[1]:+.2f}, {axis[2]:+.2f}){vs_rhino}{gap}")
         print(f"[retreat live] {mv.movement_id}: goals = the live tool0 poses moved "
-              f"{float(dist_mm):.0f} mm back: " + '; '.join(parts) + '.')
+              f"{float(dist_mm):.0f} mm back along their own -z (encoders): " + '; '.join(parts) + '.')
         self._retreat_live_targets = {'movement_id': mv.movement_id, 'frames': targets}
         return targets
 
