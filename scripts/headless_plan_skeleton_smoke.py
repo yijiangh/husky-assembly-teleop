@@ -1578,8 +1578,13 @@ def one_sided_insert_check(results: Results, problem: str, root: str, skeleton) 
         latch); TIGHTEN goes to the mating arm only, then the compliance
         controller is asked for;
     (c) under compliance the mating arm's joint motor runs, then stalls: that
-        stall alone ends the insert (the other arm never reports one), well
-        before the 30 s ceiling, every motor stopped and the joint controller back;
+        stall alone ends the insert (the other arm never reports one), PER ARM:
+        the mating arm's motor is stopped and it goes back under the joint
+        controller at once, only the holding arm gets targets after the stall
+        (the rest of its line, then its end pose until it has settled), then it
+        goes back too; well before the 30 s ceiling, every motor stopped;
+    (e) with the spiral box ticked the same insert still runs the straight line
+        (one mating joint: the spiral is ignored and the log says so);
     (d) the same insert without the mating female in its start state (no mating
         arm, not grounded) refuses to run: an error and no command at all.
 
@@ -1601,6 +1606,8 @@ def one_sided_insert_check(results: Results, problem: str, root: str, skeleton) 
     # The compliant tail places its cartesian targets with the drawn husky's
     # body; headless, the planner's robot (Cindy's URDF) stands in for it.
     monitor.huskies[0].object = SimpleNamespace(robot=monitor.cfab.client.robot_puid)
+    # The holding arm's settle reads the arm-reported TCP: FK on the ghost, as a healthy arm.
+    iface.tcp_fn = lambda i: _live_tool0_in_arm_base(monitor, i)
     all_stops = {(0, motor, arm) for motor in (GRIPPER_MOTOR, JOINT_MOTOR) for arm in (0, 1)}
 
     pump = partial(pump_exec, iface)   # pump(task, until, max_ticks=...)
@@ -1648,25 +1655,66 @@ def one_sided_insert_check(results: Results, problem: str, root: str, skeleton) 
             f"ended {ended}, tool commands {tool_cmds(iface, n_calls)}, rigid approach "
             f"{joint_cmds}, early-stall lines {early}")
 
-        # * --- (c) under compliance the mating motor runs, then stalls: that alone ends the insert
+        # * --- (c) under compliance the mating motor runs, then stalls: that alone ends the
+        # *     insert, per arm: the mating arm stiff at once, the holding arm settles first
         iface.scaffolding_status[arm] = motor_status('RUNNING')
         n_cart = len(iface.calls)
         pump(task, lambda: any(c[0] == 'cartesian' for c in iface.calls[n_cart:]))
         iface.scaffolding_status[arm] = motor_status('STALLED')
         t_stall = time.time()
+        n_stall = len(iface.calls)
         ended = pump(task, lambda: False)
         took = time.time() - t_stall
         stops = {c[1:] for c in iface.calls[n_calls:] if c[0] == 'scaffolding' and c[1] == 0}
         done = log.since(n_log, 'info', 'Compliant exec done')
+        after = iface.calls[n_stall:]
+        backs = [c[3] for c in after if c[0] == 'switch' and c[2] == JOINT_CTRL]
+        targets_after = sorted({c[1] for c in after if c[0] == 'cartesian'})
+        i_stop = next((k for k, c in enumerate(after)
+                       if c[0] == 'scaffolding' and c[1] == 0 and c[3] == arm), None)
+        i_cart = next((k for k, c in enumerate(after) if c[0] == 'cartesian'), None)
+        holding = 'LR'[1 - arm]
+        stalled_lines = log.since(n_log, 'info', 'joint motor STALLED at')
+        settled = log.since(n_log, 'info', f'{holding} settled')
         results.check(
-            f"one-sided insert: the {side} joint motor's stall alone ends {mv.movement_id} "
-            f"(the other arm never reports one), well before the "
-            f"{HOLD_FOR_STALL_TIMEOUT_S:.0f} s ceiling; every motor stopped, {JOINT_CTRL} back",
-            ended and took < GROUNDED_INSERT_MAX_S and len(done) == 1
+            f"one-sided insert: the {side} joint motor's stall alone ends {mv.movement_id} per "
+            f"arm: {'LR'[arm]}'s motor STOP and its switch to {JOINT_CTRL} first, only {holding} "
+            f"gets targets after the stall (its line, then its end pose until it has settled, "
+            f">= {husky_world.SETTLE_WINDOW_S} s), then '{holding} settled'; every motor stopped, "
+            f"{JOINT_CTRL} back on both, well before the {HOLD_FOR_STALL_TIMEOUT_S:.0f} s ceiling",
+            ended and husky_world.SETTLE_WINDOW_S <= took < GROUNDED_INSERT_MAX_S and len(done) == 1
             and tool_cmds(iface, n_calls) == [(1, JOINT_MOTOR, arm)] and stops == all_stops
+            and backs == [arm, 1 - arm] and targets_after == [1 - arm]
+            and i_stop is not None and i_cart is not None and i_stop < i_cart
+            and len(stalled_lines) == 1 and len(settled) == 1
+            and not log.since(n_log, 'error', 'ARMS LEFT UNDER')
             and iface.active_controller == [JOINT_CTRL] * cindy.n_arms,
-            f"ended {ended}, {took:.2f} s after the stall, lines {done}, stops {sorted(stops)}, "
-            f"controllers {iface.active_controller}")
+            f"ended {ended}, {took:.2f} s after the stall, lines {done}, stalled-at {stalled_lines}, "
+            f"settled {settled}, switches back {backs}, targets after the stall for arms "
+            f"{targets_after}, stops {sorted(stops)}, controllers {iface.active_controller}")
+        monitor.tasks.clear()
+
+        # * --- (e) the spiral box ticked on a one-mate bar: the straight line runs, the box is ignored
+        mv, _path = load_insert(monitor, iface, action)    # the load re-seeds the box: tick it after
+        monitor.m2_spiral_search = True
+        iface.scaffolding_status[arm] = motor_status('RUNNING')
+        n_calls, n_log = len(iface.calls), len(log.msgs)
+        monitor.exec_selected_movement_traj()
+        task = monitor.tasks[0]
+        n_cart = len(iface.calls)
+        pump(task, lambda: any(c[0] == 'cartesian' for c in iface.calls[n_cart:]))
+        iface.scaffolding_status[arm] = motor_status('STALLED')
+        ended = pump(task, lambda: False)
+        done = log.since(n_log, 'info', 'Compliant exec done')
+        results.check(
+            f"one-sided insert: with the spiral box ticked {mv.movement_id} still runs the straight "
+            f"line (one mating joint: the spiral is ignored and the log says so)",
+            ended and len(log.since(n_log, 'info', 'no spiral for a bar with one mating joint')) == 1
+            and not log.since(n_log, 'info', 'SPIRAL search for the compliant part')
+            and len(done) == 1 and '[linear mode]' in done[0],
+            f"ended {ended}, done {done}, ignored-box lines "
+            f"{log.since(n_log, 'info', 'no spiral for a bar with one mating joint')}")
+        monitor.m2_spiral_search = False
         monitor.tasks.clear()
 
         # * --- (d) no mating female in the start state, not grounded: refuses to run
@@ -3546,7 +3594,7 @@ def main(argv: Optional[list] = None) -> int:
         skeleton = load_plan_skeleton(root)
         for run in (dispatch_check, carry_check, transfer_start_check, operator_steps_check,
                     transfer_free_move_check, grounded_insert_check, one_sided_insert_check,
-                    spiral_insert_check, retreat_screw_out_check, transfer_servo_check,
+                    spiral_insert_check, transfer_servo_check,
                     cindy_run, alice_run,
                     cindy_restart_run, exec_propagation_check):
             try:

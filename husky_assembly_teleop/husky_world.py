@@ -5,6 +5,7 @@ This module contains the world definition and high level actions or sequences of
 import os, time
 import contextlib
 from itertools import product
+from collections import deque
 from typing import TYPE_CHECKING, Callable, Generator, Iterator, Optional, Tuple
 import asyncio.runners
 import asyncio
@@ -3975,6 +3976,33 @@ def compute_bar_pose_from_EE_poses(left, right):
     
     return (middle_pose, to_left, to_right)
 
+def segment_pose_at(cartesian_trajectory, t_elapsed: float) -> Tuple[np.ndarray, np.ndarray]:
+    """The target pose on a straight-line segment ``t_elapsed`` seconds after its start.
+
+    Position: the straight line from the start POINT to the end POINT; orientation:
+    slerp between the two. Past ``t_move`` the end pose is held. The one place the
+    line is computed, so a stream can be restarted mid-line from the point it had
+    reached (the holding arm of a one-mate insert) exactly where it would have been.
+
+    ! Start point to end point, not the translation of ``end * inv(start)``: that
+    ! only equals this when the two orientations are the same; with any orientation
+    ! change the old line drifted and never reached the end point.
+
+    Args:
+        cartesian_trajectory (list): ``[start_pose_world, end_pose_world, t_move, t_wait]``.
+        t_elapsed (float): Seconds since the segment started.
+
+    Returns:
+        tuple: ``(point, quat)`` in the world frame, both numpy arrays.
+    """
+    start_pose_world, end_pose_world = cartesian_trajectory[0], cartesian_trajectory[1]
+    t = min(float(t_elapsed) / float(cartesian_trajectory[2]), 1.0)
+    p0 = np.asarray(pp.point_from_pose(start_pose_world), dtype=float)
+    p1 = np.asarray(pp.point_from_pose(end_pose_world), dtype=float)
+    quat = pp.quaternion_slerp(pp.quat_from_pose(start_pose_world), pp.quat_from_pose(end_pose_world), t)
+    return p0 + (p1 - p0) * t, np.asarray(quat, dtype=float)
+
+
 def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, index, arm_base_link: str = None,
                                   lateral_offset=None):
     """Publish one tick of a linear cartesian move as the arm's compliance target.
@@ -4002,27 +4030,13 @@ def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, i
     if arm_base_link is None:
         arm_base_link = 'left_ur_arm_base_link' if index == 0 else 'right_ur_arm_base_link'
     world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, arm_base_link))
-    
-    start_pose_world = cartesian_trajectory[0]
-    end_pose_world = cartesian_trajectory[1]
 
-    # ! The straight line from the start POINT to the end POINT. It used to be
-    # ! the translation of the pose product end * inv(start), which only equals
-    # ! this when the two orientations are the same; with any orientation change
-    # ! the old line drifted and never reached the end point.
-    linear_offset = (np.array(pp.point_from_pose(end_pose_world))
-                     - np.array(pp.point_from_pose(start_pose_world)))
-    quat_1 = pp.quat_from_pose(start_pose_world)
-    quat_2 = pp.quat_from_pose(end_pose_world)
-    
-    t = min(time_elapsed / cartesian_trajectory[2], 1.0)
-
-    point = np.array(pp.point_from_pose(start_pose_world)) + np.array(linear_offset) * t
+    point, quat = segment_pose_at(cartesian_trajectory, time_elapsed)
     if lateral_offset is not None:
         # * The spiral search: execute_cartesian_linear_dual hands BOTH arms the
         # * same vector, so the bar only translates and the grasp is kept.
         point = point + np.asarray(lateral_offset, dtype=float)
-    lerped = pp.Pose(point, pp.euler_from_quat(pp.quaternion_slerp(quat_1, quat_2, t)))
+    lerped = pp.Pose(point, pp.euler_from_quat(quat))
     arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), lerped)
     
     #pp.draw_pose(lerped)
@@ -4077,7 +4091,6 @@ def switch_arm_controllers(monitor: 'HuskyMonitor', to_ctrl: str, timeout_s: flo
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     spec = monitor._connected_robot()
     arms = list(range(spec.n_arms)) if arm_indices is None else list(arm_indices)
-    sides = [spec.side_keys[i] for i in arms]
     # * Ask controller_manager what each arm runs NOW instead of trusting the
     # * cache (see HuskyRobotInterface.refresh_active_controllers): a start-up
     # * query that found no controller_manager leaves it "", a switch made
@@ -4087,12 +4100,17 @@ def switch_arm_controllers(monitor: 'HuskyMonitor', to_ctrl: str, timeout_s: flo
     query_deadline = time.time() + CONTROLLER_QUERY_TIMEOUT_S
     while any(hi.controller_query_pending[i] for i in asked) and time.time() < query_deadline:
         yield
-    # Already there: say so without touching controller_manager. A switch whose
-    # deactivate and activate name the SAME controller is rejected under STRICT,
-    # so asking anyway would turn "nothing to do" into a spurious failure.
-    # Callers rely on this to cheaply ensure a controller (e.g. the joint
+    # Already there: leave that arm alone without touching controller_manager. A
+    # switch whose deactivate and activate name the SAME controller is rejected
+    # under STRICT, so asking anyway would turn "nothing to do" into a spurious
+    # failure. Callers rely on this to cheaply ensure a controller (e.g. the joint
     # controller before M2's rigid chunk) without knowing what is active.
-    if all(hi.active_controller[i] == to_ctrl for i in arms):
+    # ! Per arm, not all-or-nothing: after a one-mate insert the mating arm is
+    # ! already back under the joint controller while the holding arm is still
+    # ! under compliance, and the restore asks for both.
+    arms = [i for i in arms if hi.active_controller[i] != to_ctrl]
+    sides = [spec.side_keys[i] for i in arms]
+    if not arms:
         return True
     sent = [hi.switch_controller(hi.active_controller[i], to_ctrl, i) for i in arms]
     if not all(sent):
@@ -4124,8 +4142,9 @@ switch_dual_arm_controller = switch_arm_controllers
 
 
 def execute_cartesian_linear_dual(monitor, cartesian_trajectories,
-                                  on_tick=None, should_continue=None, lateral_offset_fn=None):
-    """Drive both arms along a per-arm linear cartesian segment.
+                                  on_tick=None, should_continue=None, lateral_offset_fn=None,
+                                  arm_indices=None):
+    """Drive both arms (or the listed ones) along a per-arm linear cartesian segment.
 
     cartesian_trajectories = [[L_start_pose, L_end_pose, t_move, t_wait],
                               [R_start_pose, R_end_pose, t_move, t_wait]]
@@ -4137,22 +4156,24 @@ def execute_cartesian_linear_dual(monitor, cartesian_trajectories,
                        search. Evaluated ONCE per tick and handed to both arms
                        as the same vector, so the tool0-to-tool0 transform (the
                        grasp on the bar) is kept: the bar translates, nothing else.
+    arm_indices: the arms that get targets; None = both. The other arm gets
+                       NOTHING (it may be under the joint controller by now: the
+                       mating arm of a one-mate insert after its stall). The list
+                       keeps its two entries either way, indexed by arm.
     """
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
     arm_base_links = monitor._connected_robot().arm_base_links
+    arms = [0, 1] if arm_indices is None else list(arm_indices)
     start_time = time.time()
 
     def _step():
         lateral = (lateral_offset_fn(time.time() - start_time)
                    if lateral_offset_fn is not None else None)
-        l = execute_linear_cartesian_move(robot, hi, start_time,
-                                          cartesian_trajectories[0], 0, arm_base_links[0],
-                                          lateral_offset=lateral)
-        r = execute_linear_cartesian_move(robot, hi, start_time,
-                                          cartesian_trajectories[1], 1, arm_base_links[1],
-                                          lateral_offset=lateral)
-        return l or r
+        alive = [execute_linear_cartesian_move(robot, hi, start_time,
+                                               cartesian_trajectories[i], i, arm_base_links[i],
+                                               lateral_offset=lateral) for i in arms]
+        return any(alive)
 
     cont = should_continue if should_continue is not None else (lambda: True)
     while cont() and _step():
@@ -4770,6 +4791,76 @@ LINEAR_ARRIVAL_TOL_M = 0.002
 # screw tightening, the plan skeleton's grasp step), for firmware that never reports it.
 HOLD_FOR_STALL_TIMEOUT_S = 30.0
 
+# * --- The holding arm of a one-mate insert: when has it settled? ---
+# The compliance controller is a spring: after its last target goes out the arm is
+# still moving toward the point where the spring's pull balances the contact force.
+# "Settled" is measured, not timed: the tool moved less than SETTLE_TOL_M over the
+# last SETTLE_WINDOW_S. ("Reached the target" is the wrong test: against a force it
+# never will.) SETTLE_CEILING_S after the last target the arm is switched back
+# anyway, with a warning.
+SETTLE_TOL_M = 0.0005
+SETTLE_WINDOW_S = 0.5
+SETTLE_CEILING_S = 3.0
+
+
+class _SettleWatch:
+    """Says when a tool has stopped moving: it travelled < ``tol_m`` over the last ``window_s``.
+
+    Feed it the measured tool point every tick after the last target went out.
+    Before a full window of samples exists the answer is "don't know" (None),
+    never "settled".
+    """
+
+    def __init__(self, tol_m: float = SETTLE_TOL_M, window_s: float = SETTLE_WINDOW_S,
+                 ceiling_s: float = SETTLE_CEILING_S, clock=time.time):
+        """Start watching.
+
+        Args:
+            tol_m (float): Travel over one window under which the tool counts as still.
+            window_s (float): The window, seconds.
+            ceiling_s (float): Seconds after the first sample at which 'ceiling' is answered.
+            clock (callable): Returns the time in seconds (``time.time``; tests pass a fake).
+        """
+        self.tol_m = float(tol_m)
+        self.window_s = float(window_s)
+        self.ceiling_s = float(ceiling_s)
+        self.clock = clock
+        self._samples = deque()       # (t, point) covering the last window
+        self._first_t = None
+        self.moved_mm = None          # travel over the last full window, for the log
+        self.elapsed_s = 0.0          # since the first sample
+
+    def sample(self, point) -> Optional[str]:
+        """Add the tool's point now and judge.
+
+        Args:
+            point (Sequence[float]): The measured tool position (any fixed frame; metres).
+
+        Returns:
+            str | None: ``'settled'`` once a full window shows less than the tolerance of
+            travel; ``'ceiling'`` once the ceiling has passed without that; None meanwhile.
+        """
+        now = float(self.clock())
+        p = np.asarray(point, dtype=float)
+        if self._first_t is None:
+            self._first_t = now
+        self.elapsed_s = now - self._first_t
+        self._samples.append((now, p))
+        # ! Keep the NEWEST sample that is at least a window old: the compared pair then
+        # ! always spans a full window whatever the tick times. Dropping everything older
+        # ! than the window instead leaves the oldest sample younger than the window on
+        # ! jittered ticks, and the window never fills.
+        while len(self._samples) > 1 and self._samples[1][0] <= now - self.window_s:
+            self._samples.popleft()
+        t_old, p_old = self._samples[0]
+        if now - t_old >= self.window_s:
+            self.moved_mm = float(np.linalg.norm(p - p_old)) * 1000.0
+            if self.moved_mm < self.tol_m * 1000.0:
+                return 'settled'
+        if self.elapsed_s >= self.ceiling_s:
+            return 'ceiling'
+        return None
+
 # * --- The insert's spiral search: the compliant part's alternative to the straight line ---
 # Radius of the spiral at the assembled depth. It grows from 0 at the
 # rigid->compliant handover, so the first turns stay inside the joint's catch
@@ -5017,6 +5108,102 @@ def _hold_until_joint_motors_stall(monitor, timeout_s, stall_gate: _JointStallGa
     monitor.get_logger().warn(
         f'[{label}] rigid-only hold hit its {timeout_s:.0f}s ceiling without the '
         f'{stall_gate.text} reporting STALLED.')
+
+
+def _finish_holding_arm(monitor, mating: int, cartesian_trajectories, stalled_at: float,
+                        t_total: float, on_tick=None, label: str = 'insert'):
+    """End a one-mate insert's compliant part per arm, after the mating screw's stall.
+
+    The mating arm's joint is made: it goes back under the joint controller at once
+    (frozen where it is). The holding arm's planned end pose was only Rhino's guess,
+    and the joint correction has already moved the bar, so the point we want for it
+    is the balance between its end pose and the contact force, not the pose itself:
+
+      1. it streams whatever is left of its planned line, from the line point it had
+         reached at the stall (not the live tool, which lags under compliance) to the
+         line's end, over the remaining seconds -- nothing is left when the stall
+         came after the line, the usual case (23 Oct: stalls 0.6 s and 2.4 s after
+         a 1.7 s line);
+      2. it keeps its end target until its measured tool has stopped moving
+         (``_SettleWatch``), ``SETTLE_CEILING_S`` at most;
+      3. the caller's ``finally`` then switches it back too.
+
+    ! The mating arm's tool gets STOP first: the driver's STOP stops both motors
+    ! of that tool and clears its stall flags, so nothing after this may read the
+    ! insert's stall gate. 'Cancel Exec' ends the holding arm's streams.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        mating (int): The mating arm (0 = left, 1 = right); the other one holds.
+        cartesian_trajectories (list): The compliant part's ``[[start, end, t_move, t_wait], ...]``.
+        stalled_at (float): Seconds into the compliant part at which the stall came.
+        t_total (float): The compliant line's planned seconds.
+        on_tick (callable): Optional ``fn(hi, robot)`` called every tick (the wrench recorder).
+        label (str): Log tag (the movement id).
+
+    Yields:
+        None: One yield per monitor tick.
+    """
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    log = monitor.get_logger()
+    h = 1 - int(mating)
+    M, H = 'LR'[mating], 'LR'[h]
+    remaining = max(float(t_total) - float(stalled_at), 0.0)
+    print(f'[scaffolding] {label}: STOP joint motor on {M} arm (arm {mating}), its screw is tight')
+    hi.send_scaffolding_cmd(0, JOINT_MOTOR, mating)
+    tail = (f'{H} finishes its line under compliance ({remaining:.1f} s left) and settles'
+            if remaining > 0.0 else f'{H} has streamed its whole line, it settles at its end')
+    log.info(f'[{label}] {M} joint motor STALLED at {stalled_at:.1f} of {t_total:.1f} s of the '
+             f'compliant part; {M} back under joint control, {tail}.')
+
+    t_switch = time.time()
+    back = yield from switch_arm_controllers(monitor, 'scaled_joint_trajectory_controller',
+                                            arm_indices=[mating])
+    if not back:
+        log.error(f'[{label}] {M} could not leave compliance at its stall; ending the insert '
+                  f'for both arms.')
+        return
+    log.info(f'[{label}] {M} back under scaled_joint_trajectory_controller '
+             f'{time.time() - t_switch:.2f} s after its stall.')
+
+    # * The rest of the holding arm's line: from the point it had reached at the stall
+    # * (the line is continuous, and well inside the 5 cm target guard) to its end,
+    # * then the end target held for the settle (t_wait = the ceiling). t_move must
+    # * not be 0: the lerp divides by it.
+    traj_h = cartesian_trajectories[h]
+    start = segment_pose_at(traj_h, stalled_at) if remaining > 0.0 else traj_h[1]
+    rest = list(cartesian_trajectories)
+    rest[h] = [start, traj_h[1], max(remaining, 0.1), SETTLE_CEILING_S]
+    watch = _SettleWatch()
+    verdict = {'what': None}
+    t1 = time.time()
+
+    def to_the_end() -> bool:
+        """Keep streaming until Cancel, or the line is out and the tool has settled."""
+        if getattr(monitor, '_servo_abort', False):
+            verdict['what'] = 'cancel'
+            return False
+        if time.time() - t1 < rest[h][2]:
+            return True                      # still streaming the line
+        # ! The controller's measured TCP, in the arm base frame: a distance is frame-free.
+        verdict['what'] = watch.sample(hi.arm_tcp_pose[h][0])
+        return verdict['what'] is None
+
+    yield from execute_cartesian_linear_dual(monitor, rest, on_tick=on_tick,
+                                             should_continue=to_the_end, arm_indices=[h])
+    moved = watch.moved_mm
+    if verdict['what'] == 'settled':
+        log.info(f'[{label}] {H} settled {watch.elapsed_s:.1f} s after its last target '
+                 f'(moved {moved:.2f} mm in the last {SETTLE_WINDOW_S:.1f} s).')
+    elif verdict['what'] == 'ceiling':
+        log.warn(f'[{label}] {H} NOT settled {SETTLE_CEILING_S:.0f} s after its last target, '
+                 f'still moving {moved if moved is not None else float("nan"):.1f} mm per '
+                 f'{SETTLE_WINDOW_S:.1f} s; held anyway.')
+    elif verdict['what'] == 'cancel':
+        log.warn(f"[{label}] 'Cancel Exec' while {H} was finishing its line; ending here.")
+    else:
+        log.warn(f'[{label}] {H} ran out its stream ({rest[h][2]:.1f} s line + '
+                 f'{SETTLE_CEILING_S:.0f} s hold) before settling or the ceiling; held anyway.')
 
 
 def _execute_spiral_search(monitor, cartesian_trajectories, spiral: SpiralSearch,
@@ -5800,9 +5987,16 @@ def execute_planned_trajectory_compliant(monitor):
     avoids.
 
     Only the MATING arms' joint motors tighten (``bar_action_io.mating_arm_sides``):
-    both on a normal bar, one on a one-sided bar (B3: the right male has no
-    female to screw into). Both arms still run the same rigid approach and the
-    same compliant tail, and go back to rigid when the mating motor(s) stall.
+    both on a two-mate bar, one on a one-mate bar (B21: the right male has no
+    female to screw into, it rests on a staging bar). Both arms run the same rigid
+    approach and the same compliant line. A two-mate bar goes back to rigid on
+    both arms when both motors stall. A ONE-MATE bar ends per arm
+    (``_finish_holding_arm``, since 2026-10-27):
+    ! no spiral (one correcting joint would turn the bar about itself);
+    ! at the mating screw's stall the mating arm goes stiff at once, while the
+    ! holding arm streams whatever is left of its line and then holds its end
+    ! target until its tool has stopped moving (``_SettleWatch``), so it is not
+    ! frozen mid-settle against the contact force (the 26 Oct skew).
 
     Safety contract: the live arms must already be at the planned start conf;
     otherwise `send_arm_cmd_cartesian` rejects targets (>5 cm from current TCP)
@@ -6024,13 +6218,12 @@ def execute_planned_trajectory_compliant(monitor):
     # tightens the screw against the scaffold; the loop must NOT terminate on
     # motion-time budget alone. Inflate t_wait so execute_linear_cartesian_move
     # keeps publishing the end pose, and exit only when every MATING arm's joint
-    # motor reports STALLED (the gate; a one-sided bar waits for one arm). Large
+    # motor reports STALLED (the gate; a one-mate bar waits for one arm). Large
     # t_wait (HOLD_FOR_STALL_TIMEOUT_S) is a hard ceiling fallback if firmware
     # never reports stall. M3's compliant part is the screw-out below
     # (_retreat_screw_out_under_compliance): its segment is rebuilt there, so
     # this t_wait is only the settle window after it (0 today).
     t_wait = HOLD_FOR_STALL_TIMEOUT_S if is_insert else LINEAR_SETTLE_SECONDS
-    should_continue_fn = lambda: not stall_gate.all_stalled()
 
     cartesian_trajectories = [
         [L_start, L_end, t_total, t_wait],
@@ -6181,9 +6374,27 @@ def execute_planned_trajectory_compliant(monitor):
         if is_retreat:
             pass     # streamed by the screw-out above
         elif spiral is None:
+            # * A stall that came during the rigid chunk is already in: both arms end at
+            # * once, as they always did. Otherwise a one-mate bar ends per arm.
+            stalled_before = bool(stall_gate.all_stalled()) if is_insert else False
+            t0 = time.time()
+            stalled_at = [None]
+
+            def going() -> bool:
+                """Keep streaming until the mating motor(s) stall or Cancel Exec."""
+                if is_insert and stall_gate.all_stalled():
+                    stalled_at[0] = time.time() - t0
+                    return False
+                return not getattr(monitor, '_servo_abort', False)
+
             yield from execute_cartesian_linear_dual(
                 monitor, cartesian_trajectories, on_tick=_record_wrench,
-                should_continue=should_continue_fn)
+                should_continue=going)
+            if (is_insert and len(mating_arms) == 1 and stalled_at[0] is not None
+                    and not stalled_before):
+                yield from _finish_holding_arm(
+                    monitor, mating_arms[0], cartesian_trajectories, stalled_at[0], t_total,
+                    on_tick=_record_wrench, label=tag)
         else:
             yield from _execute_spiral_search(
                 monitor, cartesian_trajectories, spiral, stall_gate,

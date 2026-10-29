@@ -1862,12 +1862,38 @@ ROS_DOMAIN_ID=84 ros2 service call /a200_0804/ur5e/controller_manager/switch_con
 - `servo skipped (FAKE_HARDWARE ...)` / `(the base is not tracked by mocap)` (Alice, Belle:
   `[approach ...] servo skipped (FAKE_HARDWARE / the base is not tracked by mocap)`) = no
   correction (7.b).
+- The box `Servo feedback: MoCap bar markers (unticked = tool0)` follows the loaded step (since
+  2026-10-27, `Load Movement` sets it every time): **ticked and live** when the action's bar carries
+  MoCap markers (every ground bar first of all: its MoCap feedback is what places the structure),
+  **greyed and unticked** when it carries none (the servo then aims tool0, the flanges, and records
+  nothing of the bar). Unticking it for a bar with markers prints a WARN
+  (`'Servo feedback: MoCap bar markers' UNTICKED for bar_B21, which has markers: the servo will aim tool0 ...`;
+  for a ground bar: `... a GROUND bar, the foundation of every bar after it ... Untick only on purpose.`).
+  Unticked = tool0 by itself, nothing else to set; the servo's own `[servo] feedback: tool0 (...)`
+  line says so at every run.
 
-### 6.f The spiral search (optional, insert of a bar that tightens)
+### 6.f The spiral search (insert of a bar that tightens on BOTH arms)
 
-Tick `Insert compliant part: SPIRAL search (unticked = straight line; radius 0->15 mm, bar-centric)`
-before `Exec Selected Mv Traj`: the compliant part then circles the bar around the planned
-insertion line instead of driving straight along it.
+The box `Insert compliant part: SPIRAL search (unticked = straight line; radius 0->15 mm, bar-centric)`
+follows the loaded step (since 2026-10-27, `Load Movement` sets it every time):
+- an insert whose bar mates on **both** arms (B22, B36, B37...): **ticked and live** (the default;
+  untick it for a straight-line run, the next `Load Movement` ticks it again);
+- a **ground** bar (B20, B34) or a **one-mate** bar (B21, B35: only one male has a female to
+  screw into, the other rests on a staging bar): **greyed and unticked**. The insert runs the
+  straight line whatever the box shows; with one joint correcting the spiral turned the bar about
+  that joint and skewed it (B21, B35 on 2026-10-23). The start line reads
+  `insert spiral search: n/a (box greyed: ...)`.
+With the box ticked the compliant part circles the bar around the planned insertion line instead
+of driving straight along it. To see the motion first without a bar: the spiral test, 4.2.
+
+A one-mate bar's insert also **ends per arm** (since 2026-10-27): when the mating screw stalls,
+the mating arm's motor is stopped and that arm goes stiff at once
+(`L joint motor STALLED at 2.4 of 1.7 s of the compliant part; L back under joint control, R has streamed its whole line, it settles at its end.`),
+while the holding arm keeps its end target under compliance until its tool has stopped moving
+(`R settled 0.6 s after its last target (moved 0.21 mm in the last 0.5 s).`; a WARN
+`R NOT settled 3 s after its last target, still moving X mm per 0.5 s; held anyway` means the
+spring never came to rest), then goes stiff too. The force plot of the holding arm should flatten
+before its switch; the bar should not be skewed afterwards.
 - One sideways offset goes to both arms (the grasp is kept, the bar only translates), its radius
   growing from 0 at the handover to 15 mm at the assembled depth over `Insert spiral: duration (s)`
   (default 20) with `Insert spiral: turns` revolutions (default 4, i.e. 3.75 mm per turn, under the
