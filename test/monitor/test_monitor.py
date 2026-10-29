@@ -434,7 +434,7 @@ def test_a_check_that_finds_nothing_marks_the_clearances_it_asked_about_checked(
 
 
 def test_a_watch_joins_a_check_every_half_second_and_only_reports(monkeypatch):
-    """Asked every WATCH_EVERY; too close fills `found`, never a soft stop; a robot it cannot check is left out."""
+    """Asked every WATCH_EVERY; too close fills `found`, one it cannot check `unchecked`; never a soft stop."""
     stops = []
     robots = [SimpleNamespace(base=SimpleNamespace(mocap_id=1, state=SimpleNamespace(
         marker_errors=deque([(100.0, 0.0)]), last_fix_time=100.0)), soft_stop=lambda reason="": stops.append(reason))]
@@ -459,7 +459,7 @@ def test_a_watch_joins_a_check_every_half_second_and_only_reports(monkeypatch):
 
     found, asked = asyncio.run(run())
     assert found == {"r0": "came within 1 cm of the rack"} and asked == 1, "not asked again within WATCH_EVERY"
-    assert watch.found == {} and watch.checked_at is not None and not stops
+    assert watch.found == {} and watch.unchecked == {"r0": "cannot be checked: base not measured"} and not stops
 
 
 def test_log_lines_reach_the_ros_log_and_the_console_with_their_source(monkeypatch):

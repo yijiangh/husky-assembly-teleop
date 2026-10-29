@@ -498,14 +498,13 @@ class HuskyMonitor(Node):
         """
         found = self._clearances.finished()
         if found is not None:
-            # * Watches first take their answer whole: a robot too close, with a hit; one it cannot check is left out.
+            # * Watches take their answer whole: a robot too close (with a hit), or one it cannot check.
             for _ctx, watch, _serial in self._clearances_asked:
                 if isinstance(watch, ClearanceWatch):
-                    watch.found, watch.checked_at = {}, now
+                    watch.found, watch.unchecked, watch.checked_at = {}, {}, now
             for (ctx, clearance, serial), why, hit in found:
                 if isinstance(clearance, ClearanceWatch):
-                    if hit is not None:
-                        clearance.found[serial] = why
+                    (clearance.found if hit is not None else clearance.unchecked)[serial] = why
                 else:
                     ctx._trip_clearance(clearance, serial, why, hit)
             # * What the check found nothing for is clear: a `refuse_first` clearance may now be driven under.

@@ -286,10 +286,12 @@ class PlannerPanel(HuskyPlugin):
         self._last_tick = now
         plan = self._api.plan
         if plan is not self._shown:
-            if plan is not None and (self._shown is None or plan.id != self._shown.id):
+            shown, self._shown = self._shown, plan
+            if plan is not None and (shown is None or plan.id != shown.id):
                 self._t, self._playing = 0.0, False
-            self._shown = plan
-            if plan is not None:
+            # * Only a new plan, state or message is news: a re-timed plan (`set_duration`) keeps the line as it is.
+            if plan is not None and (shown is None or (plan.id, plan.state, plan.message)
+                                     != (shown.id, shown.state, shown.message)):
                 failed = plan.state == "failed"
                 self._say(plan.message, FAIL if failed else BUSY if plan.warning else NONE)
                 if failed or plan.warning:

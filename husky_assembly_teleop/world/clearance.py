@@ -21,6 +21,7 @@ Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, 
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Collection, Hashable, Iterable, Literal
@@ -84,13 +85,14 @@ class ClearanceWatch:
     """Robots a plugin wants to know about without driving them: what each is too close to, as a clearance would see.
 
     Never trips: nothing is stopped or cancelled. The other robots not measured are checked as stand-ins, as at the
-    start of a clearance; a robot that cannot be checked is left out of `found`.
+    start of a clearance.
 
     Attributes:
         serials: The robots, by serial.
         margin: Distance below which a robot counts as too close, metres.
         unknown_arms: Arms whose joints may be unknown, checked where last seen or stowed, or ALL_ARMS.
         found: Per serial, what the last check found it too close to, e.g. "came within 10 cm of wall"; empty if clear.
+        unchecked: Per serial, why the last check could not check it, e.g. "cannot be checked: base not measured".
         checked_at: ROS time of the last finished check, or None before the first.
     """
 
@@ -98,6 +100,7 @@ class ClearanceWatch:
     margin: float
     unknown_arms: Collection[str] | Literal["all"] = ()
     found: dict[str, str] = field(default_factory=dict)
+    unchecked: dict[str, str] = field(default_factory=dict)
     checked_at: float | None = None
 
 
@@ -232,17 +235,18 @@ class ClearanceChecker:
         snapshot = with_stand_ins(snapshot, {own for _key, own, _margin in checked}).scene
         self._world.sync(snapshot)
         for key, own, margin in checked:
+            # * Itself only within SELF_DISTANCE: links of one robot sit close by design.
+            self_margin = min(margin, SELF_DISTANCE)
             try:
                 hit = self._world.collision_hit(own, margin, "clearance")
-            except (ValueError, KeyError) as error:
+                itself = None if hit is not None else self._world.self_hit(own, self_margin, "clearance")
+            except (ValueError, KeyError, OSError, ET.ParseError) as error:
                 found.append((key, f"cannot be checked: {error}", None))
                 continue
             if hit is not None:
                 found.append((key, f"came within {margin * 100:.0f} cm of {snapshot.label(hit.pairs[0][1])}", hit))
                 continue
-            # * Itself only within SELF_DISTANCE: links of one robot sit close by design.
-            self_margin = min(margin, SELF_DISTANCE)
-            hit = self._world.self_hit(own, self_margin, "clearance")
+            hit = itself
             if hit is not None:
                 why = f"came within {self_margin * 100:.0f} cm of itself: {self_text(snapshot, hit.pairs[0])}"
                 found.append((key, why, hit))

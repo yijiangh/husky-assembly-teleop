@@ -190,6 +190,32 @@ def test_a_refuse_first_clearance_too_close_at_its_start_is_refused_without_a_so
     assert "at its start; refused, nothing sent" in log.text("warning")
 
 
+def test_a_refusal_repeated_while_a_button_is_held_is_kept_and_logged_once():
+    """The same refusal again (a held D-pad asking every second) adds no trip and no log line; a new reason does."""
+    ctx, _world, log = _context()
+
+    async def drive() -> None:
+        with ctx.clearance(["0805"], refuse_first=True):
+            while True:
+                await ctx.next_tick()
+
+    async def refuse(why: str) -> None:
+        task = ctx.spawn("drive", drive())
+        await asyncio.sleep(0)
+        clearance, = ctx._clearances
+        ctx._trip_clearance(clearance, "0805", why)
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def scenario() -> None:
+        for why in ("came within 10 cm of wall", "came within 10 cm of wall", "came within 10 cm of the rack"):
+            await refuse(why)
+
+    asyncio.run(scenario())
+    assert [trip.problem for trip in ctx.clearance_trips] == ["robot 0805 came within 10 cm of wall",
+                                                              "robot 0805 came within 10 cm of the rack"]
+    assert log.text("warning").count("refused, nothing sent") == 2
+
+
 def test_a_watch_is_kept_until_unwatched_and_needs_no_task():
     """`watch_clearance` keeps the watch for the monitor to check; `unwatch_clearance` drops it."""
     ctx, _world, _log = _context()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+import numpy as np
 import pytest
 from repo_paths import DATA
 
@@ -134,6 +135,19 @@ def test_every_robot_stowed_is_clear_of_itself(serial):
     try:
         world.sync(alone(config, stowed(config)))
         assert world.self_hit(robot_id(config.serial), SELF_DISTANCE, "stowed") is None
+    finally:
+        world.close()
+
+
+def test_a_gripper_turned_on_its_wrist_is_clear_of_its_own_arm():
+    """Cindy's gripper passes within a centimetre of its own wrist_1 as wrist_3 turns: only a touch would count."""
+    config = robot_config_from_serial("0806", DATA)
+    joints = stowed(config)
+    joints["left_ur_arm_wrist_3_joint"] += np.radians(150.0)
+    world = BaseCollisionWorld()
+    try:
+        world.sync(alone(config, joints))
+        assert world.self_hit(robot_id(config.serial), SELF_DISTANCE, "turned") is None
     finally:
         world.close()
 

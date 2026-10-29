@@ -65,7 +65,7 @@ class BaseCollisionWorld:
         # Robots whose held bodies a check moved: the mirror never moves a body back, so `sync` does.
         self._moved: set[str] = set()
         # Per robot model, its link pairs `self_hit` checks: (link index, link index) by PyBullet index.
-        self._self_pairs: dict[RobotModel, list[tuple[int, int]]] = {}
+        self._self_pairs: dict[RobotModel, list[tuple[int, int, bool]]] = {}
 
     def sync(self, snapshot: Scene) -> None:
         """Make the world match a snapshot, and refresh footprints, reach and what each robot holds.
@@ -276,7 +276,8 @@ class BaseCollisionWorld:
 
         Pairs that touch by design are left out: links joined to each other, the SRDF's `disable_collisions`, a tool
         and the links its flange lets it touch (`RobotModel.tool_touches`), and a held body and its holder's (with
-        `Body.touches`).
+        `Body.touches`). A tool and the rest of its own arm count only when they touch: a gripper sits within a
+        centimetre of its own wrist by design.
 
         Args:
             own: The robot, by id.
@@ -290,28 +291,33 @@ class BaseCollisionWorld:
         robot, body, client = self.snapshot.robots[own], self.mirror.robot(own), self.mirror.client_id
         pairs, contacts = [], []
 
-        def add(body_a: int, link_a: int, body_b: int, link_b: int, sides: tuple[str, str]) -> None:
-            points = p.getClosestPoints(body_a, body_b, margin, linkIndexA=link_a, linkIndexB=link_b,
+        def add(body_a: int, link_a: int, body_b: int, link_b: int, sides: tuple[str, str], within: float) -> None:
+            points = p.getClosestPoints(body_a, body_b, within, linkIndexA=link_a, linkIndexB=link_b,
                                         physicsClientId=client)
             if points:
                 closest = min(points, key=lambda point: point[8])
                 pairs.append(sides)
                 contacts.append(Contact(sides, tuple(closest[5]), tuple(closest[6]), float(closest[8])))
 
-        for link_a, link_b in self._self_pair_indices(robot.model, body):
-            add(body, link_a, body, link_b, (self._names(own, body, link_a)[-1], self._names(own, body, link_b)[-1]))
+        for link_a, link_b, touching in self._self_pair_indices(robot.model, body):
+            add(body, link_a, body, link_b, (self._names(own, body, link_a)[-1], self._names(own, body, link_b)[-1]),
+                0.0 if touching else margin)
         for held in self._held.get(own, {}):
             for part in self.mirror.body_ids(held):
                 touched = {link for point in p.getClosestPoints(part, body, margin, physicsClientId=client)
                            for link in [point[4]] if not self._may_hold_touch(own, held, body, link)}
                 for link in sorted(touched):
-                    add(part, -1, body, link, (held, self._names(own, body, link)[-1]))
+                    add(part, -1, body, link, (held, self._names(own, body, link)[-1]), margin)
         if not pairs:
             return None
         return CollisionHit(self.snapshot, own, where, tuple(pairs), tuple(contacts), margin=margin)
 
-    def _self_pair_indices(self, model: RobotModel, body: int) -> list[tuple[int, int]]:
-        """The link pairs of a robot model that `self_hit` checks, by PyBullet link index; worked out once per model."""
+    def _self_pair_indices(self, model: RobotModel, body: int) -> list[tuple[int, int, bool]]:
+        """The link pairs of a robot model that `self_hit` checks, by PyBullet link index; worked out once per model.
+
+        Returns:
+            list[tuple[int, int, bool]]: Each pair, and whether it counts only when touching (a tool and its own arm).
+        """
         pairs = self._self_pairs.get(model)
         if pairs is not None:
             return pairs
@@ -325,8 +331,15 @@ class BaseCollisionWorld:
         allowed |= srdf_allowed_pairs(model.srdf)
         for flange, links in model.tool_touches.items():
             allowed |= {frozenset((f"{flange}_tool", link)) for link in links}
+        # * A tool "<arm>_tool0_tool" and the links "<arm>_..." of the arm it is on.
+        arms = {f"{flange}_tool": f"{flange.rsplit('_', 1)[0]}_" for flange in model.tool_touches}
+
+        def own_arm(a: str, b: str) -> bool:
+            return (a in arms and b.startswith(arms[a])) or (b in arms and a.startswith(arms[b]))
+
         shaped = [index for index in names if p.getCollisionShapeData(body, index, physicsClientId=client)]
-        pairs = self._self_pairs[model] = [(a, b) for a, b in combinations(sorted(shaped), 2)
+        pairs = self._self_pairs[model] = [(a, b, own_arm(names[a], names[b]))
+                                           for a, b in combinations(sorted(shaped), 2)
                                            if frozenset((names[a], names[b])) not in allowed]
         return pairs
 

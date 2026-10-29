@@ -70,6 +70,8 @@ FREE_DRIVE_RETRY = 1.0
 BASE = "base"
 #: Seconds between tries of a held drive refused for starting too close, so it is not checked every tick.
 START_RETRY = 1.0
+#: The labels of the red chip of a start refused (`_start_problem`): too close, or the clearance cannot check.
+START_IN_COLLISION, CANNOT_CHECK = "starts in collision", "cannot check"
 #: The F/T live plots: seconds shown, samples kept (twice that at 20 Hz), and ticks between redraws (viser resends
 #: the whole plot each time, so 4 Hz, not 20).
 FT_SECONDS, FT_SAMPLES, FT_PLOT_EVERY = 30.0, 1200, 5
@@ -205,9 +207,9 @@ class RobotControlPlugin(HuskyPlugin):
         self._base_guards: dict[str, asyncio.Task] = {}
         self._base_clearances: dict[str, Clearance] = {}
         self._tripped: dict[str, str] = {}
-        #: Per base serial or arm (serial, arm name), why its drive or jog was refused at the start, too close (no
-        #: soft stop), and when.
-        self._start_refused: dict[str | tuple[str, str], tuple[str, float]] = {}
+        #: Per base serial or arm (serial, arm name), why its drive or jog was refused at the start (nothing sent, no
+        #: soft stop): its chip's label (START_IN_COLLISION or CANNOT_CHECK), the reason, and when.
+        self._start_refused: dict[str | tuple[str, str], tuple[str, str, float]] = {}
         #: Per base serial or arm (serial, arm name), a clearance watch on it standing, as its drive or jog would be
         #: checked: a start too close shows before a press. Made in setup.
         self._watches: dict[str | tuple[str, str], ClearanceWatch] = {}
@@ -523,7 +525,7 @@ class RobotControlPlugin(HuskyPlugin):
             return True
         refused = self._start_refused.get(serial)
         # * Leased first, so the guard does not end at once for want of a lease.
-        waited = refused is None or ctx.now() - refused[1] >= START_RETRY
+        waited = refused is None or ctx.now() - refused[2] >= START_RETRY
         if waited and self._leased(ctx, (serial, BASE), lambda: True):
             self._base_clearances.pop(serial, None)  # ! the last guard's, checked: never drive under it
             self._base_guards[serial] = ctx.spawn(f"clearance {serial}", self._guard_base(ctx, widgets))
@@ -544,50 +546,64 @@ class RobotControlPlugin(HuskyPlugin):
                 self._base_clearances[serial] = clearance
                 await ctx.wait_until(lambda: not self._leases.held(serial) or not widgets.clearance.value)
         except ClearanceRefused as refused:
-            # ! The drive streams its twists apart from this guard: stop the robot, as a trip would.
-            self._tripped[serial] = str(refused)
-            ctx.world.robots[serial].soft_stop(str(refused))
-            self._refuse(ctx, (serial, BASE), "cannot check", f"{refused}: soft stopped")
+            # * No twist goes out before a clear check (`_drive_clear`): refusing is enough.
+            self._refuse_start(ctx, serial, CANNOT_CHECK, str(refused))
         except asyncio.CancelledError:
             if clearance is not None and clearance.refused:
-                self._start_refused[serial] = clearance.problem, ctx.now()
+                self._refuse_start(ctx, serial, START_IN_COLLISION if clearance.hit else CANNOT_CHECK,
+                                   clearance.problem)
             elif clearance is not None and clearance.problem:
                 self._tripped[serial] = clearance.problem
                 self._refuse(ctx, (serial, BASE), "too close",
                              f"{clearance.problem}: soft stopped.\nCollisions shows the hit; Resume in Health.")
             raise
 
-    def _starts_in_collision(self, key: str | tuple[str, str], now: float) -> str:
-        """Why a drive of base `key` (a serial), or a jog of arm `key`, would start too close; or "".
+    def _refuse_start(self, ctx: PluginContext, key: str | tuple[str, str], label: str, why: str) -> None:
+        """Keep why a drive or jog of `key` was refused at its start, for its chip; logged once per reason."""
+        last = self._start_refused.get(key)
+        if last is None or last[1] != why:
+            ctx.log_warn(f"{key if isinstance(key, str) else ' '.join(key)}: {why}; nothing sent")
+        self._start_refused[key] = label, why, ctx.now()
 
-        A press just refused says it; otherwise its watch, unless the base drives or the arm's jog guard runs.
+    def _start_problem(self, key: str | tuple[str, str], now: float) -> tuple[str, str] | None:
+        """Why a drive of base `key` (a serial), or a jog of arm `key`, would be refused at its start: label and reason.
+
+        A press just refused says it; otherwise its watch (too close, or cannot check), unless the base drives or the
+        arm's jog guard runs. None when a start would go out.
         """
         refused = self._start_refused.get(key)
         held = key in self._held or key in self._jog_held or key in self._tool_jog_held
-        if refused is not None and (held or now - refused[1] <= REFUSAL_SHOWN):
-            return refused[0]
+        if refused is not None and (held or now - refused[2] <= REFUSAL_SHOWN):
+            return refused[0], refused[1]
         guard = self._jog_guards.get(key)
-        moving = key in self._driving or (guard is not None and not guard.done())
         watch = self._watches.get(key)
+        if key in self._driving or (guard is not None and not guard.done()) or watch is None:
+            return None
         serial = key if isinstance(key, str) else key[0]
-        return "" if moving or watch is None else watch.found.get(serial, "")
+        if serial in watch.found:
+            return START_IN_COLLISION, watch.found[serial]
+        if serial in watch.unchecked:
+            return CANNOT_CHECK, watch.unchecked[serial]
+        return None
 
-    def _start_chip(self, key: str | tuple[str, str], now: float, buttons: str) -> str:
-        """A red "starts in collision" chip while a start of `key` would be refused (`_starts_in_collision`); or ""."""
-        why = self._starts_in_collision(key, now)
-        if not why:
+    def _start_chip(self, key: str | tuple[str, str], now: float, buttons: str, ticked: bool) -> str:
+        """A red chip while Clearance is ticked and would refuse a start of `key` (`_start_problem`); or ""."""
+        problem = self._start_problem(key, now) if ticked else None
+        if problem is None:
             return ""
-        return chip("starts in collision", FAIL, f"{why}: Clearance refuses the {buttons} (gray).\nUntick Clearance to "
-                                                 f"move out; Collisions shows a refused press's hit.")
+        label, why = problem
+        then = ("Untick Clearance to move out; Collisions shows a refused press's hit." if label == START_IN_COLLISION
+                else "Untick Clearance to move without it.")
+        return chip(label, FAIL, f"{why}: Clearance refuses the {buttons} (gray).\n{then}")
 
     def _color_buttons(self, buttons, ticked: bool, key: str | tuple[str, str], now: float) -> None:
         """Gray while Clearance would refuse a start, orange while it is unticked, else the theme's colour."""
-        blocked = ticked and self._starts_in_collision(key, now)
+        blocked = ticked and self._start_problem(key, now) is not None
         color_dpad(buttons, BLOCKED_COLOR if blocked else None if ticked else UNGUARDED_COLOR)
 
-    def _base_warnings(self, ctx: PluginContext, serial: str, now: float) -> str:
-        """Chips for driving the base: red for a start too close (pressed or not), amber for an arm out of stow."""
-        chips = self._start_chip(serial, now, "D-pad")
+    def _base_warnings(self, ctx: PluginContext, serial: str, now: float, ticked: bool = True) -> str:
+        """Chips for driving the base: red for a start a ticked Clearance would refuse, amber for an arm out of stow."""
+        chips = self._start_chip(serial, now, "D-pad", ticked)
         config = next(robot for robot in ctx.config.robots if robot.serial == serial)
         away = from_stow(ctx.scene.snapshot.robots[robot_id(serial)], config)
         if away > STOW_TOLERANCE:
@@ -823,11 +839,11 @@ class RobotControlPlugin(HuskyPlugin):
                 await ctx.wait_until(lambda: not self._leases.held(serial) or not widgets.jog_clearance.value)
         except ClearanceRefused as refused:
             self._end_press(key)
-            self._refuse(ctx, key, "cannot check", f"{refused}; untick Clearance to jog without it")
+            self._refuse_start(ctx, key, CANNOT_CHECK, str(refused))
         except asyncio.CancelledError:
             if clearance is not None and clearance.refused:
                 self._end_press(key)
-                self._start_refused[key] = clearance.problem, ctx.now()
+                self._refuse_start(ctx, key, START_IN_COLLISION if clearance.hit else CANNOT_CHECK, clearance.problem)
             elif clearance is not None and clearance.problem:
                 self._tripped[serial] = clearance.problem
                 self._refuse(ctx, key, "too close",
@@ -861,10 +877,11 @@ class RobotControlPlugin(HuskyPlugin):
         self._draws += 1
         for widgets in self._bases:
             show_only_running(widgets.panel)
+            ticked = widgets.clearance is None or bool(widgets.clearance.value)
             refused = refusal_chip((self._refusals.get((widgets.serial, BASE)), widgets.base.last_refusal), now) \
-                + self._base_warnings(ctx, widgets.serial, now)
+                + self._base_warnings(ctx, widgets.serial, now, ticked)
             widgets.status.content = base_status(widgets.base, now, refused)
-            self._color_buttons(widgets.dpad, widgets.clearance is None or widgets.clearance.value, widgets.serial, now)
+            self._color_buttons(widgets.dpad, ticked, widgets.serial, now)
             if widgets.offset_note is not None:
                 widgets.offset_note.content = note_line(
                     "applied " + " ".join(f"{value:.3f}" for value in widgets.base.mocap_offset) + " m")
@@ -876,10 +893,10 @@ class RobotControlPlugin(HuskyPlugin):
             tool = widgets.arm.end_effector
             refused = refusal_chip((self._refusals.get(key), widgets.arm.last_refusal,
                                     None if tool is None else tool.last_refusal), now)
-            refused += self._start_chip(key, now, "jog")
+            ticked = widgets.jog_clearance is None or bool(widgets.jog_clearance.value)
+            refused += self._start_chip(key, now, "jog", ticked)
             widgets.status.content = arm_status(widgets.arm, now, refused)
             if widgets.jog_clearance is not None:
-                ticked = bool(widgets.jog_clearance.value)
                 self._color_buttons(widgets.jog_buttons, ticked, key, now)
                 note = jog_clearance_note(ticked, ARM_STOP_DISTANCE)
                 if widgets.jog_note.content != note:

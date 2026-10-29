@@ -92,11 +92,15 @@ def collisions(mirror: CompasFabMirror, joints: Mapping[str, float] | None = Non
     Returns:
         list[tuple[str, str]]: Colliding pairs as scene ids; empty if clear.
     """
-    # * A full report, or the first pair might be one of the others' and hide ours.
-    pairs = mirror.collisions(joints, full_report=True)
+    pairs = mirror.collisions(joints, full_report)
     if not pairs:
         return []
     own = _ids_on(mirror, subtree(mirror.cell.robot_model, mirror.cell.robot_model.root.name))
+    if not full_report and (pairs[0][0] in own or pairs[0][1] in own):
+        return pairs
+    # * The first pair was one of the others': only a full report shows whether one of ours hides behind it.
+    if not full_report:
+        pairs = mirror.collisions(joints, full_report=True)
     pairs = [pair for pair in pairs if pair[0] in own or pair[1] in own]
     return pairs if full_report else pairs[:1]
 

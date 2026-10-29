@@ -14,7 +14,7 @@ from husky_assembly_teleop.shared.planner.planner_panel import (COMMIT_CONFIRM_S
                                                                 unknown_robots_chip)
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
-from husky_assembly_teleop.shared.planner.plan import PlannerContract
+from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from husky_assembly_teleop.shared.planner.planner_search import Search
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, leased
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
@@ -483,3 +483,20 @@ def test_commit_asks_twice_for_a_panels_own_warning_too():
     assert asked == "press Commit again within 2 s to move with the arm 40° from stow"
     ctx.t += 1.0
     assert confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 40° from stow"]) == ("", frozenset())
+
+
+def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():
+    """The same plan re-timed (a new object, same id, state and message) is not news: a question below stays."""
+    plan = Plan(1, Request("alice", 1.0), "ready", PATH, message="found, warned", warning=True)
+    api, warned = SimpleNamespace(plan=plan), []
+    panel = Panel()
+    panel._api = api
+    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=warned.append)
+    panel.update(ctx)
+    panel._say("press Commit again within 2 s to move with the arm 40° from stow")
+    api.plan = Plan(1, plan.request, "ready", PATH, message="found, warned", warning=True)
+    panel.update(ctx)
+    assert panel._message.startswith("press Commit again") and warned == ["found, warned"]
+    api.plan = Plan(1, plan.request, "sent", PATH, message="sent to alice")
+    panel.update(ctx)
+    assert panel._message == "sent to alice"

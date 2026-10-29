@@ -294,6 +294,7 @@ def test_a_jog_that_starts_too_close_is_refused_until_the_next_press_without_a_s
         await asyncio.sleep(0)
         clearance, = ctx.clearances
         clearance.problem, clearance.refused = "robot 0804 came within 1 cm of the rack", True  # as the monitor's
+        clearance.hit = SimpleNamespace()
         guard = plugin._jog_guards[("0804", "ur_arm")]
         guard.cancel()
         await asyncio.gather(guard, return_exceptions=True)
@@ -302,12 +303,13 @@ def test_a_jog_that_starts_too_close_is_refused_until_the_next_press_without_a_s
     asyncio.run(scenario())
     assert not arm._trajectory.sent and len(ctx.clearances) == 1, "the press is answered: not retried"
     assert "0804" not in plugin._tripped
-    chip_html = plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog")
+    chip_html = plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog", True)
     assert "starts in collision" in chip_html and "within 1 cm of the rack" in chip_html and FAIL in chip_html
+    assert plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog", False) == "", "no chip while Clearance is off"
 
 
 def test_a_jog_whose_clearance_cannot_check_is_refused_until_the_next_press():
-    """Base not tracked: nothing is sent, the chip says to untick Clearance, and the held press is not retried."""
+    """Base not tracked: nothing is sent, a "cannot check" chip says to untick Clearance, the press is not retried."""
     arm, plugin, _ctx = _jogged_arm()
     plugin._arms[0].jog_clearance = SimpleNamespace(value=True)
     ctx = JogContext(arm, refuse="robot 0804 cannot be checked for clearance: its base is not tracked")
@@ -318,8 +320,9 @@ def test_a_jog_whose_clearance_cannot_check_is_refused_until_the_next_press():
         _jog_ticks(arm, plugin, ctx, 3, press=(0, 1.0))
 
     asyncio.run(scenario())
-    refusal = plugin._refusals[("0804", "ur_arm")]
-    assert not arm._trajectory.sent and refusal.label == "cannot check" and "untick Clearance" in refusal.reason
+    chip_html = plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog", True)
+    assert not arm._trajectory.sent and ">cannot check<" in chip_html
+    assert "Untick Clearance to move without" in chip_html
     assert len(plugin._jog_guards) == 1 and plugin._jog_guards[("0804", "ur_arm")].done()
 
 
@@ -529,6 +532,7 @@ def test_a_drive_that_starts_too_close_is_refused_with_a_red_chip_and_tried_agai
         await asyncio.sleep(0)
         clearance = ctx.clearances[0]
         clearance.problem, clearance.refused = "robot 0804 came within 10 cm of wall", True  # as the monitor's refusal
+        clearance.hit = SimpleNamespace()
         guard = plugin._base_guards["0804"]
         guard.cancel()
         await asyncio.gather(guard, return_exceptions=True)
@@ -547,11 +551,36 @@ def test_a_drive_that_starts_too_close_is_refused_with_a_red_chip_and_tried_agai
     assert "starts in collision" in chips and FAIL in chips and "Untick Clearance" in chips
 
 
+def test_a_drive_whose_clearance_cannot_check_is_refused_without_a_soft_stop():
+    """Base not tracked: no twist and no soft stop (nothing went out before the check), a "cannot check" chip."""
+    plugin, sent, _controller = _driven_base()
+    plugin._bases[0].clearance = SimpleNamespace(value=True)
+    ctx = BaseContext()
+    stops = []
+    ctx.world.robots["0804"].soft_stop = lambda reason="": stops.append(reason)
+
+    @contextmanager
+    def refused(*_args, **_options):
+        raise ClearanceRefused("robot 0804 cannot be checked for clearance: base not measured")
+        yield
+
+    ctx.clearance = refused
+
+    async def drive() -> None:
+        plugin._on_hold("0804", Hold(1.0, 0.0, plugin._bases[0].speed, ctx.now()))
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        plugin.update(ctx)
+
+    asyncio.run(drive())
+    assert not sent and not stops and plugin._start_problem("0804", ctx.now())[0] == "cannot check"
+
+
 def test_a_base_standing_too_close_shows_the_chip_and_a_gray_dpad_before_any_press():
     """Its watch says too close: a red chip naming what, and a gray D-pad; while the base drives, nothing."""
     plugin, _sent, _controller = _driven_base()
     plugin._watches["0804"] = ClearanceWatch(("0804",), STOP_DISTANCE, ALL_ARMS)
-    assert not plugin._starts_in_collision("0804", 0.0)
+    assert plugin._start_problem("0804", 0.0) is None
     plugin._watches["0804"].found["0804"] = "came within 10 cm of wall"
     ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial="0804", arms=())]),
                           scene=SimpleNamespace(snapshot=Scene(robots={robot_id("0804"): RobotObject(
@@ -561,8 +590,12 @@ def test_a_base_standing_too_close_shows_the_chip_and_a_gray_dpad_before_any_pre
     buttons = [SimpleNamespace(color=None)]
     plugin._color_buttons(buttons, True, "0804", 0.0)
     assert buttons[0].color == BLOCKED_COLOR == "gray" and UNGUARDED_COLOR == "orange"
+    assert plugin._base_warnings(ctx, "0804", 0.0, ticked=False) == "", "no chip while Clearance is off"
+    plugin._watches["0804"].found.clear()
+    plugin._watches["0804"].unchecked["0804"] = "cannot be checked: base not measured"
+    assert ">cannot check<" in plugin._base_warnings(ctx, "0804", 0.0)
     plugin._driving.add("0804")
-    assert not plugin._starts_in_collision("0804", 0.0), "its own clearance guards a drive"
+    assert plugin._start_problem("0804", 0.0) is None, "its own clearance guards a drive"
 
 
 def test_the_jog_buttons_and_their_note_follow_clearance_as_the_dpad_does():

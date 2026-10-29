@@ -632,20 +632,24 @@ class PluginContext:
     def _trip_clearance(self, clearance: Clearance, serial: str, why: str, hit: CollisionHit | None = None) -> None:
         """Soft stop robot `serial` and cancel the clearance's task, unless it ended meanwhile; tell the monitor.
 
-        Before its first clear check, a `refuse_first` clearance is only refused: nothing was sent yet.
+        Before its first clear check, a `refuse_first` clearance is only refused: nothing was sent yet. A refusal the
+        same as the last trip (a held button asking again) is neither kept nor logged again.
         """
         task = self._clearances.pop(clearance, None)
         if task is None:
             return
         clearance.problem = f"robot {serial} {why}"
         clearance.hit = None if hit is None else replace(hit, where=task.get_name())
-        self._monitor.clearance_tripped(ClearanceTrip(self.now(), serial, task.get_name(), clearance.problem,
-                                                      clearance.hit))
+        trip = ClearanceTrip(self.now(), serial, task.get_name(), clearance.problem, clearance.hit)
         if clearance.refuse_first and not clearance.checked:
             clearance.refused = True
-            self.log_warn(f"task {task.get_name()!r}: {clearance.problem} at its start; refused, nothing sent")
+            last = self._monitor.clearance_trips[-1] if self._monitor.clearance_trips else None
+            if last is None or (last.serial, last.task, last.problem) != (serial, trip.task, trip.problem):
+                self._monitor.clearance_tripped(trip)
+                self.log_warn(f"task {task.get_name()!r}: {clearance.problem} at its start; refused, nothing sent")
             task.cancel(f"clearance refused: {clearance.problem}")
             return
+        self._monitor.clearance_tripped(trip)
         self.world.robots[serial].soft_stop(clearance.problem)
         self.log_error(f"task {task.get_name()!r}: {clearance.problem}; soft stopped it and cancelling the task")
         task.cancel(f"clearance: {clearance.problem}")
