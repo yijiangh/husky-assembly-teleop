@@ -166,7 +166,7 @@ def build_compliance_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, a
     if arm.urdf_problem is not None:
         gui.add_html(warning("URDF frames wrong · targets blocked (see log)", color=FAIL))
     if arm.config.cartesian_test_mode:
-        gui.add_html(warning("test mode · checks run, nothing is sent", color=FAIL))
+        gui.add_html(warning("test mode · checks run, nothing is sent"))
     gui.add_html(warning("no collision checking · straight TCP line, joints unchecked"))
     gui.add_html(note("target: TCP in the husky's base_link; set the sliders or drag the gizmo"))
     pose = [gui.add_slider(name, min=-POSITION_RANGE, max=POSITION_RANGE, step=POSITION_STEP, initial_value=0.0)

@@ -129,6 +129,8 @@ class HuskyMonitor(Node):
         self._snapshot = Scene()
         #: Checks the plugins' clearances (`ctx.clearance`) on its own worker.
         self._clearances = ClearanceChecker()
+        #: The (context, clearance, serial) of each robot the running clearance check looks at.
+        self._clearances_asked: list[tuple] = []
         #: The last TRIPS_KEPT clearance trips of every plugin, oldest first; replaced on each trip.
         self.clearance_trips: tuple[ClearanceTrip, ...] = ()
         self._viz: Visualization | None = None
@@ -488,8 +490,15 @@ class HuskyMonitor(Node):
 
         A robot whose base pose is lost trips at once; the rest is checked on the worker, a tick or two behind.
         """
-        for (ctx, clearance, serial), why, hit in self._clearances.finished() or ():
-            ctx._trip_clearance(clearance, serial, why, hit)
+        found = self._clearances.finished()
+        if found is not None:
+            for (ctx, clearance, serial), why, hit in found:
+                ctx._trip_clearance(clearance, serial, why, hit)
+            # * What the check found nothing for is clear: a `refuse_first` clearance may now be driven under.
+            tripped = {key for key, _why, _hit in found}
+            for key in self._clearances_asked:
+                if key not in tripped:
+                    key[1].checked = True
         asked = []
         for loaded in self._loaded.values():
             if loaded.stopped:
@@ -505,8 +514,8 @@ class HuskyMonitor(Node):
                                  if robot is not None else frozenset())
                     asked.append(((loaded.ctx, clearance, serial), robot_id(serial), clearance.margin, assumable,
                                   clearance.unknown_robots))
-        if asked:
-            self._clearances.check(snapshot, asked)
+        if asked and self._clearances.check(snapshot, asked):
+            self._clearances_asked = [key for key, *_rest in asked]
 
     def _step_plugin(self, loaded: _LoadedPlugin) -> None:
         """Give one plugin its turn: count failed tasks and message signals, run intents, then update.

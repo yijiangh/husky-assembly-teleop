@@ -121,6 +121,21 @@ def test_start_in_collision_is_refused(world, config):
     assert result.path is None and result.reason.startswith("start is in collision")
 
 
+def test_another_robot_in_a_box_does_not_block_the_plan(world, config):
+    """Only what Alice and her tools touch counts: Belle standing in a box far away is not a start in collision."""
+    start, goal = start_and_goal(config)
+    belle = robot_config_from_serial("0805", DATA)
+    other = RobotObject(robot_id("0805"), belle.model, Pose.from_arrays((4.0, 0.0, 0.0), (0, 0, 0, 1)),
+                        dict(zip(NAMES, belle.arms[0].stow_joints)))
+    box = Body("t/box", box_geometry((1.0, 1.0, 1.0)), Pose.from_arrays((4.0, 0.0, 0.5), (0, 0, 0, 1)))
+    scene = snapshot(config, start, (box,))
+    scene.robots[other.id] = other
+    mirror, scene = synced(world, scene)
+    assert mirror.collisions(full_report=True), "the core's check should see Belle in the box"
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is not None, result.reason
+
+
 def test_the_preview_follows_the_cosine_profile_sent():
     """The preview speeds up and slows down as the arm will: slow at the ends, halfway at half time; it clamps."""
     goal = np.array([1.0, 0.5, 0, 0, 0, 0])
@@ -129,6 +144,16 @@ def test_the_preview_follows_the_cosine_profile_sent():
     np.testing.assert_allclose(path.sample(path.duration / 2), goal / 2, atol=1e-9)
     assert path.sample(path.duration / 4)[0] < 0.2
     np.testing.assert_allclose(path.sample(1e9), goal)
+
+
+@pytest.mark.safety
+def test_a_slowdown_stretches_the_path_and_slows_every_joint():
+    """Slowed 3 times, the same path takes 3 times as long (to a waypoint step) at a third of the peak speed."""
+    corners = np.array([[0.0] * 6, [1.0, 0.5, 0, 0, 0, 0], [1.5, -0.5, 0.3, 0, 0, 0]])
+    fast, slow = ArmPath.along(NAMES, corners, [1]), ArmPath.along(NAMES, corners, [1], slowdown=3.0)
+    assert slow.duration == pytest.approx(3 * fast.duration, abs=2 * 0.2)
+    assert np.max(np.abs(slow.velocities)) <= np.max(np.abs(fast.velocities)) / 3 * 1.05
+    np.testing.assert_allclose(slow.goal, fast.goal)
 
 
 def test_window_without_display_raises(config, monkeypatch):

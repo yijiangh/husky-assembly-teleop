@@ -15,7 +15,7 @@ import numpy as np
 
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.soft_stop import MotionRefused
-from ...world.checks import BAD, WARN, Check
+from ...world.checks import BAD, PENDING, Check
 
 if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
@@ -82,7 +82,7 @@ class Procedure:
             self.outcome = Check(f"{label} failed", BAD, str(error))
             ctx.log_warn(f"{label}: {error}")
         except asyncio.CancelledError:
-            self.outcome = Check(f"{label} cancelled", WARN)
+            self.outcome = Check(f"{label} cancelled", PENDING)
             raise
         finally:
             self.doing, self.prompt = "", ""

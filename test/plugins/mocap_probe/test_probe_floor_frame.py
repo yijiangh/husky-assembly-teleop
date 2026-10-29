@@ -77,10 +77,10 @@ def test_export_stores_floor_from_raw_and_the_raw_cameras_where_the_relay_reads_
 
 @pytest.mark.parametrize("status, label, hover, enabled", [
     ("none", "no floor calibration", "Export floor calibration", False),
-    ("unchecked", "frame unchecked", "no fit to the anchors or truss cameras has decided yet", False),
+    ("unchecked", "frame unchecked", "no anchor or truss-camera fit yet", False),
     ("held", "frame held", "f.json", False),
-    ("refit_pending", "refit pending", "poses off now 20.0 mm; poses are off until Use refit", True),
-    ("untrusted", "frame untrusted", "Check in Motive that the anchors are seen (missing now: A3)", False),
+    ("refit_pending", "refit pending", "poses are off until Use refit", True),
+    ("untrusted", "frame untrusted", "Check in Motive that the anchors are seen (A3 missing now)", False),
     ("error", "frame: Drive not read", "f.json: cannot read it", False)])
 def test_every_frame_state_shows_in_the_relays_words_and_use_refit_only_for_a_pending_refit(
         server, tmp_path, status, label, hover, enabled):  # noqa: F811

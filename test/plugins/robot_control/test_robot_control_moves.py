@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.shared.teleop.dpad import HOLD_TIMEOUT, Hold
 from husky_assembly_teleop.plugins.robot_control.markers import place_markers, target_from_world
-from husky_assembly_teleop.plugins.robot_control.plugin import BASE, RobotControlPlugin, _BaseWidgets
+from husky_assembly_teleop.plugins.robot_control.plugin import BASE, START_RETRY, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.plugins.robot_control.status import refusal_chip
 from husky_assembly_teleop.plugins.robot_control.teleop_lease import IDLE_AFTER
 from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, MOVING_WITHIN,
@@ -24,7 +24,10 @@ from husky_assembly_teleop.robot_interface.base import PLATFORM_VELOCITY_CONTROL
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, take_lease
 from husky_assembly_teleop.world.clearance import (ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, Clearance,
                                                    ClearanceRefused)
+from husky_assembly_teleop.ui.style import BUSY
 from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
 
 pytestmark = pytest.mark.safety
@@ -413,9 +416,10 @@ class BaseContext:
         return asyncio.get_running_loop().create_task(work, name=label)
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
-        """Keep the clearance; the test trips it."""
-        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms))
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False):
+        """Keep the clearance; the test checks or trips it."""
+        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms,
+                                         refuse_first=refuse_first))
         yield self.clearances[-1]
 
     def log_warn(self, message: str) -> None:
@@ -424,7 +428,7 @@ class BaseContext:
 
 
 def test_driving_with_clearance_keeps_one_on_the_base_until_it_is_unticked():
-    """Every tick of a hold drives under the same clearance; unticking Clearance ends it."""
+    """A hold drives once its clearance found the base clear, every tick under the same one; unticking ends it."""
     plugin, sent, _controller = _driven_base()
     plugin._bases[0].clearance = SimpleNamespace(value=True)
     ctx = BaseContext()
@@ -434,15 +438,24 @@ def test_driving_with_clearance_keeps_one_on_the_base_until_it_is_unticked():
         plugin.update(ctx)
         await asyncio.sleep(0)
         plugin.update(ctx)
+        assert not sent and ctx.clearances[0].refuse_first  # * nothing goes out before the first clear check
+        ctx.clearances[0].checked = True
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        plugin.update(ctx)
         await asyncio.sleep(0)
         guard = plugin._base_guards["0804"]
         guarding = not guard.done()
         plugin._bases[0].clearance.value = False
         await guard
+        plugin._bases[0].clearance.value = True
+        plugin.update(ctx)  # * a new guard: the last one's checked clearance never lets a twist out
+        plugin.update(ctx)
+        assert sent[2:] == [(0.0, 0.0)]  # only the stop as the drive pauses
         return guarding
 
-    assert asyncio.run(drive()) and len(sent) == 2
-    assert [clearance.serials for clearance in ctx.clearances] == [("0804",)]
+    assert asyncio.run(drive()) and len(sent) == 3
+    assert [clearance.serials for clearance in ctx.clearances][0] == ("0804",)
 
 
 def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
@@ -456,6 +469,8 @@ def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
         plugin.update(ctx)
         await asyncio.sleep(0)
         assert ctx.clearances[0].unknown_arms == ALL_ARMS  # * driving by hand: an unknown arm counts as stowed
+        ctx.clearances[0].checked = True
+        plugin.update(ctx)
         ctx.clearances[0].problem = "robot 0804 came within 10 cm of wall"
         base.soft_stopped = True  # as the monitor's trip does
         guard = plugin._base_guards["0804"]
@@ -468,3 +483,37 @@ def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
     refusal = plugin._refusals[("0804", BASE)]
     assert refusal.label == "too close" and "came within 10 cm of wall: soft stopped" in refusal.reason
     assert "0804" not in plugin._held and sent[-1] == (0.0, 0.0)
+
+
+def test_a_drive_that_starts_too_close_is_refused_with_an_amber_chip_and_tried_again_later():
+    """Too close at the first check: nothing sent, no soft stop, a "starts in collision" chip; retried later."""
+    plugin, sent, _controller = _driven_base()
+    plugin._bases[0].clearance = SimpleNamespace(value=True)
+    ctx, now = BaseContext(), [0.0]
+    ctx.now = lambda: now[0]
+    ctx.config = SimpleNamespace(robots=[SimpleNamespace(serial="0804", arms=())])
+    ctx.scene.snapshot = Scene(robots={robot_id("0804"): RobotObject(
+        robot_id("0804"), SimpleNamespace(movable_joints=()), Pose(), {})})
+
+    async def drive() -> None:
+        plugin._on_hold("0804", Hold(1.0, 0.0, plugin._bases[0].speed, ctx.now()))
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        clearance = ctx.clearances[0]
+        clearance.problem, clearance.refused = "robot 0804 came within 10 cm of wall", True  # as the monitor's refusal
+        guard = plugin._base_guards["0804"]
+        guard.cancel()
+        await asyncio.gather(guard, return_exceptions=True)
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        assert len(ctx.clearances) == 1  # * not tried again at once
+        now[0] = START_RETRY
+        plugin._on_hold("0804", Hold(1.0, 0.0, plugin._bases[0].speed, ctx.now()))
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        assert len(ctx.clearances) == 2
+
+    asyncio.run(drive())
+    assert not sent and not plugin._bases[0].base.soft_stopped and "0804" not in plugin._tripped
+    chips = plugin._base_warnings(ctx, "0804", now[0])
+    assert "starts in collision" in chips and BUSY in chips and "Untick Clearance" in chips

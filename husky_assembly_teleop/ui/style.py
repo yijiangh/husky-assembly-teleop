@@ -31,6 +31,20 @@ LEVEL_COLORS = {PENDING: NONE, INFO_LEVEL: INFO, GOOD: OK, WARN: BUSY, BAD: FAIL
 
 #: Seconds the chip saying why a button did nothing stays up.
 REFUSAL_SHOWN = 3.0
+#: Longest hover text kept whole, characters (`hover`): about three lines of a chip's tooltip.
+HOVER_MAX = 160
+
+
+def hover(text: str, where: str = "the console") -> str:
+    """Hover text of at most HOVER_MAX characters: a longer `text` is cut at a word and says where the rest is.
+
+    Args:
+        text: The full text.
+        where: Where the full text can be read, e.g. "the console" (then make sure it is logged).
+    """
+    if len(text) <= HOVER_MAX:
+        return text
+    return f"{text[:HOVER_MAX - 10 - len(where)].rsplit(' ', 1)[0]}… full text in {where}"
 
 
 def chip(text: str, color: str, title: str = "") -> str:
@@ -111,15 +125,20 @@ def chip_line(html: str) -> str:
     return block(f'{CHIP_LINE_STYLE}<div class="chip-line">{html}</div>')
 
 
-def note_line(text: str) -> str:
-    """Small gray text that may come and go, on one line that is always there: cut with "…", the full text on hover."""
-    return block(f'<div title="{escape(text, quote=True)}" style="font-size:11px;color:{NONE};white-space:nowrap;'
+def note_line(text: str, color: str = NONE) -> str:
+    """Small text that may come and go, on one line that is always there: cut with "…", the full text on hover.
+
+    Args:
+        text: The line.
+        color: Gray by default; FAIL (red) only for a failure, BUSY (amber) for a warning or question.
+    """
+    return block(f'<div title="{escape(text, quote=True)}" style="font-size:11px;color:{color};white-space:nowrap;'
                  f'overflow:hidden;text-overflow:ellipsis">{escape(text) or "—"}</div>')
 
 
-def note(text: str) -> str:
-    """Small gray text, for placeholders."""
-    return block(f'<div style="font-size:11px;color:{NONE}">{text}</div>')
+def note(text: str, color: str = NONE) -> str:
+    """Small gray text, for placeholders; another `color` for a message (FAIL only for a failure)."""
+    return block(f'<div style="font-size:11px;color:{color}">{text}</div>')
 
 
 def warning(text: str, color: str = BUSY) -> str:

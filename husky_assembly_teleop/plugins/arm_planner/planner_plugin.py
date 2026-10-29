@@ -28,7 +28,7 @@ from ...shared.execution.send import REFUSED, ArmMotion, MotionCommand, send_mot
 from ...world.collision_hit import CollisionHit
 from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ...shared.planner.plan import Plan
-from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
+from ...shared.planner.planner_search import Search, WAIT_MARGIN, unmeasured, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...world.clearance import ARM_STOP_DISTANCE
@@ -107,9 +107,10 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                 return PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0)
             stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
             others[:] = stand_ins.warnings
-            result = plan_arm(self._world.sync(stand_ins.scene, serial), stand_ins.scene, arm, goal, abort)
+            result = plan_arm(self._world.sync(stand_ins.scene, serial), stand_ins.scene, arm, goal, abort,
+                              request.slowdown)
             if result.path is None and others:
-                result = replace(result, reason=f"{result.reason} (other robots not measured: {'; '.join(others)})")
+                result = replace(result, reason=f"{result.reason} ({unmeasured(others)})")
             return result
 
         def finished() -> None:
@@ -120,8 +121,9 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         def accepted(result: PlanResult) -> tuple[str, bool]:
             self._start_base = (result.path, base, tracked)
             how = "straight" if result.direct else "RRT"
-            stand_ins = f" (other robots not measured: {'; '.join(others)})" if others else ""
-            return (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
+            stand_ins = f" ({unmeasured(others)})" if others else ""
+            slower = f" (×{request.slowdown:g} slower)" if request.slowdown > 1.0 else ""
+            return (f"{how}: {result.path.duration:.1f} s{slower}, {result.path.rests} rests on the way, "
                     f"found in {result.seconds:.1f} s{notes}{stand_ins}"), bool(guessed or others)
 
         return Search(label=f"plan {serial} {arm}",

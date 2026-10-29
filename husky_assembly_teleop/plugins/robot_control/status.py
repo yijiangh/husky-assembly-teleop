@@ -20,7 +20,7 @@ from ...robot_interface.refusal import Refusal
 from ...robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV1State, ScaffoldingV3,
                                               ScaffoldingV3State)
 from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, REFUSAL_SHOWN, SECTION_CTRL, block, check_chip, chip,
-                         chip_line, freshness_chip, note, numbers, section, values)
+                         chip_line, freshness_chip, hover, note, numbers, section, values)
 from ...world.checks import STALE_AFTER
 from ...world.mocap import MARKER_ERROR_WARN, mocap_check
 
@@ -97,7 +97,7 @@ def _controller_chip(controllers: ControllerManagerInterface) -> str:
     if state.switch_in_flight:
         return chip(f"→ {CONTROLLER_LABELS.get(state.switch_in_flight, state.switch_in_flight)}", BUSY)
     if state.switch_error:
-        return chip("switch failed", FAIL, state.switch_error)
+        return chip("switch failed", FAIL, hover(f"{state.switch_error}. See the console."))
     if state.active is None:
         return chip("no ctrl", NONE, "no controller running, or no answer yet")
     return chip(CONTROLLER_LABELS.get(state.active, state.active), OK)
@@ -197,7 +197,7 @@ def tool_status(state: object, now: float) -> str:
         # The target until the first joint state arrives.
         shown = state.position if state.position is not None else state.commanded_position
         if shown is not None:
-            chips += chip("closed" if shown > RobotiqGripper.CLOSED_POSITION / 2 else "open", OK)
+            chips += chip("closed" if shown > RobotiqGripper.CLOSED_POSITION / 2 else "open", NONE)
         stale = state.last_update_time is None or now - state.last_update_time >= STALE_AFTER
         measured = None if state.position is None else [state.position]
         commanded = None if state.commanded_position is None else [state.commanded_position]
@@ -221,7 +221,7 @@ def tool_status(state: object, now: float) -> str:
             chips += chip("set_io failed", FAIL, "the arm refused the last output change")
         # Outputs as the UR reports them; the tool itself reports nothing.
         if state.gripper_closed is not None:
-            chips += chip("grip closed" if state.gripper_closed else "grip open", OK)
+            chips += chip("grip closed" if state.gripper_closed else "grip open", NONE)
         return chip_line(chips)
     return ""
 

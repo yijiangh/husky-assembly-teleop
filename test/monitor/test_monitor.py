@@ -403,6 +403,34 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
     assert trips == [("r0", "a: drive r0"), ("r1", "a: drive r1")]
 
 
+def test_a_check_that_finds_nothing_marks_the_clearances_it_asked_about_checked(monkeypatch):
+    """Only a finished check counts: asked and not yet answered stays unchecked."""
+    monitor = build(monkeypatch, Recorder("a", []), robots=[SimpleNamespace(base=SimpleNamespace(
+        mocap_id=1, state=SimpleNamespace(marker_errors=deque([(100.0, 0.0)]), last_fix_time=100.0)))])
+    known = Scene(robots={robot_id("r0"): RobotObject(robot_id("r0"), SimpleNamespace(movable_joints=()), Pose(), {})})
+    monkeypatch.setattr(monitor_module, "take_snapshot", lambda *_args: known)
+    monitor._snapshot = known
+    ctx, seen = monitor._loaded["a"].ctx, []
+
+    async def drive():
+        with ctx.clearance(["r0"], refuse_first=True) as clearance:
+            seen.append(clearance)
+            await ctx.wait_until(lambda: False)
+
+    async def run():
+        task = ctx.spawn("drive r0", drive())
+        await asyncio.sleep(0)
+        await monitor._tick()
+        asked = seen[0].checked
+        monitor._clearances.found = []
+        await monitor._tick()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return asked
+
+    assert not asyncio.run(run()) and seen[0].checked
+
+
 def test_log_lines_reach_the_ros_log_and_the_console_with_their_source(monkeypatch):
     """A plugin's line goes to the ROS log as "[name] text" and to the console as the plain text under its name."""
     monitor = build(monkeypatch, Recorder("a", []))

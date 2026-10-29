@@ -16,7 +16,7 @@ import viser
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
-from ...shared.arm_planner_contract import ArmPlanRequest
+from ...shared.arm_planner_contract import MAX_SLOWDOWN, ArmPlanRequest
 from ...shared.collisions_contract import CollisionsContract
 from ...shared.planner.planner_panel import PlannerPanel, unknown_robots_chip
 from ...shared.planner.plan import Plan
@@ -24,7 +24,7 @@ from ...shared.planner.planner_search import with_guesses
 from ...ui.ghost import RobotGhost
 from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_joint_sliders
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import BUSY, OK, SECTION_TOOL, block, chip, chip_line, section, values
+from ...ui.style import BUSY, FAIL, OK, SECTION_TOOL, block, chip, chip_line, section, values
 from ...ui.visualization import PLAN_TAB
 from scaffolding_assembly_core.ids import robot_id
 from ...shared.assembly_planning.joints import arm_joint_names
@@ -77,12 +77,15 @@ class ArmPlannerPanel(PlannerPanel):
             load = gui.add_button_group("Load", ["Now", "Stow", "Step"],
                                         hint="Set the target to where the arm is now, to its stow pose, or to "
                                              "the arm's target in the step selected in the process plugin")
+            self._slowdown = gui.add_slider("Duration ×", min=1.0, max=MAX_SLOWDOWN, step=0.5, initial_value=1.0,
+                                            hint="Slow the path down: 1 is the fastest the arm is allowed, "
+                                                 f"{MAX_SLOWDOWN:g} takes {MAX_SLOWDOWN:g} times as long. Replan "
+                                                 "after a change.")
 
             self._add_path_controls(ctx, gui,
-                                    plan_hint="Plan around the robot itself, the other robots and the scene, from "
-                                              "where the arm is to the target; play or pause the preview; remove "
-                                              "the plan (or stop planning); a sent path keeps moving: Hold or Stop all "
-                                              "stop it",
+                                    plan_hint="Plan from the arm's pose to the target around itself, the robots and "
+                                              "the scene; Play previews; Clear drops it. Hold or Stop all stops a "
+                                              "sent path.",
                                     commit_hint="Send the path to the arm; it stops at every waypoint")
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
@@ -146,7 +149,7 @@ class ArmPlannerPanel(PlannerPanel):
             robot = next(robot for robot in ctx.config.robots if robot.serial == self.serial)
             arm = next(arm for arm in robot.arms if arm.name == self.arm)
             if arm.stow_joints is None:
-                self._say(f"{self.arm} has no stow pose configured", failed=True)
+                self._say(f"{self.arm} has no stow pose configured", FAIL)
                 return
             self._load = np.array(arm.stow_joints)
             self._say(f"target set to the stow pose of {self.arm}")
@@ -163,14 +166,14 @@ class ArmPlannerPanel(PlannerPanel):
         selection, serial, robot_name = found
         movement, robot, label = selection.movement, selection.action.robot, selection.movement.id
         if serial not in self._arms:
-            self._say(f"{label} is for {robot_name}, which has no arms configured", failed=True)
+            self._say(f"{label} is for {robot_name}, which has no arms configured", FAIL)
             return
         target = movement.target.joints.get(robot) if movement.target is not None else None
         given = target or movement.start.robots[robot].joints or {}
         # * The arm the step moves: the first of the robot's arms it names every joint of.
         arm = next((arm for arm in self._arms[serial] if all(name in given for name in arm_joint_names(arm))), None)
         if arm is None:
-            self._say(f"{label} has no joint values for an arm of {robot_name}", failed=True)
+            self._say(f"{label} has no joint values for an arm of {robot_name}", FAIL)
             return
         self._choose(serial, arm)
         self._load = np.array([given[name] for name in arm_joint_names(arm)])
@@ -182,7 +185,8 @@ class ArmPlannerPanel(PlannerPanel):
 
     def make_request(self, ctx: PluginContext) -> ArmPlanRequest:
         """Plan the chosen arm to the slider target."""
-        return ArmPlanRequest(self.serial, self.arm, tuple(float(value) for value in self._target()))
+        return ArmPlanRequest(self.serial, self.arm, tuple(float(value) for value in self._target()),
+                              float(self._slowdown.value))
 
     def target_change(self, ctx: PluginContext, plan: Plan[ArmPlanRequest]) -> str:
         """How the chosen arm or the sliders differ from the plan's request."""
@@ -191,6 +195,8 @@ class ArmPlannerPanel(PlannerPanel):
             return "the robot or arm changed since planning"
         if np.max(np.abs(self._target() - np.array(request.goal))) > STALE_JOINT:
             return "the target changed since planning"
+        if float(self._slowdown.value) != request.slowdown:
+            return "the duration changed since planning"
         return ""
 
     def show_target(self, ctx: PluginContext, ghost: RobotGhost) -> None:

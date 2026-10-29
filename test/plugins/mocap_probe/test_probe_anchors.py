@@ -193,7 +193,7 @@ def test_an_anchor_moved_from_its_stored_place_is_left_out_and_still_exported(se
     assert data["anchors_in_floor"]["A2"]["moved"] == pytest.approx(0.006)
     assert "A2" not in data["fits"]["both"]["residuals"]
     plugin.draw(ctx)
-    assert "left out as moved: A2" in plugin._floor_status.content and "A2 " in plugin._floor_status.content
+    assert "1 left out as moved (A2)" in plugin._floor_status.content and "A2 " in plugin._floor_status.content
     plugin.teardown(ctx)
 
 

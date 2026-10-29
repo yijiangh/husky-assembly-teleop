@@ -54,13 +54,14 @@ def test_hide_leaves_out_its_sources_even_their_errors_and_a_name_covers_its_top
     ] + [(TICKS, "ERROR")]
 
 
-def test_the_list_is_newest_first_escaped_at_a_fixed_height_with_the_whole_message_on_hover():
-    """Newest on top; HTML in a message is shown, not run; a traceback shows its first line and the rest on hover."""
+def test_the_list_is_newest_first_escaped_at_a_fixed_height_with_the_whole_message_wrapped():
+    """Newest on top; HTML in a message is shown, not run; a traceback shows whole, wrapped, and on hover too."""
     html = render([Entry(1.0, INFO, "a", "first"), Entry(2.0, ERROR, "b", "failed <x>\nTraceback\n  line")])
     assert html.index("failed &lt;x&gt;") < html.index("first")
-    assert "(+2 lines)" in html and 'title="failed &lt;x&gt;\nTraceback\n  line"' in html
+    assert ">failed &lt;x&gt;\nTraceback\n  line<" in html and "white-space:pre-wrap" in html
+    assert 'title="failed &lt;x&gt;\nTraceback\n  line"' in html
     assert f"height:{LIST_HEIGHT}px" in html and "nothing to show" in render([])
-    assert ".message {white-space:normal" in html and 'class="message"' in html, "the message wraps"
+    assert ".message {white-space:pre-wrap" in html and 'class="message"' in html, "the message wraps"
 
 
 def _console() -> tuple[ConsolePlugin, FakeContext, ConsoleLog, list]:

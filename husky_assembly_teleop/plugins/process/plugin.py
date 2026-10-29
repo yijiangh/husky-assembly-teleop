@@ -48,8 +48,8 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.assembly_tab import ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
 from ...ui.phone import group_buttons, group_tooltips_css, one_row_css
-from ...ui.style import (BUSY, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line, section,
-                         swatch_chip, values)
+from ...ui.style import (BUSY, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line, hover,
+                         section, swatch_chip, values)
 from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
@@ -227,10 +227,8 @@ class ProcessPlugin(HuskyPlugin):
             gui.add_html(section("process", SECTION_CTRL))
             self._status = gui.add_html("")
             self._folder = gui.add_text("Folder", initial_value=str(folder or ""),
-                                        hint="Process folder relative to the Drive root, e.g. "
-                                             "data_design_study/<process>, or absolute: with process.json "
-                                             "(doc/process_format.md), or an export in the old compas_fab format, "
-                                             "converted into <export>_process next to it")
+                                        hint="Process folder under the Drive root (e.g. data_design_study/<process>) "
+                                             "or absolute; an old export is converted next to it.")
             load = gui.add_button("Load", hint="Load the folder; an old export is converted first (about 15 s) "
                                                "unless its <export>_process copy is up to date")
             self._transfer = gui.add_checkbox("Transfer workaround", initial_value=TRANSFER_AS_FREE,
@@ -310,6 +308,7 @@ class ProcessPlugin(HuskyPlugin):
             folder = drive_folder(ctx.config.drive_root, folder)
         except FileNotFoundError as error:
             self._error = str(error)
+            ctx.log_warn(self._error)
             return
         self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder), survives_soft_stop=True)
 
@@ -689,11 +688,13 @@ class ProcessPlugin(HuskyPlugin):
             chips = chip(escape(self.process.folder.name), OK, str(self.process.folder))
             chips += chip(f"{len(self.process.schedule)} actions · {len(self._movements)} movements", NONE)
             if self._robot_differences:
-                chips += chip("robots differ", BUSY, "; ".join(self._robot_differences))
+                count = len(self._robot_differences)
+                chips += chip("robots differ", BUSY, f"{count} difference{'s' if count > 1 else ''} from the "
+                                                     f"configured robots (tools or arms).\nThe console lists each.")
         else:
             chips = chip("no process", NONE)
         if self._error:
-            chips += chip("error", FAIL, self._error)
+            chips += chip("error", FAIL, hover(self._error))
         return chip_line(chips)
 
     def _collide_html(self, ctx: PluginContext) -> str:
@@ -751,7 +752,7 @@ class ProcessPlugin(HuskyPlugin):
         """
         number = action.movements.index(movement)
         label = labels[number]
-        which = chip(f"{self.index + 1}/{len(self._movements)}", OK)
+        which = chip(f"{self.index + 1}/{len(self._movements)}", NONE)
         if action.robot:
             which += chip(escape(self.process.robots[action.robot].name), SECTION_CTRL, action.robot)
         else:
@@ -770,11 +771,11 @@ class ProcessPlugin(HuskyPlugin):
             carries = chip(f"start conf from {escape(self._assumed[(action.id, movement.id)][1])}", BUSY,
                            "not authored: assumed from where the robot last was")
         else:
-            carries = chip("no start conf: zero", FAIL)
+            carries = chip("no start conf: zero", BUSY)
         if not self.at_target:
             carries += chip("showing start", NONE)
         else:
-            carries += chip("showing target" if target else "no target: start", OK if target else BUSY)
+            carries += chip("showing target" if target else "no target: start", NONE if target else BUSY)
         if self._carry_applies(action, movement):
             carry = self._carry
             found = "joints and base" if carry.base is not None else "joints"

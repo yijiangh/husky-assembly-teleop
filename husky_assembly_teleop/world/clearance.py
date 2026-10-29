@@ -27,7 +27,7 @@ from scaffolding_assembly_core.scene import Scene
 from ..robot_interface.soft_stop import MotionRefused
 from .base_collision import BaseCollisionWorld
 from .collision_hit import CollisionHit
-from .stand_ins import unknown_robots, with_stand_ins
+from .stand_ins import unknown_parts, unknown_robots, with_stand_ins
 
 #: Default distance, metres, below which a clearance trips.
 STOP_DISTANCE = 0.1
@@ -53,6 +53,10 @@ class Clearance:
             The base pose must always be known.
         unknown_robots: Other robots that may be unknown, by id: checked as their stand-ins, live once measured again.
         stand_ins: Other robots not measured when it started, and how they are checked (`StandIns.warnings`).
+        refuse_first: Too close at the first check refuses it instead: no soft stop, `refused` set. ! Then send
+            nothing until `checked`.
+        checked: Whether a check found it clear yet.
+        refused: Whether it ended at its first check, too close, without a soft stop (`refuse_first`).
     """
 
     serials: tuple[str, ...]
@@ -62,6 +66,9 @@ class Clearance:
     unknown_arms: Collection[str] | Literal["all"] = ()
     unknown_robots: frozenset[str] = frozenset()
     stand_ins: tuple[str, ...] = ()
+    refuse_first: bool = False
+    checked: bool = False
+    refused: bool = False
 
 
 class ClearanceRefused(MotionRefused):
@@ -77,9 +84,10 @@ def clearance_problem(robot: RobotObject | None, assumable: frozenset[str] = fro
         robot: The robot in the snapshot, or None if it is not there.
         assumable: Joints that may be unknown (`assumable_joints`).
     """
-    if robot is None:
+    if robot is None or not robot.enabled:
         return "it is not in the scene"
-    return "; ".join(replace(robot, unmeasured=robot.unmeasured - assumable).acting_problems())
+    parts = unknown_parts(replace(robot, unmeasured=robot.unmeasured - assumable))
+    return f"{parts} not measured" if parts else ""
 
 
 def others_problem(snapshot: Scene, own: Collection[str], allowed: Collection[str]) -> str:
@@ -90,7 +98,7 @@ def others_problem(snapshot: Scene, own: Collection[str], allowed: Collection[st
         own: Ids of the robots the clearance keeps clear.
         allowed: Ids of the other robots that may be unknown (`Clearance.unknown_robots`).
     """
-    return "; ".join(f"{key} is not measured ({'; '.join(snapshot.robots[key].acting_problems())})"
+    return "; ".join(f"{key.split('/', 1)[1]}: {unknown_parts(snapshot.robots[key])} not measured"
                      for key in sorted(unknown_robots(snapshot, own) - set(allowed)))
 
 

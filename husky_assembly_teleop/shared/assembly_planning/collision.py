@@ -79,9 +79,10 @@ def _forward_kinematics_world(planner: PyBulletPlanner, robot_cell_state: RobotC
 
 def collisions(mirror: CompasFabMirror, joints: Mapping[str, float] | None = None,
                full_report: bool = False) -> list[tuple[str, str]]:
-    """What the acting robot or its tools collide with at the synced state, some joints changed (`mirror.collisions`).
+    """What the acting robot, its tools or what they hold collide with at the synced state, some joints changed.
 
-    Its tools against other robots and each other (CC.6) included: the core's mirror checks them.
+    - Its tools against other robots and each other (CC.6) included: the core's mirror checks them.
+    - Pairs without the acting robot's side (another robot, as a tool, in a table) are left out: they never block it.
 
     Args:
         mirror: A synced mirror.
@@ -91,7 +92,13 @@ def collisions(mirror: CompasFabMirror, joints: Mapping[str, float] | None = Non
     Returns:
         list[tuple[str, str]]: Colliding pairs as scene ids; empty if clear.
     """
-    return mirror.collisions(joints, full_report)
+    # * A full report, or the first pair might be one of the others' and hide ours.
+    pairs = mirror.collisions(joints, full_report=True)
+    if not pairs:
+        return []
+    own = _ids_on(mirror, subtree(mirror.cell.robot_model, mirror.cell.robot_model.root.name))
+    pairs = [pair for pair in pairs if pair[0] in own or pair[1] in own]
+    return pairs if full_report else pairs[:1]
 
 
 def collision_hit(mirror: CompasFabMirror, scene: Scene, where: str, joints: Mapping[str, float] | None = None,
@@ -106,14 +113,14 @@ def collision_hit(mirror: CompasFabMirror, scene: Scene, where: str, joints: Map
         where: Which configuration, for the message, e.g. "start" or "waypoint 3".
         joints: The joints changed from the synced state, by name; None: the synced state.
         moved: The joints a search moved: only pairs with a moving side block it, as in `search_check`, and that side
-            comes first. None: every pair blocks (a state checked in full, such as the start).
+            comes first. None: every pair of the acting robot blocks (a state checked in full, such as the start).
         first: The pair the check stopped on, listed first even if the full check misses it.
 
     Returns:
         CollisionHit | None: The hit, or None if nothing blocks the configuration.
     """
     joints = dict(joints or {})
-    pairs = mirror.collisions(joints, full_report=True)  # ! poses the whole world at `joints`, for the contacts
+    pairs = collisions(mirror, joints, full_report=True)  # ! poses the whole world at `joints`, for the contacts
     if moved is not None:
         # * The moving side first: what moved into what.
         moving = _moving_ids(mirror, moved)
@@ -135,8 +142,14 @@ def collision_hit(mirror: CompasFabMirror, scene: Scene, where: str, joints: Map
 
 def _moving_ids(mirror: CompasFabMirror, joint_names: Sequence[str]) -> set[str]:
     """Our ids of what moves with these joints: links below them, the tools on those links and the bodies held."""
-    model, state, cell = mirror.cell.robot_model, mirror.state, mirror.cell
-    links = set().union(*(subtree(model, model.get_joint_by_name(name).child.link) for name in joint_names))
+    model = mirror.cell.robot_model
+    return _ids_on(mirror, set().union(*(subtree(model, model.get_joint_by_name(name).child.link)
+                                         for name in joint_names)))
+
+
+def _ids_on(mirror: CompasFabMirror, links: set[str]) -> set[str]:
+    """Our ids of these links of the acting robot, the tools on them and the bodies they hold."""
+    state, cell = mirror.state, mirror.cell
     tools = {name for name, tool in state.tool_states.items()
              if tool.attached_to_group is not None and cell.get_end_effector_link_name(tool.attached_to_group) in links}
     bodies = {name for name, body in state.rigid_body_states.items()

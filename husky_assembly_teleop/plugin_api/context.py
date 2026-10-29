@@ -282,7 +282,7 @@ class PluginContext:
     @contextmanager
     def clearance(self, serials: Iterable[str], margin: float = STOP_DISTANCE,
                   unknown_arms: Collection[str] | Literal["all"] = (),
-                  unknown_robots: Collection[str] = ()) -> Iterator[Clearance]:
+                  unknown_robots: Collection[str] = (), refuse_first: bool = False) -> Iterator[Clearance]:
         """While the `with` block runs, stop robots that come too close to anything in the scene. Optional.
 
         - Checked against the whole scene: obstacles, process bodies, tracked objects and the other robots. Allowed
@@ -304,6 +304,8 @@ class PluginContext:
             margin: Distance below which it trips, metres.
             unknown_arms: Arms whose joints may be unknown, or ALL_ARMS (`world.clearance`).
             unknown_robots: Ids of other robots that may be unknown.
+            refuse_first: Too close at the first check ends it (`refused`) without a soft stop. ! Send nothing until
+                `clearance.checked`, e.g. a drive that must not start in collision.
 
         Raises:
             RuntimeError: Outside a task of this plugin.
@@ -329,7 +331,7 @@ class PluginContext:
         for line in guessed:
             self.log_warn(f"clearance on {', '.join(serials)}: {line}")
         clearance = Clearance(serials, margin, unknown_arms=unknown_arms, unknown_robots=frozenset(unknown_robots),
-                              stand_ins=guessed)
+                              stand_ins=guessed, refuse_first=refuse_first)
         self._clearances[clearance] = task
         try:
             yield clearance
@@ -598,7 +600,10 @@ class PluginContext:
                 task.cancel(f"freeze broken: {problem}")
 
     def _trip_clearance(self, clearance: Clearance, serial: str, why: str, hit: CollisionHit | None = None) -> None:
-        """Soft stop robot `serial` and cancel the clearance's task, unless it ended meanwhile; tell the monitor."""
+        """Soft stop robot `serial` and cancel the clearance's task, unless it ended meanwhile; tell the monitor.
+
+        Before its first clear check, a `refuse_first` clearance is only refused: nothing was sent yet.
+        """
         task = self._clearances.pop(clearance, None)
         if task is None:
             return
@@ -606,6 +611,11 @@ class PluginContext:
         clearance.hit = None if hit is None else replace(hit, where=task.get_name())
         self._monitor.clearance_tripped(ClearanceTrip(self.now(), serial, task.get_name(), clearance.problem,
                                                       clearance.hit))
+        if clearance.refuse_first and not clearance.checked:
+            clearance.refused = True
+            self.log_warn(f"task {task.get_name()!r}: {clearance.problem} at its start; refused, nothing sent")
+            task.cancel(f"clearance refused: {clearance.problem}")
+            return
         self.world.robots[serial].soft_stop(clearance.problem)
         self.log_error(f"task {task.get_name()!r}: {clearance.problem}; soft stopped it and cancelling the task")
         task.cancel(f"clearance: {clearance.problem}")

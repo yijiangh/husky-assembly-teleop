@@ -498,7 +498,7 @@ def test_exec_asks_for_a_second_press_while_another_robot_is_unknown():
         lab.ctx.scene.snapshot.robots[robot_id(lab.alice.config.serial)].base_tracked = False
         lab.plugin._commit(lab.ctx)
         assert lab.executor.requests == [] and lab.plugin.plan_state == "ready"
-        assert lab.plugin._message == "press Exec again within 2 s to move with a200-0804: base unknown"
+        assert lab.plugin._message == "press Exec again within 2 s to move with 1 other robot unknown"
         lab.update()
         assert lab.plugin._confirm.button.color == "orange" and ">1 robot unknown<" in lab.html()
         lab.plugin._commit(lab.ctx)

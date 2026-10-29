@@ -18,12 +18,11 @@ import pybullet as p
 
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.mirrors.pybullet import PyBulletMirror
-from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene, world_poses
 
 from ...config import RobotConfig
 from ...world.base_collision import BaseCollisionWorld, held_bodies
-from ...world.kinematics import stow_joints
+from ...world.kinematics import from_stow, stow_joints
 
 #: Keep at least this far from every other robot and body, metres: the panel's Margin slider starts here. A retreat
 #: often ends about 3–4 cm from the bar just built, which the old 5 cm counted as a collision.
@@ -40,13 +39,6 @@ FLOOR_SAMPLES = 3
 RAY_BATCH = 8192
 #: Where the planned robot is moved out of the way, metres along x and y.
 PARK = -1000.0
-
-
-def from_stow(robot: RobotObject, config: RobotConfig) -> float:
-    """How far a robot's arms are from their stow pose: the largest measured joint's distance from it, radians."""
-    stow = stow_joints(config, robot.model.movable_joints)
-    return max((abs(math.remainder(robot.joints.get(name, 0.0) - value, math.tau)) for name, value in stow.items()
-                if name not in robot.unmeasured), default=0.0)
 
 
 def stowed(snapshot: Scene, object_id: str, config: RobotConfig) -> tuple[Scene, float]:

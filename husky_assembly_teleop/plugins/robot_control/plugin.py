@@ -14,7 +14,8 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
 * Robots are commanded and read only through their interfaces; no topic names here.
 * A robot is leased while in use (`teleop_lease.py`): a jog or drive is refused while another plugin holds it.
 * Clearance (ticked by default): while driving the base or jogging an arm, the robot is soft stopped once it comes
-  too close to anything in the scene (`ctx.clearance`); a jog waits until its clearance checks.
+  too close to anything in the scene (`ctx.clearance`); a jog waits until its clearance checks. A drive waits for its
+  first clear check: one that starts too close is refused, with an amber chip, and never soft stopped.
 * ! Every button that does nothing says why: a refusal chip on its part's status line (`_refuse`, `refusal_chip`).
 """
 
@@ -42,10 +43,11 @@ from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
 from ...robot_interface.tool_step import TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_LEAD, tool0_pose, tool_jog_target
 from ...ui.phone import big_buttons, phone_text
-from ...ui.style import REFUSAL_SHOWN, SECTION_SENSOR, block, note, note_line, numbers, section, values
+from ...ui.style import BUSY, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, note, note_line, numbers, section, values
 from ...ui.trace_plot import TracePlot
 from ...shared.teleop.dpad import HOLD_TIMEOUT, PHONE_DPAD_STYLE, Hold, build_velocity_inputs
-from ...world.clearance import ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, ClearanceRefused
+from ...world.clearance import ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, Clearance, ClearanceRefused
+from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import unknown_robots
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
@@ -62,6 +64,8 @@ from .teleop_lease import TeleopLeases
 FREE_DRIVE_RETRY = 1.0
 #: The part name of a robot's base in refusal keys; arms use their own names.
 BASE = "base"
+#: Seconds between tries of a held drive refused for starting too close, so it is not checked every tick.
+START_RETRY = 1.0
 #: The F/T live plots: seconds shown, samples kept (twice that at 20 Hz), and ticks between redraws (viser resends
 #: the whole plot each time, so 4 Hz, not 20).
 FT_SECONDS, FT_SAMPLES, FT_PLOT_EVERY = 30.0, 1200, 5
@@ -187,9 +191,13 @@ class RobotControlPlugin(HuskyPlugin):
         #: Per (serial, part), the last of this plugin's commands that did nothing, and why; part is BASE or an arm.
         self._refusals: dict[tuple[str, str], Refusal] = {}
 
-        #: Per base serial, the task keeping a clearance while this plugin drives it, and why the last one tripped.
+        #: Per base serial, the task keeping a clearance while this plugin drives it, its clearance, and why the last
+        #: one tripped.
         self._base_guards: dict[str, asyncio.Task] = {}
+        self._base_clearances: dict[str, Clearance] = {}
         self._tripped: dict[str, str] = {}
+        #: Per base serial, why its drive was refused at the start, too close (no soft stop), and when.
+        self._start_refused: dict[str, tuple[str, float]] = {}
         #: Per arm, the task keeping a clearance while this plugin jogs it; arms in `_jog_checked` once it checks.
         self._jog_guards: dict[tuple[str, str], asyncio.Task] = {}
         self._jog_checked: set[tuple[str, str]] = set()
@@ -252,9 +260,8 @@ class RobotControlPlugin(HuskyPlugin):
             speed = build_velocity_inputs(ctx, gui, serial, partial(self._on_hold, serial))
             clearance = gui.add_checkbox(
                 "Clearance", initial_value=True,
-                hint=f"While driving, soft stop the base once it comes within {STOP_DISTANCE * 100:.0f} cm of anything "
-                     f"in the scene; an arm whose joints are not known counts where last seen, or stowed. Untick to "
-                     f"drive out of a tight spot; the phone's D-pad follows it too.")
+                hint=f"Soft stop the base within {STOP_DISTANCE * 100:.0f} cm of anything; arms not measured count as "
+                     f"last seen or stowed. Untick to drive out of a tight spot (phone D-pad too).")
             return speed, clearance
 
         panel, built = build_controller_panel(ctx, gui, base.controllers,
@@ -453,8 +460,7 @@ class RobotControlPlugin(HuskyPlugin):
                     self._refuse(ctx, (widgets.serial, BASE), *dropped)
                 del self._held[widgets.serial]
                 held = None
-            if held is not None:
-                self._keep_clear(ctx, widgets)
+            if held is not None and self._drive_clear(ctx, widgets):
                 self._leased(ctx, (widgets.serial, BASE), lambda: widgets.base.send_twist(*held.twist()))
                 self._driving.add(widgets.serial)
             elif widgets.serial in self._driving:
@@ -476,24 +482,41 @@ class RobotControlPlugin(HuskyPlugin):
                                                self._applied_force.get(key))
         self._leases.release_idle(ctx, partial(self._busy, now))
 
-    def _keep_clear(self, ctx: PluginContext, widgets: _BaseWidgets) -> None:
-        """While Clearance is ticked, have a clearance kept on the base this plugin is about to drive."""
-        guard = self._base_guards.get(widgets.serial)
-        if widgets.clearance is not None and widgets.clearance.value and (guard is None or guard.done()):
-            self._base_guards[widgets.serial] = ctx.spawn(f"clearance {widgets.serial}",
-                                                          self._guard_base(ctx, widgets))
+    def _drive_clear(self, ctx: PluginContext, widgets: _BaseWidgets) -> bool:
+        """Whether a twist may go out now: Clearance unticked, or its clearance found the base clear; else start it.
+
+        A start too close is refused (`_guard_base`) and tried again after START_RETRY while the button stays held.
+        """
+        serial = widgets.serial
+        if widgets.clearance is None or not widgets.clearance.value:
+            return True
+        guard, clearance = self._base_guards.get(serial), self._base_clearances.get(serial)
+        if guard is not None and not guard.done():
+            if clearance is None or not clearance.checked:
+                return False
+            self._start_refused.pop(serial, None)
+            return True
+        refused = self._start_refused.get(serial)
+        # * Leased first, so the guard does not end at once for want of a lease.
+        waited = refused is None or ctx.now() - refused[1] >= START_RETRY
+        if waited and self._leased(ctx, (serial, BASE), lambda: True):
+            self._base_clearances.pop(serial, None)  # ! the last guard's, checked: never drive under it
+            self._base_guards[serial] = ctx.spawn(f"clearance {serial}", self._guard_base(ctx, widgets))
+        return False
 
     async def _guard_base(self, ctx: PluginContext, widgets: _BaseWidgets) -> None:
         """Keep a clearance on the base while this plugin holds its lease and Clearance stays ticked.
 
-        A trip soft stops the base (`ctx.clearance`); the status line then says what it came too close to. Driving
-        by hand, an arm whose joints are not known is checked where last seen, or stowed; the base pose must be known.
-        Other robots unknown when it starts may stay unknown; any other robot lost trips it.
+        A trip soft stops the base (`ctx.clearance`); the status line then says what it came too close to. Too close
+        at the first check, nothing was sent: it is only refused, with an amber chip. Driving by hand, an arm whose
+        joints are not known is checked where last seen, or stowed; the base pose must be known. Other robots unknown
+        when it starts may stay unknown; any other robot lost trips it.
         """
         serial, clearance = widgets.serial, None
         try:
-            with ctx.clearance([serial], unknown_arms=ALL_ARMS,
+            with ctx.clearance([serial], unknown_arms=ALL_ARMS, refuse_first=True,
                                unknown_robots=unknown_robots(ctx.scene.snapshot, {robot_id(serial)})) as clearance:
+                self._base_clearances[serial] = clearance
                 await ctx.wait_until(lambda: not self._leases.held(serial) or not widgets.clearance.value)
         except ClearanceRefused as refused:
             # ! The drive streams its twists apart from this guard: stop the robot, as a trip would.
@@ -501,10 +524,27 @@ class RobotControlPlugin(HuskyPlugin):
             ctx.world.robots[serial].soft_stop(str(refused))
             self._refuse(ctx, (serial, BASE), "cannot check", f"{refused}: soft stopped")
         except asyncio.CancelledError:
-            if clearance is not None and clearance.problem:
+            if clearance is not None and clearance.refused:
+                self._start_refused[serial] = clearance.problem, ctx.now()
+            elif clearance is not None and clearance.problem:
                 self._tripped[serial] = clearance.problem
-                self._refuse(ctx, (serial, BASE), "too close", f"{clearance.problem}: soft stopped")
+                self._refuse(ctx, (serial, BASE), "too close",
+                             f"{clearance.problem}: soft stopped.\nCollisions shows the hit; Resume in Health.")
             raise
+
+    def _base_warnings(self, ctx: PluginContext, serial: str, now: float) -> str:
+        """Amber chips for driving the base: a drive refused at its start, too close; an arm out of its stow pose."""
+        chips = ""
+        refused = self._start_refused.get(serial)
+        if refused is not None and (serial in self._held or now - refused[1] <= REFUSAL_SHOWN):
+            chips += chip("starts in collision", BUSY, f"{refused[0]}: nothing sent.\nUntick Clearance to drive out; "
+                                                       f"Collisions shows the hit.")
+        config = next(robot for robot in ctx.config.robots if robot.serial == serial)
+        away = from_stow(ctx.scene.snapshot.robots[robot_id(serial)], config)
+        if away > STOW_TOLERANCE:
+            chips += chip("arm not stowed", BUSY, f"An arm is {np.degrees(away):.0f}° from its stow pose: the base "
+                                                  f"drives with it out.\nStow it in Plan › Arm (Load Stow).")
+        return chips
 
     def _busy(self, now: float, serial: str) -> bool:
         """Whether this plugin still uses robot `serial`: an input held, its own move or force, or a part moving."""
@@ -726,7 +766,8 @@ class RobotControlPlugin(HuskyPlugin):
         except asyncio.CancelledError:
             if clearance is not None and clearance.problem:
                 self._tripped[serial] = clearance.problem
-                self._refuse(ctx, key, "too close", f"{clearance.problem}: soft stopped")
+                self._refuse(ctx, key, "too close",
+                             f"{clearance.problem}: soft stopped.\nCollisions shows the hit; Resume in Health.")
             raise
         finally:
             self._jog_checked.discard(key)
@@ -758,7 +799,8 @@ class RobotControlPlugin(HuskyPlugin):
         self._draws += 1
         for widgets in self._bases:
             show_only_running(widgets.panel)
-            refused = refusal_chip((self._refusals.get((widgets.serial, BASE)), widgets.base.last_refusal), now)
+            refused = refusal_chip((self._refusals.get((widgets.serial, BASE)), widgets.base.last_refusal), now) \
+                + self._base_warnings(ctx, widgets.serial, now)
             widgets.status.content = base_status(widgets.base, now, refused)
             if widgets.offset_note is not None:
                 widgets.offset_note.content = note_line(

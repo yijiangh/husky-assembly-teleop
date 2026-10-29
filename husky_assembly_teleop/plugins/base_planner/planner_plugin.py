@@ -30,11 +30,12 @@ from ...robot_interface.base import BaseInterface
 from ...shared.base_planner_contract import BasePlanRequest
 from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ...shared.planner.plan import Plan
-from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
+from ...shared.planner.planner_search import Search, WAIT_MARGIN, unmeasured, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...world.checks import WARN, Check
 from ...world.follower import path_check
+from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.ids import robot_id
 from .path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, BasePath
@@ -42,7 +43,7 @@ from .algorithms import ALGORITHMS, Algorithm, Debug
 from ...shared.recordings.runs import load_description, save_recording, write_description
 from .recording import RECORDING_FOLDER, attempt_folder, save_plan
 from .tasks import BY_NAME, TASK_ORIGIN
-from .world import PlanningWorld, from_stow
+from .world import PlanningWorld
 
 if TYPE_CHECKING:
     from ...shared.process_contract import ProcessContract
@@ -64,8 +65,6 @@ DEFAULT_EXPERIMENT = "default"
 #: An attempt counts for its task when it starts this close to the task's start and aims at the task's target.
 TASK_POSITION = 0.10           # m
 TASK_YAW = math.radians(10.0)  # rad
-#: Experiments hold the arms stowed: a recorded attempt with an arm further than this from it is warned about.
-STOW_TOLERANCE = math.radians(5.0)  # rad
 
 
 def send_to_onboard_follower(base: BaseInterface, path: BasePath) -> int:
@@ -184,7 +183,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 result, world = algorithm.plan(self._world, robot_id(serial), start, goal, abort, settings,
                                                debug), self._world
                 if result.path is None and others:
-                    result = replace(result, reason=f"{result.reason} (other robots not measured: {'; '.join(others)})")
+                    result = replace(result, reason=f"{result.reason} ({unmeasured(others)})")
             if folder is not None:
                 try:
                     save_plan(folder, world, robot_id(serial), setup, result, debug.notes)
@@ -203,7 +202,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             self._plan_record = {"folder": folder, "setup": setup, "seconds": result.seconds}
             self._start_joints = (result.path, dict(snapshot.robots[robot_id(serial)].joints))
             path, how = result.path, algorithm.label + (" (straight)" if result.direct else "")
-            stand_ins = f" (other robots not measured: {'; '.join(others)})" if others else ""
+            stand_ins = f" ({unmeasured(others)})" if others else ""
             return (f"{how}: {path.length:.2f} m, {path.duration:.1f} s, "
                     f"found in {result.seconds:.1f} s{guess}{stand_ins}"), bool(guessed or others)
 

@@ -20,7 +20,7 @@ from scaffolding_assembly_core.process.types import GROUND_PREFIX, HALF_PREFIX
 from scaffolding_assembly_core.scene import Attachment, Scene, world_poses
 
 from ...world.lab import floor_id
-from ...world.stand_ins import LIVE, with_stand_ins
+from ...world.stand_ins import LIVE, unknown_parts, with_stand_ins
 from ..process_scene.scene_bodies import live_ids, scene_bodies
 from .process_steps import LoadedProcess, Step
 
@@ -108,7 +108,8 @@ def scene_for(loaded: LoadedProcess, step: Step, snapshot: Scene, robots: tuple[
         problems = robot.acting_problems()
         if live != acting and robot.enabled and problems and design is not None and _lay_design(robot, design):
             designed.append(live)
-            warnings.append(f"{live} is not measured ({'; '.join(problems)}): stands where the design has it")
+            warnings.append(f"{live.split('/', 1)[1]}: {unknown_parts(robot)} not measured, stands where the design "
+                            f"has it")
     stand_ins = with_stand_ins(scene, (acting,))
     scene, warnings = stand_ins.scene, warnings + list(stand_ins.warnings)
     sources = {**stand_ins.sources, **{live: DESIGN for live in designed if stand_ins.sources[live] == LIVE}}

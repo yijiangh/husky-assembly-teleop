@@ -34,11 +34,12 @@ from ...ui.ghost import RobotGhost
 from ...ui.phone import group_buttons
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import (BUSY, OK, SECTION_TOOL, block, check_chip, chip, chip_line, section,
+from ...ui.style import (BUSY, FAIL, OK, SECTION_TOOL, block, check_chip, chip, chip_line, section,
                          values)
 from ...ui.visualization import PLAN_TAB
 from ...robot_interface.base import live_report
 from ...world.follower import path_check
+from ...world.kinematics import STOW_TOLERANCE, from_stow
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from .algorithms import ALGORITHMS, Algorithm
@@ -111,11 +112,11 @@ class BasePlannerPanel(PlannerPanel):
             self._margin = add_margin_setting(gui)
 
             self._add_path_controls(ctx, gui,
-                                    plan_hint="Plan around the other robots from the robot's current pose to "
-                                              "the target; play or pause the preview; remove the plan (or stop "
-                                              "planning); a sent path keeps driving: Stop all stops it",
-                                    commit_hint="Send the path to the robot's onboard path follower; it drives at once "
-                                                "if the velocity controller is active")
+                                    plan_hint="Plan from the robot's pose to the target around the others; Play "
+                                              "previews; Clear drops the plan. A sent path keeps driving: Stop all "
+                                              "stops it.",
+                                    commit_hint="Send the path to the onboard follower; it drives at once if Vel "
+                                                "runs. With an arm out of its stow pose, press it twice too.")
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -130,12 +131,13 @@ class BasePlannerPanel(PlannerPanel):
                                               hint="A task of the standard set: puts its virtual obstacles into the "
                                                    "scene and sets the target; Load its start to drive there first")
                 try:
-                    recordings, problem = drive_folder(ctx.config.drive_root, RECORDING_FOLDER), ""
+                    drive_folder(ctx.config.drive_root, RECORDING_FOLDER)
+                    problem = ""
                 except FileNotFoundError as error:
-                    recordings, problem = None, str(error)
+                    problem = str(error)
                 self._recording = gui.add_checkbox("Record", initial_value=False, disabled=bool(problem),
-                                                   hint=problem or f"Save every plan attempt, found or not, and the "
-                                                                   f"run of each committed plan to {recordings}")
+                                                   hint=problem or f"Save every plan attempt and each committed run "
+                                                                   f"to the Drive's {RECORDING_FOLDER}/<experiment>/")
 
                 gui.add_html(section("algorithm", SECTION_TOOL))
                 labels = [algorithm.label for algorithm in self._algorithms]
@@ -213,7 +215,7 @@ class BasePlannerPanel(PlannerPanel):
         if label.startswith("Task"):
             task = BY_NAME.get(self._task.value)
             if task is None:
-                self._say("choose a task first", failed=True)
+                self._say("choose a task first", FAIL)
                 return
             self._target.set(*(task.start_in_lab() if label == "Task start" else task.target_in_lab()))
             self._has_target = True
@@ -228,7 +230,7 @@ class BasePlannerPanel(PlannerPanel):
         if label == "Park":
             park = next(robot for robot in ctx.config.robots if robot.serial == self.serial).park_pose
             if park is None:
-                self._say(f"{self.serial} has no parked pose configured", failed=True)
+                self._say(f"{self.serial} has no parked pose configured", FAIL)
                 return
             self._target.set(*park)
             self._has_target = True
@@ -245,7 +247,7 @@ class BasePlannerPanel(PlannerPanel):
         # ? The process's base pose is the URDF root (base_footprint), as in mocap and PyBullet.
         base = selection.movement.start.robots[selection.action.robot].base
         if base is None:
-            self._say(f"{label} leaves {robot_name}'s base to the planner: no target to load", failed=True)
+            self._say(f"{label} leaves {robot_name}'s base to the planner: no target to load", FAIL)
             return
         self._target.set(float(base.position[0]), float(base.position[1]), yaw_from_xyzw(base.orientation))
         self._has_target = True
@@ -266,6 +268,20 @@ class BasePlannerPanel(PlannerPanel):
     def target_change(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> str:
         """Whether the target moved away from the plan's goal."""
         return "the target changed since planning" if differs(self._target.pose, plan.request.goal) else ""
+
+    def commit_warnings(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> list[str]:
+        """An arm out of its stow pose: the base would drive with it out."""
+        out = self._out_of_stow(ctx, plan.request.serial)
+        return [out] if out else []
+
+    def _out_of_stow(self, ctx: PluginContext, serial: str) -> str:
+        """How far the robot's measured arms are from their stow pose, e.g. "the arm 40° from stow"; "" if stowed."""
+        config = next((robot for robot in ctx.config.robots if robot.serial == serial), None)
+        robot = ctx.scene.snapshot.robots.get(robot_id(serial))
+        if config is None or robot is None:
+            return ""
+        away = from_stow(robot, config)
+        return f"the arm {math.degrees(away):.0f}° from stow" if away > STOW_TOLERANCE else ""
 
     def show_target(self, ctx: PluginContext, ghost: RobotGhost) -> None:
         """The robot at the target pose, arms as they are; hidden once the robot stands there, so it never covers it."""
@@ -341,6 +357,9 @@ class BasePlannerPanel(PlannerPanel):
         tracked = ctx.scene.snapshot.robots[robot_id(self.serial)].base_tracked
         chips = chip(escape(f"{self.serial} {'tracked' if tracked else 'not tracked'}"), OK if tracked else BUSY,
                      "" if tracked else "plans from where it was last seen; a commit needs the base tracked by mocap")
+        if out := self._out_of_stow(ctx, self.serial):
+            chips += chip("arm not stowed", BUSY, f"{out}: the base would drive with it out, so Commit asks twice.\n"
+                                                  "Stow it in Plan › Arm (Load Stow).")
         # * The run's chip replaces "sent", and stays while the next plan is made.
         plan, planner = self._api.plan, self._planner
         if plan is None or plan.state != "sent":

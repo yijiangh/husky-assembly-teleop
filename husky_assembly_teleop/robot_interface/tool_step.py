@@ -31,11 +31,11 @@ TOOL_STEP_ITERATIONS = 10
 #: Joint offset for the Jacobian's finite differences, radians.
 _DELTA = 1e-7
 #: A tool0 jog: how far ahead of the arm the point sent each tick lies, seconds; how fast a turn is per mm/s of the
-#: speed slider, degrees per second; the fastest any joint may move; the slider's range and start, mm/s.
+#: speed slider, degrees per second; the fastest any joint may move; the slider's range and start (its middle), mm/s.
 TOOL_JOG_LEAD = 0.2
 TOOL_JOG_DEG_PER_S_PER_MM_S = 0.2
 TOOL_JOG_MAX_JOINT_SPEED = np.radians(30.0)
-TOOL_JOG_SPEED_MIN, TOOL_JOG_SPEED_MAX, TOOL_JOG_SPEED_DEFAULT = 1.0, 50.0, 5.0
+TOOL_JOG_SPEED_MIN, TOOL_JOG_SPEED_MAX, TOOL_JOG_SPEED_DEFAULT = 1.0, 10.0, 5.0
 
 
 def tool_step_target(urdf: Path, arm: str, joints: Sequence[float], step: Pose,

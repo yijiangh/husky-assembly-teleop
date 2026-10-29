@@ -89,3 +89,8 @@ def with_guesses(snapshot: Scene, object_id: str) -> tuple[Scene, list[str]]:
         return snapshot, []
     known = replace(robot, base_tracked=True, unmeasured=frozenset())
     return replace(snapshot, robots={**snapshot.robots, object_id: known}), guessed
+
+
+def unmeasured(stand_ins: list[str]) -> str:
+    """A plan's short note on the other robots planned around as stand-ins, which the planner logs one by one."""
+    return f"{len(stand_ins)} other robot{'s' if len(stand_ins) > 1 else ''} not measured: see Health"

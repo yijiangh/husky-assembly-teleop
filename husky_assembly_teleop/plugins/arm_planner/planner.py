@@ -17,12 +17,13 @@ from typing import Callable, Sequence
 import numpy as np
 
 from ...world.collision_hit import CollisionHit
-from ...shared.assembly_planning.collision import collision_hit
+from ...shared.assembly_planning.collision import collision_hit, collisions
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.planner.timed_path import TimedPath
 from ...shared.planner.planner_search import PlanResult
 from ...shared.planner.rrt_connect import connect
-from ...robot_interface.arm import UR_JOINT_LIMITS, UR_JOINT_NAMES, joint_path_move
+from ...robot_interface.arm import (JOINT_MOVE_MAX_SPEED, JOINT_PATH_MAX_ACCELERATION, UR_JOINT_LIMITS,
+                                    UR_JOINT_NAMES, joint_path_move)
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 from scaffolding_assembly_core.scene import Scene
 
@@ -57,13 +58,16 @@ class ArmPath(TimedPath):
     rests: int
 
     @classmethod
-    def along(cls, joint_names: Sequence[str], points: np.ndarray, stops: Sequence[int] | None = None) -> ArmPath:
+    def along(cls, joint_names: Sequence[str], points: np.ndarray, stops: Sequence[int] | None = None,
+              slowdown: float = 1.0) -> ArmPath:
         """Time a path on `joint_path_move`'s profile.
 
         Args:
             joint_names: The six joints.
             points: (n, 6) joint values, radians; the first is the start.
             stops: Indices of the points to rest at, as `joint_path_move` takes them; None: every point.
+            slowdown: How many times longer than the fastest timing it takes: speeds divided by it, accelerations by
+                its square.
 
         Returns:
             ArmPath: The timed path.
@@ -71,7 +75,8 @@ class ArmPath(TimedPath):
         Raises:
             ValueError: If the points never move.
         """
-        positions, velocities, duration = joint_path_move(points, stops)
+        positions, velocities, duration = joint_path_move(points, stops, JOINT_MOVE_MAX_SPEED / slowdown,
+                                                          JOINT_PATH_MAX_ACCELERATION / slowdown ** 2)
         rests = len(points) - 2 if stops is None else len(set(stops) - {0, len(points) - 1})
         return cls(times=np.linspace(0.0, duration, len(positions)), points=positions,
                    joint_names=tuple(joint_names), velocities=velocities, rests=rests)
@@ -179,7 +184,7 @@ def round_corners(corners: Sequence[Sequence[float]],
 
 
 def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequence[float],
-             abort: threading.Event) -> PlanResult[ArmPath]:
+             abort: threading.Event, slowdown: float = 1.0) -> PlanResult[ArmPath]:
     """Plan a collision-free joint path for one arm within its URDF joint limits, from where it is to `goal`.
 
     Args:
@@ -188,6 +193,7 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
         arm_name: Which arm, e.g. "ur_arm".
         goal: Six joint values, radians, UR driver order.
         abort: Set from the main thread to end the search early.
+        slowdown: How many times longer than the fastest timing the path takes (`ArmPath.along`).
 
     Returns:
         PlanResult[ArmPath]: The path, or why there is none.
@@ -207,7 +213,7 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
     if outside := _outside(goal, lower, upper):
         return PlanResult(None, f"the target is past the joint limits: {outside}", time.time() - started)
     # * Check the start in full once; the fast `search_check` skips pairs the arm does not move.
-    hits = mirror.collisions()
+    hits = collisions(mirror)
     if hits:
         return refused(collision_hit(mirror, scene, "start", first=hits[0]))
     check = mirror.search_check(names)
@@ -230,5 +236,5 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
                       attempts=ATTEMPTS, improve_time=IMPROVE_TIME)
     if corners.states is None:
         return PlanResult(None, corners.reason, time.time() - started)
-    path = ArmPath.along(names, *round_corners(corners.states, collides))
+    path = ArmPath.along(names, *round_corners(corners.states, collides), slowdown=slowdown)
     return PlanResult(path, seconds=time.time() - started, direct=corners.direct)

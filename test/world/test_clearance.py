@@ -73,7 +73,7 @@ def test_an_unknown_arm_trips_a_strict_clearance_and_counts_as_stowed_in_a_lenie
     checker = ClearanceChecker()
     try:
         (_key, why, hit), = found(checker, snapshot(config, -2.0, unknown), own)
-        assert why.startswith("cannot be checked: joints not known: ur_arm_") and hit is None
+        assert why == "cannot be checked: ur_arm not measured" and hit is None
         allowed = assumable_joints(config.model.movable_joints, ["ur_arm"])
         assert allowed == unknown == assumable_joints(config.model.movable_joints, ALL_ARMS) & unknown
         assert found(checker, snapshot(config, -2.0, unknown), own, allowed) == []
@@ -101,7 +101,7 @@ def test_another_robot_that_lost_mocap_trips_unless_allowed_then_stands_where_la
     checker = ClearanceChecker()
     try:
         (_key, why, hit), = found(checker, scene(-3.0), own)
-        assert why == f"cannot be checked: {other} is not measured (its base is not tracked)" and hit is None
+        assert why == f"cannot be checked: {other.split('/')[1]}: base not measured" and hit is None
         assert found(checker, scene(-3.0), own, allowed=frozenset({other})) == []
         (_key, why, hit), = found(checker, scene(-0.8), own, allowed=frozenset({other}))
         assert why == f"came within 10 cm of {other}" and hit is not None

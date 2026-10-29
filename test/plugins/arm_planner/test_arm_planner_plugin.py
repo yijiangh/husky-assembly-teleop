@@ -101,7 +101,8 @@ def make_planner(ctx: FakeCtx) -> ArmPlannerPlugin:
 @pytest.fixture
 def found_path(monkeypatch):
     """Every search finds PATH."""
-    monkeypatch.setattr(arm_plugin, "plan_arm", lambda world, mirror, arm, goal, abort: PlanResult(PATH, seconds=0.1))
+    monkeypatch.setattr(arm_plugin, "plan_arm",
+                        lambda world, mirror, arm, goal, abort, slowdown: PlanResult(PATH, seconds=0.1))
 
 
 def run(planner: ArmPlannerPlugin, ctx: FakeCtx, scenario):
@@ -281,6 +282,7 @@ def make_panel(planner: ArmPlannerPlugin) -> ArmPlannerPanel:
     panel.serial, panel.arm, panel._has_target, panel._load_now = SERIAL, ARM, True, False
     panel._sliders = [SimpleNamespace(value=math.degrees(value)) for value in GOAL]
     panel._used = SimpleNamespace(touch=lambda: None, active=True)
+    panel._slowdown = SimpleNamespace(value=1.0)
     panel._collisions = FakeCollisions()
     return panel
 
@@ -310,6 +312,14 @@ def test_target_change_compares_the_sliders_and_arm_with_the_plan():
     panel._sliders[0].value -= 3.0
     panel.arm = "right_ur_arm"
     assert "arm changed" in panel.target_change(None, ready_plan())
+
+
+def test_a_new_duration_asks_for_a_replan_and_goes_into_the_request():
+    """Moving the Duration slider makes the plan's request out of date; the next request carries it."""
+    panel = make_panel(ArmPlannerPlugin())
+    panel._slowdown.value = 2.5
+    assert panel.target_change(None, ready_plan()) == "the duration changed since planning"
+    assert panel.make_request(None).slowdown == 2.5
 
 
 def test_make_request_takes_the_sliders():
@@ -348,7 +358,7 @@ def test_a_plan_refused_for_a_collision_shows_its_hit_until_the_next_plan(monkey
     """A target in collision lists its hit in the collisions panel, ticked; the next plan found removes it."""
     hit = SimpleNamespace(where="target", message="target is in collision: a with b")
     results = iter([PlanResult(None, hit.message, hit=hit), PlanResult(PATH, seconds=0.1)])
-    monkeypatch.setattr(arm_plugin, "plan_arm", lambda world, mirror, arm, goal, abort: next(results))
+    monkeypatch.setattr(arm_plugin, "plan_arm", lambda world, mirror, arm, goal, abort, slowdown: next(results))
     ctx = FakeCtx()
     planner = make_planner(ctx)
     panel = make_panel(planner)
@@ -382,15 +392,17 @@ def test_a_plan_warns_about_other_robots_that_stand_in(found_path):
     _with_others(ctx, RobotObject(robot_id(belle.serial), belle.model, Pose((3.0, 0.0, 0.0)), {}, base_tracked=False,
                                   base_time=1.0, joints_time=1.0),
                  RobotObject(robot_id(alice.serial), alice.model, Pose(), {}, enabled=False))
-    planner = make_planner(ctx)
+    planner, warned = make_planner(ctx), []
+    ctx.log_warn = warned.append
 
     async def scenario():
         return await planner.request_plan(REQUEST)
 
     plan = run(planner, ctx, scenario)
-    assert plan.state == "ready" and plan.warning
-    assert "robots/a200-0805 is not measured (its base is not tracked): checked where last seen" in plan.message
-    assert "a200-0804" not in plan.message
+    assert plan.state == "ready" and plan.warning and "(1 other robot not measured: see Health)" in plan.message
+    assert any("a200-0805: base not measured, checked where last seen" in line
+               for line in warned)
+    assert not any("a200-0804" in line for line in warned)
 
 
 def test_a_plan_with_every_robot_measured_has_no_such_warning(found_path):

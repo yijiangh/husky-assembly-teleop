@@ -193,7 +193,9 @@ class PlannerService(HuskyPlugin, Generic[R]):
             abort.set()
         search.finished()
         if result.path is None:
-            self._settle(future, replace(plan, state="failed", message=f"no plan: {result.reason}", hit=result.hit))
+            where = "; Collisions lists it" if result.hit is not None else ""
+            self._settle(future, replace(plan, state="failed", message=f"no plan: {result.reason}{where}",
+                                         hit=result.hit))
             return
         message, warning = search.accepted(result)
         self._settle(future, replace(plan, state="ready", path=result.path, message=message, warning=warning))
