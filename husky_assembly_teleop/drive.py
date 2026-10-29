@@ -10,6 +10,8 @@ The project's Google Drive folder, where experiment data lives, synced to this m
   its own folders (assembly_run's `runs/<stamp>/`).
 - Saved runs and takes are named the same everywhere: `folder_name` for a name typed in the panel, `stamped_name` for
   a run, `started_at` for the time written into one.
+- Every file written says whether it came from a simulation (`environment`): sim and real data share their folders,
+  except calibrations, which a relay applies (`world/calibration_sessions.py`).
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ from pathlib import Path
 
 #: The environment variable holding the local path of the project's Drive folder.
 DRIVE_ROOT_VARIABLE = "HUSKY_DRIVE_ROOT"
+#: A file's `environment`: made in a simulation, or with the real robots and Motive.
+SIM, REAL = "sim", "real"
 
 
 def drive_root(given: str | Path | None = None) -> Path | None:
@@ -66,3 +70,18 @@ def stamped_name(*parts: str) -> str:
 def started_at() -> str:
     """The local time now with its UTC offset, as written into a run's description, e.g. "2026-10-19T20:45:00+0200"."""
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def ros_domain() -> int:
+    """This process's ROS domain (ROS_DOMAIN_ID, 0 if unset)."""
+    return int(os.environ.get("ROS_DOMAIN_ID", "").strip() or 0)
+
+
+def environment(simulated: bool) -> dict:
+    """What every file written gets, to tell simulated data from real: {"environment": "sim" | "real", "ros_domain"}."""
+    return {"environment": SIM if simulated else REAL, "ros_domain": ros_domain()}
+
+
+def marked_sim(content: object) -> bool:
+    """Whether a file's content says it came from a simulation; files from before the mark count as real."""
+    return isinstance(content, dict) and content.get("environment") == SIM

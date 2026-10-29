@@ -12,8 +12,10 @@ import os
 import sys
 import textwrap
 
-#: Characters per line of a message, without ROS's `[WARN] [time] [mocap_relay]: ` prefix.
+#: Width of a box's rule, without ROS's `[WARN] [time] [mocap_relay]: ` prefix.
 WIDTH = 100
+#: Lines longer than this are wrapped; ! write messages in short lines rather than relying on it.
+WRAP_WIDTH = 160
 
 
 def _colour() -> bool:
@@ -32,7 +34,7 @@ def good(text: str) -> str:
     return f"\033[1;32m{text}\033[22;39m" if _colour() else text
 
 
-def wrap(text: str, width: int = WIDTH, indent: str = "  ") -> str:
+def wrap(text: str, width: int = WRAP_WIDTH, indent: str = "  ") -> str:
     """Wrap each line of text to width, indenting the continuations; long words such as paths stay whole."""
     return "\n".join(textwrap.fill(line, width, subsequent_indent=indent, break_long_words=False,
                                    break_on_hyphens=False) or line for line in text.splitlines())
@@ -40,6 +42,6 @@ def wrap(text: str, width: int = WIDTH, indent: str = "  ") -> str:
 
 def box(title: str, text: str) -> str:
     """A bold title on the log line, and text below it in a box, so a warning stands out among routine lines."""
-    lines = wrap(text, WIDTH - 2).splitlines()
+    lines = wrap(text, WRAP_WIDTH - 2).splitlines()
     rule = "─" * WIDTH
     return "\n".join([bold(title), f"┌{rule}", *(f"│ {line}" for line in lines), f"└{rule}"])

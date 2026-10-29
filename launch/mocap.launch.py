@@ -5,8 +5,10 @@ Moved here from crl-husky (`crl_husky mocap.launch.py`), which keeps the message
     ros2 launch husky_assembly_teleop mocap.launch.py                           # Motive PC at 192.168.0.28
     ros2 launch husky_assembly_teleop mocap.launch.py server_ip:=192.168.0.117  # another Motive PC
 
-The same in a simulation's own domain: there the relay also publishes simulated robots and a fake Motive's bodies
-(node.py), in place of Motive's with the same id, so it keeps running while simulations come and go.
+A simulation's own domain runs its own relay with `sim:=true`: it reads only the simulated robots and a fake
+Motive's bodies (node.py), never Motive, so it keeps running while simulations come and go:
+
+    ros2 launch husky_assembly_teleop mocap.launch.py sim:=true
 """
 
 import os
@@ -41,7 +43,6 @@ def _build_node(context):
     client_ip = LaunchConfiguration("client_ip").perform(context).strip()
     publish_rate_hz = float(LaunchConfiguration("publish_rate_hz").perform(context))
     topic_prefix = LaunchConfiguration("topic_prefix").perform(context)
-    frame_id = LaunchConfiguration("frame_id").perform(context)
     stale_timeout = float(LaunchConfiguration("streaming_stale_timeout_sec").perform(context))
     marker_error_valid_threshold = float(LaunchConfiguration("marker_error_valid_threshold").perform(context))
     use_multicast = LaunchConfiguration("use_multicast").perform(context).lower() in ("1", "true", "yes")
@@ -51,9 +52,14 @@ def _build_node(context):
     auto_detect = LaunchConfiguration("auto_detect_client_ip").perform(context).lower() in ("1", "true", "yes")
     drive_root = LaunchConfiguration("drive_root").perform(context)
     use_drive = LaunchConfiguration("use_drive").perform(context).lower() in ("1", "true", "yes")
+    sim = LaunchConfiguration("sim").perform(context).lower() in ("1", "true", "yes")
     watch_period_sec = float(LaunchConfiguration("watch_period_sec").perform(context))
+    definitions_period_sec = float(LaunchConfiguration("definitions_period_sec").perform(context))
+    frame_log = LaunchConfiguration("frame_log").perform(context)
+    frame_log_days = int(LaunchConfiguration("frame_log_days").perform(context))
 
-    resolved_client_ip = client_ip
+    # * A simulation's relay never talks to Motive: no client address needed.
+    resolved_client_ip = client_ip or ("127.0.0.1" if sim else "")
     if auto_detect and not resolved_client_ip:
         detected_ip = _detect_client_ip_from_server(server_ip)
         if detected_ip:
@@ -79,7 +85,6 @@ def _build_node(context):
                 "server_ip": server_ip,
                 "publish_rate_hz": publish_rate_hz,
                 "topic_prefix": topic_prefix,
-                "frame_id": frame_id,
                 "streaming_stale_timeout_sec": stale_timeout,
                 "marker_error_valid_threshold": marker_error_valid_threshold,
                 "use_multicast": use_multicast,
@@ -88,7 +93,11 @@ def _build_node(context):
                 "reconnect_min_interval_sec": reconnect_min_interval_sec,
                 "drive_root": drive_root,
                 "use_drive": use_drive,
+                "sim": sim,
                 "watch_period_sec": watch_period_sec,
+                "definitions_period_sec": definitions_period_sec,
+                "frame_log": frame_log,
+                "frame_log_days": frame_log_days,
             }
         ],
     )
@@ -123,11 +132,6 @@ def generate_launch_description():
                 "topic_prefix",
                 default_value="/mocap/rigid_body",
                 description="Topic prefix for per-ID pose topics",
-            ),
-            DeclareLaunchArgument(
-                "frame_id",
-                default_value="mocap_world",
-                description="frame_id used in PoseStamped messages",
             ),
             DeclareLaunchArgument(
                 "streaming_stale_timeout_sec",
@@ -170,9 +174,32 @@ def generate_launch_description():
                 description="Prefer the newest calibration session on the Drive over crl-husky's default",
             ),
             DeclareLaunchArgument(
+                "sim",
+                default_value="false",
+                description="true: a simulation's relay, reading only its inputs (fake Motive, simulator's truth) "
+                            "with its calibrations, never Motive; refused in the robots' domain. false: Motive only",
+            ),
+            DeclareLaunchArgument(
                 "watch_period_sec",
                 default_value="30.0",
                 description="Seconds between looks for newer calibrations on the Drive (logged, never applied); 0: off",
+            ),
+            DeclareLaunchArgument(
+                "definitions_period_sec",
+                default_value="2.0",
+                description="Seconds between asking Motive for its body definitions and cameras (published on change); "
+                            "0: off",
+            ),
+            DeclareLaunchArgument(
+                "frame_log",
+                default_value="~/.ros/mocap_frame",
+                description="Folder keeping every look's frame metrics, a <YYYYMMDD>.jsonl per day (a simulation's in "
+                            "sim/domain_<id>/); \" \" (a space, as ROS refuses an empty value): not kept",
+            ),
+            DeclareLaunchArgument(
+                "frame_log_days",
+                default_value="30",
+                description="Days of frame log files kept; older ones are deleted",
             ),
             OpaqueFunction(function=_build_node),
         ]

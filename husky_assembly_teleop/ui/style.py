@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from html import escape
 
-from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
+from ..world.checks import BAD, GOOD, PENDING, STALE_AFTER, WARN, Check
 from ..world.checks import INFO as INFO_LEVEL
 
 #: The ring that marks the selected one of a row (the process panel's movement buttons); a colour no swatch fill uses.
@@ -27,7 +27,7 @@ INFO = "#1c7ed6"
 SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL = "#4263eb", "#1098ad", "#f08c00"
 
 #: Chip colour for each severity.
-LEVEL_COLORS = {INFO_LEVEL: INFO, GOOD: OK, WARN: BUSY, BAD: FAIL}
+LEVEL_COLORS = {PENDING: NONE, INFO_LEVEL: INFO, GOOD: OK, WARN: BUSY, BAD: FAIL}
 
 #: Seconds the chip saying why a button did nothing stays up.
 REFUSAL_SHOWN = 3.0
@@ -59,8 +59,9 @@ def swatch_chip(text: str, fill: str, border: str, title: str = "", fill_to: str
 
 
 def check_chip(check: Check) -> str:
-    """A chip coloured by the check's level, its detail as hover text."""
-    return chip(check.label, LEVEL_COLORS[check.level], check.detail)
+    """A chip coloured by the check's level, its value after its label, its detail as hover text."""
+    text = f"{check.label} {check.value}" if check.value else check.label
+    return chip(escape(text), LEVEL_COLORS[check.level], check.detail)
 
 
 def section(label: str, color: str, detail: str = "") -> str:
@@ -141,7 +142,17 @@ def values(*lines: str, dim: bool = False) -> str:
     rows = "".join(f"<div>{line}</div>" for line in lines)
     # ! white-space:pre keeps the padding spaces that HTML would collapse.
     color = f"color:{NONE};" if dim else ""
-    return f'<div style="font:11px/1.5 monospace;white-space:pre;margin-top:2px;{color}">{rows}</div>'
+    return f'<div class="values" style="font:11px/1.5 monospace;white-space:pre;margin-top:2px;{color}">{rows}</div>'
+
+
+def wrapped(*lines: str) -> str:
+    """Sentences that wrap, with the readouts' margin."""
+    return "".join(f'<div style="font-size:0.85em;margin:0 8px 4px">{escape(line)}</div>' for line in lines)
+
+
+def indented(*lines: str) -> str:
+    """Readout lines with a small margin from the folder's border."""
+    return f'<div style="margin-left:8px">{values(*lines)}</div>' if lines else ""
 
 
 def numbers(items, count: int, width: int, digits: int) -> str:

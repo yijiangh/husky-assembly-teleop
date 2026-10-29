@@ -19,7 +19,7 @@ from .mocap_state import MARKER_ERROR_WINDOW, MocapBody, MocapSample, RawMarkers
 def mocap_topic(mocap_id: int) -> str:
     """The relay topic of one rigid body.
 
-    * Its pose is already calibrated and in the Z-up world frame; don't transform it again.
+    * Its pose is already calibrated and in the lab frame; don't transform it again.
     """
     return f"/mocap/rigid_body/id_{mocap_id}/pose"
 

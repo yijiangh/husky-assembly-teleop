@@ -15,19 +15,18 @@ simulated tool. A simulation runs in a ROS domain of its own and refuses the rob
   a simulated screw is stalled) add to it. ! The compliance controller reads the same topic: keep them small.
 - **Motive** (teleop, optional): `sim_motive`, a fake Motive between the robot and the relay, adds Motive's
   imperfections to every true pose. It knows no robots or arms.
-- **The relay**: the same relay as in the lab. Outside the robots' domain it also takes the simulated poses, in place
-  of Motive's body with the same id while they stream.
+- **The relay**: the same relay as in the lab, started with `sim:=true` (refused in the robots' domain): it reads
+  only the simulated poses, never Motive, so everything measured through it is simulated.
 
 ## How it fits together
 
 | Who | Publishes | The relay does |
 |---|---|---|
 | `husky_sim` (crl-husky) | `/mocap_sim/truth/id_<n>/pose`: the base's true base_footprint; with `tool:=calibration_marker`, the arm's true tool0 as the marker's body (1866) | publishes it as it is |
-| `sim_motive` (teleop, optional) | `/mocap_sim/motive/id_<n>/pose`: each true pose with Motive's imperfections; a robot's base relative to crl-husky's default calibration | takes the default off, then applies the simulated session's calibration (`calibration_data_sim/domain_<id>/`) |
-| Motive, in the lab | NatNet | applies the robots' calibrations |
+| `sim_motive` (teleop, optional) | `/mocap_sim/motive/id_<n>/pose`: each true pose with Motive's imperfections; a robot's base relative to crl-husky's default calibration | takes the default off, then applies the simulated session's calibration (`sim/calibration_data/domain_<id>/`) |
 
-Per rigid body the relay publishes the fake Motive's pose, else the truth, else Motive's, whichever streams; when one
-stops, the next comes back. Every simulated part announces itself on `/<robot>/simulated_parts` once a second
+Per rigid body the relay publishes the fake Motive's pose, else the truth, whichever streams; when one stops, the
+other comes back. Motive is never read: a relay reads either Motive or a simulation, never both. Every simulated part announces itself on `/<robot>/simulated_parts` once a second
 (`base`, each arm, each tool, `mocap`); the monitor treats a part as simulated while it was heard within 3 s.
 
 ## Every terminal
@@ -42,12 +41,14 @@ export ROS_DOMAIN_ID=70          # a domain of your own, never 80; with zenoh ev
 ## Start once: relay and monitor
 
 ```bash
-ros2 launch husky_assembly_teleop mocap.launch.py
+ros2 launch husky_assembly_teleop mocap.launch.py sim:=true
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['belle']" -p plugins:="['robot_control']"
 ```
 
 They keep running while simulations come and go. Only one relay runs per domain; a second monitor needs
-`-p viser_port:=8095`.
+`-p viser_port:=8095`. With `sim:=true` the relay applies the simulation's base and floor calibrations
+(`sim/calibration_data/domain_<ROS_DOMAIN_ID>/`), the probe writes there, and every file says `"environment": "sim"`.
+Without it the relay reads Motive only, and a simulated robot gets no mocap pose (its base's mocap chip stays red).
 
 ## One robot
 
@@ -131,12 +132,6 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -
   `ros2 launch crl_husky pure_pursuit_sim.launch.py ... xICR:=-0.15` (the base alone).
 - More: [base_exp_manual.md](base_exp_manual.md), [base_planner_manual.md](base_planner_manual.md).
 
-## In the lab, with the real objects
-
-The same on a PC wired to the mocap network: the relay then also reads Motive. A simulated robot's body stands in for
-the real one with the same id while the simulation runs; every other robot, bar and object comes from Motive with the
-robots' calibrations. The real body comes back when the simulation stops.
-
 ## While it runs
 
 - Emergency stop and battery: `ros2 param set /a200_0805/husky_sim emergency_stop true`, `battery_percentage 0.2`.
@@ -176,6 +171,9 @@ The fake Motive (`sim_mocap`, with `fake_motive:=true`); per-body values are `<v
 | `drift` (per body) | 0 | the body frame creeping, m/min and °/min (rotation vector) |
 | `dropout`, `dropout_burst_s` | 0 | chance per sample that a body is lost, and for how long |
 | `noise_seed` | 0 | the same noise and dropouts again |
+| `refines` (per body) | 0 | how often the body was refined: its markers nudged a few tenths of a mm each time; also `ros2 param set /sim_motive refines "1850:1"` while it runs |
+| `recalibration` | 0 | Motive's frame moved, x, y, z m and roll, pitch, yaw °: every body and camera seen from it, as after a recalibration; also `ros2 param set /sim_motive recalibration "0.02,-0.01,0,0,0,0.5"` while it runs |
+| `cameras_file` | the lab's | the cameras to announce, JSON as `/mocap_relay/cameras`; `none` for none (default `data/sim/motive_cameras.json`) |
 
 ## Not simulated
 
@@ -189,7 +187,7 @@ The fake Motive (`sim_mocap`, with `fake_motive:=true`); per-body values are `<v
 
 - A calibration applied in a simulation stays with that domain: later fake-Motive runs there are off by it. The
   relay's start log lists them under "fake Motive's bodies, sessions in …/domain_<id>"; use another domain, or remove
-  that domain's folder in `calibration_data_sim/` to start from the defaults.
+  that domain's folder in `sim/calibration_data/` to start from the defaults.
 - `sim_mocap.launch.py` and `ros2 launch` refuse an empty `name:=`: leave an argument out instead.
 - A simulation in domain 80 is refused by every launch and simulator; a robot there obeys the same `cmd_vel`.
 

@@ -28,6 +28,7 @@ What plugins share with each other: contracts, data types, base classes and help
                               collision checks on a mirror pool, the tamp route
   execution/                  running a planned movement on the robots: timing, sending, tools, the operator's
                               prompt, whether anything moves, and when a plan goes stale
+  guide/                      a guided procedure: steps with checks, one procedure at a time, the panel, checklists
   planner/                    base classes and helpers for the planner plugins
   process_scene/              the process scene at a movement as live scene bodies, and the colours of bodies
   recordings/                 experiment runs on the Drive: run folders, descriptions, recordings read by label

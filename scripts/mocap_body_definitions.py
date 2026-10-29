@@ -1,6 +1,8 @@
 """
 Watch Motive's rigid body definitions and report refines, pivot edits, bodies made again and other bodies on an id.
 
+The relay asks the same every few seconds and logs each change (doc/mocap_relay.md); this script tries changes by hand.
+
 ! WIP: of the lab test below, 3, 6 and 7 pass on the lab's Motive 3.0.3.1 (NatNet 4.0); the others are not done.
   Reads NatNet 4.0 and 4.1. A body missing for one reading comes back as "new body", not compared with its earlier
   definition: calibration compares against the definition it stored, so it needs no such history.
@@ -17,7 +19,7 @@ Lab test, one change at a time, noting the numbers each prints:
   1. Leave Motive alone for two minutes: nothing is reported (the same definitions every time).
   2. Rename a body: "renamed" only.
   3. Refine the tool body (Builder, Refine, Apply): "refined".
-  4. Move its pivot, then turn it: "frame moved" each time.
+  4. Move its pivot, then turn it: "pivot moved" each time.
   5. Delete a body and make it again from the same markers, same streaming id: "redefined" (or "refined").
   6. Make a body from other markers under that streaming id: "other body".
   7. Change a body's streaming id: "id A -> B", unchanged.
@@ -39,8 +41,8 @@ from pathlib import Path
 
 import numpy as np
 
-from husky_assembly_teleop.mocap_relay.body_definitions import (BodyDefinition, DescriptionClient, has_sizes,
-                                                                match)
+from husky_assembly_teleop.mocap_relay.body_definitions import DescriptionClient, has_sizes
+from husky_assembly_teleop.robot_interface.mocap_definitions import BodyDefinition, match
 
 #: The relay's defaults (mocap_relay/node.py).
 SERVER_IP, MULTICAST_ADDRESS = "192.168.0.28", "239.255.42.99"
@@ -134,7 +136,7 @@ def watch(args: argparse.Namespace) -> int:
                 print(f"{time.strftime('%H:%M:%S')}  Motive set tracked models changed in "
                       f"{client.models_changed - flagged} frames")
                 flagged = client.models_changed
-            stamp, found, problems = replies[-1]
+            stamp, found, problems = replies[-1].time, replies[-1].bodies, replies[-1].problems
             bodies = {body.streaming_id: body for body in found if ids is None or body.streaming_id in ids}
             for problem in problems:
                 print(f"{time.strftime('%H:%M:%S')}  {problem}")

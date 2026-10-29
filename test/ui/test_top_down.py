@@ -28,3 +28,13 @@ def test_render_puts_bodies_and_dots_where_they_are():
     assert tuple(picture[15, 15]) == BODY_COLOR       # row 40 - 25, column 15
     assert tuple(picture[35, 35]) == (230, 60, 150)   # row 40 - 5, column 35
     assert tuple(picture[35, 15]) == (200, 200, 200)  # (1.5, 0.5): floor
+
+
+def test_finer_floor_colours_fill_parts_of_a_cell():
+    """With 2 x 2 colours per cell, the colour for (0.25, 3.75) fills the top-left half-cell only."""
+    fine = np.full((8, 8, 3), 200)
+    fine[0, 7] = (40, 160, 60)
+    picture = render_top_down(GRID, fine, [], [])
+    assert picture.shape == (40, 40, 3)
+    assert tuple(picture[2, 2]) == (40, 160, 60)      # row 40 - 38, column 2
+    assert tuple(picture[2, 7]) == (200, 200, 200)    # (0.7, 3.8): the next half-cell

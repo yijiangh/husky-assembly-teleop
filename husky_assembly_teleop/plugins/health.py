@@ -36,6 +36,9 @@ from ..robot_interface.arm import SYNC_STATUS_MAX_AGE, ArmState
 from ..robot_interface.base import JOINT_STATES_RATE as BASE_RATE
 from ..robot_interface.base import BaseState
 from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManagerState
+from ..robot_interface.mocap_definitions import OUT_OF_DATE
+from ..robot_interface.mocap_relay import (FRAME_REFIT_PENDING, FRAME_UNCHECKED, FRAME_UNTRUSTED, TRUTH,
+                                           AppliedCalibration, FloorCalibrationState, MocapRelayState)
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
 from ..ui.phone import phone_text
 from ..ui.style import BUSY, LEVEL_COLORS, NONE, block, check_chip, chip, chip_line, section
@@ -179,7 +182,9 @@ class HealthPlugin(HuskyPlugin):
                 check = tcp_check(arm, tool0_by_kinematics(ctx.kinematics, serial, name), now)
                 if check is not None:
                     self._tcp_checks[(serial, name)] = check
-        self._robot_checks = {serial: robot_checks(robot, now, self._tcp_checks)
+        relay = ctx.world.mocap_relay.state if ctx.world.mocap_relay is not None else None
+        self._robot_checks = {serial: robot_checks(robot, now, self._tcp_checks, applied_calibration(relay, robot),
+                                                   applied_frame(relay, robot))
                               for serial, robot in ctx.world.robots.items()}
         self._object_checks = [mocap_check(obj.name, obj.mocap_id, obj, now)
                                for obj in ctx.world.tracked_objects.values()]
@@ -298,14 +303,19 @@ class _Change:
 
 # --- --- --- --- --- CHECKS (`now` is ROS time, seconds) --- --- --- --- ---
 
-def robot_checks(robot: HuskyRobotInterface, now: float,
-                 tcp_checks: dict[tuple[str, str], Check] | None = None) -> list[tuple[str, list[Check]]]:
+def robot_checks(robot: HuskyRobotInterface, now: float, tcp_checks: dict[tuple[str, str], Check] | None = None,
+                 calibration: AppliedCalibration | None = None,
+                 frame: FloorCalibrationState | None = None) -> list[tuple[str, list[Check]]]:
     """Every check for one robot: a line for the base, then one per arm with its tool and TCP.
 
     Args:
         robot: The robot to check.
         now: Current ROS time, seconds.
         tcp_checks: Each arm's latest `tcp_check` by (serial, arm name); an arm without one gets an amber chip.
+        calibration: The base calibration the relay applies to its rigid body, or None; built for an earlier body
+            definition, it turns the mocap chip amber, as a high marker error does.
+        frame: The floor calibration the relay applies, or None; with poses off (`poses_off`), the mocap chip turns
+            amber.
 
     Returns:
         list[tuple[str, list[Check]]]: (line name, one check per chip), in display order.
@@ -316,7 +326,8 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
     lines = [("base", simulated_check(robot.base.simulation)
               + [stream_check("signal", base, BASE_RATE) if base.seen else
                  Check("signal", WARN, "no platform joint_states yet"),
-                 mocap_check("mocap", robot.config.mocap_id, state, now),
+                 in_frame(calibrated(mocap_check("mocap", robot.config.mocap_id, state, now), calibration),
+                          frame),
                  estop_check(state),
                  battery_check(state, now),
                  controller_check("ctrl", state.controllers, now)])]
@@ -335,6 +346,46 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
             checks += simulated_check(robot.simulated.get(arm.config.end_effector_namespace)) + [tool]
         lines.append((arm.config.label.lower(), checks))
     return lines
+
+
+def applied_calibration(relay: MocapRelayState | None, robot: HuskyRobotInterface) -> AppliedCalibration | None:
+    """What the relay applies to the robot's base body (a fake Motive's from the simulated sessions); a truth none."""
+    if relay is None or relay.source(robot.config.mocap_id) == TRUTH:
+        return None
+    return relay.calibrations.get(robot.config.mocap_id)
+
+
+def applied_frame(relay: MocapRelayState | None, robot: HuskyRobotInterface) -> FloorCalibrationState | None:
+    """The floor calibration the relay applies to the robot's base body; none to a simulator's truth (in the lab)."""
+    if relay is None or relay.source(robot.config.mocap_id) == TRUTH:
+        return None
+    return relay.frame
+
+
+def calibrated(mocap: Check, calibration: AppliedCalibration | None) -> Check:
+    """The base's mocap chip, at least amber while the relay finds its calibration built for an earlier body."""
+    if calibration is None or calibration.definition_status != OUT_OF_DATE:
+        return mocap
+    return Check(mocap.label, max(mocap.level, WARN),
+                 f"{mocap.detail}; calibration {calibration.definition_detail}: a few mm or degrees off, calibrate "
+                 f"again")
+
+
+def in_frame(mocap: Check, frame: FloorCalibrationState | None) -> Check:
+    """The base's mocap chip, at least amber while poses may be off the floor calibration's frame (`poses_off`)."""
+    if frame is None or not frame.poses_off:
+        return mocap
+    if frame.error and not frame.floor_calibration:
+        why = f"the relay could not read its floor calibration ({frame.error})"
+    elif frame.status == FRAME_UNCHECKED:
+        why = "the relay has not checked Motive's frame against the floor calibration yet (no anchors or truss cameras)"
+    elif frame.status in (FRAME_REFIT_PENDING, FRAME_UNTRUSTED):
+        why = (f"Motive's frame moved since the floor calibration ({frame.pending or frame.status}): poses are off "
+               f"until the refit is used (mocap probe, Use refit)")
+    else:
+        why = (f"a newer floor calibration ({frame.newer}) is not applied yet: poses move by it when it is (mocap "
+               f"probe, Apply floor calibration)")
+    return Check(mocap.label, max(mocap.level, WARN), f"{mocap.detail}; {why}")
 
 
 #: The label of a simulated part's chip.

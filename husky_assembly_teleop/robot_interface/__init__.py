@@ -7,7 +7,8 @@ The only package that talks to a robot; callers read state and call commands, ne
   end_effectors.py       one class per tool kind, picked by configuration
   controller_manager.py  one per base and per arm
   mocap.py               mocap samples for bases and tracked objects
-  mocap_relay.py         the mocap relay itself: the base calibrations it applies, and reloading them
+  mocap_relay.py         the mocap relay itself: the base calibrations it applies, Motive's definitions, reloading
+  mocap_definitions.py   Motive's rigid body definitions and cameras as the relay announces them, and their changes
   mocap_state.py         what a mocap-tracked body stores, without ROS (world/mocap.py judges it)
   simulated_parts.py     which parts of a robot announce themselves as simulated
   soft_stop.py           the soft-stop latch: refuses commands that could move a stopped robot

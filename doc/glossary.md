@@ -175,11 +175,32 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 
 ## Lab and data
 
-- **relay**: the one mocap relay per ROS domain: owns the NatNet client, turns Y-up into Z-up, applies each robot's
-  base calibration and republishes per rigid body. `mocap_relay/`, `doc/mocap_relay.md`.
+- **relay**: the one mocap relay per ROS domain: owns the NatNet client, turns Y-up into Z-up, applies the floor
+  calibration and each robot's base calibration and republishes per rigid body. It reads Motive or a simulation,
+  never both. `mocap_relay/`, `doc/mocap_relay.md`.
+- **raw / lab frame**: raw is Motive's frame turned Z-up; the lab frame is the one every relayed pose is in, defined
+  by the marks and anchors of `data/lab/<lab>_frame.json`. The chain: raw → [refit] → `floor_from_raw` → lab, the
+  base calibration on top; `lab_from_raw` is the whole correction in use.
+- **floor calibration / refit**: the floor calibration (`floor_from_raw`, made with the mocap probe) puts raw poses in
+  the lab frame; it is applied only on command. A refit is a rigid fit (Kabsch) of the anchors or truss cameras, as
+  stored with the floor calibration, to where Motive puts them now; used on command, kept in memory.
+  `world/mocap_frame.py`, `world/frame_follower.py`.
+- **mark / anchor / truss camera**: marks are points on the floor probed with the probe; anchors are the markers that
+  hold Motive's continuous calibration; truss cameras are the six bolted cameras. Marks place the lab frame; anchors
+  and truss cameras follow Motive's frame moving.
+- **frame states**: none (no floor calibration), unchecked (applied, no fit has decided yet), held, refit_pending
+  (Motive's frame moved: poses off until Use refit), untrusted (the fits disagree or are too uncertain), error (the
+  floor calibration did not read).
+- **body definition / refine / out of date**: a rigid body's definition is its markers only (not name or id); a
+  refine changes it, which puts data measured with the body out of date, including a base calibration made for the
+  earlier definition.
 - **base calibration**: `base_mocap_from_base_footprint`, the one transform per robot from its base rigid body to its
-  URDF's base_footprint, applied by the relay. Other calibrations say which: Motive's camera calibration, the UR
-  factory calibration (applied to the model at startup), the arm mount check. `doc/calibration_manual.md`.
+  URDF's base_footprint, applied by the relay. Unqualified, "calibration" means this one; the others say which: the
+  floor calibration, Motive's camera calibration, the UR factory calibration (applied to the model at startup), the
+  arm mount check. `doc/calibration_manual.md`.
+- **environment sim / real**: every file the monitor writes says which, decided by where its data came from (a
+  simulated robot, a simulation's relay), never by the ROS domain. Only calibrations keep simulations' files apart,
+  in `data_experiment/sim/calibration_data/domain_<id>/`.
 - **Drive**: the synced Google Drive folder (`HUSKY_DRIVE_ROOT`) that holds all experiment and calibration data.
   Driving the base is "driving", never "the Drive". `drive.py`.
 - **calibration session / calibration run**: a session is one dated folder of calibration data on the Drive; a run is

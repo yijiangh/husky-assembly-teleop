@@ -4,7 +4,7 @@ The mocap relay: OptiTrack's NatNet stream into ROS topics, one relay per ROS do
   node.py         the ROS node (`husky_mocap_relay`), started by launch/mocap.launch.py
   log_text.py     wrapped lines and boxes for its log
   sim_motive.py   a fake Motive for simulations: every simulated body's true pose, with Motive's imperfections
-  body_definitions.py  Motive's rigid body definitions from NatNet, and how a body's definition changed
+  body_definitions.py  Motive's rigid body definitions and cameras, read from NatNet and asked for
   natnet/         OptiTrack's NatNet SDK client (NaturalPoint, Apache 2.0)
 
 Which base calibration each robot's rigid body gets is `world/calibration_sessions.py`, shared with the monitor.

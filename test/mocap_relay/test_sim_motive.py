@@ -6,11 +6,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from builtin_interfaces.msg import Time
-from robot_fakes import Publisher
+from robot_fakes import Log, Publisher
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.mocap_relay.node import apply_base_calibration, remove_base_calibration
-from husky_assembly_teleop.mocap_relay.sim_motive import SimMotive, drifted, lost, noisy, observed, offset_pose
+from husky_assembly_teleop.mocap_relay.sim_motive import (LAB_CAMERAS, MARKER_COUNT, MARKER_SPACING, REFINE_MOVE,
+                                                          SimMotive, drifted, fake_definition, lost, noisy, observed,
+                                                          offset_pose)
+from husky_assembly_teleop.robot_interface.mocap_definitions import compare, read_cameras, read_definitions
+from husky_assembly_teleop.world.mocap_frame import fit_cameras
 from husky_assembly_teleop.robot_interface.simulated_parts import body_values
 from husky_assembly_teleop.world.calibration_sessions import Calibration
 from scaffolding_assembly_core.geometry import Pose, compose, invert
@@ -135,7 +139,7 @@ def test_a_body_reaches_the_relay_after_the_delay_stamped_with_when_it_was_true(
     for delay, sent in ((0.0, 1), (10.0, 0)):
         node = SimMotive.__new__(SimMotive)
         node._delay, node._dropout, node._dropout_burst_s = delay, 0.0, 0.0
-        node._rng, node._start = np.random.default_rng(0), SimpleNamespace()
+        node._rng, node._start, node._seen_from = np.random.default_rng(0), SimpleNamespace(), Pose()
         node.get_clock = lambda: SimpleNamespace(now=lambda: Elapsed())
         stamp, publisher = Time(sec=12, nanosec=34), Publisher()
         node._bodies = {1850: {"truth": POSE, "stamp": stamp, "offset": [0.0] * 6, "drift": [0.0] * 6,
@@ -145,3 +149,63 @@ def test_a_body_reaches_the_relay_after_the_delay_stamped_with_when_it_was_true(
         assert len(publisher.sent) == sent
         if sent:
             assert publisher.sent[0].header.stamp == stamp and publisher.sent[0].pose_valid
+
+
+# * What the fake Motive's model descriptions give the relay: body definitions and the lab's cameras.
+
+def test_a_faked_body_has_the_same_spread_out_markers_every_time_and_others_differ():
+    """Seeded by its id: five markers at least 2 cm apart; another id another body."""
+    first = fake_definition(1850)
+    assert fake_definition(1850) == first and len(first.offsets) == MARKER_COUNT
+    points = first.array()
+    assert np.linalg.norm(points[:, None] - points[None, :], axis=2)[np.triu_indices(5, 1)].min() >= MARKER_SPACING
+    assert compare(first, fake_definition(1866)).kind == "other body"
+
+
+@pytest.mark.parametrize("refines", [1, 2])
+def test_a_refine_nudges_the_markers_as_motives_refine_does(refines):
+    """Refined, a data change; each refine its own nudge; none gives the first definition back."""
+    change = compare(fake_definition(1850), fake_definition(1850, refines))
+    assert change.kind == "refined" and change.data_change and change.markers_moved < 2 * REFINE_MOVE
+    assert fake_definition(1850, 1) != fake_definition(1850, 2) and fake_definition(1850, 0) == fake_definition(1850)
+
+
+def test_the_lab_cameras_file_holds_its_ten_cameras():
+    """As the relay announces them, so a fake Motive can announce them as they are."""
+    cameras = read_cameras(LAB_CAMERAS.read_text())
+    assert len(cameras) == 10 and "PrimeX 22 #72318" in cameras
+
+
+def faking(bodies) -> SimMotive:
+    """A fake Motive without ROS faking these rigid bodies."""
+    node = SimMotive.__new__(SimMotive)
+    node._bodies, node._refines, node._definitions_publisher = {body: {} for body in bodies}, "", Publisher()
+    node._cameras, node._seen_from, node._cameras_publisher = read_cameras(LAB_CAMERAS.read_text()), Pose(), Publisher()
+    node.get_logger = lambda: Log()
+    return node
+
+
+def test_refines_set_while_running_announce_the_refined_definitions_at_once():
+    """`ros2 param set /sim_motive refines "1850:1"`: 1850 refined, 1866 as it was."""
+    node = faking([1850, 1866])
+    result = node._on_parameters([SimpleNamespace(name="refines", value="1850:1")])
+    announced = read_definitions(node._definitions_publisher.sent[-1].data)
+    assert result.successful and announced == {1850: fake_definition(1850, 1), 1866: fake_definition(1866)}
+
+
+def test_refines_that_do_not_read_are_refused():
+    """Nothing announced, and why."""
+    node = faking([1850])
+    result = node._on_parameters([SimpleNamespace(name="refines", value="1850:a")])
+    assert not result.successful and node._definitions_publisher.sent == []
+
+
+def test_a_recalibration_moves_every_camera_as_the_relays_fit_recovers_it():
+    """`ros2 param set /sim_motive recalibration "0.02,-0.01,0,0,0,0.5"`: the truss cameras give that motion back."""
+    node = faking([1850])
+    result = node._on_parameters([SimpleNamespace(name="recalibration", value="0.02,-0.01,0,0,0,0.5")])
+    fit = fit_cameras(read_cameras(LAB_CAMERAS.read_text()), read_cameras(node._cameras_publisher.sent[-1].data))
+    assert result.successful and fit.trusted and not fit.bumped
+    np.testing.assert_allclose(fit.raw_cal_from_raw_now.position, (0.02, -0.01, 0.0), atol=1e-6)
+    assert np.degrees(fit.moved[1]) == pytest.approx(0.5, abs=1e-6)
+    assert not node._on_parameters([SimpleNamespace(name="recalibration", value="1,2")]).successful

@@ -126,7 +126,7 @@ A ROS domain of its own, on zenoh like the fleet. ! Never the fleet's domain 80:
 
 ```bash
 export ROS_DOMAIN_ID=70
-ros2 launch husky_assembly_teleop mocap.launch.py     # once: the relay publishes the simulated robot's pose
+ros2 launch husky_assembly_teleop mocap.launch.py sim:=true  # once: the relay publishes the simulated robot's pose
 ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=1840 \
   controller_model:=alice_tiles_2 sim_model:=alice_tiles_2 xICR:=-0.15
 ```
