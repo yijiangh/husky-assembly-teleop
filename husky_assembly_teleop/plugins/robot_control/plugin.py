@@ -45,7 +45,8 @@ from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
 from ...robot_interface.tool_step import TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_LEAD, tool0_pose, tool_jog_target
 from ...ui.phone import big_buttons, phone_text
-from ...ui.style import FAIL, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, note, note_line, numbers, section, values
+from ...ui.style import (BUSY, FAIL, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, note, note_line, numbers, section,
+                         values)
 from ...ui.trace_plot import TracePlot
 from ...shared.teleop.dpad import (BLOCKED_COLOR, HOLD_TIMEOUT, PHONE_DPAD_STYLE, UNGUARDED_COLOR, Hold,
                                    build_velocity_inputs, color_dpad)
@@ -614,12 +615,12 @@ class RobotControlPlugin(HuskyPlugin):
         color_dpad(buttons, BLOCKED_COLOR if blocked else None if ticked else UNGUARDED_COLOR)
 
     def _base_warnings(self, ctx: PluginContext, serial: str, now: float) -> str:
-        """Red chips for driving the base: a start too close (pressed or not); an arm out of its stow pose."""
+        """Chips for driving the base: red for a start too close (pressed or not), amber for an arm out of stow."""
         chips = self._start_chip(serial, now, "D-pad")
         config = next(robot for robot in ctx.config.robots if robot.serial == serial)
         away = from_stow(ctx.scene.snapshot.robots[robot_id(serial)], config)
         if away > STOW_TOLERANCE:
-            chips += chip("arm not stowed", FAIL, f"An arm is {np.degrees(away):.0f}° from its stow pose: the base "
+            chips += chip("arm not stowed", BUSY, f"An arm is {np.degrees(away):.0f}° from its stow pose: the base "
                                                   f"drives with it out.\nStow it in Plan › Arm (Load Stow).")
         return chips
 
