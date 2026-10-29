@@ -46,7 +46,7 @@ from husky_assembly_teleop.robot_interface.robot import HuskyRobotInterface
 from husky_assembly_teleop.robot_interface.robot_lease import LeaseSlot, leased
 from husky_assembly_teleop.robot_interface.soft_stop import SoftStopLatch
 from husky_assembly_teleop.robot_interface.ur_frames import BASE_LINK_FROM_UR_BASE
-from husky_assembly_teleop.world.clearance import STOP_DISTANCE, Clearance
+from husky_assembly_teleop.world.clearance import STOP_DISTANCE, Clearance, ClearanceWatch
 from husky_assembly_teleop.world.measured import TrackedObject
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.kinematics import link_pose
@@ -185,6 +185,7 @@ class FakeContext:
         self._freezes: dict = {}
         #: The clearances asked for, in order; nothing checks them.
         self.clearances: list[Clearance] = []
+        self.watches: list[ClearanceWatch] = []
         self.t, self.step = 10.0, step
         #: Whether the plugin was stopped or torn down (`PluginContext.closed`).
         self.closed = False
@@ -214,6 +215,11 @@ class FakeContext:
         """A floating window (`ctx.view.panel()`), kept in `panels`."""
         self.panels.append(FakePanel(self.gui))
         return self.panels[-1]
+
+    def watch_clearance(self, serials, margin: float = STOP_DISTANCE, unknown_arms=()) -> ClearanceWatch:
+        """Keep the watch asked for in `watches`; nothing checks it, so it stays clear unless a test fills it in."""
+        self.watches.append(ClearanceWatch(tuple(serials), margin, unknown_arms))
+        return self.watches[-1]
 
     @contextmanager
     def clearance(self, serials, margin: float = STOP_DISTANCE, unknown_arms=(),

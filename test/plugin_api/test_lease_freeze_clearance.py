@@ -190,6 +190,15 @@ def test_a_refuse_first_clearance_too_close_at_its_start_is_refused_without_a_so
     assert "at its start; refused, nothing sent" in log.text("warning")
 
 
+def test_a_watch_is_kept_until_unwatched_and_needs_no_task():
+    """`watch_clearance` keeps the watch for the monitor to check; `unwatch_clearance` drops it."""
+    ctx, _world, _log = _context()
+    watch = ctx.watch_clearance(["0805"], 0.01, ALL_ARMS)
+    assert ctx._watches == [watch] and watch.found == {} and watch.unknown_arms == ALL_ARMS
+    ctx.unwatch_clearance(watch)
+    assert ctx._watches == []
+
+
 def test_a_clearance_needs_a_task_of_its_plugin():
     """Outside a task there is nothing to cancel."""
     ctx, _world, _log = _context()

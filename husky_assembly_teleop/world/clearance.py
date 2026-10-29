@@ -13,12 +13,14 @@ Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, 
 - One worker thread checks one snapshot at a time, a tick or two behind the robot. Not an emergency stop.
 - On a trip, `PluginContext.clearance` soft stops the robot (Resume needed) and cancels the task. The monitor keeps
   the last TRIPS_KEPT trips with what came too close (`ClearanceTrip`), for the collisions plugin.
+- A watch (`ClearanceWatch`, `PluginContext.watch_clearance`) is checked the same way, every WATCH_EVERY, and only
+  reports: e.g. to show before a press that a drive would start too close.
 """
 
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Collection, Hashable, Iterable, Literal
 
 from scaffolding_assembly_core.robot import RobotObject
@@ -37,6 +39,8 @@ ARM_STOP_DISTANCE = 0.01
 TRIPS_KEPT = 10
 #: For `unknown_arms`: every arm of the robot.
 ALL_ARMS = "all"
+#: Seconds between checks of the watches (`ClearanceWatch`).
+WATCH_EVERY = 0.5
 
 
 @dataclass(eq=False)
@@ -69,6 +73,28 @@ class Clearance:
     refuse_first: bool = False
     checked: bool = False
     refused: bool = False
+
+
+@dataclass(eq=False)
+class ClearanceWatch:
+    """Robots a plugin wants to know about without driving them: what each is too close to, as a clearance would see.
+
+    Never trips: nothing is stopped or cancelled. The other robots not measured are checked as stand-ins, as at the
+    start of a clearance; a robot that cannot be checked is left out of `found`.
+
+    Attributes:
+        serials: The robots, by serial.
+        margin: Distance below which a robot counts as too close, metres.
+        unknown_arms: Arms whose joints may be unknown, checked where last seen or stowed, or ALL_ARMS.
+        found: Per serial, what the last check found it too close to, e.g. "came within 10 cm of wall"; empty if clear.
+        checked_at: ROS time of the last finished check, or None before the first.
+    """
+
+    serials: tuple[str, ...]
+    margin: float
+    unknown_arms: Collection[str] | Literal["all"] = ()
+    found: dict[str, str] = field(default_factory=dict)
+    checked_at: float | None = None
 
 
 class ClearanceRefused(MotionRefused):
