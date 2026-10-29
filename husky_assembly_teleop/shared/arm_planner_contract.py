@@ -35,6 +35,10 @@ class ArmPlanRequest:
 class ArmPlannerContract(PlannerContract[ArmPlanRequest], Protocol):
     """What `ctx.require("arm_planner")` offers: the planner contract, re-timing, and path checks."""
 
+    #: Whether a committed path runs under an ARM_STOP_DISTANCE clearance (`ctx.clearance`); on by default. Off, a
+    #: path the planner found close to something (it plans at 0 cm) runs without being soft stopped.
+    clearance: bool
+
     def set_duration(self, plan_id: int, seconds: float) -> None:
         """Re-time the latest plan to take `seconds`, without replanning: the same path, its fastest timing stretched.
 

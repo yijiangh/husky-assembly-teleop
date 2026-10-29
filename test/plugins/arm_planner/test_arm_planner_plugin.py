@@ -198,7 +198,7 @@ def _driven(speed: float = 1.0, start: np.ndarray = START) -> tuple[FakeContext,
     return ctx, arm
 
 
-def _commit(ctx: FakeContext, answers: list, cancel_after: int | None = None) -> np.ndarray:
+def _commit(ctx: FakeContext, answers: list, cancel_after: int | None = None, clearance: bool = True) -> np.ndarray:
     """Execute the ready plan under the robot's lease, cancelled after `cancel_after` ticks if given; then let 2 s pass.
 
     Returns:
@@ -206,7 +206,9 @@ def _commit(ctx: FakeContext, answers: list, cancel_after: int | None = None) ->
     """
     async def commit():
         with ctx.lease_robots([SERIAL], "commit plan 1"):
-            await ArmPlannerPlugin().execute(ctx, ready_plan(), lambda *answer: answers.append(answer))
+            planner = ArmPlannerPlugin()
+            planner.clearance = clearance
+            await planner.execute(ctx, ready_plan(), lambda *answer: answers.append(answer))
 
     async def scenario():
         task = asyncio.create_task(commit())
@@ -238,6 +240,16 @@ def test_execute_sends_the_path_and_waits_until_the_arm_is_at_its_end():
     assert np.allclose(ended, GOAL, atol=1e-3)
     clearance, = ctx.clearances
     assert (clearance.serials, clearance.margin) == ((SERIAL,), ARM_STOP_DISTANCE) and ARM_STOP_DISTANCE == 0.01
+
+
+@pytest.mark.safety
+def test_with_clearance_unticked_the_path_goes_out_without_one():
+    """Clearance is on by default; off, the same path is sent with no clearance kept."""
+    assert ArmPlannerPlugin().clearance
+    ctx, answers = _driven()[0], []
+    ended = _commit(ctx, answers, clearance=False)
+    assert answers == [(True, f"sent to {SERIAL} {ARM}")] and not ctx.clearances
+    assert np.allclose(ended, GOAL, atol=1e-3)
 
 
 @pytest.mark.safety

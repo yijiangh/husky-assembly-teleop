@@ -5,7 +5,8 @@ Others use it through `ArmPlannerContract`; its panel is `arm_planner_panel`. Th
 models in a compas_fab world (several seconds).
 
 ! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`), under an
-  ARM_STOP_DISTANCE clearance on the robot (`ctx.clearance`), so the base pose must be known to send.
+  ARM_STOP_DISTANCE clearance on the robot (`ctx.clearance`) while `clearance` is on, so the base pose must be known
+  to send.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+from contextlib import nullcontext
 from dataclasses import replace
 from typing import Callable, Sequence
 
@@ -72,6 +74,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
     def __init__(self):
         """Start with no plan; the models load with the first plan of each robot."""
         super().__init__()
+        #: Whether commits run under a clearance (`ArmPlannerContract.clearance`); the panel's Clearance box sets it.
+        self.clearance = True
         #: Robots whose models the worker has loaded, so later plans need no load allowance.
         self._loaded: set[str] = set()
         #: The latest plan's path, the base's floor pose (x, y, yaw) it was planned from, and whether mocap tracked
@@ -204,15 +208,17 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       answer: Callable[[bool, str], None]) -> None:
         """Send the plan to the arm and watch it until it is at the end; else hold it (`send_motion`).
 
-        - An ARM_STOP_DISTANCE clearance starts first: one that cannot check refuses the commit (nothing sent), a
-          trip soft stops the robot and cancels this. The robot's other arms may be unknown (where last seen, or
-          stowed), and the other robots unknown at the commit (`unknown_allowed`).
+        - While `clearance` is on, an ARM_STOP_DISTANCE clearance starts first: one that cannot check refuses the
+          commit (nothing sent), a trip soft stops the robot and cancels this. The robot's other arms may be unknown
+          (where last seen, or stowed), and the other robots unknown at the commit (`unknown_allowed`).
         - ! Arrival is judged on the joints, not `is_executing`, which clears during a slow move (the pendant's speed
           slider): the lease would go back mid-motion.
         """
         serial, arm_name, path = plan.request.serial, plan.request.arm, plan.path
         others = [name for name in ctx.world.robots[serial].arms if name != arm_name]
-        with ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others, unknown_robots=self.unknown_allowed(plan)):
+        guard = (ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others,
+                               unknown_robots=self.unknown_allowed(plan)) if self.clearance else nullcontext())
+        with guard:
             ctx.log_info(f"{serial} {arm_name}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
             outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
                                         on_sent=lambda: answer(True, f"sent to {serial} {arm_name}"))

@@ -29,6 +29,7 @@ from ...ui.visualization import PLAN_TAB
 from scaffolding_assembly_core.ids import robot_id
 from ...shared.assembly_planning.joints import arm_joint_names
 from .planner_plugin import STALE_JOINT
+from ...world.clearance import ARM_STOP_DISTANCE
 
 #: The Duration slider's step, seconds.
 DURATION_STEP = 0.1
@@ -103,6 +104,13 @@ class ArmPlannerPanel(PlannerPanel):
                                               "sent path.",
                                     commit_hint="Send the path to the arm; it stops at every waypoint",
                                     before_commit=lambda gui: self._add_duration(ctx, gui))
+            # * Below the buttons it guards, as the jogs'.
+            clearance = gui.add_checkbox(
+                "Clearance", initial_value=self._api.clearance,
+                hint=f"Soft stop a committed path once the robot comes within {ARM_STOP_DISTANCE * 100:.0f} cm of "
+                     f"anything, itself included. The plan keeps 0 cm, so untick for a path close to something.")
+            clearance.on_update(ctx.defer_value("clearance",
+                                                lambda value: setattr(self._api, "clearance", bool(value))))
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
