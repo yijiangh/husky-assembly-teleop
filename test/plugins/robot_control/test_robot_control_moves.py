@@ -305,7 +305,8 @@ def test_a_jog_that_starts_too_close_is_refused_until_the_next_press_without_a_s
     assert "0804" not in plugin._tripped
     chip_html = plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog", True)
     assert "starts in collision" in chip_html and "within 1 cm of the rack" in chip_html and FAIL in chip_html
-    assert plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog", False) == "", "no chip while Clearance is off"
+    unticked = plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog", False)
+    assert "starts in collision" in unticked and "Clearance is off" in unticked, "a collision shows either way"
 
 
 def test_a_jog_whose_clearance_cannot_check_is_refused_until_the_next_press():
@@ -590,10 +591,11 @@ def test_a_base_standing_too_close_shows_the_chip_and_a_gray_dpad_before_any_pre
     buttons = [SimpleNamespace(color=None)]
     plugin._color_buttons(buttons, True, "0804", 0.0)
     assert buttons[0].color == BLOCKED_COLOR == "gray" and UNGUARDED_COLOR == "orange"
-    assert plugin._base_warnings(ctx, "0804", 0.0, ticked=False) == "", "no chip while Clearance is off"
+    assert "Clearance is off" in plugin._base_warnings(ctx, "0804", 0.0, ticked=False), "a collision shows either way"
     plugin._watches["0804"].found.clear()
     plugin._watches["0804"].unchecked["0804"] = "cannot be checked: base not measured"
     assert ">cannot check<" in plugin._base_warnings(ctx, "0804", 0.0)
+    assert plugin._base_warnings(ctx, "0804", 0.0, ticked=False) == "", "cannot check is Clearance's own matter"
     plugin._driving.add("0804")
     assert plugin._start_problem("0804", 0.0) is None, "its own clearance guards a drive"
 

@@ -587,11 +587,17 @@ class RobotControlPlugin(HuskyPlugin):
         return None
 
     def _start_chip(self, key: str | tuple[str, str], now: float, buttons: str, ticked: bool) -> str:
-        """A red chip while Clearance is ticked and would refuse a start of `key` (`_start_problem`); or ""."""
-        problem = self._start_problem(key, now) if ticked else None
-        if problem is None:
+        """A red chip while a start of `key` would be refused (`_start_problem`), or ""; Clearance off, too close only.
+
+        ! A collision shows whether Clearance is ticked or not: unticking it only lets the robot move.
+        """
+        problem = self._start_problem(key, now)
+        if problem is None or (not ticked and problem[0] != START_IN_COLLISION):
             return ""
         label, why = problem
+        if not ticked:
+            return chip(label, FAIL, f"{why}. Clearance is off: the {buttons} moves anyway (orange).\nMove out with "
+                                     f"care.")
         then = ("Untick Clearance to move out; Collisions shows a refused press's hit." if label == START_IN_COLLISION
                 else "Untick Clearance to move without it.")
         return chip(label, FAIL, f"{why}: Clearance refuses the {buttons} (gray).\n{then}")
@@ -602,7 +608,7 @@ class RobotControlPlugin(HuskyPlugin):
         color_dpad(buttons, BLOCKED_COLOR if blocked else None if ticked else UNGUARDED_COLOR)
 
     def _base_warnings(self, ctx: PluginContext, serial: str, now: float, ticked: bool = True) -> str:
-        """Chips for driving the base: red for a start a ticked Clearance would refuse, amber for an arm out of stow."""
+        """Chips for driving the base: red for a start in collision or one Clearance would refuse, amber out of stow."""
         chips = self._start_chip(serial, now, "D-pad", ticked)
         config = next(robot for robot in ctx.config.robots if robot.serial == serial)
         away = from_stow(ctx.scene.snapshot.robots[robot_id(serial)], config)
