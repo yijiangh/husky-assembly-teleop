@@ -8,7 +8,8 @@ hands the step to `movement_exec`, which runs a motion at once and asks the oper
 Robotiq step and the servo's first pass; once every part is done the next step becomes current, and after the
 action's last step Mark done (assembly_run's) is suggested.
 
-- Live IK: the goal by IK at the live base, logged, shown as the target ghost and recorded; a plan of the same step
+- Live IK: the goal by IK at the live base, logged, recorded and carried into the process panel's drawing; a plan of
+  the same step
   reuses it while the base stays within 2 mm / 0.5° and the process plugin's "Rhino obstacles collide" is unchanged.
 - After Live IK or a plan, the process panel draws the action's later movements with the joints found, on the live
   base they were found at, and turns to the step's target (`ProcessContract.request_carry`); a new action drops them.
@@ -552,22 +553,6 @@ class AssemblyStepsPlugin(PlannerPlugin):
         self._route = self._basis = None
         if self._diagnosis_nodes is not None:
             self._diagnosis_nodes.clear("path")
-
-    def show_target(self, ctx: PluginContext, ghost: RobotGhost) -> None:
-        """The acting arms at the goal check's IK joints, else at the movement's authored target, where it stands."""
-        current = self.current()
-        if current is None:
-            ghost.hide()
-            return
-        goal = self.goal
-        _view, _action, _op_step, step = current
-        target = step.movement.target
-        joints = goal.ik.joints if goal is not None and goal.ok else (
-            target.joints.get(step.action.robot) if target is not None else None)
-        if not joints:
-            ghost.hide()
-            return
-        ghost.show(ctx.kinematics.base_pose(self.serial), {**ctx.kinematics.joints(self.serial), **joints})
 
     def show_path(self, ctx: PluginContext, ghost: RobotGhost) -> None:
         """The acting arms on the plan at the slider time, the base where it was planned."""

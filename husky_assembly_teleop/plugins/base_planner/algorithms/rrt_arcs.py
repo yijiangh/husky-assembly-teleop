@@ -24,7 +24,7 @@ from ..path import (ARC_STEP, BasePath, densify, driven, move_margins, round_cor
                     timed_path)
 from ..world import COLLISION_MARGIN, PlanningWorld
 from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, Algorithm, Debug, add_follower_settings,
-                   add_margin_setting, yaw_step)
+                   yaw_step)
 
 #: Arc radii tried in place of a turn on the spot, widest first, metres.
 ARC_RADII = (2.0, 1.0, 0.5)
@@ -72,20 +72,19 @@ class RrtArcs(Algorithm):
         self._widgets = None
 
     def add_settings(self, gui) -> None:
-        """Add the xICR range, follower model, lead, arcs and margin."""
+        """Add the xICR range, follower model, lead and arcs; the margin is the panel's."""
         self._widgets = (
             *add_follower_settings(gui),
             gui.add_slider("Lead m", min=0.0, max=1.5, step=0.05, initial_value=LEAD,
                            hint="Straight drive off the start and onto the target, where there is room"),
-            gui.add_checkbox("Arcs", initial_value=True, hint="Round corners into arcs where they fit"),
-            add_margin_setting(gui))
+            gui.add_checkbox("Arcs", initial_value=True, hint="Round corners into arcs where they fit"))
 
     def settings(self) -> Settings:
         """The widgets' values, or the defaults."""
         if self._widgets is None:
             return Settings()
-        x_icr, model, lead, arcs, margin = (widget.value for widget in self._widgets)
-        return Settings(tuple(float(value) for value in x_icr), str(model), float(lead), bool(arcs), float(margin))
+        x_icr, model, lead, arcs = (widget.value for widget in self._widgets)
+        return Settings(tuple(float(value) for value in x_icr), str(model), float(lead), bool(arcs))
 
     def plan(self, world, own, start, goal, abort, settings, debug) -> PlanResult[BasePath]:
         """See `plan`."""

@@ -52,9 +52,10 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **fix / pose_lost / stale reading**: a fix is one valid mocap sample; `pose_lost` means none for 0.3 s, so nothing
   may drive from it; a reading is stale past its age limit (`STALE_AFTER`, `JOINT_STATE_MAX_AGE`).
   `robot_interface/mocap_state.py`, `world/checks.py`.
-- **ghost**: a see-through robot copy for a target, a plan or a preview, shown only while its panel was the last one
-  used: blue where a robot should go, green where a plan has it (the old monitor's colours; only the live robots show
-  their true colours). `ui/ghost.py`.
+- **ghost**: a see-through robot copy for a target, a plan or a preview: blue where a robot should go (the process
+  panel's one robot per movement, the arm planner's target), orange at the base planner's target, green where a plan
+  has it; the planner panels show theirs only while last used, assembly_steps' path ghost while there is a plan (the
+  old monitor's colours; only the live robots show their true colours). `ui/ghost.py`.
 
 ## Safety
 
@@ -138,6 +139,13 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   transfer runs as a free move with empty tools, the operator places and grasps the bar at the insertion start after
   it, and the travel to load is skipped. While it is on, the panel lists each jointing action in that order (`as_run`).
   `shared/assembly_planning/steps.py`, `plugins/process/`.
+- **carry**: joints (and the base) found live for one robot, from one movement's end on, that the process panel
+  draws over the authored state at that movement's target and the action's later starts; nothing else reads it. The
+  old monitor's `_carry_configuration_forward` lives on only as this drawing. `shared/process_contract.py`.
+- **basis**: what a step's plan was made from (the acting robot's joints and base, the other robots, the statuses,
+  the settings); the plan goes stale once the live scene drifts from it. `shared/execution/basis.py`.
+- **belief**: where a robot that is not live is taken to be: the run's newest Mark done end for it, else the design,
+  else parked. `shared/assembly_run_contract.py` (`beliefs_of`), `shared/assembly_planning/scene_for.py`.
 - **Rhino obstacles**: the process's own obstacles from Rhino (bodies under `obstacles/`, e.g. the cabinet). Unless
   "Rhino obstacles collide" is ticked, they are drawn see-through and left out of every collision check; the measured
   room is the `obstacles` plugin's. `shared/process_scene/scene_bodies.py` (`process_obstacles`).

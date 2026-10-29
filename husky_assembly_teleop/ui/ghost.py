@@ -1,8 +1,8 @@
 """
 See-through robot copies in a plugin's 3D view, for targets, planned paths and previews.
 
-Build them in `setup` with `robot_ghosts` (slow), then `show` / `hide` them in every `draw`. Show a panel's
-ghosts only while `RecentUse.active`: only the panel used last shows its ghosts.
+Build them in `setup` with `robot_ghosts` (slow), then `show` / `hide` them in every `draw`. The planner panels show
+theirs only while `RecentUse.active` (the panel used last); assembly_steps shows its path ghost while there is a plan.
 
 ! Main thread only.
 """
@@ -22,13 +22,15 @@ if TYPE_CHECKING:
     from ..plugin_api.context import PluginContext
     from scaffolding_assembly_core.geometry import Pose
 
-#: Colours (r, g, b, alpha from 0 to 1) shared by the plugins, the old monitor's: blue where a robot should go, green
-#: where a plan has it; only the live robots show their true colours.
+#: Colours (r, g, b, alpha from 0 to 1) shared by the plugins, the old monitor's: blue where a robot should go (the
+#: process panel's movement state, the arm planner's target), orange at the base planner's target, green where a plan
+#: has it; only the live robots show their true colours.
 GOAL_COLOR = (0.0, 0.2, 0.5, 0.5)       # blue: a goal, e.g. solved at the live base (the old GOAL_BLUE)
 TARGET_COLOR = GOAL_COLOR               # blue: where it should go
+BASE_TARGET_COLOR = (0.94, 0.55, 0.0, 0.5)  # orange (#f08c00, the TARGET section): the base planner's target
 PATH_COLOR = (0.0, 0.5, 0.2, 0.5)       # green: where the plan has it at the slider time (the old TRAJECTORY_GREEN)
 #: Colour per kind; the kind is also the scene subcategory.
-KIND_COLORS = {"target": TARGET_COLOR, "path": PATH_COLOR, "goal": GOAL_COLOR}
+KIND_COLORS = {"target": TARGET_COLOR, "base_target": BASE_TARGET_COLOR, "path": PATH_COLOR, "goal": GOAL_COLOR}
 
 
 class RecentUse:
@@ -67,7 +69,7 @@ class RobotGhost:
         Args:
             ctx: The owning plugin's context; the ghost lives in its view.
             config: The robot; its model is drawn, tools on their flanges.
-            kind: A key of KIND_COLORS: "target", "path" or "goal". Sets the colour.
+            kind: A key of KIND_COLORS: "target", "base_target", "path" or "goal". Sets the colour.
         """
         path = f"{ctx.view.scene_root}/ghosts/{kind}/{config.serial}"
         color = KIND_COLORS[kind]
@@ -118,7 +120,7 @@ def robot_ghosts(ctx: PluginContext, robots: Iterable[RobotConfig], kind: str) -
     Args:
         ctx: The owning plugin's context.
         robots: The robots to build a ghost for.
-        kind: A key of KIND_COLORS: "target", "path" or "goal".
+        kind: A key of KIND_COLORS: "target", "base_target", "path" or "goal".
 
     Returns:
         dict[str, RobotGhost]: The ghosts, hidden, by robot serial.

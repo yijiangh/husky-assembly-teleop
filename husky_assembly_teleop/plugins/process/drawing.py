@@ -10,8 +10,9 @@ Drawn from the process alone, with forward kinematics from each robot's yourdfpy
   design puts the bars (`set_bar_lines`; the process panel's "Rhino bar lines" box).
 - `load_robot_models` is slow: run it on the loading thread.
 - `ProcessDrawing` is main thread only; a new state only changes poses, joint values and colours.
-- Robots and their tools are drawn in the goal blue (`ui.ghost.GOAL_COLOR`), as the old monitor drew a movement's
-  state: only the live robots show their true colours. "Ghost" only changes their opacity.
+- Robots and their tools are drawn in the goal blue (`ui.ghost.GOAL_COLOR`): the Assembly tab's one blue robot, as the
+  old monitor drew a movement's state; only the live robots show their true colours. "Ghost" only changes their
+  opacity.
 """
 
 from __future__ import annotations

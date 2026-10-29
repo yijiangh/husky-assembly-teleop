@@ -55,7 +55,10 @@ def test_the_rows_show_the_runs_marks_until_another_load(tmp_path):
 
 
 def test_the_carry_is_drawn_at_and_after_its_movement_and_dropped_on_load(tmp_path):
-    """Carried from B2's transfer: not at its start or before, at its target and at the insert; gone after a load."""
+    """Carried from B2's transfer: not before, at its target and at the insert's start, not at the insert's target.
+
+    The insert's target has joints of its own, so they show there. A load drops the carry.
+    """
     plugin, ctx = _set_up(tmp_path)
     plugin.request_carry(Carry("B2_J_joint", "B2_M2_transfer", "robots/cindy", {"left_joint1": 0.9}))
     index = {movement.id: number for number, (_action, movement) in enumerate(plugin._movements)}
@@ -71,6 +74,8 @@ def test_the_carry_is_drawn_at_and_after_its_movement_and_dropped_on_load(tmp_pa
     assert cindy("B2_M2_transfer", True) == {"left_joint1": 0.9, "left_joint2": 0.3, "right_joint1": 0.3,
                                              "right_joint2": 0.3}
     assert cindy("B2_M3_insert")["left_joint1"] == 0.9 and "joints from live IK" in plugin._details.content
+    assert cindy("B2_M3_insert", True)["left_joint1"] == 0.35, "its own target joints, not the carry's"
+    assert "joints from live IK" not in plugin._details.content
     plugin._take(plugin.process)
     assert cindy("B2_M3_insert")["left_joint1"] == 0.3 and "joints from live IK" not in plugin._details.content
 

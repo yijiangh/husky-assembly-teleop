@@ -21,7 +21,7 @@ from ...config import find_robot_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
-from ...ui.phone import button_group_color_css, columns_css
+from ...ui.phone import button_group_color_css, columns_css, group_buttons
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
 from .plan import Plan, PlannerContract
 
@@ -31,10 +31,10 @@ if TYPE_CHECKING:
 
 #: Time slider resolution, seconds.
 SLIDER_STEP = 0.05
-#: The side panel tab every planner panel's tab goes in: `tab_path = (PLAN_TAB, label)`.
-PLAN_TAB = "Plan"
 #: The Path buttons' colour: Mantine's teal for outlines, as viser's teal buttons.
 PATH_BUTTONS_COLOR = "var(--mantine-color-teal-outline)"
+#: Plan itself, filled in Mantine's teal as viser's filled teal buttons: the one button of the panel that stands out.
+PLAN_BUTTON_FILL, PLAN_BUTTON_HOVER = "var(--mantine-color-teal-filled)", "var(--mantine-color-teal-filled-hover)"
 #: Lays out the Run folder as Commit and Cancel side by side, for an html widget outside that folder.
 COMMIT_STYLE = f"<style>{columns_css(viser.Icon.SEND, 2)}</style>"
 
@@ -54,6 +54,8 @@ class PlannerPanel(HuskyPlugin):
 
     #: The planner plugin this panel drives. ! Also list it in `requires`.
     planner = ""
+    #: The target ghost's kind, a key of `ui.ghost.KIND_COLORS`: blue "target"; a subclass may pick another colour.
+    target_kind = "target"
 
     def __init__(self):
         """Start with no robot chosen and no target."""
@@ -112,8 +114,13 @@ class PlannerPanel(HuskyPlugin):
         """
         gui.add_html(section("path", SECTION_CTRL))
         plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
-        # * Teal, as Plan in the Assembly tab (computes without moving), so it never passes for Load's Step above.
-        gui.add_html(f"<style>{button_group_color_css(plan._impl.uuid, PATH_BUTTONS_COLOR)}</style>")
+        # * Teal, as Plan in the Assembly tab (computes without moving), and Plan filled, so it never passes for Load's
+        #   Step (blue outline) right above it.
+        uuid = plan._impl.uuid
+        gui.add_html(f"<style>{button_group_color_css(uuid, PATH_BUTTONS_COLOR)}"
+                     f"{group_buttons(uuid, 0)} {{ background: {PLAN_BUTTON_FILL} !important; color: white !important; "
+                     f"border-color: {PLAN_BUTTON_FILL} !important; }}"
+                     f"{group_buttons(uuid, 0)}:hover {{ background: {PLAN_BUTTON_HOVER} !important; }}</style>")
         self._slider = gui.add_slider("Preview time", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
                                       hint="Scrub through the planned path: seconds from its start")
         # * Cancel beside Commit: a folder of its own, laid out in two columns (found by Commit's icon).
@@ -137,7 +144,7 @@ class PlannerPanel(HuskyPlugin):
         """
         self._used = RecentUse(ctx.config.ghost_timeout)
         robots = list(robots)
-        self._target_ghosts = robot_ghosts(ctx, robots, "target")
+        self._target_ghosts = robot_ghosts(ctx, robots, self.target_kind)
         self._path_ghosts = robot_ghosts(ctx, robots, "path")
 
     def _set_up_idle(self, ctx: PluginContext, why: str) -> None:

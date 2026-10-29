@@ -134,7 +134,7 @@ class Chain(RobotLab):
         self.steps._ctx = self.ctx
         self.steps._panel = StepsPanel(self.ctx, self.steps)
         self.steps._used = RecentUse(0.0)
-        self.steps._target_ghosts, self.steps._path_ghosts = {}, {}
+        self.steps._path_ghosts = {}
 
     def tick(self, t: float) -> None:
         """As the lab's, then the bar's markers into the servo's tracked object."""

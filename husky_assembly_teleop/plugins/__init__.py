@@ -36,8 +36,9 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`. Its tests go 
 * Panels never jump (AGENTS.md, "Panels: nothing jumps"): chips that can appear go on a line that is always there
   (`ui.style.chip_line`), text that comes and goes below the buttons.
 * Prefer tabs to folders: users can drag tabs into windows of their own, folders stay put.
-  - `ctx.view.ui()` is the plugin's tab in the side panel, at its `tab_path` (e.g. `("Plan", "Arm")`, default its
-    name); `hidden = True` starts it in the minimized panel at the right edge, for tools not needed every session.
+  - `ctx.view.ui()` is the plugin's tab in the side panel, at its `tab_path` (e.g. `("Control",)`, default its
+    name); a path under "Plan" (`ui.visualization.PLAN_TAB`) goes in the Plan window at the top instead.
+    `hidden = True` starts it in the minimized panel at the right edge, for tools not needed every session.
   - Plugins with the same `tab_path` share one tab through bands, `ctx.view.ui(band=...)`, sorted by number; the
     first to start sets its icon. The Assembly tab holds process, assembly_steps, movement_exec and assembly_run
     (`ui/assembly_tab.py`).

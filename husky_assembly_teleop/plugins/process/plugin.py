@@ -47,7 +47,7 @@ from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.assembly_tab import ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
-from ...ui.phone import group_buttons, one_row_css
+from ...ui.phone import group_buttons, group_tooltips_css, one_row_css
 from ...ui.style import (BUSY, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line, section,
                          swatch_chip, values)
 from ...world.model_check import model_differences
@@ -264,10 +264,10 @@ class ProcessPlugin(HuskyPlugin):
             # ! The selected movement's details change with it, so they keep a fixed height: the movement buttons
             #   and the Assembly tab's buttons are below them.
             self._which = gui.add_html("")
-            # * The selected action's movements by their old codes, in their kinds' colours (`_movement_css`).
-            self._moves = gui.add_button_group("Movement", [NO_MOVEMENT],
-                                               hint="Select this movement of the action. Coloured by kind as in the "
-                                                    "action flowchart; the selected one is ringed")
+            # * The selected action's movements by their old codes, in their kinds' colours, the selected one ringed;
+            #   hovering another shows its old name and what it does (`_movement_css`). No viser hint: it would sit
+            #   over those.
+            self._moves = gui.add_button_group("Movement", [NO_MOVEMENT])
             self._moves_style = gui.add_html("")
             self._details = gui.add_html("")
             self._error_text = gui.add_html("")
@@ -658,7 +658,9 @@ class ProcessPlugin(HuskyPlugin):
     def _carry_applies(self, action: Action, movement: Movement) -> bool:
         """Whether the carried joints show at this movement of `action`.
 
-        They do at the carry's movement shown at its target, and at every later movement of the action as shown.
+        They do at the carry's movement shown at its target, and at every later movement of the action shown at its
+        start, or at its target when that names no joints for the carry's robot: a later movement's own target joints
+        stay, on the base they were authored for.
 
         Args:
             action: The action as shown (`as_run`).
@@ -674,7 +676,10 @@ class ProcessPlugin(HuskyPlugin):
         if carry.movement_id not in shown:
             return False
         at, number = shown.index(carry.movement_id), action.movements.index(movement)
-        return number > at or (number == at and self.at_target)
+        if number == at:
+            return self.at_target
+        own = movement.target.joints.get(carry.robot) if movement.target is not None else None
+        return number > at and not (self.at_target and own)
 
     def _status_html(self) -> str:
         """One line of chips: load progress or process, plus any error."""
@@ -727,7 +732,10 @@ class ProcessPlugin(HuskyPlugin):
         """
         self._moves.options = tuple(label.code for label in labels) or (NO_MOVEMENT,)
         kinds = [label.kinds[0] for label in labels]
-        self._moves_style.content = f"<style>{_movement_css(self._moves._impl.uuid, kinds, current)}</style>"
+        # * The selected movement's old name and sentence are in the details below: no tip for it.
+        tips = [None if number == current else f"{label.old_name or 'not in the old monitor'}\n{label.text}"
+                for number, label in enumerate(labels)]
+        self._moves_style.content = f"<style>{_movement_css(self._moves._impl.uuid, kinds, current, tips)}</style>"
 
     def _details_html(self, action: Action, movement: Movement, labels: list[MovementLabel]) -> tuple[str, str]:
         """The selected movement's details, split around the movement buttons.
@@ -800,13 +808,16 @@ def _kind_chip(kind: Kind, title: str) -> str:
     return swatch_chip(escape(kind.short), kind.fill, kind.border, title, kind.fill_to, kind.dashed)
 
 
-def _movement_css(uuid: str, kinds: list[Kind], current: int) -> str:
-    """CSS for the movement buttons: one row (`one_row_css`) of tall buttons in their kinds' colours, one ringed.
+def _movement_css(uuid: str, kinds: list[Kind], current: int, tips: list[str | None]) -> str:
+    """CSS for the movement buttons: one row of tall buttons in their kinds' colours, one ringed, the others with a tip.
+
+    The row is `one_row_css`; the tip shows under the row while a button is hovered (`group_tooltips_css`).
 
     Args:
         uuid: The button group's uuid.
         kinds: Each button's movement kind, left to right; empty for the one button before a load.
         current: Index of the selected movement's button.
+        tips: Each button's tooltip text, None for none.
 
     Returns:
         str: CSS rules, without the <style> element.
@@ -820,7 +831,7 @@ def _movement_css(uuid: str, kinds: list[Kind], current: int) -> str:
         # * Dark text on the light fills, in either theme, as `swatch_chip`.
         css += (f"{group_buttons(uuid, index)} {{ background: {fill} !important; color: #212529 !important; "
                 f"border: 1px {'dashed' if kind.dashed else 'solid'} {kind.border} !important;{ring} }}")
-    return css
+    return css + group_tooltips_css(uuid, tips)
 
 
 def _with_base(state: State, robot: str, base: Pose | None) -> State:

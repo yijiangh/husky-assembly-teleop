@@ -12,7 +12,8 @@ from robot_fakes import lease_context
 from husky_assembly_teleop.shared.teleop.dpad import HOLD_TIMEOUT, MAX_LINEAR_SPEED, Hold
 from husky_assembly_teleop.plugins.robot_control.plugin import FREE_DRIVE_RETRY, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.robot_interface.arm import FREE_DRIVE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER
-from husky_assembly_teleop.ui.phone import (SHEET, big_buttons, button_group_color_css, group_buttons, one_row_css,
+from husky_assembly_teleop.ui.phone import (SHEET, big_buttons, button_group_color_css, css_string, group_buttons,
+                                            group_tooltips_css, one_row_css,
                                             side_by_side_css, slim_labels_css)
 from husky_assembly_teleop.ui.visualization import Visualization
 
@@ -243,3 +244,15 @@ def test_a_button_group_is_found_by_its_label_coloured_and_kept_on_one_row():
                                                        "border-color: #f08c00 !important; }")
     css = one_row_css("g1")
     assert f"{group} > div:last-child {{ min-width: 0; }}" in css and "flex-wrap: nowrap !important" in css
+
+
+def test_a_button_groups_tooltips_hang_off_its_row_one_per_hovered_button():
+    """Each tip is the row's `::after` while its button is hovered, as a CSS string with its line breaks; None: none."""
+    group = 'div:has(> div > p > label[for="g1"])'
+    css = group_tooltips_css("g1", ["J_M3\nTravel to the bar", None, 'say "hi"'])
+    assert css.startswith(f"{group} {{ position: relative; }}{group}::after {{ display: none; position: absolute;")
+    assert (f'{group}:has(button:nth-child(1):hover)::after {{ display: block; content: "J_M3\\A Travel to the bar"; }}'
+            in css)
+    assert "nth-child(2)" not in css
+    assert css.endswith('nth-child(3):hover)::after { display: block; content: "say \\"hi\\""; }')
+    assert css_string("a\\b") == '"a\\\\b"'

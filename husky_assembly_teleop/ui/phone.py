@@ -172,6 +172,36 @@ def one_row_css(uuid: str) -> str:
             f"{row}::-webkit-scrollbar {{ display: none; }}")
 
 
+def css_string(text: str) -> str:
+    """`text` as a quoted CSS string, e.g. for `content:`; a newline becomes a line break."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\A ") + '"'
+
+
+def group_tooltips_css(uuid: str, tips: Sequence[str | None]) -> str:
+    """CSS that shows a tooltip under a button group while one of its buttons is hovered: `tips[i]` for the i-th.
+
+    The box hangs off the group's row, the full row wide, since a box inside the scrolling button row would be cut
+    off; viser's own `hint` covers the whole group only, so leave it out when the buttons have tips.
+
+    Args:
+        uuid: The button group's uuid, `handle._impl.uuid`.
+        tips: One text per button, left to right, a newline in it for a line break; None for a button without one.
+
+    Returns:
+        str: CSS rules, without the <style> element.
+    """
+    group = f'div:has(> div > p > label[for="{uuid}"])'
+    css = (f"{group} {{ position: relative; }}"
+           f"{group}::after {{ display: none; position: absolute; left: 0; right: 0; top: 100%; z-index: 20; "
+           "padding: 6px 10px; border-radius: 4px; background: #212529; color: #fff; font-size: 12px; "
+           "line-height: 1.35; white-space: pre-wrap; pointer-events: none; }")
+    for index, tip in enumerate(tips):
+        if tip:
+            css += (f"{group}:has(button:nth-child({index + 1}):hover)::after {{ display: block; "
+                    f"content: {css_string(tip)}; }}")
+    return css
+
+
 def button_group_color_css(uuid: str, color: str) -> str:
     """CSS that draws a button group's buttons in `color`, outline and label, instead of viser's blue.
 

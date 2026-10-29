@@ -69,6 +69,10 @@ def test_a_movement_button_selects_that_movement_of_the_action(tmp_path):
     assert len(codes) > 1 and movement is action.movements[0] and plugin._moves.options == codes
     style = plugin._moves_style.content
     assert style.count("box-shadow") == 1 and re.search(r"nth-child\(1\) \{[^}]*box-shadow", style)
+    labels = plugin._labels(action)
+    assert "nth-child(1):hover" not in style, "the selected movement's details are below the buttons: no tip"
+    tip = f'content: "{labels[1].old_name}\\A {labels[1].text}"'
+    assert f"nth-child(2):hover)::after {{ display: block; {tip}; }}" in style
 
     plugin._on_movement(codes[-1])
     assert plugin.selected == (action, action.movements[-1])

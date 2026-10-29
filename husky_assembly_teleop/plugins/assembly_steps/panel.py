@@ -56,8 +56,8 @@ class StepsPanel:
             self._check = gui.add_button("Live IK", color="teal", icon=GOAL_ICON,
                                          hint="Solve where the next movement starts (the insert start after a "
                                               "transfer, the linear move's start after an approach) by IK at the live "
-                                              "base, and show it as the target ghost; nothing moves. Only a transfer "
-                                              "or an approach has such a goal")
+                                              "base, and show it on the process panel's blue robot; nothing moves. "
+                                              "Only a transfer or an approach has such a goal")
             check_tool0 = gui.add_button("Check tool0", color="teal", icon=CHECK_ICON,
                                          hint="Draw each flange's live tool0 (mocap base + FK, red) against the "
                                               "step's authored target (blue) and say the gap; nothing moves")
@@ -187,7 +187,9 @@ class StepsPanel:
             self._plan_time.value, self._plan_iterations.value = settings.plan_max_time, settings.plan_max_iterations
             self._plan_resolution.value, self._plan_tries.value = settings.plan_joint_resolution, settings.plan_tries
             self._plan_swept.value = settings.plan_swept_check
-        self._details.content = block(plugin._message_html())
+        # * While planning, the free search's progress after "planning …": how far its two trees still are apart.
+        progress = ctx.require("motion_planner").progress if plugin.plan_state == "planning" else ""
+        self._details.content = block(plugin._message_html(progress))
         if plugin.path is not self._plotted:
             # * A new plan, a retime after a motion-time change, or none (Clear, Exec, a new step).
             route = plugin.route

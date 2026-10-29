@@ -1,5 +1,5 @@
 """
-Live IK: a step's goal solved by IK at the live base, kept for the target ghost and the step's next plan.
+Live IK: a step's goal solved by IK at the live base, kept for the process panel's drawing and the step's next plan.
 
 A step is keyed (loaded process, action, primary movement index, ...); the process compares by identity (`same_step`).
 

@@ -131,6 +131,8 @@ plan', and appended the servo and as-built files itself; three monitors ran, one
 
 ## 4. How the state moves from step to step
 
+The data models the two monitors hold, side by side, are in `doc/representation_old_vs_new.md`.
+
 This is the part that changed most. The question is: when the monitor plans the next movement, where does it think
 each robot is, and where does a planned movement start?
 

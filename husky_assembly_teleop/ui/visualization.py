@@ -52,6 +52,10 @@ JOINT_TOLERANCE = 1e-4
 
 #: Starting width of the side panel, pixels. Fits an arm's joint row, the widest line.
 SIDE_PANEL_WIDTH = 420
+#: The tab every planner panel's tab goes in (Base, Motion, Arm). It is a window of its own, not a side panel tab.
+PLAN_TAB = "Plan"
+#: Where the Plan window floats, pixels: at the top, right of the main panel (Stop all, health), which it never covers.
+PLAN_WINDOW_X, PLAN_WINDOW_Y = 410, 15
 
 #: Where a tab goes in a side panel: (label, icon) per level, outermost first.
 TabPath = tuple[tuple[str, viser.IconName | None], ...]
@@ -315,24 +319,29 @@ def pinned_server(port: int, parameter: str, label: str) -> viser.ViserServer:
 
 
 class SidePanel:
-    """A panel of tabs docked on the right that plugins share: tabs found by their path of labels, made on first use.
+    """A panel of tabs that plugins share, docked on the right or floating: tabs found by their path of labels.
 
-    Users can drag its tabs out into windows of their own or into other panels. It shows only while it holds a tab.
+    Tabs are made on first use. Users can drag them out into windows of their own or into other panels. It shows only
+    while it holds a tab.
     """
 
-    def __init__(self, server: viser.ViserServer, minimized: bool = False):
-        """Dock the panel, hidden until its first tab.
+    def __init__(self, server: viser.ViserServer, minimized: bool = False, at: tuple[float, float] | None = None):
+        """Dock the panel, or float it, hidden until its first tab.
 
         ! Each panel docked later sits further out, so make the panel meant for the edge last.
 
         Args:
             server: The desktop server.
             minimized: Whether the panel starts minimized to a strip.
+            at: Where it floats, its top left corner in pixels; None docks it on the right.
         """
         self._server = server
         self._panel = server.gui.add_panel(visible=False)
-        self._panel.dock_right()
-        self._panel.set_width(SIDE_PANEL_WIDTH)
+        if at is None:
+            self._panel.dock_right()
+            self._panel.set_width(SIDE_PANEL_WIDTH)
+        else:
+            self._panel.float(x=at[0], y=at[1], width=SIDE_PANEL_WIDTH)
         if minimized:
             self._panel.minimize()
         #: Tabs by their path of labels, and per tab the tab group holding the tabs nested in it.
@@ -442,9 +451,11 @@ class Visualization:
 
         #: Plugins' header folders (`PluginView.header`), under Stop all. Unlabelled: no title or border.
         self._header = self._server.gui.add_folder(None)
-        # * This panel floats in the top left corner. The plugins' tabs (`PluginView.tab`) are docked on the right,
-        #   and those hidden by default in a minimized strip at the right edge.
+        # * This panel floats in the top left corner, the Plan window right of it. The plugins' other tabs
+        #   (`PluginView.tab`) are docked on the right, and those hidden by default in a minimized strip at the right
+        #   edge.
         self._server.gui.main_panel.float(x=15, y=15)
+        self._plan = SidePanel(self._server, at=(PLAN_WINDOW_X, PLAN_WINDOW_Y))
         self._side = SidePanel(self._server)
         self._hidden_side = SidePanel(self._server, minimized=True)
 
@@ -527,7 +538,7 @@ class Visualization:
             PluginView: The plugin's slice of the UI.
         """
         return PluginView(self._server, plugin_name, self._header, self._phone, (self._side, self._hidden_side),
-                          hidden, tab_path, icon, fade=self.set_robot_opacity)
+                          hidden, tab_path, icon, fade=self.set_robot_opacity, windows={PLAN_TAB: self._plan})
 
     def atomic(self) -> AbstractContextManager[None]:
         """Batch every scene change made inside the block into one update.
@@ -633,7 +644,8 @@ class PluginView:
 
     def __init__(self, server: viser.ViserServer, plugin_name: str, header: viser.GuiFolderHandle, phone: PhonePage,
                  sides: tuple[SidePanel, SidePanel], hidden: bool, tab_path: tuple[str, ...],
-                 icon: viser.IconName | None, fade: Callable[[str, float | None], None] = lambda _s, _o: None):
+                 icon: viser.IconName | None, fade: Callable[[str, float | None], None] = lambda _s, _o: None,
+                 windows: dict[str, SidePanel] | None = None):
         """Create the plugin's scene root; its header, tabs and phone tab come on first use.
 
         Args:
@@ -646,8 +658,10 @@ class PluginView:
             tab_path: Where `ui()` goes, a label per level; empty for a tab named after the plugin.
             icon: The plugin's icon, on its own tabs.
             fade: Fades a real robot's drawing (`Visualization.set_robot_opacity`).
+            windows: Panels of their own for some top-level tabs, by label, e.g. Plan's window; the rest go in `sides`.
         """
         self._server = server
+        self._windows = windows or {}
         self._fade, self._faded = fade, set()
         self._name = plugin_name
         self._header_parent = header
@@ -748,7 +762,7 @@ class PluginView:
 
         The tab is removed with the plugin that made it, a parent once it is empty; a band with its plugin.
         """
-        side = self._sides[hidden]
+        side = self._sides[hidden] if hidden or path[0][0] not in self._windows else self._windows[path[0][0]]
         tab, made = side.tab(path, shared)
         labels = tuple(label for label, _ in path)
         if made:

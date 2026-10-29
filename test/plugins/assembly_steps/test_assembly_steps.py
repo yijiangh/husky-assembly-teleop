@@ -134,7 +134,7 @@ class Steps(RobotLab):
         self.plugin._ctx = self.ctx
         self.plugin._panel = StepsPanel(self.ctx, self.plugin)
         self.plugin._used = RecentUse(0.0)
-        self.plugin._target_ghosts, self.plugin._path_ghosts = {}, {}
+        self.plugin._path_ghosts = {}
         self.update()
 
     def update(self) -> None:
@@ -221,10 +221,11 @@ def test_a_plan_fills_the_plots_and_carries_its_end_until_another_action():
     assert lab.process.carries[-1] is None
 
 
-def test_the_ghosts_stay_while_there_is_a_target_and_a_plan_whatever_the_panel_was_last_used():
-    """The target ghost shows while the step has a target and the path ghost while there is a plan, no timeout.
+def test_the_path_ghost_stays_while_there_is_a_plan_whatever_the_panel_was_last_used():
+    """The path ghost shows while there is a plan, no timeout, and opens at the plan's end.
 
-    A Live IK answer or a plan arriving is no click, so the panel's use does not gate them; without a step both hide.
+    A plan arriving is no click, so the panel's use does not gate it; without a step it hides. The selected movement's
+    own robot is the process panel's drawing, not a ghost of this plugin.
     """
     lab = Steps(("B20_J", 3))
     calls: list[str] = []
@@ -234,18 +235,20 @@ def test_the_ghosts_stay_while_there_is_a_target_and_a_plan_whatever_the_panel_w
         return SimpleNamespace(show=lambda base, joints, parts=None: calls.append(f"{kind} shown"),
                                hide=lambda: calls.append(f"{kind} hidden"))
 
-    lab.plugin._target_ghosts, lab.plugin._path_ghosts = {"a200-0806": ghost("target")}, {"a200-0806": ghost("path")}
+    lab.plugin._path_ghosts = {"a200-0806": ghost("path")}
     RecentUse._latest = None
     lab.update()
-    assert calls == ["target shown", "path hidden"], "the step's authored target, no plan yet"
+    assert calls == ["path hidden"], "no plan yet"
     asyncio.run(lab.plan())
     RecentUse._latest, calls[:] = None, []
     lab.update()
-    assert calls == ["target shown", "path shown"]
+    assert calls == ["path shown"] and lab.plugin._t == lab.plugin.path.duration, "at the motion's end"
+    lab.plugin._on_path(lab.ctx, "Play")
+    assert lab.plugin._t == 0.0 and lab.plugin._playing, "Play runs from the start"
     lab.run.view.current = None
     calls[:] = []
     lab.update()
-    assert calls == ["target hidden", "path hidden"]
+    assert calls == ["path hidden"]
 
 
 def test_toggling_the_workaround_moves_to_the_steps_primary():
@@ -661,7 +664,7 @@ def test_the_log_line():
 def test_check_goal_asks_with_the_run_and_records_the_answer():
     """The request carries the run's beliefs, the workaround and the tick's snapshot; the answer is logged and recorded.
 
-    It shows as the target ghost while its step is current.
+    The process panel draws it, at the live base it was solved at, through the carry.
     """
     lab = Steps(("B20_J", 3))
     lab.run.view.beliefs = {"robots/a200-0805": RobotBelief(Pose())}
@@ -675,19 +678,10 @@ def test_check_goal_asks_with_the_run_and_records_the_answer():
     assert event == "check_goal" and (fields["action"], fields["movement"]) == ("B20_J", "B20_J_transfer")
     assert fields["data"] == {**answer.as_record(), "obstacles_collide": True}
     assert goal_line(answer) in lab.ctx.lines("info")
-    shown = []
-    ghost = SimpleNamespace(show=lambda base, joints, parts=None: shown.append((base, dict(joints))),
-                            hide=lambda: shown.append(None))
-    lab.plugin.show_target(lab.ctx, ghost)
-    assert shown == [(lab.bases["a200-0806"], RAW)]
     carry = lab.process.carries[-1]
     assert (carry.action_id, carry.movement_id, carry.robot, carry.joints) == ("B20_J", "B20_J_transfer",
                                                                                "robots/cindy", RAW)
     assert carry.base == answer.base == BASE, "drawn at the live base it was solved at"
-    lab.run.view.current = ("B20_J", 4)
-    lab.update()
-    lab.plugin.show_target(lab.ctx, ghost)
-    assert shown[-1] is None or shown[-1][1] != RAW
 
 
 def test_a_late_live_ik_answer_carries_nothing_once_the_step_changed():
@@ -760,7 +754,7 @@ class Walk(RobotLab):
         self.steps._ctx = self.ctx
         self.steps._panel = StepsPanel(self.ctx, self.steps)
         self.steps._used = RecentUse(0.0)
-        self.steps._target_ghosts, self.steps._path_ghosts = {}, {}
+        self.steps._path_ghosts = {}
         self.steps.update(self.ctx)
 
     async def settle(self, seconds: float = 2.5) -> None:

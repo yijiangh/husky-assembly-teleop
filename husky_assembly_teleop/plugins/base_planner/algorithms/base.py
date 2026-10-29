@@ -160,6 +160,10 @@ def add_follower_settings(gui: viser.GuiApi) -> tuple:
 
 
 def add_margin_setting(gui: viser.GuiApi):
-    """Add the margin slider: how far every algorithm keeps from everything else."""
+    """Add the margin slider: how far every algorithm keeps from everything else.
+
+    The panel adds it once, above Plan, and sends its value as the request's `margin` setting; no algorithm adds
+    one of its own.
+    """
     return gui.add_slider("Margin m", min=0.0, max=0.3, step=0.01, initial_value=COLLISION_MARGIN,
                           hint="Keep at least this far from the other robots and bodies")
