@@ -184,7 +184,7 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **floor calibration / refit**: the floor calibration (`floor_from_raw`, made with the mocap probe) puts raw poses in
   the lab frame; it is applied only on command. A refit is a rigid fit (Kabsch) of the anchors or truss cameras, as
   stored with the floor calibration, to where Motive puts them now; used on command, kept in memory.
-  `world/mocap_frame.py`, `world/frame_follower.py`.
+  `world/mocap_frame.py`, `world/frame_follower.py`, `doc/floor_calibration_manual.md`.
 - **mark / anchor / truss camera**: marks are points on the floor probed with the probe; anchors are the markers that
   hold Motive's continuous calibration; truss cameras are the six bolted cameras. Marks place the lab frame; anchors
   and truss cameras follow Motive's frame moving.
