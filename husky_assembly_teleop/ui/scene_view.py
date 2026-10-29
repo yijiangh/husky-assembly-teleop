@@ -116,6 +116,28 @@ class SceneView:
                 for i, shape in enumerate(shapes)]
 
 
+def add_labelled_frame(scene, name: str, pose: Pose, text: str, axes_length: float,
+                       color: tuple[int, int, int]) -> tuple[viser.FrameHandle, viser.LabelHandle]:
+    """A frame at `pose` with `text` at its origin, both under `name`; the origin ball takes `color` (labels have none).
+
+    Args:
+        scene: The scene api, e.g. `ctx.view.scene`.
+        name: The frame's scene path; the label goes at `<name>/label`.
+        pose: Where, in the world.
+        text: The label.
+        axes_length: The axes' length, metres.
+        color: RGB 0-255 of the origin ball.
+
+    Returns:
+        tuple[viser.FrameHandle, viser.LabelHandle]: The frame and its label.
+    """
+    frame = scene.add_frame(name, position=tuple(float(v) for v in pose.position),
+                            wxyz=quaternion_to_wxyz(pose.orientation), axes_length=axes_length,
+                            axes_radius=axes_length / 30.0, origin_radius=axes_length / 10.0, origin_color=color)
+    label = scene.add_label(f"{name}/label", text)
+    return frame, label
+
+
 def add_shape(scene, name: str, shape: Shape, color: tuple[float, ...]) -> viser.SceneNodeHandle:
     """Add one shape: primitives natively (exact, lit correctly), meshes as triangles.
 

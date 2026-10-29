@@ -1,0 +1,574 @@
+"""The insert on a fake Cindy with her real frames and both scaffolding tools: its plan, its modes, its endings."""
+
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import json
+import math
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+from planning_fixtures import CINDY, robot_config
+from plugin_fakes import (ArmDriver, FakeContext, MocapDriver, ScaffoldingDriver, fake_arm, fake_node, fake_robot,
+                          fake_scaffolding, lease_to_test)
+from robot_lab import LEFT, RIGHT
+from scipy.spatial.transform import Rotation
+from test_execution_spiral import Operator
+from test_execution_stream import BASE, MOCAP_ID, assert_same_pose, moved, world_target
+
+from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER as COMPLIANCE
+from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER as JOINT
+from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
+from husky_assembly_teleop.robot_interface.frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
+from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
+from husky_assembly_teleop.shared.execution.insert import InsertPlan, plan_insert, run_insert
+from husky_assembly_teleop.shared.execution.spiral import Spiral
+from husky_assembly_teleop.shared.execution.stream import (DRY_RUN, END_WAIT, FAILED, HOLD_FOR_STALL, NO_STALL,
+                                                           REFUSED, RIGID_DONE, SETTLE_CEILING, SETTLE_TOL,
+                                                           SETTLE_WINDOW, STALLED, line_target, split_seconds,
+                                                           tool0_fk)
+from scaffolding_assembly_core.geometry import Pose, compose
+
+pytestmark = pytest.mark.safety
+
+ARMS = ("left_ur_arm", "right_ur_arm")
+NAMES = [name for arm in ARMS for name in arm_joint_names(arm)]
+
+
+def rows_turning(elbow: float) -> np.ndarray:
+    """An insert of 10 steps with both elbows turning `elbow` rad: at 0.03 each tool0 moves about 14.6 mm."""
+    return np.array(LEFT + RIGHT) + np.outer(np.linspace(0.0, 1.0, 11), [0, 0, elbow, 0, 0, 0, 0, 0, -elbow, 0, 0, 0])
+
+
+#: The insert: both elbows turn 0.03 rad in 10 steps; each tool0 moves about 14.6 mm.
+ROWS = rows_turning(0.03)
+STOP, TIGHTEN_SCREW = (0, 0), (ScaffoldingV3.JOINT_MOTOR, 1)
+URDF = robot_config(CINDY).model.urdf
+
+
+class Lab:
+    """Cindy at BASE with her URDF frames, under joint control at the insert's start, a scaffolding tool on each arm.
+
+    Leased to the test. Every tick the arms, their controller managers and the tools' firmware answer. `sent` keeps
+    each arm's Cartesian targets with the TCP measured when each went out.
+    """
+
+    def __init__(self, left: dict | None = None, right: dict | None = None, lag: float = 0.5):
+        """Build Cindy; `left` and `right` go to the tools' firmware (`ScaffoldingDriver`), `lag` to her arms."""
+        self.ctx = FakeContext(step=self.tick)
+        node = fake_node(self.ctx.now, self.ctx.logs)
+        config = robot_config(CINDY)
+        self.tools = {name: fake_scaffolding(node, f"/a200_0806/{name.split('_')[0]}_gripper") for name in ARMS}
+        arms = [fake_arm(node, name, joints, end_effector=self.tools[name])
+                for name, joints in zip(ARMS, (LEFT, RIGHT))]
+        for arm in arms:
+            arm.urdf, arm.base_in_husky = URDF, fixed_transform(URDF, HUSKY_FRAME, f"{arm.config.name}_base_link")
+        self.robot = lease_to_test(fake_robot(node, "a200-0806", arms))
+        self.robot.config.model = config.model
+        self.robot._husky_in_mocap_frame = fixed_transform(URDF, MOCAP_FRAME, HUSKY_FRAME)
+        self.mocap = MocapDriver(self.robot, BASE, MOCAP_ID)
+        self.drivers = [ArmDriver(arm, self.robot, lag=lag) for arm in arms]
+        self.screws = {"left_ur_arm": ScaffoldingDriver(self.tools["left_ur_arm"], **(left or {})),
+                       "right_ur_arm": ScaffoldingDriver(self.tools["right_ur_arm"], **(right or {}))}
+        self.sent: dict[str, list] = {name: [] for name in ARMS}
+        for name, arm in self.robot.arms.items():
+            arm.targets_sent.attach(lambda target, arm=arm, name=name: self.sent[name].append(
+                (target, np.array(arm.state.tcp_position))))
+        self.tick(self.ctx.t)
+
+    def tick(self, t: float) -> None:
+        """Mocap sees the base, the arms move and report, their controller managers answer, the tools run and report."""
+        self.mocap.tick(t)
+        for driver in self.drivers:
+            driver.tick(t)
+        for arm in self.robot.arms.values():
+            arm.controllers.tick(t)
+        for screw in self.screws.values():
+            screw.tick(t)
+
+    def plan(self, rows: np.ndarray = ROWS, **settings) -> InsertPlan:
+        """The insert of `rows`: by default ROWS, B21-like (the left screw mates), split 5 mm, a straight line, 5 s."""
+        defaults = dict(mating=("left_ur_arm",), grounded=False, split_mm=5.0, spiral=None, traj_time=5.0)
+        plan = plan_insert(self.robot, NAMES, rows, **{**defaults, **settings})
+        assert isinstance(plan, InsertPlan), plan
+        return plan
+
+    def work(self, plan: InsertPlan, operator: Operator | None = None, dry_run: bool = False):
+        """The insert's coroutine, on every tool."""
+        return run_insert(self.ctx, self.robot, plan, self.tools, operator=operator or Operator(self), dry_run=dry_run)
+
+    def run(self, plan: InsertPlan, **options):
+        """Run the insert to its end."""
+        return asyncio.run(self.work(plan, **options))
+
+    def commands(self, arm: str) -> list[tuple[int, int]]:
+        """(motor, direction) of every command sent to one arm's tool."""
+        return [(command.motor, command.direction) for command in self.tools[arm]._command.messages]
+
+    def streamed(self, arm: str) -> list:
+        """The arm's streamed targets: every Cartesian target but a hold's."""
+        return [target for target, _tcp in self.sent[arm] if not target.hold]
+
+    def switches(self, arm: str) -> list[str]:
+        """Every controller the arm was asked to switch to."""
+        return self.robot.arms[arm].controllers.switches
+
+    def running(self) -> list[str | None]:
+        """What each arm's controller manager runs."""
+        return [self.robot.arms[arm].controllers.running for arm in ARMS]
+
+    def nothing_sent(self) -> bool:
+        """No trajectory, target, wrench, switch or tool command went out."""
+        arms = self.robot.arms.values()
+        return not (self.robot._multi_arm.messages or any(
+            arm._trajectory.messages or arm._target_frame.messages or arm._target_wrench.messages
+            or arm.controllers.switches for arm in arms) or any(tool._command.messages for tool in self.tools.values()))
+
+
+def world_tool0(lab: Lab, arm: str, row: np.ndarray) -> Pose:
+    """An arm's tool0 at a row of ROWS' joints, in the world, with the base at BASE."""
+    base = compose(compose(BASE, lab.robot._husky_in_mocap_frame), lab.robot.arms[arm].base_in_husky)
+    return compose(base, tool0_fk(URDF, arm, dict(zip(NAMES, row))))
+
+
+def insert_length() -> float:
+    """The insert's length, millimetres: the furthest an arm's tool0 travels."""
+    return 1e3 * max(float(np.linalg.norm(np.subtract(tool0_fk(URDF, arm, dict(zip(NAMES, ROWS[-1]))).position,
+                                                      tool0_fk(URDF, arm, dict(zip(NAMES, ROWS[0]))).position)))
+                     for arm in ARMS)
+
+
+def line_end_time(lab: Lab, arm: str) -> float:
+    """ROS time the arm's first target at its line's end went out (the end is sent again while the arm settles)."""
+    targets = lab.streamed(arm)
+    return next(target.update_time for target in targets
+                if np.allclose(target.position, targets[-1].position, atol=1e-9))
+
+
+# --- --- --- --- --- the plan --- --- --- --- ---
+
+def test_the_plan_splits_5_mm_off_the_end_and_says_so():
+    """B21-like: rigid D − 5 mm, then compliant 5 mm in the rest of the 5 s; the prompt states both, the left screw."""
+    lab = Lab()
+    plan = lab.plan()
+    total = insert_length()
+    assert 14.0 < total < 15.5 and plan.total_mm == pytest.approx(total) and plan.achieved_mm == pytest.approx(5.0)
+    rigid_s, compliant_s = split_seconds(5.0, plan.achieved_mm, plan.total_mm)
+    assert plan.compliant_seconds == compliant_s == pytest.approx(5.0 * 5.0 / total)
+    assert rigid_s - 1e-9 <= plan.rigid.duration < rigid_s + 0.2 and plan.arms == ARMS and plan.spiral is None
+    left, right = plan.rigid.arms
+    np.testing.assert_allclose(left.positions[0], LEFT, atol=1e-12)
+    assert plan.text == (f"INSERT: rigid {total - 5.0:.1f} mm ({plan.rigid.duration:.1f} s), then COMPLIANT 5.0 mm "
+                         f"(straight line); the joint screw of left_ur_arm TIGHTENS from the start until it stalls "
+                         f"(≤ 30 s), then STOP and back to joint control. Watch the bar enter its joint and the held "
+                         f"bars stay in their jaws.")
+    for arm in ARMS:
+        assert_same_pose(plan.ends[arm], tool0_fk(URDF, arm, dict(zip(NAMES, ROWS[-1]))))
+
+
+def test_a_spiral_too_fast_is_refused_at_plan():
+    """A two-mate bar's spiral of 5 s at 4 turns runs 75 mm/s at full radius: refused, with the shortest duration."""
+    lab = Lab()
+    refused = plan_insert(lab.robot, NAMES, ROWS, mating=ARMS, grounded=False, split_mm=5.0, spiral=(5.0, 4),
+                          traj_time=5.0)
+    assert refused == "spiral too fast: 75 mm/s at 15 mm, limit 50; 4 turns need ≥ 7.6 s" and lab.nothing_sent()
+
+
+def test_the_ground_bar_prompt():
+    """A ground bar runs the whole path rigid: it ignores the split and the spiral."""
+    lab = Lab()
+    ground = lab.plan(mating=(), grounded=True, spiral=(30.0, 6))
+    assert ground.spiral is None and ground.mating == () and not ground.compliant
+    assert ground.achieved_mm == 0.0 and ground.compliant_seconds == 0.0
+    assert ground.text == (f"RIGID insert of a ground bar, no tighten, {ground.rigid.duration:.1f} s, largest joint "
+                           f"travel {math.degrees(0.03):.1f}°.")
+
+
+# --- --- --- --- --- the split insert --- --- --- --- ---
+
+def test_a_mating_insert_runs_rigid_then_streams_the_line_until_the_left_screw_stalls():
+    """B21-like: STOP both, TIGHTEN the left screw only; rigid to the split; then each tick's target is the line.
+
+    The line runs from the measured TCP at the handover (tool0 at the split) to tool0 at the path's end, linear in time
+    over the compliant seconds, then holds; the stall 6 s after TIGHTEN, past the line's end, ends it for both arms in
+    the same tick: STOP, hold, joint control.
+    """
+    lab = Lab(left={"screw_stall_after": 6.0})
+    plan = lab.plan()
+    outcome = lab.run(plan)
+    assert outcome.status == STALLED and outcome.ok, outcome.reason
+    assert lab.sent["left_ur_arm"][-1][0].update_time == lab.sent["right_ur_arm"][-1][0].update_time
+    assert lab.commands("left_ur_arm") == [STOP, TIGHTEN_SCREW, STOP] and lab.commands("right_ur_arm") == [STOP, STOP]
+    assert [phase["name"] for phase in outcome.record["phases"]] == ["rigid", "switch", "compliant"]
+    assert outcome.record["phases"][0]["end"] == "ARRIVED"
+    # * The firmware takes the TIGHTEN and reports the stall a tick later each.
+    assert list(outcome.record["stall_times"]) == ["left_ur_arm"]
+    assert 6.0 <= outcome.record["stall_times"]["left_ur_arm"] <= 6.2 + 1e-9
+    split = np.concatenate([motion.positions[-1] for motion in plan.rigid.arms])
+    for arm in ARMS:
+        streamed = lab.streamed(arm)
+        first = streamed[0]
+        start = world_target(lab, arm, first, BASE)
+        assert_same_pose(start, world_tool0(lab, arm, split), 1e-9)
+        end = world_tool0(lab, arm, ROWS[-1])
+        for target in streamed:
+            expected = line_target(start, end, plan.compliant_seconds, target.update_time - first.update_time)
+            assert_same_pose(world_target(lab, arm, target, BASE), expected, 1e-9)
+        assert lab.ctx.t >= streamed[-1].update_time > first.update_time + plan.compliant_seconds
+        last, tcp = lab.sent[arm][-1]
+        assert last.hold and np.allclose(last.position, tcp, atol=0.0)
+        assert lab.switches(arm) == [COMPLIANCE, JOINT]
+        wrenches = lab.robot.arms[arm]._target_wrench.messages
+        assert wrenches and all(message.wrench.force.x == message.wrench.force.z == 0.0 for message in wrenches)
+        assert outcome.record["end_error_mm"][arm]["remaining_mm"] < 2.0
+    assert lab.running() == [JOINT, JOINT]
+    json.dumps(outcome.record, allow_nan=False)
+
+
+def test_an_early_stall_holds_the_rigid_part_then_switches():
+    """The screw stalls 1 s into the rigid part: the motion ENDS, the arms are held, then switched; nothing streamed."""
+    lab = Lab(left={"screw_stall_after": 1.0})
+    outcome = lab.run(lab.plan())
+    assert outcome.status == STALLED
+    rigid, switch, compliant = outcome.record["phases"]
+    assert rigid["end"] == "ENDED" and rigid["t1"] <= switch["t0"] and compliant["end"] == "stalled"
+    for arm in lab.robot.arms.values():
+        assert any(len(message.points) == 1 for message in arm._trajectory.messages)  # the hold
+        assert arm.controllers.switches == [COMPLIANCE, JOINT]
+    assert not lab.streamed("left_ur_arm") and not lab.streamed("right_ur_arm")
+
+
+def test_no_stall_holds_the_end_until_the_ceiling():
+    """The screw never stalls: the line's end is held until T_c + 30 + 1 s: NO_STALL, not ok; joint control again."""
+    lab = Lab(left={"screw_stall_after": None})
+    plan = lab.plan()
+    outcome = lab.run(plan)
+    assert outcome.status == NO_STALL and not outcome.ok and "30 s" in outcome.reason
+    compliant = outcome.record["phases"][-1]
+    assert compliant["end"] == "no_stall"
+    seconds = plan.compliant_seconds + HOLD_FOR_STALL + END_WAIT
+    assert seconds <= compliant["t1"] - compliant["t0"] <= seconds + 0.15
+    assert lab.commands("left_ur_arm")[-1] == STOP and lab.running() == [JOINT, JOINT]
+
+
+def test_cancel_during_compliance_stops_the_tools_holds_at_the_tcp_and_switches_back():
+    """Cancelled while streaming: no more targets, STOP, each arm's last target a hold at its TCP, joint control."""
+    lab = Lab(left={"screw_stall_after": None})
+
+    async def scenario():
+        task = asyncio.ensure_future(lab.work(lab.plan()))
+        while len(lab.streamed("left_ur_arm")) < 5 and not task.done():
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert len(lab.streamed("left_ur_arm")) == 5
+    for arm in ARMS:
+        last, tcp = lab.sent[arm][-1]
+        assert last.hold and np.allclose(last.position, tcp, atol=0.0)
+        assert lab.commands(arm)[-1] == STOP and lab.switches(arm) == [COMPLIANCE, JOINT]
+    assert lab.running() == [JOINT, JOINT]
+
+
+def test_a_switch_refused_sends_no_target():
+    """The controller managers reject the switch: FAILED, no Cartesian target, the tools stopped."""
+    lab = Lab()
+    for arm in lab.robot.arms.values():
+        arm.controllers.rejects = True
+    outcome = lab.run(lab.plan())
+    assert outcome.status == FAILED and "no target sent" in outcome.reason
+    assert not lab.sent["left_ur_arm"] and not lab.sent["right_ur_arm"]
+    assert lab.commands("left_ur_arm")[-1] == STOP and lab.running() == [JOINT, JOINT]
+
+
+def test_the_record_keeps_the_furthest_the_base_moved():
+    """The base moves 1.5 mm during the rigid part: the record says so; under BASE_DRIFT, the compliant part runs."""
+    lab = Lab(left={"screw_stall_after": 6.0})
+    shifted = moved(BASE, (0.0, 0.0015, 0.0))
+    lab.drivers.append(SimpleNamespace(tick=lambda t: setattr(lab.mocap, "pose", shifted) if t > 11.0 else None))
+    outcome = lab.run(lab.plan())
+    assert outcome.status == STALLED and outcome.record["base_drift_max_mm"] == pytest.approx(1.5, abs=1e-6)
+
+
+def test_a_hold_refused_as_the_insert_ends_fails_it():
+    """The left arm refuses its hold after the stall (as on a stale TCP): joint control is asked all the same; FAILED.
+
+    The one warn names the arm; the record says the way back was not ok.
+    """
+    lab = Lab(left={"screw_stall_after": 6.0})
+    lab.robot.arms["left_ur_arm"].hold = lambda: False
+    outcome = lab.run(lab.plan())
+    assert outcome.status == FAILED and not outcome.ok
+    assert outcome.reason.startswith("left_ur_arm joint screw STALLED; but the hold or the switch back to")
+    assert lab.running() == [JOINT, JOINT] and not outcome.record["switch"]["back_ok"]
+    assert sum(line.startswith("the hold was refused on left_ur_arm") for line in lab.ctx.lines("warn")) == 1
+
+
+def test_a_tool_stop_that_raises_still_brings_the_arms_back():
+    """The left tool's STOP raises as the compliant insert ends: the error comes out, joint control asked first."""
+    lab = Lab(left={"screw_stall_after": 3.0})
+    tool, left = lab.tools["left_ur_arm"], lab.robot.arms["left_ur_arm"]
+    stop = tool.stop
+
+    def broken() -> None:
+        """The STOP at the start goes out; the one at the end, the arms compliant, raises."""
+        if left.controllers.is_active(COMPLIANCE):
+            raise RuntimeError("serial port gone")
+        stop()
+
+    tool.stop = broken
+    with pytest.raises(RuntimeError, match="serial port gone"):
+        lab.run(lab.plan())
+    assert lab.switches("left_ur_arm") == [COMPLIANCE, JOINT] and lab.running() == [JOINT, JOINT]
+    assert lab.sent["left_ur_arm"][-1][0].hold
+
+
+def test_the_right_arm_failing_after_the_left_switched_brings_the_left_back():
+    """Only the right arm's switch is rejected: FAILED; the left, already compliant, is held and switched back."""
+    lab = Lab()
+    lab.robot.arms["right_ur_arm"].controllers.rejects = True
+    outcome = lab.run(lab.plan())
+    assert outcome.status == FAILED and not lab.streamed("left_ur_arm") and not lab.streamed("right_ur_arm")
+    assert lab.switches("left_ur_arm") == [COMPLIANCE, JOINT] and lab.running() == [JOINT, JOINT]
+    assert lab.sent["left_ur_arm"][-1][0].hold
+
+
+def test_the_spiral_settings_reach_the_spiral():
+    """A two-mate bar, spiral 30 s, 6 turns: the prompt says so; each target is the line over 30 s plus its offset.
+
+    The spiral turns around the planned insert's direction in the world: every arm's tool0 travel, summed.
+    """
+    lab = Lab(left={"screw_stall_after": 6.0}, right={"screw_stall_after": 6.0})
+    plan = lab.plan(mating=ARMS, spiral=(30.0, 6))
+    assert "COMPLIANT 5.0 mm (spiral 15 mm, 30 s, 6 turns, pitch 2.5 mm)" in plan.text
+    outcome = lab.run(plan)
+    assert outcome.status == STALLED and outcome.record["plan"]["spiral"]["pitch_mm"] == pytest.approx(2.5)
+    axis = sum(np.subtract(world_tool0(lab, arm, ROWS[-1]).position, world_tool0(lab, arm, ROWS[0]).position)
+               for arm in ARMS)
+    spiral = Spiral(axis, 30.0, 6)
+    for arm in ARMS:
+        streamed = lab.streamed(arm)
+        first = streamed[0]
+        start, end = world_target(lab, arm, first, BASE), world_tool0(lab, arm, ROWS[-1])
+        assert len(streamed) > 20
+        for target in streamed:
+            elapsed = target.update_time - first.update_time
+            assert_same_pose(world_target(lab, arm, target, BASE),
+                             line_target(start, end, 30.0, elapsed, spiral.offset(elapsed)), 1e-9)
+    assert outcome.record["spiral_text"].startswith("spiral ") and "of 6 turns" in outcome.record["spiral_text"]
+
+
+# --- --- --- --- --- one-mate bars --- --- --- --- ---
+
+def test_a_one_mate_bar_ignores_the_spiral_and_the_prompt_says_so():
+    """B21-like, the left screw alone mating: the spiral is dropped, even one too fast; a two-mate bar keeps it."""
+    lab = Lab()
+    plan = lab.plan(spiral=(30.0, 6))
+    assert plan.spiral is None and plan.as_record()["spiral"] is None
+    assert "COMPLIANT 5.0 mm (straight line: no spiral for a bar with one mating joint)" in plan.text
+    assert lab.plan(spiral=(5.0, 4)).spiral is None
+    assert lab.plan(mating=ARMS, spiral=(30.0, 6)).spiral == (30.0, 6)
+
+
+def test_a_one_mate_bars_holding_arm_finishes_its_line_and_settles_after_the_stall():
+    """The left screw stalls 2 s into a 5 s compliant line: the left arm goes back at once, the right finishes its line.
+
+    The right arm's targets go on to the line's end, then repeat it until its TCP moved under SETTLE_TOL over a window:
+    its hold comes a window or more after its line's end, well before the ceiling, at a TCP standing still; the left
+    is held once, under compliance, never by a trajectory; the record keeps each arm's way back and the settle as
+    phases; both end under joint control.
+    """
+    lab = Lab(left={"screw_stall_after": 2.0})
+    plan = lab.plan(split_mm=30.0)
+    assert plan.rigid is None and plan.compliant_seconds == 5.0
+    outcome = lab.run(plan)
+    assert outcome.status == STALLED and outcome.ok, outcome.reason
+    assert [(phase["name"], phase["end"]) for phase in outcome.record["phases"]][1:] == [
+        ("compliant", "stalled"), ("left_ur_arm back", "back"), ("compliant right_ur_arm", "ended"),
+        ("settle right_ur_arm", "settled")]
+    assert outcome.record["phases"][0]["name"] == "switch"
+    assert lab.switches("left_ur_arm") == lab.switches("right_ur_arm") == [COMPLIANCE, JOINT]
+    left_hold, left_tcp = lab.sent["left_ur_arm"][-1]
+    assert left_hold.hold and np.allclose(left_hold.position, left_tcp, atol=0.0)
+    assert not any(len(message.points) == 1 for message in lab.robot.arms["left_ur_arm"]._trajectory.messages)
+    right_hold, right_tcp = lab.sent["right_ur_arm"][-1]
+    assert right_hold.hold and np.allclose(right_hold.position, right_tcp, atol=0.0)
+    assert right_hold.update_time >= left_hold.update_time + 2.5
+    line_end = line_end_time(lab, "right_ur_arm")
+    assert SETTLE_WINDOW <= right_hold.update_time - line_end < SETTLE_CEILING
+    a_window_ago = next(tcp for target, tcp in lab.sent["right_ur_arm"]
+                        if abs(target.update_time - (right_hold.update_time - SETTLE_WINDOW)) < 1e-6)
+    assert np.linalg.norm(right_hold.position - a_window_ago) < SETTLE_TOL
+    settle, settle_phase = outcome.record["settle"], outcome.record["phases"][-1]
+    assert settle["settled"] and settle["arms"] == ["right_ur_arm"] and settle["moved_mm"] < SETTLE_TOL * 1e3
+    assert settle_phase["t1"] - settle_phase["t0"] == pytest.approx(settle["seconds"])
+    assert SETTLE_WINDOW - 1e-6 <= settle["seconds"] <= right_hold.update_time - line_end + 1e-6
+    streamed = lab.streamed("right_ur_arm")
+    assert len(streamed) > len(lab.streamed("left_ur_arm")) + 20
+    assert_same_pose(world_target(lab, "right_ur_arm", streamed[-1], BASE), world_tool0(lab, "right_ur_arm", ROWS[-1]),
+                     1e-9)
+    assert lab.commands("left_ur_arm") == [STOP, TIGHTEN_SCREW, STOP] and lab.commands("right_ur_arm") == [STOP, STOP]
+    assert lab.running() == [JOINT, JOINT] and outcome.record["switch"]["back_ok"]
+    assert {sample["phase"] for sample in outcome.record["stream"]} >= {
+        "compliant", "compliant right_ur_arm", "settle right_ur_arm"}
+    assert any("STALLED at " in line and "right_ur_arm finish the line under compliance" in line
+               for line in lab.ctx.lines("info"))
+    assert any(line.startswith("a200-0806: insert: right_ur_arm settled after ") and line.endswith("), held")
+               for line in lab.ctx.lines("info"))
+    json.dumps(outcome.record, allow_nan=False)
+
+
+def test_a_holding_arm_still_creeping_at_the_ceiling_is_held_anyway():
+    """The right arm trails a 29 mm line far behind (lag 0.02) and still creeps 1 mm per window 3 s after its end.
+
+    The ceiling holds it there: STALLED all the same, the settle phase "not settled", the record and a warn line say how
+    much it still moved; both arms end under joint control.
+    """
+    lab = Lab(left={"screw_stall_after": 2.0}, lag=0.02)
+    outcome = lab.run(lab.plan(rows=rows_turning(0.06), split_mm=60.0))
+    assert outcome.status == STALLED and outcome.ok, outcome.reason
+    assert [(phase["name"], phase["end"]) for phase in outcome.record["phases"]][-2:] == [
+        ("compliant right_ur_arm", "ended"), ("settle right_ur_arm", "not settled")]
+    settle = outcome.record["settle"]
+    assert not settle["settled"] and settle["moved_mm"] > SETTLE_TOL * 1e3
+    assert SETTLE_CEILING <= settle["seconds"] <= SETTLE_CEILING + 0.15
+    right_hold, right_tcp = lab.sent["right_ur_arm"][-1]
+    assert right_hold.hold and np.allclose(right_hold.position, right_tcp, atol=0.0)
+    assert SETTLE_CEILING <= right_hold.update_time - line_end_time(lab, "right_ur_arm") <= SETTLE_CEILING + 0.15
+    assert any(line.startswith("a200-0806: insert: right_ur_arm NOT settled 3 s after its last target, still moving ")
+               and line.endswith(" mm per 0.5 s; held anyway") for line in lab.ctx.lines("warn"))
+    assert lab.switches("right_ur_arm") == [COMPLIANCE, JOINT] and lab.running() == [JOINT, JOINT]
+    json.dumps(outcome.record, allow_nan=False)
+
+
+def test_a_two_mate_bar_ends_both_arms_at_the_stall():
+    """Both screws mate and stall 2 s into the 5 s line: both arms are held in the same tick and go back together."""
+    lab = Lab(left={"screw_stall_after": 2.0}, right={"screw_stall_after": 2.0})
+    outcome = lab.run(lab.plan(mating=ARMS, split_mm=30.0))
+    assert outcome.status == STALLED and outcome.ok, outcome.reason
+    assert [phase["name"] for phase in outcome.record["phases"]] == ["switch", "compliant"]
+    left_hold, right_hold = lab.sent["left_ur_arm"][-1][0], lab.sent["right_ur_arm"][-1][0]
+    assert left_hold.hold and right_hold.hold and left_hold.update_time == right_hold.update_time
+    assert len(lab.streamed("left_ur_arm")) == len(lab.streamed("right_ur_arm"))
+    assert lab.commands("left_ur_arm") == lab.commands("right_ur_arm") == [STOP, TIGHTEN_SCREW, STOP]
+    assert lab.running() == [JOINT, JOINT]
+
+
+@pytest.mark.parametrize("while_settling", [False, True])
+def test_cancel_while_the_holding_arm_finishes_holds_it_and_not_the_arm_already_back(while_settling):
+    """Cancelled with the left back and the right streaming its line, or settling: right STOP, hold, joint control.
+
+    The left gets no second hold, by target or trajectory; both arms end under joint control.
+    """
+    lab = Lab(left={"screw_stall_after": 2.0})
+
+    def time_to_cancel(first: int) -> bool:
+        """5 targets into the right arm's rest of the line; or its end target sent twice, while it settles."""
+        targets = lab.streamed("right_ur_arm")
+        if while_settling:
+            return len(targets) > 1 and np.allclose(targets[-1].position, targets[-2].position, atol=1e-12)
+        return len(targets) >= first + 5
+
+    async def scenario():
+        task = asyncio.ensure_future(lab.work(lab.plan(split_mm=30.0)))
+        while lab.running() != [JOINT, COMPLIANCE] and not task.done():
+            await asyncio.sleep(0)
+        first = len(lab.streamed("right_ur_arm"))
+        while not time_to_cancel(first) and not task.done():
+            await asyncio.sleep(0)
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    holds = {arm: [target for target, _tcp in lab.sent[arm] if target.hold] for arm in ARMS}
+    assert len(holds["left_ur_arm"]) == len(holds["right_ur_arm"]) == 1
+    assert not any(len(message.points) == 1 for message in lab.robot.arms["left_ur_arm"]._trajectory.messages)
+    right_hold, right_tcp = lab.sent["right_ur_arm"][-1]
+    assert right_hold.hold and np.allclose(right_hold.position, right_tcp, atol=0.0)
+    assert right_hold.update_time > holds["left_ur_arm"][0].update_time
+    if while_settling:
+        assert right_hold.update_time >= line_end_time(lab, "right_ur_arm") + 0.1
+        assert not any("settled" in message for _level, message in lab.ctx.logs)
+    assert lab.commands("left_ur_arm")[-1] == STOP and lab.commands("right_ur_arm")[-1] == STOP
+    assert lab.switches("left_ur_arm") == lab.switches("right_ur_arm") == [COMPLIANCE, JOINT]
+    assert lab.running() == [JOINT, JOINT]
+
+
+# --- --- --- --- --- refusals and dry runs --- --- --- --- ---
+
+def _tcp_off(lab: Lab) -> None:
+    """The left TCP measured 11 mm off tool0 by the kinematics."""
+    state = lab.robot.arms["left_ur_arm"].state
+    state.tcp_position = np.add(state.tcp_position, [0.0, 0.011, 0.0])
+
+
+def _test_mode(lab: Lab) -> None:
+    arm = lab.robot.arms["right_ur_arm"]
+    arm.config = dataclasses.replace(arm.config, cartesian_test_mode=True)
+
+
+def _no_mocap(lab: Lab) -> None:
+    """Mocap stops seeing the base, and its pose is gone."""
+    lab.mocap.live = False
+    lab.robot.base.state.position = None
+
+
+@pytest.mark.parametrize("change, why", [
+    (_tcp_off, "11.0 mm, 0.0° from tool0"),
+    (_test_mode, "right_ur_arm is in Cartesian test mode"),
+    (lambda lab: setattr(lab.robot.arms["left_ur_arm"], "urdf_problem", "moved"), "stock UR frames"),
+    (lambda lab: setattr(lab.robot.arms["left_ur_arm"].state.controllers, "active", COMPLIANCE),
+     f"runs {COMPLIANCE}"),
+    (lambda lab: setattr(lab.robot.arms["left_ur_arm"].state.controllers, "switch_in_flight", COMPLIANCE),
+     f"left_ur_arm is still switching to {COMPLIANCE}"),
+    (lambda lab: setattr(lab.tools["right_ur_arm"].state, "last_update_time", lab.ctx.t - 2.0), "no tool status"),
+    (_no_mocap, "no base pose from mocap"),
+    (lambda lab: lab.robot.base.state.marker_errors.clear(), "base pose lost"),
+])
+def test_every_refusal_sends_nothing(change, why):
+    """Wrong frames, test mode, URDF problem, not under JTC or still switching, silent tool, no mocap: REFUSED."""
+    lab = Lab()
+    plan = lab.plan()
+    change(lab)
+    outcome = lab.run(plan)
+    assert outcome.status == REFUSED and why in outcome.reason and lab.nothing_sent()
+
+
+@pytest.mark.parametrize("settings", [{}, {"mating": ARMS, "spiral": (20.0, 4)}, {"mating": (), "grounded": True}])
+def test_a_dry_run_publishes_nothing(settings):
+    """Every check runs (the rigid trajectory built, each compliant target checked); nothing goes out."""
+    lab = Lab()
+    outcome = lab.run(lab.plan(**settings), dry_run=True)
+    assert outcome.status == DRY_RUN and lab.nothing_sent()
+    assert any("DRY RUN a200-0806 left_ur_arm" in line for line in lab.ctx.lines("warn"))
+    if not settings:
+        assert any("every compliant target passed" in line for line in lab.ctx.lines("warn"))
+
+
+# --- --- --- --- --- the ground bar --- --- --- --- ---
+
+def test_a_ground_bar_runs_rigid_without_tighten_or_switch():
+    """No screw tightens, no switch, no Cartesian target; it ends with the motion."""
+    lab = Lab()
+    outcome = lab.run(lab.plan(mating=(), grounded=True))
+    assert outcome.status == RIGID_DONE and outcome.ok
+    assert lab.commands("left_ur_arm") == lab.commands("right_ur_arm") == [STOP, STOP]
+    assert lab.switches("left_ur_arm") == lab.switches("right_ur_arm") == []
+    assert not lab.sent["left_ur_arm"] and not lab.sent["right_ur_arm"]
+    assert outcome.record["end_gap_mm"] < 1e-6
+
+
+def test_the_axis_is_the_planned_travel_in_the_husky_frame():
+    """plan.axis turned by the husky frame's world rotation is the arms' tool0 travel summed in the world."""
+    lab = Lab()
+    plan = lab.plan(mating=ARMS, spiral=(20.0, 4))
+    husky = compose(BASE, lab.robot._husky_in_mocap_frame)
+    world = sum(np.subtract(world_tool0(lab, arm, ROWS[-1]).position, world_tool0(lab, arm, ROWS[0]).position)
+                for arm in ARMS)
+    np.testing.assert_allclose(Rotation.from_quat(husky.orientation).apply(plan.axis), world, atol=1e-12)

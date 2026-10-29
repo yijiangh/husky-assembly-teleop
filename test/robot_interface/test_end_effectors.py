@@ -171,6 +171,18 @@ def test_robotiq_result_says_whether_it_got_there(reached, stalled, ok):
     assert not gripper.state.moving and gripper.state.last_result_ok is ok
 
 
+def test_robotiq_new_goal_forgets_the_last_success():
+    """A successful close, then a goal cancelled from outside: no success is left to read."""
+    gripper = robotiq()
+    gripper.close()
+    finish(accept(gripper._action.goals[0]), reached=True)
+    assert gripper.state.last_result_ok is True
+    gripper.open()
+    assert gripper.state.moving and gripper.state.last_result_ok is None
+    cancelled(accept(gripper._action.goals[1]))
+    assert not gripper.state.moving and gripper.state.last_result_ok is None
+
+
 @pytest.mark.parametrize("answer", [lambda goal: goal.answer(SimpleNamespace(accepted=False)),
                                     lambda goal: goal.fail(RuntimeError("server gone"))])
 def test_robotiq_rejected_goal_stops_moving(answer):

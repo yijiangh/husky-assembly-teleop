@@ -11,6 +11,9 @@ The relay (mocap.launch.py) and the monitor start once, as with the real robots;
 - Every argument of crl_husky's sim_robot.launch.py and of sim_mocap.launch.py is one of this launch's, read from those
   files with their defaults: `ros2 launch husky_assembly_teleop sim.launch.py --show-args` lists them.
 - `fake_motive:=true` adds sim_motive (sim_mocap.launch.py); without it the relay uses the true poses as they are.
+- `fake_wrench:=true` (the default) adds sim_wrench, a force/torque reading per simulated arm (the fake hardware's
+  reads NaN): near zero, with `wrench_bias` (six values) and `contact_n` along the tool's z while a simulated screw
+  is stalled. ! The compliance controller reads it too: keep them small.
 - `robot:=all` simulates every robot (sim_all.launch.py): parked, each arm with the robot's tool (crl-husky's
   model.yaml).
 """
@@ -23,6 +26,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 #: The launches this one starts: crl-husky's robot simulation, and this package's fake Motive.
 SIM_ROBOT = Path(get_package_share_directory("crl_husky")) / "launch" / "sim" / "sim_robot.launch.py"
@@ -37,6 +41,12 @@ def generate_launch_description():
         *robot, *motive,
         DeclareLaunchArgument("fake_motive", default_value="false",
                               description="Also start sim_motive, a fake Motive with Motive's imperfections"),
+        DeclareLaunchArgument("fake_wrench", default_value="true",
+                              description="Also start sim_wrench, a force/torque reading per simulated arm"),
+        DeclareLaunchArgument("wrench_bias", default_value="0,0,0,0,0,0",
+                              description="sim_wrench: a standing reading on every arm, fx,fy,fz N, tx,ty,tz Nm"),
+        DeclareLaunchArgument("contact_n", default_value="0",
+                              description="sim_wrench: force along the tool's z, N, while a simulated screw is stalled"),
         OpaqueFunction(function=_includes, args=[[d.name for d in robot], [d.name for d in motive]]),
     ])
 
@@ -66,4 +76,9 @@ def _includes(context, robot_arguments, motive_arguments):
     if LaunchConfiguration("fake_motive").perform(context).lower() == "true":
         actions.append(IncludeLaunchDescription(PythonLaunchDescriptionSource(str(FAKE_MOTIVE)),
                                                 launch_arguments=forward(motive_arguments)))
+    if LaunchConfiguration("fake_wrench").perform(context).lower() == "true":
+        bias = [float(value) for value in LaunchConfiguration("wrench_bias").perform(context).split(",")]
+        actions.append(Node(package="husky_assembly_teleop", executable="husky_sim_wrench", output="screen",
+                            parameters=[{"bias": bias,
+                                         "contact_n": float(LaunchConfiguration("contact_n").perform(context))}]))
     return actions

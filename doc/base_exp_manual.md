@@ -162,7 +162,7 @@ open floor, at least 1 m from anything.
 In the `base_exp` folder:
 
 1. Status: `tracked` and `follower idle` ("velocity controller off" is fine in the simulator). In the simulator the
-   health panel shows an amber `SIM` chip on the base: `husky_sim` announces itself, and runs are recorded as `sim`.
+   health panel shows a green `SIM` chip on the base: `husky_sim` announces itself, and runs are recorded as `sim`.
 2. **Experiment:** `$EXP`.
 3. **Automation:**
    - `Controller: standard paths`: the same 10 paths in every scenario (straight, spot turn, wide and tight arc,

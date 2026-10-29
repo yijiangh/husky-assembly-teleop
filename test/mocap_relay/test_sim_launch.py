@@ -16,10 +16,11 @@ def _arguments(path) -> dict:
 
 
 def test_the_simulation_launch_offers_sim_robots_and_the_fake_motives_arguments():
-    """Its arguments are sim_robot's and sim_mocap's with their defaults, plus fake_motive (off)."""
+    """Its arguments: sim_robot's and sim_mocap's with their defaults, fake_motive (off), the fake wrench's (on)."""
     sim = _arguments(REPO / "launch" / "sim.launch.py")
     module = importlib.util.spec_from_file_location("sim_launch", REPO / "launch" / "sim.launch.py")
     paths = importlib.util.module_from_spec(module)
     module.loader.exec_module(paths)
-    expected = {**_arguments(paths.SIM_ROBOT), **_arguments(paths.FAKE_MOTIVE), "fake_motive": "false"}
+    expected = {**_arguments(paths.SIM_ROBOT), **_arguments(paths.FAKE_MOTIVE), "fake_motive": "false",
+                "fake_wrench": "true", "wrench_bias": "0,0,0,0,0,0", "contact_n": "0"}
     assert sim == expected and {"tool", "joint_offsets", "offsets", "delay_sec"} <= set(sim)

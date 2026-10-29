@@ -63,9 +63,12 @@ if ! ros2 pkg prefix ur_robot_driver > /dev/null 2>&1; then
     echo "fake lab: the UR driver is missing; install it once with: sudo apt install ros-humble-ur-robot-driver" >&2
     return 1
 fi
-# ! The relay and the fake Motive are this package's: an install built from another branch may lack them.
-if [ ! -x "$(ros2 pkg prefix husky_assembly_teleop 2>/dev/null)/lib/husky_assembly_teleop/husky_sim_motive" ]; then
-    echo "fake lab: the installed husky_assembly_teleop has no husky_sim_motive; build it from this checkout" \
-        "(or set FAKE_LAB_OVERLAY)" >&2
-    return 1
-fi
+# ! The relay, the fake Motive and the fake wrench are this package's: an install built before they were added, or
+#   from another branch, lacks them and the launch dies at the first missing one.
+for script in husky_sim_motive husky_sim_wrench; do
+    if [ ! -x "$(ros2 pkg prefix husky_assembly_teleop 2>/dev/null)/lib/husky_assembly_teleop/$script" ]; then
+        echo "fake lab: the installed husky_assembly_teleop has no $script; build the workspace from this checkout" \
+            "(manual, 0.4), or set FAKE_LAB_OVERLAY" >&2
+        return 1
+    fi
+done

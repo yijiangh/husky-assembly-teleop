@@ -12,13 +12,16 @@ from dataclasses import fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping
 
-from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...shared.assembly_run_contract import exported_end, first_pending, is_live, live_record
+from ...shared.execution.operator import PROMPT_ARM_S
 from ...shared.assembly_planning.steps import first_step
+from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
-from ...shared.runs.runs import (DONE, Progress, RobotRecord, Run, RunError, RunSettings, mark_done, new_run,
-                                 record_event, record_movement, save_info, save_progress, stamp, with_current)
+from ...shared.runs.runs import (DONE, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
+                                 SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, Progress, RobotRecord, Run,
+                                 RunError, RunSettings, mark_done, new_run, record_event, record_movement, save_info,
+                                 save_progress, stamp, with_current)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -26,19 +29,26 @@ if TYPE_CHECKING:
     from ...shared.assembly_planning.process_steps import LoadedProcess
     from ...shared.process_contract import ProcessContract
 
-#: The plugin that runs a step on the robots: while it leases them, nothing that moves the step may change.
-STEP_RUNNER = "movement_exec"
-#: Seconds the operator has to answer a prompt.
-CONFIRM_TIMEOUT = 120.0
-#: The insert split's range, millimetres.
-SPLIT_RANGE = (0.0, 30.0)
+#: What waits for its second click (`AssemblyRunPlugin.again`): a new run, or marking an action ("mark <action id>").
+AGAIN_NEW_RUN, AGAIN_MARK = "new run", "mark"
+#: Each number setting: what a refusal calls it, its range and its unit.
+NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
+                   "spiral_seconds": ("the spiral's duration", SPIRAL_SECONDS_RANGE, "s"),
+                   "spiral_turns": ("the spiral's turns", SPIRAL_TURNS_RANGE, "whole turns"),
+                   "plan_max_time": ("the search's time per try", PLAN_TIME_RANGE, "s"),
+                   "plan_max_iterations": ("the search's iterations", PLAN_ITERATIONS_RANGE, "whole iterations"),
+                   "plan_joint_resolution": ("the search's joint resolution", PLAN_RESOLUTION_RANGE, "rad"),
+                   "plan_tries": ("the search's tries", PLAN_TRIES_RANGE, "whole tries")}
+#: Each setting's type, its default's: a request is converted to it.
+SETTING_TYPES = {each.name: type(each.default) for each in fields(RunSettings)}
 #: How far the loaded process's runs were read; only OPEN allows writes.
 NO_PROCESS, OPENING, OPEN, NOT_OPENED = "", "opening", "open", "not opened"
 
 
 def _record_file(folder: Path, event: str, ros_time: float, action: str, movement: str,
-                 payload: Mapping[str, Any], data: Mapping[str, Any] | None) -> None:
-    """Write a movement record, then an event naming it. Writer thread.
+                 payload: Mapping[str, Any], data: Mapping[str, Any] | None, kind: str = "movements",
+                 figure: Callable[[Mapping[str, Any], Path], None] | None = None) -> None:
+    """Write a `kind` record, draw its figure beside it, then write an event naming it. Writer thread.
 
     Args:
         folder: The run's folder.
@@ -48,8 +58,16 @@ def _record_file(folder: Path, event: str, ros_time: float, action: str, movemen
         movement: The movement id.
         payload: The record's JSON values.
         data: The event's data, or None.
+        kind: A key of `runs.KINDS`: "movements" or "servo".
+        figure: Draws the record's plot, called as `figure(payload, <record>.png)`; None draws nothing.
     """
-    path = record_movement(folder, action, movement, payload)
+    path = record_movement(folder, action, movement, payload, kind)
+    if figure is not None:
+        try:
+            figure(payload, path.with_suffix(".png"))
+        except Exception as error:
+            # ! A failed plot never loses the record: the JSON stays, and the event's data says what went wrong.
+            data = {**(data or {}), "figure_error": repr(error)}
     record_event(folder, event, ros_time, action=action, movement=movement, file=str(path.relative_to(folder)),
                  **({"data": dict(data)} if data else {}))
 
@@ -74,13 +92,8 @@ class RunWrites:
             return f"an arm of {acting} is still moving: wait until it stops"
         return ""
 
-    async def _confirm_mark(self, ctx: PluginContext, action_id: str, acting: str, robot: str) -> None:
-        """Once confirmed, and still allowed, mark an action whose robot is not live with the export's end, assumed."""
-        if not await self._confirmed(ctx):
-            self._say(f"{action_id} not marked")
-            return
-        if self._refused("Mark done", self._mark_refusal(ctx, action_id)):
-            return  # ? e.g. an arm started moving while the prompt waited
+    async def _mark_assumed(self, ctx: PluginContext, action_id: str, acting: str, robot: str) -> None:
+        """Mark an action whose robot is not live done with the export's end, assumed (the second click)."""
         end = exported_end(self._loaded, action_id, at=stamp())
         if end is None:
             self._say(f"{action_id} not marked: the export leaves {robot}'s base or joints open", failed=True)
@@ -144,7 +157,7 @@ class RunWrites:
             loaded = self._loaded
             self._starting = asyncio.wrap_future(self._writer.submit(
                 new_run, loaded.process, ctx.config.robots, self._settings, continued_from=continued_from,
-                root=ctx.config.drive_root))
+                root=ctx.config.drive_root, transfer_as_free=ctx.require("process").transfer_as_free))
             self._starting.add_done_callback(lambda done: self._started(ctx, loaded, done))
         try:
             await asyncio.shield(self._starting)
@@ -172,10 +185,7 @@ class RunWrites:
         ctx.log_info(f"started run {self._run.folder}{since}")
 
     async def _new_run(self, ctx: PluginContext) -> None:
-        """Start a new run once the operator confirms; then the first action is current."""
-        if not await self._confirmed(ctx):
-            self._say("no new run")
-            return
+        """Start a new run (the second click); then the first action is current."""
         if self._refused("New run", self._step_running(ctx)):
             return
         self._starting = None
@@ -208,17 +218,20 @@ class RunWrites:
         self._write(ctx, "record the settings", record_event, run.folder, "settings", ctx.now(), changes=dict(changes))
 
     async def _record_later(self, ctx: PluginContext, event: str, action: str | None, movement: str | None,
-                            data: Mapping[str, Any] | None, file: Mapping[str, Any] | None) -> None:
+                            data: Mapping[str, Any] | None, file: Mapping[str, Any] | None, kind: str,
+                            figure: Callable[[Mapping[str, Any], Path], None] | None) -> None:
         """Record once there is a run."""
         if await self._ensure_run(ctx) is not None:
-            self._queue_record(ctx, event, action, movement, data, file)
+            self._queue_record(ctx, event, action, movement, data, file, kind, figure)
 
     def _queue_record(self, ctx: PluginContext, event: str, action: str | None, movement: str | None,
-                      data: Mapping[str, Any] | None, file: Mapping[str, Any] | None) -> None:
-        """Queue a record's writes."""
+                      data: Mapping[str, Any] | None, file: Mapping[str, Any] | None, kind: str,
+                      figure: Callable[[Mapping[str, Any], Path], None] | None) -> None:
+        """Queue a record's writes: a `kind` record with its figure and the event naming it, or the event alone."""
         folder = self._run.folder
         if file is not None:
-            self._write(ctx, f"record {event}", _record_file, folder, event, ctx.now(), action, movement, file, data)
+            self._write(ctx, f"record {event}", _record_file, folder, event, ctx.now(), action, movement, file, data,
+                        kind, figure)
         else:
             self._write(ctx, f"record {event}", record_event, folder, event, ctx.now(), action=action,
                         movement=movement, **({"data": dict(data)} if data else {}))
@@ -236,6 +249,8 @@ class RunWrites:
         self._save_current(ctx, (action_id, movement))
         selector: ProcessContract = ctx.require("process")
         selector.request_select(self._loaded.index_of(action_id, movement))
+        # * Read back, not the index asked for: a movement the panel doesn't list selects another, not to be followed.
+        self._selected = selector.selection.index
 
     def _movement(self, ctx: PluginContext, action_id: str, movement_index: int | None) -> int:
         """A movement index the action has: the one given, else its first step (warned when one was given)."""
@@ -243,18 +258,26 @@ class RunWrites:
         action = process.actions[action_id]
         if type(movement_index) is int and 0 <= movement_index < len(action.movements):  # ? not True, not "1"
             return movement_index
-        first = first_step(process, action, self._settings.transfer_as_free)
+        first = first_step(process, action, ctx.require("process").transfer_as_free)
         if movement_index is not None:
             ctx.log_warn(f"{action_id} has no movement {movement_index} (it has {len(action.movements)}): "
                          f"it starts at its first step, {action.movements[first].id}")
         return first
 
-    def _save_current(self, ctx: PluginContext, current: tuple[str, int] | None) -> None:
-        """Make `current` current, and write the run's progress with it."""
+    def _save_current(self, ctx: PluginContext, current: tuple[str, int] | None, write: bool = True) -> None:
+        """Make `current` current, and write the run's progress with it.
+
+        Args:
+            ctx: The plugin's context.
+            current: (action id, movement index), or None.
+            write: Write progress.json now; False leaves it to the caller (a pick followed in the process panel is
+                written once the picking stops, `FOLLOW_SAVE_AFTER`).
+        """
         self._current = current
         if self._run is not None:
             self._run = with_current(self._run, current)
-            self._write(ctx, "save the progress", save_progress, self._run)
+            if write:
+                self._write(ctx, "save the progress", save_progress, self._run)
         self._changed()
 
     def _progress(self) -> Progress:
@@ -282,13 +305,9 @@ class RunWrites:
     def _step_running(ctx: PluginContext) -> str:
         """Why nothing that moves the current step or the robots may change now: a step runs on them; else "".
 
-        ? A step runs while STEP_RUNNER leases the robots (`ctx` names a lease "<plugin>: <label>").
+        ? A step runs while movement_exec has the robots' leases (`step_running`).
         """
-        for serial, robot in ctx.world.robots.items():
-            lease = robot.lease_slot.lease
-            if lease is not None and lease.holder.startswith(f"{STEP_RUNNER}: "):
-                return f"{serial} is leased by {lease.holder}: wait until it is done, or Cancel it"
-        return ""
+        return step_running(ctx.world.robots)
 
     def _not_open(self) -> str:
         """Why nothing may be written yet: no process, or its runs not read; else ""."""
@@ -301,13 +320,12 @@ class RunWrites:
         return ""
 
     def _busy(self) -> str:
-        """Why nothing that writes may start now: the run is not open, a prompt waits, or a run is being started; else "".
+        """Why nothing that writes may start now: the run is not open, or a run is being started; else "".
 
         ? Being started includes a Continue still running: a second Continue would race the first.
         """
         starting = self._starting is not None or (self._continuing is not None and not self._continuing.done())
-        return self._not_open() or ("answer the prompt first" if self._prompt
-                                    else "a run is being started: wait a moment" if starting else "")
+        return self._not_open() or ("a run is being started: wait a moment" if starting else "")
 
     def _offered_first(self) -> str:
         """Why nothing is written while runs are offered; else ""."""
@@ -331,15 +349,15 @@ class RunWrites:
         return "" if self._run is not None else self._offered_first() or "no run yet: nothing is done"
 
     def _settings_problem(self, changes: Mapping[str, Any]) -> str:
-        """What is wrong with requested settings, or ""."""
-        names = {field.name for field in fields(RunSettings)}
+        """What is wrong with requested settings, or "": a number out of its range or not whole where it must be."""
         for name, value in changes.items():
-            if name not in names:
+            if name not in SETTING_TYPES:
                 return f"there is no setting {name!r}"
-            if name == "insert_split_mm":
-                if isinstance(value, bool) or not isinstance(value, (int, float)) \
-                        or not SPLIT_RANGE[0] <= value <= SPLIT_RANGE[1]:
-                    return f"the insert split must be {SPLIT_RANGE[0]:.0f} to {SPLIT_RANGE[1]:.0f} mm, not {value!r}"
+            if name in NUMBER_SETTINGS:
+                what, (low, high), unit = NUMBER_SETTINGS[name]
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high \
+                        or (SETTING_TYPES[name] is int and value != int(value)):
+                    return f"{what} must be {low:g} to {high:g} {unit}, not {value!r}"
             elif not isinstance(value, bool):
                 return f"{name} must be True or False, not {value!r}"
         return ""
@@ -373,23 +391,38 @@ class RunWrites:
             ctx.log_error(f"could not {what}: {job.exception()!r}")
             self._changed()
 
-    def _ask(self, prompt: str) -> None:
-        """Put a question to the operator, at once, so a second click is refused until it is answered."""
-        self._prompt, self._answer = prompt, None
-        self._changed()
+    def _arm(self, ctx: PluginContext, key: str, message: str) -> None:
+        """Wait, with no time limit, for the second click of `key` (`again`), and say what it will do.
 
-    async def _confirmed(self, ctx: PluginContext) -> bool:
-        """The answer to the question asked: True on Confirm, False on Cancel or none within CONFIRM_TIMEOUT."""
-        try:
-            await ctx.wait_until(lambda: self._answer is not None, timeout_s=CONFIRM_TIMEOUT,
-                                 description="Confirm or Cancel")
-            return bool(self._answer)
-        except WaitTimeout:
-            ctx.log_warn(f"no answer in {CONFIRM_TIMEOUT:.0f} s to: {self._prompt}")
+        Args:
+            ctx: The plugin's context, for the clock.
+            key: What waits: AGAIN_NEW_RUN, or AGAIN_MARK and the action id.
+            message: What the second click does, for the message line.
+        """
+        self._again = (key, ctx.now())
+        self._say(message)
+
+    def _clicked_again(self, ctx: PluginContext, key: str, message: str) -> bool:
+        """Whether this click is the second one `key` waits for; the first click arms it and says `message`.
+
+        ! A second click within PROMPT_ARM_S of the first is a double click: ignored, the first one still waits.
+
+        Args:
+            ctx: The plugin's context, for the clock.
+            key: What waits: AGAIN_NEW_RUN, or AGAIN_MARK and the action id.
+            message: What a second click does, for the message line.
+
+        Returns:
+            bool: True when it confirms (and the wait ends); False when it armed the wait or was too soon.
+        """
+        if self.again != key:
+            self._arm(ctx, key, message)
             return False
-        finally:
-            self._prompt, self._answer = "", None
-            self._changed()
+        if ctx.now() - self._again[1] < PROMPT_ARM_S:
+            self._say(f"ignored: clicked again within {PROMPT_ARM_S} s (a double click?). {message}")
+            return False
+        self._again = None
+        return True
 
     def _spawn(self, ctx: PluginContext, label: str, work: Coroutine) -> asyncio.Task:
         """Start a task of this process's run, cancelled when another process loads."""

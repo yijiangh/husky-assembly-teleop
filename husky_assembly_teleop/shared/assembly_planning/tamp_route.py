@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Callable, Mapping
 from husky_assembly_tamp.motion_planner.api import (_arm_joint_names, plan_constrained_dual_arm,
                                                     plan_constrained_dual_arm_linear, plan_dual_arm_linear_independent)
 
+from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.mirrors.compas import frame_from_pose
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
@@ -34,17 +35,14 @@ from .ik import solve_ik
 from .joints import arm_joint_names, joint_limits, unwrap_to_nearest
 from .movement import GoalSource, MovementSpec, Routine, classify
 from .route_result import GoalCheck, RouteResult, aims_at_line, line_goal, pose_error
-from .route_search import ATTEMPTS, Refused, RouteSearch, pairs_text
+from .route_search import ATTEMPTS, FreeSearch, Refused, RouteSearch, pairs_text
 from .scene_for import scene_for
+from .search_tree import SearchTree
 from .single_arm import plan_linear
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
 
-#: tamp's free search for a transfer and the travel to load, and for the way home: seconds and iterations per try,
-#: joint step of its checks (rad).
-FAR = {"max_time": 120.0, "max_iterations": 50, "joint_resolution": 0.1}
-HOME = {"max_time": 30.0, "joint_resolution": 0.1}
 #: tamp's search with the bar held: the bar's step (m, rad), seconds per try; try k is seeded SEED_STEP * k.
 HELD = {"stage": 3, "position_res": 0.01, "rotation_res": 0.025, "max_time": 120.0, "derive_start": False}
 SEED_STEP = 9973
@@ -61,7 +59,9 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
                   robots: tuple[RobotConfig, ...], *, transfer_as_free: bool = False,
                   ignore_built: bool = False,
                   obstacles_collide: bool = True, goal_joints: Mapping[str, float] | None = None,
-                  abort: threading.Event | None = None, log: Callable[[str], None] = print) -> RouteResult:
+                  goal_poses: Mapping[str, Pose] | None = None, linear_step: float | None = None,
+                  search: FreeSearch | None = None, abort: threading.Event | None = None,
+                  log: Callable[[str], None] = print, tree: SearchTree | None = None) -> RouteResult:
     """Plan one movement from where the snapshot has its robot, by its routine (`classify`).
 
     Args:
@@ -74,8 +74,13 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
         ignore_built: Plan as if the built bars were not there (`scene_for`).
         obstacles_collide: Whether the process's obstacles from Rhino count (`scene_for`).
         goal_joints: Arm joints to plan to instead of solving the goal: a transfer, a travel to load, an approach.
+        goal_poses: Process flange id -> world pose a retreat goes to instead of along its line, one per moving
+            flange (`RouteResult.goals` of an earlier plan).
+        linear_step: A retreat's largest step between waypoints, metres; None: tamp's default (5 mm).
+        search: The free searches' settings (`MotionPlanRequest.search`); None: the defaults.
         abort: Set from another thread to stop between tries.
-        log: Gets the IK and linear fallback lines.
+        log: Gets a line per try and check, and the IK and linear fallback lines.
+        tree: Records the free search's trees while it runs, for drawing; None records nothing.
 
     Returns:
         RouteResult: Solved, failed with the reason, or not planned (no arm moves, no goal yet).
@@ -90,8 +95,8 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
     if spec.routine is Routine.FREE_TO_LOAD and goal_joints is None and spec.goal_joints is None:
         return _not_planned(spec, "needs the transfer start, after M3", started)
     route = _route(mirror, loaded, step, snapshot, robots, spec, ignore_built=ignore_built,
-                   obstacles_collide=obstacles_collide, goal_joints=goal_joints, abort=abort or threading.Event(),
-                   log=log)
+                   obstacles_collide=obstacles_collide, goal_joints=goal_joints, goal_poses=goal_poses,
+                   linear_step=linear_step, search=search, abort=abort or threading.Event(), log=log, tree=tree)
     try:
         result = route.run()
     except Refused as refused:
@@ -157,7 +162,9 @@ def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snaps
 
 def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
            robots: tuple[RobotConfig, ...], spec: MovementSpec, *, ignore_built: bool, obstacles_collide: bool,
-           goal_joints: Mapping[str, float] | None, abort: threading.Event, log: Callable[[str], None]) -> _Route:
+           goal_joints: Mapping[str, float] | None, abort: threading.Event, log: Callable[[str], None],
+           goal_poses: Mapping[str, Pose] | None = None, linear_step: float | None = None,
+           search: FreeSearch | None = None, tree: SearchTree | None = None) -> _Route:
     """A movement's route: its planning scene, and the scene its searches run in (without the bar for the workaround).
 
     Raises:
@@ -169,10 +176,11 @@ def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot:
     if mirror.robot_id != planning.acting:
         raise ValueError(f"{step.label}: the mirror plans for {mirror.robot_id}, the movement is {planning.acting}'s")
     # * The workaround searches without the bar, but solves its goal with the bar held there.
-    search = scene_for(loaded, step, snapshot, robots, hide_held=True, **options).scene \
+    search_scene = scene_for(loaded, step, snapshot, robots, hide_held=True, **options).scene \
         if spec.routine is Routine.TRANSFER_FREE else planning.scene
     config = next(config for config in robots if robot_id(config.serial) == planning.acting)
-    return _Route(mirror, loaded.process, step, spec, planning, search, config, goal_joints, abort, log)
+    return _Route(mirror, loaded.process, step, spec, planning, search_scene, config, goal_joints, abort, log,
+                  goal_poses=goal_poses, linear_step=linear_step, search=search, tree=tree)
 
 
 def _sync_again(route: _Route) -> str:
@@ -192,6 +200,20 @@ def _not_planned(spec: MovementSpec, reason: str, started: float) -> RouteResult
 
 class _Route(RouteSearch):
     """One movement planned by its routine, after its start is checked once."""
+
+    def __init__(self, *args, goal_poses: Mapping[str, Pose] | None = None, linear_step: float | None = None,
+                 search: FreeSearch | None = None, tree: SearchTree | None = None):
+        """A route as `RouteSearch` makes it, with a retreat's own goals and step, and the free searches' settings.
+
+        Args:
+            *args: `RouteSearch`'s.
+            goal_poses: Process flange id -> world pose a retreat goes to instead of along its line, or None.
+            linear_step: A retreat's largest step between waypoints, metres; None: tamp's default.
+            search: The free searches' settings (`MotionPlanRequest.search`); None: the defaults.
+            tree: Records the free search's trees, or None.
+        """
+        super().__init__(*args, search=search or FreeSearch(), tree=tree)
+        self.goal_poses, self.linear_step = goal_poses, linear_step
 
     # --- --- --- --- --- ROUTINES --- --- --- --- ---
 
@@ -231,7 +253,7 @@ class _Route(RouteSearch):
             Refused: Why it is not, as the failed result's reason.
         """
         self.planner = "tamp.plan_free_dual_arm"
-        return self.free(self.ik_goal(), FAR, {part: part.target for part in self.spec.arms})
+        return self.free(self.ik_goal(), {part: part.target for part in self.spec.arms})
 
     def _free_to_load(self) -> RouteResult:
         """The travel to load: tamp's free search to the transfer's start.
@@ -245,7 +267,7 @@ class _Route(RouteSearch):
         self.planner = "tamp.plan_free_dual_arm"
         goal = self.joints_of(self.override or self.spec.goal_joints)
         self.check_limits(goal)
-        return self.free(goal, FAR)
+        return self.free(goal)
 
     def _free_home(self) -> RouteResult:
         """The way home: tamp's free search to the process's target joints, exactly (never turned by whole turns).
@@ -259,7 +281,7 @@ class _Route(RouteSearch):
         self.planner = "tamp.plan_free_dual_arm"
         goal = self.joints_of(self.spec.goal_joints)
         self.check_limits(goal)
-        return self.free(goal, HOME)
+        return self.free(goal)
 
     def _transfer_held(self) -> RouteResult:
         """The transfer with the bar held: tamp's constrained search, each try seeded anew.
@@ -275,11 +297,14 @@ class _Route(RouteSearch):
         failures = []
         for attempt in range(ATTEMPTS):
             self.next_attempt()
+            self.note(f"max_time {HELD['max_time']:.0f} s, seed {SEED_STEP * attempt}", ATTEMPTS)
+            started = time.monotonic()
             with self.mirror.lend() as planner, world_frame_fk(planner):
                 path, info = plan_constrained_dual_arm(planner, self.mirror.state, active_bar_id=bar, goal_conf=goal,
                                                        random_seed=SEED_STEP * attempt, **HELD)
             self.mirror.sync(self.scene)
             if path is not None:
+                self.note(f"path of {len(path)} waypoints in {time.monotonic() - started:.1f} s", ATTEMPTS)
                 right = next((part for part in self.spec.arms if part.side == "right"), None)
                 if right is not None and right.target is not None:
                     missed = pose_error(self.flange(right, dict(zip(self.names, path[-1]))), right.target)[0]
@@ -287,11 +312,15 @@ class _Route(RouteSearch):
                         self.warnings.append(f"the right flange ends {missed * 1e3:.1f} mm from its target: the "
                                              f"grasp differs from the authored one")
                 return self.solved(path, {part: part.target for part in self.spec.arms})
-            failures.append(str(info.get("failure_reason", "no path")))
+            failures.append(f"no path in {time.monotonic() - started:.0f} s "
+                            f"(tamp: {info.get('failure_reason', 'no reason')})")
+            self.note(failures[-1], ATTEMPTS)
         raise Refused(f"{self.planner}: {'; '.join(failures)} ({ATTEMPTS} tries of {HELD['max_time']:.0f} s)")
 
     def _insert(self) -> RouteResult:
-        """The insert: tamp's straight move with the bar held, to the target poses, else along the line.
+        """The insert: tamp's straight move with the bar held, to the goal poses given, else the targets, else the line.
+
+        A transfer's MoCap-bar servo gives the goal poses (carried into this plan).
 
         Returns:
             RouteResult: Solved.
@@ -300,7 +329,8 @@ class _Route(RouteSearch):
             Refused: Why it is not, as the failed result's reason.
         """
         self.planner = "tamp.plan_constrained_dual_arm_linear"
-        goals = {part: part.target for part in self.spec.arms}
+        carried = self.goal_poses or {}
+        goals = {part: carried.get(part.flange, part.target) for part in self.spec.arms}
         if None in goals.values():
             goals = self.line_goals()
         frames = {part.side: frame_from_pose(goal) for part, goal in goals.items()}
@@ -309,19 +339,28 @@ class _Route(RouteSearch):
             planner, state, active_bar_id=bar, goal_ee_frames=frames, skip_env_collisions=False, report=report), goals)
 
     def _retreat_linear(self) -> RouteResult:
-        """The retreat: each flange along its line from where it is, tamp's straight move per arm.
+        """The retreat: tamp's straight move per arm, to the given goal poses, else along each line from the start.
+
+        Steps are `linear_step` long where given.
 
         Returns:
             RouteResult: Solved.
 
         Raises:
-            Refused: Why it is not, as the failed result's reason.
+            Refused: Why it is not, as the failed result's reason; a moving flange without a given goal pose.
         """
         self.planner = "tamp.plan_dual_arm_linear_independent"
-        goals = self.line_goals()
+        if self.goal_poses is None:
+            goals = self.line_goals()
+        else:
+            missing = [part.flange for part in self.spec.arms if part.flange not in self.goal_poses]
+            if missing:
+                raise Refused(f"no goal pose given for {', '.join(missing)}")
+            goals = {part: self.goal_poses[part.flange] for part in self.spec.arms}
         frames = {part.side: frame_from_pose(goal) for part, goal in goals.items()}
+        step = {} if self.linear_step is None else {"max_step_distance": self.linear_step}
         return self.linear(lambda planner, state, report: plan_dual_arm_linear_independent(
-            planner, state, goal_ee_frames=frames, skip_env_collisions=False, report=report), goals)
+            planner, state, goal_ee_frames=frames, skip_env_collisions=False, report=report, **step), goals)
 
     def _support_approach(self) -> RouteResult:
         """A support robot's approach: its target pose solved by IK at the live base, then the one-arm search.

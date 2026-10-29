@@ -1,16 +1,19 @@
 """The base planner's panel: its request, Plan and Commit through the planner's API, and the target checks."""
 
 import asyncio
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pytest
+from plugin_fakes import FakeGui
 from robot_fakes import lease_test_robots
 
 from husky_assembly_teleop.plugins.base_planner.panel_plugin import NO_TASK, BasePlannerPanel
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
+from husky_assembly_teleop.ui.ghost import KIND_COLORS
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan
@@ -51,11 +54,11 @@ class Planner(PlannerService):
 
 
 def panel_for(api) -> BasePlannerPanel:
-    """A panel without its GUI: SERIAL chosen, the target at GOAL, task "passage", Record on, driving `api`."""
+    """A panel without its GUI: SERIAL chosen, target at GOAL, margin 7 cm, task "passage", Record on, driving `api`."""
     panel = BasePlannerPanel()
     panel._api, panel.serial, panel._has_target = api, SERIAL, True
     panel._used = SimpleNamespace(touch=lambda: None, active=True)
-    panel._target = SimpleNamespace(pose=GOAL)
+    panel._target, panel._margin = SimpleNamespace(pose=GOAL), SimpleNamespace(value=0.07)
     panel._algorithm = SimpleNamespace(value=panel._algorithms[1].label)
     panel._debug_on, panel._task = SimpleNamespace(value=True), SimpleNamespace(value="passage")
     panel._recording, panel._experiment = SimpleNamespace(value=True), SimpleNamespace(value="trial")
@@ -79,12 +82,28 @@ class FakeCollisions:
         self.shown.pop(source, None)
 
 
+def test_target_ghost_hides_once_the_robot_stands_at_the_target():
+    """Away from the target the ghost shows there; within 5 cm / 3° of it, it hides instead of covering the robot."""
+    assert KIND_COLORS[BasePlannerPanel.target_kind] != KIND_COLORS["target"], "orange, apart from the process blue"
+    panel = panel_for(None)
+    shown = []
+    ghost = SimpleNamespace(show=lambda pose, joints: shown.append(pose), hide=lambda: shown.append(None))
+    pose = SimpleNamespace(position=(0.0, 0.0, 0.1))
+    ctx = SimpleNamespace(kinematics=SimpleNamespace(base_pose=lambda serial: pose, joints=lambda serial: {}))
+    with patch("husky_assembly_teleop.plugins.base_planner.panel_plugin.floor_pose", return_value=(0.0, 0.0, 0.0)):
+        panel.show_target(ctx, ghost)
+    with patch("husky_assembly_teleop.plugins.base_planner.panel_plugin.floor_pose",
+               return_value=(GOAL[0] + 0.03, GOAL[1], GOAL[2])):
+        panel.show_target(ctx, ghost)
+    assert shown[0] is not None and tuple(shown[0].position[:2]) == GOAL[:2] and shown[1] is None
+
+
 def test_request_carries_the_panels_inputs():
-    """Robot, target, algorithm with its settings, debug, task and recording go into the request."""
+    """Robot, target, algorithm settings plus the panel's margin, debug, task and recording are in the request."""
     panel = panel_for(None)
     request = panel.make_request(None)
-    assert request == BasePlanRequest(SERIAL, GOAL, panel._algorithms[1].label,
-                                      tuple(asdict(panel._algorithms[1].settings()).items()), debug=True,
+    settings = {**asdict(panel._algorithms[1].settings()), "margin": 0.07}
+    assert request == BasePlanRequest(SERIAL, GOAL, panel._algorithms[1].label, tuple(settings.items()), debug=True,
                                       task="passage", record=True, experiment="trial")
     panel._task = SimpleNamespace(value=NO_TASK)
     assert panel.make_request(None).task is None
@@ -94,9 +113,9 @@ def test_request_settings_reach_the_planner_unchanged():
     """The planner turns the panel's settings back into the settings the panel's algorithm shows."""
     panel = panel_for(None)
     algorithm = panel._algorithms[1]
-    algorithm._widgets = tuple(SimpleNamespace(value=value) for value in (0.08, "ideal", 0.3, False, 0.1))
+    algorithm._widgets = tuple(SimpleNamespace(value=value) for value in (0.08, "ideal", 0.3, False))
     _, settings = BasePlannerPlugin()._algorithm(panel.make_request(None))
-    assert settings == algorithm.settings() and settings.lead == 0.3 and not settings.arcs
+    assert settings == replace(algorithm.settings(), margin=0.07) and settings.lead == 0.3 and not settings.arcs
 
 
 @pytest.mark.parametrize("target, change", [(GOAL, ""), ((1.1, 2.0, 0.5), "target changed"),
@@ -178,3 +197,16 @@ def test_park_loads_the_robots_parked_pose(park):
     ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial=SERIAL, park_pose=park)]))
     panel._load_target(ctx, "Park")
     assert targets == ([park] if park else []) and said == [park is None]
+
+
+def test_the_preview_slider_follows_only_the_operator():
+    """Draw writes the Preview time slider every tick, and viser calls back for that too: only a drag scrubs."""
+    asked = {}
+
+    def defer_value(label, run, operator_only=False):
+        asked[label] = operator_only
+        return run
+
+    ctx = SimpleNamespace(defer_value=defer_value, defer=lambda _label, run, operator_only=False: run)
+    BasePlannerPanel()._add_path_controls(ctx, FakeGui(), "plan hint", "commit hint")
+    assert asked["scrub"] is True

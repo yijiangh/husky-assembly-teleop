@@ -5,8 +5,9 @@ assembly_steps' own planner panel base; the other planners use `shared/planner/`
 
 Plan states: none -> planning -> ready -> sent; a ready plan goes stale when the robot or target moves.
 
-* Subclasses implement `make_search`, `stale_reason`, `send_plan`, `show_target` and `show_path`,
-  and build their panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers.
+* Subclasses implement `make_search`, `stale_reason`, `send_plan` and `show_path`, build their own panel (its time
+  slider is `_slider`, its Exec button `_confirm.button`; its buttons call `_on_path`, `_scrub` and `_commit`), and
+  use `_add_ghosts` and the `_draw_*` helpers. A `_commit` of their own calls `_asks_second_press` before the send.
 ! The planning world is the subclass's, created on the worker thread; the base only closes it at teardown.
 """
 
@@ -19,7 +20,6 @@ from dataclasses import dataclass
 from html import escape
 from typing import TYPE_CHECKING, Awaitable, Callable, Iterable
 
-import viser
 from async_timeout import timeout
 
 from ...plugin_api.context import PluginContext
@@ -27,8 +27,9 @@ from ...plugin_api.plugin import HuskyPlugin
 from ...shared.planner.planner_panel import CommitConfirm
 from ...shared.planner.planner_search import PlanningWorld
 from ...shared.planner.timed_path import TimedPath
+from ...ui.assembly_tab import STEP_BAND
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
+from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, note
 from scaffolding_assembly_core.ids import robot_id
 
 if TYPE_CHECKING:
@@ -82,7 +83,7 @@ class PlannerPlugin(HuskyPlugin):
         """Start with no robot chosen, no target and no plan."""
         #: The robot being planned for, by serial.
         self.serial: str | None = None
-        #: Whether a target has been given yet; until then no target ghost is drawn.
+        #: Whether there is a step to plan for; until then Plan is refused.
         self._has_target = False
         #: The current plan, and the robot it is for.
         self.path: TimedPath | None = None
@@ -102,13 +103,12 @@ class PlannerPlugin(HuskyPlugin):
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=self.worker_name)
         #: The subclass's planning world. ! Worker thread only, from its first use on.
         self._world: PlanningWorld | None = None
-        #: When the operator last used this panel; ghosts show only while it counts (`_add_ghosts`).
+        #: When the operator last used this panel, for what the subclass shows only while it counts (its diagnosis).
         self._used: RecentUse | None = None
         #: Nothing to plan for (e.g. no robots configured): the panel says why, and the hooks do nothing.
         self.idle = False
-        #: Commit's second press while other robots are not measured, and the button's label for the message.
+        #: Exec's second press while other robots are not measured; the panel sets its `button`.
         self._confirm = CommitConfirm()
-        self._commit_label = "Commit"
 
     # --- --- --- --- --- FOR THE SUBCLASS TO SUPPLY --- --- --- --- ---
 
@@ -136,10 +136,6 @@ class PlannerPlugin(HuskyPlugin):
         """
         raise NotImplementedError
 
-    def show_target(self, ctx: PluginContext, ghost: RobotGhost) -> None:
-        """Pose the chosen robot's target ghost at the target."""
-        raise NotImplementedError
-
     def show_path(self, ctx: PluginContext, ghost: RobotGhost) -> None:
         """Pose the planned robot's path ghost at `self.path.sample(self._t)`."""
         raise NotImplementedError
@@ -149,37 +145,14 @@ class PlannerPlugin(HuskyPlugin):
 
     # --- --- --- --- --- SETUP HELPERS --- --- --- --- ---
 
-    def _add_path_controls(self, ctx: PluginContext, gui: viser.GuiApi, plan_hint: str, commit_hint: str,
-                           commit_label: str = "Commit") -> None:
-        """Add the "path" section: Plan/Play/Clear, the time slider and Commit, with their callbacks.
-
-        Args:
-            ctx: This plugin's context.
-            gui: GUI api, inside `ctx.view.ui()`.
-            plan_hint: Hover text of the Plan/Play/Clear buttons.
-            commit_hint: Hover text of Commit.
-            commit_label: The Commit button's label, e.g. "Exec".
-        """
-        gui.add_html(section("path", SECTION_CTRL))
-        plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
-        self._slider = gui.add_slider("t s", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
-                                      hint="Scrub through the planned path")
-        commit = self._confirm.button = gui.add_button(commit_label, color="blue", icon=viser.Icon.SEND,
-                                                       hint=f"{commit_hint} {CommitConfirm.HINT}")
-        self._commit_label = commit_label
-        plan.on_click(ctx.defer_value("path button", lambda label: self._on_path(ctx, label)))
-        self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value))))
-        commit.on_click(ctx.defer("commit", lambda: self._commit(ctx)))
-
     def _add_ghosts(self, ctx: PluginContext, robots: Iterable[RobotConfig]) -> None:
-        """Build a target ghost and a path ghost per robot, shown only while the panel is in use.
+        """Build a path ghost per robot, and start counting the panel's use (`_used`).
 
         ! Call in setup (loading meshes is too slow for a tick). Ghosts live under "ghosts/": keep subclass
           nodes elsewhere, since removing a node removes everything below it.
         """
         self._used = RecentUse(ctx.config.ghost_timeout)
         robots = list(robots)
-        self._target_ghosts = robot_ghosts(ctx, robots, "target")
         self._path_ghosts = robot_ghosts(ctx, robots, "path")
 
     def _set_up_idle(self, ctx: PluginContext, why: str) -> None:
@@ -192,7 +165,8 @@ class PlannerPlugin(HuskyPlugin):
             why: One line, e.g. "no robots configured".
         """
         self.idle = True
-        with ctx.view.ui() as gui:
+        # * Where the step's panel would be in the shared Assembly tab.
+        with ctx.view.ui(band=STEP_BAND) as gui:
             gui.add_html(block(note(escape(why))))
 
     def teardown(self, ctx: PluginContext) -> None:
@@ -265,12 +239,13 @@ class PlannerPlugin(HuskyPlugin):
             self._say(f"no plan: {result.reason}", failed=True)
             return
         self.path, self._path_serial, self.plan_state = result.path, search.serial, "ready"
-        self._t, self._playing = 0.0, False
+        # * At the end, where the motion arrives (the old monitor's trajectory view opened there); Play runs from 0.
+        self._t, self._playing = result.path.duration, False
         self._say(*search.accepted(result))
 
     def _scrub(self, t: float) -> None:
         """Show the path at time `t`."""
-        # ! Keep this check: draw writes the slider back, which would otherwise loop.
+        # * The same time again is not a use of the panel.
         if abs(t - self._t) > 1e-9:
             self._t = t
             self._used.touch()
@@ -281,15 +256,23 @@ class PlannerPlugin(HuskyPlugin):
         if self.plan_state != "ready":
             self._say(f"nothing to commit: the plan is {self.plan_state}", failed=True)
             return
-        acting = [robot_id(serial) for serial in (self._path_serial or self.serial,) if serial]
-        asked, _unknown = self._confirm.asks(ctx, acting, self._commit_label)
-        if asked:
-            self._say(asked, failed=True)
+        if self._asks_second_press(ctx):
             return
         sent, message = self.send_plan(ctx)
         if sent:
             self.plan_state = "sent"
         self._say(message, failed=not sent)
+
+    def _asks_second_press(self, ctx: PluginContext) -> bool:
+        """Whether Exec only asked: while other robots are not measured, the first press says to press it again.
+
+        ! Call it last before the send, after every other refusal, so the second press is never asked for in vain.
+        """
+        acting = [robot_id(serial) for serial in (self._path_serial or self.serial,) if serial]
+        asked, _unknown = self._confirm.asks(ctx, acting, "Exec")
+        if asked:
+            self._say(asked, failed=True)
+        return bool(asked)
 
     def _clear(self) -> None:
         """Forget the plan, and end a search in progress."""
@@ -337,12 +320,13 @@ class PlannerPlugin(HuskyPlugin):
         self._slider.value = round(self._t, 3)
 
     def _draw_ghosts(self, ctx: PluginContext) -> None:
-        """Show the target and path ghosts while the panel is in use; hide every other ghost."""
-        in_use = self._used.active
-        target = self.serial if in_use and self._has_target else None
-        planned = self._path_serial if in_use and self.path is not None else None
-        for serial, ghost in self._target_ghosts.items():
-            self.show_target(ctx, ghost) if serial == target else ghost.hide()
+        """Show the path ghost while there is a plan; hide every other.
+
+        - The selected movement's own robot, blue, is the process panel's drawing, which Live IK and a plan move
+          through `Carry`.
+        - No timeout: a plan is no click, and the operator looks at it for minutes.
+        """
+        planned = self._path_serial if self.path is not None else None
         for serial, ghost in self._path_ghosts.items():
             self.show_path(ctx, ghost) if serial == planned else ghost.hide()
 
@@ -350,9 +334,10 @@ class PlannerPlugin(HuskyPlugin):
         """The plan state as a chip."""
         return chip(*_STATE_CHIPS[self.plan_state])
 
-    def _message_html(self) -> str:
-        """The last message, one line, red if it was a failure; the full text on hover."""
-        return (f'<div title="{escape(self._message, quote=True)}" '
+    def _message_html(self, more: str = "") -> str:
+        """The last message, one line, red if it was a failure, `more` after it; the full text on hover."""
+        message = f"{self._message} {more}" if more else self._message
+        return (f'<div title="{escape(message, quote=True)}" '
                 f'style="font-size:11px;color:{FAIL if self._message_failed else NONE};'
                 f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
-                f'{escape(self._message) or "&nbsp;"}</div>')
+                f'{escape(message) or "&nbsp;"}</div>')

@@ -6,7 +6,7 @@ Each process movement as the operator knows it: its old monitor name, flowchart 
   (R_M0_tool_untighten_joint to R_M3_free_home). Its legend gives the kinds and their colours.
 ! A movement is matched by its routine (its parts), its action type and the drives the monitor really sends
   (`mating_drives`), never by its id. A movement the old monitor did not have (a support robot leaving, a bar placed
-  by hand) gets no old name.
+  by hand, the transfer workaround's transit) gets no old name.
 """
 
 from __future__ import annotations
@@ -59,7 +59,6 @@ OLD_NAMES = {
     ("bar_jointing", Routine.FREE_TO_LOAD): "J_M0_free_to_load",
     ("bar_jointing", Routine.TOOL_ONLY): "J_M2_tool_grasp_bar",
     ("bar_jointing", Routine.TRANSFER_HELD): "J_M3_CDFM_transfer_to_approach",
-    ("bar_jointing", Routine.TRANSFER_FREE): "J_M3_CDFM_transfer_to_approach",
     ("bar_release", Routine.TOOL_ONLY): "R_M0_tool_ungrasp_bar",
     ("bar_release", Routine.RETREAT_LINEAR): "R_M1_LM_retreat",
     ("bar_release", Routine.FREE_HOME): "R_M2_free_home",
@@ -114,6 +113,9 @@ NEW_TEXTS = {
                            "old monitor).",
     Routine.OPERATOR: "An operator step, confirmed on the monitor: {label} (Manual; not in the old monitor).",
     Routine.BASE_ONLY: "{robot}'s base drives (no movement planner drives a base yet).",
+    Routine.TRANSFER_FREE: "{robot}'s two arms travel with empty tools from wherever they are to the insert start, "
+                           "where the operator places the bar (FM; the transfer workaround, in place of J_M0 and "
+                           "J_M3).",
 }
 #: A bar_placing action's one movement.
 PLACING_TEXT = "The operator places {bar} by hand; no robot acts (Manual; not in the old monitor)."
@@ -124,8 +126,9 @@ class MovementLabel:
     """A movement as the operator knows it.
 
     Attributes:
-        code: Short, for a row of chips: the old code ("J_M3", "J_M4+5"), or the action letter and the id's ending
-            ("HR_leave") for a movement the old monitor did not have.
+        code: Short, for the process panel's movement buttons: the old code ("J_M3", "J_M4+5"), or the action
+            letter and the id's ending
+            ("HR_leave") for a movement the old monitor did not have; "J_transit" for the workaround's transit.
         old_name: The old monitor's name, e.g. "J_M3_CDFM_transfer_to_approach"; "" if it had none.
         kinds: The flowchart's kinds, the arm part first; a tool part that runs through it comes second.
         text: One sentence on what the movement does.
@@ -163,13 +166,15 @@ def kinds_of(process: Process, movement: Movement) -> tuple[Kind, ...]:
     return (arm, TM_THROUGH) if tools else (arm,)
 
 
-def label_movement(process: Process, action: Action, movement: Movement) -> MovementLabel:
+def label_movement(process: Process, action: Action, movement: Movement,
+                   transfer_as_free: bool = False) -> MovementLabel:
     """A movement's old name, flowchart kinds and description.
 
     Args:
         process: The process, for the robot's name and the mates.
         action: The action the movement belongs to.
         movement: The movement.
+        transfer_as_free: The transfer workaround: a coupled free movement is the transit ("J_transit", FM).
 
     Returns:
         MovementLabel: The label; a movement whose parts match no routine gets its own id and Rhino's label.
@@ -181,17 +186,20 @@ def label_movement(process: Process, action: Action, movement: Movement) -> Move
     robot = process.robots[action.robot].name.capitalize() if action.robot in process.robots else "the robot"
     words = {"robot": robot, "bar": action.bar.split("/")[-1], "line": _line(movement),
              "label": movement.label or movement.id, "screws": _screws(process, movement)}
-    routine = routine_or_none(action, movement)
+    routine = routine_or_none(action, movement, transfer_as_free)
+    transit = routine is Routine.TRANSFER_FREE
     old_name = _old_name(process, action, movement, routine) if routine is not None else ""
     if old_name:
         code = "J_M4+5" if old_name == INSERT_TIGHTEN else "_".join(old_name.split("_")[:2])
         text = TEXTS[old_name]
     else:
         prefix = PREFIXES.get(action.type, action.type)
-        code = f"{prefix}_{movement.id.removeprefix(action.id + '_')}"
+        code = f"{prefix}_{'transit' if transit else movement.id.removeprefix(action.id + '_')}"
         text = PLACING_TEXT if action.type == "bar_placing" else NEW_TEXTS.get(routine, "{label}")
     sentence = text.format(**words)
-    return MovementLabel(code, old_name, kinds_of(process, movement), sentence[:1].upper() + sentence[1:])
+    # * The transit holds no bar: a plain free move, though its parts are the coupled transfer's.
+    kinds = (FM,) if transit else kinds_of(process, movement)
+    return MovementLabel(code, old_name, kinds, sentence[:1].upper() + sentence[1:])
 
 
 def _old_name(process: Process, action: Action, movement: Movement, routine: Routine) -> str:

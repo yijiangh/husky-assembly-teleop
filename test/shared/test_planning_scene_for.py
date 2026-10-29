@@ -8,8 +8,9 @@ import numpy as np
 import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, movement, purged_process, robot_config, step
 
-from husky_assembly_teleop.shared.assembly_planning.scene_for import scene_for
+from husky_assembly_teleop.shared.assembly_planning.scene_for import ground_mated_halves, scene_for
 from husky_assembly_teleop.shared.process_scene.scene_bodies import process_obstacles, scene_bodies
+from husky_assembly_teleop.world.lab import floor_body
 from scaffolding_assembly_core.geometry import Pose, box_geometry, compose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.kinematics import link_pose
@@ -224,6 +225,23 @@ def test_end_contacts_let_the_gripper_touch_its_bar(purged):
     halves = purged.process.halves_of("bars/B21")
     assert "joints/J21-22_mocap" in halves
     assert not any(gripper in bodies[f"process/{half}"].touches for half in halves)
+
+
+def test_ground_mated_halves_may_touch_the_lab_floor(purged):
+    """B20's ground feet may touch the obstacles plugin's floor, both ways; a joint half between bars may not.
+
+    The feet reach a little below z = 0 at their design pose, so without this the floor refuses every ground bar's goal.
+    """
+    floor = floor_body("obstacles", None, ())
+    snapshot = _snapshot(_measured(purged, "B20_J_transfer", CINDY, "robots/cindy"))
+    snapshot.bodies[floor.id], snapshot.world_poses[floor.id] = floor, floor.placement
+    bodies = scene_for(purged, step(purged, "B20_J_transfer"), snapshot, (robot_config(CINDY),)).scene.bodies
+    feet = [f"process/{half}" for half in ground_mated_halves(purged.process) if half.startswith("joints/G20-")]
+    assert feet == ["process/joints/G20-T20-0_ground", "process/joints/G20-T20-1_ground"]
+    assert all(floor.id in bodies[foot].touches for foot in feet)
+    assert all(foot in bodies[floor.id].touches for foot in feet)
+    assert floor.id not in bodies["process/joints/J20-21_mocap"].touches
+    assert floor.id not in snapshot.bodies[floor.id].touches  # * the snapshot's own floor is untouched
 
 
 def test_only_obstacles_come_from_the_snapshot(purged):

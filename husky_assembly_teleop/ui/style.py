@@ -18,7 +18,7 @@ from html import escape
 from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
 from ..world.checks import INFO as INFO_LEVEL
 
-#: The ring that marks the current chip of a row (`swatch_chip`); a colour no swatch fill uses.
+#: The ring that marks the selected one of a row (the process panel's movement buttons); a colour no swatch fill uses.
 RING = "#212529"
 
 # Colours: chips put white text on these, readable in light and dark theme.
@@ -41,8 +41,7 @@ def chip(text: str, color: str, title: str = "") -> str:
             f'margin:0 4px 2px 0;font-size:11px;font-weight:600">{text}</span>')
 
 
-def swatch_chip(text: str, fill: str, border: str, title: str = "", fill_to: str = "", dashed: bool = False,
-                current: bool = False) -> str:
+def swatch_chip(text: str, fill: str, border: str, title: str = "", fill_to: str = "", dashed: bool = False) -> str:
     """A chip in a diagram's own colours: dark text on a light fill, with a border.
 
     Args:
@@ -52,13 +51,10 @@ def swatch_chip(text: str, fill: str, border: str, title: str = "", fill_to: str
         title: Hover text.
         fill_to: A second background colour the fill fades into, left to right; "" for a plain fill.
         dashed: Dash the border.
-        current: Mark it as the current one of a row: a dark ring inside the border, which takes no room and is
-            never cut off by its row, so nothing beside it moves when the mark moves.
     """
     background = f"linear-gradient(90deg,{fill},{fill_to})" if fill_to else fill
-    ring = f"box-shadow:inset 0 0 0 2px {RING};" if current else ""
     return (f'<span title="{escape(title, quote=True)}" style="display:inline-block;white-space:nowrap;'
-            f'background:{background};color:#212529;border:1px {"dashed" if dashed else "solid"} {border};{ring}'
+            f'background:{background};color:#212529;border:1px {"dashed" if dashed else "solid"} {border};'
             f'border-radius:4px;padding:0 5px;margin:0 4px 2px 0;font-size:11px;font-weight:600">{text}</span>')
 
 

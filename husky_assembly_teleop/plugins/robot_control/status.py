@@ -128,6 +128,9 @@ def base_status(base: BaseInterface, now: float, refused: str = "") -> str:
     """Status HTML for a base: chips with `refused` last, then its pose (placeholders before the first fix) and wifi."""
     state = base.state
     chips = _controller_chip(base.controllers) + check_chip(mocap_check("mocap", base.mocap_id, state, now)) + refused
+    if np.any(base.mocap_offset):
+        chips += chip("offset " + " ".join(f"{value:.3f}" for value in base.mocap_offset) + " m", BUSY,
+                      title="The operator's shift of this base's mocap pose, in the world; Reset in Mocap offset.")
     yaw = None if state.orientation is None else Rotation.from_quat(state.orientation).as_euler(
         "xyz", degrees=True)[2:]
     stale = not state.tracked or now - state.last_fix_time >= STALE_AFTER

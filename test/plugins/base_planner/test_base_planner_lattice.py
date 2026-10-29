@@ -245,7 +245,7 @@ def test_debug_records_the_search(world, robots, alice):  # noqa: F811
     for name in ("cost map: no heading fits", "cost map's way", "portals", "path as followed, per xICR"):
         assert debug.layers[name].segments or debug.layers[name].points, name
     assert any(text.startswith("search:") for text in debug.notes)
-    assert any("Room (margin 5 cm)" in text for text in debug.notes)
+    assert any(f"Room (margin {Settings().margin * 100:.0f} cm)" in text for text in debug.notes)
 
 
 @pytest.mark.slow

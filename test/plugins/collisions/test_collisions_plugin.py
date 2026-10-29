@@ -61,7 +61,7 @@ def make_ctx(server: viser.ViserServer) -> SimpleNamespace:
     shown = []
     view = SimpleNamespace(ui=tab, scene=server.scene, scene_root=ROOT, show_collision=shown.append, shown=shown)
     return SimpleNamespace(view=view, defer=defer, defer_value=defer_value, spawn=spawn, run_in_thread=run_in_thread,
-                           clearance_trips=())
+                           clearance_trips=(), now=lambda: 0.0)
 
 
 def hit(depth: float = -0.012, rack: Geometry = box_geometry((0.2, 0.2, 0.2))) -> CollisionHit:
@@ -93,6 +93,29 @@ def test_ticked_hits_draw_and_unticked_ones_go(server):
     plugin._sources["calibration"].list._boxes["take 1"].value = False
     plugin.draw(plugin._ctx)
     assert plugin._drawn == {} and nodes(server, root) == []
+
+
+def test_a_drawing_goes_after_shown_for_its_hit_still_listed(server):
+    """A ticked hit is drawn for SHOWN_FOR s, then unticked: its drawing goes, the hit stays; ticked again, it draws."""
+    clock = [100.0]
+    ctx = make_ctx(server)
+    ctx.now = lambda: clock[0]
+    plugin = CollisionsPlugin()
+    plugin.setup(ctx)
+    plugin.replace("calibration", {"take 1": hit()}, shown=("take 1",))
+    plugin.draw(ctx)
+    root = plugin._drawn["calibration", "take 1"].root.name
+    clock[0] += collisions.SHOWN_FOR - 1.0
+    plugin.draw(ctx)
+    assert ("calibration", "take 1") in plugin._drawn
+    clock[0] += 2.0
+    plugin.draw(ctx)
+    listed = plugin._sources["calibration"]
+    assert plugin._drawn == {} and nodes(server, root) == []
+    assert "take 1" in listed.hits and not listed.list.is_selected("take 1")
+    listed.list._boxes["take 1"].value = True
+    plugin.draw(ctx)
+    assert ("calibration", "take 1") in plugin._drawn
 
 
 def test_collision_shapes_switch_the_whole_view_and_teardown_switches_back(server):

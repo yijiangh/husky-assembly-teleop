@@ -36,7 +36,7 @@ from ..path import (MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE, BasePa
                     timed_path)
 from ..world import CLEARANCE_LIMIT, CLEARANCE_STEP, COLLISION_MARGIN, FLOOR_BOTTOM, PlanningWorld
 from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, Algorithm, Debug, add_follower_settings,
-                   add_margin_setting, follower_model, yaw_step)
+                   follower_model, yaw_step)
 
 #: Search grid: the first pose to reach a cell and heading bin keeps it. Cell size, metres (also of the cost map's fine
 #: maps), and heading bin, radians.
@@ -182,14 +182,13 @@ class Lattice(Algorithm):
         self._widgets = None
 
     def add_settings(self, gui) -> None:
-        """Add the xICR spread, follower model, lead, turn weight, margin and curves."""
+        """Add the xICR spread, follower model, lead, turn weight and curves; the margin is the panel's."""
         self._widgets = (
             *add_follower_settings(gui),
             gui.add_slider("Lead m", min=0.0, max=1.5, step=0.05, initial_value=LEAD,
                            hint="Straight drive onto the target; in a narrow place, this much more than its length"),
             gui.add_slider("Turn cost m/rad", min=0.0, max=2.0, step=0.1, initial_value=TURN_WEIGHT,
                            hint="Metres of driving one radian of turning on the spot is worth"),
-            add_margin_setting(gui),
             gui.add_checkbox("Curves", initial_value=True,
                              hint="Drive curves where they fit; off: turn on the spot only"))
 
@@ -197,9 +196,8 @@ class Lattice(Algorithm):
         """The widgets' values, or the defaults."""
         if self._widgets is None:
             return Settings()
-        spread, model, lead, turn_weight, margin, curves = (widget.value for widget in self._widgets)
-        return Settings(float(spread), follower_model(model), float(lead), float(turn_weight), float(margin),
-                        bool(curves))
+        spread, model, lead, turn_weight, curves = (widget.value for widget in self._widgets)
+        return Settings(float(spread), follower_model(model), float(lead), float(turn_weight), curves=bool(curves))
 
     def plan(self, world, own, start, goal, abort, settings, debug) -> PlanResult[BasePath]:
         """See `plan`."""

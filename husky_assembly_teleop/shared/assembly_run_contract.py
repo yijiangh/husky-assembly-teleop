@@ -3,7 +3,7 @@ What the assembly_run plugin offers other plugins (`AssemblyRunContract`, `RunVi
 
 A robot is live while it is in the scene with its base tracked and every joint measured, both fresh (`is_live`). A mark
 records every live robot where it is; a robot not live at its own action's mark gets the export's end, once the
-operator confirms (`exported_end`).
+operator clicks Mark done a second time (`exported_end`).
 
 Pure: any thread.
 """
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from scaffolding_assembly_core.process.plan_check import end_state
 from scaffolding_assembly_core.robot import RobotObject
@@ -20,10 +20,6 @@ from scaffolding_assembly_core.robot import RobotObject
 from .assembly_planning.process_steps import LoadedProcess
 from .runs.runs import (ASSUMED, DONE, LIVE, LIVE_BASE_AGE, LIVE_JOINTS_AGE, ActionRecord, Progress, RobotRecord,
                         RunSettings)
-
-#: The side panel tab the assembly's panels share: `tab_path = (ASSEMBLY_TAB, label)` (assembly_run, assembly_steps,
-#: movement_exec).
-ASSEMBLY_TAB = "Assembly"
 
 
 @dataclass(frozen=True)
@@ -68,13 +64,13 @@ class AssemblyRunContract(Protocol):
         """Make an action (at a movement, else its first step) current and select it in the process plugin."""
 
     def request_mark_done(self, action_id: str | None = None) -> None:
-        """Mark an action (the current one if None) done; asks to confirm when its robot is not live."""
+        """Mark an action (the current one if None) done; its robot not live, only on a second request."""
 
     def request_reopen(self, action_id: str | None = None) -> None:
         """Put a done action (the current one if None) back to pending, and make it current."""
 
     def request_new_run(self) -> None:
-        """Start a new run after the operator confirms; the old one is kept."""
+        """Start a new run on a second request; the old one is kept."""
 
     def request_continue(self, run_name: str | None = None) -> None:
         """Continue an offered run: the one used last if None; one made on another export goes on in a new run."""
@@ -83,8 +79,14 @@ class AssemblyRunContract(Protocol):
         """Change run settings (`RunSettings` fields); saved with the run."""
 
     def request_record(self, event: str, *, action: str | None = None, movement: str | None = None,
-                       data: Mapping[str, Any] | None = None, file: Mapping[str, Any] | None = None) -> None:
-        """Record an event, with `data` as its fields; `file` is written as a movement record the event names."""
+                       data: Mapping[str, Any] | None = None, file: Mapping[str, Any] | None = None,
+                       kind: str = "movements",
+                       figure: Callable[[Mapping[str, Any], Path], None] | None = None) -> None:
+        """Record an event, with `data` as its fields; `file` is written as a `kind` record the event names.
+
+        `figure(payload, png path)` draws the record's plot beside it; a plot that fails is noted in the event's data
+        as `figure_error`, the record kept.
+        """
 
 
 def is_live(robot: RobotObject, now: float) -> bool:

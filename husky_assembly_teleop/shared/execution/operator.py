@@ -68,7 +68,7 @@ class PromptBox:
             warn: Whether it is a warning.
 
         Returns:
-            Prompt: The prompt; hand it to `wait`.
+            Prompt: The prompt; hand it to `wait`, or to `poll` each tick.
         """
         self._count += 1
         self.current = Prompt(self._count, robot, text, warn, now)
@@ -111,6 +111,28 @@ class PromptBox:
             await ctx.wait_until(lambda: prompt.id in self._answers, description=f"an answer to {prompt.line!r}")
             return self._answers[prompt.id]
         finally:
-            self._answers.pop(prompt.id, None)
-            if self.current is prompt:
-                self.current = None
+            self.close(prompt)
+
+    def poll(self, prompt: Prompt) -> bool | None:
+        """The answer to `prompt` if one came, closing it then; None while it waits.
+
+        Args:
+            prompt: The prompt `ask` opened.
+
+        Returns:
+            bool | None: True if confirmed, False if cancelled, None if not answered yet.
+        """
+        answer = self._answers.get(prompt.id)
+        if answer is not None:
+            self.close(prompt)
+        return answer
+
+    def close(self, prompt: Prompt) -> None:
+        """Close `prompt`, answered or not; its answer is dropped and a newer prompt stays open.
+
+        Args:
+            prompt: The prompt `ask` opened.
+        """
+        self._answers.pop(prompt.id, None)
+        if self.current is prompt:
+            self.current = None

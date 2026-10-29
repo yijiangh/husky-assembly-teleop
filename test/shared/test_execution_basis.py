@@ -14,7 +14,6 @@ from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, from_outs
 from husky_assembly_teleop.shared.execution.basis import basis_of, stale_reason
 from husky_assembly_teleop.shared.execution.moving import moving_reason
 from husky_assembly_teleop.shared.execution.operator import PROMPT_ARM_S, PromptBox
-from husky_assembly_teleop.shared.runs.runs import RunSettings
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
@@ -37,10 +36,10 @@ def snapshot(cindy_joint: float = 0.0, cindy_x: float = 1.0, alice_x: float = -1
         ALICE: RobotObject(ALICE, model, Pose((alice_x, 0.0, 0.0)), {"ur_arm_elbow_joint": alice_joint})})
 
 
-def basis(settings: RunSettings = RunSettings(), obstacles_collide: bool = True):
+def basis(transfer_as_free: bool = True, obstacles_collide: bool = True):
     """The basis of a plan for B20_J's transfer (movement 3) made from `snapshot()`."""
     step = SimpleNamespace(action=SimpleNamespace(id="B20_J"), movement_index=3)
-    return basis_of(snapshot(), LOADED, step, "a200-0806", NAMES, {NAMES[0]: 0.0, NAMES[1]: 1.0}, settings,
+    return basis_of(snapshot(), LOADED, step, "a200-0806", NAMES, {NAMES[0]: 0.0, NAMES[1]: 1.0}, transfer_as_free,
                     STATUSES, False, 12.0, obstacles_collide=obstacles_collide)
 
 
@@ -166,6 +165,23 @@ def test_a_cancel_wins_over_a_confirm_not_yet_taken():
         return await box.wait(FakeContext(), prompt)
 
     assert asyncio.run(scenario()) is False
+
+
+def test_poll_gives_an_answer_without_waiting_and_close_drops_a_prompt():
+    """`poll`: None until answered, then the answer once, the prompt closed; `close` leaves a newer prompt open."""
+    box = PromptBox()
+    first = box.ask("cindy (a200-0806)", "Spiral complete without a stall", 10.0, warn=True)
+    assert box.poll(first) is None and box.current is first
+    assert box.answer(True, 10.0 + PROMPT_ARM_S) == ""
+    assert box.poll(first) is True and box.current is None and box.poll(first) is None
+    second = box.ask("cindy (a200-0806)", "again", 11.0)
+    box.answer(False, 11.0)
+    box.close(first)
+    assert box.current is second and box.poll(second) is False and box.current is None
+    third = box.ask("cindy (a200-0806)", "once more", 12.0)
+    box.answer(False, 12.0)
+    box.close(third)
+    assert box.current is None and box.poll(third) is None and box.answer(False, 12.0) == "nothing to answer"
 
 
 def test_robots_in_the_world_fake_are_arms():

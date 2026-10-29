@@ -1,5 +1,5 @@
 """
-Check goal: a step's goal solved by IK at the live base, kept for the target ghost and the step's next plan.
+Live IK: a step's goal solved by IK at the live base, kept for the process panel's drawing and the step's next plan.
 
 A step is keyed (loaded process, action, primary movement index, ...); the process compares by identity (`same_step`).
 
@@ -85,7 +85,7 @@ class StepGoal:
             async with timeout(GOAL_TIMEOUT):
                 check = await planner.request_ik(request)
         except asyncio.TimeoutError:
-            ctx.log_warn(f"Check goal: no answer within {GOAL_TIMEOUT:.0f} s")
+            ctx.log_warn(f"Live IK: no answer within {GOAL_TIMEOUT:.0f} s")
             return None
         self._check, self._step = check, step
         (ctx.log_info if check.ok else ctx.log_warn)(goal_line(check))

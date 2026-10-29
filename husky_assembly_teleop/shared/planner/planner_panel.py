@@ -22,7 +22,7 @@ from ...config import find_robot_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
-from ...ui.phone import columns_css
+from ...ui.phone import button_group_color_css, columns_css, group_buttons
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
 from ...world.stand_ins import unknown_parts, unknown_robots
 from scaffolding_assembly_core.ids import robot_id
@@ -36,8 +36,10 @@ if TYPE_CHECKING:
 
 #: Time slider resolution, seconds.
 SLIDER_STEP = 0.05
-#: The side panel tab every planner panel's tab goes in: `tab_path = (PLAN_TAB, label)`.
-PLAN_TAB = "Plan"
+#: The Path buttons' colour: Mantine's teal for outlines, as viser's teal buttons.
+PATH_BUTTONS_COLOR = "var(--mantine-color-teal-outline)"
+#: Plan itself, filled in Mantine's teal as viser's filled teal buttons: the one button of the panel that stands out.
+PLAN_BUTTON_FILL, PLAN_BUTTON_HOVER = "var(--mantine-color-teal-filled)", "var(--mantine-color-teal-filled-hover)"
 #: Seconds a Commit waits for its second press while other robots are not measured (`CommitConfirm`).
 COMMIT_CONFIRM_SECONDS = 2.0
 #: Lays out the Run folder as Commit and Cancel side by side, for an html widget outside that folder.
@@ -59,6 +61,8 @@ class PlannerPanel(HuskyPlugin):
 
     #: The planner plugin this panel drives. ! Also list it in `requires`.
     planner = ""
+    #: The target ghost's kind, a key of `ui.ghost.KIND_COLORS`: blue "target"; a subclass may pick another colour.
+    target_kind = "target"
 
     def __init__(self):
         """Start with no robot chosen and no target."""
@@ -119,8 +123,15 @@ class PlannerPanel(HuskyPlugin):
         """
         gui.add_html(section("path", SECTION_CTRL))
         plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
-        self._slider = gui.add_slider("t s", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
-                                      hint="Scrub through the planned path")
+        # * Teal, as Plan in the Assembly tab (computes without moving), and Plan filled, so it never passes for Load's
+        #   Step (blue outline) right above it.
+        uuid = plan._impl.uuid
+        gui.add_html(f"<style>{button_group_color_css(uuid, PATH_BUTTONS_COLOR)}"
+                     f"{group_buttons(uuid, 0)} {{ background: {PLAN_BUTTON_FILL} !important; color: white !important; "
+                     f"border-color: {PLAN_BUTTON_FILL} !important; }}"
+                     f"{group_buttons(uuid, 0)}:hover {{ background: {PLAN_BUTTON_HOVER} !important; }}</style>")
+        self._slider = gui.add_slider("Preview time", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
+                                      hint="Scrub through the planned path: seconds from its start")
         # * Cancel beside Commit: a folder of its own, laid out in two columns (found by Commit's icon).
         gui.add_html(COMMIT_STYLE)
         with gui.add_folder("Run"):
@@ -129,7 +140,9 @@ class PlannerPanel(HuskyPlugin):
             cancel = gui.add_button("Cancel", color="red", icon=viser.Icon.PLAYER_STOP,
                                     hint="Stop the motion Commit started: the planner stops the robot")
         plan.on_click(ctx.defer_value("path button", lambda label: self._on_path(ctx, label)))
-        self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value))))
+        # ! Operator drags only: draw writes the slider every tick, and viser calls back for that too, late, which
+        #   would set the preview back.
+        self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value)), operator_only=True))
         commit.on_click(ctx.defer("commit", lambda: self._commit(ctx)))
         cancel.on_click(ctx.defer("cancel commit", lambda: self._cancel_commit()))
 
@@ -141,7 +154,7 @@ class PlannerPanel(HuskyPlugin):
         """
         self._used = RecentUse(ctx.config.ghost_timeout)
         robots = list(robots)
-        self._target_ghosts = robot_ghosts(ctx, robots, "target")
+        self._target_ghosts = robot_ghosts(ctx, robots, self.target_kind)
         self._path_ghosts = robot_ghosts(ctx, robots, "path")
 
     def _set_up_idle(self, ctx: PluginContext, why: str) -> None:
@@ -186,7 +199,7 @@ class PlannerPanel(HuskyPlugin):
 
     def _scrub(self, t: float) -> None:
         """Show the path at time `t`."""
-        # ! Keep this check: draw writes the slider back, which would otherwise loop.
+        # * The same time again is not a use of the panel.
         if abs(t - self._t) > 1e-9:
             self._t = t
             self._used.touch()

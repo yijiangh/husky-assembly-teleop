@@ -1,11 +1,11 @@
 #!/bin/bash
 # Fake lab: the tmux session "fake_lab" that you and Claude share, then attach to it.
 #
-# One window "lab" with four panes:
-# - top: the three simulated robots and the fake Motive (sim.sh), started at once;
-# - middle: the monitor (monitor.sh), typed in but not started. Press Enter once the robots are up (~20 s).
-# - bottom left, small: the Zenoh router that every node meets through (router.sh), started first;
-# - bottom right, small: the mocap relay (relay.sh), started next.
+# One window "lab" with four panes, each named in its top border:
+# - "sim", top: the three simulated robots and the fake Motive (sim.sh), started at once;
+# - "monitor", middle: the monitor (monitor.sh), typed in but not started. Press Enter once the robots are up (~20 s).
+# - "router", bottom left, small: the Zenoh router that every node meets through (router.sh), started first;
+# - "relay", bottom right, small: the mocap relay (relay.sh), started next.
 #
 # Claude reads the panes (tmux capture-pane) and never types into them unless you ask. Detach with Ctrl-b d; the
 # session keeps running. Running this again only re-attaches. Stop everything with: tmux kill-session -t fake_lab
@@ -21,9 +21,19 @@ done
 if ! tmux has-session -t "$session" 2>/dev/null; then
     tmux new-session -d -s "$session" -n lab -x 220 -y 60
     tmux set-option -t "$session" history-limit 50000
+    # * A pane split off later gets them too, so `source env.sh` there finds this session's domain.
+    for name in ${!FAKE_LAB_*}; do
+        tmux set-environment -t "$session" "$name" "${!name}"
+    done
     tmux split-window -v -t "$session:lab"
     tmux split-window -v -l 5 -t "$session:lab.1"
     tmux split-window -h -t "$session:lab.2"
+    # * Each pane's name in its border, as a pane option: a shell's prompt would overwrite a pane title.
+    tmux set-option -t "$session" pane-border-status top
+    tmux set-option -t "$session" pane-border-format " #{pane_index} #{@name} "
+    for pane in 0:sim 1:monitor 2:router 3:relay; do
+        tmux set-option -p -t "$session:lab.${pane%%:*}" @name "${pane#*:}"
+    done
     tmux send-keys -t "$session:lab.2" "$settings$here/router.sh" Enter
     tmux send-keys -t "$session:lab.3" "$settings$here/relay.sh" Enter
     tmux send-keys -t "$session:lab.0" "$settings$here/sim.sh" Enter

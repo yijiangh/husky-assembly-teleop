@@ -10,7 +10,8 @@ robot as checked, faint. "As checked" draws meshes as the check tested them.
 ? viser has no order-independent transparency: see-through shapes of different colours pop in front of each other as
   the view turns. So only one strong colour is see-through (cyan), drawn without depth writes; red is solid.
 
-! Never moves the camera; a drawing stays until it is unticked, replaced or cleared.
+! Never moves the camera. A drawing stays until it is unticked, replaced or cleared, SHOWN_FOR s at most: then its
+  hit is unticked, still listed.
 """
 
 from __future__ import annotations
@@ -44,6 +45,8 @@ CONTACT_COLOR = (255, 200, 0)          # the contact's two points and the line b
 CONTACT_RADIUS = 0.006                 # m
 #: The Focus choice that shows no robots.
 NO_FOCUS = "none"
+#: Seconds a ticked hit stays drawn; then it is unticked, still listed (tick it to see it again).
+SHOWN_FOR = 120.0
 #: The source clearance trips are listed under.
 CLEARANCE = "clearance"
 
@@ -65,6 +68,8 @@ class _Drawn:
     hit: CollisionHit
     as_checked: bool
     root: viser.SceneNodeHandle
+    #: When it was drawn, `ctx.now()`.
+    since: float
 
 
 @register
@@ -165,7 +170,11 @@ class CollisionsPlugin(HuskyPlugin):
 
     def draw(self, ctx: PluginContext) -> None:
         """Draw the ticked hits and the focused hit's robots; remove what is no longer ticked or out of date."""
-        as_checked = self._as_checked.value
+        as_checked, now = self._as_checked.value, ctx.now()
+        # * A hit drawn for SHOWN_FOR s is unticked: its drawing goes below, the hit stays listed.
+        for (source, label), drawn in self._drawn.items():
+            if now - drawn.since > SHOWN_FOR and source in self._sources:
+                self._sources[source].list.deselect(label)
         listed = {id(hit) for found in self._sources.values() for hit in found.hits.values()}
         self._ready = {key: ready for key, ready in self._ready.items() if key in listed}
         ticked = {(source, label): found.hits[label]
@@ -176,7 +185,7 @@ class CollisionsPlugin(HuskyPlugin):
                 del self._drawn[key]
         for key, hit in ticked.items():
             if key not in self._drawn and self._prepared(ctx, hit):
-                self._drawn[key] = _Drawn(hit, as_checked, self._draw_hit(ctx, hit, as_checked))
+                self._drawn[key] = _Drawn(hit, as_checked, self._draw_hit(ctx, hit, as_checked), now)
 
         choices = {f"{source}: {label}": hit for (source, label), hit in ticked.items()}
         options = (NO_FOCUS, *choices)
@@ -189,7 +198,7 @@ class CollisionsPlugin(HuskyPlugin):
             self._focused.root.remove()
             self._focused = None
         if focus is not None and self._focused is None and self._prepared(ctx, focus):
-            self._focused = _Drawn(focus, as_checked, self._draw_robots(ctx, focus, as_checked))
+            self._focused = _Drawn(focus, as_checked, self._draw_robots(ctx, focus, as_checked), now)
 
         for found in self._sources.values():
             found.list.sync()

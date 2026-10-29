@@ -6,20 +6,25 @@ The slow test asks the real service about B20's transfer on the purged process.
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from async_timeout import timeout
 from planning_fixtures import ALICE, BELLE, CINDY, DATA, design_scene, purged_process, robot_config, step
+from plugin_fakes import FakeScene
 from process_fixtures import build_process
 
 from husky_assembly_teleop.plugins.motion_planner import plugin as motion
-from husky_assembly_teleop.plugins.motion_planner.plugin import MotionPlannerPlugin
+from husky_assembly_teleop.plugins.motion_planner.plugin import MotionPlannerPlugin, describe, hits_of
 from husky_assembly_teleop.shared.assembly_planning.ik import ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import RouteResult
+from husky_assembly_teleop.shared.assembly_planning.search_tree import TreeView
+from husky_assembly_teleop.shared.assembly_planning.servo_route import ServoStep
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.motion_planner_contract import MotionPlanRequest
@@ -37,6 +42,7 @@ class Pool:
     """A mirror pool that fails to make a mirror, counting what it is asked."""
 
     serials = ()
+    tree = None
 
     def __init__(self):
         """Nothing asked yet."""
@@ -155,6 +161,7 @@ def test_cancel_answers_queued_requests_unrun(monkeypatch):
         await asyncio.get_running_loop().run_in_executor(None, started.wait, 5.0)
         assert plugin.running == "first"
         plugin._status, plugin._details = SimpleNamespace(content=""), SimpleNamespace(content="")
+        plugin._search, plugin._show_tree = SimpleNamespace(content=""), SimpleNamespace(value=True)
         plugin.draw(None)
         assert plugin._status.content.count('class="chip-line"') == 1 and "2 queued" in plugin._status.content
         plugin.request_cancel()
@@ -190,6 +197,35 @@ def test_a_callers_timeout_stops_the_search(monkeypatch):
     assert stopped == [True]
 
 
+def test_what_the_worker_prints_goes_to_the_tamp_log(monkeypatch, capfd):
+    """Python's and C's stdout on the worker reach `_log_tamp` line by line; fd 1 is as before once the work is done.
+
+    Outside pytest's capture, as in the monitor: `print` goes through fd 1 there.
+    """
+    def work(_pool, _request, _abort, _log):
+        print("[ssik] hello")
+        os.write(1, b"b3Printf\n")
+        return SOLVED
+
+    monkeypatch.setattr(motion, "run_plan", work)
+    lines = []
+
+    async def scenario():
+        plugin = planner()
+        plugin._log_tamp = lines.append
+        answer = await plugin.request_plan(request("plan"))
+        await idle(plugin)
+        plugin.teardown(None)
+        return answer
+
+    with capfd.disabled():
+        before = os.fstat(1)
+        answer = asyncio.run(scenario())
+        after = os.fstat(1)
+    assert answer is SOLVED and sorted(lines) == ["[ssik] hello", "b3Printf"]
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+
+
 def test_errors_come_back_as_failed_answers(tmp_path):
     """The real work, failing inside: every kind of request answers with the error, none raises."""
     process = write(build_process(tmp_path), tmp_path / "p")
@@ -209,6 +245,25 @@ def test_errors_come_back_as_failed_answers(tmp_path):
     plan, ik, collisions = asyncio.run(scenario())
     reason = "the planner raised RuntimeError('no mirror here')"
     assert plan.result.status == "failed" and (plan.result.reason, ik.reason, collisions.reason) == (reason,) * 3
+
+
+def test_describe_a_servo_step():
+    """A servo step's line: the route's line with each flange's correction in mm; nothing left; a failure fails."""
+    left, right = "robots/cindy/left_ur_arm_tool0", "robots/cindy/right_ur_arm_tool0"
+    moved = RouteResult(MovementResult("solved"), Routine.INSERT, planner="tamp.plan_constrained_dual_arm_linear",
+                        attempts=1, seconds=1.25, waypoints=4, hits=(SimpleNamespace(where="goal by IK"),))
+    step = ServoStep(moved, {left: 0.0103, right: 0.00981}, False)
+    assert describe(step) == ("servo insert solved by tamp.plan_constrained_dual_arm_linear: 4 waypoints, 1 tries, "
+                              "1.2 s; correction left_ur_arm_tool0 10.30 mm, right_ur_arm_tool0 9.81 mm", False)
+    nothing = ServoStep(RouteResult(MovementResult("not_planned", "nothing left to plan"), Routine.INSERT),
+                        {left: 0.0001, right: 0.00015}, True)
+    assert nothing.ok and describe(nothing) == ("servo: nothing left to plan (left_ur_arm_tool0 0.10 mm, "
+                                                "right_ur_arm_tool0 0.15 mm)", False)
+    failed = ServoStep(RouteResult(MovementResult("failed", "no IK for the servo target (ssik): out of reach"),
+                                   Routine.INSERT), {}, False)
+    assert not failed.ok and describe(failed) == ("servo insert failed: no IK for the servo target (ssik): out of "
+                                                  "reach", True)
+    assert list(hits_of("servo 1/8 B20_J_insert", step)) == ["servo 1/8 B20_J_insert: goal by IK"]
 
 
 def test_teardown_closes_the_pool_once():
@@ -245,3 +300,44 @@ def test_the_service_on_the_purged_process():
     assert plan.ok and plan.routine is Routine.TRANSFER_FREE and plan.planner == "tamp.plan_free_dual_arm"
     assert report.reason == "" and report.pairs == ()
     assert worlds == ("a200-0806",) and plugin._pool.serials == ()
+
+
+def test_a_free_searchs_trees_are_drawn_every_two_seconds_and_go_when_a_path_is_found(monkeypatch):
+    """Each tree's edges at both tool0s, the gap and its label; a newer iteration waits TREE_PERIOD; a path clears."""
+    plugin, scene, now = planner(), FakeScene(), [100.0]
+    monkeypatch.setattr(motion.time, "monotonic", lambda: now[0])
+    plugin._status, plugin._details = SimpleNamespace(content=""), SimpleNamespace(content="")
+    plugin._search, plugin._show_tree = SimpleNamespace(content=""), SimpleNamespace(value=True)
+    ctx = SimpleNamespace(view=SimpleNamespace(scene=scene, scene_root="/plugin"))
+
+    def view(nodes: int, found: bool = False) -> TreeView:
+        """The start, the goal, and `nodes` - 2 nodes grown from the start in a line; two arms, 0.5 m apart."""
+        configs = np.array([[0.1 * k, 0.0] for k in range(nodes - 1)] + [[2.0, 0.0]])[[0, -1, *range(1, nodes - 1)]]
+        points = np.stack([np.column_stack([configs[:, 0], np.full(nodes, side), np.zeros(nodes)])
+                           for side in (0.0, 0.5)], axis=1)
+        parents, trees = np.array([-1, -1, 0, *range(2, nodes - 1)]), np.array([0, 1] + [0] * (nodes - 2))
+        return TreeView("try 1/3", 1, 3, nodes, 50, configs, points, parents, trees, over=found, found=found)
+
+    plugin._running, plugin._tree.view = "plan B20_J_transfer", view(3)
+    plugin._tree._probes = [(np.zeros((2, 3)), False), (np.ones((2, 3)), True)]
+    plugin.draw(ctx)
+    checks, = scene.of_kind("point_cloud")
+    assert checks.args[0].shape == (4, 3) and checks.args[1].tolist() == [[*motion.CHECK_COLOR]] * 2 + [
+        [*motion.HIT_COLOR]] * 2, "each check at both tool0s, red where it collided"
+    edges, gap = scene.of_kind("line_segments")
+    assert edges.name == "/plugin/tree/0" and edges.args[0].shape == (2, 2, 3), "one edge, at each arm's tool0"
+    assert gap.name == "/plugin/tree/gap" and np.allclose(gap.args[0][:, 0, 0], 0.1)
+    assert scene.of_kind("label")[0].args == ("trees 1.90 rad apart",)
+    assert plugin.progress == "try 1/3 · run 1/3 · it 3/50 · gap 1.90 rad · 2+1 nodes · 2 checks"
+    assert "gap 1.90 rad" in plugin._search.content
+    plugin._tree.view, plugin._tree._probes = view(4), []
+    plugin.draw(ctx)
+    assert len(scene.nodes) == 4 and "it 3/50" in plugin.progress, "a newer iteration waits for TREE_PERIOD"
+    now[0] += motion.TREE_PERIOD
+    plugin.draw(ctx)
+    assert len(scene.nodes) == 7 and plugin.progress.endswith("it 4/50 · gap 1.80 rad · 3+1 nodes")
+    plugin._tree.view = view(4, found=True)
+    plugin.draw(ctx)
+    assert plugin._tree_nodes == plugin._check_nodes == [] and len(scene.nodes) == 7, "a found path clears at once"
+    plugin._running = ""
+    assert plugin.progress == ""

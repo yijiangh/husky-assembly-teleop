@@ -25,8 +25,9 @@ from ...config import RobotConfig
 from ...world.base_collision import BaseCollisionWorld, held_bodies
 from ...world.kinematics import stow_joints
 
-#: Keep at least this far from every other robot and body, metres.
-COLLISION_MARGIN = 0.05
+#: Keep at least this far from every other robot and body, metres: the panel's Margin slider starts here. A retreat
+#: often ends about 3–4 cm from the bar just built, which the old 5 cm counted as a collision.
+COLLISION_MARGIN = 0.02
 #: `clearance` measures up to CLEARANCE_LIMIT, to CLEARANCE_STEP, metres.
 CLEARANCE_LIMIT = 0.30
 CLEARANCE_STEP = 0.005

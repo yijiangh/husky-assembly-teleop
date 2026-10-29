@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import numpy as np
+
 from crl_husky_msgs.msg import BaseFollowerState
 from nav_msgs.msg import Odometry
 from robot_fakes import Node
@@ -28,6 +30,18 @@ def test_follower_report_is_stored_before_it_is_fired():
     (record, stored), = seen
     assert record is stored and record.state == "following"
     assert record.command.tolist() == [0.2, -0.1] and (record.update_time, record.stamp) == (100.0, 99.5)
+
+
+def test_a_mocap_offset_is_put_on_the_followers_points():
+    """The follower's reference and lookahead come in its own world: the offset is added so they match the pose."""
+    base = _base()
+    base.mocap_offset = np.array([0.1, 0.2, 0.0])
+    message = BaseFollowerState(controller="pure_pursuit", state=1, reference_x=1.0, reference_y=1.0,
+                                reference_yaw=0.5, lookahead_x=2.0, lookahead_y=2.0, cross_track_error=0.01)
+    base._on_follower(message)
+    report = base.state.follower
+    assert report.reference.tolist() == [1.1, 1.2, 0.5] and report.lookahead.tolist() == [2.1, 2.2]
+    assert report.cross_track_error == 0.01
 
 
 def test_odometry_is_stored_and_fired():

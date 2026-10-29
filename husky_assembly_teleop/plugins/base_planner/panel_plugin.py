@@ -27,19 +27,22 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.base_planner_contract import BasePlanRequest
 from ...shared.collisions_contract import CollisionsContract
-from ...shared.planner.planner_panel import PLAN_TAB, PlannerPanel, unknown_robots_chip
+from ...shared.planner.planner_panel import PlannerPanel, unknown_robots_chip
 from ...shared.planner.plan import Plan
 from ...ui.base_markers import Markers
 from ...ui.ghost import RobotGhost
+from ...ui.phone import group_buttons
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import (BUSY, OK, SECTION_TOOL, block, check_chip, chip, chip_line, section,
                          values)
+from ...ui.visualization import PLAN_TAB
 from ...robot_interface.base import live_report
 from ...world.follower import path_check
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from .algorithms import ALGORITHMS, Algorithm
+from .algorithms.base import add_margin_setting
 from .debug_view import DebugView
 from .planner_plugin import DEFAULT_EXPERIMENT, BasePlannerPlugin, differs, floor_pose
 from .recording import RECORDING_FOLDER
@@ -59,6 +62,8 @@ class BasePlannerPanel(PlannerPanel):
     tab_path = (PLAN_TAB, "Base")
     icon = viser.Icon.CAR
     requires = ("base_planner", "process", "collisions")
+    #: Orange, so the target never passes for the process panel's blue robot in the same view.
+    target_kind = "base_target"
 
     def __init__(self):
         """Start with no robot chosen and no target."""
@@ -98,6 +103,12 @@ class BasePlannerPanel(PlannerPanel):
                                         hint="Set the target to where the robot is now, to its parked pose, to its "
                                              "base pose in the step selected in the process plugin, or to the task's "
                                              "start or target")
+            # * Step in the target section's orange: the one pressed at every assembly step, among the plain ones.
+            gui.add_html(f"<style>{group_buttons(load._impl.uuid, 2)} {{ color: {SECTION_TOOL} !important; "
+                         f"border-color: {SECTION_TOOL} !important; }}</style>")
+            # * One margin for every algorithm, in plain sight: the first thing to lower when a start or target
+            #   near a bar counts as a collision.
+            self._margin = add_margin_setting(gui)
 
             self._add_path_controls(ctx, gui,
                                     plan_hint="Plan around the other robots from the robot's current pose to "
@@ -243,11 +254,12 @@ class BasePlannerPanel(PlannerPanel):
     # --- --- --- --- --- PLANNER PANEL --- --- --- --- ---
 
     def make_request(self, ctx: PluginContext) -> BasePlanRequest:
-        """The chosen robot, target, algorithm and its settings, and the task and recording inputs."""
+        """The chosen robot, target, algorithm and its settings (margin from the panel), task and recording inputs."""
         algorithm = next(algorithm for algorithm in self._algorithms if algorithm.label == self._algorithm.value)
         task = str(self._task.value)
+        settings = {**asdict(algorithm.settings()), "margin": float(self._margin.value)}
         return BasePlanRequest(self.serial, tuple(float(value) for value in self._target.pose), algorithm.label,
-                               tuple(asdict(algorithm.settings()).items()), debug=bool(self._debug_on.value),
+                               tuple(settings.items()), debug=bool(self._debug_on.value),
                                task=None if task == NO_TASK else task, record=bool(self._recording.value),
                                experiment=str(self._experiment.value))
 
@@ -256,8 +268,11 @@ class BasePlannerPanel(PlannerPanel):
         return "the target changed since planning" if differs(self._target.pose, plan.request.goal) else ""
 
     def show_target(self, ctx: PluginContext, ghost: RobotGhost) -> None:
-        """The robot at the target pose, arms as they are."""
-        self._show_at(ctx, ghost, self.serial, self._target.pose)
+        """The robot at the target pose, arms as they are; hidden once the robot stands there, so it never covers it."""
+        if differs(floor_pose(ctx, self.serial), self._target.pose):
+            self._show_at(ctx, ghost, self.serial, self._target.pose)
+        else:
+            ghost.hide()
 
     def show_path(self, ctx: PluginContext, ghost: RobotGhost, plan: Plan[BasePlanRequest]) -> None:
         """The robot on the path at the slider time, arms as they are."""

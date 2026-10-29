@@ -5,6 +5,11 @@ On a process load it continues the assembly run used last when it was made on ex
 operator chooses (`shared/runs/runs.py`); then the first pending action becomes current, and its first step is
 selected once the action's robot is live. Other plugins read and change it through `AssemblyRunContract`.
 
+Its part of the Assembly tab is Mark done and Reopen, the settings and the run. The run follows the process panel: a
+movement picked there becomes current, except while movement_exec has a robot's lease for a step; each action's mark
+shows in the panel's rows. New run, and Mark done with the action's robot not live, take a second click; it waits with
+no time limit, until any other request.
+
 - ! Nothing is written until the runs were read: an open that fails or is stopped is tried again.
 - ! Runs are written into the process folder (`runs/`), in order on a writer thread; the state here changes first.
 - ! EXPERIMENTAL: the run format and the requests may still change.
@@ -16,19 +21,25 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Mapping
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 import viser
 
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...shared.assembly_run_contract import ASSEMBLY_TAB, RunView, first_pending, is_live
+from ...shared.assembly_run_contract import RunView, first_pending, is_live
 from ...shared.assembly_planning.process_steps import LoadedProcess, loaded_process
+from ...shared.execution.spiral import spiral_fits
+from ...shared.movement_exec_contract import INSERT_PART, current_step, part_plan
+from ...shared.process_contract import MARK_ASSUMED, MARK_DONE, MARK_PENDING
 from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, RunError, RunSettings, continue_run,
                                  file_hashes, find_runs, made_after, record_event, reopen, save_progress, with_current)
+from ...ui.assembly_tab import ASSEMBLY_TAB
 from .panel import PanelStatus, RunPanel
-from .writes import NO_PROCESS, NOT_OPENED, OPEN, OPENING, RunWrites
+from .writes import (AGAIN_MARK, AGAIN_NEW_RUN, NO_PROCESS, NOT_OPENED, OPEN, OPENING, SETTING_TYPES,
+                     RunWrites)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -40,6 +51,8 @@ if TYPE_CHECKING:
 LIVE_WAIT = 15.0
 #: Seconds (ROS time) before reading the runs again after reading them failed.
 RETRY_AFTER = 5.0
+#: Seconds (ROS time) without another pick before a pick followed in the process panel is written.
+FOLLOW_SAVE_AFTER = 2.0
 
 
 def _scan(process: Process) -> tuple[tuple[str, dict], tuple[list[Run], list[tuple[str, str]]]]:
@@ -66,7 +79,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
     name = "assembly_run"
     requires = ("process",)
     experimental = True
-    tab_path = (ASSEMBLY_TAB, "Run")
+    tab_path = (ASSEMBLY_TAB,)
     icon = viser.Icon.CHECKLIST
 
     def __init__(self):
@@ -85,14 +98,24 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         #: The run being written; else the run used last, offered, and an older run made on these files, offered too
         #: (both the same run when a newer run folder can't be read).
         self._run: Run | None = None
+        #: Per robot serial, the mocap offset last recorded in the open run's events, and which run that was.
+        self._offsets: dict[str, tuple[float, ...]] = {}
+        self._offsets_run: Path | None = None
         self._offer: Run | None = None
         self._match: Run | None = None
         self._settings = RunSettings()
         #: (action id, movement index) the operator is at.
         self._current: tuple[str, int] | None = None
-        #: The question waiting for Confirm or Cancel, and the answer once given.
-        self._prompt = ""
-        self._answer: bool | None = None
+        #: The process panel's authored index the run last selected or followed, so a new pick there is noticed.
+        self._selected: int | None = None
+        #: Whether movement_exec had a robot's lease for a step at the last update, to notice the step ending.
+        self._step_ran = False
+        #: The click waiting for its second one (`again`): (AGAIN_NEW_RUN or "mark <action id>", ROS time it came).
+        self._again: tuple[str, float] | None = None
+        #: When the current followed from the process panel was last changed without writing it; None: written.
+        self._unsaved_at: float | None = None
+        #: The view's revision whose marks the process panel was last given.
+        self._marks_revision = -1
         #: One line of feedback, whether it is a failure, and the last write that failed.
         self._message, self._failed, self._save_error = "", False, ""
         #: How many settings requests were refused, so the panel puts its widgets back.
@@ -131,33 +154,40 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
 
     def request_set_current(self, action_id: str, movement_index: int | None = None) -> None:
         """Make an action current (at a movement it has, else its first step) and select it; never starts a run."""
+        self._again = None
         if self._refused("Select", self._unknown(action_id) or self._step_running(self._ctx)):
             return
         self._stop_auto()
         self._set_current(self._ctx, action_id, movement_index)
 
     def request_mark_done(self, action_id: str | None = None) -> None:
-        """Mark an action (the current one if None) done; asks to confirm when its robot is not live."""
+        """Mark an action (the current one if None) done; its robot not live, on a second click."""
         ctx = self._ctx
         action_id = action_id or self._current_action()
         if self._refused("Mark done", self._mark_refusal(ctx, action_id)):
+            self._again = None  # ! a refused click never waits for a second one
             return
         self._stop_auto()
         acting = self._acting(ctx, action_id)
         ends = self._live_ends(ctx)
+        key = f"{AGAIN_MARK} {action_id}"
         if acting is None or acting in ends:
+            self._again = None
             if self._run is not None:
                 self._apply_mark(ctx, action_id, ends, False)
             else:
                 self._spawn(ctx, f"mark {action_id} done", self._mark(ctx, action_id, ends, False))
-        else:
-            robot = self._loaded.process.robots[self._loaded.process.actions[action_id].robot].name
-            self._ask(f"{action_id} is {robot}'s; {robot} is not live: mark done with the export's end (assumed)?")
-            self._spawn(ctx, f"confirm marking {action_id}", self._confirm_mark(ctx, action_id, acting, robot))
+            return
+        robot = self._loaded.process.robots[self._loaded.process.actions[action_id].robot].name
+        if not self._clicked_again(ctx, key, f"{action_id}: {robot} is not live; click Mark done again to record "
+                                             f"the export's end (assumed)"):
+            return
+        self._spawn(ctx, f"mark {action_id} done", self._mark_assumed(ctx, action_id, acting, robot))
 
     def request_reopen(self, action_id: str | None = None) -> None:
         """Put a done action (the current one if None) back to pending, and make it current."""
         ctx = self._ctx
+        self._again = None
         action_id = action_id or self._current_action()
         if self._refused("Reopen", self._unknown(action_id) or self._busy() or self._no_run()
                          or self._step_running(ctx)):
@@ -175,14 +205,19 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         ctx.log_info(f"{action_id} reopened in run {run.info.name}")
 
     def request_new_run(self) -> None:
-        """Start a new run after the operator confirms; every action pending, the old run kept."""
-        if not self._refused("New run", self._busy() or self._step_running(self._ctx)):
-            self._stop_auto()
-            self._ask("Start a new run? Every action starts pending; the old run is kept.")
-            self._spawn(self._ctx, "new run", self._new_run(self._ctx))
+        """Start a new run on a second click; every action pending, the old run kept."""
+        if self._refused("New run", self._busy() or self._step_running(self._ctx)):
+            self._again = None  # ! a refused click never waits for a second one
+            return
+        if not self._clicked_again(self._ctx, AGAIN_NEW_RUN, "New run: click New run again to confirm; every action "
+                                                             "starts pending, the old run is kept"):
+            return
+        self._stop_auto()
+        self._spawn(self._ctx, "new run", self._new_run(self._ctx))
 
     def request_continue(self, run_name: str | None = None) -> None:
         """Continue an offered run: the one used last if None; one made on another export goes on in a new run."""
+        self._again = None
         offered = [run for run in (self._offer, self._match) if run is not None]
         target = self._offer if run_name is None else next((run for run in offered if run.info.name == run_name), None)
         missing = "" if target is not None else (f"no offered run is named {run_name!r}" if run_name
@@ -200,26 +235,32 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             self._settings_refused += 1
             self._refused("Settings", refusal)
             return
-        settings = replace(self._settings, **{name: float(value) if name == "insert_split_mm" else value
-                                              for name, value in changes.items()})
+        settings = replace(self._settings, **{name: SETTING_TYPES[name](value) for name, value in changes.items()})
         if settings == self._settings:
             return
+        self._again = None
         self._settings = settings
         self._changed()
         self._spawn(self._ctx, "save settings", self._save_settings(self._ctx, changes))
 
     def request_record(self, event: str, *, action: str | None = None, movement: str | None = None,
-                       data: Mapping[str, Any] | None = None, file: Mapping[str, Any] | None = None) -> None:
-        """Record an event, `data` under its "data" key; `file` is written as a movement record the event names."""
+                       data: Mapping[str, Any] | None = None, file: Mapping[str, Any] | None = None,
+                       kind: str = "movements",
+                       figure: Callable[[Mapping[str, Any], Path], None] | None = None) -> None:
+        """Record an event, `data` under its "data" key; `file` is written as a `kind` record the event names.
+
+        `figure(payload, png path)` draws the record's plot beside it; a plot that fails is noted in the event's data
+        as `figure_error`, the record kept.
+        """
         refusal = self._not_open() or (
             "a file needs its action and movement" if file is not None and None in (action, movement) else "")
         if self._refused(f"Record {event}", refusal):
             return
         if self._run is not None:
-            self._queue_record(self._ctx, event, action, movement, data, file)
+            self._queue_record(self._ctx, event, action, movement, data, file, kind, figure)
         else:
             self._spawn(self._ctx, f"record {event}", self._record_later(self._ctx, event, action, movement, data,
-                                                                         file))
+                                                                         file, kind, figure))
 
     # --- --- --- --- --- HOOKS --- --- --- --- ---
 
@@ -229,7 +270,11 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._panel = RunPanel(ctx, self)
 
     def update(self, ctx: PluginContext) -> None:
-        """Open the run of a newly loaded process; open it again if that failed; notice a step picked meanwhile."""
+        """Open the run of a newly loaded process; open it again if that failed; notice a step picked meanwhile.
+
+        It also follows a pick in the process panel (not one made while a step runs), writes it once the picking stops,
+        puts the panel back on the run's movement when a step ends, and gives the panel the actions' marks.
+        """
         process: ProcessContract = ctx.require("process")
         selection = process.selection
         source = selection.process if selection is not None else None
@@ -238,7 +283,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             loaded = loaded_process(source) if source is not None else None
             self._reset(loaded)
             if loaded is not None:
-                self._auto_from = selection.index
+                self._auto_from = self._selected = selection.index
                 self._open_now(ctx)
             return
         if source is None:
@@ -246,29 +291,79 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         if self._auto_from is not None and selection.index != self._auto_from:
             self._stop_auto()
             ctx.log_info("a step was picked in the process panel: the first pending action is not selected")
+        running = bool(self._step_running(ctx))
+        if self._step_ran and not running and self._current is not None:
+            # * The step ended: the panel goes back to the run's movement, whatever was picked during it. Read back,
+            #   as in `_set_current`, so this select is not taken for a pick.
+            process.request_select(self._loaded.index_of(*self._current))
+            selection = process.selection
+            self._selected = selection.index
+        self._step_ran = running
+        if selection.index != self._selected:
+            # * Follow a pick in the process panel. ! Never one made while a step runs, then or later, so the step being
+            #   run can't change: such a pick only shows that movement until the step ends.
+            self._selected = selection.index
+            if not running:
+                # A click waiting for its second one was for what was current before: it no longer waits.
+                step = self._loaded.steps[selection.index]
+                self._again = None
+                # ? progress.json once the picking stops, not at every step of a dragged slider.
+                self._save_current(ctx, (step.action.id, step.movement_index), write=False)
+                self._unsaved_at = ctx.now()
+        if self._unsaved_at is not None and ctx.now() - self._unsaved_at >= FOLLOW_SAVE_AFTER:
+            self._unsaved_at = None
+            if self._run is not None:
+                self._write(ctx, "save the progress", save_progress, self._run)
+        self._record_offsets(ctx)
         if self._state == NOT_OPENED and ctx.now() >= self._retry_at:
             self._open_now(ctx)
+        view = self.view
+        if view.revision != self._marks_revision:
+            # * Here, not in draw: draw is skipped while the panels are frozen.
+            self._marks_revision = view.revision
+            process.request_marks({action: MARK_ASSUMED if action in view.assumed
+                                   else MARK_DONE if status == DONE else MARK_PENDING
+                                   for action, status in view.statuses.items()})
+
+    def _record_offsets(self, ctx: PluginContext) -> None:
+        """Note in the open run's events a base's mocap offset when it changes, or is on when the run opens."""
+        if self._run is None:
+            return
+        if self._run.folder != self._offsets_run:
+            self._offsets, self._offsets_run = {}, self._run.folder
+        for serial, robot in ctx.world.robots.items():
+            offset = getattr(robot.base, "mocap_offset", None)
+            if offset is None:
+                continue
+            xyz = tuple(float(value) for value in offset)
+            if xyz != self._offsets.get(serial, (0.0, 0.0, 0.0)):
+                self._offsets[serial] = xyz
+                self._write(ctx, "record the mocap offset", record_event, self._run.folder, "mocap_offset",
+                            ctx.now(), robot=serial, xyz=list(xyz))
 
     def draw(self, ctx: PluginContext) -> None:
         """Fill the panel."""
         if self._panel is not None:
-            status = PanelStatus(self._run.info.name if self._run is not None else "", self._prompt,
+            status = PanelStatus(self._run.info.name if self._run is not None else "", self.again,
                                  (self._message, self._failed), self._save_error, tuple(self.robot_lines(ctx)),
-                                 self._settings_refused)
+                                 self._settings_refused, self._spiral_fits(ctx))
             self._panel.draw(self.view, status)
 
     def teardown(self, ctx: PluginContext) -> None:
-        """Wait for the queued writes."""
+        """Write a current not written yet, and wait for the queued writes."""
+        if self._unsaved_at is not None and self._run is not None:
+            self._writer.submit(save_progress, self._run)
         self._writer.shutdown(wait=True)
 
     # --- --- --- --- --- FOR THE PANEL --- --- --- --- ---
 
-    def answer(self, confirmed: bool) -> None:
-        """Answer the prompt: Confirm or Cancel; ignored without one."""
-        if not self._prompt:
-            self._ctx.log_info(f"{'Confirm' if confirmed else 'Cancel'} ignored: nothing to answer")
-            return
-        self._answer = confirmed
+    @property
+    def again(self) -> str:
+        """str: The click waiting for its second one, AGAIN_NEW_RUN or "mark <action id>"; "" for none.
+
+        * No time limit: the operator may take as long as they need. Any other request forgets it.
+        """
+        return self._again[0] if self._again is not None else ""
 
     def robot_lines(self, ctx: PluginContext) -> list[str]:
         """One line per configured robot: live now, or when and where it was last recorded."""
@@ -289,6 +384,16 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             lines.append(f"{names.get(live) or live.split('/', 1)[-1]:<9} {text}")
         return lines
 
+    def _spiral_fits(self, ctx: PluginContext) -> bool:
+        """Whether the current step's insert has two mating joints, so the Spiral box is live (`spiral_fits`)."""
+        transfer = ctx.require("process").transfer_as_free
+        found = current_step(self.view, transfer)
+        if found is None:
+            return False
+        action, steps, index = found
+        part = part_plan(self.view.process, action, steps[index].primary, ctx.config.robots, transfer)
+        return part.kind == INSERT_PART and spiral_fits(part.tools)
+
     # --- --- --- --- --- OPENING A PROCESS'S RUN --- --- --- --- ---
 
     def _reset(self, loaded: LoadedProcess | None) -> None:
@@ -298,7 +403,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._loaded, self._ids, self._run, self._offer, self._match = loaded, None, None, None, None
         self._state, self._current, self._starting, self._auto_from, self._go_task = NO_PROCESS, None, None, None, None
         self._continuing = None
-        self._settings, self._prompt, self._answer, self._save_error = RunSettings(), "", None, ""
+        self._settings, self._again, self._save_error, self._unsaved_at = RunSettings(), None, "", None
         self._say("")
         self._changed()
 

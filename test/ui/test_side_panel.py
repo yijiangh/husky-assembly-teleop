@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 import viser
+from viser._icons import svg_from_icon
 
 from husky_assembly_teleop.ui.style import PATH_TABS_MARKER
-from husky_assembly_teleop.ui.visualization import Visualization
+from husky_assembly_teleop.ui.visualization import (PLAN_TAB, PLAN_WINDOW_X, PLAN_WINDOW_Y, SIDE_PANEL_WIDTH,
+                                                    Visualization)
 
 
 @pytest.fixture
@@ -25,14 +29,34 @@ def test_plugins_share_parent_tabs_and_clear_only_their_own(viz):
     for view in (control, arm, base, arm):
         with view.ui() as gui:
             gui.add_button("Go")
-    side = viz._side
-    assert side._panel._tab_labels == ("Control", "Plan")
-    assert side._groups[("Plan",)]._tab_labels == ("Arm", "Base")
+    side, plan = viz._side, viz._plan
+    assert side._panel._tab_labels == ("Control",) and plan._panel._tab_labels == ("Plan",)
+    assert plan._groups[("Plan",)]._tab_labels == ("Arm", "Base")
     arm.clear()
-    assert side._panel._tab_labels == ("Control", "Plan")
-    assert side._groups[("Plan",)]._tab_labels == ("Base",)
+    assert plan._panel._tab_labels == ("Plan",)
+    assert plan._groups[("Plan",)]._tab_labels == ("Base",)
     control.clear()
-    assert side._panel._tab_labels == ("Plan",)
+    assert side._panel._tab_labels == () and plan._panel._tab_labels == ("Plan",)
+
+
+def test_plan_is_a_window_right_of_the_main_panel_shown_only_with_a_planner(monkeypatch):
+    """The planner panels' Plan tab floats in a window of its own, at the top; it shows only while it holds a tab."""
+    floated = []
+    original = viser.PanelHandle.float
+    monkeypatch.setattr(viser.PanelHandle, "float",
+                        lambda panel, **where: (floated.append((panel, where)), original(panel, **where))[1])
+    viz = Visualization(port=0, phone_port=0)
+    try:
+        assert (viz._plan._panel, {"x": PLAN_WINDOW_X, "y": PLAN_WINDOW_Y, "width": SIDE_PANEL_WIDTH}) in floated
+        assert not viz._plan._panel.visible
+        base = viz.view_for("base_panel", tab_path=(PLAN_TAB, "Base"), icon=viser.Icon.CAR)
+        with base.ui() as gui:
+            gui.add_button("Go")
+        assert viz._plan._panel.visible and not viz._side._panel.visible
+        base.clear()
+        assert not viz._plan._panel.visible
+    finally:
+        viz.stop()
 
 
 def test_own_tabs_carry_the_plugin_icon_and_shared_parents_none(viz):
@@ -45,9 +69,9 @@ def test_own_tabs_carry_the_plugin_icon_and_shared_parents_none(viz):
         pass
     with probe.tab("Status", viser.Icon.EYE, hidden=True):
         pass
-    plan_icon, = viz._side._panel._tab_icons_html
+    plan_icon, = viz._plan._panel._tab_icons_html
     probe_icon, = viz._hidden_side._panel._tab_icons_html
-    arm_icon, = viz._side._groups[("Plan",)]._tab_icons_html
+    arm_icon, = viz._plan._groups[("Plan",)]._tab_icons_html
     assert plan_icon is None and arm_icon and probe_icon
     assert viz._hidden_side._groups[("Mocap probe",)]._tab_labels == ("Points", "Status")
 
@@ -67,7 +91,7 @@ def test_only_tabs_shared_by_plugins_mark_their_tab_bar_as_a_path(viz):
         pass
     with probe.tab("Status"):
         pass
-    assert marked(viz._side._tabs[("Plan",)]) and not marked(viz._side._tabs[("Mocap probe",)])
+    assert marked(viz._plan._tabs[("Plan",)]) and not marked(viz._side._tabs[("Mocap probe",)])
 
 
 def test_extra_tabs_nest_under_the_plugin_name_in_the_minimized_panel(viz):
@@ -98,3 +122,35 @@ def test_a_folder_goes_in_the_main_panel_not_the_tabs(viz):
     assert not viz._side._panel.visible and health._folder is not None
     health.clear()
     assert health._folder._impl.removed
+
+
+@pytest.mark.parametrize("maker", ["assembly_run", "assembly_steps"])
+def test_plugins_share_a_tab_through_bands_and_clear_only_their_own(viz, maker):
+    """Two plugins at tab path ("Assembly",) get their bands in band order, whichever starts first; its maker's icon.
+
+    Clearing the other plugin removes only its bands; the maker cleared first takes a third plugin's bands with it,
+    and clearing that one then warns of nothing.
+    """
+    icons = {"assembly_run": viser.Icon.LIST_CHECK, "assembly_steps": viser.Icon.STAIRS_UP}
+    bands = {"assembly_run": 400.0, "assembly_steps": 100.0}
+    views = {name: viz.view_for(name, tab_path=("Assembly",), icon=icon) for name, icon in icons.items()}
+    other = next(name for name in views if name != maker)
+    for name in (maker, other, "assembly_steps"):
+        with views[name].ui(band=bands[name]) as gui:
+            gui.add_button(name)
+    side = viz._side
+    tab = side._tabs[("Assembly",)]
+    assert sorted((child.order, len(child._children)) for child in tab._children.values()) == [(100.0, 2), (400.0, 1)]
+    assert side._panel._tab_labels == ("Assembly",) and side._panel._tab_icons_html == (svg_from_icon(icons[maker]),)
+    (band,) = views[other]._bands.values()
+    views[other].clear()
+    assert side._panel._tab_labels == ("Assembly",) and band._impl.removed
+    assert [child.order for child in tab._children.values()] == [bands[maker]]
+    exec_ = viz.view_for("movement_exec", tab_path=("Assembly",), icon=viser.Icon.PLAYER_PLAY)
+    with exec_.ui(band=300.0) as gui:
+        gui.add_button("Confirm")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        views[maker].clear()
+        exec_.clear()
+    assert side._panel._tab_labels == ()

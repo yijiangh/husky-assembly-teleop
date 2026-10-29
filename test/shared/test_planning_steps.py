@@ -9,11 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 from planning_fixtures import action, purged_process
+from process_fixtures import build_process, joints, with_movement
 
-from husky_assembly_teleop.shared.assembly_planning.movement import Routine, classify
+from husky_assembly_teleop.shared.assembly_planning.movement import Routine, classify, routine_or_none
 from husky_assembly_teleop.shared.assembly_planning.process_steps import LoadedProcess, Step
-from husky_assembly_teleop.shared.assembly_planning.steps import OperatorStep, operator_steps, step_index_of
+from husky_assembly_teleop.shared.assembly_planning.steps import (TRANSIT_LABEL, OperatorStep, as_run, operator_steps,
+                                                                  step_index_of)
 from scaffolding_assembly_core.process import Action, Movement, State, Target
+from scaffolding_assembly_core.process.plan_check import end_state
 
 
 @pytest.fixture(scope="module")
@@ -94,3 +97,36 @@ def test_index_of_an_actions_movement():
     assert (loaded.index_of("A"), loaded.index_of("B"), loaded.index_of("B", 2)) == (0, 2, 4)
     with pytest.raises(IndexError, match="A has no movement 2"):
         loaded.index_of("A", 2)
+
+
+def test_as_run_shows_a_jointing_action_as_the_workaround_runs_it(purged):
+    """B22_J: the transit from the action's start (no bar, tools open); place and grasp at the insert start; insert.
+
+    Releases keep their objects; without the workaround the process itself comes back.
+    """
+    process = purged.process
+    shown = as_run(process, True)
+    load, place_bar, grasp, transfer, insert = process.actions["B22_J"].movements
+    jointing = shown.actions["B22_J"]
+    assert [each.id for each in jointing.movements] == [transfer.id, place_bar.id, grasp.id, insert.id]
+    transit, place = jointing.movements[:2]
+    assert "bars/B22" not in transit.start.present and transit.label == TRANSIT_LABEL
+    assert {tools.grip for tool, tools in transit.start.tools.items() if tool.startswith("tools/cindy/")} == {"open"}
+    assert routine_or_none(jointing, transit, True) is Routine.TRANSFER_FREE
+    assert place.start.robots["robots/cindy"].joints == transfer.target.joints["robots/cindy"]
+    assert "bars/B22" in end_state(place).attached and jointing.movements[3] is insert
+    assert all(shown.actions[action_id] is each for action_id, each in process.actions.items()
+               if each.type == "bar_release")
+    assert as_run(process, False) is process
+
+
+def test_as_run_without_the_drive(tmp_path):
+    """The small process, B2's transfer coupled: the transit from the place's start, then place and grasp at its end."""
+    process = with_movement(build_process(tmp_path), "B2_J_joint", 2, coupled=True)
+    shown = as_run(process, True)
+    place, grasp, transfer, insert = process.actions["B2_J_joint"].movements
+    transit, *rest = shown.actions["B2_J_joint"].movements
+    assert [each.id for each in (transit, *rest)] == [transfer.id, place.id, grasp.id, insert.id]
+    assert transit.start is place.start and transit.target.joints == {"robots/cindy": joints(0.3)}
+    assert rest[0].start.robots["robots/cindy"].joints == joints(0.3) and rest[2] is insert
+    assert shown.actions["B1_J_joint"] is process.actions["B1_J_joint"]

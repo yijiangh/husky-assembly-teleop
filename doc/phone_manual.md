@@ -107,7 +107,7 @@ For running an assembly step next to the robot (`movement_exec`); the step is st
 
 - The status line: what runs, and whether a prompt waits.
 - The prompt, naming the robot, then **Confirm** (do what it says) and **Cancel** (answer no; with no prompt open,
-  stop the running step, every arm held).
+  stop the running step and hold every arm where it is).
 - The last result.
 
 ## 5. After a stop

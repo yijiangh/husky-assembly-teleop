@@ -17,6 +17,7 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        TRAJECTORY_MAX_JOINT_SPEED, TRAJECTORY_MAX_WAYPOINTS,
                                                        UR_JOINT_LIMITS, JOG_DISTANCE, JOG_LIMIT_MARGIN,
                                                        JOG_MAX_SPEED, joint_jog, joint_move, joint_path_move)
+from husky_assembly_teleop.robot_interface.tool_step import TOOL_JOG_LEAD, TOOL_JOG_MAX_JOINT_SPEED
 from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
 from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, NotLeased
@@ -241,6 +242,50 @@ def test_a_jog_stops_short_of_the_joint_limit_and_refuses_at_it():
     assert fake_arm(joints=positions[0]).send_joint_trajectory(positions, duration, velocities)
     with pytest.raises(ValueError, match="elbow"):
         joint_jog(positions[-1], 2, 1.0)
+
+
+def test_a_jog_point_goes_out_as_one_point_a_lead_ahead():
+    """One point, positions only, reaching in TOOL_JOG_LEAD, and the arm counts as executing."""
+    arm = fake_arm()
+    target = arm.joint_vector() + np.radians([1.0, 0, 0, 0, 0, 0])
+    assert arm.send_jog_point(target)
+    trajectory, = arm._trajectory.sent
+    point, = trajectory.points
+    np.testing.assert_allclose(point.positions, target)
+    assert not point.velocities and point.time_from_start.nanosec == pytest.approx(TOOL_JOG_LEAD * 1e9, abs=1)
+    assert arm.state.is_executing and arm.state.last_motion_time == arm._node.now
+
+
+def _too_fast(arm):
+    """A point one joint would need to reach faster than TOOL_JOG_MAX_JOINT_SPEED."""
+    return arm.joint_vector() + np.array([TOOL_JOG_MAX_JOINT_SPEED * 1.01 * TOOL_JOG_LEAD, 0, 0, 0, 0, 0])
+
+
+def _stale(arm):
+    """The arm's own joints, but measured too long ago."""
+    arm.state.last_update_time = arm._node.now - JOINT_STATE_MAX_AGE - 0.1
+    return arm.joint_vector()
+
+
+def _under_compliance(arm):
+    """The arm's own joints, with the compliance controller running."""
+    arm.state.controllers.active = CARTESIAN_COMPLIANCE_CONTROLLER
+    return arm.joint_vector()
+
+
+@pytest.mark.parametrize("make, why", [
+    (_too_fast, "°/s"),
+    (lambda arm: np.array([0, 0, UR_JOINT_LIMITS[2] + 0.01, 0, 0, 0]), "joint limit"),
+    (lambda arm: np.full(6, np.nan), "finite"),
+    (_stale, "stale"),
+    (_under_compliance, "is not active"),
+])
+def test_jog_point_refused(make, why):
+    """A point too fast, past a limit, not finite, on a stale joint state or under another controller stays in."""
+    arm = fake_arm()
+    target = make(arm)
+    assert not arm.send_jog_point(target)
+    assert not arm._trajectory.sent and why in arm.last_refusal.reason and arm.last_refusal.label == "jog refused"
 
 
 # --- --- --- --- --- hold --- --- --- --- ---

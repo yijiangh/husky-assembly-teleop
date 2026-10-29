@@ -196,6 +196,10 @@ class _Drawing(SimpleNamespace):
     def set_ghost(self, ghost: bool) -> None:
         """Nothing to fade."""
 
+    def set_bar_lines(self, on: bool) -> None:
+        """Keep the switch, as the real drawing does."""
+        self.bar_lines = on
+
     def show(self, state, joints, everything: bool = False, reference: frozenset[str] = frozenset()) -> None:
         """Keep what it was asked to draw see-through where it stands."""
         self.references.append(reference)
@@ -372,4 +376,5 @@ def test_bar_placed_by_hand(tmp_path):
     panel = ProcessPlugin()
     panel._take(process)
     panel.select(len(panel._movements) - 1)
-    assert BY_HAND_LABEL in panel._details_html(*panel.selected)
+    action, movement = panel.selected
+    assert BY_HAND_LABEL in panel._details_html(action, movement, panel._labels(action))[0]

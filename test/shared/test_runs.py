@@ -48,7 +48,7 @@ def record(x: float, source: str = LIVE) -> RobotRecord:
 
 def test_new_run_reads_back(process, robots, tmp_path):
     """A new run's files read back equal, with the schema and the process's file hashes, every action pending."""
-    run = new_run(process, robots, RunSettings(spiral=True), now=NOW, root=tmp_path)
+    run = new_run(process, robots, RunSettings(spiral=True), now=NOW, root=tmp_path, transfer_as_free=True)
     assert run.folder == Path(process.folder) / "runs" / "20261021_093000"
     assert read_run(run.folder) == run
     data = json.loads((run.folder / "run.json").read_text())
@@ -61,11 +61,39 @@ def test_new_run_reads_back(process, robots, tmp_path):
     assert [event["event"] for event in read_events(run.folder)] == ["new_run"]
 
 
+def test_an_older_run_json_with_the_transfer_workaround_reads(process, robots):
+    """A run.json from when the run kept the transfer workaround: its "transfer_as_free" is left out, the rest read."""
+    run = new_run(process, robots, RunSettings(spiral=True), now=NOW, transfer_as_free=True)
+    path = run.folder / "run.json"
+    info = json.loads(path.read_text())
+    path.write_text(json.dumps({**info, "settings": {**info["settings"], "transfer_as_free": False}}))
+    assert read_run(run.folder).info.settings == RunSettings(spiral=True)
+
+
+def test_an_older_run_json_without_the_insert_settings_reads_their_defaults(process, robots):
+    """A run.json from before the spiral's duration and turns, and the plan_* settings: their defaults.
+
+    One from before Rigid insert was removed keeps its rigid_only: it is dropped on reading.
+    """
+    run = new_run(process, robots, RunSettings(spiral=True, spiral_seconds=30.0, spiral_turns=6, plan_tries=1),
+                  now=NOW, transfer_as_free=True)
+    assert read_run(run.folder).info.settings.spiral_turns == 6
+    path = run.folder / "run.json"
+    info = json.loads(path.read_text())
+    older = {name: value for name, value in info["settings"].items()
+             if name not in ("spiral_seconds", "spiral_turns") and not name.startswith("plan_")}
+    path.write_text(json.dumps({**info, "settings": {**older, "rigid_only": True}}))
+    settings = read_run(run.folder).info.settings
+    assert settings == RunSettings(spiral=True)
+    assert (settings.spiral_seconds, settings.spiral_turns) == (20.0, 4)
+    assert (settings.plan_max_time, settings.plan_tries, settings.plan_swept_check) == (120.0, 3, True)
+
+
 def test_continue_run_picks_the_newest_matching(process, robots):
     """Of the runs on these files the newest is continued; a run on other files is not, another schema is a problem."""
-    older = new_run(process, robots, RunSettings(), now=NOW)
-    newer = new_run(process, robots, RunSettings(), now=NOW.replace(minute=40))
-    other = new_run(process, robots, RunSettings(), now=NOW.replace(minute=50))
+    older = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
+    newer = new_run(process, robots, RunSettings(), now=NOW.replace(minute=40), transfer_as_free=True)
+    other = new_run(process, robots, RunSettings(), now=NOW.replace(minute=50), transfer_as_free=True)
     info = json.loads((other.folder / "run.json").read_text())
     (other.folder / "run.json").write_text(json.dumps({**info, "process_hash": "0" * 64}))
     alien = Path(process.folder) / "runs" / "20261021_095500"
@@ -80,7 +108,7 @@ def test_continue_run_picks_the_newest_matching(process, robots):
 
 def test_mark_done_records_ends_and_beliefs(process, robots):
     """A mark keeps its ends, believes each robot there and counts on; a later mark changes only its own robots."""
-    run = new_run(process, robots, RunSettings(), now=NOW)
+    run = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
     run = mark_done(run, "B1_J_joint", {CINDY: record(1.0), ALICE: record(2.0)}, False, now=NOW)
     run = mark_done(run, "B1_H_hold", {ALICE: record(3.0, ASSUMED)}, True, now=NOW)
     first, second = run.progress.actions["B1_J_joint"], run.progress.actions["B1_H_hold"]
@@ -95,8 +123,8 @@ def test_mark_done_records_ends_and_beliefs(process, robots):
 
 
 def test_reopen_restores_the_earlier_end_or_drops_it(process, robots):
-    """Reopening the latest mark puts a robot back at its latest earlier end; a robot with none loses its belief."""
-    run = new_run(process, robots, RunSettings(), now=NOW)
+    """Reopening the latest mark puts a robot back at its latest earlier end; a robot with none is dropped."""
+    run = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
     run = mark_done(run, "B1_J_joint", {CINDY: record(1.0)}, False)
     run = mark_done(run, "B1_H_hold", {CINDY: record(2.0), ALICE: record(3.0)}, False)
     run = mark_done(run, "B1_R_release", {CINDY: record(4.0)}, False)
@@ -114,10 +142,10 @@ def test_reopen_restores_the_earlier_end_or_drops_it(process, robots):
 
 def test_new_run_keeps_the_old_folder(process, robots):
     """A new run leaves the old run's files as they were; one started in the same second is named `_2`."""
-    old = new_run(process, robots, RunSettings(), now=NOW)
+    old = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
     save_progress(mark_done(old, "B1_J_joint", {CINDY: record(1.0)}, False, now=NOW))
     before = {path.name: path.read_bytes() for path in old.folder.iterdir()}
-    same_second = new_run(process, robots, RunSettings(), now=NOW)
+    same_second = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
     assert same_second.folder.name == "20261021_093000_2"
     assert {path.name: path.read_bytes() for path in old.folder.iterdir()} == before
     assert find_runs(process.folder)[0][0].folder == same_second.folder
@@ -125,7 +153,7 @@ def test_new_run_keeps_the_old_folder(process, robots):
 
 def test_re_export_keeps_runs_and_carries_by_id(process, robots, tmp_path):
     """Writing the process again keeps runs/; the old run no longer matches, and continuing it carries what still is."""
-    run = new_run(process, robots, RunSettings(), now=NOW)
+    run = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
     run = mark_done(run, "B1_J_joint", {CINDY: record(1.0)}, False)
     run = mark_done(run, "B1_HR_hold_release", {ALICE: record(2.0)}, False)
     run = replace(run, progress=replace(run.progress, current=("B1_H_hold", 1)))
@@ -139,7 +167,8 @@ def test_re_export_keeps_runs_and_carries_by_id(process, robots, tmp_path):
     assert [each.folder for each in found] == [run.folder]
     assert continue_run(found, file_hashes(again)) is None
 
-    carried = new_run(again, robots, RunSettings(), continued_from=found[0], now=NOW.replace(hour=10))
+    carried = new_run(again, robots, RunSettings(), continued_from=found[0], now=NOW.replace(hour=10),
+                      transfer_as_free=True)
     assert carried.info.continued_from == run.info.name
     assert carried.info.changed_since == ("process.json", "B1_H_hold")  # the schedule is in process.json
     assert carried.progress.actions["B1_J_joint"].status == DONE
@@ -153,7 +182,7 @@ def test_re_export_keeps_runs_and_carries_by_id(process, robots, tmp_path):
 
 def test_crash_safety(process, robots, monkeypatch):
     """A failed rename keeps the old progress.json readable; a stray .tmp is ignored; a cut last event is skipped."""
-    run = new_run(process, robots, RunSettings(), now=NOW)
+    run = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
 
     def crash(_source, _target):
         raise OSError("power cut")
@@ -176,7 +205,7 @@ def test_crash_safety(process, robots, monkeypatch):
 
 def test_record_movement_numbers_its_files(process, robots):
     """Records of one movement are numbered .1, .2; servo records go to servo/."""
-    folder = new_run(process, robots, RunSettings(), now=NOW).folder
+    folder = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True).folder
     first = record_movement(folder, "B1_J_joint", "B1_M2_insert", {"ok": True})
     second = record_movement(folder, "B1_J_joint", "B1_M2_insert", {"ok": False})
     servo = record_movement(folder, "B1_J_joint", "B1_M2_insert", {"error": 0.1}, kind="servo")
@@ -227,26 +256,27 @@ def test_a_robot_is_recorded_by_its_source_urdf(process, tmp_path):
     source.write_text("<robot name='fake'/>")
     copy.write_text("<robot name='fake'><!-- /home/someone/meshes --></robot>")
     robots = (SimpleNamespace(serial="a200-0806", model=SimpleNamespace(urdf=copy), source_urdf=source),)
-    run = new_run(process, robots, RunSettings(), now=NOW)
+    run = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
     assert run.info.robots[CINDY]["urdf_sha256"] == sha256(source.read_bytes()).hexdigest()
 
 
 def test_a_carried_movement_the_action_lacks_becomes_its_first_step(process, robots, tmp_path):
     """Continuing on an export whose action lost the saved movement: its first step, said in the first event."""
-    run = new_run(process, robots, RunSettings(), now=NOW)
+    run = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
     save_progress(replace(run, progress=replace(run.progress, current=("B1_H_hold", 1))))
     base = build_process(tmp_path)
     shorter = with_action(base, "B1_H_hold", movements=base.actions["B1_H_hold"].movements[:1])
     again = write(shorter, process.folder, overwrite=True)
-    carried = new_run(again, robots, RunSettings(), continued_from=read_run(run.folder), now=NOW.replace(hour=10))
+    carried = new_run(again, robots, RunSettings(), continued_from=read_run(run.folder), now=NOW.replace(hour=10),
+                      transfer_as_free=True)
     assert carried.progress.current == ("B1_H_hold", 0)
     assert read_events(carried.folder)[0]["current_moved"] == [["B1_H_hold", 1], ["B1_H_hold", 0]]
 
 
 def test_the_run_used_last_comes_first_not_the_newest_folder(process, robots):
     """An older run whose progress changed after a newer one was made comes first; on a tie, the newer folder."""
-    older = new_run(process, robots, RunSettings(), now=NOW)
-    newer = new_run(process, robots, RunSettings(), now=NOW.replace(minute=40))
+    older = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
+    newer = new_run(process, robots, RunSettings(), now=NOW.replace(minute=40), transfer_as_free=True)
     assert [run.folder for run in find_runs(process.folder)[0]] == [newer.folder, older.folder]
     save_progress(with_current(older, ("B1_H_hold", 0), now=NOW.replace(minute=40, microsecond=1)))
     assert [run.folder for run in find_runs(process.folder)[0]] == [older.folder, newer.folder]
@@ -255,9 +285,10 @@ def test_the_run_used_last_comes_first_not_the_newest_folder(process, robots):
 @pytest.mark.parametrize("movement", ["1", True])
 def test_a_carried_movement_that_is_no_index_becomes_the_first_step(process, robots, movement):
     """A hand-edited current movement ("1", true) is not an index: the new run starts the action at its first step."""
-    run = new_run(process, robots, RunSettings(), now=NOW)
+    run = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)
     run = replace(run, progress=replace(run.progress, current=("B1_H_hold", movement)))
-    carried = new_run(process, robots, RunSettings(), continued_from=run, now=NOW.replace(hour=10))
+    carried = new_run(process, robots, RunSettings(), continued_from=run, now=NOW.replace(hour=10),
+                      transfer_as_free=True)
     assert carried.progress.current == ("B1_H_hold", 0)
     assert read_events(carried.folder)[0]["current_moved"] == [["B1_H_hold", movement], ["B1_H_hold", 0]]
 
@@ -266,5 +297,5 @@ def test_a_new_run_that_fails_leaves_no_folder(process, robots):
     """A robot's URDF can't be read: the run is not started, and no empty run folder is left behind."""
     broken = (SimpleNamespace(serial="a200-0804", model=SimpleNamespace(urdf=Path("/nowhere.urdf")), source_urdf=None),)
     with pytest.raises(OSError):
-        new_run(process, broken, RunSettings(), now=NOW)
+        new_run(process, broken, RunSettings(), now=NOW, transfer_as_free=True)
     assert not (Path(process.folder) / "runs").exists() or not any((Path(process.folder) / "runs").iterdir())

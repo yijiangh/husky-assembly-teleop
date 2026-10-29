@@ -16,14 +16,16 @@ from typing import TYPE_CHECKING
 from scaffolding_assembly_core.ids import IdMap, split_link_id
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.process.plan_check import end_state
+from scaffolding_assembly_core.process.types import GROUND_PREFIX, HALF_PREFIX
 from scaffolding_assembly_core.scene import Attachment, Scene, world_poses
 
+from ...world.lab import floor_id
 from ...world.stand_ins import LIVE, with_stand_ins
 from ..process_scene.scene_bodies import live_ids, scene_bodies
 from .process_steps import LoadedProcess, Step
 
 if TYPE_CHECKING:
-    from scaffolding_assembly_core.process import RobotState
+    from scaffolding_assembly_core.process import Process, RobotState
     from scaffolding_assembly_core.robot import RobotObject
 
     from ...config import RobotConfig
@@ -128,6 +130,15 @@ def scene_for(loaded: LoadedProcess, step: Step, snapshot: Scene, robots: tuple[
             if body is not None and ids(tool) not in body.touches:
                 body.touches = (*body.touches, ids(tool))
 
+    # * A half mated to the ground stands on the lab's floor (the obstacles plugin's slab), as the core lets it touch
+    #   the process's own ground bodies: its foot reaches a little below z = 0 at its design pose.
+    floors = [body for body_id, body in scene.bodies.items() if body_id == floor_id(body_id.partition("/")[0])]
+    for half in ground_mated_halves(process):
+        body = scene.bodies.get(ids(half)) if half in ids else None
+        for floor in floors if body is not None else ():
+            body.touches = (*body.touches, floor.id) if floor.id not in body.touches else body.touches
+            floor.touches = (*floor.touches, body.id) if body.id not in floor.touches else floor.touches
+
     scene.world_poses = world_poses(scene.bodies, scene.robots,
                                     lambda robot, link: link_pose(robot.model.urdf, robot.base, robot.joints, link))
     for body_id in [body_id for body_id in scene.bodies if body_id not in scene.world_poses]:
@@ -135,6 +146,12 @@ def scene_for(loaded: LoadedProcess, step: Step, snapshot: Scene, robots: tuple[
         warnings.append(f"{body_id} has no world pose: removed")
         scene.remove(body_id)
     return PlanningScene(scene, acting, ids, process_ids, sources, tuple(warnings))
+
+
+def ground_mated_halves(process: Process) -> tuple[str, ...]:
+    """The halves the process mates to a ground body, sorted: their feet stand on the floor."""
+    return tuple(sorted(half for mate in process.mates if any(body.startswith(GROUND_PREFIX) for body in mate)
+                        for half in mate if half.startswith(HALF_PREFIX)))
 
 
 def _lay_design(robot: RobotObject, design: RobotState) -> bool:

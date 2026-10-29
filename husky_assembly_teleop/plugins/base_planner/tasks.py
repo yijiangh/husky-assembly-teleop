@@ -25,8 +25,8 @@ from scaffolding_assembly_core.scene import Body
 TASK_ORIGIN = (0.4, -0.8, math.pi)
 #: The passages run along PASSAGE_ANGLE in the task frame.
 PASSAGE_ANGLE = math.radians(17.0)
-#: Alice's width, the same at every height with her arm stowed (as the experiments hold it), and the planners' default
-#: margin, metres: the passages are sized from them.
+#: Alice's width, the same at every height with her arm stowed (as the experiments hold it), and the margin the
+#: passages were sized for, metres (the panel's Margin slider; set it to this for the standard set).
 WHEELS = 0.70
 MARGIN = 0.05
 #: The process tasks: the process folder (under the Drive root), step, and start and target in the lab frame.

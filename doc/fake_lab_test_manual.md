@@ -1,89 +1,97 @@
-# Fake-lab test manual: the core port on three simulated robots
+# Fake-lab test manual: the first three bars, end to end, on three simulated robots
 
-Tests the new monitor (`yh/core-port`: Jakob's newer code, merged on 2026-10-21, plus the Rhino obstacles box of
-2026-10-22, and since 2026-10-23 every panel in a tab of the side panel) against three simulated robots on this laptop.
-The robots come from Jakob's simulation (`launch/sim.launch.py robot:=all`, [simulation_manual.md](simulation_manual.md)),
-on crl-husky `jg/ros2` (78041cf or later): a simulated base and the UR driver's fake hardware for the arms, parked, with a fake Motive
-that adds Motive's measured latency, jitter and marker errors, and the mocap relay that publishes each base as on the
-lab PC. Everything talks over Zenoh, as the lab does with the new monitor, through a Zenoh router of the fake lab's own.
-There is no robot, no real Motive and no tool. Plan about an hour.
+Builds B20, B21 and B22 of the two-module demo with the new monitor on three simulated robots on this laptop: Cindy
+joints each bar and retreats, Alice holds B21 while Cindy joints it. That is schedule entries 1–7 of the process:
+B20_J, B20_R, B21_J, B21_H, B21_R, B22_J, B22_R. Every movement of every action runs as the process has it: the base
+drives, the transfer, the bar placed by hand, the grasp, the servo, the insert, the retreat, the support robot's
+approach, open, close and retreat. The simulated tools answer as the real ones do, the compliant parts switch the arms
+to the compliance controller as in the lab, and nothing is skipped or faked.
 
-Every step was run on 2026-10-22, on Zenoh, with this code, and gave the results it lists. On 2026-10-23 the panels
-moved into tabs of the side panel (**Assembly** › Run, Exec, Steps; **Plan** › Base, Motion, Arm); their buttons and
-results are the same. Also on 2026-10-23 the fake lab moved to Jakob's simulation: the robots start on their park
-row instead of 0.5 m behind it, with mocap. Sections 0–2 were run again then; the base plans of 4.1, 4.2 and 9.2 were
-not, and say so.
+The robots are Jakob's simulation (`launch/sim.launch.py robot:=all`, [simulation_manual.md](simulation_manual.md)),
+on crl-husky `jg/ros2` (78041cf or later): a simulated base with the real follower, the UR driver's fake hardware for
+the arms, each arm with the robot's tool simulated (a Robotiq that reaches every goal at once, a scaffolding tool
+whose screws stall a fixed time after a tighten), a fake Motive with Motive's measured latency, jitter and marker
+errors, and the mocap relay, as on the lab PC. Everything talks over Zenoh through a router of the fake lab's own.
+Plan about two hours.
+
+Run on 2026-10-26 with this code (M6, M7 and Jakob's core-port of the same day merged): sections 1–6 as written;
+run again on 2026-10-27 (branch `yh/lab-tools`) with the Cartesian controllers built and the fake wrench on: the
+retreat's compliant break-out (4.4) and the compliant insert (5.2) as written below. The handoff (5.3 step 5) and
+Alice's open (5.3 step 3) still wait for `ros-humble-gripper-controllers` (section 0.1): those two say "not run yet"
+and give what the code does; tell me where the page differs.
 
 ## What you are testing, and whose it is
 
-The new monitor is Jakob's rewrite. Our port adds the assembly on top of it: everything the old monitor did to run a
-bar's steps.
-
-| Feature | Whose | Where in this test |
+| Feature | Whose | Where |
 |---|---|---|
-| **The monitor itself.** The web page, phone page, plugins and panels; health chips; Stop all, which now latches each robot until its Resume; per-robot leases; robot_control (jog, tools) in the side panel's **Control** tab; arms move only when the onboard safety sync vouches for them. | Jakob | 1–3, 6, 7 |
-| **process.** Loads a process folder (Rhino's new export) and shows a movement in 3D. | Jakob | 3, 4 |
-| **The Rhino obstacles box (new).** "Rhino obstacles collide" in the process panel, off at start. While it is off, the process's own obstacles from Rhino (the cabinet `env39`) are drawn see-through and left out of every collision check: base and arm planners, clearances, assembly planning. Tick it to count them. A plan made before a change goes stale. | **Ours** | 3, 4, 5 |
-| **obstacles.** The lab's measured obstacles, from `data/lab/main.json`: the cabinet, tables, tripods, trusses and the border walls. They always count. | Jakob | 2, 4 |
-| **The planners.** **base_planner_panel**, in **Plan** › **Base**, plans a base path and sends it to the robot's follower, with a clearance watch while it drives. **Plan** › **Arm** plans one arm to a joint target, and the **Collisions** tab lists what blocked a plan. | Jakob | 4, 6, 9 |
-| **The simulated robots.** Jakob's simulation (`launch/sim.launch.py`): crl-husky's simulator, a fake Motive and the mocap relay, with the `SIM` chips. The fake-lab scripts around it are ours. | Jakob | 1, 2 |
-| **assembly_run (ours, M4).** The run record `runs/<date>_<time>/`: which actions are done, where each robot was left, an event log. Mark done, Reopen, New run, and continue after a restart. The run's settings, such as the transfer workaround. | **Ours** | 4–6, 11 |
-| **motion_planner (ours, M3–M4).** Plans a step's motion at the live base through tamp, solves goals by exact IK (ssik), checks collisions. One worker, which the other plugins ask. | **Ours** | 5–7, 9 |
-| **assembly_steps (ours, M5).** The operator's step panel: Check goal, Plan, Play, Exec, Prev / Next, Mark done. A plan goes stale when anything moves, or when a setting changes. | **Ours** | 5–9 |
-| **movement_exec (ours, M5).** Runs a step's parts after Confirm (desktop or the phone's Exec tab). One motion at a time across all robots: it leases every robot while it runs, so Jakob's panels get no lease. Checks before every send: another robot moving, a silent link, the safety sync. Retimes paths to the arms' limits. Tool steps, by-hand steps, Cancel, and a record of every part. | **Ours** | 5–8, 10 |
-| **Under the hood (ours, M2–M3, not visible as a panel).** Each movement mapped to a routine, steps grouped (with the transfer workaround), the planning scene per movement, swept collision checks, and the core's tool-vs-tool check (CC.6). | **Ours** | everywhere a step is planned |
-| **Not in this test:** insert, retreat and handoff (M6, compliance); the servo and the MoCap bar fit (M7); calibration (M10). | Specs, waiting for your OK | – |
-
-### The new monitor, in old-monitor terms
-
-| Old monitor | New monitor (one web page, http://localhost:8080) |
-|---|---|
-| One monitor per robot, each robot on its own Cyclone domain (84/85/86). | One monitor for all three robots, all on Zenoh in domain 80. Here they are simulated, on Zenoh in domain 70. |
-| The PyBullet window. | The 3D view, on the left of the page. |
-| The obstacles in the PyBullet scene, from the export. | The process's Rhino obstacles (drawn; they collide only when **Rhino obstacles collide** is ticked), plus the measured lab obstacles (the **obstacles** panel). |
-| The compas_fab export: `BarActions/`, `ActionSchedule.json`. | A *process folder*: `process.json` plus `actions/`, from Rhino's RSExportProcess. You open it in the **process** panel. |
-| `progress.json` and its Reset. | **assembly_run**: the run folders, with Mark done, Reopen and New run. An old run is never deleted. |
-| Check goal, Plan and Exec for the current movement. | **assembly_steps**: the same buttons for the run's current step, plus Play, and Prev / Next. |
-| The confirmation before each motion or tool action. | **movement_exec**: one prompt at a time, with Confirm and Cancel. The phone page has the same prompt. |
-| Jog, stow and gripper buttons. | The side panel on the right: **Control** has a tab per robot (Base, and Arm or Left / Right); **Plan** has the base planner (Base), motion_planner (Motion) and the arm planner (Arm); **Collisions** has a tab of its own. |
-
-Each tab of the side panel on the right belongs to one plugin and is named after it; the assembly's three share the
-**Assembly** tab (assembly_run is **Assembly** › **Run**, movement_exec **Exec**, assembly_steps **Steps**), the
-planners the **Plan** tab. Health floats at the top left.
+| **The monitor.** The web page and phone page, health (a `SIM` chip per simulated base, arm and tool), Stop all (latches each robot until its Resume), leases, the console at the bottom right, robot_control in the **Control** tab. | Jakob | 1–2, 8 |
+| **The simulated robots and tools.** Bases, arms, a Robotiq and a scaffolding tool per `model.yaml`, the fake Motive and the relay. The fake-lab scripts around them are ours. | Jakob | 1–2 |
+| **process.** Loads the process folder and draws one movement at a time; its action list carries the run's marks. | Jakob, the marks ours | 3 |
+| **obstacles.** The measured lab from `data/lab/main.json`, with a floor the arms and what they hold may not cross. | Jakob | everywhere a plan is made |
+| **base_planner_panel** (**Plan** › **Base**). A base path around robots and obstacles, committed to the follower. | Jakob | 4.1, 5.1, 5.3, 6.1 |
+| **assembly_run.** The run folder: marks, where each robot was left, the settings (transfer workaround, insert split, spiral, rigid insert, servo by bar), the event log; Mark done, Reopen, New run. | **Ours** | 3–7 |
+| **motion_planner.** Plans a step's motion at the live base through tamp, goals by exact IK (ssik), collision checks. | **Ours** | every Plan |
+| **assembly_steps.** The run's current step in the **Assembly** tab: Live IK, Plan, Play, Exec; the Plan plots window. | **Ours** | 4–6 |
+| **movement_exec.** Runs a step's parts (a motion on Exec, the bar mount, a Robotiq step and the servo's first pass after Confirm), one motion at a time across all robots, with the M6 compliant parts (insert, retreat, handoff) and the M7 servo after a transfer, an approach or a grounded insert. | **Ours** | 4–6 |
 
 **Words used below:**
-- **Milestones M2–M10.** These are steps of the port plan, not the tool's M1/M2 motors (the grasp prompt also mentions
-  those).
-- **Transfer workaround.** The same rule as in the old monitor since 2026-10-06: the transfer runs as a free move
-  without the bar, and you mount the bar at its end. Here that is the place-bar and grasp prompts.
-- **F5.** Finding 5 of the safety review of M5: what one robot's silent link does to the other robots' motions. You
-  decide its rule after this test (section 8).
+- **Transfer workaround.** Cindy's transfer runs as a free move with empty tools to the insert start, where you place
+  the bar. It stays on in this test: this export carries no joints for the loading pose (the travel to load has
+  nothing to plan to), so the process cannot run its load, place, grasp and held transfer yet. When an export has the
+  loading pose, untick the box and the five movements run in order.
+- **Servo.** After a transfer, a support approach or a grounded insert, the executor measures the flanges and moves
+  them onto the authored targets, pass by pass, until they are within 0.2 mm. On tool0 here: **Servo by bar** is on
+  (the default; it steers only a grounded bar, B20 here, and every other bar servos on tool0), but the fake Motive
+  streams no bar markers, so B20's servo warns once that the MoCap bar is not usable and aims tool0. The last line of the exec section shows each reading, and after the
+  Exec ends how the servo ended, e.g. `servo done: nothing left to plan (correction L 0.13 mm, R 0.18 mm, under 0.2
+  mm)`, until the next Exec.
+- **Split.** The last millimetres of an insert, and the first of a retreat, run under the compliance controller
+  (**Insert split mm**, 5 by default).
 
 > ⚠️ **Safety.** Everything runs on ROS domain 70, from a clean environment. Every node connects only to the fake
 > lab's own Zenoh router, which listens on the loopback only (port 7470; the lab's routers use 7447) and connects to
-> no robot. The relay looks for Motive at 127.0.0.1 only. Your `.bashrc` puts every new terminal on Cyclone and
-> domain 86 (Cindy's), but these scripts never use it.
-> The robots now in use can't see this test, and it can't see them. The monitor's Drive root is the scratch folder
-> `~/husky_fake_lab/drive`, so its `runs/` never reach the real Drive.
+> no robot. The relay looks for Motive at 127.0.0.1 only. The robots in use can't see this test, and it can't see
+> them. The monitor's Drive root is the scratch folder `~/husky_fake_lab/drive`, so its `runs/` never reach the real
+> Drive.
 
-Steps are numbered so you can report them as, for example, "5.4 not OK: …".
+Steps are numbered so you can report them as, for example, "4.2 not OK: …".
 
 ---
 
 ## 0. Once, before the first test
 
-**0.1** Install the UR driver, Zenoh's ROS middleware and tmux. The simulated arms run on the UR driver's fake
-hardware, which added 39 packages. Zenoh adds 2 more; the lab needs them anyway (README, One-time setup). tmux holds the
-panes (section 1). Nothing is upgraded.
+**0.1** Install the UR driver, the Robotiq description and controllers, the gripper controllers, Zenoh's ROS
+middleware and tmux. The simulated arms run on the UR driver's fake hardware; the simulated Robotiq on Alice and Belle
+needs its description and controllers, or `sim.launch.py robot:=all` stops at Alice with `package
+'robotiq_description' not found`, and its `GripperActionController` comes from `ros-humble-gripper-controllers`, or
+its spawner dies (`spawner robotiq_gripper_controller … process has died`) and every Robotiq step is refused with
+`the gripper's action server is not available`.
 
 ```shell
-sudo apt install ros-humble-ur-robot-driver ros-humble-rmw-zenoh-cpp ros-humble-zenoh-cpp-vendor tmux
+sudo apt install ros-humble-ur-robot-driver ros-humble-robotiq-description ros-humble-robotiq-controllers \
+    ros-humble-gripper-controllers ros-humble-rmw-zenoh-cpp ros-humble-zenoh-cpp-vendor tmux
 ```
 
-Before the first real-lab run, check that the robots have the same Zenoh version (crl-husky's README requires it):
-`dpkg -l ros-humble-rmw-zenoh-cpp` on each robot and here. This laptop gets 0.1.11.
+**0.2** Build the Cartesian controllers into the workspace. The insert's compliant part, the retreat's break-out and
+the handoff switch the arms to `cartesian_compliance_controller`, which the robots carry onboard and this workspace
+does not: without it the simulated arms' spawner dies at start (four `process has died` lines) and every compliant
+part fails at the switch (`controller manager rejected the switch`). The source is cloned in
+`src/cartesian_controllers` (fzi `cartesian_controllers`, branch `ros2`; its simulation, tests, handles and
+utilities carry a `COLCON_IGNORE`).
 
-**0.2** Copy the test process into the scratch Drive root. `--fresh` also deletes the runs of an earlier test.
+```shell
+cd ~/Code/ros2_ws_next && source venv/bin/activate && source /opt/ros/humble/setup.bash
+python3 -m colcon build --symlink-install --packages-select cartesian_controller_base cartesian_motion_controller \
+    cartesian_force_controller cartesian_compliance_controller
+```
+
+**0.2b** The simulated arms report no force (the fake hardware reads NaN), so `sim.launch.py` also starts
+`sim_wrench`, a near-zero force/torque reading per simulated arm, by default: the F/T plots, the retreat's contact
+check and the servo's load guard then read something. `wrench_bias:=0,0,-5,0,0,0` adds a standing reading,
+`contact_n:=8` a push along the tool's z while a simulated screw is stalled; keep both small, the compliance
+controller reads the same topic and moves the arm by it.
+
+**0.3** Copy the test process into the scratch Drive root. `--fresh` also deletes the runs of an earlier test.
 
 ```shell
 ~/Code/ros2_ws_next/src/husky-assembly-teleop/scripts/fake_lab/drive.sh --fresh
@@ -91,10 +99,9 @@ Before the first real-lab run, check that the robots have the same Zenoh version
 
 **Expect:** `drive.sh: …/husky_fake_lab/drive/data_design_study/261008_2ModulesDemo_purged_process is ready (84M)`.
 
-This is Jakob's export of the two-module demo. Its first 18 actions are the three-robot sequence B20–B37.
-
-**0.3** Build the workspace from this branch, with crl-husky on `jg/ros2` (78041cf or later): the fake lab runs the installed relay
-and fake Motive, and `env.sh` refuses an install without them.
+**0.4** Build the workspace from this branch, with crl-husky on `jg/ros2` (78041cf or later): the fake lab runs the
+installed relay, fake Motive, fake wrench and simulated tools, and `env.sh` refuses an install without them. Build
+again after every pull: an install older than a script the launch needs dies with `executable ... not found`.
 
 ```shell
 cd ~/Code/ros2_ws_next && source venv/bin/activate && python3 -m colcon build --symlink-install
@@ -110,479 +117,299 @@ cd ~/Code/ros2_ws_next && source venv/bin/activate && python3 -m colcon build --
 ~/Code/ros2_ws_next/src/husky-assembly-teleop/scripts/fake_lab/tmux.sh
 ```
 
-This opens the tmux session **`fake_lab`** with one window and four panes:
-- **top:** the three simulated robots and the fake Motive (`sim.sh`). They start at once.
-- **middle, the monitor pane:** the monitor command (`monitor.sh`), typed in but not started yet.
-- **bottom left, small:** the Zenoh router (`router.sh`) that every node meets through, as the PC's and the robots'
-  routers do in the lab. It starts first.
-- **bottom right, small:** the mocap relay (`relay.sh`), as on the lab PC: it publishes each base's pose from the fake
-  Motive.
+This opens the tmux session **`fake_lab`** with one window and four panes, each named in its top border:
+- **`sim`, top:** the three simulated robots, their tools and the fake Motive (`sim.sh`). They start at once.
+- **`monitor`, middle:** the monitor command (`monitor.sh`), typed in but not started yet.
+- **`router`, bottom left, small:** the Zenoh router (`router.sh`) that every node meets through. It starts first.
+- **`relay`, bottom right, small:** the mocap relay (`relay.sh`), as on the lab PC.
 
 I read the panes from my side (`tmux capture-pane`). I never type into them unless you ask.
 
 - **Leave the session:** Ctrl-b d. It keeps running.
 - **Come back:** run `tmux.sh` again, or `tmux attach -t fake_lab`.
-- **More panes:** Ctrl-b " splits one, for example for section 8.
 
-**Expect, in the bottom left pane:** `fake lab: Zenoh router for ROS domain 70, on 127.0.0.1:7470 only`.
+**Expect, in the `router` pane:** `fake lab: Zenoh router for ROS domain 70, on 127.0.0.1:7470 only`.
 
-**Expect, in the bottom right pane:** `fake lab: mocap relay on ROS domain 70, Zenoh router 127.0.0.1:7470, no Motive`,
-its calibrations (every robot on `crl-husky default`), and once the robots are up
-`rigid body 1840: now from the fake Motive, was the simulator's truth`, the same for 1850 and 1860. A
-`No NatNet frames … reconnecting` line every 30 s is right: no Motive runs here.
+**Expect, in the `relay` pane:** `fake lab: mocap relay on ROS domain 70, Zenoh router 127.0.0.1:7470, no Motive`,
+then once the robots are up `rigid body 1840: now from the fake Motive, was the simulator's truth`, the same for 1850
+and 1860. A `No NatNet frames … reconnecting` line every 30 s is right: no Motive runs here.
 
-**Expect, in the top pane:**
+**Expect, in the `sim` pane:**
 - `fake lab: alice, belle and cindy on ROS domain 70, Zenoh router 127.0.0.1:7470`;
-- then many `Configured and activated …` lines, and `sim_motive: rigid body 1840: faking it, noise [1.5e-05, 0.003],
-  marker_error 0.0005`, the same for 1850 and 1860;
-- four `process has died` lines, one per arm. That is the cartesian controllers' spawner: those controllers aren't
-  installed here, and nothing in this test uses them.
+- many `Configured and activated …` lines, one per controller of each arm, `scaffolding_tool_sim`'s `announcing
+  left_gripper as simulated (scaffolding tool sim)` and the same for `right_gripper`, and `sim_motive: rigid body
+  1840: faking it, noise [1.5e-05, 0.003], marker_error 0.0005`, the same for 1850 and 1860.
 
-**1.2** When the top pane goes quiet (about 20 s), click into the monitor pane and press **Enter**.
+If an arm's spawner reports `Failed loading controller joint_state_broadcaster` (three robots starting at once can
+starve one; the arm's health chips then stay red), press Ctrl-C in the `sim` pane and start `sim.sh` again.
 
-**Expect:**
-- `fake lab: open http://localhost:8080 …` and the path of the log it saves;
-- about 10 s later, `started in … ms`.
+**1.2** When the `sim` pane goes quiet (about 20 s), click into the `monitor` pane and press **Enter**.
 
-
-> **Why `monitor.sh` starts the monitor in an odd way.** It imports pytest first, as a workaround for a bug I found
-> while preparing this test. compas_fab closes stdout for a moment around every model it loads. Inside the monitor,
-> other threads open files at the same moment, so Check goal and Plan failed with
-> `OSError(16, 'Device or resource busy')`. compas_fab skips that step when pytest is imported. The real fix is your
-> decision, and comes after this test. Side effect: PyBullet's own messages print in the monitor pane.
+**Expect:** `fake lab: open http://localhost:8080 …` and the path of the log it saves; about 10 s later, `started in
+… ms`. PyBullet's own lines print in this pane too (the known issues say why).
 
 ---
 
 ## 2. First look
 
-**2.1** Open http://localhost:8080 in Chrome.
+**2.1** Open http://localhost:8080 in Chrome, and keep that one page open.
 
 **Expect:**
-- **3D view:**
-  - three robots side by side on their park row, y = 1.35 m (Alice at x = 0.3, Belle at 1.7, Cindy at 3.1), facing
-    +y, arms at their stow pose.
-  - the measured lab (Jakob's **obstacles** plugin, its panel minimized at the right edge): the cabinet behind the robots,
-    tables, tall grey tripod cylinders, and an orange border around the floor.
-- **health:** every arm shows a green `arm` chip and a `SIM` chip. Every base shows a `SIM` chip, a green `ctrl` chip
-  and a `mocap` chip: green for Alice and Cindy, amber for Belle, whose fake Motive body reports the 1.2 mm marker
-  error measured in the lab (hover it).
-- **Top left:** health, with Stop all.
-- **Side panel on the right:** the tabs **Process**, **Assembly** (Run, Exec, Steps: the order this manual uses them
-  in), **Plan** (Base, Motion, Arm), **Control** (one tab per robot) and **Collisions**; **Obstacles** sits minimized
-  at the right edge.
-
-**Expected in the simulation:**
-- `robotiq` and `scaffolding_v3` are green, each followed by an amber `robotiq SIM` or `scaffolding_v3 SIM` chip.
-- The top shows about `12 PROBLEMS`: the eleven `SIM` chips (three bases, four arms, four tools) and Belle's `mocap`.
-- On a busy PC a base's `signal` chip may turn red (hover: a gap); see the known issues.
+- **3D view:** three robots side by side on their park row, y = 1.35 m (Alice at x = 0.3, Belle at 1.7, Cindy at
+  3.1), facing +y, arms stowed; the measured lab (cabinet, tables, tripods, trusses, the orange border).
+- **Health, top left:** every base shows `signal`, `mocap`, `estop`, `battery 90%`, `ctrl` and `SIM`; every arm
+  `signal`, `arm`, `SIM` and its tool: `robotiq` and `robotiq SIM` on Alice and Belle, `scaffolding_v3` and
+  `scaffolding_v3 SIM` on each of Cindy's arms. The `SIM` chips are green: a simulated part is no problem, the chip
+  only says which it is (hover it for the simulator). Belle's `mocap` is amber: her fake Motive body reports the
+  1.2 mm marker error measured in the lab (hover it). So `1 PROBLEM`: Belle's `mocap`.
+- **Plan window, top, right of health:** the tabs **Base**, **Motion** and **Arm**, one per planner panel.
+- **Side panel, right:** the tabs **Assembly**, **Collisions** and **Control** (a tab per
+  robot); **Obstacles** minimized at the right edge; three minimized bars at the bottom: **Plan plots** and **Exec
+  plots** at the left, the **Console** at the right (each opens by itself when it has something to show, and the
+  control at a bar's right end opens or closes it). Assembly is open: the **PROCESS** section at the top (Folder,
+  Load, the two boxes, an empty action list, the Step slider), then the big buttons **Live IK**, **Plan**, **Exec**,
+  **Confirm** | **Cancel**, **Mark done** | **Reopen**, the settings, the run, the closed **Advanced planning**
+  folder.
 
 ---
 
-## 3. Load the process, the run, and the Rhino obstacles box
+## 3. Load the process, the run and the settings
 
-**3.1** In the **process** panel, the folder is filled in. Click **Load** once, and wait 5–10 s.
-
-It doesn't load by itself: the README says it does, but the code waits for this button.
+**3.1** In the **PROCESS** section the folder is filled in. Click **Load** once, and wait 5–10 s.
 
 **Expect:**
-- **While it loads:** the chip shows the progress, such as `reading the robots' URDFs and meshes`.
-- **Then:**
-  - **process:** a green chip `261008_2ModulesDemo_purged_process`, `78 actions · 306 movements`, and an amber `robots
-    differ`. The amber chip is expected: this export used the old UR frames, and the monitor plans with the configured
-    robots.
-  - **ACTIONS:** `1/78`, with `1. B20_J · cindy · 5 mv` on top.
-  - **assembly_run:** `no run yet` and `0/78 done`; `current B20_J · B20_J_transfer (4/5)`; `alice`, `belle` and
-    `cindy` each `live now`.
+- a green chip `261008_2ModulesDemo_purged_process`, `78 actions · 273 movements`, and an amber `robots differ` (this
+  export used the old UR frames; the monitor plans with the configured robots);
+- **ACTIONS** `1/78`: `1. B20_J · cindy · 4 mv · pending` on top, in blue, then `2. B20_R · cindy · 3 mv`,
+  `3. B21_J`, `4. B21_H · alice · 4 mv`, `5. B21_R`, `6. B22_J`, `7. B22_R`, every row ending in `· pending`;
+- under the buttons, `current B20_J · B20_J_transfer (4/5)`, `no run yet`, `0/78 done`, and `alice`, `belle`, `cindy`
+  each `live now`.
 
-**Open the page before you click Load, and keep that one page open.**
-- A page that opens or reloads after Load first receives the whole drawn process: about 200 bodies with their meshes.
-  Until it has them, it shows the panel's starting state (`no process`, empty rows). That took about 20 s in my test.
-- Every Load draws everything again. So clicking Load again while a page catches up only sets it further back.
-- If the panel shows `no process` while the monitor pane says `[process] loaded … 78 actions, 306 movements`, wait
-  about 30 s. Don't click Load again, and tell me if it doesn't recover.
+Every Load draws the whole process again, and a page that opens later first receives about 200 bodies (20 s): don't
+click Load twice.
 
-**The process panel's Step slider** only changes which movement the 3D overlay shows. The run's current step is chosen
-in assembly_run (click an action) and assembly_steps (Prev / Next).
+**The process panel picks the run's current step.** Click an action row or a movement button, drag the Step slider
+or click ◀ mv / mv ▶:
+the step under the buttons follows, except while an Exec holds the robots' leases.
 
-**3.2** **The Rhino obstacles box (ours).** Right under **Load**: **Rhino obstacles collide**.
+**3.2** The two boxes under Load:
+- **Transfer workaround** ticked (see Words): B20_J is listed as `J_transit`, `J_M1`, `J_M2`, `J_M4`, 4 mv.
+- **Rhino obstacles collide** unticked, with the grey chip `Rhino obstacles: drawn only`: Rhino's cabinet `env39` is
+  drawn see-through and left out of every collision check. Leave it: it sits 0.38 m nearer the park row than the
+  measured cabinet, and ticked it refuses any base pose on the row.
 
-**Expect:**
-- unticked, with the grey chip `Rhino obstacles: drawn only` under it;
-- **3D view:** Rhino's cabinet `env39` see-through, a long box just in front of the measured cabinet (on the robots'
-  side). It sits about 0.38 m nearer the robots than the measured one; the known issues say more.
+**3.3** The settings, under Mark done: **Ignore built bars** off, **Insert split mm** 5, **Spiral** off, **Spiral s**
+20, **Spiral turns** 4, **Servo by bar** on, **Dry run** off. Leave them so. A run started before 2026-10-28 keeps the
+Servo by bar it saved (off): tick it. There is no Rigid insert box: a ground bar always inserts rigid, every other bar
+rigid then compliant.
 
-Tick it.
+**3.4** Optional: the simulated screws stall 2 s after a tighten whatever the arms do, so an insert's 5 s path is held
+40 % in. To see an insert reach its end and stall in the hold, give the screws more time, in a terminal of the
+session (Ctrl-b " splits one; it gets the session's settings), after `source scripts/fake_lab/env.sh`:
 
-**Expect:**
-- the chip turns green: `Rhino obstacles collide`;
-- the Rhino cabinet turns solid;
-- **monitor pane:** `[process] Rhino obstacles now count in every collision check`.
-
-Untick it again.
-
-**Expect:** `[process] Rhino obstacles are drawn only: left out of every collision check; replan`.
-
-If a red `room unchecked` chip ever shows next to it, the measured obstacles are not loaded, and nothing in the room is
-checked. `monitor.sh` loads them; tell me if you see it.
-
----
-
-## 4. The base planner: the box on Belle, then Cindy to her B20 base (Jakob's planner)
-
-**4.1** **The box on a base plan.** Belle's park pose is inside Rhino's cabinet.
-
-> Not run again since the robots start on the park row: Belle now starts at her park pose, so step 4 may name the
-> start rather than the target, and the plan of step 5 is about 0 m long.
-
-1. Open **Plan** › **Base** (base_planner_panel) in the side panel.
-2. Pick Robot **a200-0805**.
-3. Click Load **Park**.
-   - **Expect:** `target +1.700 +1.350 +90.0°`.
-4. Tick **Rhino obstacles collide**, then click **Plan**.
-   - **Expect:** `no plan: target is in collision with obstacles/env39`.
-5. Untick it and click **Plan** again.
-   - **Expect:** `Lattice (hybrid A*) (straight): 0.50 m, 2.5 s`.
-6. Click **Clear**. Belle stays where she is.
-
-**4.2** **Cindy to her B20 base.** The base planner plans around the robots, the obstacles and whatever each robot
-holds at the movement the **process** panel shows. The run selects `B20_J_transfer` there, and at that movement the
-design has Cindy *holding* bar B20. A held bar counts as part of Cindy, and from her start it sticks into the measured
-cabinet behind her, so her plan would be refused (`start is in collision with building cabinet`).
-
-So first show the action's start, before the bar is held: in the **process** panel, click **◀ action** once.
-
-**Expect:** `movement 1/5  B20_J_load`. This changes only the 3D overlay and the planners' loaded targets, not the
-run's current step.
-
-Then, in **base_planner_panel**:
-1. Pick Robot **a200-0806**.
-2. Click Load **Step**.
-   - **Expect:** `target +0.527 -3.067 +89.6°`.
-3. Click **Plan**.
-   - **Expect:** after about 2 s, `Lattice (hybrid A*) (straight): 4.83 m, 27.3 s`. That was from the old start,
-     0.5 m behind the park row; from the row the length and time differ a little.
-4. Click **Commit**.
-
-**Expect:**
-- `sent to a200-0806's follower`, and Cindy drives in the 3D view for about a minute: the simulated follower is
-  slower than the plan's 27 s.
-- **Control** → `0806` → `Base` ends at about `xyz +0.52 -3.06`: the simulated follower stops within about 1 cm and
-  2°.
-
-While a base drives, Jakob's clearance watch soft-stops it if it comes within the plan's margin of anything.
-
-Alice and Belle stay where they are until section 9.
-
-The simulated base has a stand-in controller manager (crl-husky), so its `ctrl` chip is green and driving it by hand
-(**Control** → `Base` → **Vel**) can switch its velocity controller on; not tried in this test.
-
----
-
-## 5. B20_J on Cindy: the transfer, as the workaround runs it (ours)
-
-The **assembly_steps** panel shows:
-
-```
-B20_J · cindy (a200-0806) · step 1/2 · no plan
-B20_J_transfer (transfer_free) · then: B20_J_place_bar, B20_J_grasp · skipped: B20_J_load
+```shell
+ros2 param set --no-daemon /a200_0806/left_gripper/scaffolding_tool_sim tighten_s 8
+ros2 param set --no-daemon /a200_0806/right_gripper/scaffolding_tool_sim tighten_s 8
 ```
 
-**5.1** Click **Check goal**. It takes about 10 s.
-
-**Expect:**
-- **Monitor pane:** `check goal B20_J_transfer: goal found (ssik, rank 1 of 64), max |goal - authored| 0.07 rad`.
-  - ssik is the exact IK solver; "rank 1 of 64" means it took its solution closest to the authored joints.
-  - The 0.07 rad is because the base stopped about 2° off the design base.
-- **assembly_run:** `run <date>_<time> started`. A run folder is created at the first thing it records.
-
-**5.2** Click **Plan**. It takes 20–40 s.
-
-**Expect:**
-- **Chip:** `plan ready`.
-- **Panel:** `min … s by the arms' limits`, about 17 s. That is the 90°/s² acceleration cap at work.
-- **Monitor pane:** `transfer_free solved by tamp.plan_free_dual_arm: … waypoints, 1 tries`.
-
-**5.3** Click **Play**.
-
-**Expect:** the preview runs as it will move. Drag `t s` to scrub through it.
-
-**5.4** Click **Exec**.
-
-**Expect:** the **movement_exec** panel shows `waiting for Confirm` and the whole sentence:
-
-> cindy (a200-0806): B20_J_transfer — move left_ur_arm, right_ur_arm along the planned path (Rhino obstacles not
-> checked), 17 s, largest joint travel …° (Play it first). Confirm to move.
-
-"(Rhino obstacles not checked)" is there because the box is unticked.
-
-Click **Confirm** in movement_exec.
-
-**Expect:**
-- Both arms move.
-- **Monitor pane:** `B20_J_transfer: arrived, end within 0.00°`, then `B20_J_transfer: no servo correction (not supported yet)`.
-
-**5.5** **Expect:** the next prompt is the bar by hand:
-
-> B20_J_place_bar — do Operator places the bar by hand, then Confirm (the robot panels and their free drive refuse while
-> this step has the robots' leases; Cancel to use them).
-
-Click **Confirm**.
-
-**5.6** **Expect:** the next prompt is the grasp:
-
-> B20_J_grasp — GRASP: STOP, then the M1 screw of left_ur_arm, right_ur_arm TIGHTENS until STALLED (≤30 s), then STOP.
-
-Click **Confirm**.
-
-**Expect:** after about 2 s, `B20_J_grasp: every gripper screw STALLED: the bar is clamped`. The simulated tools stall
-a fixed time after the tighten, bar or no bar.
-
-**5.7** Step 2/2 is the insert. Don't run it: its Exec line says the insert is not supported yet.
-
-**5.8** In **assembly_run**, click Action **Mark done**.
-
-**Expect:**
-- `B20_J marked done in run …; recorded robots/a200-0804, robots/a200-0805, robots/a200-0806`;
-- the current action moves to `B20_R`.
+**Expect:** `Set parameter successful` twice. `--no-daemon` skips ros2's background helper, which can stop working and
+then fails every command with `!rclpy.ok()`.
 
 ---
 
-## 6. B20_R: home, and one motion at a time (ours)
+## 4. B20: Cindy joints the ground bar, then retreats
 
-**6.1** Step 1/2 is the retreat together with the ungrasp. Its Exec line says neither is supported yet. Click
-**Next ▶**.
+**4.1 Cindy's base.** Open **Plan** › **Base**, pick Robot **a200-0806**, click Load **Step**, then **Plan**.
 
-**6.2** Step 2/2 is `B20_R_home (free_home)`. Click **Plan**.
+**Expect:** `target +0.527 -3.067 +89.6°`, then after about 2 s `Lattice (hybrid A*) (straight): 5.24 m, 29.0 s`.
 
-**Expect:** it fails with `the start collides: tools/cindy/AT3L with bars/B20; …`.
+Click **Commit**. **Expect:** `sent to a200-0806's follower`; Cindy drives in the 3D view for about 50 s; the monitor
+pane says `base path … on a200-0806: done`. **Control** › `0806` › `Base` then reads about `xyz +0.53 -3.06`,
+`yaw +88°`: the simulated follower stops within about 1 cm and 2°.
 
-That is right for the simulation: no insert or retreat ran, so the grippers still sit around B20. Ignore built bars
-doesn't help either, because B20 is this action's own bar. Jakob's arm planner (Plan → Arm, Load Stow) refuses for
-the same reason: `start is in collision: left_ur_arm tool with bars/B20`.
+**4.2 B20_J, step 1/2: the transfer, the bar, the grasp, the servo.** Back in **Assembly**, the step line reads
+`B20_J_transfer (transfer_free) · then: B20_J_place_bar, B20_J_grasp · skipped: B20_J_load` and the Exec line
+`Exec: cindy (a200-0806) moves left_ur_arm, right_ur_arm; then waits for B20_J_place_bar + B20_J_grasp by hand; then
+servos left_ur_arm, right_ur_arm onto the insert start`. As in the old monitor, Exec sends a planned motion at once;
+Confirm is asked only for the bar (placed and clamped, one prompt), a Robotiq step and the servo's first pass.
 
-To get past it, jog Cindy's grippers off the bar by hand:
-1. Open **Control** → `0806` → `Left`.
-2. Press and hold **+ lift** for about 3 s. At Speed 0.5 the lift joint turns about 25°.
-3. Do the same in `Right`.
+1. Click **Live IK: insert start** (about 5 s).
+   - **Expect:** `check goal B20_J_transfer: goal found (ssik, rank 1 of 64), max |goal - authored| 0.06 rad` in the
+     monitor pane, and `run <date>_<time> started`: a run folder is created at the first thing it records. The 0.06
+     rad is the base 2° off the design base.
+2. Click **Plan** (15–40 s).
+   - **Expect:** the chip `plan ready`, `min 16.8 s by the arms' limits`, and in the pane `transfer_free solved by
+     tamp.plan_free_dual_arm: 66 waypoints, 1 tries`. The **Plan plots** window opens at the bottom left, its two
+     plots filled: every joint along the preview, and the largest joint step per row. Close it with the control at
+     its bar's right end, or leave it: it only opens again at the next plan.
+3. Click **Play**: the preview runs as it will move; the slider **Preview time** scrubs it.
+4. Click **Exec**. Both arms move at once, for 17 s.
+   - **Expect:** in the pane, as a warning (over 60°), `cindy (a200-0806): B20_J_transfer — move left_ur_arm,
+     right_ur_arm along the planned path (Rhino obstacles not checked), 17 s, largest joint travel 214°`, then
+     `B20_J_transfer: arrived, end within 0.00°`, then the one prompt for the bar: `B20_J_place_bar + B20_J_grasp —
+     Operator places the bar by hand; clamp it: tighten the gripper screws of left_ur_arm, right_ur_arm with the
+     tools' buttons until they stall, then Confirm …`. The monitor sends the tools nothing: in the lab you place the
+     bar, press each tool's button and check the bar is held before you Confirm.
+5. Click **Confirm** (here or on the phone's Exec tab: the bar is placed and clamped, in the simulation's mind).
+   - **Expect:** the servo runs by itself, and the **Exec plots** window opens at the bottom left with the servo's
+     plots (one point per pass): `[servo] feedback: tool0 (0.2 mm); the MoCap bar bars/B20 is recorded
+     alongside.`, a warning `no
+     marker sample of bars/B20 (asset 1020) within 1 s: is Motive streaming it?` (right: no bar markers here),
+     `[servo 0] tool0 pos L=0.06 R=0.08 mm`, `servo 1/8 B20_J_transfer: servo: nothing left to plan`, `### bar pose
+     at termination (bars/B20): FK-vs-design 0.11 mm/0.007°, MoCap-vs-design n/a, MoCap-vs-FK n/a`, and `Exec
+     B20_J_transfer: done — every part done`. The flanges are already within 0.2 mm, so no servo pass moves; a pass
+     that would move asks for Confirm first (`SERVO 1/8 onto the insert start (tool0): …`). The exec section's last
+     line keeps `servo done: nothing left to plan (correction L … mm, R … mm, under 0.2 mm)`.
 
-These are raw joint moves with no collision check (the panel says so), so use them in the simulation only.
+**4.3 B20_J, step 2/2: the insert, and the servo after it.** The step line reads `B20_J_insert (insert)`.
 
-**6.3** Click **Plan** again.
+1. Click **Plan** (about 3 s). **Expect:** `insert solved by tamp.plan_constrained_dual_arm_linear: 4 waypoints`.
+2. Click **Exec**. The insert runs at once.
+   - **Expect:** in the pane `B20_J_insert — RIGID insert of a ground bar, no tighten, 5.0 s, largest joint travel
+     2.5°.` (a ground bar has no mating joint: nothing tightens and the compliance controller is not engaged), then
+     `insert: RIGID_DONE: ground bar in, no tighten; the flanges stopped 0.0 mm from the planned end;
+     peak |F| not measured`, then the servo after the grounded insert: a warning `no force reading: the servo's load
+     guard is OFF. Watch the arms and use Cancel if the bar pushes on the floor.` (no F/T sensor here),
+     `[servo 0] tool0 pos L=0.15 R=0.19 mm`, `nothing left to plan`, and `Exec B20_J_insert: done — every part done`.
+3. The line under the buttons says `every step of B20_J done: Mark done below`. Click **B20_J done**.
+   - **Expect:** `B20_J marked done in run …`, the row `1. B20_J` turns green `· done`, `1/78 done`, and the current
+     step becomes `B20_R · B20_R_ungrasp (1/3)`.
 
-**Expect:** `free_home solved by tamp.plan_free_dual_arm: … waypoints`.
+**4.4 B20_R, step 1/2: the retreat, with the ungrasp during it.** The step line reads `B20_R_retreat
+(retreat_linear) · with: B20_R_ungrasp`.
 
-Then set **Motion s** to **25**. The slow motion gives you time for 6.4.
+1. Click **Plan**. **Expect:** `retreat_linear solved by tamp.plan_dual_arm_linear_independent: 12 waypoints`.
+2. Click **Exec**. The retreat runs at once.
+   - **Expect:** in the pane `B20_R_retreat — RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN; force
+     sensors zeroed; COMPLIANT break-out 5.0 mm (0.5 s); joint control; the rest replanned from where the tools are
+     and run at once (4.5 s). Watch both tools let go and back off along their lines.`, then
+     `retreat: the gripper screws of left_ur_arm + right_ur_arm OPEN`; `force sensors zeroed`; the
+     switch to `cartesian_compliance_controller` (`left_ur_arm, right_ur_arm: cartesian_compliance_controller running
+     (0.3 s)`) and the 0.5 s stream; `back under scaled_joint_trajectory_controller (0.1 s)`; the tail replanned
+     (`retreat tail B20_R_retreat: … 48 waypoints`); the checks: `PASS start`, `PASS break-out: worst tool0 1.6 mm
+     short of its end (limit 3), travelled 3.5 / 3.4 mm`, `PASS contact: |F| left_ur_arm 0.1 N, right_ur_arm 0.0 N
+     (limit 20 N)` (the fake wrench), one failing: `check FAIL grippers: left_ur_arm LOOSENING, right_ur_arm LOOSENING
+     (want STALLED = fully open)` (the simulated screws loosen until a STOP and never stall), `PASS` for both tool0
+     paths (46 mm, ends 0.1 mm from the goal), the joints and the speed; `running the tail now (48 rows, 4.6 s); 1
+     check(s) FAILED`; after 5 s `retreat: RETREATED: retreated; 1 check(s) FAILED` and `Exec B20_R_retreat: done —
+     every part done`. The ungrasp counts as done with it. The **Exec plots** window opens with the force and torque
+     of the part (its servo plots hidden meanwhile).
 
-**6.4** Click **Exec**, then **Confirm**. While Cindy moves:
+**4.5 B20_R, step 2/2: home.** Click **mv ▶** in the process section; the step line reads `B20_R_home (free_home)`.
 
-- **Alice's arm:** open **Control** → `0804` → `Arm`, then press **+ lift** for a moment.
-  - **Expect:** a `lease refused` chip on Alice's arm, and in the monitor pane a line saying robot a200-0804 is leased
-    by `movement_exec: exec B20_R_home`.
+1. Click **Plan** (20–40 s). **Expect:** `free_home solved by tamp.plan_free_dual_arm`, `min 26 s by the arms' limits`.
+2. Click **Exec**: both arms move at once. **Expect:** in the pane `B20_R_home — move left_ur_arm, right_ur_arm along
+   the planned path …, 26 s, largest joint travel 222°`, then `B20_R_home: arrived, end within 0.00°` after 26 s.
+3. Click **B20_R done**. **Expect:** `2/78 done`, the current step `B21_J · B21_J_transfer (4/5)`.
 
-After about 25 s, **expect:** `B20_R_home: arrived, end within 0.00°` and `Exec B20_R_home: done — every part done`.
-
-**6.5** The step panel now has a button **Mark B20_R done**. Click it.
-
-**Expect:**
-- the current action becomes `B21_J`;
-- **assembly_run** shows `2/78 done`.
-
----
-
-## 7. Staleness, Cancel and Stop all (B20_J again)
-
-**7.1** In **assembly_run**, click the row `1. B20_J · cindy · done`, then Action **Reopen**.
-
-**Expect:** `B20_J reopened in run …`, and B20_J's transfer is the current step again.
-
-**7.2** Click **Plan**. It takes about 20 s, from Cindy's home pose.
-
-Then move Alice's wrist: open **Control** → `0804` → `Arm` and press **+ w3** for half a second (about 7°).
-
-**Expect:**
-- the chip turns `plan stale: replan` at once;
-- clicking **Exec** answers `nothing to Exec: the plan is stale; Plan first`.
-
-This is ours.
-
-**7.3** **Changing the Rhino obstacles box makes a plan stale (ours).**
-1. Click **Plan**.
-2. Click **Exec**, but don't Confirm yet. The prompt says `(Rhino obstacles not checked)`.
-3. Tick **Rhino obstacles collide** in the process panel.
-4. Click **Confirm**.
-
-**Expect:**
-- **Monitor pane:** `Exec B20_J_transfer: refused — B20_J_transfer: the Rhino obstacles were switched on since
-  planning`;
-- the step panel: `plan stale: replan`.
-
-Untick the box again.
-
-**7.4** **Cancel during a motion (ours).** Plan, Exec, Confirm. While the arms move, click **Cancel** in movement_exec.
-
-**Expect:**
-- **Monitor pane:** `cancelled: holding every arm`, and `Exec B20_J_transfer: cancelled — … (operator)`.
-- **3D view:** the arms stop mid-path.
-
-**7.5** **Stop all during a motion (Jakob's button; our executor's reaction).**
-
-1. Plan again. The plan starts from where 7.4 stopped and is short.
-2. Set **Motion s** to 20.
-3. Click Exec, then Confirm.
-4. While the arms move, click **Stop all (Esc)** at the top of the page (or press Esc).
-
-**Expect:**
-- **Monitor pane:**
-  - `robot a200-0806: SOFT STOP: Stop all`;
-  - an error `/a200_0806: switch_controller is not available, cannot stop`: the simulated bases have no controller
-    manager;
-  - `cancelled: holding every arm`, and `Exec B20_J_transfer: cancelled — … (Stop all (the soft stop))`.
-- **health:** every arm's `ctrl` chip turns amber, with `last stop: stopped by operator`. Each robot stays stopped until
-  its own Resume.
-
-Then click **Resume** under each of the three robots.
-
-**Expect:** `robot a200-080x: resume arms: resuming`, and that robot's arm chips turn green again.
+Mark done accepts an action with steps left: wait for `every step of … done` before clicking it, or the next base plan
+refuses because an arm still stands at the bar.
 
 ---
 
-## 8. A robot's link drops (decision "F5", ours)
+## 5. B21: Cindy joints the bar, Alice holds it, Cindy retreats
 
-You'll decide later how strict this should be. This shows you today's rule: strict, so one silent robot stops every
-motion.
+**5.1 Cindy's base.** **Plan** › **Base**, Robot **a200-0806**, Load **Step**, **Plan**, **Commit**.
 
-`link.sh` freezes one robot's simulator processes, as if its WiFi dropped, and wakes them again; nothing is killed. Run
-it in a new pane: press Ctrl-b " to split, then `cd ~/Code/ros2_ws_next/src/husky-assembly-teleop/scripts/fake_lab`.
+**Expect:** `target +0.947 -3.171 +90.0°`, a path of about `0.77 m, 11 s`, then `done` after about 30 s. The simulated
+follower sometimes never starts a short path (`base path … timed out: still following`): click **Plan** and
+**Commit** again. **Control** › `0806` › `Base` ends at about `xyz +0.95 -3.18`, `yaw +92°`.
 
-> **Bring every link back up within 60 s.** On Zenoh, a frozen robot's sessions expire after 60 s, and its arm then
-> doesn't come back after `up`; only restarting the fake lab helps (`tmux kill-session -t fake_lab`, then `tmux.sh`).
-> A real WiFi drop doesn't do this: there, the robot's own processes stay attached to the robot's router.
+**5.2 B21_J.** As 4.2 and 4.3, with these differences:
+- Live IK: `goal found (ssik, rank 1 of 64), max |goal - authored| 0.09 rad`; the transfer's plan takes 19 s.
+- The insert has a mating joint on the left: Exec logs `B21_J_insert — INSERT: rigid 10.0 mm (3.3 s), then
+  COMPLIANT 5.0 mm (straight line); the joint screw of left_ur_arm TIGHTENS from the start until it stalls (≤ 30 s),
+  then STOP and back to joint control. Watch the bar enter its joint and the held bars stay in their jaws.` and runs
+  it at once: `insert: left_ur_arm joint screw TIGHTENING`, the rigid part (3.4 s), `cartesian_compliance_controller
+  running (0.3 s)`, and, since the simulated screw stalls 2 s after the tighten (3.4), at the switch itself:
+  `left_ur_arm joint screw STALLED at 0.0 of 1.7 s; left_ur_arm back under joint control, right_ur_arm finish the line
+  under compliance`, a warning `the arms did NOT reach the line's end: left_ur_arm 0.1 of 8.0 mm, … right_ur_arm 7.8 of
+  8.1 mm`, `insert: STALLED: left_ur_arm joint screw STALLED; peak |F| left_ur_arm 0.2 N, right_ur_arm 0.2 N` and `Exec
+  B21_J_insert: done`. Once in the pane the first switch back was `rejected` and taken 0.2 s later: a retry, not a
+  fault. With `tighten_s 8` (3.4) the left arm runs its compliant line before the stall.
+- No servo after this insert: it is not a ground bar.
+- Click **B21_J done**: `3/78 done`, the current step `B21_H · B21_H_approach (1/4)`.
 
-**8.1** Plan B20_J's transfer again, but don't Exec yet. Then run `./link.sh belle down`.
+**5.3 B21_H: Alice holds B21.**
 
-**Expect:**
-- `link.sh: belle down (6 processes)`;
-- within about 2 s, health turns red for A200-0805;
-- **assembly_run:** `belle not live; last recorded live at …`.
+1. **Alice's base.** **Plan** › **Base**, Robot **a200-0804**, Load **Step**, **Plan**, **Commit**. **Expect:**
+   `target +0.638 -1.561 -29.6°`, a path of about 3 m, `done` after about 50 s; `Control` › `0804` › `Base` at about
+   `xyz +0.64 -1.56`, `yaw -31°`.
+2. **Step 1/4, the approach and its servo.** Click **Live IK: linear start** (the first plan for Alice builds her
+   planning cell, about 7 s): `check goal B21_H_approach: goal found (ssik, rank 1 of 8), max |goal - authored| 0.08
+   rad`. **Plan**: `support_approach solved by arm.plan_arm: 2 waypoints`. **Exec**: the arm moves at once.
+   - **Expect:** in the pane `alice (a200-0804): B21_H_approach — move ur_arm along the planned path …, 16 s, largest
+     joint travel 206°`, `B21_H_approach: arrived, end within 0.00°`, then the servo: `[servo] feedback: tool0 (0.2 mm); no
+     MoCap bar recorded (no bar held).`, `[servo 0] tool0 pos arm=0.19 mm`, `nothing left to plan`, `Exec
+     B21_H_approach: done — every part done`. The jaws stop short of B21.
+3. **Step 2/4, open.** Click **Exec**, then **Confirm** on `B21_H_open — OPEN the gripper (0.426). Confirm to send.`
+   - **Expect:** at once, `B21_H_open: at 0.426 rad`: the simulated Robotiq reaches every goal at once (not run yet
+     here: without `ros-humble-gripper-controllers` (section 0.1) it is refused with `/a200_0804/gripper: the
+     gripper's action server is not available`; the step stays, mv ▶ goes on).
+4. **Step 3/4, to grasp.** **Plan** (`support_linear`), **Exec**: the arm moves at once. **Expect:** in the pane
+   `B21_H_to_grasp — move ur_arm …, 5 s, largest joint travel 22°`, then `arrived, end within 0.00°`.
+5. **Step 4/4, the close: the handoff.** Click **Exec**. **Expect:** `B21_H_close — CLOSE + compliant handoff on
+   ur_arm: the arm goes COMPLIANT before the close (gives way ≤ 10 mm); jaws 0.8, effort 0.1, ≤ 30 s; then joint
+   control. Watch Cindy's tools are not pulled; hand on the e-stop.` Click **Confirm** (not run yet here: refused
+   as the open, `REFUSED: /a200_0804/gripper: the gripper's action server is not available; nothing sent`).
+   - **Expect:** in order, the joint controller confirmed, the force sensor zeroed, the anchor gap, the switch to the
+     compliance controller, the close, `gripper done`, back under joint control; the arm does not move.
+6. Click **B21_H done**: `4/78 done`, the current step `B21_R · B21_R_ungrasp (1/3)`.
 
-**8.2** Click **Exec**.
-
-**Expect:** it is refused before any prompt:
-
-> busy: can't tell whether a200-0805 ur_arm is moving: its joint states are … s old; no automatic motion until they
-> come back (check its link in Health) or the monitor restarts
-
-**8.3** Run `./link.sh belle up`.
-
-**Expect:**
-- within about 2 s, health turns green and the run panel shows `belle live now`;
-- no Reconnect click is needed;
-- a burst of red `[rmw_zenoh_cpp] Query queue depth of 10 reached …` lines in the monitor pane: harmless (see the
-  known issues).
-
-**8.4** **The link drops during a motion.**
-
-1. Plan if needed, then Exec and Confirm on Cindy.
-2. While her arms move, run `./link.sh belle down`.
-
-**Expect, within about 0.5 s:**
-
-> a200-0806: can't tell whether a200-0805 ur_arm is moving: its joint states are 0.5 s old … holding every arm
-
-The Exec ends failed, with Cindy held mid-path: a *parked* robot's link stopped her.
-
-Note what you think. Is that right, or too strict for a robot that was standing still? Then run `./link.sh belle up`.
-
----
-
-## 9. The support robot: Alice at B21_H
-
-**9.1** In **assembly_run**, click the row `4. B21_H · alice · pending`.
-
-**Expect:** the step panel shows `B21_H · alice (a200-0804) · step 1/4 · B21_H_approach (support_approach)`, and the
-process panel `movement 1/4  B21_H_approach`.
-
-**9.2** Drive Alice to her design base with **base_planner_panel** (Jakob's):
-1. Pick Robot **a200-0804**.
-2. Click Load **Step**.
-   - **Expect:** `target +0.638 -1.561 -29.6°`. If it shows another target, the process panel hadn't followed yet:
-     click Step again.
-3. Click **Plan**.
-   - **Expect:** `Lattice (hybrid A*): 3.12 m, 25.2 s`. That was from the old start, 0.5 m behind the park row; from
-     the row the length and time differ a little.
-4. Click **Commit**.
-
-**Expect:**
-- Alice drives in the 3D view, for about 50 s in the simulation.
-- **Control** → `0804` → `Base` shows `xyz ≈ +0.63 -1.56`, `yaw ≈ -32°`.
-
-**9.3** In **assembly_steps** (ours), run the approach.
-
-1. Click **Check goal**.
-   - **Expect:** `goal found (ssik, rank 1 of 8)`, about 0.07 rad from the authored goal, because the base stopped
-     about 2° off.
-2. Click **Plan**.
-   - **Expect:** `support_approach solved by arm.plan_arm`.
-3. Click **Exec**, then **Confirm**.
-   - **Expect:** `B21_H_approach: arrived, end within 0.00°`.
-
-**9.4** Step 2/4 is `B21_H_open`. Click Exec; the prompt is `B21_H_open — OPEN the gripper (0.426). Confirm to send.`
-Click Confirm.
-
-**Expect:** at once, `B21_H_open: at 0.426 rad`: the simulated Robotiq reaches every goal at once. Stop the B21_H steps
-here.
+**5.4 B21_R.** As 4.4 and 4.5, with Alice holding B21: the retreat's line and checks are the same; the tail is
+replanned (`retreat tail B21_R_retreat: … 52 waypoints`). Then **mv ▶**, the home move, **B21_R done**: `5/78 done`.
 
 ---
 
-## 10. The phone page
+## 6. B22: Cindy joints the bar with both screws, then retreats
 
-**10.1** Open http://localhost:8081, either in a narrow browser window or on your phone on the same network as
-`http://<laptop IP>:8081`.
+**6.1 Cindy's base.** As 5.1: `target +1.166 -3.212 +95.8°`, a short path.
 
-**Expect:** the tabs **Health**, **Exec** (ours) and **Control**, and **Stop all** on top.
+**6.2 B22_J.** As 5.2; the insert tightens both screws: `the joint screw of left_ur_arm + right_ur_arm TIGHTENS …`,
+and ends when both have stalled. Here the transfer's plan from the retreat pose took up to 110 s; `Plan` says if it
+gives up (`no path in 120 s`). Click **B22_J done**: `6/78 done`.
 
-**10.2** Start any Exec on the desktop page (B21_H_open again is enough), then open the phone page's **Exec** tab.
-
-**Expect:** it shows the same prompt with **Confirm** and **Cancel**. Confirm from the phone: the desktop's monitor pane
-shows the same result as a desktop Confirm.
+**6.3 B22_R.** As 4.4 and 4.5. Click **B22_R done**: `7/78 done`, and the current step is `B34_J`: the first three
+bars are built and the next bar is Belle's.
 
 ---
 
-## 11. The run record, a restart, and a new run (ours)
+## 7. The run record and a restart
 
-**11.1** Open the run folder:
+**7.1** Open the run folder:
 `~/husky_fake_lab/drive/data_design_study/261008_2ModulesDemo_purged_process/runs/<date>_<time>/`.
 
-**Expect:**
-- `run.json`, `progress.json` and `events.jsonl`;
-- `movements/<action>/<movement>.<n>.json`, one file per part, including the refused and cancelled ones. A planned
-  motion's file holds its plan's basis, with `obstacles_collide` (the box as it was at Plan).
+**Expect:** `run.json`, `progress.json`, `events.jsonl`; `movements/<action>/<movement>.<n>.json`, one file per part,
+the refused and cancelled ones included (an insert's or retreat's file keeps its settings, phases, switches, stall
+times and checks); `servo/<action>/<movement>.<n>.json` with a `.png` of each servo's readings.
 
-**11.2** In the monitor pane:
-1. Press **Ctrl-C once** and wait for `(viser) Server stopped` twice.
-2. Press **Up**, then **Enter**, to start the monitor again.
-3. Reload the page and click **Load**.
+**7.2** In the monitor pane press **Ctrl-C** once, wait for `(viser) Server stopped` twice, press **Up** and **Enter**,
+reload the page and click **Load**.
 
-**Expect:**
-- `continuing run <date>_<time>`;
-- the done actions are still done;
-- **Rhino obstacles collide** is unticked again: the box always starts off.
+**Expect:** `continuing run <date>_<time>`; the done actions are still green; the settings are the run's (the
+workaround box is on, Rhino obstacles off). The robots keep where they are across the restart.
 
-The robots keep where they are across the restart, so there's no need to drive again.
-
-**11.3** In **assembly_run**, click Run **New run**. It asks in the panel's Prompt row (`Start a new run? Every action
-starts pending; the old run is kept.`); click **Confirm** there.
-
-**Expect:**
-- a new run folder, with `0/78 done` and current B20_J;
-- the old folder stays.
+**7.3** Under the run, **New run** twice (the second click waits as long as you need) makes a new run folder (`0/78 done`, every row pending); the old
+folder stays.
 
 ---
 
-## 12. Stop
+## 8. Optional: interruptions
+
+**8.1 Cancel during a motion.** On any planned motion, Exec, then click **Cancel** (red) while the arms move.
+**Expect:** `cancelled: holding every arm`, the arms stop mid-path, `Exec …: cancelled — … (operator)`. Plan again
+from where they stopped.
+
+**8.2 Stop all during a motion.** Click **Stop all (Esc)** at the top of the page while the arms move. **Expect:**
+`robot a200-0806: SOFT STOP: Stop all`, `cancelled: holding every arm`, every arm's `ctrl` chip amber with `last stop:
+stopped by operator`; each robot stays stopped until its own **Resume** under Health.
+
+---
+
+## 9. Stop
 
 1. Press Ctrl-C once in the monitor pane and wait for `Server stopped`.
-2. Press Ctrl-C in the top pane.
+2. Press Ctrl-C in the `sim` pane.
 3. Run `tmux kill-session -t fake_lab`. This also stops the router and the relay.
 
 ---
@@ -593,26 +420,24 @@ These are not mistakes on your side.
 
 | What you see | Why |
 |---|---|
-| The odd monitor start (pytest imported). | A workaround for compas_fab's stdout race (see section 1). It needs a real fix before any lab use: decision 1 afterwards. |
-| Rhino's cabinet `env39` is in a different place from the measured one. | Rhino's cabinet (y 1.63–2.23 m) is about 0.38 m nearer the park row (y = 1.35 m) than the probe-measured cabinet (`data/lab/main.json`, from y = 2.00 m). With **Rhino obstacles collide** ticked, the base planner refuses any start or target on the park row (4.1); unticked, the default, the row is fine, and the robots start on it. The Rhino file needs the fix for Rhino's own planning. |
-| Cindy's base path is refused while the process shows a movement where she holds a bar (4.2). | The base planner counts a held bar as part of the robot, and at `B20_J_transfer` the design has B20 in her grippers; from her start it reaches the measured cabinet. With the transfer workaround, the bar isn't actually there while she drives, but the base planner doesn't know the workaround. Show the action's start (**◀ action**) first. |
-| Insert, retreat and handoff are refused; the servo logs "no servo correction (not supported yet)". | M6 and M7 are specified, not built. |
-| B20_R_home won't plan until Cindy's grippers are jogged off the bar (6.2). | In the simulation the insert and retreat never ran. |
-| Don't press **Cancel** in base_planner_panel right after a **Commit** while that robot is still driving an earlier path. | A race in Jakob's code (review finding M1, your decision 3a): within about one tick, the earlier path can keep driving with nothing watching it. Stop a driving base with **Stop all**. |
-| After a link comes back (8.3), a burst of red `[rmw_zenoh_cpp] Query queue depth of 10 reached …` lines. | Jakob's controller-manager check asks once a second without waiting for the answer; the questions pile up while the link is down. Harmless; a fix is Jakob's. |
-| A base's `signal` chip turns red now and then (hover: a gap). | The monitor's own callbacks run late on a busy PC; the simulator publishes at a steady 50 Hz. Close other simulations and test runs, and run the monitor under the performance power profile. |
-| While a robot's link is down (8.1), its mocap pose keeps arriving, but ever older. | The fake Motive keeps publishing the frozen base, as Motive keeps tracking a robot whose WiFi dropped, but with the stamp of its last true pose. A fix in the fake Motive is Jakob's. |
-| A robot's arm stays red after `link.sh … up`. | The link was down for more than 60 s, and Zenoh's sessions expired (section 8). Restart the fake lab. |
-| process needs **Load**. | The README says it loads at start; the code waits for the button. A doc fix. |
-| A plan made in base_planner_panel or **Plan** → **Arm** before you change the Rhino obstacles box is kept. | Jakob's planners don't replan on a scene change (the same as when an obstacle is edited). Replan after changing the box. The assembly steps' plans do go stale (7.3). |
-| B20's transfer planned from Cindy's home failed 3 × 120 s once. | Alice and Belle stood next to Cindy with their arms straight out. With them away it solves in about 20 s. If Plan says "no path in 120 s", look at what stands in the way. |
-| Not visible here: the force sensors are never zeroed while the transfer workaround is on. | The port zeroes them only after the load step, which the workaround skips. Today's old-monitor commit 979ffac fixed the same gap there; the port needs it too. |
+| PyBullet's lines in the monitor pane. | `monitor.sh` imports pytest before the monitor: compas_fab closes stdout for a moment around every model it loads, other threads then fail with `OSError(16, 'Device or resource busy')`, and compas_fab skips that only under pytest. A real fix is your decision. |
+| `robots differ` after Load. | The export used the old UR frames; the monitor plans with the configured robots. |
+| An insert's screws stall after 2 s whatever the arms do; its path is held 40 % in. | The simulated tool's `tighten_s`, 2 s by default (3.4 sets it). |
+| A retreat reports `1 check(s) FAILED`: grippers. | The simulated screws loosen until a STOP instead of stalling fully open. The contact check reads the fake wrench (section 0.2b) and passes near zero. |
+| A base's `xyz` flickers between two poses, the relay pane says `rigid body 18xx: now from …` again and again. | A simulator of an earlier launch is still alive in the same domain (`pgrep -af husky_sim`: two with the same `__ns`); stop the old one. |
+| `no marker sample of bars/B20 (asset 1020)`. | The fake Motive streams no bar markers; the servo runs on tool0 and records that the bar could not be measured. |
+| A short base path `timed out: still following`. | The simulated follower sometimes never starts a path of a few decimetres. Plan and Commit again. |
+| An arm's chips stay red after start. | Its spawners timed out while three robots started at once (`Failed loading controller joint_state_broadcaster` in the `sim` pane). Restart `sim.sh`. |
+| `sim.sh` refuses: `simulator nodes of an earlier start still run`. | A start that died part way (a missing package or script) left its nodes running. Run the `kill -INT …` it prints, then `sim.sh` again. Started anyway, a second controller manager under the same name answers for an arm at random: its `ctrl` chip flickers, Exec is refused with `scaled_joint_trajectory_controller is not active (active: None)`, and the new start's spawners report `Controller already loaded` then `no controller with this name exists`. |
+| Rhino's cabinet `env39` is 0.38 m nearer the park row than the measured one. | A Rhino-side fix; with **Rhino obstacles collide** off (the default) it is drawn only. |
+| The ground feet of B20 sit 15.6 mm into the floor at their design pose. | A Rhino-side fact. The planner lets a half mated to the ground touch the lab floor, as the core lets it touch the process's ground bodies; otherwise every ground bar's goal collides with the floor. |
+| Mark done accepts an action with steps left. | It marks the action, not its steps. Wait for `every step of … done`. |
+| Don't press **Cancel** in base_planner_panel right after a **Commit** while that robot still drives an earlier path. | A race in Jakob's code (review finding M1): within a tick, the earlier path can keep driving unwatched. Stop a driving base with **Stop all**. |
 
 ---
 
 ## What to send back
 
 Tell me the step numbers that did not go as written, and what you saw. A screenshot helps for anything on the page. I
-read the monitor and robot panes myself, and the monitor log is at `~/husky_fake_lab/logs/`.
-
-Then we go through the open decisions together, starting with the compas_fab fix.
+read the monitor and robot panes myself, and the monitor log is at `~/husky_fake_lab/logs/`. The compliant parts (4.4
+step 3, 5.2's insert, 5.3 step 5) are the ones nobody has run in the simulation yet: their log lines matter most.

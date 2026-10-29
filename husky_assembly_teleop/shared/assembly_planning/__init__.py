@@ -8,7 +8,7 @@ The process as steps, planning scenes, routines, IK and collision checks on a pl
   movement.py       a process movement classified by its parts: routine, arms, goal, the drives really sent
   labels.py         a movement as the operator knows it: its old monitor name, the action flowchart's kind and
                     colours, one sentence on what it does
-  steps.py          an action's movements grouped into the operator's steps
+  steps.py          an action's movements grouped into the operator's steps; the process in that order, for display
   scene_for.py      a process step's planning scene on the real robots; unmeasured robots from the design
   collision.py      checks on a synced compas_fab mirror: a state, a path swept between waypoints, what a check hit
                     (`collision_hit`); world-frame FK
@@ -18,6 +18,7 @@ The process as steps, planning scenes, routines, IK and collision checks on a pl
                     fallback
   tamp_route.py     one process movement planned by its routine: tamp's dual-arm planners, the one-arm search or line
   route_search.py   the searches, checks and results a route is built of
+  servo_route.py    one servo pass: IK at the live base for the pass's targets, then the correction move
   route_result.py   RouteResult, what planning one movement gave; GoalCheck, its goal by IK; pose error and line goals
   mirrors.py        MirrorPool: a planner's compas_fab mirrors, one per robot, and the PyBullet window
 

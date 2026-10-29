@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+import random
 import re
 import threading
 from contextlib import suppress
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -14,11 +16,15 @@ from planning_fixtures import ALICE, BELLE, CINDY, design_scene, movement, purge
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.experiments.assembly_plan_check import perturbed, run_check, select_actions, write_solutions
-from husky_assembly_teleop.shared.assembly_planning import route_search, tamp_route
+from husky_assembly_teleop.shared.assembly_planning import route_search, search_tree, tamp_route
 from husky_assembly_teleop.shared.assembly_planning.ik import ssik_unavailable
+from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine, classify
 from husky_assembly_teleop.shared.assembly_planning.route_result import aims_at_line, line_goal, pose_error
+from husky_assembly_teleop.shared.assembly_planning.route_search import FreeSearch
+from husky_assembly_teleop.shared.assembly_planning.search_tree import GOAL_TREE, START_TREE, SearchTree
 from husky_assembly_teleop.shared.assembly_planning.tamp_route import check_goal, plan_movement
+from husky_assembly_teleop.shared.planner.rrt_connect import MAX_ITERATIONS, RESTARTS
 from husky_assembly_teleop.world.kinematics import stow_joints
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
@@ -183,9 +189,12 @@ def test_retreat_moves_each_flange_along_its_line(purged, check):
     """B20's retreat: each flange 0.05 m along (0, -1, 0), turned the same."""
     row = check("B20_R_retreat")["B20_R_retreat"]
     assert row.route.ok and row.route.routine is Routine.RETREAT_LINEAR
-    for flange, (start, end) in _flanges(purged, row).items():
+    flanges = _flanges(purged, row)
+    assert set(row.route.goals) == set(flanges)
+    for flange, (start, end) in flanges.items():
         assert np.allclose(np.subtract(end.position, start.position), (0.0, -0.05, 0.0), atol=1e-4), flange
         assert pose_error(start, end)[1] <= 1e-3
+        assert pose_error(end, row.route.goals[flange])[0] <= POSE_TOL[0]
 
 
 @pytest.mark.slow
@@ -196,7 +205,7 @@ def test_home_ends_on_the_target_joints(purged, check):
     target = movement(purged, "B20_R_home")[1].target.joints["robots/cindy"]
     end = route.result.end["robots/cindy"]
     assert max(abs(end[name] - value) for name, value in target.items()) <= JOINT_TOL
-    assert route.joint_error <= JOINT_TOL
+    assert route.joint_error <= JOINT_TOL and route.goals == {}
 
 
 @pytest.mark.slow
@@ -324,6 +333,187 @@ def test_a_retreat_into_a_box_names_the_waypoint_and_the_pair(purged, configs, m
     assert not any("touches" in warning for warning in row.route.warnings)
 
 
+def _retreat_goals(purged, snapshot: Scene, distance: float) -> dict[str, Pose]:
+    """B20's retreat goals `distance` along each flange's line from where the snapshot has Cindy's tools."""
+    cindy = snapshot.robots[CINDY_ID]
+    spec = classify(purged.process, *movement(purged, "B20_R_retreat"))
+    return {part.flange: line_goal(link_pose(robot_config(CINDY).model.urdf, cindy.base, cindy.joints,
+                                             f"{part.arm}_tool0"), LineSpec(part.line.direction, distance))
+            for part in spec.arms}
+
+
+def test_free_search_gives_tamp_its_three_settings():
+    """The time, the iterations and the joint step go to tamp; the tries and the swept check are the route's own."""
+    asked = FreeSearch(7.0, 9, 0.05, tries=2, swept_check=False).tamp()
+    assert asked == {"max_time": 7.0, "max_iterations": 9, "joint_resolution": 0.05}
+    assert FreeSearch().tamp() == {"max_time": 120.0, "max_iterations": 50, "joint_resolution": 0.1}
+
+
+@pytest.mark.slow
+def test_the_search_settings_reach_tamps_free_search(purged, configs, mirrors, monkeypatch):
+    """B20's way home: tamp gets the settings' three, each of the tries; without the swept check a path is taken as is.
+
+    The default settings reach tamp too; every try without a path says tamp's reason, and the tries.
+    """
+    asked, answer = [], [None, {"failure_reason": "birrt_failed"}]
+
+    def plan(_planner, _state, goal, **options):
+        asked.append(options)
+        return answer[0](goal) if callable(answer[0]) else answer[0], answer[1]
+
+    monkeypatch.setattr(route_search, "plan_free_dual_arm", plan)
+    snapshot = design_scene(purged, "B20_R_home")
+    home = step(purged, "B20_R_home")
+    search = FreeSearch(7.0, 9, 0.05, tries=2, swept_check=False)
+    route = plan_movement(_cindys(mirrors), purged, home, snapshot, configs, search=search, log=lambda _line: None)
+    assert not route.ok and route.attempts == 2 and "(tamp: birrt_failed)" in route.result.reason
+    assert "(2 tries)" in route.result.reason and asked == [search.tamp()] * 2
+    asked.clear()
+    start = snapshot.robots[CINDY_ID].joints
+    answer[0] = lambda goal: [[start[name] for name in goal], [goal[name] for name in goal]]
+    route = plan_movement(_cindys(mirrors), purged, home, snapshot, configs, search=search, log=lambda _line: None)
+    assert route.ok and route.swept is None and route.waypoints == 2 and asked == [search.tamp()]
+    asked.clear()
+    answer[0] = None
+    plan_movement(_cindys(mirrors), purged, home, snapshot, configs, log=lambda _line: None)
+    assert asked == [FreeSearch().tamp()] * 3
+
+
+@pytest.mark.slow
+def test_the_free_search_draws_each_node_at_its_tool0s_in_the_world(purged, configs, mirrors, monkeypatch):
+    """B20's way home: tamp's draw_fn calls reach the tree, each node located where the core's FK puts its tool0s.
+
+    A sample, the two roots, and a node grown from the start; the search fails, so its tree stays, ended. A check
+    tamp runs meanwhile is recorded at the tool0s it checked; the planner's own check is back afterwards.
+    """
+    monkeypatch.setattr(search_tree, "RECORD_PERIOD", 0.0)
+    drawn, mirror = {}, _cindys(mirrors)
+    before = vars(mirror.planner).get("check_collision")
+
+    def plan(planner, state, goal, draw_fn, **_options):
+        names = list(goal)
+        start = [float(state.robot_configuration[name]) for name in names]
+        drawn.update(names=names, start=start, child=[value + 0.1 for value in start])
+        planner.check_collision(state)
+        drawn["checks"] = tree.probes()
+        draw_fn([0.5] * len(names), [])
+        draw_fn(start, [])
+        draw_fn([goal[name] for name in names], [])
+        draw_fn(drawn["child"], [drawn["child"], start], True, True)
+        return None, {"failure_reason": "birrt_failed"}
+
+    monkeypatch.setattr(route_search, "plan_free_dual_arm", plan)
+    snapshot = design_scene(purged, "B20_R_home")
+    tree = SearchTree()
+    route = plan_movement(mirror, purged, step(purged, "B20_R_home"), snapshot, configs,
+                          search=FreeSearch(5.0, 3, 0.1, tries=1), log=lambda _line: None, tree=tree)
+    assert vars(mirror.planner).get("check_collision") is before
+    view = tree.view
+    assert not route.ok and view.over and not view.found and view.label == "try 1/1"
+    assert list(view.trees) == [START_TREE, GOAL_TREE, START_TREE] and list(view.parents) == [-1, -1, 0]
+    robot, urdf = snapshot.robots[CINDY_ID], robot_config(CINDY).model.urdf
+    for index, values in ((0, drawn["start"]), (2, drawn["child"])):
+        joints = {**robot.joints, **dict(zip(drawn["names"], values))}
+        expected = [link_pose(urdf, robot.base, joints, f"{arm}_tool0").position for arm in ("left_ur_arm",
+                                                                                             "right_ur_arm")]
+        np.testing.assert_allclose(view.points[index], expected, atol=1e-5)
+        if index == 0:
+            points, collided = drawn["checks"]
+            assert list(collided) == [False]
+            np.testing.assert_allclose(points[0], expected, atol=1e-5)
+
+
+@pytest.mark.slow
+def test_the_one_arm_search_draws_its_trees_at_alices_tool0(purged, configs, mirrors, monkeypatch):
+    """Alice's leave round a box halfway along her way: birrt's nodes reach the tree, each at her tool0 by the core's FK.
+
+    Every iteration recorded; the path is found, so the last one stays, found. No check is kept for this search.
+    """
+    monkeypatch.setattr(search_tree, "RECORD_PERIOD", 0.0)
+    alice = robot_id(f"a200-{ALICE}")
+    mirror = mirrors.setdefault(alice, CompasFabMirror(alice))
+    snapshot = design_scene(purged, "B21_HR_leave")
+    robot, urdf, names = snapshot.robots[alice], robot_config(ALICE).model.urdf, arm_joint_names("ur_arm")
+    stowed = stow_joints(robot_config(ALICE), names)
+    halfway = {name: (robot.joints[name] + value) / 2 for name, value in stowed.items()}
+    box = Body("obstacles/box", box_geometry((0.09, 0.09, 0.09)),
+               link_pose(urdf, robot.base, {**robot.joints, **halfway}, "ur_arm_tool0"))
+    random.seed(0)
+    np.random.seed(0)
+    tree = SearchTree()
+    route = plan_movement(mirror, purged, step(purged, "B21_HR_leave"), replace(snapshot, bodies={
+        **snapshot.bodies, box.id: box}), configs, log=lambda _line: None, tree=tree)
+    view = tree.view
+    assert route.ok and route.planner == "arm.plan_arm" and view.over and view.found and view.label == "try 1/3"
+    assert len(view.trees) > 2 and (view.max_iterations, view.runs) == (MAX_ITERATIONS, RESTARTS + 1)
+    assert len(tree.probes()[1]) == 0
+    for index in (0, len(view.trees) - 1):
+        joints = {**robot.joints, **dict(zip(names, view.configs[index]))}
+        np.testing.assert_allclose(view.points[index], [link_pose(urdf, robot.base, joints, "ur_arm_tool0").position],
+                                   atol=1e-5)
+
+
+@pytest.mark.slow
+def test_a_box_on_the_straight_transfer_is_its_first_hit(purged, configs, mirrors, monkeypatch):
+    """A search that finds no path (tamp's reason kept) is diagnosed: a box halfway along B20's transfer is its hit.
+
+    The transfer without the bar, from the stowed arms, whose straight path is otherwise clear: the hit names the box
+    and Cindy, and where along the straight path it is.
+    """
+    monkeypatch.setattr(route_search, "plan_free_dual_arm", lambda *_args, **_options: (None, {
+        "failure_reason": "birrt_failed"}))
+    cindy = design_scene(purged, "B20_J_transfer").robots[CINDY_ID]
+    target = movement(purged, "B20_J_transfer")[1].target.joints["robots/cindy"]
+    stowed = stow_joints(robot_config(CINDY), list(target))
+    midway = {name: (stowed[name] + value) / 2 for name, value in target.items()}
+    wrist = link_pose(robot_config(CINDY).model.urdf, cindy.base, {**cindy.joints, **midway}, "left_ur_arm_tool0")
+    box = Body("obstacles/box", box_geometry((0.1, 0.1, 0.1)), wrist)
+    row, = run_check(purged, configs, ["B20_J"], only=["B20_J_transfer"], extra_bodies=(box,), mirrors=mirrors,
+                     verbose=False, log=lambda _line: None)
+    assert row.status == "failed" and "birrt_failed" in row.reason and row.route.attempts == 3
+    assert "start and goal clear; the straight path first hits" in row.reason, row.reason
+    hit, = [hit for hit in row.route.hits if hit.where.startswith("the straight path at")]
+    share = re.fullmatch(r"the straight path at (\d+)%", hit.where)
+    assert share and 0 < int(share.group(1)) < 50 and hit.robot == CINDY_ID
+    assert any("obstacles/box" in pair and any(side.startswith(("robots/a200-0806/", "tools/a200-0806/"))
+                                               for side in pair) for pair in hit.pairs), hit.pairs
+
+
+@pytest.mark.slow
+def test_a_retreat_goes_to_given_goal_poses_in_given_steps(purged, configs, mirrors, monkeypatch):
+    """B20's retreat to goal poses 3 cm along its lines in 1 mm steps: tamp gets the step, the path ends there."""
+    real, asked = tamp_route.plan_dual_arm_linear_independent, []
+
+    def plan(*args, **options):
+        asked.append(options)
+        return real(*args, **options)
+
+    monkeypatch.setattr(tamp_route, "plan_dual_arm_linear_independent", plan)
+    snapshot = design_scene(purged, "B20_R_retreat")
+    goals = _retreat_goals(purged, snapshot, 0.03)
+    route = plan_movement(_cindys(mirrors), purged, step(purged, "B20_R_retreat"), snapshot, configs, goal_poses=goals,
+                          linear_step=0.001, log=lambda _line: None)
+    assert route.ok, route.result.reason
+    assert asked[0]["max_step_distance"] == 0.001 and route.goals == goals and route.waypoints >= 31, route.waypoints
+    assert all(distance <= POSE_TOL[0] and angle <= POSE_TOL[1] for distance, angle in route.end_error.values())
+    asked.clear()
+    route = plan_movement(_cindys(mirrors), purged, step(purged, "B20_R_retreat"), snapshot, configs,
+                          log=lambda _line: None)
+    assert route.ok and "max_step_distance" not in asked[0] and route.waypoints == 12
+
+
+@pytest.mark.slow
+def test_a_retreat_missing_a_flanges_goal_pose_is_refused(purged, configs, mirrors, monkeypatch):
+    """Goal poses for the left flange only: refused naming the right one, tamp never asked."""
+    monkeypatch.setattr(tamp_route, "plan_dual_arm_linear_independent", lambda *_args, **_options: pytest.fail())
+    snapshot = design_scene(purged, "B20_R_retreat")
+    goals = {flange: goal for flange, goal in _retreat_goals(purged, snapshot, 0.03).items() if "left" in flange}
+    route = plan_movement(_cindys(mirrors), purged, step(purged, "B20_R_retreat"), snapshot, configs, goal_poses=goals,
+                          log=lambda _line: None)
+    assert route.result.status == "failed" and route.attempts == 0
+    assert route.result.reason == "no goal pose given for robots/cindy/right_ur_arm_tool0"
+
+
 @pytest.mark.slow
 def test_an_error_fails_closed_and_syncs_the_mirror_again(purged, configs, mirrors, monkeypatch):
     """An error inside tamp's borrow: the way home fails with the error's repr, and the mirror is synced after it."""
@@ -357,8 +547,11 @@ def test_abort_cancels_before_a_try(purged, configs, mirrors):
 
 
 @pytest.mark.slow
-def test_the_workaround_searches_without_the_bar(purged, configs, mirrors, monkeypatch):
-    """B20's transfer: the goal is solved with the bar held, the search runs with it and its halves hidden."""
+def test_the_workaround_searches_without_the_bar(purged, configs, mirrors, monkeypatch, capsys):
+    """B20's transfer: the goal is solved with the bar held, the search runs with it and its halves hidden.
+
+    Every try prints its settings and how it ended; no path in any of them ends with the straight path's verdict.
+    """
     bar = "process/bars/B20"
     held = [bar, *(f"process/{half}" for half in purged.process.halves_of("bars/B20"))]
     real_ik, seen = tamp_route.solve_ik, {}
@@ -379,6 +572,13 @@ def test_the_workaround_searches_without_the_bar(purged, configs, mirrors, monke
     assert seen["ik"] == (False, "left_ur_arm_tool0")
     assert len(seen["search"]) > 1 and all(seen["search"])
     assert row.status == "failed" and row.route.attempts == 3 and row.route.ik.joints is not None
+    # ? Printed (`plan_movement`'s default log), which pytest keeps at the sys level: `Row.output` has it only outside.
+    lines = capsys.readouterr().out.splitlines()
+    assert any(line.endswith("try 1/3: max_time 120 s, max_iterations 50, joint_resolution 0.1 rad") for line in lines)
+    assert len([line for line in lines if "no path in" in line and "(tamp: birrt_failed)" in line]) == 3
+    verdict = "start, goal and the straight path between them are clear: the search found no way in 3×120 s"
+    assert row.reason.endswith(f"(3 tries); {verdict}"), row.reason
+    assert lines[-3:] == [f"B20_J_transfer: {line}" for line in ("start clear", "goal clear", verdict)]
 
 
 @pytest.mark.slow

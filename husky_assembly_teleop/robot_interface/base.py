@@ -7,7 +7,7 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Sequence
 
 import numpy as np
 from crl_husky_msgs.msg import BaseFollowerState, BasePath
@@ -206,11 +206,16 @@ class BaseInterface:
         paths_sent: Fired with each `SentPath`, the empty path of a stop included.
 
     ! Mocap is the only source of the base pose; do not add a second one.
+    * `mocap_offset`, the operator's world shift of this base's mocap pose (`set_mocap_offset`), is added as each
+      sample is stored, so every reader of `state` sees it; paths and the follower's reports, in the follower's
+      own world, are converted here.
     * A twist refused without raising leaves its reason in `last_refusal`, for panels.
     """
 
     #: The last command refused without raising, or None.
     last_refusal: Refusal | None = None
+    #: The operator's world shift of the mocap pose, metres (`set_mocap_offset`); zero at start, this session only.
+    mocap_offset: np.ndarray = np.zeros(3)
 
     def __init__(self, node: Node, config: RobotConfig,
                  simulated: Callable[[], SimulatedPart | None] = lambda: None, latch: SoftStopLatch | None = None,
@@ -278,7 +283,28 @@ class BaseInterface:
                                qos_profile_sensor_data, newest_only=True, on_stamp=self._on_joint_states_stamp)
         if self._config.mocap_id is not None:
             subscribe_mocap(self._ros, self._config.mocap_id, self.state,
-                            lambda: self._node.get_clock().now().nanoseconds * 1e-9, self.mocap_messages)
+                            lambda: self._node.get_clock().now().nanoseconds * 1e-9, self.mocap_messages,
+                            offset=lambda: self.mocap_offset)
+
+    def set_mocap_offset(self, xyz: Sequence[float]) -> None:
+        """Shift this base's mocap pose by `xyz` in the world, metres, from now on; the stored pose moves at once.
+
+        For a base whose calibration is off by a known amount, for this session only. Logged.
+
+        Args:
+            xyz: The shift, x, y, z metres.
+
+        Raises:
+            ValueError: If `xyz` is not three finite numbers.
+        """
+        offset = np.asarray(xyz, dtype=float).reshape(-1)
+        if offset.shape != (3,) or not np.all(np.isfinite(offset)):
+            raise ValueError(f"a mocap offset must be three finite numbers, not {xyz!r}")
+        if self.state.position is not None:
+            self.state.position = self.state.position + (offset - self.mocap_offset)
+        self.mocap_offset = offset
+        self._node.get_logger().info(f"base {self._config.serial}: mocap offset "
+                                     f"{' '.join(f'{value:.3f}' for value in offset)} m")
 
     def reconnect(self) -> None:
         """Recreate this base's topics and clients. Keeps `state`."""
@@ -400,7 +426,10 @@ class BaseInterface:
         message.header.stamp = self._node.get_clock().now().to_msg()
         message.header.frame_id = "mocap_world"
         message.id = self._path_id = next(self._path_ids)
-        message.x, message.y, message.yaw = columns[:3]
+        # * The follower reads the mocap world unshifted: take the operator's offset off.
+        message.x = [value - float(self.mocap_offset[0]) for value in columns[0]]
+        message.y = [value - float(self.mocap_offset[1]) for value in columns[1]]
+        message.yaw = columns[2]
         message.t = columns[3] if t is not None else []
         message.max_linear_speed, message.max_angular_speed = caps
         self._publish_path(message, len(columns[0]), t is not None)
@@ -476,8 +505,11 @@ class BaseInterface:
             reason=message.reason, path_id=int(message.path_id), timed=bool(message.timed),
             piece=int(message.piece), piece_count=int(message.piece_count), turning=bool(message.turning),
             progress=float(message.progress),
-            reference=np.array([message.reference_x, message.reference_y, message.reference_yaw]),
-            lookahead=np.array([message.lookahead_x, message.lookahead_y]),
+            # * The follower's points are in the mocap world unshifted: put the operator's offset on.
+            reference=np.array([message.reference_x + self.mocap_offset[0],
+                                message.reference_y + self.mocap_offset[1], message.reference_yaw]),
+            lookahead=np.array([message.lookahead_x + self.mocap_offset[0],
+                                message.lookahead_y + self.mocap_offset[1]]),
             cross_track_error=float(message.cross_track_error), along_track_error=float(message.along_track_error),
             yaw_error=float(message.yaw_error),
             command=np.array([message.linear_velocity, message.angular_velocity]),

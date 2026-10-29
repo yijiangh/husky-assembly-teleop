@@ -215,7 +215,8 @@ def _commit(ctx: FakeContext, answers: list, cancel_after: int | None = None) ->
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         ended = ctx.world.robots[SERIAL].arms[ARM].joint_vector().copy()
-        for _ in range(20):
+        # * A hold brakes over HOLD_DURATION from one tick further on: at 10 % speed that takes 21 ticks.
+        for _ in range(25):
             await ctx.next_tick()
         return ended
 

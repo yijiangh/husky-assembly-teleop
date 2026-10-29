@@ -3,6 +3,7 @@ The operator's view, served by viser.
 
   visualization.py  the viser server, robots drawn each tick, one corner per plugin
   phone.py          the phone page: Stop all, a header, one tab per plugin
+  assembly_tab.py   the side panel's Assembly tab that four plugins share: its bands and button icons
   top_down.py       a top-down picture of the scene, for the phone
   scene_view.py     scene bodies and tracked objects drawn from each tick's snapshot
   style.py          the shared look of panels: chips, section bars, number rows
