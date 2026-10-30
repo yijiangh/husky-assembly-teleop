@@ -114,6 +114,26 @@ A servo's record (`servo_payload`): the mode (tool0 or the MoCap bar), the bar, 
 per side, the base's drift, the wrenches, the bar's deviation from its design pose by MoCap and by FK), the moves
 made, the settings and the outcome; the picture plots the readings pass by pass, as the Exec plots window shows them live.
 
+### The as-built file (on the Drive, not in the run folder)
+
+Where every MoCap bar is at the start of a request's first part and the end of every part (and on **As-built: record
+now**), one JSON line per record, appended to the old monitor's file: `<drive>/data_experiment/bar_action_live_replan_exe/
+<YYYYMMDD>-asbuilt/as_built_<process folder name>.jsonl`, one per lab day and process, every robot's monitor appending
+(`shared/runs/as_built.py`; the `as_built` event in `events.jsonl` names the line's file). A record (schema 2) keeps:
+
+| key | what |
+| --- | --- |
+| `action`, `step` | the action (its schedule index, type, J/R/H/HR letter, bar) and the part (movement, routine, kind, phase start/end/manual, outcome) |
+| `bars` | per bar with markers: the fit (`bar_fit`), the fitted pose, the sample (`sensed`), the layout, where the bar should be (`T_reference`, `reference_kind`: servo_target / assembled / resting / held_authored:<movement> / held_no_authored_pose, `held_by`, `T_link_from_bar`), the deviations vs the reference and vs the seat, its `milestone` (before_insert, after_insert, after_fix, before_retreat, after_retreat, hold_*, bystander) |
+| `robot_state`, `tool0`, `load` | the recording robot's base and joints, each flange by FK and its authored target, the tool0 errors, the wrenches and what they are relative to (`zero`) |
+| `servo`, `options` | the servo part's last reading and outcome; the tick boxes in force (transfer workaround, servo by bar and whether it engaged, spiral, the insert's mode, dry run, split, spiral seconds and turns) |
+| `robots`, `settings` | every live robot (and the run's saved ends of the others, source `assumed`); the run's settings |
+
+It needs the `mocap_bars` plugin (loaded with `movement_exec`) and a process whose bars carry markers; without them
+one line says so and nothing is recorded. A Drive not mounted loses the record (`[as-built] ... NOT recorded`), the step
+goes on. `scripts/as_built_page.py <day>` builds the day's 3D page from it, and the Exec panel's **Build as-built page**
+does the same any time, serving it on port 8082.
+
 ## 3. Who writes, and when
 
 The `assembly_run` plugin owns the run. Every other plugin hands it what to record (`AssemblyRunContract.request_record`)

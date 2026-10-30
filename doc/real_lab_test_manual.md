@@ -1098,6 +1098,46 @@ tmux.sh`); given to one script in its pane, only that one (`REAL_LAB_MOTIVE=192.
 | `REAL_LAB_HOME` | `~/husky_real_lab` | where the logs go |
 | `REAL_LAB_SESSION` | `real_lab` | another tmux session name |
 
+### 7.i The as-built record and the assembly page  [RECORDED BY ITSELF — read afterwards]
+
+While a step runs, the monitor measures every bar with MoCap markers at the start of the step's first part and the
+end of every part (`doc/run_record.md`, "The as-built file"), and appends one line per record to the old monitor's
+file of the day: `<drive>/data_experiment/bar_action_live_replan_exe/<YYYYMMDD>-asbuilt/as_built_<process>.jsonl`.
+Nothing here moves a robot.
+
+| moment | part, phase | milestone | the bar is compared with |
+|---|---|---|---|
+| before the insert | J transfer's last part (its servo), end | `before_insert` | the authored flange target of the transfer's end, with the grasp |
+| after the insert | J insert's last part (the insert, or a ground bar's servo), end | `after_insert` | the seat |
+| after a ground bar's fix | J step by hand after the insert, end | `after_fix` | the seat |
+| before / after the retreat | R retreat, start / end | `before_retreat` / `after_retreat` | the seat |
+| support robot holds | H approach's servo / move in / handoff, end | `hold_approach` / `hold_at_grasp` / `hold_grasped` | the seat |
+| support robot lets go | HR open / move out, end | `hold_released` / `hold_retreated` | the seat |
+| every other part | start of the first, end of each | none (`bystander` for the other bars) | the seat |
+
+- [ ] nothing to click: run the steps as in Part 6.
+  - **Expect:** pane monitor, one line per bar at each record and one for the file:
+    `[as-built] B20_J_transfer end (done): B20 [before_insert] fit ok 8/8, rms 0.6 mm | vs held_authored:B20_J_transfer dpos 0.4 mm, dang 0.030 deg`,
+    `[as-built] B20_J_transfer end: recorded -> .../20261030-asbuilt/as_built_261008_2ModulesDemo_purged_process.jsonl`.
+- [ ] optional: button [As-built: record now] (Assembly tab, under Dry run) at a moment no part covers.
+  - **Expect:** the same lines with `manual`.
+- [ ] any time, the progress so far: button [Build as-built page] (next to it)
+  - **Expect:** `[as-built] building the page: scripts/as_built_page.py`, then a link under the buttons
+    (`http://localhost:8082/assembly_<day>.html`): click it, the page opens in a new tab (the slider over the
+    actions, the pills, a bar's card on a click; the old manual's section 9.4 reads it). Built again on every click.
+  - From a terminal instead: `python src/husky-assembly-teleop/scripts/as_built_page.py <day> --open` (the venv
+    active, `HUSKY_DRIVE_ROOT` set); `scripts/fetch_three_js.sh` once per checkout first.
+
+**If not:**
+
+| you see | do |
+|---|---|
+| no `[as-built]` line at all | `[as-built] no bar with MoCap markers in this process: nothing recorded`: the process has no marker layouts; or `the mocap_bars plugin is not loaded` |
+| `... no bar measured` | no bar's asset streams: Motive's assets 10xx with Labeled Markers (2.f); the `mocap_bars` tab says which bars have a sample |
+| `B20 fit FAILED (only 5 of 8 design markers matched (need 6))` | balls hidden by the tools; the record is kept with the reason; free the balls, then [As-built: record now] |
+| `[as-built] end of ... NOT recorded: FileNotFoundError(...)` | the Drive's `data_experiment/bar_action_live_replan_exe` is not there (Insync not synced); the step went on |
+| `not built: ...` under the button | read the log: usually the three.js files (`scripts/fetch_three_js.sh`) or no records today |
+
 ---
 
 ## 8. If something goes wrong
