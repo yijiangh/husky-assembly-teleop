@@ -33,7 +33,7 @@ from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import Search, WAIT_MARGIN, unmeasured, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
-from ...world.clearance import ARM_STOP_DISTANCE
+from ...world.clearance import ARM_STOP_DISTANCE, clearance_problem
 from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.ids import robot_id
 from .planner import ArmPath, path_hit, plan_arm
@@ -209,15 +209,18 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         """Send the plan to the arm and watch it until it is at the end; else hold it (`send_motion`).
 
         - While `clearance` is on, an ARM_STOP_DISTANCE clearance starts first: one that cannot check refuses the
-          commit (nothing sent), a trip soft stops the robot and cancels this. The robot's other arms may be unknown
-          (where last seen, or stowed), and the other robots unknown at the commit (`unknown_allowed`).
+          commit (nothing sent), a trip soft stops the robot and cancels this. The other robots unknown at the commit
+          may be unknown (`unknown_allowed`).
+        - ! The robot's base and every arm must be measured, Clearance on or off: an arm moves beside the other.
         - ! Arrival is judged on the joints, not `is_executing`, which clears during a slow move (the pendant's speed
           slider): the lease would go back mid-motion.
         """
         serial, arm_name, path = plan.request.serial, plan.request.arm, plan.path
-        others = [name for name in ctx.world.robots[serial].arms if name != arm_name]
-        guard = (ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others,
-                               unknown_robots=self.unknown_allowed(plan)) if self.clearance else nullcontext())
+        if problem := clearance_problem(ctx.scene.snapshot.robots.get(robot_id(serial))):
+            answer(False, f"nothing sent: {serial}: {problem}")
+            return
+        guard = (ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_robots=self.unknown_allowed(plan))
+                 if self.clearance else nullcontext())
         with guard:
             ctx.log_info(f"{serial} {arm_name}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
             outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),

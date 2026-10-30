@@ -59,8 +59,8 @@ class FakeCtx:
         self.world = SimpleNamespace(robots={SERIAL: SimpleNamespace(
             config=SimpleNamespace(serial=SERIAL), arms={ARM: arm}, base=SimpleNamespace(mocap_id=5, state=mocap),
             lease=None)})
-        robot = SimpleNamespace(enabled=False, acting_problems=lambda: [], base=pose(0.0, 0.0, 0.0), base_tracked=True)
-        self.scene = SimpleNamespace(snapshot=SimpleNamespace(robots={robot_id(SERIAL): robot}))
+        robot = RobotObject(robot_id(SERIAL), SimpleNamespace(movable_joints=()), pose(0.0, 0.0, 0.0), {})
+        self.scene = SimpleNamespace(snapshot=Scene(robots={robot.id: robot}))
         self.kinematics = SimpleNamespace(joints=lambda _serial: self.joints,
                                           base_pose=lambda _serial: pose(*self.base))
 
@@ -187,10 +187,15 @@ def test_the_start_base_belongs_to_the_plan_it_was_made_for(found_path):
     assert planner._start_base is None and planner.stale_reason(ctx, plan) == ""
 
 
-def _driven(speed: float = 1.0, start: np.ndarray = START) -> tuple[FakeContext, object]:
-    """A context over robot SERIAL with a real arm ARM at `start`, run by an ArmDriver at `speed` (1: as timed)."""
+def _driven(speed: float = 1.0, start: np.ndarray = START, **measured) -> tuple[FakeContext, object]:
+    """A context over robot SERIAL with a real arm ARM at `start`, run by an ArmDriver at `speed` (1: as timed).
+
+    The snapshot has SERIAL measured, or as `measured` says (`base_tracked`, `unmeasured`).
+    """
     driver = None
-    ctx = FakeContext(name="arm_planner", step=lambda t: driver.tick(t))
+    model = robot_config(CINDY).model
+    ctx = FakeContext(name="arm_planner", step=lambda t: driver.tick(t), snapshot=Scene(robots={
+        robot_id(SERIAL): RobotObject(robot_id(SERIAL), model, Pose(), {}, **measured)}))
     node = fake_node(ctx.now, ctx.logs)
     arm = fake_arm(node, ARM, start)
     ctx.world.robots[SERIAL] = robot = fake_robot(node, SERIAL, [arm])
@@ -250,6 +255,19 @@ def test_with_clearance_unticked_the_path_goes_out_without_one():
     ended = _commit(ctx, answers, clearance=False)
     assert answers == [(True, f"sent to {SERIAL} {ARM}")] and not ctx.clearances
     assert np.allclose(ended, GOAL, atol=1e-3)
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("clearance", [True, False])
+@pytest.mark.parametrize("measured, why", [
+    ({"unmeasured": frozenset(arm_joint_names("right_ur_arm"))}, "right_ur_arm not measured"),
+    ({"base_tracked": False}, "base not measured"),
+])
+def test_an_arm_moves_only_with_the_base_and_every_arm_measured(measured, why, clearance):
+    """The other arm unknown or the base untracked: nothing is sent, Clearance on or off."""
+    (ctx, arm), answers = _driven(**measured), []
+    _commit(ctx, answers, clearance=clearance)
+    assert answers == [(False, f"nothing sent: {SERIAL}: {why}")] and not arm._trajectory.messages
 
 
 @pytest.mark.safety
