@@ -11,6 +11,8 @@ Base experiment: drive test paths from where the robot stands with the onboard p
   Each run is checked against the other robots and every scene body (`obstacles` loads with it: the lab's border).
 - Clearance: during every run the robot is soft-stopped, and automation stopped, once it comes within STOP_DISTANCE
   of anything in the scene (`ctx.clearance`); the operator resumes it, drives it clear and starts again.
+- With the robot's arms not measured, Start and Start auto ask for a second press; the runs then check the arms where
+  last seen, else stowed.
 - A way back to the start that is not clear stops automation; the collisions panel shows what it comes too close to.
 - Errors are measured here, the same for every controller (`tracking.py`): each new mocap pose against the path
   sent. After the follower ends, recording goes on until the robot stands still (SETTLE), for the error at the end.
@@ -46,16 +48,17 @@ from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState,
 from ...robot_interface.mocap_state import pose_lost
 from ...shared.collisions_contract import CollisionsContract
 from ...shared.obstacles_contract import ObstaclesContract
+from ...shared.planner.planner_panel import COMMIT_CONFIRM_SECONDS
 from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, hover, section,
                          values, warning)
 from ...ui.trace_plot import TracePlot
-from ...world.clearance import STOP_DISTANCE, Clearance, ClearanceRefused
+from ...world.clearance import ALL_ARMS, STOP_DISTANCE, Clearance, ClearanceRefused
 from ...world.checks import STALE_AFTER
 from ...world.collision_hit import CollisionHit
-from ...world.stand_ins import unknown_robots
+from ...world.stand_ins import unknown_parts, unknown_robots
 from scaffolding_assembly_core.ids import robot_id
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, PathCollisionCheck, Sampler, StandardSet
@@ -150,6 +153,10 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._seed = random.randrange(2 ** 31)
         self._rng = random.Random(self._seed)
         self._path_check = PathCollisionCheck()
+        #: Start's and Start auto's second press while the robot's arms are not measured: button -> ROS time it waits
+        #: until. Once given, the run(s) check those arms where last seen, else stowed.
+        self._confirm: dict[str, float] = {}
+        self._unknown_arms = False
         #: The run's error measurement, its latest sample and phase, and the time of the mocap fix measured last.
         self._tracker: Tracker | None = None
         self._sample: Sample | None = None
@@ -315,6 +322,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         if problem:
             self._outcome = f"not started: {problem}"
             return
+        if self._asks_second_press(ctx, "Start"):
+            return
         self._alert, self._auto_note, self._auto_alert, self._return_hit = "", "", "", None
         self._task = ctx.spawn(f"base experiment {self.serial}",
                                self._leased(ctx, self.serial, self._run(ctx, self._preview)))
@@ -328,7 +337,9 @@ class BaseExperimentPlugin(HuskyPlugin):
         if problem:
             self._auto_note = f"auto not started: {problem}"
             return
-        self._alert = ""
+        if self._asks_second_press(ctx, "Start auto"):
+            return
+        self._alert, self._auto_alert = "", ""
         self._task = ctx.spawn(f"base experiment auto {self.serial}", self._leased(
             ctx, self.serial, self._auto(ctx, self.serial, int(self._auto_runs.value), self._auto_paths.value)))
 
@@ -342,6 +353,21 @@ class BaseExperimentPlugin(HuskyPlugin):
             return f"{self.serial} is leased by {lease.holder}"
         problem = base.follow_problem()
         return f"{self.serial}: {problem}" if problem else ""
+
+    def _asks_second_press(self, ctx: PluginContext, button: str) -> bool:
+        """Whether the press only asked: with the robot's arms not measured, the first press says to press it again.
+
+        ! Call it last before starting, after every other refusal, so the second press is never asked for in vain.
+        """
+        robot = ctx.scene.snapshot.robots.get(robot_id(self.serial))
+        unknown = robot is not None and bool(robot.unmeasured)
+        if unknown and ctx.now() > self._confirm.pop(button, -math.inf):
+            self._confirm[button] = ctx.now() + COMMIT_CONFIRM_SECONDS
+            self._auto_alert = (f"Press {button} again within {COMMIT_CONFIRM_SECONDS:g} s to drive with "
+                                f"{unknown_parts(robot)} not measured: checked where last seen, else stowed")
+            return True
+        self._unknown_arms = unknown
+        return False
 
     # --- --- --- --- --- RUNS (tasks) --- --- --- --- ---
 
@@ -398,7 +424,8 @@ class BaseExperimentPlugin(HuskyPlugin):
                             signals.follower_position_error(robot), signals.follower_yaw_error(robot),
                             signals.follower_command(robot), signals.follower_progress(robot),
                             *_message_signals(robot, follower=True)) as rec, \
-                    ctx.clearance([plan.serial], STOP_DISTANCE, unknown_robots=self._others(ctx, plan)) as clearance:
+                    ctx.clearance([plan.serial], STOP_DISTANCE, unknown_arms=ALL_ARMS if self._unknown_arms else (),
+                                  unknown_robots=self._others(ctx, plan)) as clearance:
                 self._record = rec
                 path_id = experiment["path_id"] = base.send_path(*plan.poses.T, plan.t, *plan.speed_caps)
                 sent_at = self._sent_at = ctx.now()
@@ -472,7 +499,8 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._sent_at = ctx.now()
             with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(), signals.follower_progress(robot),
                             *_message_signals(robot, follower=False)) as rec, \
-                    ctx.clearance([plan.serial], STOP_DISTANCE, unknown_robots=self._others(ctx, plan)) as clearance:
+                    ctx.clearance([plan.serial], STOP_DISTANCE, unknown_arms=ALL_ARMS if self._unknown_arms else (),
+                                  unknown_robots=self._others(ctx, plan)) as clearance:
                 self._record = rec
                 self._phase = FOLLOWING
                 step_at = ctx.now() + TWIST_LEAD
