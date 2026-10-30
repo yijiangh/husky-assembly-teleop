@@ -91,6 +91,45 @@ def test_clearance_sees_walls_and_robots():
     assert open_space is None and here is None
 
 
+@pytest.mark.slow
+def test_path_check_takes_the_robots_own_unknown_arms_as_stowed():
+    """Cindy with no joint states: her path is checked with the arms stowed, not refused."""
+    cindy = robot_config_from_serial("0806", DATA)
+    robot = RobotObject(robot_id(cindy.serial), cindy.model, Pose(), {},
+                        unmeasured=frozenset(cindy.model.movable_joints))
+    snapshot = Scene(robots={robot.id: robot})
+
+    async def check():
+        check = PathCollisionCheck()
+        try:
+            return await check.path_hit(snapshot, cindy.serial, np.array([(0.0, 0.0, 0.0), (0.5, 0.0, 0.0)]))
+        finally:
+            check.close()
+
+    assert asyncio.run(check()) is None
+
+
+def test_start_with_the_arms_unknown_asks_for_a_second_press():
+    """The first press only asks; a second one in time starts with the arms unknown; a late one asks again."""
+    cindy = robot_config_from_serial("0806", DATA)
+    robot = RobotObject(robot_id(cindy.serial), cindy.model, Pose(), {},
+                        unmeasured=frozenset(cindy.model.movable_joints))
+    now = [10.0]
+    ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot})), now=lambda: now[0])
+    plugin = BaseExperimentPlugin()
+    plugin.serial = cindy.serial
+    assert plugin._asks_second_press(ctx, "Start auto") and "left_ur_arm" in plugin._auto_alert
+    now[0] += 1.0
+    assert not plugin._asks_second_press(ctx, "Start auto") and plugin._unknown_arms
+    now[0] += 1.0
+    assert plugin._asks_second_press(ctx, "Start")
+    now[0] += 5.0
+    assert plugin._asks_second_press(ctx, "Start")
+    measured = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot.__class__(
+        robot.id, cindy.model, Pose(), {})})), now=lambda: now[0])
+    assert not plugin._asks_second_press(measured, "Start auto") and not plugin._unknown_arms
+
+
 def test_sampler_fills_number_levels_evenly():
     """Within a template, successive runs spread over each number's levels before repeating one."""
     sampler = Sampler([], random.Random(2))
