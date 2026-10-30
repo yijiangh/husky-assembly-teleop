@@ -351,7 +351,7 @@ class CommitConfirm:
 
     Commit turns amber while it waits. The second press lets the robots unknown then be unknown during the motion: its
     clearance checks them as stand-ins, and soft stops for any other robot that is not measured (`ctx.clearance`,
-    `unknown_robots`).
+    `unknown_robots`). A robot the commit moves is among them too while unknown; its planner decides what that allows.
     """
 
     #: For Commit's hover text.
@@ -369,12 +369,12 @@ class CommitConfirm:
 
         Args:
             ctx: The plugin's context.
-            acting: Ids of the robots the commit moves; not counted.
+            acting: Ids of the robots the commit moves; not counted, so a panel that lets them be unknown warns.
             label: The button's label, for the message.
             warnings: More reasons to ask first, e.g. "the arm 40° from its stow pose".
 
         Returns:
-            tuple[str, frozenset[str]]: The question, or ""; the ids of the other robots not measured now.
+            tuple[str, frozenset[str]]: The question, or ""; the ids of the robots not measured now, acting ones too.
         """
         unknown = unknown_robots(ctx.scene.snapshot, set(acting))
         reasons = [*warnings] + ([f"{len(unknown)} other robot{'s' if len(unknown) > 1 else ''} unknown"]
@@ -384,7 +384,7 @@ class CommitConfirm:
             return (f"press {label} again within {COMMIT_CONFIRM_SECONDS:g} s to move with "
                     f"{'; '.join(reasons)}"), frozenset()
         self.until = -math.inf
-        return "", unknown
+        return "", unknown_robots(ctx.scene.snapshot, set())
 
     def draw(self, now: float) -> None:
         """Make the button amber while it waits for its second press, blue otherwise."""

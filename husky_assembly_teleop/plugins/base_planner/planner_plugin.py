@@ -34,6 +34,7 @@ from ...shared.planner.planner_search import Search, WAIT_MARGIN, unmeasured, wi
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...world.checks import WARN, Check
+from ...world.clearance import ALL_ARMS
 from ...world.follower import path_check
 from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import with_stand_ins
@@ -236,7 +237,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
 
         Recording and a clearance start before the send: a soft stop within the margin the path was planned with,
         not the usual STOP_DISTANCE, so a path the planner found never trips it. Refused while the base may not
-        follow a path.
+        follow a path. With the robot itself in `unknown_allowed` (Commit's second press), its unknown arms are
+        checked where last seen, else stowed.
 
         ? The margin is no stopping distance: at the planning speed the robot rolls ~10 cm after a trip. Revisit
           with the speed-aware clearance (tasks/2026-10-21_collision_view.md, follow-ups).
@@ -244,7 +246,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         request, path, record = plan.request, plan.path, self._plan_record
         serial = request.serial
         margin = self._algorithm(request)[1].margin
-        robot = ctx.world.robots[serial]
+        robot, allowed = ctx.world.robots[serial], self.unknown_allowed(plan)
         if problem := robot.base.follow_problem():
             answer(False, f"not committed: {serial}: {problem}")
             return
@@ -257,7 +259,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                             signals.follower_state(robot, every_message=True),
                             signals.base_floor_pose(robot, every_message=True),
                             signals.wheel_odometry(robot, every_message=True)) as rec, \
-                    ctx.clearance([serial], margin, unknown_robots=self.unknown_allowed(plan)) as clearance:
+                    ctx.clearance([serial], margin, unknown_arms=ALL_ARMS if robot_id(serial) in allowed else (),
+                                  unknown_robots=allowed) as clearance:
                 try:
                     sent_id = send_to_onboard_follower(robot.base, path)
                 except ValueError as error:

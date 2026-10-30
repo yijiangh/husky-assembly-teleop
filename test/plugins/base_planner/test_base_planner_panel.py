@@ -230,3 +230,15 @@ def test_an_arm_out_of_stow_asks_commit_twice_and_shows_an_amber_chip(pan, warne
     panel = panel_for(None)
     said = panel.commit_warnings(ctx, Plan(1, BasePlanRequest(SERIAL, GOAL), "ready", PATH))
     assert said == ([f"the arm {np.degrees(pan):.0f}° from stow"] if warned else [])
+
+
+@pytest.mark.parametrize("tracked", [True, False])
+def test_the_robots_own_arms_not_measured_ask_commit_twice(tracked):
+    """Arms with no joint states: Commit names them and how they are checked; not with the base untracked (refused)."""
+    model = SimpleNamespace(movable_joints=("ur_arm_shoulder_pan_joint",))
+    robot = RobotObject(robot_id(SERIAL), model, Pose(), {}, base_tracked=tracked,
+                        unmeasured=frozenset(model.movable_joints))
+    ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial=SERIAL, arms=[])]),
+                          scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot})))
+    said = panel_for(None).commit_warnings(ctx, Plan(1, BasePlanRequest(SERIAL, GOAL), "ready", PATH))
+    assert said == (["ur_arm not measured: checked where last seen, else stowed"] if tracked else [])

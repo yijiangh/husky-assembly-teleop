@@ -40,6 +40,7 @@ from ...ui.visualization import PLAN_TAB
 from ...robot_interface.base import live_report
 from ...world.follower import path_check
 from ...world.kinematics import STOW_TOLERANCE, from_stow
+from ...world.stand_ins import unknown_parts
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from .algorithms import ALGORITHMS, Algorithm
@@ -270,9 +271,15 @@ class BasePlannerPanel(PlannerPanel):
         return "the target changed since planning" if differs(self._target.pose, plan.request.goal) else ""
 
     def commit_warnings(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> list[str]:
-        """An arm out of its stow pose: the base would drive with it out."""
+        """An arm out of its stow pose: the base would drive with it out; or arms not measured, checked as last seen.
+
+        Not asked with the base untracked: Commit is refused then.
+        """
         out = self._out_of_stow(ctx, plan.request.serial)
-        return [out] if out else []
+        robot = ctx.scene.snapshot.robots.get(robot_id(plan.request.serial))
+        unknown = (f"{unknown_parts(robot)} not measured: checked where last seen, else stowed"
+                   if robot is not None and robot.base_tracked and robot.unmeasured else "")
+        return [warning for warning in (out, unknown) if warning]
 
     def _out_of_stow(self, ctx: PluginContext, serial: str) -> str:
         """How far the robot's measured arms are from their stow pose, e.g. "the arm 40° from stow"; "" if stowed."""

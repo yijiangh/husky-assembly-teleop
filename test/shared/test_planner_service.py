@@ -450,7 +450,7 @@ def test_the_unknown_robots_chip_counts_the_others_and_hides_at_zero():
 def test_commit_asks_for_a_second_press_within_two_seconds_while_a_robot_is_unknown():
     """Robot b lost mocap: the first press asks and turns Commit amber; a second within 2 s sends, letting b be unknown.
 
-    Later it asks again. The robot the commit moves is not counted.
+    Later it asks again. The robot the commit moves is not counted, but let be unknown: its planner decides.
     """
     model = SimpleNamespace(movable_joints=())
     lost = RobotObject("robots/b", model, Pose(), {}, base_tracked=False, base_time=1.0)
@@ -470,7 +470,7 @@ def test_commit_asks_for_a_second_press_within_two_seconds_while_a_robot_is_unkn
     assert confirm.asks(ctx, ["robots/me"], "Commit")[0]
     ctx.t += 2.5
     assert confirm.asks(ctx, ["robots/me"], "Commit")[0], "too late: it asks again"
-    assert confirm.asks(ctx, ["robots/b"], "Commit") == ("", frozenset()), "the robot it moves is not counted"
+    assert confirm.asks(ctx, ["robots/b"], "Commit") == ("", {"robots/b"}), "the robot it moves is not counted"
 
 
 def test_commit_asks_twice_for_a_panels_own_warning_too():

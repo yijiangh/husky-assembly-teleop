@@ -74,8 +74,8 @@ class PlannerContract(Protocol[R]):
     def commit(self, plan_id: int, unknown_robots: Collection[str] = ()) -> asyncio.Future[tuple[bool, str]]:
         """Send plan `plan_id` to the robot if it is still the latest and ready; resolves with (sent, message).
 
-        `unknown_robots`: ids of other robots the operator lets be unknown during the motion; any other robot not
-        measured soft stops it.
+        `unknown_robots`: ids of robots the operator lets be unknown during the motion; any other robot not measured
+        soft stops it. The plan's own robot among them: the base planner checks its unknown arms where last seen.
         """
 
     def cancel_commit(self) -> bool:
