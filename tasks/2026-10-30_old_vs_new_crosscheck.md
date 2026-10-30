@@ -296,6 +296,9 @@ servo by bar ground-only). The "Still missing" paragraph and the "Last change" l
 notes. Also update the dropdown statuses (enum `d5aa6403-153e`: 0 Ported, 1 Changed, 2 Partly, 3 Not ported,
 4 Dropped).
 
+Done 2026-10-30 (doc rev 11): rows 45, 47 (now Changed), 48, 53, 54 (now Ported) reworded, a row 54a "Cross-check
+2026-10-30: differences kept on purpose" (Changed), the "Still missing" sentence and the "Last change" line updated.
+
 ## Verification
 
 - Unit: per package the folder/marker sets above with `-n 0`; `pytest -m safety` after D; `pytest` before each
