@@ -41,6 +41,7 @@ from ...shared.execution.servo import (BAR_TOL, CONFIRM_TRAVEL, MARKER_MAX_AGE, 
                                        deviation_text, excursion, flange_poses, flange_side, force_vectors,
                                        recommended_time, servo_plan, stop_after_move, tool0_errors, tracking_gaps,
                                        wrench_magnitudes)
+from ...shared.runs.as_built import servo_block
 from ...shared.execution.servo_record import plot_servo, servo_payload
 from ...shared.motion_planner_contract import MotionPlanRequest, ServoAsk
 from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT, MAX_TRAJ_TIME,
@@ -83,6 +84,7 @@ async def run_servo(job: Job, run: PartRun) -> None:
     if isinstance(plan, str):
         run.ended(REFUSED, "refused", plan)
         return
+    run.servo_plan = plan
     say_feedback(job, plan)
     problem = insert_end_problem(job, plan)
     if problem:
@@ -415,6 +417,7 @@ class ServoLoop:
                                     moves=self.moves, status=run.result, reason=run.reason, engaged=self.engaged,
                                     dry_run=job.dry_run)
             run.servo_file = servo_file(job.run.view, plan)
+            run.servo = servo_block(payload, run.servo_file)
             job.run.request_record("servo", action=plan.action, movement=plan.target,
                                    data={"status": run.result, "passes": len(self.moves)}, file=payload, kind="servo",
                                    figure=plot_servo)

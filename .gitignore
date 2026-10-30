@@ -13,3 +13,6 @@ __pycache__
 data/recordings/
 # Separate clone of the design study repo
 data/husky_assembly_design_study/
+
+# The as-built page builder's 3D library, fetched by scripts/fetch_three_js.sh
+data/bar_holding_acc_data/vendor/

@@ -48,6 +48,7 @@ from ...shared.runs.runs import SPLIT_RANGE
 from ...world.freeze import WorldMoved, take_basis
 
 if TYPE_CHECKING:
+    from ...shared.execution.servo import ServoPlan
     from scaffolding_assembly_core.geometry import Pose
 
     from ...plugin_api.context import PluginContext
@@ -89,6 +90,8 @@ class Job:
         recorder: The samples of the compliant part running (insert, retreat, handoff), for the panel; else None.
         measured: Gets each servo reading as it is taken, for the Exec plots window.
         status: Shows the servo's phase in the Exec plots window: (text, chip colour).
+        ft_zero: Serial -> {at, reason} of the force sensors' last zero (the travel to load, a handoff); the plugin's
+            dict, shared, so the as-built record says what the wrenches are relative to.
     """
 
     ctx: PluginContext
@@ -104,6 +107,7 @@ class Job:
     recorder: Recorder | None = None
     measured: Callable[[Mapping[str, Any]], None] = lambda _reading: None
     status: Callable[[str, str], None] = lambda _text, _color: None
+    ft_zero: dict[str, dict] = field(default_factory=dict)
 
     @property
     def who(self) -> str:
@@ -127,6 +131,8 @@ class PartRun:
         progress: How far a motion's send got, for a cancel's record; None for other parts.
         freeze: The other robots' freeze while a motion runs; its `problem` says why it broke. None for other parts.
         servo_file: The servo record's path in the run, once the servo part wrote one.
+        servo: The servo's summary for the as-built record (`as_built.servo_block`), once it wrote one.
+        servo_plan: The servo part's plan (what it aims at), once made.
         carry: What a transfer's bar servo leaves for its insert's plan, once it did.
         started_at: ROS time the part started, after its checks; `ended_at` when it ended, however.
         base_at_start: The acting robot's base when the part started.
@@ -143,6 +149,8 @@ class PartRun:
     progress: SendProgress | None = None
     freeze: Freeze | None = None
     servo_file: str | None = None
+    servo: dict | None = None
+    servo_plan: ServoPlan | None = None
     carry: Carried | None = None
     started_at: float | None = None
     ended_at: float | None = None
@@ -451,6 +459,8 @@ async def _motion(job: Job, run: PartRun) -> None:
         zeroed = [arm.zero_ft_sensor() for arm in job.robot.arms.values()]
         (ctx.log_info if all(zeroed) else ctx.log_warn)(
             f"{job.who}: travel to load done; force sensors zeroed on {sum(zeroed)} of {len(zeroed)} arms")
+        if any(zeroed):
+            job.ft_zero[job.request.serial] = {"at": ctx.now(), "reason": "travel to load (tools empty)"}
 
 
 async def _insert(job: Job, run: PartRun) -> None:

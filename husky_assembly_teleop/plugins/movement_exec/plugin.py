@@ -33,9 +33,11 @@ from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import INTERRUPTED, motion_command
 from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HANDOFF_PART, HOLD_NOT_SENT,
                                               INSERT_PART, MAX_TRAJ_TIME, MOTION_KINDS, MOTION_PART, REFUSED,
-                                              REFUSED_PART, RETREAT_PART, SERVO_PART, Carried, ExecRequest,
-                                              ExecResult, serial_of)
+                                              REFUSED_PART, RETREAT_PART, SERVO_INDEX, SERVO_PART, WITH_MOTION_PART,
+                                              Carried, ExecRequest, ExecResult, serial_of)
 from ...ui.assembly_tab import ASSEMBLY_TAB, EXEC_PLOTS_X, PLOTS_HEIGHT, PLOTS_WIDTH, PLOTS_Y
+from ...shared.runs.as_built import KIND as AS_BUILT_KIND, bar_lines
+from .as_built import as_built_record
 from .panel import ExecPanel
 from .plots import ExecPlots
 from .sequences import Job, PartRun, run_part
@@ -57,6 +59,8 @@ def cancelled_by(ctx: PluginContext) -> str:
     return CLOSED if ctx.closed else STOP_ALL
 
 
+#: Parts no as-built record is taken around: nothing moves in them.
+AS_BUILT_SKIPPED = frozenset({WITH_MOTION_PART, REFUSED_PART})
 #: The parts that run partly under the compliance controller, whose force and torque the Exec plots window shows.
 COMPLIANT_KINDS = (INSERT_PART, RETREAT_PART, HANDOFF_PART)
 
@@ -66,7 +70,7 @@ class MovementExecPlugin(HuskyPlugin):
     """Runs one step's parts in order on its robot (a motion on Exec, the rest after Confirm) and records them."""
 
     name = "movement_exec"
-    requires = ("motion_planner", "assembly_run")
+    requires = ("motion_planner", "assembly_run", "mocap_bars")
     experimental = True
     tab_path = (ASSEMBLY_TAB,)
     icon = viser.Icon.PLAYER_PLAY
@@ -94,6 +98,8 @@ class MovementExecPlugin(HuskyPlugin):
         self._servo_line = ""
         #: The Exec plots window's plots, and the time of the compliant sample last plotted.
         self._plots: ExecPlots | None = None
+        #: What was said once about nothing to record (the process without markers, no plugin), not to repeat it.
+        self._no_bars_said = None
         self._plotted_t: float | None = None
 
     # --- --- --- --- --- WHAT OTHER PLUGINS CALL (MovementExecContract) --- --- --- --- ---
@@ -287,10 +293,15 @@ class MovementExecPlugin(HuskyPlugin):
         if self._carried is not None and self._carried.action != request.action:
             self._carried = None
         self._servo_line = ""
+        first = True
         try:
             with lease.use():
                 for part in request.parts:
                     run = PartRun(part)
+                    if first and part.kind not in AS_BUILT_SKIPPED:
+                        # * The moment before anything moves; every later start is the end of the part before.
+                        self._as_built(job, run, "start")
+                        first = False
                     if part.routine in TRANSFERS and part.kind in (MOTION_PART, SERVO_PART):
                         self._carried = None  # the transfer runs anew: its servo sets the carry again when due
                     if self._plots is not None and part.kind == SERVO_PART:
@@ -442,6 +453,76 @@ class MovementExecPlugin(HuskyPlugin):
             payload["servo_file"] = run.servo_file
         job.run.request_record("exec", action=request.action, movement=movement,
                                data={"status": run.status, "result": run.result}, file=payload)
+        if part.kind not in AS_BUILT_SKIPPED:
+            self._as_built(job, run, "end")
+
+    # --- --- --- --- --- THE AS-BUILT RECORD --- --- --- --- ---
+
+    def request_as_built(self) -> None:
+        """Measure every MoCap bar now and append an as-built record (phase "manual"); the current step's context."""
+        ctx = self._ctx
+        view = ctx.require("assembly_run").view
+        if view.process is None:
+            ctx.log_warn("[as-built] no process loaded: nothing recorded")
+            return
+        if self._job is not None and self.active:
+            job = self._job
+            self._as_built(job, None, "manual")
+            return
+        action_id, movement_index = view.current if view.current is not None else (None, None)
+        serial = serial_of(view.process, action_id, ctx.config.robots) if action_id else None
+        if serial is None or serial not in ctx.world.robots:
+            serial = next(iter(ctx.world.robots), None)
+        if serial is None:
+            ctx.log_warn("[as-built] no robot: nothing recorded")
+            return
+        self._record_as_built(ctx, view, "manual", action_id, movement_index, serial, ctx.world.robots[serial],
+                              None, None, False, {})
+
+    def _as_built(self, job: Job, run: PartRun | None, phase: str) -> None:
+        """An as-built record at a part's start or end (or a click mid-request); never raises, the step goes on."""
+        request = job.request
+        part = run.part if run is not None else None
+        movement_index = None if part is None else (request.step.primary if part.index == SERVO_INDEX
+                                                    else part.index)
+        self._record_as_built(job.ctx, job.run.view, phase, request.action, movement_index, request.serial,
+                              job.robot, request, run, job.dry_run, job.ft_zero)
+
+    def _record_as_built(self, ctx: PluginContext, view, phase: str, action_id: str | None,
+                         movement_index: int | None, serial: str, robot, request: ExecRequest | None,
+                         run: PartRun | None, dry_run: bool, ft_zero: Mapping[str, Mapping]) -> None:
+        """Build the record and hand it to assembly_run; an error is one log line."""
+        movement = run.part.movement if run is not None else "(no step loaded)"
+        if request is not None and run is None:
+            movement = request.label
+        ended = f" ({run.result or 'running'})" if run is not None and phase == "end" else ""
+        head = f"[as-built] {movement} {phase}{ended}"
+        try:
+            bars_plugin = ctx.require("mocap_bars")
+        except KeyError:
+            if self._no_bars_said != "no plugin":
+                self._no_bars_said = "no plugin"
+                ctx.log_info("[as-built] the mocap_bars plugin is not loaded: nothing recorded")
+            return
+        try:
+            record = as_built_record(ctx, bars_plugin, view.process, view, action_id=action_id,
+                                     movement_index=movement_index, serial=serial, robot=robot, phase=phase,
+                                     request=request, run=run, dry_run=dry_run, ft_zero=ft_zero)
+            if record is None:
+                if self._no_bars_said != view.process.source:
+                    self._no_bars_said = view.process.source
+                    ctx.log_info("[as-built] no bar with MoCap markers in this process: nothing recorded")
+                return
+            for line in bar_lines(record):
+                ctx.log_info(f"{head}: {line}")
+            ctx.require("assembly_run").request_record(
+                AS_BUILT_KIND, action=action_id, movement=movement if run is not None else None,
+                data={"phase": phase, "outcome": (record.get("step") or {}).get("outcome"),
+                      "bars": len(record["bars"]),
+                      "milestones": {bar: entry["milestone"] for bar, entry in record["bars"].items()}},
+                file=record, kind=AS_BUILT_KIND)
+        except Exception as error:
+            ctx.log_error(f"[as-built] {phase} of {movement} NOT recorded: {error!r}")
 
 
 def _pose_record(pose: Pose | None) -> list[float] | None:

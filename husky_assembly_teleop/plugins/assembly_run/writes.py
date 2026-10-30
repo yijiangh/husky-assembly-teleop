@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping
 
 from ...plugin_api.context import PluginContext
+from ...shared.runs.as_built import KIND as AS_BUILT_KIND, append_record, as_built_path, day_of, with_saved_robots
 from ...shared.assembly_run_contract import exported_end, first_pending, is_live, live_record
 from ...shared.execution.operator import PROMPT_ARM_S
 from ...shared.assembly_planning.steps import first_step
@@ -70,6 +71,20 @@ def _record_file(folder: Path, event: str, ros_time: float, action: str, movemen
             data = {**(data or {}), "figure_error": repr(error)}
     record_event(folder, event, ros_time, action=action, movement=movement, file=str(path.relative_to(folder)),
                  **({"data": dict(data)} if data else {}))
+
+
+def _append_as_built(folder: Path, ros_time: float, action: str | None, movement: str | None, record: Mapping[str, Any],
+                     data: Mapping[str, Any] | None, drive_root: Path | None, saved: Mapping[str, RobotRecord]) -> Path:
+    """Append an as-built record to the day's file on the Drive, then write an event naming it. Writer thread.
+
+    Raises:
+        FileNotFoundError: The Drive's runs folder is not there (`as_built_path`).
+    """
+    record = with_saved_robots(dict(record), saved)
+    path = append_record(as_built_path(drive_root, record["problem"], day_of(record["stamp"])), record)
+    record_event(folder, AS_BUILT_KIND, ros_time, action=action, movement=movement, file=str(path),
+                 **({"data": dict(data)} if data else {}))
+    return path
 
 
 class RunWrites:
@@ -229,7 +244,13 @@ class RunWrites:
                       figure: Callable[[Mapping[str, Any], Path], None] | None) -> None:
         """Queue a record's writes: a `kind` record with its figure and the event naming it, or the event alone."""
         folder = self._run.folder
-        if file is not None:
+        if file is not None and kind == AS_BUILT_KIND:
+            # * On the Drive, not in the run folder: one file per lab day, every robot's monitor appending.
+            head = f"[as-built] {movement or '(no step loaded)'} {(data or {}).get('phase', '')}".rstrip()
+            done = asyncio.wrap_future(self._writer.submit(_append_as_built, folder, ctx.now(), action, movement, file,
+                                                           data, ctx.config.drive_root, self._run.progress.robots))
+            done.add_done_callback(lambda job: self._as_built_written(ctx, head, job))
+        elif file is not None:
             self._write(ctx, f"record {event}", _record_file, folder, event, ctx.now(), action, movement, file, data,
                         kind, figure)
         else:
@@ -383,6 +404,15 @@ class RunWrites:
         """Queue a write after every earlier one; a failure shows in the panel and the log."""
         done = asyncio.wrap_future(self._writer.submit(function, *args, **kwargs))
         done.add_done_callback(lambda job: self._written(ctx, what, job))
+
+    def _as_built_written(self, ctx: PluginContext, head: str, job: asyncio.Future) -> None:
+        """Say where an as-built record went, or that it did not (the Drive not mounted): the step goes on."""
+        if job.cancelled():
+            return
+        if job.exception() is not None:
+            ctx.log_error(f"{head} NOT recorded: {job.exception()!r}")
+            return
+        ctx.log_info(f"{head}: recorded -> {job.result()}")
 
     def _written(self, ctx: PluginContext, what: str, job: asyncio.Future) -> None:
         """Report a write that failed."""

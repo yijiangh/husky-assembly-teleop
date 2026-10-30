@@ -212,6 +212,9 @@ class MovementExecContract(Protocol):
     def request_cancel(self) -> None:
         """Cancel the open prompt, else the running request (every arm is held)."""
 
+    def request_as_built(self) -> None:
+        """Measure every MoCap bar now and append an as-built record (phase "manual"), outside a request too."""
+
     def request_dry_run(self, on: bool) -> None:
         """Turn the dry run on or off; refused while a request runs."""
 

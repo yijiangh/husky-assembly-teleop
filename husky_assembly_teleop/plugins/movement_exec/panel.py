@@ -57,8 +57,12 @@ class ExecPanel:
         with ctx.view.ui(band=EXEC_SETTINGS_BAND) as gui:
             self._dry = gui.add_checkbox("Dry run (every check, nothing sent)", False,
                                          hint="Exec runs every check and builds every trajectory, and sends nothing")
+            as_built = gui.add_button("As-built: record now",
+                                      hint="Measure every MoCap bar now and append a record to the day's as-built "
+                                           "file on the Drive (every part's start and end are recorded by themselves)")
         confirm.on_click(ctx.defer("exec confirm", plugin.request_confirm))
         cancel.on_click(ctx.defer("exec cancel", plugin.request_cancel))
+        as_built.on_click(ctx.defer("as-built record", plugin.request_as_built))
         self._dry.on_update(ctx.defer_value("dry run", lambda value: plugin.request_dry_run(bool(value))))
         with ctx.view.phone("Exec", viser.Icon.PLAYER_PLAY) as phone:
             phone.add_html(f"<style>{big_buttons([CONFIRM_ICON, CANCEL_ICON], 72, 30)}</style>")

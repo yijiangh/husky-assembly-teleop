@@ -1232,3 +1232,41 @@ def test_the_re_review_messages(tmp_path, monkeypatch):
         assert failing._message == "could not open the run (bad hashes): trying again in 5 s" and failing._failed
 
     asyncio.run(scenario())
+
+
+def test_an_as_built_record_goes_to_the_days_file_on_the_drive(tmp_path):
+    """Kind "as_built" goes to <drive>/.../<day>-asbuilt/as_built_<problem>.jsonl, an event naming the path.
+
+    The saved robots are filled in; without the Drive's runs folder the record is said lost and the run goes on.
+    """
+    lab = Lab(tmp_path)
+    root = tmp_path / "drive"
+    (root / "data_experiment" / "bar_action_live_replan_exe").mkdir(parents=True)
+    lab.ctx.config.drive_root = root
+    record = {"stamp": "2026-10-30T14:15:01", "problem": "p", "bars": {"B1": {"milestone": "before_insert"}},
+              "robots": {}}
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        plugin.request_record("as_built", action="B1_J_joint", movement="B1_M2_insert",
+                              data={"phase": "end", "outcome": "ok", "bars": 1}, file=record, kind="as_built")
+        await settle(plugin)
+        lab.ctx.config.drive_root = tmp_path / "nowhere"
+        plugin.request_record("as_built", action="B1_J_joint", movement="B1_M2_insert", data={"phase": "start"},
+                              file=record, kind="as_built")
+        await settle(plugin)
+        return plugin
+
+    plugin = asyncio.run(scenario())
+    path = root / "data_experiment/bar_action_live_replan_exe/20261030-asbuilt/as_built_p.jsonl"
+    lines = path.read_text().splitlines()
+    assert len(lines) == 1
+    written = json.loads(lines[0])
+    assert written["bars"] == record["bars"] and written["robots"] == {}, "no saved robots yet in this run"
+    events = read_events(plugin.view.folder)
+    assert events[1]["event"] == "as_built" and events[1]["file"] == str(path)
+    assert events[1]["data"] == {"phase": "end", "outcome": "ok", "bars": 1}
+    assert any(line == f"[as-built] B1_M2_insert end: recorded -> {path}" for line in lab.ctx.lines("info"))
+    assert any(line.startswith("[as-built] B1_M2_insert start NOT recorded: FileNotFoundError(")
+               for line in lab.ctx.lines("error"))
+    assert len(path.read_text().splitlines()) == 1 and not plugin._save_error
