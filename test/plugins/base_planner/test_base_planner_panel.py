@@ -165,6 +165,36 @@ def test_the_panel_plans_and_commits_through_the_api():
     assert planner.plan.state == "sent"
 
 
+@pytest.mark.safety
+def test_commits_second_press_lets_the_robots_own_arms_be_unknown():
+    """The robot's arms not measured: the first Commit only asks; the second sends, letting the robot be unknown."""
+    model = SimpleNamespace(movable_joints=("ur_arm_shoulder_pan_joint",))
+    robot = RobotObject(robot_id(SERIAL), model, Pose(), {}, unmeasured=frozenset(model.movable_joints))
+    planner, ctx = Planner(), SimpleNamespace(submit=lambda _label, run: run(), now=lambda: 0.0,
+                                              spawn=lambda _label, work: asyncio.get_running_loop().create_task(work),
+                                              log_info=lambda _text: None, lease_robots=lease_test_robots,
+                                              world=SimpleNamespace(robots={}), config=SimpleNamespace(robots=()),
+                                              scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot})))
+    planner.setup(ctx)
+
+    async def scenario():
+        panel = panel_for(planner)
+        panel._on_path(ctx, "Plan")
+        await asyncio.sleep(0.05)
+        panel._commit(ctx)
+        asked, sent_after_one = panel._message, list(planner.sent)
+        panel._commit(ctx)
+        await asyncio.sleep(0.01)
+        return asked, sent_after_one
+
+    try:
+        asked, sent_after_one = asyncio.run(scenario())
+    finally:
+        planner.teardown(ctx)
+    assert "press Commit again" in asked and "ur_arm not measured" in asked and sent_after_one == []
+    assert planner.sent == [planner.plan.id] and planner.unknown_allowed(planner.plan) == {robot.id}
+
+
 def test_a_plan_refused_for_a_collision_shows_its_hit_until_the_next_plan():
     """A target in collision lists its hit in the collisions panel, ticked; the next plan found removes it."""
     hit = SimpleNamespace(where="target")
@@ -240,5 +270,7 @@ def test_the_robots_own_arms_not_measured_ask_commit_twice(tracked):
                         unmeasured=frozenset(model.movable_joints))
     ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial=SERIAL, arms=[])]),
                           scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot})))
-    said = panel_for(None).commit_warnings(ctx, Plan(1, BasePlanRequest(SERIAL, GOAL), "ready", PATH))
+    panel, plan = panel_for(None), Plan(1, BasePlanRequest(SERIAL, GOAL), "ready", PATH)
+    said = panel.commit_warnings(ctx, plan)
     assert said == (["ur_arm not measured: checked where last seen, else stowed"] if tracked else [])
+    assert panel.commit_unknown(ctx, plan) == ({robot.id} if tracked else set()), "the second press lets them be"

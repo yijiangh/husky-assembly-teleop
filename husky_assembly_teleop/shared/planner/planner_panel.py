@@ -115,6 +115,10 @@ class PlannerPanel(HuskyPlugin):
         """Reasons Commit asks for a second press, besides other robots not measured, e.g. "arm out of stow"."""
         return []
 
+    def commit_unknown(self, ctx: PluginContext, plan: Plan) -> frozenset[str]:
+        """Ids of the robots the plan moves that the second press lets be unknown (`commit_warnings` asks); none."""
+        return frozenset()
+
     # --- --- --- --- --- SETUP HELPERS --- --- --- --- ---
 
     def _connect(self, ctx: PluginContext) -> None:
@@ -233,7 +237,8 @@ class PlannerPanel(HuskyPlugin):
         if asked:
             self._say(asked, BUSY)
             return
-        ctx.spawn(f"commit plan {plan.id}", self._report(self._api.commit(plan.id, unknown)))
+        allowed = unknown | self.commit_unknown(ctx, plan)
+        ctx.spawn(f"commit plan {plan.id}", self._report(self._api.commit(plan.id, allowed)))
 
     def _cancel_commit(self) -> None:
         """Stop the motion a commit started, and say so."""
@@ -351,7 +356,7 @@ class CommitConfirm:
 
     Commit turns amber while it waits. The second press lets the robots unknown then be unknown during the motion: its
     clearance checks them as stand-ins, and soft stops for any other robot that is not measured (`ctx.clearance`,
-    `unknown_robots`). A robot the commit moves is among them too while unknown; its planner decides what that allows.
+    `unknown_robots`).
     """
 
     #: For Commit's hover text.
@@ -369,12 +374,12 @@ class CommitConfirm:
 
         Args:
             ctx: The plugin's context.
-            acting: Ids of the robots the commit moves; not counted, so a panel that lets them be unknown warns.
+            acting: Ids of the robots the commit moves; not counted.
             label: The button's label, for the message.
             warnings: More reasons to ask first, e.g. "the arm 40° from its stow pose".
 
         Returns:
-            tuple[str, frozenset[str]]: The question, or ""; the ids of the robots not measured now, acting ones too.
+            tuple[str, frozenset[str]]: The question, or ""; the ids of the other robots not measured now.
         """
         unknown = unknown_robots(ctx.scene.snapshot, set(acting))
         reasons = [*warnings] + ([f"{len(unknown)} other robot{'s' if len(unknown) > 1 else ''} unknown"]
@@ -384,7 +389,7 @@ class CommitConfirm:
             return (f"press {label} again within {COMMIT_CONFIRM_SECONDS:g} s to move with "
                     f"{'; '.join(reasons)}"), frozenset()
         self.until = -math.inf
-        return "", unknown_robots(ctx.scene.snapshot, set())
+        return "", unknown
 
     def draw(self, now: float) -> None:
         """Make the button amber while it waits for its second press, blue otherwise."""

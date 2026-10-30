@@ -276,10 +276,18 @@ class BasePlannerPanel(PlannerPanel):
         Not asked with the base untracked: Commit is refused then.
         """
         out = self._out_of_stow(ctx, plan.request.serial)
-        robot = ctx.scene.snapshot.robots.get(robot_id(plan.request.serial))
-        unknown = (f"{unknown_parts(robot)} not measured: checked where last seen, else stowed"
-                   if robot is not None and robot.base_tracked and robot.unmeasured else "")
-        return [warning for warning in (out, unknown) if warning]
+        unknown = self._unknown_arms(ctx, plan.request.serial)
+        arms = f"{unknown} not measured: checked where last seen, else stowed" if unknown else ""
+        return [warning for warning in (out, arms) if warning]
+
+    def commit_unknown(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> frozenset[str]:
+        """The robot itself while `commit_warnings` names its arms: its drive checks them where last seen."""
+        return frozenset({robot_id(plan.request.serial)} if self._unknown_arms(ctx, plan.request.serial) else ())
+
+    def _unknown_arms(self, ctx: PluginContext, serial: str) -> str:
+        """The robot's arms not measured while its base is tracked, e.g. "left_ur_arm, right_ur_arm"; else ""."""
+        robot = ctx.scene.snapshot.robots.get(robot_id(serial))
+        return unknown_parts(robot) if robot is not None and robot.base_tracked and robot.unmeasured else ""
 
     def _out_of_stow(self, ctx: PluginContext, serial: str) -> str:
         """How far the robot's measured arms are from their stow pose, e.g. "the arm 40° from stow"; "" if stowed."""
