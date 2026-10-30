@@ -796,21 +796,32 @@ Then the seven actions in order, each with its procedures (6.1–6.4) and what d
   - **Expect:** the **Exec plots** window opens with the servo's plots (one point per pass); pane monitor: the feedback
     line (B20: `[servo] feedback: the MoCap bar bars/B20 (converges at 0.5 mm / 0.1 deg).`; B21:
     `[servo] feedback: tool0 (0.2 mm); the MoCap bar bars/B21 is recorded alongside.`; B22: `... no MoCap bar recorded
-    (bars/B22 carries no MoCap markers).`), then `[servo 0] tool0 pos L=a R=b mm` (a few mm: the base gives under the
-    arms) and the prompt `<bar>_J_transfer — SERVO 1/8 onto the insert start (tool0, or the MoCap bar B20): ..., N rows,
-    travels X° (...), T s; flanges move L a mm, R b mm. Confirm to move; Cancel stops and records.`
+    (bars/B22 carries no MoCap markers).`), then `[servo 0] tool0 pos L=a R=b mm, rot ... deg` (a few mm: the base
+    gives under the arms), `[servo 0] load L=... N / ... Nm (+0.0 N vs iter 0) | R=...`, `### SERVOING iteration 1/8:
+    aiming <the MoCap bar B20 ... | tool0 at the authored targets of the insert start>`, `[servo] First move planned:
+    N waypoints, travels X deg (...), over T s; flanges move L a mm, R b mm (...)` and the prompt `<bar>_J_transfer —
+    SERVO 1/8 onto the insert start (tool0, or the MoCap bar B20): ..., N rows, travels X° (...), T s; flanges move L
+    a mm, R b mm. Confirm to move; Cancel stops and records.` The exec section's last line and the Exec plots chip
+    say which phase the pass is in (`pass 1/8: waiting for Confirm`, `moving (3 s)`, `settling 2 s`, `measuring`);
+    under each plot stand the last pass's numbers.
+  - **If not** (B20): a WARNING prompt first, `B20_J_transfer — SERVO by bar: no usable MoCap fit of B20 (asset
+    1020): <why>. Confirm to servo tool0 onto the authored targets of the insert start instead (...); Cancel stops
+    and records.`: B20's balls are not streamed (`no marker sample`: 2.f, check the Motive asset 1020 and Labeled
+    Markers) or the fit failed (`<why>` says what). Cancel, fix Motive, Exec again; or Confirm to place B20 by tool0
+    (the ground bar then stands where the flanges put it, not where its balls say: only on purpose).
 - [ ] slider [Preview time]: scrub the pass (a few mm with the bar held) → button [Confirm]
   - **Expect:** later passes run alone unless one travels over 5° (`SAFEGUARD servo k/8: ...`: scrub, Confirm). Each
-    pass logs `[servo k] tool0 pos L=... R=... mm` (B20 and B21 also `[servo k] bar bars/B2x: MoCap-vs-design ...,
-    FK-vs-design ..., MoCap-vs-FK ...`). It ends with one of: `converged on tool0 (< 0.2 mm)`; for B20
-    `converged on the MoCap bar: dpos ... mm, dang ... deg (< 0.5 mm / 0.1 deg)` and `[servo] the MoCap-bar
-    correction is carried into the plan of B20_J_insert.`; `nothing left to plan (correction L ... mm, R ... mm, under
-    0.2 mm)`; or `ran all 8 passes without converging` (the old monitor on B20: the right flange stays 1–3 mm off, the
-    bar as mounted by hand; harmless).
-    Then `### bar pose at termination (bars/<bar>): FK-vs-design ..., MoCap-vs-design ..., MoCap-vs-FK ...` and
+    pass logs `### SERVOING iteration k/8: aiming ...`, `[servo k] tool0 pos L=... R=... mm, rot ... deg`, `[servo k]
+    arms vs last commanded waypoint: L ... R ... mm`, `[servo k] load ... | force change since iter 0 L ... R ... N`
+    (B20 and B21 also `[servo k] bar bars/B2x: MoCap-vs-design ..., FK-vs-design ..., MoCap-vs-FK ...`). It ends with
+    one `### SERVOING ...` line: `converged at iter k on tool0 (< 0.2 mm)`; for B20 `converged at iter k on the MoCap
+    bar: dpos ... mm, dang ... deg (< 0.5 mm / 0.1 deg)` and `[servo] the MoCap-bar correction is carried into the
+    plan of B20_J_insert.`; `stopped at iter k: nothing left to plan (correction L ... mm, R ... mm, under 0.2 mm)`;
+    or the warning `ran all 8 iterations without converging.` (the old monitor on B20: the right flange stays 1–3 mm
+    off, the bar as mounted by hand; harmless).
+    Then `### bar pose at termination (bars/<bar>): FK-vs-design ..., MoCap-vs-design ..., MoCap-vs-FK ...`,
+    `Servoing data saved to <run>/servo/<action>/<movement>.<n>.json (its .png beside it)` and
     `Exec <bar>_J_transfer: done — every part done`. The exec section's last line keeps `servo done: ...`.
-  - **If not:** `[servo] no marker sample of bars/B20 (asset 1020) within 1 s: is Motive streaming it?`: B20's balls are
-    not streamed (2.f); the servo aims tool0 and says so.
 
 **e) Insert** (`<bar>_J_insert (insert)`)
 - [ ] button [Plan] (about 3 s)

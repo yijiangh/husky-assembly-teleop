@@ -42,9 +42,14 @@ and give what the code does; tell me where the page differs.
 - **Servo.** After a transfer, a support approach or a grounded insert, the executor measures the flanges and moves
   them onto the authored targets, pass by pass, until they are within 0.2 mm. On tool0 here: **Servo by bar** is on
   (the default; it steers only a grounded bar, B20 here, and every other bar servos on tool0), but the fake Motive
-  streams no bar markers, so B20's servo warns once that the MoCap bar is not usable and aims tool0. The last line of the exec section shows each reading, and after the
-  Exec ends how the servo ended, e.g. `servo done: nothing left to plan (correction L 0.13 mm, R 0.18 mm, under 0.2
-  mm)`, until the next Exec.
+  streams no bar markers, so B20's servo stops before its first pass with a warning prompt (`SERVO by bar: no usable
+  MoCap fit of B20 (asset 1020): ... Confirm to servo tool0 ... instead ...; Cancel stops and records.`): Confirm
+  goes on with tool0, said on every pass. The last line of the exec section shows the pass's phase and the last
+  reading (`pass 1/8: moving (3 s) · servo 0/8 · tool0 L 0.13 R 0.18 mm`), and after the Exec ends how the servo
+  ended, e.g. `servo done: nothing left to plan (correction L 0.13 mm, R 0.18 mm, under 0.2 mm)`, until the next
+  Exec; the console prints the old monitor's lines (`### SERVOING iteration k/8: aiming ...`, the reading's tool0,
+  tracking and load lines, `### SERVOING converged at iter k ...` or how else it ended). The **Exec plots** window
+  shows the phase as a chip and, under each plot, the last pass's numbers.
 - **Split.** The last millimetres of an insert, and the first of a retreat, run under the compliance controller
   (**Insert split mm**, 5 by default).
 
@@ -251,15 +256,22 @@ Confirm is asked only for the bar (placed and clamped, one prompt), a Robotiq st
      tools' buttons until they stall, then Confirm …`. The monitor sends the tools nothing: in the lab you place the
      bar, press each tool's button and check the bar is held before you Confirm.
 5. Click **Confirm** (here or on the phone's Exec tab: the bar is placed and clamped, in the simulation's mind).
-   - **Expect:** the servo runs by itself, and the **Exec plots** window opens at the bottom left with the servo's
-     plots (one point per pass): `[servo] feedback: tool0 (0.2 mm); the MoCap bar bars/B20 is recorded
-     alongside.`, a warning `no
-     marker sample of bars/B20 (asset 1020) within 1 s: is Motive streaming it?` (right: no bar markers here),
-     `[servo 0] tool0 pos L=0.06 R=0.08 mm`, `servo 1/8 B20_J_transfer: servo: nothing left to plan`, `### bar pose
-     at termination (bars/B20): FK-vs-design 0.11 mm/0.007°, MoCap-vs-design n/a, MoCap-vs-FK n/a`, and `Exec
-     B20_J_transfer: done — every part done`. The flanges are already within 0.2 mm, so no servo pass moves; a pass
-     that would move asks for Confirm first (`SERVO 1/8 onto the insert start (tool0): …`). The exec section's last
-     line keeps `servo done: nothing left to plan (correction L … mm, R … mm, under 0.2 mm)`.
+   - **Expect:** the servo starts by itself, and the **Exec plots** window opens at the bottom left with the servo's
+     plots (one point per pass, the phase as a chip, the last pass's numbers under each plot): `[servo] feedback: the
+     MoCap bar bars/B20 (converges at 0.5 mm / 0.1 deg).`, a warning `no marker sample of bars/B20 (asset 1020) within
+     1 s: is Motive streaming it?` (right: no bar markers here), `[servo 0] tool0 pos L=0.06 R=0.08 mm, rot ...`, then
+     the warning prompt `B20_J_transfer — SERVO by bar: no usable MoCap fit of B20 (asset 1020): the bar could not be
+     measured (no marker sample). Confirm to servo tool0 onto the authored targets of the insert start instead (...);
+     Cancel stops and records.`
+6. Click **Confirm** (tool0 it is, here).
+   - **Expect:** `### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start (the MoCap bar
+     B20 is not usable: ...)`, `servo 1/8 B20_J_transfer: servo: nothing left to plan`, `### SERVOING stopped at iter
+     1: nothing left to plan (correction L … mm, R … mm, under 0.2 mm)`, `### bar pose at termination (bars/B20):
+     FK-vs-design 0.11 mm/0.007°, MoCap-vs-design n/a, MoCap-vs-FK n/a`, `Servoing data saved to .../servo/B20_J/
+     B20_J_transfer.1.json (its .png beside it)` and `Exec B20_J_transfer: done — every part done`. The flanges are
+     already within 0.2 mm, so no servo pass moves; a pass that would move asks for Confirm first (`SERVO 1/8 onto the
+     insert start (tool0): …`) and logs `[servo] First move planned: ...`. The exec section's last line keeps `servo
+     done: nothing left to plan (correction L … mm, R … mm, under 0.2 mm)`.
 
 **4.3 B20_J, step 2/2: the insert, and the servo after it.** The step line reads `B20_J_insert (insert)`.
 

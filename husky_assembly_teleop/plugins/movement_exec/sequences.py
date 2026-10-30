@@ -88,6 +88,7 @@ class Job:
         opened: The arms whose gripper screws a retreat of this request opened (its ungrasp is then done).
         recorder: The samples of the compliant part running (insert, retreat, handoff), for the panel; else None.
         measured: Gets each servo reading as it is taken, for the Exec plots window.
+        status: Shows the servo's phase in the Exec plots window: (text, chip colour).
     """
 
     ctx: PluginContext
@@ -102,6 +103,7 @@ class Job:
     opened: set[str] = field(default_factory=set)
     recorder: Recorder | None = None
     measured: Callable[[Mapping[str, Any]], None] = lambda _reading: None
+    status: Callable[[str, str], None] = lambda _text, _color: None
 
     @property
     def who(self) -> str:

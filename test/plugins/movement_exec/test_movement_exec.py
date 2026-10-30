@@ -393,8 +393,11 @@ def test_the_whole_transfer_step_ends_with_the_grasp_and_its_servo():
     still recorded, and its line stays on the panel.
     """
     lab = Lab(current=("B20_J", 3))
-    result, _held = execute(lab, lab.request("B20_J_transfer"), True)
+    # * Two Confirms: the bar placed and clamped, then the servo's "no usable MoCap fit of B20" (no fake Motive).
+    result, _held = execute(lab, lab.request("B20_J_transfer"), True, True)
     assert result.status == DONE and result.done == (3, 1, 2, SERVO_INDEX), result.reason
+    prompts = [fields["data"]["text"] for event, fields in lab.run.records if event == "prompt"]
+    assert any("SERVO by bar: no usable MoCap fit of B20 (asset 1020)" in text for text in prompts), prompts
     files = lab.run.files()
     assert files[1]["outcome"]["status"] == "confirmed"
     assert files[-2]["kind"] == "transfer" and files[-2]["outcome"]["status"] == DONE
@@ -418,6 +421,7 @@ def test_a_dry_run_never_gives_done_and_sends_nothing():
         lab.plugin.request_dry_run(False)
         assert lab.plugin.prompt.text.startswith("DRY RUN — B20_J_place_bar + B20_J_grasp — ")
         await answer(lab, True)
+        await answer(lab, True)  # the servo's bar prompt: no usable MoCap fit of B20 (no fake Motive)
         return await future
 
     result = run_guarded(scenario())

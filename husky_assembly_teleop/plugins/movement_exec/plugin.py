@@ -146,7 +146,8 @@ class MovementExecPlugin(HuskyPlugin):
             job = Job(ctx, request, ctx.world.robots[request.serial], ctx.require("assembly_run"), self._prompts,
                       self._dry_run, lambda name, movement, data: self._event(job, name, movement, data),
                       self._moved_at, lambda line: setattr(self, "_servo_line", line),
-                      measured=self._plots.servo_reading if self._plots is not None else (lambda _reading: None))
+                      measured=self._plots.servo_reading if self._plots is not None else (lambda _reading: None),
+                      status=self._plots.status if self._plots is not None else (lambda _text, _color: None))
             self._job, self._active, self._cancel_reason = job, f"{request.robot_name} · {request.label}", ""
             ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
                          + (" (DRY RUN)" if job.dry_run else ""))

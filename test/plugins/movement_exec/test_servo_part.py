@@ -150,6 +150,8 @@ class ServoLab(RobotLab):
             self.bases[live.split("/")[-1]] = robot.base
         self.shift(shift)
         self.run = FakeRun(loaded, (at.action.id, at.movement_index))
+        # * tool0 scenarios by default (the setting is on by default): the bar tests tick "Servo by bar" themselves.
+        self.run.request_settings(servo_by_bar=False)
         self.planner = StubPlanner(self)
         self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner}
         self.plugin = MovementExecPlugin()
@@ -347,12 +349,24 @@ def test_tool0_servo_converges_in_one_pass_and_is_recorded():
         await sent(lab, 1)
         lab.plugin.draw(lab.ctx)
         seen["line"] = lab.plugin._panel._servo.content
+        seen["chip"] = lab.plugin._plots._note.content
         seen["tracked"] = TRACKED in lab.ctx.world.tracked_objects
 
     result = execute(lab, lab.servo_request(), True, during=look)
     assert result.status == DONE and result.done == (SERVO_INDEX,), result.reason
     assert "converged on tool0" in lab.ended() and lab.published() == 1 and lab.free()
-    assert "servo 0/8 · tool0 L 10.00 R 10.00 mm" in seen["line"] and seen["tracked"]
+    assert "pass 1/8: moving (3 s) · servo 0/8 · tool0 L 10.00 R 10.00 mm" in seen["line"] and seen["tracked"]
+    assert "pass 1/8: moving (3 s)" in seen["chip"]
+    assert "done: converged on tool0 (&lt; 0.2 mm)" in lab.plugin._plots._note.content
+    # * The old monitor's console lines, in its order.
+    info = lab.ctx.lines("info")
+    wanted = ["[servo 0] tool0 pos L=10.00 R=10.00 mm, rot L=",
+              "### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start",
+              "[servo] First move planned: 2 waypoints, travels ",
+              "[servo 1] tool0 pos L=", "[servo 1] arms vs last commanded waypoint: L ",
+              "### SERVOING converged at iter 1 on tool0 (< 0.2 mm)", "### bar pose at termination"]
+    found = [next((i for i, line in enumerate(info) if line.startswith(want)), None) for want in wanted]
+    assert None not in found and found == sorted(found), list(zip(wanted, found))
     assert not lab.ctx.world.tracked_objects
     text, warn = lab.prompts()[0]
     assert text.startswith("cindy (a200-0806): B20_J_transfer — SERVO 1/8 onto the insert start "
@@ -442,13 +456,52 @@ def test_an_unusable_bar_reading_leaves_the_loop_on_tool0(markers, words):
     lab = ServoLab()
     lab.run.request_settings(servo_by_bar=True)
     lab.markers(**markers)
-    result = execute(lab, lab.servo_request(), True)
+    # * Two prompts: the bar's (no usable fit at reading 0), then pass 1's.
+    result = execute(lab, lab.servo_request(), True, True)
     assert result.status == DONE and "converged on tool0" in lab.ended(), result.reason
     record = lab.servo_record()
-    assert record["servo_feedback"] == "tool0" and "(tool0)" in lab.prompts()[0][0]
+    prompts = lab.prompts()
+    assert record["servo_feedback"] == "tool0" and "(tool0)" in prompts[1][0]
+    assert prompts[0][1] and "SERVO by bar: no usable MoCap fit of B20 (asset 1020): " in prompts[0][0]
+    assert words in prompts[0][0]
     reasons = [reading["bar"]["reason"] for reading in record["servoing_data"]]
     assert len(reasons) == 2 and all(words in reason for reason in reasons), reasons
     assert sum("the MoCap bar is not usable" in line for line in lab.ctx.lines("warn")) == 1
+    assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start "
+                               "(the MoCap bar B20 is not usable: ") for line in lab.ctx.lines("info"))
+
+
+@pytest.mark.safety
+def test_servo_by_bar_without_a_bar_asks_first_and_cancel_records_without_sending():
+    """Servo by bar and Motive streams no bar (the lab of 2026-10-29): a warning prompt; Cancel sends nothing."""
+    lab = ServoLab()
+    lab.run.request_settings(servo_by_bar=True)
+    result = execute(lab, lab.servo_request(), False)
+    assert result.status == CANCELLED and result.done == () and lab.published() == 0 and lab.free()
+    text, warn = lab.prompts()[0]
+    assert warn and text.startswith("cindy (a200-0806): B20_J_transfer — SERVO by bar: no usable MoCap fit of B20 "
+                                    "(asset 1020): the bar could not be measured (no marker sample). Confirm to servo "
+                                    "tool0 onto the authored targets of the insert start instead")
+    assert "cancelled at the bar prompt" in result.reason and not lab.planner.requests
+    record = lab.servo_record()
+    assert len(record["servoing_data"]) == 1 and record["outcome"]["status"] == CANCELLED
+    assert "### SERVOING cancelled by user." in lab.ctx.lines("warn")
+
+
+@pytest.mark.safety
+def test_servo_by_bar_without_a_bar_goes_on_with_tool0_after_confirm():
+    """Confirm at the bar prompt: pass 1 asks as usual, aims tool0, converges; the console has the old lines."""
+    lab = ServoLab()
+    lab.run.request_settings(servo_by_bar=True)
+    result = execute(lab, lab.servo_request(), True, True)
+    assert result.status == DONE and "converged on tool0" in lab.ended(), result.reason
+    prompts = lab.prompts()
+    assert len(prompts) == 2 and "SERVO 1/8 onto the insert start (tool0)" in prompts[1][0]
+    info = lab.ctx.lines("info")
+    assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start "
+                               "(the MoCap bar B20 is not usable: the bar could not be measured") for line in info)
+    assert any(line.startswith("### SERVOING converged at iter 1 on tool0 (< 0.2 mm): the MoCap bar fit was never "
+                               "usable") for line in info)
 
 
 @pytest.mark.safety
@@ -628,6 +681,10 @@ def test_after_the_insert_the_gate_the_load_guard_and_linear_only():
     result = execute(lab, lab.servo_request(route=insert_route(lab, 0.0029), route_movement=insert), True,
                      during=push)
     assert result.status == FAILED and "changed by 25.0 N" in result.reason, result.reason
+    assert any(line.startswith("[servo 1] load L=30.0 N / 0.00 Nm (+25.0 N vs iter 0) | R=5.0 N / 0.00 Nm (+0.0 N vs "
+                               "iter 0) | force change since iter 0 L 25.0 R 0.0 N") for line in lab.ctx.lines("info"))
+    assert any(line.startswith("### SERVOING stopped at iter 1: the force on an arm changed by 25.0 N")
+               for line in lab.ctx.lines("warn"))
     ask = lab.planner.requests[0].servo
     assert ask.linear_only and ask.held and result.done == () and lab.published() == 1
     assert "onto the insert end (tool0)" in lab.prompts()[0][0]
@@ -678,6 +735,17 @@ def test_a_dry_run_builds_one_pass_and_is_never_done():
     record = lab.servo_record()
     assert record["dry_run"] and [move["outcome"] for move in record["moves"]] == [SENT_DRY]
     assert any("DRY RUN a200-0806 left_ur_arm" in line for line in lab.ctx.lines("warn"))
+
+
+@pytest.mark.safety
+def test_running_all_eight_passes_says_so_in_the_log():
+    """A planner closing only a tenth per pass never converges: eight passes, the old end line as a warning."""
+    lab = ServoLab()
+    lab.planner.fraction = 0.1
+    result = execute(lab, lab.servo_request(), True)
+    assert result.status == FAILED and "ran all 8 passes" in result.reason, result.reason
+    assert lab.published() == 8 and "### SERVOING ran all 8 iterations without converging." in lab.ctx.lines("warn")
+    assert "ran all 8 passes" in lab.plugin._plots._note.content
 
 
 # --- --- --- --- --- (11) (12) ONE ARM, A PLAN FROM BEFORE --- --- --- --- ---
