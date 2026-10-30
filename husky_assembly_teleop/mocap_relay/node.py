@@ -9,6 +9,9 @@ its base calibration (`world/calibration_sessions.py`).
 - Services: `/mocap/get_streaming_ids` (which ids stream), `~/reload_base_calibrations` (apply the newest base
   calibrations), `~/reload_base_calibration/id_<n>` (the newest of one robot's rigid body only, the others kept),
   `~/reload_floor_calibration` (apply the newest floor calibration).
+- ! Threads: NatNet's, and two executor threads. Publishing poses has its own callback group, so a slow look or reload
+  never holds the poses back; it only reads what the others lock or replace whole. Every other callback runs one at a
+  time, as on a single thread.
 - ! One mode for the relay's life, never mixed (`sim`): off, it reads Motive over NatNet only, with the robots'
   sessions; on (refused in the robots' domain), only simulated inputs (SIM_SOURCES), with the simulation's sessions of
   its domain (`calibration_sessions.sessions_folder`), base and floor calibrations alike. Every calibrations
@@ -52,7 +55,8 @@ from builtin_interfaces.msg import Time
 from crl_husky_msgs.msg import MocapRigidBodyPose
 from crl_husky_msgs.srv import GetStreamingMocapIds
 from geometry_msgs.msg import Point
-from rclpy.executors import ExternalShutdownException
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from scipy.spatial.transform import Rotation
@@ -300,7 +304,9 @@ class MocapRelay(Node):
 
         self._service = self.create_service(GetStreamingMocapIds, STREAMING_IDS_SERVICE,
                                             self._handle_get_streaming_ids)
-        self._publish_timer = self.create_timer(1.0 / self.publish_rate_hz, self._publish_cached_poses)
+        # * Its own group: a look can take half a second, longer than a robot may go without a pose.
+        self._publish_timer = self.create_timer(1.0 / self.publish_rate_hz, self._publish_cached_poses,
+                                                callback_group=MutuallyExclusiveCallbackGroup())
         if self.simulated:
             inputs = ", ".join(f"{prefix}/id_<n>/pose" for prefix in SIM_SOURCES)
             self.get_logger().info(wrap(f"sim:=true: reading only simulated inputs ({inputs}) as they appear, never "
@@ -358,7 +364,8 @@ class MocapRelay(Node):
         self._samples_lock = threading.Lock()
         self._samples: Dict[int, BodySample] = {}
         self._sim_samples: Dict[str, Dict[int, BodySample]] = {source: {} for source in SIM_SOURCES.values()}
-        # Simulated topics subscribed to, and the source each rigid body was last published from (executor only).
+        # Simulated topics subscribed to, and the source each rigid body was last published from.
+        # ! The sources are written by publishing only and read by the announcements: replaced whole.
         self._sim_topics: set[str] = set()
         self._sources: Dict[int, str] = {}
         # Bodies of the frame being received; NatNet sends the frame's timestamps after its bodies.
@@ -742,8 +749,7 @@ class MocapRelay(Node):
     def _check_mocap_health(self) -> None:
         """Reconnect while no frames arrive, retrying until they do.
 
-        ! Runs on the executor thread, like publishing. Nothing in here may
-          block, or the relay goes silent instead of publishing invalid poses.
+        ! Nothing in here may block: the looks, reloads and services wait for it.
         """
         now = time.monotonic()
         if now - self._last_frame_mono_sec <= self.frame_timeout_sec:
@@ -1114,7 +1120,7 @@ class MocapRelay(Node):
                 if rb_id in self._sources:
                     self.get_logger().info(wrap(f"rigid body {rb_id}: now from the {source}, was the "
                                                 f"{self._sources[rb_id]}"))
-                self._sources[rb_id] = source
+                self._sources = {**self._sources, rb_id: source}
                 sources_changed = True
             pose_valid = (sample.received_mono_sec >= cutoff and sample.tracking_valid
                           and sample.marker_error <= self.marker_error_valid_threshold)
@@ -1185,12 +1191,15 @@ def main(args: Optional[List[str]] = None) -> None:
             rclpy.shutdown()
         # Non-zero, so launch reports the relay as died rather than finished.
         raise SystemExit(1)
+    # * Two threads: one for publishing poses, one for every other callback.
+    executor = MultiThreadedExecutor(num_threads=2)
     try:
-        rclpy.spin(node)
+        rclpy.spin(node, executor)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass  # Ctrl-C, or SIGTERM through rclpy's signal handler
     finally:
         try:
+            executor.shutdown()
             if node is not None:
                 node.destroy_node()
             if rclpy.ok():
