@@ -28,7 +28,8 @@ import pandas as pd
 from matplotlib.figure import Figure
 
 from ...plugins.base_exp.auto import GRID, MODE, SPEED, cell_key, standard_set
-from ...plugins.base_exp.record import CONDITIONS, MODEL_PARAMETERS, environment_label, setup_key, sim_model
+from ...plugins.base_exp.record import (CONDITIONS, MODEL_PARAMETERS, environment_label, platform, setup_key,
+                                        sim_model)
 from ...plugins.base_exp.report import FOLLOWING, metrics
 from ...plugins.base_exp.twist import cell_of
 from ...shared.recordings.runs import DESCRIPTION, Recording, load_recording
@@ -218,8 +219,8 @@ def parameters(row: pd.Series) -> str:
 
 @lru_cache(maxsize=None)
 def run_track(folder: str) -> Track | None:
-    """One run folder's recording as a replay Track (loaded once)."""
-    return track(load_recording(folder))
+    """One run folder's recording as a replay Track (loaded once), with the limits of the base that drove it."""
+    return track(load_recording(folder), platform(json.loads((Path(folder) / DESCRIPTION).read_text())))
 
 
 def tracks(runs: pd.DataFrame) -> list[Track]:

@@ -13,19 +13,22 @@ the tracked point, with each input acting `delay` seconds after it was sent:
 - turn rate      = steering_efficiency · ω
 
 The input is the follower's commands, or the wheel odometry (`SOURCES`); with both, the delay splits into command to
-wheels and wheels to motion. Runs are read as `replay.Track`s, so the timing rules there apply.
+wheels and wheels to motion. Commands pass the limits of the platform that drove the run first (`replay.acting`), so
+the delay need not stand in for its ramps. Runs are read as `replay.Track`s, so the timing rules there apply.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from ...shared.recordings.series import held, within
-from .replay import Errors, Model, Track, errors, track
+from crl_husky.base_model import BaseModel
+
+from .replay import Errors, Model, Track, acting, errors, track
 
 #: Delays tried, seconds; the one that fits best is taken. From the wheels also negative ones: odometry that arrives
 #: after the motion it measures (filtered or stamped late) shows as a negative delay.
@@ -52,6 +55,7 @@ class Response:
         fit: Share of the variance explained (R²) per channel: "forward", "sideways", "turn".
         samples: Samples used; driving and turning: those exciting each channel.
         clock: "stamps" when every run had capture and command stamps, else "tick" (delay includes latencies).
+        platform: The limits the commands passed (the first run's platform), which the model keeps.
     """
 
     delay: float
@@ -63,11 +67,12 @@ class Response:
     driving: int
     turning: int
     clock: str
+    platform: BaseModel = field(default_factory=BaseModel)
 
     @property
     def model(self) -> Model:
-        """As a replay model; unknown values are the ideal ones."""
-        return Model.of(self.x_icr, self.speed_efficiency, self.steering_efficiency, self.delay)
+        """As a replay model, with the platform's limits; unknown values are the ideal ones."""
+        return Model.of(self.x_icr, self.speed_efficiency, self.steering_efficiency, self.delay, self.platform)
 
 
 def identify(runs: list, source: str = "commands → motion") -> Response | None:
@@ -97,7 +102,7 @@ def identify(runs: list, source: str = "commands → motion") -> Response | None
     return Response(delay=float(delay), speed_efficiency=speed, steering_efficiency=steering, x_icr=x_icr, fit=fit,
                     samples=len(v), driving=int((np.abs(v) > DRIVING).sum()),
                     turning=int((np.abs(w) > TURNING).sum()),
-                    clock="stamps" if all(t.clock == "stamps" for t in tracks) else "tick")
+                    clock="stamps" if all(t.clock == "stamps" for t in tracks) else "tick", platform=tracks[0].platform)
 
 
 def cross_validated(pairs: list) -> list[tuple[Any, Errors]] | None:
@@ -131,7 +136,7 @@ def _tracks(runs: list) -> list[Track]:
 
 def _pairs(t: Track, source: str, output: str) -> tuple[np.ndarray, ...] | None:
     """One run's output velocities (times, forward, sideways, turn), input (times, v, ω), and if the input is held."""
-    input_time, values = (t.command_time, t.command) if source == "commands" else (t.odometry_time, t.odometry)
+    input_time, values = acting(t, t.platform) if source == "commands" else (t.odometry_time, t.odometry)
     if len(input_time) == 0:
         return None
     if output == "motion":

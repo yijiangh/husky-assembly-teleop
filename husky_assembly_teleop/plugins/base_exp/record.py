@@ -21,6 +21,7 @@ import math
 from pathlib import Path
 
 import numpy as np
+from crl_husky.base_model import A200_LIMITS, LIMIT_KEYS, BaseModel
 
 from ...drive import started_at
 from ...plugin_api.context import PluginContext
@@ -37,6 +38,7 @@ PARAMETER_TIMEOUT = 1.0
 #: The simulator parameters that make its model, with their ideal values; the rest (topics, start pose) do not
 #: change results.
 MODEL_PARAMETERS = {"xICR": 0.0, "speed_efficiency": 1.0, "steering_efficiency": 1.0, "cmd_delay_sec": 0.0,
+                    **{key: 0.0 for key in LIMIT_KEYS},
                     "mocap_delay_sec": 0.0, "mocap_noise_position_m": 0.0, "mocap_noise_yaw_rad": 0.0}
 #: The sim model's mocap values from the fake Motive's parameters: (parameter, element of its per-body value or None
 #: for a number, factor).
@@ -94,6 +96,12 @@ def sim_model(experiment: dict) -> dict[str, float] | None:
     # * Older runs have the mocap values in the simulator's parameters, newer ones from the fake Motive's.
     values = {**model, **mocap_values(experiment.get("sim_mocap"), experiment.get("sim_mocap_body"))}
     return {key: round(float(values.get(key, ideal)), 4) for key, ideal in MODEL_PARAMETERS.items()}
+
+
+def platform(experiment: dict) -> BaseModel:
+    """The limits of the base that drove a run: the A200's on the real robot, else the simulator's (older: none)."""
+    model = sim_model(experiment)
+    return BaseModel(**(A200_LIMITS if model is None else {key: model[key] for key in LIMIT_KEYS}))
 
 
 def mocap_values(fake_motive, body: int | None) -> dict[str, float]:

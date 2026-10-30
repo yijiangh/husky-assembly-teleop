@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
+from crl_husky.base_model import A200_LIMITS, LIMIT_KEYS
 
 from ...plugins.base_exp.auto import MODE, SPEED
 from .identify import SOURCES, cross_validated, identify
@@ -95,6 +96,10 @@ def write(experiment: Experiment) -> None:
              "- **Identification** fits the four values to the commands sent and the motion mocap measured, over all "
              "path runs of one robot with every controller. It holds for the commands those runs sent (table below)."
              + (" Clock \"tick\": some runs had no stamps, so the delay includes the latencies." if tick else ""),
+             "- **Platform limits**, configured, not fitted: the commands pass the base's limits before the model, so "
+             "the delay need not stand in for its ramps. The real robot's are the A200's: acceleration "
+             f"{A200_LIMITS['max_linear_accel']:g} m/s² and {A200_LIMITS['max_angular_accel']:g} rad/s², "
+             f"{A200_LIMITS['max_wheel_speed']:g} m/s at the faster wheel; a simulator's are its model's.",
              f"- **Prediction**: every 0.2 s along a run, the model starts at the measured pose, is driven by the "
              f"commands sent, and is compared with mocap {HORIZON:g} s later. *ideal*: what a plain controller "
              "assumes; *identified*: fitted on the other half of the robot's runs, so no run grades its own fit. "
@@ -207,8 +212,8 @@ def replay_errors(runs: pd.DataFrame, known: dict) -> dict[tuple[str, str], list
         if crossed is not None:
             replays[robot, "identified"] = crossed
         if known[robot] is not None:
-            model = _model(known[robot])
-            replays[robot, "sim settings"] = [(template, run_errors(track, model)) for template, track in pairs]
+            replays[robot, "sim settings"] = [(template, run_errors(track, _model(known[robot], track.platform)))
+                                              for template, track in pairs]
     return replays
 
 
@@ -398,9 +403,10 @@ def _close(found: dict, expected: dict) -> bool:
     return all(math.isnan(found[key]) or abs(found[key] - expected[key]) <= TOLERANCE[key] for key in TOLERANCE)
 
 
-def _model(values: dict) -> Model:
-    """A replay model from values (`_values`)."""
-    return Model.of(values["x_icr"], values["speed_efficiency"], values["steering_efficiency"], values["delay"])
+def _model(values: dict, platform) -> Model:
+    """A replay model from values (`_values`), with the limits of `platform` (a BaseModel)."""
+    return Model.of(values["x_icr"], values["speed_efficiency"], values["steering_efficiency"], values["delay"],
+                    platform)
 
 
 def _columns(values: dict) -> dict:
@@ -432,7 +438,9 @@ def _model_lines(real) -> list[str]:
 
     model = {"xICR": number(values["x_icr"]), "speed_efficiency": number(values["speed_efficiency"], ideal="1"),
              "steering_efficiency": number(values["steering_efficiency"], ideal="1"),
-             "cmd_delay_sec": number(values["delay"])}
+             "cmd_delay_sec": number(values["delay"]),
+             # * Configured, not fitted: the limits the commands passed on the way (`record.platform`).
+             **{key: f"{getattr(real.platform, key):g}" for key in LIMIT_KEYS if real.platform.limited}}
     return ["Save it as crl_husky `config/base_models/<name>.yaml` and rebuild; then `sim_model:=<name>` runs the "
             "simulator with it, `controller_model:=<name>` (sim) or `model:=<name>` (robot) gives it to the "
             "follower.\n",

@@ -4,8 +4,10 @@ import math
 
 import pytest
 from base_exp_fixtures import model_run
+from crl_husky.base_model import BaseModel
 
 from husky_assembly_teleop.experiments.base_exp.identify import identify
+from husky_assembly_teleop.experiments.base_exp.replay import errors, track
 
 
 def test_recovers_a_known_model():
@@ -48,3 +50,17 @@ def test_wheels_split_the_delay():
 def test_no_wheels_no_wheel_response():
     """Runs without wheel odometry (the simulator) identify nothing from the wheels."""
     assert identify([model_run()], "commands → wheels") is None
+
+
+def test_platform_limits_come_before_the_model():
+    """A run through tight limits: with them the model comes back and predicts it; without, it fits worse."""
+    platform = BaseModel(max_linear_accel=0.1, max_angular_accel=0.2, max_wheel_speed=0.35)
+    runs = [model_run(platform=platform, mocap=True), model_run(seed=1, platform=platform, mocap=True)]
+    found = identify([track(run, platform) for run in runs])
+    assert found.delay == pytest.approx(0.2, abs=0.02) and found.x_icr == pytest.approx(-0.1, abs=0.01)
+    assert found.speed_efficiency == pytest.approx(0.9, rel=0.03)
+    assert found.steering_efficiency == pytest.approx(0.95, rel=0.03)
+    assert found.model.base.max_wheel_speed == 0.35
+    assert errors(track(runs[0], platform), found.model).at(1.0)[0].max() < 0.005
+    blind = identify(runs)
+    assert min(blind.fit.values()) < min(found.fit.values()) - 0.02
