@@ -9,6 +9,7 @@ Its parsed URDFs (no meshes) are separate from the 3D view's, so neither changes
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Container, Mapping
@@ -19,6 +20,8 @@ from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 if TYPE_CHECKING:
+    from scaffolding_assembly_core.robot import RobotObject
+
     from ..config import RobotConfig
     from .measured import WorldState
 
@@ -176,6 +179,17 @@ def stow_joints(config: RobotConfig, joints: Container[str]) -> dict[str, float]
             stowed.update((f"{arm.name}_{name}", value) for name, value in zip(UR_JOINT_NAMES, arm.stow_joints)
                           if f"{arm.name}_{name}" in joints)
     return stowed
+
+
+#: An arm further than this from its stow pose, radians, is out of it (`from_stow`): moving the base then warns.
+STOW_TOLERANCE = math.radians(5.0)
+
+
+def from_stow(robot: RobotObject, config: RobotConfig) -> float:
+    """How far a robot's arms are from their stow pose: the largest measured joint's distance from it, radians."""
+    stow = stow_joints(config, robot.model.movable_joints)
+    return max((abs(math.remainder(robot.joints.get(name, 0.0) - value, math.tau)) for name, value in stow.items()
+                if name not in robot.unmeasured), default=0.0)
 
 
 def _load_urdf(urdf_file: Path) -> URDF:

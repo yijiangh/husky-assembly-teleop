@@ -5,7 +5,8 @@ Others use it through `ArmPlannerContract`; its panel is `arm_planner_panel`. Th
 models in a compas_fab world (several seconds).
 
 ! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`), under an
-  ARM_STOP_DISTANCE clearance on the robot (`ctx.clearance`), so the base pose must be known to send.
+  ARM_STOP_DISTANCE clearance on the robot (`ctx.clearance`) while `clearance` is on, so the base pose must be known
+  to send.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+from contextlib import nullcontext
 from dataclasses import replace
 from typing import Callable, Sequence
 
@@ -21,14 +23,14 @@ import numpy as np
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.mocap_state import pose_lost
-from ...shared.arm_planner_contract import ArmPlanRequest
+from ...shared.arm_planner_contract import MAX_SLOWDOWN, ArmPlanRequest
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.execution.send import REFUSED, ArmMotion, MotionCommand, send_motion
 from ...world.collision_hit import CollisionHit
 from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ...shared.planner.plan import Plan
-from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
+from ...shared.planner.planner_search import Search, WAIT_MARGIN, unmeasured, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...world.clearance import ARM_STOP_DISTANCE
@@ -58,7 +60,7 @@ def arm_command(serial: str, arm_name: str, path: ArmPath) -> MotionCommand:
     points = path.points[:, order]
     travel = float(np.max(np.sum(np.abs(np.diff(points, axis=0)), axis=0)))
     return MotionCommand(serial, (ArmMotion(arm_name, points, path.velocities[:, order]),), path.duration,
-                         path.duration, path.duration, travel)
+                         path.fastest, path.duration, travel)
 
 
 @register
@@ -72,6 +74,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
     def __init__(self):
         """Start with no plan; the models load with the first plan of each robot."""
         super().__init__()
+        #: Whether commits run under a clearance (`ArmPlannerContract.clearance`); the panel's Clearance box sets it.
+        self.clearance = True
         #: Robots whose models the worker has loaded, so later plans need no load allowance.
         self._loaded: set[str] = set()
         #: The latest plan's path, the base's floor pose (x, y, yaw) it was planned from, and whether mocap tracked
@@ -109,7 +113,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             others[:] = stand_ins.warnings
             result = plan_arm(self._world.sync(stand_ins.scene, serial), stand_ins.scene, arm, goal, abort)
             if result.path is None and others:
-                result = replace(result, reason=f"{result.reason} (other robots not measured: {'; '.join(others)})")
+                result = replace(result, reason=f"{result.reason} ({unmeasured(others)})")
             return result
 
         def finished() -> None:
@@ -120,7 +124,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         def accepted(result: PlanResult) -> tuple[str, bool]:
             self._start_base = (result.path, base, tracked)
             how = "straight" if result.direct else "RRT"
-            stand_ins = f" (other robots not measured: {'; '.join(others)})" if others else ""
+            stand_ins = f" ({unmeasured(others)})" if others else ""
             return (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
                     f"found in {result.seconds:.1f} s{notes}{stand_ins}"), bool(guessed or others)
 
@@ -129,6 +133,18 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       + (" (loading the models first)" if loading else ""),
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
                       accepted=accepted, finished=finished)
+
+    def set_duration(self, plan_id: int, seconds: float) -> None:
+        """Re-time the latest plan to take `seconds`, without replanning (`ArmPlannerContract`)."""
+        plan = self._plan
+        if plan is None or plan.id != plan_id or plan.state != "ready":
+            return
+        path = plan.path
+        slowed = path.slowed(min(max(seconds / path.fastest, 1.0), MAX_SLOWDOWN))
+        # * The base kept for `stale_reason` belongs to the path by identity.
+        if self._start_base is not None and self._start_base[0] is path:
+            self._start_base = (slowed, *self._start_base[1:])
+        self._plan = replace(plan, path=slowed)
 
     def check_path(self, serial: str, arm: str,
                    waypoints: Sequence[Sequence[float]]) -> asyncio.Future[CollisionHit | None]:
@@ -192,15 +208,17 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       answer: Callable[[bool, str], None]) -> None:
         """Send the plan to the arm and watch it until it is at the end; else hold it (`send_motion`).
 
-        - An ARM_STOP_DISTANCE clearance starts first: one that cannot check refuses the commit (nothing sent), a
-          trip soft stops the robot and cancels this. The robot's other arms may be unknown (where last seen, or
-          stowed), and the other robots unknown at the commit (`unknown_allowed`).
+        - While `clearance` is on, an ARM_STOP_DISTANCE clearance starts first: one that cannot check refuses the
+          commit (nothing sent), a trip soft stops the robot and cancels this. The robot's other arms may be unknown
+          (where last seen, or stowed), and the other robots unknown at the commit (`unknown_allowed`).
         - ! Arrival is judged on the joints, not `is_executing`, which clears during a slow move (the pendant's speed
           slider): the lease would go back mid-motion.
         """
         serial, arm_name, path = plan.request.serial, plan.request.arm, plan.path
         others = [name for name in ctx.world.robots[serial].arms if name != arm_name]
-        with ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others, unknown_robots=self.unknown_allowed(plan)):
+        guard = (ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_arms=others,
+                               unknown_robots=self.unknown_allowed(plan)) if self.clearance else nullcontext())
+        with guard:
             ctx.log_info(f"{serial} {arm_name}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
             outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
                                         on_sent=lambda: answer(True, f"sent to {serial} {arm_name}"))

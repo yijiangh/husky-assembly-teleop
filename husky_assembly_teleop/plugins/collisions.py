@@ -32,7 +32,7 @@ from ..world.collision_hit import CollisionHit
 from ..ui.checklist import CheckList
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.scene_view import add_shape
-from ..ui.style import note, note_line
+from ..ui.style import FAIL, NONE, note, note_line
 from scaffolding_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Pose, Shape, TriMesh
 from scaffolding_assembly_core.ids import link_id
 from scaffolding_assembly_core.scene import Scene, scene_parts
@@ -43,6 +43,8 @@ HIT_COLOR = (0.0, 0.75, 0.9, 0.45)     # see-through cyan: what it moved into, t
 ROBOT_COLOR = (0.6, 0.6, 0.6, 0.15)    # faint grey: the robots as checked, for the focused hit
 CONTACT_COLOR = (255, 200, 0)          # the contact's two points and the line between them
 CONTACT_RADIUS = 0.006                 # m
+#: Pairs a hit's hover text lists; the rest are counted.
+DETAILS_PAIRS = 2
 #: The Focus choice that shows no robots.
 NO_FOCUS = "none"
 #: Seconds a ticked hit stays drawn; then it is unticked, still listed (tick it to see it again).
@@ -137,7 +139,7 @@ class CollisionsPlugin(HuskyPlugin):
             found = self._sources[source] = _Source(folder, summary, checklist, {})
         for label in found.hits:
             found.list.remove(label)
-        found.summary.content = note_line(_summary(hits))
+        found.summary.content = note_line(_summary(hits), FAIL if hits else NONE)
         for label, hit in hits.items():
             found.list.add(label, _item(label, hit), hint=_details(hit), selected=label in shown)
         found.hits = dict(hits)
@@ -346,13 +348,15 @@ def _item(label: str, hit: CollisionHit) -> str:
 
 
 def _details(hit: CollisionHit) -> str:
-    """Hover text: the message, then every pair with its depth."""
+    """Hover text: the message, then the first DETAILS_PAIRS pairs with their depth, and how many more."""
     lines = [f"{hit.robot}: {hit.message}"]
-    for index in range(len(hit.pairs)):
+    for index in range(min(len(hit.pairs), DETAILS_PAIRS)):
         a, b = _sides(hit, index)
         contact = hit.contacts[index] if index < len(hit.contacts) else None
         lines.append(f"{hit.name(a)} ↔ {hit.name(b)}: "
                      f"{_depth(contact.depth) if contact is not None else 'no contact found'}")
+    if len(hit.pairs) > DETAILS_PAIRS:
+        lines.append(f"+{len(hit.pairs) - DETAILS_PAIRS} more pairs: tick it, then Focus")
     return "\n".join(lines)
 
 
@@ -362,4 +366,5 @@ def _summary(hits: Mapping[str, CollisionHit]) -> str:
         return "nothing collides"
     counts = Counter(hit.name(_sides(hit, index)[1])
                      for hit in hits.values() for index in range(len(hit.pairs)))
-    return "hit: " + ", ".join(f"{name} ×{n}" for name, n in counts.most_common())
+    names = [f"{name} ×{n}" for name, n in counts.most_common()]
+    return "hit: " + ", ".join(names[:3]) + (f", +{len(names) - 3} more" if len(names) > 3 else "")

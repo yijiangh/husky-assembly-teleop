@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections import deque
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -15,7 +16,7 @@ from husky_assembly_teleop.monitor import HuskyMonitor
 from husky_assembly_teleop.plugin_api.console_log import ConsoleLog
 from husky_assembly_teleop.plugin_api.plugin import HuskyPlugin
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
-from husky_assembly_teleop.world.clearance import STOP_DISTANCE
+from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE, STOP_DISTANCE, WATCH_EVERY
 from husky_assembly_teleop.world.measured import WorldState
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
@@ -164,6 +165,7 @@ def build(monkeypatch, *plugins: HuskyPlugin, robots=()) -> HuskyMonitor:
     monitor._pump_ros = lambda: 0
     monitor._startup_started, monitor._startup_times = 0.0, {}
     monitor._clearances, monitor.clearance_trips = FakeClearances(), ()
+    monitor._clearances_asked, monitor._watched_at = [], -math.inf
     for index, robot in enumerate(robots):
         monitor._world.robots[f"r{index}"] = robot
     monitor._build()
@@ -401,6 +403,63 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
     assert "robot r0 came within 10 cm of wall" in errors and "robot r1 cannot be checked" in errors
     trips = [(trip.serial, trip.task) for trip in monitor.clearance_trips]
     assert trips == [("r0", "a: drive r0"), ("r1", "a: drive r1")]
+
+
+def test_a_check_that_finds_nothing_marks_the_clearances_it_asked_about_checked(monkeypatch):
+    """Only a finished check counts: asked and not yet answered stays unchecked."""
+    monitor = build(monkeypatch, Recorder("a", []), robots=[SimpleNamespace(base=SimpleNamespace(
+        mocap_id=1, state=SimpleNamespace(marker_errors=deque([(100.0, 0.0)]), last_fix_time=100.0)))])
+    known = Scene(robots={robot_id("r0"): RobotObject(robot_id("r0"), SimpleNamespace(movable_joints=()), Pose(), {})})
+    monkeypatch.setattr(monitor_module, "take_snapshot", lambda *_args: known)
+    monitor._snapshot = known
+    ctx, seen = monitor._loaded["a"].ctx, []
+
+    async def drive():
+        with ctx.clearance(["r0"], refuse_first=True) as clearance:
+            seen.append(clearance)
+            await ctx.wait_until(lambda: False)
+
+    async def run():
+        task = ctx.spawn("drive r0", drive())
+        await asyncio.sleep(0)
+        await monitor._tick()
+        asked = seen[0].checked
+        monitor._clearances.found = []
+        await monitor._tick()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return asked
+
+    assert not asyncio.run(run()) and seen[0].checked
+
+
+def test_a_watch_joins_a_check_every_half_second_and_only_reports(monkeypatch):
+    """Asked every WATCH_EVERY; too close fills `found`, one it cannot check `unchecked`; never a soft stop."""
+    stops = []
+    robots = [SimpleNamespace(base=SimpleNamespace(mocap_id=1, state=SimpleNamespace(
+        marker_errors=deque([(100.0, 0.0)]), last_fix_time=100.0)), soft_stop=lambda reason="": stops.append(reason))]
+    monitor = build(monkeypatch, Recorder("a", []), robots=robots)
+    known = Scene(robots={robot_id("r0"): RobotObject(robot_id("r0"), SimpleNamespace(movable_joints=()), Pose(), {})})
+    monkeypatch.setattr(monitor_module, "take_snapshot", lambda *_args: known)
+    monitor._snapshot = known
+    watch = monitor._loaded["a"].ctx.watch_clearance(["r0"], ARM_STOP_DISTANCE)
+
+    async def run():
+        await monitor._tick()
+        (key, own, margin, _assumable, _allowed), = monitor._clearances.asked[-1]
+        assert key[1] is watch and own == robot_id("r0") and margin == ARM_STOP_DISTANCE
+        monitor._clearances.found = [(key, "came within 1 cm of the rack", SimpleNamespace())]
+        await monitor._tick()
+        found, asked = dict(watch.found), len(monitor._clearances.asked)
+        monitor.clock[0] += WATCH_EVERY
+        await monitor._tick()
+        monitor._clearances.found = [(key, "cannot be checked: base not measured", None)]
+        await monitor._tick()
+        return found, asked
+
+    found, asked = asyncio.run(run())
+    assert found == {"r0": "came within 1 cm of the rack"} and asked == 1, "not asked again within WATCH_EVERY"
+    assert watch.found == {} and watch.unchecked == {"r0": "cannot be checked: base not measured"} and not stops
 
 
 def test_log_lines_reach_the_ros_log_and_the_console_with_their_source(monkeypatch):

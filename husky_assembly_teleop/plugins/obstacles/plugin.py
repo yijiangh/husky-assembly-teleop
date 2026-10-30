@@ -375,7 +375,8 @@ class ObstaclesPlugin(HuskyPlugin):
             ctx: This plugin's context.
         """
         name = self.path.name if self.path else "no lab file"
-        state = chip("unsaved", BUSY, "Save writes the lab file") if self.dirty else chip("saved", OK)
+        state = (chip("unsaved", BUSY, "Save writes the lab file") if self.dirty
+                 else chip("saved", OK, "The lab file matches the scene."))
         self._lab_status.content = chip_line(chip(escape(name), NONE, str(self.path)) + state) + block(values(
             f"{len(self.lab.shapes)} obstacles, {len(self.temporary)} temporary"))
         if self.lab.border is not None:

@@ -74,13 +74,13 @@ from ..shared.execution.moving import moving_reason
 from ..shared.guide.panel import set_changed
 from ..ui.checklist import CheckList
 from ..ui.phone import big_buttons, phone_text
-from ..ui.style import (BUSY, FAIL, LEVEL_COLORS, NONE, OK, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip,
-                        chip_line, note, note_line, numbers, section, values)
+from ..ui.style import (BUSY, FAIL, INFO, LEVEL_COLORS, NONE, OK, SECTION_CTRL, SECTION_SENSOR, block, check_chip,
+                        chip, chip_line, note, note_line, numbers, section, values)
 from ..ui.top_down import Dot, FloorGrid, render_top_down, scene_footprints
 from ..world.camera_coverage import (aim_point, camera_fov, coverage_faces, footprint, outlines, plane_point,
                                      rectangle, segments, triangles, view_edges, view_rotation)
 from ..world.checks import BAD, GOOD, WARN, Check
-from ..world.coverage_map import (COVERAGE_BIN, COVERAGE_ORIGIN, COVERAGE_SIGMA, COVERAGE_SIZE, CoverageMap,
+from ..world.coverage_map import (COVERAGE_BIN, COVERAGE_ORIGIN, COVERAGE_SIZE, CoverageMap,
                                   coverage_color, map_colors)
 from ..world.floor_calibration import (ANCHOR_LABEL, FLOOR_LABEL, PLANE_MIN_POINTS, PLANE_STD_GOOD, FloorSolution,
                                        Sample, anchor_name, floor_calibration_json, from_raw, pointed_anchors,
@@ -184,30 +184,33 @@ def lab_from_raw(ctx: PluginContext) -> tuple | None:
     return frame.lab_from_raw if frame is not None else None
 
 
+def few(names: Sequence[str], shown: int = 3) -> str:
+    """Up to `shown` names, then how many more, e.g. "A1, A2, A3 +2"."""
+    return ", ".join(names[:shown]) + (f" +{len(names) - shown}" if len(names) > shown else "")
+
+
 def frame_chips(frame: FloorCalibrationState | None, anchors_missing: Sequence[str] = ()) -> str:
     """The relay's frame state as a chip in its own words (`doc/mocap_relay.md`), and a newer floor calibration's."""
     if frame is None:
         return chip("frame ?", NONE, "the mocap relay announced no floor calibration: not running")
-    both = (("anchors", frame.anchor_fit), ("truss cameras", frame.camera_fit))
-    fits = "".join(f"; {what}: {fit}" for what, fit in both if fit)
-    missing = f" (missing now: {', '.join(anchors_missing)})" if anchors_missing else ""
+    missing = f" ({few(anchors_missing)} missing now)" if anchors_missing else ""
     if frame.status == FRAME_NONE:
         html = chip("no floor calibration", NONE, "poses are raw (Motive's, Z-up), not in the lab frame: Export floor "
                                                   "calibration, then Apply floor calibration")
     elif frame.status == FRAME_ERROR:
         html = chip("frame: Drive not read", FAIL, frame.error or "the relay could not read a floor calibration")
     elif frame.status == FRAME_UNCHECKED:
-        html = chip("frame unchecked", NONE, f"{frame.floor_calibration} applied; no fit to the anchors or truss "
-                                             f"cameras has decided yet (just started or reloaded, or none seen): "
-                                             f"poses may be off{fits}")
+        html = chip("frame unchecked", BUSY, f"{frame.floor_calibration} applied; no anchor or truss-camera fit yet, "
+                                             f"so poses may be off.\nCheck Motive sees the anchors.")
     elif frame.status == FRAME_HELD:
-        html = chip("frame held", OK, frame.floor_calibration + (f"; refit in use: {frame.refit}" if frame.refit
-                                                                 else "") + fits)
+        html = chip("frame held", OK, frame.floor_calibration + ("; refit in use" if frame.refit else "")
+                    + ".\nHow far off: the 'poses off' line of Floor calibration.")
     elif frame.status == FRAME_REFIT_PENDING:
-        html = chip("refit pending", BUSY, f"{frame.pending}; poses are off until Use refit")
+        html = chip("refit pending", BUSY, "Motive's frame moved: poses are off until Use refit.\nHow far: the "
+                                           "'poses off' line of Floor calibration.")
     elif frame.status == FRAME_UNTRUSTED:
-        html = chip("frame untrusted", FAIL, f"{frame.pending}; poses may be off. Check in Motive that the anchors "
-                                             f"are seen{missing} and no truss camera was bumped")
+        html = chip("frame untrusted", FAIL, f"No fit agrees: poses may be off.\nCheck in Motive that the anchors are "
+                                             f"seen{missing} and no truss camera was bumped.")
     else:
         html = chip(f"frame {frame.status}", NONE, "a state this monitor does not know: update it")
     if frame.error and frame.status != FRAME_ERROR:
@@ -270,6 +273,7 @@ class MocapProbePlugin(HuskyPlugin):
         self._highlighted: set[int] = set()
         # Result of the last action on points (track, record, delete, export, coverage), and on the floor calibration.
         self._message = self._floor_message = ""
+        self._message_color = self._floor_message_color = NONE
         # ROS time until which the big status panel shows the blue flash.
         self._flash_until = 0.0
         # Per button that acts on its second tap ("all", "floor", "export"): the ROS time that tap is due by, and
@@ -347,40 +351,28 @@ class MocapProbePlugin(HuskyPlugin):
                          f"only it in the list above and Delete.")
                 probe_mark = gui.add_button_group(
                     "Mark", list(MARK_BUTTONS),
-                    hint=f"Record the marked point under the tip; it is fitted into the plane too. The lab frame is "
-                         f"fitted to the marks stored in {self._lab_frame_path.name} (written by hand), two at least; "
-                         f"before any are stored, its origin is the origin point and its x the mocap x. Probing one "
-                         f"again averages.")
+                    hint=f"Record the marked point under the tip; it fits the plane too. The lab frame is fitted to "
+                         f"the marks in {self._lab_frame_path.name}; probing again averages.")
                 probe_anchor = gui.add_button(
                     "Anchor", icon=viser.Icon.ANCHOR,
-                    hint=f"Anchors stored in {self._lab_frame_path.name} are found by themselves; point only at those "
-                         f"the anchors line asks for, or a new one. Point the tip at the marker and press: the tip is "
-                         f"recorded, named after the stored anchor nearest it (else the next A<n>). The anchor is the "
-                         f"unlabeled marker nearest the tip, within {ANCHOR_REACH * 100:.0f} cm, read once the probe "
-                         f"is {PROBE_NEAR:g} m away. The frame is fitted to the anchors and marks together; the export "
-                         f"keeps the anchors for the relay to follow Motive's frame by.")
+                    hint=f"Tip on an anchor marker, press, then move the probe {PROBE_NEAR:g} m away. Only anchors "
+                         f"the anchors line asks for, or a new one.")
                 gui.add_html(self._marks_html())
                 self._show_stored = gui.add_checkbox(
                     "Show lab marks and anchors", initial_value=False,
-                    hint=f"The 3D view shows the marks of {self._lab_frame_path.name} as rings on the floor of "
-                         f"{MARK_WARN * 1e3:g} mm radius (off beyond), and its anchors as see-through spheres of "
-                         f"{ANCHOR_REACH * 100:g} cm (found within) and {MARK_WARN * 1e3:g} mm radius (moved beyond), "
-                         f"where the frame being fitted puts them (else the relay's frame); each anchor read as "
-                         f"Motive's marker, with its distance from its stored place and its noise.")
+                    hint=f"Show {self._lab_frame_path.name}'s marks (rings) and anchors (spheres: "
+                         f"{ANCHOR_REACH * 100:g} cm search, {MARK_WARN * 1e3:g} mm moved) where the fit puts them.")
                 export_floor = gui.add_button(
                     "Export floor calibration", icon=viser.Icon.FILE_EXPORT,
-                    hint=f"Save floor_from_raw with the marks, anchors and cameras raw on the Drive as "
-                         f"<date>/<date>_<time>_{FLOOR_PREFIX}.json in the calibration sessions folder the relay "
-                         f"reads. With a warning (a mark off, an anchor not read) press again within "
-                         f"{FORCE_SECONDS:g} s to export anyway.")
+                    hint=f"Save the floor calibration to the Drive sessions folder the relay reads. With a warning, "
+                         f"press again within {FORCE_SECONDS:g} s to export anyway.")
                 # * The relay's floor calibration on a line always there, then its two buttons, always shown: nothing
                 # * above moves.
                 self._frame_chips: viser.GuiHtmlHandle = gui.add_html(chip_line(""))
                 use_refit = gui.add_button(
                     "Use refit", icon=viser.Icon.REFRESH, disabled=True,
-                    hint="Motive's frame moved (a recalibration, or its continuous calibration): the relay composes "
-                         "the anchors' fit (else the truss cameras') onto its floor calibration, putting every pose "
-                         "back in the lab frame. Refused while any robot moves.")
+                    hint="Motive's frame moved: put poses back in the lab frame by the anchors' fit (else the truss "
+                         "cameras'). Refused while a robot moves.")
                 apply_floor = gui.add_button("Apply floor calibration", icon=viser.Icon.CHECK, disabled=True,
                                              hint="A newer floor calibration is on the Drive (an export): the relay "
                                                   "applies it, and every pose moves by the difference. Refused while "
@@ -395,12 +387,10 @@ class MocapProbePlugin(HuskyPlugin):
             with gui.add_folder("Debug", expand_by_default=False):
                 gui.add_html(section("coverage map", SECTION_SENSOR))
                 self._mapping = gui.add_checkbox("Map coverage", initial_value=False,
-                                                 hint=f"Keep every probe message, tracked or not, and map them "
-                                                      f"smoothed over {COVERAGE_SIGMA:g} m. Walk the probe around "
-                                                      f"the room. The map shows the mean marker error: green up to "
-                                                      f"{MARKER_ERROR_WARN * 1e3:g} mm (deeper is better), amber to "
-                                                      f"deep orange up to {MARKER_ERROR_LIMIT * 1e3:g} mm, red above; "
-                                                      f"grey never tracked, greyer where often lost.")
+                                                 hint=f"Record every probe message and map the mean marker error: "
+                                                      f"green ≤ {MARKER_ERROR_WARN * 1e3:g} mm, orange ≤ "
+                                                      f"{MARKER_ERROR_LIMIT * 1e3:g} mm, red above, grey never "
+                                                      f"tracked.")
                 self._show_map = gui.add_checkbox("Show map", initial_value=True)
                 coverage_actions = gui.add_button_group("Coverage", ["Export", "Clear"])
                 load = gui.add_upload_button("Load coverage", mime_type="application/json", icon=viser.Icon.UPLOAD,
@@ -414,9 +404,8 @@ class MocapProbePlugin(HuskyPlugin):
                                                            "announces them.")
                 self._show_views = gui.add_checkbox(
                     "Views on the floor", initial_value=False,
-                    hint=f"How many cameras see each point of the plane at the height below, over the coverage "
-                         f"map's {COVERAGE_SIZE[0]:g} x {COVERAGE_SIZE[1]:g} m: grey none, red one, through yellow to "
-                         f"green for {CAMERAS_FULL} or more. Range and occlusion are not modelled.")
+                    hint=f"How many cameras see each floor point at the height below: grey none, red one, green "
+                         f"{CAMERAS_FULL}+. Range and occlusion ignored.")
                 self._views_height = gui.add_slider("At height m", initial_value=0.0, min=-0.5, max=4.0, step=0.05,
                                                     hint="Metres above the floor: the plane the views are cut with, "
                                                          "e.g. where the markers are.")
@@ -528,7 +517,7 @@ class MocapProbePlugin(HuskyPlugin):
         ctx.untrack_object(PROBE_NAME)
         # * No geometry: a frame, not an obstacle.
         self._probe = ctx.track_object(PROBE_NAME, mocap_id, label="mocap probe")
-        self._message = f"tracking mocap id {mocap_id}"
+        self._show(f"tracking mocap id {mocap_id}")
         ctx.log_info(self._message)
 
     def _record(self, ctx: PluginContext, label: str) -> None:
@@ -546,7 +535,7 @@ class MocapProbePlugin(HuskyPlugin):
             self._report(ctx, f"not recorded: {check.detail if check else 'probe not tracked'}", floor, warn=True)
             return
         sample = self._tip_sample(ctx, self._next_name(label, label), label)
-        self._report(ctx, f"recorded {sample.name} at {numbers(sample.position, 3, 8, 4)} m", floor)
+        self._report(ctx, f"recorded {sample.name} at {numbers(sample.position, 3, 8, 4)} m", floor, color=OK)
 
     def _tip_sample(self, ctx: PluginContext, name: str, label: str) -> Sample:
         """Add the probe tip as a new, selected sample and flash the status; the probe must be tracked."""
@@ -606,7 +595,7 @@ class MocapProbePlugin(HuskyPlugin):
         try:
             loaded = samples_from_json(json.loads(file.content))
         except ValueError as error:  # * json.JSONDecodeError is a ValueError
-            self._message = f"not loaded {file.name}: {error}"
+            self._show(f"not loaded {file.name}: {error}", FAIL)
             ctx.log_warn(self._message)
             return
         taken = {sample.name for sample in self.samples}
@@ -624,7 +613,7 @@ class MocapProbePlugin(HuskyPlugin):
                 renamed += 1
             taken.add(sample.name)
             self._add_sample(ctx, sample, selected=False)
-        self._message = f"loaded {len(loaded)} points from {file.name}" + (f", {renamed} renamed" if renamed else "")
+        self._show(f"loaded {len(loaded)} points from {file.name}" + (f", {renamed} renamed" if renamed else ""), OK)
         ctx.log_info(self._message)
 
     def _delete(self, ctx: PluginContext) -> None:
@@ -635,7 +624,7 @@ class MocapProbePlugin(HuskyPlugin):
         """
         doomed = self._selected_samples()
         if not doomed:
-            self._message = "nothing selected to delete"
+            self._show("nothing selected to delete")
             return
         self._remove_samples(ctx, doomed)
 
@@ -651,7 +640,7 @@ class MocapProbePlugin(HuskyPlugin):
             self._report(ctx, "no points to delete", floor, log=False)
         elif not self._second_tap(ctx, which):
             self._report(ctx, f"tap {self._confirms[which][0][1]} again within {CONFIRM_SECONDS:g} s to delete "
-                              f"{len(doomed)} points", floor, log=False)
+                              f"{len(doomed)} points", floor, log=False, color=BUSY)
         else:
             self._remove_samples(ctx, doomed, floor)
 
@@ -685,7 +674,7 @@ class MocapProbePlugin(HuskyPlugin):
         """
         chosen = self._selected_samples()
         if not chosen:
-            self._message = "nothing selected to export"
+            self._show("nothing selected to export")
             return
         path = self._export_path(ctx, folder_name(self._file_name.value, "probe_points"))
         if path is None:
@@ -698,7 +687,7 @@ class MocapProbePlugin(HuskyPlugin):
             "samples": [asdict(sample) for sample in chosen],
         }
         path.write_text(json.dumps(data, indent=2))
-        self._message = f"exported {len(chosen)} samples to {path}"
+        self._show(f"exported {len(chosen)} samples to {path}", OK)
         ctx.log_info(self._message)
 
     def _export_floor(self, ctx: PluginContext, phone: bool = False) -> None:
@@ -720,11 +709,11 @@ class MocapProbePlugin(HuskyPlugin):
         warning = self._floor_warning(ctx, solution)
         if warning and not self._second_tap(ctx, "export", FORCE_SECONDS, anyway=True):
             self._report(ctx, f"not exported: {warning}; press again within {FORCE_SECONDS:g} s to export anyway",
-                         floor=True, warn=True)
+                         floor=True, warn=True, color=BUSY)
             return
         if phone and not warning and not self._second_tap(ctx, "export"):
             self._report(ctx, f"tap {self._confirms['export'][1][1]} again within {CONFIRM_SECONDS:g} s to export",
-                         floor=True, log=False)
+                         floor=True, log=False, color=BUSY)
             return
         data = {**floor_calibration_json(solution, self._lab_frame_path.name), **environment(self._simulated(ctx))}
         # * The cameras raw, like the samples and anchors: the relay's floor calibration taken off.
@@ -749,8 +738,8 @@ class MocapProbePlugin(HuskyPlugin):
             f"{len(cameras)} cameras) to {path}; {self._anchors_line(ctx, solution)}; {self._apart_line(solution)}; "
             f"{'; '.join(self._check_lines(ctx, solution))}{replaced}"
             + (f"; exported in spite of: {warning}" if warning else ""))
-        self._floor_message = (f"exported {path.name}" + (" with a warning" if warning else "")
-                               + "; press Apply floor calibration to use it")
+        self._show(f"exported {path.name}" + (" with a warning" if warning else "")
+                   + "; press Apply floor calibration to use it", BUSY if warning else OK, floor=True)
 
     def _floor_problem(self, ctx: PluginContext, solution: FloorSolution) -> str:
         """Why the floor calibration cannot be exported, or "": the frame unplaced, or no cameras from the relay."""
@@ -802,7 +791,7 @@ class MocapProbePlugin(HuskyPlugin):
         frame = relay_frame(ctx)
         if frame is None or frame.status != FRAME_REFIT_PENDING:
             self._report(ctx, f"no refit pending: the frame is {frame.status if frame else 'not announced'}",
-                         floor=True, warn=True)
+                         floor=True)
             return
         self._ask_relay(ctx, "use refit", "refit not used", ctx.world.mocap_relay.use_refit)
 
@@ -811,7 +800,7 @@ class MocapProbePlugin(HuskyPlugin):
         frame = relay_frame(ctx)
         if frame is None or not frame.newer:
             self._report(ctx, "no newer floor calibration to apply: the relay applies the newest on the Drive",
-                         floor=True, warn=True)
+                         floor=True)
             return
         self._ask_relay(ctx, "apply floor calibration", "floor calibration not applied",
                         ctx.world.mocap_relay.reload_floor_calibration)
@@ -831,7 +820,7 @@ class MocapProbePlugin(HuskyPlugin):
     async def _answered(self, ctx: PluginContext, what: str, future) -> None:
         """Report the relay's answer to Use refit or Apply floor calibration."""
         response = await ctx.ros(future)
-        self._floor_message = response.message
+        self._show(response.message, OK if response.success else FAIL, floor=True)
         (ctx.log_info if response.success else ctx.log_warn)(f"{what}: {response.message}")
 
     def _set_mapping(self, ctx: PluginContext, on: bool) -> None:
@@ -843,7 +832,7 @@ class MocapProbePlugin(HuskyPlugin):
         if on:
             self._show_map.value = True
         self._counted_update = None
-        self._message = "coverage mapping " + ("started" if on else "stopped")
+        self._show("coverage mapping " + ("started" if on else "stopped"))
         ctx.log_info(self._message)
 
     def _export_path(self, ctx: PluginContext, name: str) -> Path | None:
@@ -851,14 +840,14 @@ class MocapProbePlugin(HuskyPlugin):
         try:
             return drive_folder(ctx.config.drive_root, EXPORT_FOLDER) / f"{stamped_name(name)}.json"
         except FileNotFoundError as error:
-            self._message = f"not exported: {error}"
+            self._show(f"not exported: {error}", FAIL)
             ctx.log_warn(self._message)
             return None
 
     def _export_coverage(self, ctx: PluginContext) -> None:
         """Write the coverage map to a timestamped JSON file in the Drive's EXPORT_FOLDER."""
         if not self.coverage.count:
-            self._message = "coverage map is empty; tick Map coverage and walk the probe around"
+            self._show("coverage map is empty; tick Map coverage and walk the probe around")
             return
         path = self._export_path(ctx, COVERAGE_PREFIX)
         if path is None:
@@ -870,14 +859,14 @@ class MocapProbePlugin(HuskyPlugin):
                 **self.coverage.to_json()}
         # * Compact: thousands of rows.
         path.write_text(json.dumps(data))
-        self._message = f"exported coverage of {self.coverage.count} samples to {path}"
+        self._show(f"exported coverage of {self.coverage.count} samples to {path}", OK)
         ctx.log_info(self._message)
 
     def _clear_coverage(self, ctx: PluginContext) -> None:
         """Empty the coverage map."""
         self.coverage = CoverageMap()
         self._coverage_drawn, self._coverage_time = -1, -np.inf
-        self._message = "coverage map cleared"
+        self._show("coverage map cleared")
         ctx.log_info(self._message)
 
     def _load_coverage(self, ctx: PluginContext, file: viser.UploadedFile) -> None:
@@ -885,13 +874,13 @@ class MocapProbePlugin(HuskyPlugin):
         try:
             coverage = CoverageMap.from_json(json.loads(file.content))
         except (ValueError, KeyError, TypeError, IndexError) as error:
-            self._message = f"not loaded {file.name}: {error}"
+            self._show(f"not loaded {file.name}: {error}", FAIL)
             ctx.log_warn(self._message)
             return
         self.coverage = coverage
         self._coverage_drawn, self._coverage_time = -1, -np.inf
         self._show_map.value = True
-        self._message = f"loaded coverage of {coverage.count} samples from {file.name}"
+        self._show(f"loaded coverage of {coverage.count} samples from {file.name}", OK)
         ctx.log_info(self._message)
 
     # --- --- --- --- --- UPDATE --- --- --- --- ---
@@ -921,14 +910,27 @@ class MocapProbePlugin(HuskyPlugin):
     # --- --- --- --- --- HELPERS --- --- --- --- ---
 
     def _report(self, ctx: PluginContext, text: str, floor: bool = False, warn: bool = False,
-                log: bool = True) -> None:
-        """Show `text` below the floor section's buttons (`floor`) or the selected points'; log it if `log`."""
-        if floor:
-            self._floor_message = text
-        else:
-            self._message = text
+                log: bool = True, color: str | None = None) -> None:
+        """Show `text` below the floor section's buttons (`floor`) or the selected points'; log it if `log`.
+
+        Args:
+            ctx: This plugin's context.
+            text: The line.
+            floor: Below the floor section's buttons, else the selected points'.
+            warn: A failure: red, logged as a warning.
+            log: Log it.
+            color: The line's colour instead, e.g. BUSY for a question.
+        """
+        self._show(text, color or (FAIL if warn else NONE), floor)
         if log:
             (ctx.log_warn if warn else ctx.log_info)(text)
+
+    def _show(self, text: str, color: str = NONE, floor: bool = False) -> None:
+        """Show `text` in `color` (FAIL only for a failure) below the floor section's buttons or the points'."""
+        if floor:
+            self._floor_message, self._floor_message_color = text, color
+        else:
+            self._message, self._message_color = text, color
 
     def _selected_samples(self) -> list[Sample]:
         """The samples ticked in the list, in recording order."""
@@ -1088,7 +1090,7 @@ class MocapProbePlugin(HuskyPlugin):
             height: The probe's height above the plane, metres, or None without a plane or a fix.
             anchors: The anchors' entries (`_anchor_entries`).
             check: The poses off lines (`_check_lines`).
-            not_found: The stored anchors not found near their stored place (`_not_found`): a red chip.
+            not_found: The stored anchors not found near their stored place (`_not_found`): an amber chip.
         """
         plane, fit, worst = solution.plane, solution.fit, solution.worst
         if plane is None:
@@ -1103,25 +1105,23 @@ class MocapProbePlugin(HuskyPlugin):
         if solution.transform is None:
             state += chip("no frame", NONE, solution.problem)
         elif fit is None:
-            state += chip("frame not fixed", BUSY, f"no marks or anchors in {self._lab_frame_path.name}: the origin "
-                                                   f"mark and Motive's x place it. Writing the file by hand from an "
-                                                   f"export's marks and anchors_in_floor makes this frame the lab's")
+            state += chip("frame not fixed", BUSY, f"No marks or anchors in {self._lab_frame_path.name}: the origin "
+                                                   f"mark and Motive's x place the frame.\nWrite them into the file "
+                                                   f"to fix it.")
         elif worst[1] > MARK_WARN:
-            state += chip(f"{worst[0]} off", FAIL, f"{worst[1] * 1e3:.1f} mm from where it is stored: probe it again, "
+            state += chip(f"{worst[0]} off", BUSY, f"{worst[1] * 1e3:.1f} mm from where it is stored: probe it again, "
                                                    f"delete its samples, or check the mark; Export twice exports "
                                                    f"anyway")
         else:
-            moved = ", ".join(f"{name} {off * 1e3:.1f} mm" for name, off in solution.moved.items())
+            moved = list(solution.moved)
             state += chip(f"fixed {len(fit.residuals)}/{len(self._ideal_marks) + len(self._ideal_anchors)}",
                           BUSY if moved else OK,
-                          f"the frame fitted to the marks and anchors of {self._lab_frame_path.name}"
-                          + (f"; left out as moved: {moved} (the export has their new place in anchors_in_floor)"
-                             if moved else ""))
+                          f"Fitted to the marks and anchors of {self._lab_frame_path.name}"
+                          + (f"; {len(moved)} left out as moved ({few(moved)})" if moved else ""))
         if not_found:
             state += chip(f"{not_found[0]} not found" if len(not_found) == 1 else f"{len(not_found)} anchors not found",
-                          FAIL, f"{', '.join(not_found)}: no unlabeled marker within {ANCHOR_REACH * 100:.0f} cm of "
-                                f"the stored place; point the probe at each marker, press Anchor, then move the probe "
-                                f"away. It is still compared with its stored place.")
+                          BUSY, f"{few(not_found)}: no marker within {ANCHOR_REACH * 100:.0f} cm of the stored place."
+                                f"\nPoint the probe at it, press Anchor, move it away.")
         # * Per mark: mm off its stored place, "new" when probed but not stored, "–" when not probed.
         marks = " · ".join(f"{name.removeprefix('mark')} " + ("–" if name not in solution.measured else
                                                               f"{fit.residuals[name] * 1e3:.1f}"
@@ -1183,7 +1183,8 @@ class MocapProbePlugin(HuskyPlugin):
         rate = coverage.tracked_rate()
         smoothed = coverage.smoothed()
         here = smoothed.at(*probe.position[:2]) if probe is not None and probe.position is not None else None
-        state = chip("mapping", OK) if self._mapping.value else chip("off", NONE)
+        state = (chip("mapping", INFO, "Every probe message goes into the coverage map; untick Map coverage to stop.")
+                 if self._mapping.value else chip("off", NONE, "Tick Map coverage to map where the probe is tracked."))
         return block(state + values(
             f"{coverage.count} samples, {smoothed.seen.sum() * COVERAGE_BIN ** 2:.0f} m², "
             f"tracked {'–' if rate is None else f'{rate:.0%}'}", f"err {_error_mm(coverage.total_error())}",
@@ -1481,10 +1482,10 @@ class MocapProbePlugin(HuskyPlugin):
                 if ctx.now() > due:
                     button.label, button.color = label, color
                 else:
-                    button.label, button.color = ("Press again: export anyway", "orange") if anyway else (again, "red")
-        self._result.content = note_line(self._message)
-        self._phone_result.content = phone_text(note_line(self._message))
-        floor_result = note(escape(self._floor_message) or "—")
+                    button.label, button.color = "Press again: export anyway" if anyway else again, "orange"
+        self._result.content = note_line(self._message, self._message_color)
+        self._phone_result.content = phone_text(note_line(self._message, self._message_color))
+        floor_result = note(escape(self._floor_message) or "—", self._floor_message_color)
         self._floor_result.content, self._phone_floor_result.content = floor_result, phone_text(floor_result)
         if self._mapping.value and self._map_task is None and ctx.now() - self._map_time >= MAP_PERIOD:
             self._map_time = ctx.now()

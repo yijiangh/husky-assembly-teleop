@@ -14,7 +14,7 @@ from husky_assembly_teleop.shared.planner.planner_panel import (COMMIT_CONFIRM_S
                                                                 unknown_robots_chip)
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
-from husky_assembly_teleop.shared.planner.plan import PlannerContract
+from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from husky_assembly_teleop.shared.planner.planner_search import Search
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, leased
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
@@ -444,7 +444,7 @@ def test_the_unknown_robots_chip_counts_the_others_and_hides_at_zero():
     acting = RobotObject("robots/me", model, Pose(), {}, base_tracked=False)
     assert unknown_robots_chip(Scene(robots={robot.id: robot for robot in (live, acting)}), ["robots/me"]) == ""
     found = unknown_robots_chip(Scene(robots={robot.id: robot for robot in (live, lost, acting)}), ["robots/me"])
-    assert ">1 robot unknown<" in found and 'title="b: base unknown"' in found and "me" not in found
+    assert ">1 robot unknown<" in found and 'title="b: base unknown\nHealth shows why."' in found and "me" not in found
 
 
 def test_commit_asks_for_a_second_press_within_two_seconds_while_a_robot_is_unknown():
@@ -459,7 +459,7 @@ def test_commit_asks_for_a_second_press_within_two_seconds_while_a_robot_is_unkn
     confirm = CommitConfirm()
     confirm.button = SimpleNamespace(color="blue")
     asked, allowed = confirm.asks(ctx, ["robots/me"], "Commit")
-    assert asked == "press Commit again within 2 s to move with b: base unknown"
+    assert asked == "press Commit again within 2 s to move with 1 other robot unknown"
     assert allowed == frozenset()
     confirm.draw(ctx.t)
     assert confirm.button.color == "orange" and COMMIT_CONFIRM_SECONDS == 2.0
@@ -471,3 +471,32 @@ def test_commit_asks_for_a_second_press_within_two_seconds_while_a_robot_is_unkn
     ctx.t += 2.5
     assert confirm.asks(ctx, ["robots/me"], "Commit")[0], "too late: it asks again"
     assert confirm.asks(ctx, ["robots/b"], "Commit") == ("", frozenset()), "the robot it moves is not counted"
+
+
+def test_commit_asks_twice_for_a_panels_own_warning_too():
+    """With every robot measured, a warning such as an arm out of stow still asks first; the second press sends."""
+    ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene()), t=10.0)
+    ctx.now = lambda: ctx.t
+    confirm = CommitConfirm()
+    assert confirm.asks(ctx, ["robots/me"], "Commit") == ("", frozenset())
+    asked, _allowed = confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 40° from stow"])
+    assert asked == "press Commit again within 2 s to move with the arm 40° from stow"
+    ctx.t += 1.0
+    assert confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 40° from stow"]) == ("", frozenset())
+
+
+def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():
+    """The same plan re-timed (a new object, same id, state and message) is not news: a question below stays."""
+    plan = Plan(1, Request("alice", 1.0), "ready", PATH, message="found, warned", warning=True)
+    api, warned = SimpleNamespace(plan=plan), []
+    panel = Panel()
+    panel._api = api
+    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=warned.append)
+    panel.update(ctx)
+    panel._say("press Commit again within 2 s to move with the arm 40° from stow")
+    api.plan = Plan(1, plan.request, "ready", PATH, message="found, warned", warning=True)
+    panel.update(ctx)
+    assert panel._message.startswith("press Commit again") and warned == ["found, warned"]
+    api.plan = Plan(1, plan.request, "sent", PATH, message="sent to alice")
+    panel.update(ctx)
+    assert panel._message == "sent to alice"

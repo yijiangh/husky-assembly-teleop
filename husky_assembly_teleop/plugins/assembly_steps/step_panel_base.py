@@ -40,8 +40,11 @@ if TYPE_CHECKING:
 SLIDER_STEP = 0.05
 
 #: Chip text and colour of each plan state.
-_STATE_CHIPS = {"none": ("no plan", NONE), "planning": ("planning…", BUSY), "ready": ("plan ready", OK),
-                "stale": ("plan stale: replan", BUSY), "sent": ("sent", OK)}
+_STATE_CHIPS = {"none": ("no plan", NONE, "Press Plan for the current step."),
+                "planning": ("planning…", BUSY, "The planner searches; the line below the buttons says how it goes."),
+                "ready": ("plan ready", OK, "Exec runs it."),
+                "stale": ("plan stale: replan", BUSY, "The robot or the step changed since planning; Plan again."),
+                "sent": ("sent", OK, "Sent to the robot.")}
 
 
 @dataclass
@@ -94,8 +97,8 @@ class PlannerPlugin(HuskyPlugin):
         self._t = 0.0
         self._playing = False
         self._last_tick: float | None = None
-        #: One line of feedback on the last action, and whether it was a failure.
-        self._message, self._message_failed = "", False
+        #: One line of feedback on the last action, whether it was a failure, and its colour.
+        self._message, self._message_failed, self._message_color = "", False, NONE
         #: The running search, and the flag that ends its worker early.
         self._plan_task: asyncio.Task | None = None
         self._abort = threading.Event()
@@ -241,7 +244,8 @@ class PlannerPlugin(HuskyPlugin):
         self.path, self._path_serial, self.plan_state = result.path, search.serial, "ready"
         # * At the end, where the motion arrives (the old monitor's trajectory view opened there); Play runs from 0.
         self._t, self._playing = result.path.duration, False
-        self._say(*search.accepted(result))
+        message, warning = search.accepted(result)
+        self._say(message, color=BUSY if warning else NONE)
 
     def _scrub(self, t: float) -> None:
         """Show the path at time `t`."""
@@ -261,7 +265,7 @@ class PlannerPlugin(HuskyPlugin):
         sent, message = self.send_plan(ctx)
         if sent:
             self.plan_state = "sent"
-        self._say(message, failed=not sent)
+        self._say(message, color=OK if sent else FAIL)
 
     def _asks_second_press(self, ctx: PluginContext) -> bool:
         """Whether Exec only asked: while other robots are not measured, the first press says to press it again.
@@ -285,9 +289,16 @@ class PlannerPlugin(HuskyPlugin):
         self._t, self._playing = 0.0, False
         self.forget_plan()
 
-    def _say(self, message: str, failed: bool = False) -> None:
-        """Set the one line of feedback under the buttons."""
-        self._message, self._message_failed = message, failed
+    def _say(self, message: str, failed: bool = False, color: str | None = None) -> None:
+        """Set the one line of feedback under the buttons: red if `failed`, else gray, unless `color` says otherwise.
+
+        Args:
+            message: The line.
+            failed: Whether it says why something failed.
+            color: BUSY for a question or warning, OK for something done; None: from `failed`.
+        """
+        color = color or (FAIL if failed else NONE)
+        self._message, self._message_failed, self._message_color = message, color == FAIL, color
 
     # --- --- --- --- --- TICK --- --- --- --- ---
 
@@ -338,6 +349,6 @@ class PlannerPlugin(HuskyPlugin):
         """The last message, one line, red if it was a failure, `more` after it; the full text on hover."""
         message = f"{self._message} {more}" if more else self._message
         return (f'<div title="{escape(message, quote=True)}" '
-                f'style="font-size:11px;color:{FAIL if self._message_failed else NONE};'
+                f'style="font-size:11px;color:{self._message_color};'
                 f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
                 f'{escape(message) or "&nbsp;"}</div>')

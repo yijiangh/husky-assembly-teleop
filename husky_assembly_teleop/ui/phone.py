@@ -14,6 +14,9 @@ from typing import Callable, Iterable, Sequence
 
 import viser
 
+#: Stop all's hover text, on the laptop and the phone.
+STOP_ALL_HINT = ("Soft stop, not an e-stop: stops arm programs, base controllers, tools and moving tasks. "
+                 "Robots refuse motion until Resume in Health.")
 #: Shown in the phone's browser tab.
 PHONE_TITLE = "Husky Phone"
 
@@ -256,8 +259,7 @@ class PhonePage:
         gui.configure_theme(show_logo=False, show_share_button=False)
         gui.add_html(f'<title>{PHONE_TITLE}</title><div id="{MARKER}"></div><style>{PHONE_STYLE}</style>')
         self.stop = gui.add_button("Stop all", color="red", icon=viser.Icon.HAND_STOP,
-                                   hint="Soft stop: stop every arm's program, switch every base controller off, "
-                                        "stop every tool, cancel every plugin task. Not an emergency stop.")
+                                   hint=STOP_ALL_HINT)
         self.stop.on_click(on_stop)
         #: Each plugin's header folder goes in here, above the tabs. Unlabelled folders draw only their children.
         self.header = gui.add_folder(None)

@@ -49,7 +49,7 @@ from ...shared.obstacles_contract import ObstaclesContract
 from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
-from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section,
+from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, hover, section,
                          values, warning)
 from ...ui.trace_plot import TracePlot
 from ...world.clearance import STOP_DISTANCE, Clearance, ClearanceRefused
@@ -104,6 +104,8 @@ RETURN_CLEARANCE = 0.2
 SETTLE_POSITION, SETTLE_YAW, SETTLE_FOR, SETTLE_TIMEOUT = 0.01, math.radians(1.0), 0.5, 3.0
 #: The outcome of a run the platform's e-stop interrupted: kept on disk, left out of the analysis, automation pauses.
 E_STOPPED = "e-stopped"
+#: The follower chip's colour per state; idle is gray.
+FOLLOWER_COLORS = {"following": BUSY, "done": OK, "aborted": FAIL}
 #: Phases of a run, recorded with each sample.
 SENT, FOLLOWING, SETTLING = 0, 1, 2
 #: The preview moves with the robot once it is this far from where it was drawn.
@@ -173,7 +175,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             if not serials:
-                self._status.content = block(chip("no robots configured", NONE))
+                self._status.content = block(chip("no robots configured", NONE,
+                                                  "The monitor's robots parameter names none: nothing to drive."))
                 return
             self.serial = serials[0]
             self._robot = gui.add_dropdown("Robot", options=serials, initial_value=self.serial)
@@ -192,23 +195,18 @@ class BaseExperimentPlugin(HuskyPlugin):
             run = gui.add_button_group("Run", ["Start", "Stop"],
                                        hint="Start: send the preview to the follower. Stop: stop the run(s)")
             self._recording = gui.add_checkbox("Record", initial_value=True,
-                                               hint=f"Save each run, with a plot, to "
-                                                    f"{self._recordings}")
+                                               hint="Save each run, with a plot, to the Drive under <experiment>.")
             auto = gui.add_button_group("Auto", ["Start auto"],
                                         hint=f"Run experiments from where the robot stands at {SPEED[0]} m/s and "
                                              f"{SPEED[1]:.0f}°/s, each checked to keep {PATH_CLEARANCE:.2f} m from "
                                              f"everything. Stop ends them")
             self._auto_paths = gui.add_dropdown(
                 "Automation", options=[STANDARD, RANDOM, TWIST_GRID], initial_value=STANDARD,
-                hint="Controller: standard paths: the same 10 paths in every scenario, the least attempted first, so "
-                     "controllers compare path by path; resumes from this experiment's runs with the same setup. "
-                     "Controller: random paths: any path of the path grid, for more coverage. "
-                     "Robot: constant commands: no controller; one speed and turn rate per run, open loop, every "
-                     "cell of the command grid in turn (resumes too); shows how the robot's response changes with them")
+                hint="Standard: the same 10 paths, least tried first (resumes). Random: any grid path. Constant "
+                     "commands: open loop, every grid cell (resumes).")
             self._auto_runs = gui.add_number("Auto runs", AUTO_RUNS[STANDARD], min=0, step=1,
-                                             hint="Standard paths and constant commands: runs in all for this "
-                                                  "experiment and setup, so Start resumes; random paths: runs per "
-                                                  "Start. 0: until Stop. Choosing an Automation sets one round")
+                                             hint="Runs in total (standard, constant: Start resumes) or per Start "
+                                                  "(random). 0: until Stop.")
             self._return_always = gui.add_checkbox(
                 "Return every run", initial_value=False,
                 hint="Drive back to the series' start pose before every automated run; off: only when no clear "
@@ -793,25 +791,26 @@ class BaseExperimentPlugin(HuskyPlugin):
     def _status_html(self, ctx: PluginContext) -> str:
         """Chips on one line: robot, mocap, follower, velocity controller, run."""
         base = ctx.world.robots[self.serial].base
-        chips = chip(escape(self.serial), SECTION_CTRL)
+        chips = chip(escape(self.serial), SECTION_CTRL, "The robot the experiment drives.")
         lost = pose_lost(base.mocap_id, base.state, ctx.now())
-        chips += chip("not tracked", FAIL, lost) if lost else chip("tracked", OK)
+        chips += (chip("not tracked", FAIL, lost) if lost
+                  else chip("tracked", OK, "Mocap tracks the base; a run needs it."))
         follower = self._follower(ctx)
         if follower is None:
             chips += chip("no follower", FAIL, "start crl_husky pure_pursuit (or pure_pursuit_sim.launch.py)")
         else:
-            chips += chip(f"follower {follower.state}", BUSY if follower.state == "following" else OK,
-                          follower.reason)
+            chips += chip(f"follower {follower.state}", FOLLOWER_COLORS.get(follower.state, NONE), follower.reason)
         if not base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
             chips += chip("velocity controller off", BUSY, "the base will not move (fine in the simulator)")
         if self.running:
-            chips += chip("running", BUSY)
+            chips += chip("running", BUSY, "A run drives the base; Stop ends it.")
         elif self._outcome:
-            failed = self._outcome.startswith(("aborted", "timed out", "not started", "not driven", "soft stopped",
-                                               E_STOPPED))
+            failed = self._outcome.startswith(("aborted", "timed out", "not started", "not driven", "not sent",
+                                               "robot not changed", "soft stopped", E_STOPPED))
             # * Short on the chip ("not started" without its reason), the whole outcome on hover.
             label = "not started" if self._outcome.startswith("not started") else self._outcome.split(" → ")[0][:40]
-            chips += chip(escape(label), FAIL if failed else OK, self._outcome)
+            color = FAIL if failed else OK if self._outcome.startswith("done") else NONE
+            chips += chip(escape(label), color, hover(self._outcome))
         return chip_line(chips)
 
     def _details_html(self, ctx: PluginContext) -> str:

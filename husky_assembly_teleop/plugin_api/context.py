@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Collection, Coroutin
 
 from ..robot_interface.robot_lease import Lease, LeaseSlot, leased, take_lease
 from ..robot_interface.soft_stop import MotionRefused
-from ..world.clearance import (STOP_DISTANCE, Clearance, ClearanceRefused, ClearanceTrip, assumable_joints,
-                               clearance_problem, others_problem)
+from ..world.clearance import (STOP_DISTANCE, Clearance, ClearanceRefused, ClearanceTrip, ClearanceWatch,
+                               assumable_joints, clearance_problem, others_problem)
 from scaffolding_assembly_core.ids import robot_id
 from ..world.freeze import Basis, Freeze, Tolerance, WorldMoved, basis_problem
 from ..world.stand_ins import with_stand_ins
@@ -106,6 +106,8 @@ class PluginContext:
         self._freezes: dict[Freeze, asyncio.Task] = {}
         # The clearances being checked, each with the task it cancels; see clearance.
         self._clearances: dict[Clearance, asyncio.Task] = {}
+        # The clearance watches the monitor checks for this plugin; see watch_clearance.
+        self._watches: list[ClearanceWatch] = []
         # Leases taken with take_lease, given back when this plugin stops.
         self._leases: set[Lease] = set()
         # Traces being filled, each with the (event, listener) pairs of its message signals; see trace.
@@ -282,7 +284,7 @@ class PluginContext:
     @contextmanager
     def clearance(self, serials: Iterable[str], margin: float = STOP_DISTANCE,
                   unknown_arms: Collection[str] | Literal["all"] = (),
-                  unknown_robots: Collection[str] = ()) -> Iterator[Clearance]:
+                  unknown_robots: Collection[str] = (), refuse_first: bool = False) -> Iterator[Clearance]:
         """While the `with` block runs, stop robots that come too close to anything in the scene. Optional.
 
         - Checked against the whole scene: obstacles, process bodies, tracked objects and the other robots. Allowed
@@ -304,6 +306,8 @@ class PluginContext:
             margin: Distance below which it trips, metres.
             unknown_arms: Arms whose joints may be unknown, or ALL_ARMS (`world.clearance`).
             unknown_robots: Ids of other robots that may be unknown.
+            refuse_first: Too close at the first check ends it (`refused`) without a soft stop. ! Send nothing until
+                `clearance.checked`, e.g. a drive that must not start in collision.
 
         Raises:
             RuntimeError: Outside a task of this plugin.
@@ -329,12 +333,40 @@ class PluginContext:
         for line in guessed:
             self.log_warn(f"clearance on {', '.join(serials)}: {line}")
         clearance = Clearance(serials, margin, unknown_arms=unknown_arms, unknown_robots=frozenset(unknown_robots),
-                              stand_ins=guessed)
+                              stand_ins=guessed, refuse_first=refuse_first)
         self._clearances[clearance] = task
         try:
             yield clearance
         finally:
             self._clearances.pop(clearance, None)
+
+    def watch_clearance(self, serials: Iterable[str], margin: float = STOP_DISTANCE,
+                        unknown_arms: Collection[str] | Literal["all"] = ()) -> ClearanceWatch:
+        """Have robots checked as a clearance would check them, every WATCH_EVERY, without ever stopping them.
+
+        The answer is in the watch's `found`, until `unwatch_clearance` or this plugin stops. Uses the monitor's
+        clearance world: no world of its own.
+
+        Args:
+            serials: The robots to check.
+            margin: Distance below which a robot counts as too close, metres.
+            unknown_arms: Arms whose joints may be unknown, or ALL_ARMS, as for `clearance`.
+
+        Returns:
+            ClearanceWatch: The watch, filled in as checks finish.
+
+        Example:
+            >>> watch = ctx.watch_clearance([serial], unknown_arms=ALL_ARMS)
+            >>> watch.found.get(serial)  # e.g. "came within 10 cm of wall", or None
+        """
+        watch = ClearanceWatch(tuple(serials), margin, unknown_arms)
+        self._watches.append(watch)
+        return watch
+
+    def unwatch_clearance(self, watch: ClearanceWatch) -> None:
+        """Stop checking `watch`."""
+        if watch in self._watches:
+            self._watches.remove(watch)
 
     @property
     def clearance_trips(self) -> tuple[ClearanceTrip, ...]:
@@ -598,14 +630,26 @@ class PluginContext:
                 task.cancel(f"freeze broken: {problem}")
 
     def _trip_clearance(self, clearance: Clearance, serial: str, why: str, hit: CollisionHit | None = None) -> None:
-        """Soft stop robot `serial` and cancel the clearance's task, unless it ended meanwhile; tell the monitor."""
+        """Soft stop robot `serial` and cancel the clearance's task, unless it ended meanwhile; tell the monitor.
+
+        Before its first clear check, a `refuse_first` clearance is only refused: nothing was sent yet. A refusal the
+        same as the last trip (a held button asking again) is neither kept nor logged again.
+        """
         task = self._clearances.pop(clearance, None)
         if task is None:
             return
         clearance.problem = f"robot {serial} {why}"
         clearance.hit = None if hit is None else replace(hit, where=task.get_name())
-        self._monitor.clearance_tripped(ClearanceTrip(self.now(), serial, task.get_name(), clearance.problem,
-                                                      clearance.hit))
+        trip = ClearanceTrip(self.now(), serial, task.get_name(), clearance.problem, clearance.hit)
+        if clearance.refuse_first and not clearance.checked:
+            clearance.refused = True
+            last = self._monitor.clearance_trips[-1] if self._monitor.clearance_trips else None
+            if last is None or (last.serial, last.task, last.problem) != (serial, trip.task, trip.problem):
+                self._monitor.clearance_tripped(trip)
+                self.log_warn(f"task {task.get_name()!r}: {clearance.problem} at its start; refused, nothing sent")
+            task.cancel(f"clearance refused: {clearance.problem}")
+            return
+        self._monitor.clearance_tripped(trip)
         self.world.robots[serial].soft_stop(clearance.problem)
         self.log_error(f"task {task.get_name()!r}: {clearance.problem}; soft stopped it and cancelling the task")
         task.cancel(f"clearance: {clearance.problem}")

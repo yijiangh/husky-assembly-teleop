@@ -9,13 +9,15 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from plugin_fakes import FakeGui
 from robot_fakes import TCP_ORIENTATION, TCP_POSITION, FreeRobots, fake_arm, lease_context, wait_ticks_until
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
-from husky_assembly_teleop.shared.teleop.dpad import HOLD_TIMEOUT, Hold
+from husky_assembly_teleop.shared.teleop.dpad import BLOCKED_COLOR, HOLD_TIMEOUT, UNGUARDED_COLOR, Hold
+from husky_assembly_teleop.plugins.robot_control.arm_panel import build_jog_inputs, jog_clearance_note
 from husky_assembly_teleop.plugins.robot_control.markers import place_markers, target_from_world
-from husky_assembly_teleop.plugins.robot_control.plugin import BASE, RobotControlPlugin, _BaseWidgets
+from husky_assembly_teleop.plugins.robot_control.plugin import BASE, START_RETRY, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.plugins.robot_control.status import refusal_chip
 from husky_assembly_teleop.plugins.robot_control.teleop_lease import IDLE_AFTER
 from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, MOVING_WITHIN,
@@ -23,8 +25,11 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
 from husky_assembly_teleop.robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, take_lease
 from husky_assembly_teleop.world.clearance import (ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, Clearance,
-                                                   ClearanceRefused)
+                                                   ClearanceRefused, ClearanceWatch)
+from husky_assembly_teleop.ui.style import FAIL
 from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
 
 pytestmark = pytest.mark.safety
@@ -246,16 +251,17 @@ class JogContext(Context):
         self.clearances, self.refuse = [], refuse
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
-        """Keep the clearance, or refuse it."""
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False):
+        """Keep the clearance, or refuse it; the test checks or trips it."""
         if self.refuse:
             raise ClearanceRefused(self.refuse)
-        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms))
+        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms,
+                                         refuse_first=refuse_first))
         yield self.clearances[-1]
 
 
 def test_a_jog_waits_for_its_clearance_which_keeps_one_centimetre():
-    """With Clearance ticked, the jog goes out only once a 1 cm clearance checks the robot; unticking ends it."""
+    """With Clearance ticked, the jog goes out only once a 1 cm clearance found the robot clear; unticking ends it."""
     arm, plugin, _ctx = _jogged_arm()
     plugin._arms[0].jog_clearance = SimpleNamespace(value=True)
     ctx = JogContext(arm)
@@ -265,6 +271,9 @@ def test_a_jog_waits_for_its_clearance_which_keeps_one_centimetre():
         assert not arm._trajectory.sent, "the clearance comes first"
         await asyncio.sleep(0)
         _jog_ticks(arm, plugin, ctx, 1, press=(0, 1.0))
+        assert not arm._trajectory.sent and ctx.clearances[0].refuse_first, "not before its first clear check"
+        ctx.clearances[0].checked = True
+        _jog_ticks(arm, plugin, ctx, 1, press=(0, 1.0))
         assert len(arm._trajectory.sent) == 1
         clearance, = ctx.clearances
         assert (clearance.serials, clearance.margin, clearance.unknown_arms) == (("0804",), ARM_STOP_DISTANCE, [])
@@ -272,11 +281,37 @@ def test_a_jog_waits_for_its_clearance_which_keeps_one_centimetre():
         await plugin._jog_guards[("0804", "ur_arm")]
 
     asyncio.run(scenario())
-    assert ARM_STOP_DISTANCE == 0.01 and not plugin._jog_checked
+    assert ARM_STOP_DISTANCE == 0.01
+
+
+def test_a_jog_that_starts_too_close_is_refused_until_the_next_press_without_a_soft_stop():
+    """Too close at the first check: nothing sent, no soft stop, a red "starts in collision" chip."""
+    arm, plugin, _ctx = _jogged_arm()
+    plugin._arms[0].jog_clearance = SimpleNamespace(value=True)
+    ctx = JogContext(arm)
+
+    async def scenario() -> None:
+        _jog_ticks(arm, plugin, ctx, 1, press=(0, 1.0))
+        await asyncio.sleep(0)
+        clearance, = ctx.clearances
+        clearance.problem, clearance.refused = "robot 0804 came within 1 cm of the rack", True  # as the monitor's
+        clearance.hit = SimpleNamespace()
+        guard = plugin._jog_guards[("0804", "ur_arm")]
+        guard.cancel()
+        await asyncio.gather(guard, return_exceptions=True)
+        _jog_ticks(arm, plugin, ctx, 3, press=(0, 1.0))
+
+    asyncio.run(scenario())
+    assert not arm._trajectory.sent and len(ctx.clearances) == 1, "the press is answered: not retried"
+    assert "0804" not in plugin._tripped
+    chip_html = plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog", True)
+    assert "starts in collision" in chip_html and "within 1 cm of the rack" in chip_html and FAIL in chip_html
+    unticked = plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog", False)
+    assert "starts in collision" in unticked and "Clearance is off" in unticked, "a collision shows either way"
 
 
 def test_a_jog_whose_clearance_cannot_check_is_refused_until_the_next_press():
-    """Base not tracked: nothing is sent, the chip says to untick Clearance, and the held press is not retried."""
+    """Base not tracked: nothing is sent, a "cannot check" chip says to untick Clearance, the press is not retried."""
     arm, plugin, _ctx = _jogged_arm()
     plugin._arms[0].jog_clearance = SimpleNamespace(value=True)
     ctx = JogContext(arm, refuse="robot 0804 cannot be checked for clearance: its base is not tracked")
@@ -287,8 +322,9 @@ def test_a_jog_whose_clearance_cannot_check_is_refused_until_the_next_press():
         _jog_ticks(arm, plugin, ctx, 3, press=(0, 1.0))
 
     asyncio.run(scenario())
-    refusal = plugin._refusals[("0804", "ur_arm")]
-    assert not arm._trajectory.sent and refusal.label == "cannot check" and "untick Clearance" in refusal.reason
+    chip_html = plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog", True)
+    assert not arm._trajectory.sent and ">cannot check<" in chip_html
+    assert "Untick Clearance to move without" in chip_html
     assert len(plugin._jog_guards) == 1 and plugin._jog_guards[("0804", "ur_arm")].done()
 
 
@@ -413,9 +449,10 @@ class BaseContext:
         return asyncio.get_running_loop().create_task(work, name=label)
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
-        """Keep the clearance; the test trips it."""
-        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms))
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False):
+        """Keep the clearance; the test checks or trips it."""
+        self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms,
+                                         refuse_first=refuse_first))
         yield self.clearances[-1]
 
     def log_warn(self, message: str) -> None:
@@ -424,7 +461,7 @@ class BaseContext:
 
 
 def test_driving_with_clearance_keeps_one_on_the_base_until_it_is_unticked():
-    """Every tick of a hold drives under the same clearance; unticking Clearance ends it."""
+    """A hold drives once its clearance found the base clear, every tick under the same one; unticking ends it."""
     plugin, sent, _controller = _driven_base()
     plugin._bases[0].clearance = SimpleNamespace(value=True)
     ctx = BaseContext()
@@ -434,15 +471,24 @@ def test_driving_with_clearance_keeps_one_on_the_base_until_it_is_unticked():
         plugin.update(ctx)
         await asyncio.sleep(0)
         plugin.update(ctx)
+        assert not sent and ctx.clearances[0].refuse_first  # * nothing goes out before the first clear check
+        ctx.clearances[0].checked = True
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        plugin.update(ctx)
         await asyncio.sleep(0)
         guard = plugin._base_guards["0804"]
         guarding = not guard.done()
         plugin._bases[0].clearance.value = False
         await guard
+        plugin._bases[0].clearance.value = True
+        plugin.update(ctx)  # * a new guard: the last one's checked clearance never lets a twist out
+        plugin.update(ctx)
+        assert sent[2:] == [(0.0, 0.0)]  # only the stop as the drive pauses
         return guarding
 
-    assert asyncio.run(drive()) and len(sent) == 2
-    assert [clearance.serials for clearance in ctx.clearances] == [("0804",)]
+    assert asyncio.run(drive()) and len(sent) == 3
+    assert [clearance.serials for clearance in ctx.clearances][0] == ("0804",)
 
 
 def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
@@ -456,6 +502,8 @@ def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
         plugin.update(ctx)
         await asyncio.sleep(0)
         assert ctx.clearances[0].unknown_arms == ALL_ARMS  # * driving by hand: an unknown arm counts as stowed
+        ctx.clearances[0].checked = True
+        plugin.update(ctx)
         ctx.clearances[0].problem = "robot 0804 came within 10 cm of wall"
         base.soft_stopped = True  # as the monitor's trip does
         guard = plugin._base_guards["0804"]
@@ -468,3 +516,122 @@ def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
     refusal = plugin._refusals[("0804", BASE)]
     assert refusal.label == "too close" and "came within 10 cm of wall: soft stopped" in refusal.reason
     assert "0804" not in plugin._held and sent[-1] == (0.0, 0.0)
+
+
+def test_a_drive_that_starts_too_close_is_refused_with_a_red_chip_and_tried_again_later():
+    """Too close at the first check: nothing sent, no soft stop, a "starts in collision" chip; retried later."""
+    plugin, sent, _controller = _driven_base()
+    plugin._bases[0].clearance = SimpleNamespace(value=True)
+    ctx, now = BaseContext(), [0.0]
+    ctx.now = lambda: now[0]
+    ctx.config = SimpleNamespace(robots=[SimpleNamespace(serial="0804", arms=())])
+    ctx.scene.snapshot = Scene(robots={robot_id("0804"): RobotObject(
+        robot_id("0804"), SimpleNamespace(movable_joints=()), Pose(), {})})
+
+    async def drive() -> None:
+        plugin._on_hold("0804", Hold(1.0, 0.0, plugin._bases[0].speed, ctx.now()))
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        clearance = ctx.clearances[0]
+        clearance.problem, clearance.refused = "robot 0804 came within 10 cm of wall", True  # as the monitor's refusal
+        clearance.hit = SimpleNamespace()
+        guard = plugin._base_guards["0804"]
+        guard.cancel()
+        await asyncio.gather(guard, return_exceptions=True)
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        assert len(ctx.clearances) == 1  # * not tried again at once
+        now[0] = START_RETRY
+        plugin._on_hold("0804", Hold(1.0, 0.0, plugin._bases[0].speed, ctx.now()))
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        assert len(ctx.clearances) == 2
+
+    asyncio.run(drive())
+    assert not sent and not plugin._bases[0].base.soft_stopped and "0804" not in plugin._tripped
+    chips = plugin._base_warnings(ctx, "0804", now[0])
+    assert "starts in collision" in chips and FAIL in chips and "Untick Clearance" in chips
+
+
+def test_a_drive_whose_clearance_cannot_check_is_refused_without_a_soft_stop():
+    """Base not tracked: no twist and no soft stop (nothing went out before the check), a "cannot check" chip."""
+    plugin, sent, _controller = _driven_base()
+    plugin._bases[0].clearance = SimpleNamespace(value=True)
+    ctx = BaseContext()
+    stops = []
+    ctx.world.robots["0804"].soft_stop = lambda reason="": stops.append(reason)
+
+    @contextmanager
+    def refused(*_args, **_options):
+        raise ClearanceRefused("robot 0804 cannot be checked for clearance: base not measured")
+        yield
+
+    ctx.clearance = refused
+
+    async def drive() -> None:
+        plugin._on_hold("0804", Hold(1.0, 0.0, plugin._bases[0].speed, ctx.now()))
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        plugin.update(ctx)
+
+    asyncio.run(drive())
+    assert not sent and not stops and plugin._start_problem("0804", ctx.now())[0] == "cannot check"
+
+
+def test_a_base_standing_too_close_shows_the_chip_and_a_gray_dpad_before_any_press():
+    """Its watch says too close: a red chip naming what, and a gray D-pad; while the base drives, nothing."""
+    plugin, _sent, _controller = _driven_base()
+    plugin._watches["0804"] = ClearanceWatch(("0804",), STOP_DISTANCE, ALL_ARMS)
+    assert plugin._start_problem("0804", 0.0) is None
+    plugin._watches["0804"].found["0804"] = "came within 10 cm of wall"
+    ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial="0804", arms=())]),
+                          scene=SimpleNamespace(snapshot=Scene(robots={robot_id("0804"): RobotObject(
+                              robot_id("0804"), SimpleNamespace(movable_joints=()), Pose(), {})})))
+    chips = plugin._base_warnings(ctx, "0804", 0.0)
+    assert "starts in collision" in chips and "came within 10 cm of wall" in chips and FAIL in chips
+    buttons = [SimpleNamespace(color=None)]
+    plugin._color_buttons(buttons, True, "0804", 0.0)
+    assert buttons[0].color == BLOCKED_COLOR == "gray" and UNGUARDED_COLOR == "orange"
+    assert "Clearance is off" in plugin._base_warnings(ctx, "0804", 0.0, ticked=False), "a collision shows either way"
+    plugin._watches["0804"].found.clear()
+    plugin._watches["0804"].unchecked["0804"] = "cannot be checked: base not measured"
+    assert ">cannot check<" in plugin._base_warnings(ctx, "0804", 0.0)
+    assert plugin._base_warnings(ctx, "0804", 0.0, ticked=False) == "", "cannot check is Clearance's own matter"
+    plugin._driving.add("0804")
+    assert plugin._start_problem("0804", 0.0) is None, "its own clearance guards a drive"
+
+
+def test_the_jog_buttons_and_their_note_follow_clearance_as_the_dpad_does():
+    """Ticked: theme colour and a gray note; too close to start: gray; unticked: orange and an orange warning."""
+    plugin, key = RobotControlPlugin(), ("0804", "ur_arm")
+    buttons = [SimpleNamespace(color=None)]
+    plugin._color_buttons(buttons, True, key, 0.0)
+    assert buttons[0].color is None
+    plugin._watches[key] = ClearanceWatch(("0804",), ARM_STOP_DISTANCE, found={"0804": "came within 1 cm of the rack"})
+    plugin._color_buttons(buttons, True, key, 0.0)
+    assert buttons[0].color == BLOCKED_COLOR
+    plugin._color_buttons(buttons, False, key, 0.0)
+    assert buttons[0].color == UNGUARDED_COLOR
+    ticked, unticked = jog_clearance_note(True, ARM_STOP_DISTANCE), jog_clearance_note(False, ARM_STOP_DISTANCE)
+    assert "Clearance keeps 1 cm" in ticked and "Clearance off" in unticked
+    assert "white-space:nowrap" in ticked and "white-space:nowrap" in unticked, "one line either way: nothing jumps"
+
+
+def test_each_jog_has_its_clearance_box_below_its_buttons_and_the_two_are_one_setting():
+    """Below the joint jog buttons and below the tool0 buttons, as the D-pad's; unticking either unticks both."""
+    gui = FakeGui()
+    ctx = SimpleNamespace(defer=lambda _label, run, operator_only=False: lambda *_event: run(),
+                          defer_value=lambda _label, run, operator_only=False: run)
+    inputs = build_jog_inputs(ctx, gui, "0804 ur_arm", lambda *_args: None, lambda: None, lambda *_args: None,
+                              ARM_STOP_DISTANCE)
+    order = [widget.kind for widget in gui.widgets]
+    boxes = [index for index, kind in enumerate(order) if kind == "checkbox"]
+    buttons = [index for index, kind in enumerate(order) if kind == "button"]
+    joint, tool = buttons[:len(inputs.buttons)], buttons[len(inputs.buttons):]
+    assert len(boxes) == 2 and max(joint) < boxes[0] < min(tool) and max(tool) < boxes[1]
+    inputs.tool.clearance.value = False
+    inputs.tool.clearance.callback(False)
+    assert inputs.clearance.value is False
+    inputs.clearance.value = True
+    inputs.clearance.callback(True)
+    assert inputs.tool.clearance.value is True

@@ -61,9 +61,9 @@ def tcp_check(arm: ArmInterface, expected: Pose, now: float) -> Check | None:
     limits = f"{TCP_POSITION_TOLERANCE * 1e3:g} mm / {np.degrees(TCP_ANGLE_TOLERANCE):g}°"
     if distance > TCP_POSITION_TOLERANCE or angle > TCP_ANGLE_TOLERANCE:
         # ? Whole millimetres and degrees: the tooltip text changes only when the offset does.
-        return Check("TCP", WARN, f"reported tool0 {distance * 1e3:.0f} mm / {np.degrees(angle):.0f}° from the "
-                                  f"kinematics (over {limits}): is the pendant's active TCP "
-                                  f"{_tcp_text(arm.pendant_tcp)}? Else the URDF or its calibration is off")
+        return Check("TCP", WARN, f"tool0 {distance * 1e3:.0f} mm / {np.degrees(angle):.0f}° off the kinematics.\n"
+                                  f"Is the pendant's active TCP {_tcp_text(arm.pendant_tcp)}? Else the URDF or its "
+                                  f"calibration is off.")
     return Check("tcp", GOOD, f"reported tool0 within {limits} of the kinematics")
 
 

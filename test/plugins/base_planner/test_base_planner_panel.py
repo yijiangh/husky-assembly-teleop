@@ -14,11 +14,15 @@ from husky_assembly_teleop.plugins.base_planner.panel_plugin import NO_TASK, Bas
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.ui.ghost import KIND_COLORS
+from husky_assembly_teleop.ui.style import FAIL, NONE
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan
 from husky_assembly_teleop.shared.planner.planner_search import Search
 from husky_assembly_teleop.shared.planner.planner_service import PlannerService
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
 
 SERIAL = "alice"
@@ -134,7 +138,7 @@ def test_the_panel_plans_and_commits_through_the_api():
     planner, ctx = Planner(), SimpleNamespace(submit=lambda _label, run: run(), now=lambda: 0.0,
                                               spawn=lambda _label, work: asyncio.get_running_loop().create_task(work),
                                               log_info=lambda _text: None, lease_robots=lease_test_robots,
-                                              world=SimpleNamespace(robots={}),
+                                              world=SimpleNamespace(robots={}), config=SimpleNamespace(robots=()),
                                               scene=SimpleNamespace(snapshot=Scene()))
     planner.setup(ctx)
 
@@ -166,7 +170,8 @@ def test_a_plan_refused_for_a_collision_shows_its_hit_until_the_next_plan():
     hit = SimpleNamespace(where="target")
     planner, ctx = Planner(), SimpleNamespace(submit=lambda _label, run: run(), now=lambda: 0.0,
                                               spawn=lambda _label, work: asyncio.get_running_loop().create_task(work),
-                                              log_info=lambda _text: None, world=SimpleNamespace(robots={}))
+                                              log_info=lambda _text: None, log_warn=lambda _text: None,
+                                              world=SimpleNamespace(robots={}))
     planner.results = [PlanResult(None, "target is in collision with the wall", hit=hit)]
     planner.setup(ctx)
 
@@ -193,7 +198,7 @@ def test_park_loads_the_robots_parked_pose(park):
     panel, targets, said = BasePlannerPanel(), [], []
     panel.serial, panel._used = SERIAL, SimpleNamespace(touch=lambda: None)
     panel._target = SimpleNamespace(set=lambda *pose: targets.append(pose))
-    panel._say = lambda message, failed=False: said.append(failed)
+    panel._say = lambda message, color=NONE: said.append(color == FAIL)
     ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial=SERIAL, park_pose=park)]))
     panel._load_target(ctx, "Park")
     assert targets == ([park] if park else []) and said == [park is None]
@@ -210,3 +215,18 @@ def test_the_preview_slider_follows_only_the_operator():
     ctx = SimpleNamespace(defer_value=defer_value, defer=lambda _label, run, operator_only=False: run)
     BasePlannerPanel()._add_path_controls(ctx, FakeGui(), "plan hint", "commit hint")
     assert asked["scrub"] is True
+
+
+@pytest.mark.parametrize("pan, warned", [(0.03, False), (0.7, True)])
+def test_an_arm_out_of_stow_asks_commit_twice_and_shows_an_amber_chip(pan, warned):
+    """Within 5 degrees of stow nothing is said; further out, Commit names the arm and the chip line warns."""
+    joints = ("shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint", "wrist_1_joint", "wrist_2_joint",
+              "wrist_3_joint")
+    robot = RobotObject(robot_id(SERIAL), SimpleNamespace(movable_joints=tuple(f"ur_arm_{name}" for name in joints)),
+                        Pose(), {"ur_arm_shoulder_pan_joint": pan})
+    ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial=SERIAL, arms=[
+                              SimpleNamespace(name="ur_arm", stow_joints=(0.0,) * 6)])]),
+                          scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot})))
+    panel = panel_for(None)
+    said = panel.commit_warnings(ctx, Plan(1, BasePlanRequest(SERIAL, GOAL), "ready", PATH))
+    assert said == ([f"the arm {np.degrees(pan):.0f}° from stow"] if warned else [])

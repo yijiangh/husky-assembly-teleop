@@ -11,7 +11,7 @@ from robot_fakes import Log, fake_arm
 
 from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.robot_interface.robot_lease import LeaseSlot, NotLeased
-from husky_assembly_teleop.world.clearance import ALL_ARMS, ClearanceRefused
+from husky_assembly_teleop.world.clearance import ALL_ARMS, Clearance, ClearanceRefused
 from husky_assembly_teleop.world.freeze import WorldMoved, take_basis
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
@@ -160,6 +160,71 @@ def test_a_tripped_clearance_soft_stops_the_robot_and_cancels_its_task():
         "0805", "executor: drive", "robot 0805 came within 10 cm of wall", None)
 
 
+def test_a_refuse_first_clearance_too_close_at_its_start_is_refused_without_a_soft_stop():
+    """Before its first clear check it only ends, refused; once checked, a trip soft stops as any other."""
+    ctx, world, log = _context()
+    stops = []
+    world.robots["0805"].soft_stop = lambda reason="": stops.append(reason)
+
+    async def drive() -> None:
+        with ctx.clearance(["0805"], refuse_first=True):
+            while True:
+                await ctx.next_tick()
+
+    async def scenario() -> tuple[Clearance, Clearance]:
+        task = ctx.spawn("drive", drive())
+        await asyncio.sleep(0)
+        first, = ctx._clearances
+        ctx._trip_clearance(first, "0805", "came within 10 cm of wall")
+        await asyncio.gather(task, return_exceptions=True)
+        task = ctx.spawn("drive", drive())
+        await asyncio.sleep(0)
+        second, = ctx._clearances
+        second.checked = True
+        ctx._trip_clearance(second, "0805", "came within 10 cm of wall")
+        await asyncio.gather(task, return_exceptions=True)
+        return first, second
+
+    first, second = asyncio.run(scenario())
+    assert first.refused and not second.refused and len(stops) == 1
+    assert "at its start; refused, nothing sent" in log.text("warning")
+
+
+def test_a_refusal_repeated_while_a_button_is_held_is_kept_and_logged_once():
+    """The same refusal again (a held D-pad asking every second) adds no trip and no log line; a new reason does."""
+    ctx, _world, log = _context()
+
+    async def drive() -> None:
+        with ctx.clearance(["0805"], refuse_first=True):
+            while True:
+                await ctx.next_tick()
+
+    async def refuse(why: str) -> None:
+        task = ctx.spawn("drive", drive())
+        await asyncio.sleep(0)
+        clearance, = ctx._clearances
+        ctx._trip_clearance(clearance, "0805", why)
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def scenario() -> None:
+        for why in ("came within 10 cm of wall", "came within 10 cm of wall", "came within 10 cm of the rack"):
+            await refuse(why)
+
+    asyncio.run(scenario())
+    assert [trip.problem for trip in ctx.clearance_trips] == ["robot 0805 came within 10 cm of wall",
+                                                              "robot 0805 came within 10 cm of the rack"]
+    assert log.text("warning").count("refused, nothing sent") == 2
+
+
+def test_a_watch_is_kept_until_unwatched_and_needs_no_task():
+    """`watch_clearance` keeps the watch for the monitor to check; `unwatch_clearance` drops it."""
+    ctx, _world, _log = _context()
+    watch = ctx.watch_clearance(["0805"], 0.01, ALL_ARMS)
+    assert ctx._watches == [watch] and watch.found == {} and watch.unknown_arms == ALL_ARMS
+    ctx.unwatch_clearance(watch)
+    assert ctx._watches == []
+
+
 def test_a_clearance_needs_a_task_of_its_plugin():
     """Outside a task there is nothing to cancel."""
     ctx, _world, _log = _context()
@@ -183,7 +248,7 @@ def test_a_clearance_refuses_to_start_on_a_robot_it_cannot_check():
         return await asyncio.gather(strict, lenient, return_exceptions=True)
 
     strict, lenient = asyncio.run(scenario())
-    assert isinstance(strict, ClearanceRefused) and "joints not known: ur_arm_elbow_joint" in str(strict)
+    assert isinstance(strict, ClearanceRefused) and "ur_arm not measured" in str(strict)
     assert lenient is None and ran == [{"unknown_arms": ALL_ARMS}]
 
 
@@ -205,8 +270,7 @@ def test_another_robot_not_measured_refuses_a_clearance_unless_allowed():
 
     (refused,) = asyncio.run(scenario())
     assert isinstance(refused, ClearanceRefused)
-    assert str(refused) == ("robot 0805 cannot be checked against the others: robots/0804 is not measured "
-                            "(its base is not tracked)")
+    assert str(refused) == "robot 0805 cannot be checked against the others: 0804: base not measured"
     line, = kept
-    assert line == "robots/0804 is not measured (its base is not tracked): checked at its default pose or stowed"
+    assert line == "0804: base not measured, checked at its default pose or stowed"
     assert f"clearance on 0805: {line}" in log.text("warning")

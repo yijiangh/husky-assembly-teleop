@@ -77,8 +77,9 @@ class Step:
         The overview shows its label and short `value`; its `detail` says why on hover.
         """
         red = red_checks(self.checks(ctx))
-        return (Check("fails", BAD, "; ".join(f"{c.label}: {c.detail}" for c in red), in_short(red)) if red else
-                Check("passes", GOOD))
+        more = f" (+{len(red) - 1} more: see the step's chips)" if len(red) > 1 else ""
+        return (Check("fails", BAD, f"{red[0].label}: {red[0].detail}{more}", in_short(red)) if red else
+                Check("passes", GOOD, "Every check of this step passes."))
 
     def question(self, ctx: PluginContext) -> str:
         """A question for the operator, shown below the controls on both pages; "" for none."""

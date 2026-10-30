@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import math
 from html import escape
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Callable, Iterable, Sequence
 
 import viser
 
@@ -23,7 +23,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.phone import button_group_color_css, columns_css, group_buttons
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, hover, note, section
 from ...world.stand_ins import unknown_parts, unknown_robots
 from scaffolding_assembly_core.ids import robot_id
 from .plan import Plan, PlannerContract
@@ -40,16 +40,21 @@ SLIDER_STEP = 0.05
 PATH_BUTTONS_COLOR = "var(--mantine-color-teal-outline)"
 #: Plan itself, filled in Mantine's teal as viser's filled teal buttons: the one button of the panel that stands out.
 PLAN_BUTTON_FILL, PLAN_BUTTON_HOVER = "var(--mantine-color-teal-filled)", "var(--mantine-color-teal-filled-hover)"
-#: Seconds a Commit waits for its second press while other robots are not measured (`CommitConfirm`).
+#: Seconds a Commit waits for its second press, e.g. while other robots are not measured (`CommitConfirm`).
 COMMIT_CONFIRM_SECONDS = 2.0
 #: Lays out the Run folder as Commit and Cancel side by side, for an html widget outside that folder.
 COMMIT_STYLE = f"<style>{columns_css(viser.Icon.SEND, 2)}</style>"
 
 
 #: Chip text and colour of each state of the planner's latest plan, and of no plan.
-_PLAN_CHIPS = {None: ("no plan", NONE), "planning": ("planning…", BUSY), "ready": ("plan ready", OK),
-               "stale": ("plan stale: replan", BUSY), "sent": ("sent", OK), "failed": ("no plan found", FAIL),
-               "cancelled": ("cancelled", NONE)}
+_PLAN_CHIPS = {None: ("no plan", NONE, "Set a target and press Plan."),
+               "planning": ("planning…", BUSY, "The planner searches; the line below the buttons says how it goes."),
+               "ready": ("plan ready", OK, "Play previews it; Commit sends it."),
+               "stale": ("plan stale: replan", BUSY, "The robot moved since planning; the line below says how. "
+                                                     "Plan again."),
+               "sent": ("sent", OK, "Sent to the robot; Cancel stops it."),
+               "failed": ("no plan found", FAIL, "The line below the buttons says why."),
+               "cancelled": ("cancelled", NONE, "Planning was stopped; Plan tries again.")}
 
 
 class PlannerPanel(HuskyPlugin):
@@ -74,8 +79,8 @@ class PlannerPanel(HuskyPlugin):
         self._t = 0.0
         self._playing = False
         self._last_tick: float | None = None
-        #: One line of feedback on the last action, and whether it was a failure.
-        self._message, self._message_failed = "", False
+        #: One line of feedback on the last action, and its colour: FAIL, BUSY (a question or warning), OK or NONE.
+        self._message, self._message_color = "", NONE
         #: Commit's second press while other robots are not measured.
         self._confirm = CommitConfirm()
         #: The planner's plan whose message the panel shows; a new or changed plan replaces the message.
@@ -106,13 +111,18 @@ class PlannerPanel(HuskyPlugin):
         """Pose the planned robot's path ghost at `plan.path.sample(self._t)`."""
         raise NotImplementedError
 
+    def commit_warnings(self, ctx: PluginContext, plan: Plan) -> list[str]:
+        """Reasons Commit asks for a second press, besides other robots not measured, e.g. "arm out of stow"."""
+        return []
+
     # --- --- --- --- --- SETUP HELPERS --- --- --- --- ---
 
     def _connect(self, ctx: PluginContext) -> None:
         """Take the planner's API. ! Call first in setup."""
         self._api = ctx.require(self.planner)
 
-    def _add_path_controls(self, ctx: PluginContext, gui: viser.GuiApi, plan_hint: str, commit_hint: str) -> None:
+    def _add_path_controls(self, ctx: PluginContext, gui: viser.GuiApi, plan_hint: str, commit_hint: str,
+                           before_commit: Callable[[viser.GuiApi], None] | None = None) -> None:
         """Add the "path" section: Plan/Play/Clear, the time slider and Commit, with their callbacks.
 
         Args:
@@ -120,6 +130,7 @@ class PlannerPanel(HuskyPlugin):
             gui: GUI api, inside `ctx.view.ui()`.
             plan_hint: Hover text of the Plan/Play/Clear buttons.
             commit_hint: Hover text of Commit.
+            before_commit: Adds a subclass's own inputs between the time slider and Commit, e.g. the plan's duration.
         """
         gui.add_html(section("path", SECTION_CTRL))
         plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
@@ -132,6 +143,8 @@ class PlannerPanel(HuskyPlugin):
                      f"{group_buttons(uuid, 0)}:hover {{ background: {PLAN_BUTTON_HOVER} !important; }}</style>")
         self._slider = gui.add_slider("Preview time", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
                                       hint="Scrub through the planned path: seconds from its start")
+        if before_commit is not None:
+            before_commit(gui)
         # * Cancel beside Commit: a folder of its own, laid out in two columns (found by Commit's icon).
         gui.add_html(COMMIT_STYLE)
         with gui.add_folder("Run"):
@@ -187,7 +200,7 @@ class PlannerPanel(HuskyPlugin):
     def _plan(self, ctx: PluginContext) -> None:
         """Ask the planner for a plan to the target, unless one is being planned or there is no target."""
         if not self._has_target:
-            self._say("set a target first", failed=True)
+            self._say("set a target first", FAIL)
             return
         plan = self._api.plan
         if plan is not None and plan.state == "planning":
@@ -209,15 +222,16 @@ class PlannerPanel(HuskyPlugin):
         self._used.touch()
         plan = self._api.plan
         if plan is None or plan.state != "ready":
-            self._say(f"nothing to commit: the plan is {plan.state if plan else 'missing'}", failed=True)
+            self._say(f"nothing to commit: the plan is {plan.state if plan else 'missing'}", FAIL)
             return
         change = self.target_change(ctx, plan)
         if change:
-            self._say(f"not committed: {change}; replan", failed=True)
+            self._say(f"not committed: {change}; replan", FAIL)
             return
-        asked, unknown = self._confirm.asks(ctx, [robot_id(plan.request.serial)], "Commit")
+        asked, unknown = self._confirm.asks(ctx, [robot_id(plan.request.serial)], "Commit",
+                                            self.commit_warnings(ctx, plan))
         if asked:
-            self._say(asked, failed=True)
+            self._say(asked, BUSY)
             return
         ctx.spawn(f"commit plan {plan.id}", self._report(self._api.commit(plan.id, unknown)))
 
@@ -225,14 +239,14 @@ class PlannerPanel(HuskyPlugin):
         """Stop the motion a commit started, and say so."""
         self._used.touch()
         if self._api.cancel_commit():
-            self._say("commit cancelled: the robot stops", failed=True)
+            self._say("commit cancelled: the robot stops")
         else:
             self._say("nothing to cancel: no commit is running")
 
     async def _report(self, sent: asyncio.Future[tuple[bool, str]]) -> None:
         """Show how a commit went."""
         taken, message = await sent
-        self._say(message, failed=not taken)
+        self._say(message, OK if taken else FAIL)
 
     def _process_step(self, ctx: PluginContext) -> tuple[Selection, str, str] | None:
         """The process plugin's selected movement, and the configured robot it is for.
@@ -244,22 +258,22 @@ class PlannerPanel(HuskyPlugin):
         process: ProcessContract = ctx.require("process")
         selection = process.selection
         if selection is None:
-            self._say("no process loaded in the process plugin", failed=True)
+            self._say("no process loaded in the process plugin", FAIL)
             return None
         label = selection.movement.id
         if not selection.action.robot:
-            self._say(f"{label} is placed by hand: no robot to plan for", failed=True)
+            self._say(f"{label} is placed by hand: no robot to plan for", FAIL)
             return None
         robot = selection.process.robots[selection.action.robot]
         serial = find_robot_serial(ctx.config.robots, robot.serial or "")
         if serial is None:
-            self._say(f"{label} is for {robot.name}, which is not configured", failed=True)
+            self._say(f"{label} is for {robot.name}, which is not configured", FAIL)
             return None
         return selection, serial, robot.name
 
-    def _say(self, message: str, failed: bool = False) -> None:
-        """Set the one line of feedback under the buttons."""
-        self._message, self._message_failed = message, failed
+    def _say(self, message: str, color: str = NONE) -> None:
+        """Set the one line of feedback under the buttons: FAIL only for a failure, BUSY for a question or warning."""
+        self._message, self._message_color = message, color
 
     # --- --- --- --- --- TICK --- --- --- --- ---
 
@@ -272,11 +286,16 @@ class PlannerPanel(HuskyPlugin):
         self._last_tick = now
         plan = self._api.plan
         if plan is not self._shown:
-            if plan is not None and (self._shown is None or plan.id != self._shown.id):
+            shown, self._shown = self._shown, plan
+            if plan is not None and (shown is None or plan.id != shown.id):
                 self._t, self._playing = 0.0, False
-            self._shown = plan
-            if plan is not None:
-                self._say(plan.message, failed=plan.state == "failed" or plan.warning)
+            # * Only a new plan, state or message is news: a re-timed plan (`set_duration`) keeps the line as it is.
+            if plan is not None and (shown is None or (plan.id, plan.state, plan.message)
+                                     != (shown.id, shown.state, shown.message)):
+                failed = plan.state == "failed"
+                self._say(plan.message, FAIL if failed else BUSY if plan.warning else NONE)
+                if failed or plan.warning:
+                    ctx.log_warn(plan.message)  # * the line's hover may be cut; the console keeps it whole
         if self._playing and plan is not None and plan.path is not None:
             self._t = min(self._t + elapsed, plan.path.duration)
             self._playing = self._t < plan.path.duration
@@ -316,27 +335,27 @@ class PlannerPanel(HuskyPlugin):
         """The state of the planner's latest plan as a chip."""
         plan = self._api.plan
         if self._target_moved:
-            return chip("target moved: replan", BUSY)
+            return chip("target moved: replan", BUSY, "The target changed since planning; Plan again before Commit.")
         return chip(*_PLAN_CHIPS[plan.state if plan is not None else None])
 
     def _message_html(self) -> str:
-        """The last message, one line, red if it was a failure; the full text on hover."""
-        return (f'<div title="{escape(self._message, quote=True)}" '
-                f'style="font-size:11px;color:{FAIL if self._message_failed else NONE};'
+        """The last message, one line, in its colour; the text on hover (`hover`)."""
+        return (f'<div title="{escape(hover(self._message), quote=True)}" '
+                f'style="font-size:11px;color:{self._message_color};'
                 f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
                 f'{escape(self._message) or "&nbsp;"}</div>')
 
 
 class CommitConfirm:
-    """Commit's second press: while other robots are not measured, the first press only asks, and Commit turns amber.
+    """Commit's second press: while other robots are not measured, or the panel warns, the first press only asks.
 
-    The second press lets the robots unknown then be unknown during the motion: its clearance checks them as
-    stand-ins, and soft stops for any other robot that is not measured (`ctx.clearance`, `unknown_robots`).
+    Commit turns amber while it waits. The second press lets the robots unknown then be unknown during the motion: its
+    clearance checks them as stand-ins, and soft stops for any other robot that is not measured (`ctx.clearance`,
+    `unknown_robots`).
     """
 
     #: For Commit's hover text.
-    HINT = (f"While other robots are not measured, press it twice within {COMMIT_CONFIRM_SECONDS:g} s: they may then "
-            f"stay unknown during the motion; any other robot lost stops it.")
+    HINT = f"With other robots not measured, press it twice within {COMMIT_CONFIRM_SECONDS:g} s."
 
     def __init__(self):
         """Wait for nothing yet; set `button` once it is built."""
@@ -344,22 +363,26 @@ class CommitConfirm:
         #: ROS time until which a second press sends; -inf while none is awaited.
         self.until = -math.inf
 
-    def asks(self, ctx: PluginContext, acting: Iterable[str], label: str) -> tuple[str, frozenset[str]]:
+    def asks(self, ctx: PluginContext, acting: Iterable[str], label: str,
+             warnings: Sequence[str] = ()) -> tuple[str, frozenset[str]]:
         """What to tell the operator instead of sending ("" to send now), and the robots the commit lets be unknown.
 
         Args:
             ctx: The plugin's context.
             acting: Ids of the robots the commit moves; not counted.
             label: The button's label, for the message.
+            warnings: More reasons to ask first, e.g. "the arm 40° from its stow pose".
 
         Returns:
             tuple[str, frozenset[str]]: The question, or ""; the ids of the other robots not measured now.
         """
         unknown = unknown_robots(ctx.scene.snapshot, set(acting))
-        if unknown and ctx.now() > self.until:
+        reasons = [*warnings] + ([f"{len(unknown)} other robot{'s' if len(unknown) > 1 else ''} unknown"]
+                                 if unknown else [])
+        if reasons and ctx.now() > self.until:
             self.until = ctx.now() + COMMIT_CONFIRM_SECONDS
             return (f"press {label} again within {COMMIT_CONFIRM_SECONDS:g} s to move with "
-                    f"{'; '.join(unknown_lines(ctx.scene.snapshot, unknown))}"), frozenset()
+                    f"{'; '.join(reasons)}"), frozenset()
         self.until = -math.inf
         return "", unknown
 
@@ -381,7 +404,7 @@ def unknown_robots_chip(snapshot: Scene, acting: Iterable[str]) -> str:
     if not unknown:
         return ""
     return chip(f"{len(unknown)} robot{'s' if len(unknown) > 1 else ''} unknown", BUSY,
-                "\n".join(unknown_lines(snapshot, unknown)))
+                "\n".join(unknown_lines(snapshot, unknown)) + "\nHealth shows why.")
 
 
 def unknown_lines(snapshot: Scene, unknown: Iterable[str]) -> list[str]:

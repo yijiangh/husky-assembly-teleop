@@ -27,9 +27,9 @@ def test_the_mocap_chip_is_unchanged_unless_the_calibration_is_wrong(calibration
 
 @pytest.mark.parametrize("level, expected", [(GOOD, WARN), (WARN, WARN), (BAD, BAD)])
 def test_a_wrong_calibration_makes_the_mocap_chip_at_least_amber_and_says_why(level, expected):
-    """Amber like a high marker error; a lost body stays red; the hover text gains the relay's reason."""
+    """Amber like a high marker error; a lost body stays red; the hover text says why."""
     chip = calibrated(Check("mocap", level, "tracking"), WRONG)
-    assert chip.label == "mocap" and chip.level == expected and "refined" in chip.detail
+    assert chip.label == "mocap" and chip.level == expected and "older Motive rigid body" in chip.detail
 
 
 def test_the_base_line_gets_no_chip_of_its_own():
@@ -39,7 +39,7 @@ def test_the_base_line_gets_no_chip_of_its_own():
     (_name, plain), = robot_checks(robot, 100.0, {}, None)
     (_name, wrong), = robot_checks(robot, 100.0, {}, WRONG)
     assert [chip.label for chip in wrong] == [chip.label for chip in plain]
-    assert "refined" in next(chip for chip in wrong if chip.label == "mocap").detail
+    assert "older Motive rigid body" in next(chip for chip in wrong if chip.label == "mocap").detail
 
 
 @pytest.mark.parametrize("source, expected, frame", [(MOTIVE, "applied", True), (FAKE_MOTIVE, "applied", True),
@@ -60,7 +60,7 @@ def test_a_moved_frame_makes_the_mocap_chip_amber_until_the_refit_is_used(status
     """While the truss cameras moved and no refit is adopted, every base's poses are off: amber, with why."""
     frame = FloorCalibrationState(status, "f.json", pending="frame moved 20 mm")
     chip = in_frame(Check("mocap", GOOD, "tracking"), frame)
-    assert chip.level == level and (status not in ("refit_pending", "untrusted") or "frame moved 20 mm" in chip.detail)
+    assert chip.level == level and (status not in ("refit_pending", "untrusted") or "Use refit" in chip.detail)
 
 
 @pytest.mark.parametrize("moves_poses, level", [(True, WARN), (False, GOOD)])
@@ -69,4 +69,4 @@ def test_a_newer_floor_calibration_not_applied_turns_the_chip_amber_if_it_moves_
     frame = FloorCalibrationState("held", "f.json", newer="g.json", newer_moves_poses=moves_poses)
     chip = in_frame(Check("mocap", GOOD, "tracking"), frame)
     assert chip.level == level
-    assert moves_poses == ("a newer floor calibration (g.json) is not applied yet" in chip.detail)
+    assert moves_poses == ("a newer floor calibration waits" in chip.detail)

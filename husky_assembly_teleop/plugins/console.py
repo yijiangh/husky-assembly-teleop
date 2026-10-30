@@ -57,7 +57,7 @@ LIST_STYLE = (
     'white-space:nowrap} '
     '.console .line:hover {background:var(--mantine-color-default-hover)} '
     '.console .text {overflow:hidden; text-overflow:ellipsis} '
-    '.console .message {white-space:normal; overflow-wrap:anywhere} '
+    '.console .message {white-space:pre-wrap; overflow-wrap:anywhere} '
     '.console .dim {color:var(--mantine-color-dimmed)} '
     '.console .count {margin-left:6px; padding:0 4px; border-radius:3px; font-size:10px; '
     'background:var(--mantine-color-default-hover); color:var(--mantine-color-dimmed)}</style>')
@@ -94,9 +94,8 @@ class ConsolePlugin(HuskyPlugin):
         with panel.add_tab("Console", self.icon):
             gui = ctx.view.gui
             show = gui.add_button_group("Show", [SHOW_PLUGINS, SHOW_WARNINGS, SHOW_ALL],
-                                        hint="Plugins: what the plugins say, without health's colour changes and "
-                                             "the late-tick reports. Warnings: warnings from every source but the "
-                                             "ticks. All: every line. Errors always show.")
+                                        hint="Plugins: plugin messages only. Warnings: warnings from all but ticks. "
+                                             "All: everything. Errors always show.")
             show.on_click(ctx.defer_value("console show", self._set_show))
             self._source = gui.add_dropdown("Source", [EVERY_SOURCE], initial_value=EVERY_SOURCE)
             # * A dropdown whose first choice sums up what is hidden; picking a source ticks or unticks it.
@@ -152,7 +151,8 @@ class ConsolePlugin(HuskyPlugin):
             self._list.content = render(kept[-SHOWN_LINES:])
         late = log.late_share()
         self._status.content = chip_line(
-            chip(f"showing {self._show.lower()}", INFO)
+            chip(f"showing {self._show.lower()}", INFO, "Which lines show; Show below changes it, Hide leaves out "
+                                                        "sources.")
             + chip(f"late ticks {late:.0%}", BUSY if late > LATE_TICKS_WARN else NONE,
                    "Share of the last minute's tick periods that were late, a freeze counting for every period it "
                    "lasted; Show All lists where the time went. Often the power profile: run the monitor under "
@@ -187,15 +187,13 @@ def render(entries: list[Entry]) -> str:
 
 
 def render_line(entry: Entry) -> str:
-    """One line: time, severity, source and the message's first line, wrapped; the whole message on hover."""
+    """One entry: time, severity, source and the whole message, wrapped, with its own line breaks; also on hover."""
     stamp = time.strftime("%H:%M:%S", time.localtime(entry.time)) + f".{int(entry.time * 10) % 10}"
     name, color = LEVEL_STYLES.get(entry.level, ("?", NONE))
-    first, *rest = entry.text.splitlines() or [""]
-    more = f' <span class="dim">(+{len(rest)} lines)</span>' if rest else ""
     count = f'<span class="count">×{entry.count}</span>' if entry.count > 1 else ""
     text_color = color if entry.level >= LoggingSeverity.WARN else (
         "var(--mantine-color-dimmed)" if entry.level < LoggingSeverity.INFO else "inherit")
     return (f'<div class="line" title="{escape(entry.text, quote=True)}"><span class="dim">{stamp}</span>'
             f'<span style="color:{color};font-weight:600">{name}</span>'
             f'<span class="text" style="font-weight:600">{escape(entry.source)}</span>'
-            f'<span class="message" style="color:{text_color}">{escape(first)}{more}{count}</span></div>')
+            f'<span class="message" style="color:{text_color}">{escape(entry.text)}{count}</span></div>')

@@ -25,7 +25,7 @@ import yourdfpy
 from ..config import RobotConfig
 from scaffolding_assembly_core.robot import RobotObject, Tool
 from scaffolding_assembly_core.scene import Scene
-from .phone import PHONE_TITLE, PhonePage
+from .phone import PHONE_TITLE, STOP_ALL_HINT, PhonePage
 from .quaternion import quaternion_to_wxyz
 from .scene_view import SceneView, add_shape
 from ..tool_urdfs import resolve_mesh_path
@@ -447,10 +447,7 @@ class Visualization:
         #   ! Esc works only in the focused tab and not inside a text field. Not an e-stop.
         self._stop_requested = False
         stop = self._server.gui.add_button("Stop all (Esc)", color="red", icon=viser.Icon.HAND_STOP,
-                                           hint="Soft stop: stop every arm's program, switch every base "
-                                                "controller off, stop every tool, cancel the plugin tasks that may "
-                                                "move a robot. The robots refuse motion commands until Resume in "
-                                                "the health panel. Not an emergency stop.")
+                                           hint=STOP_ALL_HINT)
         stop.on_click(self._request_stop)
         self._server.gui.add_command("Stop all robots", description="Soft stop of every robot",
                                      hotkey="escape", icon=viser.Icon.HAND_STOP).on_trigger(self._request_stop)
