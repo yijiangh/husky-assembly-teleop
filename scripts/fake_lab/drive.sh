@@ -9,10 +9,12 @@ set -e
 FAKE_LAB_HOME="${FAKE_LAB_HOME:-$HOME/husky_fake_lab}"
 process="data_design_study/261008_2ModulesDemo_purged_process"
 
-# The real Drive: $HUSKY_DRIVE_ROOT if set, else the Insync copy of the shared "2025-03 Husky Assembly" folder.
+# The real Drive: $HUSKY_DRIVE_ROOT if set, else the Insync copy of the shared "2025-03 Husky Assembly" folder, under
+# the account folder (the laptop) or straight under ~/Insync (the RobotX PC), as scripts/real_lab/env.sh finds it.
 real="${HUSKY_DRIVE_ROOT:-}"
 if [ -z "$real" ]; then
-    for candidate in "$HOME"/Insync/*/"Google Drive - Shared with me/2025-03 Husky Assembly"; do
+    for candidate in "$HOME"/Insync/*/"Google Drive - Shared with me/2025-03 Husky Assembly" \
+                     "$HOME/Insync/2025-03 Husky Assembly"; do
         [ -d "$candidate" ] && real="$candidate" && break
     done
 fi
