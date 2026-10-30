@@ -36,7 +36,8 @@ from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.assembly_planning.movement import Routine, UnknownMovement, classify
-from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line, pose_error
+from ...shared.assembly_planning.route_result import (GoalCheck, RouteResult, goal_line, live_retreat_goals,
+                                                      pose_error)
 from ...shared.assembly_planning.route_search import ATTEMPTS, FreeSearch
 from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS
 from ...shared.assembly_run_contract import is_live
@@ -489,6 +490,17 @@ class AssemblyStepsPlugin(PlannerPlugin):
                     distance, turn = pose_error(goals[flange], ends[flange])
                     ctx.log_info(f"[insert plan] MoCap-bar correction carried: {step.label} {flange_side(flange)} "
                                  f"goal {distance * 1e3:.2f} mm / {math.degrees(turn):.3f}° from the authored end")
+                elif (primary.routine is Routine.RETREAT_LINEAR
+                      and self._assembly_run(ctx).view.settings.retreat_live_axis):
+                    # * The retreat backs each tool out along its own live -z (the old monitor since 2026-10-22).
+                    spec = classify(view.process.process, step.action, step.movement, self._transfer_as_free(ctx))
+                    own = step.movement.target.robots.get(step.action.robot) if step.movement.target else None
+                    goals, line, warnings = live_retreat_goals(
+                        step.movement.id, spec, own.link_poses if own is not None else {},
+                        flange_poses(live, [part.flange for part in spec.arms]))
+                    ctx.log_info(line)
+                    for warning in warnings:
+                        ctx.log_warn(warning)
                 request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots,
                                             transfer_as_free=self._transfer_as_free(ctx),
                                             ignore_built=self.ignore_built,
@@ -522,7 +534,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
                 "planner": route.planner, "attempts": route.attempts, "seconds": route.seconds,
                 "waypoints": route.waypoints, "goal_reused": request.goal_joints is not None,
                 "warnings": list(route.warnings), "obstacles_collide": request.obstacles_collide,
-                "goal_carried": goals is not None})
+                "goal_carried": goals is not None and primary.routine is Routine.INSERT,
+                "goal_live": goals is not None and primary.routine is Routine.RETREAT_LINEAR})
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
                                                    dict(zip(trajectory.joint_names, trajectory.positions[-1])),
                                                    "plan", self._basis.base))

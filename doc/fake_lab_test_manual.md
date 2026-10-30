@@ -16,7 +16,8 @@ Plan about two hours.
 
 Run on 2026-10-26 with this code (M6, M7 and Jakob's core-port of the same day merged): sections 1–6 as written;
 run again on 2026-10-27 (branch `yh/lab-tools`) with the Cartesian controllers built and the fake wrench on: the
-retreat's compliant break-out (4.4) and the compliant insert (5.2) as written below. The handoff (5.3 step 5) and
+retreat's compliant break-out (4.4) and the compliant insert (5.2) as written below. Since 2026-10-30 the retreat
+is the old stiff screw-out by default (4.4 rewritten; the compliant one needs the run's **Retreat compliant**). The handoff (5.3 step 5) and
 Alice's open (5.3 step 3) still wait for `ros-humble-gripper-controllers` (section 0.1): those two say "not run yet"
 and give what the code does; tell me where the page differs.
 
@@ -77,8 +78,8 @@ sudo apt install ros-humble-ur-robot-driver ros-humble-robotiq-description ros-h
     ros-humble-gripper-controllers ros-humble-rmw-zenoh-cpp ros-humble-zenoh-cpp-vendor tmux
 ```
 
-**0.2** Build the Cartesian controllers into the workspace. The insert's compliant part, the retreat's break-out and
-the handoff switch the arms to `cartesian_compliance_controller`, which the robots carry onboard and this workspace
+**0.2** Build the Cartesian controllers into the workspace. The insert's compliant part, a compliant retreat's break-out
+(the run's Retreat compliant) and the handoff switch the arms to `cartesian_compliance_controller`, which the robots carry onboard and this workspace
 does not: without it the simulated arms' spawner dies at start (four `process has died` lines) and every compliant
 part fails at the switch (`controller manager rejected the switch`). The source is cloned in
 `src/cartesian_controllers` (fzi `cartesian_controllers`, branch `ros2`; its simulation, tests, handles and
@@ -91,8 +92,8 @@ python3 -m colcon build --symlink-install --packages-select cartesian_controller
 ```
 
 **0.2b** The simulated arms report no force (the fake hardware reads NaN), so `sim.launch.py` also starts
-`sim_wrench`, a near-zero force/torque reading per simulated arm, by default: the F/T plots, the retreat's contact
-check and the servo's load guard then read something. `wrench_bias:=0,0,-5,0,0,0` adds a standing reading,
+`sim_wrench`, a near-zero force/torque reading per simulated arm, by default: the F/T plots, a compliant retreat's
+contact check and the servo's load guard then read something. `wrench_bias:=0,0,-5,0,0,0` adds a standing reading,
 `contact_n:=8` a push along the tool's z while a simulated screw is stalled; keep both small, the compliance
 controller reads the same topic and moves the arm by it.
 
@@ -290,20 +291,19 @@ Confirm is asked only for the bar (placed and clamped, one prompt), a Robotiq st
 **4.4 B20_R, step 1/2: the retreat, with the ungrasp during it.** The step line reads `B20_R_retreat
 (retreat_linear) · with: B20_R_ungrasp`.
 
-1. Click **Plan**. **Expect:** `retreat_linear solved by tamp.plan_dual_arm_linear_independent: 12 waypoints`.
-2. Click **Exec**. The retreat runs at once.
-   - **Expect:** in the pane `B20_R_retreat — RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN; force
-     sensors zeroed; COMPLIANT break-out 5.0 mm (0.5 s); joint control; the rest replanned from where the tools are
-     and run at once (4.5 s). Watch both tools let go and back off along their lines.`, then
-     `retreat: the gripper screws of left_ur_arm + right_ur_arm OPEN`; `force sensors zeroed`; the
-     switch to `cartesian_compliance_controller` (`left_ur_arm, right_ur_arm: cartesian_compliance_controller running
-     (0.3 s)`) and the 0.5 s stream; `back under scaled_joint_trajectory_controller (0.1 s)`; the tail replanned
-     (`retreat tail B20_R_retreat: … 48 waypoints`); the checks: `PASS start`, `PASS break-out: worst tool0 1.6 mm
-     short of its end (limit 3), travelled 3.5 / 3.4 mm`, `PASS contact: |F| left_ur_arm 0.1 N, right_ur_arm 0.0 N
-     (limit 20 N)` (the fake wrench), one failing: `check FAIL grippers: left_ur_arm LOOSENING, right_ur_arm LOOSENING
-     (want STALLED = fully open)` (the simulated screws loosen until a STOP and never stall), `PASS` for both tool0
-     paths (46 mm, ends 0.1 mm from the goal), the joints and the speed; `running the tail now (48 rows, 4.6 s); 1
-     check(s) FAILED`; after 5 s `retreat: RETREATED: retreated; 1 check(s) FAILED` and `Exec B20_R_retreat: done —
+1. Click **Plan**. **Expect:** `[retreat live] B20_R_retreat: goals = the live tool0 poses moved 50 mm back along
+   their own -z (encoders): left along (…), 0.0 deg from the Rhino axis, 0.x mm from the exported goal; right …`, then
+   `retreat_linear solved by tamp.plan_dual_arm_linear_independent: 12 waypoints`.
+2. Click **Exec**. The retreat runs at once (not run yet with this text: it says what the code does).
+   - **Expect:** in the pane `B20_R_retreat — RETREAT, stiff: the M1 screws of left_ur_arm + right_ur_arm LOOSEN
+     while both tools back straight out 12.0 mm at 2.40 mm/s (5.0 s, joint controller), then 38 mm rigid (3.8 s).
+     Watch both tools let go and back off along their lines.`; the checks `PASS start`, `PASS` for both tool0 paths
+     (50 mm, ends 0.1 mm from the goal), the joints and the speed, logged before anything is sent; then
+     `retreat: LOOSEN the gripper screws of left_ur_arm + right_ur_arm` and the 12 mm lead in the same tick;
+     `screw-out t=0.1s: gripper motors L/R LOOSENING/LOOSENING`; `screw-out done after 5.0 s (gripper motors L/R
+     LOOSENING/LOOSENING, still loosening); now the rest of the way out.`; `rigid chunk: N rows over 3.8 s`; no force
+     zero and no controller switch; after 4 s `retreat: RETREATED: retreated 50 mm; every check passed; the gripper
+     motors stopped (L/R LOOSENING/LOOSENING at the end)` and `Exec B20_R_retreat: done —
      every part done`. The ungrasp counts as done with it. The **Exec plots** window opens with the force and torque
      of the part (its servo plots hidden meanwhile).
 
@@ -368,8 +368,7 @@ follower sometimes never starts a short path (`base path … timed out: still fo
      compliance controller, the close, `gripper done`, back under joint control; the arm does not move.
 6. Click **B21_H done**: `4/78 done`, the current step `B21_R · B21_R_ungrasp (1/3)`.
 
-**5.4 B21_R.** As 4.4 and 4.5, with Alice holding B21: the retreat's line and checks are the same; the tail is
-replanned (`retreat tail B21_R_retreat: … 52 waypoints`). Then **mv ▶**, the home move, **B21_R done**: `5/78 done`.
+**5.4 B21_R.** As 4.4 and 4.5, with Alice holding B21: the retreat's line and checks are the same. Then **mv ▶**, the home move, **B21_R done**: `5/78 done`.
 
 ---
 
@@ -435,7 +434,7 @@ These are not mistakes on your side.
 | PyBullet's lines in the monitor pane. | `monitor.sh` imports pytest before the monitor: compas_fab closes stdout for a moment around every model it loads, other threads then fail with `OSError(16, 'Device or resource busy')`, and compas_fab skips that only under pytest. A real fix is your decision. |
 | `robots differ` after Load. | The export used the old UR frames; the monitor plans with the configured robots. |
 | An insert's screws stall after 2 s whatever the arms do; its path is held 40 % in. | The simulated tool's `tighten_s`, 2 s by default (3.4 sets it). |
-| A retreat reports `1 check(s) FAILED`: grippers. | The simulated screws loosen until a STOP instead of stalling fully open. The contact check reads the fake wrench (section 0.2b) and passes near zero. |
+| A retreat's gripper motors read `LOOSENING` at the end, never `STALLED`. | The simulated screws loosen until a STOP instead of stalling fully open; the stiff retreat only reports them. A compliant retreat's contact check reads the fake wrench (section 0.2b) and passes near zero. |
 | A base's `xyz` flickers between two poses, the relay pane says `rigid body 18xx: now from …` again and again. | A simulator of an earlier launch is still alive in the same domain (`pgrep -af husky_sim`: two with the same `__ns`); stop the old one. |
 | `no marker sample of bars/B20 (asset 1020)`. | The fake Motive streams no bar markers; the servo runs on tool0 and records that the bar could not be measured. |
 | A short base path `timed out: still following`. | The simulated follower sometimes never starts a path of a few decimetres. Plan and Commit again. |

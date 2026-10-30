@@ -1017,7 +1017,8 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
         panel = plugin._panel = RunPanel(lab.ctx, plugin)
         labels = [widget.label for widget in lab.ctx.gui.widgets if widget.kind in ("slider", "checkbox")]
         # * No Rigid insert: a ground bar always inserts rigid, every other bar rigid then compliant.
-        assert labels == ["Insert split mm", "Spiral", "Spiral s", "Spiral turns", "Servo by bar"]
+        assert labels == ["Insert split mm", "Spiral", "Spiral s", "Spiral turns", "Servo by bar",
+                          "Retreat live axis", "Retreat compliant"]
         panel._servo.callback(False)
         panel._spiral_seconds.callback(30.0)
         panel._spiral_turns.callback(6.0)

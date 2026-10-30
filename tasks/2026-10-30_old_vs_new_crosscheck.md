@@ -277,6 +277,13 @@ and real-lab manuals' retreat lines (the old manual 5.3 a) in the new wording).
 Risks: the rest's send needs the arms still for 0.5 s (a ~0.5–1 s pause at the cut the old did not have; one joined
 command is the alternative); `constant_speed` samples by joint arc (equal to tool travel on a straight line).
 
+Landed (2026-10-30, commit "retreat: the old stiff screw-out …"): as D1–D4, with these differences. The stiff plan is
+its own `StiffRetreatPlan` (`plan_stiff_retreat` / `run_stiff_retreat`); `RetreatPlan` / `plan_retreat` /
+`run_retreat` stay as they were for the compliant variant, which kept its tail replan and did NOT get the old 4 s
+hold. The box tests in `test_planning_tamp_route.py`: a 2 cm box 8 cm behind the left tool blocks every line down to
+25 mm (refused, the full line's waypoint named), 10 cm behind lets a 35 mm one through (planned, the warning). The
+fake arms arrive within 0.5° of a send's end (ARRIVED_TOLERANCE), so the executor test checks the end to that.
+
 ### E. Update the "Old vs new monitor: features" doc (Claude Docs id f3ab06b3-45f7-4c53-83c0-9e6f165bfe46)
 
 After the code lands, with the connector (`update` on node `bca01660-5a5b`, `find` targets on the rows' words;

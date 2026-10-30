@@ -510,3 +510,139 @@ def test_a_check_without_its_measurement_fails():
     assert "FAIL grippers: left_ur_arm no status, right_ur_arm LOOSENING (want STALLED = fully open)" in lines
     assert "FAIL break-out: a tool0 was not measured" in lines
     assert not any(line.startswith("break-out") for line in retreat_checks(**{**PASSING, "reached": None}))
+
+
+# --- --- --- --- --- the stiff screw-out (the default) --- --- --- --- ---
+
+from husky_assembly_teleop.shared.execution.retreat import (SCREW_OUT_MM, SCREW_RATE_MM_S, START_TOL,  # noqa: E402
+                                                            plan_stiff_retreat, run_stiff_retreat)
+from husky_assembly_teleop.shared.execution.stream import HOLD_NOT_SENT  # noqa: E402,F401
+
+
+def stiff_plan(lab: Lab, traj_time: float = 5.0, rows=PATH):
+    """The stiff retreat of PATH."""
+    return plan_stiff_retreat(lab.robot, NAMES, rows, lab.goals(), traj_time=traj_time)
+
+
+def run_stiff(lab: Lab, plan, dry_run: bool = False, during=None):
+    """Run the stiff retreat to its end; `during` (a coroutine of the lab) runs beside it."""
+    async def scenario():
+        task = asyncio.ensure_future(run_stiff_retreat(lab.ctx, lab.robot, plan, lab.tools, dry_run=dry_run))
+        if during is not None:
+            await during(task)
+        return await task
+    return asyncio.run(scenario())
+
+
+def test_the_stiff_plan_cuts_the_screw_out_at_12_mm_at_the_screw_rate():
+    """PATH is ~24 mm: a 12 mm lead over 5.0 s at 2.40 mm/s, evenly, then ~12 mm of rest at its share of the time."""
+    lab = Lab()
+    plan = stiff_plan(lab)
+    assert plan.arms == ("left_ur_arm", "right_ur_arm") and plan.names == tuple(NAMES)
+    assert plan.screw_out_mm == pytest.approx(SCREW_OUT_MM, abs=1e-3) and SCREW_RATE_MM_S == pytest.approx(2.4)
+    assert plan.screw_out_seconds == pytest.approx(5.0, abs=1e-3) and 24.0 < plan.total_mm < 24.5
+    assert plan.rest_mm == pytest.approx(plan.total_mm - plan.screw_out_mm)
+    assert plan.rest_seconds == pytest.approx(5.0 * plan.rest_mm / plan.total_mm)
+    np.testing.assert_allclose(plan.lead[0], START) and np.testing.assert_allclose(plan.rest[-1], END)
+    np.testing.assert_allclose(plan.lead[-1], plan.rest[0])
+    assert plan.text == ("RETREAT, stiff: the M1 screws of left_ur_arm + right_ur_arm LOOSEN while both tools back "
+                         f"straight out {plan.screw_out_mm:.1f} mm at 2.40 mm/s (5.0 s, joint controller), then "
+                         f"{plan.rest_mm:.0f} mm rigid ({plan.rest_seconds:.1f} s). Watch both tools let go and back "
+                         "off along their lines.")
+    record = json.loads(json.dumps(plan.as_record()))
+    assert record["stiff"] and record["rate_mm_s"] == pytest.approx(2.4)
+    # * The lead's command runs at one speed: equal tool0 steps every sample.
+    from husky_assembly_teleop.shared.execution.send import motion_command
+    command = motion_command("a200-0806", list(ARMS), NAMES, plan.lead, plan.screw_out_seconds, constant_speed=True)
+    assert command.duration == pytest.approx(5.0, abs=0.1) and len(command.arms[0].positions) == 26
+    steps = np.diff(np.hstack([motion.positions for motion in command.arms]), axis=0)
+    assert np.ptp(np.max(np.abs(steps), axis=1)) < 1e-9, "even steps along the lead"
+    assert np.all(command.arms[0].velocities[0] == 0) and np.all(command.arms[0].velocities[-1] == 0)
+
+
+def test_a_stiff_plan_not_longer_than_the_screw_out_is_refused():
+    """A planned retreat of 10 mm cannot back out 12 mm; a moving arm without a goal is refused too."""
+    lab = Lab()
+    short = np.linspace(START, START + DELTA * (10.0 / 24.3), 11)
+    assert stiff_plan(lab, rows=short) == ("stiff screw-out: the planned retreat (10 mm) is not longer than the 12 mm "
+                                           "screw-out: Plan again")
+    goals = {flange: pose for flange, pose in lab.goals().items() if "right" not in flange}
+    assert plan_stiff_retreat(lab.robot, NAMES, PATH, goals, traj_time=5.0) == (
+        "no retreat goal for right_ur_arm in the plan: Plan again")
+
+
+def test_the_stiff_retreat_loosens_as_the_lead_goes_out_then_runs_the_rest_then_stops_the_tools():
+    """STOP both, LOOSEN M1 both and the lead's trajectory in one tick; the rest once the arms stand still; STOP."""
+    lab = Lab()
+    plan = stiff_plan(lab)
+    outcome = run_stiff(lab, plan)
+    assert outcome.status == RETREATED and outcome.ok and outcome.reason.startswith("retreated 24 mm; every check")
+    events = lab.events()
+    assert lab.steps() == ["STOP", "LOOSEN M1", "trajectory", "check"] or lab.steps() == [
+        "check", "STOP", "LOOSEN M1", "trajectory"]
+    loosen = [i for i, event in enumerate(events) if event.endswith("LOOSEN M1")]
+    trajectories = [i for i, event in enumerate(events) if event.endswith(": trajectory")]
+    assert len(trajectories) == 4 and max(loosen) < trajectories[0]
+    assert events[-2:] == ["left_ur_arm: STOP", "right_ur_arm: STOP"]
+    assert all(not event.endswith(("zero F/T", "switch to compliance", "target", "replan")) for event in events)
+    np.testing.assert_allclose(lab.joints(), END, atol=math.radians(0.5))
+    record = json.loads(json.dumps(outcome.record))
+    assert [each["name"] for each in record["phases"]] == ["screw-out", "rigid"]
+    assert record["screw_out"]["seconds"] == pytest.approx(5.0, abs=0.1) and record["screw_out"]["mm"] == pytest.approx(
+        12.0, abs=1e-3)
+    assert record["screw_out"]["outcome"]["status"] == "ARRIVED" and record["rigid"]["outcome"]["status"] == "ARRIVED"
+    loosening = {"left_ur_arm": "LOOSENING", "right_ur_arm": "LOOSENING"}
+    assert any(entry["states"] == loosening for entry in record["motor_states"][:3]), record["motor_states"]
+    assert record["grippers_at_end"] == {"left_ur_arm": "STALLED", "right_ur_arm": "STALLED"}
+    assert all(line.startswith("PASS") for line in record["checks"]) and len(record["checks"]) == 4
+    assert {each["phase"] for each in record["stream"]} == {"screw-out", "rigid"}
+    assert any("screw-out done after 5." in line for line in lab.ctx.lines("info"))
+    assert any("s: gripper motors L/R LOOSENING/LOOSENING" in line for line in lab.ctx.lines("info"))
+
+
+def test_tools_that_never_stall_do_not_hold_the_stiff_retreat_up():
+    """Cindy's gripper motors never report STALLED after a loosen: the retreat ends all the same, saying so."""
+    lab = Lab(stall_after=None)
+    outcome = run_stiff(lab, stiff_plan(lab))
+    assert outcome.status == RETREATED and outcome.seconds < 5.0 + 3.0 + 2.0
+    assert outcome.record["grippers_at_end"] == {"left_ur_arm": "LOOSENING", "right_ur_arm": "LOOSENING"}
+    assert any("still loosening" in line for line in lab.ctx.lines("info"))
+
+
+def test_a_cancel_during_the_screw_out_sends_no_rest_and_stops_the_tools():
+    """Cancelled 1 s into the lead: every arm held, the tools stopped, the rest never sent."""
+    lab = Lab()
+
+    async def cut(task):
+        while not any(event.endswith(": trajectory") for event in lab.events()):
+            await asyncio.sleep(0)
+        until = lab.ctx.t + 1.0
+        while lab.ctx.t < until:
+            await lab.ctx.next_tick()
+        task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        run_stiff(lab, stiff_plan(lab), during=cut)
+    events = lab.events()
+    trajectories = [event for event in events if event.endswith(": trajectory")]
+    assert len(trajectories) == 2 and events[-2:] == ["left_ur_arm: STOP", "right_ur_arm: STOP"]
+    assert any(event.endswith(": hold") for event in events)
+    assert any("cancelled during the screw-out: the rest of the way out is not sent" in line
+               for line in lab.ctx.lines("warn"))
+
+
+def test_a_stiff_dry_run_builds_the_lead_and_sends_nothing():
+    """Dry run: the checks, the lead built, nothing sent, no tool driven."""
+    lab = Lab()
+    outcome = run_stiff(lab, stiff_plan(lab), dry_run=True)
+    assert outcome.status == DRY_RUN
+    assert not any(event.endswith((": trajectory", "LOOSEN M1")) for event in lab.events())
+    assert any("the screw-out passed every check, NOT SENT" in line for line in lab.ctx.lines("warn"))
+
+
+def test_the_path_only_checks_leave_out_the_start_contact_and_gripper_lines():
+    """`path_only`: each arm's path, the joints and the speed; no start, break-out, contact or gripper line."""
+    lines = retreat_checks(**PASSING, path_only=True)
+    assert len(lines) == 4 and all(line.startswith("PASS") for line in lines)
+    assert not any(word in line for line in lines for word in ("start:", "contact:", "grippers:", "break-out"))
+    assert math.degrees(START_TOL) == pytest.approx(0.573, abs=0.001)

@@ -18,6 +18,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Callable, Mapping
 
+import numpy as np
 from husky_assembly_tamp.motion_planner.api import (_arm_joint_names, plan_constrained_dual_arm,
                                                     plan_constrained_dual_arm_linear, plan_dual_arm_linear_independent)
 
@@ -48,6 +49,10 @@ HELD = {"stage": 3, "position_res": 0.01, "rotation_res": 0.025, "max_time": 120
 SEED_STEP = 9973
 #: A held transfer's right flange may end this far from its target before the grasp counts as mismatched, metres.
 GRASP_MISMATCH = 0.002
+#: A retreat blocked at its full length is tried shorter, in steps of this, down to this, metres (M:280-281).
+RETREAT_SHORTEN_STEP = 0.005
+RETREAT_MIN_DISTANCE = 0.025
+
 #: Routines no arm moves in, and the linear ones, whose start may touch (warned, not refused).
 _NO_ARM = (Routine.TOOL_ONLY, Routine.OPERATOR, Routine.BASE_ONLY)
 _LINEAR = (Routine.INSERT, Routine.RETREAT_LINEAR, Routine.SUPPORT_LINEAR)
@@ -357,10 +362,44 @@ class _Route(RouteSearch):
             if missing:
                 raise Refused(f"no goal pose given for {', '.join(missing)}")
             goals = {part: self.goal_poses[part.flange] for part in self.spec.arms}
-        frames = {part.side: frame_from_pose(goal) for part, goal in goals.items()}
         step = {} if self.linear_step is None else {"max_step_distance": self.linear_step}
-        return self.linear(lambda planner, state, report: plan_dual_arm_linear_independent(
-            planner, state, goal_ee_frames=frames, skip_env_collisions=False, report=report, **step), goals)
+
+        def planned(goals: dict) -> RouteResult:
+            frames = {part.side: frame_from_pose(goal) for part, goal in goals.items()}
+            return self.linear(lambda planner, state, report: plan_dual_arm_linear_independent(
+                planner, state, goal_ee_frames=frames, skip_env_collisions=False, report=report, **step), goals)
+
+        starts = {part: self.flange(part) for part in goals}
+        full = max(float(np.linalg.norm(np.subtract(goal.position, starts[part].position)))
+                   for part, goal in goals.items())
+        try:
+            return planned(goals)
+        except Refused as blocked:
+            if full <= RETREAT_MIN_DISTANCE + 1e-9:
+                raise
+            # * Blocked at full length: back out less, in RETREAT_SHORTEN_STEP steps, down to RETREAT_MIN_DISTANCE
+            #   (M:280-281, M:10377-10398); the free move home then starts from there.
+            distance = full - RETREAT_SHORTEN_STEP
+            while distance >= RETREAT_MIN_DISTANCE - 1e-9:
+                shorter = {}
+                for part, goal in goals.items():
+                    along = np.subtract(goal.position, starts[part].position)
+                    length = float(np.linalg.norm(along))
+                    unit = along / length if length > 1e-12 else np.zeros(3)
+                    shorter[part] = Pose.from_arrays(np.add(starts[part].position, unit * min(distance, length)),
+                                                     goal.orientation)
+                self.note(f"the full {full * 1e3:.0f} mm line is blocked; trying {distance * 1e3:.0f} mm")
+                try:
+                    found = planned(shorter)
+                except Refused:
+                    distance -= RETREAT_SHORTEN_STEP
+                    continue
+                warning = (f"the full {full * 1e3:.0f} mm retreat has no collision-free straight line ({blocked}); "
+                           f"planned a SHORTER one: {distance * 1e3:.0f} mm back; the free move home starts from "
+                           f"there")
+                self.log(f"{self.step.label}: {warning}")
+                return replace(found, warnings=(*found.warnings, warning), goals=found.goals)
+            raise Refused(f"no straight retreat of {RETREAT_MIN_DISTANCE * 1e3:.0f}-{full * 1e3:.0f} mm: {blocked}")
 
     def _support_approach(self) -> RouteResult:
         """A support robot's approach: its target pose solved by IK at the live base, then the one-arm search.

@@ -99,7 +99,7 @@ Three mobile robots ("huskies") build the first three bars of the two-module dem
 | # | action | who | movements | what happens |
 |---|---|---|---|---|
 | 1 | `B20_J` | Cindy | transit, place bar, grasp, insert | B20 is the ground bar: transfer, the bar by hand, servo (on the MoCap bar), **rigid** insert with no tighten, then a second servo |
-| 2 | `B20_R` | Cindy | ungrasp + retreat, home | her tools open and back off (the first millimetres compliant), then home |
+| 2 | `B20_R` | Cindy | ungrasp + retreat, home | her jaws loosen while her tools back out at the screw rate, then home |
 | 3 | `B21_J` | Cindy | transit, place bar, grasp, insert | B21 mates on its **left** joint only: rigid, then compliant while the left joint screw tightens |
 | 4 | `B21_H` | **Alice** | approach, open, to grasp, close | Alice grabs B21: approach and servo, open, 100 mm straight in, close with the compliant handoff |
 | 5 | `B21_R` | Cindy | ungrasp + retreat, home | as 2, with Alice holding B21 |
@@ -853,21 +853,26 @@ Two steps: the retreat (the ungrasp runs with it), then home.
 
 **a) Retreat** (`<bar>_R_retreat (retreat_linear) · with: <bar>_R_ungrasp`)
 - [ ] button [Plan]
-  - **Expect:** `retreat_linear solved by tamp.plan_dual_arm_linear_independent: N waypoints`; it plans from where the
-    arms are.
+  - **Expect:** `[retreat live] <bar>_R_retreat: goals = the live tool0 poses moved 50 mm back along their own -z
+    (encoders): left along (...), x deg from the Rhino axis, y mm from the exported goal; right ...` (a warning when
+    a tool is over 20° from the Rhino axis: check the tool before Exec), then `retreat_linear solved by
+    tamp.plan_dual_arm_linear_independent: N waypoints`; it plans from where the arms are. If the full 50 mm line is
+    blocked it plans a shorter one (`planned a SHORTER one: 35 mm back`), down to 25 mm.
 - [ ] optional, the first retreat on the robot (B20_R): box [Dry run]: ticked → button [Exec]
-  - **Expect:** `DRY RUN ...: retreat: passed every check, NOT SENT; its tail is replanned when it runs`. Then box
-    [Dry run]: unticked.
+  - **Expect:** `DRY RUN ...: retreat: the screw-out passed every check, NOT SENT; the rest is built from where it ends
+    when it runs`. Then box [Dry run]: unticked.
 - [ ] hand on Cindy's e-stop → button [Exec]: it runs at once
-  - **Expect:** `<bar>_R_retreat — RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN; force sensors zeroed;
-    COMPLIANT break-out 5.0 mm (0.5 s); joint control; the rest replanned from where the tools are and run at once (4.5
-    s). Watch both tools let go and back off along their lines.`; then `retreat: the gripper screws of left_ur_arm +
-    right_ur_arm OPEN`; `force sensors zeroed`; the switch to `cartesian_compliance_controller`; the 0.5 s break-out;
-    `back under scaled_joint_trajectory_controller`; the tail replanned (`retreat tail <bar>_R_retreat: ... waypoints`);
-    the checks `PASS` / `FAIL` (start, break-out, contact, grippers, both tool0 paths, joints, speed); `running the tail
-    now (N rows, T s)`; `retreat: RETREATED: retreated` and `Exec <bar>_R_retreat: done — every part done`. The **Exec
-    plots** show the part's force and torque.
-  - **!** Watch both tools let go before they back off.
+  - **Expect:** `<bar>_R_retreat — RETREAT, stiff: the M1 screws of left_ur_arm + right_ur_arm LOOSEN while both tools
+    back straight out 12.0 mm at 2.40 mm/s (5.0 s, joint controller), then 38 mm rigid (T s). Watch both tools let go
+    and back off along their lines.`; the checks `PASS` / `FAIL` (start, both tool0 paths, joints, speed) before
+    anything is sent; `retreat: LOOSEN the gripper screws of left_ur_arm + right_ur_arm` and the lead sent in the same
+    tick; `screw-out t=0.3s: gripper motors L/R LOOSENING/LOOSENING` as the motors change; `screw-out done after 5.x s
+    (gripper motors ..., still loosening); now the rest of the way out.`; `rigid chunk: N rows over T s`;
+    `retreat: RETREATED: retreated 50 mm; every check passed; the gripper motors stopped (...)` and `Exec
+    <bar>_R_retreat: done — every part done`. No force zero, no controller switch: the whole step runs under the joint
+    controller. The **Exec plots** show the part's force and torque.
+  - **!** Watch both tools let go before they back off. The arms over 0.57° from the plan's start are refused: Plan
+    again.
   - **If not:** the checks only report, the tail runs anyway; note every `check FAIL` line. `grippers: ... LOOSENING
     (want STALLED = fully open)`: a gripper screw did not open fully (in the fake lab the simulated screws never stall,
     so this check always failed there; on the real tools it should pass): look at the tool before the next move.
@@ -1042,7 +1047,8 @@ done
 
 Settings › box [Dry run]: ticked, every check runs and nothing is sent: a motion logs `DRY RUN <serial> <arm>: passed
 every check, NOT SENT`, an insert `DRY RUN ...: insert: every compliant target passed the arm's checks, NOT SENT`, a
-retreat `... retreat: passed every check, NOT SENT; its tail is replanned when it runs`, the handoff its anchor gap.
+retreat `... retreat: the screw-out passed every check, NOT SENT; the rest is built from where it ends when it
+runs`, the handoff its anchor gap.
 The panel shows a `DRY RUN` chip while it is ticked. Untick it before the real Exec.
 
 ### 7.f The run record

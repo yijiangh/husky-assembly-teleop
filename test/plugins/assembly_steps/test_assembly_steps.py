@@ -28,8 +28,9 @@ from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE
                                                                  serial_of)
 from husky_assembly_teleop.shared.assembly_planning.ik import IkResult
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
-from husky_assembly_teleop.shared.assembly_planning.movement import Routine
-from husky_assembly_teleop.shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
+from husky_assembly_teleop.shared.assembly_planning.movement import Routine, classify
+from husky_assembly_teleop.shared.assembly_planning.route_result import (GoalCheck, RouteResult, goal_line,
+                                                                         live_line_goal)
 from husky_assembly_teleop.shared.assembly_planning.route_search import FreeSearch
 from husky_assembly_teleop.shared.execution.servo import flange_poses, tool0_errors
 from husky_assembly_teleop.ui.ghost import RecentUse
@@ -171,8 +172,8 @@ def test_steps_follow_the_run():
     assert lab.plugin.position == (1, 2) and lab.run.selected == []
     lab = Steps(("B20_R", 1))
     assert "with: B20_R_ungrasp" in lab.html()
-    assert ("retreats left_ur_arm, right_ur_arm, compliant first; then opens the gripper screws on left_ur_arm, "
-            "right_ur_arm in the retreat") in lab.html()
+    assert ("retreats left_ur_arm, right_ur_arm, the jaws loosening as it backs out; then opens the gripper screws on "
+            "left_ur_arm, right_ur_arm in the retreat") in lab.html()
 
 
 def test_live_ik_says_which_start_it_solves():
@@ -576,6 +577,26 @@ def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch
     assert line.endswith(" from the authored end")
 
 
+def test_the_retreat_is_planned_along_the_live_tool_axis():
+    """B20_R_retreat: the plan's goals are each live flange backed out along its own -z; off with the setting."""
+    lab = Steps(("B20_R", 1))
+    asyncio.run(lab.plan())
+    goals = lab.planner.plans[-1].goal_poses
+    spec = classify(lab.loaded.process, *[(s.action, s.movement) for s in lab.loaded.steps
+                                          if s.movement.id == "B20_R_retreat"][0])
+    live = flange_poses(lab.ctx.scene.snapshot.robots[robot_id("a200-0806")], [part.flange for part in spec.arms])
+    assert set(goals) == {part.flange for part in spec.arms}
+    for part in spec.arms:
+        expected = live_line_goal(live[part.flange], part.line.distance)
+        assert np.allclose(goals[part.flange].matrix(), expected.matrix(), atol=1e-9)
+    assert [fields["data"]["goal_live"] for event, fields in lab.run.records if event == "plan"] == [True]
+    line, = [line for line in lab.ctx.lines("info") if line.startswith("[retreat live] B20_R_retreat")]
+    assert "goals = the live tool0 poses moved 50 mm back along their own -z (encoders): left along (" in line
+    lab.run.request_settings(retreat_live_axis=False)
+    asyncio.run(lab.plan())
+    assert lab.planner.plans[-1].goal_poses is None
+
+
 # --- --- --- --- --- Check tool0 and the visual diagnosis --- --- --- --- ---
 
 def test_check_tool0_draws_the_live_flanges_against_the_targets_and_records_the_gap():
@@ -849,7 +870,7 @@ def test_walking_b21_h_and_b20_j_with_the_real_planner_and_executor():
         walk.planner.teardown(None)
     files = [file for file in walk.run.files() if "part" in file]
     servos = [file for file in walk.run.files() if "servoing_data" in file]
-    assert prompts == 1
+    assert prompts == 2, "the bar placed and clamped, then the servo's 'no usable MoCap fit of B20' (no markers)"
     assert [file["movement"] for file in files] == ["B20_J_transfer", "B20_J_place_bar", "B20_J_transfer"]
     assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "confirmed", "nothing left"]
     assert files[0]["plan"]["planner"] == "tamp.plan_free_dual_arm"

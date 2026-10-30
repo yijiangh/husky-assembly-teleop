@@ -101,8 +101,11 @@ One file per part the executor ran (`n` counts the tries). A motion's record has
 
 A compliant part (insert, retreat, handoff) has the same frame with `command = {settings, plan}` and an `outcome`
 that keeps its phases with their times, the controller switches, the stall times, the peak force per arm, the base's
-largest drift, the end errors, the retreat's checks and replanned tail, and one sample per tick of every arm's
-target, TCP and wrench (`stream`, at most 1300 samples). A servo part names its `servo_file`.
+largest drift, the end errors, and one sample per tick of every arm's target, TCP and wrench (`stream`, at most
+1300 samples). A stiff retreat (the default) keeps its `plan` (`stiff: true`, the screw-out's millimetres, seconds
+and rate), the path `checks`, the phases `screw-out` and `rigid` with how each send ended, the gripper `motor_states`
+as they changed and `grippers_at_end`; a compliant one (the run's Retreat compliant) its checks and replanned `tail`
+instead. A servo part names its `servo_file`.
 
 So a run keeps every plan that was executed, where the robot stood when it was planned and when it ran, and what
 was sent. What it does not keep: plans that were made and then cleared or replaced without an Exec (their `plan`

@@ -31,7 +31,8 @@ from ...shared.execution.basis import STALE_ARM, stale_reason
 from ...shared.execution.handoff import handoff_text, run_handoff
 from ...shared.execution.insert import plan_insert, run_insert
 from ...shared.execution.moving import base_moving, moving_reason
-from ...shared.execution.retreat import TAIL_STEP, plan_retreat, run_retreat
+from ...shared.execution.retreat import (START_TOL, TAIL_STEP, RetreatPlan, StiffRetreatPlan, plan_retreat,
+                                         plan_stiff_retreat, run_retreat, run_stiff_retreat)
 from ...shared.execution.send import ARRIVED, LARGE_TRAVEL, SendProgress, motion_command, send_motion
 from ...shared.execution.send import DRY_RUN as SENT_DRY, HOLD_NOT_SENT as SENT_NOT_HELD, REFUSED as SENT_REFUSED
 from ...shared.execution.stream import CANCELLED as PART_CANCELLED, DRY_RUN as PART_DRY, REFUSED as PART_REFUSED
@@ -57,7 +58,6 @@ if TYPE_CHECKING:
     from ...shared.assembly_run_contract import AssemblyRunContract
     from ...shared.execution.insert import InsertPlan
     from ...shared.execution.operator import Prompt, PromptBox
-    from ...shared.execution.retreat import RetreatPlan
     from ...shared.execution.send import MotionCommand
     from ...shared.execution.stream import PartOutcome
     from ...shared.execution.tools import ToolOutcome
@@ -266,33 +266,36 @@ def others_basis(job: Job) -> Basis:
                       bases=[serial for serial, robot in others if robot.base.state.last_fix_time is not None])
 
 
-def live_path(job: Job) -> tuple[list[str], np.ndarray] | str:
+def live_path(job: Job, tolerance: float = STALE_ARM) -> tuple[list[str], np.ndarray] | str:
     """The request's plan with its first row replaced by the arms' joints now (`live_path_of`); or why it can't be.
 
     Args:
         job: The request being run.
+        tolerance: How far the arms may be from the plan's start, radians.
 
     Returns:
-        tuple[list[str], np.ndarray] | str: (names, rows), or the refusal (no plan, arms over STALE_ARM from its
+        tuple[list[str], np.ndarray] | str: (names, rows), or the refusal (no plan, arms over `tolerance` from its
             start).
     """
     route = job.request.route
     trajectory = route.result.trajectory if route is not None and route.ok else None
     if trajectory is None:
         return "no plan for this motion: Plan first"
-    return live_path_of(job, list(trajectory.joint_names), trajectory.positions)
+    return live_path_of(job, list(trajectory.joint_names), trajectory.positions, tolerance)
 
 
-def live_path_of(job: Job, names: Sequence[str], rows: Sequence[Sequence[float]]) -> tuple[list[str], np.ndarray] | str:
+def live_path_of(job: Job, names: Sequence[str], rows: Sequence[Sequence[float]],
+                 tolerance: float = STALE_ARM) -> tuple[list[str], np.ndarray] | str:
     """A path with its first row replaced by the arms' joints now; or why it can't be.
 
     Args:
         job: The request being run.
         names: The path's joint names.
         rows: The path, radians, its first row where it was planned from.
+        tolerance: How far the arms may be from the path's start, radians (a stiff retreat allows 0.57°).
 
     Returns:
-        tuple[list[str], np.ndarray] | str: (names, rows), or the refusal (arms over STALE_ARM from the path's
+        tuple[list[str], np.ndarray] | str: (names, rows), or the refusal (arms over `tolerance` from the path's
             start, a joint without a state).
     """
     names, rows = list(names), np.array(rows, dtype=float)
@@ -306,8 +309,8 @@ def live_path_of(job: Job, names: Sequence[str], rows: Sequence[Sequence[float]]
         return f"no joint state for {', '.join(missing)}"
     now = np.array([live[name] for name in names])
     gap = float(np.max(np.abs(now - rows[0])))
-    if gap > STALE_ARM:
-        return (f"the arms are {math.degrees(gap):.1f}° from the plan's start (over {math.degrees(STALE_ARM):.0f}°): "
+    if gap > tolerance:
+        return (f"the arms are {math.degrees(gap):.2f}° from the plan's start (over {math.degrees(tolerance):.2f}°): "
                 f"replan")
     # * Row 0 is where the arms are, so the trajectory starts without a jump.
     rows[0] = now
@@ -340,7 +343,8 @@ def run_settings(job: Job) -> dict:
     settings = job.run.view.settings
     return {"split_mm": min(max(float(settings.insert_split_mm), SPLIT_RANGE[0]), SPLIT_RANGE[1]),
             "spiral": settings.spiral,
-            "spiral_seconds": settings.spiral_seconds, "spiral_turns": settings.spiral_turns}
+            "spiral_seconds": settings.spiral_seconds, "spiral_turns": settings.spiral_turns,
+            "retreat_compliant": settings.retreat_compliant}
 
 
 def _ask(job: Job, movement: str, text: str, warn: bool) -> Prompt:
@@ -490,9 +494,11 @@ async def _insert(job: Job, run: PartRun) -> None:
 
 
 async def _retreat(job: Job, run: PartRun) -> None:
-    """Back the tools out of the bar (`run_retreat`); done, its arms count as opened for the ungrasp it runs.
+    """Back the tools out of the bar; done, its arms count as opened for the ungrasp it runs.
 
-    The gripper screws open, a compliant break-out, then the rest replanned (`_replan`) and run rigid.
+    Stiff by default (`run_stiff_retreat`): the gripper screws loosen while the tools back out at the screw rate,
+    then the rest of the plan rigid. With the run's "Retreat compliant": the screws open, a compliant break-out,
+    then the rest replanned (`_replan`) and run rigid (`run_retreat`).
     """
     part, robot = run.part, job.robot
     tools = {name: robot.arms[name].end_effector for name in part.tools if name in robot.arms}
@@ -501,21 +507,33 @@ async def _retreat(job: Job, run: PartRun) -> None:
         return
     settings = run_settings(job)
     goals = job.request.route.goals if job.request.route is not None else {}
+    if settings["retreat_compliant"]:
+        def plan_of(names: list[str], rows: np.ndarray) -> RetreatPlan | str:
+            return plan_retreat(robot, names, rows, goals, split_mm=settings["split_mm"],
+                                traj_time=job.request.traj_time)
 
-    def plan_of(names: list[str], rows: np.ndarray) -> RetreatPlan | str:
-        return plan_retreat(robot, names, rows, goals, split_mm=settings["split_mm"], traj_time=job.request.traj_time)
+        def start(plan: RetreatPlan, recorder: Recorder) -> Awaitable[PartOutcome]:
+            return run_retreat(job.ctx, robot, plan, tools, replan=lambda: _replan(job, part), dry_run=job.dry_run,
+                               watch=lambda: others_moving(job), recorder=recorder)
 
-    def start(plan: RetreatPlan, recorder: Recorder) -> Awaitable[PartOutcome]:
-        return run_retreat(job.ctx, robot, plan, tools, replan=lambda: _replan(job, part), dry_run=job.dry_run,
-                           watch=lambda: others_moving(job), recorder=recorder)
+        outcome = await _along_plan(job, run, settings, plan_of, start)
+    else:
+        def plan_stiff(names: list[str], rows: np.ndarray) -> StiffRetreatPlan | str:
+            return plan_stiff_retreat(robot, names, rows, goals, traj_time=job.request.traj_time)
 
-    outcome = await _along_plan(job, run, settings, plan_of, start)
+        def start_stiff(plan: StiffRetreatPlan, recorder: Recorder) -> Awaitable[PartOutcome]:
+            return run_stiff_retreat(job.ctx, robot, plan, tools, dry_run=job.dry_run,
+                                     watch=lambda: others_moving(job), recorder=recorder)
+
+        # * 0.57° from the plan's start at most (W:5737): a stiff jump holding a bar must not happen.
+        outcome = await _along_plan(job, run, settings, plan_stiff, start_stiff, tolerance=START_TOL)
     if outcome is not None and outcome.ok:
         job.opened.update(part.tools)
 
 
 async def _along_plan(job: Job, run: PartRun, settings: dict, plan_of: Callable[[list[str], np.ndarray], Any],
-                      start: Callable[[Any, Recorder], Awaitable[PartOutcome]]) -> PartOutcome | None:
+                      start: Callable[[Any, Recorder], Awaitable[PartOutcome]],
+                      tolerance: float = STALE_ARM) -> PartOutcome | None:
     """Run a compliant part along the plan as `_motion` runs a motion: plan, log, check and plan again, run.
 
     Args:
@@ -524,6 +542,7 @@ async def _along_plan(job: Job, run: PartRun, settings: dict, plan_of: Callable[
         settings: The run's settings it runs with (`run_settings`), recorded.
         plan_of: The plan's names and rows from the live joints -> the part's plan, or why not.
         start: Runs the plan under the other robots' freeze, its samples into the recorder given.
+        tolerance: How far the arms may be from the plan's start, radians.
 
     Returns:
         PartOutcome | None: How the part ran; None if it did not start.
@@ -531,7 +550,7 @@ async def _along_plan(job: Job, run: PartRun, settings: dict, plan_of: Callable[
     ctx, part = job.ctx, run.part
 
     def planned() -> Any:
-        path = live_path(job)
+        path = live_path(job, tolerance)
         return path if isinstance(path, str) else plan_of(*path)
 
     plan = planned()

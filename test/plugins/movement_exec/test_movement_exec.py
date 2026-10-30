@@ -12,6 +12,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
+from sensor_msgs.msg import JointState
 import pytest
 from planning_fixtures import purged_process, step
 from plugin_fakes import FakeContext, from_outside
@@ -41,6 +42,7 @@ from husky_assembly_teleop.shared.assembly_planning.route_result import RouteRes
 from husky_assembly_teleop.shared.assembly_planning.servo_route import ServoStep
 from husky_assembly_teleop.shared.assembly_planning.steps import operator_steps
 from husky_assembly_teleop.shared.runs.runs import RunSettings
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
 
@@ -1210,7 +1212,7 @@ def test_b21s_insert_tightens_the_left_screw_only_and_ends_when_it_stalls():
     record = json.loads(json.dumps(lab.run.files()[-1]))
     assert record["part"]["kind"] == "insert" and record["outcome"]["status"] == "STALLED"
     assert record["outcome"]["settings"] == record["command"]["settings"] == {
-        "split_mm": 5.0, "spiral": False, "spiral_seconds": 20.0, "spiral_turns": 4}
+        "split_mm": 5.0, "spiral": False, "spiral_seconds": 20.0, "spiral_turns": 4, "retreat_compliant": False}
     assert [phase["name"] for phase in record["outcome"]["phases"]] == ["rigid", "switch", "compliant"]
     assert record["plan"]["planner"] == "fake" and result.end is not None
     line, = lines
@@ -1288,12 +1290,12 @@ def test_the_insert_settings_are_read_once_and_reach_its_plan():
 @pytest.mark.parametrize("solved", [True, False])
 @pytest.mark.safety
 def test_b20s_retreat_opens_the_screws_replans_its_tail_and_its_ungrasp_is_done(solved):
-    """B20_R's step: no prompt; the M1 screws open, the tail is replanned and run; the retreat and its ungrasp done.
+    """B20_R's step with "Retreat compliant": no prompt; the screws open, the tail replanned and run; both done.
 
     The replan asks for the plan's goals in 1 mm steps. A tail not planned fails the retreat (A4): no tail, the
     ungrasp not done.
     """
-    lab = compliant_lab(("B20_R", 1))
+    lab = compliant_lab(("B20_R", 1), RunSettings(retreat_compliant=True))
     request = along(lab, "B20_R_retreat", RETREAT_STEP, goals=True)
     start = np.array(request.route.result.trajectory.positions[0])
     planner = lab.ctx.plugins["motion_planner"] = TailPlanner(lab, start + RETREAT_STEP, solved)
@@ -1358,3 +1360,60 @@ def test_a_compliant_parts_question_names_the_robot_and_is_recorded():
     assert [event for event, _movement, _data in events] == ["prompt", "confirm"]
     operator.close(operator.open("again"))
     assert lab.plugin.prompt is None and len(events) == 3
+
+
+@pytest.mark.safety
+def test_b20s_retreat_backs_out_stiff_by_default_and_its_ungrasp_is_done():
+    """B20_R's step: no prompt, no planner; the jaws LOOSEN as the 12 mm lead goes out, then the rest; both done.
+
+    The whole step runs under the joint controller: no switch, no force zero, no tail replan.
+    """
+    lab = compliant_lab(("B20_R", 1))
+    request = along(lab, "B20_R_retreat", RETREAT_STEP, goals=True)
+    start = np.array(request.route.result.trajectory.positions[0])
+    lab.ctx.plugins["motion_planner"] = TailPlanner(lab, start + RETREAT_STEP)
+    result, _held = execute(lab, request)
+    assert result.status == DONE and result.done == (1, 0), result.reason
+    assert not lab.ctx.plugins["motion_planner"].requests, "no tail replan: the rest is the plan's own rows"
+    assert not prompts(lab) and said(lab)[0].startswith(
+        "cindy (a200-0806): B20_R_retreat — RETREAT, stiff: the M1 screws of left_ur_arm + right_ur_arm LOOSEN while "
+        "both tools back straight out 12.0 mm at 2.40 mm/s (5.0 s, joint controller), then ")
+    files = [json.loads(json.dumps(file)) for file in lab.run.files()]
+    assert [(file["movement"], file["outcome"]["status"]) for file in files] == [
+        ("B20_R_retreat", "RETREATED"), ("B20_R_ungrasp", "opened")]
+    outcome = files[0]["outcome"]
+    assert outcome["plan"]["stiff"] and outcome["plan"]["screw_out_s"] == pytest.approx(5.0, abs=0.05)
+    assert [(phase["name"], phase["end"]) for phase in outcome["phases"]] == [("screw-out", "ARRIVED"),
+                                                                              ("rigid", "ARRIVED")]
+    loosening = {"left_ur_arm": "LOOSENING", "right_ur_arm": "LOOSENING"}
+    assert any(entry["states"] == loosening for entry in outcome["motor_states"][:3]), outcome["motor_states"]
+    assert "ft_zero" not in outcome and "tail" not in outcome and outcome["checks"]
+    for arm in lab.tools:
+        sent = commands(lab, arm)
+        assert sent[0][1] == 0 and sent[1] == (ScaffoldingV3.GRIPPER_MOTOR, -1) and sent[-1][1] == 0, sent
+    for arm in lab.cindy.arms.values():
+        assert arm.controllers.switches == []
+    assert len(lab.cindy._multi_arm.messages) == 2, "the lead, then the rest"
+    live = np.concatenate([arm.joint_vector() for arm in lab.cindy.arms.values()])
+    np.testing.assert_allclose(live, start + RETREAT_STEP, atol=np.radians(0.5))  # a send arrives within 0.5°
+    assert any("screw-out done after 5." in line for line in lab.ctx.lines("info"))
+    assert any(line.startswith("a200-0806: retreat: RETREATED: retreated ") for line in lab.ctx.lines("info"))
+
+
+@pytest.mark.safety
+def test_a_stiff_retreat_whose_arms_moved_over_half_a_degree_since_the_plan_is_refused():
+    """The arms 0.6° from the plan's start: refused before anything is sent (the insert's limit stays 2°)."""
+    lab = compliant_lab(("B20_R", 1))
+    request = along(lab, "B20_R_retreat", RETREAT_STEP, goals=True)
+    left = lab.cindy.arms["left_ur_arm"]
+    joints = left.joint_vector().copy()
+    joints[2] += np.radians(0.6)
+    state = JointState(name=list(UR_JOINT_NAMES), position=[float(value) for value in joints])
+    left._on_joint_state(state)
+    lab.ctx.t += 2.5  # long enough ago that the arm does not count as moving
+    lab.tick(lab.ctx.t)
+    result, _held = execute(lab, request)
+    assert result.status == REFUSED and "from the plan's start (over 0.57°): replan" in result.reason, result.reason
+    assert lab.published() == 0
+    for arm in lab.tools:
+        assert commands(lab, arm) == []

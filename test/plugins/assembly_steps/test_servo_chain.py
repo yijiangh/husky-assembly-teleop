@@ -255,8 +255,10 @@ def test_the_b20_servo_chain_on_the_real_plugins(tmp_path, monkeypatch):
     async def scenario():
         await lab.opened()
         assert lab.run.view.current == ("B20_J", transfer) and lab.run.view.folder is None
+        # * Three prompts: the bar placed and clamped, the servo's "no usable MoCap fit of B20" (no markers yet),
+        #   its pass 1.
         prompts = await lab.run_step(shift_at=1)
-        assert prompts == 2, (lab.steps._message, lab.executor._last)
+        assert prompts == 3, (lab.steps._message, lab.executor._last)
         assert lab.steps.position == (2, 2) and lab.steps.parts()[0].kind == INSERT_PART
         # * Back on the transfer step with its motion, mount and grasp done: Exec runs the servo alone, by bar (the
         #   default).

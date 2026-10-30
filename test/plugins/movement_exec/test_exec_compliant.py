@@ -120,7 +120,8 @@ def test_b20s_ground_bar_insert_is_rigid_with_no_tighten():
     Its line says so, the record keeps the end gap; the servo after it (M7) finds nothing left.
     """
     lab = compliant_lab(("B20_J", 4), RunSettings(spiral=True))
-    result, _held = execute(lab, along(lab, "B20_J_insert", INSERT_STEP))
+    # * One Confirm: the servo after the insert asks before aiming tool0 (no MoCap of B20 here).
+    result, _held = execute(lab, along(lab, "B20_J_insert", INSERT_STEP), True)
     assert result.status == DONE and result.done == (4, SERVO_INDEX), result.reason
     assert said(lab)[0].startswith("cindy (a200-0806): B20_J_insert — RIGID insert of a ground bar, no tighten, ")
     # * The servo's records come after the insert's.
@@ -147,12 +148,12 @@ def test_b20s_ground_bar_insert_is_rigid_with_no_tighten():
 
 
 def test_b20s_retreat_breaks_out_compliant_then_runs_the_tail_replanned_to_the_goals():
-    """B20_R_retreat: the M1 screws open, a compliant break-out, then the tail planned to the plan's goals; DONE.
+    """B20_R_retreat with "Retreat compliant": the screws open, a compliant break-out, the tail to the goals; DONE.
 
     The replan asks for the plan's goals in 1 mm steps; the record has every phase and the tail; the ungrasp folded
     into the step is done; every arm ends under the joint controller at the tail's end.
     """
-    lab = compliant_lab(("B20_R", 1))
+    lab = compliant_lab(("B20_R", 1), RunSettings(retreat_compliant=True))
     request = along(lab, "B20_R_retreat", RETREAT_STEP, goals=True)
     start = np.array(request.route.result.trajectory.positions[0])
     planner = lab.ctx.plugins["motion_planner"] = TailPlanner(lab, start + RETREAT_STEP)

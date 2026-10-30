@@ -93,6 +93,14 @@ class RunPanel:
                                            hint="Servo a grounded bar by its MoCap fit instead of tool0 (on by "
                                                 "default). Other bars always servo on tool0: they must mate with "
                                                 "their joints")
+            self._retreat_live = gui.add_checkbox("Retreat live axis", default.retreat_live_axis,
+                                                  hint="The retreat backs each tool out along its own live -z as "
+                                                       "the encoders read it (the export's distance); off: along "
+                                                       "the export's axis")
+            self._retreat_compliant = gui.add_checkbox("Retreat compliant", default.retreat_compliant,
+                                                       hint="Test mode: the retreat breaks out under the compliance "
+                                                            "controller instead of the stiff screw-out at the screw "
+                                                            "rate (in the lab the compliant tools pushed the bar)")
         with ctx.view.ui(band=RUN_BAND) as gui:
             gui.add_html(section("run", SECTION_TOOL))
             self._status = gui.add_html("")
@@ -109,7 +117,9 @@ class RunPanel:
         # The turns go as a number: the plugin refuses one that is not whole, then makes it an int.
         settings = ((self._split, "insert_split_mm", float), (self._spiral, "spiral", bool),
                     (self._spiral_seconds, "spiral_seconds", float),
-                    (self._spiral_turns, "spiral_turns", float), (self._servo, "servo_by_bar", bool))
+                    (self._spiral_turns, "spiral_turns", float), (self._servo, "servo_by_bar", bool),
+                    (self._retreat_live, "retreat_live_axis", bool),
+                    (self._retreat_compliant, "retreat_compliant", bool))
         # ! `operator_only`: viser also fires `on_update` when the plugin writes `widget.value` (skipped only when it
         #   is unchanged), and the Spiral box is shown unticked while greyed: that write must not reach
         #   `request_settings`, or it would untick the stored setting. The test fake takes every call as the
@@ -171,6 +181,8 @@ class RunPanel:
             self._spiral.disabled = not status.spiral_fits
             self._split.value, self._spiral.value = settings.insert_split_mm, settings.spiral and status.spiral_fits
             self._servo.value = settings.servo_by_bar
+            self._retreat_live.value, self._retreat_compliant.value = (settings.retreat_live_axis,
+                                                                       settings.retreat_compliant)
             self._spiral_seconds.value, self._spiral_turns.value = settings.spiral_seconds, settings.spiral_turns
 
         message, failed = status.message

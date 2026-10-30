@@ -288,8 +288,8 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
     if routine is Routine.BASE_ONLY:
         return part(routine, BASE_PART, f"drive the base for {movement.label or movement.id} by hand")
     if routine is Routine.RETREAT_LINEAR:
-        return part(routine, RETREAT_PART, f"retreat {', '.join(moving)}: open, compliant break-out, then rigid",
-                    moving)
+        what = f"retreat {', '.join(moving)}: the jaws loosen while the tools back out at the screw rate, then rigid"
+        return part(routine, RETREAT_PART, what, moving)
     if routine is Routine.INSERT and spec.drives.grounded:
         return part(routine, INSERT_PART, "rigid, ground bar, no tighten")
     tightened = [tool for tool, drive in spec.drives.kept.items() if drive == "tighten"]

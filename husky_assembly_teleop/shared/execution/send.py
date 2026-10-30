@@ -26,6 +26,7 @@ from ...robot_interface.arm import JOINT_STATE_MAX_AGE
 from ...robot_interface.soft_stop import MotionRefused
 from ..assembly_planning.joints import arm_joint_names
 from .retime import retime
+from .retime import constant_speed as even_speed
 
 if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
@@ -150,7 +151,7 @@ class SendProgress:
 
 
 def motion_command(serial: str, arm_names: Sequence[str], joint_names: Sequence[str],
-                   rows: Sequence[Sequence[float]], traj_time: float) -> MotionCommand:
+                   rows: Sequence[Sequence[float]], traj_time: float, *, constant_speed: bool = False) -> MotionCommand:
     """Time a planned path for a robot's arms: every column together, then split per arm by joint name.
 
     Args:
@@ -159,6 +160,8 @@ def motion_command(serial: str, arm_names: Sequence[str], joint_names: Sequence[
         joint_names: The path's columns.
         rows: The path (N x len(joint_names)), radians; the first row is where the arms are.
         traj_time: Seconds asked for; the arms' limits may need longer (`retime`).
+        constant_speed: Run the whole path at one speed over `traj_time` (`retime.constant_speed`), not on the
+            cosine profile: a retreat's screw-out keeps the screws' rate.
 
     Returns:
         MotionCommand: The command.
@@ -184,7 +187,7 @@ def motion_command(serial: str, arm_names: Sequence[str], joint_names: Sequence[
     if stray or not moving:
         raise ValueError(f"the path's joints {stray or names} belong to no arm of {serial} ({', '.join(arm_names)})")
     ordered = rows[:, columns]
-    timed = retime(ordered, traj_time)
+    timed = even_speed(ordered, traj_time) if constant_speed else retime(ordered, traj_time)
     travel = float(np.max(np.sum(np.abs(np.diff(ordered, axis=0)), axis=0)))
     arms = tuple(ArmMotion(arm, timed.positions[:, 6 * k:6 * k + 6], timed.velocities[:, 6 * k:6 * k + 6])
                  for k, arm in enumerate(moving))
