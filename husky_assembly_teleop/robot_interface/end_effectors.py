@@ -44,6 +44,8 @@ class RobotiqState:
         moving: Whether a command is still running.
         last_result_ok: Whether the last command succeeded; None while it runs, once it was cancelled, or before
             the first. ! Only True is a success.
+        failure: How the last command failed while `last_result_ok` is False (FELL_SHORT, REJECTED or NO_RESULT),
+            else "".
         reactivating: Whether a reactivation request is waiting for its answer.
         reactivate_error: Why the last reactivation failed, or "" if it did not.
     """
@@ -54,8 +56,29 @@ class RobotiqState:
     commanded_effort: float | None = None
     moving: bool = False
     last_result_ok: bool | None = None
+    failure: str = ""
     reactivating: bool = False
     reactivate_error: str = ""
+
+
+#: How a Robotiq command failed (`RobotiqState.failure`): stopped short with nothing gripped (a grip that stops on an
+#: object is a success), not accepted, or its result never came.
+FELL_SHORT, REJECTED, NO_RESULT = "fell short", "rejected", "no result"
+#: Per failure, its chip label and hover text, the same in every panel.
+ROBOTIQ_FAILURES = {
+    FELL_SHORT: ("short of target", "The fingers stopped before the target without gripping anything."),
+    REJECTED: ("goal rejected", "The driver did not accept the last command, so the fingers did not move; the log "
+                                "says why."),
+    NO_RESULT: ("no result", "The last command's result never came, so whether it got there is unknown; the log says "
+                             "why."),
+}
+
+
+def robotiq_failure(state: RobotiqState) -> tuple[str, str] | None:
+    """The chip label and hover text for how the last command failed (ROBOTIQ_FAILURES), or None if it did not."""
+    if state.last_result_ok is not False:
+        return None
+    return ROBOTIQ_FAILURES.get(state.failure, ("command failed", "The last command failed; the log says why."))
 
 
 @dataclass
@@ -268,7 +291,7 @@ class RobotiqGripper(EndEffector):
         self.state.commanded_effort = effort
         self.state.moving = True
         # * Cleared, so a goal that is cancelled or never answers can't be read as the previous goal's success.
-        self.state.last_result_ok = None
+        self.state.last_result_ok, self.state.failure = None, ""
         self._goal, self._cancel_on_accept = None, False
         self._action.send_goal_async(goal).add_done_callback(self._on_goal_answer)
 
@@ -322,7 +345,7 @@ class RobotiqGripper(EndEffector):
             self._node.get_logger().warning(f"{self.namespace}: gripper goal failed: {error}")
         if handle is None or not handle.accepted:
             self.state.moving = False
-            self.state.last_result_ok = False
+            self.state.last_result_ok, self.state.failure = False, REJECTED
             self._node.get_logger().warning(f"{self.namespace}: gripper goal rejected")
             return
         self._goal = handle
@@ -348,10 +371,11 @@ class RobotiqGripper(EndEffector):
             return
         self.state.moving = False
         if response is None:
-            self.state.last_result_ok = False
+            self.state.last_result_ok, self.state.failure = False, NO_RESULT
             return
         result = response.result
         self.state.last_result_ok = bool(result.reached_goal or result.stalled)
+        self.state.failure = "" if self.state.last_result_ok else FELL_SHORT
         outcome = "reached goal" if result.reached_goal else "stalled" if result.stalled else "fell short"
         self._log(f"gripper {outcome} at {result.position:.3f} rad")
 

@@ -86,9 +86,13 @@ def test_the_plugin_draws_the_filtered_lines_and_offers_each_source():
     log.add(INFO, "robot_control", "drive done")
     log.add(INFO, "health/chips", "0804 base: mocap green -> amber")
     console.draw(ctx)
-    status, lines = ctx.gui.of_kind("html")
+    status, counts, lines = ctx.gui.of_kind("html")
     assert "drive done" in lines.content and "mocap" not in lines.content
-    assert "1 hidden" in status.content and "late ticks 0%" in status.content
+    assert "1 hidden" in counts.content and "late ticks 0%" in counts.content
+    chips = status.content
+    log.add(INFO, "health/chips", "0804 base: mocap amber -> green")
+    console.draw(ctx)
+    assert status.content == chips and "2 hidden" in counts.content, "the counts change, the chips do not"
     assert ctx.gui.of_kind("dropdown")[0].options == [EVERY_SOURCE, "health/chips", "robot_control"]
     ctx.gui.of_kind("button_group")[0].callback(SHOW_ALL)
     console.draw(ctx)
@@ -96,7 +100,7 @@ def test_the_plugin_draws_the_filtered_lines_and_offers_each_source():
     hide = ctx.gui.of_kind("dropdown")[1]
     hide.callback(f"{SHOWN_MARK}health/chips")
     console.draw(ctx)
-    assert "mocap" not in lines.content and "1 hidden" in status.content
+    assert "mocap" not in lines.content and "2 hidden" in counts.content
 
 
 def test_hide_hides_nothing_at_start_unless_the_layout_file_says():
@@ -119,7 +123,7 @@ def test_hide_starts_with_the_layout_files_sources_and_toggles_any_source_picked
     log.add(INFO, "robot_control", "drive done")
     ctx.gui.of_kind("button_group")[0].callback(SHOW_ALL)
     console.draw(ctx)
-    lines = ctx.gui.of_kind("html")[1]
+    lines = ctx.gui.of_kind("html")[2]
     assert "drive done" in lines.content and "plugin loaded" not in lines.content and "behind" not in lines.content
     assert f"{SHOWN_MARK}robot_control" in hide.options
     hide.callback(f"{HIDDEN_MARK}runtime")
@@ -144,4 +148,4 @@ def test_a_line_added_while_the_list_is_drawn_shows_at_the_next_draw():
     console.draw(ctx)
     log.entries = read
     console.draw(ctx)
-    assert "switch failed" in ctx.gui.of_kind("html")[1].content
+    assert "switch failed" in ctx.gui.of_kind("html")[2].content

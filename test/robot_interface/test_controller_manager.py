@@ -67,17 +67,23 @@ def test_a_rejected_switch_keeps_the_running_controller(finish):
     assert interface.state.switch_in_flight is None and len(interface._list_client.calls) == 1
 
 
-@pytest.mark.parametrize("controller, active, ready, in_flight, why", [
-    ("unknown", None, True, None, "is not one of"),
-    (CARTESIAN, None, False, None, "is not available"),
-    (CARTESIAN, None, True, FREE, "still switching"),
-])
-def test_switch_refused(controller, active, ready, in_flight, why):
-    """Unknown controller, no service, or a switch still pending: nothing is sent, and the error says why."""
-    interface = manager(active, ready=ready)
-    interface.state.switch_in_flight = in_flight
+@pytest.mark.parametrize("controller, ready, why", [("unknown", True, "is not one of"),
+                                                    (CARTESIAN, False, "is not available")])
+def test_switch_failed(controller, ready, why):
+    """Unknown controller or no service: nothing is sent, and the error says why."""
+    interface = manager(None, ready=ready)
     assert not interface.switch(controller)
     assert not interface._switch_client.calls and why in interface.state.switch_error
+
+
+def test_a_second_switch_while_one_is_pending_is_refused_not_failed():
+    """A second Run tap during a switch: nothing sent, a refusal for the panel, and no switch error."""
+    interface = manager(JOINTS)
+    interface.switch(CARTESIAN)
+    assert not interface.switch(FREE) and len(interface._switch_client.calls) == 1
+    assert interface.state.switch_error is None and "still switching to 'cartesian'" in interface.last_refusal.reason
+    assert interface.last_refusal.time == interface._node.now and "still switching" in interface._node.log.text(
+        "error")
 
 
 def test_a_guard_refuses_only_what_it_names():
@@ -85,8 +91,30 @@ def test_a_guard_refuses_only_what_it_names():
     interface = manager(JOINTS)
     interface._guard = lambda controller: "no recent sync status" if controller == FREE else None
     assert not interface.switch(FREE) and not interface._switch_client.calls
-    assert "no recent sync status" in interface.state.switch_error
+    assert interface.state.switch_error is None and "no recent sync status" in interface.last_refusal.reason
     assert interface.switch(CARTESIAN)
+
+
+def test_a_switch_that_succeeds_clears_an_earlier_error():
+    """A failed switch, then one accepted: the new controller runs and nothing says the switch failed."""
+    interface = manager(JOINTS)
+    interface.switch(CARTESIAN)
+    interface._switch_client.calls[0].answer(SimpleNamespace(ok=False))
+    assert interface.state.switch_error
+    interface.switch(FREE)
+    interface._switch_client.calls[1].answer(SimpleNamespace(ok=True))
+    assert interface.state.active == FREE and interface.state.switch_error is None
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_a_stop_that_failed_while_a_switch_was_pending_stays_shown(ok):
+    """The soft stop finds no service while a switch is pending: that switch's answer leaves the stop failure."""
+    interface = manager(JOINTS)
+    interface.switch(CARTESIAN)
+    interface._switch_client.ready = False
+    assert not interface.deactivate_all()
+    interface._switch_client.calls[0].answer(SimpleNamespace(ok=ok))
+    assert "cannot stop" in interface.state.switch_error
 
 
 def test_switching_to_the_running_controller_sends_nothing():

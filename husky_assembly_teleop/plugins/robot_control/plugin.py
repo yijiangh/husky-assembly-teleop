@@ -44,7 +44,8 @@ from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
 from ...robot_interface.tool_step import TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_LEAD, tool0_pose, tool_jog_target
 from ...ui.phone import big_buttons, phone_text
-from ...ui.style import BUSY, FAIL, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, note_line, numbers, section, values
+from ...ui.style import (BUSY, FAIL, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, hover, note_line, numbers, section,
+                         values)
 from ...ui.trace_plot import TracePlot
 from ...shared.teleop.dpad import (BLOCKED_COLOR, HOLD_TIMEOUT, PHONE_DPAD_STYLE, UNGUARDED_COLOR, Hold,
                                    build_velocity_inputs, color_dpad)
@@ -83,7 +84,8 @@ class _BaseWidgets:
     serial: str
     base: BaseInterface
     panel: ControllerPanel
-    status: viser.GuiHtmlHandle
+    #: The chip line and the numbers below it, apart so a hovered chip keeps its text (`base_status`).
+    status: tuple[viser.GuiHtmlHandle, viser.GuiHtmlHandle]
     speed: viser.GuiSliderHandle
     #: Clearance: while ticked, driving soft stops the base once it comes too close to anything (`_guard_base`).
     clearance: viser.GuiCheckboxHandle | None = None
@@ -101,8 +103,9 @@ class _ArmWidgets:
     serial: str
     arm: ArmInterface
     panel: ControllerPanel
-    status: viser.GuiHtmlHandle
-    tool_status: viser.GuiHtmlHandle | None
+    #: The chip lines and the numbers below them, of the arm and of its tool (`arm_status`, `tool_status`).
+    status: tuple[viser.GuiHtmlHandle, viser.GuiHtmlHandle]
+    tool_status: tuple[viser.GuiHtmlHandle, viser.GuiHtmlHandle] | None
     #: The jog speed slider, a fraction of JOG_MAX_SPEED.
     jog_speed: viser.GuiSliderHandle
     #: Jog Clearance: while ticked, a joint or tool0 jog soft stops the robot once it comes within ARM_STOP_DISTANCE
@@ -273,7 +276,7 @@ class RobotControlPlugin(HuskyPlugin):
         Returns:
             _BaseWidgets: The handles.
         """
-        status = gui.add_html("")
+        status = gui.add_html(""), gui.add_html("")
         dpad: list[viser.GuiButtonHandle] = []
 
         def velocity_inputs() -> tuple[viser.GuiSliderHandle, viser.GuiCheckboxHandle]:
@@ -310,7 +313,7 @@ class RobotControlPlugin(HuskyPlugin):
         key = (serial, arm.config.name)
         self._load_pose.add(key)
 
-        status = gui.add_html("")
+        status = gui.add_html(""), gui.add_html("")
         hold = partial(self._hold_arm, serial, arm)
         jog_inputs = partial(build_jog_inputs, ctx, gui, label, partial(self._on_jog_hold, ctx, key), hold,
                              partial(self._on_tool_jog_hold, ctx, key), ARM_STOP_DISTANCE)
@@ -565,12 +568,13 @@ class RobotControlPlugin(HuskyPlugin):
         if problem is None or (not ticked and problem[0] != START_IN_COLLISION):
             return ""
         label, why = problem
+        # * A refused press is logged (`_refuse_start`), what the watch finds standing is not: there the chip's cut.
+        logged = hover if self._start_refused.get(key, ("", ""))[1] == why else str
         if not ticked:
-            return chip(label, FAIL, f"{why}. Clearance is off: the {buttons} moves anyway (amber).\nMove out with "
-                                     f"care.")
-        then = ("Untick Clearance to move out; Collisions shows a refused press's hit." if label == START_IN_COLLISION
-                else "Untick Clearance to move without it.")
-        return chip(label, FAIL, f"{why}: Clearance refuses the {buttons} (grey).\n{then}")
+            return chip(label, FAIL, logged(f"{why}.\nClearance is off: the {buttons} moves anyway; move out with "
+                                            f"care."))
+        then = "move out; Collisions shows the hit" if label == START_IN_COLLISION else "move without it"
+        return chip(label, FAIL, logged(f"{why}.\nClearance refuses the {buttons} (grey); untick it to {then}."))
 
     def _color_buttons(self, buttons, ticked: bool, key: str | tuple[str, str], now: float) -> None:
         """Grey while Clearance would refuse a start, amber while it is unticked, else the theme's colour."""
@@ -583,8 +587,9 @@ class RobotControlPlugin(HuskyPlugin):
         config = next(robot for robot in ctx.config.robots if robot.serial == serial)
         away = from_stow(ctx.scene.snapshot.robots[robot_id(serial)], config)
         if away > STOW_TOLERANCE:
-            chips += chip("arm not stowed", BUSY, f"An arm is {np.degrees(away):.0f}° from its stow pose: the base "
-                                                  f"drives with it out.\nStow it in Plan › Arm (Load Stow).")
+            chips += chip("arm not stowed", BUSY, f"An arm is over {np.degrees(STOW_TOLERANCE):.0f}° from its stow "
+                                                  f"pose: the base drives with it out.\nStow it in Plan › Arm (Load "
+                                                  f"Stow).")
         return chips
 
     def _busy(self, now: float, serial: str) -> bool:
@@ -856,15 +861,17 @@ class RobotControlPlugin(HuskyPlugin):
         """
         now = ctx.now()
         self._draws += 1
+        relay = None if ctx.world.mocap_relay is None else ctx.world.mocap_relay.state
         for widgets in self._bases:
             show_only_running(widgets.panel)
             ticked = widgets.clearance is None or bool(widgets.clearance.value)
             refused = refusal_chip((self._refusals.get((widgets.serial, BASE)), widgets.base.last_refusal), now) \
                 + self._base_warnings(ctx, widgets.serial, now, ticked)
-            widgets.status.content = base_status(widgets.base, now, refused)
+            for handle, html in zip(widgets.status, base_status(widgets.base, now, refused, relay)):
+                handle.content = html
             self._color_buttons(widgets.dpad, ticked, widgets.serial, now)
             if widgets.phone_status is not None:
-                widgets.phone_status.content = phone_text(phone_base_status(widgets.base, refused))
+                widgets.phone_status.content = phone_text(phone_base_status(widgets.base, now, refused))
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             show_only_running(widgets.panel)
@@ -873,7 +880,8 @@ class RobotControlPlugin(HuskyPlugin):
                                     None if tool is None else tool.last_refusal), now)
             ticked = widgets.jog_clearance is None or bool(widgets.jog_clearance.value)
             refused += self._start_chip(key, now, "jog", ticked)
-            widgets.status.content = arm_status(widgets.arm, now, refused)
+            for handle, html in zip(widgets.status, arm_status(widgets.arm, now, refused)):
+                handle.content = html
             if widgets.jog_clearance is not None:
                 self._color_buttons(widgets.jog_buttons, ticked, key, now)
                 note = jog_clearance_note(ticked, ARM_STOP_DISTANCE)
@@ -893,10 +901,10 @@ class RobotControlPlugin(HuskyPlugin):
             applied = self._applied_force.get(key)
             widgets.compliance.wrench_line.content = block(values(
                 f"applied {numbers(applied, 3, 6, 1)} N ({TARGET_WRENCH_FRAME})"))
-            if widgets.tool_status is not None:
-                widgets.tool_status.content = tool_status(widgets.arm.state.end_effector, now)
+            for handle, html in zip(widgets.tool_status or (), tool_status(widgets.arm.state.end_effector, now)):
+                handle.content = html
             if widgets.phone_status is not None:
-                widgets.phone_status.content = phone_text(phone_arm_status(widgets.arm, refused))
+                widgets.phone_status.content = phone_text(phone_arm_status(widgets.arm, now, refused))
 
     def _load_pose_sliders(self, widgets: _ArmWidgets) -> None:
         """Set one arm's pose sliders to its TCP, if asked.

@@ -9,8 +9,9 @@ from action_msgs.msg import GoalStatus
 from robot_fakes import Client, Future, Node, Publisher, leased_slot
 from ur_msgs.srv import SetIO
 
-from husky_assembly_teleop.robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV1,
-                                                                 ScaffoldingV1State, ScaffoldingV3, ScaffoldingV3State)
+from husky_assembly_teleop.robot_interface.end_effectors import (FELL_SHORT, REJECTED, RobotiqGripper, RobotiqState,
+                                                                 ScaffoldingV1, ScaffoldingV1State, ScaffoldingV3,
+                                                                 ScaffoldingV3State)
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped, SoftStopLatch
 
@@ -169,6 +170,7 @@ def test_robotiq_result_says_whether_it_got_there(reached, stalled, ok):
     gripper.close()
     finish(accept(gripper._action.goals[0]), reached, stalled)
     assert not gripper.state.moving and gripper.state.last_result_ok is ok
+    assert gripper.state.failure == ("" if ok else FELL_SHORT)
 
 
 def test_robotiq_new_goal_forgets_the_last_success():
@@ -186,11 +188,12 @@ def test_robotiq_new_goal_forgets_the_last_success():
 @pytest.mark.parametrize("answer", [lambda goal: goal.answer(SimpleNamespace(accepted=False)),
                                     lambda goal: goal.fail(RuntimeError("server gone"))])
 def test_robotiq_rejected_goal_stops_moving(answer):
-    """A rejected or failed goal never leaves `moving` set."""
+    """A rejected or failed goal never leaves `moving` set, and counts as rejected, not as short of its target."""
     gripper = robotiq()
     gripper.close()
     answer(gripper._action.goals[0])
     assert not gripper.state.moving and gripper.state.last_result_ok is False
+    assert gripper.state.failure == REJECTED
 
 
 def test_robotiq_preempted_goal_does_not_end_the_newer_one():

@@ -7,7 +7,7 @@ one per robot and one for tracked objects.
 A robot's row has a line of chips for its base and one for each arm with its tool.
 
 Green is fine, amber needs a look, red is broken or silent, blue is a fact to know (a "sim" chip before the simulated
-part's chips); hover a chip for detail.
+part's chips), grey has nothing to judge yet; hover a chip for detail.
 Loaded by default (config.DEFAULT_PLUGINS).
 
 ! Checks never command or block: each is a pure function of measured state and the clock.
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import viser
@@ -25,11 +26,12 @@ from ur_dashboard_msgs.msg import RobotMode, SafetyMode
 
 from ..colors import HUE_NAMES
 from ..plugin_api.context import PluginContext
+from ..world.base_mocap import applied_calibration, applied_frame, with_relay
 from ..world.mocap import mocap_check
 from ..world.tcp import tcp_check, tool0_by_kinematics
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..robot_interface.arm import ArmInterface
-from ..robot_interface.end_effectors import RobotiqGripper, ScaffoldingV1, ScaffoldingV3
+from ..robot_interface.end_effectors import RobotiqGripper, ScaffoldingV1, ScaffoldingV3, robotiq_failure
 from ..robot_interface.robot import HuskyRobotInterface
 from ..robot_interface.simulated_parts import SimulatedPart
 from ..robot_interface.arm import JOINT_STATES_RATE as ARM_RATE
@@ -37,12 +39,12 @@ from ..robot_interface.arm import SYNC_STATUS_MAX_AGE, ArmState
 from ..robot_interface.base import JOINT_STATES_RATE as BASE_RATE
 from ..robot_interface.base import BaseState
 from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManagerState
-from ..robot_interface.mocap_definitions import OUT_OF_DATE
-from ..robot_interface.mocap_relay import (FRAME_REFIT_PENDING, FRAME_UNCHECKED, FRAME_UNTRUSTED, TRUTH,
-                                           AppliedCalibration, FloorCalibrationState, MocapRelayState)
+from ..robot_interface.mocap_relay import AppliedCalibration, FloorCalibrationState
+from ..robot_interface.refusal import Refusal
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
 from ..ui.phone import phone_text
-from ..ui.style import LEVEL_COLORS, NONE, SECTION_SENSOR, block, check_chip, chip, chip_line, hover, section
+from ..ui.style import (FAIL, HOVER_MAX, LEVEL_COLORS, NONE, REFUSAL_SHOWN, SECTION_SENSOR, block, check_chip, chip,
+                        chip_line, hover, section)
 from ..world.checks import BAD, GOOD, INFO, PENDING, STALE_AFTER, WARN, Check
 
 # --- --- --- --- --- THRESHOLDS --- --- --- --- ---
@@ -97,20 +99,25 @@ ROBOT_ACTIONS = {
 LEASED_ACTIONS = ("Unlock", "Reconnect")
 
 
-def robot_action(ctx: PluginContext, serial: str, clicked: str) -> None:
+def robot_action(ctx: PluginContext, serial: str, clicked: str) -> Refusal | None:
     """Run a robot button's action (a key of ROBOT_ACTIONS); LEASED_ACTIONS are refused while the robot is leased.
 
     Args:
         ctx: health's context.
         serial: The robot.
         clicked: The button's label.
+
+    Returns:
+        Refusal | None: Why nothing was done, also logged; None once the action ran.
     """
     robot = ctx.world.robots[serial]
     lease = robot.lease_slot.lease
     if clicked in LEASED_ACTIONS and lease is not None:
-        ctx.log_warn(f"{serial} {clicked} refused: robot {serial} is leased by {lease.holder}")
-        return
+        reason = f"robot {serial} is leased by {lease.holder}; try again once it is given back"
+        ctx.log_warn(f"{serial} {clicked} refused: {reason}")
+        return Refusal(f"{clicked} refused", reason, ctx.now())
     getattr(robot, ROBOT_ACTIONS[clicked])()
+    return None
 
 
 @register
@@ -125,6 +132,9 @@ class HealthPlugin(HuskyPlugin):
         self._banner: viser.GuiHtmlHandle | None = None
         #: Per robot, by serial: its section bar and chips.
         self._robot_rows: dict[str, viser.GuiHtmlHandle] = {}
+        #: Per robot, the line under its buttons saying why the last one did nothing, and that refusal.
+        self._refusal_lines: dict[str, viser.GuiHtmlHandle] = {}
+        self._refusals: dict[str, Refusal] = {}
         #: One row for all tracked objects.
         self._objects_row: viser.GuiHtmlHandle | None = None
         #: On the phone: the banner above the tabs, and every row in one html in the Health tab.
@@ -139,6 +149,9 @@ class HealthPlugin(HuskyPlugin):
         self._changes: dict[tuple[str, int], _Change] = {}
         #: Each arm's last TCP verdict by (serial, arm name), kept while the arm moves (`tcp_check`).
         self._tcp_checks: dict[tuple[str, str], Check] = {}
+        #: Per line ("<serial> <base or arm>"), the signal chip shown and when it was last measured that bad, wall
+        #: clock (`_hold_signal`).
+        self._signals: dict[str, tuple[Check, float]] = {}
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the banner, one chip row and action buttons per robot, the objects row, and the same on the phone.
@@ -160,13 +173,20 @@ class HealthPlugin(HuskyPlugin):
                          "Reconnect: rebuild its ROS links. Unlock/Reconnect need its lease free.")
                 # ! Bind this loop's serial as a default argument.
                 actions.on_click(ctx.defer_value(f"robot action {serial}",
-                                                 lambda clicked, serial=serial: robot_action(ctx, serial, clicked)))
+                                                 lambda clicked, serial=serial: self._act(ctx, serial, clicked)))
+                self._refusal_lines[serial] = gui.add_html(chip_line(""))
             self._objects_row = gui.add_html("")
         # * The phone shows the same banner and rows, without the actions: those stay on the laptop.
         with ctx.view.phone_header() as phone:
             self._phone_banner = phone.add_html("")
         with ctx.view.phone("Health", viser.Icon.HEART_RATE_MONITOR) as phone:
             self._phone_rows = phone.add_html("")
+
+    def _act(self, ctx: PluginContext, serial: str, clicked: str) -> None:
+        """Run robot `serial`'s button `clicked` (`robot_action`), keeping a refusal for the line under the buttons."""
+        refusal = robot_action(ctx, serial, clicked)
+        if refusal is not None:
+            self._refusals[serial] = refusal
 
     def update(self, ctx: PluginContext) -> None:
         """Run every check against this tick's state.
@@ -181,18 +201,34 @@ class HealthPlugin(HuskyPlugin):
                 if check is not None:
                     self._tcp_checks[(serial, name)] = check
         relay = ctx.world.mocap_relay.state if ctx.world.mocap_relay is not None else None
-        self._robot_checks = {serial: robot_checks(robot, now, self._tcp_checks, applied_calibration(relay, robot),
-                                                   applied_frame(relay, robot))
+        self._robot_checks = {serial: robot_checks(robot, now, self._tcp_checks,
+                                                   applied_calibration(relay, robot.config.mocap_id),
+                                                   applied_frame(relay, robot.config.mocap_id))
                               for serial, robot in ctx.world.robots.items()}
         self._object_checks = [mocap_check(obj.name, obj.mocap_id, obj, now)
                                for obj in ctx.world.tracked_objects.values()]
         lines = [(f"{serial} {name}", checks) for serial, robot_lines in self._robot_checks.items()
                  for name, checks in robot_lines]
-        # * The hold runs on the wall clock: a paused simulation or a bag jumping back must not hold a change.
+        # * The holds run on the wall clock: a paused simulation or a bag jumping back must not hold a change.
         held = time.monotonic()
+        for row, checks in lines:
+            checks[:] = [self._hold_signal(row, check, held) if check.label == SIGNAL_LABEL else check
+                         for check in checks]
         for row, checks in [*lines, ("objects", self._object_checks)]:
             self._note_changes(row, checks, held)
         self._log_changes(ctx, held)
+
+    def _hold_signal(self, row: str, check: Check, now: float) -> Check:
+        """The signal chip to show for `row`: a worse level at once, a better one once it held for LOG_HOLD.
+
+        On marginal wifi the measured level flaps; held like this, the chip shows the worse level steadily.
+        `now` is the wall clock (`time.monotonic`), seconds.
+        """
+        shown = self._signals.get(row)
+        if shown is None or check.level >= shown[0].level or now - shown[1] >= LOG_HOLD:
+            self._signals[row] = check, now
+            return check
+        return shown[0]
 
     def _note_changes(self, row: str, checks: list[Check], now: float) -> None:
         """Note every chip of `row` ("<serial> <base or arm>", or "objects") that changed colour since the last tick.
@@ -250,6 +286,10 @@ class HealthPlugin(HuskyPlugin):
             # * A sensor section's bar; the robot's worst level is its banner chip's colour.
             rows.append(section(heading, SECTION_SENSOR) + "".join(render_line(name, checks) for name, checks in lines))
             self._robot_rows[serial].content = rows[-1]
+            refusal = self._refusals.get(serial)
+            shown = refusal is not None and ctx.now() - refusal.time <= REFUSAL_SHOWN
+            self._refusal_lines[serial].content = chip_line(
+                chip(refusal.label, FAIL, hover(refusal.reason)) if shown else "")
         rows.append((section("objects", SECTION_SENSOR) + render_chips(self._object_checks))
                     if self._object_checks else "")
         self._objects_row.content = rows[-1]
@@ -321,16 +361,15 @@ def robot_checks(robot: HuskyRobotInterface, now: float, tcp_checks: dict[tuple[
     base = state.joint_states_stats.quality(now)
     # * Each part's sim chip comes first, then its own chips: base; arm up to its tcp; then the tool.
     lines = [("base", simulated_check(robot.base.simulation)
-              + [stream_check("signal", base, BASE_RATE) if base.seen else
-                 Check("signal", BAD, "no platform joint_states yet"),
-                 in_frame(calibrated(mocap_check("mocap", robot.config.mocap_id, state, now), calibration),
-                          frame),
+              + [stream_check(SIGNAL_LABEL, base, BASE_RATE) if base.seen else
+                 Check(SIGNAL_LABEL, BAD, "no platform joint_states yet"),
+                 with_relay(mocap_check("mocap", robot.config.mocap_id, state, now), calibration, frame),
                  estop_check(state),
                  battery_check(state, now),
                  controller_check("ctrl", state.controllers, now)])]
     for arm in robot.arms.values():
         checks = simulated_check(arm.simulation) + [
-            stream_check("signal", arm.state.joint_states_stats.quality(now), ARM_RATE), arm_check(arm, now)]
+            stream_check(SIGNAL_LABEL, arm.state.joint_states_stats.quality(now), ARM_RATE), arm_check(arm, now)]
         checks.append((tcp_checks or {}).get((robot.config.serial, arm.config.name),
                                              Check("tcp", PENDING, "not checked yet: waiting for the arm to be still")))
         # * Only when out of date: the monitor uses the calibration, but the URDF file other tools read does not.
@@ -348,50 +387,8 @@ def robot_checks(robot: HuskyRobotInterface, now: float, tcp_checks: dict[tuple[
     return lines
 
 
-def applied_calibration(relay: MocapRelayState | None, robot: HuskyRobotInterface) -> AppliedCalibration | None:
-    """What the relay applies to the robot's base body (a fake Motive's from the simulated sessions); a truth none."""
-    if relay is None or relay.source(robot.config.mocap_id) == TRUTH:
-        return None
-    return relay.calibrations.get(robot.config.mocap_id)
-
-
-def applied_frame(relay: MocapRelayState | None, robot: HuskyRobotInterface) -> FloorCalibrationState | None:
-    """The floor calibration the relay applies to the robot's base body; none to a simulator's truth (in the lab)."""
-    if relay is None or relay.source(robot.config.mocap_id) == TRUTH:
-        return None
-    return relay.frame
-
-
-def calibrated(mocap: Check, calibration: AppliedCalibration | None) -> Check:
-    """The base's mocap chip, at least amber while the relay finds its calibration built for an earlier body."""
-    if calibration is None or calibration.definition_status != OUT_OF_DATE:
-        return mocap
-    return Check(mocap.label, max(mocap.level, WARN), _with_problem(
-        mocap, "base calibration made for an older Motive rigid body: a few mm off. Calibrate the base again."))
-
-
-def in_frame(mocap: Check, frame: FloorCalibrationState | None) -> Check:
-    """The base's mocap chip, at least amber while poses may be off the floor calibration's frame (`poses_off`)."""
-    if frame is None or not frame.poses_off:
-        return mocap
-    if frame.error and not frame.floor_calibration:
-        why = "relay could not read its floor calibration: see Mocap probe"
-    elif frame.status == FRAME_UNCHECKED:
-        why = "floor frame not checked yet (no anchors or truss cameras seen)"
-    elif frame.status in (FRAME_REFIT_PENDING, FRAME_UNTRUSTED):
-        why = "Motive's frame moved: poses off until Use refit (Mocap probe → Floor calibration)"
-    else:
-        why = "a newer floor calibration waits: Apply it in Mocap probe → Floor calibration"
-    return Check(mocap.label, max(mocap.level, WARN), _with_problem(mocap, why))
-
-
-def _with_problem(mocap: Check, why: str) -> str:
-    """The mocap chip's hover text with a problem added; a green chip's own detail is left out."""
-    return why if mocap.level == GOOD else f"{mocap.detail}; {why}"
-
-
-#: The label of a simulated part's chip.
-SIM_LABEL = "sim"
+#: The label of a simulated part's chip, and of a part's joint_states chip (`stream_check`).
+SIM_LABEL, SIGNAL_LABEL = "sim", "signal"
 
 
 def simulated_check(simulation: SimulatedPart | None) -> list[Check]:
@@ -414,10 +411,10 @@ def stream_check(label: str, quality: StreamQuality, rate: float = ARM_RATE) -> 
         rate: The stream's nominal rate, Hz.
 
     Returns:
-        Check: BAD when silent or far off, WARN when a little off, else GOOD.
+        Check: BAD when silent or far off, WARN when a little off, PENDING while still measuring, else GOOD.
     """
     if quality.rate is None:
-        return Check(label, WARN, f"joint_states seen for under {WINDOW:g}s; still measuring")
+        return Check(label, PENDING, f"joint_states seen for under {WINDOW:g}s; still measuring")
     if quality.rate == 0.0:
         return Check(label, BAD, f"no joint_states in the last {WINDOW:g}s")
     rate_warn, rate_bad = SIGNAL_RATE_WARN * rate, SIGNAL_RATE_BAD * rate
@@ -464,23 +461,32 @@ def arm_check(arm: ArmInterface, now: float) -> Check:
             parts += [safety_check(state.safety_mode), running_check(state)]
     parts += [controller_check("ctrl", state.controllers, now),
               age_check("joints", "joint_states", state.last_update_time, now)]
-    return combine("arm", parts)
+    # * The sync's last stop is shown nowhere else: the only place to read why it stopped the arms.
+    return combine("arm", parts, noted=parts[:1] if state.stop_reason else ())
 
 
-def combine(label: str, parts: list[Check]) -> Check:
-    """Fold several checks into one chip: the worst level, every detail in the tooltip.
+def combine(label: str, parts: list[Check], noted: Sequence[Check] = ()) -> Check:
+    """Fold several checks into one chip: the worst level; in the tooltip the parts not green, worst first.
 
     Args:
         label: The chip's name, e.g. the arm's.
-        parts: The checks to fold, in tooltip order.
+        parts: The checks to fold.
+        noted: Parts whose detail the tooltip keeps even when green, after the others.
 
     Returns:
         Check: Labelled `label`, plus the worst part's label when not all are good.
     """
     level = worst_level(parts)
     worst = next(part for part in parts if part.level == level)
-    detail = "\n".join(f"{part.label}: {part.detail}" for part in parts)
-    return Check(label if level == GOOD else f"{label} {worst.label}", level, detail)
+    shown = sorted((part for part in parts if part.level > GOOD or part in noted), key=lambda part: -part.level)
+    if level <= GOOD:
+        notes = "".join(f"\n{part.label}: {part.detail}" for part in shown)
+        return Check(label, level, f"all fine: {', '.join(part.label for part in parts)}{notes}")
+    detail = "\n".join(f"{part.label}: {part.detail}" for part in shown)
+    if len(detail) > HOVER_MAX and len(shown) > 1:
+        # * The worst in full, the others by name: a cut tooltip would lose them.
+        detail = f"{shown[0].label}: {shown[0].detail}\nalso {', '.join(part.label for part in shown[1:])}"
+    return Check(f"{label} {worst.label}", level, detail)
 
 
 def estop_check(state: BaseState) -> Check:
@@ -607,7 +613,7 @@ def controller_check(label: str, state: ControllerManagerState, now: float) -> C
     if age > CONTROLLER_STALE_AFTER:
         return Check(label, BAD, f"controller manager silent for over {CONTROLLER_STALE_AFTER:g}s")
     if state.switch_error:
-        return Check(label, WARN, state.switch_error)
+        return Check(label, BAD, hover(state.switch_error))
     if state.active is None:
         return Check(label, WARN, "no controller active; commands will be refused")
     return Check(label, GOOD, state.active)
@@ -623,13 +629,16 @@ def age_check(label: str, topic: str, last_update_time: float | None, now: float
         now: Current ROS time, seconds.
 
     Returns:
-        Check: BAD if missing or older than STALE_AFTER, else GOOD.
+        Check: BAD if missing or silent for over WINDOW (as the signal chip judges joint_states), WARN if older than
+            STALE_AFTER (stale, as `freshness_chip` shows it), else GOOD.
     """
     if last_update_time is None:
         return Check(label, BAD, f"no {topic} yet")
     age = now - last_update_time
+    if age > WINDOW:
+        return Check(label, BAD, f"no {topic} for over {WINDOW:g}s: is its driver running?")
     if age > STALE_AFTER:
-        return Check(label, BAD, f"no {topic} for over {STALE_AFTER:g}s")
+        return Check(label, WARN, f"no {topic} for over {STALE_AFTER:g}s")
     return Check(label, GOOD, f"{topic} arriving")
 
 
@@ -652,9 +661,9 @@ def tool_check(arm: ArmInterface, now: float) -> Check | None:
         if joints.level != GOOD:
             return joints
         if tool.state.reactivate_error:
-            return Check(label, WARN, f"reactivation failed: {tool.state.reactivate_error}")
-        if tool.state.last_result_ok is False:
-            return Check(label, WARN, "last gripper command did not reach its target")
+            return Check(label, BAD, hover(f"reactivation failed: {tool.state.reactivate_error}"))
+        if failure := robotiq_failure(tool.state):
+            return Check(label, BAD, failure[1])
         return Check(label, GOOD, "robotiq connected")
     if isinstance(tool, ScaffoldingV3):
         # ? A stalled motor is not checked: the screws stall on purpose once tight.
@@ -696,10 +705,10 @@ def render_banner(robots: dict[str, list[tuple[str, list[Check]]]], objects: lis
     every = [(f"{label} {part}", check) for label, checks in groups.items() for part, check in checks]
     level = worst_level([check for _part, check in every])
     chips = chip(BANNER_LABELS[level], LEVEL_COLORS[level],
-                 hover(_not_green(every), "the Health rows") or "every chip is green")
+                 hover(_not_green(every) or _quiet(every), "the Health rows"))
     for label, checks in groups.items():
         chips += chip(label, LEVEL_COLORS[worst_level([check for _part, check in checks])],
-                      hover(_not_green(checks), "the Health rows") or "all green")
+                      hover(_not_green(checks) or _quiet(checks), "the Health rows"))
     return chip_line(chips)
 
 
@@ -711,6 +720,16 @@ def _not_green(checks: list[tuple[str, Check]]) -> str:
     """One hover line per check that is not green: "<part> <label>: <detail>", worst first."""
     shown = sorted((item for item in checks if item[1].level > GOOD), key=lambda item: -item[1].level)
     return "\n".join(f"{part}{check.label}: {check.detail}" for part, check in shown)
+
+
+def _quiet(checks: list[tuple[str, Check]]) -> str:
+    """The hover text when nothing is amber or red: which chips are grey (nothing to judge yet) or blue (facts)."""
+    text = "nothing amber or red"
+    for level, what in ((PENDING, "not judged yet"), (INFO, "facts")):
+        names = [f"{part}{check.label}" for part, check in checks if check.level == level]
+        if names:
+            text += f"; {what}: {', '.join(names)}"
+    return text
 
 
 def worst_level(checks: list[Check]) -> int:

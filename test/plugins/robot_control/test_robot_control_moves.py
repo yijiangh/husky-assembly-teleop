@@ -325,7 +325,7 @@ def test_a_jog_whose_clearance_cannot_check_is_refused_until_the_next_press():
     asyncio.run(scenario())
     chip_html = plugin._start_chip(("0804", "ur_arm"), ctx.now(), "jog", True)
     assert not arm._trajectory.sent and ">cannot check<" in chip_html
-    assert "Untick Clearance to move without" in chip_html
+    assert "untick it to move without it" in chip_html
     assert len(plugin._jog_guards) == 1 and plugin._jog_guards[("0804", "ur_arm")].done()
 
 
@@ -551,7 +551,7 @@ def test_a_drive_that_starts_too_close_is_refused_with_a_red_chip_and_tried_agai
     asyncio.run(drive())
     assert not sent and not plugin._bases[0].base.soft_stopped and "0804" not in plugin._tripped
     chips = plugin._base_warnings(ctx, "0804", now[0])
-    assert "starts in collision" in chips and FAIL in chips and "Untick Clearance" in chips
+    assert "starts in collision" in chips and FAIL in chips and "untick it to move out" in chips
 
 
 def test_a_drive_whose_clearance_cannot_check_is_refused_without_a_soft_stop():

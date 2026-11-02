@@ -301,7 +301,7 @@ def tool_commands(tool: EndEffector, leased: Callable[[Callable], object]) -> di
 
 
 def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,
-                      leased: Callable[[Callable], object]) -> viser.GuiHtmlHandle:
+                      leased: Callable[[Callable], object]) -> tuple[viser.GuiHtmlHandle, viser.GuiHtmlHandle]:
     """Add the TOOL section for the arm's end effector: its status line and buttons.
 
     Args:
@@ -312,11 +312,11 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
         leased: Runs a command under the robot's lease, which every tool command but a stop needs.
 
     Returns:
-        viser.GuiHtmlHandle: The tool's status line.
+        tuple[viser.GuiHtmlHandle, viser.GuiHtmlHandle]: The tool's chip line and its numbers (`tool_status`).
     """
     kind = arm.config.end_effector
     gui.add_html(section("tool", SECTION_TOOL, TOOL_LABELS.get(kind, kind)))
-    status = gui.add_html("")
+    status = gui.add_html(""), gui.add_html("")
     tool = arm.end_effector
     commands = tool_commands(tool, leased)
     grip = gui.add_button_group("Grip", list(commands), hint=GRIP_HINTS.get(kind))

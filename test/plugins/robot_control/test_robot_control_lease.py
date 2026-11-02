@@ -328,10 +328,11 @@ def test_health_unlock_and_reconnect_are_refused_while_the_robot_is_leased():
     lab.robot.resume = lambda: calls.append("resume")
     lab.robot.reconnect = lambda: calls.append("reconnect")
     lease = lab.lease_every_robot()
-    for clicked in ("Unlock", "Resume", "Reconnect"):
-        robot_action(lab.ctx, SERIAL, clicked)
+    refusals = [robot_action(lab.ctx, SERIAL, clicked) for clicked in ("Unlock", "Resume", "Reconnect")]
     assert calls == ["resume"]
     assert len([line for line in lab.ctx.lines("warn") if f"is leased by {EXEC}" in line]) == 2
+    assert [refusal and refusal.label for refusal in refusals] == ["Unlock refused", None, "Reconnect refused"], \
+        "for the chip under Health's buttons"
     lease.release()
-    robot_action(lab.ctx, SERIAL, "Reconnect")
+    assert robot_action(lab.ctx, SERIAL, "Reconnect") is None
     assert calls == ["resume", "reconnect"]

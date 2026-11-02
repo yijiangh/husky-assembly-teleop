@@ -100,6 +100,19 @@ def test_a_controller_manager_that_is_down_fails_at_once():
     assert lab.running() == [JOINT, JOINT] and lab.left._switch_client.calls == []
 
 
+def test_a_refused_switch_says_why_this_switch_went_wrong_not_an_older_one():
+    """An older failed switch, then a guard refusal: the refusal is named. An older refusal, then no service: that."""
+    lab = Lab()
+    lab.arms[0].state.controllers.switch_error = "switch to 'free_drive' failed: controller manager rejected it"
+    lab.left._guard = lambda controller: "robot stopped: press Resume"
+    outcome = asyncio.run(switch_arms(lab.ctx, lab.arms, COMPLIANCE))
+    assert not outcome.ok and "robot stopped: press Resume" in outcome.reason and "free_drive" not in outcome.reason
+
+    lab.left._guard, lab.left.ready = None, False
+    outcome = asyncio.run(switch_arms(lab.ctx, lab.arms, COMPLIANCE))
+    assert not outcome.ok and "switch_controller is not available" in outcome.reason
+
+
 def test_a_switch_rejected_partway_fails_and_leaving_brings_the_switched_arm_back():
     """Left accepted, right rejected: FAILED at the answer, not after 5 s; `leave_compliance` restores the left."""
     lab = Lab()
