@@ -20,12 +20,12 @@ from ...shared.runs.as_built import ACTION_KIND, build_record, milestone_of, ref
 from ...shared.assembly_planning.joints import arm_joint_names, arm_side
 from ...shared.assembly_planning.movement import Routine, routine_or_none
 from ...shared.assembly_run_contract import is_live, live_record
+from ...shared.bars.layouts import bar_layouts
+from ...shared.bars.pose import pose_deviation
 from ...shared.execution.servo import flange_poses, tool0_errors, wrench_magnitudes
 from ...shared.execution.spiral import spiral_fits
 from ...shared.movement_exec_contract import DONE, INSERT_PART, SERVO_INDEX, SERVO_PART
 from ...shared.runs.runs import stamp
-from ...world.bar_pose import pose_deviation
-from ...world.marker_layouts import bar_layouts
 
 #: The transfer's two routines: the workaround (a free move, the bar mounted after) and the held one.
 TRANSFER_ROUTINES = (Routine.TRANSFER_FREE, Routine.TRANSFER_HELD)

@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import math
 import signal
 import sys
 import time
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor, TimeoutException
@@ -31,7 +32,9 @@ from .plugin_api.console_log import ROBOTS, RUNTIME, TICKS, ConsoleLog, ConsoleL
 from .config import MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
 from scaffolding_assembly_core.geometry import Geometry
-from .world.clearance import TRIPS_KEPT, ClearanceChecker, ClearanceTrip, assumable_joints
+from .world.clearance import (TRIPS_KEPT, WATCH_EVERY, Clearance, ClearanceChecker, ClearanceTrip, ClearanceWatch,
+                              assumable_joints)
+from .world.stand_ins import unknown_robots
 from .world.kinematics import Kinematics
 from .plugin_api.plugin import HuskyPlugin, UnknownPluginError, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
@@ -43,6 +46,7 @@ from .robot_interface.soft_stop import MotionRefused
 from scaffolding_assembly_core.ids import robot_id, tracked_id
 from scaffolding_assembly_core.scene import Scene
 from .world.scene import PluginScene, take_snapshot, tracked_body
+from .ui.layout import default_layout_path, read_layout
 from .ui.visualization import Visualization
 from .world.measured import TrackedObject, WorldState
 
@@ -129,6 +133,10 @@ class HuskyMonitor(Node):
         self._snapshot = Scene()
         #: Checks the plugins' clearances (`ctx.clearance`) on its own worker.
         self._clearances = ClearanceChecker()
+        #: The (context, clearance or watch, serial) of each robot the running clearance check looks at, and when the
+        #: watches last joined one.
+        self._clearances_asked: list[tuple] = []
+        self._watched_at = -math.inf
         #: The last TRIPS_KEPT clearance trips of every plugin, oldest first; replaced on each trip.
         self.clearance_trips: tuple[ClearanceTrip, ...] = ()
         self._viz: Visualization | None = None
@@ -156,7 +164,13 @@ class HuskyMonitor(Node):
         with self._timed("kinematics"):
             self._kinematics = Kinematics(self._config.robots, log_warn=self.log_warn)
         with self._timed("viser servers"):
-            self._viz = Visualization(port=self._config.viser_port, phone_port=self._config.phone_port)
+            layout = read_layout(self._config.layout or default_layout_path(), self.log_warn)
+            if layout.source is not None:
+                self.log_info(f"layout from {layout.source}")
+            if layout.preferences.ghost_timeout is not None:
+                self._config = replace(self._config, ghost_timeout=layout.preferences.ghost_timeout)
+            self._viz = Visualization(port=self._config.viser_port, phone_port=self._config.phone_port,
+                                      layout=layout)
         port, phone_port = self._viz.ports
         self.log_info(f"UI at http://localhost:{port}, phone page at http://<this PC's IP>:{phone_port}")
 
@@ -196,6 +210,8 @@ class HuskyMonitor(Node):
             except Exception:
                 self.log_error(f"plugin {loaded.name!r} failed in setup:\n{traceback.format_exc()}")
                 self._stop(loaded, "failed in setup")
+        for label in self._viz.place_plugin_windows():
+            self.log_warn(f"layout: no plugin made a window {label!r}; its entry in panels is skipped")
 
     @contextmanager
     def _timed(self, what: str):
@@ -484,12 +500,27 @@ class HuskyMonitor(Node):
                 self.log_warn(f"SOFT STOP: cancelled {', '.join(repr(name) for name in cancelled)}")
 
     def _check_clearances(self, snapshot: Scene, now: float) -> None:
-        """Trip what the last clearance check found too close, then start checking this tick's snapshot.
+        """Trip what the last clearance check found too close, fill in the watches, then check this tick's snapshot.
 
         A robot whose base pose is lost trips at once; the rest is checked on the worker, a tick or two behind.
+        Watches (`ClearanceWatch`) join a check every WATCH_EVERY; they only report.
         """
-        for (ctx, clearance, serial), why, hit in self._clearances.finished() or ():
-            ctx._trip_clearance(clearance, serial, why, hit)
+        found = self._clearances.finished()
+        if found is not None:
+            # * Watches take their answer whole: a robot too close (with a hit), or one it cannot check.
+            for _ctx, watch, _serial in self._clearances_asked:
+                if isinstance(watch, ClearanceWatch):
+                    watch.found, watch.unchecked, watch.checked_at = {}, {}, now
+            for (ctx, clearance, serial), why, hit in found:
+                if isinstance(clearance, ClearanceWatch):
+                    (clearance.found if hit is not None else clearance.unchecked)[serial] = why
+                else:
+                    ctx._trip_clearance(clearance, serial, why, hit)
+            # * What the check found nothing for is clear: a `refuse_first` clearance may now be driven under.
+            tripped = {key for key, _why, _hit in found}
+            for key in self._clearances_asked:
+                if key not in tripped and isinstance(key[1], Clearance):
+                    key[1].checked = True
         asked = []
         for loaded in self._loaded.values():
             if loaded.stopped:
@@ -505,8 +536,22 @@ class HuskyMonitor(Node):
                                  if robot is not None else frozenset())
                     asked.append(((loaded.ctx, clearance, serial), robot_id(serial), clearance.margin, assumable,
                                   clearance.unknown_robots))
-        if asked:
-            self._clearances.check(snapshot, asked)
+        watching = now - self._watched_at >= WATCH_EVERY
+        for loaded in self._loaded.values() if watching else ():
+            if loaded.stopped:
+                continue
+            for watch in loaded.ctx._watches:
+                for serial in watch.serials:
+                    own = robot_id(serial)
+                    robot = snapshot.robots.get(own)
+                    if robot is not None:
+                        asked.append(((loaded.ctx, watch, serial), own, watch.margin,
+                                      assumable_joints(robot.model.movable_joints, watch.unknown_arms),
+                                      unknown_robots(snapshot, {own})))
+        if asked and self._clearances.check(snapshot, asked):
+            self._clearances_asked = [key for key, *_rest in asked]
+            if watching:
+                self._watched_at = now
 
     def _step_plugin(self, loaded: _LoadedPlugin) -> None:
         """Give one plugin its turn: count failed tasks and message signals, run intents, then update.

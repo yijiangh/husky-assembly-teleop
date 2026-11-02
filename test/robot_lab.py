@@ -9,12 +9,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import numpy as np
 from planning_fixtures import ALICE, BELLE, CINDY, robot_config
-from plugin_fakes import (ArmDriver, FakeContext, RobotiqDriver, ScaffoldingDriver, fake_arm, fake_node, fake_robot,
-                          fake_robotiq, fake_scaffolding)
+from plugin_fakes import (ArmDriver, FakeContext, MocapDriver, RobotiqDriver, ScaffoldingDriver, fake_arm, fake_node,
+                          fake_robot, fake_robotiq, fake_scaffolding, with_urdf_frames)
 
-from husky_assembly_teleop.robot_interface.frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.runs.runs import RunSettings
 from scaffolding_assembly_core.geometry import Pose
@@ -82,8 +80,8 @@ class RobotLab:
         self.drivers += [RobotiqDriver(robot.arms["ur_arm"].end_effector) for robot in (self.alice, self.belle)]
         self.bases = dict(BASES)
         self.live = True
-        #: The robots whose base mocap sees (`track`).
-        self.tracked: set[str] = set()
+        #: Serial -> mocap seeing that robot's base (`track`).
+        self.mocap: dict[str, MocapDriver] = {}
         self.tick(self.ctx.t)
 
     def track(self, serial: str) -> None:
@@ -92,23 +90,15 @@ class RobotLab:
         Under joint control its arms report tool0 by the URDF as their TCP (`ArmDriver`).
         """
         robot, config = self.robots[serial], next(config for config in self.configs if config.serial == serial)
-        urdf = config.model.urdf
-        robot.config.model = config.model
-        robot._husky_in_mocap_frame = fixed_transform(urdf, MOCAP_FRAME, HUSKY_FRAME)
-        for arm in robot.arms.values():
-            arm.urdf, arm.base_in_husky = urdf, fixed_transform(urdf, HUSKY_FRAME, f"{arm.config.name}_base_link")
-        robot.base.mocap_id = len(self.tracked) + 1
-        self.tracked.add(serial)
+        with_urdf_frames(robot, config)
+        self.mocap[serial] = MocapDriver(robot, self.bases[serial], len(self.mocap) + 1)
         self.tick(self.ctx.t)
 
     def tick(self, t: float) -> None:
         """Mocap sees the tracked bases, arms and tools move and report; the snapshot is taken from them."""
-        for serial in self.tracked:
-            state, pose = self.robots[serial].base.state, self.bases[serial]
-            state.position, state.orientation = np.array(pose.position), np.array(pose.orientation)
-            state.tracked = state.tracking_valid = True
-            state.last_update_time = state.last_fix_time = t
-            state.marker_errors.append((t, 0.0))
+        for serial, mocap in self.mocap.items():
+            mocap.pose = self.bases[serial]
+            mocap.tick(t)
         for driver in self.drivers:
             driver.tick(t)
         models = {config.serial: config.model for config in self.configs}

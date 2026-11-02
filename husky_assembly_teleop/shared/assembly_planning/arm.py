@@ -19,6 +19,7 @@ import numpy as np
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 
 from ...robot_interface.arm import JOINT_MOVE_MAX_SPEED, UR_JOINT_LIMITS
+from .collision import collisions
 from .joints import arm_joint_names
 from ..planner.planner_search import TIME_LIMIT, PlanResult
 from ..planner.rrt_connect import connect
@@ -98,7 +99,7 @@ def plan_arm(mirror: CompasFabMirror, arm_name: str, goal: Sequence[float], abor
                           time.time() - started)
 
     # * Check the start in full once; the fast `search_check` skips pairs the arm does not move.
-    hits = mirror.collisions()
+    hits = collisions(mirror)
     if hits:
         return refused("start", hits[0])
     check = mirror.search_check(names)

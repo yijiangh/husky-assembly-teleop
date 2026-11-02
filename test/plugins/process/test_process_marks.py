@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from plugin_fakes import FakeContext
 from process_fixtures import build_process
 
+from husky_assembly_teleop.colors import CURRENT, NONE, OK, WARN, rgb
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.plugins.process.plugin import ProcessPlugin
 from husky_assembly_teleop.shared.process_contract import MARK_ASSUMED, MARK_DONE, MARK_PENDING, Carry
@@ -41,17 +42,18 @@ def _set_up(tmp_path) -> tuple[ProcessPlugin, FakeContext]:
 
 
 def test_the_rows_show_the_runs_marks_until_another_load(tmp_path):
-    """Done rows are green, assumed ones orange, the selected one blue whatever its mark; a load drops the marks."""
+    """Done rows are green, assumed ones amber, the selected one blue whatever its mark; a load drops the marks."""
     plugin, ctx = _set_up(tmp_path)
     plugin.request_marks({"B1_J_joint": MARK_DONE, "B1_H_hold": MARK_ASSUMED, "B1_R_release": MARK_PENDING})
     plugin.select(5)  # B1_R_release's first movement
     plugin.draw(ctx)
     assert [(row.label, row.color) for row in plugin._action_rows[:4]] == [
-        ("1. B1_J_joint · cindy · 3 mv · done", "green"), ("2. B1_H_hold · alice · 2 mv · done (assumed)", "orange"),
-        ("3. B1_R_release · cindy · 2 mv · pending", "blue"), ("4. B2_J_joint · cindy · 4 mv", "gray")]
+        ("1. B1_J_joint · cindy · 3 mv · done", rgb(OK)),
+        ("2. B1_H_hold · alice · 2 mv · done (assumed)", rgb(WARN)),
+        ("3. B1_R_release · cindy · 2 mv · pending", rgb(CURRENT)), ("4. B2_J_joint · cindy · 4 mv", rgb(NONE))]
     plugin._take(plugin.process)
     plugin.draw(ctx)
-    assert plugin._action_rows[1].label == "2. B1_H_hold · alice · 2 mv" and plugin._action_rows[1].color == "gray"
+    assert plugin._action_rows[1].label == "2. B1_H_hold · alice · 2 mv" and plugin._action_rows[1].color == rgb(NONE)
 
 
 def test_the_carry_is_drawn_at_and_after_its_movement_and_dropped_on_load(tmp_path):

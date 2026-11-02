@@ -7,7 +7,7 @@ Whether a follower runs at all is `robot_interface.base.live_report`; receiving 
 from __future__ import annotations
 
 from ..robot_interface.base import FOLLOWER_SILENT_AFTER, FollowerState, live_report
-from .checks import BAD, GOOD, WARN, Check
+from .checks import BAD, GOOD, PENDING, WARN, Check
 
 
 def path_check(follower: FollowerState | None, path_id: int, sent_at: float, now: float) -> Check:
@@ -34,4 +34,7 @@ def path_check(follower: FollowerState | None, path_id: int, sent_at: float, now
         return Check(f"following {follower.progress:.0%}", WARN)
     if follower.state == "done":
         return Check("done", GOOD)
+    if follower.state == "idle":
+        # * No path, or stopped by an empty one: Cancel and Stop all send that.
+        return Check("idle", PENDING, follower.reason)
     return Check(follower.state, BAD, follower.reason)

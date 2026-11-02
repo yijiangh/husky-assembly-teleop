@@ -13,7 +13,7 @@ Two scrolling plots of the last few seconds, one sample per tick:
 ! `data` is a tuple of equal-length 1-D arrays: x first, then one per series in
   `series` order. Assign a new tuple: arrays edited in place are not sent.
 
-Run with:  -p plugins:="['example_plot']"
+Run with:  plugins:="example_plot"
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import SECTION_SENSOR, section
 
+# * Own colours: plot lines (test_colors skips this file).
 #: How much history each plot shows, in samples (ticks).
 HISTORY = 200
 

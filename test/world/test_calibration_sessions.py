@@ -7,9 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from husky_assembly_teleop.world.calibration_sessions import (SESSIONS_FOLDER, SIM_SESSIONS_FOLDER,
-                                                              default_calibration, explain,
-                                                              newest_session_file, resolve, robot_mocap_ids)
+from husky_assembly_teleop.robot_interface.mocap_definitions import BodyDefinition, body_dict
+from husky_assembly_teleop.world.calibration_sessions import (DEFINITION_KEY, SESSIONS_FOLDER, default_calibration,
+                                                              explain, newest_session_file, resolve, robot_mocap_ids,
+                                                              sessions_folder)
+
+pytestmark = pytest.mark.safety
 
 #: Alice's rigid body and serial in crl-husky's config.
 ALICE_ID, ALICE = 1840, "a200-0804"
@@ -60,12 +63,22 @@ def test_newest_session_wins_and_subfolders_are_ignored(tmp_path):
 
 
 def test_robots_and_simulations_never_read_each_others_sessions(tmp_path):
-    """The robots' relay sees only real sessions, a simulation's only the simulated ones, even if newer."""
+    """The robots' relay sees only real sessions, a simulation's only its domain's simulated ones, even if newer."""
     real = _session(tmp_path, "20261001", _shifted(0.002))
-    simulated = _session(tmp_path, "20261020", _shifted(0.003), sessions=SIM_SESSIONS_FOLDER)
+    simulated = _session(tmp_path, "20261020", _shifted(0.003), sessions=sessions_folder(True, 70))
+    assert sessions_folder(True, 70).as_posix() == "data_experiment/sim/calibration_data/domain_70"
     assert newest_session_file(tmp_path, ALICE) == real
-    assert newest_session_file(tmp_path, ALICE, SIM_SESSIONS_FOLDER) == simulated
-    assert resolve(ALICE_ID, ALICE, tmp_path, SIM_SESSIONS_FOLDER)[0].session == "20261020"
+    assert newest_session_file(tmp_path, ALICE, sessions_folder(True, 70)) == simulated
+    assert newest_session_file(tmp_path, ALICE, sessions_folder(True, 72)) is None
+    assert resolve(ALICE_ID, ALICE, tmp_path, sessions_folder(True, 70))[0].session == "20261020"
+
+
+def test_a_simulated_calibration_in_the_robots_folder_is_refused(tmp_path):
+    """Marked sim (`drive.environment`) but copied into the robots' sessions: the default instead, with why."""
+    _session(tmp_path, "20261020", {**_shifted(0.003), "environment": "sim", "ros_domain": 70})
+    calibration, warnings = resolve(ALICE_ID, ALICE, tmp_path)
+    assert calibration == default_calibration(ALICE_ID)
+    assert len(warnings) == 1 and "made in a simulation" in warnings[0]
 
 
 @pytest.mark.parametrize("content, why", [
@@ -111,3 +124,22 @@ def test_same_numbers_same_hash(tmp_path):
     _session(tmp_path, "20261020", content)
     calibration, _ = resolve(ALICE_ID, ALICE, tmp_path)
     assert calibration.session == "20261020" and calibration.sha256 == default.sha256
+
+
+def test_a_session_names_the_body_definition_it_was_built_for(tmp_path):
+    """Read back from the calibration file, and announced with it; the hash stays that of the transforms."""
+    plate = BodyDefinition(ALICE_ID, "alice", ((0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.0, 0.08, 0.01)), (0, 0, 0))
+    plain = _session(tmp_path, "20261020", _shifted(0.001))
+    plain_hash = resolve(ALICE_ID, ALICE, tmp_path)[0].sha256
+    plain.write_text(json.dumps({**_shifted(0.001), DEFINITION_KEY: body_dict(plate)}))
+    calibration, warnings = resolve(ALICE_ID, ALICE, tmp_path)
+    assert warnings == [] and calibration.body_definition == plate and calibration.sha256 == plain_hash
+    assert calibration.as_dict()[DEFINITION_KEY] == body_dict(plate)
+    assert default_calibration(ALICE_ID).body_definition is None
+
+
+def test_a_session_with_a_malformed_body_definition_falls_back(tmp_path):
+    """Not a body definition: refused like any malformed file, the default applied."""
+    _session(tmp_path, "20261020", {**_shifted(0.001), DEFINITION_KEY: {"id": 1840}})
+    calibration, warnings = resolve(ALICE_ID, ALICE, tmp_path)
+    assert calibration == default_calibration(ALICE_ID) and "is not a body definition" in warnings[0]

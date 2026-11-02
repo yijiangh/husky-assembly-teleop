@@ -32,8 +32,8 @@ from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE
                                                                  SERVO_INDEX, SERVO_PART, ExecRequest, serial_of,
                                                                  servo_part, step_parts)
 from husky_assembly_teleop.shared.runs.runs import RunSettings
-from husky_assembly_teleop.world.bar_pose import transform_points
-from husky_assembly_teleop.world.marker_layouts import bar_layouts
+from husky_assembly_teleop.shared.bars.layouts import bar_layouts
+from husky_assembly_teleop.world.marker_match import transform_points
 from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.ids import robot_id, split_link_id
 from scaffolding_assembly_core.kinematics import link_pose
@@ -394,8 +394,8 @@ def test_bar_servo_closes_a_flange_side_error_in_one_pass_and_carries_it():
     lab.markers(offset(0.003, roll_deg=0.1), where="bar")
     result = execute(lab, lab.servo_request(), True)
     assert result.status == DONE and result.done == (SERVO_INDEX,), result.reason
-    assert "converged on the MoCap bar" in lab.ended() and lab.published() == 1
-    assert "(the MoCap bar B20)" in lab.prompts()[0][0]
+    assert "converged on the mocap bar" in lab.ended() and lab.published() == 1
+    assert "(the mocap bar B20)" in lab.prompts()[0][0]
     record = lab.servo_record()
     assert record["servo_feedback"] == "mocap_bar" and record["planner_mode"] == "transfer+mocap_bar"
     assert len(record["moves"]) == 1 and record["servoing_data"][1]["bar"]["usable"]
@@ -419,7 +419,7 @@ def test_bar_servo_closes_a_world_frame_error_within_three_passes():
     lab.run.request_settings(servo_by_bar=True)
     lab.markers(offset(0.0, 0.003, roll_deg=0.1), where="world")
     result = execute(lab, lab.servo_request(), True)
-    assert result.status == DONE and "converged on the MoCap bar" in lab.ended(), result.reason
+    assert result.status == DONE and "converged on the mocap bar" in lab.ended(), result.reason
     record = lab.servo_record()
     assert 1 <= len(record["moves"]) <= 3 and lab.published() == len(record["moves"])
     for k, request in enumerate(lab.planner.requests):
@@ -462,13 +462,13 @@ def test_an_unusable_bar_reading_leaves_the_loop_on_tool0(markers, words):
     record = lab.servo_record()
     prompts = lab.prompts()
     assert record["servo_feedback"] == "tool0" and "(tool0)" in prompts[1][0]
-    assert prompts[0][1] and "SERVO by bar: no usable MoCap fit of B20 (asset 1020): " in prompts[0][0]
+    assert prompts[0][1] and "SERVO by bar: no usable mocap fit of B20 (asset 1020): " in prompts[0][0]
     assert words in prompts[0][0]
     reasons = [reading["bar"]["reason"] for reading in record["servoing_data"]]
     assert len(reasons) == 2 and all(words in reason for reason in reasons), reasons
-    assert sum("the MoCap bar is not usable" in line for line in lab.ctx.lines("warn")) == 1
+    assert sum("the mocap bar is not usable" in line for line in lab.ctx.lines("warn")) == 1
     assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start "
-                               "(the MoCap bar B20 is not usable: ") for line in lab.ctx.lines("info"))
+                               "(the mocap bar B20 is not usable: ") for line in lab.ctx.lines("info"))
 
 
 @pytest.mark.safety
@@ -479,7 +479,7 @@ def test_servo_by_bar_without_a_bar_asks_first_and_cancel_records_without_sendin
     result = execute(lab, lab.servo_request(), False)
     assert result.status == CANCELLED and result.done == () and lab.published() == 0 and lab.free()
     text, warn = lab.prompts()[0]
-    assert warn and text.startswith("cindy (a200-0806): B20_J_transfer — SERVO by bar: no usable MoCap fit of B20 "
+    assert warn and text.startswith("cindy (a200-0806): B20_J_transfer — SERVO by bar: no usable mocap fit of B20 "
                                     "(asset 1020): the bar could not be measured (no marker sample). Confirm to servo "
                                     "tool0 onto the authored targets of the insert start instead")
     assert "cancelled at the bar prompt" in result.reason and not lab.planner.requests
@@ -499,8 +499,8 @@ def test_servo_by_bar_without_a_bar_goes_on_with_tool0_after_confirm():
     assert len(prompts) == 2 and "SERVO 1/8 onto the insert start (tool0)" in prompts[1][0]
     info = lab.ctx.lines("info")
     assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start "
-                               "(the MoCap bar B20 is not usable: the bar could not be measured") for line in info)
-    assert any(line.startswith("### SERVOING converged at iter 1 on tool0 (< 0.2 mm): the MoCap bar fit was never "
+                               "(the mocap bar B20 is not usable: the bar could not be measured") for line in info)
+    assert any(line.startswith("### SERVOING converged at iter 1 on tool0 (< 0.2 mm): the mocap bar fit was never "
                                "usable") for line in info)
 
 

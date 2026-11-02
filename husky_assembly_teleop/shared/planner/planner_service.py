@@ -116,14 +116,15 @@ class PlannerService(HuskyPlugin, Generic[R]):
 
         Args:
             plan_id: The plan.
-            unknown_robots: Ids of other robots the operator lets be unknown during the motion (`unknown_allowed`).
+            unknown_robots: Ids of robots the operator lets be unknown during the motion (`unknown_allowed`); the
+                plan's own robot among them lets `execute` check its unknown arms where last seen, else stowed.
         """
         future = asyncio.get_running_loop().create_future()
         self._ctx.submit(f"commit plan {plan_id}", lambda: self._commit(plan_id, future, frozenset(unknown_robots)))
         return future
 
     def unknown_allowed(self, plan: Plan[R]) -> frozenset[str]:
-        """Ids of the other robots the operator let be unknown when committing `plan`; for `execute`'s clearance."""
+        """Ids of the robots the operator let be unknown when committing `plan`; for `execute`'s clearance."""
         return self._unknown.get(plan.id, frozenset())
 
     def cancel_commit(self) -> bool:
@@ -193,7 +194,9 @@ class PlannerService(HuskyPlugin, Generic[R]):
             abort.set()
         search.finished()
         if result.path is None:
-            self._settle(future, replace(plan, state="failed", message=f"no plan: {result.reason}", hit=result.hit))
+            where = "; Collisions lists it" if result.hit is not None else ""
+            self._settle(future, replace(plan, state="failed", message=f"no plan: {result.reason}{where}",
+                                         hit=result.hit))
             return
         message, warning = search.accepted(result)
         self._settle(future, replace(plan, state="ready", path=result.path, message=message, warning=warning))

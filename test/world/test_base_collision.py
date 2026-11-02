@@ -13,6 +13,8 @@ from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Attachment, Body, Scene, world_poses
 
+pytestmark = pytest.mark.safety
+
 #: A post the robot passes 1 m to its left, clear of it but not of a 2.4 m bar held across it.
 POST = Body("test/post", box_geometry((0.1, 0.1, 2.0)), Pose((1.0, 1.1, 1.0)), label="post")
 

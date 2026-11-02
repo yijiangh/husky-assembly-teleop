@@ -1,7 +1,7 @@
 """
 One module (or package) per feature, found by `plugin.discover`.
 
-Add a file with @register; run it with `-p plugins:="['<name>']"`. Its tests go in `test/plugins/<name>/`, where
+Add a file with @register; run it with `plugins:="<name>"`. Its tests go in `test/plugins/<name>/`, where
 `pytest -m <name>` runs them all, slow ones too (AGENTS.md).
 
 ! Everything that is not a real robot lives here; the runtime knows nothing about
@@ -40,11 +40,12 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`. Its tests go 
   (`ui.style.chip_line`), text that comes and goes below the buttons.
 * Prefer tabs to folders: users can drag tabs into windows of their own, folders stay put.
   - `ctx.view.ui()` is the plugin's tab in the side panel, at its `tab_path` (e.g. `("Control",)`, default its
-    name); a path under "Plan" (`ui.visualization.PLAN_TAB`) goes in the Plan window at the top instead.
+    name). A person's layout file may give a top-level folder a window of its own, or move a plugin's tab
+    (`ui/layout.py`); plugins never assume either.
     `hidden = True` starts it in the minimized panel at the right edge, for tools not needed every session.
   - Plugins with the same `tab_path` share one tab through bands, `ctx.view.ui(band=...)`, sorted by number; the
     first to start sets its icon. The Assembly tab holds process, assembly_steps, movement_exec and assembly_run
-    (`ui/assembly_tab.py`).
+    (`shared/assembly_tab/layout.py`).
   - `ctx.view.tab(label, hidden=...)` adds a further tab, nested in a tab named after the plugin, so its owner shows.
   - `ctx.view.folder()` is a folder in the main panel, for what must always show, like health's rows.
   - ! Set `icon`: every tab a plugin owns at the top of a panel carries it (also its phone tab); shared parents like

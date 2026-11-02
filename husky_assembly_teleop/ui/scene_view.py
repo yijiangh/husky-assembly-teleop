@@ -18,10 +18,11 @@ from scaffolding_assembly_core.geometry import BoxShape, CylinderShape, Geometry
 from scaffolding_assembly_core.ids import TRACKED
 from scaffolding_assembly_core.scene import Scene
 from scaffolding_assembly_core.geometry import Pose
+from ..colors import BODY, rgb01
 from .quaternion import quaternion_to_wxyz
 
 #: Colour of a body without one of its own, (r, g, b, a) from 0 to 1.
-DEFAULT_COLOR = (0.7, 0.7, 0.7, 1.0)
+DEFAULT_COLOR = rgb01(BODY, 1.0)
 
 
 @dataclass

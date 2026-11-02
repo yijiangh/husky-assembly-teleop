@@ -1,5 +1,7 @@
 """
-Report one base planner experiment (doc/base_planner_manual.md): the planners side by side on the standard tasks.
+Report one base planner experiment: the planners side by side on the standard tasks.
+
+The experiment: doc/experiments/base_planner_manual.md.
 
 Reads every attempt folder of the experiment under --recordings (default: the base planner's RECORDING_FOLDER under the
 Drive root, HUSKY_DRIVE_ROOT) and writes its `_analysis/` (`experiments/base_planner/analysis.py`): summary.md, one CSV

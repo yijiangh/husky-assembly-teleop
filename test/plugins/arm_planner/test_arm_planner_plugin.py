@@ -19,7 +19,7 @@ from husky_assembly_teleop.plugins.arm_planner.panel_plugin import ArmPlannerPan
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.plugins.arm_planner.planner_plugin import ArmPlannerPlugin
-from husky_assembly_teleop.shared.arm_planner_contract import ArmPlanRequest
+from husky_assembly_teleop.shared.arm_planner_contract import MAX_SLOWDOWN, ArmPlanRequest
 from husky_assembly_teleop.shared.execution.send import ARRIVED_TOLERANCE
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
@@ -59,8 +59,8 @@ class FakeCtx:
         self.world = SimpleNamespace(robots={SERIAL: SimpleNamespace(
             config=SimpleNamespace(serial=SERIAL), arms={ARM: arm}, base=SimpleNamespace(mocap_id=5, state=mocap),
             lease=None)})
-        robot = SimpleNamespace(enabled=False, acting_problems=lambda: [], base=pose(0.0, 0.0, 0.0), base_tracked=True)
-        self.scene = SimpleNamespace(snapshot=SimpleNamespace(robots={robot_id(SERIAL): robot}))
+        robot = RobotObject(robot_id(SERIAL), SimpleNamespace(movable_joints=()), pose(0.0, 0.0, 0.0), {})
+        self.scene = SimpleNamespace(snapshot=Scene(robots={robot.id: robot}))
         self.kinematics = SimpleNamespace(joints=lambda _serial: self.joints,
                                           base_pose=lambda _serial: pose(*self.base))
 
@@ -101,7 +101,8 @@ def make_planner(ctx: FakeCtx) -> ArmPlannerPlugin:
 @pytest.fixture
 def found_path(monkeypatch):
     """Every search finds PATH."""
-    monkeypatch.setattr(arm_plugin, "plan_arm", lambda world, mirror, arm, goal, abort: PlanResult(PATH, seconds=0.1))
+    monkeypatch.setattr(arm_plugin, "plan_arm",
+                        lambda world, mirror, arm, goal, abort: PlanResult(PATH, seconds=0.1))
 
 
 def run(planner: ArmPlannerPlugin, ctx: FakeCtx, scenario):
@@ -186,10 +187,15 @@ def test_the_start_base_belongs_to_the_plan_it_was_made_for(found_path):
     assert planner._start_base is None and planner.stale_reason(ctx, plan) == ""
 
 
-def _driven(speed: float = 1.0, start: np.ndarray = START) -> tuple[FakeContext, object]:
-    """A context over robot SERIAL with a real arm ARM at `start`, run by an ArmDriver at `speed` (1: as timed)."""
+def _driven(speed: float = 1.0, start: np.ndarray = START, **measured) -> tuple[FakeContext, object]:
+    """A context over robot SERIAL with a real arm ARM at `start`, run by an ArmDriver at `speed` (1: as timed).
+
+    The snapshot has SERIAL measured, or as `measured` says (`base_tracked`, `unmeasured`).
+    """
     driver = None
-    ctx = FakeContext(name="arm_planner", step=lambda t: driver.tick(t))
+    model = robot_config(CINDY).model
+    ctx = FakeContext(name="arm_planner", step=lambda t: driver.tick(t), snapshot=Scene(robots={
+        robot_id(SERIAL): RobotObject(robot_id(SERIAL), model, Pose(), {}, **measured)}))
     node = fake_node(ctx.now, ctx.logs)
     arm = fake_arm(node, ARM, start)
     ctx.world.robots[SERIAL] = robot = fake_robot(node, SERIAL, [arm])
@@ -197,7 +203,7 @@ def _driven(speed: float = 1.0, start: np.ndarray = START) -> tuple[FakeContext,
     return ctx, arm
 
 
-def _commit(ctx: FakeContext, answers: list, cancel_after: int | None = None) -> np.ndarray:
+def _commit(ctx: FakeContext, answers: list, cancel_after: int | None = None, clearance: bool = True) -> np.ndarray:
     """Execute the ready plan under the robot's lease, cancelled after `cancel_after` ticks if given; then let 2 s pass.
 
     Returns:
@@ -205,7 +211,9 @@ def _commit(ctx: FakeContext, answers: list, cancel_after: int | None = None) ->
     """
     async def commit():
         with ctx.lease_robots([SERIAL], "commit plan 1"):
-            await ArmPlannerPlugin().execute(ctx, ready_plan(), lambda *answer: answers.append(answer))
+            planner = ArmPlannerPlugin()
+            planner.clearance = clearance
+            await planner.execute(ctx, ready_plan(), lambda *answer: answers.append(answer))
 
     async def scenario():
         task = asyncio.create_task(commit())
@@ -237,6 +245,29 @@ def test_execute_sends_the_path_and_waits_until_the_arm_is_at_its_end():
     assert np.allclose(ended, GOAL, atol=1e-3)
     clearance, = ctx.clearances
     assert (clearance.serials, clearance.margin) == ((SERIAL,), ARM_STOP_DISTANCE) and ARM_STOP_DISTANCE == 0.01
+
+
+@pytest.mark.safety
+def test_with_clearance_unticked_the_path_goes_out_without_one():
+    """Clearance is on by default; off, the same path is sent with no clearance kept."""
+    assert ArmPlannerPlugin().clearance
+    ctx, answers = _driven()[0], []
+    ended = _commit(ctx, answers, clearance=False)
+    assert answers == [(True, f"sent to {SERIAL} {ARM}")] and not ctx.clearances
+    assert np.allclose(ended, GOAL, atol=1e-3)
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("clearance", [True, False])
+@pytest.mark.parametrize("measured, why", [
+    ({"unmeasured": frozenset(arm_joint_names("right_ur_arm"))}, "right_ur_arm not measured"),
+    ({"base_tracked": False}, "base not measured"),
+])
+def test_an_arm_moves_only_with_the_base_and_every_arm_measured(measured, why, clearance):
+    """The other arm unknown or the base untracked: nothing is sent, Clearance on or off."""
+    (ctx, arm), answers = _driven(**measured), []
+    _commit(ctx, answers, clearance=clearance)
+    assert answers == [(False, f"nothing sent: {SERIAL}: {why}")] and not arm._trajectory.messages
 
 
 @pytest.mark.safety
@@ -312,6 +343,39 @@ def test_target_change_compares_the_sliders_and_arm_with_the_plan():
     assert "arm changed" in panel.target_change(None, ready_plan())
 
 
+def test_set_duration_re_times_the_ready_plan_within_its_limits_and_keeps_its_id():
+    """No replan: the path at the asked seconds, clamped to 1 to MAX_SLOWDOWN times its fastest; stale checks go on."""
+    planner = ArmPlannerPlugin()
+    plan = ready_plan()
+    planner._plan, planner._start_base = plan, (plan.path, (0.0, 0.0, 0.0), False)
+    fastest = plan.path.duration
+    planner.set_duration(plan.id, 2 * fastest)
+    assert planner.plan.id == plan.id and planner.plan.path.duration == pytest.approx(2 * fastest)
+    assert planner._start_base[0] is planner.plan.path
+    planner.set_duration(plan.id, 100 * fastest)
+    assert planner.plan.path.slowdown == MAX_SLOWDOWN
+    planner.set_duration(plan.id, 0.0)
+    assert planner.plan.path.duration == pytest.approx(fastest)
+    planner.set_duration(plan.id + 1, 3 * fastest)
+    assert planner.plan.path.slowdown == 1.0, "another plan's id changes nothing"
+
+
+def test_the_duration_slider_re_times_the_plan_and_new_plans_take_its_slowdown():
+    """Moving it stretches the plan and keeps the preview's place along it; the next plan comes at the same slowdown."""
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    planner._plan = ready_plan()
+    panel._t = 1.0
+    panel._set_duration(3 * planner.plan.path.fastest)
+    assert panel._slowdown == pytest.approx(3.0) and panel._t == pytest.approx(3.0)
+    planner._plan = Plan(2, REQUEST, "ready", path=PATH)
+    panel.update(SimpleNamespace(now=lambda: 0.0, log_warn=lambda _text: None))
+    assert planner.plan.id == 2 and planner.plan.path.duration == pytest.approx(3 * PATH.duration)
+    planner._plan = Plan(3, REQUEST, "planning")
+    panel._set_duration(1.0)
+    assert panel._message == "nothing to re-time: plan first" and panel._slowdown == pytest.approx(3.0)
+
+
 def test_make_request_takes_the_sliders():
     """The request carries the chosen robot and arm and the slider values in radians."""
     request = make_panel(ArmPlannerPlugin()).make_request(None)
@@ -382,15 +446,17 @@ def test_a_plan_warns_about_other_robots_that_stand_in(found_path):
     _with_others(ctx, RobotObject(robot_id(belle.serial), belle.model, Pose((3.0, 0.0, 0.0)), {}, base_tracked=False,
                                   base_time=1.0, joints_time=1.0),
                  RobotObject(robot_id(alice.serial), alice.model, Pose(), {}, enabled=False))
-    planner = make_planner(ctx)
+    planner, warned = make_planner(ctx), []
+    ctx.log_warn = warned.append
 
     async def scenario():
         return await planner.request_plan(REQUEST)
 
     plan = run(planner, ctx, scenario)
-    assert plan.state == "ready" and plan.warning
-    assert "robots/a200-0805 is not measured (its base is not tracked): checked where last seen" in plan.message
-    assert "a200-0804" not in plan.message
+    assert plan.state == "ready" and plan.warning and "(1 other robot not measured: see Health)" in plan.message
+    assert any("a200-0805: base not measured, checked where last seen" in line
+               for line in warned)
+    assert not any("a200-0804" in line for line in warned)
 
 
 def test_a_plan_with_every_robot_measured_has_no_such_warning(found_path):

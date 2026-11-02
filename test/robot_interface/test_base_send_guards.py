@@ -103,21 +103,6 @@ def test_a_silent_follower_counts_as_none():
     assert "no follower" in base.follow_problem()
 
 
-def test_a_mocap_offset_is_taken_off_a_path_and_shifts_the_stored_pose():
-    """The follower reads the mocap world unshifted: x and y go out minus the offset; the pose moves at once."""
-    base = _base()
-    base.state.position = np.array([1.0, 2.0, 0.0])
-    base.set_mocap_offset([0.1, -0.2, 0.0])
-    np.testing.assert_allclose(base.state.position, [1.1, 1.8, 0.0])
-    base.send_path([1.0, 2.0], [3.0, 4.0], [0.0, 0.1])
-    message, = base._base_path.sent
-    assert list(message.x) == [0.9, 1.9] and list(message.y) == [3.2, 4.2] and list(message.yaw) == [0.0, 0.1]
-    base.set_mocap_offset([0.0, 0.0, 0.0])
-    np.testing.assert_allclose(base.state.position, [1.0, 2.0, 0.0])
-    with pytest.raises(ValueError, match="three finite"):
-        base.set_mocap_offset([math.nan, 0.0, 0.0])
-
-
 def test_finite_commands_go_out():
     """A finite twist and a finite path are published while the base may drive, and fired as sent; so is a stop."""
     base = _base()

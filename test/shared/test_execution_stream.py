@@ -9,18 +9,19 @@ import math
 import numpy as np
 import pytest
 from planning_fixtures import CINDY, robot_config
-from plugin_fakes import ArmDriver, FakeContext, MocapDriver, fake_arm, fake_node, fake_robot, lease_to_test
+from plugin_fakes import (ArmDriver, FakeContext, MocapDriver, assert_same_pose, fake_arm, fake_node, fake_robot,
+                          lease_to_test, with_urdf_frames)
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER,
                                                        SCALED_JOINT_TRAJECTORY_CONTROLLER)
 from husky_assembly_teleop.robot_interface.base import BaseState
-from husky_assembly_teleop.robot_interface.frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from husky_assembly_teleop.robot_interface.mocap_state import POSE_TIMEOUT
 from husky_assembly_teleop.shared.execution.stream import (ARRIVAL, FK_TCP_TOL, MAX_SAMPLES, SETTLE_CEILING,
                                                            SETTLE_WINDOW, Recorder, Segment, Settling, fk_tcp_gap,
                                                            line_target, measured_tool0, plan_stream, progress,
-                                                           split_rows, split_seconds, stream, target_problem, tool0_fk)
+                                                           split_rows, split_seconds, stream, target_problem)
+from husky_assembly_teleop.world.tcp import tool0_in_base_link
 from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
@@ -44,13 +45,6 @@ def moved(pose: Pose, shift=(0.0, 0.0, 0.0), yaw_deg: float = 0.0) -> Pose:
     return Pose.from_arrays(np.add(pose.position, shift), (turn * Rotation.from_quat(pose.orientation)).as_quat())
 
 
-def assert_same_pose(a: Pose, b: Pose, tolerance: float = 1e-12) -> None:
-    """Positions and turns equal within `tolerance` (a quaternion and its negative are the same turn)."""
-    np.testing.assert_allclose(a.position, b.position, rtol=0.0, atol=tolerance)
-    sign = 1.0 if np.dot(a.orientation, b.orientation) >= 0.0 else -1.0
-    np.testing.assert_allclose(a.orientation, sign * np.asarray(b.orientation), rtol=0.0, atol=tolerance)
-
-
 class Lab:
     """Cindy with her URDF frames, under the compliance controller at her measured TCP, at BASE; leased to the test.
 
@@ -62,14 +56,8 @@ class Lab:
         """Build Cindy, measure her TCP by her kinematics, then switch her arms to compliance."""
         self.ctx = FakeContext(step=self.tick)
         node = fake_node(self.ctx.now, self.ctx.logs)
-        config = robot_config(CINDY)
-        urdf = config.model.urdf
         arms = [fake_arm(node, name, joints) for name, joints in ARMS.items()]
-        for arm in arms:
-            arm.urdf, arm.base_in_husky = urdf, fixed_transform(urdf, HUSKY_FRAME, f"{arm.config.name}_base_link")
-        self.robot = lease_to_test(fake_robot(node, "a200-0806", arms))
-        self.robot.config.model = config.model
-        self.robot._husky_in_mocap_frame = fixed_transform(urdf, MOCAP_FRAME, HUSKY_FRAME)
+        self.robot = with_urdf_frames(lease_to_test(fake_robot(node, "a200-0806", arms)), robot_config(CINDY))
         self.mocap = MocapDriver(self.robot, BASE, MOCAP_ID)
         self.drivers = [ArmDriver(arm, self.robot, lag=lag) for arm in arms]
         self.later: list = []
@@ -404,12 +392,12 @@ def test_fk_and_the_measured_tcp_disagreeing_by_11_mm_is_over_the_tolerance():
     assert fk_tcp_gap(lab.robot, "left_ur_arm") is None
 
 
-def test_tool0_fk_is_tool0_in_the_arms_base_link():
+def test_tool0_in_base_link_is_tool0_in_the_arms_base_link():
     """tool0 by the kinematics, seen from the arm's base_link: the URDF's root-frame poses composed."""
     urdf = robot_config(CINDY).model.urdf
     joints = {f"right_ur_arm_{name}": value for name, value in zip(UR_JOINT_NAMES, RIGHT)}
     base = link_pose(urdf, Pose(), joints, "right_ur_arm_base_link")
-    assert_same_pose(compose(base, tool0_fk(urdf, "right_ur_arm", joints)),
+    assert_same_pose(compose(base, tool0_in_base_link(urdf, "right_ur_arm", joints)),
                      link_pose(urdf, Pose(), joints, "right_ur_arm_tool0"), 1e-9)
 
 

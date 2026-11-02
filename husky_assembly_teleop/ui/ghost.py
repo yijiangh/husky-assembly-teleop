@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Iterable, Mapping
 
 import numpy as np
 
+from ..colors import PLAN, TARGET, rgb01
 from .quaternion import quaternion_to_wxyz
 from .visualization import FastViserUrdf, shared_urdf
 
@@ -22,13 +23,12 @@ if TYPE_CHECKING:
     from ..plugin_api.context import PluginContext
     from scaffolding_assembly_core.geometry import Pose
 
-#: Colours (r, g, b, alpha from 0 to 1) shared by the plugins, the old monitor's: blue where a robot should go (the
-#: process panel's movement state, the arm planner's target), orange at the base planner's target, green where a plan
-#: has it; only the live robots show their true colours.
-GOAL_COLOR = (0.0, 0.2, 0.5, 0.5)       # blue: a goal, e.g. solved at the live base (the old GOAL_BLUE)
-TARGET_COLOR = GOAL_COLOR               # blue: where it should go
-BASE_TARGET_COLOR = (0.94, 0.55, 0.0, 0.5)  # orange (#f08c00, the TARGET section): the base planner's target
-PATH_COLOR = (0.0, 0.5, 0.2, 0.5)       # green: where the plan has it at the slider time (the old TRAJECTORY_GREEN)
+#: Colours (r, g, b, alpha from 0 to 1) shared by the plugins: every target (process movement, arm and base planner)
+#: in the one target blue, where a plan has the robot in the plan green; only the live robots show their true colours.
+GOAL_COLOR = rgb01(TARGET, 0.5)         # a goal, e.g. solved at the live base
+TARGET_COLOR = GOAL_COLOR               # where it should go
+BASE_TARGET_COLOR = GOAL_COLOR          # the base planner's target
+PATH_COLOR = rgb01(PLAN, 0.5)           # where the plan has it at the slider time
 #: Colour per kind; the kind is also the scene subcategory.
 KIND_COLORS = {"target": TARGET_COLOR, "base_target": BASE_TARGET_COLOR, "path": PATH_COLOR, "goal": GOAL_COLOR}
 

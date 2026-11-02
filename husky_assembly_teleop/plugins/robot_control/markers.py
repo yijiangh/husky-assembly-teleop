@@ -13,17 +13,18 @@ from ...plugin_api.context import PluginContext
 from ...robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER, ArmInterface
 from ...robot_interface.ur_frames import STOCK_YAW
 from ...ui.quaternion import quaternion_to_wxyz
+from ...colors import AMBER, GREEN, TARGET, rgb
 from ...ui.style import block
 
-#: Poses drawn in 3D while the Cartesian controller runs: kind, label, origin colour (r, g, b), axis length (m).
+#: Poses drawn in 3D while the Cartesian controller runs: kind, label, origin colour, axis length (m).
 FRAME_MARKERS = (
-    ("target", "target (sliders, gizmo)", (255, 200, 0), 0.12),
-    ("tcp", "TCP reported", (40, 170, 60), 0.08),
+    ("target", "target (sliders, gizmo)", TARGET, 0.12),
+    ("tcp", "TCP reported", GREEN, 0.08),
 )
 #: Force arrows drawn from the reported TCP: kind, label, colour.
 FORCE_ARROWS = (
-    ("force_target", "force (sliders)", (255, 200, 0)),
-    ("force_applied", "force applied", (255, 110, 0)),
+    ("force_target", "force (sliders)", TARGET),
+    ("force_applied", "force applied", AMBER),
 )
 FORCE_ARROW_SCALE = 0.01  # metres per newton: 20 N draws 20 cm
 #: The gizmo is moved to the sliders' target only when this far from it, metres and radians: closer, the slider
@@ -55,7 +56,7 @@ def add_frame_markers(ctx: PluginContext, serial: str, arm: ArmInterface) -> dic
         dict[str, viser.FrameHandle]: One marker per FRAME_MARKERS kind.
     """
     return {name: ctx.view.scene.add_frame(_marker_path(ctx, name, serial, arm), axes_length=length, axes_radius=0.004,
-                                           origin_radius=0.012, origin_color=color, visible=False)
+                                           origin_radius=0.012, origin_color=rgb(color), visible=False)
             for name, _, color, length in FRAME_MARKERS}
 
 
@@ -71,7 +72,7 @@ def add_force_arrows(ctx: PluginContext, serial: str, arm: ArmInterface) -> dict
         dict[str, viser.ArrowsHandle]: One arrow per FORCE_ARROWS kind.
     """
     return {name: ctx.view.scene.add_arrows(_marker_path(ctx, name, serial, arm), points=np.zeros((1, 2, 3)),
-                                            colors=color, shaft_radius=0.004, head_radius=0.012, head_length=0.03,
+                                            colors=rgb(color), shaft_radius=0.004, head_radius=0.012, head_length=0.03,
                                             visible=False)
             for name, _, color in FORCE_ARROWS}
 
@@ -104,7 +105,7 @@ def add_target_gizmo(ctx: PluginContext, serial: str, arm: ArmInterface,
 def controller_base(ctx: PluginContext, serial: str, arm: ArmInterface) -> Pose:
     """The world pose of the compliance controller's own `base_link`: `base_link_inertia` turned by STOCK_YAW.
 
-    ? Markers are placed in it, so they show where the controller will go. See doc/ur_frames.md.
+    ? Markers are placed in it, so they show where the controller will go. See doc/lab/ur_frames.md.
     """
     inertia = ctx.kinematics.link_pose(serial, f"{arm.config.name}_base_link_inertia")
     return compose(inertia, Pose(orientation=tuple(Rotation.from_euler("z", -STOCK_YAW).as_quat())))
@@ -120,9 +121,9 @@ def target_from_world(ctx: PluginContext, serial: str, arm: ArmInterface,
 def marker_legend() -> str:
     """HTML legend of the 3D markers, for the arm's panel."""
     style = "font-size:11px;margin-right:8px;white-space:nowrap"
-    return block("".join(f'<span style="{style}"><span style="color:rgb{color}">●</span> {text}</span>'
+    return block("".join(f'<span style="{style}"><span style="color:{color}">●</span> {text}</span>'
                          for _, text, color, _ in FRAME_MARKERS)
-                 + "".join(f'<span style="{style}"><span style="color:rgb{color}">➜</span> {text}</span>'
+                 + "".join(f'<span style="{style}"><span style="color:{color}">➜</span> {text}</span>'
                            for _, text, color in FORCE_ARROWS))
 
 

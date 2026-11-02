@@ -20,6 +20,7 @@ import math
 import random
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from typing import Iterable, Iterator
 
 import numpy as np
@@ -208,7 +209,8 @@ class PathCollisionCheck:
                        margin: float = PATH_CLEARANCE) -> CollisionHit | None:
         """What the robot would come within `margin` of along `poses` (n x 3), or None if the path is clear.
 
-        Other robots not measured are checked as their stand-ins (`with_stand_ins`).
+        Other robots not measured are checked as their stand-ins (`with_stand_ins`); the robot's own arms not measured
+        where last seen, else stowed: the run's clearance decides whether it may drive so.
         """
         return await self._run(self._path_hit, snapshot, serial, check_poses(poses), margin)
 
@@ -223,5 +225,9 @@ class PathCollisionCheck:
 
     def _path_hit(self, snapshot: Scene, serial: str, poses: np.ndarray, margin: float) -> CollisionHit | None:
         """Worker: sync the world to the snapshot and say what the robot comes too close to first along the poses."""
-        self._world.sync(with_stand_ins(snapshot, {robot_id(serial)}).scene)
-        return self._world.path_hit(robot_id(serial), poses, margin)
+        own = robot_id(serial)
+        scene = with_stand_ins(snapshot, {own}).scene
+        if scene.robots[own].unmeasured:
+            scene = replace(scene, robots={**scene.robots, own: replace(scene.robots[own], unmeasured=frozenset())})
+        self._world.sync(scene)
+        return self._world.path_hit(own, poses, margin)

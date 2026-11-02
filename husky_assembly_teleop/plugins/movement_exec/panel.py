@@ -16,8 +16,9 @@ import viser
 
 from ...plugin_api.context import PluginContext
 from ...robot_interface.end_effectors import ScaffoldingV3
-from ...ui.assembly_tab import CANCEL_ICON, CONFIRM_ICON, EXEC_SETTINGS_BAND, PROMPT_BAND
-from ...ui.phone import big_buttons, phone_text, side_by_side_css
+from ...shared.assembly_tab.layout import CANCEL_ICON, CONFIRM_ICON, EXEC_SETTINGS_BAND, PROMPT_BAND
+from ...ui.css import side_by_side_css
+from ...ui.phone import big_buttons, phone_text
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, chip_line, section
 
 if TYPE_CHECKING:

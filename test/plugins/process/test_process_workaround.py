@@ -125,7 +125,7 @@ def test_the_flip_is_refused_while_a_step_has_a_robots_lease(small):
     plugin, ctx = _set_up(small)
     slot = LeaseSlot("a200-0806")
     ctx.world.robots["a200-0806"] = SimpleNamespace(lease_slot=slot)
-    lease = take_lease([slot], "movement_exec: exec B1_M2_insert")
+    lease = take_lease([slot], "movement_exec: exec B1_M2_insert", owner="movement_exec")
     revision = plugin.revision
     plugin._transfer.callback(False)
     assert plugin.transfer_as_free and plugin.revision == revision

@@ -17,13 +17,10 @@ import numpy as np
 import viser
 
 from ...plugin_api.trace import Signal, Trace
+from ...shared.execution.servo_record import BASE_COLORS, FIRST_ARM_COLORS, SECOND_ARM_COLORS
 from ...ui.style import NONE, chip, chip_line, numbers, values
 from ...ui.trace_plot import TracePlot
 
-#: Line colours: the first arm's x, y, z and |d| in reds, the second's in greens, the base's in blues.
-FIRST_ARM = ("#e03131", "#f06595", "#c92a2a", "#ffa8a8")
-SECOND_ARM = ("#2f9e44", "#69db7c", "#2b8a3e", "#b2f2bb")
-BASE = ("#4263eb", "#74c0fc", "#1c7ed6", "#a5d8ff")
 #: Samples kept per trace: passes of a servo (far more than any), ticks of a compliant part (a 300 s hold at 20 Hz).
 SERVO_SAMPLES, COMPLIANT_SAMPLES = 200, 6000
 #: Sides in series order; a one-arm robot fills the first family, the other stays NaN.
@@ -57,9 +54,10 @@ class ExecPlots:
                                  Signal("torque", _nothing, per_axis, "Nm")), COMPLIANT_SAMPLES)
         self._panel = panel
         self._note = gui.add_html(chip_line(""))
-        arms = FIRST_ARM + SECOND_ARM
-        colors = {"tool0_pos_err": arms, "tool0_rot_err": FIRST_ARM[:3] + SECOND_ARM[:3], "base_pos_diff": BASE,
-                  "base_rot_diff": BASE[:3], "bar": BASE[:2], "force_change": (FIRST_ARM[3], SECOND_ARM[3])}
+        arms = FIRST_ARM_COLORS + SECOND_ARM_COLORS
+        colors = {"tool0_pos_err": arms, "tool0_rot_err": FIRST_ARM_COLORS[:3] + SECOND_ARM_COLORS[:3],
+                  "base_pos_diff": BASE_COLORS, "base_rot_diff": BASE_COLORS[:3], "bar": BASE_COLORS[:2],
+                  "force_change": (FIRST_ARM_COLORS[3], SECOND_ARM_COLORS[3])}
         spans = {"tool0_pos_err": 0.1, "tool0_rot_err": 0.01, "base_pos_diff": 0.1, "base_rot_diff": 0.01,
                  "bar": 0.1, "force_change": 1.0}
         self._servo_folder = gui.add_folder("servo")
@@ -75,9 +73,9 @@ class ExecPlots:
         with self._compliant_folder:
             self._plots += [
                 TracePlot(gui, self._compliant, "force", seconds=None, min_span=1.0, x_label="s",
-                          colors=FIRST_ARM[:3] + SECOND_ARM[:3]),
+                          colors=FIRST_ARM_COLORS[:3] + SECOND_ARM_COLORS[:3]),
                 TracePlot(gui, self._compliant, "torque", seconds=None, min_span=0.1, x_label="s",
-                          colors=FIRST_ARM[:3] + SECOND_ARM[:3])]
+                          colors=FIRST_ARM_COLORS[:3] + SECOND_ARM_COLORS[:3])]
         self._arms: tuple[str, ...] = ()
         self._label = ""
         self._no_wrench = False
@@ -106,6 +104,8 @@ class ExecPlots:
         """One point per pass at x = the pass: tool0 errors per side, the base's drift, the bar, the force change."""
         k = float(reading.get("iter", len(self._servo.times("tool0_pos_err"))))
         tool0, base, bar = reading.get("tool0", {}), reading.get("base", {}), reading.get("bar") or {}
+        if "arm" in tool0:  # a one-arm robot's side (`arm_side`)
+            tool0 = {SIDES[0]: tool0["arm"]}
         pos = [value for side in SIDES for value in _side(tool0, side, "pos_err_mm", "pos_norm_mm", 4)]
         rot = [value for side in SIDES for value in _side(tool0, side, "rot_err_deg", None, 3)]
         base_pos = [*base.get("pos_diff_mm", [np.nan] * 3), base.get("pos_norm_mm", np.nan)]

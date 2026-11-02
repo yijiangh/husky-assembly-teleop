@@ -119,9 +119,9 @@ def test_without_a_design_a_robot_stands_where_the_snapshot_has_it(purged):
     assert planning.sources == {CINDY_ID: "design", BELLE_ID: "default"}
     belle = planning.scene.robots[BELLE_ID]
     assert belle.enabled and not belle.acting_problems() and belle.base == Pose()
-    assert any(warning.startswith(f"{CINDY_ID} is not measured") and warning.endswith("where the design has it")
+    assert any(warning.startswith(f"{CINDY_ID.split('/')[1]}: ") and warning.endswith("where the design has it")
                for warning in planning.warnings)
-    assert any(warning.startswith(f"{BELLE_ID} is not measured") and warning.endswith("default pose or stowed")
+    assert any(warning.startswith(f"{BELLE_ID.split('/')[1]}: ") and warning.endswith("default pose or stowed")
                for warning in planning.warnings)
 
 

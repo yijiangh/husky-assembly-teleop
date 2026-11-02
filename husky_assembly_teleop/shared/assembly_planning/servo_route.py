@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable, Mapping
 
 import numpy as np
-from husky_assembly_tamp.motion_planner.api import plan_constrained_dual_arm, plan_constrained_dual_arm_linear
+from husky_assembly_tamp.motion_planner.api import plan_constrained_dual_arm_linear
 
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.mirrors.compas import frame_from_pose
@@ -26,14 +26,12 @@ from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 from scaffolding_assembly_core.process.solutions import MovementResult
 
 from .process_steps import LoadedProcess, Step
-from .collision import collisions, world_frame_fk
-from .ik import solve_ik
-from .joints import joint_limits, unwrap_to_nearest
+from .collision import collisions
 from .movement import classify
-from .route_result import RouteResult, pose_error
+from .route_result import RouteResult
 from .route_search import Refused, pairs_text
 from .scene_for import scene_for
-from .tamp_route import GRASP_MISMATCH, HELD, _Route, _sync_again
+from .tamp_route import HELD, Route
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.scene import Scene
@@ -41,7 +39,7 @@ if TYPE_CHECKING:
     from ...config import RobotConfig
     from ..motion_planner_contract import ServoAsk
 
-#: The one-arm correction's planner name: the two rows [live, goal] as one joint move (W:6154-6156).
+#: The one-arm correction's planner name: the two rows [live, goal] as one joint move.
 TWO_ROWS = "servo.two_rows"
 
 
@@ -51,7 +49,7 @@ class ServoStep:
 
     Attributes:
         route: The correction move, as a planned movement; "not_planned" when nothing is left to plan.
-        correction: Process flange id -> how far the move takes it, metres (W:1868-1898); empty when it failed
+        correction: Process flange id -> how far the move takes it, metres; empty when it failed
             before IK.
         nothing_left: Every correction is under the ask's `stop_below`: no move was planned, the pass is done.
     """
@@ -102,26 +100,24 @@ def plan_servo_step(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, 
     route = ServoRoute(mirror, loaded.process, step, spec, planning, planning.scene, config, None,
                        abort or threading.Event(), log)
     correction, nothing_left = {}, False
-    try:
+
+    def plan() -> RouteResult:
+        """The start checked, the goal by IK, then the correction move, or nothing when the correction is small."""
+        nonlocal correction, nothing_left
         route.check_start()
         goal = route.servo_goal(ask)
         correction = route.correction_of(goal)
         if max(correction.values()) < ask.stop_below:
-            result, nothing_left = route.route(MovementResult("not_planned", "nothing left to plan")), True
-        else:
-            result = route.held_move(ask, goal) if ask.held else route.one_arm_move(ask, goal)
-    except Refused as refused:
-        result = route.failed(str(refused))
-    except Exception as error:
-        # ! Fail closed: whatever went wrong, nothing is solved.
-        result = route.failed(f"{route.planner or spec.routine.value} raised {error!r}")
-        problem = _sync_again(route)
-        if problem:
-            result = replace(result, warnings=(*result.warnings, problem))
+            result = route.route(MovementResult("not_planned", "nothing left to plan"))
+            nothing_left = True
+            return result
+        return route.held_move(ask, goal) if ask.held else route.one_arm_move(ask, goal)
+
+    result = route.planned(plan)
     return ServoStep(replace(result, seconds=time.monotonic() - started), correction, nothing_left)
 
 
-class ServoRoute(_Route):
+class ServoRoute(Route):
     """One servo pass: the goal by IK at the live base from the live joints, and the correction move to it."""
 
     def check_start(self) -> None:
@@ -149,26 +145,13 @@ class ServoRoute(_Route):
         missing = [part.flange for part in self.spec.arms if part.flange not in ask.targets]
         if missing:
             raise Refused(f"no target for {', '.join(missing)}")
-        targets = {part.arm: ask.targets[part.flange] for part in self.spec.arms}
-        # ! The reference is the LIVE joints (W:3553-3555), not the authored goal `ik_goal` stays near.
-        self.ik = solve_ik(self.mirror, self.robot, targets, log=self.log)
-        if self.ik.joints is None and self.ik.colliding_joints is not None:
-            self.mirror.sync(self.scene)  # ? IK may have lent the mirror
-            self.hit("goal by IK", self.ik.colliding_joints)
-        self.mirror.sync(self.scene)
-        if self.ik.joints is None:
-            raise Refused(f"no IK for the servo target ({self.ik.backend}): {self.ik.reason}")
-        goal = self.joints_of(self.ik.joints)
-        # * Unwrapped to the turn nearest the live joints within the URDF limits (M:5534-5544).
-        values = unwrap_to_nearest([goal[name] for name in self.names], [self.start[name] for name in self.names],
-                                   *joint_limits(self.robot.model.urdf, self.names))
-        goal = dict(zip(self.names, values.tolist()))
-        self.check_limits(goal)
+        # ! Solved near the LIVE joints, not the authored goal, and unwrapped next to them.
+        goal = self.ik_goal(targets={part.arm: ask.targets[part.flange] for part in self.spec.arms})
         self.goal_joints = goal
         return goal
 
     def correction_of(self, goal: Mapping[str, float]) -> dict[str, float]:
-        """How far the goal moves each flange from where it is, metres: a pose question, never joints (W:1868-1898).
+        """How far the goal moves each flange from where it is, metres: a pose question, never joints.
 
         Args:
             goal: Goal values by joint name, one per name in `names`.
@@ -185,9 +168,8 @@ class ServoRoute(_Route):
     def held_move(self, ask: ServoAsk, goal: dict[str, float]) -> RouteResult:
         """The correction with the bar in both tools: tamp's straight line to the targets, else its sampling search.
 
-        The line interpolates the bar from where it is to the targets, so the grasp really held stays
-        (M:5545-5560). With no line and sampling allowed, one try of the sampling search to the goal joints
-        (M:5580-5597): it explores, so the result warns.
+        The line interpolates the bar from where it is to the targets, so the grasp really held stays. With no line
+        and sampling allowed, one try of the sampling search to the goal joints: it explores, so the result warns.
 
         Args:
             ask: The pass; `linear_only` forbids the sampling search.
@@ -197,7 +179,7 @@ class ServoRoute(_Route):
             RouteResult: Solved.
 
         Raises:
-            Refused: No line and `linear_only` (W:2208-2214), the sampling search finds no path, or cancelled.
+            Refused: No line and `linear_only`, the sampling search finds no path, or cancelled.
         """
         self.planner = "tamp.plan_constrained_dual_arm_linear"
         goals = {part: ask.targets[part.flange] for part in self.spec.arms}
@@ -211,29 +193,20 @@ class ServoRoute(_Route):
             if self.abort.is_set():
                 raise
             if ask.linear_only:
-                # ! The bar stands on the floor: the sampling search explores, which would drag it (W:2208-2214).
+                # ! The bar stands on the floor: the sampling search explores, which would drag it.
                 raise Refused(f"{no_line}; straight lines only after a grounded insert: nothing is planned")
             self.warnings.append(f"no straight line ({no_line}): the sampling search ran instead; it explores, so "
                                  f"check the travel before confirming")
         self.planner = "tamp.plan_constrained_dual_arm"
         self.next_attempt()
-        with self.mirror.lend() as planner, world_frame_fk(planner):
-            path, info = plan_constrained_dual_arm(planner, self.mirror.state, active_bar_id=bar, goal_conf=goal,
-                                                   random_seed=0, **HELD)
-        self.mirror.sync(self.scene)
+        path, info = self.held_search(goal, 0, goals)
         if path is None:
             raise Refused(f"{self.planner}: {info.get('failure_reason', 'no path')} (1 try of "
                           f"{HELD['max_time']:.0f} s)")
-        right = next((part for part in self.spec.arms if part.side == "right"), None)
-        if right is not None:
-            missed = pose_error(self.flange(right, dict(zip(self.names, path[-1]))), goals[right])[0]
-            if missed > GRASP_MISMATCH:
-                self.warnings.append(f"the right flange ends {missed * 1e3:.1f} mm from its target: the grasp "
-                                     f"differs from the authored one")
         return self.solved(path, goals)
 
     def one_arm_move(self, ask: ServoAsk, goal: dict[str, float]) -> RouteResult:
-        """One arm's correction: the rows [live, goal] as one joint move (W:6154-6156), swept-checked (A6).
+        """One arm's correction: the rows [live, goal] as one joint move, swept-checked.
 
         Args:
             ask: The pass, for the target the end is measured against.

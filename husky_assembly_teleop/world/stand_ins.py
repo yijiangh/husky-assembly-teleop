@@ -53,7 +53,7 @@ def with_stand_ins(snapshot: Scene, acting: Collection[str]) -> StandIns:
             continue
         sources[key] = stand_in_source(robot)
         if sources[key] != LIVE:
-            warnings.append(f"{key} is not measured ({'; '.join(robot.acting_problems())}): checked "
+            warnings.append(f"{key.split('/', 1)[1]}: {unknown_parts(robot)} not measured, checked "
                             f"{'where last seen' if sources[key] == LAST_SEEN else 'at its default pose or stowed'}")
             robots[key] = replace(robot, base_tracked=True, unmeasured=frozenset())
     if not warnings:

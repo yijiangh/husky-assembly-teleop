@@ -6,7 +6,7 @@ The monitor appends one as-built record at the start and the end of every part i
 robot's base, joints, tool0 and load, the servo, the tick boxes. This script reads one lab day of them and writes one
 offline page (three.js inside, no server): a slider over the schedule's actions, each record's bars where they were
 measured and where they should be, their markers, and a card per bar with the placement, rotation, plates, bow, fit,
-tool0, servo and load numbers. Manual: `doc/real_lab_test_manual.md`, the as-built part.
+tool0, servo and load numbers. Manual: `doc/lab/real_lab_test_manual.md`, the as-built part.
 
 Run from the workspace root with the venv active and HUSKY_DRIVE_ROOT set (or `--drive`):
 

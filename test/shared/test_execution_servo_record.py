@@ -10,7 +10,7 @@ import pytest
 
 from husky_assembly_teleop.shared.execution.servo import AFTER_INSERT, APPROACH, TRANSFER, ServoPlan
 from husky_assembly_teleop.shared.execution.servo_record import plot_servo, servo_payload
-from husky_assembly_teleop.world.marker_layouts import BarLayout
+from husky_assembly_teleop.shared.bars.layouts import BarLayout
 from scaffolding_assembly_core.geometry import Pose, compose
 
 LEFT, RIGHT = "robots/cindy/left_ur_arm_tool0", "robots/cindy/right_ur_arm_tool0"
@@ -99,6 +99,7 @@ def test_planner_mode_labels(kind: str, engaged: bool, mode: str, feedback: str)
     assert record["settings"]["max_force_change_N"] == (20.0 if kind == AFTER_INSERT else None)
 
 
+@pytest.mark.slow
 def test_plot_writes_a_png(tmp_path: Path):
     """Two arms with bar readings (a gap where the fit failed), and one arm without: both draw to a PNG."""
     path = tmp_path / "B20_J_transfer.1.png"

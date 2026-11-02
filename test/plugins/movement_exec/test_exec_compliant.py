@@ -27,7 +27,7 @@ from husky_assembly_teleop.shared.execution.stream import RETREATED, RIGID_DONE,
 from husky_assembly_teleop.shared.movement_exec_contract import DONE, SERVO_INDEX
 from husky_assembly_teleop.shared.runs.runs import RunSettings
 
-pytestmark = [pytest.mark.slow, pytest.mark.safety]
+pytestmark = pytest.mark.safety
 
 STOP, TIGHTEN_SCREW, OPEN_GRIPPER = (0, 0), (ScaffoldingV3.JOINT_MOTOR, 1), (ScaffoldingV3.GRIPPER_MOTOR, -1)
 #: Seconds into the compliant part the left screw stalls: inside B21's 1.7 s line (the insert asked over 5 s), so
@@ -160,8 +160,8 @@ def test_b20s_retreat_breaks_out_compliant_then_runs_the_tail_replanned_to_the_g
     result, _held = execute(lab, request)
     assert result.status == DONE and result.done == (1, 0), result.reason
     assert not prompts(lab) and said(lab) == [said(lab)[0]] and said(lab)[0].startswith(
-        "cindy (a200-0806): B20_R_retreat — RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN; force sensors "
-        "zeroed; COMPLIANT break-out ")
+        "cindy (a200-0806): B20_R_retreat — RETREAT: the gripper screws of left_ur_arm + right_ur_arm OPEN; force "
+        "sensors zeroed; COMPLIANT break-out ")
     asked, = planner.requests
     assert asked.goal_poses == request.route.goals and asked.linear_step == TAIL_STEP
     retreat, ungrasp = [json.loads(json.dumps(file)) for file in lab.run.files()]

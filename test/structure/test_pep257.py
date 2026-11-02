@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ament pep257 check of our docstrings (Google style): the package without old/, test/ and scripts/."""
+"""ament pep257 check of our docstrings (Google style): the package, test/ and scripts/."""
 
 
 from ament_pep257.main import main
@@ -20,11 +20,11 @@ import pytest
 from repo_paths import REPO
 
 
-#: Our code: the package without the old monitor, plus tests and scripts. external/ and data/ are not ours.
+#: Our code: the package, tests and scripts. external/ and data/ are not ours.
 ROOT = REPO
 PATHS = [str(ROOT / d) for d in ("husky_assembly_teleop", "test", "scripts")]
-#: The old monitor, and OptiTrack's NatNet SDK vendored next to the relay.
-EXCLUDE = [str(ROOT / "husky_assembly_teleop" / d) for d in ("old", "mocap_relay/natnet")]
+#: OptiTrack's NatNet SDK, vendored next to the relay.
+EXCLUDE = [str(ROOT / "husky_assembly_teleop" / "mocap_relay" / "natnet")]
 
 
 @pytest.mark.linter

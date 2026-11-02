@@ -12,20 +12,20 @@ mocap sample of the base. `plugin_api/signals.py` has ready-made ones of both ki
 
 ! A tick signal shows only the newest value of a faster stream (mocap 50 Hz, the tick 20 Hz): read it per message.
 
-Run with:  -p plugins:="['example_recording']" -p robots:="['0806']"
+Run with:  plugins:="example_recording" robots:="0806"
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from ...drive import drive_folder
+from ...drive import drive_folder, environment
 from ...plugin_api import signals
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.trace import Signal
 from ...shared.recordings.runs import run_folder, save_recording, write_description
-from ...ui.style import BUSY, NONE, OK, SECTION_SENSOR, block, chip, section, values
+from ...ui.style import BUSY, NONE, SECTION_SENSOR, block, chip, section, values
 from ...ui.trace_plot import TracePlot
 
 RECORD_SECONDS = 5.0
@@ -88,7 +88,8 @@ class ExampleRecordingPlugin(HuskyPlugin):
             await ctx.sleep(RECORD_SECONDS)
         serial = self._robot.config.serial
         folder = run_folder(self._recordings, "default", serial, "example")
-        write_description(folder, {"robot": serial, "seconds": RECORD_SECONDS})
+        write_description(folder, {"robot": serial, "seconds": RECORD_SECONDS,
+                                   **environment(self._robot.base.simulation is not None)})
         path = save_recording(folder, rec, serial, file_format=ctx.config.recording_format)
         self._result = f"{len(rec)} samples -> {path}"
         ctx.log_info(f"recording saved: {self._result}")
@@ -99,6 +100,6 @@ class ExampleRecordingPlugin(HuskyPlugin):
             self._status.content = block(chip("no robot with an arm", NONE))
             return
         running = self._task is not None and not self._task.done()
-        state = chip("recording", BUSY) if running else chip("idle", OK)
+        state = chip("recording", BUSY) if running else chip("idle", NONE)
         self._status.content = block(state + values(self._result or "—"))
         self._plot.draw()

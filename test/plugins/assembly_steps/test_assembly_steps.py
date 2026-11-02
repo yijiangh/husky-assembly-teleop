@@ -18,6 +18,7 @@ import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, design_scene, purged_process, robot_config, step
 from robot_lab import FakeRun, RobotLab
 
+from husky_assembly_teleop.colors import WARN, rgb
 from husky_assembly_teleop.plugins.assembly_steps.diagnosis import tool0_line
 from husky_assembly_teleop.plugins.assembly_steps.panel import StepsPanel, exec_line
 from husky_assembly_teleop.plugins.assembly_steps.plugin import PLAN_TIME_MARGIN, AssemblyStepsPlugin
@@ -34,7 +35,7 @@ from husky_assembly_teleop.shared.assembly_planning.route_result import (GoalChe
 from husky_assembly_teleop.shared.assembly_planning.route_search import FreeSearch
 from husky_assembly_teleop.shared.execution.servo import flange_poses, tool0_errors
 from husky_assembly_teleop.ui.ghost import RecentUse
-from husky_assembly_teleop.world.bar_pose import apply_authored_move
+from husky_assembly_teleop.shared.bars.pose import apply_authored_move
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
@@ -239,7 +240,9 @@ def test_the_path_ghost_stays_while_there_is_a_plan_whatever_the_panel_was_last_
     RecentUse._latest = None
     lab.update()
     assert calls == ["path hidden"], "no plan yet"
+    RecentUse._latest = None
     asyncio.run(lab.plan())
+    assert RecentUse._latest is lab.plugin._used, "a plan arriving counts as use"
     RecentUse._latest, calls[:] = None, []
     lab.update()
     assert calls == ["path shown"] and lab.plugin._t == lab.plugin.path.duration, "at the motion's end"
@@ -499,11 +502,12 @@ def test_exec_asks_for_a_second_press_while_another_robot_is_unknown():
         lab.ctx.scene.snapshot.robots[robot_id(lab.alice.config.serial)].base_tracked = False
         lab.plugin._commit(lab.ctx)
         assert lab.executor.requests == [] and lab.plugin.plan_state == "ready"
-        assert lab.plugin._message == "press Exec again within 2 s to move with a200-0804: base unknown"
+        assert lab.plugin._message == "press Exec again within 2 s to move with 1 other robot unknown"
         lab.update()
-        assert lab.plugin._confirm.button.color == "orange" and ">1 robot unknown<" in lab.html()
+        assert lab.plugin._confirm.button.color == rgb(WARN) and ">1 robot unknown<" in lab.html()
         lab.plugin._commit(lab.ctx)
         assert len(lab.executor.requests) == 1 and lab.plugin.plan_state == "sent"
+        assert lab.executor.requests[0].unknown_robots == {robot_id(lab.alice.config.serial)}
         lab.update()
         assert lab.plugin._confirm.button.color == "blue"
 
@@ -573,7 +577,7 @@ def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch
         ("plan", True), ("plan", False), ("plan", False)]
     lines = [line for line in lab.ctx.lines("info") if line.startswith("[insert plan]")]
     line, = lines
-    assert line.startswith("[insert plan] MoCap-bar correction carried: B20_J_insert left goal ")
+    assert line.startswith("[insert plan] mocap bar correction carried: B20_J_insert left goal ")
     assert line.endswith(" from the authored end")
 
 

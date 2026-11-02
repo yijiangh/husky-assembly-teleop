@@ -3,7 +3,6 @@
     python scripts/process_storage.py <export folder> [--json results.json]
 
 * Converts into a temporary folder; the export and its `<export>_process` copy are not touched.
-* Loader timing and the loader equality check are in `legacy_equivalence.py`.
 ! Parsing each export cell takes ~2 s and a few GB of memory.
 """
 

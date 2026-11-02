@@ -29,13 +29,14 @@ from scaffolding_assembly_core.process.relations import is_present, placement
 from scaffolding_assembly_core.geometry import Geometry, Pose, compose, shape_mesh
 from scaffolding_assembly_core.ids import split_link_id
 from scaffolding_assembly_core.process.types import BAR_PREFIX
+from ...colors import HELD, rgb
 from ...ui.ghost import GOAL_COLOR
 from ...ui.visualization import FastViserUrdf, joints_changed, load_urdf, quaternion_to_wxyz
 from ...shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH, body_color
-from ...world.bar_pose import bar_ends
+from ...shared.bars.pose import bar_ends
 
-#: Colour of held bodies, RGB 0-255, so they stand out; other bodies use `colors.body_color`.
-ATTACHED_COLOR = (240, 120, 30)
+#: Colour of a body a robot's tool holds, RGB 0-255; other bodies use `process_scene.colors.body_color`.
+ATTACHED_COLOR = rgb(HELD)
 
 #: Opacity of robots, tools and held bodies when "Ghost" is on, and always of bodies that do not stand.
 GHOST_OPACITY = 0.4

@@ -43,8 +43,8 @@ def test_last_seen_and_never_seen_robots_stand_where_the_snapshot_has_them():
     assert not any(robot.acting_problems() for key, robot in found.scene.robots.items() if key != ALICE_ID)
     assert found.scene.robots[BELLE_ID].base.position[0] == 3.0 and found.scene.robots[ALICE_ID] is alice
     belle_line, cindy_line = found.warnings
-    assert belle_line == f"{BELLE_ID} is not measured (its base is not tracked): checked where last seen"
-    assert cindy_line.startswith(f"{CINDY_ID} is not measured (joints not known: left_ur_arm_")
+    assert belle_line == f"{BELLE_ID.split('/')[1]}: base not measured, checked where last seen"
+    assert cindy_line.startswith(f"{CINDY_ID.split('/')[1]}: left_ur_arm not measured")
     assert cindy_line.endswith("checked at its default pose or stowed")
     assert not snapshot.robots[BELLE_ID].base_tracked and snapshot.robots[CINDY_ID].unmeasured == arms
 

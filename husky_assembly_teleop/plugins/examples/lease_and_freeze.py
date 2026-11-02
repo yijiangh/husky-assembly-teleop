@@ -13,7 +13,7 @@ Wiggle turns one arm's wrist 15 deg and back, as a task:
 ! Neither the lease nor the freeze stops a moving arm: on cancel, hold it yourself (`except` below).
 ! Run it on a simulation first: it really moves the arm.
 
-Run with:  -p plugins:="['example_lease_and_freeze']"
+Run with:  plugins:="example_lease_and_freeze"
 """
 
 from __future__ import annotations
@@ -145,7 +145,7 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
                           lease.holder if lease else "")
         label, reason = self.outcome
         if label:
-            chips += chip(label, OK if label in ("running", "done") else FAIL, reason)
+            chips += chip(label, BUSY if label == "running" else OK if label == "done" else FAIL, reason)
         if self._refused is not None and ctx.now() - self._refused[2] <= REFUSAL_SHOWN:
             chips += chip(self._refused[0], FAIL, self._refused[1])
         self._status.content = chip_line(chips)

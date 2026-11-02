@@ -11,13 +11,13 @@ from __future__ import annotations
 import math
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
 import numpy as np
 
 from ...world.collision_hit import CollisionHit
-from ...shared.assembly_planning.collision import collision_hit
+from ...shared.assembly_planning.collision import collision_hit, collisions
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.planner.timed_path import TimedPath
 from ...shared.planner.planner_search import PlanResult
@@ -50,11 +50,26 @@ class ArmPath(TimedPath):
         joint_names: The six joints, in the order of each sample.
         velocities: Joint speeds at each sample, rad/s, shape (n, 6).
         rests: How often the arm comes to rest on the way, at corners left sharp.
+        slowdown: How many times longer than its fastest timing it takes (`slowed`).
     """
 
     joint_names: tuple[str, ...]
     velocities: np.ndarray
     rests: int
+    slowdown: float = 1.0
+
+    @property
+    def fastest(self) -> float:
+        """float: Seconds it takes at its fastest timing, the one it was planned with."""
+        return self.duration / self.slowdown
+
+    def slowed(self, slowdown: float) -> ArmPath:
+        """The same path taking `slowdown` times its fastest timing: times stretched, speeds divided by it.
+
+        Accelerations drop by its square, so every joint keeps within the limits the fastest timing kept.
+        """
+        ratio = slowdown / self.slowdown
+        return replace(self, times=self.times * ratio, velocities=self.velocities / ratio, slowdown=slowdown)
 
     @classmethod
     def along(cls, joint_names: Sequence[str], points: np.ndarray, stops: Sequence[int] | None = None) -> ArmPath:
@@ -207,7 +222,7 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
     if outside := _outside(goal, lower, upper):
         return PlanResult(None, f"the target is past the joint limits: {outside}", time.time() - started)
     # * Check the start in full once; the fast `search_check` skips pairs the arm does not move.
-    hits = mirror.collisions()
+    hits = collisions(mirror)
     if hits:
         return refused(collision_hit(mirror, scene, "start", first=hits[0]))
     check = mirror.search_check(names)

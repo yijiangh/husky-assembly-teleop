@@ -8,12 +8,13 @@ The user interface: the desktop and phone pages, the world drawn each tick, and 
 
 from __future__ import annotations
 
+import math
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cache, partial
 from html import escape
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 import numpy as np
 import trimesh
@@ -22,14 +23,16 @@ import viser.extras
 import viser.transforms
 import yourdfpy
 
+from ..colors import BODY, COLLISION, DARK_GREY, WHITE, rgb, rgb01
 from ..config import RobotConfig
 from scaffolding_assembly_core.robot import RobotObject, Tool
 from scaffolding_assembly_core.scene import Scene
-from .phone import PHONE_TITLE, PhonePage
+from .layout import SIDE, Layout, Placement
+from .phone import PHONE_TITLE, STOP_ALL_HINT, PhonePage
 from .quaternion import quaternion_to_wxyz
 from .scene_view import SceneView, add_shape
 from ..tool_urdfs import resolve_mesh_path
-from .style import FAIL, NESTED_TABS_STYLE, PATH_TABS_MARKER
+from .style import BUSY, FAIL, NESTED_TABS_STYLE, PATH_TABS_MARKER, configure_theme
 
 
 #: Mesh roughness, 0 = mirror, 1 = flat; just under 1 keeps edges readable.
@@ -39,13 +42,13 @@ MATTE_ROUGHNESS = 0.9
 PAGE_TITLE = "Husky Monitor"
 
 #: Fallback colour for a mesh that carries no colour of its own.
-_DEFAULT_MESH_COLOR = (0.8, 0.8, 0.8, 1.0)
+_DEFAULT_MESH_COLOR = rgb01(BODY, 1.0)
 
 #: Colour of the robots' collision meshes, RGB 0-1, when the view shows collision shapes.
-COLLISION_COLOR = (0.9, 0.35, 0.35)
+COLLISION_COLOR = rgb01(COLLISION)
 
 #: Colour of the mounted tools, RGB 0-1; their models carry none.
-TOOL_COLOR = (0.27, 0.27, 0.31)
+TOOL_COLOR = rgb01(DARK_GREY)
 
 #: Joint change (rad or m) below which a robot is not re-posed.
 JOINT_TOLERANCE = 1e-4
@@ -57,10 +60,6 @@ GUESSED_OPACITY = 0.35
 SIDE_PANEL_WIDTH = 420
 #: The main panel's width, pixels: the narrowest at which a robot's health line with simulated parts does not scroll.
 MAIN_PANEL_WIDTH = 330
-#: The tab every planner panel's tab goes in (Base, Motion, Arm). It is a window of its own, not a side panel tab.
-PLAN_TAB = "Plan"
-#: Where the Plan window floats, pixels: at the top, right of the main panel (Stop all, health), which it never covers.
-PLAN_WINDOW_X, PLAN_WINDOW_Y = 410, 15
 
 #: Where a tab goes in a side panel: (label, icon) per level, outermost first.
 TabPath = tuple[tuple[str, viser.IconName | None], ...]
@@ -334,7 +333,7 @@ def pinned_server(port: int, parameter: str, label: str) -> viser.ViserServer:
     if port and server.get_port() != port:
         server.stop()
         raise RuntimeError(f"Port {port} is taken: is another monitor running? Stop it, or pick another port "
-                           f"with -p {parameter}:=<port>.")
+                           f"with {parameter}:=<port>.")
     return server
 
 
@@ -345,23 +344,26 @@ class SidePanel:
     while it holds a tab.
     """
 
-    def __init__(self, server: viser.ViserServer, minimized: bool = False, at: tuple[float, float] | None = None):
-        """Dock the panel, or float it, hidden until its first tab.
+    def __init__(self, server: viser.ViserServer, minimized: bool = False, placement: Placement | None = None,
+                 anchor: SidePanel | None = None):
+        """Dock the panel on the right, or place it as a layout file says; hidden until its first tab.
 
         ! Each panel docked later sits further out, so make the panel meant for the edge last.
 
         Args:
             server: The desktop server.
             minimized: Whether the panel starts minimized to a strip.
-            at: Where it floats, its top left corner in pixels; None docks it on the right.
+            placement: Where a layout file puts it (`ui/layout.py`); None docks it on the right.
+            anchor: The panel `placement` docks below or above, if it does.
         """
         self._server = server
         self._panel = server.gui.add_panel(visible=False)
-        if at is None:
+        if placement is None:
             self._panel.dock_right()
             self._panel.set_width(SIDE_PANEL_WIDTH)
         else:
-            self._panel.float(x=at[0], y=at[1], width=SIDE_PANEL_WIDTH)
+            replace(placement, width=placement.width or SIDE_PANEL_WIDTH).apply(
+                self._panel, None if anchor is None else anchor._panel)
         if minimized:
             self._panel.minimize()
         #: Tabs by their path of labels, and per tab the tab group holding the tabs nested in it.
@@ -417,12 +419,13 @@ class SidePanel:
 class Visualization:
     """Owns the viser servers (desktop and phone) and the robot and scene nodes. Plugins get a PluginView."""
 
-    def __init__(self, port: int, phone_port: int):
+    def __init__(self, port: int, phone_port: int, layout: Layout | None = None):
         """Start the desktop and the phone server.
 
         Args:
             port: Port the desktop page listens on.
             phone_port: Port the phone page listens on.
+            layout: A person's layout file (`ui/layout.py`); None is the code's layout.
 
         Raises:
             RuntimeError: A port is taken; no server is left running.
@@ -435,7 +438,7 @@ class Visualization:
             self._server.stop()
             raise
         # * Widest panel: fixed-width number rows wrap at the default.
-        self._server.gui.configure_theme(control_width="large")
+        configure_theme(self._server.gui, control_width="large")
         # ? Sets the browser tab title (the first <title> on the page wins). HTML, not markdown,
         #   which viser pads into an empty row.
         self._server.gui.add_html(f"<title>{PAGE_TITLE}</title>{NESTED_TABS_STYLE}")
@@ -446,11 +449,8 @@ class Visualization:
         # * Soft stop: a button and Esc both raise a flag the monitor reads next tick.
         #   ! Esc works only in the focused tab and not inside a text field. Not an e-stop.
         self._stop_requested = False
-        stop = self._server.gui.add_button("Stop all (Esc)", color="red", icon=viser.Icon.HAND_STOP,
-                                           hint="Soft stop: stop every arm's program, switch every base "
-                                                "controller off, stop every tool, cancel the plugin tasks that may "
-                                                "move a robot. The robots refuse motion commands until Resume in "
-                                                "the health panel. Not an emergency stop.")
+        stop = self._server.gui.add_button("Stop all (Esc)", color=rgb(FAIL), icon=viser.Icon.HAND_STOP,
+                                           hint=STOP_ALL_HINT)
         stop.on_click(self._request_stop)
         self._server.gui.add_command("Stop all robots", description="Soft stop of every robot",
                                      hotkey="escape", icon=viser.Icon.HAND_STOP).on_trigger(self._request_stop)
@@ -458,7 +458,7 @@ class Visualization:
         # * Pause: while paused the monitor skips every plugin's `draw`, so panel text can be selected
         #   (each rewrite drops the selection). Controls, updates and tasks keep running.
         self._paused = False
-        self._pause = self._server.gui.add_button("Live", color="green", icon=viser.Icon.ACTIVITY)
+        self._pause = self._server.gui.add_button("Live", color=None, icon=viser.Icon.ACTIVITY)
         self._pause.on_click(self._toggle_pause)
         self._show_pause_state()
 
@@ -469,14 +469,21 @@ class Visualization:
 
         #: Plugins' header folders (`PluginView.header`), under Stop all. Unlabelled: no title or border.
         self._header = self._server.gui.add_folder(None)
-        # * This panel floats in the top left corner, the Plan window right of it. The plugins' other tabs
-        #   (`PluginView.tab`) are docked on the right, and those hidden by default in a minimized strip at the right
-        #   edge.
+        # * This panel floats in the top left corner. The plugins' tabs (`PluginView.ui`) are docked on the right,
+        #   those hidden by default in a minimized strip at the right edge; a layout file may give top-level folders
+        #   windows of their own.
         self._server.gui.main_panel.float(x=15, y=15)
         self._server.gui.main_panel.set_width(MAIN_PANEL_WIDTH)
-        self._plan = SidePanel(self._server, at=(PLAN_WINDOW_X, PLAN_WINDOW_Y))
+        self._layout = layout or Layout()
         self._side = SidePanel(self._server)
+        #: Top-level folders with a panel of their own (`Layout.windows`), by label.
+        self._windows: dict[str, SidePanel] = {}
+        for label, placement in self._layout.windows.items():
+            anchor = self._side if placement.anchor == SIDE else self._windows.get(placement.anchor or "")
+            self._windows[label] = SidePanel(self._server, placement=placement, anchor=anchor)
         self._hidden_side = SidePanel(self._server, minimized=True)
+        #: Every plugin's view, for `place_plugin_windows`.
+        self._views: list[PluginView] = []
 
         # Per-robot handles by serial, built once in load_robot.
         self._robots: dict[str, _DrawnRobot] = {}
@@ -529,11 +536,16 @@ class Visualization:
 
     @staticmethod
     def _apply_opacity(drawn: _DrawnRobot) -> None:
-        """Set every part's meshes to the robot's opacity, or without one to GUESSED_OPACITY on the parts guessed."""
+        """Set every part's meshes to the robot's opacity times GUESSED_OPACITY on the parts guessed; None if neither.
+
+        Multiplied, so a robot a plugin fades still shows which of its parts the checks only assume.
+        """
         for part, handles in drawn.parts.items():
-            guessed = GUESSED_OPACITY if part in drawn.guessed else None
+            factors = [factor for factor in (drawn.opacity, GUESSED_OPACITY if part in drawn.guessed else None)
+                       if factor is not None]
+            opacity = math.prod(factors) if factors else None
             for handle in handles:
-                handle.opacity = guessed if drawn.opacity is None else drawn.opacity
+                handle.opacity = opacity
 
     def view_for(self, plugin_name: str, hidden: bool = False, tab_path: tuple[str, ...] = (),
                  icon: viser.IconName | None = None) -> PluginView:
@@ -548,9 +560,29 @@ class Visualization:
         Returns:
             PluginView: The plugin's slice of the UI.
         """
-        return PluginView(self._server, plugin_name, self._header, self._phone, (self._side, self._hidden_side),
+        hidden, tab_path = self._layout.plugin(plugin_name, hidden, tab_path)
+        view = PluginView(self._server, plugin_name, self._header, self._phone, (self._side, self._hidden_side),
                           hidden, tab_path, icon, partial(setattr, self, "show_collision"),
-                          fade=self.set_robot_opacity, windows={PLAN_TAB: self._plan})
+                          fade=self.set_robot_opacity, windows=self._windows,
+                          preferences=self._layout.plugin_preferences(plugin_name))
+        self._views.append(view)
+        return view
+
+    def place_plugin_windows(self) -> list[str]:
+        """Place the windows plugins made in `setup` (`PluginView.panel`) as the layout file says, by their first tab.
+
+        Returns:
+            list[str]: The layout's `panels` entries no plugin window matched, for the log.
+        """
+        found = set()
+        for view in self._views:
+            for panel in view._panels:
+                labels = panel._tab_labels
+                placement = self._layout.panels.get(labels[0]) if labels else None
+                if placement is not None:
+                    placement.apply(panel)
+                    found.add(labels[0])
+        return [label for label in self._layout.panels if label not in found]
 
     def atomic(self) -> AbstractContextManager[None]:
         """Batch every scene change made inside the block into one update.
@@ -588,7 +620,7 @@ class Visualization:
         """
         rows = "".join(f"<li><b>{escape(name)}</b>: {escape(reason)}</li>" for name, reason in stopped.items())
         self._broken.content = (
-            f'<div style="background:{FAIL};color:#fff;border-radius:4px;padding:6px 10px;'
+            f'<div style="background:{FAIL};color:{WHITE};border-radius:4px;padding:6px 10px;'
             f'font-size:12px"><b>⚠ Monitor broken: restart it.</b>'
             f'<ul style="margin:4px 0 0;padding-left:18px">{rows}</ul>'
             f'<div style="margin-top:4px">Stopped plugins no longer act on their buttons. '
@@ -603,10 +635,10 @@ class Visualization:
     def _show_pause_state(self) -> None:
         """Make the pause button show the current state."""
         if self._paused:
-            self._pause.label, self._pause.color, self._pause.icon = "Paused", "orange", viser.Icon.PLAYER_PAUSE
+            self._pause.label, self._pause.color, self._pause.icon = "Paused", rgb(BUSY), viser.Icon.PLAYER_PAUSE
             self._pause.hint = "Panels are paused, so their text can be selected. Click to go live again."
         else:
-            self._pause.label, self._pause.color, self._pause.icon = "Live", "green", viser.Icon.ACTIVITY
+            self._pause.label, self._pause.color, self._pause.icon = "Live", None, viser.Icon.ACTIVITY
             self._pause.hint = ("Click to pause every panel, so its text can be selected and copied. "
                                 "Buttons still act; the robots in the 3D view stay live.")
 
@@ -617,8 +649,8 @@ class Visualization:
 
         ! Only the snapshot taken this tick: the real robots and their tools must always show the newest
           measurement, never a copy a planner kept.
-        - A robot part the checks only assume (`guessed_parts`) is drawn see-through, at GUESSED_OPACITY, unless a
-          plugin fades the whole robot (`set_robot_opacity`).
+        - A robot part the checks only assume (`guessed_parts`) is drawn see-through, at GUESSED_OPACITY, times the
+          opacity a plugin fades the whole robot to (`set_robot_opacity`).
 
         Args:
             snapshot: The tick's copy of the world.
@@ -662,7 +694,7 @@ class PluginView:
                  sides: tuple[SidePanel, SidePanel], hidden: bool, tab_path: tuple[str, ...],
                  icon: viser.IconName | None, set_collision: Callable[[bool], None] = lambda _on: None,
                  fade: Callable[[str, float | None], None] = lambda _s, _o: None,
-                 windows: dict[str, SidePanel] | None = None):
+                 windows: dict[str, SidePanel] | None = None, preferences: Mapping[str, Any] | None = None):
         """Create the plugin's scene root; its header, tabs and phone tab come on first use.
 
         Args:
@@ -676,8 +708,11 @@ class PluginView:
             icon: The plugin's icon, on its own tabs.
             set_collision: Switches the 3D view to collision shapes, or back (`show_collision`).
             fade: Fades a real robot's drawing (`Visualization.set_robot_opacity`).
-            windows: Panels of their own for some top-level tabs, by label, e.g. Plan's window; the rest go in `sides`.
+            windows: Panels of their own for some top-level folders, by label (a layout file's); the rest go in `sides`.
+            preferences: This plugin's own preferences from the layout file (`plugins.<name>.preferences`).
         """
+        #: This plugin's own preferences from the person's layout file, a JSON object it documents and checks itself.
+        self.preferences: Mapping[str, Any] = preferences if preferences is not None else {}
         self._server = server
         self._set_collision = set_collision
         self._windows = windows or {}
@@ -759,7 +794,7 @@ class PluginView:
         with self._folder:
             yield self._server.gui
 
-    def tab(self, label: str, icon: viser.IconName | None = None, hidden: bool = False, top: bool = False
+    def tab(self, label: str, icon: viser.IconName | None = None, hidden: bool = False
             ) -> AbstractContextManager[viser.GuiApi]:
         """Add widgets inside a further tab of this plugin, inside a tab named after it, so its owner shows.
 
@@ -767,14 +802,11 @@ class PluginView:
             label: The tab's label.
             icon: The tab's icon, free to choose (nested in the plugin's tab); read when the tab is made.
             hidden: Whether the tab goes in the minimized panel at the right edge, for what is not needed every time.
-            top: Whether the tab goes at the top level, beside Assembly and Control, instead of inside the plugin's
-                own tab: for a tab the operator drags out into a window of its own. ! Its label must be unique.
 
         Returns:
             AbstractContextManager[viser.GuiApi]: The GUI api, with the tab as parent.
         """
-        path = ((label, icon),) if top else ((self._label, self._icon), (label, icon))
-        return self._side_tab(path, hidden, 0)
+        return self._side_tab(((self._label, self._icon), (label, icon)), hidden, 0)
 
     def set_robot_opacity(self, serial: str, opacity: float | None) -> None:
         """Draw a real robot see-through at `opacity`, or as measured (None); `clear` puts back every one faded."""

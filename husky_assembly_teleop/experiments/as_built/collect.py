@@ -19,12 +19,12 @@ import numpy as np
 
 from scaffolding_assembly_core.process import read
 
+from ...shared.bars.layouts import BarLayout
+from ...shared.bars.pose import bar_ends, pose_deviation
+from ...shared.bars.readings import plate_geometry
 from ...shared.runs.as_built import (ACTION_KIND, AS_BUILT_FOLDER, DIR_SUFFIX, FILE_PREFIX, as_built_path,
                                      read_records)
-from ...world.bar_fit import BarFit
-from ...world.bar_pose import bar_ends, pose_deviation
-from ...world.marker_fit import plate_geometry
-from ...world.marker_layouts import BarLayout, Sensed
+from ...world.marker_match import BarFit, Sensed
 from .page import RobotModels, flatten, matrix_from_pose
 
 #: Records of one action further apart than this, or from another run, are a redo ("run 2").

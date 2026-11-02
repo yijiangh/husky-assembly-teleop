@@ -20,11 +20,13 @@ from scipy.spatial import ConvexHull, QhullError
 from scaffolding_assembly_core.geometry import Pose, Shape, shape_mesh
 from scaffolding_assembly_core.scene import Scene, scene_parts
 
+from ..colors import ACTUAL, OUTLINE, WHITE, rgb
+
 #: Footprint colours: bodies (obstacles, parts) and robots with their tools.
-BODY_COLOR = (70, 70, 70)
-ROBOT_COLOR = (40, 70, 150)
+BODY_COLOR = rgb(OUTLINE)
+ROBOT_COLOR = rgb(ACTUAL)  # where the robots really are, lighter than the obstacles
 #: Thin lines between floor cells.
-GRID_LINE_COLOR = (255, 255, 255)
+GRID_LINE_COLOR = rgb(WHITE)
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,7 @@ class Dot:
     y: float
     color: tuple[int, int, int]
     radius: int = 4
-    outline: tuple[int, int, int] = (255, 255, 255)
+    outline: tuple[int, int, int] = rgb(WHITE)
 
 
 @dataclass(frozen=True)
@@ -108,7 +110,8 @@ def render_top_down(grid: FloorGrid, cell_colors: np.ndarray,
 
     Args:
         grid: The area drawn.
-        cell_colors: RGB 0-255 per cell, shape (*grid.shape, 3), indexed [x cell, y cell].
+        cell_colors: RGB 0-255, indexed [x, y]: one per cell, shape (*grid.shape, 3), or k x k per cell, shape
+            (k * grid.shape, 3), with k dividing `grid.cell_pixels`.
         footprints: (outline, colour) pairs; outlines in world x y, as `footprint` gives them.
         dots: Drawn last, in order, so the last one is on top.
 
@@ -117,7 +120,8 @@ def render_top_down(grid: FloorGrid, cell_colors: np.ndarray,
     """
     # * Rows run down the picture while y runs up: transpose to [y, x], then flip the rows.
     floor = np.asarray(cell_colors, dtype=np.uint8).transpose(1, 0, 2)[::-1]
-    floor = floor.repeat(grid.cell_pixels, axis=0).repeat(grid.cell_pixels, axis=1)
+    pixels = grid.cell_pixels * grid.shape[0] // floor.shape[1]
+    floor = floor.repeat(pixels, axis=0).repeat(pixels, axis=1)
     image = Image.fromarray(np.ascontiguousarray(floor))
     draw = ImageDraw.Draw(image)
     width, height = image.size

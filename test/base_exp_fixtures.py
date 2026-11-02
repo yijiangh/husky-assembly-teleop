@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from crl_husky.base_model import BaseModel
+from crl_husky.base_model import PLATFORM_CYCLE, BaseModel
 
 from husky_assembly_teleop.shared.recordings.runs import Recording
 
@@ -26,7 +26,7 @@ def saved(run: dict, robot: str = "x") -> dict:
 
 
 def model_run(delay=0.2, speed=0.9, steering=0.95, x_icr=-0.1, seconds=60.0, seed=0, stamps=True,
-              wheel_delay=None, mocap=False) -> Recording:
+              wheel_delay=None, mocap=False, platform: BaseModel | None = None) -> Recording:
     """A run driven by smooth random commands through the simulator's model.
 
     The robot holds each command until the next one, `delay` seconds late; the recording samples it at the tick.
@@ -43,6 +43,7 @@ def model_run(delay=0.2, speed=0.9, steering=0.95, x_icr=-0.1, seconds=60.0, see
         wheel_delay: With a value, the run has wheel odometry: the commands this many seconds late, unscaled.
         mocap: Whether poses come per mocap sample (`mocap.*`, MOCAP_RATE, handled 5 ms after capture) as recorded
             now, instead of `times`.
+        platform: With one, the commands pass its limits every PLATFORM_CYCLE before they act, as on the robot.
     """
     rng = np.random.default_rng(seed)
     sent = np.arange(0.0, seconds, 1.0 / COMMAND_RATE)
@@ -58,6 +59,13 @@ def model_run(delay=0.2, speed=0.9, steering=0.95, x_icr=-0.1, seconds=60.0, see
     model, step = BaseModel(x_icr, speed, steering), 1.0 / (COMMAND_RATE * FINE)
     fine = np.arange(0.0, seconds, step)
     acting = held(fine, delay)
+    if platform is not None:
+        cycles = np.arange(0.0, seconds, PLATFORM_CYCLE)
+        wheels, limited = held(cycles, 0.0), (0.0, 0.0)
+        for i, (v, w) in enumerate(wheels):
+            limited, wheels[i] = platform.limit(limited, v, w, PLATFORM_CYCLE)
+        index = np.searchsorted(cycles, fine - delay, side="right") - 1
+        acting = np.where((index >= 0)[:, None], wheels[np.clip(index, 0, None)], 0.0)
     pose = np.zeros((len(fine), 3))
     for i in range(1, len(fine)):
         pose[i] = model.step(pose[i - 1], *acting[i - 1], step)

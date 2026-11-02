@@ -3,11 +3,11 @@ Bar marker fitting: where every bar the mocap sees is, against where the process
 
 Every bar of the loaded process that carries markers is tracked as its Motive asset (bar Bxx streams as asset 10xx;
 the Mocap ID box re-tracks the chosen bar under another id). Each bar's CAD markers are fitted to the measured ones
-without Motive's labels (`world/marker_layouts.fit_bar`, the old monitor's matcher) at most ten times a second:
+without Motive's labels (`shared/bars/layouts.fit_bar`) at most ten times a second:
 matched around the last good fit while it is fresh, else around the planned pose, else by the full search, of which
 at most one runs per tick across the bars. "Ghost bars" draws every fitted bar (the process bar and its mounted
 halves, see-through, the old monitor's MoCap cyan) at its fitted pose; "Show markers" draws the chosen bar's
-measured markers (green the trusted ones the fit used, orange filled in by Motive), its fitted markers (blue:
+measured markers (green the trusted ones the fit used, amber filled in by Motive), its fitted markers (blue:
 markers, axis, a line per residual) and its planned markers and line (grey, pink). The stats block below the buttons
 reads the chosen bar's fit the old monitor's way: each marker's residuals, each plate's ball pair, the spacing
 between plates, the bow, and the deviation from the planned pose; "Measure + log" and "Log live" print the old
@@ -24,7 +24,7 @@ assembly pose, a held one on the real robot's flange. Record writes a take of th
 - * The ghosts are drawn only, in this plugin's view: not scene bodies, so they never collide (the planned ones
   already do), and hidden while there is no fit.
 
-Run with:  -p plugins:="['mocap_bars']"  (loads `process`)
+Run with:  plugins:="mocap_bars"  (loads `process`)
 """
 
 from __future__ import annotations
@@ -38,7 +38,8 @@ from typing import TYPE_CHECKING, Mapping
 import numpy as np
 import viser
 
-from ..drive import drive_folder, folder_name
+from ..colors import FITTED, GREEN, GREY, MEASURED, WARN, rgb, rgb01
+from ..drive import drive_folder, environment, folder_name
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..plugin_api.trace import Signal
@@ -48,11 +49,11 @@ from ..shared.recordings.runs import run_folder, save_recording, write_descripti
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.scene_view import add_shape
 from ..ui.style import BUSY, NONE, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, note, section, values
-from ..world.bar_fit import BarFit
-from ..world.bar_pose import PoseDeviation, bar_ends, pose_deviation, transform_points
-from ..world.marker_fit import (MATCHED, MISSING, MarkerRow, PlateGeometry, bar_deviation, bar_report, marker_rows,
-                                plate_geometry)
-from ..world.marker_layouts import BarLayout, Sensed, bar_asset_id, bar_layouts, fit_bar, sensed_from_raw
+from ..shared.bars.layouts import BarLayout, bar_asset_id, bar_layouts, fit_bar
+from ..shared.bars.pose import PoseDeviation, bar_ends, pose_deviation
+from ..shared.bars.readings import (MATCHED, MISSING, MarkerRow, PlateGeometry, bar_report, marker_rows,
+                                    plate_geometry)
+from ..world.marker_match import BarFit, Sensed, sensed_from_raw, transform_points
 from ..world.measured import TrackedObject
 from ..world.mocap import mocap_check
 from scaffolding_assembly_core.geometry import Pose, compose, invert
@@ -76,13 +77,13 @@ HINT_MAX_AGE = 1.0
 SEARCH_RETRY = 1.0
 #: "Log live" prints the chosen bar's report this often, seconds.
 LOG_PERIOD = 5.0
-#: Colours: measured markers, markers filled in by Motive, the fitted markers, the planned markers.
-MEASURED_COLOR = (40, 190, 80)
-FILLED_COLOR = (250, 140, 30)
-FIT_COLOR = (40, 120, 230)
-PLANNED_COLOR = (150, 150, 150)
+#: Colours: the trusted markers the fit used, markers Motive filled in, the fitted markers, the planned markers.
+MEASURED_COLOR = rgb(GREEN)
+FILLED_COLOR = rgb(WARN)
+FIT_COLOR = rgb(FITTED)
+PLANNED_COLOR = rgb(GREY)
 #: The ghost bars' colour, the old monitor's MoCap cyan (r, g, b, alpha from 0 to 1).
-MOCAP_COLOR = (0.0, 0.8, 0.9, 0.5)
+MOCAP_COLOR = rgb01(MEASURED, 0.5)
 #: Size of the drawn markers, metres.
 MARKER_POINT_SIZE = 0.02
 
@@ -357,7 +358,9 @@ class MocapBarsPlugin(HuskyPlugin):
             await ctx.sleep(seconds)
         process: ProcessContract = ctx.require("process")
         selection = process.selection
+        relay = ctx.world.mocap_relay
         description = {"bar": bar_id, "mocap_id": state.obj.mocap_id,
+                       **environment(relay is not None and relay.state.simulated),
                        "process": str(selection.process.folder) if selection is not None else None,
                        "step": selection.movement.id if selection is not None else None, "seconds": seconds,
                        "frame": "world (mocap, Z-up), metres; quaternions (x, y, z, w); deviation in the planned "
@@ -382,9 +385,8 @@ class MocapBarsPlugin(HuskyPlugin):
         def fit() -> BarFit | None:
             return state.fit if state.fit is not None and state.fit.ok else None
 
-        def planned_deviation():
-            return (bar_deviation(state.pose, state.planned)
-                    if state.pose is not None and state.planned is not None else None)
+        def planned_deviation() -> PoseDeviation | None:
+            return state.deviation
 
         return [
             Signal("fit_position", lambda: state.pose.position if state.pose else None, ("x", "y", "z"), "m"),
@@ -397,9 +399,10 @@ class MocapBarsPlugin(HuskyPlugin):
                    "m"),
             Signal("planned_orientation", lambda: state.planned.orientation if state.planned else None,
                    ("qx", "qy", "qz", "qw")),
-            Signal("deviation", lambda: (planned_deviation().across, planned_deviation().along)
+            Signal("deviation", lambda: (planned_deviation().across_mm / 1e3, planned_deviation().along_mm / 1e3)
                    if planned_deviation() else None, ("across", "along"), "m"),
-            Signal("tilt", lambda: planned_deviation().tilt if planned_deviation() else None, (), "rad"),
+            Signal("tilt", lambda: np.radians(planned_deviation().tilt_deg) if planned_deviation() else None, (),
+                   "rad"),
             Signal("matched_markers", lambda: self._matched(state), tuple(
                 f"{index}.{axis}" for index in range(len(model)) for axis in "xyz"), "m"),
         ]
@@ -643,7 +646,7 @@ class MocapBarsPlugin(HuskyPlugin):
         if self._drawn is not None and all(a is b for a, b in zip(self._drawn, shown)):
             return
         self._drawn = shown
-        # * Green: the trusted markers the last fit used; orange: the ones Motive filled in from its own pose.
+        # * MEASURED: the trusted markers the last fit used; WARN: the ones Motive filled in from its own pose.
         self._measured_cloud.visible = sensed is not None and len(markers.ids) > 0
         if self._measured_cloud.visible:
             filled = markers.positions[~markers.measured]

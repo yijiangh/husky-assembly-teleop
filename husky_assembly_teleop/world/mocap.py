@@ -13,6 +13,8 @@ from .checks import BAD, GOOD, WARN, Check
 #: ? A guess from typical OptiTrack numbers. The relay's own looser threshold
 #:   (`marker_error_valid_threshold`) marks the pose invalid.
 MARKER_ERROR_WARN = 1e-3
+#: Mean marker error, metres, above which a body must be looked at or refined (red).
+MARKER_ERROR_LIMIT = 2e-3
 
 
 def mocap_check(label: str, mocap_id: int | None, body: MocapBody, now: float) -> Check:

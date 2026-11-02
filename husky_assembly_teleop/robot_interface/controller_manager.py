@@ -127,6 +127,10 @@ class ControllerManagerInterface:
         future.add_done_callback(self._on_list_answer)
         return True
 
+    def refusal(self, controller: str) -> str | None:
+        """Why a guarded `switch` to `controller` would be refused now (e.g. no lease), or None."""
+        return self._guard(controller) if self._guard is not None else None
+
     def switch(self, controller: str, unguarded: bool = False) -> bool:
         """Start `controller`, stopping whichever switchable one is running; the outcome lands in `state`.
 

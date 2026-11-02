@@ -6,6 +6,8 @@ Project-wide instructions for coding agents. Keep them generic: no personal path
 
 - Simplicity first: make every change as simple as possible and touch as little code as possible. Reuse existing functions instead of writing new ones.
 - Code is read by humans and agents: write comments, in plain language without jargon (no "no-op").
+- For an analysis or report that others will act on, a reviewer subagent loop often catches what you missed:
+  `doc/experiments/experiment_report_guide.md`, "Review before handing over". A suggestion, not a rule.
 
 ## Panels: nothing jumps
 
@@ -47,15 +49,34 @@ When briefing a subagent to write or edit comments, paste this section into its 
 
 ## Where things are
 
-- `README.md`: install, run, parameters, plugins.
+- `README.md`: install, run, parameters, a line per plugin; keep it short, for getting new users running.
+  `doc/lab/plugins.md`: the UI's panels and every plugin in detail; a plugin's behaviour is documented there.
 - `external/scaffolding_assembly_core/`: the core shared with the Rhino plugin and the planners: the process format (`process/`, schema 2.1), robots, scenes and their mirrors; layers in its `scaffolding_assembly_core/__init__.py`, the process format in its `doc/process_format.md`. A submodule of `yijiangh/scaffolding_assembly_core`, installed editable in the venv.
   - ! It imports nothing from `husky_assembly_teleop`, ROS or viser, and runs on Python 3.9: change it in the submodule following its own `AGENTS.md`, run its own tests there (`cd external/scaffolding_assembly_core && python3 -m pytest`), commit and push it, then commit the new submodule pointer here.
 - `husky_assembly_teleop/plugins/__init__.py`: the rules every plugin follows. `plugins/robot_control/` is the reference plugin, `plugins/examples/` the templates.
 - `husky_assembly_teleop/shared/`: for plugins to share code, data and services; plugins never import each other. What plugin `<name>` offers is `<Name>Contract` in `shared/<name>_contract.py`; subfolders (`shared/planner/`) hold base classes and helpers. `test/structure/test_layers.py` checks that imports only go down the layers.
-- `doc/glossary.md`: the project's words (runtime, core, lease, freeze, clearance, ...) and which meaning each has where. `doc/representation_old_vs_new.md`: the old monitor's action/movement/state data and the new, side by side, live and on disk; `doc/run_record.md`: what an assembly run writes. `doc/refactor_rationale.md`: why the runtime is built the way it is. `doc/plugin_roadmap.md`: which old features are still to be ported. `doc/scene_refactor_plan.md`: the scene.
-- `doc/experiment_design_guide.md` and `doc/experiment_report_guide.md`: JG's Experiment Design Guide: how to plan, build and analyse an experiment, and how its generated reports are written.
-- `husky_assembly_teleop/old/`: the old monitor, reference only. It does not run; never import it from new code.
-- Docs marked outdated at the top describe the old monitor.
+- `doc/glossary.md`: the project's words (runtime, core, lease, freeze, clearance, ...) and which meaning each has where. `doc/design/representation_old_vs_new.md`: the old monitor's action/movement/state data and the new, side by side, live and on disk; `doc/design/run_record.md`: what an assembly run writes. `doc/design/refactor_rationale.md`: why the runtime is built the way it is. `doc/design/plugin_roadmap.md`: which old features are still to be ported. `doc/design/scene_refactor_plan.md`: the scene.
+- `doc/experiments/experiment_design_guide.md` and `doc/experiments/experiment_report_guide.md`: JG's Experiment Design Guide: how to plan, build and analyse an experiment, and how its generated reports are written.
+- The old monitor lives on `master` only (`doc/setup/old_monitor.md`).
+- `doc/README.md`: every doc by folder: `setup/` and `lab/` (all it takes to run the monitor), `experiments/`, `design/`.
+  `doc/archive/` holds outdated docs; a doc elsewhere marked outdated at the top describes the old monitor.
+
+## The Drive
+
+`HUSKY_DRIVE_ROOT` (or the monitor's `drive_root`) is the project's real shared Google Drive folder
+(`2025-03 Husky Assembly`), synced by Insync: every change reaches everyone on the project and may not be undoable.
+
+- ! Ask the user before deleting, moving, renaming or editing anything under the Drive root, including through a script
+  or a monitor run you start; say which files and why. Reading needs no permission.
+- An experiment the user is running may create and edit its own files there without asking: its runs, recordings,
+  takes, reports and analysis output, in its own folder.
+- ! Never create folders directly under the root or its data folders (`doc/setup/experiment_data.md`); the user
+  creates them in Drive.
+- For rapid development, point `HUSKY_DRIVE_ROOT` (or `drive_root:=`) at a mock Drive: a local, unsynced rough copy of
+  the folder structure holding only what the work needs, so temporary runs never pollute the real Drive. Say when the
+  mock is in use; results that should last are rerun or copied onto the real Drive with the user.
+- Write test output and scratch copies elsewhere: `tmp_path` in tests, `scripts/fake_lab/drive.sh` for a monitor run on
+  a copy of a process. Tests only read the Drive and skip without it.
 
 ## Build and test
 

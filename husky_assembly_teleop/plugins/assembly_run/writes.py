@@ -48,7 +48,8 @@ NO_PROCESS, OPENING, OPEN, NOT_OPENED = "", "opening", "open", "not opened"
 
 def _record_file(folder: Path, event: str, ros_time: float, action: str, movement: str,
                  payload: Mapping[str, Any], data: Mapping[str, Any] | None, kind: str = "movements",
-                 figure: Callable[[Mapping[str, Any], Path], None] | None = None) -> None:
+                 figure: Callable[[Mapping[str, Any], Path], None] | None = None,
+                 reserved: Path | None = None) -> None:
     """Write a `kind` record, draw its figure beside it, then write an event naming it. Writer thread.
 
     Args:
@@ -61,8 +62,9 @@ def _record_file(folder: Path, event: str, ros_time: float, action: str, movemen
         data: The event's data, or None.
         kind: A key of `runs.KINDS`: "movements" or "servo".
         figure: Draws the record's plot, called as `figure(payload, <record>.png)`; None draws nothing.
+        reserved: The file `reserve_record` took for the record, or None.
     """
-    path = record_movement(folder, action, movement, payload, kind)
+    path = record_movement(folder, action, movement, payload, kind, reserved)
     if figure is not None:
         try:
             figure(payload, path.with_suffix(".png"))
@@ -234,14 +236,16 @@ class RunWrites:
 
     async def _record_later(self, ctx: PluginContext, event: str, action: str | None, movement: str | None,
                             data: Mapping[str, Any] | None, file: Mapping[str, Any] | None, kind: str,
-                            figure: Callable[[Mapping[str, Any], Path], None] | None) -> None:
+                            figure: Callable[[Mapping[str, Any], Path], None] | None,
+                            reserved: Path | None = None) -> None:
         """Record once there is a run."""
         if await self._ensure_run(ctx) is not None:
-            self._queue_record(ctx, event, action, movement, data, file, kind, figure)
+            self._queue_record(ctx, event, action, movement, data, file, kind, figure, reserved)
 
     def _queue_record(self, ctx: PluginContext, event: str, action: str | None, movement: str | None,
                       data: Mapping[str, Any] | None, file: Mapping[str, Any] | None, kind: str,
-                      figure: Callable[[Mapping[str, Any], Path], None] | None) -> None:
+                      figure: Callable[[Mapping[str, Any], Path], None] | None,
+                      reserved: Path | None = None) -> None:
         """Queue a record's writes: a `kind` record with its figure and the event naming it, or the event alone."""
         folder = self._run.folder
         if file is not None and kind == AS_BUILT_KIND:
@@ -252,7 +256,7 @@ class RunWrites:
             done.add_done_callback(lambda job: self._as_built_written(ctx, head, job))
         elif file is not None:
             self._write(ctx, f"record {event}", _record_file, folder, event, ctx.now(), action, movement, file, data,
-                        kind, figure)
+                        kind, figure, reserved)
         else:
             self._write(ctx, f"record {event}", record_event, folder, event, ctx.now(), action=action,
                         movement=movement, **({"data": dict(data)} if data else {}))

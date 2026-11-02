@@ -116,7 +116,7 @@ def test_a_press_with_clearance_ticked_streams_only_once_its_clearance_checks():
         bench.ticks(1, press=(0, 1.0))
         assert not bench.sent(), "the clearance comes first"
         await asyncio.sleep(0)
-        assert (SERIAL, ARM) in bench.plugin._jog_checked
+        assert bench.plugin._jog_clearances[(SERIAL, ARM)].checked  # * the fake context checks it clear at once
         bench.ticks(3, press=(0, 1.0))
         assert len(bench.sent()) == 3
         clearance, = bench.ctx.clearances
@@ -125,7 +125,6 @@ def test_a_press_with_clearance_ticked_streams_only_once_its_clearance_checks():
         await bench.plugin._jog_guards[(SERIAL, ARM)]
 
     asyncio.run(scenario())
-    assert not bench.plugin._jog_checked
 
 
 def test_a_press_under_the_compliance_controller_is_refused_and_sends_nothing():

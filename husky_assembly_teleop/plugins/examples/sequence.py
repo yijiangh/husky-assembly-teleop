@@ -14,7 +14,7 @@ Three cycles of fake waits in place of robot work:
 ! Ignore (and log) a click that does not apply now: a stored click would fire long after it was forgotten.
 ! Catch the failures you expect, such as a timeout, and report them: repeated failing ticks stop the plugin.
 
-Run with:  -p plugins:="['example_sequence']"
+Run with:  plugins:="example_sequence"
 """
 
 from __future__ import annotations
@@ -23,10 +23,11 @@ import asyncio
 
 import viser
 
+from ...colors import rgb
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, chip, chip_line, section
+from ...ui.style import BUSY, CURRENT, FAIL, INFO, NONE, OK, SECTION_CTRL, chip, chip_line, section
 
 CYCLES = 3
 TIMER_SECONDS = 3.0
@@ -68,7 +69,7 @@ class ExampleSequencePlugin(HuskyPlugin):
         """
         with ctx.view.ui() as gui:
             self._status: viser.GuiHtmlHandle = gui.add_html("")
-            self._progress = gui.add_progress_bar(0.0, color="blue")
+            self._progress = gui.add_progress_bar(0.0, color=rgb(CURRENT))
             gui.add_html(section("sequence", SECTION_CTRL))
             buttons = gui.add_button_group("Seq", ["Start", "Next", "Cancel"])
         buttons.on_click(ctx.defer_value("sequence button", lambda clicked: self._on_button(ctx, clicked)))
@@ -155,9 +156,8 @@ class ExampleSequencePlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        waiting = self.step == "press Next"
         if self.running:
-            chips = chip(f"cycle {self.cycle}/{CYCLES}", OK) + chip(self.step, BUSY if waiting else OK)
+            chips = chip(f"cycle {self.cycle}/{CYCLES}", INFO) + chip(self.step, BUSY)
         else:
             chips = chip("idle", NONE)
         if self.outcome:

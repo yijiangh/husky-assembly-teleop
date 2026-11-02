@@ -5,7 +5,7 @@
 # Usage: drive.sh           copy the process files (a runs/ folder already in the copy is kept)
 #        drive.sh --fresh   also delete the copy's runs/, for a test from the very start
 
-set -e
+set -euo pipefail
 FAKE_LAB_HOME="${FAKE_LAB_HOME:-$HOME/husky_fake_lab}"
 process="data_design_study/261008_2ModulesDemo_purged_process"
 
@@ -30,7 +30,7 @@ fi
 copy="$FAKE_LAB_HOME/drive/$process"
 mkdir -p "$copy" "$FAKE_LAB_HOME/logs"
 rsync -a --exclude runs --exclude solutions "$real/$process/" "$copy/"
-if [ "$1" = "--fresh" ]; then
+if [ "${1:-}" = "--fresh" ]; then
     rm -rf "$copy/runs"
     echo "drive.sh: deleted the copy's runs/"
 fi

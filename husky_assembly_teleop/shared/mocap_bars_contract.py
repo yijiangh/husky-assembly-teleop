@@ -16,9 +16,9 @@ import numpy as np
 from scaffolding_assembly_core.geometry import Pose
 
 if TYPE_CHECKING:
-    from ..world.bar_fit import BarFit
-    from ..world.bar_pose import PoseDeviation
-    from ..world.marker_layouts import BarLayout, Sensed
+    from ..world.marker_match import BarFit, Sensed
+    from .bars.layouts import BarLayout
+    from .bars.pose import PoseDeviation
 
 
 @dataclass(frozen=True)

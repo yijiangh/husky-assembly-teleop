@@ -23,7 +23,7 @@ POSE_TIMEOUT = 0.3
 
 @dataclass(frozen=True)
 class RawMarkers:
-    """The raw markers Motive labeled to a rigid body in one sample: world frame (Z-up), metres, not calibrated.
+    """The raw markers Motive labeled to a rigid body in one sample: lab frame, metres, no robot calibration.
 
     Attributes:
         ids: 1-based member numbers in the Motive asset, shape (n,).

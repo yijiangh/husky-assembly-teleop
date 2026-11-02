@@ -1,9 +1,9 @@
 """
 Capture what the planners print while they run, line by line, into a callback: tamp's `[ssik]` lines, PyBullet's.
 
-At the file descriptor (fd 1), since PyBullet redirects stdout itself, so `contextlib.redirect_stdout` misses it.
-Only fd 1 is captured: the ROS log and `ctx.log_info` write to stderr, so nothing of the monitor's is swallowed and
-the callback may log freely. compas_fab's own fd redirect nests inside this one.
+At the file descriptor (fd 1), since PyBullet's and ssik's C code write to it directly, which
+`contextlib.redirect_stdout` misses. Only fd 1 is captured: the ROS log and `ctx.log_info` write to stderr, so nothing
+of the monitor's is swallowed and the callback may log freely.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ def captured_lines(line: Callable[[str], None]) -> Iterator[None]:
     Args:
         line: Gets each line without its newline, on the reader thread.
     """
-    # * Lines must leave Python's buffer as they are printed, or they all arrive when the block ends: compas_fab's
-    #   redirect replaces sys.stdout with a block-buffered file, and a pipe is never a terminal.
+    # * Lines must leave Python's buffer as they are printed, or they all arrive when the block ends: a pipe is never a
+    #   terminal, so sys.stdout would buffer whole blocks.
     sys.stdout.flush()
     sys.stdout.reconfigure(line_buffering=True)
     read_end, write_end = os.pipe()

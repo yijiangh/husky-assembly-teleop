@@ -18,11 +18,10 @@ from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import split_link_id
 from scaffolding_assembly_core.process import LineSpec, Movement, Process
 from scaffolding_assembly_core.process.solutions import MovementResult
-from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 from .collision import SweptReport
 from .ik import IkResult
-from .joints import arm_side
+from .joints import arm_of_joint, arm_side
 from .movement import MovementSpec, Routine
 
 if TYPE_CHECKING:
@@ -147,8 +146,7 @@ def goal_line(check: GoalCheck) -> str:
         return f"{check.movement}: no goal at the live base: {check.reason}"
     arms: dict[str, list[float]] = {}
     for name, value in check.ik.joints.items():
-        arm = next(name[:-len(joint) - 1] for joint in UR_JOINT_NAMES if name.endswith(f"_{joint}"))
-        arms.setdefault(arm_side(arm), []).append(value)
+        arms.setdefault(arm_side(arm_of_joint(name)), []).append(value)
     goal = " ".join(f"{side} [{', '.join(f'{value:+.4f}' for value in joints)}]" for side, joints in arms.items())
     x, y, _z = check.base.position
     qx, qy, qz, qw = check.base.orientation
@@ -187,7 +185,7 @@ def line_goal(start: Pose, line: LineSpec) -> Pose:
 
 
 #: A live tool axis this far from the export's retreat axis is said loudly: the tool sits turned on the bar, or the
-#: export's axis is wrong (M:276).
+#: export's axis is wrong.
 RETREAT_AXIS_WARN = math.radians(20.0)
 
 

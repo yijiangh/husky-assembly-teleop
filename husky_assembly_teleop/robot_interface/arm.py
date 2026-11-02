@@ -16,7 +16,7 @@ from crl_husky_msgs.msg import ArmStatus
 from geometry_msgs.msg import PoseStamped, WrenchStamped
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
-from scipy.spatial.transform import Rotation, Slerp
+from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
@@ -158,20 +158,33 @@ def cartesian_move(start_position: Sequence[float], start_orientation: Sequence[
         tuple[float, Callable]: The duration T in seconds, and `sample(t)`, the
             (position, quaternion) t seconds after the start (the target beyond T).
     """
-    start_position = np.asarray(start_position, dtype=float)
-    delta = np.asarray(target_position, dtype=float) - start_position
-    rotations = Rotation.from_quat([start_orientation, target_orientation])
-    angle = float((rotations[0].inv() * rotations[1]).magnitude())
+    start = Pose.from_arrays(start_position, start_orientation)
+    target = Pose.from_arrays(target_position, target_orientation)
+    delta = np.subtract(target.position, start.position)
+    angle = float((Rotation.from_quat(start.orientation).inv() * Rotation.from_quat(target.orientation)).magnitude())
     duration = max(min_duration, np.pi / 2 * float(np.linalg.norm(delta)) / max_speed,
                    np.pi / 2 * angle / max_rotation_speed)
-    turn = Slerp([0.0, 1.0], rotations)
 
     def sample(t: float) -> tuple[np.ndarray, np.ndarray]:
         """(position, quaternion) at t seconds after the start."""
-        progress = (1.0 - np.cos(np.pi * min(max(t / duration, 0.0), 1.0))) / 2.0
-        return start_position + progress * delta, turn([progress]).as_quat()[0]
+        pose = pose_between(start, target, (1.0 - np.cos(np.pi * min(max(t / duration, 0.0), 1.0))) / 2.0)
+        return np.asarray(pose.position), np.asarray(pose.orientation)
 
     return duration, sample
+
+
+def pose_between(start: Pose, end: Pose, fraction: float) -> Pose:
+    """The pose `fraction` of the way from `start` to `end`: the position on the straight line, the turn by slerp.
+
+    Args:
+        start: The pose at 0.
+        end: The pose at 1.
+        fraction: How far along, 0 to 1.
+    """
+    first = Rotation.from_quat(start.orientation)
+    turn = (first.inv() * Rotation.from_quat(end.orientation)).as_rotvec()
+    position = np.add(start.position, fraction * np.subtract(end.position, start.position))
+    return Pose.from_arrays(position, (first * Rotation.from_rotvec(fraction * turn)).as_quat())
 
 
 def joint_move(start: Sequence[float], target: Sequence[float],
@@ -985,7 +998,7 @@ class ArmInterface:
         if refusal is not None:
             pass
         elif self.urdf_problem is not None and not hold:
-            refusal = "the URDF breaks the stock UR frames (logged at startup, doc/ur_frames.md)"
+            refusal = "the URDF breaks the stock UR frames (logged at startup, doc/lab/ur_frames.md)"
         elif (refusal := cartesian_target_refusal(position, orientation)) is not None:
             pass
         elif self.state.tcp_position is None:
@@ -1082,7 +1095,7 @@ class ArmInterface:
             f"##  TEST MODE -- arm {self.config.name}: {what} passed every check, NOT SENT\n"
             f"##  {detail}\n"
             f"##  Send for real (ArmConfig.cartesian_test_mode=False) only once the startup\n"
-            f"##  log shows no URDF frame error for this arm (doc/ur_frames.md).\n"
+            f"##  log shows no URDF frame error for this arm (doc/lab/ur_frames.md).\n"
             f"{rule}")
 
     def send_target_wrench(self, force: Sequence[float],

@@ -121,6 +121,21 @@ def test_start_in_collision_is_refused(world, config):
     assert result.path is None and result.reason.startswith("start is in collision")
 
 
+def test_another_robot_in_a_box_does_not_block_the_plan(world, config):
+    """Only what Alice and her tools touch counts: Belle standing in a box far away is not a start in collision."""
+    start, goal = start_and_goal(config)
+    belle = robot_config_from_serial("0805", DATA)
+    other = RobotObject(robot_id("0805"), belle.model, Pose.from_arrays((4.0, 0.0, 0.0), (0, 0, 0, 1)),
+                        dict(zip(NAMES, belle.arms[0].stow_joints)))
+    box = Body("t/box", box_geometry((1.0, 1.0, 1.0)), Pose.from_arrays((4.0, 0.0, 0.5), (0, 0, 0, 1)))
+    scene = snapshot(config, start, (box,))
+    scene.robots[other.id] = other
+    mirror, scene = synced(world, scene)
+    assert mirror.collisions(full_report=True), "the core's check should see Belle in the box"
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is not None, result.reason
+
+
 def test_the_preview_follows_the_cosine_profile_sent():
     """The preview speeds up and slows down as the arm will: slow at the ends, halfway at half time; it clamps."""
     goal = np.array([1.0, 0.5, 0, 0, 0, 0])
@@ -129,6 +144,19 @@ def test_the_preview_follows_the_cosine_profile_sent():
     np.testing.assert_allclose(path.sample(path.duration / 2), goal / 2, atol=1e-9)
     assert path.sample(path.duration / 4)[0] < 0.2
     np.testing.assert_allclose(path.sample(1e9), goal)
+
+
+@pytest.mark.safety
+def test_slowing_a_path_stretches_its_times_and_divides_its_speeds():
+    """The same samples, 2.5 times as long at 1/2.5 the speed; slowing again is relative to the fastest timing."""
+    corners = np.array([[0.0] * 6, [1.0, 0.5, 0, 0, 0, 0], [1.5, -0.5, 0.3, 0, 0, 0]])
+    fast = ArmPath.along(NAMES, corners, [1])
+    slow = fast.slowed(2.5)
+    np.testing.assert_allclose(slow.points, fast.points)
+    assert slow.duration == pytest.approx(2.5 * fast.duration) and slow.fastest == pytest.approx(fast.duration)
+    np.testing.assert_allclose(slow.velocities, fast.velocities / 2.5)
+    np.testing.assert_allclose(slow.sample(slow.duration / 2), fast.sample(fast.duration / 2))
+    assert slow.slowed(1.0).duration == pytest.approx(fast.duration)
 
 
 def test_window_without_display_raises(config, monkeypatch):
@@ -145,7 +173,6 @@ def test_window_without_display_raises(config, monkeypatch):
         world.close()
 
 
-@pytest.mark.slow
 def test_a_given_path_is_checked_at_its_waypoints_and_between_them(world, config):
     """Clear without a box; a box on the swing hits the move to the goal, a box at the goal the goal itself."""
     start, goal = start_and_goal(config)
@@ -157,7 +184,6 @@ def test_a_given_path_is_checked_at_its_waypoints_and_between_them(world, config
         assert hit is not None and hit.message.startswith(where) and "the box" in hit.message, hit
 
 
-@pytest.mark.slow
 def test_a_hit_lists_every_pair_that_blocks_it_with_its_contact(world, config):
     """A box at the goal: the arm side comes first and the contact overlaps; a box the arm never moves is not listed."""
     start, goal = start_and_goal(config)
@@ -175,7 +201,6 @@ def test_a_hit_lists_every_pair_that_blocks_it_with_its_contact(world, config):
     assert hit.scene.robots[robot_id(ALICE)].joints[NAMES[0]] == pytest.approx(goal[0])
 
 
-@pytest.mark.slow
 def test_a_start_in_collision_lists_every_pair(world, config):
     """The start is checked in full: a box at the chassis blocks it though the arm never moves it."""
     start, goal = start_and_goal(config)
@@ -185,7 +210,6 @@ def test_a_start_in_collision_lists_every_pair(world, config):
     assert any("t/static" in pair for pair in result.hit.pairs)
 
 
-@pytest.mark.slow
 def test_a_hit_moves_the_held_body_with_the_arm(world, config):
     """In the hit's scene, a body held on tool0 sits at the tool at the target, not where the snapshot had it."""
     start, goal = start_and_goal(config)
@@ -200,7 +224,6 @@ def test_a_hit_moves_the_held_body_with_the_arm(world, config):
     assert scene.robots[robot_id(ALICE)].joints[NAMES[0]] == pytest.approx(start[0])
 
 
-@pytest.mark.slow
 def test_a_hit_on_another_robot_names_the_link_touched(world, config):
     """Another robot is one body to the check; the contact narrows it to the link the arm touched."""
     start, goal = start_and_goal(config)

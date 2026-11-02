@@ -31,6 +31,7 @@ ARC_RADII = (2.0, 1.0, 0.5)
 #: Samples are drawn from the box around start and goal, grown by this much per side, metres.
 SAMPLE_PADDING = 3.0
 
+# * Own colours: the debug view's layers (test_colors skips this file).
 #: Debug layers, back to front: name and colour (r, g, b).
 SAMPLED = "samples", (173, 181, 189)
 EXPLORED = "moves tried, as far as clear", (134, 142, 150)

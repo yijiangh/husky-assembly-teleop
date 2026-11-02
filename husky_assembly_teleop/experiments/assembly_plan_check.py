@@ -272,7 +272,7 @@ def _plan_one(loaded: LoadedProcess, step: Step, robots: tuple[RobotConfig, ...]
 def _captured(into: list[str], capture: bool) -> Iterator[None]:
     """Keep what is printed meanwhile, Python's and the C libraries' alike, in `into`; nothing when not `capture`.
 
-    ? At the file descriptor: PyBullet's helpers redirect it themselves, so `redirect_stdout` breaks them.
+    ? At the file descriptor: C libraries (PyBullet, ssik) write to fd 1 directly, which `redirect_stdout` misses.
     """
     if not capture:
         yield

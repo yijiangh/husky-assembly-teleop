@@ -1,4 +1,7 @@
-"""The UR frame convention the arms' Cartesian commands rely on (see doc/ur_frames.md); the URDF check is the core's."""
+"""The UR frame convention the arms' Cartesian commands rely on; the URDF check is the core's.
+
+The convention: doc/lab/ur_frames.md.
+"""
 
 from __future__ import annotations
 

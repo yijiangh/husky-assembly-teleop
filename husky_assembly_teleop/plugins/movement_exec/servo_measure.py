@@ -1,9 +1,9 @@
 """
 What the servo part says and records around its loop.
 
-The feedback line, the gate after a grounded insert, the panel's one line per reading, the old monitor's console lines
-(what a pass aims at, the plan, the load, how the loop ended), the record's IK entry and the servo file's name: pure
-helpers for `servo_part.py` (same thread, same rules).
+The feedback line, the gate after a ground bar's insert, the panel's one line per reading, the old monitor's console
+lines (what a pass aims at, the plan, the load, how the loop ended), the record's IK entry and the servo file's name:
+pure helpers for `servo_part.py` (same thread, same rules).
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from scaffolding_assembly_core.ids import robot_id
 from ...shared.execution.servo import (AFTER_INSERT, BAR_TOL, GROUNDED_END_TOL, MAX_PASSES, TOOL0_TOL, force_vectors,
                                        insert_end_gap)
 from ...shared.movement_exec_contract import CANCELLED, DONE, SERVO_TARGET
+from ...shared.runs.runs import reserve_record
 
 if TYPE_CHECKING:
     from ...shared.assembly_planning.ik import IkResult
@@ -26,30 +27,28 @@ if TYPE_CHECKING:
 
 #: How a side reads on the panel line and in the prompt ("arm" stays as it is).
 SIDE = {"left": "L", "right": "R"}
-#: (servo folder, movement id) -> the last record number `servo_file` named, for records the writer has not written yet.
-NAMED: dict[tuple[str, str], int] = {}
 
 
 def say_feedback(job: Job, plan: ServoPlan) -> None:
-    """Log what the loop steers on (W:2243-2252); "Servo by bar" ticked but not usable for a grounded bar warns."""
+    """Log what the loop steers on; "Servo by bar" ticked but not usable for a ground bar warns."""
     ctx, settings = job.ctx, job.run.view.settings
     if plan.by_bar:
-        ctx.log_info(f"[servo] feedback: the MoCap bar {plan.bar} (converges at {BAR_TOL[0] * 1e3:.1f} mm / "
+        ctx.log_info(f"[servo] feedback: the mocap bar {plan.bar} (converges at {BAR_TOL[0] * 1e3:.1f} mm / "
                      f"{math.degrees(BAR_TOL[1]):.1f} deg).")
         return
-    # * Only a grounded bar held in the tools servos by bar; for any other the box is no promise, so no warning.
+    # * Only a ground bar held in the tools servos by bar; for any other the box is no promise, so no warning.
     if settings.servo_by_bar and plan.held and plan.grounded:
         ctx.log_warn(f"[servo] 'Servo by bar' is ticked, but this run aims tool0: {plan.why_tool0}.")
     if plan.layout is not None and plan.holder is not None:
-        ctx.log_info(f"[servo] feedback: tool0 ({TOOL0_TOL * 1e3:.1f} mm); the MoCap bar {plan.bar} is recorded "
+        ctx.log_info(f"[servo] feedback: tool0 ({TOOL0_TOL * 1e3:.1f} mm); the mocap bar {plan.bar} is recorded "
                      f"alongside.")
     else:
-        why = f"{plan.bar} carries no MoCap markers" if plan.held else "no bar held"
-        ctx.log_info(f"[servo] feedback: tool0 ({TOOL0_TOL * 1e3:.1f} mm); no MoCap bar recorded ({why}).")
+        why = f"{plan.bar} carries no mocap markers" if plan.held else "no bar held"
+        ctx.log_info(f"[servo] feedback: tool0 ({TOOL0_TOL * 1e3:.1f} mm); no mocap bar recorded ({why}).")
 
 
 def insert_end_problem(job: Job, plan: ServoPlan) -> str:
-    """After a grounded insert: why the servo may not run, "" if it may (W:5994-6024); warns when the guard is off.
+    """After a ground bar's insert: why the servo may not run, "" if it may; warns when the guard is off.
 
     ! The insert's end is the request's insert plan's last row, nothing else: the authored end joints were solved at
       the design base, so at the live base they stand millimetres off. A servo Exec on its own is refused.
@@ -66,10 +65,10 @@ def insert_end_problem(job: Job, plan: ServoPlan) -> str:
     if robot is None:
         return f"{request.serial} is not in the scene"
     gap = insert_end_gap(robot, names, end_row, plan.arms)
-    if gap > GROUNDED_END_TOL:  # (W:6004-6007)
+    if gap > GROUNDED_END_TOL:
         return (f"the flanges stopped {gap * 1e3:.1f} mm from the end of the insert (limit "
                 f"{GROUNDED_END_TOL * 1e3:.0f} mm): no servo after it")
-    if force_vectors(job.robot, plan.arms) is None:  # (W:6013-6015)
+    if force_vectors(job.robot, plan.arms) is None:
         ctx.log_warn(f"{job.who}: no force reading: the servo's load guard is OFF. Watch the arms and use Cancel if "
                      f"the bar pushes on the floor.")
     return ""
@@ -81,11 +80,11 @@ def sides(values: dict[str, float], spec: str) -> str:
 
 
 def line(k: int, reading: dict, plan: ServoPlan) -> str:
-    """The panel's one line for a reading: tool0 or the bar, and the force change after an insert (spec §2.5)."""
+    """The panel's one line for a reading: tool0 or the bar, and the force change after an insert."""
     bar = reading.get("bar")
     if plan.by_bar and bar is not None and bar["usable"]:
         deviation = bar["mocap_vs_design"]
-        text = (f"servo {k}/{MAX_PASSES} · bar {plan.bar.rsplit('/', 1)[-1]} MoCap {deviation['dpos_mm']:.2f} mm / "
+        text = (f"servo {k}/{MAX_PASSES} · bar {plan.bar.rsplit('/', 1)[-1]} mocap {deviation['dpos_mm']:.2f} mm / "
                 f"{deviation['dang_deg']:.2f}° · FK {bar['fk_vs_design']['dpos_mm']:.2f} mm")
     else:
         text = f"servo {k}/{MAX_PASSES} · tool0 " + sides(
@@ -96,20 +95,20 @@ def line(k: int, reading: dict, plan: ServoPlan) -> str:
 
 
 def aim_text(plan: ServoPlan, engaged: bool, bar: Mapping | None) -> str:
-    """What the next pass aims at, for the pass banner: the MoCap bar once engaged, else tool0 and why."""
+    """What the next pass aims at, for the pass banner: the mocap bar once engaged, else tool0 and why."""
     short, target = plan.bar.rsplit("/", 1)[-1] if plan.bar else "", SERVO_TARGET[plan.kind]
     if engaged and bar is not None and bar.get("fit") is not None:
         fit = bar["fit"]
-        return (f"the MoCap bar {short} onto {target} (fit {fit['n_matched']}/{fit['n_design']}, rms "
+        return (f"the mocap bar {short} onto {target} (fit {fit['n_matched']}/{fit['n_design']}, rms "
                 f"{(fit['rms_m'] or 0.0) * 1e3:.1f} mm)")
     if plan.by_bar:
         why = bar["reason"] if bar is not None else "not measured"
-        return f"tool0 at the authored targets of {target} (the MoCap bar {short} is not usable: {why})"
+        return f"tool0 at the authored targets of {target} (the mocap bar {short} is not usable: {why})"
     return f"tool0 at the authored targets of {target}"
 
 
 def load_line(k: int, reading: Mapping, wrench0: Mapping) -> str:
-    """The old load line (W:2327-2333): each arm's force and torque, its change since reading 0, the force change."""
+    """The old load line: each arm's force and torque, its change since reading 0, the force change."""
     parts = []
     for side, wrench in reading["wrench"].items():
         change = wrench["force_N"] - wrench0[side]["force_N"]
@@ -122,14 +121,14 @@ def load_line(k: int, reading: Mapping, wrench0: Mapping) -> str:
 
 
 def planned_line(k: int, planner: str, move: Mapping, flanges_move: str) -> str:
-    """The old "First move planned" line (W:2493-2495), and its later-pass form."""
+    """The old "First move planned" line, and its later-pass form."""
     head = "[servo] First move planned" if k == 1 else f"[servo {k}] move planned"
     return (f"{head}: {move['rows']} waypoints, travels {move['excursion_deg']:.1f} deg (ends {move['net_deg']:.1f} "
             f"deg from where it starts), over {move['traj_time']:.0f} s; flanges move {flanges_move} ({planner})")
 
 
 def end_line(result: str, status: str, reason: str, k: int) -> str:
-    """How the loop ended, in the old monitor's words (W:2444, 2617-2652)."""
+    """How the loop ended, in the old monitor's words."""
     if result == CANCELLED:
         return "### SERVOING cancelled by user."
     if status == "not converged":
@@ -143,24 +142,20 @@ def end_line(result: str, status: str, reason: str, k: int) -> str:
 
 
 def ik_record(ik: IkResult | None) -> dict | None:
-    """The pass's IK as the record keeps it (spec §2.9)."""
+    """The pass's IK as the record keeps it."""
     if ik is None:
         return None
     return {"backend": ik.backend, "rank": ik.rank, "combinations": ik.combinations, "max_change": ik.max_change}
 
 
-def servo_file(view: RunView, plan: ServoPlan) -> str | None:
-    """The servo record's path in the run, numbered as `runs.record_movement` will number it; None without a run.
+def servo_file(view: RunView, plan: ServoPlan) -> tuple[Path, str] | None:
+    """Take the servo record's file in the run (`runs.reserve_record`); None without a run.
 
-    The number is one past the highest on disk or named here before (a record of this movement may still be queued
-    on the writer). ? A queued record the writer then fails to write leaves the next name one too high.
+    Returns:
+        tuple[Path, str] | None: The file, and its path in the run.
     """
     folder = getattr(view, "folder", None)
     if folder is None:
         return None
-    where = Path(folder) / "servo" / plan.action
-    taken = [int(number) for number in (path.name[len(plan.target) + 1:-len(".json")]
-                                        for path in where.glob(f"{plan.target}.*.json")) if number.isdigit()]
-    key = (str(where), plan.target)
-    NAMED[key] = max(taken + [NAMED.get(key, 0)], default=0) + 1
-    return f"servo/{plan.action}/{plan.target}.{NAMED[key]}.json"
+    path = reserve_record(Path(folder), plan.action, plan.target, "servo")
+    return path, path.relative_to(folder).as_posix()

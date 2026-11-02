@@ -9,10 +9,10 @@ import numpy as np
 import pytest
 from test_movement_exec import Lab, execute
 
+from husky_assembly_teleop.shared.bars.layouts import bar_layouts, fake_sensed_markers, fit_bar
+from husky_assembly_teleop.shared.bars.pose import bar_slide_roll
 from husky_assembly_teleop.shared.mocap_bars_contract import BarMeasurement
 from husky_assembly_teleop.shared.movement_exec_contract import DONE
-from husky_assembly_teleop.world.bar_pose import bar_slide_roll
-from husky_assembly_teleop.world.marker_layouts import bar_layouts, fake_sensed_markers, fit_bar
 from scaffolding_assembly_core.geometry import Pose
 
 BAR = "bars/B20"

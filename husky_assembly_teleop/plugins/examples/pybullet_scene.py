@@ -14,7 +14,7 @@ The pattern every planner follows:
   - Report results with our ids ("example_pybullet/box", "robots/0806"), never PyBullet body ids:
     those exist only inside one mirror and get reused.
 
-Run with:  -p plugins:="['example_pybullet']" -p robots:="['0806']"
+Run with:  plugins:="example_pybullet" robots:="0806"
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import viser
 
+from ...colors import AMBER, rgb01
 from ...plugin_api.context import PluginContext
 from scaffolding_assembly_core.geometry import box_geometry
 from scaffolding_assembly_core.mirrors.pybullet import PyBulletMirror
@@ -37,7 +38,7 @@ from ...ui.quaternion import quaternion_to_wxyz
 BOX_ID = "example_pybullet/box"  # ! must start with the plugin's name
 BOX_SIZE = (0.3, 0.3, 0.3)       # m
 BOX_START = (1.5, 0.0, 0.15)     # m, standing on the floor
-BOX_COLOR = (0.9, 0.5, 0.1)      # rgb, 0..1
+BOX_COLOR = rgb01(AMBER)        # rgb, 0..1
 BOX_STEP = 0.1                   # m per button press
 MOVES = {"−x": (-1, 0), "+x": (1, 0), "−y": (0, -1), "+y": (0, 1)}
 

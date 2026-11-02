@@ -1,11 +1,11 @@
 # Husky Extrinsic Calibration Manual
 
-> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see README "Running the old monitor").** Kept as reference for porting.
-> - §1 Mocap and network: replaced by the mocap relay (README, "Start the mocap relay"); the monitor sets no IPs.
+> ⚠️ **Outdated: written for the old monitor (runnable on `master`, see `doc/setup/old_monitor.md`).** Kept as reference for porting.
+> - §1 Mocap and network: replaced by the mocap relay (README, "Run in the lab"); the monitor sets no IPs.
 > - §2 Robot startup: see crl-husky's README (Zenoh on domain 80, not one `ROS_DOMAIN_ID` per robot).
-> - §3–6 Data collection and punch validation: **missing** in the new monitor (`calibration` and `punch_validation` plugins, `doc/plugin_roadmap.md`).
+> - §3–6 Data collection and punch validation: **missing** in the new monitor (`calibration` and `punch_validation` plugins, `doc/design/plugin_roadmap.md`).
 > - §7–8 Offline pipeline (`data/calibration_data/`): standalone scripts, not checked against the new code.
-> - **Different:** the base calibration is applied by the mocap relay (`doc/mocap_relay.md`), not by the monitor: the newest session in the Drive's `data_experiment/calibration_data/` if close to crl-husky's default (`config/robots/<serial>/mocap_config.json`). Update that default when a calibration is accepted.
+> - **Different:** the base calibration is applied by the mocap relay (`doc/lab/mocap_relay.md`), not by the monitor: the newest session in the Drive's `data_experiment/calibration_data/` if close to crl-husky's default (`config/robots/<serial>/mocap_config.json`). Update that default when a calibration is accepted.
 
 This manual walks you through the complete extrinsic calibration procedure for the Husky robot, from powering on the motion capture system to running the calibration pipeline. Follow each section in order.
 

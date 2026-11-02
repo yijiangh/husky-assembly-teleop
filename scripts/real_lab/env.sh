@@ -4,6 +4,7 @@
 #
 # ! This reaches the real robots: a node started with it talks to them through this laptop's Zenoh router (crl-husky's
 #   crl-zenoh-router service, manual 1.c). The fake lab (scripts/fake_lab/) has settings of its own.
+# ! Sourced, also into an interactive shell: no set -e here, and it works under set -u (a script's set -euo pipefail).
 
 #: This checkout and its workspace: scripts/real_lab/ -> the repo -> src/ -> the workspace.
 REAL_LAB_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -16,19 +17,20 @@ REAL_LAB_PROCESS="data_design_study/261008_2ModulesDemo_purged_process"
 REAL_LAB_MOTIVE="${REAL_LAB_MOTIVE:-192.168.0.28}"
 # * The Drive: REAL_LAB_DRIVE if set, else the Insync copy of the shared "2025-03 Husky Assembly" folder. The monitor
 #   records its run in the process folder there, and the relay reads the base calibrations from it.
-if [ -z "$REAL_LAB_DRIVE" ]; then
+if [ -z "${REAL_LAB_DRIVE:-}" ]; then
     for candidate in "$HOME"/Insync/*/"Google Drive - Shared with me/2025-03 Husky Assembly" \
                      "$HOME/Insync/2025-03 Husky Assembly"; do
         [ -d "$candidate" ] && REAL_LAB_DRIVE="$candidate" && break
     done
 fi
 export REAL_LAB_REPO REAL_LAB_WS REAL_LAB_HOME REAL_LAB_PROCESS REAL_LAB_MOTIVE REAL_LAB_DRIVE
-export HUSKY_DRIVE_ROOT="$REAL_LAB_DRIVE"
+export HUSKY_DRIVE_ROOT="${REAL_LAB_DRIVE:-}"
 
 # Set ROBOT_SERIAL, ROBOT_IP, ROBOT_NS, ROBOT_ARMS (their ROS namespaces), ROBOT_BODY (mocap rigid body) and
 # ROBOT_GRIPPER (the onboard launch's) for robot $1: alice, belle or cindy. Any other name returns 1.
+# shellcheck disable=SC2034  # read by the scripts that source this
 real_lab_robot() {
-    case "$1" in
+    case "${1:-}" in
         alice) ROBOT_SERIAL=0804 ROBOT_IP=192.168.0.113 ROBOT_BODY=1840 ROBOT_ARMS="ur5e"
                ROBOT_GRIPPER=robotiq_2F_85 ;;
         belle) ROBOT_SERIAL=0805 ROBOT_IP=192.168.0.114 ROBOT_BODY=1850 ROBOT_ARMS="ur5e"
@@ -42,7 +44,7 @@ real_lab_robot() {
 
 # Whether this laptop's Zenoh router listens: a node started without one waits for it, silently.
 real_lab_router_up() {
-    ss -Htln 2>/dev/null | awk '{print $4}' | grep -qx '127\.0\.0\.1:7447'
+    ss -Htln 2>/dev/null | awk '$4 == "127.0.0.1:7447" {up = 1} END {exit !up}'
 }
 
 # * ROS: rmw_zenoh in the robots' domain, as every robot and control PC in the lab (crl-husky README, Zenoh). Nodes
@@ -50,7 +52,15 @@ real_lab_router_up() {
 export ROS_DOMAIN_ID=80 RMW_IMPLEMENTATION=rmw_zenoh_cpp
 unset ZENOH_CONFIG_OVERRIDE ZENOH_SESSION_CONFIG_URI
 
-# * The workspace: its venv, ROS, then its install (this package, crl-husky).
-source "$REAL_LAB_WS/venv/bin/activate"
-source /opt/ros/humble/setup.bash
-source "$REAL_LAB_WS/install/setup.bash"
+# * The workspace: its venv, ROS, then its install (this package, crl-husky). Their scripts read unset variables: they
+#   are sourced with set -u off, and it is back on after if it was on.
+real_lab_nounset=${-//[^u]/}
+set +u
+source "$REAL_LAB_WS/venv/bin/activate" && source /opt/ros/humble/setup.bash \
+    && source "$REAL_LAB_WS/install/setup.bash"
+real_lab_loaded=$?
+[ -z "$real_lab_nounset" ] || set -u
+if [ "$real_lab_loaded" != 0 ]; then
+    echo "real lab: could not load the workspace $REAL_LAB_WS (above)" >&2
+    return 1
+fi

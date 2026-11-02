@@ -10,16 +10,16 @@ Every body of the selected movement's process scene (`Process.scene_at`) goes in
 robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.ProcessDrawing`), with the other
 bodies on request. The plugin only reads processes: it never edits one.
 
-The "Transfer workaround" box (on at start, this session only) runs Cindy's transfer as a free move with empty tools
+The "Transfer workaround" box (on at start, this session only) runs the transfer as a free move with empty tools
 to the insert start, where the operator places the bar. While it is on, the panel lists and draws each jointing action
 in that order (`steps.as_run`); `process` stays the authored process, and `Selection.index` an authored index.
 
 The "Rhino obstacles collide" box (off at start) decides whether the process's obstacles ("obstacles/<name>")
 count in every collision check; while off they are disabled scene bodies, drawn see-through by the overlay.
 
-The panel is the top of the side panel's Assembly tab (`ui/assembly_tab.py`), above the steps planned and run from
-it. It lists a window of the schedule's actions around the selected one (`action_window`); click a row to jump. The
-selected action's movements are buttons coloured by kind, the selected one ringed: click one to select it.
+The panel is the top of the side panel's Assembly tab (`shared/assembly_tab/layout.py`), above the steps planned and
+run from it. It lists a window of the schedule's actions around the selected one (`action_window`); click a row to
+jump. The selected action's movements are buttons coloured by kind, the selected one ringed: click one to select it.
 Each row shows the mark the run gives its action (`request_marks`: pending, done, done with its end assumed). After a
 Live IK or a plan, the action's later movements are drawn with the joints found, on the live base they were found at,
 and the panel turns to the target of the movement they are for (`request_carry`); the drawing only.
@@ -43,13 +43,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
 from async_timeout import timeout
+from ...colors import INK, rgb
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...ui.assembly_tab import ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
-from ...ui.phone import group_buttons, group_tooltips_css, one_row_css
-from ...ui.style import (BUSY, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line, section,
-                         swatch_chip, values)
+from ...shared.assembly_tab.layout import ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
+from ...ui.css import group_buttons, group_tooltips_css, one_row_css
+from ...ui.style import (BUSY, CURRENT, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line,
+                         hover, section, swatch_chip, values)
 from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
@@ -62,7 +63,6 @@ from ...shared.assembly_planning.movement import mating_drives
 from ...shared.assembly_planning.steps import as_run
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
-from ...ui.checklist import ACTION_ROWS, action_window
 from .drawing import ProcessDrawing, load_robot_models
 from .loading import load_process
 
@@ -79,7 +79,7 @@ BY_HAND_LABEL = "by hand"
 #: The movement buttons' only button before a load.
 NO_MOVEMENT = "—"
 
-#: Whether the transfer workaround is on when the monitor starts: Cindy's transfer runs as a free move with empty tools.
+#: Whether the transfer workaround is on when the monitor starts: the transfer runs as a free move with empty tools.
 TRANSFER_AS_FREE = True
 
 #: Whether the process's obstacles from Rhino count in collision checks when the monitor starts.
@@ -109,6 +109,32 @@ def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[Pro
     models = load_robot_models(process)
     watch.lap("robot URDFs and meshes")
     return process, models, watch
+
+
+#: Hover text of a movement's controller and end chips.
+CONTROLLER_HINTS = {"position": "Position control: the arms follow the path exactly.",
+                    "compliant": "Compliant control: the arms give way to contact while they follow the path.",
+                    "": "No arm moves in this movement."}
+ENDS_ON_HINTS = {"target": "It ends when the arms reach the target and the tools are done.",
+                 "tools": "It ends when the tools are done.", "operator": "It ends when the operator confirms."}
+
+
+#: Rows in a panel's action list: a window of the schedule, the selected action in the middle row.
+ACTION_ROWS = 7
+
+
+def action_window(current: int, count: int, rows: int = ACTION_ROWS) -> int:
+    """The first action shown in an action list: `current` in the middle row, except near either end of the schedule.
+
+    Args:
+        current: Index of the selected action in the schedule.
+        count: How many actions the schedule has.
+        rows: How many rows the list has.
+
+    Returns:
+        int: Schedule index of the top row.
+    """
+    return max(0, min(current - rows // 2, count - rows))
 
 
 @register
@@ -227,14 +253,12 @@ class ProcessPlugin(HuskyPlugin):
             gui.add_html(section("process", SECTION_CTRL))
             self._status = gui.add_html("")
             self._folder = gui.add_text("Folder", initial_value=str(folder or ""),
-                                        hint="Process folder relative to the Drive root, e.g. "
-                                             "data_design_study/<process>, or absolute: with process.json "
-                                             "(doc/process_format.md), or an export in the old compas_fab format, "
-                                             "converted into <export>_process next to it")
+                                        hint="Process folder under the Drive root (e.g. data_design_study/<process>) "
+                                             "or absolute; an old export is converted next to it.")
             load = gui.add_button("Load", hint="Load the folder; an old export is converted first (about 15 s) "
                                                "unless its <export>_process copy is up to date")
             self._transfer = gui.add_checkbox("Transfer workaround", initial_value=TRANSFER_AS_FREE,
-                                              hint="Run Cindy's transfer as a free move with empty tools to the insert "
+                                              hint="Run the transfer as a free move with empty tools to the insert "
                                                    "start; you place the bar there. Lists and draws each jointing "
                                                    "action in that order. Replan after a change.")
             self._collide = gui.add_checkbox("Rhino obstacles collide", initial_value=OBSTACLES_COLLIDE,
@@ -246,7 +270,7 @@ class ProcessPlugin(HuskyPlugin):
             self._collide_status = gui.add_html("")
             self._actions_title = gui.add_html(section("actions", SECTION_CTRL))
             # * A window of the schedule that follows the selection: click a row to jump to that action.
-            self._action_rows = [gui.add_button("·", color="gray") for _ in range(ACTION_ROWS)]
+            self._action_rows = [gui.add_button("·", color=rgb(NONE)) for _ in range(ACTION_ROWS)]
             gui.add_html(section("step", SECTION_CTRL))
             self._slider = gui.add_slider("Step", min=0, max=1, step=1, initial_value=0)
             go = gui.add_button_group("Go", ["◀ action", "◀ mv", "mv ▶", "action ▶"],
@@ -310,6 +334,7 @@ class ProcessPlugin(HuskyPlugin):
             folder = drive_folder(ctx.config.drive_root, folder)
         except FileNotFoundError as error:
             self._error = str(error)
+            ctx.log_warn(self._error)
             return
         self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder), survives_soft_stop=True)
 
@@ -644,15 +669,15 @@ class ProcessPlugin(HuskyPlugin):
             index = self._window_start + row
             if index >= count:
                 # ! Never hide a row: that would shift the buttons below it.
-                button.label, button.color = "·", "gray"
+                button.label, button.color = "·", rgb(NONE)
                 continue
             action = self._shown.actions[self.process.schedule[index]]
             robot = self.process.robots[action.robot].name if action.robot else BY_HAND_LABEL
             mark = self._marks.get(action.id)
             label = f"{index + 1}. {action.id} · {robot} · {len(action.movements)} mv"
             button.label = label + (f" · {'done (assumed)' if mark == MARK_ASSUMED else mark}" if mark else "")
-            button.color = ("blue" if index == current else "orange" if mark == MARK_ASSUMED
-                            else "green" if mark == MARK_DONE else "gray")
+            button.color = (rgb(CURRENT) if index == current else rgb(BUSY) if mark == MARK_ASSUMED
+                            else rgb(OK) if mark == MARK_DONE else rgb(NONE))
     # ! Keep every row one line tall (`_one_line`) and the chip set fixed, so nothing shifts between steps.
 
     def _carry_applies(self, action: Action, movement: Movement) -> bool:
@@ -684,16 +709,19 @@ class ProcessPlugin(HuskyPlugin):
     def _status_html(self) -> str:
         """One line of chips: load progress or process, plus any error."""
         if self._progress:
-            chips = chip(escape(self._progress), BUSY)
+            chips = chip(escape(self._progress), BUSY, "Reading the process files; the panel fills in when done.")
         elif self.process is not None:
             chips = chip(escape(self.process.folder.name), OK, str(self.process.folder))
-            chips += chip(f"{len(self.process.schedule)} actions · {len(self._movements)} movements", NONE)
+            chips += chip(f"{len(self.process.schedule)} actions · {len(self._movements)} movements", NONE,
+                          "The actions in the process's schedule and the movements they hold; step through them below.")
             if self._robot_differences:
-                chips += chip("robots differ", BUSY, "; ".join(self._robot_differences))
+                count = len(self._robot_differences)
+                chips += chip("robots differ", BUSY, f"{count} difference{'s' if count > 1 else ''} from the "
+                                                     f"configured robots (tools or arms).\nThe console lists each.")
         else:
-            chips = chip("no process", NONE)
+            chips = chip("no process", NONE, "Pick a process folder above and load it.")
         if self._error:
-            chips += chip("error", FAIL, self._error)
+            chips += chip("error", FAIL, hover(self._error))
         return chip_line(chips)
 
     def _collide_html(self, ctx: PluginContext) -> str:
@@ -751,7 +779,7 @@ class ProcessPlugin(HuskyPlugin):
         """
         number = action.movements.index(movement)
         label = labels[number]
-        which = chip(f"{self.index + 1}/{len(self._movements)}", OK)
+        which = chip(f"{self.index + 1}/{len(self._movements)}", NONE, "This movement among all of the process's.")
         if action.robot:
             which += chip(escape(self.process.robots[action.robot].name), SECTION_CTRL, action.robot)
         else:
@@ -763,25 +791,30 @@ class ProcessPlugin(HuskyPlugin):
         target = movement.target.joints.get(action.robot) if movement.target is not None else None
         start = movement.start.robots.get(action.robot)
         if not action.robot:
-            carries = chip("no robot acts", NONE)
+            carries = chip("no robot acts", NONE, "A bar_placing action: the operator places the bar by hand.")
         elif start is not None and start.joints is not None:
-            carries = chip("start conf", OK)
+            carries = chip("start conf", OK, "The start joints are authored in the export.")
         elif self._assumed.get((action.id, movement.id), (None, ""))[0] is not None:
             carries = chip(f"start conf from {escape(self._assumed[(action.id, movement.id)][1])}", BUSY,
                            "not authored: assumed from where the robot last was")
         else:
-            carries = chip("no start conf: zero", FAIL)
+            carries = chip("no start conf: zero", BUSY, "No start joints authored or assumed: the robot is drawn at "
+                                                        "zero joints, not where it will be.")
         if not self.at_target:
-            carries += chip("showing start", NONE)
+            carries += chip("showing start", NONE, "The robots are drawn at this movement's start; Show › Target for "
+                                                   "its end.")
         else:
-            carries += chip("showing target" if target else "no target: start", OK if target else BUSY)
+            carries += (chip("showing target", NONE, "The robots are drawn at this movement's target.") if target
+                        else chip("no target: start", BUSY, "No target authored: it ends where the next movement "
+                                                            "starts, so its start is drawn."))
         if self._carry_applies(action, movement):
             carry = self._carry
             found = "joints and base" if carry.base is not None else "joints"
             title = f"{escape(carry.robot)} drawn at the {found} found for {escape(carry.movement_id)}'s end"
             carries += chip(f"joints from {escape(carry.source)}", BUSY, title)
-        carries += chip(movement.controller or "no arm moves", NONE)
-        carries += chip(f"ends on {movement.ends_on}", NONE)
+        carries += chip(movement.controller or "no arm moves", NONE,
+                        CONTROLLER_HINTS.get(movement.controller, "The arm controller during the movement."))
+        carries += chip(f"ends on {movement.ends_on}", NONE, ENDS_ON_HINTS.get(movement.ends_on, ""))
 
         # * A drive the monitor never sends (e.g. a tighten on a ground half) says so.
         dropped = mating_drives(self.process, movement).dropped if movement.drives else {}
@@ -829,7 +862,7 @@ def _movement_css(uuid: str, kinds: list[Kind], current: int, tips: list[str | N
         fill = f"linear-gradient(90deg,{kind.fill},{kind.fill_to})" if kind.fill_to else kind.fill
         ring = f" box-shadow: inset 0 0 0 2px {RING};" if index == current else ""
         # * Dark text on the light fills, in either theme, as `swatch_chip`.
-        css += (f"{group_buttons(uuid, index)} {{ background: {fill} !important; color: #212529 !important; "
+        css += (f"{group_buttons(uuid, index)} {{ background: {fill} !important; color: {INK} !important; "
                 f"border: 1px {'dashed' if kind.dashed else 'solid'} {kind.border} !important;{ring} }}")
     return css + group_tooltips_css(uuid, tips)
 

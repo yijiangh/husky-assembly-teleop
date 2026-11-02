@@ -6,7 +6,7 @@ The base planner experiment's tasks: a start and a target for Alice, and the obs
 - The process tasks drive into the bar structure of a process step and back out: their scene comes from the process
   plugin (live) or from the process folder (offline); their start and target are in the lab frame.
 
-`TASKS` is the standard set, in report order. doc/base_planner_manual.md says what each tests.
+`TASKS` is the standard set, in report order. doc/experiments/base_planner_manual.md says what each tests.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import numpy as np
 
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.scene import Body
+from ...colors import TEMPORARY, rgb01
 
 #: Where the task frame lies in the lab: (x, y, yaw), metres and radians; it is recorded with every attempt.
 #: ! Every task's paths need about 6 m by 5 m around it, clear (fitted to the lab of 15 Oct, Belle parked at
@@ -34,8 +35,8 @@ PROCESS = "data_design_study/261008_2ModulesDemo_purged_process"
 PROCESS_STEP = 110
 PROCESS_START = (-2.75, -3.32, math.radians(76.61))
 PROCESS_TARGET = (0.43, -2.785, 0.0)
-#: Colour of virtual obstacles, (r, g, b, a) from 0 to 1.
-VIRTUAL_COLOR = (0.85, 0.45, 0.85, 0.6)
+#: Colour of virtual obstacles, (r, g, b, a) from 0 to 1: temporary obstacles' purple, see-through.
+VIRTUAL_COLOR = rgb01(TEMPORARY, 0.6)
 
 
 @dataclass(frozen=True)

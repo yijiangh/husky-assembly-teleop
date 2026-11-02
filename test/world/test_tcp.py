@@ -9,7 +9,7 @@ import pytest
 
 from husky_assembly_teleop.world.tcp import TCP_POSITION_TOLERANCE, tcp_check
 from husky_assembly_teleop.robot_interface.arm import STILL_AFTER
-from husky_assembly_teleop.world.checks import GOOD, WARN
+from husky_assembly_teleop.world.checks import BAD, GOOD, WARN
 from scaffolding_assembly_core.geometry import Pose
 
 pytestmark = pytest.mark.safety
@@ -44,7 +44,7 @@ def test_no_verdict_while_the_arm_moves():
     assert tcp_check(arm(position=(1.0, 0.0, 0.0), moved=NOW - STILL_AFTER / 2), EXPECTED, NOW) is None
 
 
-def test_missing_or_old_tcp_is_amber():
-    """No report yet, or none for a while."""
-    assert tcp_check(arm(position=None), EXPECTED, NOW).level == WARN
+def test_missing_tcp_is_red_and_old_tcp_amber():
+    """No report yet is red, like every message that never came; none for a while is amber (stale)."""
+    assert tcp_check(arm(position=None), EXPECTED, NOW).level == BAD
     assert tcp_check(arm(updated=NOW - 10.0), EXPECTED, NOW).level == WARN

@@ -6,6 +6,7 @@ Which base calibration the mocap relay applies to each robot's rigid body: crl-h
   calibrated_transformation_<digits>_rhino.json` (the robot's four serial digits), used only if it passes
   `sanity_problem` against the default.
 - Rigid bodies of no robot (probe, bars) get none: Motive's pivot defines them.
+- A session names the base body definition it was built for (`body_definition`), which the relay checks.
 
 Shared by the relay and the monitor's calibration plugin. Pure functions of files; no ROS, any thread.
 """
@@ -14,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import textwrap
 from dataclasses import dataclass
@@ -24,13 +24,14 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from crl_husky import config_resolver
+from ..drive import marked_sim, ros_domain
+from ..robot_interface.mocap_definitions import BodyDefinition, body_dict, body_from_dict
 
-#: Calibration sessions, below the Drive root: one folder per day, YYYYMMDD.
+#: Calibration sessions, below the Drive root: one folder per day, YYYYMMDD, with the base and floor calibrations.
 SESSIONS_FOLDER = Path("data_experiment") / "calibration_data"
-#: Simulated calibration sessions, below the Drive root: only a simulation's relay reads them, never the robots'. One
-#: folder per ROS domain, so simulations in different domains never apply each other's calibrations.
-SIM_SESSIONS_FOLDER = (Path("data_experiment") / "calibration_data_sim"
-                       / f"domain_{os.environ.get('ROS_DOMAIN_ID', '0')}")
+#: Simulated calibration sessions, laid out the same in one folder per ROS domain (`sessions_folder`): only a relay
+#: serving a simulation reads them, and simulations in different domains never apply each other's.
+SIM_SESSIONS_ROOT = Path("data_experiment") / "sim" / "calibration_data"
 SESSION_NAME = re.compile(r"\d{8}")
 #: The pipeline's output in a session, per robot's four serial digits.
 SESSION_OUTPUT = "calibrated_transformation_{digits}_rhino.json"
@@ -39,6 +40,8 @@ SESSION_OUTPUT = "calibrated_transformation_{digits}_rhino.json"
 SANITY_POSITION = 0.05
 SANITY_ANGLE = np.radians(5.0)
 BASE_KEY = "base_mocap_from_base_footprint"
+#: The calibration file's key for the base body's definition it was built for (`mocap_definitions.body_dict`).
+DEFINITION_KEY = "body_definition"
 #: Column titles over `Calibration.describe` rows.
 DESCRIBE_HEADER = f"{'body':<6}{'robot':<11}{'calibration':<24}{'sha256':<14}measured on"
 
@@ -57,6 +60,8 @@ class Calibration:
         measured: What the calibration measured besides the derived base, e.g.
             ("base_mocap_from_left_ur_arm_base_link_inertia",): which arm it was calibrated on.
         session: The Drive session's YYYYMMDD, or "" for the default.
+        body_definition: Motive's definition of the rigid body it was built for (Z-up, as the relay announces it), or
+            None if it names none (crl-husky's default, older sessions).
     """
 
     mocap_id: int
@@ -67,6 +72,7 @@ class Calibration:
     sha256: str
     measured: tuple[str, ...]
     session: str = ""
+    body_definition: BodyDefinition | None = None
 
     def describe(self) -> str:
         """One row of a table under DESCRIBE_HEADER: id, robot, origin, short hash and what was measured."""
@@ -78,7 +84,8 @@ class Calibration:
         """Everything, for the relay's published list."""
         return {"mocap_id": self.mocap_id, "robot_serial": self.robot_serial, "source": self.source,
                 "session": self.session, "sha256": self.sha256, "measured": list(self.measured),
-                BASE_KEY: [list(self.position), list(self.orientation)]}
+                BASE_KEY: [list(self.position), list(self.orientation)],
+                DEFINITION_KEY: body_dict(self.body_definition) if self.body_definition is not None else None}
 
 
 def _calibration(mocap_id: int, serial: str, content: dict, source: str, session: str = "") -> Calibration:
@@ -101,7 +108,11 @@ def _calibration(mocap_id: int, serial: str, content: dict, source: str, session
     # * Of the transforms only, so the same numbers have the same hash wherever they are kept.
     transforms = {key: content[key] for key in (*measured, BASE_KEY)}
     digest = hashlib.sha256(json.dumps(transforms, sort_keys=True).encode()).hexdigest()
-    return Calibration(mocap_id, serial, position, orientation, source, digest, measured, session)
+    try:
+        definition = body_from_dict(content[DEFINITION_KEY]) if content.get(DEFINITION_KEY) else None
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"{source}: {DEFINITION_KEY} is not a body definition") from None
+    return Calibration(mocap_id, serial, position, orientation, source, digest, measured, session, definition)
 
 
 def robot_mocap_ids() -> dict[int, str]:
@@ -138,12 +149,36 @@ def calibrating_arm_key(robot_serial: str) -> str | None:
     return None
 
 
+def sessions_folder(simulated: bool, domain: int | None = None) -> Path:
+    """Where calibration sessions are below the Drive root: the robots', or a simulation's for its ROS domain.
+
+    Args:
+        simulated: Whether made from a fake Motive or a simulated robot.
+        domain: The simulation's ROS domain, or None for this process's.
+    """
+    if not simulated:
+        return SESSIONS_FOLDER
+    return SIM_SESSIONS_ROOT / f"domain_{ros_domain() if domain is None else domain}"
+
+
+def misplaced_problem(content: object, path: Path) -> str | None:
+    """Why a calibration file must not be applied: marked as simulated, yet outside the simulations' folders; or None.
+
+    A simulated calibration copied into the robots' folder would otherwise reach a real robot.
+    """
+    parts, sim = path.parts, SIM_SESSIONS_ROOT.parts
+    in_sim = any(parts[i:i + len(sim)] == sim for i in range(len(parts)))
+    if marked_sim(content) and not in_sim:
+        return f"{path.name} was made in a simulation (environment: sim) but sits in the robots' folder"
+    return None
+
+
 def newest_session_file(root: Path, robot_serial: str, sessions: Path = SESSIONS_FOLDER) -> Path | None:
     """The robot's calibration file in the newest session folder that has one measured on its calibrating arm, or None.
 
     - ! Only directly inside each dated session folder: `archive/` and `backup/` below it are older attempts.
     - A file measured on another arm (Cindy's right arm checks its mount only) is passed over.
-    - `sessions`: the sessions folder below the root, SIM_SESSIONS_FOLDER for a simulation.
+    - `sessions`: the sessions folder below the root (`sessions_folder`).
     """
     sessions = root / sessions
     if not sessions.is_dir():
@@ -177,7 +212,8 @@ def read_session_file(path: Path, root: Path, mocap_id: int, robot_serial: str) 
     that names one (the calibration plugin writes it) must name this one.
 
     Raises:
-        ValueError: If the file does not parse, names another rigid body, or its transform is malformed.
+        ValueError: If the file does not parse, names another rigid body, its transform is malformed, or it was made
+            in a simulation and sits in the robots' folder.
     """
     source = str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
     try:
@@ -186,6 +222,9 @@ def read_session_file(path: Path, root: Path, mocap_id: int, robot_serial: str) 
         raise ValueError(f"{source}: cannot read it ({error}); half-synced?") from None
     if not isinstance(content, dict):
         raise ValueError(f"{source}: not a calibration object")
+    problem = misplaced_problem(content, path)
+    if problem is not None:
+        raise ValueError(f"{source}: {problem}")
     if "mocap_id" in content and int(content["mocap_id"]) != mocap_id:
         raise ValueError(f"{source}: for rigid body {content['mocap_id']}, not {mocap_id}")
     return _calibration(mocap_id, robot_serial, content, source, session=path.parent.name)

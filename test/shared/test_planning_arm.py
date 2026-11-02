@@ -16,7 +16,7 @@ def test_the_search_samples_within_the_urdf_and_ur_limits(monkeypatch):
     """A pan of ±π and a wrist of ±4.19 in the URDF bound the samples; a joint without URDF limits keeps the UR's."""
     names = arm_joint_names("ur_arm")
     mirror = SimpleNamespace(state=SimpleNamespace(robot_configuration=dict.fromkeys(names, 0.0)),
-                             collisions=lambda: [], search_check=lambda _names: lambda _q: None)
+                             collisions=lambda *_args, **_options: [], search_check=lambda _names: lambda _q: None)
     lower = np.array([-np.pi, -np.inf, -np.pi, -4.19, -4.19, -4.19])
     upper = -lower
     samples = []

@@ -2,7 +2,7 @@
 
 The words this project gives a meaning of its own, one or two sentences each, with where the idea lives. Paths are
 relative to `husky_assembly_teleop/` unless they start with `doc/`, `core:` (`external/scaffolding_assembly_core/`)
-or `crl-husky:`. Plain robotics words (pose, FK, URDF, frame) are in `doc/Su_Note.md` §0.
+or `crl-husky:`. Plain robotics words (pose, FK, URDF, frame) are in `doc/archive/Su_Note.md` §0.
 
 When a word has more than one meaning, the entry says which is which. Use the qualified name ("calibration run",
 "run folder") wherever the context does not settle it.
@@ -12,9 +12,9 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **core**: only `scaffolding_assembly_core`, the library shared with the Rhino plugin and the planners: the process
   format, robots, scenes and mirrors. It imports nothing from the monitor, ROS or viser. `core:AGENTS.md`.
 - **runtime**: the monitor's own framework that ticks, owns all state and drives the plugins: `monitor.py`,
-  `config.py`, `plugin_api/`, `world/`, `robot_interface/`, `ui/`. Never call it "the core". `doc/refactor_rationale.md`.
+  `config.py`, `plugin_api/`, `world/`, `robot_interface/`, `ui/`. Never call it "the core". `doc/design/refactor_rationale.md`.
 - **plugin**: one feature with its own state, panel and scene bodies, registered with `@register` and loaded with
-  `-p plugins:=[...]`. Plugins never import each other. `plugins/__init__.py`, `plugin_api/plugin.py`.
+  `plugins:="..."`. Plugins never import each other. `plugins/__init__.py`, `plugin_api/plugin.py`.
 - **contract**: the `<Name>Contract` Protocol in `shared/<name>_contract.py`, the only way one plugin reads another's
   live data (`ctx.require`, for names in `requires`). What the runtime hands a plugin is its **context**
   (`PluginContext`), not a contract. `shared/__init__.py`.
@@ -36,7 +36,7 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 ## Scene and state
 
 - **measured vs planned**: measured state is written only by ROS callbacks (`WorldState`, `RobotState`); planners
-  never write into it. `doc/refactor_rationale.md`, `world/measured.py`.
+  never write into it. `doc/design/refactor_rationale.md`, `world/measured.py`.
 - **None until measured**: no stand-in values; a reading that has not arrived is `None`, a judgement starts False.
   `robot_interface/__init__.py`.
 - **unmeasured**: joints never measured. Drawings fill them with the stow value or 0; planners and clearances refuse
@@ -46,7 +46,7 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **snapshot**: the copy of the live scene taken once per tick, before the plugins run, for planners, clearances and
   the 3D view. A write shows in the next tick's snapshot. `world/scene.py` (`take_snapshot`).
 - **mirror**: a planner's private copy of a snapshot in one collision backend (PyBullet, compas_fab), synced on that
-  planner's own worker thread and used by no other. `core:mirrors/`, `doc/scene_refactor_plan.md` §6.
+  planner's own worker thread and used by no other. `core:mirrors/`, `doc/design/scene_refactor_plan.md` §6.
 - **tracked object**: a mocap rigid body that is not a robot, scene id `tracked/<name>`, never put in the scene by a
   plugin (`ctx.track_object`). ! Its `tracked` flag stays true when the relay goes silent: check `pose_lost`.
 - **fix / pose_lost / stale reading**: a fix is one valid mocap sample; `pose_lost` means none for 0.3 s, so nothing
@@ -60,9 +60,9 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   within 2 s, which lets those robots be unknown during the motion (`unknown_robots` of a clearance).
   `world/stand_ins.py`, `shared/assembly_planning/scene_for.py`.
 - **ghost**: a see-through robot copy for a target, a plan or a preview: blue where a robot should go (the process
-  panel's one robot per movement, the arm planner's target), orange at the base planner's target, green where a plan
-  has it; the planner panels show theirs only while last used, assembly_steps' path ghost while there is a plan (the
-  old monitor's colours; only the live robots show their true colours). `ui/ghost.py`.
+  panel's one robot per movement, the arm and base planners' targets), green where a plan has it; the planner panels
+  show theirs only while last used, assembly_steps' path ghost while there is a plan. Only the live robots show their
+  true colours. `ui/ghost.py`.
 
 ## Safety
 
@@ -86,8 +86,15 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   motion was committed or started; then a stand-in); unknown arm joints of its own robot trip it unless
   `unknown_arms` lets them count where last seen, or stowed. A **trip** is one firing (`ctx.clearance_trips`).
   robot_control's Clearance boxes turn it on for D-pad driving and, at 1 cm (`ARM_STOP_DISTANCE`), for arm joint
-  jogs; the arm planner's commits always keep 1 cm. `world/clearance.py`. The base planner's **path clearance** is a
-  measured number instead: a planned path's nearest distance to anything, recorded in `experiment.json`.
+  jogs; the arm planner's commits and Exec's arm motions (insert, retreat and servo passes included) always keep
+  1 cm; the base planner's commit keeps its panel's **Margin** (2 cm at start, `COLLISION_MARGIN` in
+  `plugins/base_planner/world.py`). A robot is also kept 1 cm from itself
+  (`SELF_DISTANCE`): its links, tools and what it holds, but not pairs that touch by design (joined links, the SRDF's,
+  a tool's flange links). With `refuse_first`, one too close at its first check is only refused, nothing sent
+  (robot_control's drives and jogs). A **clearance watch** (`ctx.watch_clearance`) is checked the same way, every
+  0.5 s, and only reports: robot_control's gray buttons and "starts in collision" chip. `world/clearance.py`. The base
+  planner's **path clearance** is a measured number instead: a planned path's nearest distance to anything, recorded in
+  `experiment.json`.
 - **hold**: the arm command "stop where you are and stay" (`arm.hold()`, the Hold button), which needs no lease and is
   refused only without a fresh measurement. Also: a D-pad **hold button** (counts as released 0.25 s after its last
   report), a support robot's **bar hold** (`bar_holding`), and a guided step's precondition that **holds** (below).
@@ -95,7 +102,8 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   playing) before any arm motion goes out; Hold is never refused for it. Not time sync, not the Drive's sync.
   `robot_interface/arm.py`.
 - **simulated part**: a part (base, an arm, mocap) counts as simulated only while its once-a-second announcements keep
-  coming; the monitor then relaxes its real-only checks and shows a `SIM` chip. `robot_interface/simulated_parts.py`.
+  coming; the monitor then relaxes its real-only checks and shows a blue `sim` chip.
+  `robot_interface/simulated_parts.py`.
 
 ## Process format
 
@@ -128,6 +136,9 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   ahead). The lattice plans the turning centre, not base_footprint. `plugins/base_planner/follow.py`.
 - **lattice**: the default base planner, a hybrid A* over straight drives, arcs and turns on the spot, steered by its
   **cost map** (where the robot's shape fits, learned from hits). `plugins/base_planner/algorithms/lattice.py`.
+- **Margin (base planner)**: the base planner panel's distance, in metres, a path keeps from every other robot and
+  body (2 cm at start, `COLLISION_MARGIN`); the commit's clearance soft stops the base within it.
+  `plugins/base_planner/world.py`.
 - **lead / portal**: the lead is the straight drive onto the target with no turn on the spot; a portal is a narrow
   place the lattice crosses in one move, lined up `PORTAL_LEAD` before it.
 - **park / stow**: park is the base's parked floor pose (`park_pose`); stow is the arm's rest joints (`stow_joints`);
@@ -145,13 +156,44 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   `shared/assembly_planning/steps.py`, `shared/movement_exec_contract.py`.
 - **live robot**: a robot measured now: in the snapshot, every movable joint measured and its base tracked, both
   fresh (`is_live`). Plan and Exec need it live. `shared/assembly_run_contract.py`.
+- **Live IK**: solving a step's goal (the insert start after a transfer, the linear move's start after an approach)
+  by IK at the live base; nothing moves, and the next plan reuses it while the base stays put. `check_goal` in code.
+  `plugins/assembly_steps/plugin.py`, `shared/assembly_planning/tamp_route.py`.
+- **ground bar / one-mate bar / two-mate bar**: a ground bar stands on ground joints: its insert is rigid and no
+  screw turns. A one-mate bar mates with a built bar at one of its two tools, a two-mate bar at both.
+  `shared/execution/insert.py`.
+- **gripper screw / joint screw**: the scaffolding tool's two motors: the gripper screw clamps the bar in the tool,
+  the joint screw fixes the bar to its joint (it tightens during an insert). The driver calls them M1 and M2; text
+  never does. `robot_interface/end_effectors.py` (`ScaffoldingV3`).
+- **insert / split / stall**: the insert is the straight move that mates a held bar: rigid under joint control up to
+  the split, then the last **Insert split mm** under the compliance controller, on a line or a spiral, while the
+  mating joint screws tighten; it ends when they stall (stop by themselves against the joint). A ground bar's insert
+  is rigid throughout. `shared/execution/insert.py`.
+- **settle**: after a one-mate bar's stall, the other arm (not the mating one) finishes its line under compliance and
+  keeps its end target until its TCP stands still (3 s at most), then switches back to joint control.
+  `shared/execution/stream.py` (`Settling`).
+- **retreat / break-out**: the retreat backs a bar's tools out of their joints: the gripper screws open, the force
+  sensors are zeroed, the first Insert split mm run under the compliance controller (the break-out), then the rest
+  is replanned from where the tools are and run rigid. `shared/execution/retreat.py`.
+- **handoff**: a support robot's Robotiq close on a bar another robot holds, with its arm compliant, so the closing
+  fingers pull the arm (up to 1 cm) instead of the bar; with frames that disagree it closes stiff.
+  `shared/execution/handoff.py`.
+- **servo**: the part after a transfer, a support approach or a ground bar's insert: pass by pass (up to 8) it moves
+  the flanges onto the authored targets, steering on tool0, or with **Servo by bar** on a ground bar's mocap fit.
+  `plugins/movement_exec/servo_part.py`, `shared/execution/servo.py`.
+- **Plan plots / Exec plots**: the two floating plot windows at the bottom, right of the main panel: assembly_steps' shows a plan's
+  joints, movement_exec's a servo's readings pass by pass or a compliant part's force and torque. Each opens by
+  itself when it has something to show. `plugins/assembly_steps/plan_plots.py`, `plugins/movement_exec/plots.py`.
+- **Check tool0 / Visual diagnosis**: Check tool0 draws each flange's live tool0 (mocap base + FK) against the step's
+  authored target and logs the gap; the Visual diagnosis box draws the real robots see-through and each insert or
+  retreat plan's tool0 path with its Rhino and planned start and end frames. Nothing moves. `plugins/assembly_steps/`.
 - **transfer workaround**: the process panel's setting for this session, on at start (runs don't keep it): the
-  transfer runs as a free move with empty tools, the operator places and grasps the bar at the insertion start after
+  transfer runs as a free move with empty tools, the operator places and grasps the bar at the insert start after
   it, and the travel to load is skipped. While it is on, the panel lists each jointing action in that order (`as_run`).
   `shared/assembly_planning/steps.py`, `plugins/process/`.
 - **carry**: joints (and the base) found live for one robot, from one movement's end on, that the process panel
-  draws over the authored state at that movement's target and the action's later starts; nothing else reads it. The
-  old monitor's `_carry_configuration_forward` lives on only as this drawing. `shared/process_contract.py`.
+  draws over the authored state at that movement's target and the action's later starts; nothing else reads it.
+  `shared/process_contract.py`.
 - **basis**: what a step's plan was made from (the acting robot's joints and base, the other robots, the statuses,
   the settings); the plan goes stale once the live scene drifts from it. `shared/execution/basis.py`.
 - **robot record**: where the run last recorded a robot (its newest Mark done end), kept in `progress.json` for the
@@ -175,11 +217,32 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 
 ## Lab and data
 
-- **relay**: the one mocap relay per ROS domain: owns the NatNet client, turns Y-up into Z-up, applies each robot's
-  base calibration and republishes per rigid body. `mocap_relay/`, `doc/mocap_relay.md`.
+- **relay**: the one mocap relay per ROS domain: owns the NatNet client, turns Y-up into Z-up, applies the floor
+  calibration and each robot's base calibration and republishes per rigid body. It reads Motive or a simulation,
+  never both. `mocap_relay/`, `doc/lab/mocap_relay.md`.
+- **raw / lab frame**: raw is Motive's frame turned Z-up; the lab frame is the one every relayed pose is in, defined
+  by the marks and anchors of `data/lab/<lab>_frame.json`. The chain: raw → [refit] → `floor_from_raw` → lab, the
+  base calibration on top; `lab_from_raw` is the whole correction in use.
+- **floor calibration / refit**: the floor calibration (`floor_from_raw`, made with the mocap probe) puts raw poses in
+  the lab frame; it is applied only on command. A refit is a rigid fit (Kabsch) of the anchors or truss cameras, as
+  stored with the floor calibration, to where Motive puts them now; used on command, kept in memory.
+  `world/mocap_frame.py`, `world/frame_follower.py`, `doc/lab/floor_calibration_manual.md`.
+- **mark / anchor / truss camera**: marks are points on the floor probed with the probe; anchors are the markers that
+  hold Motive's continuous calibration; truss cameras are the six bolted cameras. Marks place the lab frame; anchors
+  and truss cameras follow Motive's frame moving.
+- **frame states**: none (no floor calibration), unchecked (applied, no fit has decided yet), held, refit_pending
+  (Motive's frame moved: poses off until Use refit), untrusted (the fits disagree or are too uncertain), error (the
+  floor calibration did not read).
+- **body definition / refine / out of date**: a rigid body's definition is its markers only (not name or id); a
+  refine changes it, which puts data measured with the body out of date, including a base calibration made for the
+  earlier definition.
 - **base calibration**: `base_mocap_from_base_footprint`, the one transform per robot from its base rigid body to its
-  URDF's base_footprint, applied by the relay. Other calibrations say which: Motive's camera calibration, the UR
-  factory calibration (applied to the model at startup), the arm mount check. `doc/calibration_manual.md`.
+  URDF's base_footprint, applied by the relay. Unqualified, "calibration" means this one; the others say which: the
+  floor calibration, Motive's camera calibration, the UR factory calibration (applied to the model at startup), the
+  arm mount check. `doc/calibration_manual.md`.
+- **environment sim / real**: every file the monitor writes says which, decided by where its data came from (a
+  simulated robot, a simulation's relay), never by the ROS domain. Only calibrations keep simulations' files apart,
+  in `data_experiment/sim/calibration_data/domain_<id>/`.
 - **Drive**: the synced Google Drive folder (`HUSKY_DRIVE_ROOT`) that holds all experiment and calibration data.
   Driving the base is "driving", never "the Drive". `drive.py`.
 - **calibration session / calibration run**: a session is one dated folder of calibration data on the Drive; a run is
@@ -188,12 +251,12 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **experiment / run folder**: an experiment names a folder of run folders `<date>_<time>_<parts>/` (each with
   `experiment.json`, `recording.npz`, `report.json`); one report covers one experiment. `shared/recordings/runs.py`.
 - **experiment task / attempt**: in base planner experiments, a task is a named start, target and obstacles, and an
-  attempt is one plan from its start. Experiments A, B, C are named per manual (`doc/base_exp_manual.md`,
-  `doc/base_planner_manual.md`): the same letter is a different experiment in each.
+  attempt is one plan from its start. Experiments A, B, C are named per manual (`doc/experiments/base_exp_manual.md`,
+  `doc/experiments/base_planner_manual.md`): the same letter is a different experiment in each.
 - **hypothesis / report / results**: a hypothesis is a numbered claim the data can refute; the generated report holds
-  numbers only, the results are written from it. `doc/experiment_design_guide.md`, `doc/experiment_report_guide.md`.
+  numbers only, the results are written from it. `doc/experiments/experiment_design_guide.md`, `doc/experiments/experiment_report_guide.md`.
 - **fleet domain / sim domain**: the real robots run zenoh on ROS domain 80; a simulation uses a domain of its own,
-  and every sim launch refuses 80. `crl-husky:README.md`, `doc/simulation_manual.md`.
+  and every sim launch refuses 80. `crl-husky:README.md`, `doc/lab/simulation_manual.md`.
 - **temporary / virtual obstacles**: temporary obstacles are the operator's, kept in a local file until promoted into
   the lab file; virtual obstacles belong to a base planner experiment task and are never saved. Both are drawn purple
   and stop nothing physical. `plugins/obstacles/`, `plugins/base_planner/tasks.py`.

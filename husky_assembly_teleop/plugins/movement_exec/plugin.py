@@ -35,13 +35,13 @@ from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, 
                                               INSERT_PART, MAX_TRAJ_TIME, MOTION_KINDS, MOTION_PART, REFUSED,
                                               REFUSED_PART, RETREAT_PART, SERVO_INDEX, SERVO_PART, WITH_MOTION_PART,
                                               Carried, ExecRequest, ExecResult, serial_of)
-from ...ui.assembly_tab import ASSEMBLY_TAB, EXEC_PLOTS_X, PLOTS_HEIGHT, PLOTS_WIDTH, PLOTS_Y
+from ...shared.assembly_tab.layout import ASSEMBLY_TAB, EXEC_PLOTS_X, plots_window
 from ...shared.runs.as_built import KIND as AS_BUILT_KIND, bar_lines
 from .as_built import as_built_record
 from .panel import ExecPanel
 from .report import PageServer, build as build_page
 from .plots import ExecPlots
-from .sequences import Job, PartRun, run_part
+from .sequences import Job, PartRun, run_part, unknown_serials
 from .servo_part import run_servo
 
 if TYPE_CHECKING:
@@ -139,7 +139,8 @@ class MovementExecPlugin(HuskyPlugin):
         ctx = self._ctx
         future = asyncio.get_running_loop().create_future()
         refusal = self._refusal(ctx, request)
-        if not refusal and (moving := moving_reason(ctx.world, ctx.now())):
+        if not refusal and (moving := moving_reason(ctx.world, ctx.now(),
+                                                    unknown=unknown_serials(ctx.world, request))):
             refusal = f"busy: {moving}"
         if not refusal:
             try:
@@ -211,11 +212,8 @@ class MovementExecPlugin(HuskyPlugin):
         self._panel = ExecPanel(ctx, self)
         # * A window at the bottom left, beside the plan plots, minimized to its bar until a servo or a compliant
         #   part starts (`ExecPlots`).
-        panel = ctx.view.panel()
-        with panel.add_tab("Exec plots", viser.Icon.CHART_DOTS):
+        with plots_window(ctx.view, "Exec plots", viser.Icon.CHART_DOTS, EXEC_PLOTS_X) as panel:
             self._plots = ExecPlots(ctx.view.gui, panel)
-        panel.float(x=EXEC_PLOTS_X, y=PLOTS_Y, width=PLOTS_WIDTH, height=PLOTS_HEIGHT)
-        panel.minimize()
 
     def draw(self, ctx: PluginContext) -> None:
         """Fill the panel, and the Exec plots with the running compliant part's newest sample."""
@@ -324,7 +322,7 @@ class MovementExecPlugin(HuskyPlugin):
                         raise
                     finally:
                         # * However the servo ended: the bar mode engaged, so the insert plans from where it left the
-                        #   flanges (W:2658-2662).
+                        #   flanges.
                         if run.carry is not None:
                             self._carried = run.carry
                     self._record_part(job, run)

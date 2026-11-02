@@ -4,7 +4,7 @@ The operator's steps in the Assembly tab: the current step, its goal checked, it
 The current step follows the run (`assembly_run`), which follows the process panel: its action, the step holding its
 movement (`operator_steps`, the process plugin's transfer workaround). Plan asks the motion planner from the live robot
 (only when it is live); the plan goes stale when anything it was made from changes (`shared/execution/basis.py`). Exec
-hands the step to `movement_exec`, which runs a motion at once and asks the operator to Confirm the bar mount, a
+hands the step to `movement_exec`, which runs a motion at once and asks the operator to Confirm placing the bar, a
 Robotiq step and the servo's first pass; once every part is done the next step becomes current, and after the
 action's last step Mark done (assembly_run's) is suggested.
 
@@ -17,7 +17,7 @@ action's last step Mark done (assembly_run's) is suggested.
   movement instead (`_move_on`): the operator clicks Plan again.
 - A plan is used once: Exec takes it, and it is cleared once the step ran; only a request refused before sending
   anything, or a dry run, gives it back (still checked for staleness).
-- An insert after its transfer's MoCap-bar servo is planned from where the servo left the flanges (`executor.carried`).
+- An insert after its transfer's mocap bar servo is planned from where the servo left the flanges (`executor.carried`).
 - ! EXPERIMENTAL, with movement_exec the first plugins that run process movements on the robots.
 """
 
@@ -35,6 +35,7 @@ from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
+from ...shared.assembly_planning.joints import arm_of_flange
 from ...shared.assembly_planning.movement import Routine, UnknownMovement, classify
 from ...shared.assembly_planning.route_result import (GoalCheck, RouteResult, goal_line, live_retreat_goals,
                                                       pose_error)
@@ -52,7 +53,7 @@ from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TR
 from ...shared.planner.planner_search import WAIT_MARGIN, PlanResult
 from ...shared.planner.timed_path import TimedPath
 from ...shared.process_contract import Carry
-from ...ui.assembly_tab import ASSEMBLY_TAB
+from ...shared.assembly_tab.layout import ASSEMBLY_TAB
 from ...ui.ghost import RobotGhost
 from .diagnosis import StepDiagnosis, path_line, tool0_line
 from .goal import StepGoal, same_step
@@ -327,7 +328,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             link = split_link_id(flange)[1]
             if not link.endswith(FLANGE_SUFFIX):
                 continue
-            arm = link[:-len(FLANGE_SUFFIX)]
+            arm = arm_of_flange(link)
             rhino_target[arm] = pose
             try:
                 rhino_start[arm] = authored_start(view.process.process.actions[action], step.movement_index, flange)
@@ -404,6 +405,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return None
         if still:
             self._say(goal_line(check), failed=not check.ok)
+            self._used.touch()  # * an answer arriving counts as use, as a plan does
         if still and check.ok and check.goal_joints:
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
                                                    dict(check.goal_joints), base=check.base))
@@ -472,7 +474,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             live = snapshot.robots.get(robot_id(self.serial)) if self.serial else None
             primary = next((part for part in self.parts() if part.index == op_step.primary), None)
             if primary is not None and primary.kind == REFUSED_PART:
-                # * Say why, e.g. "B20_J_transfer: the transfer with the bar held (M7) is not supported yet".
+                # * Say why, e.g. "B20_J_transfer: a tool movement with a drive, or without a grip, is not supported".
                 refusal = f"{step.label}: {primary.text}"
             elif primary is None or primary.kind not in MOTION_KINDS:
                 refusal = f"{step.label} has no motion to plan"
@@ -488,7 +490,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
                     goals = carried_insert_goals(view.process, action, carried.insert, live)
                     flange, ends = next(iter(goals)), step.movement.target.robots[step.action.robot].link_poses
                     distance, turn = pose_error(goals[flange], ends[flange])
-                    ctx.log_info(f"[insert plan] MoCap-bar correction carried: {step.label} {flange_side(flange)} "
+                    ctx.log_info(f"[insert plan] mocap bar correction carried: {step.label} {flange_side(flange)} "
                                  f"goal {distance * 1e3:.2f} mm / {math.degrees(turn):.3f}° from the authored end")
                 elif (primary.routine is Routine.RETREAT_LINEAR
                       and self._assembly_run(ctx).view.settings.retreat_live_axis):
@@ -607,12 +609,13 @@ class AssemblyStepsPlugin(PlannerPlugin):
                               self._basis if motion else None, self.traj_time, step.label,
                               ignore_built=lambda: self.ignore_built,
                               obstacles_collide=lambda: self._obstacles_collide(ctx),
-                              transfer_as_free=lambda: self._transfer_as_free(ctx))
+                              transfer_as_free=lambda: self._transfer_as_free(ctx),
+                              unknown_robots=self._unknown_allowed)
         if motion:
             self.plan_state = "sent"  # ! used once: never sent again
         executor: MovementExecContract = ctx.require("movement_exec")
         key = self._executing = self._key
-        self._say(f"Exec {step.label}: running; Confirm below or on the phone when asked (the bar mount, a Robotiq "
+        self._say(f"Exec {step.label}: running; Confirm below or on the phone when asked (placing the bar, a Robotiq "
                   f"step, the servo's first pass)")
         executor.request_execute(request).add_done_callback(
             lambda future: self._executed(ctx, key, motion, future))

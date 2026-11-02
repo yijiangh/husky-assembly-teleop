@@ -131,6 +131,7 @@ FINISHES_DRAWN = 40
 SEND_STEP = 0.05
 SEND_TURN = 0.05
 
+# * Own colours: the debug view's layers (test_colors skips this file).
 #: Debug layers, back to front: name and colour (r, g, b).
 FLOOR = "cost map: no heading fits", (206, 212, 218)
 LEARNED = "cost map: learned to avoid", (255, 212, 59)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,8 +17,8 @@ from husky_assembly_teleop.shared.obstacles_contract import ObstaclesContract
 from husky_assembly_teleop.world import lab as lab_module
 from husky_assembly_teleop.world.base_collision import BaseCollisionWorld
 from husky_assembly_teleop.world.clearance import STOP_DISTANCE
-from husky_assembly_teleop.world.lab import (FLOOR_WITHOUT_BORDER, Shape, border_bodies, floor_body, read_lab,
-                                             read_temporary, shape_id, write_lab, write_temporary)
+from husky_assembly_teleop.world.lab import (FLOOR_WITHOUT_BORDER, MESH_DIRECTORY, Shape, border_bodies, floor_body,
+                                             read_lab, read_temporary, shape_id, write_lab, write_temporary)
 from husky_assembly_teleop.world.scene import PluginScene
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
@@ -35,11 +36,12 @@ IDS = ["obstacles/boxes/bar_table_1", "obstacles/boxes/bar_table_2", "obstacles/
 
 @pytest.fixture
 def files(tmp_path, monkeypatch):
-    """Temporary-obstacle files in a temporary folder, and a copy of the main lab file there."""
+    """Temporary-obstacle files in a temporary folder, and a copy of the main lab file there with its meshes."""
     monkeypatch.setattr(lab_module, "TEMPORARY_FILE", tmp_path / "temporary.json")
     monkeypatch.setattr(lab_module, "OLD_TEMPORARY_FILE", tmp_path / "debug_gizmo.json")
     (tmp_path / "lab").mkdir()
     (tmp_path / "lab" / "main.json").write_text((DATA / "lab" / "main.json").read_text())
+    (tmp_path / "lab" / MESH_DIRECTORY).symlink_to(DATA / "lab" / MESH_DIRECTORY)
     return tmp_path
 
 
@@ -83,6 +85,7 @@ def test_offers_the_lab_with_its_border(files):
 def test_lab_file_round_trip(tmp_path):
     """Written and read back, a lab is the same; each obstacle is one line of the file."""
     lab = read_lab(DATA / "lab" / "main.json")
+    (tmp_path / MESH_DIRECTORY).symlink_to(DATA / "lab" / MESH_DIRECTORY)
     write_lab(lab, tmp_path / "lab.json")
     assert read_lab(tmp_path / "lab.json") == lab
     lines = (tmp_path / "lab.json").read_text().splitlines()
@@ -98,6 +101,31 @@ def test_broken_lab_file_is_refused(tmp_path):
     (tmp_path / "b.json").write_text(json.dumps({"format": "husky_lab", "obstacles": [box, box]}))
     with pytest.raises(ValueError, match="share a name"):
         read_lab(tmp_path / "b.json")
+    (tmp_path / "c.json").write_text(json.dumps({"format": "husky_lab", "obstacles": [{**box, "meshes": [
+        {"mesh": "missing"}]}]}))
+    with pytest.raises(ValueError, match="no mesh file"):
+        read_lab(tmp_path / "c.json")
+
+
+def test_meshes_are_drawn_and_never_collide(files):
+    """An obstacle with meshes is drawn as them, standing on the floor, and collides as its shape."""
+    plugin, ctx = _loaded(files)
+    with_meshes = [shape for shape in plugin.lab.shapes if shape.meshes]
+    assert with_meshes
+    for shape in with_meshes:
+        body = ctx.scene.bodies[shape_id(plugin.name, shape)]
+        assert body.geometry.collision == replace(shape, meshes=()).geometry().collision
+        assert len(body.geometry.visual) == len(shape.meshes)
+        lowest = min(float(mesh.vertices[:, 2].min()) for mesh in body.geometry.visual)
+        assert lowest + shape.center[2] == pytest.approx(shape.center[2] - shape.size[2] / 2, abs=1e-3)
+
+
+def test_a_mesh_without_git_lfs_leaves_the_shape_drawn(tmp_path):
+    """A mesh file that is a Git LFS pointer (a clone without Git LFS) reads empty: the shape is drawn instead."""
+    (tmp_path / "table.obj").write_text("version https://git-lfs.github.com/spec/v1\noid sha256:0\nsize 1\n")
+    shape = Shape("box", "t", (0.0, 0.0, 0.5), (1.0, 1.0, 1.0), meshes=(lab_module.MeshPart("table"),))
+    drawn, plain = shape.geometry(tmp_path), replace(shape, meshes=()).geometry()
+    assert drawn.visual == plain.visual and drawn.collision == plain.collision
 
 
 def test_shapes_stay_upright_and_square():

@@ -28,7 +28,7 @@ from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.world.checks import WARN
-from husky_assembly_teleop.world.clearance import STOP_DISTANCE, Clearance
+from husky_assembly_teleop.world.clearance import ALL_ARMS, STOP_DISTANCE, Clearance
 
 SERIAL = "alice"
 
@@ -133,8 +133,9 @@ class CommitCtx:
         yield []
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_robots=()):
-        """Never trip."""
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
+        """Never trip; keep the arms it lets be unknown."""
+        self.unknown_arms = unknown_arms
         yield Clearance(tuple(serials), margin)
 
 
@@ -143,22 +144,31 @@ def test_the_planner_offers_the_planner_api():
     assert isinstance(BasePlannerPlugin(), PlannerContract)
 
 
-def commit(base: FakeBase):
+def commit(base: FakeBase, unknown_robots=(), ctx: CommitCtx | None = None):
     """Commit a ready plan for SERIAL on `base` through the planner's API; returns (sent, message) and the planner.
 
     The run follows the path until the test ends, which cancels it.
     """
     planner = BasePlannerPlugin()
-    ctx = CommitCtx(base)
+    ctx = ctx or CommitCtx(base)
     planner._path_check = lambda *_args: SimpleNamespace(level=WARN, label="following", detail="")
     planner.setup(ctx)
     path = planned((0.0, 0.0, 0.0), (1.0, 1.0, 0.0))
     planner._plan = Plan(1, BasePlanRequest(SERIAL, tuple(path.goal)), "ready", path)
 
     async def main():
-        return await planner.commit(1)
+        return await planner.commit(1, unknown_robots)
 
     return asyncio.run(main()), planner
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("allowed, arms", [((), ()), ((f"robots/{SERIAL}",), ALL_ARMS)])
+def test_only_commits_second_press_lets_the_robots_own_arms_be_unknown(allowed, arms):
+    """The robot itself among the robots let be unknown (Commit's second press): its clearance takes any arm unknown."""
+    ctx = CommitCtx(FakeBase())
+    (sent, _message), _planner = commit(ctx.world.robots[SERIAL].base, allowed, ctx)
+    assert sent and ctx.unknown_arms == arms
 
 
 @pytest.mark.safety
@@ -331,7 +341,7 @@ class FakeClock:
                 event.detach(listener)
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_robots=()):
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
         """Keep the clearance asked for; the test trips it by setting its problem and cancelling the run."""
         self.clearances.append(Clearance(tuple(serials), margin))
         yield self.clearances[-1]

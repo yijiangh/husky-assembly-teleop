@@ -5,7 +5,9 @@ It starts minimized to its bar; the control at the bar's right end opens it.
 
 - Show "Plugins" (the default) leaves out health's colour changes and the late-tick reports, "Warnings" shows warnings
   and errors from every source but the ticks, "All" every line. Errors always show. Source narrows to one source;
-  Hide leaves out the sources ticked in it (DEFAULT_HIDDEN at start), whatever Show says.
+  Hide leaves out the sources ticked in it, but not their errors (at start the layout file's console `hidden`, else
+  DEFAULT_HIDDEN), whatever Show says.
+- Its layout file preferences (`plugins.console.preferences`): `hidden`, the source names Hide starts with.
 - The list is rewritten when a line comes in: pause the page (Live) to read or select it.
 - stdout and the ROS log still get every line; a message's first line wraps, a tick report or traceback shows in full
   on hover.
@@ -21,7 +23,7 @@ from html import escape
 import viser
 from rclpy.logging import LoggingSeverity
 
-from ..plugin_api.console_log import RUNTIME, TICKS, Entry
+from ..plugin_api.console_log import TICKS, Entry
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..ui.style import BUSY, FAIL, INFO, NONE, chip, chip_line
@@ -31,12 +33,12 @@ SHOW_PLUGINS, SHOW_WARNINGS, SHOW_ALL = "Plugins", "Warnings", "All"
 EVERY_SOURCE = "all"
 #: Sources "Plugins" leaves out: health's colour changes (its "chips" topic) and the late-tick reports.
 NOISY_SOURCES = ("health/chips", TICKS)
-#: Sources Hide leaves out at start: the late-tick reports and the runtime's own lines.
-DEFAULT_HIDDEN = (TICKS, RUNTIME)
+#: Sources Hide leaves out at start, unless the layout file's console `hidden` says otherwise: none.
+DEFAULT_HIDDEN: tuple[str, ...] = ()
 #: How Hide marks a source it leaves out, and one it shows; picking either turns it to the other.
 HIDDEN_MARK, SHOWN_MARK = "☑ ", "☐ "
 HIDE_HINT = ("Pick a source to hide it (☑), pick it again to show it; several can be hidden. Hidden whatever Show "
-             "says; a name without a / also hides its topics (health hides health/chips)")
+             "says, except its errors; a name without a / also hides its topics (health hides health/chips)")
 
 #: The window's size, and the height of the list in it, pixels.
 WIDTH, HEIGHT, LIST_HEIGHT = 900, 360, 220
@@ -57,7 +59,7 @@ LIST_STYLE = (
     'white-space:nowrap} '
     '.console .line:hover {background:var(--mantine-color-default-hover)} '
     '.console .text {overflow:hidden; text-overflow:ellipsis} '
-    '.console .message {white-space:normal; overflow-wrap:anywhere} '
+    '.console .message {white-space:pre-wrap; overflow-wrap:anywhere} '
     '.console .dim {color:var(--mantine-color-dimmed)} '
     '.console .count {margin-left:6px; padding:0 4px; border-radius:3px; font-size:10px; '
     'background:var(--mantine-color-default-hover); color:var(--mantine-color-dimmed)}</style>')
@@ -90,13 +92,17 @@ class ConsolePlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
+        hidden = ctx.view.preferences.get("hidden")
+        if isinstance(hidden, list) and all(isinstance(name, str) and name for name in hidden):
+            self._hidden_names = tuple(hidden)
+        elif hidden is not None:
+            ctx.log_warn(f"layout: console's hidden must be a list of source names, not {hidden!r}; nothing hidden")
         panel = ctx.view.panel()
         with panel.add_tab("Console", self.icon):
             gui = ctx.view.gui
             show = gui.add_button_group("Show", [SHOW_PLUGINS, SHOW_WARNINGS, SHOW_ALL],
-                                        hint="Plugins: what the plugins say, without health's colour changes and "
-                                             "the late-tick reports. Warnings: warnings from every source but the "
-                                             "ticks. All: every line. Errors always show.")
+                                        hint="Plugins: plugin messages only. Warnings: warnings from all but ticks. "
+                                             "All: everything. Errors always show.")
             show.on_click(ctx.defer_value("console show", self._set_show))
             self._source = gui.add_dropdown("Source", [EVERY_SOURCE], initial_value=EVERY_SOURCE)
             # * A dropdown whose first choice sums up what is hidden; picking a source ticks or unticks it.
@@ -152,7 +158,8 @@ class ConsolePlugin(HuskyPlugin):
             self._list.content = render(kept[-SHOWN_LINES:])
         late = log.late_share()
         self._status.content = chip_line(
-            chip(f"showing {self._show.lower()}", INFO)
+            chip(f"showing {self._show.lower()}", INFO, "Which lines show; Show below changes it, Hide leaves out "
+                                                        "sources.")
             + chip(f"late ticks {late:.0%}", BUSY if late > LATE_TICKS_WARN else NONE,
                    "Share of the last minute's tick periods that were late, a freeze counting for every period it "
                    "lasted; Show All lists where the time went. Often the power profile: run the monitor under "
@@ -169,9 +176,11 @@ def shown(entry: Entry, show: str, source: str, hidden: tuple[str, ...] = ()) ->
     """Whether the list shows `entry` with Show at `show`, Source at `source` and Hide naming `hidden`."""
     if source != EVERY_SOURCE and entry.source != source:
         return False
+    if entry.level >= LoggingSeverity.ERROR:
+        return True
     if any(entry.source == name or entry.source.startswith(name + "/") for name in hidden):
         return False
-    if entry.level >= LoggingSeverity.ERROR or show == SHOW_ALL:
+    if show == SHOW_ALL:
         return True
     if show == SHOW_WARNINGS:
         return entry.level >= LoggingSeverity.WARN and entry.source != TICKS
@@ -187,15 +196,13 @@ def render(entries: list[Entry]) -> str:
 
 
 def render_line(entry: Entry) -> str:
-    """One line: time, severity, source and the message's first line, wrapped; the whole message on hover."""
+    """One entry: time, severity, source and the whole message, wrapped, with its own line breaks; also on hover."""
     stamp = time.strftime("%H:%M:%S", time.localtime(entry.time)) + f".{int(entry.time * 10) % 10}"
     name, color = LEVEL_STYLES.get(entry.level, ("?", NONE))
-    first, *rest = entry.text.splitlines() or [""]
-    more = f' <span class="dim">(+{len(rest)} lines)</span>' if rest else ""
     count = f'<span class="count">×{entry.count}</span>' if entry.count > 1 else ""
     text_color = color if entry.level >= LoggingSeverity.WARN else (
         "var(--mantine-color-dimmed)" if entry.level < LoggingSeverity.INFO else "inherit")
     return (f'<div class="line" title="{escape(entry.text, quote=True)}"><span class="dim">{stamp}</span>'
             f'<span style="color:{color};font-weight:600">{name}</span>'
             f'<span class="text" style="font-weight:600">{escape(entry.source)}</span>'
-            f'<span class="message" style="color:{text_color}">{escape(first)}{more}{count}</span></div>')
+            f'<span class="message" style="color:{text_color}">{escape(entry.text)}{count}</span></div>')

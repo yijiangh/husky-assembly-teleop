@@ -26,6 +26,7 @@ from ...plots import heading_arrows, time_spans
 from ...shared.recordings.runs import Recording, load_description, load_recording, write_report as write_numbers
 from ...shared.recordings.series import finite_mean, span
 
+# * Own colours: offline report figures (test_colors skips this file).
 PATH_COLOR, ROBOT_COLOR = "tab:blue", "tab:orange"
 TURN_SHADE = "0.9"          # turns on the spot
 SETTLE_SHADE = "#fff3bf"    # settling after the follower ended

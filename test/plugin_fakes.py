@@ -29,7 +29,7 @@ from robot_fakes import TEST_LEASE, Client
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import JointState
 
-from husky_assembly_teleop.config import ArmConfig
+from husky_assembly_teleop.config import ArmConfig, RobotConfig
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.plugin_api.trace import Trace
@@ -41,12 +41,13 @@ from husky_assembly_teleop.robot_interface.controller_manager import ControllerM
 from husky_assembly_teleop.robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV3,
                                                                  ScaffoldingV3State)
 from husky_assembly_teleop.robot_interface.event import Event
+from husky_assembly_teleop.robot_interface.frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from husky_assembly_teleop.robot_interface.mocap_state import MARKER_ERROR_WINDOW
 from husky_assembly_teleop.robot_interface.robot import HuskyRobotInterface
 from husky_assembly_teleop.robot_interface.robot_lease import LeaseSlot, leased
 from husky_assembly_teleop.robot_interface.soft_stop import SoftStopLatch
 from husky_assembly_teleop.robot_interface.ur_frames import BASE_LINK_FROM_UR_BASE
-from husky_assembly_teleop.world.clearance import STOP_DISTANCE, Clearance
+from husky_assembly_teleop.world.clearance import STOP_DISTANCE, Clearance, ClearanceWatch
 from husky_assembly_teleop.world.measured import TrackedObject
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.kinematics import link_pose
@@ -133,15 +134,21 @@ class FakeGui:
         """`add_<kind>(label, value, **options)`: a widget of that kind."""
         if not name.startswith("add_"):
             raise AttributeError(name)
+        return partial(self._add, name[4:])
 
-        def add(label: str = "", *values: Any, **options: Any) -> FakeWidget:
-            widget = FakeWidget(kind=name[4:], label=label, value=values[0] if values else options.get("initial_value"),
-                                content="", color=options.get("color"), disabled=options.get("disabled", False),
-                                options=options,
-                                _impl=SimpleNamespace(uuid=f"fake-{len(self.widgets)}", removed=False))
-            self.widgets.append(widget)
-            return widget
-        return add
+    def add_uplot(self, **fields: Any) -> FakeWidget:
+        """A uPlot chart: a widget of kind "uplot" that keeps what it was built with (`data`, `series`, `scales`)."""
+        widget = self._add("uplot", **fields)
+        widget.__dict__.update(fields)
+        return widget
+
+    def _add(self, kind: str, label: str = "", *values: Any, **options: Any) -> FakeWidget:
+        """A widget of `kind`, kept in `widgets`."""
+        widget = FakeWidget(kind=kind, label=label, value=values[0] if values else options.get("initial_value"),
+                            content="", color=options.get("color"), disabled=options.get("disabled", False),
+                            options=options, _impl=SimpleNamespace(uuid=f"fake-{len(self.widgets)}", removed=False))
+        self.widgets.append(widget)
+        return widget
 
     def of_kind(self, kind: str) -> list[FakeWidget]:
         """The widgets of one kind, e.g. "button", in order."""
@@ -185,6 +192,7 @@ class FakeContext:
         self._freezes: dict = {}
         #: The clearances asked for, in order; nothing checks them.
         self.clearances: list[Clearance] = []
+        self.watches: list[ClearanceWatch] = []
         self.t, self.step = 10.0, step
         #: Whether the plugin was stopped or torn down (`PluginContext.closed`).
         self.closed = False
@@ -198,7 +206,8 @@ class FakeContext:
         self.view = SimpleNamespace(ui=lambda band=None: nullcontext(self.gui),
                                     phone=lambda *_tab: nullcontext(self.gui),
                                     tab=lambda *_tab, **_options: nullcontext(self.gui), gui=self.gui,
-                                    panel=self._panel, scene=FakeScene(), scene_root="/plugin", faded=[])
+                                    panel=self._panel, scene=FakeScene(), scene_root="/plugin", faded=[],
+                                    preferences={})
         #: `ctx.view.set_robot_opacity` as the runtime's: every call is kept in `view.faded`.
         self.view.set_robot_opacity = lambda serial, opacity: self.view.faded.append((serial, opacity))
         #: (level, message) per log line.
@@ -215,12 +224,18 @@ class FakeContext:
         self.panels.append(FakePanel(self.gui))
         return self.panels[-1]
 
+    def watch_clearance(self, serials, margin: float = STOP_DISTANCE, unknown_arms=()) -> ClearanceWatch:
+        """Keep the watch asked for in `watches`; nothing checks it, so it stays clear unless a test fills it in."""
+        self.watches.append(ClearanceWatch(tuple(serials), margin, unknown_arms))
+        return self.watches[-1]
+
     @contextmanager
     def clearance(self, serials, margin: float = STOP_DISTANCE, unknown_arms=(),
-                  unknown_robots=()) -> Iterator[Clearance]:
-        """Keep the clearance asked for in `clearances`; nothing checks it."""
+                  unknown_robots=(), refuse_first: bool = False) -> Iterator[Clearance]:
+        """Keep the clearance asked for in `clearances`; nothing checks it, so it counts as checked clear at once."""
         self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms,
-                                         unknown_robots=frozenset(unknown_robots)))
+                                         unknown_robots=frozenset(unknown_robots), refuse_first=refuse_first,
+                                         checked=True))
         yield self.clearances[-1]
 
     def require(self, name: str) -> Any:
@@ -516,6 +531,26 @@ def from_outside(robot: HuskyRobotInterface) -> Iterator[None]:
             yield
     finally:
         robot.lease_slot.lease = kept
+
+
+def with_urdf_frames(robot: HuskyRobotInterface, config: RobotConfig) -> HuskyRobotInterface:
+    """Give a fake robot the frames of its URDF: its model, the husky frame on its mocap body, each arm's base_link.
+
+    Returns `robot`.
+    """
+    urdf = config.model.urdf
+    robot.config.model = config.model
+    robot._husky_in_mocap_frame = fixed_transform(urdf, MOCAP_FRAME, HUSKY_FRAME)
+    for arm in robot.arms.values():
+        arm.urdf, arm.base_in_husky = urdf, fixed_transform(urdf, HUSKY_FRAME, f"{arm.config.name}_base_link")
+    return robot
+
+
+def assert_same_pose(a: Pose, b: Pose, tolerance: float = 1e-12) -> None:
+    """Positions and turns equal within `tolerance` (a quaternion and its negative are the same turn)."""
+    np.testing.assert_allclose(a.position, b.position, rtol=0.0, atol=tolerance)
+    sign = 1.0 if np.dot(a.orientation, b.orientation) >= 0.0 else -1.0
+    np.testing.assert_allclose(a.orientation, sign * np.asarray(b.orientation), rtol=0.0, atol=tolerance)
 
 
 def lease_to_test(part):

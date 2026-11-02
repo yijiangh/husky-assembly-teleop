@@ -105,7 +105,8 @@ class Lab:
 
     def lease_to_exec(self, serial: str) -> Lease:
         """Lease a robot as movement_exec does while a step runs."""
-        return take_lease([self.ctx.world.robots[serial].lease_slot], "movement_exec: exec B21_H_approach")
+        return take_lease([self.ctx.world.robots[serial].lease_slot], "movement_exec: exec B21_H_approach",
+                          owner="movement_exec")
 
     def plugin(self) -> tuple[AssemblyRunPlugin, FakeProcess]:
         """A new plugin, as after a restart, on the process loaded again."""

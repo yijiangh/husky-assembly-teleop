@@ -44,33 +44,35 @@ def test_a_source_narrows_to_its_own_lines():
     assert _shown_sources(SHOW_ALL, TICKS) == [(TICKS, level) for level in ("DEBUG", "INFO", "WARN", "ERROR")]
 
 
-def test_hide_leaves_out_its_sources_even_their_errors_and_a_name_covers_its_topics():
-    """All but health/chips and the runtime, nothing of theirs; "health" hides health and health/chips."""
-    assert _shown_sources(SHOW_ALL, hide=("health/chips", RUNTIME)) == [
-        (name, level) for name in ("robot_control", ROBOTS, "health", TICKS)
-        for level in ("DEBUG", "INFO", "WARN", "ERROR")]
+def test_hide_leaves_out_its_sources_but_their_errors_and_a_name_covers_its_topics():
+    """All but health/chips and the runtime, only their errors; "health" hides health and health/chips."""
+    every = ("DEBUG", "INFO", "WARN", "ERROR")
+    assert _shown_sources(SHOW_ALL, hide=("health/chips", RUNTIME)) == (
+        [("robot_control", level) for level in every] + [(RUNTIME, "ERROR")] + [(ROBOTS, level) for level in every]
+        + [("health", level) for level in every] + [("health/chips", "ERROR")] + [(TICKS, level) for level in every])
     assert _shown_sources(SHOW_PLUGINS, hide=("health",)) == [
         (name, level) for name in ("robot_control", RUNTIME, ROBOTS) for level in ("INFO", "WARN", "ERROR")
-    ] + [(TICKS, "ERROR")]
+    ] + [("health", "ERROR"), ("health/chips", "ERROR"), (TICKS, "ERROR")]
 
 
-def test_the_list_is_newest_first_escaped_at_a_fixed_height_with_the_whole_message_on_hover():
-    """Newest on top; HTML in a message is shown, not run; a traceback shows its first line and the rest on hover."""
+def test_the_list_is_newest_first_escaped_at_a_fixed_height_with_the_whole_message_wrapped():
+    """Newest on top; HTML in a message is shown, not run; a traceback shows whole, wrapped, and on hover too."""
     html = render([Entry(1.0, INFO, "a", "first"), Entry(2.0, ERROR, "b", "failed <x>\nTraceback\n  line")])
     assert html.index("failed &lt;x&gt;") < html.index("first")
-    assert "(+2 lines)" in html and 'title="failed &lt;x&gt;\nTraceback\n  line"' in html
+    assert ">failed &lt;x&gt;\nTraceback\n  line<" in html and "white-space:pre-wrap" in html
+    assert 'title="failed &lt;x&gt;\nTraceback\n  line"' in html
     assert f"height:{LIST_HEIGHT}px" in html and "nothing to show" in render([])
-    assert ".message {white-space:normal" in html and 'class="message"' in html, "the message wraps"
+    assert ".message {white-space:pre-wrap" in html and 'class="message"' in html, "the message wraps"
 
 
-def _console() -> tuple[ConsolePlugin, FakeContext, ConsoleLog, list]:
+def _console(preferences: dict | None = None) -> tuple[ConsolePlugin, FakeContext, ConsoleLog, list]:
     """A console set up in a fake context with an empty log; the list records each `minimize`."""
     ctx = FakeContext(name="console")
     log = ctx.console_log = ConsoleLog()
     minimized = []
     panel = SimpleNamespace(add_tab=lambda *_tab: nullcontext(), float=lambda **_place: None,
                             minimize=lambda: minimized.append(True))
-    ctx.view = SimpleNamespace(panel=lambda: panel, gui=ctx.gui)
+    ctx.view = SimpleNamespace(panel=lambda: panel, gui=ctx.gui, preferences=preferences or {})
     console = ConsolePlugin()
     console.setup(ctx)
     ctx.gui.of_kind("dropdown")[0].value = EVERY_SOURCE  # * The fake takes the options for the value.
@@ -97,9 +99,18 @@ def test_the_plugin_draws_the_filtered_lines_and_offers_each_source():
     assert "mocap" not in lines.content and "1 hidden" in status.content
 
 
-def test_hide_starts_with_ticks_and_the_runtime_and_toggles_any_source_picked():
+def test_hide_hides_nothing_at_start_unless_the_layout_file_says():
+    """With no console `hidden` in the layout file, Hide starts empty; a bad one is reported and hides nothing."""
+    _console_, ctx, _log, _minimized = _console()
+    assert ctx.gui.of_kind("dropdown")[1].value == "hiding nothing"
+    _console_, ctx, _log, _minimized = _console({"hidden": "runtime"})
+    assert ctx.gui.of_kind("dropdown")[1].value == "hiding nothing"
+    assert "console's hidden must be a list of source names" in ctx.lines("warn")[-1]
+
+
+def test_hide_starts_with_the_layout_files_sources_and_toggles_any_source_picked():
     """Hide's first choice says what it hides; picking a source ticks it, picking it again unticks it."""
-    console, ctx, log, _minimized = _console()
+    console, ctx, log, _minimized = _console({"hidden": [TICKS, RUNTIME]})
     hide = ctx.gui.of_kind("dropdown")[1]
     assert hide.value == "hiding ticks, runtime"
     assert hide.options == ["hiding ticks, runtime", f"{HIDDEN_MARK}runtime", f"{HIDDEN_MARK}ticks"]

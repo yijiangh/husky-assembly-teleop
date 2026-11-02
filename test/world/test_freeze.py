@@ -15,6 +15,8 @@ from husky_assembly_teleop.robot_interface.mocap_state import POSE_TIMEOUT
 from husky_assembly_teleop.world.freeze import Tolerance, WorldMoved, basis_problem, take_basis
 from husky_assembly_teleop.world.measured import TrackedObject, WorldState
 
+pytestmark = pytest.mark.safety
+
 NOW = 100.0
 TOLERANCE = Tolerance()
 QUARTER_TURN = np.array([0.0, 0.0, np.sin(np.pi / 4), np.cos(np.pi / 4)])

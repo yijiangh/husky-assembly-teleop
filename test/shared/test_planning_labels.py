@@ -14,7 +14,6 @@ from planning_fixtures import action, movement, purged_process
 from process_fixtures import build_process
 
 from husky_assembly_teleop.plugins.process.loading import load_process
-from husky_assembly_teleop.plugins.process.plugin import ProcessPlugin, _movement_css
 from husky_assembly_teleop.shared.assembly_planning import labels as labels_module
 from husky_assembly_teleop.shared.assembly_planning.labels import (BASE, CDFM, CDLM, FM, INSERT_GROUND, INSERT_TIGHTEN,
                                                                    LM, MANUAL, TM, TM_THROUGH, kinds_of,
@@ -84,15 +83,6 @@ def test_ground_bars_insert_rigid_with_no_screw(purged):
         assert "rigid" in label.text and "no jointing screw runs" in label.text and "tighten" not in label.text
 
 
-def test_the_panel_says_which_drives_are_never_sent(purged):
-    """A ground bar's authored tightens show as not sent in the moves line; a screwed bar's do not."""
-    panel = ProcessPlugin()
-    panel._take(purged.process)
-    for movement_id, marked in (("B20_J_insert", True), ("B22_J_insert", False)):
-        panel.select(next(index for index, (_, one) in enumerate(panel._movements) if one.id == movement_id))
-        assert ("tighten (not sent)" in _details(panel)) == marked, movement_id
-
-
 def test_a_bar_on_the_ground_at_one_end_that_tightens_at_the_other(purged, monkeypatch):
     """Grounded but with a tighten really sent: the screwed insert's name and sentence, with its tool chip."""
     jointing = action(purged, "B22_J")
@@ -137,28 +127,6 @@ def test_an_insert_with_nothing_to_tighten_is_not_called_a_ground_bar(purged):
     label = label_movement(purged.process, jointing, insert)
     assert (label.old_name, label.code, label.kinds) == ("", "J_insert", (CDLM,))
     assert "ground" not in label.text and "no jointing screw is sent" in label.text
-
-
-def test_the_process_panel_shows_the_old_name_the_row_and_the_sentence(purged):
-    """At a screwed insert: its kinds' chips, the old name and the sentence; the action's codes, this one ringed.
-
-    The transfer workaround is on at start: the row is in run order, the transit first, no travel to load.
-    """
-    panel = ProcessPlugin()
-    panel._take(purged.process)
-    panel.select(next(index for index, (_, one) in enumerate(panel._movements) if one.id == "B22_J_insert"))
-    html = _details(panel)
-    assert f"old name {INSERT_TIGHTEN}" in html and "Straight-line insert 15 mm" in html
-    assert "1px dashed #666666" in html and "linear-gradient(90deg,#d5e8d4,#e6d0de)" in html
-    action, movement = panel.selected
-    labels = panel._labels(action)
-    codes = [label.code for label in labels]
-    assert codes[0] == "J_transit" and {"J_M1", "J_M2", "J_M4+5"} <= set(codes)
-    assert "J_M0" not in codes and "J_M3" not in codes
-    # * Only the selected movement's button is ringed, and every button keeps one weight, so nothing moves.
-    css = _movement_css("u", [label.kinds[0] for label in labels], action.movements.index(movement),
-                        [None] * len(labels))
-    assert css.count("box-shadow") == 1 and css.count("font-weight") == 1
 
 
 # --- --- --- --- --- WITHOUT THE DRIVE --- --- --- --- ---
@@ -214,21 +182,3 @@ def test_the_transfer_workaround_transit(small):
     assert label.text == ("Cindy's two arms travel with empty tools from wherever they are to the insert start, where "
                           "the operator places the bar (FM; the transfer workaround, in place of J_M0 and J_M3).")
     assert label_movement(small, jointing, transfer).code == "J_M3"
-
-
-def test_the_panel_escapes_rhino_labels(small):
-    """A movement's label from Rhino is text, never HTML, in the chips' hover text and the sentence."""
-    first_id = small.schedule[0]
-    first = small.actions[first_id]
-    odd = replace(first, movements=(replace(first.movements[0], label="<b>mount</b> & go"), *first.movements[1:]))
-    panel = ProcessPlugin()
-    panel._take(replace(small, actions={**small.actions, first_id: odd}))
-    panel.select(0)
-    html = _details(panel)
-    assert "<b>mount</b>" not in html and "&lt;b&gt;mount&lt;/b&gt; &amp; go" in html
-
-
-def _details(panel: ProcessPlugin) -> str:
-    """The selected movement's details as the panel shows them, above and below its movement buttons."""
-    action, movement = panel.selected
-    return "".join(panel._details_html(action, movement, panel._labels(action)))

@@ -8,16 +8,18 @@ its calibration is off.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Mapping
 
 import numpy as np
 from scipy.spatial.transform import Rotation
 
 from scaffolding_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.kinematics import link_poses
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 
 from ..robot_interface.arm import STILL_AFTER, ArmInterface
-from .checks import GOOD, STALE_AFTER, WARN, Check
+from .checks import BAD, GOOD, STALE_AFTER, WARN, Check
 
 if TYPE_CHECKING:
     from .kinematics import Kinematics
@@ -32,6 +34,19 @@ def tool0_by_kinematics(kinematics: Kinematics, serial: str, arm: str) -> Pose:
     """An arm's tool0 in its base_link, by forward kinematics of this tick's joints: what `tcp_check` expects."""
     return compose(invert(kinematics.link_pose(serial, f"{arm}_base_link")),
                    kinematics.link_pose(serial, f"{arm}{FLANGE_SUFFIX}"))
+
+
+def tool0_in_base_link(urdf: Path, arm: str, joints: Mapping[str, float]) -> Pose:
+    """An arm's tool0 in its base_link by the URDF's kinematics of `joints` (missing ones 0), no live world needed.
+
+    Args:
+        urdf: The robot's URDF.
+        arm: The arm's name, e.g. "left_ur_arm".
+        joints: Joint values by URDF name.
+    """
+    base, tool0 = f"{arm}_base_link", f"{arm}{FLANGE_SUFFIX}"
+    poses = link_poses(urdf, Pose(), joints, (base, tool0))
+    return compose(invert(poses[base]), poses[tool0])
 
 
 def tcp_check(arm: ArmInterface, expected: Pose, now: float) -> Check | None:
@@ -50,7 +65,7 @@ def tcp_check(arm: ArmInterface, expected: Pose, now: float) -> Check | None:
     """
     state = arm.state
     if state.tcp_position is None:
-        return Check("tcp", WARN, "no tcp_pose yet")
+        return Check("tcp", BAD, "no tcp_pose yet")
     if now - state.tcp_update_time > STALE_AFTER:
         return Check("tcp", WARN, f"no tcp_pose for over {STALE_AFTER:g}s")
     if state.last_motion_time is not None and now - state.last_motion_time < STILL_AFTER:
@@ -61,9 +76,9 @@ def tcp_check(arm: ArmInterface, expected: Pose, now: float) -> Check | None:
     limits = f"{TCP_POSITION_TOLERANCE * 1e3:g} mm / {np.degrees(TCP_ANGLE_TOLERANCE):g}°"
     if distance > TCP_POSITION_TOLERANCE or angle > TCP_ANGLE_TOLERANCE:
         # ? Whole millimetres and degrees: the tooltip text changes only when the offset does.
-        return Check("TCP", WARN, f"reported tool0 {distance * 1e3:.0f} mm / {np.degrees(angle):.0f}° from the "
-                                  f"kinematics (over {limits}): is the pendant's active TCP "
-                                  f"{_tcp_text(arm.pendant_tcp)}? Else the URDF or its calibration is off")
+        return Check("TCP", WARN, f"tool0 {distance * 1e3:.0f} mm / {np.degrees(angle):.0f}° off the kinematics.\n"
+                                  f"Is the pendant's active TCP {_tcp_text(arm.pendant_tcp)}? Else the URDF or its "
+                                  f"calibration is off.")
     return Check("tcp", GOOD, f"reported tool0 within {limits} of the kinematics")
 
 

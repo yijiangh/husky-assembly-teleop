@@ -8,14 +8,14 @@
 #   robot's namespace. The fake Motive names no robot and keeps running: it goes on publishing the frozen base where
 #   it stands, as Motive tracks a robot whose WiFi dropped.
 
-set -e
-case "$1" in
+set -euo pipefail
+case "${1:-}" in
     alice) namespace=a200_0804 ;;
     belle) namespace=a200_0805 ;;
     cindy) namespace=a200_0806 ;;
     *) echo "usage: $0 alice|belle|cindy down|up" >&2; exit 2 ;;
 esac
-case "$2" in
+case "${2:-}" in
     down) signal=STOP ;;
     up) signal=CONT ;;
     *) echo "usage: $0 alice|belle|cindy down|up" >&2; exit 2 ;;
@@ -27,8 +27,9 @@ domain="${FAKE_LAB_DOMAIN:-70}"
 # The fake-lab launch on this domain (another one may run on its own domain beside it).
 launch=""
 for pid in $(pgrep -u "$USER" -f "^/usr/bin/python3 /opt/ros/humble/bin/ros2 launch $repo/launch/sim.launch.py" || true); do
-    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx "ROS_DOMAIN_ID=$domain" && launch+="$pid "
+    if grep -qsxz "ROS_DOMAIN_ID=$domain" "/proc/$pid/environ"; then launch+="$pid "; fi
 done
+# shellcheck disable=SC2086  # counts the words
 if [ "$(echo $launch | wc -w)" != 1 ]; then
     echo "link.sh: expected one fake-lab launch (sim.sh) on domain $domain, found: ${launch:-none}" >&2
     exit 1
@@ -36,11 +37,13 @@ fi
 # The launch's own children whose arguments name this robot's namespace: its base simulator, follower and arm nodes.
 pids=""
 for pid in $(pgrep -P "${launch% }"); do  # without the trailing space, which pgrep refuses
-    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "$namespace" && pids+="$pid "
+    if grep -qsz -- "$namespace" "/proc/$pid/cmdline"; then pids+="$pid "; fi
 done
 if [ -z "$pids" ]; then
     echo "link.sh: no simulator process of $1 ($namespace) under the fake-lab launch" >&2
     exit 1
 fi
+# shellcheck disable=SC2086  # one process per word
 kill -s "$signal" $pids
+# shellcheck disable=SC2086  # counts the words
 echo "link.sh: $1 $2 ($(echo $pids | wc -w) processes)"

@@ -11,6 +11,8 @@ Base experiment: drive test paths from where the robot stands with the onboard p
   Each run is checked against the other robots and every scene body (`obstacles` loads with it: the lab's border).
 - Clearance: during every run the robot is soft-stopped, and automation stopped, once it comes within STOP_DISTANCE
   of anything in the scene (`ctx.clearance`); the operator resumes it, drives it clear and starts again.
+- With the robot's arms not measured, Start and Start auto ask for a second press; the runs then check the arms where
+  last seen, else stowed.
 - A way back to the start that is not clear stops automation; the collisions panel shows what it comes too close to.
 - Errors are measured here, the same for every controller (`tracking.py`): each new mocap pose against the path
   sent. After the follower ends, recording goes on until the robot stands still (SETTLE), for the error at the end.
@@ -36,6 +38,7 @@ import numpy as np
 import viser
 from crl_husky.follower_path import FollowerPath, wrap
 
+from ...colors import CURRENT, rgb
 from ...drive import drive_folder, folder_name
 from ...plugin_api import signals
 from ...plugin_api.concurrency import WaitTimeout
@@ -46,16 +49,17 @@ from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState,
 from ...robot_interface.mocap_state import pose_lost
 from ...shared.collisions_contract import CollisionsContract
 from ...shared.obstacles_contract import ObstaclesContract
+from ...shared.planner.planner_panel import COMMIT_CONFIRM_SECONDS
 from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
-from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section,
-                         values, warning)
+from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, chip_line, hover, section, values,
+                         warning)
 from ...ui.trace_plot import TracePlot
-from ...world.clearance import STOP_DISTANCE, Clearance, ClearanceRefused
+from ...world.clearance import ALL_ARMS, STOP_DISTANCE, Clearance, ClearanceRefused
 from ...world.checks import STALE_AFTER
 from ...world.collision_hit import CollisionHit
-from ...world.stand_ins import unknown_robots
+from ...world.stand_ins import unknown_parts, unknown_robots
 from scaffolding_assembly_core.ids import robot_id
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, PathCollisionCheck, Sampler, StandardSet
@@ -104,6 +108,8 @@ RETURN_CLEARANCE = 0.2
 SETTLE_POSITION, SETTLE_YAW, SETTLE_FOR, SETTLE_TIMEOUT = 0.01, math.radians(1.0), 0.5, 3.0
 #: The outcome of a run the platform's e-stop interrupted: kept on disk, left out of the analysis, automation pauses.
 E_STOPPED = "e-stopped"
+#: The follower chip's colour per state; idle is gray.
+FOLLOWER_COLORS = {"following": BUSY, "done": OK, "aborted": FAIL}
 #: Phases of a run, recorded with each sample.
 SENT, FOLLOWING, SETTLING = 0, 1, 2
 #: The preview moves with the robot once it is this far from where it was drawn.
@@ -148,6 +154,10 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._seed = random.randrange(2 ** 31)
         self._rng = random.Random(self._seed)
         self._path_check = PathCollisionCheck()
+        #: Start's and Start auto's second press while the robot's arms are not measured: button -> ROS time it waits
+        #: until. Once given, the run(s) check those arms where last seen, else stowed.
+        self._confirm: dict[str, float] = {}
+        self._unknown_arms = False
         #: The run's error measurement, its latest sample and phase, and the time of the mocap fix measured last.
         self._tracker: Tracker | None = None
         self._sample: Sample | None = None
@@ -173,12 +183,13 @@ class BaseExperimentPlugin(HuskyPlugin):
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             if not serials:
-                self._status.content = block(chip("no robots configured", NONE))
+                self._status.content = block(chip("no robots configured", NONE,
+                                                  "The monitor's robots parameter names none: nothing to drive."))
                 return
             self.serial = serials[0]
             self._robot = gui.add_dropdown("Robot", options=serials, initial_value=self.serial)
 
-            gui.add_html(section("path", SECTION_TOOL))
+            gui.add_html(section("path", SECTION_CTRL))
             self._template = gui.add_dropdown("Template", options=list(TEMPLATES), initial_value="Straight")
             self._mode = gui.add_dropdown("Mode", options=["Geometric", "Timed"], initial_value="Geometric",
                                           hint="Geometric: the follower picks the speed, up to the limits. "
@@ -192,29 +203,24 @@ class BaseExperimentPlugin(HuskyPlugin):
             run = gui.add_button_group("Run", ["Start", "Stop"],
                                        hint="Start: send the preview to the follower. Stop: stop the run(s)")
             self._recording = gui.add_checkbox("Record", initial_value=True,
-                                               hint=f"Save each run, with a plot, to "
-                                                    f"{self._recordings}")
+                                               hint="Save each run, with a plot, to the Drive under <experiment>.")
             auto = gui.add_button_group("Auto", ["Start auto"],
                                         hint=f"Run experiments from where the robot stands at {SPEED[0]} m/s and "
                                              f"{SPEED[1]:.0f}°/s, each checked to keep {PATH_CLEARANCE:.2f} m from "
                                              f"everything. Stop ends them")
             self._auto_paths = gui.add_dropdown(
                 "Automation", options=[STANDARD, RANDOM, TWIST_GRID], initial_value=STANDARD,
-                hint="Controller: standard paths: the same 10 paths in every scenario, the least attempted first, so "
-                     "controllers compare path by path; resumes from this experiment's runs with the same setup. "
-                     "Controller: random paths: any path of the path grid, for more coverage. "
-                     "Robot: constant commands: no controller; one speed and turn rate per run, open loop, every "
-                     "cell of the command grid in turn (resumes too); shows how the robot's response changes with them")
+                hint="Standard: the same 10 paths, least tried first (resumes). Random: any grid path. Constant "
+                     "commands: open loop, every grid cell (resumes).")
             self._auto_runs = gui.add_number("Auto runs", AUTO_RUNS[STANDARD], min=0, step=1,
-                                             hint="Standard paths and constant commands: runs in all for this "
-                                                  "experiment and setup, so Start resumes; random paths: runs per "
-                                                  "Start. 0: until Stop. Choosing an Automation sets one round")
+                                             hint="Runs in total (standard, constant: Start resumes) or per Start "
+                                                  "(random). 0: until Stop.")
             self._return_always = gui.add_checkbox(
                 "Return every run", initial_value=False,
                 hint="Drive back to the series' start pose before every automated run; off: only when no clear "
                      "path is found where the robot stands")
             # * Progress of the automated series (runs done of runs asked for), else of the current run.
-            self._progress = gui.add_progress_bar(0.0, color="blue")
+            self._progress = gui.add_progress_bar(0.0, color=rgb(CURRENT))
             self._experiment = gui.add_text("Experiment", initial_value="default",
                                             hint="Name of this data collection: runs are saved under it")
             # ! Template numbers BELOW the buttons; the ones the template does not use are disabled.
@@ -317,6 +323,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         if problem:
             self._outcome = f"not started: {problem}"
             return
+        if self._asks_second_press(ctx, "Start"):
+            return
         self._alert, self._auto_note, self._auto_alert, self._return_hit = "", "", "", None
         self._task = ctx.spawn(f"base experiment {self.serial}",
                                self._leased(ctx, self.serial, self._run(ctx, self._preview)))
@@ -330,7 +338,9 @@ class BaseExperimentPlugin(HuskyPlugin):
         if problem:
             self._auto_note = f"auto not started: {problem}"
             return
-        self._alert = ""
+        if self._asks_second_press(ctx, "Start auto"):
+            return
+        self._alert, self._auto_alert = "", ""
         self._task = ctx.spawn(f"base experiment auto {self.serial}", self._leased(
             ctx, self.serial, self._auto(ctx, self.serial, int(self._auto_runs.value), self._auto_paths.value)))
 
@@ -344,6 +354,21 @@ class BaseExperimentPlugin(HuskyPlugin):
             return f"{self.serial} is leased by {lease.holder}"
         problem = base.follow_problem()
         return f"{self.serial}: {problem}" if problem else ""
+
+    def _asks_second_press(self, ctx: PluginContext, button: str) -> bool:
+        """Whether the press only asked: with the robot's arms not measured, the first press says to press it again.
+
+        ! Call it last before starting, after every other refusal, so the second press is never asked for in vain.
+        """
+        robot = ctx.scene.snapshot.robots.get(robot_id(self.serial))
+        unknown = robot is not None and bool(robot.unmeasured)
+        if unknown and ctx.now() > self._confirm.pop(button, -math.inf):
+            self._confirm[button] = ctx.now() + COMMIT_CONFIRM_SECONDS
+            self._auto_alert = (f"Press {button} again within {COMMIT_CONFIRM_SECONDS:g} s to drive with "
+                                f"{unknown_parts(robot)} not measured: checked where last seen, else stowed")
+            return True
+        self._unknown_arms = unknown
+        return False
 
     # --- --- --- --- --- RUNS (tasks) --- --- --- --- ---
 
@@ -400,7 +425,8 @@ class BaseExperimentPlugin(HuskyPlugin):
                             signals.follower_position_error(robot), signals.follower_yaw_error(robot),
                             signals.follower_command(robot), signals.follower_progress(robot),
                             *_message_signals(robot, follower=True)) as rec, \
-                    ctx.clearance([plan.serial], STOP_DISTANCE, unknown_robots=self._others(ctx, plan)) as clearance:
+                    ctx.clearance([plan.serial], STOP_DISTANCE, unknown_arms=ALL_ARMS if self._unknown_arms else (),
+                                  unknown_robots=self._others(ctx, plan)) as clearance:
                 self._record = rec
                 path_id = experiment["path_id"] = base.send_path(*plan.poses.T, plan.t, *plan.speed_caps)
                 sent_at = self._sent_at = ctx.now()
@@ -474,7 +500,8 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._sent_at = ctx.now()
             with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(), signals.follower_progress(robot),
                             *_message_signals(robot, follower=False)) as rec, \
-                    ctx.clearance([plan.serial], STOP_DISTANCE, unknown_robots=self._others(ctx, plan)) as clearance:
+                    ctx.clearance([plan.serial], STOP_DISTANCE, unknown_arms=ALL_ARMS if self._unknown_arms else (),
+                                  unknown_robots=self._others(ctx, plan)) as clearance:
                 self._record = rec
                 self._phase = FOLLOWING
                 step_at = ctx.now() + TWIST_LEAD
@@ -793,25 +820,26 @@ class BaseExperimentPlugin(HuskyPlugin):
     def _status_html(self, ctx: PluginContext) -> str:
         """Chips on one line: robot, mocap, follower, velocity controller, run."""
         base = ctx.world.robots[self.serial].base
-        chips = chip(escape(self.serial), SECTION_CTRL)
+        chips = chip(escape(self.serial), SECTION_CTRL, "The robot the experiment drives.")
         lost = pose_lost(base.mocap_id, base.state, ctx.now())
-        chips += chip("not tracked", FAIL, lost) if lost else chip("tracked", OK)
+        chips += (chip("not tracked", FAIL, lost) if lost
+                  else chip("tracked", OK, "Mocap tracks the base; a run needs it."))
         follower = self._follower(ctx)
         if follower is None:
             chips += chip("no follower", FAIL, "start crl_husky pure_pursuit (or pure_pursuit_sim.launch.py)")
         else:
-            chips += chip(f"follower {follower.state}", BUSY if follower.state == "following" else OK,
-                          follower.reason)
+            chips += chip(f"follower {follower.state}", FOLLOWER_COLORS.get(follower.state, NONE), follower.reason)
         if not base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
             chips += chip("velocity controller off", BUSY, "the base will not move (fine in the simulator)")
         if self.running:
-            chips += chip("running", BUSY)
+            chips += chip("running", BUSY, "A run drives the base; Stop ends it.")
         elif self._outcome:
-            failed = self._outcome.startswith(("aborted", "timed out", "not started", "not driven", "soft stopped",
-                                               E_STOPPED))
+            failed = self._outcome.startswith(("aborted", "timed out", "not started", "not driven", "not sent",
+                                               "robot not changed", "soft stopped", E_STOPPED))
             # * Short on the chip ("not started" without its reason), the whole outcome on hover.
             label = "not started" if self._outcome.startswith("not started") else self._outcome.split(" → ")[0][:40]
-            chips += chip(escape(label), FAIL if failed else OK, self._outcome)
+            color = FAIL if failed else OK if self._outcome.startswith("done") else NONE
+            chips += chip(escape(label), color, hover(self._outcome))
         return chip_line(chips)
 
     def _details_html(self, ctx: PluginContext) -> str:

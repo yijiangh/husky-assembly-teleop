@@ -155,9 +155,8 @@ def add_follower_settings(gui: viser.GuiApi) -> tuple:
                            hint="How far the true turning centre may be from the follower model's, either way; the "
                                 "path is checked for all of them"),
             gui.add_dropdown("Follower model", options=[ROBOTS_MODEL] + follower_models(), initial_value=ROBOTS_MODEL,
-                             hint="The robot model the onboard follower runs with (its model:=), from crl_husky "
-                                  "config/base_models; robot's: its base_model in crl-husky's model.yaml. The path is "
-                                  "checked as that follower drives it"))
+                             hint="Follower model the path is checked with. robot's = its base_model in model.yaml; "
+                                  "the others come from crl_husky config/base_models."))
 
 
 def follower_model(widget_value: str) -> str:

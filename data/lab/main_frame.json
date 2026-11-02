@@ -1,0 +1,21 @@
+{
+  "format": "husky_lab_frame",
+  "frame": "the lab frame: x, y on the floor plane, z up from it, metres; first set by the origin mark and Motive x of 20261027_154338_probe_points.json. Marks and anchors: as measured in 20261029_150102_mocap_floor_calibration.json (marks 3 hits each, anchors one reading of the relay's markers), put in the lab frame by its marks-only fit to the marks stored before, then shifted 0.9 mm so the origin mark is (0, 0) again. A7 (on the floor in the truss corner, below BFL), A8 and A9 (on the floor below the right tripod, BMR) are not declared in Motive.",
+  "marks": {
+    "origin": [0.0, 0.0],
+    "mark1": [1.56, -3.5089],
+    "mark2": [-0.8003, -1.8415],
+    "mark3": [2.7391, 0.2478]
+  },
+  "anchors": {
+    "A1": [-0.34, 2.0514, 1.1465],
+    "A2": [-0.3787, 2.6146, 1.1836],
+    "A3": [2.1093, 2.0097, 1.1471],
+    "A4": [2.1001, 2.5995, 1.1654],
+    "A5": [3.4397, -1.6498, 0.0122],
+    "A6": [3.5099, -1.9812, 0.0129],
+    "A7": [3.7744, -4.9023, 0.0205],
+    "A8": [-3.1469, -1.7335, 0.0014],
+    "A9": [-3.0593, -2.0469, 0.0005]
+  }
+}

@@ -24,10 +24,15 @@ What plugins share with each other: contracts, data types, base classes and help
                               (`ExecRequest`, `ExecResult`, `MovementExecContract`), and a step's parts
   obstacles_contract.py       what the obstacles plugin offers: the lab as in the scene (`ObstaclesContract`)
   process_contract.py         what the process plugin offers: its selected movement (`Selection`, `ProcessContract`)
+  assembly_tab/               the side panel's Assembly tab that process, assembly_steps, movement_exec and
+                              assembly_run share: its bands, button icons and plot windows
   assembly_planning/          the assembly's planning: the process as steps, routines, planning scenes, IK and
                               collision checks on a mirror pool, the tamp route
+  bars/                       a process bar measured by mocap: marker layouts, Motive asset ids, the fit, its
+                              deviation from the design and the servo's correction
   execution/                  running a planned movement on the robots: timing, sending, tools, the operator's
                               prompt, whether anything moves, and when a plan goes stale
+  guide/                      a guided procedure: steps with checks, one procedure at a time, the panel, checklists
   planner/                    base classes and helpers for the planner plugins
   process_scene/              the process scene at a movement as live scene bodies, and the colours of bodies
   recordings/                 experiment runs on the Drive: run folders, descriptions, recordings read by label

@@ -13,9 +13,9 @@ from planning_fixtures import purged_process
 from husky_assembly_teleop.experiments.as_built.build import build_page
 from husky_assembly_teleop.experiments.as_built.collect import collect_assembly, options_of, timeline
 from husky_assembly_teleop.experiments.as_built.page import THREE_CORE, pack_link_meshes
+from husky_assembly_teleop.shared.bars.layouts import bar_layouts, fake_sensed_markers, fit_bar
+from husky_assembly_teleop.shared.bars.pose import pose_deviation
 from husky_assembly_teleop.shared.runs.as_built import append_record, as_built_path, build_record
-from husky_assembly_teleop.world.bar_pose import pose_deviation
-from husky_assembly_teleop.world.marker_layouts import bar_layouts, fake_sensed_markers, fit_bar
 from scaffolding_assembly_core.geometry import Pose
 
 BAR, DAY = "bars/B20", "20261030"

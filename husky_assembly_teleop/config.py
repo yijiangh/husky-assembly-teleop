@@ -41,7 +41,7 @@ _TOOL_ALIASES: dict[str, str | None] = {"robotiq_2F_85": "robotiq", "none": None
 _ROBOT_URDF_FOLDER = tempfile.TemporaryDirectory(prefix="husky_robot_urdf_")
 ROBOT_URDF_DIRECTORY = Path(_ROBOT_URDF_FOLDER.name)
 
-#: Plugins loaded before the requested ones; `-p no_default_plugins:=true` skips them.
+#: Plugins loaded before the requested ones; `no_default_plugins:=true` skips them.
 DEFAULT_PLUGINS: tuple[str, ...] = ("health", "console")
 
 
@@ -183,8 +183,10 @@ class MonitorConfig:
         shutdown_grace: Seconds each plugin's cancelled tasks get to clean up at shutdown.
         lab: The lab file the `obstacles` plugin loads: a name under `data_directory/lab/`, or a .json path;
             empty for its default.
-        ghost_timeout: Seconds a plugin's ghost robots stay shown after the last input in it; 0 (the default)
-            keeps them until another plugin's ghosts show. Ghosts appear only after an input in their plugin.
+        ghost_timeout: Seconds a plugin's ghost robots stay shown after the last input in it; 0 keeps them until
+            another plugin's ghosts show. Ghosts appear only after an input in their plugin. A layout file's
+            `ghost_timeout` replaces it.
+        layout: A person's layout file (`ui/layout.py`); None for `default_layout_path()`.
     """
 
     robots: tuple[RobotConfig, ...]
@@ -201,7 +203,8 @@ class MonitorConfig:
     late_tick_warn_period: float = 5.0
     shutdown_grace: float = 2.0
     lab: str = ""
-    ghost_timeout: float = 0.0
+    ghost_timeout: float = 20.0
+    layout: Path | None = None
 
 
 # --- --- --- --- --- WHAT EACH ROBOT IS --- --- --- --- ---
@@ -209,7 +212,7 @@ class MonitorConfig:
 #   config/robots/<serial>/model.yaml), and so do the parked base pose and arm joints (`get_park`, park.yaml); the
 #   simulators start from the same. The arms and their namespaces are here. Each arm of the URDF is checked against
 #   its UR calibration in crl-husky at startup (`_apply_ur_calibrations`), its stock UR base frames by test
-#   (doc/ur_frames.md).
+#   (doc/lab/ur_frames.md).
 # ? TODO consolidate a robot's config further: it is spread over crl-husky's robot.yaml, env/setup.bash,
 #   mocap_config.json, model.yaml and this table.
 #: Where crl-husky's model paths start, below the data directory.
@@ -222,6 +225,9 @@ _DUAL_ARM = (
     ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e", label="Left", end_effector_namespace="left_gripper"),
     ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e", label="Right", end_effector_namespace="right_gripper"),
 )
+
+#: Each arm's tool namespace by the arm's ROS namespace, e.g. "left_ur5e" -> "left_gripper".
+TOOL_NAMESPACES = {arm.ros_namespace: arm.end_effector_namespace for arm in (*_SINGLE_ARM, *_DUAL_ARM)}
 
 _ROBOTS_BY_SERIAL = {
     "0804": dict(arms=_SINGLE_ARM),
@@ -290,10 +296,10 @@ def robot_config_from_serial(token: str, data_directory: Path,
     park = park["base"]
     if tools is not None:
         if len(tools) != len(arms):
-            example = ",".join(tool or "none" for tool in (*tools, *(None,) * len(arms))[:len(arms)])
+            example = ":".join(tool or "none" for tool in (*tools, *(None,) * len(arms))[:len(arms)])
             raise ValueError(f"robot {number!r} has {len(arms)} arm(s) ({', '.join(a.name for a in arms)}), "
                              f"but {len(tools)} tool(s) were given; list one tool per arm in that order, "
-                             f"\"none\" for a bare arm, e.g. -p tools:=\"['{number}:{example}']\"")
+                             f"\"none\" for a bare arm, e.g. tools:=\"{number}:{example}\"")
         arms = tuple(replace(arm, end_effector=tool) for arm, tool in zip(arms, tools))
     urdf = absolute_mesh_urdf(urdf_file, ROBOT_URDF_DIRECTORY / f"a200_{number}.urdf")
     checks = _apply_ur_calibrations(urdf, number, arms)
@@ -360,15 +366,15 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     - `recording_format`: "npz" (the default) or "json".
     - Robots may be named instead of numbered, in `robots` and `tools` alike. `robots:="[]"` runs without robots.
     - `viser_port` (8080) and `phone_port` (default the next port): a second monitor needs `viser_port:=8095`.
+    - `layout`: a person's layout file; empty for ~/.config/husky_monitor/layout.json (`ui/layout.py`).
 
     Args:
         node: The monitor node, whose parameters are read.
 
     Example:
-        ros2 run husky_assembly_teleop husky_monitor --ros-args \
-            -p robots:="['0804','cindy']" -p plugins:="['process']" \
-            -p tools:="['0804:scaffolding_v3', '0806:scaffolding_v3,none']" \
-            -p process_directory:=data_design_study/260814_RobArch_support_ik
+        ros2 launch husky_assembly_teleop monitor.launch.py robots:="0804 cindy" plugins:="process" \
+            tools:="0804:scaffolding_v3 0806:scaffolding_v3:none" \
+            process_directory:=data_design_study/260814_RobArch_support_ik
     """
     node.declare_parameter("robots", [""])
     node.declare_parameter("tools", [""])
@@ -381,8 +387,9 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("ghost_timeout", MonitorConfig.ghost_timeout)
     node.declare_parameter("lab", "")
     node.declare_parameter("viser_port", MonitorConfig.viser_port)
-    # * 0: the port after viser_port, so a second monitor needs only -p viser_port:=8095.
+    # * 0: the port after viser_port, so a second monitor needs only viser_port:=8095.
     node.declare_parameter("phone_port", 0)
+    node.declare_parameter("layout", "")
 
     def string_list(name: str) -> tuple[str, ...]:
         """Read a string-array parameter, dropping the empty-string default.
@@ -418,6 +425,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         lab=node.get_parameter("lab").get_parameter_value().string_value.strip(),
         viser_port=viser_port,
         phone_port=node.get_parameter("phone_port").value or viser_port + 1,
+        layout=Path(layout_text).expanduser() if (layout_text := node.get_parameter("layout").value.strip()) else None,
     )
 
 
@@ -429,10 +437,10 @@ def _enabled_plugins(requested: tuple[str, ...], use_default_plugins: bool) -> t
 
 
 def _parse_tools(entries: tuple[str, ...]) -> dict[str, tuple[EndEffectorKind | None, ...]]:
-    """Read the `tools` parameter: "<serial>:<tool>[,<tool>...]" per robot.
+    """Read the `tools` parameter: "<serial>:<tool>[:<tool>...]" per robot.
 
     Args:
-        entries: The parameter's strings, e.g. ("0806:scaffolding_v3,none",).
+        entries: The parameter's strings, e.g. ("0806:scaffolding_v3:none",).
 
     Returns:
         dict[str, tuple[EndEffectorKind | None, ...]]: The tools per arm by four-digit serial; None for a bare arm.
@@ -445,8 +453,8 @@ def _parse_tools(entries: tuple[str, ...]) -> dict[str, tuple[EndEffectorKind | 
         serial, _, names = entry.partition(":")
         number = _serial_digits(serial)
         if number is None or not names:
-            raise ValueError(f"tools entry {entry!r} should look like '0806:scaffolding_v3,scaffolding_v1'")
-        tools[number] = tuple(_tool_kind(name.strip(), f"tools entry {entry!r}") for name in names.split(","))
+            raise ValueError(f"tools entry {entry!r} should look like '0806:scaffolding_v3:scaffolding_v1'")
+        tools[number] = tuple(_tool_kind(name.strip(), f"tools entry {entry!r}") for name in names.split(":"))
     return tools
 
 

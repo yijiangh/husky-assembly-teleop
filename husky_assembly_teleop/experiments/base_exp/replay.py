@@ -1,10 +1,11 @@
 """
 Replay recorded commands through a motion model and compare with where mocap saw the robot.
 
-A model is the simulator's (`crl_husky.base_model.BaseModel`) plus a delay from command to motion (`Model`). Its
-quality is how far it predicts wrong `horizon` seconds after starting at a measured pose, driven by the run's own
-commands (`errors`); 1 s is about how long pure pursuit takes to correct (0.2 m lookahead at 0.2 m/s). A replay of
-a whole run from its start (`free_run`) drifts, so it is for plots only.
+A model is the simulator's (`crl_husky.base_model.BaseModel`) plus a delay from command to motion (`Model`). With
+platform limits, its commands first pass them every platform cycle (`acting`), as on the robot. Its quality is how
+far it predicts wrong `horizon` seconds after starting at a measured pose, driven by the run's own commands
+(`errors`); 1 s is about how long pure pursuit takes to correct (0.2 m lookahead at 0.2 m/s). A replay of a whole run
+from its start (`free_run`) drifts, so it is for plots only.
 
 Poses are every mocap sample at its capture time (`mocap.*`); runs recorded before that have the tick's pose at its
 capture time (`times`), or only the tick's time, which adds the latencies to the delay. Commands are every follower
@@ -18,7 +19,7 @@ import math
 from dataclasses import dataclass, field, replace
 
 import numpy as np
-from crl_husky.base_model import BaseModel
+from crl_husky.base_model import LIMIT_KEYS, PLATFORM_CYCLE, BaseModel
 
 from ...plugins.base_exp.report import segment_types
 from ...shared.recordings.runs import Recording
@@ -35,6 +36,8 @@ EVERY = 0.2
 FOLLOWING, PHASES = 1, (1, 2)
 #: Fewer poses than this leave a run out.
 FEWEST_POSES = 5
+#: Seconds the platform's limits are followed past a run's last command, for its last ramp to end.
+RAMP_TAIL = 2.0
 
 
 @dataclass(frozen=True)
@@ -45,13 +48,15 @@ class Model:
     delay: float = 0.0
 
     @classmethod
-    def of(cls, x_icr: float, speed_efficiency: float, steering_efficiency: float, delay: float) -> Model:
-        """A model from identified values; an unknown (NaN) value is the ideal one."""
+    def of(cls, x_icr: float, speed_efficiency: float, steering_efficiency: float, delay: float,
+           platform: BaseModel | None = None) -> Model:
+        """A model from identified values and `platform`'s limits (none by default); unknown (NaN) values are ideal."""
         def known(value, ideal):
             return ideal if value is None or math.isnan(value) else float(value)
 
-        return cls(BaseModel(known(x_icr, 0.0), known(speed_efficiency, 1.0), known(steering_efficiency, 1.0)),
-                   known(delay, 0.0))
+        return cls(replace(platform or BaseModel(), x_icr=known(x_icr, 0.0),
+                           speed_efficiency=known(speed_efficiency, 1.0),
+                           steering_efficiency=known(steering_efficiency, 1.0)), known(delay, 0.0))
 
 
 #: The robot the controllers assume: no delay, gains of one, turning about the tracked point.
@@ -72,6 +77,7 @@ class Track:
         odometry_time: Stamp of each wheel odometry message, ascending; empty without it.
         odometry: (K, 2) v and ω from the wheels.
         clock: "stamps" (capture and command stamps) or "tick" (the monitor's tick time, the oldest runs).
+        platform: The base that drove it, for its limits only (`record.platform`); none for older sim runs.
     """
 
     pose_time: np.ndarray
@@ -83,6 +89,9 @@ class Track:
     odometry_time: np.ndarray
     odometry: np.ndarray
     clock: str
+    platform: BaseModel = field(default_factory=BaseModel)
+    #: Its commands through each set of limits (`acting`), once computed.
+    limited: dict = field(default_factory=dict, repr=False, compare=False)
 
 
 @dataclass
@@ -117,8 +126,8 @@ class Errors:
         return self.position[:, column], self.heading[:, column]
 
 
-def track(run: Recording) -> Track | None:
-    """A loaded recording (`load_recording`) as a Track; None if it has too few poses.
+def track(run: Recording, platform: BaseModel | None = None) -> Track | None:
+    """A loaded recording (`load_recording`) as a Track, driven by `platform`; None if it has too few poses.
 
     A mocap sample takes the phase and segment of the first tick sample after it was handled.
     """
@@ -155,14 +164,33 @@ def track(run: Recording) -> Track | None:
     else:
         odometry_time, odometry = np.empty(0), np.empty((0, 2))
     return Track(pose_time, pose, moving, kinds, command_time, command, odometry_time, odometry,
-                 "stamps" if stamped else "tick")
+                 "stamps" if stamped else "tick", platform or BaseModel())
+
+
+def acting(track: Track, base: BaseModel) -> tuple[np.ndarray, np.ndarray]:
+    """The run's commands as `base`'s limits pass them on (`BaseModel.limit`); the commands as sent if it has none.
+
+    Every PLATFORM_CYCLE from the first command until RAMP_TAIL after the last.
+    * A fixed delay and the limits commute, so the commands are limited once and delayed afterwards.
+    """
+    if not base.limited or not len(track.command):
+        return track.command_time, track.command
+    key = tuple(getattr(base, name) for name in LIMIT_KEYS)
+    if key not in track.limited:
+        times = np.arange(track.command_time[0], track.command_time[-1] + RAMP_TAIL, PLATFORM_CYCLE)
+        sent, _ = held(track.command_time, track.command, times)
+        wheels, limited = np.empty_like(sent), (0.0, 0.0)
+        for i, (v, w) in enumerate(sent):
+            limited, wheels[i] = base.limit(limited, v, w, PLATFORM_CYCLE)
+        track.limited[key] = times, wheels
+    return track.limited[key]
 
 
 def commands_at(track: Track, model: Model, times: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """The v and ω acting at `times`: the latest command sent `model.delay` before; zero before the first."""
+    """The v and ω acting at `times`: the latest sent `model.delay` before, limited by the model; zero before any."""
     if not len(track.command):
         return np.zeros(np.shape(times)), np.zeros(np.shape(times))
-    command, known = held(track.command_time, track.command, np.asarray(times) - model.delay)
+    command, known = held(*acting(track, model.base), np.asarray(times) - model.delay)
     return np.where(known, command[..., 0], 0.0), np.where(known, command[..., 1], 0.0)
 
 
