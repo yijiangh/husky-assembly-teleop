@@ -10,16 +10,16 @@ Every body of the selected movement's process scene (`Process.scene_at`) goes in
 robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.ProcessDrawing`), with the other
 bodies on request. The plugin only reads processes: it never edits one.
 
-The "Transfer workaround" box (on at start, this session only) runs Cindy's transfer as a free move with empty tools
+The "Transfer workaround" box (on at start, this session only) runs the transfer as a free move with empty tools
 to the insert start, where the operator places the bar. While it is on, the panel lists and draws each jointing action
 in that order (`steps.as_run`); `process` stays the authored process, and `Selection.index` an authored index.
 
 The "Rhino obstacles collide" box (off at start) decides whether the process's obstacles ("obstacles/<name>")
 count in every collision check; while off they are disabled scene bodies, drawn see-through by the overlay.
 
-The panel is the top of the side panel's Assembly tab (`ui/assembly_tab.py`), above the steps planned and run from
-it. It lists a window of the schedule's actions around the selected one (`action_window`); click a row to jump. The
-selected action's movements are buttons coloured by kind, the selected one ringed: click one to select it.
+The panel is the top of the side panel's Assembly tab (`shared/assembly_tab/layout.py`), above the steps planned and
+run from it. It lists a window of the schedule's actions around the selected one (`action_window`); click a row to
+jump. The selected action's movements are buttons coloured by kind, the selected one ringed: click one to select it.
 Each row shows the mark the run gives its action (`request_marks`: pending, done, done with its end assumed). After a
 Live IK or a plan, the action's later movements are drawn with the joints found, on the live base they were found at,
 and the panel turns to the target of the movement they are for (`request_carry`); the drawing only.
@@ -47,8 +47,8 @@ from ...colors import INK, rgb
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...ui.assembly_tab import ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
-from ...ui.phone import group_buttons, group_tooltips_css, one_row_css
+from ...shared.assembly_tab.layout import ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
+from ...ui.css import group_buttons, group_tooltips_css, one_row_css
 from ...ui.style import (BUSY, CURRENT, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line,
                          hover, section, swatch_chip, values)
 from ...world.model_check import model_differences
@@ -63,7 +63,6 @@ from ...shared.assembly_planning.movement import mating_drives
 from ...shared.assembly_planning.steps import as_run
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
-from ...ui.checklist import ACTION_ROWS, action_window
 from .drawing import ProcessDrawing, load_robot_models
 from .loading import load_process
 
@@ -80,7 +79,7 @@ BY_HAND_LABEL = "by hand"
 #: The movement buttons' only button before a load.
 NO_MOVEMENT = "—"
 
-#: Whether the transfer workaround is on when the monitor starts: Cindy's transfer runs as a free move with empty tools.
+#: Whether the transfer workaround is on when the monitor starts: the transfer runs as a free move with empty tools.
 TRANSFER_AS_FREE = True
 
 #: Whether the process's obstacles from Rhino count in collision checks when the monitor starts.
@@ -118,6 +117,24 @@ CONTROLLER_HINTS = {"position": "Position control: the arms follow the path exac
                     "": "No arm moves in this movement."}
 ENDS_ON_HINTS = {"target": "It ends when the arms reach the target and the tools are done.",
                  "tools": "It ends when the tools are done.", "operator": "It ends when the operator confirms."}
+
+
+#: Rows in a panel's action list: a window of the schedule, the selected action in the middle row.
+ACTION_ROWS = 7
+
+
+def action_window(current: int, count: int, rows: int = ACTION_ROWS) -> int:
+    """The first action shown in an action list: `current` in the middle row, except near either end of the schedule.
+
+    Args:
+        current: Index of the selected action in the schedule.
+        count: How many actions the schedule has.
+        rows: How many rows the list has.
+
+    Returns:
+        int: Schedule index of the top row.
+    """
+    return max(0, min(current - rows // 2, count - rows))
 
 
 @register
@@ -241,7 +258,7 @@ class ProcessPlugin(HuskyPlugin):
             load = gui.add_button("Load", hint="Load the folder; an old export is converted first (about 15 s) "
                                                "unless its <export>_process copy is up to date")
             self._transfer = gui.add_checkbox("Transfer workaround", initial_value=TRANSFER_AS_FREE,
-                                              hint="Run Cindy's transfer as a free move with empty tools to the insert "
+                                              hint="Run the transfer as a free move with empty tools to the insert "
                                                    "start; you place the bar there. Lists and draws each jointing "
                                                    "action in that order. Replan after a change.")
             self._collide = gui.add_checkbox("Rhino obstacles collide", initial_value=OBSTACLES_COLLIDE,

@@ -33,7 +33,7 @@ from ...colors import HELD, rgb
 from ...ui.ghost import GOAL_COLOR
 from ...ui.visualization import FastViserUrdf, joints_changed, load_urdf, quaternion_to_wxyz
 from ...shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH, body_color
-from ...world.bar_pose import bar_ends
+from ...shared.bars.pose import bar_ends
 
 #: Colour of a body a robot's tool holds, RGB 0-255; other bodies use `process_scene.colors.body_color`.
 ATTACHED_COLOR = rgb(HELD)

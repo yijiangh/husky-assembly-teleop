@@ -8,6 +8,7 @@ The user interface: the desktop and phone pages, the world drawn each tick, and 
 
 from __future__ import annotations
 
+import math
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from functools import cache, partial
@@ -527,11 +528,16 @@ class Visualization:
 
     @staticmethod
     def _apply_opacity(drawn: _DrawnRobot) -> None:
-        """Set every part's meshes to the robot's opacity, or without one to GUESSED_OPACITY on the parts guessed."""
+        """Set every part's meshes to the robot's opacity times GUESSED_OPACITY on the parts guessed; None if neither.
+
+        Multiplied, so a robot a plugin fades still shows which of its parts the checks only assume.
+        """
         for part, handles in drawn.parts.items():
-            guessed = GUESSED_OPACITY if part in drawn.guessed else None
+            factors = [factor for factor in (drawn.opacity, GUESSED_OPACITY if part in drawn.guessed else None)
+                       if factor is not None]
+            opacity = math.prod(factors) if factors else None
             for handle in handles:
-                handle.opacity = guessed if drawn.opacity is None else drawn.opacity
+                handle.opacity = opacity
 
     def view_for(self, plugin_name: str, hidden: bool = False, tab_path: tuple[str, ...] = (),
                  icon: viser.IconName | None = None) -> PluginView:
@@ -615,8 +621,8 @@ class Visualization:
 
         ! Only the snapshot taken this tick: the real robots and their tools must always show the newest
           measurement, never a copy a planner kept.
-        - A robot part the checks only assume (`guessed_parts`) is drawn see-through, at GUESSED_OPACITY, unless a
-          plugin fades the whole robot (`set_robot_opacity`).
+        - A robot part the checks only assume (`guessed_parts`) is drawn see-through, at GUESSED_OPACITY, times the
+          opacity a plugin fades the whole robot to (`set_robot_opacity`).
 
         Args:
             snapshot: The tick's copy of the world.
@@ -757,7 +763,7 @@ class PluginView:
         with self._folder:
             yield self._server.gui
 
-    def tab(self, label: str, icon: viser.IconName | None = None, hidden: bool = False, top: bool = False
+    def tab(self, label: str, icon: viser.IconName | None = None, hidden: bool = False
             ) -> AbstractContextManager[viser.GuiApi]:
         """Add widgets inside a further tab of this plugin, inside a tab named after it, so its owner shows.
 
@@ -765,14 +771,11 @@ class PluginView:
             label: The tab's label.
             icon: The tab's icon, free to choose (nested in the plugin's tab); read when the tab is made.
             hidden: Whether the tab goes in the minimized panel at the right edge, for what is not needed every time.
-            top: Whether the tab goes at the top level, beside Assembly and Control, instead of inside the plugin's
-                own tab: for a tab the operator drags out into a window of its own. ! Its label must be unique.
 
         Returns:
             AbstractContextManager[viser.GuiApi]: The GUI api, with the tab as parent.
         """
-        path = ((label, icon),) if top else ((self._label, self._icon), (label, icon))
-        return self._side_tab(path, hidden, 0)
+        return self._side_tab(((self._label, self._icon), (label, icon)), hidden, 0)
 
     def set_robot_opacity(self, serial: str, opacity: float | None) -> None:
         """Draw a real robot see-through at `opacity`, or as measured (None); `clear` puts back every one faded."""

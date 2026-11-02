@@ -9,8 +9,9 @@ import pytest
 from repo_paths import DATA
 
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.shared.assembly_planning.joints import (arm_joint_names, arm_side, joint_limits,
-                                                                   outside_limits, unwrap_to_nearest)
+from husky_assembly_teleop.shared.assembly_planning.joints import (arm_joint_names, arm_of_flange, arm_of_joint,
+                                                                   arm_side, joint_limits, outside_limits,
+                                                                   unwrap_to_nearest)
 
 
 def test_a_whole_turn_is_taken_off():
@@ -81,3 +82,10 @@ def test_arm_names_and_sides():
         "left_ur_arm_shoulder_pan_joint", "left_ur_arm_shoulder_lift_joint", "left_ur_arm_elbow_joint",
         "left_ur_arm_wrist_1_joint", "left_ur_arm_wrist_2_joint", "left_ur_arm_wrist_3_joint"]
     assert [arm_side(arm) for arm in ("left_ur_arm", "right_ur_arm", "ur_arm")] == ["left", "right", "arm"]
+
+
+def test_the_arm_of_a_flange_or_a_joint_by_its_name():
+    """A flange or UR joint names its arm; any other name comes back as it is."""
+    assert arm_of_flange("left_ur_arm_tool0") == "left_ur_arm" and arm_of_flange("base_link") == "base_link"
+    assert arm_of_joint("left_ur_arm_elbow_joint") == "left_ur_arm" and arm_of_joint("ur_arm_wrist_3_joint") == "ur_arm"
+    assert arm_of_joint("front_left_wheel") == "front_left_wheel"

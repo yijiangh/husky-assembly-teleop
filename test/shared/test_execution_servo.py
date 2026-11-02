@@ -23,9 +23,9 @@ from husky_assembly_teleop.shared.execution.servo import (
     insert_end_gap, per_axis_angles_deg, recommended_time, servo_kind, servo_plan, stop_after_move, tool0_errors,
     tracking_gaps, wrench_magnitudes)
 from husky_assembly_teleop.shared.runs.runs import RunSettings
-from husky_assembly_teleop.world.bar_fit import BarFit
-from husky_assembly_teleop.world.bar_pose import apply_authored_move, bar_start, pose_deviation, transform_points
-from husky_assembly_teleop.world.marker_layouts import BarLayout, Sensed, bar_layouts, fit_bar
+from husky_assembly_teleop.shared.bars.layouts import BarLayout, bar_layouts, fit_bar
+from husky_assembly_teleop.shared.bars.pose import apply_authored_move, bar_start, pose_deviation
+from husky_assembly_teleop.world.marker_match import BarFit, Sensed, transform_points
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.kinematics import link_pose
 
@@ -252,8 +252,8 @@ TOOL0 = held_plan(by_bar=False, why_tool0="'Servo by bar' is off")
 @pytest.mark.parametrize("plan, reading, engaged, status, words", [
     # 1. the load guard, after a grounded insert only, beats a converged bar
     (AFTER, reading_with(bar=bar_dict(), force={"left": 20.1, "right": 1.0}), True, FAILED, "changed by 20.1 N"),
-    (AFTER, reading_with(bar=bar_dict(), force={"left": 19.9, "right": 1.0}), True, DONE, "converged on the MoCap bar"),
-    (held_plan(), reading_with(bar=bar_dict(), force={"left": 25.0, "right": 1.0}), True, DONE, "on the MoCap bar"),
+    (AFTER, reading_with(bar=bar_dict(), force={"left": 19.9, "right": 1.0}), True, DONE, "converged on the mocap bar"),
+    (held_plan(), reading_with(bar=bar_dict(), force={"left": 25.0, "right": 1.0}), True, DONE, "on the mocap bar"),
     # 2. steering on the bar: its fit lost, converged at the tolerance, or not yet (tool0 does not count, D2)
     (held_plan(), reading_with(bar=bar_dict(usable=False, reason="fit rms 3.1 mm")), True, FAILED,
      "fit is lost (fit rms 3.1 mm)"),
@@ -308,7 +308,7 @@ def test_servo_plan_after_the_transfer():
     off = servo_plan(loaded, "B20_J", 3, RunSettings(servo_by_bar=False), layouts)
     assert not off.by_bar and off.why_tool0 == "'Servo by bar' is off"
     bare = servo_plan(loaded, "B20_J", 3, RunSettings(servo_by_bar=True), {})
-    assert not bare.by_bar and bare.why_tool0 == "bars/B20 carries no MoCap markers" and bare.layout is None
+    assert not bare.by_bar and bare.why_tool0 == "bars/B20 carries no mocap markers" and bare.layout is None
 
 
 def test_servo_plan_after_the_insert_and_the_approach():

@@ -22,8 +22,8 @@ from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, HANDOFF_P
 from ...shared.planner.planner_panel import CommitConfirm, unknown_robots_chip
 from ...shared.runs.runs import (PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
                                  RunSettings)
-from ...ui.assembly_tab import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLAN_PLOTS_X,
-                                PLAN_SETTINGS_BAND, PLOTS_HEIGHT, PLOTS_WIDTH, PLOTS_Y, SETTINGS_BAND, STEP_BAND)
+from ...shared.assembly_tab.layout import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLAN_PLOTS_X,
+                                           PLAN_SETTINGS_BAND, SETTINGS_BAND, STEP_BAND, plots_window)
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
 from .plan_plots import PlanPlots
 from .step_panel_base import SLIDER_STEP
@@ -78,7 +78,7 @@ class StepsPanel:
             # * Blue like the planners' Commit; amber while it waits for its second press (`CommitConfirm.draw`).
             commit = plugin._confirm.button = gui.add_button(
                 "Exec", color="blue", icon=EXEC_ICON,
-                hint="Run the step's parts on the robot: a motion at once; the bar mount, a Robotiq step and the "
+                hint="Run the step's parts on the robot: a motion at once; placing the bar, a Robotiq step and the "
                      f"servo's first pass after Confirm below or on the phone. {CommitConfirm.HINT}")
             # ! Keep changing text BELOW the buttons.
             self._details = gui.add_html("")
@@ -113,11 +113,8 @@ class StepsPanel:
                                                 hint="Check a found path between its waypoints, 0.01 rad apart, "
                                                      "before taking it; off, the path is taken as the search found it")
         # * The plan's plots in a window of their own, minimized to its bar until a plan arrives (`draw`).
-        self._plots_panel = ctx.view.panel()
-        with self._plots_panel.add_tab("Plan plots", viser.Icon.CHART_LINE):
+        with plots_window(ctx.view, "Plan plots", viser.Icon.CHART_LINE, PLAN_PLOTS_X) as self._plots_panel:
             self._plots = PlanPlots(ctx.view.gui)
-        self._plots_panel.float(x=PLAN_PLOTS_X, y=PLOTS_Y, width=PLOTS_WIDTH, height=PLOTS_HEIGHT)
-        self._plots_panel.minimize()
         self._check.on_click(ctx.defer("live IK", lambda: plugin.check_goal(ctx)))
         check_tool0.on_click(ctx.defer("check tool0", lambda: plugin.check_tool0(ctx)))
         plan.on_click(ctx.defer("plan", lambda: plugin._on_path(ctx, "Plan")))

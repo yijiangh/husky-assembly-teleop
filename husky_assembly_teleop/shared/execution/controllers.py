@@ -1,10 +1,9 @@
 """
 Switch a robot's arms between the joint trajectory controller and the Cartesian compliance controller, and back.
 
-- `switch_arms` asks once and waits for every arm; it reports a failure and never falls back (W:4037-4114).
+- `switch_arms` asks once and waits for every arm; it reports a failure and never falls back.
 - `leave_compliance` is the way out of every compliant part: hold, ask for joint control at once, then wait for it in a
-  task that neither a second cancel nor Stop all ends. A switch to compliance answered late is switched back
-  (W:6841-6858).
+  task that neither a second cancel nor Stop all ends. A switch to compliance answered late is switched back.
 - ! Main thread, from a plugin task.
 """
 
@@ -22,7 +21,7 @@ if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
     from ...robot_interface.arm import ArmInterface
 
-#: Seconds for every arm to answer a switch (W:4031); for the controller manager to say what runs, first (W:4034).
+#: Seconds for every arm to answer a switch; for the controller manager to say what runs, first.
 SWITCH_TIMEOUT = 5.0
 QUERY_TIMEOUT = 2.0
 #: Seconds the way back to joint control is watched before the arms are reported as maybe left compliant.
@@ -156,7 +155,7 @@ async def restore_joint_control(ctx: PluginContext, arms: Collection[ArmInterfac
                                 timeout_s: float = RESTORE_TIMEOUT) -> bool:
     """Wait until every arm runs the joint controller, asking again for each arm that doesn't and has no switch pending.
 
-    A switch to compliance answered late lands here and is switched back (W:6841-6858).
+    A switch to compliance answered late lands here and is switched back.
 
     Args:
         ctx: The plugin's context.

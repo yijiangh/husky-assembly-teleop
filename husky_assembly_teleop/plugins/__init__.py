@@ -44,7 +44,7 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`. Its tests go 
     `hidden = True` starts it in the minimized panel at the right edge, for tools not needed every session.
   - Plugins with the same `tab_path` share one tab through bands, `ctx.view.ui(band=...)`, sorted by number; the
     first to start sets its icon. The Assembly tab holds process, assembly_steps, movement_exec and assembly_run
-    (`ui/assembly_tab.py`).
+    (`shared/assembly_tab/layout.py`).
   - `ctx.view.tab(label, hidden=...)` adds a further tab, nested in a tab named after the plugin, so its owner shows.
   - `ctx.view.folder()` is a folder in the main panel, for what must always show, like health's rows.
   - ! Set `icon`: every tab a plugin owns at the top of a panel carries it (also its phone tab); shared parents like

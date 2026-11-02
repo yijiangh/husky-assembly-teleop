@@ -15,7 +15,7 @@ import viser.uplot
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 from ...shared.assembly_planning.joints import arm_side
-from ...ui.trace_plot import BLANK, COLORS, MAX_POINTS
+from ...ui.trace_plot import BLANK, COLORS, thinned
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.process.solutions import Trajectory
@@ -42,21 +42,6 @@ def joint_label(name: str) -> str:
             side = arm_side(name[:-len(joint) - 1])
             return short if side == "arm" else f"{side[0].upper()} {short}"
     return name
-
-
-def _thinned(*columns: np.ndarray) -> tuple[np.ndarray, ...]:
-    """The columns cut to at most MAX_POINTS rows, picked evenly: viser sends the whole plot on each change.
-
-    Args:
-        columns: Equally long columns, x first.
-
-    Returns:
-        tuple[np.ndarray, ...]: The same columns, at most MAX_POINTS rows each.
-    """
-    if len(columns[0]) <= MAX_POINTS:
-        return columns
-    pick = np.linspace(0, len(columns[0]) - 1, MAX_POINTS).astype(int)
-    return tuple(column[pick] for column in columns)
 
 
 def _line(index: int, label: str) -> viser.uplot.Series:
@@ -111,7 +96,7 @@ class PlanPlots:
                                      for index, name in enumerate(trajectory.joint_names)))
         if series != self._series:
             self._series = self._values.series = series
-        self._values.data = _thinned(np.asarray(path.times, dtype=float), *np.degrees(path.points).T)
+        self._values.data = thinned(np.asarray(path.times, dtype=float), *np.degrees(path.points).T)
         rows = np.asarray(trajectory.positions, dtype=float)
         steps = np.degrees(np.abs(np.diff(rows, axis=0)).max(axis=1))
-        self._steps.data = _thinned(np.arange(1, len(rows), dtype=float), steps)
+        self._steps.data = thinned(np.arange(1, len(rows), dtype=float), steps)

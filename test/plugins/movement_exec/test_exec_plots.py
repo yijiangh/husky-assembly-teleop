@@ -11,17 +11,8 @@ from plugin_fakes import FakeGui, FakePanel
 from husky_assembly_teleop.plugins.movement_exec.plots import ExecPlots
 
 
-class FakeUplot:
-    """What `gui.add_uplot` gives back: keeps the data set on it."""
-
-    def __init__(self, **fields):
-        """Keep the data and scales the plot was built with."""
-        self.data, self.scales = fields.get("data"), fields.get("scales")
-
-
 def _plots() -> tuple[ExecPlots, FakeGui, FakePanel]:
     gui = FakeGui()
-    gui.add_uplot = lambda **fields: FakeUplot(**fields)
     window = FakePanel(gui)
     return ExecPlots(gui, window), gui, window
 

@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from ...plugin_api.context import PluginContext
 from ...shared.runs.runs import DONE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, RunSettings
-from ...ui.assembly_tab import MARK_BAND, MARK_ICON, REOPEN_ICON, RUN_BAND, RUN_SETTINGS_BAND, TAB_BUTTONS_CSS
-from ...ui.phone import side_by_side_css
+from ...shared.assembly_tab.layout import (MARK_BAND, MARK_ICON, REOPEN_ICON, RUN_BAND, RUN_SETTINGS_BAND,
+                                           TAB_BUTTONS_CSS)
+from ...ui.css import side_by_side_css
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
 from .writes import AGAIN_MARK, AGAIN_NEW_RUN
 
@@ -90,7 +91,7 @@ class RunPanel:
                                                 step=1, initial_value=default.spiral_turns,
                                                 hint="Turns the spiral makes on its way out; pitch = 15 mm / turns")
             self._servo = gui.add_checkbox("Servo by bar", default.servo_by_bar,
-                                           hint="Servo a grounded bar by its MoCap fit instead of tool0 (on by "
+                                           hint="Servo a ground bar by its mocap fit instead of tool0 (on by "
                                                 "default). Other bars always servo on tool0: they must mate with "
                                                 "their joints")
         with ctx.view.ui(band=RUN_BAND) as gui:

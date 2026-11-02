@@ -10,15 +10,14 @@ from dataclasses import replace
 import numpy as np
 import pytest
 from planning_fixtures import CINDY, robot_config
-from plugin_fakes import (ArmDriver, FakeContext, ScaffoldingDriver, fake_arm, fake_node, fake_robot,
-                          fake_scaffolding, lease_to_test)
+from plugin_fakes import (ArmDriver, FakeContext, MocapDriver, ScaffoldingDriver, assert_same_pose, fake_arm,
+                          fake_node, fake_robot, fake_scaffolding, lease_to_test, with_urdf_frames)
 from robot_lab import LEFT, RIGHT
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER as COMPLIANCE
 from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER as JOINT
 from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
-from husky_assembly_teleop.robot_interface.frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.route_result import RouteResult
 from husky_assembly_teleop.shared.execution.retreat import (CHECK_ARRIVAL, CHECK_BACKTRACK, CHECK_FORCE,
@@ -26,8 +25,8 @@ from husky_assembly_teleop.shared.execution.retreat import (CHECK_ARRIVAL, CHECK
                                                             CHECK_SPREAD, CHECK_START, CHECK_TURN, plan_retreat,
                                                             retreat_checks, run_retreat)
 from husky_assembly_teleop.shared.execution.stream import (ARRIVAL, DRY_RUN, END_WAIT, FAILED, REFUSED, RETREATED,
-                                                           arm_base_in_world, line_target, measured_tool0,
-                                                           tool0_fk)
+                                                           arm_base_in_world, line_target, measured_tool0)
+from husky_assembly_teleop.world.tcp import tool0_in_base_link
 from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
 
@@ -52,7 +51,7 @@ STEPS = ["STOP", "LOOSEN M1", "zero F/T", "switch to compliance", "zero wrench",
 class Lab:
     """Cindy under joint control with her URDF frames and her two tools clamped on a bar, at BASE; leased to the test.
 
-    Mocap (rigid body MOCAP_ID) sees the base every tick while `mocap` is on. Every command sent goes into `ctx.logs`
+    Mocap (rigid body MOCAP_ID) sees the base every tick (`MocapDriver`). Every command sent goes into `ctx.logs`
     as ("event", "<arm>: <what>"), in order with the log lines; `targets` keeps each arm's Cartesian targets, holds
     left out. `on_tick` runs every tick after the drivers.
     """
@@ -66,15 +65,9 @@ class Lab:
         self.tools = {name: fake_scaffolding(node, f"/a200_0806/{name.split('_')[0]}_gripper") for name in ARMS}
         arms = [fake_arm(node, name, joints, end_effector=self.tools[name]) for name, joints in ARMS.items()]
         for arm in arms:
-            arm.urdf = self.urdf
-            arm.base_in_husky = fixed_transform(self.urdf, HUSKY_FRAME, f"{arm.config.name}_base_link")
             arm.state.wrench = np.zeros(6)
-        self.robot = lease_to_test(fake_robot(node, "a200-0806", arms))
-        self.robot.config.model = config.model
-        self.robot._husky_in_mocap_frame = fixed_transform(self.urdf, MOCAP_FRAME, HUSKY_FRAME)
-        self.robot.base.mocap_id, self.mocap = MOCAP_ID, True
-        state = self.robot.base.state
-        state.position, state.orientation = np.array(BASE.position), np.array(BASE.orientation)
+        self.robot = with_urdf_frames(lease_to_test(fake_robot(node, "a200-0806", arms)), config)
+        self.mocap = MocapDriver(self.robot, BASE, MOCAP_ID)
         self.drivers = [ArmDriver(arm, self.robot, lag=lag) for arm in arms]
         options = {"motor": ScaffoldingV3.STALLED, "screw": ScaffoldingV3.STALLED, **tool}
         self.drivers += [ScaffoldingDriver(each, **options) for each in self.tools.values()]
@@ -86,12 +79,8 @@ class Lab:
             self._spy(name, arm)
 
     def tick(self, t: float) -> None:
-        """Mocap sees the base while `mocap` is on, every arm and tool moves and reports; then the test's changes."""
-        base = self.robot.base.state
-        if self.mocap:
-            base.tracked = base.tracking_valid = True
-            base.last_update_time = base.last_fix_time = t
-            base.marker_errors.append((t, 0.0))
+        """Mocap sees the base, every arm and tool moves and reports; then the test's changes."""
+        self.mocap.tick(t)
         for driver in self.drivers:
             driver.tick(t)
         for change in self.on_tick:
@@ -142,7 +131,7 @@ class Lab:
         """The route's goals: each tool0 at the path's end in the world, by process flange id."""
         joints = dict(zip(NAMES, END))
         return {f"robots/cindy/{name}_tool0": compose(arm_base_in_world(self.robot, name),
-                                                      tool0_fk(self.urdf, name, joints)) for name in ARMS}
+                                                      tool0_in_base_link(self.urdf, name, joints)) for name in ARMS}
 
     def plan(self, split_mm: float = 5.0, traj_time: float = 5.0):
         """The retreat of PATH."""
@@ -174,13 +163,6 @@ class Lab:
         return [compose(base, Pose.from_arrays(sent.position, sent.orientation)) for sent in self.targets[name]]
 
 
-def assert_same_pose(a: Pose, b: Pose, tolerance: float = 1e-9) -> None:
-    """Positions and turns equal within `tolerance` (a quaternion and its negative are the same turn)."""
-    np.testing.assert_allclose(a.position, b.position, rtol=0.0, atol=tolerance)
-    sign = 1.0 if np.dot(a.orientation, b.orientation) >= 0.0 else -1.0
-    np.testing.assert_allclose(a.orientation, sign * np.asarray(b.orientation), rtol=0.0, atol=tolerance)
-
-
 # --- --- --- --- --- the plan --- --- --- --- ---
 
 def test_the_plan_cuts_the_break_out_from_the_start_and_shares_the_time():
@@ -195,7 +177,7 @@ def test_the_plan_cuts_the_break_out_from_the_start_and_shares_the_time():
 
     # * The cut is one row of the straight joint path, START + s DELTA: found on the left arm, it fits the right one.
     def tool0(name: str, s: float) -> Pose:
-        return tool0_fk(lab.urdf, name, dict(zip(NAMES, START + s * DELTA)))
+        return tool0_in_base_link(lab.urdf, name, dict(zip(NAMES, START + s * DELTA)))
 
     def gone(name: str, pose: Pose) -> float:
         return float(np.linalg.norm(np.subtract(pose.position, tool0(name, 0.0).position)))
@@ -209,10 +191,10 @@ def test_the_plan_cuts_the_break_out_from_the_start_and_shares_the_time():
     for name in ARMS:
         assert_same_pose(tool0(name, low), plan.ends[name], 1e-8)
     assert set(plan.goals) == set(ARMS)
-    assert plan.text == ("RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN; force sensors zeroed; COMPLIANT "
-                         f"break-out 5.0 mm ({plan.compliant_seconds:.1f} s); joint control; the rest replanned from "
-                         f"where the tools are and run at once ({plan.tail_seconds:.1f} s). Watch both tools let go "
-                         "and back off along their lines.")
+    assert plan.text == ("RETREAT: the gripper screws of left_ur_arm + right_ur_arm OPEN; force sensors zeroed; "
+                         f"COMPLIANT break-out 5.0 mm ({plan.compliant_seconds:.1f} s); joint control; the rest "
+                         f"replanned from where the tools are and run at once ({plan.tail_seconds:.1f} s). Watch "
+                         "both tools let go and back off along their lines.")
     assert json.loads(json.dumps(plan.as_record()))["compliant_mm"] == pytest.approx(5.0, abs=1e-3)
 
 
@@ -262,12 +244,12 @@ def test_the_retreat_opens_breaks_out_comes_back_replans_checks_and_runs_its_tai
     for name in ARMS:
         end = compose(arm_base_in_world(lab.robot, name), plan.ends[name])
         for k, target in enumerate(lab.world_targets(name)):
-            assert_same_pose(target, line_target(starts[name], end, plan.compliant_seconds, 0.1 * k))
+            assert_same_pose(target, line_target(starts[name], end, plan.compliant_seconds, 0.1 * k), 1e-9)
     # * The tail was planned from the live joints after the break-out, where its compliance left the tools.
     tail = lab.replans[-1]
     assert np.max(np.abs(tail[0] - START)) > 1e-3
     for name, (_start, end) in zip(ARMS, ((0, 6), (6, 12))):
-        here = tool0_fk(lab.urdf, name, dict(zip(NAMES[_start:end], tail[0][_start:end])))
+        here = tool0_in_base_link(lab.urdf, name, dict(zip(NAMES[_start:end], tail[0][_start:end])))
         assert np.linalg.norm(np.subtract(here.position, plan.ends[name].position)) < CHECK_ARRIVAL
     np.testing.assert_allclose(lab.joints(), END, atol=math.radians(0.5))
     record = json.loads(json.dumps(outcome.record))
@@ -345,7 +327,7 @@ def test_without_a_break_out_or_a_tail_those_steps_are_left_out(split_mm, steps)
         assert outcome.reason == "the break-out ran to the retreat's end: no tail"
         for name in ARMS:
             goal = lab.goals()[f"robots/cindy/{name}_tool0"]
-            assert_same_pose(lab.world_targets(name)[-1], goal)
+            assert_same_pose(lab.world_targets(name)[-1], goal, 1e-9)
 
 
 @pytest.mark.parametrize("case, why", [

@@ -24,7 +24,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import rclpy
@@ -292,11 +292,16 @@ class SimMotive(Node):
 
 def main(args: Optional[List[str]] = None) -> None:
     """Run until Ctrl-C; exit 1 in the robots' domain or on a bad configuration."""
+    spin_simulation(SimMotive, "sim_motive", args)
+
+
+def spin_simulation(make: Callable[[], Node], name: str, args: Optional[List[str]] = None) -> None:
+    """Run the node `make` builds until Ctrl-C; exit 1 if building it refuses (the robots' domain, a bad setting)."""
     rclpy.init(args=args)
     try:
-        node = SimMotive()
+        node = make()
     except (RuntimeError, ValueError) as exc:
-        rclpy.logging.get_logger("sim_motive").error(wrap(str(exc)))
+        rclpy.logging.get_logger(name).error(wrap(str(exc)))
         rclpy.shutdown()
         raise SystemExit(1)
     try:

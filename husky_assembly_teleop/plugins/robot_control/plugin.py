@@ -193,7 +193,7 @@ class RobotControlPlugin(HuskyPlugin):
         #: This tick's 3D marker poses and force-arrow segments per arm; None without the compliance controller.
         self._markers: dict[tuple[str, str], dict[str, tuple] | None] = {}
 
-        #: The robots this plugin holds the lease of while the operator uses them.
+        #: The robots this plugin has the lease of while the operator uses them.
         self._leases = TeleopLeases()
         #: Per (serial, part), the last of this plugin's commands that did nothing, and why; part is BASE or an arm.
         self._refusals: dict[tuple[str, str], Refusal] = {}
@@ -667,18 +667,7 @@ class RobotControlPlugin(HuskyPlugin):
         """
         for widgets in self._arms:
             key, arm = (widgets.serial, widgets.arm.config.name), widgets.arm
-            held = self._jog_held.get(key)
-            # Drop the press if it timed out, the robot was soft stopped or leased, or the controller no longer runs.
-            dropped = None if held is None else self._drop_reason(ctx, widgets.serial, arm.soft_stopped)
-            if dropped is None and held is not None \
-                    and not arm.controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER):
-                dropped = "jog refused", "the joint controller is not running; switch to Joint"
-            if held is not None and (now - held[2] > HOLD_TIMEOUT or dropped is not None):
-                if dropped is not None:
-                    self._refuse(ctx, key, *dropped)
-                del self._jog_held[key]
-                held = None
-            press = None if held is None else held[:2]
+            press = self._live_press(ctx, widgets, self._jog_held, now)
             jogging = self._jogging.get(key)
             if jogging is not None and jogging[:2] != press:
                 del self._jogging[key]
@@ -689,6 +678,32 @@ class RobotControlPlugin(HuskyPlugin):
             if press is not None and jogging is None and (moved is None or now - moved >= MOVING_WITHIN) \
                     and self._jog_clear(ctx, widgets):
                 self._jogging[key] = (*press, self._send_jog(ctx, widgets, *press))
+
+    def _live_press(self, ctx: PluginContext, widgets: _ArmWidgets,
+                    presses: dict[tuple[str, str], tuple[int, float, float]], now: float) -> tuple[int, float] | None:
+        """The arm's press in `presses` still on, as (index, direction); None once it timed out or was dropped.
+
+        A press is dropped, said why, when the robot is soft stopped or leased, or the joint controller no longer runs.
+
+        Args:
+            ctx: This plugin's context.
+            widgets: The arm's widgets.
+            presses: The joint or tool0 jog presses by (serial, arm name): (index, direction, arrival time).
+            now: This tick's time.
+        """
+        key, arm = (widgets.serial, widgets.arm.config.name), widgets.arm
+        held = presses.get(key)
+        if held is None:
+            return None
+        dropped = self._drop_reason(ctx, widgets.serial, arm.soft_stopped)
+        if dropped is None and not arm.controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER):
+            dropped = "jog refused", "the joint controller is not running; switch to Joint"
+        if now - held[2] > HOLD_TIMEOUT or dropped is not None:
+            if dropped is not None:
+                self._refuse(ctx, key, *dropped)
+            del presses[key]
+            return None
+        return held[:2]
 
     def _update_tool_jogs(self, ctx: PluginContext, now: float) -> None:
         """Stream one joint point per tick while a tool0 jog button is held, and hold the arm once it is released.
@@ -705,17 +720,7 @@ class RobotControlPlugin(HuskyPlugin):
         """
         for widgets in self._arms:
             key, arm = (widgets.serial, widgets.arm.config.name), widgets.arm
-            held = self._tool_jog_held.get(key)
-            dropped = None if held is None else self._drop_reason(ctx, widgets.serial, arm.soft_stopped)
-            if dropped is None and held is not None \
-                    and not arm.controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER):
-                dropped = "jog refused", "the joint controller is not running; switch to Joint"
-            if held is not None and (now - held[2] > HOLD_TIMEOUT or dropped is not None):
-                if dropped is not None:
-                    self._refuse(ctx, key, *dropped)
-                del self._tool_jog_held[key]
-                held = None
-            press = None if held is None else held[:2]
+            press = self._live_press(ctx, widgets, self._tool_jog_held, now)
             jog = self._tool_jogging.get(key)
             if jog is not None and (jog.axis, jog.sign) != press:
                 del self._tool_jogging[key]

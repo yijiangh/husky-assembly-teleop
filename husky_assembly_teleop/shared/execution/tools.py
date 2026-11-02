@@ -1,10 +1,10 @@
 """
-A movement's tool steps on the real tools: a Robotiq move, and a scaffolding tool's grasp, each watched until done.
+A movement's tool steps on the real tools: a Robotiq move watched until done, and the scaffolding tools' helpers.
 
 - Robotiq: refused while an earlier goal still runs (its late answer would end this wait early); a timeout or a cancel
   stops the fingers where they are.
 - Scaffolding tools: `stop_and_clear` before a screw motor starts (a stalled one refuses to start), a `StallGate` to
-  tell when the screws have stalled, `stop_all` on the way out. The grasp clamps a bar with them.
+  tell when the screws have stalled, `stop_all` on the way out.
 - A command the robot refuses by raising (soft stopped, or no lease: `MotionRefused`) is REFUSED.
 - ! Main thread, from a plugin task.
 """
@@ -12,8 +12,8 @@ A movement's tool steps on the real tools: a Robotiq move, and a scaffolding too
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Callable, Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Mapping
 
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.end_effectors import ScaffoldingV3
@@ -23,15 +23,14 @@ if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
     from ...robot_interface.end_effectors import RobotiqGripper
 
-#: Robotiq knuckle angles (rad) and force of the old monitor's buttons and gripper steps; seconds for its answer.
+#: Robotiq knuckle angles (rad) and force of the gripper buttons and steps; seconds for its answer.
 ROBOTIQ_OPEN = 0.426
 ROBOTIQ_CLOSE = 0.8
 ROBOTIQ_EFFORT = 0.1
 ROBOTIQ_TIMEOUT = 5.0
 #: A Robotiq move this close to its target, radians, reached it.
 REACHED_TOLERANCE = 0.02
-#: Seconds for every gripper screw to stall on the bar; for the stall to clear after a STOP.
-GRASP_TIMEOUT = 30.0
+#: Seconds for a screw's stall to clear after a STOP.
 CLEAR_TIMEOUT = 2.0
 #: A scaffolding tool status older than this, seconds, means its driver is silent.
 STATUS_MAX_AGE = 1.0
@@ -48,7 +47,7 @@ class ToolOutcome:
     """How a tool step ended.
 
     Attributes:
-        status: REACHED, STALLED (a grasp done), FELL_SHORT, TIMEOUT, REFUSED (nothing sent) or DRY_RUN.
+        status: REACHED, FELL_SHORT, TIMEOUT, REFUSED (nothing sent) or DRY_RUN.
         reason: One line saying what happened.
         seconds: From the first command to the end.
         detail: What the tools reported at the end, as JSON values.
@@ -123,7 +122,7 @@ async def robotiq_move(ctx: PluginContext, gripper: RobotiqGripper, position: fl
 # * Scaffolding tools
 
 class StallGate:
-    """Tells when every watched tool's motor has stalled, for a part that ends on the stall (W:4181-4226).
+    """Tells when every watched tool's motor has stalled, for a part that ends on the stall.
 
     - A tool counts once its motor was seen not STALLED (in a fresh status when the gate was made, or since), and
       reports STALLED now: a stall left over from before never ends a part.
@@ -211,62 +210,6 @@ def stop_all(tools: Mapping[str, ScaffoldingV3]) -> None:
     """
     for tool in tools.values():
         tool.stop()
-
-
-async def scaffolding_grasp(ctx: PluginContext, tools: Mapping[str, ScaffoldingV3], *,
-                            timeout_s: float = GRASP_TIMEOUT, dry_run: bool = False,
-                            ready: Callable[[], str] = lambda: "") -> ToolOutcome:
-    """Clamp a bar in scaffolding tools: STOP, wait for the stall to clear, tighten the gripper screws until stalled.
-
-    Args:
-        ctx: The plugin's context.
-        tools: Arm name -> its tool.
-        timeout_s: Seconds for every screw to stall.
-        dry_run: Run the checks and send nothing.
-        ready: Why the screws may not tighten now, "" if they may; asked again right before they tighten, after
-            the wait for the stall to clear (up to CLEAR_TIMEOUT).
-
-    Returns:
-        ToolOutcome: STALLED (clamped), TIMEOUT, REFUSED (a driver silent, `ready` said no, or the robot refused
-            the close: nothing tightened) or DRY_RUN.
-
-    Raises:
-        asyncio.CancelledError: When cancelled; every tool was stopped first.
-    """
-    problem = status_problem(ctx, tools)
-    if problem:
-        return ToolOutcome(REFUSED, problem)
-    if dry_run:
-        ctx.log_warn(f"DRY RUN grasp on {', '.join(tools)}: passed every check, NOT SENT")
-        return ToolOutcome(DRY_RUN, "every check passed; nothing sent (dry run)")
-    gripper = ScaffoldingV3.GRIPPER_MOTOR
-    started = ctx.now()
-    try:
-        not_cleared = await stop_and_clear(ctx, tools, gripper)
-        if not_cleared is not None:
-            return replace(not_cleared, reason=f"{not_cleared.reason}; nothing tightened")
-        # ? Asked again here, with no wait before the close: the wait above may have lasted seconds.
-        problem = ready()
-        if problem:
-            return ToolOutcome(REFUSED, f"{problem}; nothing tightened", ctx.now() - started,
-                               _motor_detail(tools, gripper))
-        try:
-            for tool in tools.values():
-                tool.close()
-        except MotionRefused as refused:
-            return ToolOutcome(REFUSED, f"{refused}; nothing tightened", ctx.now() - started,
-                               _motor_detail(tools, gripper))
-        closed = ctx.now()
-        try:
-            await ctx.wait_until(lambda: all(_reports(tool, gripper, closed, True) for tool in tools.values()),
-                                 timeout_s=timeout_s, description="every gripper screw to stall")
-        except WaitTimeout:
-            return ToolOutcome(TIMEOUT, f"not every gripper screw STALLED within {timeout_s:.0f} s: check the grip",
-                               ctx.now() - started, _motor_detail(tools, gripper))
-        return ToolOutcome(STALLED, "every gripper screw STALLED: the bar is clamped", ctx.now() - started,
-                           _motor_detail(tools, gripper))
-    finally:
-        stop_all(tools)
 
 
 def _robotiq_detail(gripper: RobotiqGripper, target: float) -> dict:

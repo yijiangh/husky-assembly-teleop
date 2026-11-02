@@ -7,6 +7,7 @@ from typing import Sequence
 
 import numpy as np
 
+from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES, load_urdf
 
 #: How far outside a limit a goal joint may sit and still count as inside, radians: rounding only.
@@ -20,6 +21,16 @@ _TURNS = (0, -1, 1, -2, 2)
 def arm_joint_names(arm: str) -> list[str]:
     """The URDF names of one arm's six joints (e.g. arm "left_ur_arm"), in the UR driver's order."""
     return [f"{arm}_{name}" for name in UR_JOINT_NAMES]
+
+
+def arm_of_flange(link: str) -> str:
+    """The arm of a flange link, e.g. "left_ur_arm_tool0" -> "left_ur_arm"; `link` itself when it is no flange."""
+    return link.removesuffix(FLANGE_SUFFIX)
+
+
+def arm_of_joint(name: str) -> str:
+    """The arm of a UR joint, e.g. "left_ur_arm_elbow_joint" -> "left_ur_arm"; `name` itself when it is no arm's."""
+    return next((name[:-len(joint) - 1] for joint in UR_JOINT_NAMES if name.endswith(f"_{joint}")), name)
 
 
 def arm_side(arm: str) -> str:

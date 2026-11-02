@@ -23,7 +23,8 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...colors import ACTION, TEAL, WHITE, rgb
-from ...ui.phone import button_group_color_css, columns_css, group_buttons
+from ...ui.css import button_group_color_css, group_buttons
+from ...ui.phone import columns_css
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, hover, note, section
 from ...world.stand_ins import unknown_parts, unknown_robots
 from scaffolding_assembly_core.ids import robot_id

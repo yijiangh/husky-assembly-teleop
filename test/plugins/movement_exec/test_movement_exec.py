@@ -27,7 +27,7 @@ from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
 from husky_assembly_teleop.shared.execution.basis import basis_of
 from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
-from husky_assembly_teleop.shared.execution.stream import arm_base_in_world, tool0_fk
+from husky_assembly_teleop.shared.execution.stream import arm_base_in_world
 from husky_assembly_teleop.shared.execution.tools import ROBOTIQ_CLOSE
 from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DEFAULT_TRAJ_TIME, DONE, DRY_RUN, FAILED,
                                                                  HANDOFF_PART, HOLD_NOT_SENT, INSERT_PART, LATER,
@@ -41,7 +41,9 @@ from husky_assembly_teleop.shared.assembly_planning.route_result import RouteRes
 from husky_assembly_teleop.shared.assembly_planning.servo_route import ServoStep
 from husky_assembly_teleop.shared.assembly_planning.steps import operator_steps
 from husky_assembly_teleop.shared.runs.runs import RunSettings
+from husky_assembly_teleop.world.tcp import tool0_in_base_link
 from scaffolding_assembly_core.geometry import Pose, compose
+from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
 
 
@@ -791,6 +793,28 @@ def test_a_robot_whose_link_dropped_while_moving_refuses_the_request():
     assert lab.free() and not lab.cindy._multi_arm.messages
 
 
+@pytest.mark.safety
+def test_a_robot_let_be_unknown_by_the_second_press_does_not_refuse_the_request():
+    """Belle's joint states stop while she moves, but Exec's second press let her be unknown: Cindy's motion runs."""
+    lab = Lab()
+    belle = lab.belle.arms["ur_arm"]
+    driver = next(driver for driver in lab.drivers if getattr(driver, "arm", None) is belle)
+
+    async def scenario():
+        with from_outside(lab.belle):
+            belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
+        for _ in range(5):
+            await lab.ctx.next_tick()
+        driver.silent_from = lab.ctx.t
+        for _ in range(8):
+            await lab.ctx.next_tick()
+        return await lab.plugin.request_execute(lab.request(unknown_robots=frozenset({robot_id("a200-0805")})))
+
+    result = run_guarded(scenario())
+    assert result.status == DONE, result.reason
+    assert lab.cindy._multi_arm.messages
+
+
 # --- --- --- --- --- a base step and the pendant's speed (review L7, L8) --- --- --- --- ---
 
 def test_a_base_step_says_how_to_drive_while_the_panels_refuse():
@@ -1112,8 +1136,9 @@ def along(lab: Lab, movement: str, step: np.ndarray, goals: bool = False) -> Exe
     route = RouteResult(MovementResult("solved", trajectory=Trajectory("robots/cindy", CINDY_NAMES,
                                                                        tuple(map(tuple, rows.tolist())))),
                         Routine.RETREAT_LINEAR if goals else Routine.INSERT, planner="fake",
-                        goals={f"robots/cindy/{arm}_tool0": compose(arm_base_in_world(lab.cindy, arm), tool0_fk(
-                            lab.cindy.config.model.urdf, arm, dict(zip(CINDY_NAMES, rows[-1]))))
+                        goals={f"robots/cindy/{arm}_tool0": compose(
+                            arm_base_in_world(lab.cindy, arm),
+                            tool0_in_base_link(lab.cindy.config.model.urdf, arm, dict(zip(CINDY_NAMES, rows[-1]))))
                             for arm in lab.cindy.arms} if goals else {})
     return lab.request(movement, route=route)
 
@@ -1282,7 +1307,7 @@ def test_the_insert_settings_are_read_once_and_reach_its_plan():
 @pytest.mark.parametrize("solved", [True, False])
 @pytest.mark.safety
 def test_b20s_retreat_opens_the_screws_replans_its_tail_and_its_ungrasp_is_done(solved):
-    """B20_R's step: no prompt; the M1 screws open, the tail is replanned and run; the retreat and its ungrasp done.
+    """B20_R's step: no prompt; the gripper screws open, the tail is replanned and run; the retreat and its ungrasp done.
 
     The replan asks for the plan's goals in 1 mm steps. A tail not planned fails the retreat (A4): no tail, the
     ungrasp not done.
@@ -1296,7 +1321,7 @@ def test_b20s_retreat_opens_the_screws_replans_its_tail_and_its_ungrasp_is_done(
     assert asked.goal_poses == request.route.goals and asked.linear_step == TAIL_STEP
     assert asked.step.movement.id == "B20_R_retreat" and asked.snapshot is not None
     assert not prompts(lab) and len(said(lab)) == 1 and said(lab)[0].startswith(
-        "cindy (a200-0806): B20_R_retreat — RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN")
+        "cindy (a200-0806): B20_R_retreat — RETREAT: the gripper screws of left_ur_arm + right_ur_arm OPEN")
     for arm in lab.tools:
         assert (ScaffoldingV3.GRIPPER_MOTOR, -1) in commands(lab, arm)
     files = [json.loads(json.dumps(file)) for file in lab.run.files()]

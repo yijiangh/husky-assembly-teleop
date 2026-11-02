@@ -90,7 +90,7 @@ class RunSettings:
         insert_split_mm: The last part of an insert run compliant, millimetres (0 to 30); a retreat's compliant part
             is as long, from its start.
         spiral: The insert's compliant part searches in a spiral.
-        servo_by_bar: Servo a grounded bar by its MoCap fit instead of tool0; on by default. Other bars always
+        servo_by_bar: Servo a ground bar by its mocap fit instead of tool0; on by default. Other bars always
             servo on tool0 (`servo_plan`).
         spiral_seconds: How long the spiral takes to reach its full radius, seconds (SPIRAL_SECONDS_RANGE).
         spiral_turns: How many turns it makes on the way (SPIRAL_TURNS_RANGE).
@@ -468,9 +468,34 @@ def read_events(folder: Path, log: Callable[[str], None] | None = None) -> list[
     return events
 
 
+def reserve_record(folder: Path, action: str, movement: str, kind: str = "movements") -> Path:
+    """Take a movement's next record file, `<kind>/<action>/<movement>.<n>.json`, n one past the highest there.
+
+    The file is made at once, empty, so no other record takes its number; `record_movement` fills it.
+
+    Args:
+        folder: The run's folder.
+        action: The action id.
+        movement: The movement id.
+        kind: A key of KINDS: "movements" or "servo".
+    """
+    where = Path(folder) / kind / action
+    where.mkdir(parents=True, exist_ok=True)
+    taken = [int(number) for number in (path.name[len(movement) + 1:-len(".json")]
+                                        for path in where.glob(f"{movement}.*.json")) if number.isdigit()]
+    number = max(taken, default=0) + 1
+    while True:
+        path = where / f"{movement}.{number}.json"
+        try:
+            path.open("x").close()
+            return path
+        except FileExistsError:
+            number += 1
+
+
 def record_movement(folder: Path, action: str, movement: str, payload: Mapping[str, Any],
-                    kind: str = "movements") -> Path:
-    """Write one record of a movement as `<kind>/<action>/<movement>.<n>.json`, n one past the highest there.
+                    kind: str = "movements", path: Path | None = None) -> Path:
+    """Write one record of a movement as `<kind>/<action>/<movement>.<n>.json`: in `path`, else the next number.
 
     Args:
         folder: The run's folder.
@@ -478,15 +503,12 @@ def record_movement(folder: Path, action: str, movement: str, payload: Mapping[s
         movement: The movement id.
         payload: JSON values.
         kind: A key of KINDS: "movements" or "servo".
+        path: The file `reserve_record` took for this record, or None.
 
     Returns:
         Path: The file written.
     """
-    where = Path(folder) / kind / action
-    where.mkdir(parents=True, exist_ok=True)
-    taken = [int(number) for number in (path.name[len(movement) + 1:-len(".json")]
-                                        for path in where.glob(f"{movement}.*.json")) if number.isdigit()]
-    path = where / f"{movement}.{max(taken, default=0) + 1}.json"
+    path = reserve_record(folder, action, movement, kind) if path is None else path
     _write(path, {"schema": SCHEMA, "kind": KINDS[kind], **payload})
     return path
 

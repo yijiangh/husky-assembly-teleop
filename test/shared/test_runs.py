@@ -18,7 +18,7 @@ from husky_assembly_teleop.shared.assembly_planning.process_steps import LoadedP
 from husky_assembly_teleop.shared.runs.runs import (ASSUMED, DONE, LIVE, PENDING, SCHEMA, RobotRecord, RunError,
                                                     RunSettings, continue_run, file_hashes, find_runs, mark_done,
                                                     new_run, read_events, read_run, record_event, record_movement,
-                                                    reopen, save_progress, with_current)
+                                                    reopen, reserve_record, save_progress, with_current)
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.process import RobotState, write
 from scaffolding_assembly_core.robot import RobotObject
@@ -213,6 +213,17 @@ def test_record_movement_numbers_its_files(process, robots):
     assert servo == folder / "servo" / "B1_J_joint" / "B1_M2_insert.1.json"
     assert json.loads(second.read_text()) == {"schema": SCHEMA, "kind": "movement", "ok": False}
     assert json.loads(servo.read_text())["kind"] == "servo"
+
+
+def test_a_reserved_record_keeps_its_number(process, robots):
+    """A record file reserved before it is written: the next record takes the number after it; it is filled later."""
+    folder = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True).folder
+    reserved = reserve_record(folder, "B1_J_joint", "B1_M2_insert", "servo")
+    after = record_movement(folder, "B1_J_joint", "B1_M2_insert", {"error": 0.2}, kind="servo")
+    assert (reserved.name, after.name) == ("B1_M2_insert.1.json", "B1_M2_insert.2.json")
+    filled = record_movement(folder, "B1_J_joint", "B1_M2_insert", {"error": 0.1}, kind="servo", path=reserved)
+    assert filled == reserved
+    assert json.loads(reserved.read_text())["error"] == 0.1
 
 
 def test_is_live_at_the_age_limits():

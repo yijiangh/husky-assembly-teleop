@@ -29,13 +29,13 @@ def opacities(viz: Visualization) -> dict[str | None, set[float | None]]:
 
 
 def test_a_faded_robot_is_all_at_its_opacity_and_comes_back_to_its_guessed_parts(viz):
-    """The arm not measured: 0.3 fades every part; None puts the arm back at GUESSED_OPACITY and the base solid."""
+    """The arm not measured: 0.3 fades every part, the arm still fainter; None puts the arm back at GUESSED_OPACITY."""
     model = robot_config_from_serial("0804", DATA).model
     robot = RobotObject(f"robots/{SERIAL}", model, Pose(), {}, unmeasured=frozenset({"ur_arm_elbow_joint"}))
     viz.draw(Scene(robots={robot.id: robot}))
     assert opacities(viz) == {None: {None}, "ur_arm": {GUESSED_OPACITY}}
     viz.set_robot_opacity(SERIAL, 0.3)
-    assert opacities(viz) == {None: {0.3}, "ur_arm": {0.3}}
+    assert opacities(viz) == {None: {0.3}, "ur_arm": {0.3 * GUESSED_OPACITY}}
     viz.set_robot_opacity(SERIAL, None)
     assert opacities(viz) == {None: {None}, "ur_arm": {GUESSED_OPACITY}}
     viz.set_robot_opacity("a200-9999", 0.3)  # unknown: ignored

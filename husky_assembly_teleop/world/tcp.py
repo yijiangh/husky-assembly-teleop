@@ -8,12 +8,14 @@ its calibration is off.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Mapping
 
 import numpy as np
 from scipy.spatial.transform import Rotation
 
 from scaffolding_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.kinematics import link_poses
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 
 from ..robot_interface.arm import STILL_AFTER, ArmInterface
@@ -32,6 +34,19 @@ def tool0_by_kinematics(kinematics: Kinematics, serial: str, arm: str) -> Pose:
     """An arm's tool0 in its base_link, by forward kinematics of this tick's joints: what `tcp_check` expects."""
     return compose(invert(kinematics.link_pose(serial, f"{arm}_base_link")),
                    kinematics.link_pose(serial, f"{arm}{FLANGE_SUFFIX}"))
+
+
+def tool0_in_base_link(urdf: Path, arm: str, joints: Mapping[str, float]) -> Pose:
+    """An arm's tool0 in its base_link by the URDF's kinematics of `joints` (missing ones 0), no live world needed.
+
+    Args:
+        urdf: The robot's URDF.
+        arm: The arm's name, e.g. "left_ur_arm".
+        joints: Joint values by URDF name.
+    """
+    base, tool0 = f"{arm}_base_link", f"{arm}{FLANGE_SUFFIX}"
+    poses = link_poses(urdf, Pose(), joints, (base, tool0))
+    return compose(invert(poses[base]), poses[tool0])
 
 
 def tcp_check(arm: ArmInterface, expected: Pose, now: float) -> Check | None:

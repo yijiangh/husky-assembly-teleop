@@ -1,5 +1,5 @@
 """
-The insert's spiral search: the bar circles out around its straight line during the compliant part (W:4703-4822).
+The insert's spiral search: the bar circles out around its straight line during the compliant part.
 
 Both arms get the same sideways offset each tick, so the grasp is kept: the bar shifts, it does not turn. The radius
 grows with the line's progress, from 0 at the handover to SPIRAL_RADIUS at the end, where the arms hold until a stall
@@ -26,9 +26,9 @@ if TYPE_CHECKING:
     from .stream import Recorder
 
 #: The spiral's radius at the line's end, metres; keeps the target well inside the arm's 5 cm check. Its seconds and
-#: turns are run settings (`RunSettings`); 4 turns make a pitch of 3.75 mm, under the joint's ~5 mm catch (M:12947).
+#: turns are run settings (`RunSettings`); 4 turns make a pitch of 3.75 mm, under the joint's ~5 mm catch.
 SPIRAL_RADIUS = 0.015
-#: Seconds from the spiral's end back to the line's end, after the operator's Confirm (W:4718).
+#: Seconds from the spiral's end back to the line's end, after the operator's Confirm.
 SPIRAL_RETURN = 2.0
 #: The fastest a spiral may move at full radius, metres per second (the retreat checks' speed limit).
 SPIRAL_MAX_SPEED = 0.05
@@ -61,7 +61,7 @@ class Operator(Protocol):
 
 
 def lateral_basis(axis: Sequence[float]) -> tuple[np.ndarray, np.ndarray]:
-    """Two unit vectors across `axis`: u = â × z (â × x for a vertical axis), v = â × u (W:4721-4747).
+    """Two unit vectors across `axis`: u = â × z (â × x for a vertical axis), v = â × u.
 
     Raises:
         ValueError: For a zero axis.
@@ -158,7 +158,7 @@ async def run_spiral(ctx: PluginContext, robot: HuskyRobotInterface, segment: Se
 
     - A: the line over the spiral's seconds plus its offset, held at the end with no time limit. It ends on a stall;
       once the spiral is complete a warning prompt opens, polled each tick before sending: Cancel ends here, Confirm
-      goes on to B (W:4962-5051).
+      goes on to B.
     - B: from the spiral's end to the line's end over SPIRAL_RETURN, then held until a stall, or HOLD_FOR_STALL.
     - ! As after `stream`, the caller holds the arms and switches them back on every ending.
 

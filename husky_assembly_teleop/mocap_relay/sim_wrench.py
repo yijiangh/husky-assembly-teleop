@@ -20,25 +20,19 @@ import re
 from typing import Dict, List, Optional
 
 import numpy as np
-import rclpy
 from crl_husky.simulated_parts import fleet_domain_problem
 from crl_husky_msgs.msg import ScaffoldingToolStatus
 from geometry_msgs.msg import WrenchStamped
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
+from ..config import TOOL_NAMESPACES
 from .node import SIM_DISCOVERY_SEC
+from .sim_motive import spin_simulation
 
 #: A simulated arm's joint_states topic: the robot's namespace and the arm's ("ur5e", "left_ur5e", "right_ur5e").
 ARM_TOPIC = re.compile(r"^/(a200_\d{4})/((?:left_|right_)?ur5e)/joint_states$")
 #: The scaffolding tool simulator's state while a screw bit.
 STALLED = "STALLED"
-
-
-def gripper_namespace(robot: str, arm: str) -> str:
-    """The tool namespace of an arm: "left_gripper" beside "left_ur5e", "gripper" beside "ur5e"."""
-    side = arm[:-len("ur5e")]
-    return f"/{robot}/{side}gripper"
 
 
 class SimWrench(Node):
@@ -80,7 +74,7 @@ class SimWrench(Node):
             entry = {"publisher": self.create_publisher(WrenchStamped, f"/{robot}/{arm}/ft_sensor_wrench", 10),
                      "stalled": False, "frame": f"{arm}_tool0"}
             self._arms[topic] = entry
-            self.create_subscription(ScaffoldingToolStatus, f"{gripper_namespace(robot, arm)}/tool_status",
+            self.create_subscription(ScaffoldingToolStatus, f"/{robot}/{TOOL_NAMESPACES[arm]}/tool_status",
                                      lambda message, e=entry: self._on_tool(e, message), 10)
             self.get_logger().info(f"{robot}/{arm}: faking its force/torque reading, bias {self._bias.tolist()}, "
                                    f"noise {self._noise:g} N, contact {self._contact:g} N while a screw is stalled")
@@ -105,18 +99,4 @@ class SimWrench(Node):
 
 def main(args: Optional[List[str]] = None) -> None:
     """Run until Ctrl-C; exit 1 in the robots' domain or on a bad configuration."""
-    rclpy.init(args=args)
-    try:
-        node = SimWrench()
-    except (RuntimeError, ValueError) as exc:
-        rclpy.logging.get_logger("sim_wrench").error(str(exc))
-        rclpy.shutdown()
-        raise SystemExit(1)
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_simulation(SimWrench, "sim_wrench", args)

@@ -223,6 +223,9 @@ _DUAL_ARM = (
     ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e", label="Right", end_effector_namespace="right_gripper"),
 )
 
+#: Each arm's tool namespace by the arm's ROS namespace, e.g. "left_ur5e" -> "left_gripper".
+TOOL_NAMESPACES = {arm.ros_namespace: arm.end_effector_namespace for arm in (*_SINGLE_ARM, *_DUAL_ARM)}
+
 _ROBOTS_BY_SERIAL = {
     "0804": dict(arms=_SINGLE_ARM),
     "0805": dict(arms=_SINGLE_ARM),

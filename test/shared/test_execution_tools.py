@@ -1,4 +1,4 @@
-"""The tool steps on fake tools: a Robotiq move watched to its answer, a scaffolding grasp watched to its stalls.
+"""The tool steps on fake tools: a Robotiq move watched to its answer.
 
 Also the scaffolding helpers the compliant parts use: the stall gate, the STOP that clears a stall, the fake firmware.
 """
@@ -13,9 +13,8 @@ from plugin_fakes import (FakeContext, RobotiqDriver, ScaffoldingDriver, fake_no
 
 from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.shared.execution.tools import (CLEAR_TIMEOUT, DRY_RUN, FELL_SHORT, REACHED, REFUSED,
-                                                          ROBOTIQ_CLOSE, ROBOTIQ_OPEN, STALLED, STATUS_MAX_AGE,
-                                                          TIMEOUT, StallGate, robotiq_move, scaffolding_grasp,
-                                                          stop_and_clear)
+                                                          ROBOTIQ_CLOSE, ROBOTIQ_OPEN, STATUS_MAX_AGE, TIMEOUT,
+                                                          StallGate, robotiq_move, stop_and_clear)
 
 pytestmark = pytest.mark.safety
 
@@ -132,96 +131,17 @@ class Tools:
         return first
 
 
-STOP, CLOSE = (0, 0), (ScaffoldingV3.GRIPPER_MOTOR, 1)
+STOP = (0, 0)
 JOINT = ScaffoldingV3.JOINT_MOTOR
 TIGHTEN_SCREW = (JOINT, 1)
 
 
-def test_a_grasp_clears_a_stall_closes_and_stops():
-    """A stall left over: STOP, the stall clears, close, both STALLED: clamped; then STOP again."""
-    lab = Tools(left={"motor": ScaffoldingV3.STALLED}, right={"stall_after": 2.0})
-    outcome = run(lab.ctx, scaffolding_grasp(lab.ctx, lab.tools))
-    assert outcome.status == STALLED and outcome.ok
-    assert outcome.detail == {"left_ur_arm": "STALLED", "right_ur_arm": "STALLED"}
-    for arm in lab.tools:
-        assert lab.commands(arm) == [STOP, CLOSE, STOP]
-
-
-def test_a_grasp_asks_again_right_before_it_tightens():
-    """Something starts moving while the leftover stall clears: refused, nothing tightened, every tool stopped."""
-    lab = Tools(left={"motor": ScaffoldingV3.STALLED})
-    asked = []
-
-    def ready() -> str:
-        """Busy once the stall-clearing wait has taken a tick."""
-        asked.append(lab.ctx.t)
-        return "a200-0804 ur_arm is running a trajectory" if lab.ctx.t > 10.0 else ""
-
-    outcome = run(lab.ctx, scaffolding_grasp(lab.ctx, lab.tools, ready=ready))
-    assert outcome.status == REFUSED and outcome.reason == ("a200-0804 ur_arm is running a trajectory; nothing "
-                                                            "tightened")
-    assert len(asked) == 1 and asked[0] > 10.0
-    for arm in lab.tools:
-        assert lab.commands(arm) == [STOP, STOP]
-
-
-def test_a_tool_that_never_stalls_times_out_and_is_stopped():
-    """The right screw never stalls: TIMEOUT after 30 s, "check the grip", every tool stopped."""
-    lab = Tools(right={"stall_after": None})
-    outcome = run(lab.ctx, scaffolding_grasp(lab.ctx, lab.tools))
-    assert outcome.status == TIMEOUT and "check the grip" in outcome.reason and outcome.seconds >= 30.0
-    assert lab.commands("right_ur_arm") == [STOP, CLOSE, STOP]
-
-
-def test_a_stall_that_does_not_clear_tightens_nothing():
-    """A tool still STALLED after STOP (its firmware ignores it): nothing tightened, every tool stopped."""
-    lab = Tools()
-    lab.stuck("right_ur_arm", "STALLED", "IDLE")
-    outcome = run(lab.ctx, scaffolding_grasp(lab.ctx, lab.tools))
-    assert outcome.status == TIMEOUT and "nothing tightened" in outcome.reason
-    assert lab.commands("left_ur_arm") == [STOP, STOP]
-
-
-def test_a_cancelled_grasp_stops_every_tool():
-    """Cancelling while the screws tighten stops both, then raises."""
-    lab = Tools(left={"stall_after": None}, right={"stall_after": None})
-
-    async def scenario():
-        task = asyncio.ensure_future(scaffolding_grasp(lab.ctx, lab.tools))
-        while lab.ctx.t < 11.0 and not task.done():
-            await asyncio.sleep(0)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(scenario())
-    for arm in lab.tools:
-        assert lab.commands(arm) == [STOP, CLOSE, STOP]
-
-
-def test_a_soft_stopped_robot_moves_no_tool():
-    """Soft stopped (until Resume): a Robotiq move and a grasp are REFUSED, nothing moves; the screws are stopped."""
+def test_a_soft_stopped_robot_moves_no_gripper():
+    """Soft stopped (until Resume): a Robotiq move is REFUSED, nothing moves."""
     lab = Gripper()
     lab.gripper._latch.stopped = True
     outcome = run(lab.ctx, robotiq_move(lab.ctx, lab.gripper, ROBOTIQ_CLOSE))
     assert outcome.status == REFUSED and "soft stopped" in outcome.reason and lab.goals() == []
-    lab = Tools()
-    for tool in lab.tools.values():
-        tool._latch.stopped = True
-    outcome = run(lab.ctx, scaffolding_grasp(lab.ctx, lab.tools))
-    assert outcome.status == REFUSED and "soft stopped" in outcome.reason and "nothing tightened" in outcome.reason
-    for arm in lab.tools:
-        assert lab.commands(arm) == [STOP, STOP]
-
-
-def test_a_silent_driver_is_refused():
-    """A tool with no status in the last second: refused, nothing sent; a dry run checks the same and sends nothing."""
-    lab = Tools(right={"silent": True})
-    outcome = run(lab.ctx, scaffolding_grasp(lab.ctx, lab.tools))
-    assert outcome.status == REFUSED and "right_ur_arm" in outcome.reason and lab.commands("left_ur_arm") == []
-    lab = Tools()
-    assert run(lab.ctx, scaffolding_grasp(lab.ctx, lab.tools, dry_run=True)).status == DRY_RUN
-    assert lab.commands("left_ur_arm") == []
 
 
 def test_the_fake_firmware_runs_one_motor_at_a_time():

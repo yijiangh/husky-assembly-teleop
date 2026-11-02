@@ -13,14 +13,6 @@ ARM, SERIAL = "ur_arm", "a200-0804"
 JOINTS = np.radians([10.0, -100.0, 90.0, -80.0, -90.0, 30.0])
 
 
-class FakeUplot:
-    """What `gui.add_uplot` gives back: keeps the data and scales set on it."""
-
-    def __init__(self, **fields):
-        """Keep the data and scales the plot was built with."""
-        self.data, self.scales = fields.get("data"), fields.get("scales")
-
-
 def _watched(wrench) -> tuple[FakeContext, object, list[TracePlot]]:
     """A context with one arm reporting `wrench`, its F/T trace recording, and the two plots on a fake GUI."""
     ctx = FakeContext(name="robot_control")
@@ -29,7 +21,6 @@ def _watched(wrench) -> tuple[FakeContext, object, list[TracePlot]]:
     arm.state.wrench = wrench
     ctx.world.robots[SERIAL] = fake_robot(node, SERIAL, [arm])
     gui = ctx.gui
-    gui.add_uplot = lambda **fields: FakeUplot(**fields)
     signals = (force(arm), torque(arm))
     trace = ctx.trace(*signals, max_samples=FT_SAMPLES)
     plots = [TracePlot(gui, trace, signal, seconds=30.0, min_span=span) for signal, span in zip(signals, (1.0, 0.1))]
@@ -73,7 +64,6 @@ def test_the_plugin_builds_the_watch_last_in_the_arms_tab(monkeypatch):
         monkeypatch.setattr(robot_control_module, name, lambda *_args: {})
     monkeypatch.setattr(robot_control_module, "add_target_gizmo", lambda *_args: None)
     ctx, arm, _plots = _watched(None)
-    ctx.gui.add_uplot = lambda **fields: FakeUplot(**fields)
     widgets = RobotControlPlugin()._build_arm(ctx, ctx.gui, SERIAL, arm)
     assert len(widgets.ft_plots) == 2 and widgets.ft_trace is not None and widgets.ft_note is not None
     assert BLANK[0].shape == (1,)

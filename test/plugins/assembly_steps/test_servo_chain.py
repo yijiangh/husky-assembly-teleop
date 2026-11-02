@@ -2,7 +2,7 @@
 
 Spec §6 "test_servo_chain". B20_J's transfer step is planned on tamp and run with its prompts confirmed, the tools
 stalling and Cindy's base measured 10 mm off: the servo converges on tool0 and is recorded in the run; then, with
-"Servo by bar" and synthetic markers of B20 streamed from a world-frame error, it converges on the MoCap bar and
+"Servo by bar" and synthetic markers of B20 streamed from a world-frame error, it converges on the mocap bar and
 carries the correction for the insert. The run is written into a copy of the purged process: the Drive's folder is
 never written.
 """
@@ -28,6 +28,7 @@ from husky_assembly_teleop.plugins.motion_planner.plugin import MotionPlannerPlu
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.robot_interface.mocap_state import RawMarkers
+from husky_assembly_teleop.shared.assembly_planning.ik import ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.execution.servo import flange_poses, servo_plan
@@ -35,8 +36,8 @@ from husky_assembly_teleop.shared.movement_exec_contract import DONE, INSERT_PAR
 from husky_assembly_teleop.shared.process_contract import Selection
 from husky_assembly_teleop.shared.runs.runs import RunSettings, read_events
 from husky_assembly_teleop.ui.ghost import RecentUse
-from husky_assembly_teleop.world.bar_pose import transform_points
-from husky_assembly_teleop.world.marker_layouts import bar_layouts
+from husky_assembly_teleop.shared.bars.layouts import bar_layouts
+from husky_assembly_teleop.world.marker_match import transform_points
 from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.ids import robot_id
 
@@ -230,7 +231,9 @@ class Chain(RobotLab):
 
 
 @pytest.mark.slow
-@pytest.mark.timeout(600)
+@pytest.mark.skipif(ssik_unavailable() is not None, reason=ssik_unavailable() or "")
+# * Measured 18-208 s on a loaded machine (median ~55 s): twice the slowest.
+@pytest.mark.timeout(420)
 def test_the_b20_servo_chain_on_the_real_plugins(tmp_path, monkeypatch):
     """B20_J's transfer step with the real run, planner, executor and step panel: the servo on tool0, then by bar.
 
@@ -238,7 +241,7 @@ def test_the_b20_servo_chain_on_the_real_plugins(tmp_path, monkeypatch):
     Cindy's base measured 10 mm off: the servo's pass 1 is confirmed and converges on tool0, recorded as
     `servo/B20_J/B20_J_transfer.1.json` with its
     .png; the run's events hold new_run, plan, prompt, confirm, exec and servo. Then, "Servo by bar" on and B20's
-    markers streamed 3 mm / 0.1° off in the world, Exec runs the servo alone: it converges on the MoCap bar within
+    markers streamed 3 mm / 0.1° off in the world, Exec runs the servo alone: it converges on the mocap bar within
     3 passes and carries the correction for B20_J_insert. The Drive's process folder is never written.
     """
     # * The run records the commits by running git: left out, so no git command runs in the shared worktree.
@@ -297,12 +300,12 @@ def test_the_b20_servo_chain_on_the_real_plugins(tmp_path, monkeypatch):
     assert all(error["pos_norm_mm"] < 0.2 for error in after.values())
 
     bar = lab.servo_record(2)
-    assert bar["servo_feedback"] == "mocap_bar" and "converged on the MoCap bar" in bar["outcome"]["reason"]
+    assert bar["servo_feedback"] == "mocap_bar" and "converged on the mocap bar" in bar["outcome"]["reason"]
     assert 1 <= again <= len(bar["moves"]) <= 3 and bar["servoing_data"][-1]["bar"]["usable"]
     carried = lab.executor.carried
     assert carried is not None and carried.loaded is lab.run.view.process
     assert (carried.action, carried.insert, carried.serial) == ("B20_J", insert, SERIAL)
-    assert "[servo] the MoCap-bar correction is carried into the plan of B20_J_insert." in lab.ctx.lines("info")
+    assert "[servo] the mocap-bar correction is carried into the plan of B20_J_insert." in lab.ctx.lines("info")
     assert lab.steps.position == (2, 2) and lab.steps.parts()[0].kind == INSERT_PART
     # ? after the M6 merge: the insert is a motion part then. Plan it here (keep the planner's request, e.g. by
     #   wrapping `lab.planner.request_plan`) and assert its `goal_poses` equal `apply_authored_move` from the live

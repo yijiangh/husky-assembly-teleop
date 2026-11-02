@@ -4,7 +4,7 @@ The steps an operator walks through in one action: each runs one movement, with 
 - An ungrasp (a tool movement opening every grip it commands) directly before a two-arm linear retreat runs with
   that retreat.
 - With the transfer workaround the free transfer runs first, with empty tools. The operator and tool movements
-  authored before it (place, grasp) are done after its motion, in a pause at the insertion start, and the travel to
+  authored before it (place, grasp) are done after its motion, in a pause at the insert start, and the travel to
   load before them is skipped. `as_run` gives the process in that order, for display.
 
 Pure: any thread.
@@ -34,7 +34,7 @@ class OperatorStep:
         primary: The movement the step loads and runs.
         with_motion: Tool movements carried out while the primary moves (the ungrasp during the retreat).
         after_motion: Movements done after the primary's motion, in this order, in a pause before the next step
-            (with the transfer workaround: place and grasp the bar in the empty tools at the insertion start).
+            (with the transfer workaround: place and grasp the bar in the empty tools at the insert start).
         skipped: Movements not run at all, carried by this step (with the workaround: the travel to load).
     """
 

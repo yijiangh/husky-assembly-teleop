@@ -11,24 +11,23 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from planning_fixtures import CINDY, robot_config
-from plugin_fakes import (ArmDriver, FakeContext, MocapDriver, ScaffoldingDriver, fake_arm, fake_node, fake_robot,
-                          fake_scaffolding, lease_to_test)
+from plugin_fakes import (ArmDriver, FakeContext, MocapDriver, ScaffoldingDriver, assert_same_pose, fake_arm,
+                          fake_node, fake_robot, fake_scaffolding, lease_to_test, with_urdf_frames)
 from robot_lab import LEFT, RIGHT
 from scipy.spatial.transform import Rotation
 from test_execution_spiral import Operator
-from test_execution_stream import BASE, MOCAP_ID, assert_same_pose, moved, world_target
+from test_execution_stream import BASE, MOCAP_ID, moved, world_target
 
 from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER as COMPLIANCE
 from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER as JOINT
 from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
-from husky_assembly_teleop.robot_interface.frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.execution.insert import InsertPlan, plan_insert, run_insert
 from husky_assembly_teleop.shared.execution.spiral import Spiral
 from husky_assembly_teleop.shared.execution.stream import (DRY_RUN, END_WAIT, FAILED, HOLD_FOR_STALL, NO_STALL,
                                                            REFUSED, RIGID_DONE, SETTLE_CEILING, SETTLE_TOL,
-                                                           SETTLE_WINDOW, STALLED, line_target, split_seconds,
-                                                           tool0_fk)
+                                                           SETTLE_WINDOW, STALLED, line_target, split_seconds)
+from husky_assembly_teleop.world.tcp import tool0_in_base_link
 from scaffolding_assembly_core.geometry import Pose, compose
 
 pytestmark = pytest.mark.safety
@@ -59,15 +58,10 @@ class Lab:
         """Build Cindy; `left` and `right` go to the tools' firmware (`ScaffoldingDriver`), `lag` to her arms."""
         self.ctx = FakeContext(step=self.tick)
         node = fake_node(self.ctx.now, self.ctx.logs)
-        config = robot_config(CINDY)
         self.tools = {name: fake_scaffolding(node, f"/a200_0806/{name.split('_')[0]}_gripper") for name in ARMS}
         arms = [fake_arm(node, name, joints, end_effector=self.tools[name])
                 for name, joints in zip(ARMS, (LEFT, RIGHT))]
-        for arm in arms:
-            arm.urdf, arm.base_in_husky = URDF, fixed_transform(URDF, HUSKY_FRAME, f"{arm.config.name}_base_link")
-        self.robot = lease_to_test(fake_robot(node, "a200-0806", arms))
-        self.robot.config.model = config.model
-        self.robot._husky_in_mocap_frame = fixed_transform(URDF, MOCAP_FRAME, HUSKY_FRAME)
+        self.robot = with_urdf_frames(lease_to_test(fake_robot(node, "a200-0806", arms)), robot_config(CINDY))
         self.mocap = MocapDriver(self.robot, BASE, MOCAP_ID)
         self.drivers = [ArmDriver(arm, self.robot, lag=lag) for arm in arms]
         self.screws = {"left_ur_arm": ScaffoldingDriver(self.tools["left_ur_arm"], **(left or {})),
@@ -130,14 +124,15 @@ class Lab:
 def world_tool0(lab: Lab, arm: str, row: np.ndarray) -> Pose:
     """An arm's tool0 at a row of ROWS' joints, in the world, with the base at BASE."""
     base = compose(compose(BASE, lab.robot._husky_in_mocap_frame), lab.robot.arms[arm].base_in_husky)
-    return compose(base, tool0_fk(URDF, arm, dict(zip(NAMES, row))))
+    return compose(base, tool0_in_base_link(URDF, arm, dict(zip(NAMES, row))))
 
 
 def insert_length() -> float:
     """The insert's length, millimetres: the furthest an arm's tool0 travels."""
-    return 1e3 * max(float(np.linalg.norm(np.subtract(tool0_fk(URDF, arm, dict(zip(NAMES, ROWS[-1]))).position,
-                                                      tool0_fk(URDF, arm, dict(zip(NAMES, ROWS[0]))).position)))
-                     for arm in ARMS)
+    def tool0(arm: str, row: np.ndarray) -> np.ndarray:
+        return np.asarray(tool0_in_base_link(URDF, arm, dict(zip(NAMES, row))).position)
+
+    return 1e3 * max(float(np.linalg.norm(tool0(arm, ROWS[-1]) - tool0(arm, ROWS[0]))) for arm in ARMS)
 
 
 def line_end_time(lab: Lab, arm: str) -> float:
@@ -165,7 +160,7 @@ def test_the_plan_splits_5_mm_off_the_end_and_says_so():
                          f"(≤ 30 s), then STOP and back to joint control. Watch the bar enter its joint and the held "
                          f"bars stay in their jaws.")
     for arm in ARMS:
-        assert_same_pose(plan.ends[arm], tool0_fk(URDF, arm, dict(zip(NAMES, ROWS[-1]))))
+        assert_same_pose(plan.ends[arm], tool0_in_base_link(URDF, arm, dict(zip(NAMES, ROWS[-1]))))
 
 
 def test_a_spiral_too_fast_is_refused_at_plan():

@@ -16,6 +16,7 @@ from scaffolding_assembly_core.geometry import Pose
 from ...plugin_api.context import PluginContext
 from ...shared.assembly_planning.route_result import pose_error
 from ...shared.execution.servo import flange_side
+from ...ui.quaternion import quaternion_to_wxyz
 from ...ui.scene_view import add_labelled_frame
 
 #: Axes lengths, metres: the authored target, the live tool0, a plan's start and end, a waypoint along the path.
@@ -92,8 +93,8 @@ class StepDiagnosis:
             for index in range(0, len(path), every):
                 pose = path[index]
                 self._scene.add_frame(f"{base}/waypoint_{index}", position=tuple(float(v) for v in pose.position),
-                                      wxyz=_wxyz(pose), axes_length=WAYPOINT_AXES, axes_radius=WAYPOINT_AXES / 20.0,
-                                      show_axes=True)
+                                      wxyz=quaternion_to_wxyz(pose.orientation), axes_length=WAYPOINT_AXES,
+                                      axes_radius=WAYPOINT_AXES / 20.0, show_axes=True)
 
     def clear(self, what: str | None = None) -> None:
         """Remove the drawing of `what`, or every drawing."""
@@ -146,9 +147,3 @@ def path_line(movement: str, paths: Mapping[str, Sequence[Pose]], rhino_start: M
         parts.append(f"{arm}: " + ", ".join(gaps))
     count = max((len(path) for path in paths.values()), default=0)
     return f"[visual diagnosis] {movement} " + " | ".join(parts) + f"; {count} waypoints"
-
-
-def _wxyz(pose: Pose) -> tuple[float, float, float, float]:
-    """A pose's quaternion as viser wants it, (w, x, y, z)."""
-    x, y, z, w = (float(v) for v in pose.orientation)
-    return w, x, y, z

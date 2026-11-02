@@ -2,7 +2,7 @@
 The compliant Robotiq close: a support robot's gripper closes on a bar another robot holds, its arm compliant meanwhile.
 
 The arm springs around where it stands (the anchor: its measured TCP) with a zero target wrench, so the closing fingers
-pull it up to MAX_DRIFT instead of pulling on the other robot's tools (W:6637-6869).
+pull it up to MAX_DRIFT instead of pulling on the other robot's tools.
 
 - An anchor further than ANCHOR_TOL from the URDF's tool0 of the live joints means the frames are wrong: the gripper
   then closes with the arm stiff (STIFF).
@@ -22,10 +22,12 @@ from scaffolding_assembly_core.geometry import Pose
 
 from ...robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER
 from ...robot_interface.soft_stop import MotionRefused
-from .controllers import leave_compliance, switch_arms
+from .compliant_part import enter_compliance, part_outcome, started_part, stop_then_leave
+from .controllers import switch_arms
+from .force_sensors import zero_force_sensors
 from .precheck import part_problem
 from .stream import (CLOSED, DRY_RUN, FAILED, FK_TCP_TOL, REFUSED, STIFF, PartOutcome, Recorder, fk_tcp_gap,
-                     gap_record)
+                     gap_record, zero_wrench)
 from .tools import ROBOTIQ_CLOSE, ROBOTIQ_EFFORT, robotiq_move
 
 if TYPE_CHECKING:
@@ -34,13 +36,11 @@ if TYPE_CHECKING:
     from ...robot_interface.end_effectors import RobotiqGripper
     from ...robot_interface.robot import HuskyRobotInterface
 
-#: How far the measured TCP may move from the anchor, metres, before the hold ends (W:6641).
+#: How far the measured TCP may move from the anchor, metres, before the hold ends.
 MAX_DRIFT = 0.01
-#: The anchor and the URDF's tool0 of the live joints must agree this well, metres and radians (W:6645-6646).
+#: The anchor and the URDF's tool0 of the live joints must agree this well, metres and radians.
 ANCHOR_TOL = FK_TCP_TOL
-#: Seconds the F/T sensor gets to zero, before the arm goes compliant (W:6648).
-FT_SETTLE = 0.5
-#: Seconds the gripper has to answer the close (W:6652).
+#: Seconds the gripper has to answer the close.
 TIMEOUT = 30.0
 
 
@@ -48,7 +48,7 @@ def handoff_text(arm: str) -> str:
     """The handoff's Confirm question, after "<robot> (<serial>): <movement> — "."""
     return (f"CLOSE + compliant handoff on {arm}: the arm goes COMPLIANT before the close (gives way ≤ "
             f"{MAX_DRIFT * 1e3:.0f} mm); jaws {ROBOTIQ_CLOSE}, effort {ROBOTIQ_EFFORT}, ≤ {TIMEOUT:.0f} s; then joint "
-            f"control. Watch Cindy's tools are not pulled; hand on the e-stop.")
+            f"control. Watch the other robot's tools are not pulled; hand on the e-stop.")
 
 
 async def run_handoff(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, gripper: RobotiqGripper, *,
@@ -78,12 +78,11 @@ async def run_handoff(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, 
     label = f"{robot.config.serial} {arm}: handoff"
     interface = robot.arms[arm]
     record: dict = {"arm": arm, "gripper": {"target": ROBOTIQ_CLOSE, "effort": ROBOTIQ_EFFORT}}
-    started = ctx.now()
+    started, recorder = started_part(ctx, robot, recorder)
 
     def ended(status: str, reason: str) -> PartOutcome:
         """The outcome, its record completed."""
-        seconds = ctx.now() - started
-        return PartOutcome(status, reason, seconds, {"status": status, "reason": reason, "seconds": seconds, **record})
+        return part_outcome(status, reason, ctx.now() - started, record)
 
     problem = _problem(ctx, robot, arm, gripper)
     if problem:
@@ -99,14 +98,7 @@ async def run_handoff(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, 
     if not joint.ok:
         return ended(FAILED, f"{joint.reason}; nothing closed")
     # * Zeroed while the fingers are open and touch nothing; never with a bar in them (it would tare its weight).
-    before = _force(interface)
-    zeroed = interface.zero_ft_sensor()
-    await ctx.sleep(FT_SETTLE)
-    after = _force(interface)
-    record["ft_zero"] = {"sent": zeroed, "force_before_N": before, "force_after_N": after}
-    (ctx.log_info if zeroed else ctx.log_warn)(
-        f"{label}: F/T sensor {'zeroed' if zeroed else 'NOT zeroed (service not available)'}: |F| "
-        f"{_newtons(before)} before, {_newtons(after)} {FT_SETTLE:.1f} s later")
+    record["ft_zero"] = (await zero_force_sensors(ctx, [interface], label))[arm]
 
     # ! The compliant arm pulls straight to the anchor: it must be where the arm really is.
     state = interface.state
@@ -123,19 +115,12 @@ async def run_handoff(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, 
         return ended(STIFF, f"{gap}: closed with the arm stiff: {stiff.reason}")
     ctx.log_info(f"{label}: {gap}")
 
-    recorder = Recorder(robot, started) if recorder is None else recorder
     recorder.phase = "close"
     try:
         status, reason = await _close(ctx, interface, gripper, anchor, recorder, record, label)
     finally:
-        try:
-            # * A6: fingers still closing stop where they are (nothing happens once they stopped); then the arm
-            #   stiffens.
-            gripper.stop()
-        finally:
-            back = ctx.now()
-            restored = await leave_compliance(ctx, [interface], label=label)
-            record.setdefault("switch", {}).update(back_s=ctx.now() - back, back_ok=restored)
+        # * Fingers still closing stop where they are (nothing happens once they stopped); then the arm stiffens.
+        restored = await stop_then_leave(ctx, gripper.stop, [interface], label=label, record=record)
     record["gripper"].update(position=gripper.state.position, result_ok=gripper.state.last_result_ok)
     record.update(recorder.as_record())
     if status == CLOSED and not restored:
@@ -151,10 +136,9 @@ async def _close(ctx: PluginContext, arm: ArmInterface, gripper: RobotiqGripper,
     Returns:
         tuple[str, str]: CLOSED or FAILED, and why; `record` gets the switch and the largest drift.
     """
-    switched = await switch_arms(ctx, [arm], CARTESIAN_COMPLIANCE_CONTROLLER)
-    record["switch"] = {"to_s": switched.seconds, "ok": switched.ok}
-    if not switched.ok:
-        return FAILED, f"{switched.reason}; nothing closed"
+    failed = await enter_compliance(ctx, [arm], record, zero=False)
+    if failed:
+        return FAILED, f"{failed}; nothing closed"
     # ! The anchor and a zero wrench go out before the close goal: robot_control may have left a wrench.
     refused = _hold_anchor(arm, anchor)
     if refused:
@@ -218,19 +202,6 @@ def _hold_anchor(arm: ArmInterface, anchor: Pose) -> str:
     try:
         if not arm.send_cartesian_target(anchor.position, anchor.orientation):
             return f"{name} refused the anchor target (its log says why)"
-        if not arm.send_target_wrench((0.0, 0.0, 0.0)):
-            return f"{name} refused the zero target wrench (its log says why)"
     except MotionRefused as refused:
         return f"{name}: {refused}"
-    return ""
-
-
-def _force(arm: ArmInterface) -> float | None:
-    """The arm's measured |F|, newtons; None before its first F/T reading."""
-    wrench = arm.state.wrench
-    return None if wrench is None else round(float(np.linalg.norm(wrench[:3])), 2)
-
-
-def _newtons(force: float | None) -> str:
-    """A force for the log."""
-    return "unknown" if force is None else f"{force:.1f} N"
+    return zero_wrench([arm])

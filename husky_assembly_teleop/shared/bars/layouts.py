@@ -1,11 +1,9 @@
 """
-Each bar's marker layout from the process, its sensed markers from the Motive asset, and the fit of one to the other.
+Each bar's marker layout from the process, the Motive asset that streams it, and its fit to sensed markers.
 
-The old monitor's `fit_bar_from_cache` (BMF:850-915) without its marker cache.
-
-- `bar_layouts(process)`: the markers of the connector halves mounted on each bar, with the bar's length;
-  `bar_asset_id` names the Motive asset that streams them (Bxx -> 10xx).
-- `sensed_from_raw(raw, now)`: the relay's markers with the untrusted ones dropped; `fit_bar` matches them to a layout.
+- `bar_layouts(process)`: the markers of the connector halves mounted on each bar, in the bar's frame, with the bar's
+  length; `bar_asset_id` names the Motive asset that streams them (Bxx -> 10xx).
+- `fit_bar(sensed, layout)`: matches a sample (`world.marker_match.sensed_from_raw`) to a layout.
 - `fake_sensed_markers`: a made-up sample for the tests and a desk rehearsal.
 """
 
@@ -16,19 +14,19 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ..robot_interface.mocap_state import RawMarkers
-from .bar_fit import (MARKER_SIZE_RANGE_M, MATCH_TOL_M, MAX_MARKER_ERROR_M, MIN_TRIANGLE_HEIGHT_M, TRACK_GATE_M,
-                      BarFit, _design_triangles, _failed_fit, fit_near_hint, match_and_fit)
-from .bar_pose import bar_slide_roll, transform_points
-from .marker_fit import bar_markers
+from ...world.marker_match import (MARKER_SIZE_RANGE_M, MATCH_TOL_M, MAX_MARKER_ERROR_M, MIN_TRIANGLE_HEIGHT_M,
+                                   TRACK_GATE_M, BarFit, Sensed, design_triangles, failed_fit, fit_near_hint,
+                                   match_and_fit, transform_points)
+from .pose import bar_slide_roll
+from scaffolding_assembly_core.geometry import compose, invert
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.process import Process
 
-#: The lab convention for a bar's own Motive asset: bar Bxx streams as rigid body 1000 + xx (W:81-95).
+#: The lab convention for a bar's own Motive asset: bar Bxx streams as rigid body 1000 + xx.
 BAR_ASSET_BASE = 1000
 
-# What a fake marker reports as its Motive residual, and how far the fake stray marker sits from the bar (BMF:81-84).
+# What a fake marker reports as its Motive residual, and how far the fake stray marker sits from the bar.
 _FAKE_MARKER_ERROR_M = 0.0005
 _FAKE_STRAY_DISTANCE_M = 0.3
 
@@ -52,35 +50,34 @@ class BarLayout:
     warnings: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
-class Sensed:
-    """The markers of one sample that may be fitted, after the untrusted ones were dropped.
-
-    Attributes:
-        points: (N, 3) marker centres in world, metres.
-        ids: The marker id of each row (Motive's member number; 1.. for a fake).
-        residuals: (N,) Motive's fit residual of each row, metres; None when the relay did not send them.
-        age: How old the sample is, seconds (0.0 when the relay sent no capture time).
-        source: Where the markers came from: "asset" (the bar's Motive asset) or "fake".
-        dropped: Markers dropped for their residual or size.
-        occluded: Markers Motive did not see (filled in from its own pose), dropped.
-        notes: Checks that could not run, said once in a failed fit's reason.
-    """
-
-    points: np.ndarray
-    ids: tuple[int, ...]
-    residuals: np.ndarray | None
-    age: float
-    source: str
-    dropped: int = 0
-    occluded: int = 0
-    notes: tuple[str, ...] = ()
-
-
 # * ================================================================ the layouts of a process
 
+def bar_markers(process: Process) -> dict[str, tuple[tuple[str, ...], np.ndarray]]:
+    """Each bar's mocap markers, from the halves mounted on it, in the bar's frame; bars with fewer than 3 left out.
+
+    Args:
+        process: The process; `BodySpec.markers` of each half, its `mount` bar and both assembly poses.
+
+    Returns:
+        dict[str, tuple[tuple[str, ...], np.ndarray]]: Bar id -> (marker names "<half id>/<label>", positions in
+            metres, shape (m, 3)), in a fixed order.
+    """
+    names: dict[str, list[str]] = {}
+    points: dict[str, list[np.ndarray]] = {}
+    for half_id in sorted(process.bodies):
+        half = process.bodies[half_id]
+        if not half.markers or half.mount not in process.bodies:
+            continue
+        # * Mounted halves stay where they sit on their bar, so the assembly poses give the offset.
+        bar_from_half = compose(invert(process.bodies[half.mount].assembly_pose), half.assembly_pose).matrix()
+        for label in sorted(half.markers):
+            names.setdefault(half.mount, []).append(f"{half_id}/{label}")
+            points.setdefault(half.mount, []).append(bar_from_half[:3, :3] @ half.markers[label] + bar_from_half[:3, 3])
+    return {bar: (tuple(names[bar]), np.array(points[bar])) for bar in sorted(names) if len(names[bar]) >= 3}
+
+
 def bar_layouts(process: Process) -> dict[str, BarLayout]:
-    """Each bar's marker layout from the halves mounted on it (`marker_fit.bar_markers`), with the bar's length.
+    """Each bar's marker layout from the halves mounted on it (`bar_markers`), with the bar's length.
 
     Args:
         process: The process; a bar is the `mount` of halves with `markers`, its length its collision cylinder's.
@@ -92,7 +89,7 @@ def bar_layouts(process: Process) -> dict[str, BarLayout]:
     layouts = {}
     for bar, (names, points) in bar_markers(process).items():
         warnings = ()
-        if not _design_triangles(points, MIN_TRIANGLE_HEIGHT_M):  # (BMF:325-327)
+        if not design_triangles(points, MIN_TRIANGLE_HEIGHT_M):
             warnings = (f"{bar}: its markers are collinear (no three of them form a triangle "
                         f"{MIN_TRIANGLE_HEIGHT_M * 1000:.0f} mm high), so its roll cannot be measured",)
         length = float(process.bodies[bar].geometry.collision[0].height)
@@ -101,7 +98,7 @@ def bar_layouts(process: Process) -> dict[str, BarLayout]:
 
 
 def bar_asset_id(bar: str) -> int | None:
-    """The Motive streaming id of a bar's own asset by the lab convention: "bars/B20" -> 1020 (W:85-95).
+    """The Motive streaming id of a bar's own asset by the lab convention: "bars/B20" -> 1020.
 
     Args:
         bar: The bar's body id, or a bare "B20".
@@ -114,51 +111,11 @@ def bar_asset_id(bar: str) -> int | None:
     return BAR_ASSET_BASE + int(number) if number.isdigit() else None
 
 
-# * ================================================================ the sensed markers, and the fit
-
-def sensed_from_raw(raw: RawMarkers, now: float) -> Sensed:
-    """The relay's markers of a bar's asset, ready to fit: measured ones only, residual <= 3 mm, size 12-26 mm.
-
-    ! A hidden marker of an asset still streams, at Motive's guess: it is never fitted (BMF:891-894). Residuals,
-      sizes or a capture time the relay did not send leave that check out, which a failed fit's reason then says.
-
-    Args:
-        raw: The markers Motive labeled to the bar's asset in one sample.
-        now: The current ROS time, seconds, for the sample's age.
-
-    Returns:
-        Sensed: The markers kept, their ids and residuals, the counts dropped, and the sample's age.
-    """
-    measured = np.asarray(raw.measured, dtype=bool)
-    residuals = getattr(raw, "residuals", None)
-    sizes = getattr(raw, "sizes", None)
-    capture_time = getattr(raw, "capture_time", None)
-    keep = measured.copy()
-    notes = []
-    if residuals is None:
-        notes.append("marker residuals not relayed: residual check skipped")
-    else:
-        residuals = np.asarray(residuals, dtype=float)
-        keep &= residuals <= MAX_MARKER_ERROR_M  # (BMF:896)
-    if sizes is None:
-        notes.append("marker sizes not relayed: size check skipped")
-    else:
-        sizes = np.asarray(sizes, dtype=float)
-        keep &= (MARKER_SIZE_RANGE_M[0] <= sizes) & (sizes <= MARKER_SIZE_RANGE_M[1])  # (BMF:896)
-    if capture_time is None:
-        notes.append("no capture time relayed: age check skipped")
-    occluded = int(np.count_nonzero(~measured))
-    return Sensed(points=np.asarray(raw.positions, dtype=float).reshape(-1, 3)[keep],
-                  ids=tuple(int(marker_id) for marker_id in np.asarray(raw.ids)[keep]),
-                  residuals=None if residuals is None else residuals[keep],
-                  age=0.0 if capture_time is None else now - capture_time, source="asset",
-                  dropped=int(len(keep) - np.count_nonzero(keep) - occluded), occluded=occluded,  # (BMF:906)
-                  notes=tuple(notes))
-
+# * ================================================================ the fit
 
 def fit_bar(sensed: Sensed, layout: BarLayout, *, max_age: float | None = None, hint: np.ndarray | None = None,
             gate_m: float = TRACK_GATE_M, **kwargs) -> BarFit:
-    """Fit a bar's layout to one sample of sensed markers (BMF:850-915).
+    """Fit a bar's layout to one sample of sensed markers.
 
     * With `hint` (following live: the bar's last good pose, or the FK bar) the markers are first matched around that
       pose (`fit_near_hint`, ~1 ms); when the bar moved too far for that, the full search (`match_and_fit`) runs.
@@ -178,8 +135,8 @@ def fit_bar(sensed: Sensed, layout: BarLayout, *, max_age: float | None = None, 
     """
     points = layout.points
     if max_age is not None and sensed.age > max_age:
-        fit = _failed_fit(f"the marker snapshot is {sensed.age:.1f} s old (limit {max_age:.1f} s); "
-                          f"is Motive streaming?", 0, len(points))
+        fit = failed_fit(f"the marker snapshot is {sensed.age:.1f} s old (limit {max_age:.1f} s); "
+                         f"is Motive streaming?", 0, len(points))
         fit.bar_name = layout.bar
         return fit
     fit = None
@@ -190,7 +147,7 @@ def fit_bar(sensed: Sensed, layout: BarLayout, *, max_age: float | None = None, 
         fit = match_and_fit(sensed.points, points, **kwargs)
     fit.bar_name = layout.bar
     fit.sensed_ids = list(sensed.ids)
-    if not fit.ok and sensed.occluded:  # (BMF:906-913)
+    if not fit.ok and sensed.occluded:
         fit.reason += f" ({sensed.occluded} marker(s) occluded in Motive)"
     if not fit.ok and sensed.dropped:
         fit.reason += (f" ({sensed.dropped} marker(s) dropped: size outside {MARKER_SIZE_RANGE_M[0] * 1000:.0f}-"
@@ -204,7 +161,7 @@ def fit_bar(sensed: Sensed, layout: BarLayout, *, max_age: float | None = None, 
 
 def fake_sensed_markers(T_world_from_bar: np.ndarray, design_points: np.ndarray, *, slide_m: float = 0.03,
                         roll_deg: float = 2.0, noise_m: float = 0.0005, seed: int = 0) -> Sensed:
-    """A made-up sample of a bar that sits a known bit off its pose (BMF:920-952).
+    """A made-up sample of a bar that sits a known bit off its pose.
 
     * Its fit should come out as ``T_world_from_bar @ bar_slide_roll(slide_m, roll_deg)``: slid ``slide_m`` along
       the bar and rolled ``roll_deg`` about it (up to the noise), so `pose_deviation` against ``T_world_from_bar``
@@ -226,9 +183,9 @@ def fake_sensed_markers(T_world_from_bar: np.ndarray, design_points: np.ndarray,
     """
     T_world_from_bar = np.asarray(T_world_from_bar, dtype=float)
     rng = np.random.default_rng(seed)
-    moved = transform_points(T_world_from_bar @ bar_slide_roll(slide_m, roll_deg), design_points)  # (BMF:945)
+    moved = transform_points(T_world_from_bar @ bar_slide_roll(slide_m, roll_deg), design_points)
     moved = moved + rng.normal(0.0, noise_m, moved.shape)
-    stray = moved.mean(axis=0) + _FAKE_STRAY_DISTANCE_M * T_world_from_bar[:3, 0]  # (BMF:948)
+    stray = moved.mean(axis=0) + _FAKE_STRAY_DISTANCE_M * T_world_from_bar[:3, 0]
     rows = np.vstack([moved, stray])[rng.permutation(len(moved) + 1)]
     return Sensed(points=rows, ids=tuple(range(1, len(rows) + 1)), residuals=np.full(len(rows), _FAKE_MARKER_ERROR_M),
                   age=0.0, source="fake")

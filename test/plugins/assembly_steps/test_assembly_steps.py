@@ -34,7 +34,7 @@ from husky_assembly_teleop.shared.assembly_planning.route_result import GoalChec
 from husky_assembly_teleop.shared.assembly_planning.route_search import FreeSearch
 from husky_assembly_teleop.shared.execution.servo import flange_poses, tool0_errors
 from husky_assembly_teleop.ui.ghost import RecentUse
-from husky_assembly_teleop.world.bar_pose import apply_authored_move
+from husky_assembly_teleop.shared.bars.pose import apply_authored_move
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
@@ -504,6 +504,7 @@ def test_exec_asks_for_a_second_press_while_another_robot_is_unknown():
         assert lab.plugin._confirm.button.color == rgb(WARN) and ">1 robot unknown<" in lab.html()
         lab.plugin._commit(lab.ctx)
         assert len(lab.executor.requests) == 1 and lab.plugin.plan_state == "sent"
+        assert lab.executor.requests[0].unknown_robots == {robot_id(lab.alice.config.serial)}
         lab.update()
         assert lab.plugin._confirm.button.color == "blue"
 
@@ -573,7 +574,7 @@ def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch
         ("plan", True), ("plan", False), ("plan", False)]
     lines = [line for line in lab.ctx.lines("info") if line.startswith("[insert plan]")]
     line, = lines
-    assert line.startswith("[insert plan] MoCap-bar correction carried: B20_J_insert left goal ")
+    assert line.startswith("[insert plan] mocap bar correction carried: B20_J_insert left goal ")
     assert line.endswith(" from the authored end")
 
 

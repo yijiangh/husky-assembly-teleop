@@ -36,7 +36,7 @@ from ...shared.movement_exec_contract import INSERT_PART, current_step, part_pla
 from ...shared.process_contract import MARK_ASSUMED, MARK_DONE, MARK_PENDING
 from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, RunError, RunSettings, continue_run,
                                  file_hashes, find_runs, made_after, record_event, reopen, save_progress, with_current)
-from ...ui.assembly_tab import ASSEMBLY_TAB
+from ...shared.assembly_tab.layout import ASSEMBLY_TAB
 from .panel import PanelStatus, RunPanel
 from .writes import (AGAIN_MARK, AGAIN_NEW_RUN, NO_PROCESS, NOT_OPENED, OPEN, OPENING, SETTING_TYPES,
                      RunWrites)
@@ -243,21 +243,23 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
     def request_record(self, event: str, *, action: str | None = None, movement: str | None = None,
                        data: Mapping[str, Any] | None = None, file: Mapping[str, Any] | None = None,
                        kind: str = "movements",
-                       figure: Callable[[Mapping[str, Any], Path], None] | None = None) -> None:
+                       figure: Callable[[Mapping[str, Any], Path], None] | None = None,
+                       reserved: Path | None = None) -> None:
         """Record an event, `data` under its "data" key; `file` is written as a `kind` record the event names.
 
         `figure(payload, png path)` draws the record's plot beside it; a plot that fails is noted in the event's data
-        as `figure_error`, the record kept.
+        as `figure_error`, the record kept. `reserved`: the file `runs.reserve_record` took for it; None: the next
+        number when it is written.
         """
         refusal = self._not_open() or (
             "a file needs its action and movement" if file is not None and None in (action, movement) else "")
         if self._refused(f"Record {event}", refusal):
             return
         if self._run is not None:
-            self._queue_record(self._ctx, event, action, movement, data, file, kind, figure)
+            self._queue_record(self._ctx, event, action, movement, data, file, kind, figure, reserved)
         else:
             self._spawn(self._ctx, f"record {event}", self._record_later(self._ctx, event, action, movement, data,
-                                                                         file, kind, figure))
+                                                                         file, kind, figure, reserved))
 
     # --- --- --- --- --- HOOKS --- --- --- --- ---
 

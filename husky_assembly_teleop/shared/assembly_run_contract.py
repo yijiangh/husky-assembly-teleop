@@ -81,11 +81,13 @@ class AssemblyRunContract(Protocol):
     def request_record(self, event: str, *, action: str | None = None, movement: str | None = None,
                        data: Mapping[str, Any] | None = None, file: Mapping[str, Any] | None = None,
                        kind: str = "movements",
-                       figure: Callable[[Mapping[str, Any], Path], None] | None = None) -> None:
+                       figure: Callable[[Mapping[str, Any], Path], None] | None = None,
+                       reserved: Path | None = None) -> None:
         """Record an event, with `data` as its fields; `file` is written as a `kind` record the event names.
 
         `figure(payload, png path)` draws the record's plot beside it; a plot that fails is noted in the event's data
-        as `figure_error`, the record kept.
+        as `figure_error`, the record kept. `reserved`: the file `runs.reserve_record` took for it; None: the next
+        number when it is written.
         """
 
 

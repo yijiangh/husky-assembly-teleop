@@ -3,7 +3,7 @@ The Exec plots window: the servo's readings pass by pass, and a compliant part's
 
 Fed by the executor (`servo_reading`, `compliant_sample`), drawn each tick; the curves of a part stay until the next
 part of its kind starts. When a part starts, its kind's folder shows, the other's hides, and the window comes forward
-(`expand`), as the old monitor's windows opened; only the operator closes it.
+(`expand`); only the operator closes it.
 """
 
 from __future__ import annotations
@@ -14,13 +14,10 @@ import numpy as np
 import viser
 
 from ...plugin_api.trace import Signal, Trace
+from ...shared.execution.servo_record import BASE_COLORS, FIRST_ARM_COLORS, SECOND_ARM_COLORS
 from ...ui.style import NONE, chip, chip_line
 from ...ui.trace_plot import TracePlot
 
-#: Line colours: the first arm's x, y, z and |d| in reds, the second's in greens, the base's in blues.
-FIRST_ARM = ("#e03131", "#f06595", "#c92a2a", "#ffa8a8")
-SECOND_ARM = ("#2f9e44", "#69db7c", "#2b8a3e", "#b2f2bb")
-BASE = ("#4263eb", "#74c0fc", "#1c7ed6", "#a5d8ff")
 #: Samples kept per trace: passes of a servo (far more than any), ticks of a compliant part (a 300 s hold at 20 Hz).
 SERVO_SAMPLES, COMPLIANT_SAMPLES = 200, 6000
 #: Sides in series order; a one-arm robot fills the first family, the other stays NaN.
@@ -50,24 +47,25 @@ class ExecPlots:
                                  Signal("torque", _nothing, per_axis, "Nm")), COMPLIANT_SAMPLES)
         self._panel = panel
         self._note = gui.add_html(chip_line(""))
-        arms = FIRST_ARM + SECOND_ARM
+        arms = FIRST_ARM_COLORS + SECOND_ARM_COLORS
         self._servo_folder = gui.add_folder("servo")
         with self._servo_folder:
             self._plots = [
                 TracePlot(gui, self._servo, "tool0_pos_err", seconds=None, min_span=0.1, x_label="pass", colors=arms),
                 TracePlot(gui, self._servo, "tool0_rot_err", seconds=None, min_span=0.01, x_label="pass",
-                          colors=FIRST_ARM[:3] + SECOND_ARM[:3]),
-                TracePlot(gui, self._servo, "base_pos_diff", seconds=None, min_span=0.1, x_label="pass", colors=BASE),
+                          colors=FIRST_ARM_COLORS[:3] + SECOND_ARM_COLORS[:3]),
+                TracePlot(gui, self._servo, "base_pos_diff", seconds=None, min_span=0.1, x_label="pass",
+                          colors=BASE_COLORS),
                 TracePlot(gui, self._servo, "base_rot_diff", seconds=None, min_span=0.01, x_label="pass",
-                          colors=BASE[:3]),
-                TracePlot(gui, self._servo, "bar", seconds=None, min_span=0.1, x_label="pass", colors=BASE[:2])]
+                          colors=BASE_COLORS[:3]),
+                TracePlot(gui, self._servo, "bar", seconds=None, min_span=0.1, x_label="pass", colors=BASE_COLORS[:2])]
         self._compliant_folder = gui.add_folder("force and torque")
         with self._compliant_folder:
             self._plots += [
                 TracePlot(gui, self._compliant, "force", seconds=None, min_span=1.0, x_label="s",
-                          colors=FIRST_ARM[:3] + SECOND_ARM[:3]),
+                          colors=FIRST_ARM_COLORS[:3] + SECOND_ARM_COLORS[:3]),
                 TracePlot(gui, self._compliant, "torque", seconds=None, min_span=0.1, x_label="s",
-                          colors=FIRST_ARM[:3] + SECOND_ARM[:3])]
+                          colors=FIRST_ARM_COLORS[:3] + SECOND_ARM_COLORS[:3])]
         self._arms: tuple[str, ...] = ()
         self._label = ""
         self._no_wrench = False
