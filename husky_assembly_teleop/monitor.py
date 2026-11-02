@@ -17,7 +17,7 @@ import sys
 import time
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor, TimeoutException
@@ -46,6 +46,7 @@ from .robot_interface.soft_stop import MotionRefused
 from scaffolding_assembly_core.ids import robot_id, tracked_id
 from scaffolding_assembly_core.scene import Scene
 from .world.scene import PluginScene, take_snapshot, tracked_body
+from .ui.layout import default_layout_path, read_layout
 from .ui.visualization import Visualization
 from .world.measured import TrackedObject, WorldState
 
@@ -163,7 +164,13 @@ class HuskyMonitor(Node):
         with self._timed("kinematics"):
             self._kinematics = Kinematics(self._config.robots, log_warn=self.log_warn)
         with self._timed("viser servers"):
-            self._viz = Visualization(port=self._config.viser_port, phone_port=self._config.phone_port)
+            layout = read_layout(self._config.layout or default_layout_path(), self.log_warn)
+            if layout.source is not None:
+                self.log_info(f"layout from {layout.source}")
+            if layout.preferences.ghost_timeout is not None:
+                self._config = replace(self._config, ghost_timeout=layout.preferences.ghost_timeout)
+            self._viz = Visualization(port=self._config.viser_port, phone_port=self._config.phone_port,
+                                      layout=layout)
         port, phone_port = self._viz.ports
         self.log_info(f"UI at http://localhost:{port}, phone page at http://<this PC's IP>:{phone_port}")
 
@@ -203,6 +210,8 @@ class HuskyMonitor(Node):
             except Exception:
                 self.log_error(f"plugin {loaded.name!r} failed in setup:\n{traceback.format_exc()}")
                 self._stop(loaded, "failed in setup")
+        for label in self._viz.place_plugin_windows():
+            self.log_warn(f"layout: no plugin made a window {label!r}; its entry in panels is skipped")
 
     @contextmanager
     def _timed(self, what: str):

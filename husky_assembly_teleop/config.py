@@ -183,8 +183,10 @@ class MonitorConfig:
         shutdown_grace: Seconds each plugin's cancelled tasks get to clean up at shutdown.
         lab: The lab file the `obstacles` plugin loads: a name under `data_directory/lab/`, or a .json path;
             empty for its default.
-        ghost_timeout: Seconds a plugin's ghost robots stay shown after the last input in it; 0 (the default)
-            keeps them until another plugin's ghosts show. Ghosts appear only after an input in their plugin.
+        ghost_timeout: Seconds a plugin's ghost robots stay shown after the last input in it; 0 keeps them until
+            another plugin's ghosts show. Ghosts appear only after an input in their plugin. A layout file's
+            `ghost_timeout` replaces it.
+        layout: A person's layout file (`ui/layout.py`); None for `default_layout_path()`.
     """
 
     robots: tuple[RobotConfig, ...]
@@ -201,7 +203,8 @@ class MonitorConfig:
     late_tick_warn_period: float = 5.0
     shutdown_grace: float = 2.0
     lab: str = ""
-    ghost_timeout: float = 0.0
+    ghost_timeout: float = 20.0
+    layout: Path | None = None
 
 
 # --- --- --- --- --- WHAT EACH ROBOT IS --- --- --- --- ---
@@ -363,6 +366,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     - `recording_format`: "npz" (the default) or "json".
     - Robots may be named instead of numbered, in `robots` and `tools` alike. `robots:="[]"` runs without robots.
     - `viser_port` (8080) and `phone_port` (default the next port): a second monitor needs `viser_port:=8095`.
+    - `layout`: a person's layout file; empty for ~/.config/husky_monitor/layout.json (`ui/layout.py`).
 
     Args:
         node: The monitor node, whose parameters are read.
@@ -386,6 +390,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("viser_port", MonitorConfig.viser_port)
     # * 0: the port after viser_port, so a second monitor needs only -p viser_port:=8095.
     node.declare_parameter("phone_port", 0)
+    node.declare_parameter("layout", "")
 
     def string_list(name: str) -> tuple[str, ...]:
         """Read a string-array parameter, dropping the empty-string default.
@@ -421,6 +426,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         lab=node.get_parameter("lab").get_parameter_value().string_value.strip(),
         viser_port=viser_port,
         phone_port=node.get_parameter("phone_port").value or viser_port + 1,
+        layout=Path(layout_text).expanduser() if (layout_text := node.get_parameter("layout").value.strip()) else None,
     )
 
 

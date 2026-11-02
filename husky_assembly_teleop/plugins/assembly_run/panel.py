@@ -63,7 +63,8 @@ class RunPanel:
         self._shown_settings: tuple[RunSettings, int, bool] | None = None
         with ctx.view.ui(band=MARK_BAND) as gui:
             gui.add_html(section("action", SECTION_CTRL))
-            # * Draws nothing: the tab's big buttons, and Mark done and Reopen side by side once they exist.
+            # * Draws nothing: the tab's big buttons when the layout file asks (assembly_run's `big_buttons`), and
+            #   Mark done and Reopen side by side once they exist.
             pair = gui.add_html("")
             self._mark = gui.add_button("Mark done", color="yellow", icon=MARK_ICON,
                                         hint="Mark the current action done, recording every live robot where it is. "
@@ -71,8 +72,8 @@ class RunPanel:
                                              "assumed")
             reopen = gui.add_button("Reopen", color="gray", icon=REOPEN_ICON,
                                     hint="Put the current action back to pending")
-            pair.content = (f"<style>{TAB_BUTTONS_CSS}{side_by_side_css([self._mark._impl.uuid, reopen._impl.uuid])}"
-                            f"</style>")
+            big = TAB_BUTTONS_CSS if ctx.view.preferences.get("big_buttons") is True else ""
+            pair.content = f"<style>{big}{side_by_side_css([self._mark._impl.uuid, reopen._impl.uuid])}</style>"
             # ! Keep changing text BELOW the buttons.
             self._details = gui.add_html("")
         default = RunSettings()

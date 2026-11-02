@@ -69,8 +69,9 @@ MARK_ICON, REOPEN_ICON = viser.Icon.CIRCLE_CHECK, viser.Icon.ARROW_BACK_UP
 #: Confirm and Cancel, here and on the phone's Exec tab.
 CONFIRM_ICON, CANCEL_ICON = viser.Icon.CHECK, viser.Icon.X
 
-#: CSS that makes the tab's buttons big, for the whole desktop page; assembly_run adds it, since assembly_steps and
-#: movement_exec load it.
+#: CSS that makes the tab's buttons big, for the whole desktop page, when the layout file asks (assembly_run's
+#: `big_buttons`); assembly_run adds it, since assembly_steps and movement_exec load it. ! Other plugins' buttons with
+#: these icons grow too (mocap_probe's Apply, the guide's Done).
 TAB_BUTTONS_CSS = big_buttons([GOAL_ICON, CHECK_ICON, PLAN_ICON, EXEC_ICON, MARK_ICON, REOPEN_ICON, CONFIRM_ICON,
                                CANCEL_ICON], 40,
                               18, scope="")

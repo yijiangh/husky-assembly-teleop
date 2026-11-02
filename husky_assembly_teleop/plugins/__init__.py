@@ -40,7 +40,8 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`. Its tests go 
   (`ui.style.chip_line`), text that comes and goes below the buttons.
 * Prefer tabs to folders: users can drag tabs into windows of their own, folders stay put.
   - `ctx.view.ui()` is the plugin's tab in the side panel, at its `tab_path` (e.g. `("Control",)`, default its
-    name); a path under "Plan" (`ui.visualization.PLAN_TAB`) goes in the Plan window at the top instead.
+    name). A person's layout file may give a top-level folder a window of its own, or move a plugin's tab
+    (`ui/layout.py`); plugins never assume either.
     `hidden = True` starts it in the minimized panel at the right edge, for tools not needed every session.
   - Plugins with the same `tab_path` share one tab through bands, `ctx.view.ui(band=...)`, sorted by number; the
     first to start sets its icon. The Assembly tab holds process, assembly_steps, movement_exec and assembly_run

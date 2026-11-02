@@ -13,6 +13,8 @@ no time limit, until any other request.
 - ! Nothing is written until the runs were read: an open that fails or is stopped is tried again.
 - ! Runs are written into the process folder (`runs/`), in order on a writer thread; the state here changes first.
 - ! EXPERIMENTAL: the run format and the requests may still change.
+- Its layout file preferences (`plugins.assembly_run.preferences`): `big_buttons`, true to draw the Assembly tab's
+  buttons big.
 """
 
 from __future__ import annotations

@@ -36,6 +36,8 @@ if TYPE_CHECKING:
     from ...config import RobotConfig
     from ..process_contract import ProcessContract, Selection
 
+#: The side panel tab every planner panel's tab goes in: `tab_path = (PLAN_TAB, label)`.
+PLAN_TAB = "Plan"
 #: Time slider resolution, seconds.
 SLIDER_STEP = 0.05
 #: The Path buttons' colour, outlines and Plan filled: the one button of the panel that stands out. Teal, as Plan in

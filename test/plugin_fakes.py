@@ -206,7 +206,8 @@ class FakeContext:
         self.view = SimpleNamespace(ui=lambda band=None: nullcontext(self.gui),
                                     phone=lambda *_tab: nullcontext(self.gui),
                                     tab=lambda *_tab, **_options: nullcontext(self.gui), gui=self.gui,
-                                    panel=self._panel, scene=FakeScene(), scene_root="/plugin", faded=[])
+                                    panel=self._panel, scene=FakeScene(), scene_root="/plugin", faded=[],
+                                    preferences={})
         #: `ctx.view.set_robot_opacity` as the runtime's: every call is kept in `view.faded`.
         self.view.set_robot_opacity = lambda serial, opacity: self.view.faded.append((serial, opacity))
         #: (level, message) per log line.

@@ -28,7 +28,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.base_planner_contract import BasePlanRequest
 from ...shared.collisions_contract import CollisionsContract
-from ...shared.planner.planner_panel import PlannerPanel, unknown_robots_chip
+from ...shared.planner.planner_panel import PLAN_TAB, PlannerPanel, unknown_robots_chip
 from ...shared.planner.plan import Plan
 from ...ui.base_markers import Markers
 from ...ui.ghost import RobotGhost
@@ -37,7 +37,6 @@ from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, check_chip, chip, chip_line, section,
                          values)
-from ...ui.visualization import PLAN_TAB
 from ...robot_interface.base import live_report
 from ...world.follower import path_check
 from ...world.kinematics import STOW_TOLERANCE, from_stow
