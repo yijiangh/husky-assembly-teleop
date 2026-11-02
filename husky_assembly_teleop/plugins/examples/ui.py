@@ -11,7 +11,7 @@ A counter showing the three steps of every panel:
 ! Keep state on `self` (here `self.count`); widgets only display it. Operator
   settings (step size, "Below 0") may be read from widgets.
 
-Run with:  -p plugins:="['example_ui']"
+Run with:  plugins:="example_ui"
 """
 
 from __future__ import annotations

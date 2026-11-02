@@ -14,7 +14,7 @@ The pattern every planner follows:
   - Report results with our ids ("example_pybullet/box", "robots/0806"), never PyBullet body ids:
     those exist only inside one mirror and get reused.
 
-Run with:  -p plugins:="['example_pybullet']" -p robots:="['0806']"
+Run with:  plugins:="example_pybullet" robots:="0806"
 """
 
 from __future__ import annotations

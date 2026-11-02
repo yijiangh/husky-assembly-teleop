@@ -13,7 +13,7 @@ Wiggle turns one arm's wrist 15 deg and back, as a task:
 ! Neither the lease nor the freeze stops a moving arm: on cancel, hold it yourself (`except` below).
 ! Run it on a simulation first: it really moves the arm.
 
-Run with:  -p plugins:="['example_lease_and_freeze']"
+Run with:  plugins:="example_lease_and_freeze"
 """
 
 from __future__ import annotations

@@ -14,7 +14,7 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **runtime**: the monitor's own framework that ticks, owns all state and drives the plugins: `monitor.py`,
   `config.py`, `plugin_api/`, `world/`, `robot_interface/`, `ui/`. Never call it "the core". `doc/design/refactor_rationale.md`.
 - **plugin**: one feature with its own state, panel and scene bodies, registered with `@register` and loaded with
-  `-p plugins:=[...]`. Plugins never import each other. `plugins/__init__.py`, `plugin_api/plugin.py`.
+  `plugins:="..."`. Plugins never import each other. `plugins/__init__.py`, `plugin_api/plugin.py`.
 - **contract**: the `<Name>Contract` Protocol in `shared/<name>_contract.py`, the only way one plugin reads another's
   live data (`ctx.require`, for names in `requires`). What the runtime hands a plugin is its **context**
   (`PluginContext`), not a contract. `shared/__init__.py`.

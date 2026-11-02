@@ -33,7 +33,7 @@ In the browser's 3D view, left-drag rotates, right-drag pans, scroll zooms.
 
 Dragged windows are not remembered (viser never reports them). To keep a layout, save it as
 `~/.config/husky_monitor/layout.json` on the laptop running the monitor (`mkdir -p ~/.config/husky_monitor` first), or
-name another file with `-p layout:=<path>`. It is yours, never in git; without it the monitor uses the layout above.
+name another file with `layout:=<path>`. It is yours, never in git; without it the monitor uses the layout above.
 
 It can give a top-level folder a window of its own, move a plugin's tab or start it hidden, place a window a plugin
 made itself, by its title, and set preferences: the monitor's `ghost_timeout` under `preferences`, and each plugin's
@@ -104,26 +104,25 @@ Setup, every button and troubleshooting: [phone_manual.md](phone_manual.md). Plu
 
 ```shell
 # Drive one robot
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -p plugins:="['robot_control']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice" plugins:="robot_control"
 
 # Assembly: a process, the lab obstacles and the base planner
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','cindy']" \
-    -p plugins:="['robot_control', 'process', 'obstacles', 'base_planner_panel']" -p process_directory:=data_design_study/260814_RobArch_support_ik
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice cindy" \
+    plugins:="robot_control process obstacles base_planner_panel" process_directory:=data_design_study/260814_RobArch_support_ik
 
 # Plan arm motions too
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['cindy']" \
-    -p plugins:="['robot_control', 'obstacles', 'arm_planner_panel']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="cindy" plugins:="robot_control obstacles arm_planner_panel"
 
 # Try the plugin examples
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" \
-    -p plugins:="['example_plot', 'example_pybullet', 'example_sequence', 'example_ui']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice" \
+    plugins:="example_plot example_pybullet example_sequence example_ui"
 ```
 
 More in the README, "Examples".
 
 ## Plugins
 
-Load plugins with `-p plugins:="[...]"` (README, Parameters). A plugin that needs others loads them itself
+Load plugins with `plugins:="<name> <name>"` (README, Parameters). A plugin that needs others loads them itself
 ("Loads ..." in its section). `health` and `console` are loaded by default.
 
 ### `health`
@@ -140,7 +139,7 @@ The **Control** tab, with a tab per robot: drives the base, jogs each arm joint 
 
 ### `obstacles`
 
-The lab's obstacles as collision bodies for the planners: tables, cabinets, tripods and trusses, and walls around the usable floor, from the lab file `data/lab/<lab>.json` (in git; `-p lab:=<name>`); and the floor, a slab under z = 0 out to the walls, not drawn, which arms, tools and what they hold collide with while the robots' platforms (wheels, chassis) may touch it. Click an obstacle in the 3D view or pick it, then drag it with the gizmo (only yaw is kept), resize it with the corner gizmo, or type position, yaw and size; rename and remove it, and set the border's x and y range. Edits stay unsaved (amber chip) until **Save** writes the lab file; **Revert** goes back to it. **Add** puts temporary boxes and cylinders (purple) into the scene, kept in `~/husky_obstacles_temporary.json` across restarts and never in the lab file; **Promote** moves one into the lab.
+The lab's obstacles as collision bodies for the planners: tables, cabinets, tripods and trusses, and walls around the usable floor, from the lab file `data/lab/<lab>.json` (in git; `lab:=<name>`); and the floor, a slab under z = 0 out to the walls, not drawn, which arms, tools and what they hold collide with while the robots' platforms (wheels, chassis) may touch it. Click an obstacle in the 3D view or pick it, then drag it with the gizmo (only yaw is kept), resize it with the corner gizmo, or type position, yaw and size; rename and remove it, and set the border's x and y range. Edits stay unsaved (amber chip) until **Save** writes the lab file; **Revert** goes back to it. **Add** puts temporary boxes and cylinders (purple) into the scene, kept in `~/husky_obstacles_temporary.json` across restarts and never in the lab file; **Promote** moves one into the lab.
 
 ### `debug_gizmo`
 

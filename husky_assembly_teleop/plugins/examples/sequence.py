@@ -14,7 +14,7 @@ Three cycles of fake waits in place of robot work:
 ! Ignore (and log) a click that does not apply now: a stored click would fire long after it was forgotten.
 ! Catch the failures you expect, such as a timeout, and report them: repeated failing ticks stop the plugin.
 
-Run with:  -p plugins:="['example_sequence']"
+Run with:  plugins:="example_sequence"
 """
 
 from __future__ import annotations

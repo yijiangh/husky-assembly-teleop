@@ -9,7 +9,7 @@ To edit the lab's obstacles for good (move, resize, add, save), use the `obstacl
 ! Writes other plugins' live bodies directly, which plugins normally must not do. Debug only: the moves are never
   saved, and the owner may put the body back at any time.
 
-Run with:  -p plugins:="['obstacles', 'debug_gizmo']"
+Run with:  plugins:="obstacles debug_gizmo"
 """
 
 from __future__ import annotations

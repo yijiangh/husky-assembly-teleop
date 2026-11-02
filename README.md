@@ -150,7 +150,7 @@ Zenoh router from Install step 4 must be running.
 # Terminal 1: the relay, reading the simulation instead of Motive
 ros2 launch husky_assembly_teleop mocap.launch.py sim:=true
 # Terminal 2: the monitor
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['belle']" -p plugins:="['robot_control']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="belle" plugins:="robot_control"
 # Terminal 3: Belle (0805), base and arms
 ros2 launch husky_assembly_teleop sim.launch.py robot:=0805
 ```
@@ -161,7 +161,7 @@ pendant or dashboard.
 
 The relay and the monitor keep running while simulations come and go. To simulate every robot and a fake Motive
 instead, stop Terminal 3 (Ctrl-C) and run `sim.launch.py robot:=all fake_motive:=true` there; restart the monitor with
-`robots:="['alice','belle','cindy']"` to see them all.
+`robots:="alice belle cindy"` to see them all.
 
 Several robots, realistic mocap, base experiments, every argument and what is not simulated:
 [doc/lab/simulation_manual.md](doc/lab/simulation_manual.md). The fake lab (`scripts/fake_lab/tmux.sh`) starts all of it for
@@ -191,12 +191,12 @@ Calibrations, topics, services and the lab frame: [doc/lab/mocap_relay.md](doc/l
 **2. Start the monitor** with the robots and plugins you need:
 
 ```shell
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -p plugins:="['robot_control']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice" plugins:="robot_control"
 ```
 
 **3. Open the UI** at http://localhost:8080, or `http://<host-ip>:8080` from another PC. A phone on the robot WiFi opens
 `http://<host-ip>:8081` ([doc/lab/phone_manual.md](doc/lab/phone_manual.md)). The ports are fixed: if one is taken (another
-monitor?), the monitor refuses to start. A second monitor on the same PC: `-p viser_port:=8095` (its phone page is
+monitor?), the monitor refuses to start. A second monitor on the same PC: `viser_port:=8095` (its phone page is
 then 8096).
 
 Before anything moves:
@@ -218,30 +218,35 @@ What each panel and button does: [doc/lab/plugins.md](doc/lab/plugins.md).
 
 ```shell
 # All three robots at once
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','belle','cindy']" -p plugins:="['robot_control']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="robot_control"
 
 # Alice with the scaffolding tool instead of the Robotiq, Cindy with only one tool (on the left arm)
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','cindy']" \
-    -p tools:="['alice:scaffolding_v3', 'cindy:scaffolding_v3,none']" -p plugins:="['robot_control']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice cindy" plugins:="robot_control" \
+    tools:="alice:scaffolding_v3 cindy:scaffolding_v3:none"
 
 # Measure obstacles with the mocap probe (no robots needed)
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="[]" -p plugins:="['mocap_probe']"
+ros2 launch husky_assembly_teleop monitor.launch.py plugins:="mocap_probe"
 
 # Run an assembly step by step (assembly_run, motion_planner and movement_exec come with assembly_steps);
 # the process folder is on the Drive
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','belle','cindy']" \
-    -p plugins:="['assembly_steps', 'robot_control']" -p process_directory:=data_design_study/261008_2ModulesDemo_purged_process
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps robot_control" \
+    process_directory:=data_design_study/261008_2ModulesDemo_purged_process
 ```
 
 More, for the planners and the plugin examples: [doc/lab/plugins.md](doc/lab/plugins.md#examples).
 
 # Parameters
 
+Each is an argument of `monitor.launch.py` (`--show-args` lists them); an argument left out keeps the default. Lists
+are always quoted, also for one item, and their items separated by spaces (commas work too): `robots:="alice belle"`,
+`plugins:="robot_control"`. The monitor's ROS parameters are the same: `ros2 run husky_assembly_teleop husky_monitor
+--ros-args -p robots:="['alice']"` works too, with lists in that form.
+
 | Parameter | Default | Meaning |
 |---|---|---|
-| `robots` | none | Robots to connect to, by serial or name: `0804`, `alice`, `a200-0806`, `Cindy`. `"[]"` runs without robots. |
+| `robots` | none | Robots to connect to, by serial or name: `0804`, `alice`, `a200-0806`, `Cindy`. Left out, the monitor runs without robots. |
 | `plugins` | none | Plugins to load, see below. `health` and `console` are always added, unless `no_default_plugins:=true`. |
-| `tools` | per robot | Only where the mounted tools differ from the defaults: `'<robot>:<tool>[,<tool>...]'`, one tool per arm in arm order. Tools: `robotiq`, `scaffolding_v1`, `scaffolding_v3`, `none`. Defaults: Alice and Belle `robotiq`, Cindy `scaffolding_v3,scaffolding_v3`. |
+| `tools` | per robot | Only where the mounted tools differ from the defaults: `<robot>:<tool>[:<tool>...]` per robot, one tool per arm in arm order: `cindy:scaffolding_v3:none`. Tools: `robotiq`, `scaffolding_v1`, `scaffolding_v3`, `none`. Defaults: Alice and Belle `robotiq`, Cindy `scaffolding_v3:scaffolding_v3`. |
 | `process_directory` | none | Process folder (with `process.json`) or old compas_fab export the `process` plugin loads at startup, relative to `drive_root` (e.g. `data_design_study/260814_RobArch_support_ik`) or absolute; without it, pick one in its panel. An export is converted into `<export>_process` next to it. |
 | `data_directory` | `data/` of this repo | Root for meshes, URDFs and processes. |
 | `drive_root` | `$HUSKY_DRIVE_ROOT` | Local copy of the project's Google Drive folder (`2025-03 Husky Assembly`), for experiment data: [doc/setup/experiment_data.md](doc/setup/experiment_data.md). |

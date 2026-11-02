@@ -43,7 +43,7 @@ nothing where no samples are near. Export and Load keep the samples across runs;
 ! Recording is refused while the mocap chip is red; amber records, with its marker error.
 ! A lost probe has no position: its misses count at its last fix, so walk slowly through gaps.
 
-Run with:  -p plugins:="['mocap_probe']"
+Run with:  plugins:="mocap_probe"
 """
 
 from __future__ import annotations
