@@ -529,8 +529,15 @@ class AssemblyStepsPlugin(PlannerPlugin):
                                                    dict(zip(trajectory.joint_names, trajectory.positions[-1])),
                                                    "plan", self._basis.base))
             self._draw_plan_path(ctx)
-            return (f"{route.planner}: {route.waypoints} waypoints in {route.seconds:.1f} s; the motion takes "
-                    f"{self.path.duration:.1f} s"), bool(route.warnings)
+            message = (f"{route.planner}: {route.waypoints} waypoints in {route.seconds:.1f} s; the motion takes "
+                       f"{self.path.duration:.1f} s")
+            # * The line says the first warning; the console has them all.
+            for warning in route.warnings:
+                ctx.log_warn(f"plan {step.movement.id}: {warning}")
+            if route.warnings:
+                count = len(route.warnings)
+                message += f"; {count} warning{'s' if count > 1 else ''} (console): {route.warnings[0]}"
+            return message, bool(route.warnings)
 
         label = current[3].label if current is not None else "nothing"
         # * Long enough for every try of the free search at the run's settings.

@@ -276,7 +276,19 @@ def test_the_outcome_chip_takes_the_level_it_was_given(server, level, color):
     panel, _, ctx, _ = make_panel(server)
     panel.procedure.outcome = Check("new run", level, "its file starts with the first thing recorded")
     panel.draw(ctx)
-    assert "new run" in panel._status_html.content and color in panel._status_html.content
+    assert "new run" in panel._line_html.content and color in panel._line_html.content
+
+
+def test_the_procedure_line_changes_without_touching_the_checks(server):
+    """What runs, the outcome and `extra` sit in their own handle: their changes keep the checks' hover readable."""
+    panel, _, ctx, _ = make_panel(server)
+    panel.draw(ctx)
+    checks = panel._status_html.content
+    panel.procedure.doing = "moving"
+    panel.procedure.outcome = Check("take failed", BAD, "x " * 200)
+    panel.draw(ctx, extra="<span>lease</span>")
+    assert panel._status_html.content == checks and "moving" in panel._line_html.content
+    assert "full text in the console" in panel._line_html.content
 
 
 def test_a_checklist_starts_unticked_and_ticks_by_label(server):
@@ -299,12 +311,12 @@ def test_chips_that_come_and_go_stay_on_the_status_line(server):
     """
     panel, _, ctx, _ = make_panel(server)
     panel.draw(ctx)
-    quiet = panel._status_html.content
+    quiet = panel._line_html.content
     assert 'class="chip-line"></div>' in quiet
     panel.procedure.doing, panel.procedure.prompt = "moving", "Move there? Go"
     panel.procedure.outcome = Check("take failed", BAD, "the arm refused")
     panel.draw(ctx, extra="<span>lease</span>")
-    busy = panel._status_html.content
+    busy = panel._line_html.content
     assert busy.count("<div") == quiet.count("<div") and "moving" in busy and "take failed" in busy
     assert "Move there?" in panel._notes_html.content and "Move there?" not in busy
 

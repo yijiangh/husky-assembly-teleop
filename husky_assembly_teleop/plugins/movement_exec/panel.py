@@ -88,9 +88,11 @@ class ExecPanel:
                 ended (grey once the request is over); "" for none.
         """
         chips = chip("DRY RUN", BUSY, "every check, nothing sent") if dry_run else ""
-        chips += chip(escape(active), BUSY) if active else chip("idle", NONE)
+        chips += (chip(escape(active), BUSY, "this request runs; Cancel stops it and holds every arm") if active
+                  else chip("idle", NONE, "no request running; an Exec button starts one"))
         if prompt is not None:
-            chips += chip("waiting for Confirm", FAIL if prompt.warn else BUSY)
+            chips += chip("waiting for Confirm", FAIL if prompt.warn else BUSY,
+                          "the request waits for an answer to the question below: Confirm goes on, Cancel says no")
         line = _one_line(escape(prompt.line) if prompt is not None else "no prompt",
                          (FAIL if prompt.warn else BUSY) if prompt is not None else NONE)
         self._status.content = chip_line(chips)

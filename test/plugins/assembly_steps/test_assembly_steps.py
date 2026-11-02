@@ -11,6 +11,7 @@ import json
 import math
 import threading
 from copy import copy
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -219,6 +220,23 @@ def test_a_plan_fills_the_plots_and_carries_its_end_until_another_action():
     lab.run.view.current = ("B21_H", 0)
     lab.update()
     assert lab.process.carries[-1] is None
+
+
+def test_a_plan_with_warnings_says_the_first_and_logs_each(monkeypatch):
+    """The plan line, amber, says the first warning and how many there are; the console has every one."""
+    lab = Steps(("B20_R", 2))
+    answer = lab.planner.request_plan
+
+    def warned(request):
+        route = answer(request).result()
+        return _answered(replace(route, warnings=("the start touches: tool vs bar", "a mismatched grasp")))
+
+    monkeypatch.setattr(lab.planner, "request_plan", warned)
+    asyncio.run(lab.plan())
+    assert lab.plugin._message.endswith("; 2 warnings (console): the start touches: tool vs bar")
+    warns = [line for level, line in lab.ctx.logs if level == "warn"]
+    assert any("the start touches: tool vs bar" in line for line in warns)
+    assert any("a mismatched grasp" in line for line in warns)
 
 
 def test_the_path_ghost_stays_while_there_is_a_plan_whatever_the_panel_was_last_used():

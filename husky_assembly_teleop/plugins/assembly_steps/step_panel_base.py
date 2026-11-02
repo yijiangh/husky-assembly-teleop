@@ -59,7 +59,8 @@ class Search:
         message: Shown in the panel while planning.
         work: Syncs the world and searches, on the worker; must stop soon after its `abort` is set. Or None.
         time_limit: Seconds to wait for `work` or `run`, margin included.
-        accepted: Main thread, when a path was found: returns the panel message and whether it is a warning.
+        accepted: Main thread, when a path was found: returns the panel message and whether it warns (the message
+            then says what about).
         finished: Main thread, after `work` or `run` returned, path or not.
         run: Awaited on the main thread instead of `work`, e.g. a request to a planning service; cancelled when the
             time limit passes or the plan is cleared. Or None.

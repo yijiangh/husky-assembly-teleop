@@ -16,6 +16,7 @@ The guided procedure's panel: the overview of the steps, the current step, Back 
 
 from __future__ import annotations
 
+from dataclasses import replace
 from html import escape
 from typing import TYPE_CHECKING, Callable, Sequence
 
@@ -24,7 +25,7 @@ import viser
 from ...ui.phone import big_buttons, phone_text
 from ...colors import INK, rgb
 from ...ui.style import (BUSY, CURRENT, FAIL, LEVEL_COLORS, NONE, OK, SECTION_CTRL, WHITE, block, check_chip, chip,
-                         chip_line, note, section, warning)
+                         chip_line, hover, note, section, warning)
 from ...world.checks import Check
 from .both_pages import BothPages, on_both
 from .procedure import Procedure
@@ -59,7 +60,7 @@ def state_chip(text: str, state: Check, dashed: bool, current: bool = False, nee
         look += f";box-shadow:0 0 0 2px {CURRENT}"
     if needed:
         look += f";outline:2px dotted {INK};outline-offset:1px"
-    title = f"{state.label}: {state.detail}" if state.detail else state.label
+    title = hover(f"{state.label}: {state.detail}", "the step's chips") if state.detail else state.label
     return (f'<span title="{escape(title, quote=True)}" style="display:inline-block;white-space:nowrap;{look};'
             f'border-radius:4px;padding:0 5px;margin:0 6px 2px 2px;font-size:11px;font-weight:600">{text}</span>')
 
@@ -152,7 +153,10 @@ class GuidePanel:
             self._back_button = gui.add_button("Back", icon=viser.Icon.CHEVRON_LEFT, hint=BACK_HINT)
             self._next_button = gui.add_button("Next", icon=viser.Icon.CHEVRON_RIGHT, hint=NEXT_HINT)
             self._done_button = gui.add_button("Done", color=rgb(OK), icon=viser.Icon.CIRCLE_CHECK, hint=DONE_HINT)
+        # * The step's checks, then the procedure's line in its own handle: what runs and `extra` change often, and
+        #   a change would drop the checks' hover.
         self._status_html = gui.add_html("")
+        self._line_html = gui.add_html("")
         self._folders = []
         with gui.add_folder("Step controls"):
             for index, step in enumerate(self.steps):
@@ -201,6 +205,7 @@ class GuidePanel:
             forward = gui.add_button("Next", icon=viser.Icon.CHEVRON_RIGHT, hint=NEXT_HINT)
             done = gui.add_button("Done", color=rgb(OK), icon=viser.Icon.CIRCLE_CHECK, hint=DONE_HINT)
         self._status_html = on_both(self._status_html, gui.add_html(""), phone_text)
+        self._line_html = on_both(self._line_html, gui.add_html(""), phone_text)
         with gui.add_folder("Step controls"):
             for index, step in enumerate(self.steps):
                 folder = gui.add_folder(step.name, visible=index == self.index)
@@ -293,13 +298,14 @@ class GuidePanel:
         procedure = self.procedure
         status = chip(procedure.doing, BUSY, "The step's action runs; Cancel stops it.") if procedure.doing else ""
         if procedure.outcome is not None:
-            status += check_chip(procedure.outcome)
+            outcome = procedure.outcome
+            status += check_chip(replace(outcome, detail=hover(outcome.detail)))
         ready = step.ready(ctx)
         self._status_html.content = (
             section(step.name, CURRENT, state.label)
             + '<div class="guide-chips">' + block("".join(check_chip(check) for check in step.checks(ctx)))
-            + (block("".join(check_chip(check) for check in ready)) if ready else "") + "</div>"
-            + chip_line(status + extra))
+            + (block("".join(check_chip(check) for check in ready)) if ready else "") + "</div>")
+        self._line_html.content = chip_line(status + extra)
         question = step.question(ctx)
         self._notes_html.content = (
             (note(escape(procedure.prompt), CURRENT) if procedure.prompt else "")
@@ -314,13 +320,13 @@ class GuidePanel:
     def _row(self, index: int, state: Check, needed: bool) -> str:
         """One line of the overview: the step's number and name, its state in short, why on hover; the current bold."""
         step, current = self.steps[index], index == self.index
-        color = LEVEL_COLORS[state.level]
+        color, why = LEVEL_COLORS[state.level], escape(hover(state.detail, "the step's chips"), quote=True)
         return (f'<div style="display:flex;align-items:center;white-space:nowrap;overflow:hidden;min-height:20px">'
                 f'{state_chip(str(index + 1), state, step.precondition, current, needed)}'
                 f'<span style="font-weight:{700 if current else 400};margin-right:6px">{escape(step.name)}</span>'
                 f'<span style="color:{color};font-size:11px;font-weight:600;margin-right:6px">'
                 f'{escape(state.label)}</span>'
-                f'<span title="{escape(state.detail, quote=True)}" style="color:{NONE};font-size:11px;'
+                f'<span title="{why}" style="color:{NONE};font-size:11px;'
                 f'overflow:hidden;text-overflow:ellipsis">{escape(state.value)}</span></div>')
 
     def _draw_controls(self, unfinished_step: bool, done_label: str) -> None:

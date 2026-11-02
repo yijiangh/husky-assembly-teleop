@@ -151,17 +151,23 @@ class StepsPanel:
         acting = [robot_id(plugin.serial)] if plugin.serial else []
         unknown = unknown_robots_chip(ctx.scene.snapshot, acting)
         if current is None:
-            self._status.content = chip_line(chip("no current step", NONE) + plugin._plan_chip() + unknown)
+            idle = chip("no current step", NONE, "no process loaded, or the run has no current action")
+            self._status.content = chip_line(idle + plugin._plan_chip() + unknown)
             self._step.content = block(values("—"))
             self._moves.content = block(values("Exec: —"))
         else:
             view, action, step, primary = current
             number, count = plugin.position
-            chips = (chip(escape(action), SECTION_CTRL)
-                     + chip(escape(f"{plugin._robot_name} ({plugin.serial or 'not configured'})"), OK)
-                     + chip(f"step {number}/{count}", NONE) + plugin._plan_chip())
+            robot = ("the robot this action is for, and its serial" if plugin.serial
+                     else "the robot this action is for; no robot of the monitor's config has its serial")
+            chips = (chip(escape(action), SECTION_CTRL, "the run's current action")
+                     + chip(escape(f"{plugin._robot_name} ({plugin.serial or 'not configured'})"), OK, robot)
+                     + chip(f"step {number}/{count}", NONE, "this step of the action's steps: a movement, with the "
+                                                            "tool movements run with it or after it")
+                     + plugin._plan_chip())
             if executor.active:
-                chips += chip(escape(f"exec: {executor.active}"), BUSY)
+                chips += chip(escape(f"exec: {executor.active}"), BUSY,
+                              "Exec runs this request; its prompt and Cancel are in the Exec panel")
             self._status.content = chip_line(chips + unknown)
             movements = view.process.process.actions[action].movements
             routine = plugin.routine()

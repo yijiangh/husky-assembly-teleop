@@ -16,7 +16,8 @@ from ...shared.runs.runs import DONE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, 
 from ...shared.assembly_tab.layout import (MARK_BAND, MARK_ICON, REOPEN_ICON, RUN_BAND, RUN_SETTINGS_BAND,
                                            TAB_BUTTONS_CSS)
 from ...ui.css import side_by_side_css
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
+from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, hover, section,
+                         values)
 from .writes import AGAIN_MARK, AGAIN_NEW_RUN
 
 if TYPE_CHECKING:
@@ -148,11 +149,14 @@ class RunPanel:
         elif view.offer:
             older = f"; run {view.match}, older, was made on these files" if view.match else ""
             chips = chip("export changed", BUSY, f"run {view.offer} was made on another export{older}")
+        elif loaded is not None:
+            chips = chip("no run yet", NONE, "this process has no run folder yet: a Run button starts one")
         else:
-            chips = chip("no run yet" if loaded is not None else "no process", NONE)
-        chips += chip(f"{done}/{len(schedule)} done", OK if schedule and done == len(schedule) else NONE)
+            chips = chip("no process", NONE, "no process loaded: Load one in the Process panel")
+        chips += chip(f"{done}/{len(schedule)} done", OK if schedule and done == len(schedule) else NONE,
+                      "actions of the process's schedule marked done in this run")
         if status.save_error:
-            chips += chip("save error", FAIL, status.save_error)
+            chips += chip("save error", FAIL, hover(status.save_error))
         self._status.content = chip_line(chips)
 
         # * Mark done names the action it marks, e.g. "B20_J done" beside its check icon (short: a half-width button at
@@ -196,6 +200,7 @@ def _where(view: RunView) -> str:
 
 
 def _one_line(html: str, color: str | None = None) -> str:
-    """Content on one line, cut with "…" when too wide."""
+    """Content on one line, cut with "…" when too wide; the whole line on hover."""
     tint = f"color:{color};font-size:11px;" if color else ""
-    return f'<div style="{tint}white-space:pre;overflow:hidden;text-overflow:ellipsis">{html}</div>'
+    title = "" if html == "&nbsp;" else html
+    return f'<div title="{title}" style="{tint}white-space:pre;overflow:hidden;text-overflow:ellipsis">{html}</div>'

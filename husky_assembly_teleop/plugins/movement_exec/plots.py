@@ -22,6 +22,9 @@ from ...ui.trace_plot import TracePlot
 SERVO_SAMPLES, COMPLIANT_SAMPLES = 200, 6000
 #: Sides in series order; a one-arm robot fills the first family, the other stays NaN.
 SIDES = ("left", "right")
+#: The part chips' hover texts.
+SERVO_TITLE = "the servo part these plots show, one point per pass; they stay until the next servo starts"
+COMPLIANT_TITLE = "the compliant part these plots show, one point per tick; they stay until the next one starts"
 #: Arm names in series order for the force plots, by arm name as the robot's arms are listed.
 
 
@@ -79,7 +82,7 @@ class ExecPlots:
         """Forget the last servo's points: a new servo part starts; its curves stay until the next."""
         self._servo.clear()
         self._label = label
-        self._note.content = chip_line(chip(f"servo: {label}", NONE))
+        self._note.content = chip_line(chip(f"servo: {label}", NONE, SERVO_TITLE))
         self._show(servo=True)
 
     def servo_reading(self, reading: Mapping) -> None:
@@ -99,7 +102,7 @@ class ExecPlots:
         """Forget the last compliant part's samples: a new insert, retreat or handoff starts on these arms."""
         self._compliant.clear()
         self._arms, self._label, self._no_wrench = tuple(arms), label, False
-        self._note.content = chip_line(chip(f"compliant: {label}", NONE))
+        self._note.content = chip_line(chip(f"compliant: {label}", NONE, COMPLIANT_TITLE))
         self._show(servo=False)
 
     def compliant_sample(self, sample: Mapping) -> None:
@@ -116,8 +119,9 @@ class ExecPlots:
         self._compliant.add(float(sample.get("t", 0.0)), force, torque)
         if missing and not self._no_wrench:
             self._no_wrench = True
-            self._note.content = chip_line(chip(f"compliant: {self._label}", NONE)
-                                           + chip("no force reading: the arms report no wrench", NONE))
+            self._note.content = chip_line(chip(f"compliant: {self._label}", NONE, COMPLIANT_TITLE)
+                                           + chip("no force reading: the arms report no wrench", NONE,
+                                                  "the force plots show 0 for these arms, not a measured 0"))
 
     def draw(self) -> None:
         """Send new samples to the browser."""

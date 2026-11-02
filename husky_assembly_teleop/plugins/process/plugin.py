@@ -733,9 +733,10 @@ class ProcessPlugin(HuskyPlugin):
         """
         chips = ""
         if self._transfer_refused and ctx.now() - self._transfer_refused_at < REFUSAL_SHOWN:
-            chips += chip("workaround refused", FAIL, f"Transfer workaround not changed: {self._transfer_refused}")
+            chips += chip("workaround refused", FAIL,
+                          hover(f"Transfer workaround not changed: {self._transfer_refused}"))
         if self.obstacles_collide:
-            chips += chip("Rhino obstacles collide", OK)
+            chips += chip("Rhino obstacles collide", OK, "counted in every collision check")
         else:
             chips += chip("Rhino obstacles: drawn only", NONE, "left out of every collision check")
             if not any(body_id.startswith(MEASURED_PREFIX) for body_id in ctx.scene.snapshot.bodies):
@@ -814,7 +815,8 @@ class ProcessPlugin(HuskyPlugin):
             carries += chip(f"joints from {escape(carry.source)}", BUSY, title)
         carries += chip(movement.controller or "no arm moves", NONE,
                         CONTROLLER_HINTS.get(movement.controller, "The arm controller during the movement."))
-        carries += chip(f"ends on {movement.ends_on}", NONE, ENDS_ON_HINTS.get(movement.ends_on, ""))
+        carries += chip(f"ends on {movement.ends_on}", NONE,
+                        ENDS_ON_HINTS.get(movement.ends_on, "What ends the movement."))
 
         # * A drive the monitor never sends (e.g. a tighten on a ground half) says so.
         dropped = mating_drives(self.process, movement).dropped if movement.drives else {}
@@ -929,5 +931,6 @@ def _empty_details() -> tuple[str, str]:
         return f'<span style="visibility:hidden">{html}</span>'
 
     swatch, plain = hidden(swatch_chip("-", NONE, NONE)), hidden(chip("-", NONE))
-    return (block(_one_line(chip("no process loaded", NONE) + swatch)),
+    loaded = chip("no process loaded", NONE, "Load a process above: its movement shows here.")
+    return (block(_one_line(loaded + swatch)),
             block(_one_line(plain) + values(*[_one_line("&nbsp;")] * 4) + _description("")))

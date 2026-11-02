@@ -78,6 +78,7 @@ class Procedure:
             await work
         except MotionRefused as refused:
             self.outcome = Check(f"{label} refused", BAD, str(refused))
+            ctx.log_warn(f"{label} refused: {refused}")
         except (WaitTimeout, RuntimeError, OSError, ValueError) as error:
             self.outcome = Check(f"{label} failed", BAD, str(error))
             ctx.log_warn(f"{label}: {error}")
