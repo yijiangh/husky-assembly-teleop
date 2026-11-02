@@ -158,7 +158,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._seed = random.randrange(2 ** 31)
         self._rng = random.Random(self._seed)
         self._path_check = PathCollisionCheck()
-        #: Start's and Start auto's second press while the robot's arms are not measured (key: the button's label).
+        #: Start's and Start auto's second press while the robot's arms are not measured (key: the button, the arms).
         #: Once given, the run(s) check those arms where last seen, else stowed.
         self._press = SecondPress()
         #: The alert asking for that second press; it goes when the press stops waiting.
@@ -320,8 +320,9 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._enable_numbers()
 
     def _on_run(self, ctx: PluginContext, label: str) -> None:
-        """Start a run of the preview, or stop the run(s) or the follower."""
+        """Start a run of the preview, or stop the run(s) or the follower; Stop forgets a waiting Start."""
         if label == "Stop":
+            self._press.forget()
             if self.running:
                 self._task.cancel()
             else:
@@ -331,6 +332,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         problem = self._start_problem(ctx) or ("" if self._preview else self._preview_problem or "no path")
         if problem:
             self._outcome = f"not started: {problem}"
+            self._press.forget()
             return
         if self._asks_second_press(ctx, "Start"):
             return
@@ -346,6 +348,7 @@ class BaseExperimentPlugin(HuskyPlugin):
             problem = "no lab border: set one in the obstacles plugin"
         if problem:
             self._auto_note = f"auto not started: {problem}"
+            self._press.forget()
             return
         if self._asks_second_press(ctx, "Start auto"):
             return
@@ -373,7 +376,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         unknown = robot is not None and bool(robot.unmeasured)
         if not unknown:
             self._press.forget()
-        elif not self._press.press(ctx.now(), button):
+        elif not self._press.press(ctx.now(), f"{button}: {unknown_parts(robot)}"):
             self._auto_alert = (f"Press {button} again within {SECOND_PRESS_SECONDS:g} s to drive with "
                                 f"{unknown_parts(robot)} not measured: checked where last seen, else stowed")
             self._press_again = self._auto_alert
@@ -838,10 +841,10 @@ class BaseExperimentPlugin(HuskyPlugin):
             plot.draw()
 
     def _draw_waiting(self, now: float) -> None:
-        """Show Start or Start auto amber and "Press again: ..." while it waits for its second press."""
-        waiting = self._press.waiting(now)
+        """Show Start or Start auto amber and "Start?" while it waits for its second press."""
+        waiting = self._press.waiting(now).split(":")[0]
         for group, label in ((self._run_group, "Start"), (self._auto_group, "Start auto")):
-            options = (again_label(label.lower()) if waiting == label else label, *tuple(group.options)[1:])
+            options = (again_label(label) if waiting == label else label, *tuple(group.options)[1:])
             if tuple(group.options) != options:
                 group.options = options
         group = {"Start": self._run_group, "Start auto": self._auto_group}.get(waiting)

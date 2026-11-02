@@ -50,7 +50,7 @@ HUE_NAMES = {GREEN: "green", AMBER: "amber", RED: "red", GREY: "grey", BLUE: "bl
 
 # * Status: chips put white text on these.
 OK = GREEN          # ok, within limit, ready, done; Go and Confirm buttons
-WARN = AMBER        # moving or in progress, over a warn limit, stale, waiting for a second tap, Clearance off
+WARN = AMBER        # moving or in progress, over a warn limit, stale, waiting for a second press, Clearance off
 FAIL = RED          # failed, refused, over a red limit, collision; Stop and Cancel buttons
 NONE = GREY         # no data yet, pending, not done; also small secondary text
 INFO = BLUE         # a fact or an expected end state (screwed tight, sim), as a filled chip

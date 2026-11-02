@@ -650,6 +650,7 @@ class MocapProbePlugin(HuskyPlugin):
         """
         doomed, floor = self._deletable(which), which == "floor"
         if not doomed:
+            self._presses[which].forget()
             self._report(ctx, "no points to delete", floor, log=False)
         elif not self._second_press(ctx, which):
             self._report(ctx, f"press {self._confirms[which][0][1]} again within {SECOND_PRESS_SECONDS:g} s to delete "
@@ -708,11 +709,13 @@ class MocapProbePlugin(HuskyPlugin):
         solution = self._solve(ctx)
         problem = self._floor_problem(ctx, solution)
         if problem:
+            self._presses["export"].forget()
             self._report(ctx, f"not exported: {problem}", floor=True, warn=True)
             return
         relay, frame = ctx.world.mocap_relay, relay_frame(ctx)
         path = self._floor_path(ctx, frame)
         if path is None:
+            self._presses["export"].forget()
             return
         warning = self._floor_warning(ctx, solution)
         if warning and not self._second_press(ctx, "export", anyway=True):
@@ -1498,10 +1501,8 @@ class MocapProbePlugin(HuskyPlugin):
         self._draw_frame(ctx)
         for which, buttons in self._confirms.items():
             waiting = self._presses[which].waiting(ctx.now())
-            what = ("export anyway" if waiting == "anyway" else "export" if which == "export"
-                    else f"delete {len(self._deletable(which))}")
             for button, label, color in buttons:
-                show_waiting(button, bool(waiting), label, what, color)
+                show_waiting(button, bool(waiting), label, color, "Export anyway?" if waiting == "anyway" else "")
         self._result.content = note_line(self._message, self._message_color)
         self._phone_result.content = phone_text(note_line(self._message, self._message_color))
         self._floor_result.content = note_line(self._floor_message, self._floor_message_color)

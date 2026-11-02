@@ -99,7 +99,7 @@ def test_a_moved_mark_exports_only_on_a_second_press_and_too_few_marks_not_at_al
     assert plugin._floor_message.endswith("press again within 5 s to export anyway")
     button = plugin._confirms["export"][0][0]
     plugin.draw(ctx)
-    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Press again: export anyway", rgb(WARN))
+    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Export anyway?", rgb(WARN))
     ctx.now = lambda: NOW + SECOND_PRESS_SECONDS + 1.0
     plugin._export_floor(ctx)
     assert not floor_exports(tmp_path)

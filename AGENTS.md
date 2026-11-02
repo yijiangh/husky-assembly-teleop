@@ -20,7 +20,7 @@ Buttons must stay where the operator's finger or pointer expects them, on the la
 - Never hide or show widgets above other controls; keep a fixed set of chips per view and change their colour
   instead.
 - A button that asks first and acts on its second press uses `ui/second_press.py` (`SecondPress`, `show_waiting`):
-  one window, amber and "Press again: ..." while it waits, a double click never counts.
+  one window, amber and its own label with a "?" while it waits (about as wide), a double click never counts.
 
 ## Code style
 

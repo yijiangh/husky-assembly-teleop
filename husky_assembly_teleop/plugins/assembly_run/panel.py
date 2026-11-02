@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 #: The run buttons.
 CONTINUE_NEWEST, CONTINUE_MATCH, NEW_RUN = "Continue newest", "Continue match", "New run"
-NEW_RUN_AGAIN = again_label("new run")
+NEW_RUN_AGAIN = again_label(NEW_RUN)
 #: Mark done's own colour, shown again once it stops waiting for its second press.
 MARK_COLOR = "yellow"
 
@@ -129,7 +129,7 @@ class RunPanel:
 
     @staticmethod
     def _on_run(plugin: AssemblyRunPlugin, label: str) -> None:
-        """Ask for what a run button says; New run reads "Press again: new run" while it waits for its second press."""
+        """Ask for what a run button says; New run reads "New run?" while it waits for its second press."""
         if label in (NEW_RUN, NEW_RUN_AGAIN):
             plugin.request_new_run()
         elif label == CONTINUE_NEWEST:
@@ -169,7 +169,7 @@ class RunPanel:
         #   18 px); a press waiting for its second one says so on its button.
         action = view.current[0] if view.current is not None else None
         show_waiting(self._mark, action is not None and status.again == f"{AGAIN_MARK} {action}",
-                     f"{action} done" if action is not None else "Mark done", "mark", MARK_COLOR)
+                     f"{action} done" if action is not None else "Mark done", MARK_COLOR)
         new_run = status.again == AGAIN_NEW_RUN
         self._run.options = (CONTINUE_NEWEST, CONTINUE_MATCH, NEW_RUN_AGAIN if new_run else NEW_RUN)
         css = f"<style>{waiting_group_css(self._run, 2)}</style>" if new_run else ""

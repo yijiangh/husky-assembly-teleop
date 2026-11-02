@@ -129,6 +129,21 @@ def test_start_with_the_arms_unknown_asks_for_a_second_press():
     assert not plugin._asks_second_press(measured, "Start auto") and not plugin._unknown_arms
 
 
+def test_stop_forgets_a_start_waiting_for_its_second_press():
+    """Start asks, Stop is pressed: the next Start asks again instead of starting at once."""
+    cindy = robot_config_from_serial("0806", DATA)
+    robot = RobotObject(robot_id(cindy.serial), cindy.model, Pose(), {},
+                        unmeasured=frozenset(cindy.model.movable_joints))
+    base = SimpleNamespace(stop_path=lambda: None)
+    ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot})), now=lambda: 10.0,
+                          world=SimpleNamespace(robots={cindy.serial: SimpleNamespace(base=base)}))
+    plugin = BaseExperimentPlugin()
+    plugin.serial = cindy.serial
+    assert plugin._asks_second_press(ctx, "Start") and plugin._press.waiting(10.0)
+    plugin._on_run(ctx, "Stop")
+    assert plugin._press.waiting(10.0) == ""
+
+
 def test_the_second_press_alert_goes_with_its_window():
     """The "Press Start again within 5 s" alert is taken down once the 5 s have passed; another alert stays."""
     cindy = robot_config_from_serial("0806", DATA)

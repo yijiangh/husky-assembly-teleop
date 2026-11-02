@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from robot_fakes import lease_test_robots, wait_ticks_until
 
-from husky_assembly_teleop.colors import OK, WARN, rgb
+from husky_assembly_teleop.colors import FAIL, OK, WARN, rgb
 from husky_assembly_teleop.shared.planner.planner_panel import CommitConfirm, PlannerPanel, unknown_robots_chip
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
@@ -490,7 +490,7 @@ def test_the_unknown_robots_chip_counts_the_others_and_hides_at_zero():
 
 
 def test_commit_asks_for_a_second_press_within_five_seconds_while_a_robot_is_unknown():
-    """Robot b lost mocap: the first press asks, Commit amber and "Press again: commit"; a second within 5 s sends.
+    """Robot b lost mocap: the first press asks, Commit amber and "Commit?"; a second within 5 s sends.
 
     The second lets b be unknown; a double click does not count; later it asks again. The moving robot is not counted.
     """
@@ -504,7 +504,7 @@ def test_commit_asks_for_a_second_press_within_five_seconds_while_a_robot_is_unk
     assert asked == "press Commit again within 5 s to move with 1 other robot unknown"
     assert allowed == frozenset()
     confirm.draw(ctx.t)
-    assert (confirm.button.color, confirm.button.label) == (rgb(WARN), "Press again: commit")
+    assert (confirm.button.color, confirm.button.label) == (rgb(WARN), "Commit?")
     ctx.t += 0.2
     assert confirm.asks(ctx, ["robots/me"], "Commit")[0], "a double click only asks again"
     ctx.t += 4.0
@@ -527,6 +527,39 @@ def test_commit_asks_twice_for_a_panels_own_warning_too():
     assert asked == "press Commit again within 5 s to move with the arm 40° from stow"
     ctx.t += 1.0
     assert confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 40° from stow"]) == ("", frozenset())
+
+
+def test_the_second_press_counts_only_for_the_plan_and_robots_it_asked_about():
+    """Another robot lost, or another plan, between the presses asks again; a warning's drifting number does not."""
+    model = SimpleNamespace(movable_joints=())
+    b, c = (RobotObject(f"robots/{name}", model, Pose(), {}, base_time=1.0) for name in ("b", "c"))
+    b.base_tracked = False
+    ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={b.id: b, c.id: c})), t=10.0)
+    ctx.now = lambda: ctx.t
+    confirm = CommitConfirm()
+    assert confirm.asks(ctx, ["robots/me"], "Commit", subject=1)[0]
+    c.base_tracked = False
+    ctx.t += 1.0
+    assert confirm.asks(ctx, ["robots/me"], "Commit", subject=1)[0].endswith("2 other robots unknown"), "c is new"
+    ctx.t += 1.0
+    assert confirm.asks(ctx, ["robots/me"], "Commit", subject=2)[0], "a new plan asks again"
+    ctx.t += 1.0
+    assert confirm.asks(ctx, ["robots/me"], "Commit", subject=2) == ("", {"robots/b", "robots/c"})
+    assert confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 40° from stow"], 3)[0]
+    ctx.t += 1.0
+    assert confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 41° from stow"], 3)[1] == {"robots/b", "robots/c"}
+
+
+def test_a_refusal_or_cancel_forgets_a_commit_waiting_for_its_second_press():
+    """Said in red (e.g. "not committed: replan") or Cancel pressed: the next Commit asks again."""
+    panel = Panel()
+    panel._api = SimpleNamespace(cancel_commit=lambda: False)
+    panel._confirm.press.press(0.0)
+    panel._say("not committed: the target changed since planning; replan", FAIL)
+    assert panel._confirm.press.waiting(0.1) == ""
+    panel._confirm.press.press(0.0)
+    panel._cancel_commit()
+    assert panel._confirm.press.waiting(0.1) == ""
 
 
 def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():

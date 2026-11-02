@@ -657,7 +657,7 @@ click `◀ mv` / `mv ▶`: the step under the buttons follows, except while an E
       (the base's `ctrl` chip green)
   - **If not:** button [Run: Vel]. The follower drives only with it.
 - [ ] The run line: `no run yet` on the first Load ever. If it says `continuing run <date>_<time>` (an earlier lab test
-      on these files): button [Run: New run], then once more when it reads `Press again: new run` (no time limit; a
+      on these files): button [Run: New run], then once more when it reads `New run?` (no time limit; a
       second press within half a second counts as a double click and is ignored) → `0/78 done`, every row
       `· pending`; the old folder stays.
   - Part 5's tests are recorded in this run; 6.0 starts another one for the assembly.
@@ -733,7 +733,7 @@ bar; clear floor and workspace.
 
 ### 6.0 A run of its own
 
-- [ ] Under the run: button [Run: New run], then once more when it reads `Press again: new run` (no time limit; a
+- [ ] Under the run: button [Run: New run], then once more when it reads `New run?` (no time limit; a
       second press within half a second counts as a double click and is ignored)
   - **Expect:** a new run (`0/78 done`, every row `· pending`); the test run's folder stays. Once its robot is live the
     run selects the first pending action's first step: `B20_J · B20_J_transfer`.
@@ -1101,7 +1101,7 @@ tmux.sh`); given to one script in its pane, only that one (`REAL_LAB_MOTIVE=192.
 - **A motion must stop now:** the robot's remote e-stop; or `Stop all (Esc)` (each robot then waits for its `Resume`
   under Health).
 - **Redo an action:** select it → button [Reopen] (pending again) → its steps again from where the robots stand.
-- **Start the whole test over:** button [Run: New run], then once more when it reads `Press again: new run`.
+- **Start the whole test over:** button [Run: New run], then once more when it reads `New run?`.
   Nothing is deleted: the old run's folder stays.
 - **The monitor hangs or the page shows nothing new:** reload the page first; then restart the monitor (7.f).
 

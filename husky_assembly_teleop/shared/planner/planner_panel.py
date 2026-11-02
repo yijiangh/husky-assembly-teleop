@@ -12,6 +12,7 @@ panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers.
 from __future__ import annotations
 
 import asyncio
+import re
 from html import escape
 from typing import TYPE_CHECKING, Callable, Iterable, Sequence
 
@@ -239,7 +240,7 @@ class PlannerPanel(HuskyPlugin):
             self._say(f"not committed: {change}; replan", FAIL)
             return
         asked, unknown = self._confirm.asks(ctx, [robot_id(plan.request.serial)], "Commit",
-                                            self.commit_warnings(ctx, plan))
+                                            self.commit_warnings(ctx, plan), plan.id)
         if asked:
             self._say(asked, BUSY)
             return
@@ -247,8 +248,9 @@ class PlannerPanel(HuskyPlugin):
         ctx.spawn(f"commit plan {plan.id}", self._report(self._api.commit(plan.id, allowed)))
 
     def _cancel_commit(self) -> None:
-        """Stop the motion a commit started, and say so."""
+        """Stop the motion a commit started, and say so; a Commit waiting for its second press waits no more."""
         self._used.touch()
+        self._confirm.press.forget()
         if self._api.cancel_commit():
             self._say("commit cancelled: the robot stops")
         else:
@@ -283,8 +285,13 @@ class PlannerPanel(HuskyPlugin):
         return selection, serial, robot.name
 
     def _say(self, message: str, color: str = NONE) -> None:
-        """Set the one line of feedback under the buttons: FAIL only for a failure, BUSY for a question or warning."""
+        """Set the one line of feedback under the buttons: FAIL only for a failure, BUSY for a question or warning.
+
+        * A failure (a refusal) forgets a Commit waiting for its second press: the next press asks again.
+        """
         self._message, self._message_color = message, color
+        if color == FAIL:
+            self._confirm.press.forget()
 
     # --- --- --- --- --- TICK --- --- --- --- ---
 
@@ -367,7 +374,8 @@ class CommitConfirm:
     """Commit's second press (`SecondPress`): while other robots are unknown, or the panel warns, the first only asks.
 
     The second press lets the robots unknown then be unknown during the motion: its clearance checks them as stand-ins,
-    and soft stops for any other robot that is not measured (`ctx.clearance`, `unknown_robots`).
+    and soft stops for any other robot that is not measured (`ctx.clearance`, `unknown_robots`). It counts only for the
+    plan and the reasons the first asked about: another robot lost, or a new plan, asks again.
     """
 
     #: For Commit's hover text.
@@ -381,11 +389,9 @@ class CommitConfirm:
         self._label = ""
         self._color: tuple[int, int, int] | str | None = None
         self._kept = False
-        #: The label `asks` was given, lower case, for "Press again: commit".
-        self._what = ""
 
-    def asks(self, ctx: PluginContext, acting: Iterable[str], label: str,
-             warnings: Sequence[str] = ()) -> tuple[str, frozenset[str]]:
+    def asks(self, ctx: PluginContext, acting: Iterable[str], label: str, warnings: Sequence[str] = (),
+             subject: object = None) -> tuple[str, frozenset[str]]:
         """What to tell the operator instead of sending ("" to send now), and the robots the commit lets be unknown.
 
         Args:
@@ -393,6 +399,7 @@ class CommitConfirm:
             acting: Ids of the robots the commit moves; not counted.
             label: The button's label, for the message.
             warnings: More reasons to ask first, e.g. "the arm 40° from its stow pose".
+            subject: What is sent, e.g. the plan's id: a second press counts only for the same one.
 
         Returns:
             tuple[str, frozenset[str]]: The question, or ""; the ids of the other robots not measured now.
@@ -403,21 +410,22 @@ class CommitConfirm:
         if not reasons:
             self.press.forget()
             return "", unknown
-        if self.press.press(ctx.now()):
+        # * The warnings without their numbers, which drift between presses (e.g. "the arm 40° from stow").
+        key = repr((subject, sorted(unknown), [re.sub(r"[\d.]+", "#", warning) for warning in warnings]))
+        if self.press.press(ctx.now(), key):
             return "", unknown
-        self._what = label.lower()
         return (f"press {label} again within {SECOND_PRESS_SECONDS:g} s to move with "
                 f"{'; '.join(reasons)}"), frozenset()
 
     def draw(self, now: float) -> None:
-        """Make the button amber and "Press again: ..." while it waits for its second press, as it was otherwise."""
+        """Make the button amber and "Commit?" while it waits for its second press, as it was otherwise."""
         if self.button is None:
             return
         if not self._kept:
             self._color, self._kept = self.button.color, True
-        if not self.button.label.startswith(again_label("")):
-            self._label = self.button.label  # * the owner may relabel it, e.g. the guide's "Go: move"
-        show_waiting(self.button, bool(self.press.waiting(now)), self._label, self._what, self._color)
+        if self.button.label != again_label(self._label):
+            self._label = self.button.label  # * its owner's own label, also after the owner changed it
+        show_waiting(self.button, bool(self.press.waiting(now)), self._label, self._color)
 
 
 def unknown_robots_chip(snapshot: Scene, acting: Iterable[str]) -> str:

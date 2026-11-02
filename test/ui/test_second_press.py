@@ -29,11 +29,13 @@ def test_another_key_asks_anew_and_no_limit_waits_until_forgotten():
 
 
 def test_a_waiting_button_is_amber_and_says_press_again():
-    """Amber and "Press again: <what>" while waiting; its own label and colour once it stops."""
+    """Amber and its own label with a "?" (or the one given) while waiting; its own label and colour once it stops."""
     button = SimpleNamespace(label="Export", color=None)
-    show_waiting(button, True, "Export", "export anyway", None)
-    assert (button.label, button.color) == ("Press again: export anyway", rgb(WARN))
-    show_waiting(button, False, "Export", "export anyway", None)
+    show_waiting(button, True, "Export", None)
+    assert (button.label, button.color) == ("Export?", rgb(WARN))
+    show_waiting(button, True, "Export", None, "Export anyway?")
+    assert button.label == "Export anyway?"
+    show_waiting(button, False, "Export", None)
     assert (button.label, button.color) == ("Export", None)
     group = SimpleNamespace(_impl=SimpleNamespace(uuid="g1"))
     assert waiting_group_css(group, 2).startswith('div:has(> div > p > label[for="g1"]) button:nth-child(3)')

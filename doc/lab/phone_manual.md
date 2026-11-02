@@ -66,8 +66,8 @@ From top to bottom:
 - **Health banner**: "ALL GREEN", or how many problems there are; shown on every tab.
 - **Tabs**: one per plugin, below.
 
-Buttons that delete or export act on a second tap: the first turns them amber (**Press again: ...**), and a second
-within 5 s does it (a double tap does not count).
+Buttons that delete or export act on a second tap: the first turns them amber with a **?** (e.g. **Delete all
+points?**), and a second within 5 s does it (a double tap does not count).
 
 ### Control
 

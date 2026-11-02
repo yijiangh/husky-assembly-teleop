@@ -1,12 +1,13 @@
 """
-A button that acts on its second press: the first press only asks, and the button reads "Press again: ..." in amber.
+A button that acts on its second press: the first press only asks, and the button turns amber with a "?" ("Commit?").
 
 One look and one timing for every such button (Commit, Exec, Start, Export floor calibration, New run, Done, ...):
 
 - The second press counts within SECOND_PRESS_SECONDS of the first (or with no limit), not sooner than
   DOUBLE_CLICK_SECONDS: a double click never answers the question it raised.
-- While it waits the button is amber (WARN) and reads `again_label(what)`; the question goes on the panel's message
-  line, where it stays until the next message.
+- While it waits the button is amber (WARN) and reads `again_label(label)`: its own label, about as wide; the question
+  goes on the panel's message line.
+- A press counts only for what it asked about (`key`): ask about a new plan or new reasons and it asks again.
 """
 
 from __future__ import annotations
@@ -24,9 +25,9 @@ SECOND_PRESS_SECONDS = 5.0
 DOUBLE_CLICK_SECONDS = 0.5
 
 
-def again_label(what: str) -> str:
-    """The label of a button waiting for its second press, e.g. "Press again: commit"."""
-    return f"Press again: {what}"
+def again_label(label: str) -> str:
+    """The label of a button waiting for its second press: its own with a question mark, e.g. "Commit?"."""
+    return f"{label}?"
 
 
 class SecondPress:
@@ -80,10 +81,10 @@ class SecondPress:
                 else f"Asks first: press it again within {self.seconds:g} s to go on.")
 
 
-def show_waiting(button: viser.GuiButtonHandle, waiting: bool, label: str, what: str,
-                 color: tuple[int, int, int] | str | None) -> None:
-    """Draw `button` as waiting for its second press (amber, `again_label(what)`) or at rest (`label`, `color`)."""
-    label, color = (again_label(what), rgb(WARN)) if waiting else (label, color)
+def show_waiting(button: viser.GuiButtonHandle, waiting: bool, label: str, color: tuple[int, int, int] | str | None,
+                 again: str = "") -> None:
+    """Draw `button` as waiting for its second press (amber, `again` or `again_label(label)`) or at rest."""
+    label, color = (again or again_label(label), rgb(WARN)) if waiting else (label, color)
     if button.label != label:
         button.label = label
     if button.color != color:

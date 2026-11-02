@@ -280,7 +280,8 @@ class PlannerPlugin(HuskyPlugin):
         - ! Call it last before the send, after every other refusal, so the second press is never asked for in vain.
         """
         acting = [robot_id(serial) for serial in (self._path_serial or self.serial,) if serial]
-        asked, self._unknown_allowed = self._confirm.asks(ctx, acting, "Exec")
+        # * Keyed on the path itself: a new plan (or a re-timed one) asks again.
+        asked, self._unknown_allowed = self._confirm.asks(ctx, acting, "Exec", subject=id(self.path))
         if asked:
             self._say(asked, color=BUSY)
         return bool(asked)
@@ -306,6 +307,8 @@ class PlannerPlugin(HuskyPlugin):
         """
         color = color or (FAIL if failed else NONE)
         self._message, self._message_failed, self._message_color = message, color == FAIL, color
+        if color == FAIL:
+            self._confirm.press.forget()  # * a refusal: the next Exec asks again
 
     # --- --- --- --- --- TICK --- --- --- --- ---
 

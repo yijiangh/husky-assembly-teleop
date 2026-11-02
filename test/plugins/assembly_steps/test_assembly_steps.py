@@ -522,7 +522,7 @@ def test_exec_asks_for_a_second_press_while_another_robot_is_unknown():
         assert lab.plugin._message == "press Exec again within 5 s to move with 1 other robot unknown"
         lab.update()
         assert lab.plugin._confirm.button.color == rgb(WARN) and ">1 robot unknown<" in lab.html()
-        assert lab.plugin._confirm.button.label == "Press again: exec"
+        assert lab.plugin._confirm.button.label == "Exec?"
         lab.ctx.t += 1.0
         lab.plugin._commit(lab.ctx)
         assert len(lab.executor.requests) == 1 and lab.plugin.plan_state == "sent"

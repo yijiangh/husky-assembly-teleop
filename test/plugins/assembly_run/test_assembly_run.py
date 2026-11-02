@@ -474,7 +474,7 @@ def test_the_panel_and_the_process_rows_show_the_run_and_its_buttons_ask_the_plu
         assert plugin.view.current[0] == "B1_H_hold"
         run.callback("New run")
         plugin.draw(lab.ctx)
-        assert run.options[2] == "Press again: new run" and mark.label == "B1_H_hold done"
+        assert run.options[2] == "New run?" and mark.label == "B1_H_hold done"
         assert "cindy     live now" in plugin._panel._robots.content and "<style>" in gui.widgets[-1].content
         assert plugin._panel._status.content.count('class="chip-line"') == 1
         reopen.callback()
@@ -497,7 +497,7 @@ def test_an_assumed_mark_shows_in_the_process_rows(tmp_path):
         mark, _reopen = lab.ctx.gui.of_kind("button")
         mark.callback()
         plugin.draw(lab.ctx)
-        assert mark.label == "Press again: mark"
+        assert mark.label == "B1_J_joint done?"
         lab.ctx.t += 1.0
         mark.callback()
         await settle(plugin)

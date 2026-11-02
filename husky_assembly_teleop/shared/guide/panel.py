@@ -313,7 +313,7 @@ class GuidePanel:
                               f"{SECOND_PRESS_SECONDS:g} s to {anyway.lower()}: it goes on as it stands."))
                if asked else ""))
         self._text_html.content = section("what to do", CURRENT) + block(f"<div>{escape(step.instructions)}</div>")
-        self._draw_controls(unfinished(state), again_label(anyway.lower()) if asked else "Done")
+        self._draw_controls(unfinished(state), again_label(anyway) if asked else "Done")
         step.draw(ctx)
 
     def _row(self, index: int, state: Check, needed: bool) -> str:
