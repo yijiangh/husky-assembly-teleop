@@ -63,17 +63,14 @@ def test_a_servo_reading_is_one_point_per_pass_and_a_new_servo_starts_over():
 
 
 def test_a_one_arm_reading_leaves_the_other_family_blank():
-    """A support robot's reading fills the first family; the second is NaN, never zero."""
+    """A support robot's reading (side "arm") fills the first family; the second is NaN, never zero."""
     plots, _gui, _window = _plots()
     reading = _reading(3)
     reading["tool0"] = {"arm": reading["tool0"]["left"]}
     plots.servo_reading(reading)
     row = plots._servo.values("tool0_pos_err")[-1]
-    assert np.all(np.isnan(row)), "a side that is neither left nor right is not drawn"
-    reading["tool0"] = {"left": reading["tool0"]["arm"]}
-    plots.servo_reading(reading)
-    row = plots._servo.values("tool0_pos_err")[-1]
     assert row[:4].tolist() == [1.0, 2.0, 2.0, 3.0] and np.all(np.isnan(row[4:]))
+    np.testing.assert_allclose(plots._servo.values("tool0_rot_err")[-1][:3], [0.1, 0.2, 0.3])
 
 
 def test_compliant_samples_split_force_and_torque_per_arm_and_say_when_a_wrench_is_missing():

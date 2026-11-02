@@ -88,6 +88,8 @@ class ExecPlots:
         """One point per pass at x = the pass: tool0 errors per side, the base's drift, the bar's deviation."""
         k = float(reading.get("iter", len(self._servo.times("tool0_pos_err"))))
         tool0, base, bar = reading.get("tool0", {}), reading.get("base", {}), reading.get("bar") or {}
+        if "arm" in tool0:  # a one-arm robot's side (`arm_side`)
+            tool0 = {SIDES[0]: tool0["arm"]}
         pos = [value for side in SIDES for value in _side(tool0, side, "pos_err_mm", "pos_norm_mm", 4)]
         rot = [value for side in SIDES for value in _side(tool0, side, "rot_err_deg", None, 3)]
         base_pos = [*base.get("pos_diff_mm", [np.nan] * 3), base.get("pos_norm_mm", np.nan)]
