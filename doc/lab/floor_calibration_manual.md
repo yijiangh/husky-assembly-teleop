@@ -46,8 +46,9 @@ Make one:
 6. **Hold-out check** (optional): without recording, hold the tip on a few new floor spots, some near the edges, and
    read "probe above floor": each should stay within about the plane's max, and not grow with the distance from the
    points.
-7. **Export floor calibration.** On the laptop one press; on the phone two taps within 3 s. With a warning (a mark
-   off, an anchor not read) it says why, the button turns orange, and a second press within 2 s exports anyway. The
+7. **Export floor calibration.** On the laptop one press; on the phone two taps within 5 s. With a warning (a mark
+   off, an anchor not read) it says why, the button turns amber (**Press again: export anyway**), and a second press
+   within 5 s exports anyway. The
    file goes to `<Drive>/data_experiment/calibration_data/<YYYYMMDD>/<YYYYMMDD>_<HHMMSS>_mocap_floor_calibration.json`
    (a simulation's relay announces its own folder). Nothing changes for anyone yet.
 8. **Apply floor calibration.** Within 30 s the relay finds the new file and the chip "newer floor calibration"

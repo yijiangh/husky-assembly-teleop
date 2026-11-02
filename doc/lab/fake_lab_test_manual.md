@@ -389,7 +389,7 @@ reload the page and click **Load**.
 **Expect:** `continuing run <date>_<time>`; the done actions are still green; the settings are the run's (the
 workaround box is on, Rhino obstacles off). The robots keep where they are across the restart.
 
-**7.3** Under the run, **New run** twice (the second click waits as long as you need) makes a new run folder (`0/78 done`, every row pending); the old
+**7.3** Under the run, **New run** twice (the second press waits as long as you need) makes a new run folder (`0/78 done`, every row pending); the old
 folder stays.
 
 ---

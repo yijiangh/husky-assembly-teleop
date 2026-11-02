@@ -14,7 +14,8 @@ from scipy.spatial.transform import Rotation
 
 from repo_paths import DATA
 from husky_assembly_teleop.colors import NONE, WARN, rgb
-from husky_assembly_teleop.plugins.mocap_probe import CONFIRM_SECONDS, MocapProbePlugin
+from husky_assembly_teleop.plugins.mocap_probe import MocapProbePlugin
+from husky_assembly_teleop.ui.second_press import SECOND_PRESS_SECONDS
 from husky_assembly_teleop.robot_interface.mocap_definitions import read_cameras
 from husky_assembly_teleop.robot_interface.mocap_relay import FloorCalibrationState, MocapRelayState
 from husky_assembly_teleop.world.calibration_sessions import SESSIONS_FOLDER
@@ -183,7 +184,7 @@ def test_without_cameras_from_the_relay_nothing_is_exported(server, tmp_path):
 
 
 def test_phone_delete_all_needs_a_second_tap(server, tmp_path):
-    """The first tap only arms the button (red, with the count); a second tap within CONFIRM_SECONDS deletes."""
+    """The first tap only asks (amber, with the count); a second within SECOND_PRESS_SECONDS deletes, a double not."""
     ctx = make_ctx(server, tmp_path)
     plugin = MocapProbePlugin()
     plugin.setup(ctx)
@@ -195,7 +196,10 @@ def test_phone_delete_all_needs_a_second_tap(server, tmp_path):
     plugin._delete_all(ctx, "floor")
     plugin.draw(ctx)
     assert len(plugin.samples) == 5
-    assert (floor_button.label, floor_button.color) == ("Tap again: delete 3", rgb(WARN))
+    assert (floor_button.label, floor_button.color) == ("Press again: delete 3", rgb(WARN))
+    plugin._delete_all(ctx, "floor")
+    assert len(plugin.samples) == 5, "a double click"
+    ctx.now = lambda: NOW + 1.0
     plugin._delete_all(ctx, "floor")
     plugin.draw(ctx)
     assert [sample.name for sample in plugin.samples] == ["table_1", "table_2"]
@@ -203,9 +207,10 @@ def test_phone_delete_all_needs_a_second_tap(server, tmp_path):
 
     # * A second tap too late only arms the button again.
     plugin._delete_all(ctx, "all")
-    ctx.now = lambda: NOW + CONFIRM_SECONDS + 1.0
+    ctx.now = lambda: NOW + SECOND_PRESS_SECONDS + 2.0
     plugin._delete_all(ctx, "all")
     assert len(plugin.samples) == 2
+    ctx.now = lambda: NOW + SECOND_PRESS_SECONDS + 3.0
     plugin._delete_all(ctx, "all")
     plugin.draw(ctx)
     assert not plugin.samples and all_button.label == "Delete all points"
@@ -227,8 +232,9 @@ def test_phone_export_needs_a_second_tap(server, tmp_path):
     button = plugin._confirms["export"][1][0]
     plugin._export_floor(ctx, phone=True)
     plugin.draw(ctx)
-    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Tap again: export", rgb(WARN))
-    assert "again within 3 s" in plugin._floor_result.content
+    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Press again: export", rgb(WARN))
+    assert "again within 5 s" in plugin._floor_result.content
+    ctx.now = lambda: NOW + 1.0
     plugin._export_floor(ctx, phone=True)
     plugin.draw(ctx)
     assert len(floor_exports(tmp_path)) == 1 and button.label == "Export floor calibration"

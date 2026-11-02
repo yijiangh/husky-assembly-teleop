@@ -57,7 +57,7 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   default pose with its arms stowed (the values the snapshot keeps); the process planner lays the step's design over
   it first. Each one is a warning for the operator: the 3D view draws an assumed base or arm see-through, and each
   planner shows an amber count chip, named on hover, and asks for a second press of Commit (Exec in the Assembly tab)
-  within 2 s, which lets those robots be unknown during the motion (`unknown_robots` of a clearance).
+  within 5 s (`ui/second_press.py`), which lets those robots be unknown during the motion (`unknown_robots` of a clearance).
   `world/stand_ins.py`, `shared/assembly_planning/scene_for.py`.
 - **ghost**: a see-through robot copy for a target, a plan or a preview: blue where a robot should go (the process
   panel's one robot per movement, the arm and base planners' targets), green where a plan has it; the planner panels

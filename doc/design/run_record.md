@@ -65,7 +65,7 @@ Rewritten (atomically: a temp file, then a rename) whenever something changes, s
 - `current` is the step the operator is on; it follows the process panel and is what the monitor selects again at
   the next start.
 - An action's `status` is `pending` or `done`; `seq` numbers the marks; `assumed` says the robot was not live at
-  Mark done and the export's end was written instead (the second click).
+  Mark done and the export's end was written instead (the second press).
 - `ends` is where every live robot stood when the action was marked: its base pose and every joint, as measured
   then (`live_record`). `robots` keeps the newest end per robot, where it was last recorded, for the report
   (section 4).
@@ -123,7 +123,7 @@ The `assembly_run` plugin owns the run. Every other plugin hands it what to reco
 and never touches the files; `assembly_run` writes on a thread of its own (`writes.py`), so a slow disk never stalls
 a tick, and a write that fails is said in the log and tried again. The panel's **Mark done** and **Reopen** are its
 own: Mark done takes the snapshot of every live robot (base within 1 s, joints within 0.5 s) and writes the action's
-`ends`; a robot not live gets the export's end on a second click, marked `assumed`.
+`ends`; a robot not live gets the export's end on a second press, marked `assumed`.
 
 On Load, the plugin reads the runs folder: the newest run made on these very files (the hashes match) is continued
 without a question; otherwise the three buttons. Nothing is written until the runs were read, so a half-read folder

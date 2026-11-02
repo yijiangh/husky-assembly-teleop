@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping
 
 from ...plugin_api.context import PluginContext
 from ...shared.assembly_run_contract import exported_end, first_pending, is_live, live_record
-from ...shared.execution.operator import PROMPT_ARM_S
 from ...shared.assembly_planning.steps import first_step
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
@@ -29,7 +28,7 @@ if TYPE_CHECKING:
     from ...shared.assembly_planning.process_steps import LoadedProcess
     from ...shared.process_contract import ProcessContract
 
-#: What waits for its second click (`AssemblyRunPlugin.again`): a new run, or marking an action ("mark <action id>").
+#: What waits for its second press (`AssemblyRunPlugin.again`): a new run, or marking an action ("mark <action id>").
 AGAIN_NEW_RUN, AGAIN_MARK = "new run", "mark"
 #: Each number setting: what a refusal calls it, its range and its unit.
 NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
@@ -95,7 +94,7 @@ class RunWrites:
         return ""
 
     async def _mark_assumed(self, ctx: PluginContext, action_id: str, acting: str, robot: str) -> None:
-        """Mark an action whose robot is not live done with the export's end, assumed (the second click)."""
+        """Mark an action whose robot is not live done with the export's end, assumed (the second press)."""
         end = exported_end(self._loaded, action_id, at=stamp())
         if end is None:
             self._say(f"{action_id} not marked: the export leaves {robot}'s base or joints open", failed=True)
@@ -187,7 +186,7 @@ class RunWrites:
         ctx.log_info(f"started run {self._run.folder}{since}")
 
     async def _new_run(self, ctx: PluginContext) -> None:
-        """Start a new run (the second click); then the first action is current."""
+        """Start a new run (the second press); then the first action is current."""
         if self._refused("New run", self._step_running(ctx)):
             return
         self._starting = None
@@ -395,38 +394,18 @@ class RunWrites:
             ctx.log_error(f"could not {what}: {job.exception()!r}")
             self._changed()
 
-    def _arm(self, ctx: PluginContext, key: str, message: str) -> None:
-        """Wait, with no time limit, for the second click of `key` (`again`), and say what it will do.
+    def _pressed_again(self, ctx: PluginContext, key: str, message: str) -> bool:
+        """Whether this press is the second one `key` waits for (`SecondPress`); else it asks, saying `message`.
 
         Args:
             ctx: The plugin's context, for the clock.
             key: What waits: AGAIN_NEW_RUN, or AGAIN_MARK and the action id.
-            message: What the second click does, for the message line.
+            message: What a second press does, for the message line.
         """
-        self._again = (key, ctx.now())
+        if self._press.press(ctx.now(), key):
+            return True
         self._say(message)
-
-    def _clicked_again(self, ctx: PluginContext, key: str, message: str) -> bool:
-        """Whether this click is the second one `key` waits for; the first click arms it and says `message`.
-
-        ! A second click within PROMPT_ARM_S of the first is a double click: ignored, the first one still waits.
-
-        Args:
-            ctx: The plugin's context, for the clock.
-            key: What waits: AGAIN_NEW_RUN, or AGAIN_MARK and the action id.
-            message: What a second click does, for the message line.
-
-        Returns:
-            bool: True when it confirms (and the wait ends); False when it armed the wait or was too soon.
-        """
-        if self.again != key:
-            self._arm(ctx, key, message)
-            return False
-        if ctx.now() - self._again[1] < PROMPT_ARM_S:
-            self._say(f"ignored: clicked again within {PROMPT_ARM_S} s (a double click?). {message}")
-            return False
-        self._again = None
-        return True
+        return False
 
     def _spawn(self, ctx: PluginContext, label: str, work: Coroutine) -> asyncio.Task:
         """Start a task of this process's run, cancelled when another process loads."""

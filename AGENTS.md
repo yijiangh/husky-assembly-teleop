@@ -19,6 +19,8 @@ Buttons must stay where the operator's finger or pointer expects them, on the la
 - Text that comes and goes (questions, refusals, readouts that grow) goes below the buttons.
 - Never hide or show widgets above other controls; keep a fixed set of chips per view and change their colour
   instead.
+- A button that asks first and acts on its second press uses `ui/second_press.py` (`SecondPress`, `show_waiting`):
+  one window, amber and "Press again: ..." while it waits, a double click never counts.
 
 ## Code style
 

@@ -49,10 +49,10 @@ from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState,
 from ...robot_interface.mocap_state import pose_lost
 from ...shared.collisions_contract import CollisionsContract
 from ...shared.obstacles_contract import ObstaclesContract
-from ...shared.planner.planner_panel import COMMIT_CONFIRM_SECONDS
 from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
+from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, again_label, waiting_group_css
 from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, chip_line, hover, section, values,
                          warning)
 from ...ui.trace_plot import TracePlot
@@ -158,11 +158,11 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._seed = random.randrange(2 ** 31)
         self._rng = random.Random(self._seed)
         self._path_check = PathCollisionCheck()
-        #: Start's and Start auto's second press while the robot's arms are not measured: button -> ROS time it waits
-        #: until. Once given, the run(s) check those arms where last seen, else stowed.
-        self._confirm: dict[str, float] = {}
-        #: The alert asking for that second press and the ROS time its window ends; it goes when the window does.
-        self._press_again: tuple[str, float] = ("", -math.inf)
+        #: Start's and Start auto's second press while the robot's arms are not measured (key: the button's label).
+        #: Once given, the run(s) check those arms where last seen, else stowed.
+        self._press = SecondPress()
+        #: The alert asking for that second press; it goes when the press stops waiting.
+        self._press_again = ""
         self._unknown_arms = False
         #: The run's error measurement, its latest sample and phase, and the time of the mocap fix measured last.
         self._tracker: Tracker | None = None
@@ -206,12 +206,13 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._angular = gui.add_slider("Turn °/s", 5.0, 60.0, 5.0, 30.0, hint="As Speed, for turning")
 
             gui.add_html(section("run", SECTION_CTRL))
-            run = gui.add_button_group("Run", ["Start", "Stop"],
-                                       hint="Start: send the preview to the follower. Stop: stop the run(s)")
+            run = self._run_group = gui.add_button_group("Run", ["Start", "Stop"],
+                                                         hint="Start: send the preview to the follower. Stop: stop "
+                                                              f"the run(s). {self._press.hint}")
             self._recording = gui.add_checkbox("Record", initial_value=True,
                                                hint="Save each run, with a plot, to the Drive under <experiment>.")
-            auto = gui.add_button_group("Auto", ["Start auto"],
-                                        hint=f"Run experiments from where the robot stands at {SPEED[0]} m/s and "
+            auto = self._auto_group = gui.add_button_group(
+                "Auto", ["Start auto"], hint=f"Run experiments from where the robot stands at {SPEED[0]} m/s and "
                                              f"{SPEED[1]:.0f}°/s, each checked to keep {PATH_CLEARANCE:.2f} m from "
                                              f"everything. Stop ends them")
             self._auto_paths = gui.add_dropdown(
@@ -233,6 +234,8 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._numbers = {p.name: gui.add_number(p.label, p.default, step=p.step, hint=p.hint)
                              for p in PARAMETERS}
             self._details = gui.add_html("")
+            # * Only a <style>: the Start or Start auto waiting for its second press, amber.
+            self._waiting_css = gui.add_html("")
 
             # * The live plots in a tab, in a folder closed at start; last, so opening it moves no button.
             live = self._live_signals(ctx)
@@ -368,22 +371,22 @@ class BaseExperimentPlugin(HuskyPlugin):
         """
         robot = ctx.scene.snapshot.robots.get(robot_id(self.serial))
         unknown = robot is not None and bool(robot.unmeasured)
-        if unknown and ctx.now() > self._confirm.pop(button, -math.inf):
-            self._confirm[button] = ctx.now() + COMMIT_CONFIRM_SECONDS
-            self._auto_alert = (f"Press {button} again within {COMMIT_CONFIRM_SECONDS:g} s to drive with "
+        if not unknown:
+            self._press.forget()
+        elif not self._press.press(ctx.now(), button):
+            self._auto_alert = (f"Press {button} again within {SECOND_PRESS_SECONDS:g} s to drive with "
                                 f"{unknown_parts(robot)} not measured: checked where last seen, else stowed")
-            self._press_again = self._auto_alert, self._confirm[button]
+            self._press_again = self._auto_alert
             return True
         self._unknown_arms = unknown
         return False
 
     def _drop_press_again(self, now: float) -> None:
         """Take the second-press alert down once its window has passed (a later alert stays)."""
-        text, until = self._press_again
-        if text and now > until:
-            if self._auto_alert == text:
+        if self._press_again and not self._press.waiting(now):
+            if self._auto_alert == self._press_again:
                 self._auto_alert = ""
-            self._press_again = "", -math.inf
+            self._press_again = ""
 
     # --- --- --- --- --- RUNS (tasks) --- --- --- --- ---
 
@@ -820,6 +823,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         if self.serial is None:
             return
         self._robot.value = self.serial
+        self._draw_waiting(ctx.now())
         preview = None if self.running or self._preview is None else self._preview.path
         self._markers.paths(preview, None if self._sent is None else self._sent.path)
         trail = None if self._record is None or self._sent is None else \
@@ -832,6 +836,18 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._progress.value = self._progress_percent()
         for plot in self._plots:
             plot.draw()
+
+    def _draw_waiting(self, now: float) -> None:
+        """Show Start or Start auto amber and "Press again: ..." while it waits for its second press."""
+        waiting = self._press.waiting(now)
+        for group, label in ((self._run_group, "Start"), (self._auto_group, "Start auto")):
+            options = (again_label(label.lower()) if waiting == label else label, *tuple(group.options)[1:])
+            if tuple(group.options) != options:
+                group.options = options
+        group = {"Start": self._run_group, "Start auto": self._auto_group}.get(waiting)
+        css = f"<style>{waiting_group_css(group, 0)}</style>" if group is not None else ""
+        if self._waiting_css.content != css:
+            self._waiting_css.content = css
 
     def _status_html(self, ctx: PluginContext) -> str:
         """Chips on one line: robot, mocap, follower, velocity controller, run."""

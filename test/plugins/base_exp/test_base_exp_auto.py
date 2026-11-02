@@ -15,7 +15,7 @@ from husky_assembly_teleop.plugins.base_exp.auto import (GRID, PATH_CLEARANCE, S
                                                          standard_set)
 from husky_assembly_teleop.plugins.base_exp.plan import plan_from
 from husky_assembly_teleop.plugins.base_exp.plugin import BaseExperimentPlugin
-from husky_assembly_teleop.shared.planner.planner_panel import COMMIT_CONFIRM_SECONDS
+from husky_assembly_teleop.ui.second_press import SECOND_PRESS_SECONDS
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject
@@ -122,7 +122,7 @@ def test_start_with_the_arms_unknown_asks_for_a_second_press():
     assert not plugin._asks_second_press(ctx, "Start auto") and plugin._unknown_arms
     now[0] += 1.0
     assert plugin._asks_second_press(ctx, "Start")
-    now[0] += 5.0
+    now[0] += 6.0
     assert plugin._asks_second_press(ctx, "Start")
     measured = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot.__class__(
         robot.id, cindy.model, Pose(), {})})), now=lambda: now[0])
@@ -130,7 +130,7 @@ def test_start_with_the_arms_unknown_asks_for_a_second_press():
 
 
 def test_the_second_press_alert_goes_with_its_window():
-    """The "Press Start again within 2 s" alert is taken down once the 2 s have passed; another alert stays."""
+    """The "Press Start again within 5 s" alert is taken down once the 5 s have passed; another alert stays."""
     cindy = robot_config_from_serial("0806", DATA)
     robot = RobotObject(robot_id(cindy.serial), cindy.model, Pose(), {},
                         unmeasured=frozenset(cindy.model.movable_joints))
@@ -138,13 +138,13 @@ def test_the_second_press_alert_goes_with_its_window():
     plugin = BaseExperimentPlugin()
     plugin.serial = cindy.serial
     assert plugin._asks_second_press(ctx, "Start")
-    plugin._drop_press_again(10.0 + COMMIT_CONFIRM_SECONDS / 2)
+    plugin._drop_press_again(10.0 + SECOND_PRESS_SECONDS / 2)
     assert plugin._auto_alert.startswith("Press Start again")
-    plugin._drop_press_again(10.0 + COMMIT_CONFIRM_SECONDS + 0.1)
+    plugin._drop_press_again(10.0 + SECOND_PRESS_SECONDS + 0.1)
     assert plugin._auto_alert == ""
     assert plugin._asks_second_press(ctx, "Start auto")
     plugin._auto_alert = "Automation stopped"
-    plugin._drop_press_again(10.0 + COMMIT_CONFIRM_SECONDS + 0.1)
+    plugin._drop_press_again(10.0 + SECOND_PRESS_SECONDS + 0.1)
     assert plugin._auto_alert == "Automation stopped"
 
 

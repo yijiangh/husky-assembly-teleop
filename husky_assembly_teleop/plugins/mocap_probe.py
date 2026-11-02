@@ -9,9 +9,8 @@ The floor calibration sits in its own "Floor calibration" folder, closed at star
 big Status tab, readable from across the room, in the "Big status" folder at the bottom, closed at start.
 The phone's Mocap tab has the same big status over two tabs: Points (Label, Record point, Map coverage, a top-down
 map while mapping with the coverage map, obstacles, robots, points and probe, and the last points) and Floor.
-Its delete-all buttons (every point, or the floor calibration's) and Export floor calibration act on a second tap.
-An export with a warning (a mark off, an anchor not read) goes on a second press within FORCE_SECONDS, the button
-amber meanwhile, on the laptop too.
+Its delete-all buttons (every point, or the floor calibration's) and Export floor calibration act on a second press
+(`SecondPress`). An export with a warning (a mark off, an anchor not read) takes a second press on the laptop too.
 
 Floor calibration: "Floor point" records a "floor" sample, "Mark" one of the marks on the floor (origin, mark1..3),
 "Anchor" the tip near one of Motive's anchor markers: a hint, the anchor being that marker, read with the probe away
@@ -75,6 +74,7 @@ from ..shared.execution.moving import moving_reason
 from ..shared.guide.panel import set_changed
 from ..ui.checklist import CheckList
 from ..ui.phone import big_buttons, phone_text
+from ..ui.second_press import SECOND_PRESS_SECONDS, SecondPress, show_waiting
 from ..ui.style import (BUSY, FAIL, INFO, LEVEL_COLORS, NONE, OK, SECTION_CTRL, SECTION_SENSOR, block, check_chip,
                         chip, chip_line, hover, note, note_line, numbers, section, values)
 from ..ui.top_down import Dot, FloorGrid, render_top_down, scene_footprints
@@ -115,10 +115,6 @@ PROBE_DOT_COLOR, PROBE_LOST_COLOR, PROBE_RING_COLOR = rgb(WHITE), rgb(NONE), rgb
 FLASH_SECONDS = 0.8
 #: The flash: a fact (the point is recorded), not a tracking level.
 FLASH_COLOR = INFO
-#: Seconds a phone button that acts on its second tap (delete all, export) waits for it.
-CONFIRM_SECONDS = 3.0
-#: Seconds Export floor calibration waits for the second press that exports in spite of a warning, amber meanwhile.
-FORCE_SECONDS = 2.0
 #: The big status panel's word for each mocap check level.
 BIG_WORDS = {GOOD: "TRACKED", WARN: "NOISY", BAD: "NO FIX"}
 #: Metres between the phone map's grid lines.
@@ -280,9 +276,9 @@ class MocapProbePlugin(HuskyPlugin):
         self._message_color = self._floor_message_color = NONE
         # ROS time until which the big status panel shows the blue flash.
         self._flash_until = 0.0
-        # Per button that acts on its second tap ("all", "floor", "export"): the ROS time that tap is due by, and
-        # whether it exports in spite of a warning.
-        self._confirm: dict[str, tuple[float, bool]] = {}
+        # Per button that acts on its second press ("all", "floor", "export"); an export's key says whether it exports
+        # in spite of a warning ("anyway") or is a phone's plain second press ("press").
+        self._presses = {which: SecondPress() for which in ("all", "floor", "export")}
         # The lab frame file, the floor (x, y) it stores per mark and the (x, y, z) per anchor.
         self._lab_frame_path: Path | None = None
         self._ideal_marks: dict[str, np.ndarray] = {}
@@ -373,7 +369,7 @@ class MocapProbePlugin(HuskyPlugin):
                 export_floor = gui.add_button(
                     "Export floor calibration", icon=viser.Icon.FILE_EXPORT,
                     hint=f"Save the floor calibration to the Drive sessions folder the relay reads. With a warning, "
-                         f"press again within {FORCE_SECONDS:g} s to export anyway.")
+                         f"press again within {SECOND_PRESS_SECONDS:g} s to export anyway.")
                 # * The relay's floor calibration on a line always there, then its two buttons, always shown: nothing
                 # * above moves.
                 self._frame_chips: viser.GuiHtmlHandle = gui.add_html(chip_line(""))
@@ -478,8 +474,7 @@ class MocapProbePlugin(HuskyPlugin):
                 phone_delete_floor = phone.add_button("Delete floor points", color=rgb(NONE), icon=viser.Icon.TRASH)
                 self._phone_floor_result = phone.add_html("")
 
-        # * Buttons that act on their second tap, with their label and colour; `draw` turns them amber (BUSY) while
-        # * they wait for that tap, or for the second press that exports in spite of a warning.
+        # * Buttons that act on their second press, with their label and colour; `draw` shows them waiting for it.
         self._confirms = {"all": [(phone_delete_all, "Delete all points", rgb(NONE))],
                           "floor": [(phone_delete_floor, "Delete floor points", rgb(NONE))],
                           "export": [(export_floor, "Export floor calibration", None),
@@ -647,7 +642,7 @@ class MocapProbePlugin(HuskyPlugin):
         self._remove_samples(ctx, doomed)
 
     def _delete_all(self, ctx: PluginContext, which: str) -> None:
-        """Delete every sample, or only the floor calibration's, on the second tap within CONFIRM_SECONDS.
+        """Delete every sample, or only the floor calibration's, on the second press.
 
         Args:
             ctx: This plugin's context.
@@ -656,23 +651,18 @@ class MocapProbePlugin(HuskyPlugin):
         doomed, floor = self._deletable(which), which == "floor"
         if not doomed:
             self._report(ctx, "no points to delete", floor, log=False)
-        elif not self._second_tap(ctx, which):
-            self._report(ctx, f"tap {self._confirms[which][0][1]} again within {CONFIRM_SECONDS:g} s to delete "
+        elif not self._second_press(ctx, which):
+            self._report(ctx, f"press {self._confirms[which][0][1]} again within {SECOND_PRESS_SECONDS:g} s to delete "
                               f"{len(doomed)} points", floor, log=False, color=BUSY)
         else:
             self._remove_samples(ctx, doomed, floor)
 
-    def _second_tap(self, ctx: PluginContext, which: str, seconds: float = CONFIRM_SECONDS,
-                    anyway: bool = False) -> bool:
-        """Whether a tap on a button that acts on its second tap (`_confirms`) is that one; else arm it for `seconds`.
+    def _second_press(self, ctx: PluginContext, which: str, anyway: bool = False) -> bool:
+        """Whether a press of a button that acts on its second press (`_confirms`) is that one; else it asks.
 
-        `anyway`: the tap exports in spite of a warning; a tap armed without one does not count for it.
+        `anyway`: the press exports in spite of a warning; a press that asked without one does not count for it.
         """
-        due, armed_anyway = self._confirm.pop(which, (-np.inf, False))
-        if ctx.now() <= due and (armed_anyway or not anyway):
-            return True
-        self._confirm[which] = (ctx.now() + seconds, anyway)
-        return False
+        return self._presses[which].press(ctx.now(), "anyway" if anyway else "press")
 
     def _remove_samples(self, ctx: PluginContext, doomed: list[Sample], floor: bool = False) -> None:
         """Remove `doomed` from the samples, the list and the 3D view; say so in the floor section if `floor`."""
@@ -713,7 +703,7 @@ class MocapProbePlugin(HuskyPlugin):
 
         Args:
             ctx: This plugin's context.
-            phone: Pressed on the phone: it writes on the second tap within CONFIRM_SECONDS.
+            phone: Pressed on the phone: it writes on the second press.
         """
         solution = self._solve(ctx)
         problem = self._floor_problem(ctx, solution)
@@ -725,12 +715,13 @@ class MocapProbePlugin(HuskyPlugin):
         if path is None:
             return
         warning = self._floor_warning(ctx, solution)
-        if warning and not self._second_tap(ctx, "export", FORCE_SECONDS, anyway=True):
-            self._report(ctx, f"not exported: {warning}; press again within {FORCE_SECONDS:g} s to export anyway",
-                         floor=True, warn=True, color=BUSY)
+        if warning and not self._second_press(ctx, "export", anyway=True):
+            self._report(ctx, f"not exported: {warning}; press again within {SECOND_PRESS_SECONDS:g} s to export "
+                              f"anyway", floor=True, warn=True, color=BUSY)
             return
-        if phone and not warning and not self._second_tap(ctx, "export"):
-            self._report(ctx, f"tap {self._confirms['export'][1][1]} again within {CONFIRM_SECONDS:g} s to export",
+        if phone and not warning and not self._second_press(ctx, "export"):
+            self._report(ctx, f"press {self._confirms['export'][1][1]} again within {SECOND_PRESS_SECONDS:g} s to "
+                              f"export",
                          floor=True, log=False, color=BUSY)
             return
         data = {**floor_calibration_json(solution, self._lab_frame_path.name), **environment(self._simulated(ctx))}
@@ -746,7 +737,7 @@ class MocapProbePlugin(HuskyPlugin):
         path.parent.mkdir(exist_ok=True)
         # * Swapped in whole: the relay reads the newest file and must never find half of one.
         replace_text(path, json.dumps(data, indent=2))
-        self._confirm.pop("export", None)
+        self._presses["export"].forget()
         # * The relay applies it only on command (Apply floor calibration): whatever was measured against an
         #   out-of-date frame is off by its move.
         replaced = (f"; it replaces {frame.floor_calibration or 'the old floor calibration'}, whose poses were off "
@@ -1506,13 +1497,11 @@ class MocapProbePlugin(HuskyPlugin):
         self._draw_cameras(ctx)
         self._draw_frame(ctx)
         for which, buttons in self._confirms.items():
-            due, anyway = self._confirm.get(which, (-np.inf, False))
-            again = "Tap again: export" if which == "export" else f"Tap again: delete {len(self._deletable(which))}"
+            waiting = self._presses[which].waiting(ctx.now())
+            what = ("export anyway" if waiting == "anyway" else "export" if which == "export"
+                    else f"delete {len(self._deletable(which))}")
             for button, label, color in buttons:
-                if ctx.now() > due:
-                    button.label, button.color = label, color
-                else:
-                    button.label, button.color = "Press again: export anyway" if anyway else again, rgb(BUSY)
+                show_waiting(button, bool(waiting), label, what, color)
         self._result.content = note_line(self._message, self._message_color)
         self._phone_result.content = phone_text(note_line(self._message, self._message_color))
         self._floor_result.content = note_line(self._floor_message, self._floor_message_color)

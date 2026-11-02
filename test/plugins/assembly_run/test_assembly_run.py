@@ -239,10 +239,10 @@ def test_mark_done_not_live_needs_a_second_click(tmp_path):
         plugin.request_mark_done()
         await settle(plugin)
         assert runs(lab) == [] and plugin.view.statuses["B1_J_joint"] == PENDING
-        assert "click Mark done again to record" in plugin._message and plugin.again == "mark B1_J_joint"
+        assert "press Mark done again to record" in plugin._message and plugin.again == "mark B1_J_joint"
         lab.ctx.t += 60.0
         plugin.update(lab.ctx)
-        assert plugin.again == "mark B1_J_joint", "the second click waits with no time limit"
+        assert plugin.again == "mark B1_J_joint", "the second press waits with no time limit"
         plugin.request_set_current("B1_J_joint")
         assert plugin.again == "", "another request forgets it"
         plugin.request_mark_done()
@@ -297,15 +297,15 @@ def test_new_run_on_a_second_click_keeps_the_old_one(tmp_path):
         lab.ctx.t += 60.0
         plugin.update(lab.ctx)
         await settle(plugin)
-        assert len(runs(lab)) == 1 and "click New run again to confirm" in plugin._message
-        assert plugin.again == "new run", "the second click waits with no time limit"
+        assert len(runs(lab)) == 1 and "press New run again to confirm" in plugin._message
+        assert plugin.again == "new run", "the second press waits with no time limit"
         plugin.request_continue()  # * another request forgets it
         await settle(plugin)
         assert plugin.again == ""
         plugin.request_new_run()
         plugin.request_new_run()  # * a double click: too soon to count
         await settle(plugin)
-        assert len(runs(lab)) == 1 and "a double click" in plugin._message and plugin.again == "new run"
+        assert len(runs(lab)) == 1 and plugin.again == "new run"
         lab.ctx.t += 1.0
         plugin.request_new_run()
         await settle(plugin)
@@ -456,7 +456,7 @@ def test_record_writes_a_servo_file_and_draws_its_figure_beside_it(tmp_path):
 def test_the_panel_and_the_process_rows_show_the_run_and_its_buttons_ask_the_plugin(tmp_path):
     """Mark done, Reopen, New run and a setting reach the plugin; each action's mark goes to the process panel's rows.
 
-    Mark done and New run say on their button when they wait for a second click.
+    Mark done and New run say on their button when they wait for a second press; New run turns amber too.
     """
     lab = Lab(tmp_path)
 
@@ -474,8 +474,8 @@ def test_the_panel_and_the_process_rows_show_the_run_and_its_buttons_ask_the_plu
         assert plugin.view.current[0] == "B1_H_hold"
         run.callback("New run")
         plugin.draw(lab.ctx)
-        assert run.options[2] == "New run: click again" and mark.label == "B1_H_hold done"
-        assert "cindy     live now" in gui.widgets[-1].content
+        assert run.options[2] == "Press again: new run" and mark.label == "B1_H_hold done"
+        assert "cindy     live now" in plugin._panel._robots.content and "<style>" in gui.widgets[-1].content
         assert plugin._panel._status.content.count('class="chip-line"') == 1
         reopen.callback()
         plugin.draw(lab.ctx)
@@ -488,7 +488,7 @@ def test_the_panel_and_the_process_rows_show_the_run_and_its_buttons_ask_the_plu
 
 
 def test_an_assumed_mark_shows_in_the_process_rows(tmp_path):
-    """Marked with Cindy not live: the action's mark is "assumed"; the button asked for its second click before."""
+    """Marked with Cindy not live: the action's mark is "assumed"; the button asked for its second press before."""
     lab = Lab(tmp_path, live_from=None)
 
     async def scenario():
@@ -497,7 +497,7 @@ def test_an_assumed_mark_shows_in_the_process_rows(tmp_path):
         mark, _reopen = lab.ctx.gui.of_kind("button")
         mark.callback()
         plugin.draw(lab.ctx)
-        assert mark.label == "Click again"
+        assert mark.label == "Press again: mark"
         lab.ctx.t += 1.0
         mark.callback()
         await settle(plugin)

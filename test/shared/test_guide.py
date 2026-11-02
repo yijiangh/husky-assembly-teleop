@@ -118,7 +118,7 @@ def test_done_leaves_a_finished_step_for_where_on_done_says(server):
 
 @pytest.mark.parametrize("level, label", [(BAD, "Accept as is"), (PENDING, "Skip")])
 def test_done_asks_once_more_on_an_unfinished_step_then_goes_on(server, level, label):
-    """A failing or missing result: the first Done turns into Accept as is or Skip; pressed in time, it goes on."""
+    """A failing or missing result: the first Done reads "Press again: accept as is" or "skip"; in time, it goes on."""
     panel, steps, ctx, dones = make_panel(server)
     steps[0].level = level
     steps[0].state = lambda ctx: Check("none yet" if level == PENDING else "fails", level, "nothing yet")
@@ -126,15 +126,15 @@ def test_done_asks_once_more_on_an_unfinished_step_then_goes_on(server, level, l
     assert panel._done_button.color == rgb(BUSY) and panel._done_button.label == "Done"
     panel.done(ctx)
     panel.draw(ctx)
-    assert panel.index == 0 and dones == [] and f"{label} within 5 s goes on" in panel._notes_html.content
-    assert panel._done_button.label == label
+    assert panel.index == 0 and dones == [] and f"within 5 s to {label.lower()}" in panel._notes_html.content
+    assert panel._done_button.label == f"Press again: {label.lower()}"
     ctx.time = 4.0
     panel.done(ctx)
     assert panel.index == 2 and dones == [True]
 
 
 def test_done_asks_afresh_once_its_window_has_passed(server):
-    """A second Done later than CONFIRM_SECONDS is a first one again; the button is Done meanwhile."""
+    """A second Done later than SECOND_PRESS_SECONDS is a first one again; the button is Done meanwhile."""
     panel, steps, ctx, dones = make_panel(server)
     steps[0].level = BAD
     panel.done(ctx)

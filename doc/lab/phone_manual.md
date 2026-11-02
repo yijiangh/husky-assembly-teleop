@@ -66,7 +66,8 @@ From top to bottom:
 - **Health banner**: "ALL GREEN", or how many problems there are; shown on every tab.
 - **Tabs**: one per plugin, below.
 
-Buttons that delete or export act on a second tap: the first turns them red, and a second within 3 s does it.
+Buttons that delete or export act on a second tap: the first turns them amber (**Press again: ...**), and a second
+within 5 s does it (a double tap does not count).
 
 ### Control
 

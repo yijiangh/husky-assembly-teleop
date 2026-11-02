@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Callable, Sequence
 import viser
 
 from ...ui.phone import big_buttons, phone_text
+from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, again_label
 from ...colors import INK, rgb
 from ...ui.style import (BUSY, CURRENT, FAIL, LEVEL_COLORS, NONE, OK, SECTION_CTRL, WHITE, block, check_chip, chip,
                          chip_line, hover, note, section, warning)
@@ -86,8 +87,6 @@ def step_buttons_css(arrow_width: int) -> str:
 #: The step buttons' hints: Back and Next only look at another step; Done finishes this one.
 BACK_HINT, NEXT_HINT = "Look at the step before; changes nothing", "Look at the next step; changes nothing"
 DONE_HINT = "Keep this step's result and go to the work that is left"
-#: Seconds a first Done on an unfinished step waits for the second; then Done is plain Done again.
-CONFIRM_SECONDS = 5.0
 #: Back, Next and Done's icons.
 STEP_ICONS = [viser.Icon.CHEVRON_LEFT, viser.Icon.CHEVRON_RIGHT, viser.Icon.CIRCLE_CHECK]
 #: On the phone: the step buttons big; the check chips in a box of fixed height, scrolling if a chip's value grows
@@ -122,8 +121,8 @@ class GuidePanel:
         self.steps = list(steps)
         self.procedure = procedure
         self.index = 0
-        #: The step whose Done asked once already and when, so a second Done within CONFIRM_SECONDS leaves it.
-        self._asked: tuple[int, float] | None = None
+        #: Done's second press on an unfinished step, keyed by the step's index: it leaves the step as it stands.
+        self._press = SecondPress()
         #: The path Preview was last reset for.
         self._previewing = None
         #: The phone page's overview, once `build_phone` made it.
@@ -244,8 +243,7 @@ class GuidePanel:
             return
         state = self.current.state(ctx)
         anyway = unfinished(state)
-        if anyway and not self._confirming(ctx):
-            self._asked = (self.index, ctx.now())
+        if anyway and not self._press.press(ctx.now(), str(self.index)):
             ctx.log_info(f"Done asks again: {self.current.name} {state.label}: {state.detail}")
             return
         if anyway:
@@ -256,13 +254,13 @@ class GuidePanel:
 
     def _confirming(self, ctx: PluginContext) -> bool:
         """Whether a first Done on the current step still waits for its second."""
-        return (self._asked is not None and self._asked[0] == self.index
-                and ctx.now() - self._asked[1] <= CONFIRM_SECONDS)
+        return self._press.waiting(ctx.now()) == str(self.index)
 
     def show(self, ctx: PluginContext, index: int) -> None:
         """Make step `index` the current one."""
         self.current.leave(ctx)
-        self.index, self._asked = index, None
+        self.index = index
+        self._press.forget()
         self.procedure.outcome = None
         for number, folder in enumerate(self._folders):
             folder.visible = number == index
@@ -291,8 +289,9 @@ class GuidePanel:
                 state_chip(str(index + 1), states[index], self.steps[index].precondition, index == self.index,
                            index in needed) for index in range(len(self.steps)))))))
         state = states[self.index]
-        if not unfinished(state) or not self._confirming(ctx):
-            self._asked = None
+        if not unfinished(state):
+            self._press.forget()
+        asked = self._confirming(ctx)
         # * A failing result is accepted as it stands; one missing or out of date is only skipped.
         anyway = "Accept as is" if state.label == "fails" else "Skip"
         procedure = self.procedure
@@ -310,11 +309,11 @@ class GuidePanel:
         self._notes_html.content = (
             (note(escape(procedure.prompt), CURRENT) if procedure.prompt else "")
             + (warning(escape(question)) if question else "")
-            + (warning(escape(f"{step.name}: {state.label}: {state.detail}. {anyway} within "
-                              f"{CONFIRM_SECONDS:g} s goes on as it stands."))
-               if self._asked is not None else ""))
+            + (warning(escape(f"{step.name}: {state.label}: {state.detail}. Press Done again within "
+                              f"{SECOND_PRESS_SECONDS:g} s to {anyway.lower()}: it goes on as it stands."))
+               if asked else ""))
         self._text_html.content = section("what to do", CURRENT) + block(f"<div>{escape(step.instructions)}</div>")
-        self._draw_controls(unfinished(state), anyway if self._asked is not None else "Done")
+        self._draw_controls(unfinished(state), again_label(anyway.lower()) if asked else "Done")
         step.draw(ctx)
 
     def _row(self, index: int, state: Check, needed: bool) -> str:
@@ -332,7 +331,7 @@ class GuidePanel:
     def _draw_controls(self, unfinished_step: bool, done_label: str) -> None:
         """Show Back, Done, Next, Go, Cancel, Preview and Auto as what they do now: disabled while they do nothing.
 
-        Done is amber while the step is unfinished (it asks once more, labelled `done_label`), green otherwise.
+        Done is amber while the step is unfinished (it asks once more, then labelled `done_label`), green otherwise.
         """
         step, procedure = self.current, self.procedure
         set_changed(self._auto, visible=step.auto)

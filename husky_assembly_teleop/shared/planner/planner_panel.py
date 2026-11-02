@@ -12,7 +12,6 @@ panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers.
 from __future__ import annotations
 
 import asyncio
-import math
 from html import escape
 from typing import TYPE_CHECKING, Callable, Iterable, Sequence
 
@@ -25,6 +24,7 @@ from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...colors import ACTION, TEAL, WHITE, rgb
 from ...ui.css import button_group_color_css, group_buttons
 from ...ui.phone import columns_css
+from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, again_label, show_waiting
 from ...ui.style import BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, chip, hover, note, section
 from ...world.stand_ins import unknown_parts, unknown_robots
 from scaffolding_assembly_core.ids import robot_id
@@ -43,8 +43,6 @@ SLIDER_STEP = 0.05
 #: The Path buttons' colour, outlines and Plan filled: the one button of the panel that stands out. Teal, as Plan in
 #: the Assembly tab: it computes, nothing moves.
 PATH_BUTTONS_COLOR = TEAL
-#: Seconds a Commit waits for its second press, e.g. while other robots are not measured (`CommitConfirm`).
-COMMIT_CONFIRM_SECONDS = 2.0
 #: Lays out the Run folder as Commit and Cancel side by side, for an html widget outside that folder.
 COMMIT_STYLE = f"<style>{columns_css(viser.Icon.SEND, 2)}</style>"
 
@@ -366,24 +364,25 @@ class PlannerPanel(HuskyPlugin):
 
 
 class CommitConfirm:
-    """Commit's second press: while other robots are not measured, or the panel warns, the first press only asks.
+    """Commit's second press (`SecondPress`): while other robots are unknown, or the panel warns, the first only asks.
 
-    Commit turns amber while it waits. The second press lets the robots unknown then be unknown during the motion: its
-    clearance checks them as stand-ins, and soft stops for any other robot that is not measured (`ctx.clearance`,
-    `unknown_robots`).
+    The second press lets the robots unknown then be unknown during the motion: its clearance checks them as stand-ins,
+    and soft stops for any other robot that is not measured (`ctx.clearance`, `unknown_robots`).
     """
 
     #: For Commit's hover text.
-    HINT = f"With other robots not measured, press it twice within {COMMIT_CONFIRM_SECONDS:g} s."
+    HINT = f"With other robots not measured, press it twice within {SECOND_PRESS_SECONDS:g} s."
 
     def __init__(self):
         """Wait for nothing yet; set `button` once it is built."""
         self.button: viser.GuiButtonHandle | None = None
-        #: The button's own colour (None: the theme's), kept at the first `draw` and shown again once it stops waiting.
-        self.ready: tuple[int, int, int] | str | None = None
+        self.press = SecondPress()
+        #: The button's own label and colour (None: the theme's), shown again once it stops waiting.
+        self._label = ""
+        self._color: tuple[int, int, int] | str | None = None
         self._kept = False
-        #: ROS time until which a second press sends; -inf while none is awaited.
-        self.until = -math.inf
+        #: The label `asks` was given, lower case, for "Press again: commit".
+        self._what = ""
 
     def asks(self, ctx: PluginContext, acting: Iterable[str], label: str,
              warnings: Sequence[str] = ()) -> tuple[str, frozenset[str]]:
@@ -401,22 +400,24 @@ class CommitConfirm:
         unknown = unknown_robots(ctx.scene.snapshot, set(acting))
         reasons = [*warnings] + ([f"{len(unknown)} other robot{'s' if len(unknown) > 1 else ''} unknown"]
                                  if unknown else [])
-        if reasons and ctx.now() > self.until:
-            self.until = ctx.now() + COMMIT_CONFIRM_SECONDS
-            return (f"press {label} again within {COMMIT_CONFIRM_SECONDS:g} s to move with "
-                    f"{'; '.join(reasons)}"), frozenset()
-        self.until = -math.inf
-        return "", unknown
+        if not reasons:
+            self.press.forget()
+            return "", unknown
+        if self.press.press(ctx.now()):
+            return "", unknown
+        self._what = label.lower()
+        return (f"press {label} again within {SECOND_PRESS_SECONDS:g} s to move with "
+                f"{'; '.join(reasons)}"), frozenset()
 
     def draw(self, now: float) -> None:
-        """Make the button amber while it waits for its second press, its own colour otherwise."""
+        """Make the button amber and "Press again: ..." while it waits for its second press, as it was otherwise."""
         if self.button is None:
             return
         if not self._kept:
-            self.ready, self._kept = self.button.color, True
-        color = rgb(BUSY) if now <= self.until else self.ready
-        if self.button.color != color:
-            self.button.color = color
+            self._color, self._kept = self.button.color, True
+        if not self.button.label.startswith(again_label("")):
+            self._label = self.button.label  # * the owner may relabel it, e.g. the guide's "Go: move"
+        show_waiting(self.button, bool(self.press.waiting(now)), self._label, self._what, self._color)
 
 
 def unknown_robots_chip(snapshot: Scene, acting: Iterable[str]) -> str:

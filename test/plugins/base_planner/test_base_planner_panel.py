@@ -171,7 +171,8 @@ def test_commits_second_press_lets_the_robots_own_arms_be_unknown():
     """The robot's arms not measured: the first Commit only asks; the second sends, letting the robot be unknown."""
     model = SimpleNamespace(movable_joints=("ur_arm_shoulder_pan_joint",))
     robot = RobotObject(robot_id(SERIAL), model, Pose(), {}, unmeasured=frozenset(model.movable_joints))
-    planner, ctx = Planner(), SimpleNamespace(submit=lambda _label, run: run(), now=lambda: 0.0,
+    now = [0.0]
+    planner, ctx = Planner(), SimpleNamespace(submit=lambda _label, run: run(), now=lambda: now[0],
                                               spawn=lambda _label, work: asyncio.get_running_loop().create_task(work),
                                               log_info=lambda _text: None, lease_robots=lease_test_robots,
                                               world=SimpleNamespace(robots={}), config=SimpleNamespace(robots=()),
@@ -184,6 +185,7 @@ def test_commits_second_press_lets_the_robots_own_arms_be_unknown():
         await asyncio.sleep(0.05)
         panel._commit(ctx)
         asked, sent_after_one = panel._message, list(planner.sent)
+        now[0] += 1.0
         panel._commit(ctx)
         await asyncio.sleep(0.01)
         return asked, sent_after_one

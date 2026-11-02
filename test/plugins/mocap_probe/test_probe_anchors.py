@@ -224,6 +224,8 @@ def test_stored_anchors_are_found_by_themselves_and_one_not_found_is_asked_for(s
     plugin._export_floor(ctx)
     assert plugin._floor_message.startswith("not exported: anchors not read (A3: no unlabeled marker within 10 cm of "
                                             "its stored place: point at it)")
+    now = ctx.now()
+    ctx.now = lambda: now + 1.0
     plugin._export_floor(ctx)
     [path] = floor_exports(tmp_path)
     assert sorted(json.loads(path.read_text())["anchors"]) == ["A1", "A2"]

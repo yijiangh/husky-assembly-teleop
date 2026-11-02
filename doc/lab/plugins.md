@@ -89,7 +89,7 @@ selected action blue), and the movement you pick there (a row, the step slider, 
 becomes the run's current step, except while `movement_exec` has a robot's lease for a step.
 
 Buttons are coloured by what they do: teal computes without moving (Live IK, Plan), blue starts a motion (Exec; while
-other robots are not measured it turns amber and asks for a second press within 2 s), green lets a waiting step go on
+other robots are not measured it turns amber, reads **Press again: exec** and asks for a second press within 5 s), green lets a waiting step go on
 (Confirm), red stops (Cancel), yellow records (Mark done).
 
 ## Phone
@@ -172,7 +172,7 @@ In its own **Collisions** tab: lists what collision checks hit, per source (cali
 
 ### `assembly_run`
 
-In the **Assembly** tab: remembers how far the assembly of the loaded process got, in an assembly run, kept in `runs/<YYYYMMDD_HHMMSS>/` inside the process folder (not an experiment's run folder on the Drive): which actions are done, where each robot was left, the run's settings (insert split, spiral, servo by bar, the spiral's seconds and turns, and Advanced planning's free-search settings; the transfer workaround is `process`'s) and an event log. On Load it continues the newest run when it was made on these very process files; otherwise the operator chooses: **Continue newest** (the newest run, made on another export, goes on in a new run), **Continue match** (an older run made on these files) or **New run**. Nothing is written until the runs were read (a failed or stopped read is tried again). Then it selects the first pending action's first step in `process` once its robot is live; after that it follows what you pick in `process`. **Mark done** records every live robot where it is; for a robot not live, a second click records the export's end as assumed (it waits with no time limit; any other click forgets it) (meanwhile the button reads **Click again**). **Reopen** puts an action back to pending. **New run** too needs a second click. Each action's mark shows in `process`'s action rows. Loads `process`. Experimental.
+In the **Assembly** tab: remembers how far the assembly of the loaded process got, in an assembly run, kept in `runs/<YYYYMMDD_HHMMSS>/` inside the process folder (not an experiment's run folder on the Drive): which actions are done, where each robot was left, the run's settings (insert split, spiral, servo by bar, the spiral's seconds and turns, and Advanced planning's free-search settings; the transfer workaround is `process`'s) and an event log. On Load it continues the newest run when it was made on these very process files; otherwise the operator chooses: **Continue newest** (the newest run, made on another export, goes on in a new run), **Continue match** (an older run made on these files) or **New run**. Nothing is written until the runs were read (a failed or stopped read is tried again). Then it selects the first pending action's first step in `process` once its robot is live; after that it follows what you pick in `process`. **Mark done** records every live robot where it is; for a robot not live, a second press records the export's end as assumed (it waits with no time limit; any other click forgets it) (meanwhile the button is amber and reads **Press again: mark**). **Reopen** puts an action back to pending. **New run** too needs a second press (**Press again: new run**). Each action's mark shows in `process`'s action rows. Loads `process`. Experimental.
 
 ### `motion_planner`
 

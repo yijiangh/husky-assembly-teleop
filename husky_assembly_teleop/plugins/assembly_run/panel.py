@@ -16,6 +16,7 @@ from ...shared.runs.runs import DONE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, 
 from ...shared.assembly_tab.layout import (MARK_BAND, MARK_ICON, REOPEN_ICON, RUN_BAND, RUN_SETTINGS_BAND,
                                            TAB_BUTTONS_CSS)
 from ...ui.css import side_by_side_css
+from ...ui.second_press import again_label, show_waiting, waiting_group_css
 from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, hover, section,
                          values)
 from .writes import AGAIN_MARK, AGAIN_NEW_RUN
@@ -26,6 +27,9 @@ if TYPE_CHECKING:
 
 #: The run buttons.
 CONTINUE_NEWEST, CONTINUE_MATCH, NEW_RUN = "Continue newest", "Continue match", "New run"
+NEW_RUN_AGAIN = again_label("new run")
+#: Mark done's own colour, shown again once it stops waiting for its second press.
+MARK_COLOR = "yellow"
 
 
 class PanelStatus(NamedTuple):
@@ -33,7 +37,7 @@ class PanelStatus(NamedTuple):
 
     Attributes:
         run: The run's name, or "".
-        again: The click waiting for its second one (`AssemblyRunPlugin.again`), or "".
+        again: The press waiting for its second one (`AssemblyRunPlugin.again`), or "".
         message: The last line of feedback, and whether it is a failure.
         save_error: The last write that failed, or "".
         robots: One line per configured robot, live or where it was recorded (the plugin's `robot_lines`).
@@ -67,9 +71,9 @@ class RunPanel:
             # * Draws nothing: the tab's big buttons when the layout file asks (assembly_run's `big_buttons`), and
             #   Mark done and Reopen side by side once they exist.
             pair = gui.add_html("")
-            self._mark = gui.add_button("Mark done", color="yellow", icon=MARK_ICON,
+            self._mark = gui.add_button("Mark done", color=MARK_COLOR, icon=MARK_ICON,
                                         hint="Mark the current action done, recording every live robot where it is. "
-                                             "Its robot not live: click again to record the export's end, "
+                                             "Its robot not live: press again to record the export's end, "
                                              "assumed")
             reopen = gui.add_button("Reopen", color="gray", icon=REOPEN_ICON,
                                     hint="Put the current action back to pending")
@@ -102,9 +106,11 @@ class RunPanel:
             self._run = gui.add_button_group("Run", [CONTINUE_NEWEST, CONTINUE_MATCH, NEW_RUN],
                                              hint="Continue the run used last, made on another export of this "
                                                   "process, in a new run; or write on in an older run made on these "
-                                                  "very files; or start a new run, every action pending (click again "
+                                                  "very files; or start a new run, every action pending (press again "
                                                   "to confirm). Old runs are kept")
             self._robots = gui.add_html("")
+            # * Only a <style>: New run amber while it waits for its second press.
+            self._waiting_css = gui.add_html("")
 
         self._mark.on_click(ctx.defer("mark done", plugin.request_mark_done))
         reopen.on_click(ctx.defer("reopen", plugin.request_reopen))
@@ -123,8 +129,8 @@ class RunPanel:
 
     @staticmethod
     def _on_run(plugin: AssemblyRunPlugin, label: str) -> None:
-        """Ask for what a run button says; New run reads "New run: click again" while it waits for the second click."""
-        if label.startswith(NEW_RUN):
+        """Ask for what a run button says; New run reads "Press again: new run" while it waits for its second press."""
+        if label in (NEW_RUN, NEW_RUN_AGAIN):
             plugin.request_new_run()
         elif label == CONTINUE_NEWEST:
             plugin.request_continue()
@@ -160,14 +166,15 @@ class RunPanel:
         self._status.content = chip_line(chips)
 
         # * Mark done names the action it marks, e.g. "B20_J done" beside its check icon (short: a half-width button at
-        #   18 px); a click waiting for its second one says so on its button.
+        #   18 px); a press waiting for its second one says so on its button.
         action = view.current[0] if view.current is not None else None
-        if action is not None and status.again == f"{AGAIN_MARK} {action}":
-            self._mark.label = "Click again"
-        else:
-            self._mark.label = f"{action} done" if action is not None else "Mark done"
-        self._run.options = (CONTINUE_NEWEST, CONTINUE_MATCH,
-                             f"{NEW_RUN}: click again" if status.again == AGAIN_NEW_RUN else NEW_RUN)
+        show_waiting(self._mark, action is not None and status.again == f"{AGAIN_MARK} {action}",
+                     f"{action} done" if action is not None else "Mark done", "mark", MARK_COLOR)
+        new_run = status.again == AGAIN_NEW_RUN
+        self._run.options = (CONTINUE_NEWEST, CONTINUE_MATCH, NEW_RUN_AGAIN if new_run else NEW_RUN)
+        css = f"<style>{waiting_group_css(self._run, 2)}</style>" if new_run else ""
+        if self._waiting_css.content != css:
+            self._waiting_css.content = css
         if (view.settings, status.settings_refused, status.spiral_fits) != self._shown_settings:
             # * Only when the settings change, a change was refused or the spiral's fit changes; the plugin's own
             #   writes never come back as requests (`operator_only` above).

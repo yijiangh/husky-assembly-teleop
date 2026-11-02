@@ -11,8 +11,7 @@ import pytest
 from robot_fakes import lease_test_robots, wait_ticks_until
 
 from husky_assembly_teleop.colors import OK, WARN, rgb
-from husky_assembly_teleop.shared.planner.planner_panel import (COMMIT_CONFIRM_SECONDS, CommitConfirm, PlannerPanel,
-                                                                unknown_robots_chip)
+from husky_assembly_teleop.shared.planner.planner_panel import CommitConfirm, PlannerPanel, unknown_robots_chip
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
@@ -490,28 +489,30 @@ def test_the_unknown_robots_chip_counts_the_others_and_hides_at_zero():
     assert ">1 robot unknown<" in found and 'title="b: base unknown\nHealth shows why."' in found and "me" not in found
 
 
-def test_commit_asks_for_a_second_press_within_two_seconds_while_a_robot_is_unknown():
-    """Robot b lost mocap: the first press asks and turns Commit amber; a second within 2 s sends, letting b be unknown.
+def test_commit_asks_for_a_second_press_within_five_seconds_while_a_robot_is_unknown():
+    """Robot b lost mocap: the first press asks, Commit amber and "Press again: commit"; a second within 5 s sends.
 
-    Later it asks again. The robot the commit moves is not counted.
+    The second lets b be unknown; a double click does not count; later it asks again. The moving robot is not counted.
     """
     model = SimpleNamespace(movable_joints=())
     lost = RobotObject("robots/b", model, Pose(), {}, base_tracked=False, base_time=1.0)
     ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={lost.id: lost})), t=10.0)
     ctx.now = lambda: ctx.t
     confirm = CommitConfirm()
-    confirm.button = SimpleNamespace(color=rgb(OK))
+    confirm.button = SimpleNamespace(color=rgb(OK), label="Commit")
     asked, allowed = confirm.asks(ctx, ["robots/me"], "Commit")
-    assert asked == "press Commit again within 2 s to move with 1 other robot unknown"
+    assert asked == "press Commit again within 5 s to move with 1 other robot unknown"
     assert allowed == frozenset()
     confirm.draw(ctx.t)
-    assert confirm.button.color == rgb(WARN) and COMMIT_CONFIRM_SECONDS == 2.0
-    ctx.t += 1.5
+    assert (confirm.button.color, confirm.button.label) == (rgb(WARN), "Press again: commit")
+    ctx.t += 0.2
+    assert confirm.asks(ctx, ["robots/me"], "Commit")[0], "a double click only asks again"
+    ctx.t += 4.0
     assert confirm.asks(ctx, ["robots/me"], "Commit") == ("", {"robots/b"}), "the second press lets b be unknown"
     confirm.draw(ctx.t)
-    assert confirm.button.color == rgb(OK)
+    assert (confirm.button.color, confirm.button.label) == (rgb(OK), "Commit")
     assert confirm.asks(ctx, ["robots/me"], "Commit")[0]
-    ctx.t += 2.5
+    ctx.t += 5.5
     assert confirm.asks(ctx, ["robots/me"], "Commit")[0], "too late: it asks again"
     assert confirm.asks(ctx, ["robots/b"], "Commit") == ("", frozenset()), "the robot it moves is not counted"
 
@@ -523,7 +524,7 @@ def test_commit_asks_twice_for_a_panels_own_warning_too():
     confirm = CommitConfirm()
     assert confirm.asks(ctx, ["robots/me"], "Commit") == ("", frozenset())
     asked, _allowed = confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 40° from stow"])
-    assert asked == "press Commit again within 2 s to move with the arm 40° from stow"
+    assert asked == "press Commit again within 5 s to move with the arm 40° from stow"
     ctx.t += 1.0
     assert confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 40° from stow"]) == ("", frozenset())
 
@@ -536,7 +537,7 @@ def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():
     panel._api = api
     ctx = SimpleNamespace(now=lambda: 0.0, log_warn=warned.append)
     panel.update(ctx)
-    panel._say("press Commit again within 2 s to move with the arm 40° from stow")
+    panel._say("press Commit again within 5 s to move with the arm 40° from stow")
     api.plan = Plan(1, plan.request, "ready", PATH, message="found, warned", warning=True)
     panel.update(ctx)
     assert panel._message.startswith("press Commit again") and warned == ["found, warned"]
