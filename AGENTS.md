@@ -49,7 +49,8 @@ When briefing a subagent to write or edit comments, paste this section into its 
 
 ## Where things are
 
-- `README.md`: install, run, parameters, plugins.
+- `README.md`: install, run, parameters, a line per plugin; keep it short, for getting new users running.
+  `doc/plugins.md`: the UI's panels and every plugin in detail; a plugin's behaviour is documented there.
 - `external/scaffolding_assembly_core/`: the core shared with the Rhino plugin and the planners: the process format (`process/`, schema 2.1), robots, scenes and their mirrors; layers in its `scaffolding_assembly_core/__init__.py`, the process format in its `doc/process_format.md`. A submodule of `yijiangh/scaffolding_assembly_core`, installed editable in the venv.
   - ! It imports nothing from `husky_assembly_teleop`, ROS or viser, and runs on Python 3.9: change it in the submodule following its own `AGENTS.md`, run its own tests there (`cd external/scaffolding_assembly_core && python3 -m pytest`), commit and push it, then commit the new submodule pointer here.
 - `husky_assembly_teleop/plugins/__init__.py`: the rules every plugin follows. `plugins/robot_control/` is the reference plugin, `plugins/examples/` the templates.
@@ -68,7 +69,7 @@ When briefing a subagent to write or edit comments, paste this section into its 
   or a monitor run you start; say which files and why. Reading needs no permission.
 - An experiment the user is running may create and edit its own files there without asking: its runs, recordings,
   takes, reports and analysis output, in its own folder.
-- ! Never create folders directly under the root or its data folders (`README.md`, "Experiment data"); the user
+- ! Never create folders directly under the root or its data folders (`doc/experiment_data.md`); the user
   creates them in Drive.
 - For rapid development, point `HUSKY_DRIVE_ROOT` (or `drive_root:=`) at a mock Drive: a local, unsynced rough copy of
   the folder structure holding only what the work needs, so temporary runs never pollute the real Drive. Say when the

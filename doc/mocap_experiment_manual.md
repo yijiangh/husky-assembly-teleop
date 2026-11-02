@@ -1,6 +1,6 @@
 # MoCap Experiment Manual
 
-> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see README "Running the old monitor")** (`mocap_experiment.py`, now in `old/`; links point to a personal checkout). Taking, analysing and reporting mocap experiments is **missing** in the new monitor and not on the roadmap yet. Recording signals is now `ctx.record` (`doc/plugin_roadmap.md`, "Recording and live plots").
+> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see `doc/old_monitor.md`)** (`mocap_experiment.py`, now in `old/`; links point to a personal checkout). Taking, analysing and reporting mocap experiments is **missing** in the new monitor and not on the roadmap yet. Recording signals is now `ctx.record` (`doc/plugin_roadmap.md`, "Recording and live plots").
 
 This document describes the workflow for:
 

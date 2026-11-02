@@ -17,7 +17,7 @@ Make one:
 - **The probe**: rigid body 1863 (choose another in the probe's panel), with its pivot set to the tip in Motive. The
   recorded point is the rigid body's origin, so a pivot off the tip puts every point off.
 - **Motive** streaming "Unlabeled Markers": the anchors arrive as those.
-- **The relay** running against Motive (README, "Start the mocap relay"): the export needs its cameras and its
+- **The relay** running against Motive (README, "Run in the lab"): the export needs its cameras and its
   calibration folder, and goes nowhere without it.
 - **The Drive** mounted on the laptop (`HUSKY_DRIVE_ROOT`): the export goes to today's calibration session there.
 - **The monitor** with the probe: `ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="[]" -p

@@ -159,6 +159,14 @@ The robot (`sim_robot`):
 | `joint_offsets` | 0 | the tool arms' encoder offsets, degrees ×6 shoulder_pan to wrist_3; `<arm namespace>:<values>` per arm |
 | `husky_urdf` | teleop's `data/husky_urdf` beside crl-husky | for the arms' mounts |
 
+The force/torque reading (`sim_wrench`, sim.launch.py only):
+
+| Argument | Default | |
+|---|---|---|
+| `fake_wrench` | `true` | start `sim_wrench`, a near-zero force/torque reading per simulated arm |
+| `wrench_bias` | `0,0,0,0,0,0` | a standing reading on every arm, fx, fy, fz N, tx, ty, tz Nm |
+| `contact_n` | 0 | force along the tool's z, N, while a simulated screw is stalled |
+
 The fake Motive (`sim_mocap`, with `fake_motive:=true`); per-body values are `<values>` for every body or
 `<id>:<values>` for one, space separated, a body's own entry winning:
 

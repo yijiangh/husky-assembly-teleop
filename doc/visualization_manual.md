@@ -1,6 +1,6 @@
 # Husky MoCap & Calibration Visualization Manual (Rhino8 / Grasshopper)
 
-> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see README "Running the old monitor").** Code links (`husky_monitor.py`, `utils.py`, `optitrack/`) point to files now in `old/`.
+> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see `doc/old_monitor.md`).** Code links (`husky_monitor.py`, `utils.py`, `optitrack/`) point to files now in `old/`.
 > - Workflow 1, camera export: used the monitor's own NatNet client; **missing** in the new monitor, which reads mocap only through the relay.
 > - Workflow 2, calibration plots in Rhino: standalone scripts in `data/calibration_data/`, not checked against the new code.
 

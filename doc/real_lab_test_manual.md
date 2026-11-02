@@ -36,7 +36,7 @@ How to read the steps:
 | `[REAL RUN — recorded]` | the assembly itself; every part is recorded in the run, `runs/<date>_<time>/` on the Drive |
 
 Anything that does not match an **Expect:** is worth a note (the log lines and what you did; Part 9). What each panel
-and button does in detail: the README (Panels; the Plugins table).
+and button does in detail: `doc/plugins.md`.
 
 > **If you closed a terminal** (the six panes: 0.7)
 >
@@ -277,7 +277,7 @@ Open in Chrome on this laptop: http://localhost:8080 (4.b). One page at a time.
 ```
 
 Plan holds a tab per planner panel (Base, Motion, Arm). A layout file in `~/.config/husky_monitor/layout.json` may
-place these differently, e.g. Plan in a floating window and big Assembly buttons (README, Panels).
+place these differently, e.g. Plan in a floating window and big Assembly buttons (`doc/plugins.md`, Your own layout).
 
 - **Assembly** tab, top to bottom: the PROCESS section (folder, `Load`, the boxes `Transfer workaround` and
   `Rhino obstacles collide`, the ACTIONS list, the `Step` slider, `◀ mv` / `mv ▶`, the movement buttons), the step line

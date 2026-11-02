@@ -47,7 +47,7 @@ git ls-remote git@gitlab.inf.ethz.ch:crl/robot-control/crl-husky.git jg/ros2
 ## 1. What is new compared with the old monitor
 
 The old monitor ran Cyclone DDS with one robot per run in that robot's domain (84 Alice, 85 Belle, 86 Cindy), its own
-NatNet client and a PyBullet and Dear PyGui window (README, What changed from the old monitor). New on this PC:
+NatNet client and a PyBullet and Dear PyGui window (doc/old_monitor.md, What changed). New on this PC:
 
 | New | Why |
 |---|---|
@@ -105,7 +105,7 @@ cd ~/Code/ros2_ws_next && source /opt/ros/humble/setup.bash
 <the commands>'
 ```
 
-The venv: README's One-time setup, everything from `# The venv` to the `pip list` check, in order, the optional ssik
+The venv: README's Install, step 3, everything from `python3 -m venv` to the `pip list` check, in order, the optional ssik
 line included: the fake lab plans with ssik 4.1 (exact IK) and numpy 1.26.
 
 - Without ssik the planners fall back to PyBullet's and compas_fab's IK, and plan differently from the fake lab.

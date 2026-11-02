@@ -23,7 +23,7 @@ sudo ufw enable
 
 ## 2. Start the monitor
 
-Start it as usual (README, "Start the monitor"). The tabs come from the plugins you load:
+Start it as usual (README, "Run in the lab"). The tabs come from the plugins you load:
 
 | Tab | Needs | For |
 |---|---|---|
@@ -97,7 +97,7 @@ length: TRACKED, NOISY or NO FIX, the probe's x y z and marker error, flashing R
 it two tabs:
 
 - **Points**: **Label** and **Record point** (numbered per label: `table_1`, `table_2`, …; refused without a fix),
-  **Delete all points**, **Map coverage** with a top-down map of where the probe is seen well (colours: README,
+  **Delete all points**, **Map coverage** with a top-down map of where the probe is seen well (colours: plugins.md,
   `mocap_probe`; obstacles dark grey, robots grey, points cyan, the probe a white dot, grey without a fix; +x right,
   +y up), and the last points. Export and delete single points on the laptop.
 - **Floor**: the floor calibration, made walking from mark to mark: [floor_calibration_manual.md](floor_calibration_manual.md).
