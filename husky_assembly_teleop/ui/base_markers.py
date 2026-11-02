@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ..colors import PLAN, PREVIEW, TARGET, TRAIL, rgb
+
 if TYPE_CHECKING:
     from crl_husky.follower_path import FollowerPath
 
@@ -18,10 +20,10 @@ if TYPE_CHECKING:
     from ..robot_interface.base import FollowerState
 
 #: Colours (r, g, b).
-PREVIEW_COLOR = (66, 99, 235)      # blue: what would be sent
-SENT_COLOR = (47, 158, 68)         # green: the path being followed
-TRAIL_COLOR = (232, 89, 12)        # orange: where the robot went
-LOOKAHEAD_COLOR = (224, 49, 49)
+PREVIEW_COLOR = rgb(PREVIEW)       # blue: what would be sent
+SENT_COLOR = rgb(PLAN)             # the path being followed
+TRAIL_COLOR = rgb(TRAIL)           # amber: where the robot went
+LOOKAHEAD_COLOR = rgb(TARGET)       # the point on the path the follower aims at
 FLOOR = 0.005                      # m, just above the grid
 LINE = 0.012                       # m
 TICK = 0.08                        # m, heading ticks

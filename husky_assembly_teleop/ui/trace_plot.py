@@ -21,6 +21,7 @@ import viser.uplot
 if TYPE_CHECKING:
     from ..plugin_api.trace import Signal, Trace
 
+# * Own colours: plot lines, one per channel (test_colors skips this file).
 #: Line colour per channel, in order; x, y, z are red, green, blue as in the 3D view.
 COLORS = ("#e03131", "#2f9e44", "#4263eb", "#f08c00", "#ae3ec9", "#1098ad", "#868e96")
 

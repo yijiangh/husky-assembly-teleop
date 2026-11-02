@@ -235,7 +235,7 @@ def tool_status(state: object, now: float) -> str:
 
 
 def _motor_chip(name: str, motor_state: str | None) -> str:
-    """One v3 motor's chip: busy while it runs, blue when stalled (screwed tight, as intended), green when idle."""
+    """One v3 motor's chip: amber while it runs, blue when stalled (screwed tight, as intended), green when idle."""
     color = {ScaffoldingV3.IDLE: OK, ScaffoldingV3.STALLED: INFO}.get(motor_state, BUSY)
     hint = "screwed tight; Stop clears the stall before it runs again" if motor_state == ScaffoldingV3.STALLED else ""
     return chip(f"{name} {str(motor_state).lower()}", color, hint)

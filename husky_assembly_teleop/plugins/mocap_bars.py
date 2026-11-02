@@ -4,12 +4,12 @@ Bar marker fitting: how far a bar the mocap sees is from where the process plans
 Pick a bar of the loaded process and the Motive rigid body made of its markers, and press Track. The bar's CAD
 markers are fitted to the measured ones without Motive's labels (`world/marker_layouts.fit_bar`, the old monitor's
 matcher) at most ten times a second: matched around the last good fit while it is fresh, else around the planned
-pose, else by a full search. The view shows the real bar (blue, the process bar and its mounted halves at the fitted
-pose) next to the planned one, and with "Show markers" the measured markers (green the trusted ones the fit used,
-orange filled in by Motive), the fitted markers (blue: markers, axis, a line per residual) and the planned markers
-(grey). The planned bar is the process body in the live scene (`process/bars/<id>`): a built bar at its assembly
-pose, a held one on the real robot's flange. Record writes a take of the fit, its residuals and the deviation to the
-Drive (`data_experiment/mocap_bars/`): a run folder per take with experiment.json and recording.npz
+pose, else by a full search. The view shows the real bar (blue, the process bar and its mounted halves, dark blue,
+at the fitted pose) next to the planned one, and with "Show markers" the measured markers (green the trusted ones the
+fit used, amber filled in by Motive), the fitted markers (blue, the axis and a line per residual) and the planned
+markers (grey). The planned bar is the process body in the live scene (`process/bars/<id>`): a built bar at
+its assembly pose, a held one on the real robot's flange. Record writes a take of the fit, its residuals and the
+deviation to the Drive (`data_experiment/mocap_bars/`): a run folder per take with experiment.json and recording.npz
 (`shared/recordings/runs.py`).
 
 - ! Marker layouts come only from the process (`BodySpec.markers` of the halves mounted on a bar); old compas_fab
@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import viser
 
+from ..colors import FITTED, GREEN, GREY, MOUNTED, WARN, rgb, rgb01
 from ..drive import drive_folder, environment, folder_name
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
@@ -65,14 +66,14 @@ FIT_PERIOD = 0.1
 MAX_MARKER_AGE = 0.5
 #: The last good fit guides the next one while it is younger than this, seconds; after that the planned pose does.
 HINT_MAX_AGE = 1.0
-#: Colours: measured markers, markers filled in by Motive, the fitted bar, the planned markers.
-MEASURED_COLOR = (40, 190, 80)
-FILLED_COLOR = (250, 140, 30)
-FIT_COLOR = (40, 120, 230)
-PLANNED_COLOR = (150, 150, 150)
+#: Colours: the trusted markers the fit used, markers Motive filled in, the fitted markers, the planned markers.
+MEASURED_COLOR = rgb(GREEN)
+FILLED_COLOR = rgb(WARN)
+FIT_COLOR = rgb(FITTED)
+PLANNED_COLOR = rgb(GREY)
 #: The real bar's colour and its mounted halves', (r, g, b) from 0 to 1.
-FIT_COLOR_UNIT = tuple(c / 255 for c in FIT_COLOR)
-HALF_COLOR_UNIT = (0.1, 0.27, 0.6)
+FIT_COLOR_UNIT = rgb01(FITTED)
+HALF_COLOR_UNIT = rgb01(MOUNTED)
 #: Size of the drawn markers, metres.
 MARKER_POINT_SIZE = 0.02
 
@@ -411,7 +412,7 @@ class MocapBarsPlugin(HuskyPlugin):
         if self._drawn is not None and all(a is b for a, b in zip(self._drawn, shown)):
             return
         self._drawn = shown
-        # * Green: the trusted markers the last fit used; orange: the ones Motive filled in from its own pose.
+        # * MEASURED: the trusted markers the last fit used; WARN: the ones Motive filled in from its own pose.
         self._measured_cloud.visible = sensed is not None and len(markers.ids) > 0
         if self._measured_cloud.visible:
             filled = markers.positions[~markers.measured]

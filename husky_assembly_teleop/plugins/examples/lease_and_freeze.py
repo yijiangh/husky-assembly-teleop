@@ -145,7 +145,7 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
                           lease.holder if lease else "")
         label, reason = self.outcome
         if label:
-            chips += chip(label, OK if label in ("running", "done") else FAIL, reason)
+            chips += chip(label, BUSY if label == "running" else OK if label == "done" else FAIL, reason)
         if self._refused is not None and ctx.now() - self._refused[2] <= REFUSAL_SHOWN:
             chips += chip(self._refused[0], FAIL, self._refused[1])
         self._status.content = chip_line(chips)

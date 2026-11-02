@@ -207,7 +207,7 @@ Something wrong at any point: Part 8.
 | **split** | those millimetres under the compliance controller (`Insert split mm`, 5) |
 | **transfer workaround** | the process panel's box: Cindy's transfer runs as a free move with empty tools to the insert start, where you place the bar by hand (this export has no loading pose) |
 | **ground bar / one-mate / two-mate** | B20 stands on ground joints: rigid insert, no tighten. B21 mates on its left joint only, B22 on both |
-| **ghost** | a see-through robot in the 3D view: blue where the selected movement has the robot (after Live IK or a plan, on the live base), orange at the base planner's target, green along a plan |
+| **ghost** | a see-through robot in the 3D view: blue where the selected movement has the robot (after Live IK or a plan, on the live base) and at the base planner's target, green along a plan |
 | **pane** | one of the six terminal areas of 0.7 |
 
 ### 0.7 The six terminal panes

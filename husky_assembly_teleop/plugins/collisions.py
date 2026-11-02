@@ -26,6 +26,7 @@ import numpy as np
 import trimesh
 import viser
 
+from ..colors import BODY, COLLISION, CONTACT, HIT, rgb, rgb01
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..world.collision_hit import CollisionHit
@@ -38,10 +39,10 @@ from scaffolding_assembly_core.ids import link_id
 from scaffolding_assembly_core.scene import Scene, scene_parts
 
 #: Colours, (r, g, b, alpha) from 0 to 1.
-MOVED_COLOR = (1.0, 0.15, 0.1, 1.0)    # solid red: what moved into something
-HIT_COLOR = (0.0, 0.75, 0.9, 0.45)     # see-through cyan: what it moved into, the red visible inside it
-ROBOT_COLOR = (0.6, 0.6, 0.6, 0.15)    # faint grey: the robots as checked, for the focused hit
-CONTACT_COLOR = (255, 200, 0)          # the contact's two points and the line between them
+MOVED_COLOR = rgb01(COLLISION, 1.0)    # solid: what moved into something
+HIT_COLOR = rgb01(HIT, 0.45)           # see-through: what it moved into, the red visible inside it
+ROBOT_COLOR = rgb01(BODY, 0.15)        # faint: the robots as checked, for the focused hit
+CONTACT_COLOR = rgb(CONTACT)           # the contact's two points and the line between them
 CONTACT_RADIUS = 0.006                 # m
 #: Pairs a hit's hover text lists; the rest are counted.
 DETAILS_PAIRS = 2

@@ -85,7 +85,8 @@ class DebugView:
             for node in nodes:
                 node.visible = name not in self._hidden
             count = len(layer.segments) + len(layer.points)
-            rows.append(f'<div><span style="color:rgb{layer.color}">■</span> {escape(name)} '
+            r, g, b = layer.color
+            rows.append(f'<div><span style="color:rgb({r}, {g}, {b})">■</span> {escape(name)} '
                         f'<span style="color:{NONE}">{count}</span></div>')
         notes = "".join(f'<div style="color:{NONE}">{escape(text)}</div>' for text in debug.notes)
         style = '<div style="font-size:11px;line-height:1.5">{}</div>'

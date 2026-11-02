@@ -23,6 +23,7 @@ import viser
 from sensor_msgs.msg import BatteryState
 from ur_dashboard_msgs.msg import RobotMode, SafetyMode
 
+from ..colors import HUE_NAMES
 from ..plugin_api.context import PluginContext
 from ..world.mocap import mocap_check
 from ..world.tcp import tcp_check, tool0_by_kinematics
@@ -41,7 +42,7 @@ from ..robot_interface.mocap_relay import (FRAME_REFIT_PENDING, FRAME_UNCHECKED,
                                            AppliedCalibration, FloorCalibrationState, MocapRelayState)
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
 from ..ui.phone import phone_text
-from ..ui.style import LEVEL_COLORS, NONE, block, check_chip, chip, chip_line, hover, section
+from ..ui.style import LEVEL_COLORS, NONE, SECTION_SENSOR, block, check_chip, chip, chip_line, hover, section
 from ..world.checks import BAD, GOOD, INFO, PENDING, STALE_AFTER, WARN, Check
 
 # --- --- --- --- --- THRESHOLDS --- --- --- --- ---
@@ -243,22 +244,21 @@ class HealthPlugin(HuskyPlugin):
         self._banner.content = banner
         rows = []
         for serial, lines in self._robot_checks.items():
-            robot = [check for _name, checks in lines for check in checks]
             stop = stops.get(serial)
             # * Next to the name: whatever else is green, nothing moves this robot until Resume.
             heading = serial + (" " + check_chip(stop) if stop is not None else "")
-            rows.append(section(heading, LEVEL_COLORS[worst_level(robot + ([stop] if stop is not None else []))])
-                        + "".join(render_line(name, checks) for name, checks in lines))
+            # * A sensor section's bar; the robot's worst level is its banner chip's colour.
+            rows.append(section(heading, SECTION_SENSOR) + "".join(render_line(name, checks) for name, checks in lines))
             self._robot_rows[serial].content = rows[-1]
-        rows.append((section("objects", LEVEL_COLORS[worst_level(self._object_checks)])
-                     + render_chips(self._object_checks)) if self._object_checks else "")
+        rows.append((section("objects", SECTION_SENSOR) + render_chips(self._object_checks))
+                    if self._object_checks else "")
         self._objects_row.content = rows[-1]
         self._phone_banner.content = phone_text(banner)
         self._phone_rows.content = phone_text("".join(rows))
 
 
 #: Chip colours by level, for the log.
-LEVEL_NAMES = {INFO: "blue", GOOD: "green", WARN: "amber", BAD: "red"}
+LEVEL_NAMES = {level: HUE_NAMES[color] for level, color in LEVEL_COLORS.items()}
 
 
 @dataclass
@@ -308,7 +308,7 @@ def robot_checks(robot: HuskyRobotInterface, now: float, tcp_checks: dict[tuple[
     Args:
         robot: The robot to check.
         now: Current ROS time, seconds.
-        tcp_checks: Each arm's latest `tcp_check` by (serial, arm name); an arm without one gets an amber chip.
+        tcp_checks: Each arm's latest `tcp_check` by (serial, arm name); an arm without one gets a grey (pending) chip.
         calibration: The base calibration the relay applies to its rigid body, or None; built for an earlier body
             definition, it turns the mocap chip amber, as a high marker error does.
         frame: The floor calibration the relay applies, or None; with poses off (`poses_off`), the mocap chip turns
@@ -322,7 +322,7 @@ def robot_checks(robot: HuskyRobotInterface, now: float, tcp_checks: dict[tuple[
     # * Each part's sim chip comes first, then its own chips: base; arm up to its tcp; then the tool.
     lines = [("base", simulated_check(robot.base.simulation)
               + [stream_check("signal", base, BASE_RATE) if base.seen else
-                 Check("signal", WARN, "no platform joint_states yet"),
+                 Check("signal", BAD, "no platform joint_states yet"),
                  in_frame(calibrated(mocap_check("mocap", robot.config.mocap_id, state, now), calibration),
                           frame),
                  estop_check(state),
@@ -490,7 +490,7 @@ def estop_check(state: BaseState) -> Check:
         state: The base's measured state.
     """
     if state.estopped is None:
-        return Check("estop", WARN, "no emergency_stop message yet; state unknown")
+        return Check("estop", BAD, "no emergency_stop message yet; state unknown")
     if state.estopped:
         return Check("ESTOP", BAD, "platform emergency stop is engaged")
     return Check("estop", GOOD, "released")
@@ -507,7 +507,7 @@ def battery_check(state: BaseState, now: float) -> Check:
         Check: Labelled with the charge when known.
     """
     if state.battery_update_time is None:
-        return Check("bat", WARN, "no bms/state message yet")
+        return Check("bat", BAD, "no bms/state message yet")
     percentage = state.battery_percentage
     known = percentage is not None and math.isfinite(percentage)
     # * 5 % steps, no voltage: a jittering label would rebuild the row.

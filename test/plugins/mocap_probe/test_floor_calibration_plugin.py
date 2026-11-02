@@ -13,6 +13,7 @@ import viser
 from scipy.spatial.transform import Rotation
 
 from repo_paths import DATA
+from husky_assembly_teleop.colors import NONE, WARN, rgb
 from husky_assembly_teleop.plugins.mocap_probe import CONFIRM_SECONDS, MocapProbePlugin
 from husky_assembly_teleop.robot_interface.mocap_definitions import read_cameras
 from husky_assembly_teleop.robot_interface.mocap_relay import FloorCalibrationState, MocapRelayState
@@ -167,11 +168,11 @@ def test_phone_delete_all_needs_a_second_tap(server, tmp_path):
     plugin._delete_all(ctx, "floor")
     plugin.draw(ctx)
     assert len(plugin.samples) == 5
-    assert (floor_button.label, floor_button.color) == ("Tap again: delete 3", "orange")
+    assert (floor_button.label, floor_button.color) == ("Tap again: delete 3", rgb(WARN))
     plugin._delete_all(ctx, "floor")
     plugin.draw(ctx)
     assert [sample.name for sample in plugin.samples] == ["table_1", "table_2"]
-    assert (floor_button.label, floor_button.color) == ("Delete floor points", "gray")
+    assert (floor_button.label, floor_button.color) == ("Delete floor points", rgb(NONE))
 
     # * A second tap too late only arms the button again.
     plugin._delete_all(ctx, "all")
@@ -199,7 +200,7 @@ def test_phone_export_needs_a_second_tap(server, tmp_path):
     button = plugin._confirms["export"][1][0]
     plugin._export_floor(ctx, phone=True)
     plugin.draw(ctx)
-    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Tap again: export", "orange")
+    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Tap again: export", rgb(WARN))
     assert "again within 3 s" in plugin._floor_result.content
     plugin._export_floor(ctx, phone=True)
     plugin.draw(ctx)

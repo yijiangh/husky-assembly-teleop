@@ -88,7 +88,7 @@ class FakeCollisions:
 
 def test_target_ghost_hides_once_the_robot_stands_at_the_target():
     """Away from the target the ghost shows there; within 5 cm / 3° of it, it hides instead of covering the robot."""
-    assert KIND_COLORS[BasePlannerPanel.target_kind] != KIND_COLORS["target"], "orange, apart from the process blue"
+    assert KIND_COLORS[BasePlannerPanel.target_kind] == KIND_COLORS["target"], "one target colour"
     panel = panel_for(None)
     shown = []
     ghost = SimpleNamespace(show=lambda pose, joints: shown.append(pose), hide=lambda: shown.append(None))

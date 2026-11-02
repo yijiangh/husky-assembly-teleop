@@ -13,6 +13,7 @@ from plugin_fakes import FakeGui
 from robot_fakes import TCP_ORIENTATION, TCP_POSITION, FreeRobots, fake_arm, lease_context, wait_ticks_until
 from scipy.spatial.transform import Rotation
 
+from husky_assembly_teleop.colors import NONE, WARN, rgb
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.shared.teleop.dpad import BLOCKED_COLOR, HOLD_TIMEOUT, UNGUARDED_COLOR, Hold
 from husky_assembly_teleop.plugins.robot_control.arm_panel import build_jog_inputs, jog_clearance_note
@@ -579,7 +580,7 @@ def test_a_drive_whose_clearance_cannot_check_is_refused_without_a_soft_stop():
 
 
 def test_a_base_standing_too_close_shows_the_chip_and_a_gray_dpad_before_any_press():
-    """Its watch says too close: a red chip naming what, and a gray D-pad; while the base drives, nothing."""
+    """Its watch says too close: a red chip naming what, and a grey D-pad; while the base drives, nothing."""
     plugin, _sent, _controller = _driven_base()
     plugin._watches["0804"] = ClearanceWatch(("0804",), STOP_DISTANCE, ALL_ARMS)
     assert plugin._start_problem("0804", 0.0) is None
@@ -591,7 +592,7 @@ def test_a_base_standing_too_close_shows_the_chip_and_a_gray_dpad_before_any_pre
     assert "starts in collision" in chips and "came within 10 cm of wall" in chips and FAIL in chips
     buttons = [SimpleNamespace(color=None)]
     plugin._color_buttons(buttons, True, "0804", 0.0)
-    assert buttons[0].color == BLOCKED_COLOR == "gray" and UNGUARDED_COLOR == "orange"
+    assert buttons[0].color == BLOCKED_COLOR == rgb(NONE) and UNGUARDED_COLOR == rgb(WARN)
     assert "Clearance is off" in plugin._base_warnings(ctx, "0804", 0.0, ticked=False), "a collision shows either way"
     plugin._watches["0804"].found.clear()
     plugin._watches["0804"].unchecked["0804"] = "cannot be checked: base not measured"
@@ -602,7 +603,7 @@ def test_a_base_standing_too_close_shows_the_chip_and_a_gray_dpad_before_any_pre
 
 
 def test_the_jog_buttons_and_their_note_follow_clearance_as_the_dpad_does():
-    """Ticked: theme colour and a gray note; too close to start: gray; unticked: orange and an orange warning."""
+    """Ticked: theme colour and a grey note; too close to start: grey; unticked: amber and an amber warning."""
     plugin, key = RobotControlPlugin(), ("0804", "ur_arm")
     buttons = [SimpleNamespace(color=None)]
     plugin._color_buttons(buttons, True, key, 0.0)

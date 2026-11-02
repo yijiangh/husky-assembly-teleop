@@ -20,11 +20,13 @@ from scipy.spatial import ConvexHull, QhullError
 from scaffolding_assembly_core.geometry import Pose, Shape, shape_mesh
 from scaffolding_assembly_core.scene import Scene, scene_parts
 
+from ..colors import ACTUAL, OUTLINE, WHITE, rgb
+
 #: Footprint colours: bodies (obstacles, parts) and robots with their tools.
-BODY_COLOR = (70, 70, 70)
-ROBOT_COLOR = (40, 70, 150)
+BODY_COLOR = rgb(OUTLINE)
+ROBOT_COLOR = rgb(ACTUAL)  # where the robots really are, lighter than the obstacles
 #: Thin lines between floor cells.
-GRID_LINE_COLOR = (255, 255, 255)
+GRID_LINE_COLOR = rgb(WHITE)
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,7 @@ class Dot:
     y: float
     color: tuple[int, int, int]
     radius: int = 4
-    outline: tuple[int, int, int] = (255, 255, 255)
+    outline: tuple[int, int, int] = rgb(WHITE)
 
 
 @dataclass(frozen=True)

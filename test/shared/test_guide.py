@@ -13,7 +13,8 @@ from husky_assembly_teleop.shared.guide.checklist import Checklist
 from husky_assembly_teleop.shared.guide.panel import GuidePanel
 from husky_assembly_teleop.shared.guide.procedure import Procedure
 from husky_assembly_teleop.shared.guide.step import Step
-from husky_assembly_teleop.ui.style import BUSY, FAIL, INFO, OK
+from husky_assembly_teleop.colors import INK, rgb
+from husky_assembly_teleop.ui.style import BUSY, CURRENT, FAIL, OK
 from husky_assembly_teleop.world.checks import BAD, GOOD, PENDING, WARN, Check
 
 
@@ -110,7 +111,7 @@ def test_done_leaves_a_finished_step_for_where_on_done_says(server):
     """A step whose state is finished: Done goes at once, without accepting."""
     panel, steps, ctx, dones = make_panel(server)
     panel.draw(ctx)
-    assert panel._done_button.color == "green"
+    assert panel._done_button.color == rgb(OK)
     panel.done(ctx)
     assert panel.index == 2 and dones == [False]
 
@@ -122,7 +123,7 @@ def test_done_asks_once_more_on_an_unfinished_step_then_goes_on(server, level, l
     steps[0].level = level
     steps[0].state = lambda ctx: Check("none yet" if level == PENDING else "fails", level, "nothing yet")
     panel.draw(ctx)
-    assert panel._done_button.color == "orange" and panel._done_button.label == "Done"
+    assert panel._done_button.color == rgb(BUSY) and panel._done_button.label == "Done"
     panel.done(ctx)
     panel.draw(ctx)
     assert panel.index == 0 and dones == [] and f"{label} within 5 s goes on" in panel._notes_html.content
@@ -210,9 +211,10 @@ def test_the_overview_shows_every_step_state_on_its_own_line(server):
     panel.draw(ctx)
     rows = panel._list_html.content.split('<div style="display:flex')[1:]
     assert len(rows) == 3
-    assert f"1px dashed {BUSY}" in rows[0] and "outline:2px dotted" in rows[0] and "ticked 61 min ago" in rows[0]
+    assert f"1px dashed {BUSY}" in rows[0] and f"outline:2px dotted {INK}" in rows[0]
+    assert "ticked 61 min ago" in rows[0]
     assert f"background:{FAIL}" in rows[1] and ">fails<" in rows[1] and "outline" not in rows[1]
-    assert f"background:{OK}" in rows[2] and f"box-shadow:0 0 0 2px {INFO}" in rows[2] and ">passes<" in rows[2]
+    assert f"background:{OK}" in rows[2] and f"box-shadow:0 0 0 2px {CURRENT}" in rows[2] and ">passes<" in rows[2]
     steps[0].why = None
     panel.draw(ctx)
     assert "outline:2px dotted" not in panel._list_html.content

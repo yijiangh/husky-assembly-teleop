@@ -7,6 +7,7 @@ from typing import Callable
 
 import viser
 
+from ...colors import NONE, WARN, rgb
 from ...plugin_api.context import PluginContext
 from ...ui.phone import big_buttons, grid_css
 
@@ -29,11 +30,12 @@ DPAD_STYLE = f"<style>{grid_css(_GRID, 3)}</style>"
 PHONE_DPAD_STYLE = f"<style>{big_buttons(_ICONS, 84, 40, labels=False)}</style>"
 #: How often the browser reports a held button, Hz. Matches the 20 Hz tick.
 HOLD_CALLBACK_HZ = 20.0
-#: D-pad colours: gray while Clearance would refuse a drive (too close already), orange while Clearance is off.
+#: D-pad colours: grey while Clearance would refuse a drive (too close already), amber while Clearance is off. Grey
+#: is fine here: unticking Clearance lifts the block.
 #: ! Only a colour: the buttons stay pressable, and a refused press says why.
-BLOCKED_COLOR, UNGUARDED_COLOR = "gray", "orange"
+BLOCKED_COLOR, UNGUARDED_COLOR = rgb(NONE), rgb(WARN)
 #: The D-pad buttons' hover text.
-DPAD_HINT = "Drives while held. Gray: too close to start with Clearance on. Orange: Clearance is off."
+DPAD_HINT = "Drives while held. Grey: too close to start with Clearance on. Amber: Clearance is off."
 #: A hold counts as released after this long without a report, seconds.
 #: ! viser never reports a release: this timeout is what stops the base, also on disconnect.
 HOLD_TIMEOUT = 0.25
@@ -93,8 +95,8 @@ def build_velocity_inputs(ctx: PluginContext, gui: viser.GuiApi, serial: str, on
     return speed, buttons
 
 
-def color_dpad(buttons: list[viser.GuiButtonHandle], color: str | None) -> None:
-    """Colour the D-pad's buttons, e.g. BLOCKED_COLOR; None for the theme's own. Sends only a change."""
+def color_dpad(buttons: list[viser.GuiButtonHandle], color: tuple[int, int, int] | None) -> None:
+    """Colour the D-pad's buttons, e.g. UNGUARDED_COLOR; None for the theme's own. Sends only a change."""
     for button in buttons:
         if button.color != color:
             button.color = color

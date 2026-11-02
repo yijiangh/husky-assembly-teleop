@@ -22,6 +22,7 @@ import viser.extras
 import viser.transforms
 import yourdfpy
 
+from ..colors import BODY, COLLISION, DARK_GREY, WHITE, rgb, rgb01
 from ..config import RobotConfig
 from scaffolding_assembly_core.robot import RobotObject, Tool
 from scaffolding_assembly_core.scene import Scene
@@ -29,7 +30,7 @@ from .phone import PHONE_TITLE, STOP_ALL_HINT, PhonePage
 from .quaternion import quaternion_to_wxyz
 from .scene_view import SceneView, add_shape
 from ..tool_urdfs import resolve_mesh_path
-from .style import FAIL, NESTED_TABS_STYLE, PATH_TABS_MARKER
+from .style import BUSY, FAIL, NESTED_TABS_STYLE, PATH_TABS_MARKER, configure_theme
 
 
 #: Mesh roughness, 0 = mirror, 1 = flat; just under 1 keeps edges readable.
@@ -39,13 +40,13 @@ MATTE_ROUGHNESS = 0.9
 PAGE_TITLE = "Husky Monitor"
 
 #: Fallback colour for a mesh that carries no colour of its own.
-_DEFAULT_MESH_COLOR = (0.8, 0.8, 0.8, 1.0)
+_DEFAULT_MESH_COLOR = rgb01(BODY, 1.0)
 
 #: Colour of the robots' collision meshes, RGB 0-1, when the view shows collision shapes.
-COLLISION_COLOR = (0.9, 0.35, 0.35)
+COLLISION_COLOR = rgb01(COLLISION)
 
 #: Colour of the mounted tools, RGB 0-1; their models carry none.
-TOOL_COLOR = (0.27, 0.27, 0.31)
+TOOL_COLOR = rgb01(DARK_GREY)
 
 #: Joint change (rad or m) below which a robot is not re-posed.
 JOINT_TOLERANCE = 1e-4
@@ -435,7 +436,7 @@ class Visualization:
             self._server.stop()
             raise
         # * Widest panel: fixed-width number rows wrap at the default.
-        self._server.gui.configure_theme(control_width="large")
+        configure_theme(self._server.gui, control_width="large")
         # ? Sets the browser tab title (the first <title> on the page wins). HTML, not markdown,
         #   which viser pads into an empty row.
         self._server.gui.add_html(f"<title>{PAGE_TITLE}</title>{NESTED_TABS_STYLE}")
@@ -446,7 +447,7 @@ class Visualization:
         # * Soft stop: a button and Esc both raise a flag the monitor reads next tick.
         #   ! Esc works only in the focused tab and not inside a text field. Not an e-stop.
         self._stop_requested = False
-        stop = self._server.gui.add_button("Stop all (Esc)", color="red", icon=viser.Icon.HAND_STOP,
+        stop = self._server.gui.add_button("Stop all (Esc)", color=rgb(FAIL), icon=viser.Icon.HAND_STOP,
                                            hint=STOP_ALL_HINT)
         stop.on_click(self._request_stop)
         self._server.gui.add_command("Stop all robots", description="Soft stop of every robot",
@@ -455,7 +456,7 @@ class Visualization:
         # * Pause: while paused the monitor skips every plugin's `draw`, so panel text can be selected
         #   (each rewrite drops the selection). Controls, updates and tasks keep running.
         self._paused = False
-        self._pause = self._server.gui.add_button("Live", color="green", icon=viser.Icon.ACTIVITY)
+        self._pause = self._server.gui.add_button("Live", color=None, icon=viser.Icon.ACTIVITY)
         self._pause.on_click(self._toggle_pause)
         self._show_pause_state()
 
@@ -585,7 +586,7 @@ class Visualization:
         """
         rows = "".join(f"<li><b>{escape(name)}</b>: {escape(reason)}</li>" for name, reason in stopped.items())
         self._broken.content = (
-            f'<div style="background:{FAIL};color:#fff;border-radius:4px;padding:6px 10px;'
+            f'<div style="background:{FAIL};color:{WHITE};border-radius:4px;padding:6px 10px;'
             f'font-size:12px"><b>⚠ Monitor broken: restart it.</b>'
             f'<ul style="margin:4px 0 0;padding-left:18px">{rows}</ul>'
             f'<div style="margin-top:4px">Stopped plugins no longer act on their buttons. '
@@ -600,10 +601,10 @@ class Visualization:
     def _show_pause_state(self) -> None:
         """Make the pause button show the current state."""
         if self._paused:
-            self._pause.label, self._pause.color, self._pause.icon = "Paused", "orange", viser.Icon.PLAYER_PAUSE
+            self._pause.label, self._pause.color, self._pause.icon = "Paused", rgb(BUSY), viser.Icon.PLAYER_PAUSE
             self._pause.hint = "Panels are paused, so their text can be selected. Click to go live again."
         else:
-            self._pause.label, self._pause.color, self._pause.icon = "Live", "green", viser.Icon.ACTIVITY
+            self._pause.label, self._pause.color, self._pause.icon = "Live", None, viser.Icon.ACTIVITY
             self._pause.hint = ("Click to pause every panel, so its text can be selected and copied. "
                                 "Buttons still act; the robots in the 3D view stay live.")
 

@@ -24,6 +24,8 @@ from scaffolding_assembly_core.kinematics import chain_joints
 from scaffolding_assembly_core.robot import RobotModel
 from scaffolding_assembly_core.scene import Body
 
+from ..colors import BODY, LAB_BORDER, TEMPORARY, rgb01
+
 #: Lab files, under the data directory; `-p lab:=<name>` picks `<name>.json`.
 LAB_DIRECTORY = "lab"
 #: The lab loaded without a `lab` parameter.
@@ -348,10 +350,10 @@ def replace_text(path: Path, text: str) -> None:
 
 # --- --- --- --- --- SCENE BODIES --- --- --- --- ---
 
-#: Colours, (r, g, b, a) from 0 to 1: muted grey furniture, the border as orange floor tape, temporary ones purple.
-LAB_COLOR = (150 / 255, 150 / 255, 160 / 255, 1.0)
-BORDER_COLOR = (230 / 255, 140 / 255, 40 / 255, 1.0)
-TEMPORARY_COLOR = (0.6, 0.35, 0.9, 1.0)
+#: Colours, (r, g, b, a) from 0 to 1: grey furniture, the border as amber floor tape, temporary ones purple.
+LAB_COLOR = rgb01(BODY, 1.0)
+BORDER_COLOR = rgb01(LAB_BORDER, 1.0)
+TEMPORARY_COLOR = rgb01(TEMPORARY, 1.0)
 
 
 def border_bodies(plugin: str, border: Border | None) -> list[Body]:

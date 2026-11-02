@@ -17,6 +17,7 @@ import viser
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.arm_planner_contract import MAX_SLOWDOWN, ArmPlanRequest
+from ...colors import TARGET
 from ...shared.collisions_contract import CollisionsContract
 from ...shared.planner.planner_panel import PlannerPanel, unknown_robots_chip
 from ...shared.planner.plan import Plan
@@ -24,7 +25,7 @@ from ...shared.planner.planner_search import with_guesses
 from ...ui.ghost import RobotGhost
 from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_joint_sliders
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import BUSY, FAIL, OK, SECTION_TOOL, block, chip, chip_line, section, values
+from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, chip_line, section, values
 from ...ui.visualization import PLAN_TAB
 from scaffolding_assembly_core.ids import robot_id
 from ...shared.assembly_planning.joints import arm_joint_names
@@ -92,7 +93,7 @@ class ArmPlannerPanel(PlannerPanel):
             self._robot = gui.add_dropdown("Robot", options=list(arms), initial_value=self.serial)
             self._arm = gui.add_dropdown("Arm", options=arms[self.serial], initial_value=self.arm)
 
-            gui.add_html(section("target", SECTION_TOOL))
+            gui.add_html(section("target", TARGET))
             self._sliders = add_joint_sliders(gui)
             load = gui.add_button_group("Load", ["Now", "Stow", "Step"],
                                         hint="Set the target to where the arm is now, to its stow pose, or to "
@@ -116,7 +117,7 @@ class ArmPlannerPanel(PlannerPanel):
 
             # Everything beyond plan and commit, folded away until wanted (as in the base planner's panel).
             with gui.add_folder("Advanced", expand_by_default=False):
-                gui.add_html(section("debug", SECTION_TOOL))
+                gui.add_html(section("debug", NONE))
                 # * Watch the search in the chosen robot's planning world.
                 # ! The one reach into the planner (the concrete plugin, not its API): the window runs on the
                 #   planner's worker (`_executor`) and shows its world (`_world`).

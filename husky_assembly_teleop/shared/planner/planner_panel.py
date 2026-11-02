@@ -22,6 +22,7 @@ from ...config import find_robot_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
+from ...colors import ACTION, TEAL, WHITE, rgb
 from ...ui.phone import button_group_color_css, columns_css, group_buttons
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, hover, note, section
 from ...world.stand_ins import unknown_parts, unknown_robots
@@ -36,10 +37,9 @@ if TYPE_CHECKING:
 
 #: Time slider resolution, seconds.
 SLIDER_STEP = 0.05
-#: The Path buttons' colour: Mantine's teal for outlines, as viser's teal buttons.
-PATH_BUTTONS_COLOR = "var(--mantine-color-teal-outline)"
-#: Plan itself, filled in Mantine's teal as viser's filled teal buttons: the one button of the panel that stands out.
-PLAN_BUTTON_FILL, PLAN_BUTTON_HOVER = "var(--mantine-color-teal-filled)", "var(--mantine-color-teal-filled-hover)"
+#: The Path buttons' colour, outlines and Plan filled: the one button of the panel that stands out. Teal, as Plan in
+#: the Assembly tab: it computes, nothing moves.
+PATH_BUTTONS_COLOR = TEAL
 #: Seconds a Commit waits for its second press, e.g. while other robots are not measured (`CommitConfirm`).
 COMMIT_CONFIRM_SECONDS = 2.0
 #: Lays out the Run folder as Commit and Cancel side by side, for an html widget outside that folder.
@@ -138,13 +138,12 @@ class PlannerPanel(HuskyPlugin):
         """
         gui.add_html(section("path", SECTION_CTRL))
         plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
-        # * Teal, as Plan in the Assembly tab (computes without moving), and Plan filled, so it never passes for Load's
-        #   Step (blue outline) right above it.
+        # * Plan filled, so it never passes for Load's Step (blue outline) right above it.
         uuid = plan._impl.uuid
         gui.add_html(f"<style>{button_group_color_css(uuid, PATH_BUTTONS_COLOR)}"
-                     f"{group_buttons(uuid, 0)} {{ background: {PLAN_BUTTON_FILL} !important; color: white !important; "
-                     f"border-color: {PLAN_BUTTON_FILL} !important; }}"
-                     f"{group_buttons(uuid, 0)}:hover {{ background: {PLAN_BUTTON_HOVER} !important; }}</style>")
+                     f"{group_buttons(uuid, 0)} {{ background: {PATH_BUTTONS_COLOR} !important; "
+                     f"color: {WHITE} !important; border-color: {PATH_BUTTONS_COLOR} !important; }}"
+                     f"{group_buttons(uuid, 0)}:hover {{ filter: brightness(0.9); }}</style>")
         self._slider = gui.add_slider("Preview time", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
                                       hint="Scrub through the planned path: seconds from its start")
         if before_commit is not None:
@@ -153,8 +152,8 @@ class PlannerPanel(HuskyPlugin):
         gui.add_html(COMMIT_STYLE)
         with gui.add_folder("Run"):
             commit = self._confirm.button = gui.add_button(
-                "Commit", color="blue", icon=viser.Icon.SEND, hint=f"{commit_hint} {CommitConfirm.HINT}")
-            cancel = gui.add_button("Cancel", color="red", icon=viser.Icon.PLAYER_STOP,
+                "Commit", color=rgb(ACTION), icon=viser.Icon.SEND, hint=f"{commit_hint} {CommitConfirm.HINT}")
+            cancel = gui.add_button("Cancel", color=rgb(FAIL), icon=viser.Icon.PLAYER_STOP,
                                     hint="Stop the motion Commit started: the planner stops the robot")
         plan.on_click(ctx.defer_value("path button", lambda label: self._on_path(ctx, label)))
         # ! Operator drags only: draw writes the slider every tick, and viser calls back for that too, late, which
@@ -365,6 +364,9 @@ class CommitConfirm:
     def __init__(self):
         """Wait for nothing yet; set `button` once it is built."""
         self.button: viser.GuiButtonHandle | None = None
+        #: The button's own colour (None: the theme's), kept at the first `draw` and shown again once it stops waiting.
+        self.ready: tuple[int, int, int] | str | None = None
+        self._kept = False
         #: ROS time until which a second press sends; -inf while none is awaited.
         self.until = -math.inf
 
@@ -392,9 +394,13 @@ class CommitConfirm:
         return "", unknown
 
     def draw(self, now: float) -> None:
-        """Make the button amber while it waits for its second press, blue otherwise."""
-        color = "orange" if now <= self.until else "blue"
-        if self.button is not None and self.button.color != color:
+        """Make the button amber while it waits for its second press, its own colour otherwise."""
+        if self.button is None:
+            return
+        if not self._kept:
+            self.ready, self._kept = self.button.color, True
+        color = rgb(BUSY) if now <= self.until else self.ready
+        if self.button.color != color:
             self.button.color = color
 
 

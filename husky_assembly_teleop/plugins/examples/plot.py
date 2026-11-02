@@ -28,6 +28,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import SECTION_SENSOR, section
 
+# * Own colours: plot lines (test_colors skips this file).
 #: How much history each plot shows, in samples (ticks).
 HISTORY = 200
 

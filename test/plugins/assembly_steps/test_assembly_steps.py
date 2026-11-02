@@ -18,6 +18,7 @@ import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, design_scene, purged_process, robot_config, step
 from robot_lab import FakeRun, RobotLab
 
+from husky_assembly_teleop.colors import WARN, rgb
 from husky_assembly_teleop.plugins.assembly_steps.diagnosis import tool0_line
 from husky_assembly_teleop.plugins.assembly_steps.panel import StepsPanel, exec_line
 from husky_assembly_teleop.plugins.assembly_steps.plugin import PLAN_TIME_MARGIN, AssemblyStepsPlugin
@@ -500,7 +501,7 @@ def test_exec_asks_for_a_second_press_while_another_robot_is_unknown():
         assert lab.executor.requests == [] and lab.plugin.plan_state == "ready"
         assert lab.plugin._message == "press Exec again within 2 s to move with 1 other robot unknown"
         lab.update()
-        assert lab.plugin._confirm.button.color == "orange" and ">1 robot unknown<" in lab.html()
+        assert lab.plugin._confirm.button.color == rgb(WARN) and ">1 robot unknown<" in lab.html()
         lab.plugin._commit(lab.ctx)
         assert len(lab.executor.requests) == 1 and lab.plugin.plan_state == "sent"
         lab.update()

@@ -28,6 +28,7 @@ BIN_FULL = 10
 #: The map shows only where the smoothed weight reaches COVERAGE_REACH of what a lone full bin leaves on itself:
 #: about 1.5 sigma around a lone bin, further along a walk.
 COVERAGE_REACH = 0.3
+# * Own colours: a plot, the coverage map's ramps (test_colors skips this file).
 #: Colour of coverage cells without samples.
 UNCOVERED_COLOR = (200, 200, 200)
 #: The map by mean marker error: GREENS from 0 to MARKER_ERROR_WARN, ORANGES from there to MARKER_ERROR_LIMIT, red

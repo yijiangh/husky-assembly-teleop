@@ -22,8 +22,9 @@ from typing import TYPE_CHECKING, Callable, Sequence
 import viser
 
 from ...ui.phone import big_buttons, phone_text
-from ...ui.style import (BUSY, INFO, LEVEL_COLORS, NONE, SECTION_CTRL, block, check_chip, chip, chip_line, section,
-                         warning)
+from ...colors import INK, rgb
+from ...ui.style import (BUSY, CURRENT, FAIL, LEVEL_COLORS, NONE, OK, SECTION_CTRL, WHITE, block, check_chip, chip,
+                         chip_line, note, section, warning)
 from ...world.checks import Check
 from .both_pages import BothPages, on_both
 from .procedure import Procedure
@@ -53,11 +54,11 @@ def state_chip(text: str, state: Check, dashed: bool, current: bool = False, nee
     """
     color = LEVEL_COLORS[state.level]
     look = (f"background:transparent;color:{color};border:1px dashed {color}" if dashed else
-            f"background:{color};color:#fff;border:1px solid {color}")
+            f"background:{color};color:{WHITE};border:1px solid {color}")
     if current:
-        look += f";box-shadow:0 0 0 2px {INFO}"
+        look += f";box-shadow:0 0 0 2px {CURRENT}"
     if needed:
-        look += f";outline:2px dotted {INFO};outline-offset:1px"
+        look += f";outline:2px dotted {INK};outline-offset:1px"
     title = f"{state.label}: {state.detail}" if state.detail else state.label
     return (f'<span title="{escape(title, quote=True)}" style="display:inline-block;white-space:nowrap;{look};'
             f'border-radius:4px;padding:0 5px;margin:0 6px 2px 2px;font-size:11px;font-weight:600">{text}</span>')
@@ -150,7 +151,7 @@ class GuidePanel:
         with gui.add_folder("Step"):
             self._back_button = gui.add_button("Back", icon=viser.Icon.CHEVRON_LEFT, hint=BACK_HINT)
             self._next_button = gui.add_button("Next", icon=viser.Icon.CHEVRON_RIGHT, hint=NEXT_HINT)
-            self._done_button = gui.add_button("Done", color="green", icon=viser.Icon.CIRCLE_CHECK, hint=DONE_HINT)
+            self._done_button = gui.add_button("Done", color=rgb(OK), icon=viser.Icon.CIRCLE_CHECK, hint=DONE_HINT)
         self._status_html = gui.add_html("")
         self._folders = []
         with gui.add_folder("Step controls"):
@@ -162,8 +163,8 @@ class GuidePanel:
             self._auto = gui.add_checkbox("Auto", initial_value=False, hint=self._auto_hint)
             self._preview = gui.add_slider("Preview", min=0.0, max=1.0, step=0.01, initial_value=0.0,
                                            hint="Scrub what Go starts; the ghost shows the robot.")
-            self._go_button = gui.add_button("Go", color="green", icon=viser.Icon.PLAYER_PLAY)
-            self._cancel_button = gui.add_button("Cancel", color="red", icon=viser.Icon.PLAYER_STOP)
+            self._go_button = gui.add_button("Go", color=rgb(OK), icon=viser.Icon.PLAYER_PLAY)
+            self._cancel_button = gui.add_button("Cancel", color=rgb(FAIL), icon=viser.Icon.PLAYER_STOP)
         self._notes_html = gui.add_html("")
         self._text_html = gui.add_html("")
         procedure = self.procedure
@@ -188,7 +189,7 @@ class GuidePanel:
         shows, with where to answer it.
         """
         def notes(html: str) -> str:
-            go = warning("Go on the laptop, after the preview.", INFO) if self.procedure.prompt else ""
+            go = note("Go on the laptop, after the preview.", CURRENT) if self.procedure.prompt else ""
             return phone_text(html + go)
 
         gui.add_html(PHONE_STEP_STYLE)
@@ -198,7 +199,7 @@ class GuidePanel:
         with gui.add_folder("Step"):
             back = gui.add_button("Back", icon=viser.Icon.CHEVRON_LEFT, hint=BACK_HINT)
             forward = gui.add_button("Next", icon=viser.Icon.CHEVRON_RIGHT, hint=NEXT_HINT)
-            done = gui.add_button("Done", color="green", icon=viser.Icon.CIRCLE_CHECK, hint=DONE_HINT)
+            done = gui.add_button("Done", color=rgb(OK), icon=viser.Icon.CIRCLE_CHECK, hint=DONE_HINT)
         self._status_html = on_both(self._status_html, gui.add_html(""), phone_text)
         with gui.add_folder("Step controls"):
             for index, step in enumerate(self.steps):
@@ -206,7 +207,7 @@ class GuidePanel:
                 self._folders[index] = on_both(self._folders[index], folder)
                 with folder:
                     step.build_phone(ctx, gui)
-            cancel = gui.add_button("Cancel", color="red", icon=viser.Icon.PLAYER_STOP)
+            cancel = gui.add_button("Cancel", color=rgb(FAIL), icon=viser.Icon.PLAYER_STOP)
         self._notes_html = on_both(self._notes_html, gui.add_html(""), notes)
         self._text_html = on_both(self._text_html, gui.add_html(""), phone_text)
         cancel.on_click(ctx.defer("cancel", self.procedure.cancel))
@@ -295,18 +296,18 @@ class GuidePanel:
             status += check_chip(procedure.outcome)
         ready = step.ready(ctx)
         self._status_html.content = (
-            section(step.name, INFO, state.label)
+            section(step.name, CURRENT, state.label)
             + '<div class="guide-chips">' + block("".join(check_chip(check) for check in step.checks(ctx)))
             + (block("".join(check_chip(check) for check in ready)) if ready else "") + "</div>"
             + chip_line(status + extra))
         question = step.question(ctx)
         self._notes_html.content = (
-            (warning(escape(procedure.prompt), INFO) if procedure.prompt else "")
+            (note(escape(procedure.prompt), CURRENT) if procedure.prompt else "")
             + (warning(escape(question)) if question else "")
             + (warning(escape(f"{step.name}: {state.label}: {state.detail}. {anyway} within "
                               f"{CONFIRM_SECONDS:g} s goes on as it stands."))
                if self._asked is not None else ""))
-        self._text_html.content = section("what to do", INFO) + block(f"<div>{escape(step.instructions)}</div>")
+        self._text_html.content = section("what to do", CURRENT) + block(f"<div>{escape(step.instructions)}</div>")
         self._draw_controls(unfinished(state), anyway if self._asked is not None else "Done")
         step.draw(ctx)
 
@@ -323,9 +324,9 @@ class GuidePanel:
                 f'overflow:hidden;text-overflow:ellipsis">{escape(state.value)}</span></div>')
 
     def _draw_controls(self, unfinished_step: bool, done_label: str) -> None:
-        """Show Back, Done, Next, Go, Cancel, Preview and Auto as what they do now: grey while they do nothing.
+        """Show Back, Done, Next, Go, Cancel, Preview and Auto as what they do now: disabled while they do nothing.
 
-        Done is orange while the step is unfinished (it asks once more, labelled `done_label`), green otherwise.
+        Done is amber while the step is unfinished (it asks once more, labelled `done_label`), green otherwise.
         """
         step, procedure = self.current, self.procedure
         set_changed(self._auto, visible=step.auto)
@@ -337,12 +338,10 @@ class GuidePanel:
         set_changed(self._go_button, visible=step.goes, disabled=not procedure.prompt,
                     label=f"Go: {procedure.go_label}" if procedure.prompt else "Go")
         set_changed(self._cancel_button, visible=step.cancels or procedure.running, disabled=not procedure.running)
-        if procedure.running:
-            back = done = forward = ("gray", True)
-        else:
-            back = ("gray", True) if self.index == 0 else (None, False)
-            forward = ("gray", True) if self.index >= len(self.steps) - 1 else (None, False)
-            done = ("orange", False) if unfinished_step else ("green", False)
+        running = procedure.running
+        back = (None, running or self.index == 0)
+        forward = (None, running or self.index >= len(self.steps) - 1)
+        done = (rgb(BUSY if unfinished_step else OK), running)
         for button, (color, disabled) in ((self._back_button, back), (self._done_button, done),
                                           (self._next_button, forward)):
             set_changed(button, color=color, disabled=disabled)

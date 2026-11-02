@@ -10,6 +10,7 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from test_floor_calibration_plugin import NOW, floor_exports, make_ctx, server  # noqa: F401 (the viser server fixture)
+from husky_assembly_teleop.colors import WARN, rgb
 from husky_assembly_teleop.plugins.mocap_probe import FORCE_SECONDS, MARK_BUTTONS, MocapProbePlugin
 from husky_assembly_teleop.robot_interface.mocap_relay import FloorCalibrationState
 from husky_assembly_teleop.world.calibration_sessions import SESSIONS_FOLDER
@@ -85,7 +86,7 @@ def test_the_marks_from_the_first_export_give_every_later_calibration_its_frame(
 
 
 def test_a_moved_mark_exports_only_on_a_second_press_and_too_few_marks_not_at_all(server, tmp_path):  # noqa: F811
-    """A mark 5 mm off: red chip, exported on a second press within 2 s (orange meanwhile); one mark: no frame.
+    """A mark 5 mm off: red chip, exported on a second press within 2 s (amber meanwhile); one mark: no frame.
 
     A second press too late only arms the button again.
     """
@@ -97,7 +98,7 @@ def test_a_moved_mark_exports_only_on_a_second_press_and_too_few_marks_not_at_al
     assert plugin._floor_message.endswith("press again within 2 s to export anyway")
     button = plugin._confirms["export"][0][0]
     plugin.draw(ctx)
-    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Press again: export anyway", "orange")
+    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Press again: export anyway", rgb(WARN))
     ctx.now = lambda: NOW + FORCE_SECONDS + 1.0
     plugin._export_floor(ctx)
     assert not floor_exports(tmp_path)

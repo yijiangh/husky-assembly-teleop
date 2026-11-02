@@ -1,30 +1,32 @@
 """
 The shared look of plugin panels: coloured chips, section bars, number rows.
 
-Chips are green = ok, blue = an expected end state (e.g. a stalled screw), amber = in progress or stale,
-red = failed, gray = no data. Every helper returns
+Chips are green = ok, blue = an expected end state (e.g. a stalled screw), amber = moving, in progress or stale,
+red = failed, grey = no data; the colours and what else they mean are in `colors.py`. Every helper returns
 HTML for viser's `add_html`; assigning it in every `draw` is cheap (viser only sends changes).
 
 ! Nothing above a button may change height while a view shows (AGENTS.md, "Panels: nothing jumps"):
   - a chip that can appear, e.g. the refusal chip saying why a button did nothing (gone after REFUSAL_SHOWN), goes on
     a `chip_line`, which is always there and one line high;
-  - never hide or grey out buttons: ignore and log inapplicable actions instead, with such a chip.
+  - never hide buttons; grey one out only while a toggle can lift the block (the D-pad under Clearance), else ignore
+    and log inapplicable actions, with such a chip.
 """
 
 from __future__ import annotations
 
 from html import escape
 
+import viser
+from viser import _messages
+
+from ..colors import ACTION_SHADES, CURRENT, FAIL, INFO, INK, NONE, OK, WHITE
+from ..colors import SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL  # noqa: F401 (for the plugins' section bars)
+from ..colors import WARN as BUSY
 from ..world.checks import BAD, GOOD, PENDING, STALE_AFTER, WARN, Check
 from ..world.checks import INFO as INFO_LEVEL
 
-#: The ring that marks the selected one of a row (the process panel's movement buttons); a colour no swatch fill uses.
-RING = "#212529"
-
-# Colours: chips put white text on these, readable in light and dark theme.
-OK, BUSY, FAIL, NONE = "#2f9e44", "#e8590c", "#e03131", "#868e96"
-INFO = "#1c7ed6"
-SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL = "#4263eb", "#1098ad", "#f08c00"
+#: The ring that marks the current one of a row (the process panel's movement buttons).
+RING = CURRENT
 
 #: Chip colour for each severity.
 LEVEL_COLORS = {PENDING: NONE, INFO_LEVEL: INFO, GOOD: OK, WARN: BUSY, BAD: FAIL}
@@ -33,6 +35,18 @@ LEVEL_COLORS = {PENDING: NONE, INFO_LEVEL: INFO, GOOD: OK, WARN: BUSY, BAD: FAIL
 REFUSAL_SHOWN = 3.0
 #: Longest hover text kept whole, characters (`hover`): about three lines of a chip's tooltip.
 HOVER_MAX = 160
+
+
+def configure_theme(gui: viser.GuiApi, control_width: str = "medium", show_logo: bool = True,
+                    show_share_button: bool = True, dark_mode: bool = False) -> None:
+    """Configure the viser theme with ACTION blue as its colour, the same blue in the light and the dark theme.
+
+    ? viser 1.1.1 drops a 10-shade `brand_color` and derives its own shades from one colour, which makes the light
+      theme's buttons lighter than ACTION; so the theme message is sent here, with `colors.ACTION_SHADES`.
+    """
+    gui._websock_interface.queue_message(_messages.ThemeConfigurationMessage(
+        titlebar_content=None, control_layout="floating", control_width=control_width, show_logo=show_logo,
+        show_share_button=show_share_button, dark_mode=dark_mode, colors=ACTION_SHADES))
 
 
 def hover(text: str, where: str = "the console") -> str:
@@ -51,7 +65,7 @@ def chip(text: str, color: str, title: str = "") -> str:
     """A small coloured label; `title` is hover text for extra detail."""
     # nowrap: rows wrap between chips, never inside one.
     return (f'<span title="{escape(title, quote=True)}" style="display:inline-block;white-space:nowrap;'
-            f'background:{color};color:#fff;border-radius:4px;padding:0 5px;'
+            f'background:{color};color:{WHITE};border-radius:4px;padding:0 5px;'
             f'margin:0 4px 2px 0;font-size:11px;font-weight:600">{text}</span>')
 
 
@@ -68,7 +82,7 @@ def swatch_chip(text: str, fill: str, border: str, title: str = "", fill_to: str
     """
     background = f"linear-gradient(90deg,{fill},{fill_to})" if fill_to else fill
     return (f'<span title="{escape(title, quote=True)}" style="display:inline-block;white-space:nowrap;'
-            f'background:{background};color:#212529;border:1px {"dashed" if dashed else "solid"} {border};'
+            f'background:{background};color:{INK};border:1px {"dashed" if dashed else "solid"} {border};'
             f'border-radius:4px;padding:0 5px;margin:0 4px 2px 0;font-size:11px;font-weight:600">{text}</span>')
 
 
@@ -142,13 +156,15 @@ def note(text: str, color: str = NONE) -> str:
 
 
 def warning(text: str, color: str = BUSY) -> str:
-    """One line of warning text with a warning sign.
+    """One line of warning text with a warning sign; the sign and a bar on the left are coloured, the text is not.
 
     Args:
         text: The warning.
         color: Amber by default; FAIL (red) when the control is blocked.
     """
-    return block(f'<div style="font-size:11px;font-weight:600;color:{color}">⚠ {text}</div>')
+    # Amber text is too light on a white panel, hence the plain text.
+    return block(f'<div style="font-size:11px;font-weight:600;border-left:3px solid {color};padding-left:5px">'
+                 f'<span style="color:{color}">⚠</span> {text}</div>')
 
 
 def values(*lines: str, dim: bool = False) -> str:

@@ -60,7 +60,7 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   within 2 s, which lets those robots be unknown during the motion (`unknown_robots` of a clearance).
   `world/stand_ins.py`, `shared/assembly_planning/scene_for.py`.
 - **ghost**: a see-through robot copy for a target, a plan or a preview: blue where a robot should go (the process
-  panel's one robot per movement, the arm planner's target), orange at the base planner's target, green where a plan
+  panel's one robot per movement, the arm and base planners' targets), green where a plan
   has it; the planner panels show theirs only while last used, assembly_steps' path ghost while there is a plan (the
   old monitor's colours; only the live robots show their true colours). `ui/ghost.py`.
 

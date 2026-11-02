@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from robot_fakes import lease_test_robots, wait_ticks_until
 
+from husky_assembly_teleop.colors import OK, WARN, rgb
 from husky_assembly_teleop.shared.planner.planner_panel import (COMMIT_CONFIRM_SECONDS, CommitConfirm, PlannerPanel,
                                                                 unknown_robots_chip)
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
@@ -457,16 +458,16 @@ def test_commit_asks_for_a_second_press_within_two_seconds_while_a_robot_is_unkn
     ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={lost.id: lost})), t=10.0)
     ctx.now = lambda: ctx.t
     confirm = CommitConfirm()
-    confirm.button = SimpleNamespace(color="blue")
+    confirm.button = SimpleNamespace(color=rgb(OK))
     asked, allowed = confirm.asks(ctx, ["robots/me"], "Commit")
     assert asked == "press Commit again within 2 s to move with 1 other robot unknown"
     assert allowed == frozenset()
     confirm.draw(ctx.t)
-    assert confirm.button.color == "orange" and COMMIT_CONFIRM_SECONDS == 2.0
+    assert confirm.button.color == rgb(WARN) and COMMIT_CONFIRM_SECONDS == 2.0
     ctx.t += 1.5
     assert confirm.asks(ctx, ["robots/me"], "Commit") == ("", {"robots/b"}), "the second press lets b be unknown"
     confirm.draw(ctx.t)
-    assert confirm.button.color == "blue"
+    assert confirm.button.color == rgb(OK)
     assert confirm.asks(ctx, ["robots/me"], "Commit")[0]
     ctx.t += 2.5
     assert confirm.asks(ctx, ["robots/me"], "Commit")[0], "too late: it asks again"

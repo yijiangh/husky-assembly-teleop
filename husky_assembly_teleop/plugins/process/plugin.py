@@ -43,13 +43,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
 from async_timeout import timeout
+from ...colors import INK, rgb
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.assembly_tab import ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
 from ...ui.phone import group_buttons, group_tooltips_css, one_row_css
-from ...ui.style import (BUSY, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line, hover,
-                         section, swatch_chip, values)
+from ...ui.style import (BUSY, CURRENT, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line,
+                         hover, section, swatch_chip, values)
 from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
@@ -252,7 +253,7 @@ class ProcessPlugin(HuskyPlugin):
             self._collide_status = gui.add_html("")
             self._actions_title = gui.add_html(section("actions", SECTION_CTRL))
             # * A window of the schedule that follows the selection: click a row to jump to that action.
-            self._action_rows = [gui.add_button("·", color="gray") for _ in range(ACTION_ROWS)]
+            self._action_rows = [gui.add_button("·", color=rgb(NONE)) for _ in range(ACTION_ROWS)]
             gui.add_html(section("step", SECTION_CTRL))
             self._slider = gui.add_slider("Step", min=0, max=1, step=1, initial_value=0)
             go = gui.add_button_group("Go", ["◀ action", "◀ mv", "mv ▶", "action ▶"],
@@ -651,15 +652,15 @@ class ProcessPlugin(HuskyPlugin):
             index = self._window_start + row
             if index >= count:
                 # ! Never hide a row: that would shift the buttons below it.
-                button.label, button.color = "·", "gray"
+                button.label, button.color = "·", rgb(NONE)
                 continue
             action = self._shown.actions[self.process.schedule[index]]
             robot = self.process.robots[action.robot].name if action.robot else BY_HAND_LABEL
             mark = self._marks.get(action.id)
             label = f"{index + 1}. {action.id} · {robot} · {len(action.movements)} mv"
             button.label = label + (f" · {'done (assumed)' if mark == MARK_ASSUMED else mark}" if mark else "")
-            button.color = ("blue" if index == current else "orange" if mark == MARK_ASSUMED
-                            else "green" if mark == MARK_DONE else "gray")
+            button.color = (rgb(CURRENT) if index == current else rgb(BUSY) if mark == MARK_ASSUMED
+                            else rgb(OK) if mark == MARK_DONE else rgb(NONE))
     # ! Keep every row one line tall (`_one_line`) and the chip set fixed, so nothing shifts between steps.
 
     def _carry_applies(self, action: Action, movement: Movement) -> bool:
@@ -844,7 +845,7 @@ def _movement_css(uuid: str, kinds: list[Kind], current: int, tips: list[str | N
         fill = f"linear-gradient(90deg,{kind.fill},{kind.fill_to})" if kind.fill_to else kind.fill
         ring = f" box-shadow: inset 0 0 0 2px {RING};" if index == current else ""
         # * Dark text on the light fills, in either theme, as `swatch_chip`.
-        css += (f"{group_buttons(uuid, index)} {{ background: {fill} !important; color: #212529 !important; "
+        css += (f"{group_buttons(uuid, index)} {{ background: {fill} !important; color: {INK} !important; "
                 f"border: 1px {'dashed' if kind.dashed else 'solid'} {kind.border} !important;{ring} }}")
     return css + group_tooltips_css(uuid, tips)
 

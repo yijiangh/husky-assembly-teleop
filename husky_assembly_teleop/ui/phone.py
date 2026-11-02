@@ -14,6 +14,9 @@ from typing import Callable, Iterable, Sequence
 
 import viser
 
+from ..colors import FAIL, INK, WHITE, rgb
+from .style import configure_theme
+
 #: Stop all's hover text, on the laptop and the phone.
 STOP_ALL_HINT = ("Soft stop, not an e-stop: stops arm programs, base controllers, tools and moving tasks. "
                  "Robots refuse motion until Resume in Health.")
@@ -196,7 +199,7 @@ def group_tooltips_css(uuid: str, tips: Sequence[str | None]) -> str:
     group = f'div:has(> div > p > label[for="{uuid}"])'
     css = (f"{group} {{ position: relative; }}"
            f"{group}::after {{ display: none; position: absolute; left: 0; right: 0; top: 100%; z-index: 20; "
-           "padding: 6px 10px; border-radius: 4px; background: #212529; color: #fff; font-size: 12px; "
+           f"padding: 6px 10px; border-radius: 4px; background: {INK}; color: {WHITE}; font-size: 12px; "
            "line-height: 1.35; white-space: pre-wrap; pointer-events: none; }")
     for index, tip in enumerate(tips):
         if tip:
@@ -210,7 +213,7 @@ def button_group_color_css(uuid: str, color: str) -> str:
 
     Args:
         uuid: The button group's uuid, `handle._impl.uuid`.
-        color: A CSS colour, e.g. `ui.style.SECTION_TOOL`.
+        color: A CSS colour, e.g. `colors.TEAL`.
 
     Returns:
         str: CSS rules, without the <style> element.
@@ -256,9 +259,9 @@ class PhonePage:
         """
         self.server = server
         gui = server.gui
-        gui.configure_theme(show_logo=False, show_share_button=False)
+        configure_theme(gui, show_logo=False, show_share_button=False)
         gui.add_html(f'<title>{PHONE_TITLE}</title><div id="{MARKER}"></div><style>{PHONE_STYLE}</style>')
-        self.stop = gui.add_button("Stop all", color="red", icon=viser.Icon.HAND_STOP,
+        self.stop = gui.add_button("Stop all", color=rgb(FAIL), icon=viser.Icon.HAND_STOP,
                                    hint=STOP_ALL_HINT)
         self.stop.on_click(on_stop)
         #: Each plugin's header folder goes in here, above the tabs. Unlabelled folders draw only their children.

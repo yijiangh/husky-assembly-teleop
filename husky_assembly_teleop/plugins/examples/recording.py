@@ -25,7 +25,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.trace import Signal
 from ...shared.recordings.runs import run_folder, save_recording, write_description
-from ...ui.style import BUSY, NONE, OK, SECTION_SENSOR, block, chip, section, values
+from ...ui.style import BUSY, NONE, SECTION_SENSOR, block, chip, section, values
 from ...ui.trace_plot import TracePlot
 
 RECORD_SECONDS = 5.0
@@ -100,6 +100,6 @@ class ExampleRecordingPlugin(HuskyPlugin):
             self._status.content = block(chip("no robot with an arm", NONE))
             return
         running = self._task is not None and not self._task.done()
-        state = chip("recording", BUSY) if running else chip("idle", OK)
+        state = chip("recording", BUSY) if running else chip("idle", NONE)
         self._status.content = block(state + values(self._result or "—"))
         self._plot.draw()

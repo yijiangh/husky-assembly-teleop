@@ -48,7 +48,7 @@ TOOL_JOG_BUTTONS = tuple(
 #: Lays out the Tool0 folder as a row per axis: move -, move +, turn -, turn +.
 TOOL_JOG_STYLE = f"<style>{columns_css(TOOL_JOG_BUTTONS[0][0][1], 4)}</style>"
 #: The jog buttons' colours, for their hover text.
-JOG_COLORS = "Gray: too close to start with Clearance on. Orange: Clearance is off."
+JOG_COLORS = "Grey: too close to start with Clearance on. Amber: Clearance is off."
 #: Hint on the Grip buttons, per end effector kind.
 GRIP_HINTS = {"robotiq": "Stop holds the fingers where they are.",
               "scaffolding_v1": "The gripper is only ever open or closed.",

@@ -98,7 +98,7 @@ it two tabs:
 
 - **Points**: **Label** and **Record point** (numbered per label: `table_1`, `table_2`, …; refused without a fix),
   **Delete all points**, **Map coverage** with a top-down map of where the probe is seen well (colours: README,
-  `mocap_probe`; obstacles dark grey, robots blue, points pink, the probe a white dot, grey without a fix; +x right,
+  `mocap_probe`; obstacles dark grey, robots grey, points cyan, the probe a white dot, grey without a fix; +x right,
   +y up), and the last points. Export and delete single points on the laptop.
 - **Floor**: the floor calibration, made walking from mark to mark: [floor_calibration_manual.md](floor_calibration_manual.md).
 

@@ -11,7 +11,7 @@ The phone's Mocap tab has the same big status over two tabs: Points (Label, Reco
 map while mapping with the coverage map, obstacles, robots, points and probe, and the last points) and Floor.
 Its delete-all buttons (every point, or the floor calibration's) and Export floor calibration act on a second tap.
 An export with a warning (a mark off, an anchor not read) goes on a second press within FORCE_SECONDS, the button
-orange meanwhile, on the laptop too.
+amber meanwhile, on the laptop too.
 
 Floor calibration: "Floor point" records a "floor" sample, "Mark" one of the marks on the floor (origin, mark1..3),
 "Anchor" the tip near one of Motive's anchor markers: a hint, the anchor being that marker, read with the probe away
@@ -64,6 +64,7 @@ from scipy.spatial.transform import Rotation
 
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 
+from ..colors import INK, LAB_BORDER, LIGHT_GREY, MEASURED, OUTLINE, SELECTED, WHITE, rgb
 from ..drive import drive_folder, environment, folder_name, stamped_name, started_at
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
@@ -100,23 +101,23 @@ DEFAULT_LABEL = "p"
 #: Where "Export" writes the probe's measurements (points, coverage), below the Drive root; floor calibrations go to
 #: the relay's calibration sessions.
 EXPORT_FOLDER = Path("data_experiment") / "mocap_probe"
-#: Colour of unselected recorded points in the 3D view.
-SAMPLE_COLOR = (230, 60, 150)
+#: Colour of unselected recorded points in the 3D view and on the phone's map: measurements.
+SAMPLE_COLOR = rgb(MEASURED)
 #: Colour of the selected recorded points.
-SELECTED_COLOR = (250, 200, 30)
+SELECTED_COLOR = rgb(SELECTED)
 #: Points listed on the phone, newest last.
 PHONE_POINTS = 5
 #: Seconds between redraws of the phone's top-down map; each redraw is sent as a PNG over the robot WiFi.
 MAP_PERIOD = 0.5
-#: The probe on the map: white while tracked, grey without a fix.
-PROBE_DOT_COLOR, PROBE_LOST_COLOR = (255, 255, 255), (150, 150, 150)
+#: The probe on the map, ringed in PROBE_RING_COLOR: a measurement while tracked, no data without a fix.
+PROBE_DOT_COLOR, PROBE_LOST_COLOR, PROBE_RING_COLOR = rgb(WHITE), rgb(NONE), rgb(INK)
 #: How long the big status panel flashes blue after a point is recorded, seconds.
 FLASH_SECONDS = 0.8
-#: Blue of that flash.
-FLASH_COLOR = "#1c7ed6"
+#: The flash: a fact (the point is recorded), not a tracking level.
+FLASH_COLOR = INFO
 #: Seconds a phone button that acts on its second tap (delete all, export) waits for it.
 CONFIRM_SECONDS = 3.0
-#: Seconds Export floor calibration waits for the second press that exports in spite of a warning, orange meanwhile.
+#: Seconds Export floor calibration waits for the second press that exports in spite of a warning, amber meanwhile.
 FORCE_SECONDS = 2.0
 #: The big status panel's word for each mocap check level.
 BIG_WORDS = {GOOD: "TRACKED", WARN: "NOISY", BAD: "NO FIX"}
@@ -142,27 +143,27 @@ POINT_AT_IT, POINT_REACH = "point at it", 0.5
 ANCHORS_PER_ROW = 3
 #: How far each camera's wireframe reaches, metres, and its colour.
 FRUSTUM_DEPTH = 0.5
-FRUSTUM_COLOR = (40, 90, 200)
+FRUSTUM_COLOR = rgb(MEASURED)
 #: Seen by this many cameras or more is green on the floor; fewer go through yellow to red (one), none grey.
 CAMERAS_FULL = 6
 #: The views' regions: how opaque, and how far above their plane, metres (over the coverage map's tiles).
 VIEWS_OPACITY, VIEWS_LIFT = 0.6, 0.006
 #: Their outlines' colour and width, and the count labels' height, metres; faces smaller than this, m², get none.
-OUTLINE_COLOR, OUTLINE_WIDTH, COUNT_HEIGHT, COUNT_MIN_AREA = (50, 50, 50), 0.01, 0.18, 0.05
+OUTLINE_COLOR, OUTLINE_WIDTH, COUNT_HEIGHT, COUNT_MIN_AREA = rgb(OUTLINE), 0.01, 0.18, 0.05
 #: A view's edges: faint grey rays from the camera to the plane, this long, metres, where they never meet it.
-RAY_COLOR, RAY_WIDTH, RAY_LENGTH = (185, 185, 185), 0.004, 15.0
+RAY_COLOR, RAY_WIDTH, RAY_LENGTH = rgb(LIGHT_GREY), 0.004, 15.0
 #: The lab frame file's marks and anchors in the 3D view (Show lab marks and anchors), sized by the cutoffs: each mark
 #: a ring on the floor of MARK_WARN radius; each anchor a faint sphere of ANCHOR_REACH (found within) around a denser
-#: one of MARK_WARN (moved beyond). Line width, metres; colours; opacities.
-STORED_MARK_COLOR, STORED_LINE = (250, 140, 0), 0.0005
-STORED_ANCHOR_COLOR, REACH_OPACITY, WARN_OPACITY = (40, 170, 160), 0.12, 0.5
-#: An anchor's spheres once read: green with its marker within MARK_WARN of them, red beyond; orange while it is not
+#: one of MARK_WARN (moved beyond). Line width, metres; colours (marks amber as the lab's border tape, anchors light
+#: grey, apart from a read anchor's green, red and amber); opacities.
+STORED_MARK_COLOR, STORED_LINE = rgb(LAB_BORDER), 0.0005
+STORED_ANCHOR_COLOR, REACH_OPACITY, WARN_OPACITY = rgb(LIGHT_GREY), 0.12, 0.5
+#: An anchor's spheres once read: green with its marker within MARK_WARN of them, red beyond; amber while it is not
 #: found near its stored place (the chips' colours).
-WITHIN_COLOR, BEYOND_COLOR, NOT_FOUND_COLOR = (tuple(int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
-                                               for hex_color in (OK, FAIL, BUSY))
+WITHIN_COLOR, BEYOND_COLOR, NOT_FOUND_COLOR = rgb(OK), rgb(FAIL), rgb(BUSY)
 #: Each anchor read: Motive's marker as a solid sphere this wide, metres, labelled with its distance from the stored
 #: place drawn and its noise, taken from the relay's look for the marker within NOISE_MATCH metres of it.
-READ_RADIUS, READ_COLOR, NOISE_MATCH = 0.001, (20, 90, 200), 0.005
+READ_RADIUS, READ_COLOR, NOISE_MATCH = 0.001, rgb(MEASURED), 0.005
 #: Where a view's middle meets the plane: a cross this wide, metres, in the frustums' colour.
 AIM_SIZE, AIM_WIDTH = 0.3, 0.015
 
@@ -442,28 +443,28 @@ class MocapProbePlugin(HuskyPlugin):
             views = phone.add_tab_group()
             with views.add_tab("Points", icon=viser.Icon.MAP_PIN):
                 self._phone_label = phone.add_text("Label", initial_value="")
-                phone_record = phone.add_button("Record point", color="green", icon=viser.Icon.MAP_PIN)
+                phone_record = phone.add_button("Record point", color=rgb(OK), icon=viser.Icon.MAP_PIN)
                 self._phone_result = phone.add_html("")
-                phone_delete_all = phone.add_button("Delete all points", color="gray", icon=viser.Icon.TRASH)
+                phone_delete_all = phone.add_button("Delete all points", color=rgb(NONE), icon=viser.Icon.TRASH)
                 self._phone_mapping = phone.add_checkbox("Map coverage", initial_value=False)
                 # * Shown and drawn only while mapping: it costs a PNG over the robot WiFi twice a second.
                 self._phone_map = phone.add_image(render_top_down(*self._map_inputs(None)), format="png",
                                                   visible=False)
                 self._phone_points = phone.add_html("")
             with views.add_tab("Floor", icon=viser.Icon.ARROW_BAR_TO_DOWN):
-                phone_floor = phone.add_button("Floor point", color="green", icon=viser.Icon.ARROW_BAR_TO_DOWN)
+                phone_floor = phone.add_button("Floor point", color=rgb(OK), icon=viser.Icon.ARROW_BAR_TO_DOWN)
                 phone_mark = phone.add_button_group("Mark", list(MARK_BUTTONS))
                 phone_anchor = phone.add_button("Anchor", icon=viser.Icon.ANCHOR)
                 phone.add_html(phone_text(self._marks_html()))
                 self._phone_floor_status = phone.add_html("")
                 phone_export_floor = phone.add_button("Export floor calibration", icon=viser.Icon.FILE_EXPORT)
-                phone_delete_floor = phone.add_button("Delete floor points", color="gray", icon=viser.Icon.TRASH)
+                phone_delete_floor = phone.add_button("Delete floor points", color=rgb(NONE), icon=viser.Icon.TRASH)
                 self._phone_floor_result = phone.add_html("")
 
-        # * Buttons that act on their second tap, with their label and colour; `draw` turns them red while they wait
-        # * for that tap, orange while a second press exports in spite of a warning.
-        self._confirms = {"all": [(phone_delete_all, "Delete all points", "gray")],
-                          "floor": [(phone_delete_floor, "Delete floor points", "gray")],
+        # * Buttons that act on their second tap, with their label and colour; `draw` turns them amber (BUSY) while
+        # * they wait for that tap, or for the second press that exports in spite of a warning.
+        self._confirms = {"all": [(phone_delete_all, "Delete all points", rgb(NONE))],
+                          "floor": [(phone_delete_floor, "Delete floor points", rgb(NONE))],
                           "export": [(export_floor, "Export floor calibration", None),
                                      (phone_export_floor, "Export floor calibration", None)]}
 
@@ -1207,7 +1208,7 @@ class MocapProbePlugin(HuskyPlugin):
             check = self._check(ctx)
             lost = check is None or check.level == BAD
             dots.append(Dot(*probe.position[:2], PROBE_LOST_COLOR if lost else PROBE_DOT_COLOR, radius=7,
-                            outline=(0, 0, 0)))
+                            outline=PROBE_RING_COLOR))
         footprints = () if ctx is None else scene_footprints(ctx.scene.snapshot)
         lines = tuple(round(size / MAP_LINES) for size in COVERAGE_SIZE)
         return FloorGrid(COVERAGE_ORIGIN, MAP_LINES, lines), colors, footprints, dots
@@ -1254,7 +1255,7 @@ class MocapProbePlugin(HuskyPlugin):
         position = (f'<div style="font:700 clamp(20px,5vw,64px)/1.2 monospace;white-space:pre;text-align:left;'
                     f'display:inline-block;margin-top:8px;{dim}">{rows}</div>')
         # ? vh units, so the box grows with a floated, enlarged panel.
-        return (f'<div style="background:{color};color:#fff;border-radius:8px;min-height:{min_height};'
+        return (f'<div style="background:{color};color:{WHITE};border-radius:8px;min-height:{min_height};'
                 f'display:flex;flex-direction:column;align-items:center;justify-content:center;'
                 f'text-align:center;padding:12px;margin:0 8px 8px">'
                 f'<div style="font-size:clamp(32px,9vw,120px);font-weight:800;line-height:1.1">{word}</div>'
@@ -1304,7 +1305,7 @@ class MocapProbePlugin(HuskyPlugin):
         """Each anchor read, while the stored ones show (`shown`, lab to the scene): Motive's marker, labelled.
 
         The label: how far the marker is from its stored place as drawn, and the relay's noise of it. The stored
-        anchor's spheres turn green with the marker within MARK_WARN of them, red beyond, orange while `not_found`,
+        anchor's spheres turn green with the marker within MARK_WARN of them, red beyond, amber while `not_found`,
         its label then saying so.
         """
         applied, wanted, tints = lab_from_raw(ctx), {}, {name: NOT_FOUND_COLOR for name in not_found}
@@ -1482,7 +1483,7 @@ class MocapProbePlugin(HuskyPlugin):
                 if ctx.now() > due:
                     button.label, button.color = label, color
                 else:
-                    button.label, button.color = "Press again: export anyway" if anyway else again, "orange"
+                    button.label, button.color = "Press again: export anyway" if anyway else again, rgb(BUSY)
         self._result.content = note_line(self._message, self._message_color)
         self._phone_result.content = phone_text(note_line(self._message, self._message_color))
         floor_result = note(escape(self._floor_message) or "—", self._floor_message_color)

@@ -16,7 +16,7 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
 * Clearance (ticked by default): while driving the base or jogging an arm, the robot is soft stopped once it comes
   too close to anything in the scene (`ctx.clearance`). A drive or jog waits for its first clear check: one that
   starts too close is refused, with a red chip, and never soft stopped. Watched standing too (`ctx.watch_clearance`):
-  its buttons turn gray while a start would be refused, orange while Clearance is off.
+  its buttons turn grey while a start would be refused, amber while Clearance is off.
 * ! Every button that does nothing says why: a refusal chip on its part's status line (`_refuse`, `refusal_chip`).
 """
 
@@ -596,14 +596,14 @@ class RobotControlPlugin(HuskyPlugin):
             return ""
         label, why = problem
         if not ticked:
-            return chip(label, FAIL, f"{why}. Clearance is off: the {buttons} moves anyway (orange).\nMove out with "
+            return chip(label, FAIL, f"{why}. Clearance is off: the {buttons} moves anyway (amber).\nMove out with "
                                      f"care.")
         then = ("Untick Clearance to move out; Collisions shows a refused press's hit." if label == START_IN_COLLISION
                 else "Untick Clearance to move without it.")
-        return chip(label, FAIL, f"{why}: Clearance refuses the {buttons} (gray).\n{then}")
+        return chip(label, FAIL, f"{why}: Clearance refuses the {buttons} (grey).\n{then}")
 
     def _color_buttons(self, buttons, ticked: bool, key: str | tuple[str, str], now: float) -> None:
-        """Gray while Clearance would refuse a start, orange while it is unticked, else the theme's colour."""
+        """Grey while Clearance would refuse a start, amber while it is unticked, else the theme's colour."""
         blocked = ticked and self._start_problem(key, now) is not None
         color_dpad(buttons, BLOCKED_COLOR if blocked else None if ticked else UNGUARDED_COLOR)
 

@@ -38,6 +38,7 @@ import numpy as np
 import viser
 from crl_husky.follower_path import FollowerPath, wrap
 
+from ...colors import CURRENT, rgb
 from ...drive import drive_folder, folder_name
 from ...plugin_api import signals
 from ...plugin_api.concurrency import WaitTimeout
@@ -52,8 +53,8 @@ from ...shared.planner.planner_panel import COMMIT_CONFIRM_SECONDS
 from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
-from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, hover, section,
-                         values, warning)
+from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, chip_line, hover, section, values,
+                         warning)
 from ...ui.trace_plot import TracePlot
 from ...world.clearance import ALL_ARMS, STOP_DISTANCE, Clearance, ClearanceRefused
 from ...world.checks import STALE_AFTER
@@ -188,7 +189,7 @@ class BaseExperimentPlugin(HuskyPlugin):
             self.serial = serials[0]
             self._robot = gui.add_dropdown("Robot", options=serials, initial_value=self.serial)
 
-            gui.add_html(section("path", SECTION_TOOL))
+            gui.add_html(section("path", SECTION_CTRL))
             self._template = gui.add_dropdown("Template", options=list(TEMPLATES), initial_value="Straight")
             self._mode = gui.add_dropdown("Mode", options=["Geometric", "Timed"], initial_value="Geometric",
                                           hint="Geometric: the follower picks the speed, up to the limits. "
@@ -219,7 +220,7 @@ class BaseExperimentPlugin(HuskyPlugin):
                 hint="Drive back to the series' start pose before every automated run; off: only when no clear "
                      "path is found where the robot stands")
             # * Progress of the automated series (runs done of runs asked for), else of the current run.
-            self._progress = gui.add_progress_bar(0.0, color="blue")
+            self._progress = gui.add_progress_bar(0.0, color=rgb(CURRENT))
             self._experiment = gui.add_text("Experiment", initial_value="default",
                                             hint="Name of this data collection: runs are saved under it")
             # ! Template numbers BELOW the buttons; the ones the template does not use are disabled.

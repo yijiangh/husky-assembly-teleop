@@ -17,7 +17,7 @@ from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 
 from ..robot_interface.arm import STILL_AFTER, ArmInterface
-from .checks import GOOD, STALE_AFTER, WARN, Check
+from .checks import BAD, GOOD, STALE_AFTER, WARN, Check
 
 if TYPE_CHECKING:
     from .kinematics import Kinematics
@@ -50,7 +50,7 @@ def tcp_check(arm: ArmInterface, expected: Pose, now: float) -> Check | None:
     """
     state = arm.state
     if state.tcp_position is None:
-        return Check("tcp", WARN, "no tcp_pose yet")
+        return Check("tcp", BAD, "no tcp_pose yet")
     if now - state.tcp_update_time > STALE_AFTER:
         return Check("tcp", WARN, f"no tcp_pose for over {STALE_AFTER:g}s")
     if state.last_motion_time is not None and now - state.last_motion_time < STILL_AFTER:

@@ -22,6 +22,7 @@ from html import escape
 import viser
 from crl_husky.follower_path import FollowerPath
 
+from ...colors import TARGET, WHITE
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
@@ -34,7 +35,7 @@ from ...ui.ghost import RobotGhost
 from ...ui.phone import group_buttons
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import (BUSY, FAIL, OK, SECTION_TOOL, block, check_chip, chip, chip_line, section,
+from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, check_chip, chip, chip_line, section,
                          values)
 from ...ui.visualization import PLAN_TAB
 from ...robot_interface.base import live_report
@@ -64,7 +65,7 @@ class BasePlannerPanel(PlannerPanel):
     tab_path = (PLAN_TAB, "Base")
     icon = viser.Icon.CAR
     requires = ("base_planner", "process", "collisions")
-    #: Orange, so the target never passes for the process panel's blue robot in the same view.
+    #: Its own ghost kind (`ui.ghost.KIND_COLORS`), in the one target blue.
     target_kind = "base_target"
 
     def __init__(self):
@@ -98,16 +99,16 @@ class BasePlannerPanel(PlannerPanel):
             self._status = gui.add_html("")
             self._robot = gui.add_dropdown("Robot", options=serials, initial_value=self.serial)
 
-            gui.add_html(section("target", SECTION_TOOL))
+            gui.add_html(section("target", TARGET))
             self._target = PlanarPoseInput(ctx, gui, f"{root}/target_gizmo", label="Target",
                                            on_change=self._target_changed)
             load = gui.add_button_group("Load", ["Robot", "Park", "Step", "Task start", "Task target"],
                                         hint="Set the target to where the robot is now, to its parked pose, to its "
                                              "base pose in the step selected in the process plugin, or to the task's "
                                              "start or target")
-            # * Step in the target section's orange: the one pressed at every assembly step, among the plain ones.
-            gui.add_html(f"<style>{group_buttons(load._impl.uuid, 2)} {{ color: {SECTION_TOOL} !important; "
-                         f"border-color: {SECTION_TOOL} !important; }}</style>")
+            # * Step filled in the target blue: the one pressed at every assembly step, among the outlined ones.
+            gui.add_html(f"<style>{group_buttons(load._impl.uuid, 2)} {{ background: {TARGET} !important; "
+                         f"color: {WHITE} !important; border-color: {TARGET} !important; }}</style>")
             # * One margin for every algorithm, in plain sight: the first thing to lower when a start or target
             #   near a bar counts as a collision.
             self._margin = add_margin_setting(gui)
@@ -123,7 +124,7 @@ class BasePlannerPanel(PlannerPanel):
 
             # Everything beyond plan and commit, folded away until wanted.
             with gui.add_folder("Advanced", expand_by_default=False):
-                gui.add_html(section("experiment", SECTION_TOOL))
+                gui.add_html(section("experiment", SECTION_CTRL))
                 self._experiment = gui.add_text("Experiment", initial_value=DEFAULT_EXPERIMENT,
                                                 hint="Name of this data collection: recorded attempts are saved "
                                                      "under it")
@@ -140,7 +141,7 @@ class BasePlannerPanel(PlannerPanel):
                                                    hint=problem or f"Save every plan attempt and each committed run "
                                                                    f"to the Drive's {RECORDING_FOLDER}/<experiment>/")
 
-                gui.add_html(section("algorithm", SECTION_TOOL))
+                gui.add_html(section("algorithm", SECTION_CTRL))
                 labels = [algorithm.label for algorithm in self._algorithms]
                 self._algorithm = gui.add_dropdown("Algorithm", options=labels, initial_value=labels[0],
                                                    hint="How the next plan is searched; its settings are below")
@@ -153,7 +154,7 @@ class BasePlannerPanel(PlannerPanel):
                     self._settings.append(folder)
 
                 # * Watch the planning world, and the search moving the robot around in it.
-                gui.add_html(section("debug", SECTION_TOOL))
+                gui.add_html(section("debug", NONE))
                 add_pybullet_window_toggle(ctx, gui, self._planner._executor, self._planner._world.set_gui)
                 self._debug_on = gui.add_checkbox("Debug view", initial_value=False,
                                                   hint="Record how the next search works, and draw it on the floor")
