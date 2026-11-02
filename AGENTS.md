@@ -57,6 +57,23 @@ When briefing a subagent to write or edit comments, paste this section into its 
 - `husky_assembly_teleop/old/`: the old monitor, reference only. It does not run; never import it from new code.
 - Docs marked outdated at the top describe the old monitor.
 
+## The Drive
+
+`HUSKY_DRIVE_ROOT` (or the monitor's `drive_root`) is the project's real shared Google Drive folder
+(`2025-03 Husky Assembly`), synced by Insync: every change reaches everyone on the project and may not be undoable.
+
+- ! Ask the user before deleting, moving, renaming or editing anything under the Drive root, including through a script
+  or a monitor run you start; say which files and why. Reading needs no permission.
+- An experiment the user is running may create and edit its own files there without asking: its runs, recordings,
+  takes, reports and analysis output, in its own folder.
+- ! Never create folders directly under the root or its data folders (`README.md`, "Experiment data"); the user
+  creates them in Drive.
+- For rapid development, point `HUSKY_DRIVE_ROOT` (or `drive_root:=`) at a mock Drive: a local, unsynced rough copy of
+  the folder structure holding only what the work needs, so temporary runs never pollute the real Drive. Say when the
+  mock is in use; results that should last are rerun or copied onto the real Drive with the user.
+- Write test output and scratch copies elsewhere: `tmp_path` in tests, `scripts/fake_lab/drive.sh` for a monitor run on
+  a copy of a process. Tests only read the Drive and skip without it.
+
 ## Build and test
 
 Run everything from the workspace root (the folder holding `src/`, `venv/`, `install/`), in its venv, with ROS sourced. The monitor needs `src/crl-husky` built in the same workspace.
