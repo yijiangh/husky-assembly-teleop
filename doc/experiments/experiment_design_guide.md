@@ -5,7 +5,7 @@ How to plan, build and analyse an experiment on the robots, for anyone (human or
 - **Part 1** (this file): the three stages, from the question to the analysis script.
 - **Part 2** (`experiment_report_guide.md`): how the generated reports are written.
 
-Examples come from the base controller experiments (`doc/base_exp_manual.md`, `plugins/base_exp/`).
+Examples come from the base controller experiments (`doc/experiments/base_exp_manual.md`, `plugins/base_exp/`).
 
 ## The three stages
 

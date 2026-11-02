@@ -1,7 +1,8 @@
 """
 Watch Motive's rigid body definitions and report refines, pivot edits, bodies made again and other bodies on an id.
 
-The relay asks the same every few seconds and logs each change (doc/mocap_relay.md); this script tries changes by hand.
+The relay asks the same every few seconds and logs each change (doc/lab/mocap_relay.md); this script tries changes
+by hand.
 
 ! WIP: of the lab test below, 3, 6 and 7 pass on the lab's Motive 3.0.3.1 (NatNet 4.0); the others are not done.
   Reads NatNet 4.0 and 4.1. A body missing for one reading comes back as "new body", not compared with its earlier

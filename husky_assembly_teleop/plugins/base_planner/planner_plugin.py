@@ -6,8 +6,9 @@ Its panel is `panel.BasePlannerPanel`; other plugins use it as `BasePlannerContr
 - Commit sends the path to the robot's onboard path follower (crl_husky `pure_pursuit`), geometric, capped at the
   planning speeds, and follows the run until the follower is done.
 - With `record` in the request, every plan attempt is saved under the experiment's name, found or not, and a
-  committed plan's run is added to it once the follower is done (`recording`, doc/base_planner_manual.md). An attempt
-  counts for the request's task when it starts at the task's start and aims at its target.
+  committed plan's run is added to it once the follower is done (`recording`,
+  doc/experiments/base_planner_manual.md). An attempt counts for the request's task when it starts at the task's
+  start and aims at its target.
 """
 
 from __future__ import annotations

@@ -130,7 +130,7 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -
 - Each base_exp run records its sim model and the fake Motive's delay and base noise (0 without one).
 - Different `sim_model` and `controller_model` make a model mismatch. Single values override the sim model, e.g.
   `ros2 launch crl_husky pure_pursuit_sim.launch.py ... xICR:=-0.15` (the base alone).
-- More: [base_exp_manual.md](base_exp_manual.md), [base_planner_manual.md](base_planner_manual.md).
+- More: [base_exp_manual.md](../experiments/base_exp_manual.md), [base_planner_manual.md](../experiments/base_planner_manual.md).
 
 ## While it runs
 

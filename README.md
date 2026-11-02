@@ -106,7 +106,7 @@ To see which versions you use and from where:
 
 **6. Experiment data** (optional; the relay and the monitor start without it). Point `HUSKY_DRIVE_ROOT` at your synced
 copy of the project's Google Drive folder, in `~/.bashrc`: processes are loaded from there, and experiments and
-calibrations are saved there. Details: [doc/experiment_data.md](doc/experiment_data.md).
+calibrations are saved there. Details: [doc/setup/experiment_data.md](doc/setup/experiment_data.md).
 
 ```bash
 export HUSKY_DRIVE_ROOT="$HOME/Insync/<account>/Google Drive - Shared with me/2025-03 Husky Assembly"
@@ -164,14 +164,14 @@ instead, stop Terminal 3 (Ctrl-C) and run `sim.launch.py robot:=all fake_motive:
 `robots:="['alice','belle','cindy']"` to see them all.
 
 Several robots, realistic mocap, base experiments, every argument and what is not simulated:
-[doc/simulation_manual.md](doc/simulation_manual.md). The fake lab (`scripts/fake_lab/tmux.sh`) starts all of it for
+[doc/lab/simulation_manual.md](doc/lab/simulation_manual.md). The fake lab (`scripts/fake_lab/tmux.sh`) starts all of it for
 every robot with the assembly plugins, on a Zenoh router of its own:
-[doc/fake_lab_test_manual.md](doc/fake_lab_test_manual.md).
+[doc/lab/fake_lab_test_manual.md](doc/lab/fake_lab_test_manual.md).
 
 # Run in the lab
 
 First the robots: power them on, pair their remote e-stops and start their onboard launches (crl-husky's README,
-[Startup](../crl-husky/README.md#startup); step by step in [doc/real_lab_test_manual.md](doc/real_lab_test_manual.md)).
+[Startup](../crl-husky/README.md#startup); step by step in [doc/lab/real_lab_test_manual.md](doc/lab/real_lab_test_manual.md)).
 Then, on the control PC, in terminals set up as in [Every terminal](#every-terminal):
 
 **1. Start the mocap relay**, unless one already runs in the lab (a second one refuses to start). The relay reads the
@@ -186,7 +186,7 @@ ros2 launch husky_assembly_teleop mocap.launch.py use_drive:=false          # cr
 
 > ⚠️ Keep the relay running while mocap is in use: stopping it stops mocap for everyone in that domain.
 
-Calibrations, topics, services and the lab frame: [doc/mocap_relay.md](doc/mocap_relay.md).
+Calibrations, topics, services and the lab frame: [doc/lab/mocap_relay.md](doc/lab/mocap_relay.md).
 
 **2. Start the monitor** with the robots and plugins you need:
 
@@ -195,7 +195,7 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -
 ```
 
 **3. Open the UI** at http://localhost:8080, or `http://<host-ip>:8080` from another PC. A phone on the robot WiFi opens
-`http://<host-ip>:8081` ([doc/phone_manual.md](doc/phone_manual.md)). The ports are fixed: if one is taken (another
+`http://<host-ip>:8081` ([doc/lab/phone_manual.md](doc/lab/phone_manual.md)). The ports are fixed: if one is taken (another
 monitor?), the monitor refuses to start. A second monitor on the same PC: `-p viser_port:=8095` (its phone page is
 then 8096).
 
@@ -212,7 +212,7 @@ Before anything moves:
   **Remote**. Otherwise the move is refused and the log says why.
 - **Quit** with Ctrl-C once and wait: the plugins send their final hold commands. A second Ctrl-C skips them.
 
-What each panel and button does: [doc/plugins.md](doc/plugins.md).
+What each panel and button does: [doc/lab/plugins.md](doc/lab/plugins.md).
 
 ## Examples
 
@@ -233,7 +233,7 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','be
     -p plugins:="['assembly_steps', 'robot_control']" -p process_directory:=data_design_study/261008_2ModulesDemo_purged_process
 ```
 
-More, for the planners and the plugin examples: [doc/plugins.md](doc/plugins.md#examples).
+More, for the planners and the plugin examples: [doc/lab/plugins.md](doc/lab/plugins.md#examples).
 
 # Parameters
 
@@ -244,18 +244,18 @@ More, for the planners and the plugin examples: [doc/plugins.md](doc/plugins.md#
 | `tools` | per robot | Only where the mounted tools differ from the defaults: `'<robot>:<tool>[,<tool>...]'`, one tool per arm in arm order. Tools: `robotiq`, `scaffolding_v1`, `scaffolding_v3`, `none`. Defaults: Alice and Belle `robotiq`, Cindy `scaffolding_v3,scaffolding_v3`. |
 | `process_directory` | none | Process folder (with `process.json`) or old compas_fab export the `process` plugin loads at startup, relative to `drive_root` (e.g. `data_design_study/260814_RobArch_support_ik`) or absolute; without it, pick one in its panel. An export is converted into `<export>_process` next to it. |
 | `data_directory` | `data/` of this repo | Root for meshes, URDFs and processes. |
-| `drive_root` | `$HUSKY_DRIVE_ROOT` | Local copy of the project's Google Drive folder (`2025-03 Husky Assembly`), for experiment data: [doc/experiment_data.md](doc/experiment_data.md). |
+| `drive_root` | `$HUSKY_DRIVE_ROOT` | Local copy of the project's Google Drive folder (`2025-03 Husky Assembly`), for experiment data: [doc/setup/experiment_data.md](doc/setup/experiment_data.md). |
 | `recording_format` | `npz` | How runs are saved: `npz` (compact) or `json` (readable text, about twice the size: one row per sample, unknown values as `null`). Both load the same way (`load_recording`). |
 | `no_default_plugins` | `false` | `true` skips the default plugins (`health`, `console`). |
 | `ghost_timeout` | `20.0` | Seconds a plugin's ghost robots stay after the last input in it; 0 keeps them until another plugin's ghosts show. A layout file's `ghost_timeout` replaces it. |
-| `layout` | `""` | A person's layout file (`ui/layout.py`); empty for `~/.config/husky_monitor/layout.json`. Never in git. See [doc/plugins.md](doc/plugins.md#your-own-layout). |
+| `layout` | `""` | A person's layout file (`ui/layout.py`); empty for `~/.config/husky_monitor/layout.json`. Never in git. See [doc/lab/plugins.md](doc/lab/plugins.md#your-own-layout). |
 | `lab` | `main` | The lab file `obstacles` loads: a name in `data/lab/`, or a path to a .json file. |
 | `viser_port` | `8080` | Port of the desktop page. Fixed: the monitor refuses to start if it is taken. |
 | `phone_port` | `viser_port + 1` | Port of the phone page. Fixed too. |
 
 # Plugins
 
-What each one does in detail, and the panels and tabs it shows: [doc/plugins.md](doc/plugins.md).
+What each one does in detail, and the panels and tabs it shows: [doc/lab/plugins.md](doc/lab/plugins.md).
 
 | Plugin | In short |
 |---|---|
@@ -279,23 +279,17 @@ What each one does in detail, and the panels and tabs it shows: [doc/plugins.md]
 
 # Documentation
 
+Every doc, by folder: [doc/README.md](doc/README.md). The ones you need first:
+
 | Doc | What it covers |
 |---|---|
-| [doc/plugins.md](doc/plugins.md) | The UI's panels, the Assembly tab, and every plugin in detail. |
-| [doc/real_lab_test_manual.md](doc/real_lab_test_manual.md) | The real robots from a laptop on the lab network: one-time setup (router, time sync, ssh keys), the robots' launches, read-only checks, tests in the air, then the first three bars step by step; `scripts/real_lab/tmux.sh`. |
-| [doc/fake_lab_test_manual.md](doc/fake_lab_test_manual.md) | The same test against three simulated robots, a fake Motive and the relay on one laptop, isolated on Zenoh; known issues; `scripts/fake_lab/tmux.sh`. |
-| [doc/simulation_manual.md](doc/simulation_manual.md) | Simulated robots and mocap: one robot, several, realistic mocap, base experiments, every argument, what is not simulated. |
-| [doc/phone_manual.md](doc/phone_manual.md) | The phone page: connecting a phone, what each tab is for, what to do after a stop, troubleshooting. |
-| [doc/mocap_relay.md](doc/mocap_relay.md) | The mocap relay: topics, calibrations, the lab frame and how it follows Motive's frame, rigid bodies in Motive, simulated inputs. |
-| [doc/floor_calibration_manual.md](doc/floor_calibration_manual.md) | The floor calibration with the mocap probe: when, the steps, what every chip and number means, after a Motive recalibration, troubleshooting. |
-| [doc/experiment_data.md](doc/experiment_data.md) | Experiment data on the Drive: where runs go, sim and real data, who creates folders there. |
-| [doc/base_exp_manual.md](doc/base_exp_manual.md), [doc/base_planner_manual.md](doc/base_planner_manual.md) | Base controller and base planner experiments: goals and hypotheses, how to run them, where the results are. |
-| [doc/old_monitor.md](doc/old_monitor.md) | What changed from the old monitor, running it, and migrating a workspace to the new one. |
-| [doc/monitor_pc_setup.md](doc/monitor_pc_setup.md) | For a coding agent setting up the new monitor on another lab PC, beside the old monitor. |
+| [doc/lab/plugins.md](doc/lab/plugins.md) | The UI's panels, the Assembly tab, and every plugin in detail. |
+| [doc/lab/real_lab_test_manual.md](doc/lab/real_lab_test_manual.md) | The real robots, step by step: setup, the robots' launches, checks, tests in the air, the first three bars. |
+| [doc/lab/fake_lab_test_manual.md](doc/lab/fake_lab_test_manual.md) | The same test against three simulated robots on one laptop. |
+| [doc/lab/simulation_manual.md](doc/lab/simulation_manual.md) | Simulated robots and mocap, every argument, what is not simulated. |
+| [doc/lab/mocap_relay.md](doc/lab/mocap_relay.md) | The mocap relay: topics, calibrations, the lab frame, rigid bodies in Motive. |
 | [doc/glossary.md](doc/glossary.md) | The project's words and what each means where. |
 | [AGENTS.md](AGENTS.md) | Conventions, build and test commands; for coding agents and people alike. |
-| Design notes | [doc/refactor_rationale.md](doc/refactor_rationale.md) (why the runtime is built the way it is), [doc/plugin_roadmap.md](doc/plugin_roadmap.md) (which old features are still to be ported), [doc/scene_refactor_plan.md](doc/scene_refactor_plan.md) (the scene), [doc/ur_frames.md](doc/ur_frames.md) (the UR arm frames), `tasks/` (specs written while building a feature). The process file format is in the core's `doc/process_format.md`. |
-| Outdated | `doc/calibration_manual.md` and the other manuals that say so at the top were written for the old monitor; each says what is missing or different now. [DOCKER.md](DOCKER.md) is in an unknown state, not tested with the new monitor. |
 
 > 🚧 A fuller overview (how the monitor fits with crl-husky, the planners and the Rhino design workflow) is still to be written.
 
@@ -316,7 +310,7 @@ The monitor is a small runtime that ticks and owns the shared state; every featu
 | `mocap_relay/` | The mocap relay, its own process. |
 | `experiments/` | Offline analysis of recorded experiments, run from `scripts/`. |
 | `drive.py`, `plots.py`, `tool_urdfs.py` | Experiment folders on the Drive; plot helpers; tool URDFs and mesh paths. |
-| `old/` | The old monitor, for reference only ([doc/old_monitor.md](doc/old_monitor.md)). |
+| `old/` | The old monitor, for reference only ([doc/setup/old_monitor.md](doc/setup/old_monitor.md)). |
 
 `external/scaffolding_assembly_core/` is the core shared with the Rhino plugin and the planners, a submodule of
 [yijiangh/scaffolding_assembly_core](https://github.com/yijiangh/scaffolding_assembly_core): the process file format

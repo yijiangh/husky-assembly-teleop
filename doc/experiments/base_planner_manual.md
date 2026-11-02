@@ -1,7 +1,7 @@
 # Base planner experiments
 
 How the base planners are compared: the goals, the tasks, how attempts are recorded, and how to collect and analyse
-them. Follows `doc/experiment_design_guide.md` and `doc/experiment_report_guide.md`.
+them. Follows `doc/experiments/experiment_design_guide.md` and `doc/experiments/experiment_report_guide.md`.
 
 ## Goals
 
@@ -134,7 +134,7 @@ ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=
 Or the whole robot with its arms, `ros2 launch husky_assembly_teleop sim.launch.py robot:=0804` (crl-husky's
 `sim_robot.launch.py`), or every robot with `robot:=all` (`sim_all.launch.py`), both parked, with each robot's base
 model; `fake_motive:=true` adds `sim_motive`, a fake Motive with Motive's delay and noise
-([simulation_manual.md](simulation_manual.md)). Then the monitor, in the same domain:
+([simulation_manual.md](../lab/simulation_manual.md)). Then the monitor, in the same domain:
 
 ```bash
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" \

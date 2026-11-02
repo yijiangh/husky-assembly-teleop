@@ -1,9 +1,11 @@
 """
-The base planner experiment's report (doc/base_planner_manual.md): the planners side by side on the standard tasks.
+The base planner experiment's report: the planners side by side on the standard tasks.
+
+The experiment: doc/experiments/base_planner_manual.md.
 
 Reads every attempt folder of one experiment (`recording.py`) and writes into its `_analysis/`: summary.md, one CSV per
 table, the charts (`figures.py`) and tasks.png, and results_prompt.md; per attempt plan.png, and per run overview.png
-and report.json. No ROS. Follows doc/experiment_report_guide.md: numbers only, no interpretation.
+and report.json. No ROS. Follows doc/experiments/experiment_report_guide.md: numbers only, no interpretation.
 """
 
 from __future__ import annotations
@@ -750,7 +752,7 @@ def _strip(cell: str) -> str:
 RESULTS_PROMPT = """# Prompt for results.md
 
 Read `summary.md` in this folder (and the CSVs it names if a number needs checking) and write `results.md` beside it,
-following doc/experiment_report_guide.md. Sections:
+following doc/experiments/experiment_report_guide.md. Sections:
 
 1. **Answer per question**: one short paragraph per numbered question in summary.md's Why, each with the numbers that
    answer it, naming the planner that is better where a value is bold, and saying "no difference" where none is.

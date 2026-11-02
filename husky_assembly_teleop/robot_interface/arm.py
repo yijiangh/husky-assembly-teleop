@@ -998,7 +998,7 @@ class ArmInterface:
         if refusal is not None:
             pass
         elif self.urdf_problem is not None and not hold:
-            refusal = "the URDF breaks the stock UR frames (logged at startup, doc/ur_frames.md)"
+            refusal = "the URDF breaks the stock UR frames (logged at startup, doc/lab/ur_frames.md)"
         elif (refusal := cartesian_target_refusal(position, orientation)) is not None:
             pass
         elif self.state.tcp_position is None:
@@ -1095,7 +1095,7 @@ class ArmInterface:
             f"##  TEST MODE -- arm {self.config.name}: {what} passed every check, NOT SENT\n"
             f"##  {detail}\n"
             f"##  Send for real (ArmConfig.cartesian_test_mode=False) only once the startup\n"
-            f"##  log shows no URDF frame error for this arm (doc/ur_frames.md).\n"
+            f"##  log shows no URDF frame error for this arm (doc/lab/ur_frames.md).\n"
             f"{rule}")
 
     def send_target_wrench(self, force: Sequence[float],

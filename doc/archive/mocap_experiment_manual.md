@@ -1,6 +1,6 @@
 # MoCap Experiment Manual
 
-> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see `doc/old_monitor.md`)** (`mocap_experiment.py`, now in `old/`; links point to a personal checkout). Taking, analysing and reporting mocap experiments is **missing** in the new monitor and not on the roadmap yet. Recording signals is now `ctx.record` (`doc/plugin_roadmap.md`, "Recording and live plots").
+> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see `doc/setup/old_monitor.md`)** (`mocap_experiment.py`, now in `old/`; links point to a personal checkout). Taking, analysing and reporting mocap experiments is **missing** in the new monitor and not on the roadmap yet. Recording signals is now `ctx.record` (`doc/design/plugin_roadmap.md`, "Recording and live plots").
 
 This document describes the workflow for:
 
@@ -64,7 +64,7 @@ ros2 run husky_assembly_teleop husky_monitor
 
 ## Before Starting a Session
 
-Open [config.yaml](../data/mocap_experiments/config.yaml).
+Open [config.yaml](../../data/mocap_experiments/config.yaml).
 
 Keep the `experiment` section stable for the full session:
 

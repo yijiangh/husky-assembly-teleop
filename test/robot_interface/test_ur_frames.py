@@ -1,4 +1,4 @@
-"""Every configured robot URDF must keep the stock UR base frames (doc/ur_frames.md).
+"""Every configured robot URDF must keep the stock UR base frames (doc/lab/ur_frames.md).
 
 A URDF that breaks this still looks right in the viewer, but Cartesian commands
 go to the wrong place. Catch it here, before it reaches a robot.
@@ -30,7 +30,7 @@ ARM_URDFS = sorted(p for p in (DATA / "husky_urdf").rglob("*.urdf")
 
 @pytest.mark.parametrize("urdf", ARM_URDFS, ids=lambda p: p.name)
 def test_every_arm_urdf_keeps_stock_ur_frames(urdf):
-    """No husky_urdf file may carry the old turned UR base frames: others copy from them (doc/ur_frames.md)."""
+    """No husky_urdf file may carry the old turned UR base frames: others copy from them (doc/lab/ur_frames.md)."""
     arms = sorted({name[:-len("_base_link_inertia")] for name in re.findall(r'link name="([^"]*_base_link_inertia)"',
                                                                             urdf.read_text())})
     problems = [p for arm in arms if (p := stock_frame_problem(urdf, arm)) is not None]

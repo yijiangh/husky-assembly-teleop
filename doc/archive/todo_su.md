@@ -61,7 +61,7 @@ a few bugs appear:
 - [x] load bar action first put the bars all out and then make thme disppear. Then load movement will do this again. Can just do it once a bar action leve at bar action level, and it should lock the render to acc
     - [] still reloading after a vs on one bar action will leave a bar hangingthere
 
-![alt text](doc/archive/image.png)
+![alt text](image.png)
 
 - [] For vs iter > 2, do a direct interpolation and projection instead of call cdfm planner.
 

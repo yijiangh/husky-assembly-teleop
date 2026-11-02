@@ -6,7 +6,7 @@ Usage:
 
 For each arm, the joints below `<arm>_base_link` are set to the stock rpy 0 0 pi, and the rotation that was
 there moves into the mount joint above, so every link except a mis-set `<arm>_base` stays where it was.
-Files that are already stock are left untouched. Why: doc/ur_frames.md.
+Files that are already stock are left untouched. Why: doc/lab/ur_frames.md.
 """
 
 from __future__ import annotations

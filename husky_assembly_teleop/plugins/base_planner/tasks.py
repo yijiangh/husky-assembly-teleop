@@ -6,7 +6,7 @@ The base planner experiment's tasks: a start and a target for Alice, and the obs
 - The process tasks drive into the bar structure of a process step and back out: their scene comes from the process
   plugin (live) or from the process folder (offline); their start and target are in the lab frame.
 
-`TASKS` is the standard set, in report order. doc/base_planner_manual.md says what each tests.
+`TASKS` is the standard set, in report order. doc/experiments/base_planner_manual.md says what each tests.
 """
 
 from __future__ import annotations

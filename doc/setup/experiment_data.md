@@ -27,7 +27,7 @@ and, once analysed, `report.json` and pictures. Load a run with `load_recording(
 `data_experiment/<plugin>/` folder, made in Drive.
 
 An assembly run is different: `assembly_run` keeps it in `runs/<YYYYMMDD_HHMMSS>/` inside the process folder
-([run_record.md](run_record.md)).
+([run_record.md](../design/run_record.md)).
 
 ## Simulated and real data
 

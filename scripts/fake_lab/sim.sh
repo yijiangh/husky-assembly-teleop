@@ -1,6 +1,6 @@
 #!/bin/bash
 # Fake lab: simulate all three robots (bases and arms) until Ctrl-C, parked, arms at their stow pose, with a fake
-# Motive: this checkout's launch/sim.launch.py (robot:=all fake_motive:=true; doc/simulation_manual.md). The relay
+# Motive: this checkout's launch/sim.launch.py (robot:=all fake_motive:=true; doc/lab/simulation_manual.md). The relay
 # (relay.sh) publishes their poses. Needs crl-husky jg/ros2 at 78041cf or later (husky_sim publishes the true base pose, tools are simulated).
 #
 # * The fake Motive has Motive's measured latency, jitter and marker errors (simulation_manual.md, "Realistic mocap"):

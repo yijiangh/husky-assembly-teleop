@@ -2,7 +2,7 @@
 
 For a coding agent on a lab PC that runs the old monitor. Set up the new monitor, branch `core-port` of
 `yijiangh/husky-assembly-teleop`, in a workspace of its own beside the old one, so that both keep working and the
-real-lab test (`doc/real_lab_test_manual.md`) runs from this PC as it does from Yijiang's laptop. The versions named
+real-lab test (`doc/lab/real_lab_test_manual.md`) runs from this PC as it does from Yijiang's laptop. The versions named
 are that laptop's (Ubuntu 22.04, ROS 2 Humble, Python 3.10.12), where all of this works.
 
 ! Never pull or check out this branch in the old monitor's checkout: that replaces the old monitor's code. Read this
@@ -11,7 +11,7 @@ checkout (a fetch only downloads):
 
 ```bash
 git -C <old checkout> fetch origin core-port
-git -C <old checkout> show FETCH_HEAD:doc/monitor_pc_setup.md
+git -C <old checkout> show FETCH_HEAD:doc/setup/monitor_pc_setup.md
 ```
 
 ## Rules
@@ -47,7 +47,7 @@ git ls-remote git@gitlab.inf.ethz.ch:crl/robot-control/crl-husky.git jg/ros2
 ## 1. What is new compared with the old monitor
 
 The old monitor ran Cyclone DDS with one robot per run in that robot's domain (84 Alice, 85 Belle, 86 Cindy), its own
-NatNet client and a PyBullet and Dear PyGui window (doc/old_monitor.md, What changed). New on this PC:
+NatNet client and a PyBullet and Dear PyGui window (doc/setup/old_monitor.md, What changed). New on this PC:
 
 | New | Why |
 |---|---|
@@ -217,7 +217,7 @@ after. Both restart her Clearpath services: never while she holds a bar.
 
 ## 8. Only if this PC should also run the fake lab
 
-The simulation needs more (`doc/fake_lab_test_manual.md`, section 0): apt `ros-humble-ur-robot-driver
+The simulation needs more (`doc/lab/fake_lab_test_manual.md`, section 0): apt `ros-humble-ur-robot-driver
 ros-humble-robotiq-description ros-humble-robotiq-controllers ros-humble-gripper-controllers`, and fzi's Cartesian
 controllers built into the workspace (the robots carry their own):
 
