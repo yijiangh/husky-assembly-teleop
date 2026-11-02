@@ -1,5 +1,5 @@
 #!/bin/bash
-# Real lab: the monitor with Alice, Belle and Cindy and the fake lab's plugins (lab_common.sh), until Ctrl-C (press it
+# Real lab: the monitor with Alice, Belle and Cindy and the labs' plugins (lab_common.sh), until Ctrl-C (press it
 # once and wait for the final holds). It loads the test's process from the Drive and records the assembly run there.
 # Its terminal output is also saved to ~/husky_real_lab/logs/monitor_<date>.log (tee ignores Ctrl-C, so the monitor's
 # shutdown lines still reach it).

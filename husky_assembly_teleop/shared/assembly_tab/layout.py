@@ -1,7 +1,7 @@
 """
 The side panel's Assembly tab, shared by process, assembly_steps, movement_exec and assembly_run: bands and icons.
 
-The plot windows of assembly_steps and movement_exec float at the bottom left; where is set here too.
+The plot windows of assembly_steps and movement_exec float at the bottom, right of the main panel; set here too.
 Each of them sets `tab_path = (ASSEMBLY_TAB,)` and adds its widgets in its own bands, `with ctx.view.ui(band=STEP_BAND)
 as gui:`; the bands sort top to bottom by these numbers, whichever plugin starts first.
 

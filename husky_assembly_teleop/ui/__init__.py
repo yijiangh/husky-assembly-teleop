@@ -2,6 +2,7 @@
 The operator's view, served by viser.
 
   visualization.py  the viser server, robots drawn each tick, one corner per plugin
+  layout.py         a person's layout file: windows, plugins' tabs and preferences, outside git
   phone.py          the phone page: Stop all, a header, one tab per plugin
   css.py            CSS for viser widgets on the laptop's page: buttons side by side, button groups
   top_down.py       a top-down picture of the scene, for the phone

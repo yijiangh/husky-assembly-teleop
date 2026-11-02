@@ -1,7 +1,7 @@
 """
 The assembly_steps part of the Assembly tab: the step, Live IK, Plan, the preview, Exec, the settings.
 
-The Plan plots window at the bottom left is this panel's too; it opens by itself when a plan arrives.
+The Plan plots window at the bottom is this panel's too; it opens by itself when a plan arrives.
 The process panel's slider and ◀ mv / mv ▶ move through the movements; the run follows them, and this panel the run.
 
 ! Never hide a row or a button, and keep every changing line one line tall, so nothing moves under the cursor.

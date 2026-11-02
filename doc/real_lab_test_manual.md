@@ -5,7 +5,7 @@ This is the operator manual for the first three bars of the design problem **`26
 B21_J, B21_H, B21_R, B22_J, B22_R**. It is the fake-lab test (`doc/fake_lab_test_manual.md`) on the real robots: the
 same process, plugins and steps, run from this laptop over Zenoh.
 
-> **?** Written on 2026-10-28 from the fake-lab runs of 2026-10-26/27 and the code; not run on the robots yet. Log
+> **?** Written from the fake-lab runs and the code; not run on the robots yet. Log
 > lines are quoted from the code; a number marked *(fake lab)* is what the simulation gave, and the robots will give
 > their own. Tell me where the page or the robots differ (Part 9).
 
@@ -98,7 +98,7 @@ Three mobile robots ("huskies") build the first three bars of the two-module dem
 
 | # | action | who | movements | what happens |
 |---|---|---|---|---|
-| 1 | `B20_J` | Cindy | transit, place bar, grasp, insert | B20 is the ground bar: transfer, the bar by hand, servo (on the MoCap bar), **rigid** insert with no tighten, then a second servo |
+| 1 | `B20_J` | Cindy | transit, place bar, grasp, insert | B20 is the ground bar: transfer, the bar by hand, servo (on the mocap bar), **rigid** insert with no tighten, then a second servo |
 | 2 | `B20_R` | Cindy | ungrasp + retreat, home | her tools open and back off (the first millimetres compliant), then home |
 | 3 | `B21_J` | Cindy | transit, place bar, grasp, insert | B21 mates on its **left** joint only: rigid, then compliant while the left joint screw tightens |
 | 4 | `B21_H` | **Alice** | approach, open, to grasp, close | Alice grabs B21: approach and servo, open, 100 mm straight in, close with the compliant handoff |
@@ -134,16 +134,16 @@ Something wrong at any point: Part 8.
 | what | where | note |
 |---|---|---|
 | this laptop | Yijiang's laptop, user `yijiangh` | runs the monitor, the relay and the checks |
-| workspace | `~/Code/ros2_ws_next` (venv `venv`, ssik installed), branch `yh/process_replan_execution` | crl-husky in `src/crl-husky` (03056b7 on 2026-10-28) |
+| workspace | `~/Code/ros2_ws_next` (venv `venv`, ssik installed), branch `core-port` of `yijiangh/husky-assembly-teleop` | crl-husky in `src/crl-husky` (`jg/ros2` at the commit README names, or later) |
 | the Drive | `~/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly` | the process folder; the run is recorded there (`runs/`), the relay reads the base calibrations there |
-| lab network | the USB-ethernet dongle (`enxa0cec86472dd` on 2026-10-28) cabled to the lab switch: `192.168.0.203`, this laptop's reserved slot | the Wi-Fi `wlo1` stays for the internet; ROS does not use it |
+| lab network | the USB-ethernet dongle (e.g. `enxa0cec86472dd`) cabled to the lab switch: `192.168.0.203`, this laptop's reserved slot | the Wi-Fi `wlo1` stays for the internet; ROS does not use it |
 | middleware | Zenoh (`rmw_zenoh_cpp`) on ROS domain 80; this laptop's router `crl-zenoh-router` linked to every robot's | the scripts set it; `~/.bashrc` (Cyclone, domain 86, for the old monitor) stays as it is |
 | Cindy's PC | `192.168.0.115`, user `administrator`, password `12345678` | rigid body 1860 |
 | Alice's PC | `192.168.0.113`, same user and password | rigid body 1840 |
 | Belle's PC | `192.168.0.114`, same user and password | rigid body 1850 |
-| Motive PC | `192.168.0.28` | the robots' bodies, and B20 / B21 as assets 1020 / 1021 (their MoCap balls) |
+| Motive PC | `192.168.0.28` | the robots' bodies, and B20 / B21 as assets 1020 / 1021 (their mocap balls) |
 | remote e-stops | one per robot | pair one husky at a time (crl-husky README, Troubleshooting) |
-| the bars | B20, B21, B22, ready to hand next to Cindy's insert starts | B20 and B21 carry MoCap balls, B22 none |
+| the bars | B20, B21, B22, ready to hand next to Cindy's insert starts | B20 and B21 carry mocap balls, B22 none |
 | a phone (optional) | on the robot Wi-Fi | `http://192.168.0.203:8081`: Stop all, and Confirm / Cancel next to the robots (`doc/phone_manual.md`) |
 
 ### 0.4 How the PCs connect
@@ -202,7 +202,7 @@ Something wrong at any point: Part 8.
 | **launch** | what `robot.sh <robot>` starts on her PC: `crl_arms_and_base.launch.py` (arms, tools, safety sync, follower) |
 | **health chips** | the coloured chips per robot, top left of the page; hover one for detail |
 | **tool0** | the end of the arm (its flange), where the tool or gripper sits |
-| **servo** | after a transfer, an approach or a ground bar's insert: small corrections from mocap until the flanges are within 0.2 mm of their targets; for B20 (**Servo by bar**) until the bar's MoCap fit is within 0.5 mm / 0.1° of its design pose |
+| **servo** | after a transfer, an approach or a ground bar's insert: small corrections from mocap until the flanges are within 0.2 mm of their targets; for B20 (**Servo by bar**) until the bar's mocap fit is within 0.5 mm / 0.1° of its design pose |
 | **controllers** | `scaled_joint_trajectory_controller` (**Joint**: stiff, follows joints; the normal one) or `cartesian_compliance_controller` (**Cart**: gives way to forces; only for an insert's last millimetres, a retreat's first ones and the handoff) |
 | **split** | those millimetres under the compliance controller (`Insert split mm`, 5) |
 | **transfer workaround** | the process panel's box: Cindy's transfer runs as a free move with empty tools to the insert start, where you place the bar by hand (this export has no loading pose) |
@@ -263,9 +263,9 @@ The four tmux things you need (more in 7.g):
 Open in Chrome on this laptop: http://localhost:8080 (4.b). One page at a time.
 
 ```text
-┌ main panel (top left) ────────┐ ┌ Plan: Base | Motion | Arm ─┐          ┌ side panel (right) ────────────┐
-│ Stop all (Esc)    N PROBLEMS  │ │ a planner's panel per tab  │          │ Assembly | Collisions | Control│
-│ health: a row per robot       │ └────────────────────────────┘          │ PROCESS: Folder, Load, boxes,  │
+┌ main panel (top left) ────────┐                                         ┌ side panel (right) ────────────┐
+│ Stop all (Esc)    N PROBLEMS  │                                         │ Assembly|Collisions|Control|Plan│
+│ health: a row per robot       │                                         │ PROCESS: Folder, Load, boxes,  │
 │  base: signal mocap estop     │                                         │   ACTIONS, Step, ◀ mv  mv ▶    │
 │        battery ctrl           │      3D view: the measured lab,         │ step line, Exec line           │
 │  arm:  signal arm <tool>      │      the robots where Motive sees       │ Live IK · Plan · Play          │
@@ -273,12 +273,15 @@ Open in Chrome on this laptop: http://localhost:8080 (4.b). One page at a time.
 └───────────────────────────────┘                                         │ Exec · Confirm | Cancel        │
                                                                           │ Mark done | Reopen             │
                                                                           │ settings · the run · Advanced  │
- [Plan plots] [Exec plots]  (bottom left, minimized)          [Console]   └────────────────────────────────┘
+ [Plan plots] [Exec plots]  (bottom, minimized)                [Console]   └────────────────────────────────┘
 ```
+
+Plan holds a tab per planner panel (Base, Motion, Arm). A layout file in `~/.config/husky_monitor/layout.json` may
+place these differently, e.g. Plan in a floating window and big Assembly buttons (README, Panels).
 
 - **Assembly** tab, top to bottom: the PROCESS section (folder, `Load`, the boxes `Transfer workaround` and
   `Rhino obstacles collide`, the ACTIONS list, the `Step` slider, `◀ mv` / `mv ▶`, the movement buttons), the step line
-  and the Exec line, the big buttons, the prompt line, the settings, the run (its chips, `Continue newest` /
+  and the Exec line, the buttons Live IK, Check tool0 and Plan, the prompt line, the settings, the run (its chips, `Continue newest` /
   `Continue match` / `New run`, where each robot is), the closed `Advanced planning` folder.
 - Buttons are coloured by what they do: teal computes without moving (Live IK, Plan), blue starts a motion (Exec; amber while it asks for a second press with other robots unknown),
   green lets a waiting step go on (Confirm), red stops (Cancel), yellow records (Mark done).
@@ -508,7 +511,7 @@ drivers, tools and follower: never while she holds a bar.
   - **Expect:** `real lab: mocap relay on ROS domain 80, Motive 192.168.0.28, calibrations from .../2025-03 Husky
     Assembly`, `Starting mocap relay` with `NatNet: client 192.168.0.203, server 192.168.0.28, unicast`,
     `NatNet client connected.`, then `calibrations at start, Drive root ...` with a block per robot's body: the
-    newest Drive session (Alice `20260623`, Belle `20261013`, Cindy `20261016` on 2026-10-28), applied when within
+    newest Drive session (e.g. Alice `20260623`, Belle `20261013`, Cindy `20261016`), applied when within
     5 cm / 5° of crl-husky's default; `Motive latency (mid-exposure to transmit): ... ms`; a
     `Created mocap publisher for rigid body id=...` line per body.
   - **If not:** `no Zenoh router on this laptop`: 1.c. `Another mocap relay is already running in this ROS domain`:
@@ -613,7 +616,7 @@ What it checks and what a `FAIL` means:
   - **Expect:** 3D view: the measured lab (cabinet, tables, tripods, trusses, the orange border) and the three robots
     where Motive sees them, their arms as measured.
   - **Expect:** health, top left: every base shows `signal`, `mocap`, `estop`, `battery NN%`, `ctrl`; every arm
-    `signal`, `arm` and its tool (`robotiq` on Alice and Belle, `scaffolding_v3` on each of Cindy's arms). No `SIM`
+    `signal`, `arm` and its tool (`robotiq` on Alice and Belle, `scaffolding_v3` on each of Cindy's arms). No `sim`
     chip: nothing is simulated. Belle's `mocap` may be amber: her body's marker error was 1.2 mm in the lab (hover it).
   - **If not** (hover the chip):
     - `estop` red: that robot's remote e-stop is pressed (release it before anything moves).
@@ -644,7 +647,7 @@ What it checks and what a `FAIL` means:
     the row.
 
 **The process panel picks the run's current step.** Click an action row or a movement button, drag the Step slider or
-click `◀ mv` / `mv ▶`: the step under the buttons follows, except while an Exec holds the robots.
+click `◀ mv` / `mv ▶`: the step under the buttons follows, except while an Exec has the robots' leases.
 
 ### 4.d The settings, the base controllers
 
@@ -705,10 +708,10 @@ bar; clear floor and workspace.
     compliant; above, it closes stiff and says so. Note X and Y.
 - [ ] box [Dry run]: unticked → button [Exec]
   - **Expect:** the prompt `alice (a200-0804): B21_H_close — CLOSE + compliant handoff on ur_arm: the arm goes
-    COMPLIANT before the close (gives way ≤ 10 mm); jaws 0.8, effort 0.1, ≤ 30 s; then joint control. Watch Cindy's
-    tools are not pulled; hand on the e-stop.`
+    COMPLIANT before the close (gives way ≤ 10 mm); jaws 0.8, effort 0.1, ≤ 30 s; then joint control. Watch the other
+    robot's tools are not pulled; hand on the e-stop.`
 - [ ] hand on Alice's e-stop → button [Confirm]
-  - **Expect,** in order: `a200-0804 ur_arm: handoff: F/T sensor zeroed: |F| ... before, ... 0.5 s later`;
+  - **Expect,** in order: `a200-0804 ur_arm: handoff: force sensors zeroed: |F| ur_arm ... -> ...`;
     `a200-0804 ur_arm: handoff: anchor X mm, Y° from the URDF's tool0 (limit 10 mm, 2°)`; `ur_arm:
     cartesian_compliance_controller running (...)`; `a200-0804 ur_arm: handoff: closing to 0.800 rad, effort 0.10, the
     arm compliant around its anchor ...`; the close; `ur_arm back under scaled_joint_trajectory_controller (... s)`; and
@@ -721,8 +724,8 @@ bar; clear floor and workspace.
 - [ ] Control › `0804`: button [Gripper: Open]
 - [ ] Optional, a Cancel test: movement button [H_M2], then [H_M3] again (a step's parts count as done until another
       step is picked) → button [Exec] → button [Confirm] → button [Cancel] while the jaws close
-  - **Expect:** the fingers stop, the arm back under joint control (Control › `0804` shows `Joint`). Then
-    button [Gripper: Open].
+  - **Expect:** the fingers stop and the arm holds where it is, still compliant (Control › `0804` shows `Cart`; a
+    cancel sends no controller switch). Control › `0804`: button [Joint], then button [Gripper: Open].
 
 ---
 
@@ -773,7 +776,7 @@ Then the seven actions in order, each with its procedures (6.1–6.4) and what d
     drawn pair collides: drive again (6.1), then Live IK again.
 - [ ] button [Plan] (15–40 s)
   - **Expect:** the chip `plan ready`, `min T s by the arms' limits`, and in the pane `transfer_free solved by
-    tamp.plan_free_dual_arm: N waypoints, 1 tries`. The **Plan plots** window opens bottom left: every joint along the
+    tamp.plan_free_dual_arm: N waypoints, 1 tries`. The **Plan plots** window opens at the bottom: every joint along the
     preview, and the largest joint step per row.
 - [ ] button [Path: Play], or drag slider [Preview time]
   - **Expect:** it starts at the live arms and ends with the **empty** tools at the insert start, clear of the floor,
@@ -794,27 +797,27 @@ Then the seven actions in order, each with its procedures (6.1–6.4) and what d
 
 **d) The servo** (runs by itself after Confirm)
   - **Expect:** the **Exec plots** window opens with the servo's plots (one point per pass); pane monitor: the feedback
-    line (B20: `[servo] feedback: the MoCap bar bars/B20 (converges at 0.5 mm / 0.1 deg).`; B21:
-    `[servo] feedback: tool0 (0.2 mm); the MoCap bar bars/B21 is recorded alongside.`; B22: `... no MoCap bar recorded
-    (bars/B22 carries no MoCap markers).`), then `[servo 0] tool0 pos L=a R=b mm` (a few mm: the base gives under the
+    line (B20: `[servo] feedback: the mocap bar bars/B20 (converges at 0.5 mm / 0.1 deg).`; B21:
+    `[servo] feedback: tool0 (0.2 mm); the mocap bar bars/B21 is recorded alongside.`; B22: `... no mocap bar recorded
+    (bars/B22 carries no mocap markers).`), then `[servo 0] tool0 pos L=a R=b mm` (a few mm: the base gives under the
     arms) and the prompt `<bar>_J_transfer — SERVO 1/8 onto the insert start (tool0, or the MoCap bar B20): ..., N rows,
     travels X° (...), T s; flanges move L a mm, R b mm. Confirm to move; Cancel stops and records.`
 - [ ] slider [Preview time]: scrub the pass (a few mm with the bar held) → button [Confirm]
   - **Expect:** later passes run alone unless one travels over 5° (`SAFEGUARD servo k/8: ...`: scrub, Confirm). Each
-    pass logs `[servo k] tool0 pos L=... R=... mm` (B20 and B21 also `[servo k] bar bars/B2x: MoCap-vs-design ...,
-    FK-vs-design ..., MoCap-vs-FK ...`). It ends with one of: `converged on tool0 (< 0.2 mm)`; for B20
-    `converged on the MoCap bar: dpos ... mm, dang ... deg (< 0.5 mm / 0.1 deg)` and `[servo] the MoCap-bar
+    pass logs `[servo k] tool0 pos L=... R=... mm` (B20 and B21 also `[servo k] bar bars/B2x: mocap-vs-design ...,
+    FK-vs-design ..., mocap-vs-FK ...`). It ends with one of: `converged on tool0 (< 0.2 mm)`; for B20
+    `converged on the mocap bar: dpos ... mm, dang ... deg (< 0.5 mm / 0.1 deg)` and `[servo] the mocap-bar
     correction is carried into the plan of B20_J_insert.`; `nothing left to plan (correction L ... mm, R ... mm, under
     0.2 mm)`; or `ran all 8 passes without converging` (the old monitor on B20: the right flange stays 1–3 mm off, the
     bar as mounted by hand; harmless).
-    Then `### bar pose at termination (bars/<bar>): FK-vs-design ..., MoCap-vs-design ..., MoCap-vs-FK ...` and
+    Then `### bar pose at termination (bars/<bar>): FK-vs-design ..., mocap-vs-design ..., mocap-vs-FK ...` and
     `Exec <bar>_J_transfer: done — every part done`. The exec section's last line keeps `servo done: ...`.
   - **If not:** `[servo] no marker sample of bars/B20 (asset 1020) within 1 s: is Motive streaming it?`: B20's balls are
     not streamed (2.f); the servo aims tool0 and says so.
 
 **e) Insert** (`<bar>_J_insert (insert)`)
 - [ ] button [Plan] (about 3 s)
-  - **Expect:** `insert solved by tamp.plan_constrained_dual_arm_linear: 4 waypoints` (B20 after its MoCap-bar servo:
+  - **Expect:** `insert solved by tamp.plan_constrained_dual_arm_linear: 4 waypoints` (B20 after its mocap-bar servo:
     `[insert plan] MoCap-bar correction carried: ...`); it starts where the servo left the arms.
 - [ ] optional, the first insert of its kind on the robot (B21, B22): box [Dry run]: ticked → button [Exec]
   - **Expect:** `DRY RUN a200-0806: insert: every compliant target passed the arm's checks, NOT SENT`. Then box
@@ -848,7 +851,7 @@ Two steps: the retreat (the ungrasp runs with it), then home.
   - **Expect:** `DRY RUN ...: retreat: passed every check, NOT SENT; its tail is replanned when it runs`. Then box
     [Dry run]: unticked.
 - [ ] hand on Cindy's e-stop → button [Exec]: it runs at once
-  - **Expect:** `<bar>_R_retreat — RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN; force sensors zeroed;
+  - **Expect:** `<bar>_R_retreat — RETREAT: the gripper screws of left_ur_arm + right_ur_arm OPEN; force sensors zeroed;
     COMPLIANT break-out 5.0 mm (0.5 s); joint control; the rest replanned from where the tools are and run at once (4.5
     s). Watch both tools let go and back off along their lines.`; then `retreat: the gripper screws of left_ur_arm +
     right_ur_arm OPEN`; `force sensors zeroed`; the switch to `cartesian_compliance_controller`; the 0.5 s break-out;
@@ -925,12 +928,12 @@ Four steps: approach (and its servo), open, straight in, close with the complian
 
 | # | action | procedures | what differs |
 |---|---|---|---|
-| 1 | `B20_J` | B (Cindy), J, ground bar | base target `+0.527 -3.067 +89.6°`, about 5 m from the park row (*fake lab:* 5.24 m planned, about 50 s driven). The servo steers on the **MoCap bar** (Servo by bar; B20's balls must stream, 2.f). The insert is rigid, then the servo after the insert. Mark: `1/78 done`, current `B20_R · B20_R_ungrasp (1/3)` |
+| 1 | `B20_J` | B (Cindy), J, ground bar | base target `+0.527 -3.067 +89.6°`, about 5 m from the park row (*fake lab:* 5.24 m planned, about 50 s driven). The servo steers on the **mocap bar** (Servo by bar; B20's balls must stream, 2.f). The insert is rigid, then the servo after the insert. Mark: `1/78 done`, current `B20_R · B20_R_ungrasp (1/3)` |
 | 2 | `B20_R` | R | the first compliant part on a real robot: the Dry run first. Mark: `2/78`, current `B21_J · B21_J_transfer (4/5)` |
-| 3 | `B21_J` | B (Cindy), J, one-mate | base target `+0.947 -3.171 +90.0°`, about 0.8 m. The servo on tool0, B21's MoCap fit recorded alongside. The first compliant insert: the Dry run first. The left joint screw tightens into B20. Mark: `3/78`, current `B21_H · B21_H_approach (1/4)` |
+| 3 | `B21_J` | B (Cindy), J, one-mate | base target `+0.947 -3.171 +90.0°`, about 0.8 m. The servo on tool0, B21's mocap fit recorded alongside. The first compliant insert: the Dry run first. The left joint screw tightens into B20. Mark: `3/78`, current `B21_H · B21_H_approach (1/4)` |
 | 4 | `B21_H` | B (Alice), H | base target `+0.638 -1.561 -29.6°`, about 3 m. Mark: `4/78`, current `B21_R · B21_R_ungrasp (1/3)` |
 | 5 | `B21_R` | R, Alice holding B21 | B21 is clamped by Alice: the ungrasp releases Cindy's tools from it. In the retreat's preview, check that both tools back off clear of Alice's gripper. Mark: `5/78` |
-| 6 | `B22_J` | B (Cindy), J, two-mate | base target `+1.166 -3.212 +95.8°`, a short path. The transfer's plan from the retreat pose took up to 110 s in the fake lab; `no path in 120 s`: Plan again. The servo on tool0 (B22 has no MoCap balls). Both joint screws tighten, into B21 and B20. **!** Watch B21 while B22 screws in: Alice holds it, and it must not be pushed out of her jaws. Mark: `6/78` |
+| 6 | `B22_J` | B (Cindy), J, two-mate | base target `+1.166 -3.212 +95.8°`, a short path. The transfer's plan from the retreat pose took up to 110 s in the fake lab; `no path in 120 s`: Plan again. The servo on tool0 (B22 has no mocap balls). Both joint screws tighten, into B21 and B20. **!** Watch B21 while B22 screws in: Alice holds it, and it must not be pushed out of her jaws. Mark: `6/78` |
 | 7 | `B22_R` | R | Mark: `7/78`, and the current step is `B34_J`: the first three bars are built, and the next bar's robot is Cindy again |
 
 ### 6.6 Optional: Alice lets go of B21
@@ -1021,7 +1024,7 @@ done
 - It runs after a transfer (onto the insert start), a support approach (onto the approach pose) and a ground bar's
   insert (onto the insert end, straight lines only, stopped when a flange's force changes by over 20 N).
 - The first pass waits for Confirm; a later one only when it travels over 5° (`SAFEGUARD`). At most 8 passes.
-- Done: every flange within 0.2 mm of its target (tool0); or, steering on the MoCap bar (B20 with Servo by bar), the
+- Done: every flange within 0.2 mm of its target (tool0); or, steering on the mocap bar (B20 with Servo by bar), the
   bar's fit within 0.5 mm / 0.1° of its design pose; or `nothing left to plan` (the correction is under what the planner
   moves).
 - The panel's last exec line shows each reading, and after the Exec how the servo ended, until the next Exec.
@@ -1073,8 +1076,9 @@ All in `scripts/real_lab/`, beside the fake lab's `scripts/fake_lab/`. Each says
 | `env.sh` | the lab's settings, sourced by the others and in pane checks: domain 80 on Zenoh, the workspace, the Drive, the robots' addresses |
 | `robot.sh <robot>` | ssh to her and run `crl_arms_and_base.launch.py` there with her tools; a shell on her instead when she is not on Zenoh in domain 80, or a crl_husky launch already runs on her |
 | `relay.sh` | the mocap relay against the Motive PC, with the Drive's calibrations |
-| `monitor.sh` | the monitor: the three robots, the fake lab's plugins, the process from the Drive; refuses while another monitor runs in domain 80 (it checks once, at its start), or when ROS does not answer |
+| `monitor.sh` | the monitor: the three robots, the labs' plugins (`lab_common.sh`), the process from the Drive; refuses while another monitor runs in domain 80 (it checks once, at its start), or when ROS does not answer |
 | `check_robots.sh [robot ...]` | Part 3's read-only checks |
+| `../lab_common.sh` | what both labs share, sourced by their scripts: the monitor's plugins, the clean environment each process starts in, the monitor's start line, the tmux panes |
 
 Settings: given to `tmux.sh` when it makes the session, they reach every pane (`REAL_LAB_MOTIVE=192.168.0.117
 tmux.sh`); given to one script in its pane, only that one (`REAL_LAB_MOTIVE=192.168.0.117 relay.sh`). Running
@@ -1149,7 +1153,7 @@ Worth noting as you go:
   compliant (did it stay still? Did Cindy's tools get pulled?).
 - **Each J action:** the Live IK `max |goal - authored|`; how the servo ended (and its passes); how the insert ended
   (stall times, peak force, any warning); whether the bar sat in both tools after you clamped it.
-- **B20:** the MoCap-bar servo's ending and the `### bar pose at termination` line; the servo after the insert (its
+- **B20:** the mocap-bar servo's ending and the `### bar pose at termination` line; the servo after the insert (its
   force changes).
 - **Each R action:** the retreat's `check` lines (the FAIL ones with their numbers), and whether the tools let go and
   backed off cleanly (B21_R: clear of Alice's gripper).

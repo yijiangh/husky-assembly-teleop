@@ -1,20 +1,20 @@
-# Lab tools test manual: the tool0 jog, the live plots, the base offset, the diagnostics, the compliant parts
+# Lab tools test manual: the tool0 jog, the live plots, the relay's base offset, the diagnostics, the compliant parts
 
-The eight operator tools of `yh/lab-tools` (branch note `tasks/2026-10-27_lab_tools.md`), tested one at a time:
+Eight operator tools (task note `tasks/2026-10-27_lab_tools.md`), tested one at a time:
 first in the simulation (the fake lab of `doc/fake_lab_test_manual.md`), then on one robot. Every step says what to
 click, what to expect, and what to do if not. Plan an hour for the simulation and an hour on a robot.
 
-Simulation runs on 2026-10-27 with this code, in a slot of the fake lab (every robot simulated, the fake wrench
-on): everything below marked **(sim)** was run as written; the notes under "On the robot" are what to look for.
+Everything below marked **(sim)** runs as written in a slot of the fake lab (every robot simulated, the fake wrench
+on); the notes under "On the robot" are what to look for.
 
 ## Before you start
 
 **In the simulation.** The fake lab as in `doc/fake_lab_test_manual.md` sections 0 and 1, plus:
 
 - the Cartesian controllers built (its section 0.2): the compliant parts need them;
-- `ros-humble-gripper-controllers` installed beside the Robotiq packages (its section 0.1 lists it now): the
+- `ros-humble-gripper-controllers` installed beside the Robotiq packages (its section 0.1 lists it): the
   simulated Robotiq's action server needs it, or `B21_H_open` is refused and the handoff cannot run;
-- the simulation's fake force/torque reading, on by default since this branch: `sim.launch.py` starts `sim_wrench`,
+- the simulation's fake force/torque reading, on by default: `sim.launch.py` starts `sim_wrench`,
   a near-zero wrench per simulated arm (`wrench_bias:=`, `contact_n:=` add a standing reading and a contact while a
   simulated screw is stalled). **Expect** in the sim pane: `[sim_wrench]: a200_0806/left_ur5e: faking its
   force/torque reading …`, one line per arm, and in **Control** › any arm `F -0.0 -0.1 -0.0 N` instead of `— — —`.
@@ -41,7 +41,7 @@ the arm never drifts off the axis; one arm jogs at a time.
    (counting up), `tcp` in the status moves, and on release the pane says `arm left_ur_arm: hold sent` once.
    **(sim: ~10 mm per 2 s on a normal browser; see the note on browsers.)**
    - **If not:** a chip `jog refused` names why (hover): `the joint controller is not running` (click **Joint**
-     under **Run**), `lease refused` (another plugin holds the robot: wait or Cancel it), `no joint state`.
+     under **Run**), `lease refused` (another plugin has the robot's lease: wait or Cancel it), `no joint state`.
 3. Hold **rz+** with the speed at 10: `jogging about tool0 z: +2.0°` after a second (0.2 °/s per mm/s).
 4. Hold **x+** on the `Right` tab while the left arm's button is still held (two fingers, or the phone): the second
    is refused, `jog refused: a200-0806 left_ur_arm is jogging; one arm at a time`. **(sim)**
@@ -62,23 +62,17 @@ the arm never drifts off the axis; one arm jogs at a time.
 2. **On the robot:** push the flange sideways by hand: the matching line swings and comes back; **FT › Zero** brings
    the lines to zero; a tool mounted shows as a standing offset.
 
-## 3. The mocap base offset (Control › robot › Base › Mocap offset)
+## 3. A base offset in the relay (`base_offset.id_<n>`)
 
-The old "MOCAP base XYZ offset": a world shift of one base's mocap pose for this session, for a base whose
-calibration is off by a known amount. It is applied as each sample is stored, so everything (the scene, the planners,
-the executor, the records) sees the shifted pose; a path sent to the onboard follower is converted back.
+A shift of one robot's base pose in the lab frame, x, y, z metres, on top of its base calibration, for a base whose
+calibration is off by a known amount. The relay applies it, so every monitor, follower and recording sees the same
+pose; it lasts until the relay restarts. Anything over 0.1 m per axis is refused: redo the base calibration instead.
 
-1. **Control** › `0806` › `Base`: the **Mocap offset** folder at the bottom, closed; open it: `Δx m`, `Δy m`, `Δz m`
-   at 0, **Offset** › **Apply** | **Reset**, and `applied 0.000 0.000 0.000 m` below. **(sim)**
-2. Type `0.05` into `Δx m` and click **Apply**. **Expect:** the status line's `xyz` jumps by +0.050 in x, a chip
-   `offset 0.050 0.000 0.000 m` on the base's chip line, the pane `base a200-0806: mocap offset 0.050 0.000 0.000 m`,
-   and in the 3D view the robot moves 5 cm; a run that is open notes it in `events.jsonl` (`mocap_offset`). **(sim)**
-3. **Plan** › **Base**, Load **Robot**, **Plan**, **Commit** a short path: the follower drives to the target where
-   the shifted drawing says it is; its reported path on the floor lines up with the drawing (the conversion back).
-4. Click **Reset**: the inputs and the pose go back, the chip disappears. **(sim)**
-5. **On the robot:** with the robot standing still, Apply 0.05 in x: the drawing moves, the robot does not; a base
-   plan from there lands the real robot 5 cm from where the drawing says, as it should (the offset is a correction
-   you believe in, not a measurement). Reset before the assembly.
+1. In a terminal with the relay's ROS settings: `ros2 param set /mocap_relay base_offset.id_1860 "[0.05, 0.0, 0.0]"`.
+   **Expect:** `Set parameter successful`, the relay logs `rigid body 1860: base offset 0.050 0.000 0.000 m in the
+   lab frame, on top of its calibration`, `/mocap_relay/calibrations` lists it under `base_offsets`, and in the
+   monitor's 3D view the robot moves 5 cm. **(sim)**
+2. `ros2 param set /mocap_relay base_offset.id_1860 "[0.0, 0.0, 0.0]"` takes it off again. **(sim)**
 
 ## 4. Rhino bar lines (Assembly › process › View)
 
@@ -118,9 +112,9 @@ The old "Visual diagnosis" box: the real robots see-through, and each insert or 
 3. **Clear**, a new step or unticking the box removes the drawing; unticking also draws the robots solid again.
 4. A free move's plan draws nothing: only inserts and retreats have a tool0 path worth looking at.
 
-## 7. The Exec plots window (bottom left)
+## 7. The Exec plots window (bottom)
 
-The **Exec plots** window starts minimized to its bar at the bottom left, beside the Plan plots' bar, and opens by
+The **Exec plots** window starts minimized to its bar at the bottom, beside the Plan plots' bar, and opens by
 itself when a servo or a compliant part starts, as the old Servoing Live Tracker and Compliant Exec Force windows
 did; close it with the control at its bar's right end (nothing closes it for you). It holds a chip line saying
 whose curves they are, and the running kind's plots: the servo's five or the compliant part's two.
@@ -128,7 +122,7 @@ whose curves they are, and the running kind's plots: the servo's five or the com
 1. **A servo.** Run B20_J's transfer step (fake lab manual 4.2). **Expect:** when the servo starts, the window
    opens with the chip `servo: B20_J_transfer on a200-0806`, and per pass one point on `tool0_pos_err [mm]` (L
    x/y/z/|d| in reds, R in greens), `tool0_rot_err [deg]`, `base_pos_diff [mm]` and `base_rot_diff [deg]` (blues),
-   and `bar` (MoCap vs design, FK vs design) when a bar is tracked; x is the pass number. The points stay until the
+   and `bar` (mocap vs design, FK vs design) when a bar is tracked; x is the pass number. The points stay until the
    next servo.
 2. **A compliant part.** Run an insert with a mating joint (B21_J's, fake lab manual 5.2) or a retreat. **Expect:**
    the window opens, the servo's plots hidden, with the chip `compliant: B21_J_insert on a200-0806`, then `force [N]` and `torque [Nm]` filling every tick, L reds and
@@ -141,7 +135,7 @@ whose curves they are, and the running kind's plots: the servo's five or the com
 With the Cartesian controllers built and the fake wrench on, the fake lab manual's steps marked "not run yet" run:
 
 - **4.4** B20_R's retreat: the switch to `cartesian_compliance_controller` succeeds, the 5 mm break-out streams
-  under it, then the tail. The `contact` check now reads the fake wrench (near zero: `check PASS contact` unless
+  under it, then the tail. The `contact` check reads the fake wrench (near zero: `check PASS contact` unless
   `contact_n` is set); the `grippers` check still FAILs (the simulated screws loosen until a STOP and never stall).
 - **5.2** B21_J's insert: rigid to the split, the switch to compliance, and since the simulated screw stalls 2 s
   after the tighten (at the switch itself): the left arm straight back under joint control, the right arm finishing
@@ -152,7 +146,7 @@ With the Cartesian controllers built and the fake wrench on, the fake lab manual
 On the robot these are the fake lab manual's own steps, B20 first (a ground bar: always rigid), then the compliant
 insert on B21 with the Exec plots window open.
 
-Run on 2026-10-27 in the simulation: 4.4 and 5.2 as above; 5.3 waits for the package.
+In the simulation 4.4 and 5.2 run as above; 5.3 waits for the package.
 
 ## What to send back
 

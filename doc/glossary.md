@@ -60,9 +60,9 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   within 2 s, which lets those robots be unknown during the motion (`unknown_robots` of a clearance).
   `world/stand_ins.py`, `shared/assembly_planning/scene_for.py`.
 - **ghost**: a see-through robot copy for a target, a plan or a preview: blue where a robot should go (the process
-  panel's one robot per movement, the arm and base planners' targets), green where a plan
-  has it; the planner panels show theirs only while last used, assembly_steps' path ghost while there is a plan (the
-  old monitor's colours; only the live robots show their true colours). `ui/ghost.py`.
+  panel's one robot per movement, the arm and base planners' targets), green where a plan has it; the planner panels
+  show theirs only while last used, assembly_steps' path ghost while there is a plan. Only the live robots show their
+  true colours. `ui/ghost.py`.
 
 ## Safety
 
@@ -86,12 +86,14 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   motion was committed or started; then a stand-in); unknown arm joints of its own robot trip it unless
   `unknown_arms` lets them count where last seen, or stowed. A **trip** is one firing (`ctx.clearance_trips`).
   robot_control's Clearance boxes turn it on for D-pad driving and, at 1 cm (`ARM_STOP_DISTANCE`), for arm joint
-  jogs; the arm planner's commits always keep 1 cm. A robot is also kept 1 cm from itself (`SELF_DISTANCE`): its
-  links, tools and what it holds, but not pairs that touch by design (joined links, the SRDF's, a tool's flange
-  links). With `refuse_first`, one too close at its first check is only refused, nothing sent (robot_control's drives
-  and jogs). A **clearance watch** (`ctx.watch_clearance`) is checked the same way, every 0.5 s, and only reports:
-  robot_control's gray buttons and "starts in collision" chip. `world/clearance.py`. The base planner's **path
-  clearance** is a measured number instead: a planned path's nearest distance to anything, recorded in
+  jogs; the arm planner's commits and Exec's arm motions (insert, retreat and servo passes included) always keep
+  1 cm; the base planner's commit keeps its panel's **Margin** (2 cm at start, `COLLISION_MARGIN` in
+  `plugins/base_planner/world.py`). A robot is also kept 1 cm from itself
+  (`SELF_DISTANCE`): its links, tools and what it holds, but not pairs that touch by design (joined links, the SRDF's,
+  a tool's flange links). With `refuse_first`, one too close at its first check is only refused, nothing sent
+  (robot_control's drives and jogs). A **clearance watch** (`ctx.watch_clearance`) is checked the same way, every
+  0.5 s, and only reports: robot_control's gray buttons and "starts in collision" chip. `world/clearance.py`. The base
+  planner's **path clearance** is a measured number instead: a planned path's nearest distance to anything, recorded in
   `experiment.json`.
 - **hold**: the arm command "stop where you are and stay" (`arm.hold()`, the Hold button), which needs no lease and is
   refused only without a fresh measurement. Also: a D-pad **hold button** (counts as released 0.25 s after its last
@@ -100,7 +102,8 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   playing) before any arm motion goes out; Hold is never refused for it. Not time sync, not the Drive's sync.
   `robot_interface/arm.py`.
 - **simulated part**: a part (base, an arm, mocap) counts as simulated only while its once-a-second announcements keep
-  coming; the monitor then relaxes its real-only checks and shows a `SIM` chip. `robot_interface/simulated_parts.py`.
+  coming; the monitor then relaxes its real-only checks and shows a blue `sim` chip.
+  `robot_interface/simulated_parts.py`.
 
 ## Process format
 
@@ -133,6 +136,9 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   ahead). The lattice plans the turning centre, not base_footprint. `plugins/base_planner/follow.py`.
 - **lattice**: the default base planner, a hybrid A* over straight drives, arcs and turns on the spot, steered by its
   **cost map** (where the robot's shape fits, learned from hits). `plugins/base_planner/algorithms/lattice.py`.
+- **Margin (base planner)**: the base planner panel's distance, in metres, a path keeps from every other robot and
+  body (2 cm at start, `COLLISION_MARGIN`); the commit's clearance soft stops the base within it.
+  `plugins/base_planner/world.py`.
 - **lead / portal**: the lead is the straight drive onto the target with no turn on the spot; a portal is a narrow
   place the lattice crosses in one move, lined up `PORTAL_LEAD` before it.
 - **park / stow**: park is the base's parked floor pose (`park_pose`); stow is the arm's rest joints (`stow_joints`);
@@ -150,13 +156,44 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   `shared/assembly_planning/steps.py`, `shared/movement_exec_contract.py`.
 - **live robot**: a robot measured now: in the snapshot, every movable joint measured and its base tracked, both
   fresh (`is_live`). Plan and Exec need it live. `shared/assembly_run_contract.py`.
+- **Live IK**: solving a step's goal (the insert start after a transfer, the linear move's start after an approach)
+  by IK at the live base; nothing moves, and the next plan reuses it while the base stays put. `check_goal` in code.
+  `plugins/assembly_steps/plugin.py`, `shared/assembly_planning/tamp_route.py`.
+- **ground bar / one-mate bar / two-mate bar**: a ground bar stands on ground joints: its insert is rigid and no
+  screw turns. A one-mate bar mates with a built bar at one of its two tools, a two-mate bar at both.
+  `shared/execution/insert.py`.
+- **gripper screw / joint screw**: the scaffolding tool's two motors: the gripper screw clamps the bar in the tool,
+  the joint screw fixes the bar to its joint (it tightens during an insert). The driver calls them M1 and M2; text
+  never does. `robot_interface/end_effectors.py` (`ScaffoldingV3`).
+- **insert / split / stall**: the insert is the straight move that mates a held bar: rigid under joint control up to
+  the split, then the last **Insert split mm** under the compliance controller, on a line or a spiral, while the
+  mating joint screws tighten; it ends when they stall (stop by themselves against the joint). A ground bar's insert
+  is rigid throughout. `shared/execution/insert.py`.
+- **settle**: after a one-mate bar's stall, the other arm (not the mating one) finishes its line under compliance and
+  keeps its end target until its TCP stands still (3 s at most), then switches back to joint control.
+  `shared/execution/stream.py` (`Settling`).
+- **retreat / break-out**: the retreat backs a bar's tools out of their joints: the gripper screws open, the force
+  sensors are zeroed, the first Insert split mm run under the compliance controller (the break-out), then the rest
+  is replanned from where the tools are and run rigid. `shared/execution/retreat.py`.
+- **handoff**: a support robot's Robotiq close on a bar another robot holds, with its arm compliant, so the closing
+  fingers pull the arm (up to 1 cm) instead of the bar; with frames that disagree it closes stiff.
+  `shared/execution/handoff.py`.
+- **servo**: the part after a transfer, a support approach or a ground bar's insert: pass by pass (up to 8) it moves
+  the flanges onto the authored targets, steering on tool0, or with **Servo by bar** on a ground bar's mocap fit.
+  `plugins/movement_exec/servo_part.py`, `shared/execution/servo.py`.
+- **Plan plots / Exec plots**: the two floating plot windows at the bottom, right of the main panel: assembly_steps' shows a plan's
+  joints, movement_exec's a servo's readings pass by pass or a compliant part's force and torque. Each opens by
+  itself when it has something to show. `plugins/assembly_steps/plan_plots.py`, `plugins/movement_exec/plots.py`.
+- **Check tool0 / Visual diagnosis**: Check tool0 draws each flange's live tool0 (mocap base + FK) against the step's
+  authored target and logs the gap; the Visual diagnosis box draws the real robots see-through and each insert or
+  retreat plan's tool0 path with its Rhino and planned start and end frames. Nothing moves. `plugins/assembly_steps/`.
 - **transfer workaround**: the process panel's setting for this session, on at start (runs don't keep it): the
-  transfer runs as a free move with empty tools, the operator places and grasps the bar at the insertion start after
+  transfer runs as a free move with empty tools, the operator places and grasps the bar at the insert start after
   it, and the travel to load is skipped. While it is on, the panel lists each jointing action in that order (`as_run`).
   `shared/assembly_planning/steps.py`, `plugins/process/`.
 - **carry**: joints (and the base) found live for one robot, from one movement's end on, that the process panel
-  draws over the authored state at that movement's target and the action's later starts; nothing else reads it. The
-  old monitor's `_carry_configuration_forward` lives on only as this drawing. `shared/process_contract.py`.
+  draws over the authored state at that movement's target and the action's later starts; nothing else reads it.
+  `shared/process_contract.py`.
 - **basis**: what a step's plan was made from (the acting robot's joints and base, the other robots, the statuses,
   the settings); the plan goes stale once the live scene drifts from it. `shared/execution/basis.py`.
 - **robot record**: where the run last recorded a robot (its newest Mark done end), kept in `progress.json` for the
