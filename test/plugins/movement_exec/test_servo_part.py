@@ -32,8 +32,8 @@ from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE
                                                                  SERVO_INDEX, SERVO_PART, ExecRequest, serial_of,
                                                                  servo_part, step_parts)
 from husky_assembly_teleop.shared.runs.runs import RunSettings
-from husky_assembly_teleop.world.bar_pose import transform_points
-from husky_assembly_teleop.world.marker_layouts import bar_layouts
+from husky_assembly_teleop.shared.bars.layouts import bar_layouts
+from husky_assembly_teleop.world.marker_match import transform_points
 from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.ids import robot_id, split_link_id
 from scaffolding_assembly_core.kinematics import link_pose
@@ -380,8 +380,8 @@ def test_bar_servo_closes_a_flange_side_error_in_one_pass_and_carries_it():
     lab.markers(offset(0.003, roll_deg=0.1), where="bar")
     result = execute(lab, lab.servo_request(), True)
     assert result.status == DONE and result.done == (SERVO_INDEX,), result.reason
-    assert "converged on the MoCap bar" in lab.ended() and lab.published() == 1
-    assert "(the MoCap bar B20)" in lab.prompts()[0][0]
+    assert "converged on the mocap bar" in lab.ended() and lab.published() == 1
+    assert "(the mocap bar B20)" in lab.prompts()[0][0]
     record = lab.servo_record()
     assert record["servo_feedback"] == "mocap_bar" and record["planner_mode"] == "transfer+mocap_bar"
     assert len(record["moves"]) == 1 and record["servoing_data"][1]["bar"]["usable"]
@@ -405,7 +405,7 @@ def test_bar_servo_closes_a_world_frame_error_within_three_passes():
     lab.run.request_settings(servo_by_bar=True)
     lab.markers(offset(0.0, 0.003, roll_deg=0.1), where="world")
     result = execute(lab, lab.servo_request(), True)
-    assert result.status == DONE and "converged on the MoCap bar" in lab.ended(), result.reason
+    assert result.status == DONE and "converged on the mocap bar" in lab.ended(), result.reason
     record = lab.servo_record()
     assert 1 <= len(record["moves"]) <= 3 and lab.published() == len(record["moves"])
     for k, request in enumerate(lab.planner.requests):
@@ -448,7 +448,7 @@ def test_an_unusable_bar_reading_leaves_the_loop_on_tool0(markers, words):
     assert record["servo_feedback"] == "tool0" and "(tool0)" in lab.prompts()[0][0]
     reasons = [reading["bar"]["reason"] for reading in record["servoing_data"]]
     assert len(reasons) == 2 and all(words in reason for reason in reasons), reasons
-    assert sum("the MoCap bar is not usable" in line for line in lab.ctx.lines("warn")) == 1
+    assert sum("the mocap bar is not usable" in line for line in lab.ctx.lines("warn")) == 1
 
 
 @pytest.mark.safety

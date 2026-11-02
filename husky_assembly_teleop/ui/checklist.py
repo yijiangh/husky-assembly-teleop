@@ -3,8 +3,6 @@ A selectable list: one checkbox per item in a collapsible folder, "Select all" o
 
 viser 1.1 has no multi-select widget. Build one in `setup`, `add` / `remove` items from intents, read
 `selected()` when acting, and call `sync()` from `draw`. Item checkboxes have no callbacks.
-
-`action_window` is the window of a schedule that a panel's list of action rows shows (process).
 """
 
 from __future__ import annotations
@@ -17,23 +15,6 @@ from .style import note
 
 if TYPE_CHECKING:
     from ..plugin_api.context import PluginContext
-
-#: Rows in a panel's action list: a window of the schedule, the selected action in the middle row.
-ACTION_ROWS = 7
-
-
-def action_window(current: int, count: int, rows: int = ACTION_ROWS) -> int:
-    """The first action shown in an action list: `current` in the middle row, except near either end of the schedule.
-
-    Args:
-        current: Index of the selected action in the schedule.
-        count: How many actions the schedule has.
-        rows: How many rows the list has.
-
-    Returns:
-        int: Schedule index of the top row.
-    """
-    return max(0, min(current - rows // 2, count - rows))
 
 
 class CheckList:

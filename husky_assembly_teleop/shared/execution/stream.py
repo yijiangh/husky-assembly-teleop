@@ -2,8 +2,8 @@
 Stream Cartesian targets to a robot's arms, one per tick, along lines fixed in the world: a compliant part's move.
 
 Each tick every arm gets the point of its line at the stream's time `e`, plus an optional sideways offset (the
-spiral's), turned into its base_link with the live mocap base; both arms in the same tick (W:3992-4024). Also here: the
-split of a path into its rigid and compliant parts, the frames the targets are built from, and a part's record.
+spiral's), turned into its base_link with the live mocap base; both arms in the same tick. Also here: the split of a
+path into its rigid and compliant parts, the frames the targets are built from, and a part's record.
 
 - The stream's clock advances at most MAX_CLOCK_STEP per tick: a late tick slows the move, never makes it jump.
 - It stops before publishing: `keep_going` says no, its time is up, mocap lost the base (`pose_lost`), the base moved
@@ -21,18 +21,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Collection, Iterable, Mapping, Sequence
 
 import numpy as np
-from scipy.spatial.transform import Rotation
-
-from scaffolding_assembly_core.geometry import Pose, compose, invert
-from scaffolding_assembly_core.kinematics import link_pose
+from scaffolding_assembly_core.geometry import Pose, compose
+from scaffolding_assembly_core.kinematics import link_poses
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 
-from ...robot_interface.arm import cartesian_target_refusal
+from ...robot_interface.arm import cartesian_target_refusal, pose_between
 from ...robot_interface.end_effectors import ScaffoldingV3State
 from ...robot_interface.mocap_state import pose_lost
 from ...robot_interface.soft_stop import MotionRefused
+from ...world.tcp import tool0_in_base_link
 from ..assembly_planning.route_result import pose_error
 from .basis import STALE_BASE
+from .force_sensors import force_magnitude
 
 if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
@@ -43,17 +43,18 @@ if TYPE_CHECKING:
 MAX_CLOCK_STEP = 0.1
 #: The base may move this far from where it was when the stream started, metres and radians, before it stops.
 BASE_DRIFT = STALE_BASE
-#: Every arm this close to its end, metres, has arrived (W:4697).
+#: Every arm this close to its end, metres, has arrived.
 ARRIVAL = 0.002
-#: Seconds a stream runs past its line and its wait before it gives up (W:128).
+#: Seconds a stream runs past its line and its wait before it gives up.
 END_WAIT = 1.0
-#: Seconds a compliant end is held waiting for every mating screw to stall (W:4701).
+#: Seconds a compliant end is held waiting for every mating screw to stall.
 HOLD_FOR_STALL = 30.0
 #: The URDF's tool0 and the measured TCP must agree this well, metres and radians, before a part goes compliant.
+#: * A refusal, so looser than `world.tcp`'s TCP_POSITION_TOLERANCE and TCP_ANGLE_TOLERANCE, which only warn.
 FK_TCP_TOL = (0.010, math.radians(2.0))
-#: A leading part shorter than this, millimetres, is left out: one mode the whole way (W:4407).
+#: A leading part shorter than this, millimetres, is left out: one mode the whole way.
 MIN_LEADING_MM = 0.5
-#: The shortest a compliant part or a retreat's rigid tail takes, seconds (W:5419, W:5485).
+#: The shortest a compliant part or a retreat's rigid tail takes, seconds.
 MIN_PART_SECONDS = 0.5
 #: Samples a `Recorder` keeps, the last ones: about a minute at 20 Hz.
 MAX_SAMPLES = 1300
@@ -115,7 +116,7 @@ class PartOutcome:
 
 def split_rows(rows: Sequence[Sequence[float]], points: Callable[[np.ndarray], Sequence[Sequence[float]]],
                split_mm: float, from_start: bool = False) -> tuple[np.ndarray | None, np.ndarray | None, float, float]:
-    """Cut a path where every arm's tool0 is `split_mm` from its end, or from its start (W:4446-4527).
+    """Cut a path where every arm's tool0 is `split_mm` from its end, or from its start.
 
     The distance of a row is the largest over the arms; the cut is interpolated between the two rows around it, and
     both parts hold the cut row, so they join.
@@ -158,7 +159,7 @@ def split_rows(rows: Sequence[Sequence[float]], points: Callable[[np.ndarray], S
 
 def split_seconds(traj_time: float, achieved_mm: float, total_mm: float,
                   from_start: bool = False) -> tuple[float, float]:
-    """The leading and trailing parts' seconds: the path's time shared by distance (W:5416-5419, W:5484-5486).
+    """The leading and trailing parts' seconds: the path's time shared by distance.
 
     The compliant part (an insert's trailing one, a retreat's leading one) and a retreat's rigid tail take at least
     MIN_PART_SECONDS.
@@ -179,18 +180,6 @@ def split_seconds(traj_time: float, achieved_mm: float, total_mm: float,
 
 # --- --- --- --- --- FRAMES --- --- --- --- ---
 
-def tool0_fk(urdf: Path, arm: str, joints: Mapping[str, float]) -> Pose:
-    """An arm's tool0 in its base_link (the controller's frame) by the URDF's kinematics.
-
-    Args:
-        urdf: The robot's URDF.
-        arm: The arm's name, e.g. "left_ur_arm".
-        joints: Joint values by URDF name; missing ones count as 0.
-    """
-    return compose(invert(link_pose(urdf, Pose(), joints, f"{arm}_base_link")),
-                   link_pose(urdf, Pose(), joints, f"{arm}{FLANGE_SUFFIX}"))
-
-
 def tool0_world_path(urdf: Path, base: Pose, names: Sequence[str], rows: Sequence[Sequence[float]],
                      arms: Iterable[str]) -> dict[str, list[Pose]]:
     """Each arm's tool0 in the world at every row of a joint path, the robot's base at `base`.
@@ -205,12 +194,12 @@ def tool0_world_path(urdf: Path, base: Pose, names: Sequence[str], rows: Sequenc
     Returns:
         dict[str, list[Pose]]: Arm name -> its tool0 at each row.
     """
-    arms = tuple(arms)
-    paths: dict[str, list[Pose]] = {arm: [] for arm in arms}
+    links = {arm: f"{arm}{FLANGE_SUFFIX}" for arm in arms}
+    paths: dict[str, list[Pose]] = {arm: [] for arm in links}
     for row in rows:
-        joints = dict(zip(names, (float(value) for value in row)))
-        for arm in arms:
-            paths[arm].append(link_pose(urdf, base, joints, f"{arm}{FLANGE_SUFFIX}"))
+        poses = link_poses(urdf, base, dict(zip(names, (float(value) for value in row))), links.values())
+        for arm, link in links.items():
+            paths[arm].append(poses[link])
     return paths
 
 
@@ -239,7 +228,7 @@ def fk_tcp_gap(robot: HuskyRobotInterface, arm: str) -> tuple[float, float] | No
     state = robot.arms[arm].state
     if robot.arms[arm].joint_vector() is None or state.tcp_position is None:
         return None
-    return pose_error(tool0_fk(robot.config.model.urdf, arm, state.joint_positions),
+    return pose_error(tool0_in_base_link(robot.config.model.urdf, arm, state.joint_positions),
                       Pose.from_arrays(state.tcp_position, state.tcp_orientation))
 
 
@@ -264,7 +253,7 @@ def zero_wrench(arms: Collection[ArmInterface]) -> str:
 
 def line_target(start: Pose, end: Pose, seconds: float, elapsed: float,
                 lateral: Sequence[float] | None = None) -> Pose:
-    """The point of a line at `elapsed`: linear in time, the turn by the shortest slerp, `lateral` added (W:4141-4156).
+    """The point of a line at `elapsed`: linear in time, the turn by the shortest slerp, `lateral` added.
 
     Args:
         start: Where the line starts.
@@ -273,13 +262,10 @@ def line_target(start: Pose, end: Pose, seconds: float, elapsed: float,
         elapsed: Seconds since it started.
         lateral: An offset added to the position, metres, e.g. the spiral's; None for none.
     """
-    fraction = 1.0 if seconds <= 0.0 else min(elapsed / seconds, 1.0)
-    position = np.add(start.position, fraction * np.subtract(end.position, start.position))
-    if lateral is not None:
-        position = position + np.asarray(lateral, dtype=float)
-    first = Rotation.from_quat(start.orientation)
-    turn = (first.inv() * Rotation.from_quat(end.orientation)).as_rotvec()
-    return Pose.from_arrays(position, (first * Rotation.from_rotvec(fraction * turn)).as_quat())
+    pose = pose_between(start, end, 1.0 if seconds <= 0.0 else min(elapsed / seconds, 1.0))
+    if lateral is None:
+        return pose
+    return Pose.from_arrays(np.add(pose.position, np.asarray(lateral, dtype=float)), pose.orientation)
 
 
 def plan_stream(segment: Segment, dt: float,
@@ -322,7 +308,7 @@ def target_problem(previous: Pose | None, target: Pose, tcp: Pose) -> str:
 
 
 def progress(robot: HuskyRobotInterface, segment: Segment) -> dict[str, dict[str, float] | None]:
-    """How far each arm's measured TCP got along its line, millimetres (W:4891-4915).
+    """How far each arm's measured TCP got along its line, millimetres.
 
     Returns:
         dict: Arm name -> {"travel_mm": start to end, "achieved_mm": start to the TCP, "remaining_mm": the TCP to the
@@ -376,7 +362,7 @@ class Recorder:
             arms[name] = {"target": target, "tcp": None if state.tcp_position is None else _rounded(state.tcp_position),
                           "wrench": None if state.wrench is None else _rounded(state.wrench)}
             if state.wrench is not None:
-                self.peak_force[name] = max(self.peak_force.get(name, 0.0), float(np.linalg.norm(state.wrench[:3])))
+                self.peak_force[name] = max(self.peak_force.get(name, 0.0), force_magnitude(state.wrench))
             if isinstance(state.end_effector, ScaffoldingV3State):
                 motors[name] = [state.end_effector.gripper_motor, state.end_effector.joint_motor]
         self.samples.append({"t": round(now - self.started, 3), "phase": self.phase, "arms": arms, "motors": motors})

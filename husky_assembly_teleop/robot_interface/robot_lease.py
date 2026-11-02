@@ -32,12 +32,14 @@ class Lease:
 
     Attributes:
         holder: Who holds them, for messages, e.g. "base_planner: commit plan 3".
+        owner: The plugin that took it, e.g. "base_planner"; "" if no plugin did.
         serials: The leased robots.
     """
 
-    def __init__(self, holder: str, guards: tuple[LeaseSlot, ...]):
+    def __init__(self, holder: str, guards: tuple[LeaseSlot, ...], owner: str = ""):
         """Lease `guards` to `holder`; only `take_lease` calls this, after checking they are free."""
         self.holder = holder
+        self.owner = owner
         self._guards = guards
         self.serials = tuple(guard.serial for guard in guards)
         for guard in guards:
@@ -109,8 +111,8 @@ class LeaseSlot:
             raise NotLeased(f"{problem}, {command} not sent")
 
 
-def take_lease(guards: Iterable[LeaseSlot], holder: str) -> Lease:
-    """Lease every robot of `guards` to `holder` until `release`.
+def take_lease(guards: Iterable[LeaseSlot], holder: str, owner: str = "") -> Lease:
+    """Lease every robot of `guards` to `holder` (taken by plugin `owner`) until `release`.
 
     Raises:
         NotLeased: If any of them is leased already, by anyone; none is leased then.
@@ -119,17 +121,17 @@ def take_lease(guards: Iterable[LeaseSlot], holder: str) -> Lease:
     taken = [f"robot {guard.serial} is leased by {guard.lease.holder}" for guard in guards if guard.lease is not None]
     if taken:
         raise NotLeased("; ".join(taken))
-    return Lease(holder, guards)
+    return Lease(holder, guards, owner)
 
 
 @contextmanager
-def leased(guards: Iterable[LeaseSlot], holder: str) -> Iterator[Lease]:
-    """Lease every robot of `guards` to `holder` while the `with` block runs, and hold the lease in it.
+def leased(guards: Iterable[LeaseSlot], holder: str, owner: str = "") -> Iterator[Lease]:
+    """Lease every robot of `guards` to `holder` (taken by plugin `owner`) while the `with` block runs, and hold it.
 
     Raises:
         NotLeased: If any of them is leased already; none is leased then.
     """
-    lease = take_lease(guards, holder)
+    lease = take_lease(guards, holder, owner)
     try:
         with lease.use():
             yield lease

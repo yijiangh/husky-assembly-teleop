@@ -5,7 +5,9 @@ It starts minimized to its bar; the control at the bar's right end opens it.
 
 - Show "Plugins" (the default) leaves out health's colour changes and the late-tick reports, "Warnings" shows warnings
   and errors from every source but the ticks, "All" every line. Errors always show. Source narrows to one source;
-  Hide leaves out the sources ticked in it (DEFAULT_HIDDEN at start), whatever Show says.
+  Hide leaves out the sources ticked in it, but not their errors (at start the layout file's console `hidden`, else
+  DEFAULT_HIDDEN), whatever Show says.
+- Its layout file preferences (`plugins.console.preferences`): `hidden`, the source names Hide starts with.
 - The list is rewritten when a line comes in: pause the page (Live) to read or select it.
 - stdout and the ROS log still get every line; a message's first line wraps, a tick report or traceback shows in full
   on hover.
@@ -21,7 +23,7 @@ from html import escape
 import viser
 from rclpy.logging import LoggingSeverity
 
-from ..plugin_api.console_log import RUNTIME, TICKS, Entry
+from ..plugin_api.console_log import TICKS, Entry
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..ui.style import BUSY, FAIL, INFO, NONE, chip, chip_line
@@ -31,12 +33,12 @@ SHOW_PLUGINS, SHOW_WARNINGS, SHOW_ALL = "Plugins", "Warnings", "All"
 EVERY_SOURCE = "all"
 #: Sources "Plugins" leaves out: health's colour changes (its "chips" topic) and the late-tick reports.
 NOISY_SOURCES = ("health/chips", TICKS)
-#: Sources Hide leaves out at start: the late-tick reports and the runtime's own lines.
-DEFAULT_HIDDEN = (TICKS, RUNTIME)
+#: Sources Hide leaves out at start, unless the layout file's console `hidden` says otherwise: none.
+DEFAULT_HIDDEN: tuple[str, ...] = ()
 #: How Hide marks a source it leaves out, and one it shows; picking either turns it to the other.
 HIDDEN_MARK, SHOWN_MARK = "☑ ", "☐ "
 HIDE_HINT = ("Pick a source to hide it (☑), pick it again to show it; several can be hidden. Hidden whatever Show "
-             "says; a name without a / also hides its topics (health hides health/chips)")
+             "says, except its errors; a name without a / also hides its topics (health hides health/chips)")
 
 #: The window's size, and the height of the list in it, pixels.
 WIDTH, HEIGHT, LIST_HEIGHT = 900, 360, 220
@@ -90,6 +92,11 @@ class ConsolePlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
+        hidden = ctx.view.preferences.get("hidden")
+        if isinstance(hidden, list) and all(isinstance(name, str) and name for name in hidden):
+            self._hidden_names = tuple(hidden)
+        elif hidden is not None:
+            ctx.log_warn(f"layout: console's hidden must be a list of source names, not {hidden!r}; nothing hidden")
         panel = ctx.view.panel()
         with panel.add_tab("Console", self.icon):
             gui = ctx.view.gui
@@ -169,9 +176,11 @@ def shown(entry: Entry, show: str, source: str, hidden: tuple[str, ...] = ()) ->
     """Whether the list shows `entry` with Show at `show`, Source at `source` and Hide naming `hidden`."""
     if source != EVERY_SOURCE and entry.source != source:
         return False
+    if entry.level >= LoggingSeverity.ERROR:
+        return True
     if any(entry.source == name or entry.source.startswith(name + "/") for name in hidden):
         return False
-    if entry.level >= LoggingSeverity.ERROR or show == SHOW_ALL:
+    if show == SHOW_ALL:
         return True
     if show == SHOW_WARNINGS:
         return entry.level >= LoggingSeverity.WARN and entry.source != TICKS

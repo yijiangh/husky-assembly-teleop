@@ -12,13 +12,12 @@ import numpy as np
 import pytest
 from planning_fixtures import ALICE, robot_config
 from plugin_fakes import (ArmDriver, FakeContext, MocapDriver, RobotiqDriver, fake_arm, fake_node, fake_robot,
-                          fake_robotiq, lease_to_test)
+                          fake_robotiq, lease_to_test, with_urdf_frames)
 from robot_lab import SUPPORT
 from test_execution_stream import BASE, MOCAP_ID, moved
 
 from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER as COMPLIANCE
 from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER as JOINT
-from husky_assembly_teleop.robot_interface.frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from husky_assembly_teleop.shared.execution.handoff import MAX_DRIFT, TIMEOUT, handoff_text, run_handoff
 from husky_assembly_teleop.shared.execution.stream import CLOSED, DRY_RUN, FAILED, REFUSED, STIFF
 from husky_assembly_teleop.shared.execution.tools import ROBOTIQ_CLOSE, ROBOTIQ_EFFORT
@@ -38,13 +37,9 @@ class Lab:
         """Build Alice; `gripper` options go to the RobotiqDriver; `reject_goals`: the gripper rejects every goal."""
         self.ctx = FakeContext(step=self.tick)
         node = fake_node(self.ctx.now, self.ctx.logs)
-        config = robot_config(ALICE)
         self.gripper = fake_robotiq(node)
         self.arm = fake_arm(node, "ur_arm", SUPPORT, end_effector=self.gripper)
-        self.arm.urdf = config.model.urdf
-        self.robot = lease_to_test(fake_robot(node, "a200-0804", [self.arm]))
-        self.robot.config.model = config.model
-        self.robot._husky_in_mocap_frame = fixed_transform(config.model.urdf, MOCAP_FRAME, HUSKY_FRAME)
+        self.robot = with_urdf_frames(lease_to_test(fake_robot(node, "a200-0804", [self.arm])), robot_config(ALICE))
         self.mocap = MocapDriver(self.robot, BASE, MOCAP_ID)
         self.drivers = [ArmDriver(self.arm, self.robot, lag=1.0), RobotiqDriver(self.gripper, **gripper)]
         self.push, self.push_at = np.zeros(3), math.inf
@@ -176,8 +171,8 @@ def test_a_close_cancelled_from_outside_is_not_closed():
     assert lab.gripper._action.goals[0].cancelled and lab.arm.state.controllers.active == JOINT
 
 
-def test_a_cancel_stops_the_fingers_holds_the_arm_and_brings_it_back():
-    """Cancelled mid-close: the goal cancelled, a hold at the TCP, joint control, then CancelledError."""
+def test_a_cancel_stops_the_fingers_and_holds_the_arm_without_switching():
+    """Cancelled mid-close: the goal cancelled, a hold at the TCP, the arm left compliant, then CancelledError."""
     lab = Lab(delay=10.0)
 
     async def scenario():
@@ -190,8 +185,8 @@ def test_a_cancel_stops_the_fingers_holds_the_arm_and_brings_it_back():
 
     asyncio.run(scenario())
     assert lab.gripper._action.goals[0].cancelled
-    assert lab.sent("target")[-1].hold and lab.arm.state.controllers.active == JOINT
-    assert lab.arm.controllers.switches == [COMPLIANCE, JOINT]
+    assert lab.sent("target")[-1].hold and lab.arm.state.controllers.active == COMPLIANCE
+    assert lab.arm.controllers.switches == [COMPLIANCE]
 
 
 def test_a_refused_switch_to_compliance_closes_nothing():

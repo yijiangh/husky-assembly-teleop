@@ -86,9 +86,7 @@ class TracePlot:
         if self._seconds is not None and len(t):
             keep = t >= t[-1] - self._seconds
             t, values = t[keep], values[keep]
-        if len(t) > MAX_POINTS:
-            pick = np.linspace(0, len(t) - 1, MAX_POINTS).astype(int)
-            t, values = t[pick], values[pick]
+        t, values = thinned(t, values)
         start = self._trace.start or 0.0
         if not self._fixed:
             y_range = _nice_range(values, self._min_span)
@@ -101,6 +99,21 @@ class TracePlot:
     def _scales(self) -> dict:
         """The x scale in seconds and the current y range."""
         return {"x": viser.uplot.Scale(time=False), "y": viser.uplot.Scale(auto=False, range=self._y_range)}
+
+
+def thinned(*columns: np.ndarray) -> tuple[np.ndarray, ...]:
+    """The columns cut to at most MAX_POINTS rows, picked evenly: viser sends the whole plot on each change.
+
+    Args:
+        columns: Equally long columns, x first.
+
+    Returns:
+        tuple[np.ndarray, ...]: The same columns, at most MAX_POINTS rows each.
+    """
+    if len(columns[0]) <= MAX_POINTS:
+        return columns
+    pick = np.linspace(0, len(columns[0]) - 1, MAX_POINTS).astype(int)
+    return tuple(column[pick] for column in columns)
 
 
 def _nice_range(values: np.ndarray, min_span: float = 1e-6) -> tuple[float, float]:

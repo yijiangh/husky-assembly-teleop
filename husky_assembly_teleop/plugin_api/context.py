@@ -224,7 +224,7 @@ class PluginContext:
             ...     await ctx.wait_until(lambda: np.allclose(arm.joint_vector(), target, atol=1e-2),
             ...                          timeout_s=duration + 5.0)
         """
-        with leased(self._lease_slots(serials), f"{self.name}: {label}") as lease:
+        with leased(self._lease_slots(serials), f"{self.name}: {label}", owner=self.name) as lease:
             yield lease
 
     def take_lease(self, serials: Iterable[str], label: str) -> Lease:
@@ -240,7 +240,7 @@ class PluginContext:
             NotLeased: If any of them is leased already; none is leased then.
             KeyError: If a serial is not a connected robot.
         """
-        lease = take_lease(self._lease_slots(serials), f"{self.name}: {label}")
+        lease = take_lease(self._lease_slots(serials), f"{self.name}: {label}", owner=self.name)
         self._leases = {kept for kept in self._leases if kept.active} | {lease}
         return lease
 

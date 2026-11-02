@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from pathlib import Path
 from collections import deque
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -71,14 +72,18 @@ class FakeView:
 class FakeVisualization:
     """Stands in for ui.visualization.Visualization: records draws, the stop button and the broken banner."""
 
-    def __init__(self, port=None, phone_port=None):
+    def __init__(self, port=None, phone_port=None, layout=None):
         """Nothing drawn, no stop requested."""
         self.ports, self.paused, self.stop_requested = (8080, 8081), False, False
-        self.draws, self.broken, self.views, self.stopped = 0, {}, {}, False
+        self.draws, self.broken, self.views, self.stopped, self.layout = 0, {}, {}, False, layout
 
     def view_for(self, name: str, *_settings: object) -> FakeView:
         """A fresh view per plugin."""
         return self.views.setdefault(name, FakeView())
+
+    def place_plugin_windows(self) -> list[str]:
+        """No layout entries left over."""
+        return []
 
     def take_stop_request(self) -> bool:
         """Whether Stop all was pressed since the last tick."""
@@ -157,7 +162,8 @@ def build(monkeypatch, *plugins: HuskyPlugin, robots=()) -> HuskyMonitor:
     monitor.get_logger, monitor.now, monitor.clock = (lambda: log), (lambda: clock[0]), clock
     monitor._ros_logger, monitor.console_log = log, ConsoleLog()
     monitor._config = SimpleNamespace(robots=(), enabled_plugins=(), viser_port=0, phone_port=0,
-                                      max_plugin_errors=MAX_ERRORS, shutdown_grace=0.5, tick_period=0.001)
+                                      max_plugin_errors=MAX_ERRORS, shutdown_grace=0.5, tick_period=0.001,
+                                      layout=Path("/nonexistent/husky_monitor/layout.json"))
     monitor._world, monitor._loaded, monitor._object_connections, monitor._tick_index = WorldState(), {}, {}, 0
     monitor._executor = SimpleNamespace(shutdown=lambda: None)
     monitor._kinematics, monitor._scene, monitor._snapshot, monitor._viz = None, Scene(), Scene(), None

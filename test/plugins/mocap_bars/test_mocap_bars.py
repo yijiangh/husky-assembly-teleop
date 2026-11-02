@@ -8,8 +8,9 @@ import numpy as np
 
 from husky_assembly_teleop.plugins.mocap_bars import FIT_PERIOD, MocapBarsPlugin
 from husky_assembly_teleop.robot_interface.mocap_state import RawMarkers
-from husky_assembly_teleop.world.bar_pose import bar_slide_roll, transform_points
-from husky_assembly_teleop.world.marker_layouts import bar_layouts, fake_sensed_markers
+from husky_assembly_teleop.shared.bars.layouts import bar_layouts, fake_sensed_markers
+from husky_assembly_teleop.shared.bars.pose import bar_slide_roll
+from husky_assembly_teleop.world.marker_match import transform_points
 from husky_assembly_teleop.world.measured import TrackedObject
 from planning_fixtures import purged_process
 from plugin_fakes import FakeContext, FakeScene

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from husky_assembly_teleop.ui.assembly_tab import (ASSEMBLY_ICON, CANCEL_ICON, CONFIRM_ICON, EXEC_BAND, EXEC_ICON,
-                                                   EXEC_PLOTS_X, EXEC_SETTINGS_BAND, GOAL_ICON, MARK_BAND, MARK_ICON,
-                                                   PLAN_ICON, PLAN_PLOTS_X, PLAN_SETTINGS_BAND, PLOTS_WIDTH, PLOTS_Y,
-                                                   PROCESS_BAND, PROMPT_BAND, REOPEN_ICON, RUN_BAND,
-                                                   RUN_SETTINGS_BAND, SETTINGS_BAND, STEP_BAND)
+from husky_assembly_teleop.shared.assembly_tab.layout import (ASSEMBLY_ICON, CANCEL_ICON, CONFIRM_ICON, EXEC_BAND,
+                                                              EXEC_ICON, EXEC_PLOTS_X, EXEC_SETTINGS_BAND, GOAL_ICON,
+                                                              MARK_BAND, MARK_ICON, PLAN_ICON, PLAN_PLOTS_X,
+                                                              PLAN_SETTINGS_BAND, PLOTS_WIDTH, PLOTS_Y, PROCESS_BAND,
+                                                              PROMPT_BAND, REOPEN_ICON, RUN_BAND, RUN_SETTINGS_BAND,
+                                                              SETTINGS_BAND, STEP_BAND)
 
 
 def test_bands_run_top_to_bottom_and_icons_are_distinct():

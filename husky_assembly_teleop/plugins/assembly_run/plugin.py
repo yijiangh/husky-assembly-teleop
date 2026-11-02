@@ -13,6 +13,8 @@ no time limit, until any other request.
 - ! Nothing is written until the runs were read: an open that fails or is stopped is tried again.
 - ! Runs are written into the process folder (`runs/`), in order on a writer thread; the state here changes first.
 - ! EXPERIMENTAL: the run format and the requests may still change.
+- Its layout file preferences (`plugins.assembly_run.preferences`): `big_buttons`, true to draw the Assembly tab's
+  buttons big.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ from ...shared.movement_exec_contract import INSERT_PART, current_step, part_pla
 from ...shared.process_contract import MARK_ASSUMED, MARK_DONE, MARK_PENDING
 from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, RunError, RunSettings, continue_run,
                                  file_hashes, find_runs, made_after, record_event, reopen, save_progress, with_current)
-from ...ui.assembly_tab import ASSEMBLY_TAB
+from ...shared.assembly_tab.layout import ASSEMBLY_TAB
 from .panel import PanelStatus, RunPanel
 from .writes import (AGAIN_MARK, AGAIN_NEW_RUN, NO_PROCESS, NOT_OPENED, OPEN, OPENING, SETTING_TYPES,
                      RunWrites)
@@ -98,9 +100,6 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         #: The run being written; else the run used last, offered, and an older run made on these files, offered too
         #: (both the same run when a newer run folder can't be read).
         self._run: Run | None = None
-        #: Per robot serial, the mocap offset last recorded in the open run's events, and which run that was.
-        self._offsets: dict[str, tuple[float, ...]] = {}
-        self._offsets_run: Path | None = None
         self._offer: Run | None = None
         self._match: Run | None = None
         self._settings = RunSettings()
@@ -246,21 +245,23 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
     def request_record(self, event: str, *, action: str | None = None, movement: str | None = None,
                        data: Mapping[str, Any] | None = None, file: Mapping[str, Any] | None = None,
                        kind: str = "movements",
-                       figure: Callable[[Mapping[str, Any], Path], None] | None = None) -> None:
+                       figure: Callable[[Mapping[str, Any], Path], None] | None = None,
+                       reserved: Path | None = None) -> None:
         """Record an event, `data` under its "data" key; `file` is written as a `kind` record the event names.
 
         `figure(payload, png path)` draws the record's plot beside it; a plot that fails is noted in the event's data
-        as `figure_error`, the record kept.
+        as `figure_error`, the record kept. `reserved`: the file `runs.reserve_record` took for it; None: the next
+        number when it is written.
         """
         refusal = self._not_open() or (
             "a file needs its action and movement" if file is not None and None in (action, movement) else "")
         if self._refused(f"Record {event}", refusal):
             return
         if self._run is not None:
-            self._queue_record(self._ctx, event, action, movement, data, file, kind, figure)
+            self._queue_record(self._ctx, event, action, movement, data, file, kind, figure, reserved)
         else:
             self._spawn(self._ctx, f"record {event}", self._record_later(self._ctx, event, action, movement, data,
-                                                                         file, kind, figure))
+                                                                         file, kind, figure, reserved))
 
     # --- --- --- --- --- HOOKS --- --- --- --- ---
 
@@ -314,7 +315,6 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             self._unsaved_at = None
             if self._run is not None:
                 self._write(ctx, "save the progress", save_progress, self._run)
-        self._record_offsets(ctx)
         if self._state == NOT_OPENED and ctx.now() >= self._retry_at:
             self._open_now(ctx)
         view = self.view
@@ -324,22 +324,6 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             process.request_marks({action: MARK_ASSUMED if action in view.assumed
                                    else MARK_DONE if status == DONE else MARK_PENDING
                                    for action, status in view.statuses.items()})
-
-    def _record_offsets(self, ctx: PluginContext) -> None:
-        """Note in the open run's events a base's mocap offset when it changes, or is on when the run opens."""
-        if self._run is None:
-            return
-        if self._run.folder != self._offsets_run:
-            self._offsets, self._offsets_run = {}, self._run.folder
-        for serial, robot in ctx.world.robots.items():
-            offset = getattr(robot.base, "mocap_offset", None)
-            if offset is None:
-                continue
-            xyz = tuple(float(value) for value in offset)
-            if xyz != self._offsets.get(serial, (0.0, 0.0, 0.0)):
-                self._offsets[serial] = xyz
-                self._write(ctx, "record the mocap offset", record_event, self._run.folder, "mocap_offset",
-                            ctx.now(), robot=serial, xyz=list(xyz))
 
     def draw(self, ctx: PluginContext) -> None:
         """Fill the panel."""

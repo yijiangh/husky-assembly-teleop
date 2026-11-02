@@ -191,6 +191,12 @@ Calibration is relay-side, not consumer-side.
 - The monitor reads that announcement and calls one robot's reload service through `MocapRelayInterface`
   (`robot_interface/mocap_relay.py`, `world.mocap_relay`); the `calibration` plugin writes new sessions and applies
   them that way (`doc/calibration_manual.md`).
+- `base_offset.id_<n>` (one parameter per robot's rigid body, x, y, z metres, at most 0.1 m per axis): a shift in the
+  lab frame on top of that robot's base calibration, for a base known to be off, until the relay restarts. Set it with
+  `ros2 param set /mocap_relay base_offset.id_<n> "[x, y, z]"`, every number with a decimal point (`[0.05, 0.0, 0.0]`;
+  ROS reads `[0.05, 0, 0]` as a string and the relay refuses it); the relay logs it and lists it under `base_offsets`
+  in `/mocap_relay/calibrations`. Without a floor calibration the shift is in Motive's raw frame. The monitor neither
+  shows it nor records it in a run.
 - Rigid bodies of no robot (probe, bars) are published as Motive gives them.
 - A session written by the `calibration` plugin names the base body's definition it was built for (`body_definition`:
   streaming id, name, marker offsets, Z-up). The relay compares it with Motive's definition now (below) and announces

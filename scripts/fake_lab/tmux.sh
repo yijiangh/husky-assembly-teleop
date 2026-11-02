@@ -10,37 +10,30 @@
 # Claude reads the panes (tmux capture-pane) and never types into them unless you ask. Detach with Ctrl-b d; the
 # session keeps running. Running this again only re-attaches. Stop everything with: tmux kill-session -t fake_lab
 
-set -e
+set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$here/../lab_common.sh"
 session="${FAKE_LAB_SESSION:-fake_lab}"
 # * The panes' shells come from the tmux server, not from this shell: pass the fake-lab settings that are set.
+lab_collect_settings FAKE_LAB_
 settings=""
-for name in ${!FAKE_LAB_*}; do
-    settings+="$name=$(printf %q "${!name}") "
+for setting in "${lab_settings[@]}"; do
+    settings+="${setting%%=*}=$(printf %q "${setting#*=}") "
 done
-if ! tmux has-session -t "$session" 2>/dev/null; then
+if ! tmux has-session -t "=$session" 2>/dev/null; then
     tmux new-session -d -s "$session" -n lab -x 220 -y 60
     tmux set-option -t "$session" history-limit 50000
     # * A pane split off later gets them too, so `source env.sh` there finds this session's domain.
-    for name in ${!FAKE_LAB_*}; do
-        tmux set-environment -t "$session" "$name" "${!name}"
-    done
+    lab_tmux_set_environment "$session" FAKE_LAB_
     tmux split-window -v -t "$session:lab"
     tmux split-window -v -l 5 -t "$session:lab.1"
     tmux split-window -h -t "$session:lab.2"
-    # * Each pane's name in its border, as a pane option: a shell's prompt would overwrite a pane title.
-    tmux set-option -t "$session" pane-border-status top
-    tmux set-option -t "$session" pane-border-format " #{pane_index} #{@name} "
-    for pane in 0:sim 1:monitor 2:router 3:relay; do
-        tmux set-option -p -t "$session:lab.${pane%%:*}" @name "${pane#*:}"
-    done
+    lab_tmux_name_panes "$session" " #{pane_index} #{@name} " \
+        "$session:lab.0" sim "$session:lab.1" monitor "$session:lab.2" router "$session:lab.3" relay
+    lab_tmux_wait_for_shells "$session:lab.0" "$session:lab.1" "$session:lab.2" "$session:lab.3"
     tmux send-keys -t "$session:lab.2" "$settings$here/router.sh" Enter
     tmux send-keys -t "$session:lab.3" "$settings$here/relay.sh" Enter
     tmux send-keys -t "$session:lab.0" "$settings$here/sim.sh" Enter
     tmux send-keys -t "$session:lab.1" "$settings$here/monitor.sh"
 fi
-if [ -z "$TMUX" ]; then
-    exec tmux attach -t "$session"
-else
-    echo "already inside tmux: switch with  tmux switch-client -t $session"
-fi
+lab_tmux_attach "$session"

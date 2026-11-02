@@ -9,7 +9,7 @@ robot). Who may command a robot is the robot lease's job (`robot_interface/robot
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Collection
 
 from ...robot_interface.arm import JOINT_STATE_MAX_AGE
 
@@ -28,7 +28,7 @@ FOLLOWER_FRESH = 2.0
 UNTIL_BACK = "no automatic motion until they come back (check its link in Health) or the monitor restarts"
 
 
-def moving_reason(world: WorldState, now: float, besides: str | None = None) -> str:
+def moving_reason(world: WorldState, now: float, besides: str | None = None, unknown: Collection[str] = ()) -> str:
     """Why no automatic motion may start or go on now: an arm or a base moves; "" if none does.
 
     Leases are not checked here: the automatic motion leases every robot first, so nothing else here can command one.
@@ -37,9 +37,10 @@ def moving_reason(world: WorldState, now: float, besides: str | None = None) -> 
         world: The measured world.
         now: ROS time, seconds.
         besides: A robot left out (its arms and base): the one an automatic motion is for, or None.
+        unknown: Serials of robots the operator let be unknown (Exec's second press): left out too.
     """
     for serial, robot in world.robots.items():
-        if serial == besides:
+        if serial == besides or serial in unknown:
             continue
         for name, arm in robot.arms.items():
             why = arm_moving(arm, f"{serial} {name}", now)

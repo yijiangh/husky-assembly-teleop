@@ -1,17 +1,16 @@
 # Setting up another PC for the new monitor (for agents)
 
-For a coding agent on a lab PC that runs the old monitor. Set up the new monitor, branch
-`yh/process_replan_execution`, in a workspace of its own beside the old one, so that both keep working and the
-real-lab test (`doc/real_lab_test_manual.md`) runs from this PC as it does from Yijiang's laptop. Written on 2026-10-29
-from that laptop (Ubuntu 22.04, ROS 2 Humble, Python 3.10.12), where all of this works; the versions named are the
-laptop's.
+For a coding agent on a lab PC that runs the old monitor. Set up the new monitor, branch `core-port` of
+`yijiangh/husky-assembly-teleop`, in a workspace of its own beside the old one, so that both keep working and the
+real-lab test (`doc/real_lab_test_manual.md`) runs from this PC as it does from Yijiang's laptop. The versions named
+are that laptop's (Ubuntu 22.04, ROS 2 Humble, Python 3.10.12), where all of this works.
 
 ! Never pull or check out this branch in the old monitor's checkout: that replaces the old monitor's code. Read this
 note from a fresh clone in the new workspace (step 2's first `git clone` is then done), or without changing any
 checkout (a fetch only downloads):
 
 ```bash
-git -C <old checkout> fetch origin yh/process_replan_execution
+git -C <old checkout> fetch origin core-port
 git -C <old checkout> show FETCH_HEAD:doc/monitor_pc_setup.md
 ```
 
@@ -53,8 +52,8 @@ NatNet client and a PyBullet and Dear PyGui window (README, What changed from th
 | New | Why |
 |---|---|
 | a workspace of its own, `~/Code/ros2_ws_next` (`src/`, `venv/`, `install/`) | the old one stays as it is; the laptop's path, so the manuals' commands work as written |
-| this repo on `yh/process_replan_execution`, with the new submodule `external/scaffolding_assembly_core`, and `external/husky_assembly_tamp` on `yh/core-port` | the new monitor, and the core it shares with the Rhino plugin and the planners |
-| crl-husky on `jg/ros2` at 03056b7, in the new workspace | the robots' configs, base models and messages; the laptop's commit, which the robots should run too (manual 1.g) |
+| this repo on `core-port`, with the new submodule `external/scaffolding_assembly_core`, and `external/husky_assembly_tamp` on `yh/core-port` | the new monitor, and the core it shares with the Rhino plugin and the planners |
+| crl-husky on `jg/ros2` at the commit README names, or later, in the new workspace | the robots' configs, base models and messages; the robots should run the same commit (manual 1.g) |
 | apt: `ros-humble-rmw-zenoh-cpp` and `ros-humble-zenoh-cpp-vendor` (0.1.11), `ros-humble-ur-dashboard-msgs`, `tmux` | Zenoh; the health chips read the arms' robot and safety modes; the real-lab session |
 | a Zenoh router, the user service `crl-zenoh-router` | all robots and control PCs run Zenoh on domain 80; this PC's nodes reach the robots through it |
 | chrony, with this PC in a control-PC slot (`.201`–`.210`) | the robots take their time from the control PCs; the health chips flag a robot whose clock is off |
@@ -70,15 +69,15 @@ Not needed by the new monitor: dearpygui, kdtree, opencv-python and tracikpy (ol
 
 ```bash
 mkdir -p ~/Code/ros2_ws_next/src && cd ~/Code/ros2_ws_next/src
-git clone --recursive -b yh/process_replan_execution git@github.com:yijiangh/husky-assembly-teleop.git
+git clone --recursive -b core-port git@github.com:yijiangh/husky-assembly-teleop.git
 git clone -b jg/ros2 git@gitlab.inf.ethz.ch:crl/robot-control/crl-husky.git
 git -C husky-assembly-teleop submodule status   # seven lines, none starting with - or +
-git -C crl-husky log --oneline -1               # the laptop's: 03056b7 no second rclpy shutdown on ctrl-c or sigterm
+git -C crl-husky log --oneline -1               # the commit README names, or later
 ```
 
-- crl-husky: if `jg/ros2` has moved past 03056b7, ask the user whether to `git -C crl-husky checkout 03056b7`. The
-  laptop runs 03056b7 (the fake lab tested it), and the real-lab check (manual Part 3) compares each robot's
-  crl-husky file by file with this PC's.
+- crl-husky: README names the commit the monitor needs (`jg/ros2` at that commit or later); if `jg/ros2` is behind
+  it, stop and tell the user. The real-lab check (manual Part 3) compares each robot's crl-husky file by file with
+  this PC's.
 - Clone nothing else for the real robots. `src/cartesian_controllers` is for the fake lab only (step 8).
 - Later updates: `git pull` and `git submodule update --init --recursive` in this repo, crl-husky to the commit the
   user names, then the build (step 4) again.
@@ -106,16 +105,10 @@ cd ~/Code/ros2_ws_next && source /opt/ros/humble/setup.bash
 <the commands>'
 ```
 
-The venv: README's One-time setup, everything from `# The venv` to the `pip list` check, in order. Then two more:
-
-```bash
-source venv/bin/activate
-python3 -m pip install "ssik>=4.1,<5" "numpy==1.26.4"                 # the planners' exact IK, as in the fake lab
-python3 -m pip install "pytest-xdist==2.5.0" "pytest-timeout==2.2.0"   # the tests' workers and time limit
-```
+The venv: README's One-time setup, everything from `# The venv` to the `pip list` check, in order, the optional ssik
+line included: the fake lab plans with ssik 4.1 (exact IK) and numpy 1.26.
 
 - Without ssik the planners fall back to PyBullet's and compas_fab's IK, and plan differently from the fake lab.
-- Don't `pip install -r requirements.txt`: it pins `numpy<1.25.0`, and ssik needs `numpy>=1.26`.
 - Check `python3 -m pip list`: viser 1.1.1, yourdfpy 0.0.60, trimesh 4.12.2, ssik 4.1.0, numpy 1.26.4, scipy 1.15.3,
   matplotlib 3.10.3, and the five editable packages located under `src/husky-assembly-teleop/external`.
 

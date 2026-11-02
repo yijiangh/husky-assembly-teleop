@@ -1,7 +1,7 @@
 """
 The side panel's Assembly tab, shared by process, assembly_steps, movement_exec and assembly_run: bands and icons.
 
-The plot windows of assembly_steps and movement_exec float at the bottom left; where is set here too.
+The plot windows of assembly_steps and movement_exec float at the bottom, right of the main panel; set here too.
 Each of them sets `tab_path = (ASSEMBLY_TAB,)` and adds its widgets in its own bands, `with ctx.view.ui(band=STEP_BAND)
 as gui:`; the bands sort top to bottom by these numbers, whichever plugin starts first.
 
@@ -10,9 +10,15 @@ as gui:`; the bands sort top to bottom by these numbers, whichever plugin starts
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Iterator
+
 import viser
 
-from .phone import big_buttons
+from ...ui.phone import big_buttons
+
+if TYPE_CHECKING:
+    from ...ui.visualization import PluginView
 
 #: The tab's label, the plugins' `tab_path`.
 ASSEMBLY_TAB = "Assembly"
@@ -41,12 +47,13 @@ RUN_BAND = 600.0
 #: assembly_steps: the Advanced planning folder, closed by default; last, below every button, so opening it moves none.
 PLAN_SETTINGS_BAND = 650.0
 
-# * The plot windows float at the bottom left (the console is at the bottom right), minimized to their bars until
-#   there is something to plot: assembly_steps' Plan plots, then movement_exec's Exec plots to their right.
+# * The plot windows float at the bottom, right of the main panel (Stop all, health), which they never cover; the
+#   console is at the bottom right. Minimized to their bars until there is something to plot: assembly_steps' Plan
+#   plots, then movement_exec's Exec plots to their right.
 #: Each window's size, px.
 PLOTS_WIDTH, PLOTS_HEIGHT = 460, 560
 #: Where each window sits: x from the page's left edge, y from its bottom (negative, as viser's `float` counts it).
-PLAN_PLOTS_X, EXEC_PLOTS_X, PLOTS_Y = 15, 15 + PLOTS_WIDTH + 10, -15
+PLAN_PLOTS_X, EXEC_PLOTS_X, PLOTS_Y = 410, 410 + PLOTS_WIDTH + 10, -15
 
 # * Button icons, so the CSS and the buttons agree.
 #: Live IK.
@@ -62,8 +69,19 @@ MARK_ICON, REOPEN_ICON = viser.Icon.CIRCLE_CHECK, viser.Icon.ARROW_BACK_UP
 #: Confirm and Cancel, here and on the phone's Exec tab.
 CONFIRM_ICON, CANCEL_ICON = viser.Icon.CHECK, viser.Icon.X
 
-#: CSS that makes the tab's buttons big, for the whole desktop page; assembly_run adds it, since assembly_steps and
-#: movement_exec load it.
+#: CSS that makes the tab's buttons big, for the whole desktop page, when the layout file asks (assembly_run's
+#: `big_buttons`); assembly_run adds it, since assembly_steps and movement_exec load it. ! Other plugins' buttons with
+#: these icons grow too (mocap_probe's Apply, the guide's Done).
 TAB_BUTTONS_CSS = big_buttons([GOAL_ICON, CHECK_ICON, PLAN_ICON, EXEC_ICON, MARK_ICON, REOPEN_ICON, CONFIRM_ICON,
                                CANCEL_ICON], 40,
                               18, scope="")
+
+
+@contextmanager
+def plots_window(view: PluginView, label: str, icon: viser.Icon, x: int) -> Iterator[viser.PanelHandle]:
+    """A plot window at the bottom, `x` from the left, minimized to its bar; build its content in the block."""
+    panel = view.panel()
+    with panel.add_tab(label, icon):
+        yield panel
+    panel.float(x=x, y=PLOTS_Y, width=PLOTS_WIDTH, height=PLOTS_HEIGHT)
+    panel.minimize()

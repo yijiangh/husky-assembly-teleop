@@ -457,7 +457,7 @@ def arm_check(arm: ArmInterface, now: float) -> Check:
     """
     state = arm.state
     parts = [sync_check(state, now)]
-    # Dashboard parts are known only while the sync's status is fresh; a simulated arm has none (its SIM chip says so).
+    # Dashboard parts are known only while the sync's status is fresh; a simulated arm has none (its sim chip says so).
     if parts[0].level < BAD and arm.simulation is None:
         parts += [dashboard_check(state)]
         if state.dashboard_up:

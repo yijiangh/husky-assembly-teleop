@@ -147,7 +147,7 @@ def test_b20s_ground_bar_insert_is_rigid_with_no_tighten():
 
 
 def test_b20s_retreat_breaks_out_compliant_then_runs_the_tail_replanned_to_the_goals():
-    """B20_R_retreat: the M1 screws open, a compliant break-out, then the tail planned to the plan's goals; DONE.
+    """B20_R_retreat: the gripper screws open, a compliant break-out, then the tail planned to the plan's goals; DONE.
 
     The replan asks for the plan's goals in 1 mm steps; the record has every phase and the tail; the ungrasp folded
     into the step is done; every arm ends under the joint controller at the tail's end.
@@ -159,8 +159,8 @@ def test_b20s_retreat_breaks_out_compliant_then_runs_the_tail_replanned_to_the_g
     result, _held = execute(lab, request)
     assert result.status == DONE and result.done == (1, 0), result.reason
     assert not prompts(lab) and said(lab) == [said(lab)[0]] and said(lab)[0].startswith(
-        "cindy (a200-0806): B20_R_retreat — RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN; force sensors "
-        "zeroed; COMPLIANT break-out ")
+        "cindy (a200-0806): B20_R_retreat — RETREAT: the gripper screws of left_ur_arm + right_ur_arm OPEN; force "
+        "sensors zeroed; COMPLIANT break-out ")
     asked, = planner.requests
     assert asked.goal_poses == request.route.goals and asked.linear_step == TAIL_STEP
     retreat, ungrasp = [json.loads(json.dumps(file)) for file in lab.run.files()]

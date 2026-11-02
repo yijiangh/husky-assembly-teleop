@@ -8,8 +8,10 @@
 # One line per item: OK, NOTE (worth a look) or FAIL with what to do under it; the exit code is the number of FAILs.
 # About 20 s.
 
+# * Not set -e: a check that fails is reported, and the next one runs.
+set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$here/env.sh"
+source "$here/env.sh"  # if the workspace does not load, the checks go on: they say what fails
 
 n_fail=0
 failed=()
@@ -64,19 +66,20 @@ check_laptop() {
     if ! command -v chronyc > /dev/null; then
         fail "no time sync with the robots: chrony is not installed" \
              "install it once (manual 1.d); until then the health chips may say a robot's clock is ahead or behind"
-    elif chronyc -n tracking 2>/dev/null | grep -q '^Leap status *: Normal'; then
+    elif grep -q '^Leap status *: Normal' <<< "$(chronyc -n tracking 2>/dev/null)"; then
         ok "time: chrony synced, reference $(chronyc -n tracking | sed -n 's/^Reference ID *: //p')"
     else
         note "time: chrony runs but is not synced yet (chronyc -n sources)"
     fi
     for port in 8080 8081; do
         pid=$(ss -Htlnp "( sport = :$port )" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
-        if [ -z "$pid" ] && ! ss -Htln "( sport = :$port )" 2>/dev/null | grep -q .; then
+        if [ -z "$pid" ] && [ -z "$(ss -Htln "( sport = :$port )" 2>/dev/null)" ]; then
             ok "port $port free for the monitor"
         elif [ -n "$pid" ] && [ "$(domain_of "$pid")" = 80 ]; then
             ok "port $port: this lab's monitor runs (pane monitor)"
         else
-            local holder="process ${pid:-of another user}, ROS domain $(domain_of "$pid")"
+            local holder
+            holder="process ${pid:-of another user}, ROS domain $(domain_of "$pid")"
             fail "port $port is taken ($holder): the monitor would refuse to start" \
                  "the fake lab's monitor? Stop it (manual 1.a)"
         fi
@@ -87,7 +90,7 @@ check_laptop() {
     if [ ! -f "$HUSKY_DRIVE_ROOT/$REAL_LAB_PROCESS/process.json" ]; then
         fail "no $REAL_LAB_PROCESS under the Drive root '${HUSKY_DRIVE_ROOT}'" \
              "is Insync running? Or give REAL_LAB_DRIVE your Drive folder (manual 1.h, 7.h)"
-    elif ls -a "$HUSKY_DRIVE_ROOT/$REAL_LAB_PROCESS" | grep -q insyncdl; then
+    elif [[ "$(ls -a "$HUSKY_DRIVE_ROOT/$REAL_LAB_PROCESS")" == *insyncdl* ]]; then
         note "the process folder is still syncing (Insync): wait before Load"
     else
         ok "the process on the Drive: $REAL_LAB_PROCESS"
@@ -111,7 +114,7 @@ ask_ros() {
         return 1
     fi
     asked=yes
-    timeout -s KILL 10 ros2 daemon stop > /dev/null 2>&1  # a stale ros2 daemon can answer for an old graph
+    # * --no-daemon: a stale ros2 daemon can answer for an old graph (ros2 service call uses none).
     # * The publishers only: on Zenoh a topic someone merely subscribes to is listed too.
     topics=$(timeout -s KILL 20 ros2 topic list -v --no-daemon --spin-time 5 --include-hidden-topics 2>/dev/null \
              | sed -n '/^Published topics:/,/^Subscribed topics:/p' | awk '/ \* / {print $2}')
@@ -164,6 +167,7 @@ remote_value() {
 read_robot_pc() {
     # * Its crl-husky code and messages, compared file by file with this laptop's (upload.sh copies files, no git).
     files=$(git -C "$REAL_LAB_WS/src/crl-husky" ls-files crl_husky_msgs crl_husky crl_husky_cpp | grep -v '\.md$')
+    # shellcheck disable=SC2086,SC2116  # $files: one file per word, on one line
     remote=$(timeout -s KILL 30 ssh -o BatchMode=yes -o ConnectTimeout=5 "administrator@$ROBOT_IP" bash -s 2>&1 <<EOF
 grep -E '^export (RMW_IMPLEMENTATION|ROS_DOMAIN_ID)=' /etc/clearpath/setup.bash
 echo "zenoh=\$(dpkg-query -W -f '\${Version}' ros-humble-rmw-zenoh-cpp 2>/dev/null)"
@@ -219,6 +223,7 @@ check_robot_pc() {
     fi
     # * The same messages are a must (else a topic between them never decodes); the same code is what was tested.
     local mine diff msgs others
+    # shellcheck disable=SC2086  # one file per word
     mine=$(cd "$REAL_LAB_WS/src/crl-husky" && sha1sum $files)
     diff=$(comm -23 <(sort <<< "$mine") <(grep -E '^[0-9a-f]{40}  ' <<< "$remote" | sort) | awk '{print $2}')
     msgs=$(grep -c '^crl_husky_msgs/' <<< "$diff")
@@ -270,7 +275,7 @@ check_robot_ros() {
         done
     fi
     for topic in $wanted; do
-        grep -qx "$topic" <<< "$topics" || missing+=" ${topic#$ROBOT_NS/}"
+        grep -qx "$topic" <<< "$topics" || missing+=" ${topic#"$ROBOT_NS"/}"
     done
     if [ -z "$missing" ]; then
         local tools=""
@@ -331,7 +336,7 @@ check_robot() {
         return
     fi
     ok "her PC answers ping"
-    if ss -Htn state established 2>/dev/null | awk '{print $4}' | grep -qx "$ROBOT_IP:7447"; then
+    if ss -Htn state established 2>/dev/null | awk -v peer="$ROBOT_IP:7447" '$4 == peer {up = 1} END {exit !up}'; then
         ok "this laptop's Zenoh router is linked to hers"
     else
         fail "this laptop's Zenoh router is not linked to hers" \

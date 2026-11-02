@@ -12,7 +12,8 @@ from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, lease_to_
 from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER as COMPLIANCE
 from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER as JOINT
 from husky_assembly_teleop.shared.execution.controllers import (QUERY_TIMEOUT, RESTORE_TIMEOUT, SWITCH_TIMEOUT,
-                                                                leave_compliance, restore_joint_control, switch_arms)
+                                                                hold_compliant, leave_compliance,
+                                                                restore_joint_control, switch_arms)
 
 pytestmark = pytest.mark.safety
 
@@ -137,70 +138,36 @@ def test_a_switch_never_answered_fails_after_the_timeout_and_a_late_answer_is_sw
     assert len(late) == 2 and all(line.startswith(LABEL) for line in late)
 
 
-def test_leave_compliance_still_requests_joint_control_when_cancelled_twice():
-    """Cancelled, the part's `finally` holds and asks at once; a second cancel ends the part, not the restore."""
+def test_a_cancelled_part_only_holds_its_arms_and_switches_nothing():
+    """Cancel, Stop all or a closing plugin: each arm held at once, no switch, a warn names the arms left compliant."""
     lab = Lab(active=COMPLIANCE)
-    lab.delay(5)
-
-    async def scenario():
-        async def part():
-            try:
-                await lab.ctx.wait_until(lambda: False)
-            finally:
-                await leave_compliance(lab.ctx, lab.arms, label=LABEL)
-
-        task = asyncio.ensure_future(part())
-        await asyncio.sleep(0)
-        task.cancel()
-        await asyncio.sleep(0)
-        asked = [arm.state.controllers.switch_in_flight for arm in lab.arms]
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        restore, = (task for task in lab.ctx._tasks if task.get_name() == f"restore joint control: {LABEL}")
-        return asked, await restore
-
-    asked, restored = asyncio.run(scenario())
-    assert asked == [JOINT, JOINT] and restored and lab.running() == [JOINT, JOINT]
+    lab.robot.lease_slot.lease = None  # * a hold needs no lease: a closing plugin gave it back first
+    hold_compliant(lab.ctx, lab.arms, label=LABEL)
     assert [len(arm._target_frame.messages) for arm in lab.arms] == [1, 1]
-    assert any(line.startswith(f"{LABEL}: left_ur_arm, right_ur_arm back under {JOINT}")
-               for line in lab.ctx.lines("info"))
+    assert lab.left.switches == lab.right.switches == [] and lab.running() == [COMPLIANCE, COMPLIANCE]
+    warn = lab.ctx.lines("warn")[-1]
+    assert warn.startswith(f"{LABEL}: cancelled; left_ur_arm, right_ur_arm held, still under {COMPLIANCE}")
+    assert warn.endswith("switch them back in robot_control")
 
 
-def test_two_stop_alls_with_a_switch_in_flight_leave_the_restore_running():
-    """Stop all twice during a pending switch to compliance: the part ends; the restore survives, switches it back."""
-    lab = Lab()
+def test_a_cancel_while_leaving_ends_the_wait_and_leaves_no_task():
+    """Leaving waits in the caller: cancelled meanwhile, the wait ends with the loud error and nothing keeps running."""
+    lab = Lab(active=COMPLIANCE)
     lab.delay(None)
 
-    def restores() -> list[asyncio.Task]:
-        return [task for task in lab.ctx._tasks if task.get_name() == f"restore joint control: {LABEL}"]
-
     async def scenario():
-        async def part():
-            try:
-                await switch_arms(lab.ctx, lab.arms, COMPLIANCE)
-            finally:
-                await leave_compliance(lab.ctx, lab.arms, label=LABEL)
-
-        task = lab.ctx.spawn("insert", part())
-        while lab.right.switches != [COMPLIANCE] and not task.done():
+        task = asyncio.ensure_future(leave_compliance(lab.ctx, lab.arms, label=LABEL))
+        started = lab.ctx.t
+        while lab.ctx.t < started + 1.0 and not task.done():
             await asyncio.sleep(0)
-        lab.robot.soft_stop_latch.stopped = True
-        first = lab.ctx._cancel_for_soft_stop()
-        while not restores() and not task.done():
-            await asyncio.sleep(0)
-        second = lab.ctx._cancel_for_soft_stop()
+        task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        lab.delay(3)  # the switch to compliance is answered late
-        restore, = restores()
-        return first, second, await restore
 
-    first, second, restored = asyncio.run(scenario())
-    assert "insert" in first and "insert" in second and f"restore joint control: {LABEL}" not in second
-    assert restored and lab.running() == [JOINT, JOINT]
-    assert lab.left.switches == lab.right.switches == [COMPLIANCE, JOINT]
-    assert not any("ARMS MAY BE LEFT" in line for line in lab.ctx.lines("error"))
+    asyncio.run(scenario())
+    assert lab.left.switches == lab.right.switches == [JOINT]
+    assert not lab.ctx._tasks, "no task of its own: nothing survives the cancel"
+    assert "when the wait for them was cancelled" in lab.ctx.lines("error")[-1]
 
 
 def test_a_cancelled_restore_logs_the_loud_error():
@@ -221,6 +188,26 @@ def test_a_cancelled_restore_logs_the_loud_error():
     assert error.startswith(f"{LABEL}: ARMS MAY BE LEFT UNDER {COMPLIANCE}: left_ur_arm (runs {COMPLIANCE}, "
                             f"switching to {JOINT}), right_ur_arm")
     assert "when the wait for them was cancelled" in error
+
+
+def test_a_restore_stops_asking_once_the_lease_is_given_back():
+    """The lease given back while the arms are not back: no switch after it, the loud error naming the lease instead."""
+    lab = Lab(active=COMPLIANCE)
+    lab.delay(None)
+
+    async def scenario():
+        task = asyncio.ensure_future(restore_joint_control(lab.ctx, lab.arms, label=LABEL))
+        while lab.ctx.t < 2.0 and not task.done():
+            await asyncio.sleep(0)
+        asked = len(lab.left.switches)
+        lab.robot.lease_slot.lease = None  # * the caller gave the robot back; another plugin may take it now
+        assert not await task
+        return asked
+
+    asked = asyncio.run(scenario())
+    assert len(lab.left.switches) == asked, "nothing is switched without the lease"
+    error = lab.ctx.lines("error")[-1]
+    assert f"ARMS MAY BE LEFT UNDER {COMPLIANCE}" in error and "once the lease was given back" in error
 
 
 def test_a_restore_that_never_lands_ends_in_the_loud_error():
@@ -252,16 +239,3 @@ def test_a_refused_hold_is_named_and_leaving_is_not_clean():
     named = [line for line in lab.ctx.lines("warn") if line.startswith("the hold was refused on left_ur_arm (")]
     assert len(named) == 1 and f"left_ur_arm, right_ur_arm: switch back to {JOINT} requested" in named[0]
     assert any("HOLD NOT SENT, TCP pose missing or stale" in line for line in lab.ctx.lines("error"))
-
-
-def test_leaving_while_the_plugin_closes_requests_and_says_it_is_not_confirmed():
-    """No task can start: held and asked at once all the same, and the log says it is not confirmed."""
-    lab = Lab(active=COMPLIANCE)
-    lab.delay(None)
-    lab.ctx.closed = True
-    assert not asyncio.run(leave_compliance(lab.ctx, lab.arms, label=LABEL))
-    assert [arm.state.controllers.switch_in_flight for arm in lab.arms] == [JOINT, JOINT]
-    assert [len(arm._target_frame.messages) for arm in lab.arms] == [1, 1] and not lab.ctx._tasks
-    error = lab.ctx.lines("error")[-1]
-    assert f"not confirmed, the plugin is closing (left_ur_arm, right_ur_arm: switch back to {JOINT} requested)" \
-        in error

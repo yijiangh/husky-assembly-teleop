@@ -8,15 +8,14 @@ approach, open, close and retreat. The simulated tools answer as the real ones d
 to the compliance controller as in the lab, and nothing is skipped or faked.
 
 The robots are Jakob's simulation (`launch/sim.launch.py robot:=all`, [simulation_manual.md](simulation_manual.md)),
-on crl-husky `jg/ros2` (78041cf or later): a simulated base with the real follower, the UR driver's fake hardware for
+on crl-husky `jg/ros2` (the commit README names, or later): a simulated base with the real follower, the UR driver's fake hardware for
 the arms, each arm with the robot's tool simulated (a Robotiq that reaches every goal at once, a scaffolding tool
 whose screws stall a fixed time after a tighten), a fake Motive with Motive's measured latency, jitter and marker
 errors, and the mocap relay, as on the lab PC. Everything talks over Zenoh through a router of the fake lab's own.
 Plan about two hours.
 
-Run on 2026-10-26 with this code (M6, M7 and Jakob's core-port of the same day merged): sections 1–6 as written;
-run again on 2026-10-27 (branch `yh/lab-tools`) with the Cartesian controllers built and the fake wrench on: the
-retreat's compliant break-out (4.4) and the compliant insert (5.2) as written below. The handoff (5.3 step 5) and
+Sections 1–6 run as written; with the Cartesian controllers built and the fake wrench on, so do the retreat's
+compliant break-out (4.4) and the compliant insert (5.2) below. The handoff (5.3 step 5) and
 Alice's open (5.3 step 3) still wait for `ros-humble-gripper-controllers` (section 0.1): those two say "not run yet"
 and give what the code does; tell me where the page differs.
 
@@ -24,25 +23,25 @@ and give what the code does; tell me where the page differs.
 
 | Feature | Whose | Where |
 |---|---|---|
-| **The monitor.** The web page and phone page, health (a `SIM` chip per simulated base, arm and tool), Stop all (latches each robot until its Resume), leases, the console at the bottom right, robot_control in the **Control** tab. | Jakob | 1–2, 8 |
+| **The monitor.** The web page and phone page, health (a blue `sim` chip per simulated base, arm and tool), Stop all (latches each robot until its Resume), leases, the console at the bottom right, robot_control in the **Control** tab. | Jakob | 1–2, 8 |
 | **The simulated robots and tools.** Bases, arms, a Robotiq and a scaffolding tool per `model.yaml`, the fake Motive and the relay. The fake-lab scripts around them are ours. | Jakob | 1–2 |
 | **process.** Loads the process folder and draws one movement at a time; its action list carries the run's marks. | Jakob, the marks ours | 3 |
 | **obstacles.** The measured lab from `data/lab/main.json`, with a floor the arms and what they hold may not cross. | Jakob | everywhere a plan is made |
 | **base_planner_panel** (**Plan** › **Base**). A base path around robots and obstacles, committed to the follower. | Jakob | 4.1, 5.1, 5.3, 6.1 |
-| **assembly_run.** The run folder: marks, where each robot was left, the settings (transfer workaround, insert split, spiral, rigid insert, servo by bar), the event log; Mark done, Reopen, New run. | **Ours** | 3–7 |
+| **assembly_run.** The run folder: marks, where each robot was left, the settings (insert split, spiral, the spiral's seconds and turns, servo by bar, the Advanced planning search settings), the event log; Mark done, Reopen, New run. | **Ours** | 3–7 |
 | **motion_planner.** Plans a step's motion at the live base through tamp, goals by exact IK (ssik), collision checks. | **Ours** | every Plan |
 | **assembly_steps.** The run's current step in the **Assembly** tab: Live IK, Plan, Play, Exec; the Plan plots window. | **Ours** | 4–6 |
-| **movement_exec.** Runs a step's parts (a motion on Exec, the bar mount, a Robotiq step and the servo's first pass after Confirm), one motion at a time across all robots, with the M6 compliant parts (insert, retreat, handoff) and the M7 servo after a transfer, an approach or a grounded insert. | **Ours** | 4–6 |
+| **movement_exec.** Runs a step's parts (a motion on Exec, placing the bar by hand, a Robotiq step and the servo's first pass after Confirm), one motion at a time across all robots, with the compliant parts (insert, retreat, handoff) and the servo after a transfer, an approach or a ground bar's insert. | **Ours** | 4–6 |
 
 **Words used below:**
 - **Transfer workaround.** Cindy's transfer runs as a free move with empty tools to the insert start, where you place
   the bar. It stays on in this test: this export carries no joints for the loading pose (the travel to load has
   nothing to plan to), so the process cannot run its load, place, grasp and held transfer yet. When an export has the
   loading pose, untick the box and the five movements run in order.
-- **Servo.** After a transfer, a support approach or a grounded insert, the executor measures the flanges and moves
+- **Servo.** After a transfer, a support approach or a ground bar's insert, the executor measures the flanges and moves
   them onto the authored targets, pass by pass, until they are within 0.2 mm. On tool0 here: **Servo by bar** is on
-  (the default; it steers only a grounded bar, B20 here, and every other bar servos on tool0), but the fake Motive
-  streams no bar markers, so B20's servo warns once that the MoCap bar is not usable and aims tool0. The last line of the exec section shows each reading, and after the
+  (the default; it steers only a ground bar, B20 here, and every other bar servos on tool0), but the fake Motive
+  streams no bar markers, so B20's servo warns once that the mocap bar is not usable and aims tool0. The last line of the exec section shows each reading, and after the
   Exec ends how the servo ended, e.g. `servo done: nothing left to plan (correction L 0.13 mm, R 0.18 mm, under 0.2
   mm)`, until the next Exec.
 - **Split.** The last millimetres of an insert, and the first of a retreat, run under the compliance controller
@@ -99,7 +98,7 @@ controller reads the same topic and moves the arm by it.
 
 **Expect:** `drive.sh: …/husky_fake_lab/drive/data_design_study/261008_2ModulesDemo_purged_process is ready (84M)`.
 
-**0.4** Build the workspace from this branch, with crl-husky on `jg/ros2` (78041cf or later): the fake lab runs the
+**0.4** Build the workspace from this branch, with crl-husky on `jg/ros2` (the commit README names, or later): the fake lab runs the
 installed relay, fake Motive, fake wrench and simulated tools, and `env.sh` refuses an install without them. Build
 again after every pull: an install older than a script the launch needs dies with `executable ... not found`.
 
@@ -157,17 +156,18 @@ starve one; the arm's health chips then stay red), press Ctrl-C in the `sim` pan
 **Expect:**
 - **3D view:** three robots side by side on their park row, y = 1.35 m (Alice at x = 0.3, Belle at 1.7, Cindy at
   3.1), facing +y, arms stowed; the measured lab (cabinet, tables, tripods, trusses, the orange border).
-- **Health, top left:** every base shows `signal`, `mocap`, `estop`, `battery 90%`, `ctrl` and `SIM`; every arm
-  `signal`, `arm`, `SIM` and its tool: `robotiq` and `robotiq SIM` on Alice and Belle, `scaffolding_v3` and
-  `scaffolding_v3 SIM` on each of Cindy's arms. The `SIM` chips are green: a simulated part is no problem, the chip
+- **Health, top left:** every base shows `sim`, `signal`, `mocap`, `estop`, `battery 90%` and `ctrl`; every arm
+  `sim`, `signal`, `arm`, then its tool after a `sim` chip of its own: `sim` `robotiq` on Alice and Belle, `sim`
+  `scaffolding_v3` on each of Cindy's arms. The `sim` chips are blue: a simulated part is no problem, the chip
   only says which it is (hover it for the simulator). Belle's `mocap` is amber: her fake Motive body reports the
   1.2 mm marker error measured in the lab (hover it). So `1 PROBLEM`: Belle's `mocap`.
-- **Plan window, top, right of health:** the tabs **Base**, **Motion** and **Arm**, one per planner panel.
+- **Plan tab in the side panel:** the tabs **Base**, **Motion** and **Arm**, one per planner panel. A layout file
+  (`~/.config/husky_monitor/layout.json`) may put it in a window of its own (README, Panels).
 - **Side panel, right:** the tabs **Assembly**, **Collisions** and **Control** (a tab per
   robot); **Obstacles** minimized at the right edge; three minimized bars at the bottom: **Plan plots** and **Exec
   plots** at the left, the **Console** at the right (each opens by itself when it has something to show, and the
   control at a bar's right end opens or closes it). Assembly is open: the **PROCESS** section at the top (Folder,
-  Load, the two boxes, an empty action list, the Step slider), then the big buttons **Live IK**, **Plan**, **Exec**,
+  Load, the two boxes, an empty action list, the Step slider), then the buttons **Live IK**, **Plan**, **Exec**,
   **Confirm** | **Cancel**, **Mark done** | **Reopen**, the settings, the run, the closed **Advanced planning**
   folder.
 
@@ -190,7 +190,7 @@ click Load twice.
 
 **The process panel picks the run's current step.** Click an action row or a movement button, drag the Step slider
 or click ◀ mv / mv ▶:
-the step under the buttons follows, except while an Exec holds the robots' leases.
+the step under the buttons follows, except while an Exec has the robots' leases.
 
 **3.2** The two boxes under Load:
 - **Transfer workaround** ticked (see Words): B20_J is listed as `J_transit`, `J_M1`, `J_M2`, `J_M4`, 4 mv.
@@ -199,8 +199,8 @@ the step under the buttons follows, except while an Exec holds the robots' lease
   measured cabinet, and ticked it refuses any base pose on the row.
 
 **3.3** The settings, under Mark done: **Ignore built bars** off, **Insert split mm** 5, **Spiral** off, **Spiral s**
-20, **Spiral turns** 4, **Servo by bar** on, **Dry run** off. Leave them so. A run started before 2026-10-28 keeps the
-Servo by bar it saved (off): tick it. There is no Rigid insert box: a ground bar always inserts rigid, every other bar
+20, **Spiral turns** 4, **Servo by bar** on, **Dry run** off. Leave them so. A run that saved Servo by bar off keeps it
+off: tick it. There is no Rigid insert box: a ground bar always inserts rigid, every other bar
 rigid then compliant.
 
 **3.4** Optional: the simulated screws stall 2 s after a tighten whatever the arms do, so an insert's 5 s path is held
@@ -239,7 +239,7 @@ Confirm is asked only for the bar (placed and clamped, one prompt), a Robotiq st
      rad is the base 2° off the design base.
 2. Click **Plan** (15–40 s).
    - **Expect:** the chip `plan ready`, `min 16.8 s by the arms' limits`, and in the pane `transfer_free solved by
-     tamp.plan_free_dual_arm: 66 waypoints, 1 tries`. The **Plan plots** window opens at the bottom left, its two
+     tamp.plan_free_dual_arm: 66 waypoints, 1 tries`. The **Plan plots** window opens at the bottom, its two
      plots filled: every joint along the preview, and the largest joint step per row. Close it with the control at
      its bar's right end, or leave it: it only opens again at the next plan.
 3. Click **Play**: the preview runs as it will move; the slider **Preview time** scrubs it.
@@ -251,12 +251,12 @@ Confirm is asked only for the bar (placed and clamped, one prompt), a Robotiq st
      tools' buttons until they stall, then Confirm …`. The monitor sends the tools nothing: in the lab you place the
      bar, press each tool's button and check the bar is held before you Confirm.
 5. Click **Confirm** (here or on the phone's Exec tab: the bar is placed and clamped, in the simulation's mind).
-   - **Expect:** the servo runs by itself, and the **Exec plots** window opens at the bottom left with the servo's
+   - **Expect:** the servo runs by itself, and the **Exec plots** window opens at the bottom with the servo's
      plots (one point per pass): `[servo] feedback: tool0 (0.2 mm); the MoCap bar bars/B20 is recorded
      alongside.`, a warning `no
      marker sample of bars/B20 (asset 1020) within 1 s: is Motive streaming it?` (right: no bar markers here),
      `[servo 0] tool0 pos L=0.06 R=0.08 mm`, `servo 1/8 B20_J_transfer: servo: nothing left to plan`, `### bar pose
-     at termination (bars/B20): FK-vs-design 0.11 mm/0.007°, MoCap-vs-design n/a, MoCap-vs-FK n/a`, and `Exec
+     at termination (bars/B20): FK-vs-design 0.11 mm/0.007°, mocap-vs-design n/a, mocap-vs-FK n/a`, and `Exec
      B20_J_transfer: done — every part done`. The flanges are already within 0.2 mm, so no servo pass moves; a pass
      that would move asks for Confirm first (`SERVO 1/8 onto the insert start (tool0): …`). The exec section's last
      line keeps `servo done: nothing left to plan (correction L … mm, R … mm, under 0.2 mm)`.
@@ -268,7 +268,7 @@ Confirm is asked only for the bar (placed and clamped, one prompt), a Robotiq st
    - **Expect:** in the pane `B20_J_insert — RIGID insert of a ground bar, no tighten, 5.0 s, largest joint travel
      2.5°.` (a ground bar has no mating joint: nothing tightens and the compliance controller is not engaged), then
      `insert: RIGID_DONE: ground bar in, no tighten; the flanges stopped 0.0 mm from the planned end;
-     peak |F| not measured`, then the servo after the grounded insert: a warning `no force reading: the servo's load
+     peak |F| not measured`, then the servo after the ground bar's insert: a warning `no force reading: the servo's load
      guard is OFF. Watch the arms and use Cancel if the bar pushes on the floor.` (no F/T sensor here),
      `[servo 0] tool0 pos L=0.15 R=0.19 mm`, `nothing left to plan`, and `Exec B20_J_insert: done — every part done`.
 3. The line under the buttons says `every step of B20_J done: Mark done below`. Click **B20_J done**.
@@ -280,7 +280,7 @@ Confirm is asked only for the bar (placed and clamped, one prompt), a Robotiq st
 
 1. Click **Plan**. **Expect:** `retreat_linear solved by tamp.plan_dual_arm_linear_independent: 12 waypoints`.
 2. Click **Exec**. The retreat runs at once.
-   - **Expect:** in the pane `B20_R_retreat — RETREAT: the M1 screws of left_ur_arm + right_ur_arm OPEN; force
+   - **Expect:** in the pane `B20_R_retreat — RETREAT: the gripper screws of left_ur_arm + right_ur_arm OPEN; force
      sensors zeroed; COMPLIANT break-out 5.0 mm (0.5 s); joint control; the rest replanned from where the tools are
      and run at once (4.5 s). Watch both tools let go and back off along their lines.`, then
      `retreat: the gripper screws of left_ur_arm + right_ur_arm OPEN`; `force sensors zeroed`; the
@@ -350,8 +350,8 @@ follower sometimes never starts a short path (`base path … timed out: still fo
    `B21_H_to_grasp — move ur_arm …, 5 s, largest joint travel 22°`, then `arrived, end within 0.00°`.
 5. **Step 4/4, the close: the handoff.** Click **Exec**. **Expect:** `B21_H_close — CLOSE + compliant handoff on
    ur_arm: the arm goes COMPLIANT before the close (gives way ≤ 10 mm); jaws 0.8, effort 0.1, ≤ 30 s; then joint
-   control. Watch Cindy's tools are not pulled; hand on the e-stop.` Click **Confirm** (not run yet here: refused
-   as the open, `REFUSED: /a200_0804/gripper: the gripper's action server is not available; nothing sent`).
+   control. Watch the other robot's tools are not pulled; hand on the e-stop.` Click **Confirm** (not run yet here:
+   refused as the open, `REFUSED: /a200_0804/gripper: the gripper's action server is not available; nothing sent`).
    - **Expect:** in order, the joint controller confirmed, the force sensor zeroed, the anchor gap, the switch to the
      compliance controller, the close, `gripper done`, back under joint control; the arm does not move.
 6. Click **B21_H done**: `4/78 done`, the current step `B21_R · B21_R_ungrasp (1/3)`.

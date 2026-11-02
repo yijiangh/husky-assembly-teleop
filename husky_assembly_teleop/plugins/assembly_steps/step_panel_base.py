@@ -27,7 +27,7 @@ from ...plugin_api.plugin import HuskyPlugin
 from ...shared.planner.planner_panel import CommitConfirm
 from ...shared.planner.planner_search import PlanningWorld
 from ...shared.planner.timed_path import TimedPath
-from ...ui.assembly_tab import STEP_BAND
+from ...shared.assembly_tab.layout import STEP_BAND
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, note
 from scaffolding_assembly_core.ids import robot_id
@@ -112,6 +112,8 @@ class PlannerPlugin(HuskyPlugin):
         self.idle = False
         #: Exec's second press while other robots are not measured; the panel sets its `button`.
         self._confirm = CommitConfirm()
+        #: Ids of the other robots the last second press let be unknown during the motion.
+        self._unknown_allowed: frozenset[str] = frozenset()
 
     # --- --- --- --- --- FOR THE SUBCLASS TO SUPPLY --- --- --- --- ---
 
@@ -242,6 +244,9 @@ class PlannerPlugin(HuskyPlugin):
             self._say(f"no plan: {result.reason}", failed=True)
             return
         self.path, self._path_serial, self.plan_state = result.path, search.serial, "ready"
+        # * A plan arriving counts as use: its ghost shows even when the search outlasted the ghost timeout.
+        if self._used is not None:
+            self._used.touch()
         # * At the end, where the motion arrives (the old monitor's trajectory view opened there); Play runs from 0.
         self._t, self._playing = result.path.duration, False
         message, warning = search.accepted(result)
@@ -270,12 +275,13 @@ class PlannerPlugin(HuskyPlugin):
     def _asks_second_press(self, ctx: PluginContext) -> bool:
         """Whether Exec only asked: while other robots are not measured, the first press says to press it again.
 
-        ! Call it last before the send, after every other refusal, so the second press is never asked for in vain.
+        - The second press keeps the robots it lets be unknown in `_unknown_allowed`, for the send.
+        - ! Call it last before the send, after every other refusal, so the second press is never asked for in vain.
         """
         acting = [robot_id(serial) for serial in (self._path_serial or self.serial,) if serial]
-        asked, _unknown = self._confirm.asks(ctx, acting, "Exec")
+        asked, self._unknown_allowed = self._confirm.asks(ctx, acting, "Exec")
         if asked:
-            self._say(asked, failed=True)
+            self._say(asked, color=BUSY)
         return bool(asked)
 
     def _clear(self) -> None:

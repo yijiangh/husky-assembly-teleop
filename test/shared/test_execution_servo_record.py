@@ -10,7 +10,7 @@ import pytest
 
 from husky_assembly_teleop.shared.execution.servo import AFTER_INSERT, APPROACH, TRANSFER, ServoPlan
 from husky_assembly_teleop.shared.execution.servo_record import plot_servo, servo_payload
-from husky_assembly_teleop.world.marker_layouts import BarLayout
+from husky_assembly_teleop.shared.bars.layouts import BarLayout
 from scaffolding_assembly_core.geometry import Pose, compose
 
 LEFT, RIGHT = "robots/cindy/left_ur_arm_tool0", "robots/cindy/right_ur_arm_tool0"

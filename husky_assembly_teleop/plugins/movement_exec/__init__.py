@@ -5,7 +5,7 @@ A motion runs on Exec; a tool step, a step by hand and the servo's first pass af
 
   plugin.py     the plugin: takes requests, leases every robot while it works, records every part
   sequences.py  how each kind of part runs: a motion, a Robotiq move, a step by hand
-  servo_part.py the servo part: pass by pass onto the authored targets, or the MoCap bar (spec M7)
+  servo_part.py the servo part: pass by pass onto the authored targets, or the mocap bar
   servo_measure.py  what the servo says and records around its loop: the gate after an insert, the panel line
   panel.py      its part of the Assembly tab and the phone's Exec tab: what runs, the prompt, Confirm, Cancel,
                 the dry run, the servo line

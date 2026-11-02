@@ -9,8 +9,8 @@ import viser
 from viser._icons import svg_from_icon
 
 from husky_assembly_teleop.ui.style import PATH_TABS_MARKER
-from husky_assembly_teleop.ui.visualization import (PLAN_TAB, PLAN_WINDOW_X, PLAN_WINDOW_Y, SIDE_PANEL_WIDTH,
-                                                    Visualization)
+from husky_assembly_teleop.ui.layout import Layout, Placement, PluginPlace
+from husky_assembly_teleop.ui.visualization import SIDE_PANEL_WIDTH, Visualization
 
 
 @pytest.fixture
@@ -29,32 +29,69 @@ def test_plugins_share_parent_tabs_and_clear_only_their_own(viz):
     for view in (control, arm, base, arm):
         with view.ui() as gui:
             gui.add_button("Go")
-    side, plan = viz._side, viz._plan
-    assert side._panel._tab_labels == ("Control",) and plan._panel._tab_labels == ("Plan",)
-    assert plan._groups[("Plan",)]._tab_labels == ("Arm", "Base")
+    side = viz._side
+    assert side._panel._tab_labels == ("Control", "Plan")
+    assert side._groups[("Plan",)]._tab_labels == ("Arm", "Base")
     arm.clear()
-    assert plan._panel._tab_labels == ("Plan",)
-    assert plan._groups[("Plan",)]._tab_labels == ("Base",)
+    assert side._panel._tab_labels == ("Control", "Plan")
+    assert side._groups[("Plan",)]._tab_labels == ("Base",)
     control.clear()
-    assert side._panel._tab_labels == () and plan._panel._tab_labels == ("Plan",)
+    assert side._panel._tab_labels == ("Plan",)
 
 
-def test_plan_is_a_window_right_of_the_main_panel_shown_only_with_a_planner(monkeypatch):
-    """The planner panels' Plan tab floats in a window of its own, at the top; it shows only while it holds a tab."""
+def test_a_layout_gives_a_folder_a_window_of_its_own_shown_only_with_a_tab(monkeypatch):
+    """A layout's window for Plan floats where it says, as wide as the side panel; it shows only while it has a tab."""
     floated = []
     original = viser.PanelHandle.float
     monkeypatch.setattr(viser.PanelHandle, "float",
                         lambda panel, **where: (floated.append((panel, where)), original(panel, **where))[1])
-    viz = Visualization(port=0, phone_port=0)
+    viz = Visualization(port=0, phone_port=0, layout=Layout(windows={"Plan": Placement(at=(410.0, 15.0))}))
     try:
-        assert (viz._plan._panel, {"x": PLAN_WINDOW_X, "y": PLAN_WINDOW_Y, "width": SIDE_PANEL_WIDTH}) in floated
-        assert not viz._plan._panel.visible
-        base = viz.view_for("base_panel", tab_path=(PLAN_TAB, "Base"), icon=viser.Icon.CAR)
+        plan = viz._windows["Plan"]
+        assert (plan._panel, {"x": 410.0, "y": 15.0, "width": SIDE_PANEL_WIDTH, "height": None}) in floated
+        assert not plan._panel.visible
+        base = viz.view_for("base_panel", tab_path=("Plan", "Base"), icon=viser.Icon.CAR)
         with base.ui() as gui:
             gui.add_button("Go")
-        assert viz._plan._panel.visible and not viz._side._panel.visible
+        assert plan._panel.visible and not viz._side._panel.visible
         base.clear()
-        assert not viz._plan._panel.visible
+        assert not plan._panel.visible
+    finally:
+        viz.stop()
+
+
+def test_a_layout_docks_a_folder_below_the_side_panel_and_moves_or_hides_a_plugin(monkeypatch):
+    """Plan docked below the side panel; obstacles moved from the strip into Tools; another plugin as its class says."""
+    docked = []
+    monkeypatch.setattr(viser.PanelHandle, "dock_below", lambda panel, anchor: docked.append((panel, anchor)))
+    layout = Layout(windows={"Plan": Placement(anchor="side")},
+                    plugins={"obstacles": PluginPlace(tab_path=("Tools", "Obstacles"), hidden=False)})
+    viz = Visualization(port=0, phone_port=0, layout=layout)
+    try:
+        assert docked == [(viz._windows["Plan"]._panel, viz._side._panel)]
+        with viz.view_for("obstacles", hidden=True).ui():
+            pass
+        with viz.view_for("calibration", hidden=True).ui():
+            pass
+        assert viz._side._panel._tab_labels == ("Tools",)
+        assert viz._side._groups[("Tools",)]._tab_labels == ("Obstacles",)
+        assert viz._hidden_side._panel._tab_labels == ("Calibration",)
+    finally:
+        viz.stop()
+
+
+def test_a_layout_places_a_window_a_plugin_made_by_its_title(monkeypatch):
+    """The console's window docks right as the layout says; an entry no plugin window matches is returned."""
+    docked = []
+    monkeypatch.setattr(viser.PanelHandle, "dock_right", lambda panel: docked.append(panel))
+    viz = Visualization(port=0, phone_port=0,
+                        layout=Layout(panels={"Console": Placement(edge="right"), "Nowhere": Placement(edge="left")}))
+    try:
+        console = viz.view_for("console").panel()
+        with console.add_tab("Console"):
+            pass
+        docked.clear()
+        assert viz.place_plugin_windows() == ["Nowhere"] and docked == [console]
     finally:
         viz.stop()
 
@@ -69,9 +106,9 @@ def test_own_tabs_carry_the_plugin_icon_and_shared_parents_none(viz):
         pass
     with probe.tab("Status", viser.Icon.EYE, hidden=True):
         pass
-    plan_icon, = viz._plan._panel._tab_icons_html
+    plan_icon, = viz._side._panel._tab_icons_html
     probe_icon, = viz._hidden_side._panel._tab_icons_html
-    arm_icon, = viz._plan._groups[("Plan",)]._tab_icons_html
+    arm_icon, = viz._side._groups[("Plan",)]._tab_icons_html
     assert plan_icon is None and arm_icon and probe_icon
     assert viz._hidden_side._groups[("Mocap probe",)]._tab_labels == ("Points", "Status")
 
@@ -91,7 +128,7 @@ def test_only_tabs_shared_by_plugins_mark_their_tab_bar_as_a_path(viz):
         pass
     with probe.tab("Status"):
         pass
-    assert marked(viz._plan._tabs[("Plan",)]) and not marked(viz._side._tabs[("Mocap probe",)])
+    assert marked(viz._side._tabs[("Plan",)]) and not marked(viz._side._tabs[("Mocap probe",)])
 
 
 def test_extra_tabs_nest_under_the_plugin_name_in_the_minimized_panel(viz):

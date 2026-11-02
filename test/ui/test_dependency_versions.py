@@ -7,8 +7,11 @@
     `_collision_root_frame`); ghost.py and plugins/process/drawing.py use `_meshes` too.
   - ui/checklist.py reads `_impl.uuid` from a checkbox handle.
   - CSS aimed at viser's DOM fails silently: ui/checklist.py, ui/style.py (`data-dock-*`), ui/phone.py,
-    shared/teleop/dpad.py and tool_pad.py, shared/guide/panel.py (Mantine class names, `div:has(...)` paths).
-    Look at the desktop and phone pages.
+    shared/teleop/dpad.py, shared/guide/panel.py (Mantine class names, `div:has(...)` paths);
+    ui/css.py (buttons by `_impl.uuid`, button groups by `label[for=<uuid>]` and `nth-child`) and its users: the
+    Assembly tab's buttons (shared/assembly_tab/layout.py, plugins/assembly_run/panel.py, movement_exec/panel.py),
+    the process plugin's movement buttons, planner_panel.py's path buttons and both planner panels (arm_planner,
+    base_planner panel_plugin.py). Look at the desktop and phone pages.
   - Tests read `_handle_from_node_name`, `_gui_input_handle_from_uuid` and `_impl` of handles.
 """
 

@@ -1,8 +1,8 @@
 """
-The servo's record: the JSON payload of one run (spec §2.9) and its four-panel PNG (W:2685-2816).
+The servo's record: the JSON payload of one run and its four-panel PNG.
 
 Pure: no ROS, no context. `plot_servo` runs on assembly_run's writer thread, so it draws with matplotlib's `Figure` +
-`FigureCanvasAgg`, never pyplot: pyplot's figure manager starts a GUI loop of its own (W:2727-2731).
+`FigureCanvasAgg`, never pyplot: pyplot's figure manager starts a GUI loop of its own.
 """
 
 from __future__ import annotations
@@ -18,19 +18,19 @@ from matplotlib.figure import Figure
 from .servo import (APPROACH, BAR_GATE, BAR_MAX_RMS, BAR_TOL, CONFIRM_TRAVEL, GROUNDED_END_TOL, MARKER_MAX_AGE,
                     MAX_PASSES, MIN_TIME, SETTLE, SPEED, TOOL0_TOL, ServoPlan)
 
-# * Line colours (RGB 0-255), per family x, y, z, |d|, light -> dark so |d| reads as the bold summary line: the first
-#   arm reds, the second greens, the base blues (W:116-118).
-LEFT_ARM_RGB = ((240, 130, 120), (225, 70, 55), (150, 20, 20), (90, 0, 0))
-RIGHT_ARM_RGB = ((150, 220, 140), (70, 180, 80), (20, 130, 40), (0, 70, 20))
-BASE_RGB = ((150, 190, 230), (70, 130, 200), (30, 80, 160), (10, 40, 100))
+# * Line colours of this PNG and of the live Exec plots, per family x, y, z, |d|, light -> dark so |d| reads as the
+#   bold summary line: the first arm reds, the second greens, the base blues.
+FIRST_ARM_COLORS = ("#f08278", "#e14637", "#961414", "#5a0000")
+SECOND_ARM_COLORS = ("#96dc8c", "#46b450", "#148228", "#004614")
+BASE_COLORS = ("#96bee6", "#4682c8", "#1e50a0", "#0a2864")
 
-#: Where the bar's frame sits in the record, and where its deviations are evaluated (spec D3).
+#: Where the bar's frame sits in the record, and where its deviations are evaluated.
 BAR_FRAME = {"origin": "middle", "measured_at": "start (T·Trans(0,0,−L/2))"}
 
 
 def servo_payload(plan: ServoPlan, *, robot: str, serial: str, readings: Sequence[Mapping], moves: Sequence[Mapping],
                   status: str, reason: str, engaged: bool, dry_run: bool) -> dict:
-    """The JSON record of one servo run: the old monitor's keys (W:2719-2722) and the new ones (spec §2.9).
+    """The JSON record of one servo run: the old monitor's keys and the new ones.
 
     Args:
         plan: The servo's plan.
@@ -42,7 +42,7 @@ def servo_payload(plan: ServoPlan, *, robot: str, serial: str, readings: Sequenc
             ``net_deg``, ``traj_time``, ``duration``, ``prompted``, ``outcome``.
         status: How the run ended (the part's result).
         reason: Why, in plain words.
-        engaged: The loop steered on the MoCap bar (a usable fit came), so the record is a bar-mode one (W:2669-2672).
+        engaged: The loop steered on the mocap bar (a usable fit came), so the record is a bar-mode one.
         dry_run: The moves were built, never sent.
 
     Returns:
@@ -76,7 +76,7 @@ def servo_payload(plan: ServoPlan, *, robot: str, serial: str, readings: Sequenc
 
 
 def plot_servo(payload: Mapping, path: Path) -> None:
-    """Draw a run's four panels into a PNG: tool0 position and orientation error, base drift in both (W:2725-2816).
+    """Draw a run's four panels into a PNG: tool0 position and orientation error, base drift in both.
 
     Args:
         payload: The record (`servo_payload`), with at least one reading.
@@ -87,18 +87,18 @@ def plot_servo(payload: Mapping, path: Path) -> None:
     axis_names = ("x", "y", "z")
     # The arms the record has: left / right on Cindy, one "arm" on a support robot.
     sides = list(data[0]["tool0"].keys())
-    side_rgb = dict(zip(sides, (LEFT_ARM_RGB, RIGHT_ARM_RGB)))
+    side_colors = dict(zip(sides, (FIRST_ARM_COLORS, SECOND_ARM_COLORS)))
     bar_records = [reading for reading in data if reading.get("bar") is not None]
     bar_iters = [reading["iter"] for reading in bar_records]
 
-    def arm_color(side: str, index: int) -> tuple:
-        return tuple(value / 255.0 for value in side_rgb[side][index])
+    def arm_color(side: str, index: int) -> str:
+        return side_colors[side][index]
 
-    def base_color(index: int) -> tuple:
-        return tuple(value / 255.0 for value in BASE_RGB[index])
+    def base_color(index: int) -> str:
+        return BASE_COLORS[index]
 
     def bar_curve(key: str, field: str) -> list:
-        # One number per bar reading; NaN (a gap in the line) where there was no MoCap fit.
+        # One number per bar reading; NaN (a gap in the line) where there was no mocap fit.
         return [reading["bar"][key][field] if reading["bar"].get(key) is not None else np.nan
                 for reading in bar_records]
 
@@ -106,7 +106,7 @@ def plot_servo(payload: Mapping, path: Path) -> None:
     FigureCanvasAgg(fig)
     axes = fig.subplots(2, 2)
 
-    # * Tool0 position error, per axis + euclidean norm, every arm (mm); the held bar vs its target: MoCap dashed,
+    # * Tool0 position error, per axis + euclidean norm, every arm (mm); the held bar vs its target: mocap dashed,
     #   FK dotted.
     for side in sides:
         for index, axis_name in enumerate(axis_names):
@@ -116,7 +116,7 @@ def plot_servo(payload: Mapping, path: Path) -> None:
                         color=arm_color(side, 3), label=f"{side.capitalize()} |d|")
     if bar_records:
         axes[0, 0].plot(bar_iters, bar_curve("mocap_vs_design", "dpos_mm"), "o--", color="k",
-                        label="bar dpos (MoCap vs design)")
+                        label="bar dpos (mocap vs design)")
         axes[0, 0].plot(bar_iters, bar_curve("fk_vs_design", "dpos_mm"), "o:", color="0.45",
                         label="bar dpos (FK vs design)")
     axes[0, 0].set_title("Tool0 position error (per axis + |d|)")
@@ -132,7 +132,7 @@ def plot_servo(payload: Mapping, path: Path) -> None:
                             color=arm_color(side, index), label=f"{side.capitalize()} {axis_name}")
     if bar_records:
         axes[0, 1].plot(bar_iters, bar_curve("mocap_vs_design", "dang_deg"), "o--", color="k",
-                        label="bar dang (MoCap vs design)")
+                        label="bar dang (mocap vs design)")
         axes[0, 1].plot(bar_iters, bar_curve("fk_vs_design", "dang_deg"), "o:", color="0.45",
                         label="bar dang (FK vs design)")
     axes[0, 1].set_title("Tool0 orientation error (per axis)")

@@ -23,7 +23,8 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...colors import ACTION, TEAL, WHITE, rgb
-from ...ui.phone import button_group_color_css, columns_css, group_buttons
+from ...ui.css import button_group_color_css, group_buttons
+from ...ui.phone import columns_css
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, hover, note, section
 from ...world.stand_ins import unknown_parts, unknown_robots
 from scaffolding_assembly_core.ids import robot_id
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
     from ...config import RobotConfig
     from ..process_contract import ProcessContract, Selection
 
+#: The side panel tab every planner panel's tab goes in: `tab_path = (PLAN_TAB, label)`.
+PLAN_TAB = "Plan"
 #: Time slider resolution, seconds.
 SLIDER_STEP = 0.05
 #: The Path buttons' colour, outlines and Plan filled: the one button of the panel that stands out. Teal, as Plan in
@@ -293,6 +296,10 @@ class PlannerPanel(HuskyPlugin):
             shown, self._shown = self._shown, plan
             if plan is not None and (shown is None or plan.id != shown.id):
                 self._t, self._playing = 0.0, False
+            arrived = plan is not None and plan.state == "ready" and (
+                shown is None or plan.id != shown.id or shown.state != "ready")
+            if arrived:
+                self._used.touch()  # * a plan arriving counts as use: its ghost shows after a long search too
             # * Only a new plan, state or message is news: a re-timed plan (`set_duration`) keeps the line as it is.
             if plan is not None and (shown is None or (plan.id, plan.state, plan.message)
                                      != (shown.id, shown.state, shown.message)):

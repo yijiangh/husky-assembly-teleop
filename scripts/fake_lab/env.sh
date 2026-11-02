@@ -4,6 +4,7 @@
 # ! Everything stays on this laptop: ROS domain 70 over Zenoh, through a router on the loopback only; never the robots'
 #   domains (80, 84-86).
 # ! The monitor's Drive root is a scratch folder (~/husky_fake_lab/drive): runs/ never reach the real Drive.
+# ! Sourced, also into an interactive shell: no set -e here, and it works under set -u (a script's set -euo pipefail).
 
 #: This checkout and its workspace: scripts/fake_lab/ -> the repo -> src/ -> the workspace, unless FAKE_LAB_WS names
 #: one (for a checkout outside a workspace, e.g. a worktree).
@@ -28,26 +29,35 @@ esac
 export FAKE_LAB_ZENOH_PORT=$((7400 + ROS_DOMAIN_ID))
 export ZENOH_CONFIG_OVERRIDE="connect/endpoints=[\"tcp/127.0.0.1:$FAKE_LAB_ZENOH_PORT\"];scouting/multicast/enabled=false"
 
-# * The workspace: its venv, ROS, then its install (crl-husky's simulators, this package).
-source "$FAKE_LAB_WS/venv/bin/activate"
-source /opt/ros/humble/setup.bash
+# * The workspace: its venv, ROS, then its install (crl-husky's simulators, this package). Their scripts read unset
+#   variables: they are sourced with set -u off, and it is back on after if it was on.
+fake_lab_nounset=${-//[^u]/}
+set +u
+fake_lab_loaded=yes
+source "$FAKE_LAB_WS/venv/bin/activate" || fake_lab_loaded=""
+source /opt/ros/humble/setup.bash || fake_lab_loaded=""
 # ? Only to run without the apt install below: a folder holding the unpacked ros-humble-ur-robot-driver packages.
-if [ -n "$FAKE_LAB_UR_PREFIX" ]; then
-    export AMENT_PREFIX_PATH="$FAKE_LAB_UR_PREFIX:$AMENT_PREFIX_PATH"
-    export CMAKE_PREFIX_PATH="$FAKE_LAB_UR_PREFIX:$CMAKE_PREFIX_PATH"
-    export LD_LIBRARY_PATH="$FAKE_LAB_UR_PREFIX/lib:$LD_LIBRARY_PATH" PATH="$FAKE_LAB_UR_PREFIX/bin:$PATH"
-    export PYTHONPATH="$FAKE_LAB_UR_PREFIX/local/lib/python3.10/dist-packages:$PYTHONPATH"
+if [ -n "${FAKE_LAB_UR_PREFIX:-}" ]; then
+    export AMENT_PREFIX_PATH="$FAKE_LAB_UR_PREFIX:${AMENT_PREFIX_PATH:-}"
+    export CMAKE_PREFIX_PATH="$FAKE_LAB_UR_PREFIX:${CMAKE_PREFIX_PATH:-}"
+    export LD_LIBRARY_PATH="$FAKE_LAB_UR_PREFIX/lib:${LD_LIBRARY_PATH:-}" PATH="$FAKE_LAB_UR_PREFIX/bin:$PATH"
+    export PYTHONPATH="$FAKE_LAB_UR_PREFIX/local/lib/python3.10/dist-packages:${PYTHONPATH:-}"
 fi
-source "$FAKE_LAB_WS/install/setup.bash"
+source "$FAKE_LAB_WS/install/setup.bash" || fake_lab_loaded=""
 # ? Only for a checkout the workspace does not install (e.g. a worktree): an install of this package alone, built from
 #   it with --symlink-install, over the workspace's.
-if [ -n "$FAKE_LAB_OVERLAY" ]; then
-    source "$FAKE_LAB_OVERLAY/local_setup.bash"
+if [ -n "${FAKE_LAB_OVERLAY:-}" ]; then
+    source "$FAKE_LAB_OVERLAY/local_setup.bash" || fake_lab_loaded=""
+fi
+[ -z "$fake_lab_nounset" ] || set -u
+if [ -z "$fake_lab_loaded" ]; then
+    echo "fake lab: could not load the workspace $FAKE_LAB_WS (above)" >&2
+    return 1
 fi
 # * The core and tamp of this checkout's pins, ahead of the venv's (those of the workspace's checkout).
 for package in scaffolding_assembly_core husky_assembly_tamp; do
     if [ -d "$FAKE_LAB_REPO/external/$package/$package" ]; then
-        export PYTHONPATH="$FAKE_LAB_REPO/external/$package:$PYTHONPATH"
+        export PYTHONPATH="$FAKE_LAB_REPO/external/$package:${PYTHONPATH:-}"
     fi
 done
 export HUSKY_DRIVE_ROOT="$FAKE_LAB_HOME/drive"

@@ -10,16 +10,18 @@
 #   Local mode comes up without its controllers.
 # ! Ctrl-C here stops the robot's arm drivers, its tools and its follower: never while it holds a bar.
 
-set -e
+set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$here/env.sh"
-name="${1,,}"  # any capitalization: cindy, Cindy
+source "$here/env.sh" || exit 1
+name="${1:-}"
+name="${name,,}"  # any capitalization: cindy, Cindy
 if ! real_lab_robot "$name"; then
     echo "usage: $0 alice|belle|cindy [<argument>:=<value> ...]" >&2
     exit 2
 fi
 shift
-launch="ros2 launch crl_husky crl_arms_and_base.launch.py gripper:=$ROBOT_GRIPPER${*:+ $*}"
+# * The launch line, each word quoted for the robot's shell (printf %q): an argument may hold spaces or quotes.
+launch=$(printf '%q ' ros2 launch crl_husky crl_arms_and_base.launch.py "gripper:=$ROBOT_GRIPPER" "$@")
 
 # * Run on the robot, in an interactive shell: its ~/.bashrc sets the robot's middleware, domain, identity and
 #   workspace (Clearpath's setup and crl-husky's install_robot_config.sh).
@@ -47,8 +49,9 @@ if [ -n "\$running" ]; then
     echo "  then exit and start robot.sh $name again (Up, Enter)."
     exec bash -i
 fi
-echo "real lab: $launch"
-exec $launch
+launch=(${launch% })
+echo "real lab: \${launch[*]}"
+exec "\${launch[@]}"
 EOF
 )
 echo "real lab: $name, administrator@$ROBOT_IP (asks for her password unless this laptop's key is on her, manual 1.e)"

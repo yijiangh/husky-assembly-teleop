@@ -64,10 +64,11 @@ if TYPE_CHECKING:
     from ...shared.motion_planner_contract import MotionPlannerContract
     from ...shared.movement_exec_contract import Carried, ExecRequest, PartPlan
     from ...world.freeze import Basis, Freeze
+    from ...world.measured import WorldState
 
-#: Seconds the arms stand still after the travel to load before the force sensors are zeroed (old W:5781).
+#: Seconds the arms stand still after the travel to load before the force sensors are zeroed.
 FT_ZERO_SETTLE = 2.0
-#: Seconds the retreat's tail may take to plan; without a plan by then the retreat fails (A4).
+#: Seconds the retreat's tail may take to plan; without a plan by then the retreat fails.
 REPLAN_TIMEOUT = 60.0
 
 
@@ -237,19 +238,28 @@ def others_moving(job: Job) -> str:
       the robot) can show up here.
     """
     serial, now = job.request.serial, job.ctx.now()
-    return moving_reason(job.ctx.world, now, besides=serial) or base_moving(job.robot.base.state, f"{serial} base", now)
+    return (moving_reason(job.ctx.world, now, besides=serial, unknown=unknown_serials(job.ctx.world, job.request))
+            or base_moving(job.robot.base.state, f"{serial} base", now))
+
+
+def unknown_serials(world: WorldState, request: ExecRequest) -> set[str]:
+    """Serials of the robots the request lets be unknown (`ExecRequest.unknown_robots`)."""
+    return {serial for serial in world.robots if robot_id(serial) in request.unknown_robots}
 
 
 def others_basis(job: Job) -> Basis:
     """What a motion relies on standing still: the other robots' arms and bases, measured now, for `ctx.freeze`.
 
     Arms that never sent joint states and bases never fixed by mocap this session are left out, as `moving_reason`
-    leaves them out (that robot is not running, or not tracked: the plan did not check against it).
+    leaves them out (that robot is not running, or not tracked: the plan did not check against it), and so are the
+    robots the operator let be unknown.
 
     Raises:
         WorldMoved: If one of them can no longer be measured (stale joints, mocap lost).
     """
-    others = [(serial, robot) for serial, robot in job.ctx.world.robots.items() if serial != job.request.serial]
+    unknown = unknown_serials(job.ctx.world, job.request)
+    others = [(serial, robot) for serial, robot in job.ctx.world.robots.items()
+              if serial != job.request.serial and serial not in unknown]
     return take_basis(job.ctx.world, job.ctx.now(),
                       arms=[(serial, name) for serial, robot in others for name, arm in robot.arms.items()
                             if arm.state.last_update_time is not None],
@@ -444,7 +454,7 @@ async def _motion(job: Job, run: PartRun) -> None:
     if part.routine is Routine.SUPPORT_LEAVE:
         ctx.log_info(f"{job.who}: {part.movement}: done; drive the base away by hand")
     elif part.routine is Routine.FREE_TO_LOAD:
-        # * Tare the force sensors standing still, on the empty tools (old W:5807-5849).
+        # * Tare the force sensors standing still, on the empty tools.
         await ctx.sleep(FT_ZERO_SETTLE)
         zeroed = [arm.zero_ft_sensor() for arm in job.robot.arms.values()]
         (ctx.log_info if all(zeroed) else ctx.log_warn)(

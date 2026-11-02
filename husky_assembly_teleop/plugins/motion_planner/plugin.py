@@ -37,10 +37,10 @@ from ...shared.assembly_planning.search_tree import SearchTree, TreeView
 from ...shared.assembly_planning.servo_route import ServoStep
 from ...shared.assembly_planning.stdout_lines import captured_lines
 from ...shared.motion_planner_contract import CollisionReport, MotionPlanRequest
+from ...shared.planner.planner_panel import PLAN_TAB
 from ...shared.planner.planner_search import with_guesses
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, chip_line, values
-from ...ui.visualization import PLAN_TAB
 from .work import run_collisions, run_ik, run_plan, run_servo_step
 
 if TYPE_CHECKING:

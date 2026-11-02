@@ -1,7 +1,7 @@
 # Simulation
 
 Simulated robots run on a PC beside the real system's own relay and monitor, unchanged: the monitor drives a simulated
-robot as it drives a real one, and health shows a `SIM` chip for a simulated base, each simulated arm and each
+robot as it drives a real one, and health shows a blue `sim` chip for a simulated base, each simulated arm and each
 simulated tool. A simulation runs in a ROS domain of its own and refuses the robots' domain 80.
 
 - **The robot** (crl-husky): its base is `husky_sim`, a kinematic model of the skid-steer base driven by the real pure

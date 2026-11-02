@@ -19,9 +19,9 @@ import asyncio
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable, Mapping, Protocol
 
-from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 
 from ..config import find_robot_serial
+from .assembly_planning.joints import arm_of_flange
 from .assembly_planning.movement import Routine, UnknownMovement, classify
 from .assembly_planning.steps import OperatorStep, operator_steps, step_index_of
 from .execution.servo import AFTER_INSERT, APPROACH, TRANSFER, servo_kind
@@ -115,6 +115,8 @@ class ExecRequest:
             by default not ticked.
         obstacles_collide: Reads the process plugin's "Rhino obstacles collide" now, likewise; by default ticked.
         transfer_as_free: Reads the process plugin's "Transfer workaround" now, likewise; by default ticked.
+        unknown_robots: Ids of the other robots the operator let be unknown (Exec's second press, `CommitConfirm`):
+            left out of the freeze and of the check that nothing else moves.
     """
 
     loaded: LoadedProcess
@@ -131,6 +133,7 @@ class ExecRequest:
     ignore_built: Callable[[], bool] = lambda: False
     obstacles_collide: Callable[[], bool] = lambda: True
     transfer_as_free: Callable[[], bool] = lambda: True
+    unknown_robots: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -161,7 +164,7 @@ class ExecResult:
 
 @dataclass(frozen=True)
 class Carried:
-    """The MoCap-bar correction a transfer's servo leaves for its insert's plan (`servo.carried_insert_goals`).
+    """The mocap bar correction a transfer's servo leaves for its insert's plan (`servo.carried_insert_goals`).
 
     Attributes:
         loaded: The loaded process it was measured on, compared by identity.
@@ -222,14 +225,14 @@ def step_running(robots: Mapping[str, HuskyRobotInterface]) -> str:
     ! Main thread only, where leases change.
 
     Args:
-        robots: The robots by serial (`ctx.world.robots`); a lease's holder reads "<plugin>: <label>".
+        robots: The robots by serial (`ctx.world.robots`).
 
     Returns:
         str: E.g. "a200-0806 is leased by movement_exec: exec B20_J_transfer: wait until it is done, or Cancel it".
     """
     for serial, robot in robots.items():
         lease = robot.lease_slot.lease
-        if lease is not None and lease.holder.startswith(f"{STEP_RUNNER}: "):
+        if lease is not None and lease.owner == STEP_RUNNER:
             return f"{serial} is leased by {lease.holder}: wait until it is done, or Cancel it"
     return ""
 
@@ -247,7 +250,7 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
     - A tool must sit on a flange of the acting robot whose configured end effector is the process tool's kind; an
       insert's tightening tools must be scaffolding tools. A v1 tool, and a drive outside an insert, are refused.
     - An insert of a ground bar runs rigid, no tool driven; one with neither a ground bar nor a tighten kept is
-      refused (W:5333-5338).
+      refused.
     - A scaffolding open runs only with the retreat it goes with (`during`), on the same arms.
 
     Args:
@@ -288,7 +291,7 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
         return part(routine, INSERT_PART, "rigid, ground bar, no tighten")
     tightened = [tool for tool, drive in spec.drives.kept.items() if drive == "tighten"]
     if routine is Routine.INSERT and not tightened:
-        return part(routine, REFUSED_PART, "no mating arm: no joint screw tightens and the bar is not grounded "
+        return part(routine, REFUSED_PART, "no mating arm: no joint screw tightens and it is no ground bar "
                                            "(an export error)")
     if routine is not Routine.INSERT and (spec.drives.kept or not spec.grips):
         return part(routine, REFUSED_PART, "a tool movement with a drive, or without a grip, is not supported yet")
@@ -300,7 +303,7 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
 
     def arm_of(tool: str, kind: str) -> tuple[str, str]:
         """The arm whose flange carries `tool`, and why not if the robot has no `kind` configured there ("" if so)."""
-        arm = flanges.get(tool, "")[:-len(FLANGE_SUFFIX)]
+        arm = arm_of_flange(flanges.get(tool, ""))
         fitted = next((each.end_effector for each in config.arms if each.name == arm), None)
         return arm, "" if fitted == kind else (f"{tool} is a {kind} on {arm or 'no flange'}, but {serial} has "
                                                f"{fitted or 'nothing'} there")

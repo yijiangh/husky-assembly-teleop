@@ -21,8 +21,5 @@ What is in the world, and where.
   floor_calibration.py  the probe's floor calibration: plane fit to probed points, lab frame placed on it, its file
   camera_coverage.py       where Motive's cameras see a plane: each view cut with it, and the plane by how many see it
   coverage_map.py  the probe's coverage map: its samples, smoothed and coloured by marker error
-  marker_fit.py   each bar's designed marker layout from the process, and a bar's deviation from its design
-  bar_fit.py      which sensed marker is which designed marker of a bar, and the bar pose that fits them
-  bar_pose.py     a bar's pose as a matrix: deviation from its design, the servo's correction, start and ends
-  marker_layouts.py  each bar's marker layout from the process, its sensed markers from the relay, and their fit
+  marker_match.py  a Motive asset's trusted markers, which is which designed marker, and the pose that fits them
 """

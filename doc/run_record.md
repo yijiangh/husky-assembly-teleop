@@ -42,7 +42,7 @@ Written once at the start (`save_info`), schema `husky_run/1`:
 | `process`, `process_hash`, `action_hashes` | the process folder and the SHA-256 of `process.json` and of each action file: a run belongs to exactly these files |
 | `robots` | per robot `{serial, urdf_sha256, relay_calibration}`: which URDF and which base calibration were in use |
 | `commits` | the monitor's, the core's and tamp's git commits |
-| `settings` | the run's settings as they were at the start (`RunSettings`: insert split, spiral, rigid insert, the spiral's seconds and turns, servo by bar) |
+| `settings` | the run's settings as they were at the start (`RunSettings`: insert split, spiral, servo by bar, the spiral's seconds and turns, and the free searches' max time, max iterations, joint resolution, tries and swept check) |
 | `continued_from`, `changed_since` | when the run continues an older one: which, and what changed in the files since |
 
 The hashes are what make "Continue" safe: a run made on other files is never written on, it is continued in a new run
@@ -82,7 +82,7 @@ One JSON object per line, appended and flushed at once (a line cut by a crash is
 ```
 
 The events: `session` (a monitor opened the run, new or continued), `settings` (a run setting changed, with the
-changes), `mark_done` / `reopen`, `mocap_offset` (a base's mocap offset applied or reset, with its xyz), and per part
+changes), `mark_done` / `reopen`, and per part
 `prompt`, `confirm`, `cancel`, `soft_stop`, `error`, `exec` (with the record file it wrote), `servo`, and the planning
 events `plan`, `check_goal` and `check_tool0` with their numbers. Reading the lines in order replays the lab session.
 
@@ -102,7 +102,10 @@ One file per part the executor ran (`n` counts the tries). A motion's record has
 A compliant part (insert, retreat, handoff) has the same frame with `command = {settings, plan}` and an `outcome`
 that keeps its phases with their times, the controller switches, the stall times, the peak force per arm, the base's
 largest drift, the end errors, the retreat's checks and replanned tail, and one sample per tick of every arm's
-target, TCP and wrench (`stream`, at most 1300 samples). A servo part names its `servo_file`.
+target, TCP and wrench (`stream`, at most 1300 samples). A servo part names its `servo_file`. The F/T zeroing is
+`ft_zero`, per arm `{sent, force_before_N, force_after_N}`; `switch` (the way into and out of compliance, `back_s`,
+`back_ok`) is there only for a part that switched controllers, so a ground bar's rigid insert has none. A cancelled
+part sends no switch back: its arms stay compliant.
 
 So a run keeps every plan that was executed, where the robot stood when it was planned and when it ran, and what
 was sent. What it does not keep: plans that were made and then cleared or replaced without an Exec (their `plan`
@@ -110,8 +113,8 @@ event in `events.jsonl` has the numbers, not the rows).
 
 ### servo/<action>/<movement>.<n>.json and .png
 
-A servo's record (`servo_payload`): the mode (tool0 or the MoCap bar), the bar, every pass's reading (tool0 errors
-per side, the base's drift, the wrenches, the bar's deviation from its design pose by MoCap and by FK), the moves
+A servo's record (`servo_payload`): the mode (tool0 or the mocap bar), the bar, every pass's reading (tool0 errors
+per side, the base's drift, the wrenches, the bar's deviation from its design pose by mocap and by FK), the moves
 made, the settings and the outcome; the picture plots the readings pass by pass, as the Exec plots window shows them live.
 
 ## 3. Who writes, and when
@@ -151,7 +154,7 @@ else parked.
    (`MotionPlanRequest(snapshot=...)`). A plan goes stale when the robot moves (2° on an arm, 2 mm / 0.5° on the
    base) or another robot moves (1 cm / 1°), and is used by one Exec only (`shared/execution/basis.py`).
 2. **The goal of a transfer or an approach** is solved by IK at the live base (**Live IK**), and that goal is reused
-   by the plan while the base stays within 2 mm / 0.5° of where it was solved. After a transfer's MoCap-bar servo,
+   by the plan while the base stays within 2 mm / 0.5° of where it was solved. After a transfer's mocap-bar servo,
    the insert's goal is the authored move applied from where the servo left the flanges (`carried_insert_goals`).
 3. **The other robots** come from the snapshot when they are measured; a robot that is not measured stands where
    the export has it at that step, else as the runtime's stand-in: where it was last seen, else its default pose with
@@ -172,5 +175,6 @@ stand-ins for the others, and a drawing aid. Nothing is written back into the pr
 - A movement record's `plan.rows` with `basis.base` (the base when planned) reconstructs the planned motion;
   `exec.base_at_start` / `base_at_end` say where the base really was when it ran (they differ from `basis.base` by at
   most the staleness limits above, or the plan would have been refused).
-- `progress.json`'s `robots` is where the monitor will place a robot that is not live at the next start.
+- `progress.json`'s `robots` is where the run last recorded each robot, for the report only: nothing places or plans
+  a robot from it.
 - Every record is plain JSON; `shared/runs/runs.py` reads them back (`find_runs`, `read_run`).

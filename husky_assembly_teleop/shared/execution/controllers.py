@@ -1,10 +1,11 @@
 """
 Switch a robot's arms between the joint trajectory controller and the Cartesian compliance controller, and back.
 
-- `switch_arms` asks once and waits for every arm; it reports a failure and never falls back (W:4037-4114).
-- `leave_compliance` is the way out of every compliant part: hold, ask for joint control at once, then wait for it in a
-  task that neither a second cancel nor Stop all ends. A switch to compliance answered late is switched back
-  (W:6841-6858).
+- `switch_arms` asks once and waits for every arm; it reports a failure and never falls back.
+- `leave_compliance` is the way out of a compliant part that ends by itself: hold, ask for joint control, wait for it.
+  A switch to compliance answered late is switched back. A cancelled part only holds (`hold_compliant`).
+- ! Every switch needs the robot's lease: once the caller gives it back, the wait stops asking and says loudly which
+  arms may still be compliant, so it never switches an arm another plugin now has.
 - ! Main thread, from a plugin task.
 """
 
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
     from ...robot_interface.arm import ArmInterface
 
-#: Seconds for every arm to answer a switch (W:4031); for the controller manager to say what runs, first (W:4034).
+#: Seconds for every arm to answer a switch; for the controller manager to say what runs, first.
 SWITCH_TIMEOUT = 5.0
 QUERY_TIMEOUT = 2.0
 #: Seconds the way back to joint control is watched before the arms are reported as maybe left compliant.
@@ -114,7 +115,7 @@ def request_joint_control(ctx: PluginContext, arms: Collection[ArmInterface]) ->
     """Hold every arm, then ask each one not under joint control to switch back; sends at once, waits for nothing.
 
     - An arm with a switch in flight is not asked: `restore_joint_control` asks once that switch is answered.
-    - The switch back needs no lease, as a hold: it goes out even after the caller's lease is given back.
+    - The switch back needs the caller's lease, as every switch.
 
     Args:
         ctx: The plugin's context, for its log.
@@ -134,7 +135,7 @@ def request_joint_control(ctx: PluginContext, arms: Collection[ArmInterface]) ->
             in_flight.append(f"{name} (to {pending})")
         elif arm.controllers.is_active(joint):
             continue
-        elif arm.controllers.switch(joint, unguarded=True):
+        elif arm.controllers.switch(joint):
             requested.append(name)
         else:
             not_sent.append(name)
@@ -156,7 +157,8 @@ async def restore_joint_control(ctx: PluginContext, arms: Collection[ArmInterfac
                                 timeout_s: float = RESTORE_TIMEOUT) -> bool:
     """Wait until every arm runs the joint controller, asking again for each arm that doesn't and has no switch pending.
 
-    A switch to compliance answered late lands here and is switched back (W:6841-6858).
+    A switch to compliance answered late lands here and is switched back. It stops asking once the caller's lease is
+    given back, so it never switches an arm another plugin has.
 
     Args:
         ctx: The plugin's context.
@@ -165,7 +167,8 @@ async def restore_joint_control(ctx: PluginContext, arms: Collection[ArmInterfac
         timeout_s: Seconds to wait.
 
     Returns:
-        bool: True once every arm is back; False after `timeout_s`, with a loud error to switch them by hand.
+        bool: True once every arm is back; False after `timeout_s` or once the lease is gone, with a loud error to
+            switch them by hand.
 
     Raises:
         asyncio.CancelledError: When cancelled; the arms not back yet get the same loud error first.
@@ -180,12 +183,16 @@ async def restore_joint_control(ctx: PluginContext, arms: Collection[ArmInterfac
             if now >= deadline:
                 _report_left(ctx, arms, label, f"within {timeout_s:.0f} s")
                 return False
+            if refused := next((problem for arm in arms if not _runs(arm, joint)
+                                and (problem := arm.controllers.refusal(joint))), None):
+                _report_left(ctx, arms, label, f"once the lease was given back ({refused})")
+                return False
             for arm in arms:
                 name, running = arm.config.name, arm.state.controllers.active
                 if not arm.controllers.is_active(joint) and arm.state.controllers.switch_in_flight is None \
                         and now - asked.get(name, -math.inf) >= RETRY_PERIOD:
                     asked[name] = now
-                    sent = arm.controllers.switch(joint, unguarded=True)
+                    sent = arm.controllers.switch(joint)
                     ctx.log_warn(f"{label}: {name} runs {running}; switch back to {joint} "
                                  + ("requested" if sent else "NOT SENT (the log says why)"))
             await ctx.next_tick()
@@ -197,11 +204,10 @@ async def restore_joint_control(ctx: PluginContext, arms: Collection[ArmInterfac
 
 
 async def leave_compliance(ctx: PluginContext, arms: Collection[ArmInterface], *, label: str) -> bool:
-    """End a compliant part: hold and ask for joint control at once, then wait for it in a task of its own.
+    """End a compliant part that ended by itself: hold and ask for joint control at once, then wait for it.
 
-    - ! Call it in the part's `finally`: the request goes out before the first wait, so within the shutdown grace.
-    - The wait is shielded and survives Stop all: a second cancel ends the caller, not the restore. While the plugin
-      is closing no task can start; the request then stays unconfirmed, said loudly.
+    ! Only while the caller still has the lease. A cancel while it waits ends the wait; the caller then only holds
+    (`hold_compliant`).
 
     Args:
         ctx: The plugin's context.
@@ -210,22 +216,25 @@ async def leave_compliance(ctx: PluginContext, arms: Collection[ArmInterface], *
 
     Returns:
         bool: Whether every hold went out and every arm is back under joint control (`restore_joint_control`).
-
-    Raises:
-        asyncio.CancelledError: If the caller is cancelled while it waits; the restore goes on.
     """
-    asked, not_held = request_joint_control(ctx, arms)
+    _asked, not_held = request_joint_control(ctx, arms)
     if all(_runs(arm, SCALED_JOINT_TRAJECTORY_CONTROLLER) for arm in arms):
         return not not_held
-    try:
-        # * Survives Stop all: it only asks for the joint controller, unguarded, which never moves an arm.
-        restore = ctx.spawn(f"restore joint control: {label}", restore_joint_control(ctx, arms, label=label),
-                            survives_soft_stop=True)
-    except RuntimeError:
-        ctx.log_error(f"{label}: back to {SCALED_JOINT_TRAJECTORY_CONTROLLER} not confirmed, the plugin is closing "
-                      f"({asked}); check {_names(arms)} in robot_control before anything else")
-        return False
-    return await ctx.join(restore) and not not_held
+    return await restore_joint_control(ctx, arms, label=label) and not not_held
+
+
+def hold_compliant(ctx: PluginContext, arms: Collection[ArmInterface], *, label: str) -> None:
+    """End a cancelled compliant part (Cancel, Stop all, the plugin closing): hold each arm, sent and forgotten.
+
+    No controller switch and no wait: the arms stay under the compliance controller, said loudly, for the operator to
+    switch back in robot_control.
+    """
+    not_held = [arm.config.name for arm in arms if not arm.hold()]
+    left = [arm.config.name for arm in arms if not _runs(arm, SCALED_JOINT_TRAJECTORY_CONTROLLER)]
+    if left:
+        ctx.log_warn(f"{label}: cancelled; {', '.join(left)} held, still under {CARTESIAN_COMPLIANCE_CONTROLLER} or "
+                     f"switching: switch them back in robot_control"
+                     + (f"; the hold was refused on {', '.join(not_held)}" if not_held else ""))
 
 
 def _runs(arm: ArmInterface, controller: str) -> bool:

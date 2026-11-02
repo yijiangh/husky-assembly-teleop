@@ -1,11 +1,11 @@
 """
-Which sensed MoCap marker is which designed marker of a bar, and the bar pose that fits them.
+Which sensed mocap marker is which designed marker of a rigid body, and the pose that fits them.
 
-Motive's marker ids are not used (they shift). The old monitor's matcher (bar_mocap_fit.py = BMF), ported unchanged;
-numpy only.
+Motive's marker ids are not used (they shift); numpy only.
 
+- `sensed_from_raw(raw, now)`: one Motive asset's markers, the untrusted ones dropped.
 - `match_and_fit(sensed, design)`: the full search, every design triangle against every sensed triple.
-- `fit_near_hint(sensed, design, T_hint)`: the quick match around the last pose while following a bar live.
+- `fit_near_hint(sensed, design, T_hint)`: the quick match around the last pose while following a body live.
 - `BarFit`: what either returns; `ok` False carries a plain-language `reason`.
 """
 
@@ -17,24 +17,49 @@ from math import ceil
 
 import numpy as np
 
-from .bar_pose import kabsch, transform_points
+from ..robot_interface.mocap_state import RawMarkers
 
 # * A design triangle used to start a match must be at least this high (its smallest altitude). Balls with the
 #   same label on joints with the same roll lie on one line along the bar, and three points on a line leave the
-#   turn about that line open. A pair plus any far ball is at least 25 mm high. (BMF:62)
+#   turn about that line open. A pair plus any far ball is at least 25 mm high.
 MIN_TRIANGLE_HEIGHT_M = 0.015
 
 # * A sensed and a placed design marker closer than this match (4 mm: ten times below the 48 mm pair spacing, above
-#   Motive's ~0.8 mm noise). (BMF:66)
+#   Motive's ~0.8 mm noise).
 MATCH_TOL_M = 0.004
 # * Following live: a sensed marker this close to a design marker placed at the last pose is taken as that marker.
-#   20 mm is well under half the 48 mm pair spacing, so a ball can never be taken for its neighbour. (BMF:70)
+#   20 mm is well under half the 48 mm pair spacing, so a ball can never be taken for its neighbour.
 TRACK_GATE_M = 0.02
 
 # * Motive markers we do not trust: a fit residual above 3 mm, or a ball size far from the 19 mm balls on the plates
-#   (a reflection, a merged blob). (BMF:74-78)
+#   (a reflection, a merged blob).
 MAX_MARKER_ERROR_M = 0.003
 MARKER_SIZE_RANGE_M = (0.012, 0.026)
+
+
+@dataclass(frozen=True)
+class Sensed:
+    """The markers of one sample that may be fitted, after the untrusted ones were dropped.
+
+    Attributes:
+        points: (N, 3) marker centres in world, metres.
+        ids: The marker id of each row (Motive's member number; 1.. for a fake).
+        residuals: (N,) Motive's fit residual of each row, metres; None when the relay did not send them.
+        age: How old the sample is, seconds (0.0 when the relay sent no capture time).
+        source: Where the markers came from: "asset" (a Motive asset) or "fake".
+        dropped: Markers dropped for their residual or size.
+        occluded: Markers Motive did not see (filled in from its own pose), dropped.
+        notes: Checks that could not run, said once in a failed fit's reason.
+    """
+
+    points: np.ndarray
+    ids: tuple[int, ...]
+    residuals: np.ndarray | None
+    age: float
+    source: str
+    dropped: int = 0
+    occluded: int = 0
+    notes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -108,18 +133,101 @@ class BarFit:
         }
 
 
-# * ================================================================ matcher (BMF:516-833)
+# * ================================================================ rigid transforms, and the sensed markers
+
+def kabsch(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    """The rigid transform that best moves ``src`` points onto ``dst`` points (least squares), never a mirror.
+
+    * Numpy, not scipy's `Rotation.align_vectors` (the same result): the full search calls it ~300 times, and scipy
+      takes twice as long.
+
+    Args:
+        src: (K, 3) points, K >= 3.
+        dst: (K, 3) points, row k pairs with ``src[k]``.
+
+    Returns:
+        np.ndarray: 4x4 ``T`` with ``dst ~= T @ src`` and ``det(T[:3, :3]) = +1``.
+    """
+    src = np.asarray(src, dtype=float)
+    dst = np.asarray(dst, dtype=float)
+    src_mean, dst_mean = src.mean(axis=0), dst.mean(axis=0)
+    u, _s, vh = np.linalg.svd((dst - dst_mean).T @ (src - src_mean))
+    R = u @ vh
+    if np.linalg.det(R) < 0.0:
+        # ! A mirror is not a rigid motion: flip the weakest direction instead.
+        R -= np.outer(u[:, 2], vh[2, :] * 2.0)
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = dst_mean - R @ src_mean
+    return T
+
+
+def transform_points(T: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Apply a 4x4 transform to points.
+
+    Args:
+        T: 4x4 transform.
+        pts: (K, 3) points or a single (3,) point.
+
+    Returns:
+        np.ndarray: The moved points, same shape as ``pts``.
+    """
+    T = np.asarray(T, dtype=float)
+    return np.asarray(pts, dtype=float) @ T[:3, :3].T + T[:3, 3]
+
+
+def sensed_from_raw(raw: RawMarkers, now: float) -> Sensed:
+    """The relay's markers of one Motive asset, ready to fit: measured ones only, residual <= 3 mm, size 12-26 mm.
+
+    ! A hidden marker of an asset still streams, at Motive's guess: it is never fitted. Residuals, sizes or a capture
+      time the relay did not send leave that check out, which a failed fit's reason then says.
+
+    Args:
+        raw: The markers Motive labeled to the asset in one sample.
+        now: The current ROS time, seconds, for the sample's age.
+
+    Returns:
+        Sensed: The markers kept, their ids and residuals, the counts dropped, and the sample's age.
+    """
+    measured = np.asarray(raw.measured, dtype=bool)
+    residuals = getattr(raw, "residuals", None)
+    sizes = getattr(raw, "sizes", None)
+    capture_time = getattr(raw, "capture_time", None)
+    keep = measured.copy()
+    notes = []
+    if residuals is None:
+        notes.append("marker residuals not relayed: residual check skipped")
+    else:
+        residuals = np.asarray(residuals, dtype=float)
+        keep &= residuals <= MAX_MARKER_ERROR_M
+    if sizes is None:
+        notes.append("marker sizes not relayed: size check skipped")
+    else:
+        sizes = np.asarray(sizes, dtype=float)
+        keep &= (MARKER_SIZE_RANGE_M[0] <= sizes) & (sizes <= MARKER_SIZE_RANGE_M[1])
+    if capture_time is None:
+        notes.append("no capture time relayed: age check skipped")
+    occluded = int(np.count_nonzero(~measured))
+    return Sensed(points=np.asarray(raw.positions, dtype=float).reshape(-1, 3)[keep],
+                  ids=tuple(int(marker_id) for marker_id in np.asarray(raw.ids)[keep]),
+                  residuals=None if residuals is None else residuals[keep],
+                  age=0.0 if capture_time is None else now - capture_time, source="asset",
+                  dropped=int(len(keep) - np.count_nonzero(keep) - occluded), occluded=occluded,
+                  notes=tuple(notes))
+
+
+# * ================================================================ matcher
 #
 # * Why the matcher works the way it does (B20 / B21 of 261016_2ModulesDemo_YH):
-#   - M1 and M2 of one plate cannot be told apart by distances to the other balls (all ~1 m away, the lists differ
-#     by ~0.35 mm). So every guess is judged on ALL markers after the fit: the wrong M1/M2 guess leaves ~48 mm
-#     errors elsewhere.
+#   - The two balls of one plate cannot be told apart by distances to the other balls (all ~1 m away, the lists
+#     differ by ~0.35 mm). So every guess is judged on ALL markers after the fit: the wrong guess of the two leaves
+#     ~48 mm errors elsewhere.
 #   - A three-ball triangle cannot reject a mirror (a flipped triangle is a rotated one). Mirrors are rejected by
 #     `kabsch` never mirroring plus a minimum of 4 matched balls.
 #   - Balls on a line (same label, same roll) are skipped as start triangles.
 
 def _pairwise_distances(pts: np.ndarray) -> np.ndarray:
-    """Distance between every two points (BMF:528).
+    """Distance between every two points.
 
     Args:
         pts: (K, 3) points.
@@ -130,8 +238,8 @@ def _pairwise_distances(pts: np.ndarray) -> np.ndarray:
     return np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=2)
 
 
-def _design_triangles(design: np.ndarray, min_height_m: float) -> list:
-    """Every three design markers whose triangle is high enough to fix a pose (BMF:540).
+def design_triangles(design: np.ndarray, min_height_m: float) -> list:
+    """Every three design markers whose triangle is high enough to fix a pose.
 
     Args:
         design: (M, 3) design points.
@@ -152,7 +260,7 @@ def _design_triangles(design: np.ndarray, min_height_m: float) -> list:
 
 
 def _assign(sensed: np.ndarray, design_world: np.ndarray, tol_m: float) -> dict:
-    """Pair sensed and design markers one-to-one, closest pairs first (BMF:561).
+    """Pair sensed and design markers one-to-one, closest pairs first.
 
     Args:
         sensed: (N, 3) sensed points.
@@ -174,7 +282,7 @@ def _assign(sensed: np.ndarray, design_world: np.ndarray, tol_m: float) -> dict:
 
 
 def _fit_pairs(sensed: np.ndarray, design: np.ndarray, pairs: dict) -> np.ndarray:
-    """Kabsch on matched pairs (BMF:583).
+    """Kabsch on matched pairs.
 
     Args:
         sensed: (N, 3) sensed points.
@@ -188,7 +296,7 @@ def _fit_pairs(sensed: np.ndarray, design: np.ndarray, pairs: dict) -> np.ndarra
 
 
 def _refine(sensed: np.ndarray, design: np.ndarray, pairs: dict, tol_m: float) -> tuple:
-    """Refit on all matched pairs, re-pair once, refit again (BMF:597).
+    """Refit on all matched pairs, re-pair once, refit again.
 
     Args:
         sensed: (N, 3) sensed points.
@@ -212,7 +320,7 @@ def _refine(sensed: np.ndarray, design: np.ndarray, pairs: dict, tol_m: float) -
 
 
 def _rms(residuals: dict) -> float:
-    """Root mean square of residuals (BMF:621).
+    """Root mean square of residuals.
 
     Args:
         residuals: ``{index: metres}``, not empty.
@@ -224,7 +332,7 @@ def _rms(residuals: dict) -> float:
 
 
 def _conflicts(a: dict, b: dict) -> bool:
-    """Whether two marker assignments disagree about some marker (BMF:633).
+    """Whether two marker assignments disagree about some marker.
 
     One being a part of the other (a marker more or less) is NOT a disagreement.
 
@@ -241,7 +349,7 @@ def _conflicts(a: dict, b: dict) -> bool:
 
 
 def _default_min_inliers(n_design: int) -> int:
-    """How many markers must match for a fit to count, when the caller does not say (BMF:650).
+    """How many markers must match for a fit to count, when the caller does not say.
 
     Args:
         n_design: How many design markers the bar has.
@@ -252,8 +360,8 @@ def _default_min_inliers(n_design: int) -> int:
     return max(4, ceil(0.75 * n_design))
 
 
-def _failed_fit(reason: str, n_sensed: int, n_design: int, n_hypotheses: int = 0) -> BarFit:
-    """A fit that found no pose at all (BMF:662).
+def failed_fit(reason: str, n_sensed: int, n_design: int, n_hypotheses: int = 0) -> BarFit:
+    """A fit that found no pose at all.
 
     Args:
         reason: Why, in plain language.
@@ -272,7 +380,7 @@ def _failed_fit(reason: str, n_sensed: int, n_design: int, n_hypotheses: int = 0
 def match_and_fit(sensed_points_m: np.ndarray, design_points_bar_m: np.ndarray, *, tol_m: float = MATCH_TOL_M,
                   side_tol_m: float = 0.002, min_inliers: int | None = None,
                   min_triangle_height_m: float = MIN_TRIANGLE_HEIGHT_M, max_sensed: int = 24) -> BarFit:
-    """Find which sensed marker is which design marker and the bar pose that fits them (BMF:679-781).
+    """Find which sensed marker is which design marker and the bar pose that fits them.
 
     Motive's marker ids are not used. Every high-enough design triangle is matched against every sensed triple with
     the same side lengths; each such guess is fitted and judged on ALL markers (most matched, then smallest rms).
@@ -300,24 +408,24 @@ def match_and_fit(sensed_points_m: np.ndarray, design_points_bar_m: np.ndarray, 
 
     # * 1. Enough markers on both sides, not too many in view.
     if n_design < 3:
-        return _failed_fit(f"the design has only {n_design} markers (need at least 3)", n_sensed, n_design)
+        return failed_fit(f"the design has only {n_design} markers (need at least 3)", n_sensed, n_design)
     if n_sensed < 3:
-        return _failed_fit(f"only {n_sensed} markers in view (need at least 3)", n_sensed, n_design)
+        return failed_fit(f"only {n_sensed} markers in view (need at least 3)", n_sensed, n_design)
     if n_sensed > max_sensed:
-        return _failed_fit(f"too many markers in view ({n_sensed}, at most {max_sensed}); "
-                           f"disable other assets or use the per-bar asset", n_sensed, n_design)
+        return failed_fit(f"too many markers in view ({n_sensed}, at most {max_sensed}); "
+                          f"disable other assets or use the per-bar asset", n_sensed, n_design)
 
     # * 2-3. Distance tables and the start triangles of the design.
     sensed_dist = _pairwise_distances(sensed)
     design_dist = _pairwise_distances(design)
-    triangles = _design_triangles(design, min_triangle_height_m)
+    triangles = design_triangles(design, min_triangle_height_m)
     if not triangles:
-        return _failed_fit(f"the design markers are collinear (no three of them form a triangle "
-                           f"{min_triangle_height_m * 1000:.0f} mm high), so the bar's roll cannot be measured",
-                           n_sensed, n_design)
+        return failed_fit(f"the design markers are collinear (no three of them form a triangle "
+                          f"{min_triangle_height_m * 1000:.0f} mm high), so the bar's roll cannot be measured",
+                          n_sensed, n_design)
 
     # * 4-5. Every sensed triple shaped like a design triangle is one guess. Ordered triples on purpose:
-    #   M1/M2-swapped and mirrored guesses are tried too, and lose on the full-set score.
+    #   guesses with a plate's two balls swapped, and mirrored ones, are tried too, and lose on the full-set score.
     guesses = {}
     n_hypotheses = 0
     for a, b, c in triangles:
@@ -333,8 +441,8 @@ def match_and_fit(sensed_points_m: np.ndarray, design_points_bar_m: np.ndarray, 
             if len(pairs) >= 3:
                 guesses.setdefault(tuple(sorted(pairs.items())), pairs)
     if not guesses:
-        return _failed_fit("no three sensed markers match any design triangle "
-                           "(wrong bar, or wrong unit / axis convention?)", n_sensed, n_design, n_hypotheses)
+        return failed_fit("no three sensed markers match any design triangle "
+                          "(wrong bar, or wrong unit / axis convention?)", n_sensed, n_design, n_hypotheses)
 
     # * 6. Refine every distinct guess, so equal assignments end up equal; best first.
     fits = {}
@@ -371,7 +479,7 @@ def match_and_fit(sensed_points_m: np.ndarray, design_points_bar_m: np.ndarray, 
 
 def fit_near_hint(sensed: np.ndarray, design: np.ndarray, T_hint: np.ndarray, *, gate_m: float,
                   tol_m: float, min_inliers: int | None) -> BarFit | None:
-    """The quick fit while following a bar live: match around its last pose, no full search (BMF:784-833).
+    """The quick fit while following a bar live: match around its last pose, no full search.
 
     The design markers are placed at ``T_hint``; each sensed marker within ``gate_m`` of one is taken as that marker
     (closest pairs first, one to one), then the pose is refitted and the markers re-paired within ``tol_m``, until

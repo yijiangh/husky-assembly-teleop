@@ -7,23 +7,20 @@
 #
 # Usage: relay.sh [<argument>:=<value> ...]    more arguments for mocap.launch.py
 
-set -e
+set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# The real-lab settings that are set (REAL_LAB_*), for the clean environment.
-settings=(); for name in ${!REAL_LAB_*}; do settings+=("$name=${!name}"); done
+source "$here/../lab_common.sh"
 
-# ! A clean environment: your shell's ROS settings (another domain, Cyclone, the fake lab) never leak in.
-exec env -i HOME="$HOME" USER="$USER" PATH=/usr/local/bin:/usr/bin:/bin TERM="${TERM:-xterm}" \
-    LANG="${LANG:-C.UTF-8}" "${settings[@]}" \
-    bash --noprofile --norc -c '
-        source "$0/env.sh" || exit 1
-        if ! real_lab_router_up; then
-            echo "real lab: no Zenoh router on this laptop (127.0.0.1:7447): install it once (manual 1.c)" >&2
-            exit 1
-        fi
-        mkdir -p "$REAL_LAB_HOME" && cd "$REAL_LAB_HOME"  # out of any checkout
-        echo "real lab: mocap relay on ROS domain $ROS_DOMAIN_ID, Motive $REAL_LAB_MOTIVE," \
-            "calibrations from ${HUSKY_DRIVE_ROOT:-crl-husky only (no Drive found)}"
-        exec ros2 launch "$REAL_LAB_REPO/launch/mocap.launch.py" server_ip:="$REAL_LAB_MOTIVE" \
-            drive_root:="$HUSKY_DRIVE_ROOT" "${@:1}"
-    ' "$here" "$@"
+# * In a clean environment (lab_common.sh).
+# shellcheck disable=SC2016  # expanded by the clean shell
+lab_exec_clean REAL_LAB_ "$here" '
+    if ! real_lab_router_up; then
+        echo "real lab: no Zenoh router on this laptop (127.0.0.1:7447): install it once (manual 1.c)" >&2
+        exit 1
+    fi
+    mkdir -p "$REAL_LAB_HOME" && cd "$REAL_LAB_HOME"  # out of any checkout
+    echo "real lab: mocap relay on ROS domain $ROS_DOMAIN_ID, Motive $REAL_LAB_MOTIVE," \
+        "calibrations from ${HUSKY_DRIVE_ROOT:-crl-husky only (no Drive found)}"
+    exec ros2 launch "$REAL_LAB_REPO/launch/mocap.launch.py" server_ip:="$REAL_LAB_MOTIVE" \
+        drive_root:="$HUSKY_DRIVE_ROOT" "$@"
+' "$@"

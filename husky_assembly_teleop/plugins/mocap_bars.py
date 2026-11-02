@@ -1,15 +1,16 @@
 """
 Bar marker fitting: how far a bar the mocap sees is from where the process plans it.
 
-Pick a bar of the loaded process and the Motive rigid body made of its markers, and press Track. The bar's CAD
-markers are fitted to the measured ones without Motive's labels (`world/marker_layouts.fit_bar`, the old monitor's
-matcher) at most ten times a second: matched around the last good fit while it is fresh, else around the planned
-pose, else by a full search. The view shows the real bar (blue, the process bar and its mounted halves, dark blue,
-at the fitted pose) next to the planned one, and with "Show markers" the measured markers (green the trusted ones the
-fit used, amber filled in by Motive), the fitted markers (blue, the axis and a line per residual) and the planned
-markers (grey). The planned bar is the process body in the live scene (`process/bars/<id>`): a built bar at
-its assembly pose, a held one on the real robot's flange. Record writes a take of the fit, its residuals and the
-deviation to the Drive (`data_experiment/mocap_bars/`): a run folder per take with experiment.json and recording.npz
+Pick a bar of the loaded process and the Motive rigid body made of its markers (by default the bar's own asset,
+Bxx -> 10xx), and press Track. The bar's CAD markers are fitted to the measured ones without Motive's labels
+(`shared/bars/layouts.fit_bar`) at most ten times a second: matched around the last good fit while it is fresh, else
+around the planned pose, else by a full search. The view shows the real bar (blue, the process bar and its mounted
+halves, dark blue, at the fitted pose) next to the planned one, and with "Show markers" the measured markers (green
+the trusted ones the fit used, amber filled in by Motive), the fitted markers (blue, the axis and a line per residual)
+and the planned markers (grey). The planned bar is the process body in the live scene (`process/bars/<id>`): a built
+bar at its assembly pose, a held one on the real robot's flange. Record writes a take of the fit, its residuals and
+the deviation to the Drive (`data_experiment/mocap_bars/`): a run folder per take with experiment.json and
+recording.npz
 (`shared/recordings/runs.py`).
 
 - ! Marker layouts come only from the process (`BodySpec.markers` of the halves mounted on a bar); old compas_fab
@@ -43,10 +44,9 @@ from ..shared.recordings.runs import run_folder, save_recording, write_descripti
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.scene_view import add_shape
 from ..ui.style import BUSY, NONE, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, note, section, values
-from ..world.bar_fit import BarFit
-from ..world.bar_pose import bar_ends, transform_points
-from ..world.marker_fit import BarDeviation, bar_deviation
-from ..world.marker_layouts import BarLayout, Sensed, bar_layouts, fit_bar, sensed_from_raw
+from ..shared.bars.layouts import BarLayout, bar_asset_id, bar_layouts, fit_bar
+from ..shared.bars.pose import PoseDeviation, bar_ends, pose_deviation
+from ..world.marker_match import BarFit, Sensed, sensed_from_raw, transform_points
 from ..world.measured import TrackedObject
 from ..world.mocap import mocap_check
 from scaffolding_assembly_core.geometry import Pose, compose, invert
@@ -111,7 +111,7 @@ class MocapBarsPlugin(HuskyPlugin):
         self._last_ok: tuple[float, np.ndarray] | None = None
         #: The planned bar pose this tick, and the fit's deviation from it.
         self._planned: Pose | None = None
-        self._deviation: BarDeviation | None = None
+        self._deviation: PoseDeviation | None = None
         #: What the scene last showed, so marker nodes are only resent when they change.
         self._drawn: tuple | None = None
         #: Nodes of the real bar and its halves, and the bar and process they were built from.
@@ -136,7 +136,8 @@ class MocapBarsPlugin(HuskyPlugin):
             self._bar = gui.add_dropdown("Bar", options=[NO_BAR],
                                          hint="Bars of the loaded process with 3 or more markers on their halves.")
             self._mocap_id = gui.add_number("Mocap ID", initial_value=0, min=0, step=1,
-                                            hint="The Motive rigid body made of this bar's markers.")
+                                            hint="The Motive rigid body made of this bar's markers; picking a bar "
+                                                 "sets its own asset (Bxx -> 10xx).")
             track = gui.add_button("Track")
             self._status: viser.GuiHtmlHandle = gui.add_html("")
             self._show_markers = gui.add_checkbox("Show markers", initial_value=True)
@@ -185,8 +186,11 @@ class MocapBarsPlugin(HuskyPlugin):
     # --- --- --- --- --- ACTIONS (run as intents) --- --- --- --- ---
 
     def _choose(self, bar_id: str) -> None:
-        """Fit this bar from now on."""
+        """Fit this bar from now on, and offer its own Motive asset as the rigid body to track."""
         self._bar_id = bar_id if bar_id in self._layouts else None
+        asset = bar_asset_id(self._bar_id) if self._bar_id else None
+        if asset is not None:
+            self._mocap_id.value = asset
         self._forget_fit()
 
     def _track(self, ctx: PluginContext) -> None:
@@ -254,7 +258,7 @@ class MocapBarsPlugin(HuskyPlugin):
         def planned() -> Pose | None:
             return self._planned
 
-        def deviation() -> BarDeviation | None:
+        def deviation() -> PoseDeviation | None:
             return self._deviation
 
         return [
@@ -266,9 +270,9 @@ class MocapBarsPlugin(HuskyPlugin):
             Signal("planned_position", lambda: planned().position if planned() else None, ("x", "y", "z"), "m"),
             Signal("planned_orientation", lambda: planned().orientation if planned() else None,
                    ("qx", "qy", "qz", "qw")),
-            Signal("deviation", lambda: (deviation().across, deviation().along) if deviation() else None,
-                   ("across", "along"), "m"),
-            Signal("tilt", lambda: deviation().tilt if deviation() else None, (), "rad"),
+            Signal("deviation", lambda: (deviation().across_mm / 1e3, deviation().along_mm / 1e3) if deviation()
+                   else None, ("across", "along"), "m"),
+            Signal("tilt", lambda: np.radians(deviation().tilt_deg) if deviation() else None, (), "rad"),
             Signal("matched_markers", lambda: self._matched(len(model)), tuple(
                 f"{index}.{axis}" for index in range(len(model)) for axis in "xyz"), "m"),
         ]
@@ -298,9 +302,8 @@ class MocapBarsPlugin(HuskyPlugin):
             self._layouts_of = loaded
             self._layouts = bar_layouts(loaded) if loaded is not None else {}
             self._bar.options = list(self._layouts) or [NO_BAR]
-            self._bar_id = next(iter(self._layouts), None)
+            self._choose(next(iter(self._layouts), NO_BAR))
             self._bar.value = self._bar_id or NO_BAR
-            self._forget_fit()
         ids = selection.ids if selection is not None else None
         live_id = ids.get(self._bar_id) if ids is not None and self._bar_id else None
         self._planned = ctx.scene.snapshot.world_poses.get(live_id) if live_id else None
@@ -310,7 +313,7 @@ class MocapBarsPlugin(HuskyPlugin):
         elif obj.last_update_time != self._fitted_update and now >= self._next_fit_at:
             self._fitted_update, self._next_fit_at = obj.last_update_time, now + FIT_PERIOD
             self._refit(obj.markers, self._layouts[self._bar_id], now)
-        self._deviation = (bar_deviation(self._pose, self._planned)
+        self._deviation = (pose_deviation(self._pose.matrix(), self._planned.matrix())
                            if self._pose is not None and self._planned is not None else None)
 
     def _refit(self, markers: RawMarkers, layout: BarLayout, now: float) -> None:
@@ -368,8 +371,8 @@ class MocapBarsPlugin(HuskyPlugin):
                      f"{fit.max_residual_m * 1e3:.2f} mm")
         deviation = self._deviation
         lines.append("no planned pose: is the bar in the selected step?" if deviation is None else
-                     f"across {deviation.across * 1e3:.1f}  along {deviation.along * 1e3:+.1f} mm  "
-                     f"tilt {np.degrees(deviation.tilt):.2f}°")
+                     f"across {deviation.across_mm:.1f}  along {deviation.along_mm:+.1f} mm  "
+                     f"tilt {deviation.tilt_deg:.2f}°")
         return lines
 
     def _draw_bar(self, ctx: PluginContext) -> None:

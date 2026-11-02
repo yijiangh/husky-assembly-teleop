@@ -501,3 +501,19 @@ def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():
     api.plan = Plan(1, plan.request, "sent", PATH, message="sent to alice")
     panel.update(ctx)
     assert panel._message == "sent to alice"
+
+
+def test_a_plan_arriving_counts_as_use_once_a_re_timed_one_does_not():
+    """A ready plan arriving touches the panel's use, so its ghost shows after a long search; re-timed, it does not."""
+    touches = []
+    panel = Panel()
+    panel._used = SimpleNamespace(touch=lambda: touches.append(True), active=True)
+    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=lambda _line: None)
+    panel._api = api = SimpleNamespace(plan=Plan(1, Request("alice", 1.0), "planning", None))
+    panel.update(ctx)
+    assert touches == []
+    api.plan = Plan(1, api.plan.request, "ready", PATH, message="found")
+    panel.update(ctx)
+    api.plan = Plan(1, api.plan.request, "ready", PATH, message="found")
+    panel.update(ctx)
+    assert touches == [True]

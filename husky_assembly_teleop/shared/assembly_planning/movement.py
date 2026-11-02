@@ -16,9 +16,8 @@ from scaffolding_assembly_core.process import Action, LineSpec, Movement, Proces
 from scaffolding_assembly_core.process.plan_check import end_state
 from scaffolding_assembly_core.process.relations import bar_of
 from scaffolding_assembly_core.process.types import GROUND_PREFIX, HALF_PREFIX
-from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 
-from .joints import arm_joint_names, arm_side
+from .joints import arm_joint_names, arm_of_flange, arm_side
 
 #: Why a drive is not sent (`MatingDrives.dropped`).
 GROUND_HALF = "ground half"
@@ -370,6 +369,6 @@ def _goal(process: Process, action: Action, movement: Movement,
 def _arm_part(movement: Movement, flange: str) -> ArmPart:
     """One moving arm of a movement, from its flange link id."""
     _robot, link = split_link_id(flange)
-    arm = link[:-len(FLANGE_SUFFIX)] if link.endswith(FLANGE_SUFFIX) else link
+    arm = arm_of_flange(link)
     target = movement.target.link_poses.get(flange) if movement.target is not None else None
     return ArmPart(flange, arm, arm_side(arm), tuple(arm_joint_names(arm)), movement.line.get(flange), target)

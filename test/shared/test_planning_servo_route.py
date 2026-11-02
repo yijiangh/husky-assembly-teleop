@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, design_scene, movement, purged_process, robot_config, step
 
-from husky_assembly_teleop.shared.assembly_planning import servo_route
+from husky_assembly_teleop.shared.assembly_planning import servo_route, tamp_route
 from husky_assembly_teleop.shared.assembly_planning.ik import ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.servo_route import TWO_ROWS, plan_servo_step
 from husky_assembly_teleop.shared.motion_planner_contract import ServoAsk
@@ -145,7 +145,7 @@ def test_linear_only_refuses_when_there_is_no_line(purged, configs, mirrors, mon
     """No straight line: with straight lines only the pass fails saying so, and the sampling search never runs."""
     sampled = []
     monkeypatch.setattr(servo_route, "plan_constrained_dual_arm_linear", lambda *_args, **_options: None)
-    monkeypatch.setattr(servo_route, "plan_constrained_dual_arm", lambda *args, **options: sampled.append(1))
+    monkeypatch.setattr(tamp_route, "plan_constrained_dual_arm", lambda *args, **options: sampled.append(1))
     snapshot = shifted(design_scene(purged, "B20_J_insert"), CINDY_ID, (0.01, 0.0, 0.0))
     targets = dict(movement(purged, "B20_J_transfer")[1].target.link_poses)
     answer = cindy_held(purged, configs, mirrors, snapshot, targets, linear_only=True)
@@ -166,7 +166,7 @@ def test_no_line_falls_back_to_one_sampling_search(purged, configs, mirrors, mon
         return rows, {}
 
     monkeypatch.setattr(servo_route, "plan_constrained_dual_arm_linear", lambda *_args, **_options: None)
-    monkeypatch.setattr(servo_route, "plan_constrained_dual_arm", sampling)
+    monkeypatch.setattr(tamp_route, "plan_constrained_dual_arm", sampling)
     snapshot = shifted(design_scene(purged, "B20_J_insert"), CINDY_ID, (0.01, 0.0, 0.0))
     targets = dict(movement(purged, "B20_J_transfer")[1].target.link_poses)
     answer = cindy_held(purged, configs, mirrors, snapshot, targets)
