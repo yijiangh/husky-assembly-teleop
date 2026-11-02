@@ -17,25 +17,33 @@ class _Declared(Exception):
 
 
 class _DeclaringNode:
-    """Keeps the names the monitor declares."""
+    """Keeps the type of each parameter the monitor declares, by name."""
 
     def __init__(self):
-        self.names = []
+        self.types = {}
 
-    def declare_parameter(self, name, _default):
-        self.names.append(name)
+    def declare_parameter(self, name, default):
+        self.types[name] = type(default)
 
     def get_parameter(self, _name):
         raise _Declared
 
 
-def test_the_launch_offers_every_monitor_parameter():
-    """An argument per parameter config.py declares, each once."""
+def test_the_launch_offers_every_monitor_parameter_with_its_type():
+    """An argument per parameter config.py declares, each once, typed as the monitor's default."""
     node = _DeclaringNode()
     with pytest.raises(_Declared):
         config_from_ros_parameters(node)
-    names = [name for name, _kind, _description in LAUNCH.PARAMETERS]
-    assert sorted(names) == sorted(node.names) and len(set(names)) == len(names)
+    kinds = {"list": list, "bool": bool, "int": int, "float": float, "str": str}
+    offered = {name: kinds[kind] for name, kind, _description in LAUNCH.PARAMETERS}
+    assert offered == node.types and len(offered) == len(LAUNCH.PARAMETERS)
+
+
+def test_ros_gets_serials_and_paths_as_quoted_strings():
+    """Each value goes to ROS as JSON, so a serial stays a string; ROS would read a bare 0804 as a number."""
+    typed = LAUNCH.parameters({"robots": "0804 cindy", "drive_root": "/a b/c:d", "ghost_timeout": "20"})
+    assert LAUNCH.ros_arguments(typed) == ["-p", 'robots:=["0804", "cindy"]', "-p", 'drive_root:="/a b/c:d"',
+                                           "-p", "ghost_timeout:=20.0"]
 
 
 def test_empty_arguments_leave_the_monitors_defaults():

@@ -13,6 +13,7 @@
   skips them.
 """
 
+import json
 import re
 
 import yaml
@@ -57,7 +58,15 @@ def _monitor(context):
     """The monitor node, with a parameter for each argument that is not empty."""
     values = {name: LaunchConfiguration(name).perform(context) for name, _kind, _description in PARAMETERS}
     return [Node(package="husky_assembly_teleop", executable="husky_monitor", output="screen", emulate_tty=True,
-                 parameters=[parameters(values)], sigterm_timeout=SHUTDOWN_SECONDS)]
+                 ros_arguments=ros_arguments(parameters(values)), sigterm_timeout=SHUTDOWN_SECONDS)]
+
+
+def ros_arguments(typed: dict) -> list[str]:
+    """`-p name:=value` per parameter, the value as JSON.
+
+    ! Not `Node(parameters=...)`: its params file leaves strings unquoted, so ROS reads a serial (0804) as a number.
+    """
+    return [argument for name, value in typed.items() for argument in ("-p", f"{name}:={json.dumps(value)}")]
 
 
 def parameters(values: dict[str, str]) -> dict:
@@ -65,6 +74,7 @@ def parameters(values: dict[str, str]) -> dict:
 
     Raises:
         ValueError: For a value that does not read as its parameter's type.
+        yaml.YAMLError: For a list in the --ros-args form that does not parse.
     """
     result = {}
     for name, kind, _description in PARAMETERS:
