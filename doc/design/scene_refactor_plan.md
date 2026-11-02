@@ -9,7 +9,7 @@ Read this first if you are picking it up:
 - `scaffolding_assembly_core/`: `geometry.py` (poses, shapes), `ids.py`, `robot.py`, `scene.py`, `kinematics.py`, `mirrors/pybullet.py`, `mirrors/compas_fab.py`
 - `husky_assembly_teleop/world/`: `scene.py` (`take_snapshot`, `PluginScene`), `kinematics.py` (live forward kinematics); `ui/scene_view.py`
 - `monitor.py` (`_tick`), `plugin_api/context.py` (`ctx.scene`, `ctx.kinematics`)
-- `husky_assembly_teleop/old/cfab_session.py` and `husky_assembly_teleop/old/husky_monitor.py::_bridge_cfab_to_pp_for_bar_action` (how compas_fab was used before)
+- `cfab_session.py` and `husky_monitor.py::_bridge_cfab_to_pp_for_bar_action` on `master` (how compas_fab was used before)
 
 ---
 

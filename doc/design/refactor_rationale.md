@@ -6,12 +6,12 @@ Background for the `husky_assembly_teleop` runtime (`monitor.py`, `config.py`,
 This file holds the *archaeology*: what the old code did, and which specific
 failure each design decision is defending against. It lives here rather than in
 the module docstrings because it justifies choices against code that is being
-deleted, and it goes stale the moment `husky_assembly_teleop/old/` goes away.
+deleted; the old monitor is on `master`.
 The modules themselves keep only the rules a reader has to follow today.
 
 ## The god object
 
-`old/husky_monitor.py` was 7085 lines in one class. There was nowhere else for a
+The old `husky_monitor.py` was 7085 lines in one class. There was nowhere else for a
 new feature to go, so every feature went there.
 
 Concretely:
@@ -56,7 +56,7 @@ between measurement and geometry is the name.
 
 ## Shared mutable class attributes
 
-`old`'s `HuskyRobotInterface` declared its state at class scope
+The old `HuskyRobotInterface` declared its state at class scope
 (`arm_joint_pose = [UR5e_HOME_STATE]`, `io_states = [[False] * 18]`, ...) and
 then mutated it with `self.arm_joint_pose.append(...)`. With exactly one robot
 that behaves. With two, both robots share one list and the lists grow on every

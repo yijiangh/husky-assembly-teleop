@@ -51,6 +51,5 @@ The process file format is in the core's `doc/process_format.md` (`external/scaf
 - [calibration_manual.md](calibration_manual.md): **outdated**, written for the old monitor; it says at the top what
   is missing or different now.
 - `archive/`: outdated docs, kept for reference: manuals written for the old monitor, Su's notes and to-do list, the
-  superseded journal plan, the RobArch 2026 paper, the old code layout diagram, `DOCKER.md` (not tested with the new
-  monitor).
+  superseded journal plan, the RobArch 2026 paper, the old code layout diagram.
 - `../tasks/`: specs written while building a feature, dated; they describe the code as it was then.

@@ -1,6 +1,6 @@
 # Husky Extrinsic Calibration Manual
 
-> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see `doc/setup/old_monitor.md`).** Kept as reference for porting.
+> ⚠️ **Outdated: written for the old monitor (runnable on `master`, see `doc/setup/old_monitor.md`).** Kept as reference for porting.
 > - §1 Mocap and network: replaced by the mocap relay (README, "Run in the lab"); the monitor sets no IPs.
 > - §2 Robot startup: see crl-husky's README (Zenoh on domain 80, not one `ROS_DOMAIN_ID` per robot).
 > - §3–6 Data collection and punch validation: **missing** in the new monitor (`calibration` and `punch_validation` plugins, `doc/design/plugin_roadmap.md`).

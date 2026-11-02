@@ -310,7 +310,6 @@ The monitor is a small runtime that ticks and owns the shared state; every featu
 | `mocap_relay/` | The mocap relay, its own process. |
 | `experiments/` | Offline analysis of recorded experiments, run from `scripts/`. |
 | `drive.py`, `plots.py`, `tool_urdfs.py` | Experiment folders on the Drive; plot helpers; tool URDFs and mesh paths. |
-| `old/` | The old monitor, for reference only ([doc/setup/old_monitor.md](doc/setup/old_monitor.md)). |
 
 `external/scaffolding_assembly_core/` is the core shared with the Rhino plugin and the planners, a submodule of
 [yijiangh/scaffolding_assembly_core](https://github.com/yijiangh/scaffolding_assembly_core): the process file format

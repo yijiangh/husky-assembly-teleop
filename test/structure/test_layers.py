@@ -88,8 +88,8 @@ def _problem(module: str, target: str) -> str | None:
 
 def test_every_package_has_a_layer():
     """A new top-level module or package must be put into LAYERS."""
-    names = {path.stem for path in ROOT.glob("*.py")} | {path.name for path in ROOT.iterdir() if path.is_dir()}
-    missing = names - set(LAYER) - {"__init__", "__pycache__", "old"}
+    names = {path.stem for path in ROOT.glob("*.py")} | {path.name for path in ROOT.iterdir() if any(path.glob("*.py"))}
+    missing = names - set(LAYER) - {"__init__"}
     assert not missing, f"put these into LAYERS: {sorted(missing)}"
 
 
@@ -97,8 +97,6 @@ def test_imports_go_down_the_layers():
     """No runtime import points up the layers or from one plugin into another."""
     problems = []
     for path in sorted(ROOT.rglob("*.py")):
-        if "old" in path.relative_to(ROOT).parts:
-            continue
         module = _module_name(path)
         for node in _imports(ast.parse(path.read_text(), str(path))):
             for target in _targets(module, path.name == "__init__.py", node):

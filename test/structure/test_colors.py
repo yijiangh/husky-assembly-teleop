@@ -19,9 +19,9 @@ HEX = re.compile(r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b")
 #: viser's button colour names (Mantine).
 MANTINE = {"dark", "gray", "red", "pink", "grape", "violet", "indigo", "blue", "cyan", "green", "lime", "yellow",
            "orange", "teal", "white", "black"}
-#: Not checked: the colours themselves, the old monitor, offline experiments, vendored code, and Yijiang's plugins and
+#: Not checked: the colours themselves, offline experiments, vendored code, and Yijiang's plugins and
 #: the calibration plugin (converted later).
-SKIPPED = re.compile(r"^(colors\.py|old/|experiments/|mocap_relay/natnet/"
+SKIPPED = re.compile(r"^(colors\.py|experiments/|mocap_relay/natnet/"
                      r"|plugins/(assembly_run|assembly_steps|motion_planner|movement_exec|calibration)/"
                      r"|shared/(assembly_planning|execution|process_scene|runs)/)")
 

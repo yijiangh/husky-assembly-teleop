@@ -7,9 +7,9 @@ only into a run folder. The narrative of how the state moves from step to step i
 are laid out in its §2; this note puts the data models side by side and says what each event changes.
 
 * Citations. OLD is the final old monitor: the `ros2_ws` checkout of this repo at `6c19ff9c` (branch
-  `yh/multi-robot-monitor`, 2026-10-21); M is its `husky_assembly_teleop/husky_monitor.py`. This repo's
-  `husky_assembly_teleop/old/` is an older snapshot: it writes the sidecar but has no `plan_skeleton_io.py`,
-  `progress_io.py` or `as_built_io.py`, and none of the carry functions. NEW is this repo; `types.py`, `plan_check.py`,
+  `yh/multi-robot-monitor`, 2026-10-21); M is its `husky_assembly_teleop/husky_monitor.py`. `master` holds an
+  older snapshot: it writes the sidecar but has no `plan_skeleton_io.py`, `progress_io.py` or `as_built_io.py`, and
+  none of the carry functions. NEW is this repo; `types.py`, `plan_check.py`,
   `carry.py` and `process_format.md` are the core's (`external/scaffolding_assembly_core/`).
 
 ## 1. Where the data lives

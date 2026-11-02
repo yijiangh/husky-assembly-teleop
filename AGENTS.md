@@ -57,7 +57,7 @@ When briefing a subagent to write or edit comments, paste this section into its 
 - `husky_assembly_teleop/shared/`: for plugins to share code, data and services; plugins never import each other. What plugin `<name>` offers is `<Name>Contract` in `shared/<name>_contract.py`; subfolders (`shared/planner/`) hold base classes and helpers. `test/structure/test_layers.py` checks that imports only go down the layers.
 - `doc/glossary.md`: the project's words (runtime, core, lease, freeze, clearance, ...) and which meaning each has where. `doc/design/representation_old_vs_new.md`: the old monitor's action/movement/state data and the new, side by side, live and on disk; `doc/design/run_record.md`: what an assembly run writes. `doc/design/refactor_rationale.md`: why the runtime is built the way it is. `doc/design/plugin_roadmap.md`: which old features are still to be ported. `doc/design/scene_refactor_plan.md`: the scene.
 - `doc/experiments/experiment_design_guide.md` and `doc/experiments/experiment_report_guide.md`: JG's Experiment Design Guide: how to plan, build and analyse an experiment, and how its generated reports are written.
-- `husky_assembly_teleop/old/`: the old monitor, reference only. It does not run; never import it from new code.
+- The old monitor lives on `master` only (`doc/setup/old_monitor.md`).
 - `doc/README.md`: every doc by folder: `setup/` and `lab/` (all it takes to run the monitor), `experiments/`, `design/`.
   `doc/archive/` holds outdated docs; a doc elsewhere marked outdated at the top describes the old monitor.
 

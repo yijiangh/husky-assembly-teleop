@@ -1,8 +1,7 @@
 # The old monitor
 
-The old monitor is `husky_monitor.py` on `master`. A copy is kept in `husky_assembly_teleop/old/` for reference; it
-does not run from there. This page says what changed, how to run the old monitor, and how to move a workspace to the
-new one.
+The old monitor is `husky_monitor.py` on `master`; nothing of it is left on the new monitor's branch. This page
+says what changed, how to run the old monitor, and how to move a workspace to the new one.
 
 ## What changed
 
@@ -32,20 +31,11 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=86   # robot's domain
 ros2 run husky_assembly_teleop husky_monitor
 ```
 
+Its dependencies beyond the new monitor's are listed in `requirements.txt` on `master`: tracikpy (a submodule, with
+its apt packages `libeigen3-dev liborocos-kdl-dev libkdl-parser-dev liburdfdom-dev libnlopt-dev libnlopt-cxx-dev`),
+kdtree, dearpygui and opencv-python.
+
 To return to the new monitor, check out its branch, update the submodules and rebuild.
-
-### Tracikpy (Linux only)
-
-Only the old monitor (`old/`) uses tracikpy, and the dependencies in the last block of `requirements.txt`. The new
-monitor runs without them; they stay until the remaining features are ported.
-
-[Tracikpy](https://github.com/mjd3/tracikpy) is a minimal, fast inverse kinematics solver that takes a URDF and a
-target pose and returns a solution. It only works on Linux, so the Grasshopper/Rhino design interface cannot use it.
-
-```shell
-sudo apt-get install libeigen3-dev liborocos-kdl-dev libkdl-parser-dev liburdfdom-dev libnlopt-dev libnlopt-cxx-dev
-pip install -r requirements.txt
-```
 
 ## Migrating a workspace to the new monitor
 
