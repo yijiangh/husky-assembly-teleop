@@ -12,6 +12,9 @@ its base calibration (`world/calibration_sessions.py`).
 - ! Threads: NatNet's, and two executor threads. Publishing poses has its own callback group, so a slow look or reload
   never holds the poses back; it only reads what the others lock or replace whole. Every other callback runs one at a
   time, as on a single thread.
+- `base_offset.id_<n>` parameters: a robot's x, y, z shift in the lab frame, metres, on top of its base calibration,
+  for a base known to be off; set with `ros2 param set /mocap_relay base_offset.id_<n> "[x, y, z]"`, up to
+  MAX_BASE_OFFSET, for the relay's life only. Logged, and announced with the calibrations.
 - ! One mode for the relay's life, never mixed (`sim`): off, it reads Motive over NatNet only, with the robots'
   sessions; on (refused in the robots' domain), only simulated inputs (SIM_SOURCES), with the simulation's sessions of
   its domain (`calibration_sessions.sessions_folder`), base and floor calibrations alike. Every calibrations
@@ -43,6 +46,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import re
 import threading
 import time
@@ -61,6 +65,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from scipy.spatial.transform import Rotation
 from std_msgs.msg import String
+from rcl_interfaces.msg import SetParametersResult
 from std_srvs.srv import Trigger
 
 from crl_husky import config_resolver
@@ -98,6 +103,8 @@ SIM_TOPIC = re.compile(rf"^({'|'.join(re.escape(prefix) for prefix in SIM_SOURCE
 SIM_DEFINITIONS_TOPIC, SIM_CAMERAS_TOPIC = f"{SIM_MOTIVE_PREFIX}/body_definitions", f"{SIM_MOTIVE_PREFIX}/cameras"
 #: Seconds between looks for new simulated inputs.
 SIM_DISCOVERY_SEC = 1.0
+#: The largest `base_offset.id_<n>` accepted, metres: anything larger is a calibration to redo.
+MAX_BASE_OFFSET = 0.1
 #: Motive latencies outside [0, this] are treated as garbage; the frame is stamped with its arrival instead.
 MAX_PLAUSIBLE_LATENCY_SEC = 0.5
 #: The poses' header.frame_id: in the lab frame (by a floor calibration, or a simulator's truth), or raw (Motive's,
@@ -287,6 +294,11 @@ class MocapRelay(Node):
             self._frame_log = FrameLog(folder, int(self.get_parameter("frame_log_days").value))
             self.get_logger().info(wrap(f"frame log: every look's frame metrics in {folder}/<YYYYMMDD>.jsonl, kept "
                                         f"{self._frame_log.days} days"))
+        declared = [self.declare_parameter(f"base_offset.id_{mocap_id}", [0.0, 0.0, 0.0])
+                    for mocap_id in robot_mocap_ids()]
+        if not (started := self._set_base_offsets(declared)).successful:
+            raise ValueError(started.reason)
+        self.add_on_set_parameters_callback(self._set_base_offsets)
         self._load_calibrations("start")
         self._load_floor_calibration("start")
         self._reload_service = self.create_service(Trigger, "~/reload_base_calibrations", self._handle_reload)
@@ -383,6 +395,8 @@ class MocapRelay(Node):
         # ! Read by the NatNet thread: always replaced whole (one assignment), never edited in place. By rigid body,
         # ! for Motive's bodies, or with `sim` the fake Motive's.
         self._calibrations: Dict[int, Calibration] = {}
+        #: Each robot's `base_offset.id_<n>`, by rigid body id; only non-zero ones. Replaced whole, never changed.
+        self._base_offsets: Dict[int, Vec3] = {}
         #: crl-husky's default calibration by robot's rigid body, which a fake Motive's bases are relative to.
         self._defaults: Dict[int, Calibration] = {}
         # Newer Drive files already reported by the watch, so each is logged once.
@@ -562,7 +576,8 @@ class MocapRelay(Node):
             entries.append({**calibration.as_dict(), "definition_check": {"status": status, "detail": detail}})
         self._calibrations_publisher.publish(String(data=json.dumps({
             **self._announced, "calibrations": entries, "simulated": self.simulated,
-            "sources": {str(rb_id): source for rb_id, source in self._sources.items()}})))
+            "sources": {str(rb_id): source for rb_id, source in self._sources.items()},
+            "base_offsets": {str(rb_id): list(offset) for rb_id, offset in self._base_offsets.items()}})))
 
     def _handle_reload(self, request, response, only: Optional[int] = None):
         """Apply the newest base calibrations now (~/reload_base_calibrations), or one rigid body's (`only`)."""
@@ -807,9 +822,42 @@ class MocapRelay(Node):
 
     def _calibrated(self, rigid_body_id: int, pos: Vec3, quat: QuatXyzw,
                     calibrations: Dict[int, Calibration]) -> Tuple[Vec3, QuatXyzw]:
-        """A raw body's pose as its robot's base_footprint, or unchanged if it is no robot's."""
+        """A raw body's pose as its robot's base_footprint, its `base_offset` added; unchanged if it is no robot's."""
         calibration = calibrations.get(rigid_body_id)
-        return apply_base_calibration(calibration, pos, quat) if calibration is not None else (pos, quat)
+        if calibration is not None:
+            pos, quat = apply_base_calibration(calibration, pos, quat)
+        offset = self._base_offsets.get(rigid_body_id)
+        if offset is not None:
+            pos = (pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2])
+        return pos, quat
+
+    def _set_base_offsets(self, parameters) -> SetParametersResult:
+        """Take the `base_offset.id_<n>` parameters set: three finite numbers each, up to MAX_BASE_OFFSET; logged."""
+        offsets = dict(self._base_offsets)
+        for parameter in parameters:
+            match = re.fullmatch(r"base_offset\.id_(\d+)", parameter.name)
+            if match is None:
+                continue
+            values = list(parameter.value) if parameter.value is not None else []
+            if len(values) != 3 or not all(math.isfinite(value) for value in values):
+                return SetParametersResult(successful=False, reason=f"{parameter.name}: three finite numbers, metres")
+            if max(abs(value) for value in values) > MAX_BASE_OFFSET:
+                return SetParametersResult(successful=False, reason=f"{parameter.name}: at most {MAX_BASE_OFFSET} m "
+                                                                    f"per axis; redo the base calibration instead")
+            mocap_id = int(match.group(1))
+            offset = (float(values[0]), float(values[1]), float(values[2]))
+            if offset == self._base_offsets.get(mocap_id, (0.0, 0.0, 0.0)):
+                continue
+            if any(offset):
+                offsets[mocap_id] = offset
+            else:
+                offsets.pop(mocap_id, None)
+            self.get_logger().warn(f"rigid body {mocap_id}: base offset {offset[0]:.3f} {offset[1]:.3f} "
+                                   f"{offset[2]:.3f} m in the lab frame, on top of its calibration")
+        self._base_offsets = offsets
+        if hasattr(self, "_calibrations_publisher"):
+            self._announce_calibrations()
+        return SetParametersResult(successful=True)
 
     def _receive_labeled_markers(self, labeled_marker_from_model_id) -> None:
         """Attach the frame's labeled markers to its rigid bodies held until the frame completes.

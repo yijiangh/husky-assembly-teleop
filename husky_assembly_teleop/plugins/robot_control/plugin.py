@@ -44,8 +44,7 @@ from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
 from ...robot_interface.tool_step import TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_LEAD, tool0_pose, tool_jog_target
 from ...ui.phone import big_buttons, phone_text
-from ...ui.style import (BUSY, FAIL, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, note, note_line, numbers, section,
-                         values)
+from ...ui.style import BUSY, FAIL, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, note_line, numbers, section, values
 from ...ui.trace_plot import TracePlot
 from ...shared.teleop.dpad import (BLOCKED_COLOR, HOLD_TIMEOUT, PHONE_DPAD_STYLE, UNGUARDED_COLOR, Hold,
                                    build_velocity_inputs, color_dpad)
@@ -93,9 +92,6 @@ class _BaseWidgets:
     phone_speed: viser.GuiSliderHandle | None = None
     #: The D-pad's buttons on the laptop and on the phone, coloured by Clearance (`color_dpad`).
     dpad: tuple[viser.GuiButtonHandle, ...] = ()
-    #: The mocap offset's x, y, z inputs and the line showing what is applied.
-    offset: tuple[viser.GuiNumberHandle, ...] = ()
-    offset_note: viser.GuiHtmlHandle | None = None
 
 
 @dataclass
@@ -293,35 +289,9 @@ class RobotControlPlugin(HuskyPlugin):
                                               {PLATFORM_VELOCITY_CONTROLLER: velocity_inputs},
                                               partial(self._leased, ctx, (serial, BASE)))
         speed, clearance = built[PLATFORM_VELOCITY_CONTROLLER]
-        # * The mocap offset, in a folder closed at start, last: a world shift of this base's mocap pose for the
-        #   session, for a base whose calibration is off by a known amount. No lease: it moves no robot.
-        with gui.add_folder("Mocap offset", expand_by_default=False):
-            gui.add_html(note("shifts this base's mocap pose for everyone: scene, planners, exec, records"))
-            offset = tuple(gui.add_number(f"Δ{axis} m", 0.0, step=0.001, hint=f"World {axis} shift, metres.")
-                           for axis in "xyz")
-            group = gui.add_button_group("Offset", ["Apply", "Reset"],
-                                         hint="Apply: shift the mocap pose by x, y, z. Reset: back to zero.")
-            offset_note = gui.add_html(note_line(""))
-        widgets = _BaseWidgets(serial=serial, base=base, panel=panel, status=status, speed=speed, clearance=clearance,
-                               offset=offset, offset_note=offset_note)
+        widgets = _BaseWidgets(serial=serial, base=base, panel=panel, status=status, speed=speed, clearance=clearance)
         widgets.dpad = tuple(dpad)
-        group.on_click(ctx.defer_value(f"mocap offset {serial}",
-                                       lambda clicked: self._set_offset(ctx, widgets, clicked == "Apply")))
         return widgets
-
-    def _set_offset(self, ctx: PluginContext, widgets: _BaseWidgets, apply: bool) -> None:
-        """Apply the typed mocap offset to the base, or reset it and the inputs to zero; logged either way."""
-        if not apply:
-            for number in widgets.offset:
-                number.value = 0.0
-        xyz = [float(number.value) for number in widgets.offset]
-        try:
-            widgets.base.set_mocap_offset(xyz)
-        except ValueError as error:
-            self._refuse(ctx, (widgets.serial, BASE), "offset refused", str(error))
-            return
-        ctx.log_info(f"{widgets.serial}: mocap offset {'applied' if apply else 'reset'}: "
-                     f"{' '.join(f'{value:.3f}' for value in xyz)} m")
 
     def _build_arm(self, ctx: PluginContext, gui: viser.GuiApi, serial: str,
                    arm: ArmInterface) -> _ArmWidgets:
@@ -888,9 +858,6 @@ class RobotControlPlugin(HuskyPlugin):
                 + self._base_warnings(ctx, widgets.serial, now, ticked)
             widgets.status.content = base_status(widgets.base, now, refused)
             self._color_buttons(widgets.dpad, ticked, widgets.serial, now)
-            if widgets.offset_note is not None:
-                widgets.offset_note.content = note_line(
-                    "applied " + " ".join(f"{value:.3f}" for value in widgets.base.mocap_offset) + " m")
             if widgets.phone_status is not None:
                 widgets.phone_status.content = phone_text(phone_base_status(widgets.base, refused))
         for widgets in self._arms:

@@ -109,6 +109,28 @@ def test_a_calibrated_body_is_published_as_its_base_footprint(seed):
     assert same_rotation(quaternion, (body_r * offset_r).as_quat())
 
 
+def test_a_base_offset_shifts_the_calibrated_pose_and_is_announced():
+    """`base_offset.id_3` adds its x, y, z in the lab frame on top of the calibration; zero takes it off again."""
+    calibration = Calibration(mocap_id=3, robot_serial="a200-0804", position=(0.1, 0.0, -0.3),
+                              orientation=(0.0, 0.0, 0.0, 1.0), source="test", sha256="", measured=())
+    node = relay({3: calibration})
+    assert node._set_base_offsets([SimpleNamespace(name="base_offset.id_3", value=[0.01, -0.02, 0.0])]).successful
+    frame(node, 3, (0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    np.testing.assert_allclose(pose_of(published(node, 3))[0], (0.11, -0.02, 0.7), atol=1e-12)
+    assert json.loads(node._calibrations_publisher.sent[-1].data)["base_offsets"] == {"3": [0.01, -0.02, 0.0]}
+    assert node._set_base_offsets([SimpleNamespace(name="base_offset.id_3", value=[0.0, 0.0, 0.0])]).successful
+    frame(node, 3, (0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    np.testing.assert_allclose(pose_of(published(node, 3))[0], (0.1, 0.0, 0.7), atol=1e-12)
+
+
+@pytest.mark.parametrize("value", [[0.2, 0.0, 0.0], [float("nan"), 0.0, 0.0], [0.01, 0.0]])
+def test_a_base_offset_too_large_or_not_three_numbers_is_refused(value):
+    """Over MAX_BASE_OFFSET, not finite or not three numbers: refused, nothing applied."""
+    node = relay()
+    assert not node._set_base_offsets([SimpleNamespace(name="base_offset.id_3", value=value)]).successful
+    assert node._base_offsets == {}
+
+
 def test_only_the_calibrated_body_is_moved_to_its_base():
     """A robot's body gets its calibration; another body is published as Motive gives it, logged once."""
     calibration = Calibration(mocap_id=3, robot_serial="a200-0804", position=(0.1, 0.0, -0.3),

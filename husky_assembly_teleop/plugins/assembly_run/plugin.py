@@ -98,9 +98,6 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         #: The run being written; else the run used last, offered, and an older run made on these files, offered too
         #: (both the same run when a newer run folder can't be read).
         self._run: Run | None = None
-        #: Per robot serial, the mocap offset last recorded in the open run's events, and which run that was.
-        self._offsets: dict[str, tuple[float, ...]] = {}
-        self._offsets_run: Path | None = None
         self._offer: Run | None = None
         self._match: Run | None = None
         self._settings = RunSettings()
@@ -314,7 +311,6 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             self._unsaved_at = None
             if self._run is not None:
                 self._write(ctx, "save the progress", save_progress, self._run)
-        self._record_offsets(ctx)
         if self._state == NOT_OPENED and ctx.now() >= self._retry_at:
             self._open_now(ctx)
         view = self.view
@@ -324,22 +320,6 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             process.request_marks({action: MARK_ASSUMED if action in view.assumed
                                    else MARK_DONE if status == DONE else MARK_PENDING
                                    for action, status in view.statuses.items()})
-
-    def _record_offsets(self, ctx: PluginContext) -> None:
-        """Note in the open run's events a base's mocap offset when it changes, or is on when the run opens."""
-        if self._run is None:
-            return
-        if self._run.folder != self._offsets_run:
-            self._offsets, self._offsets_run = {}, self._run.folder
-        for serial, robot in ctx.world.robots.items():
-            offset = getattr(robot.base, "mocap_offset", None)
-            if offset is None:
-                continue
-            xyz = tuple(float(value) for value in offset)
-            if xyz != self._offsets.get(serial, (0.0, 0.0, 0.0)):
-                self._offsets[serial] = xyz
-                self._write(ctx, "record the mocap offset", record_event, self._run.folder, "mocap_offset",
-                            ctx.now(), robot=serial, xyz=list(xyz))
 
     def draw(self, ctx: PluginContext) -> None:
         """Fill the panel."""
