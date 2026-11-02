@@ -1032,7 +1032,6 @@ class HuskyMonitor(Node):
         self._transfer_as_free_move()
         self._visual_diagnosis()
         self._m2_spiral_search()
-        self.servo_bar_feedback_ticked()
         if _common._global_backend is not None:
             _common._global_backend.clear()
         self.buttons.clear()
@@ -4762,22 +4761,49 @@ class HuskyMonitor(Node):
             return False
         return self._mocap_bar_design(getattr(self, 'active_bar_name', None)) is not None
 
+    def _action_bar_is_grounded(self) -> bool:
+        """Whether the loaded action places a ground bar (B20, B34): its insert holds ground joints.
+
+        No exported field says which bar is grounded (``held_ground_joints``), so
+        this reads it from the action's insert: the transfer before it and the
+        step after it then answer the same.
+
+        Returns:
+            bool: True when the action's insert holds ground joints in the tools.
+        """
+        insert = self._loaded_movement_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
+        return (insert is not None and getattr(insert, 'start_state', None) is not None
+                and bool(held_ground_joints(insert.start_state)))
+
+    def _servo_can_aim_bar(self) -> bool:
+        """Whether the servo may aim the held bar's MoCap markers instead of tool0.
+
+        ! A given rule, not an option: only a GROUND bar is servoed by its MoCap
+        ! markers (its pose is what places the structure). Every other bar is
+        ! servoed by tool0, even when it carries markers (they are still recorded).
+
+        Returns:
+            bool: True for a ground bar that carries MoCap markers.
+        """
+        return self._bar_has_mocap_markers() and self._action_bar_is_grounded()
+
     def _default_insert_options(self, mv) -> None:
         """Seed the insert's two option boxes for the step just loaded, and say what they are.
 
         * Spiral search: ON and live for an insert mating on both arms; OFF and greyed
           for a ground bar, a one-mate bar, or any other step.
-        * Servo feedback: MoCap bar ON when the bar carries markers (a ground bar first
-          of all: its MoCap feedback is what places the structure); OFF and greyed
-          when it carries none, so the servo aims tool0.
+        * Servo feedback: a given rule, not an option (``_servo_can_aim_bar``): MoCap
+          bar ON for a ground bar that carries markers (its MoCap feedback is what
+          places the structure), OFF for every other bar, so the servo aims tool0.
+          The box is ALWAYS greyed: it only shows the rule.
 
-        The operator can still untick a live box; the next load re-seeds it.
+        The operator can still untick the live spiral box; the next load re-seeds it.
 
         Args:
             mv: The movement just loaded.
         """
         self.m2_spiral_search = self._spiral_fits(mv)
-        self._servo_bar_feedback = self._bar_has_mocap_markers()
+        self._servo_bar_feedback = self._servo_can_aim_bar()
         self._apply_insert_option_boxes()
         self._log_spiral_mode()
         self._log_servo_feedback_mode()
@@ -4795,24 +4821,20 @@ class HuskyMonitor(Node):
         tgl = getattr(self, 'servo_bar_feedback_toggle', None)
         if tgl is not None:
             tgl.set_value(bool(getattr(self, '_servo_bar_feedback', False)))
-            tgl.set_enabled(self._bar_has_mocap_markers())
+            # ! Always greyed: the servo's feedback is a rule (_servo_can_aim_bar), the box a reminder.
+            tgl.set_enabled(False)
 
     def servo_bar_feedback_ticked(self) -> bool:
-        """Whether the 'Servo feedback: MoCap bar markers' box is ticked (aim the bar, not tool0).
+        """Whether the servo aims the held bar's MoCap markers instead of tool0.
 
-        Same shape as ``_transfer_as_free_move``: the widget is read ONCE and
-        the flag re-synced, because a checkbox rebuilt by reset_ui can miss its
-        next click's callback. The flag is read with a default because headless
-        harnesses build the monitor without its __init__.
+        The flag is set by the rule at every 'Load Movement' (``_servo_can_aim_bar``:
+        a ground bar with markers); the greyed box only shows it, so the widget is
+        never read. Read with a default because headless harnesses build the
+        monitor without its __init__.
 
         Returns:
             bool: True when the servo aims the held bar's MoCap markers instead of tool0.
         """
-        toggle = getattr(self, 'servo_bar_feedback_toggle', None)
-        # * A greyed box (bar without markers) shows no tick that means anything.
-        ticked = toggle.value if toggle is not None and getattr(toggle, 'enabled', True) else None
-        if ticked is not None:
-            self._servo_bar_feedback = bool(ticked)
         return bool(getattr(self, '_servo_bar_feedback', False))
 
     def _log_spiral_mode(self) -> None:
@@ -4840,22 +4862,30 @@ class HuskyMonitor(Node):
     def _log_servo_feedback_mode(self) -> None:
         """Say in colour what the servo aims at: the flanges (tool0) or the held bar's MoCap markers.
 
-        Green = the MoCap bar (the default for a bar with markers); yellow = tool0.
+        Green = the MoCap bar (a ground bar with markers); yellow = tool0 (every other bar).
+        Both say the rule, since the box only shows it.
         """
-        if not self._bar_has_mocap_markers():
+        if not self._servo_can_aim_bar():
             bar = getattr(self, 'active_bar_name', None)
-            why = f'{bar} carries no MoCap markers' if bar else 'no bar loaded'
+            if not bar:
+                why = 'no bar loaded'
+            elif not self._bar_has_mocap_markers():
+                why = f'{bar} carries no MoCap markers'
+            else:
+                why = (f'{bar} is not a ground bar: its markers are only recorded; only a ground bar '
+                       f'is servoed by its MoCap markers')
             self.get_logger().info(
-                f"{self._ANSI_YELLOW}servo feedback: tool0{self._ANSI_RESET} (box greyed: {why}; the "
+                f"{self._ANSI_YELLOW}servo feedback: tool0{self._ANSI_RESET} ({why}; the "
                 f"flanges go to their Rhino targets)")
         elif getattr(self, '_servo_bar_feedback', False):
             self.get_logger().info(
-                f"{self._ANSI_GREEN}servo feedback: MoCap bar{self._ANSI_RESET} (the held bar's markers to its "
-                f"Rhino pose; box 'Servo feedback: MoCap bar markers')")
+                f"{self._ANSI_GREEN}servo feedback: MoCap bar{self._ANSI_RESET} (a ground bar: the held bar's "
+                f"markers to its Rhino pose; the rule, the box only shows it)")
         else:
+            # Only a harness sets the flag off for a ground bar; the panel never does.
             self.get_logger().info(
                 f"{self._ANSI_YELLOW}servo feedback: tool0{self._ANSI_RESET} (the flanges to their Rhino "
-                f"targets; tick 'Servo feedback: MoCap bar markers' to aim the bar by its markers)")
+                f"targets; the MoCap bar feedback is set off)")
 
     def _announce_exec_options(self) -> None:
         """Print the execution options an operator can easily miss, next to the mocap check at start-up."""
@@ -4915,31 +4945,20 @@ class HuskyMonitor(Node):
         self._log_spiral_mode()
 
     def _set_servo_bar_feedback(self, ticked: bool) -> None:
-        """'Servo feedback: MoCap bar markers' clicked: keep the flag and say the new mode.
+        """'Servo feedback: MoCap bar markers' clicked: change nothing, the box only shows the rule.
 
-        Unticking it for a bar that has markers is said loudly: the servo then aims
-        tool0 (the flanges) and only records the bar; for a GROUND bar louder still,
-        its MoCap feedback is what places the whole structure.
+        ! The box is always greyed (``_apply_insert_option_boxes``), so a click only
+        ! gets here on a backend that cannot grey it (PyBullet). The flag goes back
+        ! to the rule (``_servo_can_aim_bar``) and the box is set back.
 
         Args:
-            ticked (bool): The box's new state.
+            ticked (bool): The box's new state (ignored).
         """
-        self._servo_bar_feedback = bool(ticked)
-        if not ticked and self._bar_has_mocap_markers():
-            bar = getattr(self, 'active_bar_name', None)
-            mv = getattr(self, 'current_movement', None)
-            grounded = (mv is not None and getattr(mv, 'start_state', None) is not None
-                        and bool(held_ground_joints(mv.start_state)))
-            if grounded:
-                self.get_logger().warn(
-                    f"'Servo feedback: MoCap bar markers' UNTICKED for {bar}, a GROUND bar, the "
-                    f"foundation of every bar after it: its MoCap feedback is what places the "
-                    f"structure. The servo will aim tool0 (the flanges) and only record the bar. "
-                    f"Untick only on purpose.")
-            else:
-                self.get_logger().warn(
-                    f"'Servo feedback: MoCap bar markers' UNTICKED for {bar}, which has markers: "
-                    f"the servo will aim tool0 (the flanges) and only record the bar.")
+        self._servo_bar_feedback = self._servo_can_aim_bar()
+        self._apply_insert_option_boxes()
+        self.get_logger().warn(
+            "'Servo feedback: MoCap bar markers' is a reminder, not a choice: a ground bar is "
+            "servoed by its MoCap markers, every other bar by tool0.")
         self._log_servo_feedback_mode()
 
     def _read_insert_sliders(self) -> None:
@@ -14029,15 +14048,15 @@ class HuskyMonitor(Node):
                     lambda v: setattr(self, 'm2_spiral_turns', int(round(float(v)))),
                     1, M2_SPIRAL_TURNS_MAX, int(self.m2_spiral_turns), integer=True,
                 )
-                # * The servo's feedback, next to the insert's options: ticked, the servo after a
-                # * transfer (and after a grounded insert) moves the held bar's MoCap markers onto
-                # * its Rhino pose; unticked, tool0 onto the authored flange targets (the MoCap bar
-                # * is recorded alongside either way). Needs MoCap. Read once per run
-                # * (servo_bar_feedback_ticked); seeded from the flag so a reset_ui rebuild keeps
-                # * the tick: ticked per loaded step when the bar has markers, greyed when not.
+                # * The servo's feedback, next to the insert's options. ! A REMINDER, never a
+                # * choice: always greyed, it shows the rule (_servo_can_aim_bar). Ticked = a ground
+                # * bar with markers, the servo after a transfer (and after a grounded insert) moves
+                # * the held bar's MoCap markers onto its Rhino pose; unticked = every other bar,
+                # * tool0 onto the authored flange targets (the MoCap bar is recorded alongside
+                # * either way). Needs MoCap. Seeded from the flag so a reset_ui rebuild keeps it.
                 if self.USE_MOCAP or self.MOCAP_BAR_FAKE_MARKERS:
                     self.servo_bar_feedback_toggle = Toggle(
-                        'Servo feedback: MoCap bar markers (unticked = tool0)',
+                        'Servo feedback: MoCap bar markers (rule: ground bar only, other bars tool0)',
                         self._set_servo_bar_feedback,
                         bool(getattr(self, '_servo_bar_feedback', False)),
                         color=BUTTON_MOVE_RGB,

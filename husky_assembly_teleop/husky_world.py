@@ -2174,11 +2174,13 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
             subfolder is made in it).
         log_label (str): File name prefix of that record, e.g.
             ``'B3_J_M5_LM_insert_servoing'``.
-        bar_feedback (bool): Aim the held bar by MoCap instead of tool0 (the
-            panel's 'Servo feedback: MoCap bar markers' box). Only with
-            ``use_transfer`` on a step whose held bar can be measured (any bar
-            with a marker table, grounded or screwed); otherwise the loop says
-            why and aims tool0.
+        bar_feedback (bool): Aim the held bar by MoCap instead of tool0 (set by
+            the rule at each load; the panel's greyed 'Servo feedback: MoCap bar
+            markers' box only shows it). Only with
+            ``use_transfer`` on a GROUND bar whose held bar can be measured
+            (every other bar is servoed by tool0, a given rule:
+            ``monitor._servo_can_aim_bar``); otherwise the loop says why and
+            aims tool0.
         linear_only (bool): With ``use_transfer``, every correction is a straight
             line or nothing (no sampling planner): for the servo after a grounded
             insert, where the bar stands on the floor. Forced on that step,
@@ -2242,6 +2244,9 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
     if bar_feedback:
         if not use_transfer:
             why_off = 'this loop plans free moves (no bar held)'
+        elif not monitor._action_bar_is_grounded():
+            # ! A given rule: only a ground bar is servoed by its MoCap markers; every other bar by tool0.
+            why_off = f'{bar_name} is not a ground bar (only a ground bar is servoed by its MoCap markers)'
         elif T_design_bar is None:
             why_off = why_no_bar
         else:
@@ -6703,8 +6708,8 @@ def execute_grounded_insert_then_servo(monitor):
     loads the next step, whose start is the insert's authored end, and runs
     the servo loop on it (``servo_to_movement_start_live``): straight-line
     corrections only, and a load guard (``SERVO_CONTACT_MAX_LOAD_RISE_N``)
-    because the bar touches the floor. It aims the MoCap bar when the panel's
-    'Servo feedback: MoCap bar markers' box is ticked, else tool0.
+    because the bar touches the floor. It aims the MoCap bar when the bar carries
+    markers (the rule for a ground bar, ``monitor._servo_can_aim_bar``), else tool0.
 
     The servo is skipped, with a log line, after 'Cancel Exec', when the flanges
     stopped more than ``GROUNDED_INSERT_END_TOL_MM`` from the insert's end,
@@ -6748,7 +6753,7 @@ def execute_grounded_insert_then_servo(monitor):
         log.info(f"{tag} servo after the insert skipped: no step after it in this action "
                  f"starts at the insert's end.")
         return
-    # ! "Finished" is judged at the flanges, in mm: the insert is only 15 mm, a
+    # ! "Finished" is judged at the flanges, in mm: the insert is only 30 mm (15 mm before 2026-10-29), a
     # ! few hundredths of a radian at the joints, so a joint tolerance cannot tell
     # ! an insert that never ran (e.g. the wrong controller) from one that did.
     # ! Checked last: it needs the drawn live robot, as the servo itself does.

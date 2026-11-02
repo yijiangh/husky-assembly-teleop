@@ -274,8 +274,8 @@ ros2 run husky_assembly_teleop husky_monitor
       `Rhino bar lines (pink)` (a checkbox, ticked), `MoCap bar: measure + draw (streaming bars)`,
       `MoCap bar: follow live (10 Hz)` (a checkbox), `MoCap bar: clear drawing`,
       `MoCap bar: record take`, `As-built: record now`. The servo's checkbox
-      `Servo feedback: MoCap bar markers (unticked = tool0)` sits under `MOVEMENT EXE`, below the
-      spiral box (only used with Cindy in section 10). `As-built: record now` writes one line of
+      `Servo feedback: MoCap bar markers (rule: ground bar only, other bars tool0)` sits under
+      `MOVEMENT EXE`, below the spiral box: always greyed, a reminder of the rule (section 10). `As-built: record now` writes one line of
       the as-built record of an assembly run (`doc/three_robot_assembly_test_manual.md` section 9);
       this test does not need it.
 
@@ -470,11 +470,17 @@ another PC's address.
 
 Sections 0–9 run without a robot. This section runs **action 0, `B20_J_joint`, on Cindy**, twice:
 once with the servo aiming the **bar** by its MoCap fit, once aiming **tool0** as before. Both runs
-print, and save, the same comparison of three bar poses:
+print, and save, the same comparison of three bar poses.
+
+**!** Since 2026-10-29 the servo's feedback is a rule, not a choice (three-robot manual 6.e): a
+ground bar such as B20 is **always** servoed by its MoCap markers, every other bar by tool0, and
+the box only shows it. Run 2 (10.3, B20 on tool0) can no longer be set from the panel: the tool0
+runs of 2026-10-20 are the comparison, and `scripts/headless_bar_servo_smoke.py` still covers
+the tool0 mode headless.
 
 | name in the log | what it is |
 |---|---|
-| **design** | where Rhino wants the bar at that moment: the insert's start (15 mm above B20's assembled pose) during the first servo, the assembled pose during the second |
+| **design** | where Rhino wants the bar at that moment: the insert's start (the insert's length above B20's assembled pose: 30 mm in exports since 2026-10-29, 15 mm before) during the first servo, the assembled pose during the second |
 | **FK** | where the robot thinks the bar is: mocap base + arm joints (FK) → tool0, composed with the Rhino grasp (tool0 → bar) |
 | **MoCap** | where the bar is: the fit of its 8 joint balls (sections 4–5) |
 
@@ -516,16 +522,18 @@ grep -nE "^    (FAKE_HARDWARE|USE_MOCAP|MOCAP_BAR_FAKE_MARKERS) *=" "$F"     # e
 - [ ] Motive streams B20's asset (1020) with its 8 balls (0.3). B20 is on its loading spot, its four
       mocap plates mounted (0.4), and nothing will cover the balls while the arms hold it.
 - [ ] Start the monitor (section 3). Under `MOVEMENT EXE`, below the spiral box, is the checkbox
-      **`Servo feedback: MoCap bar markers (unticked = tool0)`**, unticked by default; the start-up
-      log says `servo feedback: tool0` in yellow. Since 2026-10-22 the box also works for a screwed
-      bar that carries markers (B21, B35); that use has not run on Cindy yet.
+      **`Servo feedback: MoCap bar markers (rule: ground bar only, other bars tool0)`**, always
+      greyed; the start-up log says `servo feedback: tool0 (no bar loaded; ...)` in yellow.
+      **!** Only a ground bar (B20, B34) is servoed by its markers (the rule since 2026-10-29): for
+      a screwed bar that carries markers (B21, B35) the box stays unticked and the servo aims
+      tool0 (three-robot manual 6.e).
 - [ ] Tick `Workaround: plan the transfer as a free move (no bar, from the live arms)`, as in the
       three-robot manual's 5.2 a).
 
 ### 10.2 Run 1: box ticked (the servo aims the bar)
 
-Tick `Servo feedback: MoCap bar markers (unticked = tool0)` (the log says `servo feedback: MoCap bar`
-in green), then run action 0 as the three-robot manual's
+Nothing to tick: loading B20's step ticks the greyed box by itself (B20 is a ground bar; the log
+says `servo feedback: MoCap bar` in green). Then run action 0 as the three-robot manual's
 5.2 describes: IK check, `Plan Movement`, `Exec Selected Mv Traj (auto)` on the transfer, then the
 mount pause. What is new:
 
@@ -535,8 +543,8 @@ mount pause. What is new:
 - [ ] Every reading prints one bar line next to the tool0 line, e.g.
       `[servo 0] bar bar_B20: FK-vs-design 0.05 mm/0.002°, MoCap-vs-design 4.31 mm/0.125°, MoCap-vs-FK 4.29 mm/0.124° (fit 8/8, rms 0.6 mm, asset)`.
       After it: `[IK Live Base] target is BAR-CORRECTED (servo on the MoCap bar): ...`.
-- [ ] PyBullet: the **pink** B20 copy stands at the insert's start (15 mm above its assembled
-      pose) while the servo runs. The **cyan** copy (the MoCap fit) is redrawn at every reading
+- [ ] PyBullet: the **pink** B20 copy stands at the insert's start (the insert's length above its
+      assembled pose: 30 mm since 2026-10-29) while the servo runs. The **cyan** copy (the MoCap fit) is redrawn at every reading
       and closes on the pink one.
 - [ ] The first move pauses for `Confirm Exec` as before (a few mm, the bar held). Later passes
       run alone unless a path travels more than 5°.
@@ -553,7 +561,7 @@ mount pause. What is new:
       followed by `[servo] the MoCap-bar correction is carried into the plan of B20_J_M4_LM_insert.`
 - [ ] **Insert**: `Plan Movement` →
       `[insert plan] MoCap-bar correction carried: B20_J_M4_LM_insert left goal X mm / Y deg from the authored end.`
-      X is about the `MoCap-vs-FK` gap: the insert makes Rhino's 15 mm move down from where the
+      X is about the `MoCap-vs-FK` gap: the insert makes Rhino's 30 mm move down from where the
       servo put the bar, not from the Rhino start.
 - [ ] `Exec Selected Mv Traj (auto)` → the rigid insert as in the three-robot manual's 5.2 d) (`grounded bar ... rigid insert done (no tighten).`). Then, new:
       `[insert B20_J_M4_LM_insert] servo to the start of B20_J_M5_manual_fix_foundation (the insert's end), feedback: MoCap bar; straight-line corrections only.`
@@ -580,6 +588,10 @@ mount pause. What is new:
 - [ ] **Fix foundation** as in the three-robot manual's 5.2 e). Before `Mark action done`, keep the two records (10.4).
 
 ### 10.3 Run 2: box unticked (tool0, as before)
+
+**!** **Not possible from the panel since 2026-10-29**: the box is a reminder only, and B20, a
+ground bar, is always servoed by its markers (10, three-robot manual 6.e). Kept to read the tool0
+records of 2026-10-20.
 
 Redo action 0: un-mount B20 and put it back on its loading spot, then `Reopen action (reload clean)`
 (three-robot manual 7.a). Untick the box and run it exactly as in 10.2.
