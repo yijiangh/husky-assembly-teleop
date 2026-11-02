@@ -12,6 +12,7 @@ the tools ended and runs at once. The retreat checks before that tail only repor
 
 from __future__ import annotations
 
+import asyncio
 import math
 from dataclasses import dataclass
 from functools import partial
@@ -356,10 +357,15 @@ async def run_retreat(ctx: PluginContext, robot: HuskyRobotInterface, plan: Retr
             return status, f"the tail ended {sent.status}: {sent.reason}"
         return RETREATED, (f"retreated; {failures} check(s) FAILED" if failures else "retreated; every check passed")
 
+    cancelled = False
     try:
         status, reason = await steps()
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     finally:
-        await stop_then_leave(ctx, partial(stop_all, tools), arms if compliant else [], label=label)
+        await stop_then_leave(ctx, partial(stop_all, tools), arms if compliant else [], label=label,
+                              cancelled=cancelled)
     # * A refused hold was said loudly by `send_motion`; once is enough.
     if status != HOLD_NOT_SENT:
         (ctx.log_info if status == RETREATED else ctx.log_error)(f"{label}: {status}: {reason}")

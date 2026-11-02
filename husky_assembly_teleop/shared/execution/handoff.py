@@ -13,6 +13,7 @@ pull it up to MAX_DRIFT instead of pulling on the other robot's tools.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import TYPE_CHECKING
 
@@ -116,11 +117,17 @@ async def run_handoff(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, 
     ctx.log_info(f"{label}: {gap}")
 
     recorder.phase = "close"
+    cancelled = False
     try:
         status, reason = await _close(ctx, interface, gripper, anchor, recorder, record, label)
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     finally:
-        # * Fingers still closing stop where they are (nothing happens once they stopped); then the arm stiffens.
-        restored = await stop_then_leave(ctx, gripper.stop, [interface], label=label, record=record)
+        # * Fingers still closing stop where they are (nothing happens once they stopped); then the arm stiffens,
+        #   unless cancelled: then it only holds.
+        restored = await stop_then_leave(ctx, gripper.stop, [interface], label=label, record=record,
+                                         cancelled=cancelled)
     record["gripper"].update(position=gripper.state.position, result_ok=gripper.state.last_result_ok)
     record.update(recorder.as_record())
     if status == CLOSED and not restored:

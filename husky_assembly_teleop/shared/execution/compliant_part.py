@@ -14,7 +14,7 @@ from scaffolding_assembly_core.geometry import Pose
 from ...robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER
 from ...world.tcp import tool0_in_base_link
 from ..assembly_planning.joints import arm_joint_names
-from .controllers import leave_compliance, switch_arms
+from .controllers import hold_compliant, leave_compliance, switch_arms
 from .precheck import part_problem
 from .stream import (MAX_CLOCK_STEP, PartOutcome, Recorder, Segment, fk_tcp_gap, gap_record, plan_stream,
                      target_problem, zero_wrench)
@@ -88,10 +88,11 @@ async def enter_compliance(ctx: PluginContext, arms: Collection[ArmInterface], r
 
 
 async def stop_then_leave(ctx: PluginContext, stop: Callable[[], None], arms: Collection[ArmInterface], *,
-                          label: str, record: dict | None = None) -> bool:
+                          label: str, record: dict | None = None, cancelled: bool = False) -> bool:
     """Stop the part's tools, then bring `arms` back under joint control (`leave_compliance`), even if the stop raised.
 
-    ! Call it in the part's `finally`. No arms: only the stop.
+    ! Call it in the part's `finally`. No arms: only the stop. `cancelled` (Cancel, Stop all, the plugin closing):
+    only the stop and a hold, sent and forgotten (`hold_compliant`); the arms stay compliant.
 
     Args:
         ctx: The plugin's context.
@@ -101,13 +102,16 @@ async def stop_then_leave(ctx: PluginContext, stop: Callable[[], None], arms: Co
         record: The part's record: its "switch" gets the way back's seconds and result; None: not kept.
 
     Returns:
-        bool: Whether every arm is confirmed back (`leave_compliance`); True without arms.
+        bool: Whether every arm is confirmed back (`leave_compliance`); True without arms, False when cancelled.
     """
     try:
         stop()
     finally:
         restored = True
-        if arms:
+        if arms and cancelled:
+            hold_compliant(ctx, arms, label=label)
+            restored = False
+        elif arms:
             since = ctx.now()
             restored = await leave_compliance(ctx, arms, label=label)
             if record is not None:

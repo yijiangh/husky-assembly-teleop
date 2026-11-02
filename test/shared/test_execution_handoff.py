@@ -171,8 +171,8 @@ def test_a_close_cancelled_from_outside_is_not_closed():
     assert lab.gripper._action.goals[0].cancelled and lab.arm.state.controllers.active == JOINT
 
 
-def test_a_cancel_stops_the_fingers_holds_the_arm_and_brings_it_back():
-    """Cancelled mid-close: the goal cancelled, a hold at the TCP, joint control, then CancelledError."""
+def test_a_cancel_stops_the_fingers_and_holds_the_arm_without_switching():
+    """Cancelled mid-close: the goal cancelled, a hold at the TCP, the arm left compliant, then CancelledError."""
     lab = Lab(delay=10.0)
 
     async def scenario():
@@ -185,8 +185,8 @@ def test_a_cancel_stops_the_fingers_holds_the_arm_and_brings_it_back():
 
     asyncio.run(scenario())
     assert lab.gripper._action.goals[0].cancelled
-    assert lab.sent("target")[-1].hold and lab.arm.state.controllers.active == JOINT
-    assert lab.arm.controllers.switches == [COMPLIANCE, JOINT]
+    assert lab.sent("target")[-1].hold and lab.arm.state.controllers.active == COMPLIANCE
+    assert lab.arm.controllers.switches == [COMPLIANCE]
 
 
 def test_a_refused_switch_to_compliance_closes_nothing():

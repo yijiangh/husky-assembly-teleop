@@ -367,8 +367,8 @@ def test_a_dry_run_sends_nothing():
     assert any(line.startswith("DRY RUN a200-0806: retreat") for line in lab.ctx.lines("warn"))
 
 
-def test_a_cancel_during_the_break_out_stops_the_tools_holds_and_restores_joint_control():
-    """Cancelled after three targets: STOP both tools, hold each arm at its TCP, JTC; then CancelledError."""
+def test_a_cancel_during_the_break_out_stops_the_tools_and_holds_without_switching():
+    """Cancelled after three targets: STOP both tools, hold each arm at its TCP, no switch; then CancelledError."""
     lab = Lab()
     plan = lab.plan()
     cut = []
@@ -387,9 +387,8 @@ def test_a_cancel_during_the_break_out_stops_the_tools_holds_and_restores_joint_
     after = [event for event in lab.events()[cut[0]:] if not event.endswith(": target")]
     assert not any(event.endswith(": target") for event in lab.events()[cut[0] + 2:])
     assert after == ["left_ur_arm: STOP", "right_ur_arm: STOP", "left_ur_arm: zero wrench", "left_ur_arm: hold",
-                     "left_ur_arm: switch to JTC", "right_ur_arm: zero wrench", "right_ur_arm: hold",
-                     "right_ur_arm: switch to JTC"]
-    assert all(arm.controllers.is_active(JOINT) for arm in lab.robot.arms.values())
+                     "right_ur_arm: zero wrench", "right_ur_arm: hold"]
+    assert not any(arm.controllers.is_active(JOINT) for arm in lab.robot.arms.values())
 
 
 def test_arms_not_back_under_joint_control_end_failed_and_nothing_more_is_sent():

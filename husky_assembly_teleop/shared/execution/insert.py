@@ -14,6 +14,7 @@ plugin task.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from dataclasses import dataclass
 from functools import partial
@@ -263,13 +264,17 @@ async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
             return CANCELLED, "Cancel at the spiral's end"
         return FAILED, f"compliant part: {ended}"
 
+    cancelled = False
     try:
         status, reason = await steps()
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     finally:
         # ! An arm already back must not be held again: under the joint controller a hold sends a trajectory.
         restored = await stop_then_leave(ctx, partial(stop_all, tools),
                                          [arm for arm in arms if arm.config.name not in back_early], label=label,
-                                         record=record)
+                                         record=record, cancelled=cancelled)
     record.update(recorder.as_record(), stall_times=dict(gate.stall_times) if gate is not None else {})
     outcome = PartOutcome(status, reason, ctx.now() - started, record)
     if outcome.ok and not restored:

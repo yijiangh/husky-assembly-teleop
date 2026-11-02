@@ -248,8 +248,8 @@ def test_no_stall_holds_the_end_until_the_ceiling():
     assert lab.commands("left_ur_arm")[-1] == STOP and lab.running() == [JOINT, JOINT]
 
 
-def test_cancel_during_compliance_stops_the_tools_holds_at_the_tcp_and_switches_back():
-    """Cancelled while streaming: no more targets, STOP, each arm's last target a hold at its TCP, joint control."""
+def test_cancel_during_compliance_stops_the_tools_and_holds_at_the_tcp_without_switching():
+    """Cancelled while streaming: no more targets, STOP, each arm's last target a hold at its TCP, no switch back."""
     lab = Lab(left={"screw_stall_after": None})
 
     async def scenario():
@@ -265,8 +265,9 @@ def test_cancel_during_compliance_stops_the_tools_holds_at_the_tcp_and_switches_
     for arm in ARMS:
         last, tcp = lab.sent[arm][-1]
         assert last.hold and np.allclose(last.position, tcp, atol=0.0)
-        assert lab.commands(arm)[-1] == STOP and lab.switches(arm) == [COMPLIANCE, JOINT]
-    assert lab.running() == [JOINT, JOINT]
+        assert lab.commands(arm)[-1] == STOP and lab.switches(arm) == [COMPLIANCE]
+    assert lab.running() == [COMPLIANCE, COMPLIANCE]
+    assert "switch them back in robot_control" in lab.ctx.lines("warn")[-1]
 
 
 def test_a_switch_refused_sends_no_target():
@@ -455,9 +456,9 @@ def test_a_two_mate_bar_ends_both_arms_at_the_stall():
 
 @pytest.mark.parametrize("while_settling", [False, True])
 def test_cancel_while_the_holding_arm_finishes_holds_it_and_not_the_arm_already_back(while_settling):
-    """Cancelled with the left back and the right streaming its line, or settling: right STOP, hold, joint control.
+    """Cancelled with the left back and the right streaming its line, or settling: right STOP and a hold, no switch.
 
-    The left gets no second hold, by target or trajectory; both arms end under joint control.
+    The left gets no second hold, by target or trajectory; it stays under joint control, the right under compliance.
     """
     lab = Lab(left={"screw_stall_after": 2.0})
 
@@ -491,8 +492,8 @@ def test_cancel_while_the_holding_arm_finishes_holds_it_and_not_the_arm_already_
         assert right_hold.update_time >= line_end_time(lab, "right_ur_arm") + 0.1
         assert not any("settled" in message for _level, message in lab.ctx.logs)
     assert lab.commands("left_ur_arm")[-1] == STOP and lab.commands("right_ur_arm")[-1] == STOP
-    assert lab.switches("left_ur_arm") == lab.switches("right_ur_arm") == [COMPLIANCE, JOINT]
-    assert lab.running() == [JOINT, JOINT]
+    assert lab.switches("left_ur_arm") == [COMPLIANCE, JOINT] and lab.switches("right_ur_arm") == [COMPLIANCE]
+    assert lab.running() == [JOINT, COMPLIANCE]
 
 
 # --- --- --- --- --- refusals and dry runs --- --- --- --- ---
