@@ -404,6 +404,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return None
         if still:
             self._say(goal_line(check), failed=not check.ok)
+            self._used.touch()  # * an answer arriving counts as use, as a plan does
         if still and check.ok and check.goal_joints:
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
                                                    dict(check.goal_joints), base=check.base))

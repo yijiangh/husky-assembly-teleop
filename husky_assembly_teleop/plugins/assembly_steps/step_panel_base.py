@@ -244,6 +244,9 @@ class PlannerPlugin(HuskyPlugin):
             self._say(f"no plan: {result.reason}", failed=True)
             return
         self.path, self._path_serial, self.plan_state = result.path, search.serial, "ready"
+        # * A plan arriving counts as use: its ghost shows even when the search outlasted the ghost timeout.
+        if self._used is not None:
+            self._used.touch()
         # * At the end, where the motion arrives (the old monitor's trajectory view opened there); Play runs from 0.
         self._t, self._playing = result.path.duration, False
         message, warning = search.accepted(result)

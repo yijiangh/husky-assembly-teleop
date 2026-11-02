@@ -296,6 +296,10 @@ class PlannerPanel(HuskyPlugin):
             shown, self._shown = self._shown, plan
             if plan is not None and (shown is None or plan.id != shown.id):
                 self._t, self._playing = 0.0, False
+            arrived = plan is not None and plan.state == "ready" and (
+                shown is None or plan.id != shown.id or shown.state != "ready")
+            if arrived:
+                self._used.touch()  # * a plan arriving counts as use: its ghost shows after a long search too
             # * Only a new plan, state or message is news: a re-timed plan (`set_duration`) keeps the line as it is.
             if plan is not None and (shown is None or (plan.id, plan.state, plan.message)
                                      != (shown.id, shown.state, shown.message)):

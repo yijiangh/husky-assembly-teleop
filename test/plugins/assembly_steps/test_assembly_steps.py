@@ -239,7 +239,9 @@ def test_the_path_ghost_stays_while_there_is_a_plan_whatever_the_panel_was_last_
     RecentUse._latest = None
     lab.update()
     assert calls == ["path hidden"], "no plan yet"
+    RecentUse._latest = None
     asyncio.run(lab.plan())
+    assert RecentUse._latest is lab.plugin._used, "a plan arriving counts as use"
     RecentUse._latest, calls[:] = None, []
     lab.update()
     assert calls == ["path shown"] and lab.plugin._t == lab.plugin.path.duration, "at the motion's end"
