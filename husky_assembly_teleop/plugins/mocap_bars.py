@@ -43,7 +43,8 @@ from ..shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH
 from ..shared.recordings.runs import run_folder, save_recording, write_description
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.scene_view import add_shape
-from ..ui.style import BUSY, NONE, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, note, section, values
+from ..ui.style import (BUSY, NONE, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, chip_line, note, section,
+                        values)
 from ..shared.bars.layouts import BarLayout, bar_asset_id, bar_layouts, fit_bar
 from ..shared.bars.pose import PoseDeviation, bar_ends, pose_deviation
 from ..world.marker_match import BarFit, Sensed, sensed_from_raw, transform_points
@@ -139,6 +140,9 @@ class MocapBarsPlugin(HuskyPlugin):
                                             hint="The Motive rigid body made of this bar's markers; picking a bar "
                                                  "sets its own asset (Bxx -> 10xx).")
             track = gui.add_button("Track")
+            # * The chip on its own line, the fit below it: the fit's numbers change on every refit and would drop the
+            #   chip's hover.
+            self._status_chip: viser.GuiHtmlHandle = gui.add_html(chip_line(""))
             self._status: viser.GuiHtmlHandle = gui.add_html("")
             self._show_markers = gui.add_checkbox("Show markers", initial_value=True)
 
@@ -343,9 +347,12 @@ class MocapBarsPlugin(HuskyPlugin):
             state = chip("not tracking", NONE, "choose the bar's Motive rigid body and press Track")
         else:
             state = check_chip(mocap_check(f"mocap {obj.mocap_id}", obj.mocap_id, obj, ctx.now()))
-        self._status.content = block(state + values(*self._status_lines()))
+        self._status_chip.content = chip_line(state)
+        self._status.content = block(values(*self._status_lines()))
         running = self._take is not None and not self._take.done()
-        self._result.content = (chip("recording", BUSY) if running else "") + (
+        recording = chip("recording", BUSY, "A take is being recorded; it is saved to the Drive when its seconds are "
+                                            "up.")
+        self._result.content = (recording if running else "") + (
             note(escape(self._message)) if self._message else "")
         self._draw_bar(ctx)
         self._draw_markers()

@@ -35,6 +35,12 @@ SENSOR_FILL_SECONDS = 4.0     # time for the fake sensor to reach 1.0
 NEXT_TIMEOUT = 30.0           # give up if nobody presses Next
 SENSOR_TIMEOUT = 10.0
 
+#: Every chip gets a hover text: what each step waits for, and what each ending means.
+STEP_HINTS = {"timer": f"waiting {TIMER_SECONDS:g} s", "press Next": f"press Next within {NEXT_TIMEOUT:g} s",
+              "sensor": "waiting for the fake sensor to reach 1"}
+OUTCOMES = {"done": (OK, "every cycle ran"), "timed out": (FAIL, "a step waited too long; the log says which"),
+            "cancelled": (NONE, "stopped by Cancel or a soft stop"), "failed": (FAIL, "a bug: the log has it")}
+
 
 @register
 class ExampleSequencePlugin(HuskyPlugin):
@@ -157,11 +163,13 @@ class ExampleSequencePlugin(HuskyPlugin):
             ctx: This plugin's context.
         """
         if self.running:
-            chips = chip(f"cycle {self.cycle}/{CYCLES}", INFO) + chip(self.step, BUSY)
+            chips = (chip(f"cycle {self.cycle}/{CYCLES}", INFO, "the cycle that runs")
+                     + chip(self.step, BUSY, STEP_HINTS.get(self.step, "")))
         else:
-            chips = chip("idle", NONE)
+            chips = chip("idle", NONE, "press Start to run the sequence")
         if self.outcome:
-            chips += chip(self.outcome, OK if self.outcome == "done" else FAIL)
+            # * Cancelled is grey: the operator asked for it, nothing failed.
+            chips += chip(self.outcome, *OUTCOMES[self.outcome])
         self._status.content = chip_line(chips)
 
         progress = 0.0

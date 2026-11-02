@@ -114,7 +114,7 @@ def mocap_problem(mocap_id: int | None, body: MocapBody, now: float) -> str:
     return ""
 
 
-def pose_lost(mocap_id: int | None, body: MocapBody, now: float) -> str:
+def pose_lost(mocap_id: int | None, body: MocapBody, now: float, age: bool = True) -> str:
     """Why a body's pose is too old to drive from (none valid arrived, or was captured, within POSE_TIMEOUT), or "".
 
     ! Check this, not `tracked`, before and while driving from the pose: `tracked` stays True if the relay goes silent.
@@ -124,6 +124,8 @@ def pose_lost(mocap_id: int | None, body: MocapBody, now: float) -> str:
         mocap_id: The body's rigid-body id, or None if it has none configured.
         body: The body's measured state.
         now: Current ROS time, seconds.
+        age: Whether to say how long ago the newest pose was captured, for logs and refusals (a clock out of sync
+            shows as thousands of seconds); False for a chip's title, which must not tick.
 
     Returns:
         str: The reason, or "" while the pose is live.
@@ -131,8 +133,9 @@ def pose_lost(mocap_id: int | None, body: MocapBody, now: float) -> str:
     # * marker_errors holds the arrival time of each valid sample, so its newest entry is the last valid one.
     if mocap_id is not None and body.marker_errors and now - body.marker_errors[-1][0] <= POSE_TIMEOUT:
         # * The relay republishes its last frame as valid for 1 s after the stream stops; its capture time shows it.
-        age = now - body.last_fix_time
-        if age <= POSE_TIMEOUT:
+        since = now - body.last_fix_time
+        if since <= POSE_TIMEOUT:
             return ""
-        return f"the newest mocap pose was captured {age:.1f}s ago (stream stopped, or clocks out of sync?)"
+        ago = f"{since:.1f}s" if age else f"over {POSE_TIMEOUT:g}s"
+        return f"the newest mocap pose was captured {ago} ago (stream stopped, or clocks out of sync?)"
     return mocap_problem(mocap_id, body, now) or f"no valid mocap pose for over {POSE_TIMEOUT:g}s"

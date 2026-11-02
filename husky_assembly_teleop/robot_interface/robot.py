@@ -196,7 +196,7 @@ class HuskyRobotInterface:
     def soft_stop(self, reason: str = "") -> None:
         """Stop the whole robot, and refuse every command that could move it, until an operator resumes it.
 
-        `reason` is kept in the latch for the panels, e.g. "Stop all" or what a clearance came too close to.
+        `reason` is kept in the latch for the panels, e.g. STOP_ALL_REASON or what a clearance came too close to.
 
         - Arms: stay stopped until `resume`.
         - Base: see BaseInterface.stop; `resume` switches its velocity controller on again.

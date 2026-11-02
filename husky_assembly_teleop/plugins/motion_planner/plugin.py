@@ -40,7 +40,7 @@ from ...shared.motion_planner_contract import CollisionReport, MotionPlanRequest
 from ...shared.planner.planner_panel import PLAN_TAB
 from ...shared.planner.planner_search import with_guesses
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, chip_line, values
+from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, chip_line, hover, note_line, values
 from .work import run_collisions, run_ik, run_plan, run_servo_step
 
 if TYPE_CHECKING:
@@ -355,15 +355,16 @@ class MotionPlannerPlugin(HuskyPlugin):
         """Show what runs, how many wait, the robots with a loaded world, and the last answer."""
         running = self._running
         queued = sum(not job.done() for job, _abort, _label in self._jobs) - (1 if running else 0)
-        chips = chip(escape(f"planning {running}"), BUSY) if running else chip("idle", NONE)
+        chips = (chip(escape(f"planning {running}"), BUSY, "the worker plans this request; Cancel stops it")
+                 if running else chip("idle", NONE, "no request is being planned"))
         if queued > 0:
-            chips += chip(f"{queued} queued", BUSY)
+            chips += chip(f"{queued} queued", BUSY, "requests waiting for the one being planned; Cancel drops them too")
         chips += chip(f"worlds: {escape(', '.join(self._worlds)) or 'none'}", OK if self._worlds else NONE,
                       "robots whose planning world is loaded; the first request for a robot loads its models")
         self._status.content = chip_line(chips)
-        color = FAIL if self._last_failed else NONE
-        self._details.content = block(f'<div title="{escape(self._last, quote=True)}" style="color:{color}">'
-                                      + values(escape(self._last) or "no answer yet") + "</div>")
+        # * One line, cut: an answer can list every collision pair; the whole answer is logged.
+        self._details.content = note_line(hover(self._last) if self._last else "no answer yet",
+                                          FAIL if self._last_failed else NONE)
         self._draw_tree(ctx)
         self._search.content = block(values(escape(self._progress) or "no free search yet"))
 

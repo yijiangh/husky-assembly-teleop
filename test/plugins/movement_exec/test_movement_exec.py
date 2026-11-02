@@ -25,6 +25,7 @@ from husky_assembly_teleop.plugins.movement_exec.sequences import PartOperator
 from husky_assembly_teleop.robot_interface.base import BaseState, FollowerState
 from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
+from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON
 from husky_assembly_teleop.shared.execution.basis import basis_of
 from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
 from husky_assembly_teleop.shared.execution.stream import arm_base_in_world
@@ -552,7 +553,7 @@ def test_a_confirm_clicked_in_the_tick_of_stop_all_runs_after_it_and_moves_nothi
         return await future
 
     result = run_guarded(scenario())
-    assert queued._intents.empty() and lab.cindy.soft_stopped and latch.reason == "Stop all"
+    assert queued._intents.empty() and lab.cindy.soft_stopped and latch.reason == STOP_ALL_REASON
     assert result.status == CANCELLED and "Stop all" in result.reason and result.done == (3,) and lab.free()
     events = [event for event, _fields in lab.run.records]
     assert "confirm" not in events and events[-1] == "soft_stop" and len(lab.cindy._multi_arm.messages) == 1

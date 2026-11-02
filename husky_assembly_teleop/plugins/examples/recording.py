@@ -97,9 +97,10 @@ class ExampleRecordingPlugin(HuskyPlugin):
     def draw(self, ctx: PluginContext) -> None:
         """Show whether a recording runs, the last result and the live plot."""
         if self._robot is None:
-            self._status.content = block(chip("no robot with an arm", NONE))
+            self._status.content = block(chip("no robot with an arm", NONE, "start with a robot that has an arm"))
             return
         running = self._task is not None and not self._task.done()
-        state = chip("recording", BUSY) if running else chip("idle", NONE)
+        state = (chip("recording", BUSY, f"recording the signals for {RECORD_SECONDS:g} s; saved when done")
+                 if running else chip("idle", NONE, "not recording; the line below says where the last one went"))
         self._status.content = block(state + values(self._result or "—"))
         self._plot.draw()

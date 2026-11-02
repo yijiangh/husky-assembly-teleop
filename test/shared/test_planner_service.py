@@ -18,8 +18,10 @@ from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from husky_assembly_teleop.shared.planner.planner_search import Search
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, leased
-from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
+from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON, RobotStopped, SoftStopLatch
 from husky_assembly_teleop.shared.planner.planner_service import PlannerService
+from husky_assembly_teleop.world.checks import BAD, PENDING
+from husky_assembly_teleop.world.clearance import Clearance
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
@@ -68,7 +70,7 @@ class Planner(PlannerService):
         """Plan with `work(abort)`; send succeeds; nothing is stale."""
         super().__init__()
         self.work, self.time_limit = work, time_limit
-        self.stale, self.taken, self.sent, self.forgotten = "", True, [], []
+        self.stale, self.taken, self.sent, self.forgotten, self.refused = "", True, [], [], []
 
     def make_search(self, ctx, request, abort):
         """Run `work` on the worker."""
@@ -87,6 +89,10 @@ class Planner(PlannerService):
     def forget(self, plan):
         """Keep what was forgotten."""
         self.forgotten.append(plan.id)
+
+    def commit_refused(self, plan, message):
+        """Keep the refusal."""
+        self.refused.append((plan.id, message))
 
 
 def run(planner: Planner, scenario):
@@ -291,6 +297,42 @@ def test_a_commit_to_a_robot_leased_elsewhere_sends_nothing():
     committed, latest = run(planner, scenario)
     assert not committed[0] and "robot alice is leased by robot_control: teleop" in committed[1]
     assert planner.sent == [] and latest.state == "ready" and guard.lease.holder == "robot_control: teleop"
+    # * `execute` never ran: the subclass hears of it (a run chip), with the answer.
+    assert planner.refused == [(latest.id, committed[1])]
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("how", ["sent", "refused by execute", "plan not ready"])
+def test_commit_refused_is_only_for_a_commit_that_ended_before_execute(how):
+    """A commit `execute` answered, or one `commit` refused at once (no run started), is no `commit_refused`."""
+    async def scenario(planner, ctx):
+        plan = await planner.request_plan(Request("alice"))
+        if how == "plan not ready":
+            planner.stale = "the robot moved"
+            planner.update(ctx)
+        return await planner.commit(plan.id)
+
+    planner = Planner()
+    planner.taken = how != "refused by execute"
+    committed = run(planner, scenario)
+    assert committed[0] == (how == "sent") and planner.refused == []
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("tripped, reason, label, level", [
+    (True, "", "clearance stop", BAD),
+    (False, STOP_ALL_REASON, "soft stopped", PENDING),
+    (False, "robot alice came within 1 cm of wall", "soft stopped", BAD),
+    (False, None, "cancelled", PENDING),
+])
+def test_the_run_chip_of_a_cancelled_commit_says_who_stopped_it(tripped, reason, label, level):
+    """Its own clearance or another trip is red; the operator's Stop all and Cancel are grey, as expected ends."""
+    latch = SoftStopLatch("alice")
+    latch.stopped, latch.reason = reason is not None, reason or ""
+    ctx = SimpleNamespace(world=SimpleNamespace(robots={"alice": SimpleNamespace(soft_stop_latch=latch)}))
+    clearance = Clearance(("alice",), 0.01, problem="robot alice came within 1 cm of wall" if tripped else None)
+    check = PlannerService.cancelled_check(ctx, "alice", "alice left", clearance, "the arm holds where it was")
+    assert (check.label, check.level) == (label, level)
 
 
 @pytest.mark.safety

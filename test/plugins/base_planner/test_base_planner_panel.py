@@ -11,10 +11,11 @@ from plugin_fakes import FakeGui
 from robot_fakes import lease_test_robots
 
 from husky_assembly_teleop.plugins.base_planner.panel_plugin import NO_TASK, BasePlannerPanel
-from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
+from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin, Run
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.ui.ghost import KIND_COLORS
 from husky_assembly_teleop.ui.style import FAIL, NONE
+from husky_assembly_teleop.world.checks import BAD, Check
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan
@@ -274,3 +275,44 @@ def test_the_robots_own_arms_not_measured_ask_commit_twice(tracked):
     said = panel.commit_warnings(ctx, plan)
     assert said == (["ur_arm not measured: checked where last seen, else stowed"] if tracked else [])
     assert panel.commit_unknown(ctx, plan) == ({robot.id} if tracked else set()), "the second press lets them be"
+
+
+@pytest.mark.parametrize("base, said", [
+    (Pose(), ("target from M3 (Belle)", NONE)),
+    (None, ("M3 leaves Belle's base to the planner: no target to load", FAIL)),
+])
+def test_loading_a_step_for_another_robot_says_so_past_the_next_tick(base, said):
+    """Load › Step for another robot clears the plan; the load's own line, not "plan cleared", is what stays."""
+    planner = Planner()
+    planner._plan = Plan(1, BasePlanRequest(SERIAL, GOAL), "ready", PATH)
+    panel = panel_for(planner)
+    panel._target = SimpleNamespace(pose=GOAL, set=lambda *pose: None)
+    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=lambda _text: None)
+    panel.update(ctx)
+    movement = SimpleNamespace(id="M3", start=SimpleNamespace(robots={"belle": SimpleNamespace(base=base)}))
+    selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="belle"))
+    panel._process_step = lambda _ctx: (selection, "belle", "Belle")
+    panel._load_target(ctx, "Step")
+    panel.update(ctx)
+    assert planner.plan is None and panel.serial == "belle" and (panel._message, panel._message_color) == said
+
+
+def test_each_robot_keeps_its_own_run_chip():
+    """Committing Belle keeps Alice's run chip: the panel shows the chosen robot's, none for a robot not run."""
+    robots = [RobotObject(robot_id(serial), SimpleNamespace(movable_joints=()), Pose(), {})
+              for serial in (SERIAL, "belle", "cindy")]
+    follower = SimpleNamespace(path_id=4, state="done", reason="", update_time=0.5)
+    ctx = SimpleNamespace(config=SimpleNamespace(robots=()), now=lambda: 1.0,
+                          scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot for robot in robots})),
+                          world=SimpleNamespace(robots={SERIAL: SimpleNamespace(base=SimpleNamespace(
+                              state=SimpleNamespace(follower=follower)))}))
+    planner = BasePlannerPlugin()
+    planner._runs = {SERIAL: Run(path_id=4), "belle": Run(ended=Check("refused", BAD, "belle: no follower"))}
+    panel = panel_for(Planner())
+    panel._planner = planner
+    shown = {}
+    for panel.serial in (SERIAL, "belle", "cindy"):
+        shown[panel.serial] = panel._status_html(ctx)
+    assert "reached the path" in shown[SERIAL] and "no follower" not in shown[SERIAL]
+    assert "no follower" in shown["belle"] and "reached the path" not in shown["belle"]
+    assert "reached the path" not in shown["cindy"] and "no follower" not in shown["cindy"]

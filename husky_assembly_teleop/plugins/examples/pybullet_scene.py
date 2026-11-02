@@ -85,7 +85,10 @@ class ExamplePybulletPlugin(HuskyPlugin):
                     f"{root}/{serial}/{arm_name}_tool0", axes_length=0.1, axes_radius=0.005)
 
         with ctx.view.ui() as gui:
+            # * The chip and the numbers in two handles: the tick count changes every check, which would rebuild
+            #   the chip and drop its hover.
             self._status: viser.GuiHtmlHandle = gui.add_html("")
+            self._numbers: viser.GuiHtmlHandle = gui.add_html("")
             gui.add_html(section("box", SECTION_CTRL))
             move = gui.add_button_group("Move", list(MOVES))
             move.on_click(ctx.defer_value("move box", lambda clicked: self._move_box(ctx, MOVES[clicked])))
@@ -162,15 +165,16 @@ class ExamplePybulletPlugin(HuskyPlugin):
             lines.append(f"{serial} {arm_name:<8} {numbers(pose.position, 3, 6, 2)} m")
         hits = [f"{object_id}: {', '.join(ids)}" for object_id, ids in self._collisions.items() if ids]
         if not ctx.world.robots:
-            state = chip("no robots", NONE)
+            state = chip("no robots", NONE, "start with robots:=\"...\" to check them")
         elif hits:
-            state = chip("collision", FAIL)
+            state = chip("collision", FAIL, "a robot touches something; the hits line says what")
         else:
-            state = chip("clear", OK)
+            state = chip("clear", OK, "no robot touches anything in the scene")
         # * One line for all hits, so the Move buttons below stay put.
         lines.append(f"hits          {'; '.join(hits) or '—'}")
         lines.append(f"checked tick  {self._checked_tick}")
-        self._status.content = block(state + values(*lines))
+        self._status.content = block(state)
+        self._numbers.content = block(values(*lines))
 
     def teardown(self, ctx: PluginContext) -> None:
         """Close the mirror on its worker thread, then stop the worker. May run after a partial setup.

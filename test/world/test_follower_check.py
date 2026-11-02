@@ -28,7 +28,7 @@ def test_report_counts_while_fresh():
 
 
 @pytest.mark.parametrize("report, sent_at, label, level", [
-    (REPORT, 9.0, "following 40%", WARN),
+    (REPORT, 9.0, "following", WARN),
     (replace(REPORT, state="done"), 9.0, "done", GOOD),
     (replace(REPORT, state="aborted", reason="off the path"), 9.0, "aborted", BAD),
     (replace(REPORT, path_id=6), 9.5, "sent", WARN),

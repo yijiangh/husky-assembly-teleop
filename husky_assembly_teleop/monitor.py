@@ -42,7 +42,7 @@ from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
 from .robot_interface.mocap_relay import MocapRelayInterface
 from .robot_interface.mocap_state import pose_lost
-from .robot_interface.soft_stop import MotionRefused
+from .robot_interface.soft_stop import STOP_ALL_REASON, MotionRefused
 from scaffolding_assembly_core.ids import robot_id, tracked_id
 from scaffolding_assembly_core.scene import Scene
 from .world.scene import PluginScene, take_snapshot, tracked_body
@@ -491,7 +491,7 @@ class HuskyMonitor(Node):
         self.log_warn("SOFT STOP: stopping every robot and cancelling the plugin tasks that may move one")
         for serial, robot in self._world.robots.items():
             try:
-                robot.soft_stop("Stop all")
+                robot.soft_stop(STOP_ALL_REASON)
             except Exception:
                 self.log_error(f"SOFT STOP: stopping {serial} failed:\n{traceback.format_exc()}")
         for loaded in self._loaded.values():

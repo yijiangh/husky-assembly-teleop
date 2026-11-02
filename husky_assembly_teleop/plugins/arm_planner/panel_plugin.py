@@ -25,10 +25,10 @@ from ...shared.planner.planner_search import with_guesses
 from ...ui.ghost import RobotGhost
 from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_joint_sliders
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, chip_line, section, values
+from ...ui.style import BUSY, FAIL, NONE, OK, block, check_chip, chip, chip_line, section, values
 from scaffolding_assembly_core.ids import robot_id
 from ...shared.assembly_planning.joints import arm_joint_names
-from .planner_plugin import STALE_JOINT
+from .planner_plugin import STALE_JOINT, ArmPlannerPlugin
 from ...world.clearance import ARM_STOP_DISTANCE
 
 #: The Duration slider's step, seconds.
@@ -78,6 +78,8 @@ class ArmPlannerPanel(PlannerPanel):
     def setup(self, ctx: PluginContext) -> None:
         """Build the panel, and a target ghost and a path ghost per robot with arms."""
         self._connect(ctx)
+        # * The concrete plugin, for the window below and the last motion's run chip (internal state).
+        self._planner: ArmPlannerPlugin = ctx.require(self.planner)
         self._collisions: CollisionsContract = ctx.require("collisions")
         arms = {robot.serial: [arm.name for arm in robot.arms] for robot in ctx.config.robots if robot.arms}
         if not arms:
@@ -122,7 +124,7 @@ class ArmPlannerPanel(PlannerPanel):
                 #   planner's worker (`_executor`) and shows its world (`_world`).
                 # ? `self.serial` is read on the worker; at worst it is the robot chosen a moment later.
                 # * Guessed like a plan is, so an untracked robot still shows.
-                planner = ctx.require(self.planner)
+                planner = self._planner
                 add_pybullet_window_toggle(
                     ctx, gui, planner._executor,
                     lambda gui, snapshot: planner._world.set_gui(
@@ -174,7 +176,7 @@ class ArmPlannerPanel(PlannerPanel):
         if (serial, arm) == (self.serial, self.arm):
             return
         self.serial, self.arm = serial, arm
-        self._api.clear()
+        self._clear_plan()
         self._has_target, self._load_now = False, True
 
     def _target_changed(self) -> None:
@@ -301,13 +303,7 @@ class ArmPlannerPanel(PlannerPanel):
         """Pose the ghosts and fill the panel."""
         if self.idle:
             return
-        tracked = ctx.scene.snapshot.robots[robot_id(self.serial)].base_tracked
-        robot = chip(escape(f"{self.serial} {self.arm} {'tracked' if tracked else 'not tracked'}"),
-                     OK if tracked else BUSY,
-                     "mocap tracks the base: plans start from its live pose" if tracked
-                     else "plans from where the base was last seen; a commit needs it tracked by mocap")
-        self._status.content = chip_line(robot + self._plan_chip()
-                                         + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
+        self._status.content = self._status_html(ctx)
         # Loading a target from the step can switch the robot or arm; show that here.
         self._robot.value = self.serial
         if tuple(self._arm.options) != tuple(self._arms[self.serial]):
@@ -317,6 +313,20 @@ class ArmPlannerPanel(PlannerPanel):
         self._draw_slider()
         self._draw_duration()
         self._draw_ghosts(ctx)
+
+    def _status_html(self, ctx: PluginContext) -> str:
+        """One line of chips: the robot and arm and whether the base is tracked, the plan's state and the last run's."""
+        tracked = ctx.scene.snapshot.robots[robot_id(self.serial)].base_tracked
+        robot = chip(escape(f"{self.serial} {self.arm} {'tracked' if tracked else 'not tracked'}"),
+                     OK if tracked else BUSY,
+                     "mocap tracks the base: plans start from its live pose" if tracked
+                     else "plans from where the base was last seen; a commit needs it tracked by mocap")
+        # * The chosen arm's run chip replaces "sent", and stays while the next plan is made (as the base planner's).
+        plan, motion = self._api.plan, self._planner._motions.get((self.serial, self.arm))
+        chips = robot + (self._plan_chip() if plan is None or plan.state != "sent" else "")
+        if motion is not None:
+            chips += check_chip(motion)
+        return chip_line(chips + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
 
     def _draw_duration(self) -> None:
         """Fit the Duration slider to the plan: its fastest time up to MAX_SLOWDOWN times that, at its duration."""

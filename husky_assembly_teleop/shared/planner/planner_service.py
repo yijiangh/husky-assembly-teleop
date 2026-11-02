@@ -23,7 +23,10 @@ from async_timeout import timeout
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
-from ...robot_interface.soft_stop import MotionRefused
+from ...robot_interface.soft_stop import STOP_ALL_REASON, MotionRefused
+from ...ui.style import hover
+from ...world.checks import BAD, PENDING, Check
+from ...world.clearance import Clearance
 from .plan import Plan, R
 from .planner_search import PlanningWorld, Search
 
@@ -83,6 +86,13 @@ class PlannerService(HuskyPlugin, Generic[R]):
     def forget(self, plan: Plan[R]) -> None:
         """Drop anything kept about `plan` besides the plan itself (`Search.accepted`). Optional."""
 
+    def commit_refused(self, plan: Plan[R], message: str) -> None:
+        """A commit of `plan` ended before `execute` ran (e.g. another plugin holds the lease); `message` is the answer.
+
+        Optional, e.g. for a run chip. Not called for a commit `commit` refuses at once (a plan replaced or not ready,
+        the robot still moving): no run started, so the last run's chip still holds.
+        """
+
     # --- --- --- --- --- API (PlannerContract) --- --- --- --- ---
 
     @property
@@ -137,6 +147,28 @@ class PlannerService(HuskyPlugin, Generic[R]):
     def replaced(self) -> bool:
         """Whether a newer commit is replacing the running `execute`: called while it is being cancelled."""
         return asyncio.current_task() in self._replaced
+
+    @staticmethod
+    def cancelled_check(ctx: PluginContext, serial: str, what: str, clearance: Clearance | None,
+                        cancelled: str) -> Check:
+        """The run chip of a commit cancelled for anything but `replaced`: red if tripped, grey if the operator ended it.
+
+        Args:
+            ctx: The plugin's context.
+            serial: The robot.
+            what: The robot or arm, for the hover, e.g. "alice".
+            clearance: The commit's clearance, if it had one.
+            cancelled: The hover after Cancel, after `what: `, e.g. "the commit was cancelled; the follower stopped".
+        """
+        if clearance is not None and clearance.problem:
+            return Check("clearance stop", BAD, hover(f"{what}: {clearance.problem}"))
+        latch = ctx.world.robots[serial].soft_stop_latch
+        if latch.stopped:
+            # * The operator's Stop all is an expected end, as Cancel; another reason is a trip.
+            if latch.reason == STOP_ALL_REASON:
+                return Check("soft stopped", PENDING, f"{what}: Stop all stopped it; Resume the robot to go on")
+            return Check("soft stopped", BAD, hover(f"{what}: soft stopped: {latch.reason or 'no reason given'}"))
+        return Check("cancelled", PENDING, f"{what}: {cancelled}")
 
     # --- --- --- --- --- HOOKS --- --- --- --- ---
 
@@ -233,7 +265,10 @@ class PlannerService(HuskyPlugin, Generic[R]):
 
     async def _execute(self, plan: Plan[R], replacing: asyncio.Task | None,
                        future: asyncio.Future[tuple[bool, str]]) -> None:
-        """Lease the plan's robot once the commit it replaces has ended, and `execute` the plan; always answers."""
+        """Lease the plan's robot once the commit it replaces has ended, and `execute` the plan; always answers.
+
+        Ended before `execute` ran, the answer also goes to `commit_refused`.
+        """
         def answer(sent: bool, message: str) -> None:
             if future.done():
                 return
@@ -241,13 +276,17 @@ class PlannerService(HuskyPlugin, Generic[R]):
                 self._plan = replace(plan, state="sent", message=message, warning=False)
             future.set_result((sent, message))
 
+        ran = False
         try:
             if replacing is not None:
                 await asyncio.gather(replacing, return_exceptions=True)  # it gives the lease back as it ends
             with self._ctx.lease_robots([plan.request.serial], f"commit plan {plan.id}"):
+                ran = True
                 await self.execute(self._ctx, plan, answer)
         except MotionRefused as refused:
             answer(False, f"nothing sent: {refused}")
         finally:
             self._replaced.discard(asyncio.current_task())
             answer(False, "nothing sent: the commit ended before sending")
+            if not ran:
+                self.commit_refused(plan, future.result()[1])

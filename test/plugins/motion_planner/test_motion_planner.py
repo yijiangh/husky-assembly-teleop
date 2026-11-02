@@ -28,6 +28,7 @@ from husky_assembly_teleop.shared.assembly_planning.servo_route import ServoStep
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.motion_planner_contract import MotionPlanRequest
+from husky_assembly_teleop.ui.style import FAIL, hover
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.process import write
@@ -172,6 +173,21 @@ def test_cancel_answers_queued_requests_unrun(monkeypatch):
     pool, (first, ik, collisions) = asyncio.run(scenario())
     assert first.result.reason == "stopped by its abort" and ik.reason == collisions.reason == "cancelled"
     assert pool.asked == []
+
+
+def test_the_last_answer_is_one_line_with_a_short_hover():
+    """An answer listing many collision pairs stays one line, red only if it failed, its hover cut (`hover`)."""
+    plugin = planner()
+    plugin._status, plugin._details = SimpleNamespace(content=""), SimpleNamespace(content="")
+    plugin._search, plugin._show_tree = SimpleNamespace(content=""), SimpleNamespace(value=True)
+    plugin._last = "B20_J_transfer: collides: " + ", ".join(f"link_{k} vs bar_{k}" for k in range(40))
+    for failed in (True, False):
+        plugin._last_failed = failed
+        plugin.draw(None)
+        title = plugin._details.content.split('title="')[1].split('"')[0]
+        assert title == hover(plugin._last) != plugin._last and "white-space:nowrap" in plugin._details.content
+        assert (f"color:{FAIL}" in plugin._details.content) == failed
+    assert 'title=""' not in plugin._status.content
 
 
 def test_a_callers_timeout_stops_the_search(monkeypatch):

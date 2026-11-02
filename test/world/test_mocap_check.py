@@ -75,7 +75,10 @@ def test_pose_lost_once_the_newest_pose_was_captured_too_long_ago():
     store_sample(body, message, 10.0 + POSE_TIMEOUT - 0.01)
     assert pose_lost(1, body, 10.0 + POSE_TIMEOUT - 0.01) == ""
     store_sample(body, message, 10.0 + POSE_TIMEOUT + 0.01)
-    assert "captured" in pose_lost(1, body, 10.0 + POSE_TIMEOUT + 0.01)
+    # * Logs and refusals say how old it is (a wrong clock reads thousands of s); a chip's title must not tick.
+    assert f"captured {POSE_TIMEOUT + 0.2:.1f}s ago" in pose_lost(1, body, 10.0 + POSE_TIMEOUT + 0.2)
+    assert pose_lost(1, body, 10.0 + POSE_TIMEOUT + 0.01, age=False) == pose_lost(1, body, 10.0 + POSE_TIMEOUT + 0.2,
+                                                                                  age=False)
 
 
 def test_pose_lost_without_a_mocap_id():

@@ -110,6 +110,10 @@ SETTLE_POSITION, SETTLE_YAW, SETTLE_FOR, SETTLE_TIMEOUT = 0.01, math.radians(1.0
 E_STOPPED = "e-stopped"
 #: The follower chip's colour per state; idle is gray.
 FOLLOWER_COLORS = {"following": BUSY, "done": OK, "aborted": FAIL}
+#: The follower chip's hover per state, when its report gives no reason.
+FOLLOWER_TITLES = {"idle": "The follower runs and waits for a path.", "following": "The follower drives a path.",
+                   "done": "The follower reached the end of its last path.",
+                   "aborted": "The follower gave up its last path."}
 #: Phases of a run, recorded with each sample.
 SENT, FOLLOWING, SETTLING = 0, 1, 2
 #: The preview moves with the robot once it is this far from where it was drawn.
@@ -145,8 +149,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         #: The automated series: runs done, runs asked for (0: until Stop), its start time; and where its paths stand.
         self._series: tuple[int, int, float] | None = None
         self._paths_note = ""
-        #: Why the last series stopped early, shown until the next Start; the way back's hit if that stopped it, and
-        #: the hit the collisions panel shows.
+        #: Why the last series stopped early, shown until the next Start, or the press-again question, shown for its
+        #: window (`_press_again`); the way back's hit if that stopped it, and the hit the collisions panel shows.
         self._auto_alert = ""
         self._return_hit: CollisionHit | None = None
         self._reported: CollisionHit | None = None
@@ -157,6 +161,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         #: Start's and Start auto's second press while the robot's arms are not measured: button -> ROS time it waits
         #: until. Once given, the run(s) check those arms where last seen, else stowed.
         self._confirm: dict[str, float] = {}
+        #: The alert asking for that second press and the ROS time its window ends; it goes when the window does.
+        self._press_again: tuple[str, float] = ("", -math.inf)
         self._unknown_arms = False
         #: The run's error measurement, its latest sample and phase, and the time of the mocap fix measured last.
         self._tracker: Tracker | None = None
@@ -366,9 +372,18 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._confirm[button] = ctx.now() + COMMIT_CONFIRM_SECONDS
             self._auto_alert = (f"Press {button} again within {COMMIT_CONFIRM_SECONDS:g} s to drive with "
                                 f"{unknown_parts(robot)} not measured: checked where last seen, else stowed")
+            self._press_again = self._auto_alert, self._confirm[button]
             return True
         self._unknown_arms = unknown
         return False
+
+    def _drop_press_again(self, now: float) -> None:
+        """Take the second-press alert down once its window has passed (a later alert stays)."""
+        text, until = self._press_again
+        if text and now > until:
+            if self._auto_alert == text:
+                self._auto_alert = ""
+            self._press_again = "", -math.inf
 
     # --- --- --- --- --- RUNS (tasks) --- --- --- --- ---
 
@@ -811,6 +826,7 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._record.values(f"{self._sent.serial}_floor_pose")[:, :2]
         self._markers.trail(trail)
         self._markers.follower(self._follower(ctx))
+        self._drop_press_again(ctx.now())
         self._status.content = self._status_html(ctx)
         self._details.content = self._details_html(ctx)
         self._progress.value = self._progress_percent()
@@ -821,14 +837,16 @@ class BaseExperimentPlugin(HuskyPlugin):
         """Chips on one line: robot, mocap, follower, velocity controller, run."""
         base = ctx.world.robots[self.serial].base
         chips = chip(escape(self.serial), SECTION_CTRL, "The robot the experiment drives.")
-        lost = pose_lost(base.mocap_id, base.state, ctx.now())
-        chips += (chip("not tracked", FAIL, lost) if lost
+        lost = pose_lost(base.mocap_id, base.state, ctx.now(), age=False)
+        # * Not tracked and no follower are amber, as in the planners: nothing failed yet; Start refuses in red.
+        chips += (chip("not tracked", BUSY, lost) if lost
                   else chip("tracked", OK, "Mocap tracks the base; a run needs it."))
         follower = self._follower(ctx)
         if follower is None:
-            chips += chip("no follower", FAIL, "start crl_husky pure_pursuit (or pure_pursuit_sim.launch.py)")
+            chips += chip("no follower", BUSY, "start crl_husky pure_pursuit (or pure_pursuit_sim.launch.py)")
         else:
-            chips += chip(f"follower {follower.state}", FOLLOWER_COLORS.get(follower.state, NONE), follower.reason)
+            chips += chip(f"follower {follower.state}", FOLLOWER_COLORS.get(follower.state, NONE),
+                          follower.reason or FOLLOWER_TITLES.get(follower.state, ""))
         if not base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
             chips += chip("velocity controller off", BUSY, "the base will not move (fine in the simulator)")
         if self.running:
@@ -845,8 +863,8 @@ class BaseExperimentPlugin(HuskyPlugin):
     def _details_html(self, ctx: PluginContext) -> str:
         """The guard's and automation's alerts, then the plan and the follower's numbers in a fixed number of rows.
 
-        ! The alerts stay until the next Start: the operator has to deal with them. They sit here, below the controls,
-        so they push nothing.
+        ! The alerts stay until the next Start (the operator has to deal with them); a press-again question only for
+        its window. They sit here, below the controls, so they push nothing.
         """
         plan = self._sent if self.running else self._preview
         if plan is None:

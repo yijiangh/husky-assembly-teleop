@@ -31,10 +31,13 @@ def path_check(follower: FollowerState | None, path_id: int, sent_at: float, now
             return Check("sent", WARN, "waiting for the follower to take the path")
         return Check("replaced", BAD, f"the follower is on path {follower.path_id}, not ours")
     if follower.state == "following":
-        return Check(f"following {follower.progress:.0%}", WARN)
+        # * No progress figure: it changes with every report, which would drop the tooltip; the floor shows it.
+        return Check("following", WARN, "the follower drives the path; its reference point on the green path and "
+                                        "the robot's trail show how far it got")
     if follower.state == "done":
-        return Check("done", GOOD)
+        return Check("done", GOOD, "the follower reached the path's end")
     if follower.state == "idle":
         # * No path, or stopped by an empty one: Cancel and Stop all send that.
-        return Check("idle", PENDING, follower.reason)
-    return Check(follower.state, BAD, follower.reason)
+        return Check("idle", PENDING, follower.reason or "the follower stopped before the end: Cancel or Stop all "
+                                                         "sent it an empty path")
+    return Check(follower.state, BAD, follower.reason or f"the follower reports {follower.state}")

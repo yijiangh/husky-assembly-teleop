@@ -94,7 +94,7 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
         """
         robot = ctx.world.robots[serial]
         arm = robot.arms[arm_name]
-        self.outcome, self._refused = ("running", ""), None
+        self.outcome, self._refused = ("running", "the wrist turns out and back; Cancel stops it"), None
         freeze = None
         try:
             with ctx.lease_robots([serial], f"wiggle {serial} {arm_name}"):
@@ -117,7 +117,7 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
                         #   slider), and the lease would go back while the arm still moves.
                         await ctx.wait_until(lambda: _settled(ctx, arm, target), timeout_s=duration + MOVE_MARGIN,
                                              description=f"{serial} {arm_name} to arrive")
-            self.outcome = ("done", "")
+            self.outcome = ("done", "the wrist turned out and back")
         except MotionRefused as refused:
             # Expected: another holder has the robot's lease, or something moved before the start.
             self.outcome, self._refused = ("", ""), (refused.label, str(refused), ctx.now())
@@ -128,7 +128,7 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
         except asyncio.CancelledError:
             # * Cancel, Stop all, or the freeze; the freeze says if it was the freeze.
             self.outcome = ("freeze broken", freeze.problem) if freeze is not None and freeze.problem \
-                else ("cancelled", "")
+                else ("cancelled", "stopped by Cancel or Stop all; the arm holds")
             arm.hold()  # ! Holding needs no lease, and giving the lease back never stops an arm by itself.
             raise
 
@@ -142,10 +142,12 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
         for serial, robot in ctx.world.robots.items():
             lease = robot.lease_slot.lease
             chips += chip(f"{serial} {'held' if lease else 'free'}", BUSY if lease else NONE,
-                          lease.holder if lease else "")
+                          f"leased by {lease.holder}" if lease else "nothing in this monitor holds its lease")
         label, reason = self.outcome
         if label:
-            chips += chip(label, BUSY if label == "running" else OK if label == "done" else FAIL, reason)
+            # * Cancelled is grey: the operator asked for it, nothing failed.
+            color = {"running": BUSY, "done": OK, "cancelled": NONE}.get(label, FAIL)
+            chips += chip(label, color, reason)
         if self._refused is not None and ctx.now() - self._refused[2] <= REFUSAL_SHOWN:
             chips += chip(self._refused[0], FAIL, self._refused[1])
         self._status.content = chip_line(chips)

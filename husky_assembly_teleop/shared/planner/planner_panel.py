@@ -25,7 +25,7 @@ from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...colors import ACTION, TEAL, WHITE, rgb
 from ...ui.css import button_group_color_css, group_buttons
 from ...ui.phone import columns_css
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, hover, note, section
+from ...ui.style import BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, chip, hover, note, section
 from ...world.stand_ins import unknown_parts, unknown_robots
 from scaffolding_assembly_core.ids import robot_id
 from .plan import Plan, PlannerContract
@@ -53,9 +53,9 @@ COMMIT_STYLE = f"<style>{columns_css(viser.Icon.SEND, 2)}</style>"
 _PLAN_CHIPS = {None: ("no plan", NONE, "Set a target and press Plan."),
                "planning": ("planning…", BUSY, "The planner searches; the line below the buttons says how it goes."),
                "ready": ("plan ready", OK, "Play previews it; Commit sends it."),
-               "stale": ("plan stale: replan", BUSY, "The robot moved since planning; the line below says how. "
-                                                     "Plan again."),
-               "sent": ("sent", OK, "Sent to the robot; Cancel stops it."),
+               "stale": ("plan stale: replan", BUSY, "The plan no longer fits what is measured; the line below the "
+                                                     "buttons says why. Plan again."),
+               "sent": ("sent", INFO, "Sent to the robot; the panel's run chip says how it goes. Cancel stops it."),
                "failed": ("no plan found", FAIL, "The line below the buttons says why."),
                "cancelled": ("cancelled", NONE, "Planning was stopped; Plan tries again.")}
 
@@ -201,7 +201,7 @@ class PlannerPanel(HuskyPlugin):
                 self._t = 0.0  # play again from the start
             self._playing = not self._playing
         elif label == "Clear":
-            self._api.clear()
+            self._clear_plan()
 
     def _plan(self, ctx: PluginContext) -> None:
         """Ask the planner for a plan to the target, unless one is being planned or there is no target."""
@@ -215,6 +215,12 @@ class PlannerPanel(HuskyPlugin):
         request = self.make_request(ctx)
         if request is not None:
             self._api.request_plan(request)
+
+    def _clear_plan(self) -> None:
+        """Forget the plan (`PlannerContract.clear`) and say so, if there was one; a caller may `_say` more after."""
+        if self._api.plan is not None:
+            self._api.clear()
+            self._say("plan cleared")
 
     def _scrub(self, t: float) -> None:
         """Show the path at time `t`."""
@@ -304,7 +310,9 @@ class PlannerPanel(HuskyPlugin):
             if plan is not None and (shown is None or (plan.id, plan.state, plan.message)
                                      != (shown.id, shown.state, shown.message)):
                 failed = plan.state == "failed"
-                self._say(plan.message, FAIL if failed else BUSY if plan.warning else NONE)
+                # * A sent plan's message is the commit's answer: green, as `_report` shows it, whichever runs last.
+                self._say(plan.message, FAIL if failed else OK if plan.state == "sent" else BUSY if plan.warning
+                          else NONE)
                 if failed or plan.warning:
                     ctx.log_warn(plan.message)  # * the line's hover may be cut; the console keeps it whole
         if self._playing and plan is not None and plan.path is not None:

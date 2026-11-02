@@ -13,6 +13,7 @@ from scipy.spatial.transform import Rotation
 
 from repo_paths import DATA
 from test_floor_calibration_plugin import floor_exports, make_ctx, server  # noqa: F401 (the viser server fixture)
+from husky_assembly_teleop.colors import FAIL, OK
 from husky_assembly_teleop.plugins.mocap_probe import EXPORT_FOLDER, MocapProbePlugin
 from husky_assembly_teleop.robot_interface.mocap_definitions import read_cameras
 from husky_assembly_teleop.robot_interface.mocap_relay import FloorCalibrationState
@@ -121,6 +122,34 @@ def test_use_refit_is_refused_while_anything_moves_and_otherwise_asks_the_relay(
     plugin._use_refit_now(ctx)
     asyncio.run(tasks[0])
     assert asked == [True] and plugin._floor_message.startswith("refit adopted")
+
+
+def test_a_failed_relay_call_shows_red_and_a_drive_error_is_logged_once(server, tmp_path):  # noqa: F811
+    """A raising service call replaces the old answer; the relay's long Drive error is cut on hover and logged once."""
+    ctx = make_ctx(server, tmp_path)
+    relay = ctx.world.mocap_relay
+    error = "cannot read " + "/a/long/drive/path" * 12
+    relay.state.frame = FloorCalibrationState("refit_pending", "f.json", error=error, folder=ROBOTS)
+    relay.use_refit = lambda: "future"
+    tasks, warned = [], []
+    ctx.spawn = lambda _label, work: tasks.append(work)
+    ctx.log_warn = warned.append
+
+    async def broken(_future):
+        raise RuntimeError("service gone")
+
+    ctx.ros = broken
+    plugin = MocapProbePlugin()
+    plugin.setup(ctx)
+    plugin._show("an old answer", OK, floor=True)
+    plugin.draw(ctx)
+    plugin.draw(ctx)
+    assert len([text for text in warned if error in text]) == 1
+    assert error not in plugin._frame_chips.content and "full text in the console" in plugin._frame_chips.content
+    plugin._use_refit_now(ctx)
+    asyncio.run(tasks[0])
+    assert plugin._floor_message.startswith("use refit failed") and plugin._floor_message_color == FAIL
+    assert "service gone" in warned[-1]
 
 
 @pytest.mark.parametrize("status", ["refit_pending", "untrusted", "error"])

@@ -80,6 +80,8 @@ class ExampleUiPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        state = chip("zero", NONE) if self.count == 0 else chip("counting", OK)
+        # * Every chip gets a hover text; the numbers below change on presses only, so it stays readable.
+        state = (chip("zero", NONE, "the count is 0; press + to count") if self.count == 0
+                 else chip("counting", OK, "the count is not 0; Reset sets it back"))
         self._status.content = block(state + values(f"count   {self.count:+5d}",
                                                     f"presses {self.presses:5d}"))

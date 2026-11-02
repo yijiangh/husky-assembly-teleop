@@ -6,6 +6,9 @@ Stopping (`hold`, `stop`, `stop_path`, a zero twist, a tool's `stop`) always goe
 
 from __future__ import annotations
 
+#: The latch's reason for the operator's Stop all (`HuskyMonitor._soft_stop`); a clearance trip gives its problem.
+STOP_ALL_REASON = "Stop all"
+
 
 class MotionRefused(Exception):
     """A motion refused for an operator's reason, not a bug: soft stop, no lease, or a broken freeze.
@@ -29,7 +32,7 @@ class SoftStopLatch:
     Attributes:
         serial: The robot, for messages.
         stopped: True from a soft stop until the next resume.
-        reason: Why it was stopped, e.g. "Stop all"; "" when not stopped or not said.
+        reason: Why it was stopped, e.g. STOP_ALL_REASON; "" when not stopped or not said.
     """
 
     def __init__(self, serial: str):

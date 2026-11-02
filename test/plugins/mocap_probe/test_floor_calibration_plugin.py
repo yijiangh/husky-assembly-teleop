@@ -73,6 +73,33 @@ def make_ctx(server: viser.ViserServer, drive: Path) -> SimpleNamespace:
                            log_info=lambda _text: None, log_warn=lambda _text: None)
 
 
+def test_the_chips_stay_the_same_while_the_probe_moves(server, tmp_path):
+    """Pose, height and sample count change on their own lines: each chip line, and so its hover, stays the same."""
+    ctx = make_ctx(server, tmp_path)
+    ctx.spawn = lambda _name, coroutine, **_options: coroutine.close()
+    plugin = MocapProbePlugin()
+    plugin.setup(ctx)
+    for x, y in np.random.default_rng(0).uniform(-3, 3, (8, 2)):
+        ctx.probe.position = np.array([x, y, 0.02])
+        plugin._record(ctx, FLOOR_LABEL)
+    plugin._set_mapping(ctx, True)
+    chips = (plugin._status_chip, plugin._floor_chips, plugin._phone_floor_chips, plugin._coverage_chip)
+    readouts = (plugin._status, plugin._floor_status, plugin._phone_floor_status, plugin._coverage_status)
+    shown = []
+    for z in (0.10, 0.25):
+        ctx.probe.position = np.array([0.0, 0.0, z])
+        ctx.probe.last_update_time += 0.01
+        plugin.update(ctx)
+        plugin.draw(ctx)
+        shown.append(([handle.content for handle in chips], [handle.content for handle in readouts]))
+    assert shown[0][0] == shown[1][0] and all(a != b for a, b in zip(shown[0][1], shown[1][1]))
+    # * Mapping is in progress (amber); no floor calibration applied keeps the poses raw (amber too).
+    assert f"background:{WARN};" in plugin._coverage_chip.content
+    assert f"background:{WARN};" in plugin._frame_chips.content
+    plugin._set_mapping(ctx, False)
+    plugin.teardown(ctx)
+
+
 def test_probe_floor_and_base_point_then_export(server, tmp_path):
     """Each floor point refits the plane; with the origin point the axes show and the export holds floor_from_raw."""
     (tmp_path / SESSIONS_FOLDER).mkdir(parents=True)
@@ -80,8 +107,8 @@ def test_probe_floor_and_base_point_then_export(server, tmp_path):
     plugin = MocapProbePlugin()
     plugin.setup(ctx)
     plugin.draw(ctx)
-    assert "no fit" in plugin._floor_status.content
-    assert "no fit" in plugin._phone_floor_status.content
+    assert "no fit" in plugin._floor_chips.content
+    assert "no fit" in plugin._phone_floor_chips.content
 
     plugin._export_floor(ctx)
     assert plugin._floor_message.startswith("not exported")
@@ -90,13 +117,13 @@ def test_probe_floor_and_base_point_then_export(server, tmp_path):
         ctx.probe.position = np.array([x, y, 0.02 + rng.normal(0.0, 3e-4)])
         plugin._record(ctx, FLOOR_LABEL)
         plugin.draw(ctx)
-    assert "fit good" in plugin._floor_status.content and "floor: 8 pts" in plugin._floor_status.content
+    assert "fit good" in plugin._floor_chips.content and "floor: 8 pts" in plugin._floor_status.content
     assert not plugin._floor_axes.visible
 
     ctx.probe.position = np.array([1.0, 2.0, 0.025])
     plugin._record(ctx, ORIGIN_LABEL)
     plugin.draw(ctx)
-    assert "frame not fixed" in plugin._floor_status.content and "origin new" in plugin._floor_status.content
+    assert "frame not fixed" in plugin._floor_chips.content and "origin new" in plugin._floor_status.content
     assert plugin._floor_axes.visible
     assert plugin._floor_axes.position == pytest.approx([1.0, 2.0, 0.02], abs=2e-3)
     w, x, y, z = plugin._floor_axes.wxyz
@@ -130,7 +157,7 @@ def test_points_in_one_spot_are_not_exported(server, tmp_path):
         plugin._record(ctx, FLOOR_LABEL)
     plugin._record(ctx, ORIGIN_LABEL)
     plugin.draw(ctx)
-    assert "fit unusable" in plugin._floor_status.content
+    assert "fit unusable" in plugin._floor_chips.content
     assert not plugin._floor_axes.visible
     plugin._export_floor(ctx)
     assert plugin._floor_message.startswith("not exported: the floor fit is unusable")

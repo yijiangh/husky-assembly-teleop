@@ -23,17 +23,21 @@ import numpy as np
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.mocap_state import pose_lost
+from ...robot_interface.soft_stop import MotionRefused
 from ...shared.arm_planner_contract import MAX_SLOWDOWN, ArmPlanRequest
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.mirrors import MirrorPool
-from ...shared.execution.send import REFUSED, ArmMotion, MotionCommand, send_motion
+from ...shared.execution.send import ARRIVED, HOLD_NOT_SENT, INTERRUPTED, REFUSED, STOPPED, TIMEOUT, ArmMotion, \
+    MotionCommand, send_motion
 from ...world.collision_hit import CollisionHit
 from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import Search, WAIT_MARGIN, unmeasured, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
-from ...world.clearance import ARM_STOP_DISTANCE, clearance_problem
+from ...ui.style import hover
+from ...world.checks import BAD, GOOD, WARN, Check
+from ...world.clearance import ARM_STOP_DISTANCE, Clearance, clearance_problem
 from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.ids import robot_id
 from .planner import ArmPath, path_hit, plan_arm
@@ -43,6 +47,9 @@ from .planner import ArmPath, path_hit, plan_arm
 STALE_JOINT = math.radians(2.0)    # rad
 STALE_POSITION = 0.05              # m
 STALE_YAW = math.radians(3.0)      # rad; 5 cm at 1 m reach, as STALE_POSITION
+#: The run chip's label for each way a committed motion ends (`send_motion`).
+MOTION_LABELS = {ARRIVED: "done", REFUSED: "refused", TIMEOUT: "timed out", STOPPED: "stopped short",
+                 INTERRUPTED: "interrupted", HOLD_NOT_SENT: "not held"}
 #: Extra time for the first plan of a robot, which loads the models, seconds.
 LOAD_ALLOWANCE = 60.0
 
@@ -81,6 +88,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         #: The latest plan's path, the base's floor pose (x, y, yaw) it was planned from, and whether mocap tracked
         #: the base then; `stale_reason` compares the base.
         self._start_base: tuple[ArmPath, tuple[float, float, float], bool] | None = None
+        #: How the last committed motion of each (serial, arm) goes, for the panel's run chip; none before a commit.
+        self._motions: dict[tuple[str, str], Check] = {}
         # ! Worker thread only (sync, search, close).
         self._world = MirrorPool()
 
@@ -216,19 +225,55 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
           slider): the lease would go back mid-motion.
         """
         serial, arm_name, path = plan.request.serial, plan.request.arm, plan.path
+        key, what = (serial, arm_name), f"{serial} {arm_name}"
+        # * The last run's chip goes: every way out below sets this run's, or none for a replaced commit.
+        self._motions.pop(key, None)
         if problem := clearance_problem(ctx.scene.snapshot.robots.get(robot_id(serial))):
             answer(False, f"nothing sent: {serial}: {problem}")
+            ctx.log_warn(f"{what}: nothing sent: {problem}")  # * the run chip's hover may be cut
+            self._motions[key] = Check("refused", BAD, hover(f"{what}: nothing sent: {problem}"))
             return
+
+        def sent() -> None:
+            answer(True, f"sent to {what}")
+            # * Not Hold: it stops the arm but not this commit, which then ends "stopped short".
+            self._motions[key] = Check("moving", WARN, f"{what} follows the path; Cancel or Stop all stops it")
+
         guard = (ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_robots=self.unknown_allowed(plan))
                  if self.clearance else nullcontext())
-        with guard:
-            ctx.log_info(f"{serial} {arm_name}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
-            outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
-                                        on_sent=lambda: answer(True, f"sent to {serial} {arm_name}"))
+        clearance: Clearance | None = None
+        try:
+            with guard as clearance:
+                ctx.log_info(f"{what}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
+                outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
+                                            on_sent=sent)
+        except asyncio.CancelledError:
+            if self.replaced():
+                self._motions.pop(key, None)
+            else:
+                self._motions[key] = self.cancelled_check(ctx, serial, what, clearance,
+                                                          "the commit was cancelled; the arm holds where it was")
+            raise
+        except MotionRefused as refused:  # e.g. the clearance cannot check the robot: nothing sent
+            ctx.log_warn(f"{what}: nothing sent: {refused}")
+            self._motions[key] = Check("refused", BAD, hover(f"{what}: nothing sent: {refused}"))
+            raise
+        except Exception as error:
+            self._motions[key] = Check("failed", BAD, hover(f"{what}: {error}"))
+            raise
         if outcome.status == REFUSED:
             answer(False, outcome.reason)
-        else:
-            (ctx.log_info if outcome.ok else ctx.log_warn)(f"{serial} {arm_name}: {outcome.reason}")
+        # * Logged, refusals too: the run chip's hover may be cut.
+        (ctx.log_info if outcome.ok else ctx.log_warn)(f"{what}: {outcome.reason}")
+        self._motions[key] = Check(MOTION_LABELS.get(outcome.status, outcome.status.lower()),
+                                   GOOD if outcome.ok else BAD, hover(f"{what}: {outcome.reason}"))
+
+    def commit_refused(self, plan: Plan[ArmPlanRequest], message: str) -> None:
+        """A commit refused before `execute` ran (e.g. another plugin holds the lease): its run chip says refused."""
+        key = (plan.request.serial, plan.request.arm)
+        what = f"{key[0]} {key[1]}"
+        self._ctx.log_warn(f"{what}: {message}")  # * the run chip's hover may be cut
+        self._motions[key] = Check("refused", BAD, hover(f"{what}: {message}"))
 
     def forget(self, plan: Plan[ArmPlanRequest]) -> None:
         """Drop the base position the plan was for."""

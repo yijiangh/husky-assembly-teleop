@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, Callable
 
 from crl_husky.follower_path import FollowerPath
@@ -28,13 +28,15 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...plugin_api.trace import Trace
 from ...robot_interface.base import BaseInterface
+from ...robot_interface.soft_stop import MotionRefused
 from ...shared.base_planner_contract import BasePlanRequest
 from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import Search, WAIT_MARGIN, unmeasured, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
-from ...world.checks import WARN, Check
+from ...ui.style import hover
+from ...world.checks import BAD, GOOD, WARN, Check
 from ...world.clearance import ALL_ARMS
 from ...world.follower import path_check
 from ...world.kinematics import STOW_TOLERANCE, from_stow
@@ -87,6 +89,22 @@ def send_to_onboard_follower(base: BaseInterface, path: BasePath) -> int:
     return base.send_path(*path.points.T, None, MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED)
 
 
+@dataclass(eq=False)
+class Run:
+    """The last commit to one robot, for its panel: the path sent, the robot's samples, and how it ended.
+
+    Nothing sent (refused): no path, and `ended` says why.
+    """
+
+    #: The follower's cut of the path sent, its id, and the ROS time it went out.
+    path: FollowerPath | None = None
+    path_id: int | None = None
+    sent_at: float = 0.0
+    trace: Trace | None = None
+    #: How the run ended, once it did; until then the follower's reports tell (`path_check`).
+    ended: Check | None = None
+
+
 @register
 class BasePlannerPlugin(PlannerService[BasePlanRequest]):
     """Plans base paths in a private PyBullet world, sends them to the onboard follower, and records them."""
@@ -105,12 +123,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         # ! Worker thread only (sync, search, close).
         self._world = PlanningWorld()
         self._algorithms: list[Algorithm] = [algorithm() for algorithm in ALGORITHMS]
-        # The path last sent: robot, follower's cut, id, ROS time it went out, and its run's samples.
-        self._sent_serial: str | None = None
-        self._sent: FollowerPath | None = None
-        self._sent_id: int | None = None
-        self._sent_at = 0.0
-        self._trace: Trace | None = None
+        #: The last commit to each robot, by serial, for its run chip and floor drawing; none before a commit.
+        self._runs: dict[str, Run] = {}
         # The last search's debug record, once it returned.
         self._debug: Debug | None = None
         # The ready plan's setup, planning time and recorded folder (None if not recorded), for its run.
@@ -230,6 +244,17 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         self._plan_record = None
         self._start_joints = None
 
+    def commit_refused(self, plan: Plan[BasePlanRequest], message: str) -> None:
+        """A commit refused before `execute` ran (e.g. another plugin holds the lease): its run chip says refused."""
+        self._refused(self._ctx, plan.request.serial, message)
+
+    def run_check(self, ctx: PluginContext, serial: str) -> Check | None:
+        """The run chip of `serial`'s last commit: how it ended, else how the follower does; None before a commit."""
+        run = self._runs.get(serial)
+        if run is None:
+            return None
+        return run.ended or self._path_check(ctx, serial, run.path_id, run.sent_at)
+
     # --- --- --- --- --- RUN (task) --- --- --- --- ---
 
     async def execute(self, ctx: PluginContext, plan: Plan[BasePlanRequest],
@@ -248,11 +273,14 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         serial = request.serial
         margin = self._algorithm(request)[1].margin
         robot, allowed = ctx.world.robots[serial], self.unknown_allowed(plan)
+        # * The last run's chip goes: every way out below sets this run's, or none for a replaced commit.
+        self._runs.pop(serial, None)
         if problem := robot.base.follow_problem():
             answer(False, f"not committed: {serial}: {problem}")
+            self._refused(ctx, serial, f"not committed: {serial}: {problem}")
             return
         sent_id, sent_at, started = None, ctx.now(), started_at()
-        outcome, rec, clearance = "stopped", None, None
+        outcome, rec, clearance, run = "stopped", None, None, None
         try:
             with ctx.record(signals.base_floor_pose(robot), signals.follower_position_error(robot),
                             signals.follower_yaw_error(robot), signals.follower_command(robot),
@@ -266,30 +294,45 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                     sent_id = send_to_onboard_follower(robot.base, path)
                 except ValueError as error:
                     answer(False, f"not committed: {error}")
+                    self._refused(ctx, serial, f"not committed: {serial}: {error}")
                     return
                 sent_at = ctx.now()
-                self._sent_serial, self._sent = serial, FollowerPath.from_poses(*path.points.T)
-                self._sent_id, self._sent_at, self._trace = sent_id, sent_at, rec
+                run = self._runs[serial] = Run(FollowerPath.from_poses(*path.points.T), sent_id, sent_at, rec)
                 ctx.log_info(f"base path {sent_id} sent to {serial}: {path.length:.2f} m, {len(path.points)} waypoints")
                 answer(True, f"sent to {serial}'s follower (path {sent_id})")
+                limit = path.duration * RUN_FACTOR + RUN_MARGIN
                 try:
                     # * Under way is WARN (sent or following); done, aborted, replaced or silent ends the run.
                     await ctx.wait_until(lambda: self._path_check(ctx, serial, sent_id, sent_at).level != WARN,
-                                         timeout_s=path.duration * RUN_FACTOR + RUN_MARGIN,
-                                         description="the follower to finish")
+                                         timeout_s=limit, description="the follower to finish")
                     check = self._path_check(ctx, serial, sent_id, sent_at)
-                    outcome = check.label + (f": {check.detail}" if check.detail else "")
+                    # * A finished run's outcome is "done" alone: the analysis counts it by that word.
+                    outcome = check.label if check.level == GOOD else f"{check.label}: {check.detail}"
                 except WaitTimeout:
                     outcome = "timed out: still following"
+                    check = Check("timed out", BAD, f"{serial} still followed the path after {limit:.0f} s; "
+                                                    f"its path was stopped")
                     robot.base.stop_path()
+                self._end(serial, run, check)
                 await ctx.sleep(SETTLE)
         except asyncio.CancelledError:
             # ! Stop the path, unless a new commit replaces this run: its path replaces this one on the follower.
-            outcome = "replaced by a new commit" if self.replaced() else "stopped"
-            if clearance is not None and clearance.problem:
-                outcome = f"soft stopped: {clearance.problem}"
+            # * Cancelled while settling, the run had ended: its outcome and chip stay.
+            if run is None or run.ended is None:
+                outcome = "replaced by a new commit" if self.replaced() else "stopped"
+                if clearance is not None and clearance.problem:
+                    outcome = f"soft stopped: {clearance.problem}"
+                if not self.replaced():
+                    self._end(serial, run, self.cancelled_check(ctx, serial, serial, clearance,
+                                                                "the commit was cancelled; the follower stopped"))
             if sent_id is not None and not self.replaced():
                 robot.base.stop_path()
+            raise
+        except Exception as error:
+            if run is None and isinstance(error, MotionRefused):  # e.g. the clearance cannot check the robot
+                self._refused(ctx, serial, f"nothing sent: {error}")
+            else:
+                self._end(serial, run, Check("failed", BAD, hover(f"{serial}: {error}")))
             raise
         finally:
             if sent_id is not None:
@@ -328,6 +371,18 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             ctx.log_error(f"base planner: run not saved: {error}")
             return
         ctx.log_info(f"base planner: run saved to {folder}")
+
+    def _refused(self, ctx: PluginContext, serial: str, message: str) -> None:
+        """Show a commit to `serial` that sent nothing on its run chip; logged, as the hover may be cut."""
+        ctx.log_warn(message)
+        self._runs[serial] = Run(ended=Check("refused", BAD, hover(message)))
+
+    def _end(self, serial: str, run: Run | None, check: Check) -> None:
+        """End `run` (None: nothing sent) with `check`, unless a newer commit to `serial` took its place."""
+        if run is None:
+            self._runs[serial] = Run(ended=check)
+        elif self._runs.get(serial) is run:
+            run.ended = check
 
     # --- --- --- --- --- READING --- --- --- --- ---
 

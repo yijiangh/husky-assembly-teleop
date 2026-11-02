@@ -54,7 +54,7 @@ def first_calibration(server, tmp_path) -> dict:  # noqa: F811
     (tmp_path / SESSIONS_FOLDER).mkdir(parents=True, exist_ok=True)
     (tmp_path / "data" / "lab").mkdir(parents=True, exist_ok=True)
     plugin, ctx = calibrate(server, tmp_path)
-    assert "frame not fixed" in plugin._floor_status.content
+    assert "frame not fixed" in plugin._floor_chips.content
     assert "no marks or anchors stored in main_frame.json" in plugin._marks_html()
     plugin._export_floor(ctx)
     plugin.teardown(ctx)
@@ -71,7 +71,7 @@ def test_the_marks_from_the_first_export_give_every_later_calibration_its_frame(
     assert stored["mark1"] == pytest.approx([3.5, -0.4], abs=1e-6)
 
     plugin, ctx = calibrate(server, tmp_path, moved=True)
-    assert "fixed 4/4" in plugin._floor_status.content
+    assert "fixed 4/4" in plugin._floor_chips.content
     assert "mark1  x +3.500 y -0.400 m" in plugin._marks_html()
     plugin._export_floor(ctx)
     [path] = floor_exports(tmp_path)
@@ -92,7 +92,7 @@ def test_a_moved_mark_exports_only_on_a_second_press_and_too_few_marks_not_at_al
     """
     first_calibration(server, tmp_path)
     plugin, ctx = calibrate(server, tmp_path, marks={**MARKS, "mark2": (-2.005, 4.0)})
-    assert "mark2 off" in plugin._floor_status.content
+    assert "mark2 off" in plugin._floor_chips.content
     plugin._export_floor(ctx)
     assert plugin._floor_message.startswith("not exported: mark2 lands")
     assert plugin._floor_message.endswith("press again within 2 s to export anyway")
@@ -110,7 +110,7 @@ def test_a_moved_mark_exports_only_on_a_second_press_and_too_few_marks_not_at_al
     export.unlink()
     plugin._remove_samples(ctx, [sample for sample in plugin.samples if sample.label in ("mark1", "mark2", "mark3")])
     plugin.draw(ctx)
-    assert "no frame" in plugin._floor_status.content
+    assert "no frame" in plugin._floor_chips.content
     plugin._export_floor(ctx)
     assert "at least two of the marks" in plugin._floor_message
     assert not floor_exports(tmp_path)
