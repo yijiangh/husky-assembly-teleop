@@ -249,10 +249,23 @@ Some plugins show content in panels separate from the main control panel. Panels
 
 The main panel (Stop all, health) floats in the top left corner, the console, minimized, in the bottom right, and the **Plan plots** and **Exec plots** windows (`assembly_steps`, `movement_exec`), minimized to their bars, at the bottom, right of the main panel; each opens by itself when it has something new to show. The plugins' tabs are docked on the right, in the order the plugins start: **Assembly** (below), **Collisions**, **Control** (`robot_control`, a tab per robot), **Plan** with a tab per planner panel (**Base**, **Motion**, **Arm**), and a tab per other plugin; each plugin's tabs carry its icon. Drag a tab out to give it a window of its own, or into another panel. Tools and plots not needed every session (`obstacles`, `debug_gizmo`, `mocap_probe`, the calibration plots) start in a minimized strip at the right edge, nested under their plugin's name. Plugins add tabs with `ctx.view.ui()` and `ctx.view.tab()`, and plugins with the same tab path share it through bands, `ctx.view.ui(band=...)` (`plugins/__init__.py`).
 
-**Your own layout.** Dragged windows are not remembered (viser never reports them). To keep a layout, write it to `~/.config/husky_monitor/layout.json` (or name a file with `-p layout:=<path>`); it is yours, never in git. It can give a top-level folder a window of its own, move a plugin's tab or start it hidden, place a window a plugin made itself, by its title, and set preferences: the monitor's `ghost_timeout` under `preferences`, and each plugin's own under `plugins.<name>.preferences` (`console`: `hidden`, the sources hidden at start; `assembly_run`: `big_buttons`, big buttons in the Assembly tab); the monitor logs each entry it cannot use and skips it. The format is in `ui/layout.py`, e.g. the Plan tabs in a floating window right of the main panel:
+**Your own layout.** Dragged windows are not remembered (viser never reports them). To keep a layout, save it as `~/.config/husky_monitor/layout.json` on the laptop running the monitor (`mkdir -p ~/.config/husky_monitor` first), or name another file with `-p layout:=<path>`. It is yours, never in git; without it the monitor uses the layout above. It can give a top-level folder a window of its own, move a plugin's tab or start it hidden, place a window a plugin made itself, by its title, and set preferences: the monitor's `ghost_timeout` under `preferences`, and each plugin's own under `plugins.<name>.preferences` (`console`: `hidden`, the sources hidden at start; `assembly_run`: `big_buttons`, big buttons in the Assembly tab); the monitor logs each entry it cannot use and skips it. The format is in `ui/layout.py`.
+
+Example, YH's layout: the Plan tabs in a floating window right of the main panel; the two plot windows minimized side by side at the bottom left (a negative coordinate counts from the right or bottom); the console's ticks and runtime lines hidden; big buttons in the Assembly tab; ghosts kept until another plugin shows its own (`0`):
 
 ```json
-{"windows": {"Plan": {"float": [410, 15], "width": 420}}}
+{
+  "windows": {"Plan": {"float": [410, 15], "width": 420}},
+  "plugins": {
+    "console": {"preferences": {"hidden": ["ticks", "runtime"]}},
+    "assembly_run": {"preferences": {"big_buttons": true}}
+  },
+  "panels": {
+    "Plan plots": {"float": [15, -15], "width": 460, "height": 560, "minimized": true},
+    "Exec plots": {"float": [485, -15], "width": 460, "height": 560, "minimized": true}
+  },
+  "preferences": {"ghost_timeout": 0}
+}
 ```
 
 To pick a plugin's icon, `scripts/icon_gallery.py` shows every icon viser ships, searchable (tabler.io shows newer versions that can look different).
