@@ -229,8 +229,8 @@ ros2 launch husky_assembly_teleop monitor.launch.py plugins:="mocap_probe"
 
 # Run an assembly step by step (assembly_run, motion_planner and movement_exec come with assembly_steps);
 # the process folder is on the Drive
-ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps robot_control" \
-    process_directory:=data_design_study/261008_2ModulesDemo_purged_process
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" \
+    plugins:="assembly_steps robot_control" process_directory:=data_design_study/261008_2ModulesDemo_purged_process
 ```
 
 More, for the planners and the plugin examples: [doc/lab/plugins.md](doc/lab/plugins.md#examples).

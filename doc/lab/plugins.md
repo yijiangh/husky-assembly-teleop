@@ -108,7 +108,8 @@ ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice" plugins:="ro
 
 # Assembly: a process, the lab obstacles and the base planner
 ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice cindy" \
-    plugins:="robot_control process obstacles base_planner_panel" process_directory:=data_design_study/260814_RobArch_support_ik
+    plugins:="robot_control process obstacles base_planner_panel" \
+    process_directory:=data_design_study/260814_RobArch_support_ik
 
 # Plan arm motions too
 ros2 launch husky_assembly_teleop monitor.launch.py robots:="cindy" plugins:="robot_control obstacles arm_planner_panel"
