@@ -42,11 +42,11 @@ export ROS_DOMAIN_ID=70          # a domain of your own, never 80; with zenoh ev
 
 ```bash
 ros2 launch husky_assembly_teleop mocap.launch.py sim:=true
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['belle']" -p plugins:="['robot_control']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="belle" plugins:="robot_control"
 ```
 
 They keep running while simulations come and go. Only one relay runs per domain; a second monitor needs
-`-p viser_port:=8095`. With `sim:=true` the relay applies the simulation's base and floor calibrations
+`viser_port:=8095`. With `sim:=true` the relay applies the simulation's base and floor calibrations
 (`sim/calibration_data/domain_<ROS_DOMAIN_ID>/`), the probe writes there, and every file says `"environment": "sim"`.
 Without it the relay reads Motive only, and a simulated robot gets no mocap pose (its base's mocap chip stays red).
 
@@ -68,7 +68,7 @@ All of them, parked 1.4 m apart, each arm with the robot's tool:
 
 ```bash
 ros2 launch husky_assembly_teleop sim.launch.py robot:=all fake_motive:=true
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','belle','cindy']" -p plugins:="['robot_control']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="robot_control"
 ```
 
 Some of them: one launch per robot, and one fake Motive for all of them:
@@ -124,7 +124,7 @@ ros2 launch husky_assembly_teleop sim.launch.py robot:=0805 fake_motive:=true \
 ```bash
 ros2 launch husky_assembly_teleop sim.launch.py robot:=0804 arms:=false sim_model:=alice_tiles_2 \
     controller_model:=ideal start_x:=1.0 start_y:=-1.5 fake_motive:=true delay_sec:=0.006
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -p plugins:="['base_exp','obstacles']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice" plugins:="base_exp obstacles"
 ```
 
 - Each base_exp run records its sim model and the fake Motive's delay and base noise (0 without one).

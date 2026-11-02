@@ -12,7 +12,7 @@ a tick. Also shows turning a state change into an event by comparing with last t
 
 ! Read only. To move a robot, call a method on the part (see robot_control).
 
-Run with:  -p plugins:="['example_robot_state']" -p robots:="['0806']"
+Run with:  plugins:="example_robot_state" robots:="0806"
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class ExampleRobotStatePlugin(HuskyPlugin):
         """
         with ctx.view.ui() as gui:
             if not ctx.world.robots:
-                gui.add_html(block(chip("no robots", NONE, "start with -p robots:=[...]")))
+                gui.add_html(block(chip("no robots", NONE, "start with robots:=\"...\"")))
             for serial, robot in ctx.world.robots.items():
                 # * Config is fixed, so it goes into the section label once.
                 arms = ", ".join(f"{name}:{arm.config.end_effector or '-'}" for name, arm in robot.arms.items())

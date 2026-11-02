@@ -333,7 +333,7 @@ def pinned_server(port: int, parameter: str, label: str) -> viser.ViserServer:
     if port and server.get_port() != port:
         server.stop()
         raise RuntimeError(f"Port {port} is taken: is another monitor running? Stop it, or pick another port "
-                           f"with -p {parameter}:=<port>.")
+                           f"with {parameter}:=<port>.")
     return server
 
 

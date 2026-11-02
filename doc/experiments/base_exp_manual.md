@@ -113,8 +113,7 @@ ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=
 **Terminal 3: monitor**, then open <http://localhost:8095> (its phone page is on 8096):
 
 ```bash
-ros2 run husky_assembly_teleop husky_monitor --ros-args \
-  -p robots:="['alice']" -p plugins:="['base_exp', 'obstacles']" -p viser_port:=8095
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice" plugins:="base_exp obstacles" viser_port:=8095
 ```
 
 Stop with Ctrl-C, monitor first.
@@ -149,8 +148,8 @@ ros2 launch crl_husky pure_pursuit.launch.py model:=ideal        # or model:=ali
 avoided:
 
 ```bash
-ros2 run husky_assembly_teleop husky_monitor --ros-args \
-  -p robots:="['alice', 'belle', 'cindy']" -p plugins:="['base_exp', 'obstacles', 'robot_control']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" \
+  plugins:="base_exp obstacles robot_control"
 ```
 
 In `robot_control`, switch Alice's `platform_velocity_controller` **on**; in `base_exp`, choose Alice. Drive her to

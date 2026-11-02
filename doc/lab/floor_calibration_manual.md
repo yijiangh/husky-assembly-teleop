@@ -20,8 +20,8 @@ Make one:
 - **The relay** running against Motive (README, "Run in the lab"): the export needs its cameras and its
   calibration folder, and goes nowhere without it.
 - **The Drive** mounted on the laptop (`HUSKY_DRIVE_ROOT`): the export goes to today's calibration session there.
-- **The monitor** with the probe: `ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="[]" -p
-  plugins:="['mocap_probe']"` (add the robots to have Use refit and Apply refuse while one moves). The probe's
+- **The monitor** with the probe: `ros2 launch husky_assembly_teleop monitor.launch.py plugins:="mocap_probe"` (add
+  `robots:="alice belle cindy"` to have Use refit and Apply refuse while one moves). The probe's
   **Floor calibration** folder on the laptop, or the phone's **Mocap › Floor** tab ([phone_manual.md](phone_manual.md)).
 - **The floor** clean where you probe (no tape bumps, cables, mats), the robots out of the way, and the four marks
   (origin, mark 1–3) uncovered. A small dent or cone holds the ball tip better than a pen cross.

@@ -34,7 +34,7 @@ Start it as usual (README, "Run in the lab"). The tabs come from the plugins you
 
 The ports are fixed so a bookmark keeps working: desktop **8080**, phone **8081**. If one is taken, usually by a
 monitor that is still running, the monitor refuses to start and says which port. A second monitor on purpose:
-`-p viser_port:=8095` (its phone page is then 8096).
+`viser_port:=8095` (its phone page is then 8096).
 
 ## 3. Open the page on the phone
 

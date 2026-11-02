@@ -41,7 +41,7 @@ _TOOL_ALIASES: dict[str, str | None] = {"robotiq_2F_85": "robotiq", "none": None
 _ROBOT_URDF_FOLDER = tempfile.TemporaryDirectory(prefix="husky_robot_urdf_")
 ROBOT_URDF_DIRECTORY = Path(_ROBOT_URDF_FOLDER.name)
 
-#: Plugins loaded before the requested ones; `-p no_default_plugins:=true` skips them.
+#: Plugins loaded before the requested ones; `no_default_plugins:=true` skips them.
 DEFAULT_PLUGINS: tuple[str, ...] = ("health", "console")
 
 
@@ -296,10 +296,10 @@ def robot_config_from_serial(token: str, data_directory: Path,
     park = park["base"]
     if tools is not None:
         if len(tools) != len(arms):
-            example = ",".join(tool or "none" for tool in (*tools, *(None,) * len(arms))[:len(arms)])
+            example = ":".join(tool or "none" for tool in (*tools, *(None,) * len(arms))[:len(arms)])
             raise ValueError(f"robot {number!r} has {len(arms)} arm(s) ({', '.join(a.name for a in arms)}), "
                              f"but {len(tools)} tool(s) were given; list one tool per arm in that order, "
-                             f"\"none\" for a bare arm, e.g. -p tools:=\"['{number}:{example}']\"")
+                             f"\"none\" for a bare arm, e.g. tools:=\"{number}:{example}\"")
         arms = tuple(replace(arm, end_effector=tool) for arm, tool in zip(arms, tools))
     urdf = absolute_mesh_urdf(urdf_file, ROBOT_URDF_DIRECTORY / f"a200_{number}.urdf")
     checks = _apply_ur_calibrations(urdf, number, arms)
@@ -372,10 +372,9 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         node: The monitor node, whose parameters are read.
 
     Example:
-        ros2 run husky_assembly_teleop husky_monitor --ros-args \
-            -p robots:="['0804','cindy']" -p plugins:="['process']" \
-            -p tools:="['0804:scaffolding_v3', '0806:scaffolding_v3,none']" \
-            -p process_directory:=data_design_study/260814_RobArch_support_ik
+        ros2 launch husky_assembly_teleop monitor.launch.py robots:="0804 cindy" plugins:="process" \
+            tools:="0804:scaffolding_v3 0806:scaffolding_v3:none" \
+            process_directory:=data_design_study/260814_RobArch_support_ik
     """
     node.declare_parameter("robots", [""])
     node.declare_parameter("tools", [""])
@@ -388,7 +387,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("ghost_timeout", MonitorConfig.ghost_timeout)
     node.declare_parameter("lab", "")
     node.declare_parameter("viser_port", MonitorConfig.viser_port)
-    # * 0: the port after viser_port, so a second monitor needs only -p viser_port:=8095.
+    # * 0: the port after viser_port, so a second monitor needs only viser_port:=8095.
     node.declare_parameter("phone_port", 0)
     node.declare_parameter("layout", "")
 
@@ -438,10 +437,10 @@ def _enabled_plugins(requested: tuple[str, ...], use_default_plugins: bool) -> t
 
 
 def _parse_tools(entries: tuple[str, ...]) -> dict[str, tuple[EndEffectorKind | None, ...]]:
-    """Read the `tools` parameter: "<serial>:<tool>[,<tool>...]" per robot.
+    """Read the `tools` parameter: "<serial>:<tool>[:<tool>...]" per robot.
 
     Args:
-        entries: The parameter's strings, e.g. ("0806:scaffolding_v3,none",).
+        entries: The parameter's strings, e.g. ("0806:scaffolding_v3:none",).
 
     Returns:
         dict[str, tuple[EndEffectorKind | None, ...]]: The tools per arm by four-digit serial; None for a bare arm.
@@ -454,8 +453,8 @@ def _parse_tools(entries: tuple[str, ...]) -> dict[str, tuple[EndEffectorKind | 
         serial, _, names = entry.partition(":")
         number = _serial_digits(serial)
         if number is None or not names:
-            raise ValueError(f"tools entry {entry!r} should look like '0806:scaffolding_v3,scaffolding_v1'")
-        tools[number] = tuple(_tool_kind(name.strip(), f"tools entry {entry!r}") for name in names.split(","))
+            raise ValueError(f"tools entry {entry!r} should look like '0806:scaffolding_v3:scaffolding_v1'")
+        tools[number] = tuple(_tool_kind(name.strip(), f"tools entry {entry!r}") for name in names.split(":"))
     return tools
 
 

@@ -12,7 +12,7 @@ mocap sample of the base. `plugin_api/signals.py` has ready-made ones of both ki
 
 ! A tick signal shows only the newest value of a faster stream (mocap 50 Hz, the tick 20 Hz): read it per message.
 
-Run with:  -p plugins:="['example_recording']" -p robots:="['0806']"
+Run with:  plugins:="example_recording" robots:="0806"
 """
 
 from __future__ import annotations

@@ -13,7 +13,7 @@ Two scrolling plots of the last few seconds, one sample per tick:
 ! `data` is a tuple of equal-length 1-D arrays: x first, then one per series in
   `series` order. Assign a new tuple: arrays edited in place are not sent.
 
-Run with:  -p plugins:="['example_plot']"
+Run with:  plugins:="example_plot"
 """
 
 from __future__ import annotations

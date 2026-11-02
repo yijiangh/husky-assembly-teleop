@@ -26,7 +26,7 @@ from scaffolding_assembly_core.scene import Body
 
 from ..colors import BODY, LAB_BORDER, TEMPORARY, rgb01
 
-#: Lab files, under the data directory; `-p lab:=<name>` picks `<name>.json`.
+#: Lab files, under the data directory; `lab:=<name>` picks `<name>.json`.
 LAB_DIRECTORY = "lab"
 #: The lab loaded without a `lab` parameter.
 DEFAULT_LAB = "main"

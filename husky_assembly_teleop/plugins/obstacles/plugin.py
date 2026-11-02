@@ -5,7 +5,7 @@ Furniture and floor border come from the lab file; temporary obstacles are for a
 under z = 0 out to the border walls, not drawn: arms, tools and what they hold collide with it, the robots' platform
 links (wheels, chassis) may touch it.
 
-- Lab obstacles come from `data/lab/<lab>.json` (`-p lab:=<name>`, default "main"), in git and the same for everyone.
+- Lab obstacles come from `data/lab/<lab>.json` (`lab:=<name>`, default "main"), in git and the same for everyone.
   One may be drawn as meshes from `data/lab/meshes/` (furniture, screens); it still collides as its shape.
   Edits stay in memory until Save; Revert goes back to the file; an amber chip shows unsaved changes.
 - Temporary obstacles (purple, "obstacles/temporary/<n>") are kept in a local file (`world/lab.TEMPORARY_FILE`),

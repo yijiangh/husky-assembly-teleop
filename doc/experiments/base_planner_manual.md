@@ -137,8 +137,7 @@ model; `fake_motive:=true` adds `sim_motive`, a fake Motive with Motive's delay 
 ([simulation_manual.md](../lab/simulation_manual.md)). Then the monitor, in the same domain:
 
 ```bash
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" \
-  -p plugins:="['robot_control', 'base_planner_panel']"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice" plugins:="robot_control base_planner_panel"
 ```
 
 ## Real robot (B and C)
@@ -148,7 +147,7 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" \
 
 Fleet settings (`rmw_zenoh_cpp`, `ROS_DOMAIN_ID=80`). On the robot, the follower, which assumes Alice's model (her
 `base_model`, as the planner does): `ros2 launch crl_husky pure_pursuit.launch.py`. On the control PC, the mocap relay and the
-monitor with `plugins:="['robot_control', 'base_planner_panel']"`; for C also `-p process_directory:=` the process folder.
+monitor with `plugins:="robot_control base_planner_panel"`; for C also `process_directory:=` the process folder.
 Switch Alice's `platform_velocity_controller` on in `robot_control`.
 
 ## Collecting attempts (the panel)

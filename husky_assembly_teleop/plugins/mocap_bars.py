@@ -20,7 +20,7 @@ recording.npz
 - * The real bar and its halves are drawn only, in this plugin's view: not scene bodies, so they never collide (the
   planned ones already do), and hidden while there is no fit.
 
-Run with:  -p plugins:="['mocap_bars']"  (loads `process`)
+Run with:  plugins:="mocap_bars"  (loads `process`)
 """
 
 from __future__ import annotations

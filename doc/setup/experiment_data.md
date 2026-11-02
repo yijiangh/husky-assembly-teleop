@@ -8,9 +8,9 @@ above it differs per user.
 # In ~/.bashrc, or each terminal: read by the monitor and the scripts
 export HUSKY_DRIVE_ROOT="$HOME/Insync/<account>/Google Drive - Shared with me/2025-03 Husky Assembly"
 
-# Or for one monitor run; the parameter wins over the variable
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -p plugins:="['base_exp']" \
-    -p drive_root:="$HOME/Insync/<account>/Google Drive - Shared with me/2025-03 Husky Assembly"
+# Or for one monitor run; the argument wins over the variable
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice" plugins:="base_exp" \
+    drive_root:="$HOME/Insync/<account>/Google Drive - Shared with me/2025-03 Husky Assembly"
 ```
 
 Paths are given relative to this folder, e.g. `data_design_study/260814_RobArch_support_ik`; absolute paths still
