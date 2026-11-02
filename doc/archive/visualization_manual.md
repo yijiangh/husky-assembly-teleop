@@ -1,6 +1,6 @@
 # Husky MoCap & Calibration Visualization Manual (Rhino8 / Grasshopper)
 
-> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see README "Running the old monitor").** Code links (`husky_monitor.py`, `utils.py`, `optitrack/`) point to files now in `old/`.
+> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see `doc/setup/old_monitor.md`).** Code links (`husky_monitor.py`, `utils.py`, `optitrack/`) point to files now in `old/`.
 > - Workflow 1, camera export: used the monitor's own NatNet client; **missing** in the new monitor, which reads mocap only through the relay.
 > - Workflow 2, calibration plots in Rhino: standalone scripts in `data/calibration_data/`, not checked against the new code.
 
@@ -10,7 +10,7 @@ camera placement, circle-fit quality, outlier points, and the robot configuratio
 each calibration point — all in one shared coordinate frame.
 
 > **Audience**: assumes you have already collected calibration data (see
-> [`calibration_manual.md`](calibration_manual.md)) and have Rhino8 installed. Every
+> [`calibration_manual.md`](../calibration_manual.md)) and have Rhino8 installed. Every
 > importer runs in **both** the Rhino8 ScriptEditor (Python 3) and a Grasshopper
 > GhPython component.
 
@@ -44,7 +44,7 @@ overlay directly in one Rhino document:
 > **Axes** = **Z-up, "rhino" convention**. The raw Motive stream is **Y-up**; the code
 > converts it to Z-up with `new = (x, −z, y)` (`mocap_pos_y_up_to_z_up` /
 > `mocap_quat_y_up_to_z_up` in
-> [`utils.py:37-51`](../husky_assembly_teleop/utils.py#L37), `MOCAP_AXIS_CONVENTION='rhino'`).
+> [`utils.py:37-51`](../../husky_assembly_teleop/utils.py#L37), `MOCAP_AXIS_CONVENTION='rhino'`).
 >
 > **Document units** = **millimeters**. Set this in Rhino once
 > (`Tools > Options > Units > Model units = Millimeters`); both workflows assume it.
@@ -52,7 +52,7 @@ overlay directly in one Rhino document:
 Why both workflows land in the same frame:
 
 - **Calibration** rigid-body poses are converted to Z-up "rhino" **at capture time** in
-  [`husky_monitor.py:4069-4071`](../husky_assembly_teleop/husky_monitor.py#L4069)
+  [`husky_monitor.py:4069-4071`](../../husky_assembly_teleop/husky_monitor.py#L4069)
   before they are cached and saved — so the saved `base_mocap_pose` / `flange_mocap_pose`
   are already in this frame.
 - **Cameras** are stored raw and converted to the same "rhino" frame by the exporter.
@@ -71,9 +71,9 @@ Pipeline: **get camera data → export to JSON/CSV → import into Rhino/GH → 
 
 Camera pose data originates from the NatNet **camera descriptions** (Type 5: name +
 position + orientation), unpacked in
-[`NatNetClient.py:1080`](../husky_assembly_teleop/optitrack/NatNetClient.py#L1080) and
+[`NatNetClient.py:1080`](../../husky_assembly_teleop/optitrack/NatNetClient.py#L1080) and
 collected by `get_mocap_camera_inventory()`
-([`husky_monitor.py:4031`](../husky_assembly_teleop/husky_monitor.py#L4031)).
+([`husky_monitor.py:4031`](../../husky_assembly_teleop/husky_monitor.py#L4031)).
 
 ### 2.1 Where to get camera data
 
@@ -85,7 +85,7 @@ timestamped `mocap_cameras_<YYYYMMDD_HHMMSS>.json` **and** `.csv` straight into 
 `Saved N mocap cameras to …`.
 
 > Handler: `collect_mocap_camera_data`
-> ([`husky_monitor.py`](../husky_assembly_teleop/husky_monitor.py)), button registered
+> ([`husky_monitor.py`](../../husky_assembly_teleop/husky_monitor.py)), button registered
 > in the calibration block next to `Export calib data to json`.
 
 <!-- SCREENSHOT: PyBullet GUI with the "collect cameras data" button highlighted -->
@@ -169,9 +169,9 @@ same frame as the cameras, so everything overlays.
 
 ### 3.1 Produce the analysis file
 
-Run the calibration pipeline (see [`calibration_manual.md` §7](calibration_manual.md#7-running-the-calibration-pipeline)).
+Run the calibration pipeline (see [`calibration_manual.md` §7](../calibration_manual.md#7-running-the-calibration-pipeline)).
 Step 1 of the pipeline,
-[`0_circle_fitting.py`](../data/calibration_data/0_circle_fitting.py), writes each
+[`0_circle_fitting.py`](../../data/calibration_data/0_circle_fitting.py), writes each
 batch's `{batch}_analysis.json` into `data/calibration_data/<date>/<batch>/`.
 
 Each `_analysis.json` holds, per take:
@@ -204,7 +204,7 @@ Done. 2 analysis file(s) staged.
 
 ### 3.3 Import points + circles, and choose which points to show
 
-Open [`rhino8_import_outliers.py`](../data/calibration_data/rhino8_import_outliers.py)
+Open [`rhino8_import_outliers.py`](../../data/calibration_data/rhino8_import_outliers.py)
 in a **GhPython** component (or ScriptEditor). Set the controls at the top:
 
 | Setting | Meaning |
@@ -273,7 +273,7 @@ Motive frame), and the `tool0` quaternion.
 
 ### 3.5 Preview a configuration with sliders
 
-Open [`robot_skeleton_viewer.py`](../data/calibration_data/robot_skeleton_viewer.py) in
+Open [`robot_skeleton_viewer.py`](../../data/calibration_data/robot_skeleton_viewer.py) in
 a **GhPython** component. Set `SKELETON_JSON` to the file from §3.4. Add **two integer
 sliders** and wire them to component **input** params named **`TAKE`** and **`POINT`**:
 

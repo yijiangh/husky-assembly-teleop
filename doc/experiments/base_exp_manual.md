@@ -106,7 +106,7 @@ ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=
 - Mocap delay and noise come from `sim_motive`, a fake Motive between the simulator and the relay: add
   `fake_motive:=true delay_sec:=0.01 noise:=0.0005,0.1` to `sim.launch.py` (or start `sim_mocap.launch.py` with them);
   each run records its delay and its base's noise as part of the sim model (0 without one). Realistic values and
-  every argument: [simulation_manual.md](simulation_manual.md).
+  every argument: [simulation_manual.md](../lab/simulation_manual.md).
 - Models are `crl_husky/config/base_models/<name>.yaml` in crl-husky: `ideal`, and `alice_tiles_2` (Alice, tiles,
   arm stowed; `alice_tiles` is the earlier fit). Single values override the sim model, e.g. `xICR:=-0.10`.
 
@@ -255,7 +255,7 @@ It writes to `$HUSKY_DRIVE_ROOT/data_experiment/base_exp/$EXP/_analysis/`, each 
 **A bad run** (e.g. something went wrong that the plugin did not notice) stays on disk: list its folder name in
 `_excluded.txt` in the experiment folder, one per line with the reason after `#`, and every report leaves it out.
 
-The reports hold numbers only; how they are built: `doc/experiment_report_guide.md`. For written results, ask Claude Code: "Run a subagent with the prompt in
+The reports hold numbers only; how they are built: `doc/experiments/experiment_report_guide.md`. For written results, ask Claude Code: "Run a subagent with the prompt in
 `$HUSKY_DRIVE_ROOT/data_experiment/base_exp/$EXP/_analysis/results_prompt.md`". It writes `results.md` there. Constant commands have their own: `commands_results_prompt.md`, which gives `commands_results.md`.
 
 ## Troubleshooting

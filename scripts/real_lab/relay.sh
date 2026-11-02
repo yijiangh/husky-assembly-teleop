@@ -1,6 +1,6 @@
 #!/bin/bash
 # Real lab: the mocap relay until Ctrl-C (this checkout's launch/mocap.launch.py): Motive's rigid bodies on ROS, each
-# robot's as its calibrated base pose, for the monitor and the robots' followers alike (doc/mocap_relay.md).
+# robot's as its calibrated base pose, for the monitor and the robots' followers alike (doc/lab/mocap_relay.md).
 #
 # ! One relay per ROS domain: it refuses to start while another one runs in domain 80 (another PC's); then use that one.
 # ! Stopping it stops mocap for everyone: never while a base drives.

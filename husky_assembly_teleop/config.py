@@ -212,7 +212,7 @@ class MonitorConfig:
 #   config/robots/<serial>/model.yaml), and so do the parked base pose and arm joints (`get_park`, park.yaml); the
 #   simulators start from the same. The arms and their namespaces are here. Each arm of the URDF is checked against
 #   its UR calibration in crl-husky at startup (`_apply_ur_calibrations`), its stock UR base frames by test
-#   (doc/ur_frames.md).
+#   (doc/lab/ur_frames.md).
 # ? TODO consolidate a robot's config further: it is spread over crl-husky's robot.yaml, env/setup.bash,
 #   mocap_config.json, model.yaml and this table.
 #: Where crl-husky's model paths start, below the data directory.

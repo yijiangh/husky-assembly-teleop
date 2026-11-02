@@ -62,7 +62,7 @@ for package in scaffolding_assembly_core husky_assembly_tamp; do
 done
 export HUSKY_DRIVE_ROOT="$FAKE_LAB_HOME/drive"
 
-# ! Every fake-lab node runs on rmw_zenoh (the lab PC needs it too: README, One-time setup).
+# ! Every fake-lab node runs on rmw_zenoh (the lab PC needs it too: README, Install).
 if [ ! -x /opt/ros/humble/lib/rmw_zenoh_cpp/rmw_zenohd ]; then
     echo "fake lab: rmw_zenoh is missing; install it once with:" \
         "sudo apt install ros-humble-rmw-zenoh-cpp ros-humble-zenoh-cpp-vendor" >&2

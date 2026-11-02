@@ -130,7 +130,7 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -
 - Each base_exp run records its sim model and the fake Motive's delay and base noise (0 without one).
 - Different `sim_model` and `controller_model` make a model mismatch. Single values override the sim model, e.g.
   `ros2 launch crl_husky pure_pursuit_sim.launch.py ... xICR:=-0.15` (the base alone).
-- More: [base_exp_manual.md](base_exp_manual.md), [base_planner_manual.md](base_planner_manual.md).
+- More: [base_exp_manual.md](../experiments/base_exp_manual.md), [base_planner_manual.md](../experiments/base_planner_manual.md).
 
 ## While it runs
 
@@ -158,6 +158,14 @@ The robot (`sim_robot`):
 | `marker_body` | 1866 | the marker's rigid body |
 | `joint_offsets` | 0 | the tool arms' encoder offsets, degrees ×6 shoulder_pan to wrist_3; `<arm namespace>:<values>` per arm |
 | `husky_urdf` | teleop's `data/husky_urdf` beside crl-husky | for the arms' mounts |
+
+The force/torque reading (`sim_wrench`, sim.launch.py only):
+
+| Argument | Default | |
+|---|---|---|
+| `fake_wrench` | `true` | start `sim_wrench`, a near-zero force/torque reading per simulated arm |
+| `wrench_bias` | `0,0,0,0,0,0` | a standing reading on every arm, fx, fy, fz N, tx, ty, tz Nm |
+| `contact_n` | 0 | force along the tool's z, N, while a simulated screw is stalled |
 
 The fake Motive (`sim_mocap`, with `fake_motive:=true`); per-body values are `<values>` for every body or
 `<id>:<values>` for one, space separated, a body's own entry winning:

@@ -2,7 +2,7 @@
 
 This is the operator manual for the first three bars of the design problem **`261008_2ModulesDemo_purged_process`**
 (the two-module demo, 78 actions) on the real robots, with the new monitor: schedule entries 1–7, **B20_J, B20_R,
-B21_J, B21_H, B21_R, B22_J, B22_R**. It is the fake-lab test (`doc/fake_lab_test_manual.md`) on the real robots: the
+B21_J, B21_H, B21_R, B22_J, B22_R**. It is the fake-lab test (`doc/lab/fake_lab_test_manual.md`) on the real robots: the
 same process, plugins and steps, run from this laptop over Zenoh.
 
 > **?** Written from the fake-lab runs and the code; not run on the robots yet. Log
@@ -36,7 +36,7 @@ How to read the steps:
 | `[REAL RUN — recorded]` | the assembly itself; every part is recorded in the run, `runs/<date>_<time>/` on the Drive |
 
 Anything that does not match an **Expect:** is worth a note (the log lines and what you did; Part 9). What each panel
-and button does in detail: the README (Panels; the Plugins table).
+and button does in detail: `doc/lab/plugins.md`.
 
 > **If you closed a terminal** (the six panes: 0.7)
 >
@@ -144,7 +144,7 @@ Something wrong at any point: Part 8.
 | Motive PC | `192.168.0.28` | the robots' bodies, and B20 / B21 as assets 1020 / 1021 (their mocap balls) |
 | remote e-stops | one per robot | pair one husky at a time (crl-husky README, Troubleshooting) |
 | the bars | B20, B21, B22, ready to hand next to Cindy's insert starts | B20 and B21 carry mocap balls, B22 none |
-| a phone (optional) | on the robot Wi-Fi | `http://192.168.0.203:8081`: Stop all, and Confirm / Cancel next to the robots (`doc/phone_manual.md`) |
+| a phone (optional) | on the robot Wi-Fi | `http://192.168.0.203:8081`: Stop all, and Confirm / Cancel next to the robots (`doc/lab/phone_manual.md`) |
 
 ### 0.4 How the PCs connect
 
@@ -277,7 +277,7 @@ Open in Chrome on this laptop: http://localhost:8080 (4.b). One page at a time.
 ```
 
 Plan holds a tab per planner panel (Base, Motion, Arm). A layout file in `~/.config/husky_monitor/layout.json` may
-place these differently, e.g. Plan in a floating window and big Assembly buttons (README, Panels).
+place these differently, e.g. Plan in a floating window and big Assembly buttons (`doc/lab/plugins.md`, Your own layout).
 
 - **Assembly** tab, top to bottom: the PROCESS section (folder, `Load`, the boxes `Transfer workaround` and
   `Rhino obstacles collide`, the ACTIONS list, the `Step` slider, `◀ mv` / `mv ▶`, the movement buttons), the step line
@@ -625,7 +625,7 @@ What it checks and what a `FAIL` means:
       stop (`Unlock` under Health, once you know why), or Stop all (`Resume`).
     - `signal` amber or red, `stamps ... in the future (robot clock ahead; time sync?)` or
       `every message over ... ms late`: the clocks (1.d), or a slow Wi-Fi link.
-- [ ] Optional, the phone: http://192.168.0.203:8081 on the robot Wi-Fi (`doc/phone_manual.md`): Stop all, Health, and
+- [ ] Optional, the phone: http://192.168.0.203:8081 on the robot Wi-Fi (`doc/lab/phone_manual.md`): Stop all, Health, and
       the Exec tab's Confirm / Cancel next to the robots.
 
 ### 4.c Load the process
@@ -1039,7 +1039,7 @@ The panel shows a `DRY RUN` chip while it is ticked. Untick it before the real E
 
 ### 7.f The run record
 
-The run's folder: `.../261008_2ModulesDemo_purged_process/runs/<date>_<time>/` on the Drive (`doc/run_record.md`):
+The run's folder: `.../261008_2ModulesDemo_purged_process/runs/<date>_<time>/` on the Drive (`doc/design/run_record.md`):
 `run.json`, `progress.json` (the marks, where each robot was left), `events.jsonl`;
 `movements/<action>/<movement>.<n>.json`, one file per part, the refused and cancelled ones included (an insert's or a
 retreat's keeps its settings, phases, switches, stall times, peak force, end errors and checks);

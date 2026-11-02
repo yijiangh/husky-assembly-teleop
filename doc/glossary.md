@@ -2,7 +2,7 @@
 
 The words this project gives a meaning of its own, one or two sentences each, with where the idea lives. Paths are
 relative to `husky_assembly_teleop/` unless they start with `doc/`, `core:` (`external/scaffolding_assembly_core/`)
-or `crl-husky:`. Plain robotics words (pose, FK, URDF, frame) are in `doc/Su_Note.md` §0.
+or `crl-husky:`. Plain robotics words (pose, FK, URDF, frame) are in `doc/archive/Su_Note.md` §0.
 
 When a word has more than one meaning, the entry says which is which. Use the qualified name ("calibration run",
 "run folder") wherever the context does not settle it.
@@ -12,7 +12,7 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **core**: only `scaffolding_assembly_core`, the library shared with the Rhino plugin and the planners: the process
   format, robots, scenes and mirrors. It imports nothing from the monitor, ROS or viser. `core:AGENTS.md`.
 - **runtime**: the monitor's own framework that ticks, owns all state and drives the plugins: `monitor.py`,
-  `config.py`, `plugin_api/`, `world/`, `robot_interface/`, `ui/`. Never call it "the core". `doc/refactor_rationale.md`.
+  `config.py`, `plugin_api/`, `world/`, `robot_interface/`, `ui/`. Never call it "the core". `doc/design/refactor_rationale.md`.
 - **plugin**: one feature with its own state, panel and scene bodies, registered with `@register` and loaded with
   `-p plugins:=[...]`. Plugins never import each other. `plugins/__init__.py`, `plugin_api/plugin.py`.
 - **contract**: the `<Name>Contract` Protocol in `shared/<name>_contract.py`, the only way one plugin reads another's
@@ -36,7 +36,7 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 ## Scene and state
 
 - **measured vs planned**: measured state is written only by ROS callbacks (`WorldState`, `RobotState`); planners
-  never write into it. `doc/refactor_rationale.md`, `world/measured.py`.
+  never write into it. `doc/design/refactor_rationale.md`, `world/measured.py`.
 - **None until measured**: no stand-in values; a reading that has not arrived is `None`, a judgement starts False.
   `robot_interface/__init__.py`.
 - **unmeasured**: joints never measured. Drawings fill them with the stow value or 0; planners and clearances refuse
@@ -46,7 +46,7 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **snapshot**: the copy of the live scene taken once per tick, before the plugins run, for planners, clearances and
   the 3D view. A write shows in the next tick's snapshot. `world/scene.py` (`take_snapshot`).
 - **mirror**: a planner's private copy of a snapshot in one collision backend (PyBullet, compas_fab), synced on that
-  planner's own worker thread and used by no other. `core:mirrors/`, `doc/scene_refactor_plan.md` §6.
+  planner's own worker thread and used by no other. `core:mirrors/`, `doc/design/scene_refactor_plan.md` §6.
 - **tracked object**: a mocap rigid body that is not a robot, scene id `tracked/<name>`, never put in the scene by a
   plugin (`ctx.track_object`). ! Its `tracked` flag stays true when the relay goes silent: check `pose_lost`.
 - **fix / pose_lost / stale reading**: a fix is one valid mocap sample; `pose_lost` means none for 0.3 s, so nothing
@@ -219,14 +219,14 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 
 - **relay**: the one mocap relay per ROS domain: owns the NatNet client, turns Y-up into Z-up, applies the floor
   calibration and each robot's base calibration and republishes per rigid body. It reads Motive or a simulation,
-  never both. `mocap_relay/`, `doc/mocap_relay.md`.
+  never both. `mocap_relay/`, `doc/lab/mocap_relay.md`.
 - **raw / lab frame**: raw is Motive's frame turned Z-up; the lab frame is the one every relayed pose is in, defined
   by the marks and anchors of `data/lab/<lab>_frame.json`. The chain: raw → [refit] → `floor_from_raw` → lab, the
   base calibration on top; `lab_from_raw` is the whole correction in use.
 - **floor calibration / refit**: the floor calibration (`floor_from_raw`, made with the mocap probe) puts raw poses in
   the lab frame; it is applied only on command. A refit is a rigid fit (Kabsch) of the anchors or truss cameras, as
   stored with the floor calibration, to where Motive puts them now; used on command, kept in memory.
-  `world/mocap_frame.py`, `world/frame_follower.py`, `doc/floor_calibration_manual.md`.
+  `world/mocap_frame.py`, `world/frame_follower.py`, `doc/lab/floor_calibration_manual.md`.
 - **mark / anchor / truss camera**: marks are points on the floor probed with the probe; anchors are the markers that
   hold Motive's continuous calibration; truss cameras are the six bolted cameras. Marks place the lab frame; anchors
   and truss cameras follow Motive's frame moving.
@@ -251,12 +251,12 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **experiment / run folder**: an experiment names a folder of run folders `<date>_<time>_<parts>/` (each with
   `experiment.json`, `recording.npz`, `report.json`); one report covers one experiment. `shared/recordings/runs.py`.
 - **experiment task / attempt**: in base planner experiments, a task is a named start, target and obstacles, and an
-  attempt is one plan from its start. Experiments A, B, C are named per manual (`doc/base_exp_manual.md`,
-  `doc/base_planner_manual.md`): the same letter is a different experiment in each.
+  attempt is one plan from its start. Experiments A, B, C are named per manual (`doc/experiments/base_exp_manual.md`,
+  `doc/experiments/base_planner_manual.md`): the same letter is a different experiment in each.
 - **hypothesis / report / results**: a hypothesis is a numbered claim the data can refute; the generated report holds
-  numbers only, the results are written from it. `doc/experiment_design_guide.md`, `doc/experiment_report_guide.md`.
+  numbers only, the results are written from it. `doc/experiments/experiment_design_guide.md`, `doc/experiments/experiment_report_guide.md`.
 - **fleet domain / sim domain**: the real robots run zenoh on ROS domain 80; a simulation uses a domain of its own,
-  and every sim launch refuses 80. `crl-husky:README.md`, `doc/simulation_manual.md`.
+  and every sim launch refuses 80. `crl-husky:README.md`, `doc/lab/simulation_manual.md`.
 - **temporary / virtual obstacles**: temporary obstacles are the operator's, kept in a local file until promoted into
   the lab file; virtual obstacles belong to a base planner experiment task and are never saved. Both are drawn purple
   and stop nothing physical. `plugins/obstacles/`, `plugins/base_planner/tasks.py`.

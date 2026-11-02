@@ -105,7 +105,7 @@ def add_target_gizmo(ctx: PluginContext, serial: str, arm: ArmInterface,
 def controller_base(ctx: PluginContext, serial: str, arm: ArmInterface) -> Pose:
     """The world pose of the compliance controller's own `base_link`: `base_link_inertia` turned by STOCK_YAW.
 
-    ? Markers are placed in it, so they show where the controller will go. See doc/ur_frames.md.
+    ? Markers are placed in it, so they show where the controller will go. See doc/lab/ur_frames.md.
     """
     inertia = ctx.kinematics.link_pose(serial, f"{arm.config.name}_base_link_inertia")
     return compose(inertia, Pose(orientation=tuple(Rotation.from_euler("z", -STOCK_YAW).as_quat())))

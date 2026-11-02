@@ -1,5 +1,7 @@
 """
-Experiment A of doc/base_planner_manual.md: every task with every planner, offline, recorded like the panel's attempts.
+Experiment A of the base planner manual: every task with every planner, offline, recorded like the panel's attempts.
+
+The manual: doc/experiments/base_planner_manual.md.
 
 For each task of the standard set (`plugins/base_planner/tasks.py`) and each planner in the Algorithm dropdown (default
 settings), plans REPEATS times (once for a planner without randomness) and saves each attempt under the experiment, as

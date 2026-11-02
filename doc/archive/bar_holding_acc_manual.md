@@ -1,7 +1,7 @@
 # Bar-holding accuracy data processing
 
-> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see README "Running the old monitor").**
-> - Recording a take: **missing** in the new monitor (`mocap_bars` plugin, `doc/plugin_roadmap.md`).
+> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see `doc/setup/old_monitor.md`).**
+> - Recording a take: **missing** in the new monitor (`mocap_bars` plugin, `doc/design/plugin_roadmap.md`).
 > - `0_` / `1_` processing scripts in `data/bar_holding_acc_data/`: import `husky_assembly_teleop.mocap_experiment`, `.cfab_session`, `.utils`, which now live in `old/`, so they do not run as they are.
 
 Two scripts turn raw mocap marker takes (recorded while the robot holds a bar
@@ -228,7 +228,7 @@ Two notes on alignment:
 ### Setting the environment `.3dm`
 
 The environment auto-loads from **`DEFAULT_ENV_3DM`** in
-[`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py) (next to
+[`husky_assembly_teleop/__init__.py`](../../husky_assembly_teleop/__init__.py) (next to
 `DESIGN_PROBLEM_NAME`) — so `--viewer` shows it with no extra flag. To use a
 different file for one run, pass `--env-3dm "<abs path to .3dm>"` (the argument is
 a real path, not a placeholder). To change it permanently, edit `DEFAULT_ENV_3DM`.

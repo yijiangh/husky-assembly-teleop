@@ -1,7 +1,7 @@
 # Lab tools test manual: the tool0 jog, the live plots, the relay's base offset, the diagnostics, the compliant parts
 
 Eight operator tools (task note `tasks/2026-10-27_lab_tools.md`), tested one at a time:
-first in the simulation (the fake lab of `doc/fake_lab_test_manual.md`), then on one robot. Every step says what to
+first in the simulation (the fake lab of `doc/lab/fake_lab_test_manual.md`), then on one robot. Every step says what to
 click, what to expect, and what to do if not. Plan an hour for the simulation and an hour on a robot.
 
 Everything below marked **(sim)** runs as written in a slot of the fake lab (every robot simulated, the fake wrench
@@ -9,7 +9,7 @@ on); the notes under "On the robot" are what to look for.
 
 ## Before you start
 
-**In the simulation.** The fake lab as in `doc/fake_lab_test_manual.md` sections 0 and 1, plus:
+**In the simulation.** The fake lab as in `doc/lab/fake_lab_test_manual.md` sections 0 and 1, plus:
 
 - the Cartesian controllers built (its section 0.2): the compliant parts need them;
 - `ros-humble-gripper-controllers` installed beside the Robotiq packages (its section 0.1 lists it): the

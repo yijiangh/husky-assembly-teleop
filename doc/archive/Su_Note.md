@@ -1,6 +1,6 @@
 # Su_Note — Learning Notes for the Husky calibration/teleop code
 
-> ⚠️ **Personal learning notes (Su), and outdated:** the `file:line` pointers into `husky_assembly_teleop/*.py` refer to the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see README "Running the old monitor"). The background sections (§0, §A) and the `data/calibration_data/` scripts (§1–15) are still useful.
+> ⚠️ **Personal learning notes (Su), and outdated:** the `file:line` pointers into `husky_assembly_teleop/*.py` refer to the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see `doc/setup/old_monitor.md`). The background sections (§0, §A) and the `data/calibration_data/` scripts (§1–15) are still useful.
 
 Plain-language notes on the files touched this month (June 2026), for someone who
 **knows basic Python and basic forward-kinematics (FK) but has never used PyBullet or motion capture**.

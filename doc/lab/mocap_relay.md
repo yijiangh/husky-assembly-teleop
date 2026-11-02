@@ -186,8 +186,9 @@ Calibration is relay-side, not consumer-side.
   `mocap_id`; otherwise the relay warns and keeps the default.
 - The relay logs what it applies (rigid body, robot, source, sha256, which arm it was measured on) and publishes it
   latched on `/mocap_relay/calibrations`. `/mocap_relay/reload_base_calibrations` (std_srvs/Trigger) applies the newest base
-  calibrations, `/mocap_relay/reload_base_calibration/id_<n>` that of one robot's rigid body only, the others keeping
-  theirs; the floor calibration has its own, `/mocap_relay/reload_floor_calibration` (below).
+  calibrations (call it while no robot drives), `/mocap_relay/reload_base_calibration/id_<n>` that of one robot's
+  rigid body only, the others keeping theirs (call it while that robot stands still); the floor calibration has its
+  own, `/mocap_relay/reload_floor_calibration` (below).
 - The monitor reads that announcement and calls one robot's reload service through `MocapRelayInterface`
   (`robot_interface/mocap_relay.py`, `world.mocap_relay`); the `calibration` plugin writes new sessions and applies
   them that way (`doc/calibration_manual.md`).
@@ -355,6 +356,19 @@ ros2 launch husky_assembly_teleop sim.launch.py robot:=0805 tool:=calibration_ma
 (Motive's latency) and the other imperfections, and announces "mocap" on the `simulated_parts` of each robot whose
 base it fakes. Per-body arguments take values for every body, or `<id>:<values>` per body. Its arguments:
 `launch/sim_mocap.launch.py`.
+
+## Rigid Bodies In Motive
+
+How to create a rigid body in Motive and set the OptiTrack server's IP: the
+[Mocap wiki](https://gitlab.inf.ethz.ch/crl/crl-wiki/-/wikis/HW/OptiTrack).
+
+- Register a new rigid body by selecting a few markers in Motive, following
+  [the documentation](https://docs.optitrack.com/motive/rigid-body-tracking), and note its `Streaming ID` (click it in
+  the `Assets` panel), or activate an existing rigid body in the `Assets` panel. The relay publishes it as
+  `/mocap/rigid_body/id_<Streaming ID>/pose` as soon as Motive streams it.
+- To align a body with its object, add the object's 3D model in Motive and move the pivot until the model aligns with
+  the markers. For more precision, sample corners of the real object with the probe (`mocap_probe`) and use them to
+  improve the alignment.
 
 ## Quick Verification
 

@@ -5,7 +5,7 @@ Poses between the world, the husky and each arm.
           ─(URDF, fixed: mount calibration)─► <arm>_base_link ─(reported TCP)─► tool0
 
 URDF steps are fixed joints, read once at startup. `<arm>_base_link` is the arm controller's own
-base_link (doc/ur_frames.md). Quaternions are (x, y, z, w).
+base_link (doc/lab/ur_frames.md). Quaternions are (x, y, z, w).
 """
 
 from __future__ import annotations

@@ -162,7 +162,7 @@ starve one; the arm's health chips then stay red), press Ctrl-C in the `sim` pan
   only says which it is (hover it for the simulator). Belle's `mocap` is amber: her fake Motive body reports the
   1.2 mm marker error measured in the lab (hover it). So `1 PROBLEM`: Belle's `mocap`.
 - **Plan tab in the side panel:** the tabs **Base**, **Motion** and **Arm**, one per planner panel. A layout file
-  (`~/.config/husky_monitor/layout.json`) may put it in a window of its own (README, Panels).
+  (`~/.config/husky_monitor/layout.json`) may put it in a window of its own (`doc/lab/plugins.md`, Your own layout).
 - **Side panel, right:** the tabs **Assembly**, **Collisions** and **Control** (a tab per
   robot); **Obstacles** minimized at the right edge; three minimized bars at the bottom: **Plan plots** and **Exec
   plots** at the left, the **Console** at the right (each opens by itself when it has something to show, and the

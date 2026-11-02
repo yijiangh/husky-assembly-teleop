@@ -121,7 +121,7 @@ xacro expansion order makes a structural diff unreliable.
 variants. Each arm's UR factory calibration (crl-husky's copy, the one its driver
 runs with) is applied to the model at startup (`config._apply_ur_calibrations`),
 and `UrCalibrationCheck` reports when the URDF itself differs from it. The base
-calibration is not in any URDF: the mocap relay applies it (`doc/mocap_relay.md`).
+calibration is not in any URDF: the mocap relay applies it (`doc/lab/mocap_relay.md`).
 
 ## Blocking waits on the single thread
 

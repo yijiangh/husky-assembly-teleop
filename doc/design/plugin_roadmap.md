@@ -1,7 +1,7 @@
 # Plugin roadmap
 
 The set of plugins the port is aiming at, and the old feature flag each one
-replaces. See `doc/refactor_rationale.md` for why the old flags had to go, and
+replaces. See `doc/design/refactor_rationale.md` for why the old flags had to go, and
 `husky_assembly_teleop/plugins/__init__.py` for the rules a plugin follows.
 
 | Plugin | Replaces | Notes |

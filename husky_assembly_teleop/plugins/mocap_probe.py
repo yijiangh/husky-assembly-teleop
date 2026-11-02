@@ -191,7 +191,10 @@ def few(names: Sequence[str], shown: int = 3) -> str:
 
 
 def frame_chips(frame: FloorCalibrationState | None, anchors_missing: Sequence[str] = ()) -> str:
-    """The relay's frame state as a chip in its own words (`doc/mocap_relay.md`), and a newer floor calibration's."""
+    """The relay's frame state as a chip in its own words, and a newer floor calibration's.
+
+    The states: `doc/lab/mocap_relay.md`.
+    """
     if frame is None:
         return chip("frame ?", NONE, "the mocap relay announced no floor calibration: not running")
     missing = f" ({few(anchors_missing)} missing now)" if anchors_missing else ""
