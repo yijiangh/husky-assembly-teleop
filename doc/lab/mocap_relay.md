@@ -182,8 +182,9 @@ Calibration is relay-side, not consumer-side.
   (or null). No pinning, no "newest file wins".
 - Newer, optional: the newest session on the project's Drive, `data_experiment/calibration_data/<YYYYMMDD>/
   calibrated_transformation_<digits>_rhino.json` (`<digits>`: the serial's last four; only directly in a dated
-  folder, not in its `archive/`), used if it is within 5 cm / 5° of the default and names no other rigid body in its
-  `mocap_id`; otherwise the relay warns and keeps the default.
+  folder, not in its `archive/`), used if it names no other rigid body in its
+  `mocap_id`; otherwise the relay warns and keeps the default. One over 5 cm / 5° from the default is used too, with a
+  warning (a wrong robot, a failed run, or a redefined rigid body?).
 - The relay logs what it applies (rigid body, robot, source, sha256, which arm it was measured on) and publishes it
   latched on `/mocap_relay/calibrations`. `/mocap_relay/reload_base_calibrations` (std_srvs/Trigger) applies the newest base
   calibrations (call it while no robot drives), `/mocap_relay/reload_base_calibration/id_<n>` that of one robot's

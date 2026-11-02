@@ -82,18 +82,27 @@ def test_a_simulated_calibration_in_the_robots_folder_is_refused(tmp_path):
 
 
 @pytest.mark.parametrize("content, why", [
-    (_shifted(0.2), "from the default"),
     ({"base_mocap_from_base_footprint": [[0, 0], [0, 0, 0, 1]]}, "must be"),
     ({**_shifted(0.002), "mocap_id": 1850}, "for rigid body 1850"),
 ])
 def test_insane_sessions_fall_back_to_the_default(tmp_path, content, why):
-    """Far off, malformed, or for another rigid body: warned about, and the default is used."""
+    """Malformed, or for another rigid body: warned about, and the default is used."""
     _session(tmp_path, "20261020", content)
     calibration, warnings = resolve(ALICE_ID, ALICE, tmp_path)
     assert calibration == default_calibration(ALICE_ID)
     assert len(warnings) == 1 and why in warnings[0] and "using the default" in warnings[0]
     table = "\n".join(explain(ALICE_ID, ALICE, calibration, warnings, tmp_path))
     assert "crl-husky default" in table and "! refused   20261020/calibrated_transformation_0804_rhino.json" in table
+
+
+def test_a_session_far_from_the_default_is_applied_with_a_warning(tmp_path):
+    """20 cm off (a redefined body, or a failed run): applied, and the table says why it is suspicious."""
+    _session(tmp_path, "20261020", _shifted(0.2))
+    calibration, warnings = resolve(ALICE_ID, ALICE, tmp_path)
+    assert calibration.session and calibration != default_calibration(ALICE_ID)
+    assert len(warnings) == 1 and "from the default" in warnings[0] and "applied anyway" in warnings[0]
+    table = "\n".join(explain(ALICE_ID, ALICE, calibration, warnings, tmp_path))
+    assert "! warning" in table and "! refused" not in table
 
 
 def test_another_arms_session_is_passed_over(tmp_path):

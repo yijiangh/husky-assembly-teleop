@@ -511,13 +511,13 @@ drivers, tools and follower: never while she holds a bar.
   - **Expect:** `real lab: mocap relay on ROS domain 80, Motive 192.168.0.28, calibrations from .../2025-03 Husky
     Assembly`, `Starting mocap relay` with `NatNet: client 192.168.0.203, server 192.168.0.28, unicast`,
     `NatNet client connected.`, then `calibrations at start, Drive root ...` with a block per robot's body: the
-    newest Drive session (e.g. Alice `20260623`, Belle `20261013`, Cindy `20261016`), applied when within
-    5 cm / 5° of crl-husky's default; `Motive latency (mid-exposure to transmit): ... ms`; a
+    newest Drive session (e.g. Alice `20260623`, Belle `20261013`, Cindy `20261016`), applied (with a warning when
+    over 5 cm / 5° from crl-husky's default); `Motive latency (mid-exposure to transmit): ... ms`; a
     `Created mocap publisher for rigid body id=...` line per body.
   - **If not:** `no Zenoh router on this laptop`: 1.c. `Another mocap relay is already running in this ROS domain`:
     another PC runs one (the RobotX PC?). Use it, and note whose it is (its calibrations come from that PC's Drive
-    copy); or stop it there and start this one (Up, Enter). A box `... newer calibration(s) refused`: note it; that
-    robot keeps crl-husky's default.
+    copy); or stop it there and start this one (Up, Enter). A box `... warning(s), see the lines marked '!'`: note
+    it; under `! refused` that robot keeps crl-husky's default, under `! warning` its session is applied anyway.
 
 ---
 
