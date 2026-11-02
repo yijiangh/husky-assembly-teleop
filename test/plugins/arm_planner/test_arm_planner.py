@@ -173,7 +173,6 @@ def test_window_without_display_raises(config, monkeypatch):
         world.close()
 
 
-@pytest.mark.slow
 def test_a_given_path_is_checked_at_its_waypoints_and_between_them(world, config):
     """Clear without a box; a box on the swing hits the move to the goal, a box at the goal the goal itself."""
     start, goal = start_and_goal(config)
@@ -185,7 +184,6 @@ def test_a_given_path_is_checked_at_its_waypoints_and_between_them(world, config
         assert hit is not None and hit.message.startswith(where) and "the box" in hit.message, hit
 
 
-@pytest.mark.slow
 def test_a_hit_lists_every_pair_that_blocks_it_with_its_contact(world, config):
     """A box at the goal: the arm side comes first and the contact overlaps; a box the arm never moves is not listed."""
     start, goal = start_and_goal(config)
@@ -203,7 +201,6 @@ def test_a_hit_lists_every_pair_that_blocks_it_with_its_contact(world, config):
     assert hit.scene.robots[robot_id(ALICE)].joints[NAMES[0]] == pytest.approx(goal[0])
 
 
-@pytest.mark.slow
 def test_a_start_in_collision_lists_every_pair(world, config):
     """The start is checked in full: a box at the chassis blocks it though the arm never moves it."""
     start, goal = start_and_goal(config)
@@ -213,7 +210,6 @@ def test_a_start_in_collision_lists_every_pair(world, config):
     assert any("t/static" in pair for pair in result.hit.pairs)
 
 
-@pytest.mark.slow
 def test_a_hit_moves_the_held_body_with_the_arm(world, config):
     """In the hit's scene, a body held on tool0 sits at the tool at the target, not where the snapshot had it."""
     start, goal = start_and_goal(config)
@@ -228,7 +224,6 @@ def test_a_hit_moves_the_held_body_with_the_arm(world, config):
     assert scene.robots[robot_id(ALICE)].joints[NAMES[0]] == pytest.approx(start[0])
 
 
-@pytest.mark.slow
 def test_a_hit_on_another_robot_names_the_link_touched(world, config):
     """Another robot is one body to the check; the contact narrows it to the link the arm touched."""
     start, goal = start_and_goal(config)

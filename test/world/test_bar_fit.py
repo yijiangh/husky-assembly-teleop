@@ -597,6 +597,7 @@ def test_the_old_origin_is_the_bar_start():
 
 # * ------------------------------------------------- servo on the MoCap bar
 
+@pytest.mark.safety
 def test_bar_servo_correction_carries_the_measured_bar_onto_the_design():
     """``T_corr @ T_mocap`` is the design pose."""
     T_mocap, T_design = random_rigid(21), random_rigid(22)
@@ -604,6 +605,7 @@ def test_bar_servo_correction_carries_the_measured_bar_onto_the_design():
     assert T_corr @ T_mocap == pytest.approx(T_design, abs=1e-12)
 
 
+@pytest.mark.safety
 def test_apply_authored_move():
     """From the authored start it lands on the authored end; a pure translation stays one."""
     T_start, T_end = random_rigid(31), random_rigid(32)
@@ -618,6 +620,7 @@ def test_apply_authored_move():
     assert moved[:3, 3] - T_actual[:3, 3] == pytest.approx([0.0, 0.0, -0.015], abs=1e-12)
 
 
+@pytest.mark.safety
 def test_one_servo_step_closes_on_the_bar():
     """One step: flanges moved by ``T_corr`` put the held bar on its design pose, the grasp kept.
 

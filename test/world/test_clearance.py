@@ -19,7 +19,7 @@ from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Attachment, Body, Scene, world_poses
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
-pytestmark = [pytest.mark.safety, pytest.mark.slow]
+pytestmark = pytest.mark.safety
 
 #: Alice and Belle.
 CONFIGS = tuple(robot_config_from_serial(serial, DATA) for serial in ("0804", "0805"))

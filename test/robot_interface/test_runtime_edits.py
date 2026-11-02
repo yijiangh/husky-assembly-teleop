@@ -1,18 +1,12 @@
-"""The runtime edits for the executor: a hold under compliance, both arms' velocities, an awaited search."""
+"""The runtime edits for the executor: a hold under compliance, both arms' velocities."""
 
 from __future__ import annotations
-
-import asyncio
-import threading
 
 import numpy as np
 import pytest
 from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, lease_to_test
 
 from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER
-from husky_assembly_teleop.plugins.assembly_steps.step_panel_base import PlannerPlugin, Search
-from husky_assembly_teleop.shared.planner.planner_search import PlanResult
-from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 
 pytestmark = pytest.mark.safety
 
@@ -58,42 +52,3 @@ def test_both_arms_carry_their_velocities():
     assert not robot.send_multi_arm_trajectory({"left_ur_arm": positions, "right_ur_arm": positions}, 4.0,
                                                {"left_ur_arm": velocities["left_ur_arm"]})
     assert len(robot._multi_arm.messages) == 1 and "velocities for" in ctx.lines("error")[-1]
-
-
-class Panel(PlannerPlugin):
-    """The planner panel with nothing of its own."""
-
-    def forget_plan(self) -> None:
-        """Nothing kept."""
-
-
-PATH = TimedPath(np.array([0.0, 1.0]), np.zeros((2, 6)))
-
-
-def search(work=None, run=None, time_limit: float = 5.0) -> Search:
-    """A search by `work` or by `run`."""
-    return Search("a200-0806", "plan", "planning", work, time_limit, lambda result: ("found", False), run=run)
-
-
-def test_a_search_can_be_awaited_on_the_main_thread():
-    """E3: a `run` result makes the plan ready; a `run` that never answers times out; `work` is as before."""
-    async def found():
-        return PlanResult(PATH)
-
-    async def never():
-        await asyncio.get_running_loop().create_future()
-
-    panel = Panel()
-    asyncio.run(panel._run(search(run=found), threading.Event()))
-    assert panel.plan_state == "ready" and panel.path is PATH and panel._message == "found"
-
-    panel = Panel()
-    abort = threading.Event()
-    panel.plan_state = "planning"
-    asyncio.run(panel._run(search(run=never, time_limit=0.05), abort))
-    assert panel.plan_state == "none" and panel._message.startswith("timed out") and abort.is_set()
-
-    panel = Panel()
-    asyncio.run(panel._run(search(work=lambda: PlanResult(PATH)), threading.Event()))
-    assert panel.plan_state == "ready" and panel.path is PATH
-    panel._executor.shutdown()

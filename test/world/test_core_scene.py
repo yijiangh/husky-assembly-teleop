@@ -78,6 +78,7 @@ def test_frame_convention_and_fk_comparison(robot, tmp_path):
     assert list(differ) == [turned] and differ[turned] == pytest.approx(90.0, abs=1e-6)
 
 
+@pytest.mark.safety
 def test_fk_matches_yourdfpy(cindy):
     """The core's numpy FK gives yourdfpy's link poses (the monitor's FK) for every link, mimic joints included."""
     urdf = URDF.load(str(cindy.model.urdf), load_meshes=False, build_collision_scene_graph=False,
@@ -147,6 +148,7 @@ def test_monitor_snapshot_has_robot_objects_and_tracked_bodies(cindy):
     assert scene.bodies["t/tip"].enabled and snapshot.bodies["t/tip"] is not scene.bodies["t/tip"]
 
 
+@pytest.mark.safety
 def test_lost_mocap_and_stale_joint_states_are_unknown(cindy):
     """A base whose mocap pose is lost is untracked, and an arm whose joint states went stale is unmeasured.
 

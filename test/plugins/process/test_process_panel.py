@@ -1,14 +1,18 @@
-"""The process panel: its action list keeps the selected action in its middle row, and its texts keep their height."""
+"""The process panel: the action list, the texts' heights, and a movement's old name, kinds and sentence."""
 
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
+import pytest
+from planning_fixtures import purged_process
 from plugin_fakes import FakeContext
 from process_fixtures import build_process
 
 from husky_assembly_teleop.plugins.process.loading import load_process
-from husky_assembly_teleop.plugins.process.plugin import NO_MOVEMENT, ProcessPlugin, action_window
+from husky_assembly_teleop.plugins.process.plugin import NO_MOVEMENT, ProcessPlugin, _movement_css, action_window
+from husky_assembly_teleop.shared.assembly_planning.labels import INSERT_TIGHTEN
 from scaffolding_assembly_core.process import write
 
 #: The markers of a cut one-line row (`_one_line`) and of the two-line description.
@@ -104,3 +108,65 @@ def test_the_step_slider_follows_only_the_operator():
     ctx.defer_value = defer_value
     ProcessPlugin().setup(ctx)
     assert asked["select step"] is True
+
+
+@pytest.fixture(scope="module")
+def purged():
+    """The purged process."""
+    return purged_process()
+
+
+@pytest.fixture
+def small(tmp_path):
+    """The small synthetic process (cindy and alice, five actions), written and loaded as the monitor loads it."""
+    write(build_process(tmp_path), tmp_path / "process")
+    return load_process(tmp_path / "process", tmp_path)
+
+
+def test_the_panel_says_which_drives_are_never_sent(purged):
+    """A ground bar's authored tightens show as not sent in the moves line; a screwed bar's do not."""
+    panel = ProcessPlugin()
+    panel._take(purged.process)
+    for movement_id, marked in (("B20_J_insert", True), ("B22_J_insert", False)):
+        panel.select(next(index for index, (_, one) in enumerate(panel._movements) if one.id == movement_id))
+        assert ("tighten (not sent)" in _details(panel)) == marked, movement_id
+
+
+def test_the_process_panel_shows_the_old_name_the_row_and_the_sentence(purged):
+    """At a screwed insert: its kinds' chips, the old name and the sentence; the action's codes, this one ringed.
+
+    The transfer workaround is on at start: the row is in run order, the transit first, no travel to load.
+    """
+    panel = ProcessPlugin()
+    panel._take(purged.process)
+    panel.select(next(index for index, (_, one) in enumerate(panel._movements) if one.id == "B22_J_insert"))
+    html = _details(panel)
+    assert f"old name {INSERT_TIGHTEN}" in html and "Straight-line insert 15 mm" in html
+    assert "1px dashed #666666" in html and "linear-gradient(90deg,#d5e8d4,#e6d0de)" in html
+    action, movement = panel.selected
+    labels = panel._labels(action)
+    codes = [label.code for label in labels]
+    assert codes[0] == "J_transit" and {"J_M1", "J_M2", "J_M4+5"} <= set(codes)
+    assert "J_M0" not in codes and "J_M3" not in codes
+    # * Only the selected movement's button is ringed, and every button keeps one weight, so nothing moves.
+    css = _movement_css("u", [label.kinds[0] for label in labels], action.movements.index(movement),
+                        [None] * len(labels))
+    assert css.count("box-shadow") == 1 and css.count("font-weight") == 1
+
+
+def test_the_panel_escapes_rhino_labels(small):
+    """A movement's label from Rhino is text, never HTML, in the chips' hover text and the sentence."""
+    first_id = small.schedule[0]
+    first = small.actions[first_id]
+    odd = replace(first, movements=(replace(first.movements[0], label="<b>mount</b> & go"), *first.movements[1:]))
+    panel = ProcessPlugin()
+    panel._take(replace(small, actions={**small.actions, first_id: odd}))
+    panel.select(0)
+    html = _details(panel)
+    assert "<b>mount</b>" not in html and "&lt;b&gt;mount&lt;/b&gt; &amp; go" in html
+
+
+def _details(panel: ProcessPlugin) -> str:
+    """The selected movement's details as the panel shows them, above and below its movement buttons."""
+    action, movement = panel.selected
+    return "".join(panel._details_html(action, movement, panel._labels(action)))

@@ -50,6 +50,7 @@ def config(request):
     return robot_config_from_serial(request.param, DATA)
 
 
+@pytest.mark.safety
 def test_matches_pybullet(config):
     """Link world poses agree with PyBullet for random joints and a tilted, moved base."""
     kinematics = Kinematics((config,), log_warn=print)

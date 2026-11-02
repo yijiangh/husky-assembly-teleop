@@ -27,7 +27,7 @@ from husky_assembly_teleop.shared.execution.stream import RETREATED, RIGID_DONE,
 from husky_assembly_teleop.shared.movement_exec_contract import DONE, SERVO_INDEX
 from husky_assembly_teleop.shared.runs.runs import RunSettings
 
-pytestmark = [pytest.mark.slow, pytest.mark.safety]
+pytestmark = pytest.mark.safety
 
 STOP, TIGHTEN_SCREW, OPEN_GRIPPER = (0, 0), (ScaffoldingV3.JOINT_MOTOR, 1), (ScaffoldingV3.GRIPPER_MOTOR, -1)
 #: Seconds into the compliant part the left screw stalls: inside B21's 1.7 s line (the insert asked over 5 s), so

@@ -19,8 +19,6 @@ from husky_assembly_teleop.robot_interface.simulated_parts import body_values
 from husky_assembly_teleop.world.calibration_sessions import Calibration
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 
-pytestmark = pytest.mark.safety
-
 #: A pose that is not the identity.
 POSE = offset_pose([1.2, -0.4, 0.3, 10.0, -20.0, 75.0])
 

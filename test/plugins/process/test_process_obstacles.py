@@ -331,7 +331,6 @@ def test_the_status_line_says_when_nothing_in_the_room_is_checked(process):
     assert "drawn only" not in plugin._collide_status.content and "room unchecked" not in plugin._collide_status.content
 
 
-@pytest.mark.slow
 def test_alice_parked_hits_the_cabinet_only_while_the_rhino_obstacles_collide():
     """The lab finding: Alice parked at (0.3, 1.35) facing +y, arm stowed, stands in the cabinet env39 (0.38 m off).
 

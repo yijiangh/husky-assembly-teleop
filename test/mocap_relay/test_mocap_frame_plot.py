@@ -18,6 +18,8 @@ from husky_assembly_teleop.robot_interface.mocap_definitions import MocapAnchor
 from husky_assembly_teleop.world.frame_follower import FrameFollower
 from husky_assembly_teleop.world.mocap_frame import FloorCalibration
 
+pytestmark = pytest.mark.slow
+
 SCRIPT = REPO / "scripts" / "mocap_frame_plot.py"
 #: A sample as `--record` kept it before the per-anchor quality was published.
 OLD = {"time": 100.0, "floor_calibration": "20261024_090000_mocap_floor_calibration.json", "status": "held",

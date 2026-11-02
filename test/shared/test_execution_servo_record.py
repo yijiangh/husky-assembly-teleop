@@ -99,6 +99,7 @@ def test_planner_mode_labels(kind: str, engaged: bool, mode: str, feedback: str)
     assert record["settings"]["max_force_change_N"] == (20.0 if kind == AFTER_INSERT else None)
 
 
+@pytest.mark.slow
 def test_plot_writes_a_png(tmp_path: Path):
     """Two arms with bar readings (a gap where the fit failed), and one arm without: both draw to a PNG."""
     path = tmp_path / "B20_J_transfer.1.png"

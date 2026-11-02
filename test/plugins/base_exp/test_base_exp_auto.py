@@ -57,7 +57,6 @@ def test_check_poses_are_spaced_but_keep_both_ends():
     assert len(check_poses(turn)) == 19
 
 
-@pytest.mark.slow
 def test_clearance_sees_walls_and_robots():
     """A path into a wall or past another robot is not clear; one into open space is."""
     alice, cindy = (robot_config_from_serial(serial, DATA) for serial in ("0804", "0806"))
@@ -91,7 +90,6 @@ def test_clearance_sees_walls_and_robots():
     assert open_space is None and here is None
 
 
-@pytest.mark.slow
 def test_path_check_takes_the_robots_own_unknown_arms_as_stowed():
     """Cindy with no joint states: her path is checked with the arms stowed, not refused."""
     cindy = robot_config_from_serial("0806", DATA)
