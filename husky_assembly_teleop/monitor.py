@@ -29,7 +29,7 @@ from rclpy.signals import SignalHandlerOptions
 
 from .plugin_api.concurrency import TickTimer
 from .plugin_api.console_log import ROBOTS, RUNTIME, TICKS, ConsoleLog, ConsoleLogger
-from .config import MonitorConfig, config_from_ros_parameters
+from .config import ConfigError, MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
 from scaffolding_assembly_core.geometry import Geometry
 from .world.clearance import (TRIPS_KEPT, WATCH_EVERY, Clearance, ClearanceChecker, ClearanceTrip, ClearanceWatch,
@@ -719,7 +719,7 @@ def main(args: list[str] | None = None) -> None:
     sys.setswitchinterval(GIL_SWITCH_INTERVAL)
     try:
         asyncio.run(_run_monitor())
-    except UnknownPluginError as error:
+    except (ConfigError, UnknownPluginError) as error:
         # * A config mistake: the message says what to fix, and a traceback would only bury it.
         print(f"\n{error}", file=sys.stderr)
         sys.exit(1)

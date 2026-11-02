@@ -15,7 +15,7 @@ ROOT = REPO / PACKAGE
 
 #: Lowest first. A module may import from its own layer and the ones below.
 LAYERS = (
-    ("config", "drive", "tool_urdfs", "plots", "colors"),
+    ("config", "drive", "tool_urdfs", "plots", "colors", "terminal_text"),
     ("robot_interface",),
     ("world",),
     ("ui",),

@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import difflib
 import importlib
-import os
 import pkgutil
-import sys
 import traceback
 from typing import Callable, Iterable
 
+from ..terminal_text import dim, suggested, wrong
 from .context import PluginContext
 
 
@@ -166,16 +165,9 @@ class UnknownPluginError(KeyError):
         return str(self.args[0])
 
 
-def _colour(code: str, text: str) -> str:
-    """Text in an ANSI colour where ROS colours its output too (forced by the variable, else a terminal)."""
-    forced = os.environ.get("RCUTILS_COLORIZED_OUTPUT")
-    on = forced == "1" if forced in ("0", "1") else sys.stderr.isatty()
-    return f"\033[{code}m{text}\033[0m" if on else text
-
-
 def _unknown_name_message(name: str, required_by: str | None) -> str:
     """Say which name is unknown, the closest registered one, and every registered name in columns."""
-    message = f"no plugin registered under the name {_colour('1;31', repr(name))}"
+    message = f"no plugin registered under the name {wrong(repr(name))}"
     if required_by is not None:
         message += f", required by {required_by!r}"
     available = sorted(PLUGIN_REGISTRY)
@@ -186,8 +178,8 @@ def _unknown_name_message(name: str, required_by: str | None) -> str:
     width = max(len(n) for n in available) + 3
     per_row = max(1, 96 // width)
     rows = [available[i:i + per_row] for i in range(0, len(available), per_row)]
-    table = "\n".join("      " + "".join(_colour("2", n.ljust(width)) for n in row).rstrip() for row in rows)
+    table = "\n".join("      " + "".join(dim(n.ljust(width)) for n in row).rstrip() for row in rows)
     return (f"{message}\n\n"
-            f"    did you mean   {_colour('1;32', best)}\n\n"
+            f"    did you mean   {suggested(best)}\n\n"
             f"    registered plugins:\n{table}\n\n"
-            f"    {_colour('2', 'a plugin whose module failed to import is missing here; see the log above')}\n")
+            f"    {dim('a plugin whose module failed to import is missing here; see the log above')}\n")
