@@ -5,7 +5,7 @@
 #pybullet_planning==0.6.0
 compas_fab==1.1.0 # use wip_process branch
 roslibpy<2.0.0 # compas_fab 1.1.0 uses roslibpy.actionlib which was removed in roslibpy 2.0.0
-numpy<1.25.0
+numpy<2  # rclpy and pybullet need numpy 1.x; the optional ssik (below) needs 1.26
 setuptools<=70.0.0
 viser==1.1.1  # web UI; pinned because its scene/gui API moves between releases
 yourdfpy==0.0.60  # URDF parsing for viser.extras.ViserUrdf (robot meshes in the browser)
@@ -28,3 +28,6 @@ pytest-timeout==2.2.0  # hung tests fail instead of stalling; the newest release
 kdtree==0.16
 dearpygui>=2.3.1,<3  # old monitor's control panel (USE_DPG_UI)
 opencv-python  # old mocap_experiment webcam capture
+
+# * Optional: ssik>=4.1,<5 with numpy>=1.26,<2, the planners' and the servo's exact IK (`shared/assembly_planning/ik.py`);
+#   without it they use PyBullet's IK, and the tests that need it skip.
