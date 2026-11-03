@@ -774,12 +774,12 @@ def test_a_half_synced_new_file_is_tried_again(tmp_path):
 
 
 def test_anchors_lost_without_cameras_are_untrusted_not_held(tmp_path):
-    """Six anchors stored, no cameras from Motive, its frame moved 22 mm: untrusted, never held; unchecked before."""
+    """Six anchors stored, no cameras from Motive, only a loose marker: untrusted, never held; unchecked before."""
     export(tmp_path, anchors=LAB_ANCHORS)
     node = relay(drive_root=tmp_path)
     node._load_floor_calibration("start")
     assert announced_frame(node)["status"] == "unchecked"
-    see_markers(node, [np.add(position, (0.022, 0.0, 0.0)) for position in LAB_ANCHORS.values()])
+    see_markers(node, [LOOSE])
     assert announced_frame(node)["status"] == "untrusted"
     assert floor_calibration_state(node._frame_publisher.sent[-1].data).poses_off
 

@@ -18,8 +18,8 @@ from husky_assembly_teleop.world.calibration_sessions import sessions_folder
 from husky_assembly_teleop.world.lab import DEFAULT_LAB, lab_file, read_lab
 from husky_assembly_teleop.world.mocap_frame import (CAMERA_NAMES, FLOOR_SUFFIX, VOLUME, camera_label,
                                                      camera_serial, find_anchors, fit_anchors, fit_cameras,
-                                                     frame_and_cameras, frame_moved, newest_floor_calibration,
-                                                     truss_names, volume_moved)
+                                                     frame_and_cameras, frame_moved, match_anchors,
+                                                     newest_floor_calibration, truss_names, volume_moved)
 
 pytestmark = pytest.mark.safety
 
@@ -237,6 +237,16 @@ def test_anchors_are_found_by_the_nearest_marker_within_reach():
     lab = {"A": MocapAnchor("A", (0.0, 0.0, 0.0)), "B": MocapAnchor("B", (1.0, 0.0, 0.0)),
            "C": MocapAnchor("C", (2.0, 0.0, 0.0)), "D": MocapAnchor("D", (2.03, 0.0, 0.0))}
     assert find_anchors(lab, [(0.01, 0.0, 0.0), (1.03, 0.0, 0.0), (2.015, 0.0, 0.0)]) == {"A": 0}
+
+
+def test_anchors_are_matched_by_their_shape_after_a_turn_shift_and_scale_change():
+    """Motive turned 3°, shifted 10 cm and shrank 0.2 %; A3 gone, a loose marker added, all shuffled."""
+    motion = Rotation.from_euler("xyz", (0.5, -0.3, 3.0), degrees=True)
+    seen = {name: 0.998 * motion.apply(anchor.position) + (0.1, -0.05, 0.02) for name, anchor in ANCHORS.items()}
+    markers = [tuple(seen[name]) for name in ("A5", "A1", "A4", "A2")] + [(1.5, 1.1, 1.0)]
+    assert find_anchors(ANCHORS, markers) == {}
+    assert match_anchors(ANCHORS, markers) == {"A5": 0, "A1": 1, "A4": 2, "A2": 3}
+    assert match_anchors(ANCHORS, markers[:2]) == {}
 
 
 def test_a_moved_frame_is_recovered_from_the_anchors_and_a_moved_anchor_left_out():

@@ -231,8 +231,9 @@ calibration**.
   with no name. Every `definitions_period_sec` (a look) the relay takes each unlabeled marker's mean over the frames
   since (one frame's noise would tilt the fit by up to 1.6 mm in the lab) and publishes them all on
   `/mocap_relay/unlabeled_markers` (latched JSON: `markers`, in the lab frame). It finds the floor calibration's
-  anchors among them as the nearest marker within 2 cm of where it saw each, raw (after a recalibration moved them
-  further, of where the truss cameras' fit puts them), and publishes them on `/mocap_relay/anchors` (latched JSON:
+  anchors among them as the nearest marker within 2 cm of where it saw each, raw; after a recalibration moved them
+  further, by their shape (three anchors matched to three markers by the distances between them, allowing for 0.5 %
+  of scale; `match_anchors`), and publishes them on `/mocap_relay/anchors` (latched JSON:
   `anchors` by name, in the lab frame, and `missing`: not found in this look). An anchor not seen for 10 s is reported
   ("anchor A3 not seen for 10 s; the other 5 hold the frame", or "only 3 of 6 anchors seen …: the truss cameras hold
   the frame"); one that flickers is not. The lab frame file's anchors are for the probe; the relay follows the floor

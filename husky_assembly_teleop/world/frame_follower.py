@@ -23,7 +23,7 @@ from ..robot_interface.mocap_definitions import (FRAME_ERROR, FRAME_HELD, FRAME_
                                                  FRAME_UNCHECKED, FRAME_UNTRUSTED, MocapAnchor, MocapCamera)
 from .mocap_frame import (BACK_SHARE, MIN_POINTS, TRUSS_CAMERAS, VOLUME_MOVED, FloorCalibration, FrameFit,
                           camera_label, deciding_fit, find_anchors, fit_anchors, fit_cameras, frame_metrics,
-                          off_limit, truss_names, volume_moved)
+                          match_anchors, off_limit, truss_names, volume_moved)
 
 #: An anchor not seen for this long, seconds, is reported missing; one that flickers is not.
 ANCHOR_GONE_SEC = 10.0
@@ -318,16 +318,15 @@ class FrameFollower:
     def _find_anchors(self, markers: Sequence[Vec3], now: float) -> list[FrameEvent]:
         """Find the floor calibration's anchors among the markers, fit them, and report those gone or moved.
 
-        They are looked for where the floor calibration saw them, raw: the markers taken back by the refit in use, or,
-        after a recalibration moved them further, by the truss cameras' fit.
+        They are looked for where the floor calibration saw them, raw (the markers taken back by the refit in use), or,
+        after a recalibration moved them further, by their shape (`match_anchors`).
         """
         expected, back = self.floor.anchors, self._in_use()
-        found = find_anchors(expected, [compose(back, Pose(tuple(marker))).position for marker in markers])
-        if len(markers) and len(found) < len(expected) and truss_names(self.cameras, self.truss_serials):
-            refit = fit_cameras(self.floor.cameras, self.cameras, self.truss_serials)
-            refound = find_anchors(expected, [compose(refit.raw_cal_from_raw_now, Pose(tuple(marker))).position
-                                              for marker in markers])
-            found = refound if refit.trusted and len(refound) > len(found) else found
+        taken_back = [compose(back, Pose(tuple(marker))).position for marker in markers]
+        found = find_anchors(expected, taken_back)
+        if len(found) < len(expected):
+            matched = match_anchors(expected, taken_back)
+            found = matched if len(matched) > len(found) else found
         self._anchor_markers = dict(found)
         self.anchors = {name: MocapAnchor(name, tuple(markers[index])) for name, index in found.items()}
         self.anchors_unseen = tuple(sorted(set(expected) - set(found)))

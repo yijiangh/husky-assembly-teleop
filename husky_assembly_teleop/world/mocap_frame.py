@@ -11,7 +11,7 @@ calibration's anchors and cameras; a refit is kept only in memory (`frame_follow
 - A camera or anchor moved on its own does not fit the others: it is left out and named. The largest residual among
   those that fit is Motive's calibration warping the volume.
 - Motive streams anchors as unlabeled markers, with no name: each is the marker nearest where the floor calibration
-  measured it (`find_anchors`).
+  measured it (`find_anchors`), or, after Motive's frame moved further, where their shape puts it (`match_anchors`).
 - Floor calibrations are written by the probe only, in the dated calibration session folders below the Drive root
   (a simulation's in its own, which the robots' relay never reads); a newer one is applied only on command.
 - Thresholds, side by side: a camera moved between two readings over CAMERA_MOVED (1 mm) or CAMERA_TURNED (0.1°) is
@@ -67,6 +67,9 @@ TRUSS, ANCHORS = "truss cameras", "anchors"
 #: probe) and still be taken for it, metres: under half the distance between two markers, over how far Motive's
 #: continuous calibration moves the frame.
 ANCHOR_RADIUS = 0.02
+#: How much Motive's scale may differ between two calibrations and the anchors still be found by their shape, a share
+#: of each distance between them (`match_anchors`); a recalibration was seen to change it by 0.16 %.
+ANCHOR_STRETCH = 0.005
 #: The lab's volume a frame move is judged in, metres, (min, max) per axis: the central 3 m cube where the robots
 #: work, one corner at the lab frame's origin, along x, -y and z.
 VOLUME = ((0.0, 3.0), (-3.0, 0.0), (0.0, 3.0))
@@ -318,6 +321,55 @@ def find_anchors(lab: dict[str, MocapAnchor], markers: Sequence[tuple[float, flo
             found[name] = nearest
     taken = [index for index in found.values()]
     return {name: index for name, index in found.items() if taken.count(index) == 1}
+
+
+def match_anchors(lab: dict[str, MocapAnchor], markers: Sequence[tuple[float, float, float]],
+                  radius: float = ANCHOR_RADIUS) -> dict[str, int]:
+    """Each lab anchor's marker, by index, found by the anchors' shape wherever Motive's frame put them.
+
+    Three anchors are matched to three markers by the distances between them (within `radius` and ANCHOR_STRETCH);
+    the anchors carried by that match (turned, shifted and scaled) are looked for with `find_anchors`. The match
+    finding the most wins.
+    """
+    names = list(lab)
+    if len(names) < 3 or len(markers) < 3:
+        return {}
+    stored, points = np.array([lab[name].position for name in names]), np.asarray(markers, dtype=float)
+    apart_stored = np.linalg.norm(stored[:, None] - stored[None], axis=2)
+    apart = np.linalg.norm(points[:, None] - points[None], axis=2)
+    tolerance = radius + ANCHOR_STRETCH * apart_stored
+
+    def area(triangle: tuple[int, ...]) -> float:
+        first, second, third = stored[list(triangle)]
+        return float(np.linalg.norm(np.cross(second - first, third - first))) / 2
+
+    best: dict[str, int] = {}
+    # * The widest triangles first, as they place the others best; a thin one pins no turn.
+    for a, b, c in sorted(itertools.combinations(range(len(names)), 3), key=area, reverse=True):
+        if area((a, b, c)) < 0.01:
+            break
+        for i, j in zip(*np.nonzero(np.abs(apart - apart_stored[a, b]) <= tolerance[a, b])):
+            thirds = (np.abs(apart[i] - apart_stored[a, c]) <= tolerance[a, c]) & \
+                     (np.abs(apart[j] - apart_stored[b, c]) <= tolerance[b, c])
+            for k in np.nonzero(thirds)[0]:
+                if k in (i, j):
+                    continue
+                carried = _carry(stored[[a, b, c]], points[[i, j, k]], stored)
+                found = find_anchors({name: MocapAnchor(name, tuple(point)) for name, point in zip(names, carried)},
+                                     markers, radius)
+                if len(found) > len(best):
+                    best = found
+                    if len(best) == len(names):
+                        return best
+    return best
+
+
+def _carry(source: np.ndarray, target: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """`points` carried by the turn, shift and scale that take the `source` points onto the `target` ones best."""
+    source_mean, target_mean = source.mean(axis=0), target.mean(axis=0)
+    scale = np.sqrt(np.sum((target - target_mean) ** 2) / np.sum((source - source_mean) ** 2))
+    rotation, _ = Rotation.align_vectors(target - target_mean, source - source_mean)
+    return scale * rotation.apply(points - source_mean) + target_mean
 
 
 def frame_and_cameras(before: dict[str, MocapCamera], now: dict[str, MocapCamera],

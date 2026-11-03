@@ -99,10 +99,10 @@ def test_no_floor_calibration_is_none_and_one_not_read_is_an_error():
 
 
 def test_anchors_lost_without_cameras_are_untrusted_not_held():
-    """Six anchors stored, no cameras, Motive's frame moved 22 mm: no anchor found, so untrusted, logged as an error."""
+    """Six anchors stored, no cameras, Motive streams only a loose marker: untrusted, logged as an error."""
     frame = follower()
     frame.cameras = {}
-    events = looks(frame, [np.add(position, (0.022, 0.0, 0.0)) for position in LAB_ANCHORS.values()])
+    events = looks(frame, [LOOSE])
     assert frame.status == FRAME_UNTRUSTED and titles(events, "error")[0].startswith("FRAME UNTRUSTED")
 
 
@@ -287,13 +287,12 @@ def test_without_a_floor_calibration_a_sample_still_carries_the_markers_and_came
     assert len(sample["truss_camera_poses"]) == 6
 
 
-def test_anchors_are_found_where_the_floor_calibration_saw_them_after_a_refit_or_by_the_cameras():
-    """A second recalibration of 3 cm moves them out of reach: found by the truss cameras' fit."""
+def test_anchors_are_found_where_the_floor_calibration_saw_them_or_by_their_shape():
+    """A recalibration turning Motive's frame 2° moves them out of reach: found by their shape, cameras not heard."""
     frame = follower()
-    second = [(np.array([0.03, 0.0, 0.0]), 0.0)]
-    frame.cameras = cameras_after(second)
-    frame.look(anchors_after(second), 0.0)
-    assert sorted(frame.anchors) == sorted(LAB_ANCHORS) and frame.deciding.source == "anchors"
+    frame.look(anchors_after([(np.zeros(3), 2.0)]), 0.0)
+    assert sorted(frame.anchors) == sorted(LAB_ANCHORS) and frame.anchors_unseen == ()
+    assert frame.deciding.source == "anchors"
 
 
 def test_a_new_floor_calibration_starts_unchecked_without_the_refit():
