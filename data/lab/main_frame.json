@@ -1,21 +1,26 @@
 {
   "format": "husky_lab_frame",
-  "frame": "the lab frame: x, y on the floor plane, z up from it, metres; first set by the origin mark and Motive x of 20261027_154338_probe_points.json. Marks and anchors: as measured in 20261029_150102_mocap_floor_calibration.json (marks 3 hits each, anchors one reading of the relay's markers), put in the lab frame by its marks-only fit to the marks stored before, then shifted 0.9 mm so the origin mark is (0, 0) again. A7 (on the floor in the truss corner, below BFL), A8 and A9 (on the floor below the right tripod, BMR) are not declared in Motive.",
+  "frame": "the lab frame: x, y on the floor plane, z up from it, metres; first set by the origin mark and Motive x of 20261027_154338_probe_points.json. Marks and anchors: as measured in 20261103_151911_mocap_floor_calibration.json (marks 3 hits each, plane from 8 floor points and the marks, anchors one reading of the relay's markers), put in the lab frame by its marks-only fit to the marks stored before, then shifted 2.8 mm so the origin mark is (0, 0) again. Its Motive calibration matches the tape distances below within 1.2 mm; the marks before were measured under one 0.22 % too long. All nine are Motive's anchor markers too: A7 on the floor in the truss corner, below BFL, A8 and A9 on the floor below the right tripod, BMR. tape: mark centre to mark centre, metres, 5 m tape, 3 Nov 2026, each pair measured both ways",
   "marks": {
     "origin": [0.0, 0.0],
-    "mark1": [1.56, -3.5089],
-    "mark2": [-0.8003, -1.8415],
-    "mark3": [2.7391, 0.2478]
+    "mark1": [1.5568, -3.5028],
+    "mark2": [-0.7981, -1.838],
+    "mark3": [2.7333, 0.2471]
   },
   "anchors": {
-    "A1": [-0.34, 2.0514, 1.1465],
-    "A2": [-0.3787, 2.6146, 1.1836],
-    "A3": [2.1093, 2.0097, 1.1471],
-    "A4": [2.1001, 2.5995, 1.1654],
-    "A5": [3.4397, -1.6498, 0.0122],
-    "A6": [3.5099, -1.9812, 0.0129],
-    "A7": [3.7744, -4.9023, 0.0205],
-    "A8": [-3.1469, -1.7335, 0.0014],
-    "A9": [-3.0593, -2.0469, 0.0005]
+    "A1": [-0.3386, 2.0491, 1.1435],
+    "A2": [-0.3775, 2.6116, 1.1803],
+    "A3": [2.1061, 2.0072, 1.1437],
+    "A4": [2.097, 2.5958, 1.1612],
+    "A5": [3.4327, -1.6468, 0.0112],
+    "A6": [3.505, -1.9771, 0.0106],
+    "A7": [3.7633, -4.8901, 0.0191],
+    "A8": [-3.1431, -1.7286, 0.0032],
+    "A9": [-3.0554, -2.0415, 0.0023]
+  },
+  "tape": {
+    "mark2-mark3": 4.1,
+    "mark1-mark3": 3.9295,
+    "origin-mark1": 3.832
   }
 }
