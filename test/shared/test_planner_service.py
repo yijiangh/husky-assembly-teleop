@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from plugin_fakes import WATCHES, watch_clearance
 from robot_fakes import lease_test_robots, wait_ticks_until
 
 from husky_assembly_teleop.colors import FAIL, OK, WARN, rgb
@@ -38,6 +39,9 @@ class Request:
 
 class Ctx:
     """A plugin context whose intents run at once and whose tasks are plain asyncio tasks."""
+
+    watch_clearance = staticmethod(watch_clearance)
+    unwatch_clearance = staticmethod(WATCHES["unwatch_clearance"])
 
     def __init__(self):
         """No log yet; no robots (`world`, `scene`)."""
@@ -395,6 +399,10 @@ class Panel(PlannerPanel):
         """The test's target change."""
         return self.change
 
+    def commit_margin(self, ctx):
+        """A commit's clearance: 5 mm."""
+        return 0.005
+
 
 @pytest.mark.safety
 def test_the_panel_plans_and_commits_through_the_api():
@@ -515,6 +523,8 @@ def test_commit_asks_for_a_second_press_within_five_seconds_while_a_robot_is_unk
     ctx.t += 5.5
     assert confirm.asks(ctx, ["robots/me"], "Commit")[0], "too late: it asks again"
     assert confirm.asks(ctx, ["robots/b"], "Commit") == ("", frozenset()), "the robot it moves is not counted"
+    far = frozenset({"robots/b"})
+    assert confirm.asks(ctx, ["robots/me"], "Commit", far=far) == ("", far), "out of reach: unknown without asking"
 
 
 def test_commit_asks_twice_for_a_panels_own_warning_too():
@@ -568,7 +578,7 @@ def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():
     api, warned = SimpleNamespace(plan=plan), []
     panel = Panel()
     panel._api = api
-    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=warned.append)
+    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=warned.append, **WATCHES)
     panel.update(ctx)
     panel._say("press Commit again within 5 s to move with the arm 40° from stow")
     api.plan = Plan(1, plan.request, "ready", PATH, message="found, warned", warning=True)
@@ -580,16 +590,23 @@ def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():
 
 
 def test_a_plan_arriving_counts_as_use_once_a_re_timed_one_does_not():
-    """A ready plan arriving touches the panel's use, so its ghost shows after a long search; re-timed, it does not."""
+    """The panel's own plan arriving touches its use, so its ghost shows after a long search; re-timed, it does not.
+
+    A plan another plugin asked for (calibration's moves) never counts: the panel's ghosts stay hidden.
+    """
     touches = []
     panel = Panel()
     panel._used = SimpleNamespace(touch=lambda: touches.append(True), active=True)
-    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=lambda _line: None)
+    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=lambda _line: None, **WATCHES)
     panel._api = api = SimpleNamespace(plan=Plan(1, Request("alice", 1.0), "planning", None))
+    panel._requested = api.plan.request
     panel.update(ctx)
     assert touches == []
     api.plan = Plan(1, api.plan.request, "ready", PATH, message="found")
     panel.update(ctx)
     api.plan = Plan(1, api.plan.request, "ready", PATH, message="found")
+    panel.update(ctx)
+    assert touches == [True]
+    api.plan = Plan(2, Request("alice", 2.0), "ready", PATH, message="found for another plugin")
     panel.update(ctx)
     assert touches == [True]

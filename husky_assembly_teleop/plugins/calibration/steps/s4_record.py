@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -133,7 +134,8 @@ class Record(CalibrationStep):
         takes.in_progress = (index, samples)
         try:
             with ctx.lease_robots([run.serial], f"calibration take {index + 1}"), \
-                    ctx.clearance([run.serial], ARM_CLEARANCE, unknown_robots=unknown):
+                    (ctx.clearance([run.serial], ARM_CLEARANCE, unknown_robots=unknown)
+                     if procedure.clearance.value else nullcontext()):
                 # * Judged again under the lease: the base may have been driven while Go was waited for, and the
                 #   sweeps are checked clear only where it stood then (Sweeps).
                 if (refusal := self.refusal(ctx)) is not None:

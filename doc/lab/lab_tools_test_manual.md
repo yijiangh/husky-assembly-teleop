@@ -30,13 +30,13 @@ jog does the same): judge a jog on the laptop's Chrome, not on a remote or headl
 
 ## 1. The tool0 jog (Control › robot › arm › Joint)
 
-The old Teleop window: hold a button and tool0 moves along, or turns about, one of its own axes at the speed set,
-until you let go. One joint point is streamed every tick 0.2 s ahead on a straight line from where you pressed, so
+The old Teleop window: hold a button and tool0 moves along, or turns about, one axis at the speed set, until you let
+go: the robot's (x forward, y left, z up) or tool0's own, as **Frame** says. One joint point is streamed every tick 0.2 s ahead on a straight line from where you pressed, so
 the arm never drifts off the axis; one arm jogs at a time.
 
-1. **Control** › `0806` › `Left`: under **Joint**, below **Hold**, the line `tool0 jog: tool0's own axes · moves while
-   held · one arm at a time`, the **Tool speed** slider at 5 mm/s, and the **Tool0** folder: `x−  x+  rx−  rx+` /
-   `y−  y+  ry−  ry+` / `z−  z+  rz−  rz+`. **(sim)**
+1. **Control** › `0806` › `Left`: under **Joint**, below **Hold**, the line `tool0 jog · moves while held · one arm at
+   a time`, the **Tool speed** slider at 5 mm/s, **Frame** at Robot, and the **Tool0** folder: `x−  x+  rx−  rx+` /
+   `y−  y+  ry−  ry+` / `z−  z+  rz−  rz+`. Set **Frame** to Tool for steps 2 to 6. **(sim)**
 2. Hold **x+** for 2 s. **Expect:** the line under the buttons reads `jogging along tool0 x: +9.8 mm at 5 mm/s`
    (counting up), `tcp` in the status moves, and on release the pane says `arm left_ur_arm: hold sent` once.
    **(sim: ~10 mm per 2 s on a normal browser; see the note on browsers.)**
@@ -51,6 +51,9 @@ the arm never drifts off the axis; one arm jogs at a time.
    along one axis only (tool0's: the flange frame, not the base's). Hold **x+** for 10 s: the arm keeps a steady 5
    mm/s and stops within 0.2 s of release. At 50 mm/s the point is 10 mm ahead; a joint near a singularity stops the
    jog with `jog stopped: … too near a singularity` and the press is ignored until released.
+7. **Frame** at Robot, the flange turned off square (rz a quarter turn): hold **z+** for 2 s: the tip rises straight
+   up, `jogging along the robot's z: +9.8 mm`; **x+** moves it toward the robot's front, whatever the
+   flange's turn. **(sim)**
 
 ## 2. The force/torque watch (Control › robot › arm › Live plots)
 

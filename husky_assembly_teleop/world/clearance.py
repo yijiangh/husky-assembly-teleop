@@ -38,7 +38,10 @@ from .stand_ins import unknown_parts, unknown_robots, with_stand_ins
 #: Default distance, metres, below which a clearance trips.
 STOP_DISTANCE = 0.1
 #: Distance kept while an arm moves (jogs, planned paths), metres: tight, so it can still reach close to things.
-ARM_STOP_DISTANCE = 0.01
+ARM_STOP_DISTANCE = 0.005
+#: Distance an arm plan keeps where it can (`plugins/arm_planner/planner.py`), metres: more than ARM_STOP_DISTANCE,
+#: so the arm following its path a little off does not trip it.
+PLAN_DISTANCE = 0.01
 #: How many trips the monitor keeps.
 TRIPS_KEPT = 10
 #: A robot keeps this far from itself (links, tools, what it holds), metres; the SRDF's and tools' allowed pairs aside.
@@ -252,10 +255,10 @@ class ClearanceChecker:
                 found.append((key, f"cannot be checked: {error}", None))
                 continue
             if hit is not None:
-                found.append((key, f"came within {margin * 100:.0f} cm of {snapshot.label(hit.pairs[0][1])}", hit))
+                found.append((key, f"came within {margin * 100:g} cm of {snapshot.label(hit.pairs[0][1])}", hit))
                 continue
             hit = itself
             if hit is not None:
-                why = f"came within {self_margin * 100:.0f} cm of itself: {self_text(snapshot, hit.pairs[0])}"
+                why = f"came within {self_margin * 100:g} cm of itself: {self_text(snapshot, hit.pairs[0])}"
                 found.append((key, why, hit))
         return found

@@ -112,9 +112,16 @@ button changes height while a step shows, so the buttons never jump.
   again"). Scrub **Preview time** first (seconds from the start up to the move's end), or press **Play** to watch it
   in real time: the ghost shows the arm along what Go starts. A sweep stops at each waypoint for its shortest sample,
   1.5 s; readings that come in moving make the real stops longer. After 10 minutes without Go the procedure fails.
+- **Clearance** below Go, ticked, keeps what Go moves clear: a planned move soft stops within 5 mm of anything and is
+  refused if the arm already stands that close, a sweep soft stops within 5 cm of the scene (5 mm of the robot
+  itself). A red "starts too close" chip warns before the press; untick to move out of a tight spot (the chip turns
+  amber: nothing soft stops the arm then).
 - With other robots not measured, a Go that moves the arm asks twice, as the planners' Commit: the first press turns
   it amber and says so below; a second within 5 s moves, with those robots checked as stand-ins (any other robot lost
-  soft stops the arm). The D-pad and the tool pad do not ask: a robot not measured at the press is a stand-in.
+  soft stops the arm). The D-pad and the tool pad do not ask: a robot not measured at the press is a stand-in. Nor
+  does Go ask for a robot with its base tracked whose unknown arms are beyond reach: their shoulders about 2.5 m or
+  more from the moving arm's (each arm's reach, tool and held bodies included, whatever the joints:
+  `world/arm_reach.py`).
 - **Auto** goes on without asking Go: the moves, the sweeps and the validation poses; Record then goes on with the
   next take. Off by default. A sample that does not come still asks Go to try again, and a move asks Go (twice)
   while other robots are not measured.
@@ -413,15 +420,16 @@ tilts, and the plugin solves where the tip sits in tool0. The pendant stays in R
    poses and the punch takes so far go out of date (the next pose starts afresh). If not, record more poses or press
    Done: one press answers no and goes on, accepting nothing. The question sits below the controls, so no button moves.
 
-The **Tool pad** has a row per axis of tool0, coloured as the scene draws it (x red, y green, z blue; z points out of
-the flange): on the left shift −/+ along it, on the right turn −/+ about it through the tip, by the **Step size**
-chosen (0.1 mm and 0.2° up to 5 mm and 5°). Turning keeps the tip in place once the offset is known (until then it
+The **Tool pad** has a row per axis of its **Frame**, coloured as the scene draws axes (x red, y green, z blue): on
+the left shift −/+ along it, on the right turn −/+ about it through the tip, by the **Step size** chosen (0.1 mm and
+0.2° up to 5 mm and 5°). **Robot**, at start, is the robot's frame: x forward, y left, z up, whatever the flange's
+turn (from the joints only: no mocap); **Tool** is tool0's own (z out of the flange). Turning keeps the tip in place once the offset is known (until then it
 turns about tool0), so after the first pose a new tilt is a few turn clicks and a small shift.
 Each step is a short joint move on the joint controller, solved on the URDF; a step that needs more than 10° on a
 joint (the wrist near straight) is refused: move the arm away by free drive. Only **area, e-stop** red stops free
 drive and the tool pad (as the D-pad in Punch); other chips only warn. They are off while a pose is recorded, hold the
 robot's lease only while they move it (a tool step until the arm has stopped), and end with Stop all.
-**Clearance** below the pad, ticked, sends a step only once the robot is found 1 cm clear of anything, itself
+**Clearance** below the pad, ticked, sends a step only once the robot is found 5 mm clear of anything, itself
 included, and soft stops it closer; a step from too close is refused, nothing sent. Untick it to put the tip on its
 target. Free drive is never checked.
 

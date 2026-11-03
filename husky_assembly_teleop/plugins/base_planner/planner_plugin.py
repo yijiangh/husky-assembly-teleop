@@ -261,10 +261,11 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                       answer: Callable[[bool, str], None]) -> None:
         """Send the plan to the follower, then record the robot until the follower is done; save it if recorded.
 
-        Recording and a clearance start before the send: a soft stop within the margin the path was planned with,
-        not the usual STOP_DISTANCE, so a path the planner found never trips it. Refused while the base may not
-        follow a path. With the robot itself in `unknown_allowed` (Commit's second press), its unknown arms are
-        checked where last seen, else stowed.
+        Recording and, committed with Clearance ticked, a clearance start before the send (`commit_clearance`): a
+        soft stop within the margin the path was planned with, not the usual STOP_DISTANCE, so a path the planner
+        found never trips it; a start already that close refuses it. Refused while the base may not follow a path.
+        With the robot itself in `unknown_allowed` (Commit's second press), its unknown arms are checked where last
+        seen, else stowed.
 
         ? The margin is no stopping distance: at the planning speed the robot rolls ~10 cm after a trip. Revisit
           with the speed-aware clearance (tasks/2026-10-21_collision_view.md, follow-ups).
@@ -288,8 +289,9 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                             signals.follower_state(robot, every_message=True),
                             signals.base_floor_pose(robot, every_message=True),
                             signals.wheel_odometry(robot, every_message=True)) as rec, \
-                    ctx.clearance([serial], margin, unknown_arms=ALL_ARMS if robot_id(serial) in allowed else (),
-                                  unknown_robots=allowed) as clearance:
+                    self.commit_clearance(ctx, plan, margin,
+                                          unknown_arms=ALL_ARMS if robot_id(serial) in allowed else ()) as clearance:
+                await self.first_check(ctx, clearance)
                 try:
                     sent_id = send_to_onboard_follower(robot.base, path)
                 except ValueError as error:
@@ -316,12 +318,15 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 self._end(serial, run, check)
                 await ctx.sleep(SETTLE)
         except asyncio.CancelledError:
+            if refusal := self.start_refusal(clearance):
+                answer(False, refusal)
+                ctx.log_warn(f"{serial}: {refusal}")
             # ! Stop the path, unless a new commit replaces this run: its path replaces this one on the follower.
             # * Cancelled while settling, the run had ended: its outcome and chip stay.
             if run is None or run.ended is None:
                 outcome = "replaced by a new commit" if self.replaced() else "stopped"
                 if clearance is not None and clearance.problem:
-                    outcome = f"soft stopped: {clearance.problem}"
+                    outcome = f"{'refused' if clearance.refused else 'soft stopped'}: {clearance.problem}"
                 if not self.replaced():
                     self._end(serial, run, self.cancelled_check(ctx, serial, serial, clearance,
                                                                 "the commit was cancelled; the follower stopped"))

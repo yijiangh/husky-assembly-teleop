@@ -117,7 +117,8 @@ class ArmMotion:
         """Plan a collision-free move to `joints` with the arm planner, wait for Go (`optional_go`), send it and wait.
 
         Other robots not measured make Go ask twice; the move then checks them as stand-ins. A base driven while Go
-        waits (`base_moved`) has the move planned again from where it stands.
+        waits (`base_moved`) has the move planned again from where it stands. Go's Clearance box says whether the move
+        runs under the planner's clearance.
 
         Returns once the arm arrived and the planner gave the robot's lease back.
 
@@ -143,7 +144,7 @@ class ArmMotion:
             if not base_moved(planned_at, ctx.kinematics.base_pose(run.serial)):
                 break
             again = "The base moved: "
-        sent, message = await planner.commit(plan.id, unknown)
+        sent, message = await planner.commit(plan.id, unknown, self.procedure.clearance.value)
         if not sent:
             raise RuntimeError(f"move to {what} not sent: {message}")
         self.procedure.doing = f"moving to {what}"

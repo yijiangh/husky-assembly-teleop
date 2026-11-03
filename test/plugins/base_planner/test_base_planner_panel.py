@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
-from plugin_fakes import FakeGui
+from plugin_fakes import WATCHES, FakeGui
 from robot_fakes import lease_test_robots
 
 from husky_assembly_teleop.plugins.base_planner.panel_plugin import NO_TASK, BasePlannerPanel
@@ -140,7 +140,7 @@ def test_the_panel_plans_and_commits_through_the_api():
                                               spawn=lambda _label, work: asyncio.get_running_loop().create_task(work),
                                               log_info=lambda _text: None, lease_robots=lease_test_robots,
                                               world=SimpleNamespace(robots={}), config=SimpleNamespace(robots=()),
-                                              scene=SimpleNamespace(snapshot=Scene()))
+                                              scene=SimpleNamespace(snapshot=Scene()), **WATCHES)
     planner.setup(ctx)
 
     async def scenario():
@@ -204,7 +204,7 @@ def test_a_plan_refused_for_a_collision_shows_its_hit_until_the_next_plan():
     planner, ctx = Planner(), SimpleNamespace(submit=lambda _label, run: run(), now=lambda: 0.0,
                                               spawn=lambda _label, work: asyncio.get_running_loop().create_task(work),
                                               log_info=lambda _text: None, log_warn=lambda _text: None,
-                                              world=SimpleNamespace(robots={}))
+                                              world=SimpleNamespace(robots={}), **WATCHES)
     planner.results = [PlanResult(None, "target is in collision with the wall", hit=hit)]
     planner.setup(ctx)
 
@@ -246,7 +246,7 @@ def test_the_preview_slider_follows_only_the_operator():
         return run
 
     ctx = SimpleNamespace(defer_value=defer_value, defer=lambda _label, run, operator_only=False: run)
-    BasePlannerPanel()._add_path_controls(ctx, FakeGui(), "plan hint", "commit hint")
+    BasePlannerPanel()._add_path_controls(ctx, FakeGui(), "plan hint", "commit hint", "clearance hint")
     assert asked["scrub"] is True
 
 
@@ -289,7 +289,7 @@ def test_loading_a_step_for_another_robot_says_so_past_the_next_tick(base, said)
     planner._plan = Plan(1, BasePlanRequest(SERIAL, GOAL), "ready", PATH)
     panel = panel_for(planner)
     panel._target = SimpleNamespace(pose=GOAL, set=lambda *pose: None)
-    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=lambda _text: None)
+    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=lambda _text: None, **WATCHES)
     panel.update(ctx)
     movement = SimpleNamespace(id="M3", start=SimpleNamespace(robots={"belle": SimpleNamespace(base=base)}))
     selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="belle"))

@@ -120,8 +120,11 @@ def add_jog_arrows(ctx: PluginContext, serial: str, arm: ArmInterface) -> JogArr
 
 
 def draw_jog_arrows(ctx: PluginContext, serial: str, arm: ArmInterface, arrows: JogArrows, joints: bool,
-                    tool0: bool) -> None:
-    """Place one arm's joint and tool0 arrows while their box is ticked and the joint controller runs."""
+                    tool0: bool, robot_frame: bool = False) -> None:
+    """Place one arm's joint and tool0 arrows while their box is ticked and the joint controller runs.
+
+    With `robot_frame` (the tool0 jog's Frame at Robot) tool0's arrows keep the robot's axes, at tool0.
+    """
     # link_pose raises KeyError for a robot kinematics doesn't know: never shown for it.
     known = any(robot.serial == serial for robot in ctx.config.robots)
     jogging = known and arm.controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER)
@@ -133,4 +136,5 @@ def draw_jog_arrows(ctx: PluginContext, serial: str, arm: ArmInterface, arrows: 
             group.visible = visible
         for frame, link in frames if visible else ():
             pose = ctx.kinematics.link_pose(serial, f"{arm.config.name}_{link}")
-            frame.position, frame.wxyz = pose.position, quaternion_to_wxyz(np.array(pose.orientation))
+            turn = ctx.kinematics.base_pose(serial).orientation if robot_frame and link == "tool0" else pose.orientation
+            frame.position, frame.wxyz = pose.position, quaternion_to_wxyz(np.array(turn))

@@ -6,12 +6,13 @@ import asyncio
 import math
 from collections import deque
 from contextlib import contextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, robot_config
-from plugin_fakes import ArmDriver, FakeContext, fake_arm, fake_node, fake_robot
+from plugin_fakes import WATCHES, ArmDriver, FakeContext, fake_arm, fake_node, fake_robot, watch_clearance
 from robot_fakes import lease_test_robots, wait_ticks_until
 
 from husky_assembly_teleop.plugins.arm_planner import planner_plugin as arm_plugin
@@ -25,7 +26,7 @@ from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from husky_assembly_teleop.ui.style import NONE, OK
 from husky_assembly_teleop.world.checks import BAD, GOOD, PENDING, WARN, Check
-from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE, ClearanceRefused
+from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE, PLAN_DISTANCE, Clearance, ClearanceRefused
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject
@@ -35,7 +36,7 @@ SERIAL, ARM = "0806", "left_ur_arm"
 NAMES = arm_joint_names(ARM)
 START = np.array([0.0, -1.5, 1.5, 0.0, 0.0, 0.0])
 GOAL = START + np.array([0.4, 0.0, 0.0, 0.0, 0.0, 0.0])
-PATH = ArmPath.along(NAMES, np.array([START, GOAL]))
+PATH = replace(ArmPath.along(NAMES, np.array([START, GOAL])), margin=PLAN_DISTANCE)
 REQUEST = ArmPlanRequest(SERIAL, ARM, tuple(GOAL))
 
 
@@ -49,6 +50,9 @@ class FakeCtx:
 
     Mocap tracks the base until `clock` passes 0.3 s; intents run at once.
     """
+
+    watch_clearance = staticmethod(watch_clearance)
+    unwatch_clearance = staticmethod(WATCHES["unwatch_clearance"])
 
     def __init__(self):
         """The arm at START, the base at the origin with a live mocap pose, and an arm that accepts."""
@@ -82,7 +86,7 @@ class FakeCtx:
     wait_until = staticmethod(wait_ticks_until)
 
     @contextmanager
-    def clearance(self, _serials, _margin, unknown_arms=(), unknown_robots=()):
+    def clearance(self, _serials, _margin, unknown_arms=(), unknown_robots=(), refuse_first=False):
         """Keep no clearance: nothing here could trip one."""
         yield
 
@@ -216,8 +220,9 @@ def _commit(ctx: FakeContext, answers: list, cancel_after: int | None = None, cl
 
     async def commit():
         with ctx.lease_robots([SERIAL], "commit plan 1"):
-            planner.clearance = clearance
-            await planner.execute(ctx, ready_plan(), lambda *answer: answers.append(answer))
+            plan = ready_plan()
+            planner._clearance[plan.id] = clearance
+            await planner.execute(ctx, plan, lambda *answer: answers.append(answer))
 
     async def scenario():
         task = asyncio.create_task(commit())
@@ -242,24 +247,44 @@ def _held(arm) -> bool:
 
 @pytest.mark.safety
 def test_execute_sends_the_path_and_waits_until_the_arm_is_at_its_end():
-    """The plan's path goes to the arm under a 1 cm clearance, answered once sent; it ends with the arm there."""
+    """The plan's path goes to the arm under a 5 mm clearance, answered once sent; it ends with the arm there."""
     (ctx, arm), answers, planner = _driven(), [], ArmPlannerPlugin()
     ended = _commit(ctx, answers, planner=planner)
     assert answers == [(True, f"sent to {SERIAL} {ARM}")] and len(arm._trajectory.messages) == 1
     assert np.allclose(ended, GOAL, atol=1e-3)
     assert (_chip(planner).label, _chip(planner).level) == ("done", GOOD)
     clearance, = ctx.clearances
-    assert (clearance.serials, clearance.margin) == ((SERIAL,), ARM_STOP_DISTANCE) and ARM_STOP_DISTANCE == 0.01
+    assert (clearance.serials, clearance.margin) == ((SERIAL,), ARM_STOP_DISTANCE) and ARM_STOP_DISTANCE == 0.005
 
 
 @pytest.mark.safety
 def test_with_clearance_unticked_the_path_goes_out_without_one():
     """Clearance is on by default; off, the same path is sent with no clearance kept."""
-    assert ArmPlannerPlugin().clearance
+    assert ArmPlannerPlugin().keeps_clearance(ready_plan())
     ctx, answers = _driven()[0], []
     ended = _commit(ctx, answers, clearance=False)
     assert answers == [(True, f"sent to {SERIAL} {ARM}")] and not ctx.clearances
     assert np.allclose(ended, GOAL, atol=1e-3)
+
+
+@pytest.mark.safety
+def test_a_start_too_close_is_refused_and_nothing_sent():
+    """Clearance ticked: nothing goes out before the first check; too close there, it says to untick Clearance."""
+    (ctx, arm), answers, planner = _driven(), [], ArmPlannerPlugin()
+    too_close = Clearance((SERIAL,), ARM_STOP_DISTANCE, refuse_first=True, refused=True,
+                          problem="came within 0.5 cm of the rack")
+
+    @contextmanager
+    def clearance(serials, margin, unknown_robots=(), refuse_first=False):
+        # * As the monitor ends it: refused at the first check, the commit cancelled.
+        assert refuse_first and margin == ARM_STOP_DISTANCE
+        yield too_close
+
+    ctx.clearance = clearance
+    _commit(ctx, answers, cancel_after=2, planner=planner)
+    refusal = "nothing sent: came within 0.5 cm of the rack; untick Clearance to move out"
+    assert answers == [(False, refusal)] and not arm._trajectory.messages
+    assert (_chip(planner).label, _chip(planner).level) == ("refused", BAD)
 
 
 @pytest.mark.safety
@@ -446,7 +471,7 @@ def test_the_duration_slider_re_times_the_plan_and_new_plans_take_its_slowdown()
     panel._set_duration(3 * planner.plan.path.fastest)
     assert panel._slowdown == pytest.approx(3.0) and panel._t == pytest.approx(3.0)
     planner._plan = Plan(2, REQUEST, "ready", path=PATH)
-    panel.update(SimpleNamespace(now=lambda: 0.0, log_warn=lambda _text: None))
+    panel.update(SimpleNamespace(now=lambda: 0.0, log_warn=lambda _text: None, **WATCHES))
     assert planner.plan.id == 2 and planner.plan.path.duration == pytest.approx(3 * PATH.duration)
     planner._plan = Plan(3, REQUEST, "planning")
     panel._set_duration(1.0)

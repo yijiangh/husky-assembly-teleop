@@ -1,7 +1,8 @@
 """
 RRT-Connect over one arm's six joints, avoiding the robot itself, the other robots and every scene body.
 
-Plans on one robot's mirror from a `MirrorPool`; a collision comes back as a `CollisionHit` (`collision_hit`).
+Plans on one robot's mirror from a `MirrorPool`; a collision comes back as a `CollisionHit` (`collision_hit`). A path
+keeps PLAN_DISTANCE from everything, more than a commit's clearance, unless its start or target is already closer.
 
 ! Worker thread only: sync, search and close on the worker.
 """
@@ -16,6 +17,7 @@ from typing import Callable, Sequence
 
 import numpy as np
 
+from ...world.clearance import PLAN_DISTANCE
 from ...world.collision_hit import CollisionHit
 from ...shared.assembly_planning.collision import collision_hit, collisions
 from ...shared.assembly_planning.joints import arm_joint_names
@@ -51,12 +53,14 @@ class ArmPath(TimedPath):
         velocities: Joint speeds at each sample, rad/s, shape (n, 6).
         rests: How often the arm comes to rest on the way, at corners left sharp.
         slowdown: How many times longer than its fastest timing it takes (`slowed`).
+        margin: How far it keeps from everything, metres, as checked when planned: PLAN_DISTANCE, or 0 (contact only).
     """
 
     joint_names: tuple[str, ...]
     velocities: np.ndarray
     rests: int
     slowdown: float = 1.0
+    margin: float = 0.0
 
     @property
     def fastest(self) -> float:
@@ -197,6 +201,9 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
              abort: threading.Event) -> PlanResult[ArmPath]:
     """Plan a collision-free joint path for one arm within its URDF joint limits, from where it is to `goal`.
 
+    The path keeps PLAN_DISTANCE from everything, or only clear of contact if the start or target is closer
+    (`ArmPath.margin`).
+
     Args:
         mirror: The robot's mirror, synced to `scene`.
         scene: The scene the mirror was synced to, for a hit's scene.
@@ -225,7 +232,12 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
     hits = collisions(mirror)
     if hits:
         return refused(collision_hit(mirror, scene, "start", first=hits[0]))
-    check = mirror.search_check(names)
+    # * PLAN_DISTANCE all along where start and target both have it; contact only otherwise.
+    margin = PLAN_DISTANCE
+    check = mirror.search_check(names, margin)
+    if check(goal) is not None or check(start) is not None:
+        margin = 0.0
+        check = mirror.search_check(names)
     pair = check(goal)
     if pair is not None:
         return refused(collision_hit(mirror, scene, "target", dict(zip(names, goal)), names, pair))
@@ -245,5 +257,12 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
                       attempts=ATTEMPTS, improve_time=IMPROVE_TIME)
     if corners.states is None:
         return PlanResult(None, corners.reason, time.time() - started)
-    path = ArmPath.along(names, *round_corners(corners.states, collides))
+    path = replace(ArmPath.along(names, *round_corners(corners.states, collides)), margin=margin)
     return PlanResult(path, seconds=time.time() - started, direct=corners.direct)
+
+
+def margin_note(margin: float) -> str:
+    """What a path's margin means for its commit: "keeps 1 cm", or why it keeps only clear of contact."""
+    if margin > 0:
+        return f"keeps {margin * 100:g} cm"
+    return f"only free of contact: the start or target is closer than {PLAN_DISTANCE * 100:g} cm"

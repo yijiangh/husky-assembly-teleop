@@ -1,4 +1,4 @@
-"""The tool pad: each button's move in tool0's frame, at each step size."""
+"""The tool pad: each button's move in its frame, at each step size; the robot's frame unless Tool is chosen."""
 
 from types import SimpleNamespace
 
@@ -8,8 +8,8 @@ from plugin_fakes import FakeGui
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.shared.teleop.clearance_toggle import ClearanceToggle
-from husky_assembly_teleop.shared.teleop.tool_pad import (SHIFTS, STEP_SIZES, TURNS, build_tool_step_inputs,
-                                                          tool_step)
+from husky_assembly_teleop.shared.teleop.tool_pad import (ROBOT_FRAME, SHIFTS, STEP_SIZES, TOOL_FRAME, TURNS,
+                                                          build_tool_step_inputs, tool_step)
 
 pytestmark = pytest.mark.safety
 
@@ -39,12 +39,17 @@ def test_on_the_phone_the_step_size_is_a_row_of_buttons_the_chosen_one_filled_an
     gui, steps = FakeGui(), []
     ctx = SimpleNamespace(defer=lambda _label, run, operator_only=False: lambda *_event: run(),
                           defer_value=lambda _label, run, operator_only=False: run)
-    size = build_tool_step_inputs(ctx, gui, "0805 ur_arm", steps.append, ClearanceToggle("hint"), phone=True)
+    size = build_tool_step_inputs(ctx, gui, "0805 ur_arm", lambda step, frame: steps.append((step, frame)),
+                                  ClearanceToggle("hint"), phone=True)
     assert not [widget for widget in gui.widgets if widget.kind == "dropdown"] and size.value == "0.5 mm"
-    group, = [widget for widget in gui.widgets if widget.kind == "button_group"]
+    group, frame = [widget for widget in gui.widgets if widget.kind == "button_group"]
     style = size._style.content
     group.callback("5 mm")
     assert size.value == "5 mm" and size._style.content != style
     plus_x, = [widget for widget in gui.widgets if widget.label == "+X"]
     plus_x.callback()
-    np.testing.assert_allclose(steps[-1].position, (5e-3, 0.0, 0.0))
+    np.testing.assert_allclose(steps[-1][0].position, (5e-3, 0.0, 0.0))
+    assert steps[-1][1] == ROBOT_FRAME, "the robot's frame at start"
+    frame.callback(TOOL_FRAME)
+    plus_x.callback()
+    assert steps[-1][1] == TOOL_FRAME

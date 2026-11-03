@@ -152,6 +152,20 @@ def test_done_asks_once_more_on_a_passing_step_whose_precondition_has_expired(se
     assert panel.index == 2 and dones == [True]
 
 
+def test_a_state_no_chip_explains_says_why_below_the_buttons(server):
+    """Expired or out of date: the reason is below the buttons, until Done's question says it instead; not a pass."""
+    panel, steps, ctx, _dones = make_panel(server)
+    steps[0].state = lambda ctx: Check("expired", WARN, "base body refined since measured")
+    panel.draw(ctx)
+    assert "s0 expired: base body refined since measured." in panel._notes_html.content
+    steps[0].state = lambda ctx: Check("out of date", BAD, "sampled with another tool body.")
+    panel.draw(ctx)
+    assert "s0 out of date: sampled with another tool body." in panel._notes_html.content
+    steps[0].state = lambda ctx: Check("passes", GOOD, "Every check of this step passes.")
+    panel.draw(ctx)
+    assert "passes" not in panel._notes_html.content
+
+
 def test_done_asks_afresh_once_its_window_has_passed(server):
     """A second Done later than SECOND_PRESS_SECONDS is a first one again; the button is Done meanwhile."""
     panel, steps, ctx, dones = make_panel(server)
@@ -477,6 +491,23 @@ def test_a_go_that_moves_a_robot_asks_twice_while_another_robot_is_not_measured(
         await procedure._task
         alice = frozenset({"robots/a200-0804"})
         assert got == [alice] and procedure.outcome is None and procedure.unknown_allowed == alice
+
+    asyncio.run(scenario())
+
+
+def test_a_robot_out_of_reach_may_be_unknown_at_the_first_press():
+    """A robot not measured that the move cannot reach (`out_of_reach`): Go goes on at once, letting it be unknown."""
+    procedure, clock = Procedure(), SimpleNamespace(now=0.0)
+    ctx = robots_ctx(clock, unknown=True)
+    alice = frozenset({"robots/a200-0804"})
+    procedure.out_of_reach = lambda _ctx: alice
+
+    async def scenario():
+        got = started(procedure, ctx, procedure.ask_go(ctx, "move?", "move", ["robots/a200-0805"]))
+        await asyncio.sleep(0)
+        procedure.press_go(ctx)
+        await procedure._task
+        assert got == [alice] and procedure.outcome is None
 
     asyncio.run(scenario())
 

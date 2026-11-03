@@ -38,6 +38,7 @@ from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, check_chip, chip, chip_line, section,
                          values)
 from ...robot_interface.base import live_report
+from ...world.clearance import ALL_ARMS
 from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import unknown_parts
 from scaffolding_assembly_core.geometry import Pose
@@ -65,6 +66,8 @@ class BasePlannerPanel(PlannerPanel):
     requires = ("base_planner", "process", "collisions")
     #: Its own ghost kind (`ui.ghost.KIND_COLORS`), in the one target blue.
     target_kind = "base_target"
+    #: The chosen robot's arms are watched where last seen when unknown, as robot_control's D-pad.
+    watch_options = {"unknown_arms": ALL_ARMS}
 
     def __init__(self):
         """Start with no robot chosen and no target."""
@@ -116,7 +119,10 @@ class BasePlannerPanel(PlannerPanel):
                                               "previews; Clear drops the plan. A sent path keeps driving: Stop all "
                                               "stops it.",
                                     commit_hint="Send the path to the onboard follower; it drives at once if Vel "
-                                                "runs. With an arm out of its stow pose, press it twice too.")
+                                                "runs. With an arm out of its stow pose, press it twice too.",
+                                    clearance_hint="Soft stop a sent path once the robot comes within the plan's "
+                                                   "Margin of anything; a start that close is refused. Untick to "
+                                                   "drive out of a tight spot.")
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -279,6 +285,10 @@ class BasePlannerPanel(PlannerPanel):
         arms = f"{unknown} not measured: checked where last seen, else stowed" if unknown else ""
         return [warning for warning in (out, arms) if warning]
 
+    def commit_margin(self, ctx: PluginContext) -> float:
+        """A sent path's clearance: the panel's Margin."""
+        return float(self._margin.value)
+
     def commit_unknown(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> frozenset[str]:
         """The robot itself while `commit_warnings` names its arms: its drive checks them where last seen."""
         return frozenset({robot_id(plan.request.serial)} if self._unknown_arms(ctx, plan.request.serial) else ())
@@ -381,7 +391,8 @@ class BasePlannerPanel(PlannerPanel):
             chips += self._plan_chip()
         if (run := self._planner.run_check(ctx, self.serial)) is not None:
             chips += check_chip(run)
-        return chip_line(chips + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
+        return chip_line(chips + self.clearance.start_chip("Commit")
+                         + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
 
     def _details_html(self) -> str:
         """Numbers of the target and the plan, and the last message, in a fixed number of rows."""

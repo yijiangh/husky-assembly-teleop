@@ -6,7 +6,9 @@ A procedure is a coroutine run as a task. It says what it does now in `doing`, a
 outcome is kept when it went well: the step's checks say so. Steps and their helpers also leave an outcome for what
 they refused.
 - A Go that moves robots (`acting`) takes a second press while other robots are not measured, as the planners' Commit
-  (`CommitConfirm`); the move may then have those robots unknown (`unknown_allowed`).
+  (`CommitConfirm`); the move may then have those robots unknown (`unknown_allowed`). Robots the move cannot reach
+  (`out_of_reach`) may be unknown without asking.
+- Go's Clearance box (`clearance`, below Go) says whether what Go moves keeps a clearance; the steps read it.
 - Cancel ends the procedure, except in a part run with `pausable`: there it stops that part (the arm holds) and the
   procedure goes on, e.g. to ask Go to go on; Cancel then ends it.
 """
@@ -14,7 +16,7 @@ they refused.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Coroutine, Iterable
+from typing import TYPE_CHECKING, Callable, Coroutine, Iterable
 
 import numpy as np
 
@@ -23,6 +25,7 @@ from ...robot_interface.soft_stop import MotionRefused
 from ...world.checks import BAD, PENDING, WARN, Check
 from ...world.stand_ins import unknown_robots
 from ..planner.planner_panel import CommitConfirm
+from ..teleop.clearance_toggle import ClearanceToggle
 
 if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
@@ -32,6 +35,9 @@ if TYPE_CHECKING:
 GO_TIMEOUT = 600.0
 #: The outcome's label while Go waits for its second press.
 GO_AGAIN = "press Go again"
+#: The hover text of Go's Clearance box.
+GO_CLEARANCE_HINT = ("While ticked, what Go moves soft stops once the robot comes too close to anything, and a move "
+                     "starting too close is refused. Untick to move out of a tight spot.")
 
 
 class Procedure:
@@ -48,6 +54,8 @@ class Procedure:
         auto: Whether procedures go on without asking for the Go they make optional.
         confirm: Go's second press while other robots are not measured; the panel sets its `button`.
         unknown_allowed: Ids of the other robots the last Go let be unknown during its move, for its clearance.
+        clearance: Go's Clearance box: whether what Go moves keeps a clearance.
+        out_of_reach: Ids of the other robots not measured that what Go moves cannot reach; the plugin sets it.
     """
 
     def __init__(self):
@@ -63,6 +71,8 @@ class Procedure:
         self.auto = False
         self.confirm = CommitConfirm()
         self.unknown_allowed: frozenset[str] = frozenset()
+        self.clearance = ClearanceToggle(GO_CLEARANCE_HINT)
+        self.out_of_reach: Callable[[PluginContext], frozenset[str]] = lambda _ctx: frozenset()
         #: Ids of the robots the awaited Go moves; none for a Go that moves nothing.
         self._acting: frozenset[str] = frozenset()
         #: Whether a `pausable` part runs, and whether Cancel stopped it (rather than the procedure).
@@ -136,7 +146,7 @@ class Procedure:
             return
         unknown = frozenset()
         if self._acting:
-            asked, unknown = self.confirm.asks(ctx, self._acting, "Go")
+            asked, unknown = self.confirm.asks(ctx, self._acting, "Go", far=self.out_of_reach(ctx))
             if asked:
                 self.outcome = Check(GO_AGAIN, WARN, asked)
                 return
@@ -198,14 +208,15 @@ class Procedure:
 
     async def optional_go(self, ctx: PluginContext, path: TimedPath, prompt: str, go: str,
                           acting: Iterable[str]) -> frozenset[str]:
-        """`preview_go`, skipped on `auto` while every robot besides `acting` is measured.
+        """`preview_go`, skipped on `auto` while every robot besides `acting` is measured or out of reach.
 
         Returns:
-            frozenset[str]: Ids of the other robots Go let be unknown during the move; none when skipped.
+            frozenset[str]: Ids of the other robots Go let be unknown during the move; skipped, those out of reach.
         """
         acting = frozenset(acting)
-        if self.auto and not unknown_robots(ctx.scene.snapshot, acting):
-            return frozenset()
+        unknown = unknown_robots(ctx.scene.snapshot, acting)
+        if self.auto and unknown <= self.out_of_reach(ctx):
+            return unknown
         return await self.preview_go(ctx, path, prompt, go, acting)
 
     def previewed(self) -> np.ndarray | None:

@@ -262,8 +262,8 @@ class JogContext(Context):
         yield self.clearances[-1]
 
 
-def test_a_jog_waits_for_its_clearance_which_keeps_one_centimetre():
-    """With Clearance ticked, the jog goes out only once a 1 cm clearance found the robot clear; unticking ends it."""
+def test_a_jog_waits_for_its_clearance_which_keeps_half_a_centimetre():
+    """With Clearance ticked, the jog goes out only once a 5 mm clearance found the robot clear; unticking ends it."""
     arm, plugin, _ctx = _jogged_arm()
     plugin._arms[0].jog_clearance = SimpleNamespace(value=True)
     ctx = JogContext(arm)
@@ -284,7 +284,7 @@ def test_a_jog_waits_for_its_clearance_which_keeps_one_centimetre():
         await plugin._jog_guards[("0804", "ur_arm")]
 
     asyncio.run(scenario())
-    assert ARM_STOP_DISTANCE == 0.01
+    assert ARM_STOP_DISTANCE == 0.005
 
 
 def test_a_jog_that_starts_too_close_is_refused_until_the_next_press_without_a_soft_stop():
@@ -618,7 +618,7 @@ def test_the_jog_buttons_and_their_note_follow_clearance_as_the_dpad_does():
     plugin._color_buttons(buttons, False, key, 0.0)
     assert buttons[0].color == UNGUARDED_COLOR
     ticked, unticked = jog_clearance_note(True, ARM_STOP_DISTANCE), jog_clearance_note(False, ARM_STOP_DISTANCE)
-    assert "Clearance keeps 1 cm" in ticked and "Clearance off" in unticked
+    assert "Clearance keeps 0.5 cm" in ticked and "Clearance off" in unticked
     assert "white-space:nowrap" in ticked and "white-space:nowrap" in unticked, "one line either way: nothing jumps"
 
 

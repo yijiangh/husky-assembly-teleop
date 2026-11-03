@@ -23,12 +23,15 @@ from ...shared.collisions_contract import CollisionsContract
 from ...shared.guide.panel import GuidePanel
 from ...shared.teleop.dpad import PHONE_DPAD_STYLE
 from ...shared.teleop.tool_pad import ICONS as TOOL_PAD_ICONS
-from ...ui.ghost import RobotGhost, robot_ghosts
+from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.phone import big_buttons
 from ...ui.style import BUSY, FAIL, block, chip, check_chip
 from ...colors import WHITE
+from ...world.arm_reach import out_of_reach
 from ...world.checks import GOOD
+from ...world.clearance import ARM_STOP_DISTANCE
 from ...world.mocap import mocap_check
+from scaffolding_assembly_core.ids import robot_id
 from .run import Run
 from .steps import STEPS
 from .steps.base import FAILS, TOOL_NAME, WORK, Calibration, CalibrationStep
@@ -64,6 +67,7 @@ class CalibrationPlugin(HuskyPlugin):
         """Build the steps and their panel, the ghost and the side panel; choose the first arm with sweeps."""
         hits: CollisionsContract = ctx.require("collisions")
         self.cal = Calibration(hits, self.switch_run, self.show_work_left)
+        self.cal.procedure.out_of_reach = self._out_of_reach
         # Whether the run took new body definitions whose files were not moved yet (a procedure ran).
         self._untidy = False
         choices = [f"{serial} {arm}" for serial, robot in ctx.world.robots.items() for arm in robot.arms
@@ -83,6 +87,8 @@ class CalibrationPlugin(HuskyPlugin):
             self.panel.build_phone(ctx, phone)
         self._ghosts: dict[str, RobotGhost] = robot_ghosts(ctx, [robot.config for robot in ctx.world.robots.values()],
                                                            "target")
+        # * One plugin's ghosts at a time (`RecentUse`): the ghost counts as used whenever what it shows changes.
+        self._used, self._shown = RecentUse(ctx.config.ghost_timeout), None
         self.cal.results.build(ctx)
         if choices:
             self.steps[0].choose(ctx, choices[0])
@@ -189,33 +195,52 @@ class CalibrationPlugin(HuskyPlugin):
         self.cal.results.draw()
 
     def _live(self, ctx: PluginContext) -> str:
-        """Chips for live problems: a body's mocap (not in Setup, whose checks say the same), and a lease in the way."""
-        run, tool = self.cal.run, self.cal.tool
+        """Chips for live problems: the arm too close for Go, a body's mocap (not in Setup), and a lease in the way."""
+        run, tool, procedure = self.cal.run, self.cal.tool, self.cal.procedure
+        # * Watched where Go moves the arm, until a procedure moves it: Go's Clearance refuses a start too close.
+        goes = run is not None and self.panel.current.goes and (procedure.waiting or not procedure.running)
+        procedure.clearance.watch(ctx, run.serial if goes else None, ARM_STOP_DISTANCE)
         if run is None:
             return ""
         now = ctx.now()
-        html = ""
+        html = procedure.clearance.start_chip("Go") if goes else ""
         if self.panel.index != 0:
             live = [mocap_check("base", run.robot.base.mocap_id, run.robot.base.state, now)]
             if tool is not None:
                 live.append(mocap_check("tool", tool.mocap_id, tool, now))
-            html = "".join(check_chip(check) for check in live if check.level != GOOD)
+            html += "".join(check_chip(check) for check in live if check.level != GOOD)
         lease = run.robot.lease_slot.lease
         # * The lease only when it is in the way: held by someone else, not the planner moving for us.
-        if lease is not None and not lease.holder.startswith(self.name) and not self.cal.procedure.running:
+        if lease is not None and not lease.holder.startswith(self.name) and not procedure.running:
             html += chip("leased", BUSY, f"held by {lease.holder}: the calibration cannot move the robot")
         return html
 
+    def _out_of_reach(self, ctx: PluginContext) -> frozenset[str]:
+        """Other robots whose only unknown arms the run's arm cannot reach: Go lets them be unknown without asking."""
+        run = self.cal.run
+        if run is None or robot_id(run.serial) not in ctx.scene.snapshot.robots:
+            return frozenset()
+        return out_of_reach(ctx.scene.snapshot, robot_id(run.serial), [run.arm])
+
     def _draw_ghost(self, ctx: PluginContext) -> None:
-        """Show the arm where a procedure's preview stands, else where the step previews it; hide it otherwise."""
+        """Show the arm where a procedure's preview stands, else where the step previews it; hide it otherwise.
+
+        Shown only while this was used last of all the plugins with ghosts (`RecentUse`): a new preview, Preview time
+        moved, or another step counts as use.
+        """
         run = self.cal.run
         ghost = self._ghosts.get(run.serial) if run is not None else None
         if ghost is None:
             return
-        joints = self.cal.procedure.previewed()
+        procedure = self.cal.procedure
+        joints = procedure.previewed()
         if joints is None:
             joints = self.panel.current.preview_joints(ctx)
-        if joints is None:
+        shown = (procedure.preview_path, procedure.preview, self.panel.index, joints is None)
+        if shown != self._shown:
+            self._shown = shown
+            self._used.touch()
+        if joints is None or not self._used.active:
             ghost.hide()
             return
         ghost.show(ctx.kinematics.base_pose(run.serial), {**dict(ctx.kinematics.joints(run.serial)),

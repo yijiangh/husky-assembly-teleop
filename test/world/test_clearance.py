@@ -157,16 +157,16 @@ def test_an_arm_folded_into_itself_and_a_bar_into_its_robot_are_found_and_named(
     """Elbow folded: arm links against each other; a 1 m bar held at tool0 when stowed: the bar against the rack."""
     config = robot_config_from_serial("0804", DATA)
     own = robot_id(config.serial)
-    folded = {**stowed(config), "ur_arm_elbow_joint": 2.8}
+    folded = {**stowed(config), "ur_arm_elbow_joint": 2.85}
     bar = Body("bars/b", box_geometry((0.03, 0.03, 1.0)), Attachment(own, "ur_arm_tool0", Pose((0.0, 0.0, 0.5))),
                label="the bar")
     checker = ClearanceChecker()
     try:
         (_key, why, hit), = found(checker, alone(config, folded), own)
-        assert why == "came within 1 cm of itself: ur_arm_upper_arm_link with ur_arm_wrist_1_link"
+        assert why == "came within 0.5 cm of itself: ur_arm_upper_arm_link with ur_arm_wrist_1_link"
         assert hit.robot == own and hit.contacts[0] is not None
         (_key, why, hit), = found(checker, alone(config, stowed(config), (bar,)), own)
-        assert why.startswith("came within 1 cm of itself: the bar with ") and hit.pairs[0][0] == bar.id
+        assert why.startswith("came within 0.5 cm of itself: the bar with ") and hit.pairs[0][0] == bar.id
         short = Body("bars/s", box_geometry((0.03, 0.03, 0.05)), Attachment(own, "ur_arm_tool0", Pose()),
                      label="a short bar")
         assert found(checker, alone(config, stowed(config), (short,)), own) == [], "held at the flange: allowed"

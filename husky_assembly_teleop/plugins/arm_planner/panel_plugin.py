@@ -29,7 +29,8 @@ from ...ui.style import BUSY, FAIL, NONE, OK, block, check_chip, chip, chip_line
 from scaffolding_assembly_core.ids import robot_id
 from ...shared.assembly_planning.joints import arm_joint_names
 from .planner_plugin import STALE_JOINT, ArmPlannerPlugin
-from ...world.clearance import ARM_STOP_DISTANCE
+from ...world.arm_reach import out_of_reach
+from ...world.clearance import ARM_STOP_DISTANCE, PLAN_DISTANCE
 
 #: The Duration slider's step, seconds.
 DURATION_STEP = 0.1
@@ -105,14 +106,12 @@ class ArmPlannerPanel(PlannerPanel):
                                               "the scene; Play previews; Clear drops it. Hold or Stop all stops a "
                                               "sent path.",
                                     commit_hint="Send the path to the arm; it stops at every waypoint",
+                                    clearance_hint=f"Soft stop a committed path once the robot comes within "
+                                                   f"{ARM_STOP_DISTANCE * 100:g} cm of anything, itself included; a "
+                                                   f"start that close is refused. Plans keep "
+                                                   f"{PLAN_DISTANCE * 100:g} cm unless the start or target is "
+                                                   f"closer: untick to move out of a tight spot.",
                                     before_commit=lambda gui: self._add_duration(ctx, gui))
-            # * Below the buttons it guards, as the jogs'.
-            clearance = gui.add_checkbox(
-                "Clearance", initial_value=self._api.clearance,
-                hint=f"Soft stop a committed path once the robot comes within {ARM_STOP_DISTANCE * 100:.0f} cm of "
-                     f"anything, itself included. The plan keeps 0 cm, so untick for a path close to something.")
-            clearance.on_update(ctx.defer_value("clearance",
-                                                lambda value: setattr(self._api, "clearance", bool(value))))
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -246,6 +245,14 @@ class ArmPlannerPanel(PlannerPanel):
             return "the target changed since planning"
         return ""
 
+    def commit_margin(self, ctx: PluginContext) -> float:
+        """A committed path's clearance: ARM_STOP_DISTANCE."""
+        return ARM_STOP_DISTANCE
+
+    def commit_out_of_reach(self, ctx: PluginContext, plan: Plan[ArmPlanRequest]) -> frozenset[str]:
+        """Other robots whose only unknown arms the planned arm cannot reach, whatever the joints (`out_of_reach`)."""
+        return out_of_reach(ctx.scene.snapshot, robot_id(plan.request.serial), [plan.request.arm])
+
     def show_target(self, ctx: PluginContext, ghost: RobotGhost) -> None:
         """The chosen arm at the slider target."""
         self._show_arm(ctx, ghost, self.serial, self.arm, self._target())
@@ -326,7 +333,8 @@ class ArmPlannerPanel(PlannerPanel):
         chips = robot + (self._plan_chip() if plan is None or plan.state != "sent" else "")
         if motion is not None:
             chips += check_chip(motion)
-        return chip_line(chips + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
+        return chip_line(chips + self.clearance.start_chip("Commit")
+                         + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
 
     def _draw_duration(self) -> None:
         """Fit the Duration slider to the plan: its fastest time up to MAX_SLOWDOWN times that, at its duration."""

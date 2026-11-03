@@ -5,8 +5,8 @@ Others use it through `ArmPlannerContract`; its panel is `arm_planner_panel`. Th
 models in a compas_fab world (several seconds).
 
 ! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`), under an
-  ARM_STOP_DISTANCE clearance on the robot (`ctx.clearance`) while `clearance` is on, so the base pose must be known
-  to send.
+  ARM_STOP_DISTANCE clearance on the robot (`commit_clearance`) when committed with Clearance ticked, so the base
+  pose must be known to send. Paths keep PLAN_DISTANCE where start and target allow (`planner.PLAN_MARGINS`).
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
-from contextlib import nullcontext
 from dataclasses import replace
 from typing import Callable, Sequence
 
@@ -40,7 +39,7 @@ from ...world.checks import BAD, GOOD, WARN, Check
 from ...world.clearance import ARM_STOP_DISTANCE, Clearance, clearance_problem
 from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.ids import robot_id
-from .planner import ArmPath, path_hit, plan_arm
+from .planner import ArmPath, margin_note, path_hit, plan_arm
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far; the panel also
 #: refuses a target this far from the planned goal.
@@ -81,8 +80,6 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
     def __init__(self):
         """Start with no plan; the models load with the first plan of each robot."""
         super().__init__()
-        #: Whether commits run under a clearance (`ArmPlannerContract.clearance`); the panel's Clearance box sets it.
-        self.clearance = True
         #: Robots whose models the worker has loaded, so later plans need no load allowance.
         self._loaded: set[str] = set()
         #: The latest plan's path, the base's floor pose (x, y, yaw) it was planned from, and whether mocap tracked
@@ -134,8 +131,10 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             self._start_base = (result.path, base, tracked)
             how = "straight" if result.direct else "RRT"
             stand_ins = f" ({unmeasured(others)})" if others else ""
-            return (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
-                    f"found in {result.seconds:.1f} s{notes}{stand_ins}"), bool(guessed or others)
+            message = (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
+                       f"{margin_note(result.path.margin)}, found in {result.seconds:.1f} s{notes}{stand_ins}")
+            # * A path only clear of contact warns: its commit may soft stop on the way.
+            return message, bool(guessed or others or not result.path.margin)
 
         return Search(label=f"plan {serial} {arm}",
                       message=f"planning for {serial} {arm}…{notes}"
@@ -217,9 +216,9 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       answer: Callable[[bool, str], None]) -> None:
         """Send the plan to the arm and watch it until it is at the end; else hold it (`send_motion`).
 
-        - While `clearance` is on, an ARM_STOP_DISTANCE clearance starts first: one that cannot check refuses the
-          commit (nothing sent), a trip soft stops the robot and cancels this. The other robots unknown at the commit
-          may be unknown (`unknown_allowed`).
+        - Committed with Clearance ticked, an ARM_STOP_DISTANCE clearance starts first (`commit_clearance`): one
+          that cannot check, or finds the robot too close, refuses the commit (nothing sent); a trip soft stops the
+          robot and cancels this.
         - ! The robot's base and every arm must be measured, Clearance on or off: an arm moves beside the other.
         - ! Arrival is judged on the joints, not `is_executing`, which clears during a slow move (the pendant's speed
           slider): the lease would go back mid-motion.
@@ -239,15 +238,17 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             # * Not Hold: it stops the arm but not this commit, which then ends "stopped short".
             self._motions[key] = Check("moving", WARN, f"{what} follows the path; Cancel or Stop all stops it")
 
-        guard = (ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_robots=self.unknown_allowed(plan))
-                 if self.clearance else nullcontext())
         clearance: Clearance | None = None
         try:
-            with guard as clearance:
+            with self.commit_clearance(ctx, plan, ARM_STOP_DISTANCE) as clearance:
+                await self.first_check(ctx, clearance)
                 ctx.log_info(f"{what}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
                 outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
                                             on_sent=sent)
         except asyncio.CancelledError:
+            if refusal := self.start_refusal(clearance):
+                answer(False, refusal)
+                ctx.log_warn(f"{what}: {refusal}")
             if self.replaced():
                 self._motions.pop(key, None)
             else:

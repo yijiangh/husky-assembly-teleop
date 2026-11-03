@@ -12,7 +12,7 @@ from scaffolding_assembly_core.geometry import compose
 
 from ....shared.arm_planner_contract import ArmPlannerContract
 from ....ui.style import FAIL, LEVEL_COLORS, NONE, chip
-from ....world.checks import BAD, GOOD, PENDING, Check
+from ....world.checks import BAD, GOOD, PENDING, WARN, Check
 from ..analysis.checks import base_moved, new_spot, sample_marker_error, validation_level
 from ..analysis.old_outputs import write_validation_outputs
 from ..robot.motion import NoPlan
@@ -173,8 +173,13 @@ class Validate(CalibrationStep):
         return state
 
     def checks(self, ctx: PluginContext) -> list[Check]:
-        """Enough samples at enough spots, and the tool body's spread in tool0 under the current solution."""
-        return self.run.validation_verdict()
+        """Enough samples at enough spots, the tool body's spread in tool0 under the solution; the out of date ones."""
+        run = self.run
+        old = len(run.validation_files) - len(run.current_validation_files())
+        return run.validation_verdict() + [
+            Check("out of date", WARN, f"{old} samples were taken with another tool body or before a refine: they no "
+                                       f"longer count, sample again", str(old))
+            if old else Check("out of date", GOOD, "none", "0")]
 
     def ready(self, ctx: PluginContext) -> list[Check]:
         """Validation poses, a tool body; the checklist and marker errors, the safety boxes; no solution needed."""

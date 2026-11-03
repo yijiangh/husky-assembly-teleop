@@ -9,7 +9,8 @@ The guided procedure's panel: the overview of the steps, the current step, Back 
   dashed; the current step outlines the precondition steps it needs that have expired.
 - ! Nothing above the step's controls may change height while a step shows, or the buttons jump: its chips sit on
   fixed lines (the checks, the ready checks, one status line always there), and text that comes and goes (the Go
-  question, the step's `question`, Done's question) goes below the controls.
+  question, the step's `question`, Done's question, why a state no chip names holds: `EXPLAINED_BELOW`) goes below
+  the controls.
 - `build_phone` adds the same on the phone page (`BothPages`): the overview as one row, the chips, Back / Next / Done
   and Cancel, and each step's phone controls (`Step.build_phone`). Go, Auto and Preview stay on the laptop, where the
   ghost shows the move.
@@ -36,6 +37,10 @@ from .step import Step, unfinished
 
 if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
+
+
+#: The step states whose reason no chip of the step names: the line below the buttons says it.
+EXPLAINED_BELOW = ("expired", "out of date", "pending")
 
 
 def set_changed(handle, **values) -> None:
@@ -179,6 +184,8 @@ class GuidePanel:
                                                     "press again to pause.")
             self._go_button = gui.add_button("Go", color=rgb(OK), icon=viser.Icon.PLAYER_PLAY)
             self._cancel_button = gui.add_button("Cancel", color=rgb(FAIL), icon=viser.Icon.PLAYER_STOP)
+            # * Below the buttons it guards, as the jogs'.
+            self._go_clearance = self.procedure.clearance.add(ctx, gui, "go")
         self._notes_html = gui.add_html("")
         self._text_html = gui.add_html("")
         procedure = self.procedure
@@ -387,6 +394,8 @@ class GuidePanel:
             + (block("".join(check_chip(check) for check in ready)) if ready else "") + "</div>")
         self._line_html.content = chip_line(status + extra)
         question = step.question(ctx)
+        # * Why the overview says so, for a state no chip names, below the buttons: Done's question says it once asked.
+        why = state.detail if state.label in EXPLAINED_BELOW and state.detail and not asked else ""
         elsewhere = self._elsewhere()
         if elsewhere and procedure.prompt:
             asking = note(escape(f"{elsewhere} waits for Go: go back to {elsewhere} to answer it."), CURRENT)
@@ -394,6 +403,7 @@ class GuidePanel:
             asking = note(escape(procedure.prompt), CURRENT) if procedure.prompt else ""
         self._notes_html.content = (
             asking
+            + (warning(escape(f"{step.name} {state.label}: {why.rstrip('.')}.")) if why else "")
             + (warning(escape(procedure.outcome.detail)) if again else "")
             + (warning(escape(question)) if question else "")
             + (warning(escape(f"{step.name}: {asks}. Press Done again within {SECOND_PRESS_SECONDS:g} s to "
@@ -440,6 +450,7 @@ class GuidePanel:
         set_changed(self._go_button, visible=step.goes, disabled=not procedure.prompt or elsewhere,
                     label=f"Go: {procedure.go_label}" if procedure.prompt else "Go")
         set_changed(self._cancel_button, visible=step.cancels or procedure.running, disabled=not procedure.running)
+        set_changed(self._go_clearance, visible=step.goes)
         # ! Never disabled while a procedure runs: Back and Next only show another step, Done ends one waiting for Go
         #   or says why not (`_busy`).
         back = (None, self.index == 0)

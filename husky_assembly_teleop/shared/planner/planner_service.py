@@ -5,6 +5,7 @@ PlannerService: the base class of a headless planner plugin, which plans, cancel
   `PlannerContract` (`plan.py`), and its panel is a separate plugin (`planner_panel.PlannerPanel`).
 * Each commit is one task that has the robot's lease for the whole motion: `execute` sends the plan and watches
   it until it is over, so a freeze or clearance it opens covers the motion too.
+* A commit with Clearance ticked runs under `commit_clearance`: a robot already too close is refused, nothing sent.
 ! Requests run in the planner's own context (`ctx.submit`), so soft stop, teardown and its errors apply to them, and
   every future resolves: a cancelled search gives a plan in state "cancelled", a commit to a soft-stopped robot
   answers that nothing was sent.
@@ -16,8 +17,9 @@ import asyncio
 import itertools
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import replace
-from typing import Callable, Collection, Generic
+from typing import Any, Callable, Collection, ContextManager, Generic
 
 from async_timeout import timeout
 
@@ -29,6 +31,9 @@ from ...world.checks import BAD, PENDING, Check
 from ...world.clearance import Clearance
 from .plan import Plan, R
 from .planner_search import PlanningWorld, Search
+
+#: Seconds a commit's clearance may take for its first check; nothing is sent before it.
+FIRST_CHECK_TIMEOUT = 3.0
 
 
 class PlannerService(HuskyPlugin, Generic[R]):
@@ -53,8 +58,10 @@ class PlannerService(HuskyPlugin, Generic[R]):
         self._ctx: PluginContext | None = None
         #: The task of the last commit to each robot, by serial, and the ones a newer commit is replacing.
         self._executions: dict[str, asyncio.Task] = {}
-        #: Per committed plan id, the other robots the operator let be unknown during its motion (`unknown_allowed`).
+        #: Per committed plan id, the other robots the operator let be unknown during its motion (`unknown_allowed`),
+        #: and whether it runs under a clearance (`keeps_clearance`).
         self._unknown: dict[int, frozenset[str]] = {}
+        self._clearance: dict[int, bool] = {}
         self._replaced: set[asyncio.Task] = set()
 
     # --- --- --- --- --- FOR THE SUBCLASS TO SUPPLY --- --- --- --- ---
@@ -119,7 +126,8 @@ class PlannerService(HuskyPlugin, Generic[R]):
             self.forget(self._plan)
         self._plan = None
 
-    def commit(self, plan_id: int, unknown_robots: Collection[str] = ()) -> asyncio.Future[tuple[bool, str]]:
+    def commit(self, plan_id: int, unknown_robots: Collection[str] = (),
+               clearance: bool = True) -> asyncio.Future[tuple[bool, str]]:
         """Send plan `plan_id` if it is still the latest and ready; resolves with (sent, message) once sent.
 
         The motion is then watched until it is over, holding the robot's lease.
@@ -128,14 +136,46 @@ class PlannerService(HuskyPlugin, Generic[R]):
             plan_id: The plan.
             unknown_robots: Ids of robots the operator lets be unknown during the motion (`unknown_allowed`); the
                 plan's own robot among them lets `execute` check its unknown arms where last seen, else stowed.
+            clearance: Whether `execute` runs it under a clearance (`keeps_clearance`): the commit's Clearance box.
         """
         future = asyncio.get_running_loop().create_future()
-        self._ctx.submit(f"commit plan {plan_id}", lambda: self._commit(plan_id, future, frozenset(unknown_robots)))
+        self._ctx.submit(f"commit plan {plan_id}",
+                         lambda: self._commit(plan_id, future, frozenset(unknown_robots), clearance))
         return future
 
     def unknown_allowed(self, plan: Plan[R]) -> frozenset[str]:
         """Ids of the robots the operator let be unknown when committing `plan`; for `execute`'s clearance."""
         return self._unknown.get(plan.id, frozenset())
+
+    def keeps_clearance(self, plan: Plan[R]) -> bool:
+        """Whether `plan` was committed with Clearance ticked: `execute` then runs it under a clearance."""
+        return self._clearance.get(plan.id, True)
+
+    def commit_clearance(self, ctx: PluginContext, plan: Plan[R], margin: float,
+                         **options: Any) -> ContextManager[Clearance | None]:
+        """The clearance `execute` runs `plan` under, or none while committed with Clearance unticked.
+
+        A start too close refuses it (`refuse_first`): send only after `first_check`. The other robots unknown at the
+        commit may be unknown (`unknown_allowed`); `options` go to `ctx.clearance`, e.g. `unknown_arms`.
+        """
+        if not self.keeps_clearance(plan):
+            return nullcontext()
+        return ctx.clearance([plan.request.serial], margin, unknown_robots=self.unknown_allowed(plan),
+                             refuse_first=True, **options)
+
+    @staticmethod
+    async def first_check(ctx: PluginContext, clearance: Clearance | None) -> None:
+        """Wait for the commit clearance's first check, which cancels the commit if too close; at once without one."""
+        if clearance is not None and not clearance.checked:
+            await ctx.wait_until(lambda: clearance.checked, timeout_s=FIRST_CHECK_TIMEOUT,
+                                 description="the clearance's first check")
+
+    @staticmethod
+    def start_refusal(clearance: Clearance | None) -> str:
+        """Why the commit's clearance refused it at its first check, too close; "" if it did not."""
+        if clearance is None or not clearance.refused:
+            return ""
+        return f"nothing sent: {clearance.problem}; untick Clearance to move out"
 
     def cancel_commit(self, serial: str | None = None) -> bool:
         """Stop every motion a commit started that still runs, or only `serial`'s: `execute` stops the robot."""
@@ -161,6 +201,8 @@ class PlannerService(HuskyPlugin, Generic[R]):
             clearance: The commit's clearance, if it had one.
             cancelled: The hover after Cancel, after `what: `, e.g. "the commit was cancelled; the follower stopped".
         """
+        if refusal := PlannerService.start_refusal(clearance):
+            return Check("refused", BAD, hover(f"{what}: {refusal}"))
         if clearance is not None and clearance.problem:
             return Check("clearance stop", BAD, hover(f"{what}: {clearance.problem}"))
         latch = ctx.world.robots[serial].soft_stop_latch
@@ -241,7 +283,8 @@ class PlannerService(HuskyPlugin, Generic[R]):
         if not future.done():
             future.set_result(plan)
 
-    def _commit(self, plan_id: int, future: asyncio.Future[tuple[bool, str]], unknown_robots: frozenset[str]) -> None:
+    def _commit(self, plan_id: int, future: asyncio.Future[tuple[bool, str]], unknown_robots: frozenset[str],
+                clearance: bool) -> None:
         """Start executing plan `plan_id` if it is the latest and ready; otherwise answer why not."""
         plan = self._plan
         if plan is None or plan.id != plan_id:
@@ -261,7 +304,7 @@ class PlannerService(HuskyPlugin, Generic[R]):
         if running is not None:
             self._replaced.add(running)
             running.cancel()
-        self._unknown[plan.id] = unknown_robots
+        self._unknown[plan.id], self._clearance[plan.id] = unknown_robots, bool(clearance)
         self._executions[serial] = self._ctx.spawn(f"plan {plan.id} on {serial}", self._execute(plan, running, future))
 
     async def _execute(self, plan: Plan[R], replacing: asyncio.Task | None,

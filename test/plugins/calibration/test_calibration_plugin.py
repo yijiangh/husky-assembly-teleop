@@ -20,12 +20,14 @@ import viser
 
 from body_definition_fixtures import MARKERS, body, moved
 from calibration_fixtures import record_take
+from plugin_fakes import WATCHES
 from repo_paths import DATA
 from husky_assembly_teleop.colors import OK, rgb
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugin_api.trace import Trace
 from husky_assembly_teleop.ui import second_press
+from husky_assembly_teleop.ui.ghost import RecentUse
 from husky_assembly_teleop.plugins.calibration import plugin as calibration_plugin
 from husky_assembly_teleop.plugins.calibration.analysis.checks import CHECKLIST_BOXES, PRECONDITION_HOLDS, pose_change
 from husky_assembly_teleop.plugins.calibration.plugin import CalibrationPlugin
@@ -190,7 +192,7 @@ class Planner:
         return SimpleNamespace(state="ready", message="clear", id=1,
                                path=TimedPath(np.array([0.0, 1.0]), np.array([self.arm.joints, self.goal])))
 
-    async def commit(self, _plan_id, unknown_robots=()):
+    async def commit(self, _plan_id, unknown_robots=(), clearance=True):
         """Move there at once."""
         self.unknown.append(frozenset(unknown_robots))
         self.arm.joints = self.goal.copy()
@@ -272,7 +274,7 @@ def make_ctx(server: viser.ViserServer, root) -> SimpleNamespace:
     ctx = SimpleNamespace(
         name="calibration", view=view, world=SimpleNamespace(robots={SERIAL: robot}, mocap_relay=relay),
         scene=SimpleNamespace(snapshot=SimpleNamespace(robots={})),
-        config=SimpleNamespace(data_directory=DATA, drive_root=root, tick_period=0.05),
+        config=SimpleNamespace(data_directory=DATA, drive_root=root, tick_period=0.05, ghost_timeout=20.0),
         kinematics=SimpleNamespace(base_pose=lambda _serial: FOOTPRINT, joints=lambda _serial: {},
                                    link_pose=lambda _serial, link: link_pose(config.model.urdf, FOOTPRINT,
                                                                              named(ARM, arm.joints), link)),
@@ -281,7 +283,7 @@ def make_ctx(server: viser.ViserServer, root) -> SimpleNamespace:
         sleep=sleep, lease_robots=held, clearance=held, freeze=held, log=[],
         trace=lambda *signals, max_samples: Trace(signals, max_samples),
         track_object=lambda _name, mocap_id, label: FlangeBody(mocap_id, arm, config.model.urdf),
-        untrack_object=lambda _name: None)
+        untrack_object=lambda _name: None, **WATCHES)
     ctx.log_info = ctx.log_warn = ctx.log.append
     return ctx
 
@@ -1004,6 +1006,16 @@ def test_validate_samples_before_solve_and_judges_once_solved(server, tmp_path, 
             record_take(run, joint, take)
     plugin.steps[4]._solve(ctx)
     assert {c.label: c.level for c in validate.checks(ctx)}["position"] == GOOD
+    assert {c.label: c.level for c in validate.checks(ctx)}["out of date"] == GOOD
+    # * Sampled with another tool body: its chip counts them, and the line below the buttons says why the state is.
+    run.validation_files = {path: replace(made, tool_body=made.tool_body + 1)
+                            for path, made in run.validation_files.items()}
+    old = {c.label: c for c in validate.checks(ctx)}["out of date"]
+    assert (old.level, old.value) == (WARN, str(len(run.validation_files)))
+    assert validate.state(ctx).label == "out of date"
+    plugin.draw(ctx)
+    notes = plugin.panel._notes_html.content
+    assert "Validate out of date: sampled with another tool body or before a refine." in notes
 
 
 def test_a_validation_ended_after_a_few_poses_keeps_their_samples(server, tmp_path, monkeypatch):
@@ -1238,6 +1250,25 @@ def test_the_plugin_follows_motives_definitions_and_a_refine_ends_by_itself(serv
     assert all(take.file.parent.name == "archive" for take in run.takes.values())
 
 
+def test_a_refine_in_motive_after_measuring_turns_the_drive_chip_amber_and_says_why(server, tmp_path, monkeypatch):
+    """Measured, then the base body changed in Motive without Refine here: expired, and the step's chip says why."""
+    plugin, ctx, _ghost = make_plugin(server, tmp_path, monkeypatch)
+    run, state = plugin.cal.run, ctx.world.mocap_relay.state
+    mocap_id = run.robot.config.mocap_id
+    state.body_definitions = {mocap_id: body(MARKERS * 1.6, mocap_id, "belle")}
+    plugin.update(ctx)
+    measure_markers(plugin, ctx)
+    run.marker_made = run.made  # * measured with the definitions of now, as driving keeps it
+    marker = plugin.steps[1]
+    assert marker.expired(ctx) is None
+    state.body_definitions = {mocap_id: body(moved(MARKERS * 1.6, noise=0.3e-3), mocap_id, "belle")}
+    plugin.update(ctx)
+    why = marker.expired(ctx)
+    drive = marker.checks(ctx)[0]
+    assert why is not None and "since measured" in why and (drive.level, why in drive.detail) == (WARN, True)
+    assert marker.state(ctx).label == "expired"
+
+
 def test_recheck_ends_a_refine_without_definitions(server, tmp_path, monkeypatch):
     """A simulation announces no definitions: Recheck ends the refine and measures again."""
     plugin, ctx, _ghost = make_plugin(server, tmp_path, monkeypatch)
@@ -1292,3 +1323,18 @@ def test_without_a_relay_nothing_is_taken_again_on_each_tick(server, tmp_path, m
     for _ in range(5):
         plugin.update(ctx)
     assert len(saves) == 2  # * the first tick takes the definitions, then tidies once
+
+
+def test_the_ghost_shows_only_while_calibration_was_used_last_of_the_plugins_with_ghosts(server, tmp_path, monkeypatch):
+    """Another plugin's ghost used later hides calibration's; a new preview or Preview time shows it again."""
+    plugin, ctx, ghost = make_plugin(server, tmp_path, monkeypatch)
+    procedure = plugin.cal.procedure
+    procedure.preview_path = TimedPath(np.array([0.0, 1.0]), np.zeros((2, 6)))
+    plugin.draw(ctx)
+    assert ghost.joints is not None
+    RecentUse(0.0).touch()  # * e.g. the arm planner panel's Plan pressed
+    plugin.draw(ctx)
+    assert ghost.joints is None
+    procedure.preview = 0.5
+    plugin.draw(ctx)
+    assert ghost.joints is not None

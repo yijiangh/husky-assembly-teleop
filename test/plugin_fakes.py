@@ -55,6 +55,15 @@ from scaffolding_assembly_core.scene import Scene
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 
+def watch_clearance(serials, margin: float = STOP_DISTANCE, unknown_arms=(), check_self: bool = True) -> ClearanceWatch:
+    """A context's `watch_clearance` for a fake without one: nothing checks the watch, so it stays clear."""
+    return ClearanceWatch(tuple(serials), margin, unknown_arms, check_self)
+
+
+#: `watch_clearance` and `unwatch_clearance` for a SimpleNamespace context: `SimpleNamespace(..., **WATCHES)`.
+WATCHES = {"watch_clearance": watch_clearance, "unwatch_clearance": lambda _watch: None}
+
+
 class FakeWidget(SimpleNamespace):
     """A viser widget: what was given when it was added, what the plugin wrote into it, and its callback."""
 
@@ -229,6 +238,11 @@ class FakeContext:
         """Keep the watch asked for in `watches`; nothing checks it, so it stays clear unless a test fills it in."""
         self.watches.append(ClearanceWatch(tuple(serials), margin, unknown_arms, check_self))
         return self.watches[-1]
+
+    def unwatch_clearance(self, watch: ClearanceWatch) -> None:
+        """Stop the watch: it leaves `watches`."""
+        if watch in self.watches:
+            self.watches.remove(watch)
 
     @contextmanager
     def clearance(self, serials, margin: float = STOP_DISTANCE, unknown_arms=(),

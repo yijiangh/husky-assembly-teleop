@@ -42,7 +42,8 @@ from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...robot_interface.end_effectors import EndEffectorState, RobotiqState, ScaffoldingV3, ScaffoldingV3State
 from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
-from ...robot_interface.tool_step import TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_LEAD, tool0_pose, tool_jog_target
+from ...robot_interface.tool_step import (TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_LEAD, robot_axes, tool0_pose,
+                                          tool_jog_target)
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import (BUSY, FAIL, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, hover, note_line, numbers, section,
                          values)
@@ -50,6 +51,7 @@ from ...ui.trace_plot import TracePlot
 from ...shared.teleop.clearance_toggle import ClearanceToggle
 from ...shared.teleop.dpad import (BLOCKED_COLOR, HOLD_TIMEOUT, PHONE_DPAD_STYLE, UNGUARDED_COLOR, Hold,
                                    build_velocity_inputs, color_dpad)
+from ...shared.teleop.tool_pad import ROBOT_FRAME
 from ...world.clearance import (ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, Clearance, ClearanceWatch,
                                 ClearanceRefused)
 from ...world.kinematics import STOW_TOLERANCE, from_stow
@@ -140,11 +142,13 @@ class _ArmWidgets:
 class _ToolJog:
     """One press of a tool0 jog button, answered tick by tick until it is released."""
 
-    #: 0-2 moves along tool0's x, y, z; 3-5 turns about them; and the direction.
+    #: 0-2 moves along the jog's x, y, z (`axes`); 3-5 turns about them; and the direction.
     axis: int
     sign: float
     #: Tool0 at the press, 4x4 in the URDF's root: the jog runs along a line from it.
     anchor: np.ndarray
+    #: The jog's axes as columns in tool0's frame at the press (`robot_axes`), or None for tool0's own.
+    axes: np.ndarray | None = None
     #: Tool0's progress along the jog at the last tick, metres or radians.
     travelled: float = 0.0
     #: Whether any point went out, so a release holds the arm.
@@ -752,7 +756,9 @@ class RobotControlPlugin(HuskyPlugin):
                     self._refuse(ctx, key, "jog refused", "not jogging: " + (
                         "no joint state yet" if here is None else "no URDF to solve the jog on"))
                     continue
-                jog = _ToolJog(*press, anchor=tool0_pose(arm.urdf, arm.config.name, here))
+                anchor = tool0_pose(arm.urdf, arm.config.name, here)
+                robot = widgets.tool_jog is not None and widgets.tool_jog.frame.value == ROBOT_FRAME
+                jog = _ToolJog(*press, anchor=anchor, axes=robot_axes(anchor) if robot else None)
                 self._tool_jogging[key] = jog
             if jog.stopped or here is None or widgets.tool_jog is None or not self._jog_clear(ctx, widgets):
                 continue
@@ -760,7 +766,7 @@ class RobotControlPlugin(HuskyPlugin):
             speed = jog.sign * (mm_s * 1e-3 if jog.axis < 3 else np.radians(mm_s * TOOL_JOG_DEG_PER_S_PER_MM_S))
             try:
                 joints, jog.travelled = tool_jog_target(arm.urdf, arm.config.name, here, jog.anchor, jog.axis, speed,
-                                                        TOOL_JOG_LEAD, jog.travelled)
+                                                        TOOL_JOG_LEAD, jog.travelled, jog.axes)
             except ValueError as error:
                 self._refuse(ctx, key, "jog stopped", f"jog stopped: {error}")
                 jog.stopped = True
@@ -782,7 +788,8 @@ class RobotControlPlugin(HuskyPlugin):
             return ""
         name = "xyz"[jog.axis % 3]
         progress = (f"{jog.travelled * 1e3:+.1f} mm" if jog.axis < 3 else f"{np.degrees(jog.travelled):+.1f}°")
-        return (f"jogging {'along' if jog.axis < 3 else 'about'} tool0 {name}: {progress} "
+        frame = "tool0" if jog.axes is None else "the robot's"
+        return (f"jogging {'along' if jog.axis < 3 else 'about'} {frame} {name}: {progress} "
                 f"at {widgets.tool_jog.speed.value:g} mm/s")
 
     def _jog_clear(self, ctx: PluginContext, widgets: _ArmWidgets) -> bool:
@@ -908,7 +915,7 @@ class RobotControlPlugin(HuskyPlugin):
             draw_markers(widgets.frames, widgets.arrows, widgets.gizmo, self._markers.get(key) or {})
             if widgets.tool_jog is not None:
                 draw_jog_arrows(ctx, widgets.serial, widgets.arm, widgets.jog_arrows, bool(widgets.joint_arrows.value),
-                                bool(widgets.tool_jog.arrows.value))
+                                bool(widgets.tool_jog.arrows.value), widgets.tool_jog.frame.value == ROBOT_FRAME)
             applied = self._applied_force.get(key)
             widgets.compliance.wrench_line.content = block(values(
                 f"applied {numbers(applied, 3, 6, 1)} N ({TARGET_WRENCH_FRAME})"))

@@ -24,10 +24,11 @@ from scaffolding_assembly_core.ids import robot_id
 from ....plugin_api.concurrency import WaitTimeout
 from ....robot_interface.arm import FREE_DRIVE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER
 from ....robot_interface.soft_stop import MotionRefused
+from ....robot_interface.tool_step import robot_step_in_tool0
 from ....shared.guide.procedure import Procedure
 from ....shared.teleop.clearance_toggle import ClearanceToggle
 from ....shared.teleop.dpad import HOLD_CALLBACK_HZ, HOLD_TIMEOUT
-from ....shared.teleop.tool_pad import build_tool_step_inputs
+from ....shared.teleop.tool_pad import ROBOT_FRAME, TOOL_FRAME, build_tool_step_inputs
 from ....world.checks import BAD, WARN, Check
 from ....world.clearance import ARM_STOP_DISTANCE, Clearance
 from ....world.stand_ins import unknown_robots
@@ -61,11 +62,12 @@ class HandMoves:
         self.procedure = procedure
         self.free_drive = False
         self.clearance = ClearanceToggle(
-            f"A tool step goes out only with the robot {ARM_STOP_DISTANCE * 100:.0f} cm clear of anything, itself "
+            f"A tool step goes out only with the robot {ARM_STOP_DISTANCE * 100:g} cm clear of anything, itself "
             f"included, and soft stops it closer. Untick to step a tip onto its target; free drive is never checked.")
         #: `ctx.now()` until which the hold button counts as held: HOLD_TIMEOUT after its last report.
         self._held_until = float("-inf")
-        self._steps: list[tuple[Pose, np.ndarray]] = []
+        #: Queued tool pad clicks: the step, its pivot in tool0, and the frame it is in (`tool_pad.FRAMES`).
+        self._steps: list[tuple[Pose, np.ndarray, str]] = []
         self._task: asyncio.Task | None = None
         self._boxes: list[viser.GuiCheckboxHandle] = []
         #: The context and run while a step with these widgets shows; None otherwise.
@@ -87,8 +89,8 @@ class HandMoves:
                                 hint="Free drive without holding the button, until unticked; only with someone at the "
                                      "arm. Off while a procedure runs.")
         free.on_update(ctx.defer_value("free drive", self.want_free_drive, operator_only=True))
-        build_tool_step_inputs(ctx, gui, "calibration", lambda step: self.add_step(step, pivot()), self.clearance,
-                               phone)
+        build_tool_step_inputs(ctx, gui, "calibration", lambda step, frame: self.add_step(step, pivot(), frame),
+                               self.clearance, phone)
         self._boxes.append(free)
 
     def draw(self) -> None:
@@ -150,14 +152,14 @@ class HandMoves:
             self._steps = []
         self._spawn()
 
-    def add_step(self, step: Pose, pivot: np.ndarray) -> None:
-        """A tool pad click: queue the step, turning about `pivot` in tool0."""
+    def add_step(self, step: Pose, pivot: np.ndarray, frame: str = TOOL_FRAME) -> None:
+        """A tool pad click: queue the step, given in `frame`, turning about `pivot` in tool0."""
         why = self._why_not() or ("free drive is on" if self.free_drive else None) or (
             f"{QUEUED_STEPS} steps are waiting already" if len(self._steps) >= QUEUED_STEPS else None)
         if why is not None:
             self._report(Check("tool step not sent", BAD, why))
             return
-        self._steps.append((step, np.asarray(pivot, dtype=float)))
+        self._steps.append((step, np.asarray(pivot, dtype=float), frame))
         self._spawn()
 
     def _spawn(self) -> None:
@@ -213,7 +215,8 @@ class HandMoves:
             finally:
                 _end_free_drive(arm)
 
-    async def _step(self, ctx: PluginContext, run: Run, arm: ArmInterface, step: Pose, pivot: np.ndarray) -> None:
+    async def _step(self, ctx: PluginContext, run: Run, arm: ArmInterface, step: Pose, pivot: np.ndarray,
+                    frame: str) -> None:
         """Send one tool step on the joint controller once the arm rests, and keep the lease until it has stopped.
 
         While Clearance is ticked the step goes out only once its clearance found the robot clear; too close at the
@@ -227,16 +230,16 @@ class HandMoves:
         clearance = None
         try:
             with ctx.lease_robots([run.serial], "calibration tool step"), guard as clearance:
-                await self._send_step(ctx, arm, step, pivot, clearance)
+                await self._send_step(ctx, arm, step, pivot, frame, clearance)
         except asyncio.CancelledError:
             if clearance is not None and clearance.refused:
                 self._steps = []
                 self._report(Check("tool step refused", BAD, f"{clearance.problem}: untick Clearance to step closer"))
             raise
 
-    async def _send_step(self, ctx: PluginContext, arm: ArmInterface, step: Pose, pivot: np.ndarray,
+    async def _send_step(self, ctx: PluginContext, arm: ArmInterface, step: Pose, pivot: np.ndarray, frame: str,
                          clearance: Clearance | None) -> None:
-        """`_step` under its lease and `clearance` (None while Clearance is unticked)."""
+        """`_step` under its lease and `clearance` (None while unticked); a robot-frame step goes out in tool0's."""
         controllers = arm.controllers
         if not controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER):
             if not controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER):
@@ -248,6 +251,8 @@ class HandMoves:
         if clearance is not None:
             await ctx.wait_until(lambda: clearance.checked, timeout_s=SWITCH_TIMEOUT,
                                  description="the clearance's first check")
+        if frame == ROBOT_FRAME and (here := arm.joint_vector()) is not None and arm.urdf is not None:
+            step = robot_step_in_tool0(arm.urdf, arm.config.name, here, step)
         duration = arm.send_tool_step(step, pivot)
         if duration is None:
             refusal = arm.last_refusal

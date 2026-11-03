@@ -102,8 +102,15 @@ class MarkerError(CalibrationStep):
         return [name for name, error in zip(("base", "tool"), self.run.marker_max) if error > MARKER_ERROR_LIMIT]
 
     def checks(self, ctx: PluginContext) -> list[Check]:
-        """Enough driving, both bodies' largest marker error small, measured within PRECONDITION_HOLDS; not refining."""
-        checks = marker_checks(self.run.marker_max, self.run.drive_seconds, self.run.marker_age(self.cal.wall_now()))
+        """Enough driving, both bodies' largest marker error small, measured within PRECONDITION_HOLDS; not refining.
+
+        Errors measured before a body's definition changed (a refine in Motive) turn the drive chip amber.
+        """
+        run = self.run
+        changed = run.changes(run.marker_made) if run.marker_made is not None else []
+        since = f"{' and '.join(changed)} since measured" if changed else None
+        expired = run.marker_age(self.cal.wall_now()) or since
+        checks = marker_checks(run.marker_max, run.drive_seconds, expired)
         if self.run.refining:
             checks[0] = Check("drive", BAD, f"refining the {self.run.refining} body in Motive: ends once Motive "
                                             f"applied it, or Recheck")

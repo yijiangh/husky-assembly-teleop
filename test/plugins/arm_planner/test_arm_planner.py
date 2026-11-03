@@ -136,6 +136,35 @@ def test_another_robot_in_a_box_does_not_block_the_plan(world, config):
     assert result.path is not None, result.reason
 
 
+def box_near(world, config, joints, gap: float) -> Body:
+    """A box `gap` from the arm at `joints`, as PyBullet measures it: one 0.3 m above the tool, moved straight at it."""
+    geometry = box_geometry((0.1, 0.1, 0.1))
+    above = np.add(tool_at(world, config, joints).position, (0.0, 0.0, 0.3))
+    far = Body("t/near", geometry, Pose.from_arrays(above, (0, 0, 0, 1)), label="the box")
+    client = world.sync(snapshot(config, joints, (far,)), ALICE).client
+    box = client.rigid_bodies_puids["t/near"][0]
+    points = [point for part in (client.robot_puid, *client.tools_puids.values())
+              for point in p.getClosestPoints(part, box, 1.0, physicsClientId=client.client_id)]
+    nearest = min(points, key=lambda point: point[8])
+    toward = np.subtract(nearest[5], nearest[6]) * (1.0 - gap / nearest[8])
+    return Body("t/near", geometry, Pose.from_arrays(above + toward, (0, 0, 0, 1)), label="the box")
+
+
+@pytest.mark.parametrize("gap, margin, note", [
+    (None, planner_module.PLAN_DISTANCE, "keeps 1 cm"),
+    (0.005, 0.0, "only free of contact: the start or target is closer than 1 cm"),
+], ids=["free", "5 mm"])
+def test_a_path_keeps_1_cm_unless_its_target_is_closer(world, config, gap, margin, note):
+    """1 cm from everything where start and target allow it; a target closer than that keeps only clear of contact."""
+    start, goal = start_and_goal(config)
+    bodies = () if gap is None else (box_near(world, config, goal, gap),)
+    mirror, scene = synced(world, snapshot(config, start, bodies))
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is not None, result.reason
+    assert result.path.margin == margin and planner_module.margin_note(result.path.margin) == note
+    assert result.path.slowed(2.0).margin == margin
+
+
 def test_the_preview_follows_the_cosine_profile_sent():
     """The preview speeds up and slows down as the arm will: slow at the ends, halfway at half time; it clamps."""
     goal = np.array([1.0, 0.5, 0, 0, 0, 0])

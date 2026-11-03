@@ -1,7 +1,8 @@
 """
-The tool pad: one click shifts an arm's tool0 along, or turns it about, one of its own axes by the chosen step.
+The tool pad: one click shifts an arm's tool0 along, or turns it about, one axis of the chosen frame by the step.
 
-A row per axis, coloured as the scene draws it (x red, y green, z blue): shift −/+, then turn −/+; Clearance below.
+The frame is the robot's (x forward, y left, z up: the same whatever the flange's turn) or tool0's own. A row per
+axis, coloured as the scene draws axes (x red, y green, z blue): shift −/+, then turn −/+; Clearance below.
 """
 
 from __future__ import annotations
@@ -22,7 +23,13 @@ from .clearance_toggle import ClearanceToggle
 
 #: Step sizes, fine to coarse: label -> (shift in metres, turn in degrees). Labels short: four fit one phone row.
 STEP_SIZES = {"0.1 mm": (1e-4, 0.2), "0.5 mm": (5e-4, 1.0), "2 mm": (2e-3, 2.0), "5 mm": (5e-3, 5.0)}
-#: The buttons: a sign and one of tool0's axes.
+#: The frames a step is given in: the robot's (its URDF root, from the joints only) or tool0's.
+ROBOT_FRAME, TOOL_FRAME = "Robot", "Tool"
+FRAMES = (ROBOT_FRAME, TOOL_FRAME)
+#: Each frame's axes in words, for the hints.
+AXIS_WORDS = {ROBOT_FRAME: {"X": "the robot's x (forward)", "Y": "the robot's y (left)", "Z": "the robot's z (up)"},
+              TOOL_FRAME: {"X": "tool0's x", "Y": "tool0's y", "Z": "tool0's z (out of the flange)"}}
+#: The buttons: a sign and one of the frame's axes.
 SHIFTS = ("−X", "+X", "−Y", "+Y", "−Z", "+Z")
 TURNS = ("−RX", "+RX", "−RY", "+RY", "−RZ", "+RZ")
 #: Each axis' colour, as the scene draws tool0's axes.
@@ -46,7 +53,7 @@ PAD_HEADER = ('<div class="tool-pad-header" style="display:grid;grid-template-co
 
 
 def tool_step(button: str, size: str) -> Pose:
-    """The move one click of a pad button asks for, in tool0's frame.
+    """The move one click of a pad button asks for, in the pad's frame.
 
     Args:
         button: One of SHIFTS or TURNS.
@@ -59,15 +66,15 @@ def tool_step(button: str, size: str) -> Pose:
     return Pose(orientation=tuple(Rotation.from_rotvec(axis * np.radians(turn)).as_quat()))
 
 
-def build_tool_step_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_step: Callable[[Pose], None],
+def build_tool_step_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_step: Callable[[Pose, str], None],
                            clearance: ClearanceToggle, phone: bool = False) -> viser.GuiDropdownHandle | ChoiceRow:
-    """Add the step size, the pad (a row per axis) and a box of `clearance`; a click calls `on_step` with its move.
+    """Add the step size, the frame, the pad (a row per axis) and a box of `clearance`; a click calls `on_step`.
 
     Args:
         ctx: The plugin's context.
         gui: The GUI api.
         label: What the pad moves, for intent names.
-        on_step: Called with each click's `tool_step`, in tool0's frame.
+        on_step: Called with each click's `tool_step` and the frame it is in (one of FRAMES).
         clearance: Whether the steps keep their clearance.
         phone: For the phone page: the step size as a row of buttons, where a dropdown opens the keyboard.
 
@@ -78,19 +85,22 @@ def build_tool_step_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on
     hint = f"How far one click shifts tool0; it turns {turns} with them."
     size = (ChoiceRow(ctx, gui, "Step size", tuple(STEP_SIZES), "0.5 mm", hint) if phone
             else gui.add_dropdown("Step size", tuple(STEP_SIZES), initial_value="0.5 mm", hint=hint))
+    frame = ChoiceRow(ctx, gui, "Frame", FRAMES, ROBOT_FRAME,
+                      "Robot: x forward, y left, z up, whatever the flange's turn. Tool: tool0's own axes.")
     gui.add_html(PAD_STYLE)
     with gui.add_folder("Tool pad"):
         gui.add_html(PAD_HEADER)
         for axis in "XYZ":
             for button in (f"−{axis}", f"+{axis}", f"−R{axis}", f"+R{axis}"):
                 turn = button in TURNS
-                hint = (f"Turn {'+' if button[0] == '+' else '−'} about tool0's {axis.lower()} axis, through the tip"
-                        if turn else f"Shift {button[0]} along tool0's {axis.lower()} axis"
-                        + ("; z points out of the flange" if axis == "Z" else ""))
+                words = " or ".join(f"{name}: {AXIS_WORDS[name][axis]}" for name in FRAMES)
+                hint = (f"Turn {'+' if button[0] == '+' else '−'} about the frame's {axis.lower()} axis through the "
+                        f"tip ({words})" if turn else f"Shift {button[0]} along the frame's {axis.lower()} axis "
+                        f"({words})")
                 handle = gui.add_button(button, color=AXIS_COLORS[axis], icon=ICONS[button[:2 if turn else 1]],
                                         hint=f"{hint}, by the step size.")
                 # ! Bind the loop value as a default, or every button moves like the last.
                 handle.on_click(ctx.defer(f"tool step {button} {label}",
-                                          lambda button=button: on_step(tool_step(button, size.value))))
+                                          lambda button=button: on_step(tool_step(button, size.value), frame.value)))
     clearance.add(ctx, gui, label)
     return size

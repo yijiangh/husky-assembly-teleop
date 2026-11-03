@@ -68,7 +68,7 @@ def test_a_move_after_go_pressed_twice_lets_the_other_robots_not_measured_be_unk
     async def request_plan(_request):
         return SimpleNamespace(state="ready", message="clear", id=7, path=SimpleNamespace(duration=1.0))
 
-    async def commit(plan_id, unknown_robots=()):
+    async def commit(plan_id, unknown_robots=(), clearance=True):
         committed.append((plan_id, frozenset(unknown_robots)))
         return False, "stopped here by the test"
 
@@ -120,7 +120,7 @@ def test_cancel_during_a_planned_move_stops_the_planners_motion_on_that_robot():
     async def request_plan(_request):
         return SimpleNamespace(state="ready", message="clear", id=7, path=SimpleNamespace(duration=1.0))
 
-    async def commit(_plan_id, unknown_robots=()):
+    async def commit(_plan_id, unknown_robots=(), clearance=True):
         return True, "sent"
 
     async def wait_until(predicate, timeout_s=None, description=""):
@@ -148,3 +148,28 @@ def test_cancel_during_a_planned_move_stops_the_planners_motion_on_that_robot():
 
     asyncio.run(scenario())
     assert arm.holds == 1 and cancelled == ["a200-0805"]
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("ticked", [True, False])
+def test_gos_clearance_box_says_whether_a_move_keeps_the_planners_clearance(ticked):
+    """The planner's commit gets Go's Clearance: ticked, the move keeps its clearance; unticked, nothing stops it."""
+    committed = []
+
+    async def request_plan(_request):
+        return SimpleNamespace(state="ready", message="clear", id=7, path=SimpleNamespace(duration=1.0))
+
+    async def commit(_plan_id, unknown_robots=(), clearance=True):
+        committed.append(clearance)
+        return False, "stopped here by the test"
+
+    planner = SimpleNamespace(request_plan=request_plan, commit=commit)
+    ctx = SimpleNamespace(now=lambda: 0.0, require={"arm_planner": planner}.__getitem__,
+                          kinematics=SimpleNamespace(base_pose=lambda _serial: Pose()),
+                          scene=SimpleNamespace(snapshot=SimpleNamespace(robots={})))
+    run = SimpleNamespace(serial="a200-0805", arm="ur_arm", robot=SimpleNamespace(arms={"ur_arm": StuckArm()}))
+    procedure = Procedure()
+    procedure.auto, procedure.clearance.value = True, ticked  # * every other robot measured: no Go
+    with pytest.raises(RuntimeError, match="stopped here by the test"):
+        asyncio.run(ArmMotion(procedure).move_to(ctx, run, np.full(6, 0.1), "the start of take 1"))
+    assert committed == [ticked]

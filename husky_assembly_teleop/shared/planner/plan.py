@@ -71,11 +71,14 @@ class PlannerContract(Protocol[R]):
     def clear(self) -> None:
         """End a search in progress and forget the plan. ! A sent plan's motion goes on: `cancel_commit` stops it."""
 
-    def commit(self, plan_id: int, unknown_robots: Collection[str] = ()) -> asyncio.Future[tuple[bool, str]]:
+    def commit(self, plan_id: int, unknown_robots: Collection[str] = (),
+               clearance: bool = True) -> asyncio.Future[tuple[bool, str]]:
         """Send plan `plan_id` to the robot if it is still the latest and ready; resolves with (sent, message).
 
         `unknown_robots`: ids of robots the operator lets be unknown during the motion; any other robot not measured
         soft stops it. The plan's own robot among them: the base planner checks its unknown arms where last seen.
+        `clearance`: the motion runs under the planner's clearance, refused if the robot starts too close; False
+        (Clearance unticked): nothing soft stops it.
         """
 
     def cancel_commit(self, serial: str | None = None) -> bool:
