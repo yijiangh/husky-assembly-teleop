@@ -80,7 +80,7 @@ def read_lab_frame(path: Path) -> LabFrame:
         pair = tuple(str(key).split("-"))
         if len(pair) != 2 or pair[0] == pair[1] or not set(pair) <= set(marks):
             problems.append(f"tape {key!r}: not two of the marks ({', '.join(marks)}) as \"mark1-mark3\"")
-        elif not isinstance(metres, (int, float)) or not metres > 0:
+        elif isinstance(metres, bool) or not isinstance(metres, (int, float)) or not metres > 0:
             problems.append(f"tape {key!r}: {metres!r} is not a distance in metres")
         else:
             tape[pair] = float(metres)

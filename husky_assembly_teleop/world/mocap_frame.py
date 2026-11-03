@@ -406,7 +406,7 @@ class ScaleFit:
     Attributes:
         scale: How much longer Motive puts distances now, a share (-0.0015: 1.5 mm per metre shorter).
         used: The anchors it was found from.
-        pairs: How many pairs of them, each at least SCALE_PAIR_MIN apart, it is the median of.
+        pairs: How many pairs of them are at least SCALE_PAIR_MIN apart.
     """
 
     scale: float
@@ -421,7 +421,7 @@ class ScaleFit:
     def describe(self) -> str:
         """One line for people: the change, and from what."""
         return (f"distances {self.scale * 1e6:+.0f} ppm ({self.volume_change * 1e3:.1f} mm across the lab's volume), "
-                f"the median of {self.pairs} pairs of {len(self.used)} anchors")
+                f"from {self.pairs} pairs of {len(self.used)} anchors")
 
     def as_dict(self) -> dict:
         """For the relay's announcements and metrics; metres."""
@@ -432,19 +432,24 @@ class ScaleFit:
 def fit_scale(stored: dict[str, MocapAnchor], now: dict[str, MocapAnchor]) -> ScaleFit | None:
     """How Motive's scale changed, from the anchors as `stored` (the floor calibration's) and `now`, raw.
 
-    The median of how much longer each pair of anchors at least SCALE_PAIR_MIN apart is now: an anchor moved, or
-    Motive's solution warped in one corner, sways it little, where a fit swaps between subsets. None under MIN_POINTS
-    anchors or three such pairs.
+    The median of how much longer each pair of anchors at least SCALE_PAIR_MIN apart is now, taken with every anchor
+    and with each one left out; the smallest change wins, so one anchor moved, or Motive's solution warped in a corner,
+    reads as none. None under MIN_POINTS anchors, or when one left out leaves under three such pairs.
     """
     names = sorted(name for name in stored if name in now)
     if len(names) < MIN_POINTS:
         return None
-    changes = []
+    changes = {}
     for first, second in itertools.combinations(names, 2):
         then = float(np.linalg.norm(np.subtract(stored[first].position, stored[second].position)))
         if then >= SCALE_PAIR_MIN:
-            changes.append(float(np.linalg.norm(np.subtract(now[first].position, now[second].position))) / then - 1.0)
-    return ScaleFit(float(np.median(changes)), tuple(names), len(changes)) if len(changes) >= 3 else None
+            changes[first, second] = float(np.linalg.norm(np.subtract(now[first].position,
+                                                                      now[second].position))) / then - 1.0
+    sets = [list(changes.values())] + [[change for pair, change in changes.items() if name not in pair]
+                                       for name in names]
+    if min(map(len, sets)) < 3:
+        return None
+    return ScaleFit(min((float(np.median(values)) for values in sets), key=abs), tuple(names), len(changes))
 
 
 def frame_and_cameras(before: dict[str, MocapCamera], now: dict[str, MocapCamera],

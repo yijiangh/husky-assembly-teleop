@@ -16,11 +16,11 @@ from repo_paths import DATA
 from husky_assembly_teleop.robot_interface.mocap_definitions import MocapAnchor, MocapCamera, cameras_json, read_cameras
 from husky_assembly_teleop.world.calibration_sessions import sessions_folder
 from husky_assembly_teleop.world.lab import DEFAULT_LAB, lab_file, read_lab
-from husky_assembly_teleop.world.mocap_frame import (CAMERA_NAMES, FLOOR_SUFFIX, VOLUME, camera_label,
-                                                     camera_serial, find_anchors, fit_anchors, fit_cameras,
-                                                     fit_scale, follow_anchors, frame_and_cameras, frame_moved,
-                                                     match_anchors,
-                                                     newest_floor_calibration, truss_names, volume_moved)
+from husky_assembly_teleop.world.mocap_frame import (CAMERA_NAMES, FLOOR_SUFFIX, SCALE_CHANGED, VOLUME,
+                                                     camera_label, camera_serial, find_anchors, fit_anchors,
+                                                     fit_cameras, fit_scale, follow_anchors, frame_and_cameras,
+                                                     frame_moved, match_anchors, newest_floor_calibration,
+                                                     truss_names, volume_moved)
 
 pytestmark = pytest.mark.safety
 
@@ -283,17 +283,26 @@ def test_three_anchors_among_strays_are_not_matched_and_three_found_place_the_ot
 
 
 def test_motives_scale_change_is_the_median_of_the_long_pairs_and_a_moved_anchor_sways_it_little():
-    """Turned 2°, shifted and 1500 ppm shorter, A2 3 mm moved on its own: -1500 ppm within 60 ppm."""
+    """Turned 2°, shifted and 1500 ppm shorter, A2 3 mm moved on its own: -1500 ppm within 100 ppm."""
     motion = Rotation.from_euler("z", 2.0, degrees=True)
     now = {name: MocapAnchor(name, tuple(0.9985 * motion.apply(anchor.position) + (0.1, 0.0, 0.0)))
            for name, anchor in ANCHORS.items()}
     assert fit_scale(ANCHORS, now).scale == pytest.approx(-0.0015, abs=1e-9)
     now["A2"] = MocapAnchor("A2", tuple(np.add(now["A2"].position, (0.003, 0.0, 0.0))))
     fit = fit_scale(ANCHORS, now)
-    assert fit.scale == pytest.approx(-0.0015, abs=6e-5) and fit.pairs == 10
+    assert fit.scale == pytest.approx(-0.0015, abs=1e-4) and fit.pairs == 10
     assert fit.describe().startswith(f"distances {fit.scale * 1e6:+.0f} ppm (7.") and "10 pairs of 5 anchors" in \
         fit.describe()
     assert fit_scale(ANCHORS, {name: now[name] for name in ("A1", "A3", "A4")}) is None
+
+
+@pytest.mark.parametrize("shift", [(0.003, 0.0, 0.0), (0.0, 0.01, 0.0), (-0.01, 0.0, 0.0)])
+def test_one_anchor_moved_among_four_is_no_scale_change(shift):
+    """Four anchors in view, the scale unchanged, A1 moved 3 to 10 mm: under SCALE_CHANGED, or none."""
+    now = {name: ANCHORS[name] for name in ("A1", "A2", "A3", "A4")}
+    now["A1"] = MocapAnchor("A1", tuple(np.add(now["A1"].position, shift)))
+    fit = fit_scale(ANCHORS, now)
+    assert fit is None or abs(fit.scale) < SCALE_CHANGED
 
 
 def test_a_moved_frame_is_recovered_from_the_anchors_and_a_moved_anchor_left_out():

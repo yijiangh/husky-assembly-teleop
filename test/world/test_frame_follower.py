@@ -315,6 +315,7 @@ def test_a_scale_change_held_three_looks_is_warned_instead_of_anchors_moved_and_
     assert frame.metrics(0.0)["anchor_scale"]["ppm"] == pytest.approx(-1500.0)
     events = looks(frame, scaled(-0.003), 4 * LOOK, 3)
     assert ["distances -3000 ppm" in title for title in titles(events, "warn")] == [True]
+    assert frame.news() and frame.announcement(0.0)["anchor_scale"]["ppm"] == pytest.approx(-3000.0)
     events = looks(frame, anchors_after([]), 7 * LOOK, 3)
     assert titles(events, "info")[-1].startswith("Motive's scale back as at the floor calibration")
     assert not frame.scale_changed

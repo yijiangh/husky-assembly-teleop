@@ -247,7 +247,8 @@ class FrameFollower:
         """
         pending = self.pending
         key = (self.status, self.floor.floor_file.name if self.floor else None, self.error, self.newer,
-               self.deciding.source if self.deciding else None, self.anchors_missing, self.refit, self.scale_changed)
+               self.deciding.source if self.deciding else None, self.anchors_missing, self.refit, self.scale_changed,
+               self._scale_warned)
         moved = (pending is None) != (self._announced_pending is None) or pending is not None and volume_moved(
             pending.raw_cal_from_raw_now, self._announced_pending.raw_cal_from_raw_now) > VOLUME_MOVED
         if key == self._announced and not moved:
@@ -389,6 +390,7 @@ class FrameFollower:
         """
         self.scale_fit = fit_scale(self.floor.anchors, self.anchors)
         if self.scale_fit is None:
+            self._scale_looks = 0
             return []
         change = abs(self.scale_fit.scale)
         grew = change > SCALE_CHANGED + (abs(self._scale_warned) if self.scale_changed else 0.0)

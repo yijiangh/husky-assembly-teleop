@@ -250,8 +250,8 @@ calibration**.
   pin no turn, and it grows).
 - **Scale**: a refit turns and shifts, it cannot scale; a recalibration may change Motive's scale too (one changed it
   by −0.16 %). Every look the relay takes the median of how much longer each pair of anchors at least 2 m apart is
-  than in the floor calibration (`fit_scale`, `SCALE_PAIR_MIN`): one anchor moved, or Motive's solution warped in a
-  corner, sways it little. Once the scale changed the lab volume's diagonal by over 1 mm (`SCALE_CHANGED`, about
+  than in the floor calibration, with all anchors and with each left out, and keeps the smallest (`fit_scale`,
+  `SCALE_PAIR_MIN`): one anchor moved, or Motive's solution warped in a corner, reads as no change. Once the scale changed the lab volume's diagonal by over 1 mm (`SCALE_CHANGED`, about
   190 ppm) for 3 looks in a row (`SCALE_LOOKS`), the relay warns ("MOTIVE'S SCALE CHANGED … distances −1550 ppm …":
   recalibrate Motive, then make a new floor calibration), again when it grew by as much more, and stops warning of
   anchors moved, which only the scale moved; back under 75 % of it for 3 looks, it logs that at info and reports the
@@ -284,7 +284,7 @@ calibration**.
   use), `pending` (the deciding fit while not held), `newer` (`floor_calibration`, `moves_volume`, `moves_poses`),
   `decides` (`anchors`, `truss cameras` or null), `anchors_missing` (not seen for 10 s), `anchor_fit`, `camera_fit`,
   `scale_changed`, `anchor_scale` (`scale`, `ppm`, `used`, `pairs`, `volume_change`, `describe`; null under 4 anchors
-  found), `truss_cameras`. Each fit has `raw_cal_from_raw_now`, `used`, `bumped`, `missing`, `residual`, `trusted`,
+  found, or with one left out under 3 pairs of 2 m), `truss_cameras`. Each fit has `raw_cal_from_raw_now`, `used`, `bumped`, `missing`, `residual`, `trusted`,
   `source`, `uncertainty`, `consistent`, `moves_volume` (since the floor calibration), `off_now` (against the transform in use)
   and `describe` ("poses off now … mm; since the floor calibration …").
 - **Using a refit**: nothing changes until told: `ros2 service call /mocap_relay/use_refit std_srvs/srv/Trigger`, or
