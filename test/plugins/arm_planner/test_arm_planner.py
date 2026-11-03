@@ -131,7 +131,7 @@ def test_another_robot_in_a_box_does_not_block_the_plan(world, config):
     scene = snapshot(config, start, (box,))
     scene.robots[other.id] = other
     mirror, scene = synced(world, scene)
-    assert mirror.collisions(full_report=True), "the core's check should see Belle in the box"
+    assert mirror.collisions(full_report=True) == [], "Belle and the box both stand still: never checked"
     result = plan_arm(mirror, scene, ARM, goal, threading.Event())
     assert result.path is not None, result.reason
 
