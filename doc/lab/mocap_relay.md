@@ -231,9 +231,11 @@ calibration**.
   with no name. Every `definitions_period_sec` (a look) the relay takes each unlabeled marker's mean over the frames
   since (one frame's noise would tilt the fit by up to 1.6 mm in the lab) and publishes them all on
   `/mocap_relay/unlabeled_markers` (latched JSON: `markers`, in the lab frame). It finds the floor calibration's
-  anchors among them as the nearest marker within 2 cm of where it saw each, raw; after a recalibration moved them
-  further, by their shape (three anchors matched to three markers by the distances between them, allowing for 0.5 %
-  of scale; `match_anchors`), and publishes them on `/mocap_relay/anchors` (latched JSON:
+  anchors among them as the nearest marker within 2 cm of where it saw each, raw. After a recalibration moved them
+  further, three or more found place the others (`follow_anchors`); with under 4 found, the anchors are matched by
+  their shape (three anchors to three markers by the distances between them, allowing for 0.5 % of scale, kept only
+  when 4 or more fit: `match_anchors`), else where the truss cameras' fit puts them, if trusted. It publishes them on
+  `/mocap_relay/anchors` (latched JSON:
   `anchors` by name, in the lab frame, and `missing`: not found in this look). An anchor not seen for 10 s is reported
   ("anchor A3 not seen for 10 s; the other 5 hold the frame", or "only 3 of 6 anchors seen …: the truss cameras hold
   the frame"); one that flickers is not. The lab frame file's anchors are for the probe; the relay follows the floor
@@ -247,19 +249,22 @@ calibration**.
   volume's worst corner ("± … mm": the layout's leverage times the scatter of those used; points in two tight pairs
   pin no turn, and it grows).
 - **Scale**: a refit turns and shifts, it cannot scale; a recalibration may change Motive's scale too (one changed it
-  by −0.16 %). Every look the anchors found are fitted against the floor calibration's with a scale as well
-  (`fit_scale`; each checked against a fit of the others, one over 2 mm left out). Once the scale changed the lab
-  volume's diagonal by over 1 mm (`SCALE_CHANGED`, about 190 ppm), the relay warns, again once it moves by as much
-  ("MOTIVE'S SCALE CHANGED … distances −1550 ppm …": recalibrate Motive, then make a new floor calibration), and no
-  longer warns of anchors moved, which only the scale moved; back under 75 % of it, it logs that at info. Nothing is
-  corrected: poses follow Motive's scale.
+  by −0.16 %). Every look the relay takes the median of how much longer each pair of anchors at least 2 m apart is
+  than in the floor calibration (`fit_scale`, `SCALE_PAIR_MIN`): one anchor moved, or Motive's solution warped in a
+  corner, sways it little. Once the scale changed the lab volume's diagonal by over 1 mm (`SCALE_CHANGED`, about
+  190 ppm) for 3 looks in a row (`SCALE_LOOKS`), the relay warns ("MOTIVE'S SCALE CHANGED … distances −1550 ppm …":
+  recalibrate Motive, then make a new floor calibration), again when it grew by as much more, and stops warning of
+  anchors moved, which only the scale moved; back under 75 % of it for 3 looks, it logs that at info and reports the
+  anchors still left out afresh. Nothing is corrected: poses follow Motive's scale, and the monitor shows none of it
+  yet (log and `~/frame` only).
 - **Thresholds**, side by side: a camera that moved between two readings by over 1 mm or 0.1° is warned about
   ("CAMERAS MOVED", `CAMERA_MOVED`); within one fit, a camera off the others by 2 mm or 0.1°, or an anchor by 2 mm,
   is left out (`BUMP_POSITION`, `BUMP_TURN`, `ANCHOR_BUMP`), and an anchor left out comes back only within 75 % of
   that (`BACK_SHARE`); a fit is trusted with 4 or more that agree and an
   uncertainty within 2 mm (`MIN_POINTS`, `UNCERTAIN_MAX`); a refit is pending once the deciding fit places a point of
   the lab's volume beyond 1 mm, or twice its uncertainty if larger, from the transform in use (`off_limit`,
-  `VOLUME_MOVED`), and is held again only under 75 % of that limit. The lab's volume (`VOLUME`) is the central 3 m
+  `VOLUME_MOVED`), and is held again only under 75 % of that limit; Motive's scale changed by over about 190 ppm is
+  warned about (`SCALE_CHANGED`). The lab's volume (`VOLUME`) is the central 3 m
   cube where the robots work, one corner at the lab frame's origin, along x, -y and z; judged at its worst corner, so
   a turn counts as much as a shift.
 - **States** (`~/frame` `status`): `none` (no floor calibration), `unchecked` (applied, no fit has decided yet: after
@@ -272,14 +277,15 @@ calibration**.
   (info), "REFIT PENDING by …" (warning, with how to use it), "FRAME UNTRUSTED: …" (error). The same table is logged
   again only when the deciding fit's source changes or it moves by over 1 mm. While not held or unchecked, poses may
   be off: the health panel turns every base's mocap chip amber (a simulator's truth excepted).
-- **`~/frame`** (latched JSON, announced when the state, the deciding source, the anchors missing, the refit, a scale change, a newer
-  floor calibration or an error changes, or the pending fit moves by over 1 mm): `time`, `status`, `error`,
+- **`~/frame`** (latched JSON, announced when the state, the deciding source, the anchors missing, the refit, a scale
+  change reported, a newer floor calibration or an error changes, or the pending fit moves by over 1 mm): `time`,
+  `status`, `error`,
   `lab_from_raw` ([position, quaternion] or null), `floor_calibration`, `simulated`, `folder`, `refit` (the refit in
   use), `pending` (the deciding fit while not held), `newer` (`floor_calibration`, `moves_volume`, `moves_poses`),
   `decides` (`anchors`, `truss cameras` or null), `anchors_missing` (not seen for 10 s), `anchor_fit`, `camera_fit`,
-  `scale_changed`, `anchor_scale` (`scale`, `ppm`, `used`, `left_out`, `residual`, `volume_change`, `describe`; null
-  without 4 anchors that agree), `truss_cameras`. Each fit has `raw_cal_from_raw_now`, `used`, `bumped`, `missing`, `residual`, `trusted`, `source`,
-  `uncertainty`, `consistent`, `moves_volume` (since the floor calibration), `off_now` (against the transform in use)
+  `scale_changed`, `anchor_scale` (`scale`, `ppm`, `used`, `pairs`, `volume_change`, `describe`; null under 4 anchors
+  found), `truss_cameras`. Each fit has `raw_cal_from_raw_now`, `used`, `bumped`, `missing`, `residual`, `trusted`,
+  `source`, `uncertainty`, `consistent`, `moves_volume` (since the floor calibration), `off_now` (against the transform in use)
   and `describe` ("poses off now … mm; since the floor calibration …").
 - **Using a refit**: nothing changes until told: `ros2 service call /mocap_relay/use_refit std_srvs/srv/Trigger`, or
   **Use refit** in the mocap probe (refused while anything moves); logged as "REFIT USED". The fit is composed onto
@@ -298,9 +304,9 @@ calibration**.
     `FrameFit.left_out_errors`; for an anchor left out, the fit itself) and `status`: `used`, `bumped` (left out),
     `seen` (under 3 found: no fit) or `missing` (not found this look; its numbers null). A large `left_out_mm` is a
     bad anchor;
-  - `truss_camera_poses`: each truss camera's [position, quaternion].
-  - `anchor_scale`: how Motive's scale changed since the floor calibration, as on `~/frame`. With the floor calibration's file (named in
+  - `truss_camera_poses`: each truss camera's [position, quaternion]. With the floor calibration's file (named in
     `floor_calibration`), a sample holds what both fits need to be made again offline.
+  - `anchor_scale`: how Motive's scale changed since the floor calibration, as on `~/frame`.
 - **Frame log**: the relay appends every sample, one JSON line as published, to `<frame_log>/<YYYYMMDD>.jsonl` (the
   look's local date; default `~/.ros/mocap_frame/`, local beside ROS's own logs, never on the Drive). Day files older
   than `frame_log_days` (default 30) are deleted at the first look and at each day change; `frame_log:=" "` (a space:

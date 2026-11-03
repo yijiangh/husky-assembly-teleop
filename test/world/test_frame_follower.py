@@ -295,23 +295,36 @@ def test_anchors_are_found_where_the_floor_calibration_saw_them_or_by_their_shap
     assert frame.deciding.source == "anchors"
 
 
-def test_a_scale_change_is_warned_once_instead_of_anchors_moved_and_its_return_logged():
-    """Motive 0.15 % shorter: one warning, announced, none of moved anchors; 0.3 %: again; back: logged at info."""
+def scaled(share: float) -> list:
+    """The lab's anchors as Motive sees them with its scale changed by `share` (about the raw origin)."""
+    return [tuple((1.0 + share) * np.asarray(position)) for position in anchors_after([])]
+
+
+def test_a_scale_change_held_three_looks_is_warned_instead_of_anchors_moved_and_its_return_logged():
+    """Motive 0.15 % shorter: warned at the third look, announced, no moved anchors; 0.3 %: again; back: at info."""
     frame = follower()
     frame.look(anchors_after([]), 0.0)
     frame.news()
-    shrunk = [tuple(0.9985 * np.asarray(position)) for position in anchors_after([])]
-    events = looks(frame, shrunk, LOOK, 3)
-    assert titles(events, "warn") == [title for title in titles(events) if "SCALE" in title]
-    assert len(titles(events, "warn")) == 1 and "MOTIVE'S SCALE CHANGED" in titles(events, "warn")[0]
-    assert "distances -1500 ppm" in titles(events, "warn")[0] and "ANCHORS MOVED" not in text(events)
+    waiting = text(looks(frame, scaled(-0.0015), LOOK, 2))
+    assert "SCALE" not in waiting and "ANCHORS MOVED" not in waiting
+    events = looks(frame, scaled(-0.0015), 3 * LOOK)
+    assert len(titles(events, "warn")) == 1 and "ANCHORS MOVED" not in text(events)
+    assert titles(events, "warn")[0].startswith("MOTIVE'S SCALE CHANGED since the floor calibration: distances -1500 "
+                                                "ppm")
     assert frame.news() and frame.announcement(0.0)["scale_changed"]
     assert frame.metrics(0.0)["anchor_scale"]["ppm"] == pytest.approx(-1500.0)
-    events = looks(frame, [tuple(0.997 * np.asarray(position)) for position in anchors_after([])], 4 * LOOK)
+    events = looks(frame, scaled(-0.003), 4 * LOOK, 3)
     assert ["distances -3000 ppm" in title for title in titles(events, "warn")] == [True]
-    events = looks(frame, anchors_after([]), 5 * LOOK)
-    assert titles(events, "info")[0].startswith("Motive's scale back as at the floor calibration")
+    events = looks(frame, anchors_after([]), 7 * LOOK, 3)
+    assert titles(events, "info")[-1].startswith("Motive's scale back as at the floor calibration")
     assert not frame.scale_changed
+
+
+def test_a_scale_swaying_between_two_values_is_warned_once():
+    """-1200 and -1600 ppm in turn, as a warped solution gives: one warning, the sway never holds three looks."""
+    frame = follower()
+    events = looks(frame, lambda index: scaled(-0.0012 if index % 2 else -0.0016), 0.0, 12)
+    assert len(titles(events, "warn")) == 1
 
 
 def test_a_new_floor_calibration_starts_unchecked_without_the_refit():

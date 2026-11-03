@@ -974,6 +974,9 @@ class MocapProbePlugin(HuskyPlugin):
         try:
             lab_frame = read_lab_frame(self._lab_frame_path)
             self._ideal_marks, self._ideal_anchors, self._tape = lab_frame.marks, lab_frame.anchors, lab_frame.tape
+            if lab_frame.problems:
+                self._report(ctx, f"{self._lab_frame_path.name}: {'; '.join(lab_frame.problems)}", floor=True,
+                             warn=True)
         except (ValueError, KeyError, TypeError) as error:  # * json.JSONDecodeError is a ValueError
             self._ideal_marks, self._ideal_anchors, self._tape = {}, {}, {}
             self._report(ctx, f"lab frame not read: {error}", floor=True, warn=True)
@@ -1072,7 +1075,10 @@ class MocapProbePlugin(HuskyPlugin):
         return ["anchors mm:", *(f"  {line or '–'}" if row == 0 else f"  {line}" for row, line in enumerate(lines))]
 
     def _tape_line(self, solution: FloorSolution) -> str:
-        """How much longer Motive puts each taped pair of marks than the tape, mm, in the file's order."""
+        """How much longer Motive puts each taped pair of marks than the tape, mm, in the file's order.
+
+        ! Fits a phone's 40 characters for up to four pairs: keep the file's tape to four.
+        """
         offs = " · ".join("–" if pair not in solution.tape else f"{solution.tape[pair][1] * 1e3:+.1f}"
                           for pair in self._tape)
         return f"tape mm: {offs or '– (none in the file)'}"

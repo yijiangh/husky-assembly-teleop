@@ -40,11 +40,13 @@ class LabFrame:
         marks: Each mark's (x, y) on the floor.
         anchors: Each anchor's (x, y, z), z above the floor.
         tape: Each pair of marks' distance measured by tape, metres.
+        problems: The file's tape entries left out, each with why.
     """
 
     marks: dict[str, np.ndarray] = field(default_factory=dict)
     anchors: dict[str, np.ndarray] = field(default_factory=dict)
     tape: dict[tuple[str, str], float] = field(default_factory=dict)
+    problems: list[str] = field(default_factory=list)
 
 
 def lab_frame_file(data_directory: Path, lab: str) -> Path:
@@ -54,11 +56,12 @@ def lab_frame_file(data_directory: Path, lab: str) -> Path:
 
 
 def read_lab_frame(path: Path) -> LabFrame:
-    """The marks and anchors of a lab frame file; none if the file is missing.
+    """The marks, anchors and tape distances of a lab frame file; none if the file is missing.
+
+    A tape entry that does not read, or is not between two of its marks, is left out and named in `problems`.
 
     Raises:
-        ValueError: If the file is not a lab frame file, a mark and an anchor share a name, or a tape distance is not
-            between two of its marks.
+        ValueError: If the file is not a lab frame file, or a mark and an anchor share a name.
     """
     if not path.exists():
         return LabFrame()
@@ -68,15 +71,20 @@ def read_lab_frame(path: Path) -> LabFrame:
     try:
         marks = {str(name): np.array(xy, dtype=float).reshape(2) for name, xy in data.get("marks", {}).items()}
         anchors = {str(name): np.array(xyz, dtype=float).reshape(3) for name, xyz in data.get("anchors", {}).items()}
-        tape = {tuple(str(pair).split("-")): float(metres) for pair, metres in data.get("tape", {}).items()}
     except (TypeError, ValueError, AttributeError) as error:
-        raise ValueError(f"{path.name}: a mark, anchor or tape distance does not read ({error!r})") from None
+        raise ValueError(f"{path.name}: a mark or anchor does not read ({error!r})") from None
     if set(marks) & set(anchors):
         raise ValueError(f"{path.name}: marks and anchors share names {sorted(set(marks) & set(anchors))}")
-    strays = ["-".join(pair) for pair in tape if len(pair) != 2 or not set(pair) <= set(marks)]
-    if strays:
-        raise ValueError(f"{path.name}: tape distances not between two of its marks: {strays}")
-    return LabFrame(marks, anchors, tape)
+    tape, problems = {}, []
+    for key, metres in dict(data.get("tape") or {}).items():
+        pair = tuple(str(key).split("-"))
+        if len(pair) != 2 or pair[0] == pair[1] or not set(pair) <= set(marks):
+            problems.append(f"tape {key!r}: not two of the marks ({', '.join(marks)}) as \"mark1-mark3\"")
+        elif not isinstance(metres, (int, float)) or not metres > 0:
+            problems.append(f"tape {key!r}: {metres!r} is not a distance in metres")
+        else:
+            tape[pair] = float(metres)
+    return LabFrame(marks, anchors, tape, problems)
 
 
 def tape_check(measured: dict[str, np.ndarray], tape: dict[tuple[str, str], float]

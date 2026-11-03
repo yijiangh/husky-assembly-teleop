@@ -91,7 +91,7 @@ def test_the_labs_frame_file_reads():
 
 
 def test_tape_distances_check_motives_scale_and_name_two_marks(tmp_path):
-    """Motive 0.2 % long: each taped pair off by its share, one scale for all; a pair with an unknown mark refused."""
+    """Motive 0.2 % long: each taped pair off by its share, one scale; a bad entry is left out and named, no more."""
     measured = {name: in_mocap(xy * 1.002) for name, xy in KNOWN.items()}
     tape = {("origin", "mark1"): float(np.linalg.norm(KNOWN["mark1"])), ("mark2", "mark3"): 6.7,
             ("mark1", "mark9"): 1.0}
@@ -104,6 +104,10 @@ def test_tape_distances_check_motives_scale_and_name_two_marks(tmp_path):
     path.write_text(json.dumps({"format": FORMAT, "marks": {name: xy.tolist() for name, xy in KNOWN.items()},
                                 "tape": {"origin-mark1": 3.52}}))
     assert read_lab_frame(path).tape == {("origin", "mark1"): 3.52}
-    path.write_text(json.dumps({"format": FORMAT, "marks": {"origin": [0, 0]}, "tape": {"origin-mark9": 1.0}}))
-    with pytest.raises(ValueError, match="not between two of its marks"):
-        read_lab_frame(path)
+    path.write_text(json.dumps({"format": FORMAT, "marks": {name: xy.tolist() for name, xy in KNOWN.items()},
+                                "tape": {"origin-mark9": 1.0, "mark1 - mark3": 4.0, "mark1-mark1": 1.0,
+                                         "mark2-mark3": "6.7", "origin-mark1": 3.52}}))
+    frame = read_lab_frame(path)
+    assert frame.tape == {("origin", "mark1"): 3.52} and len(frame.marks) == 4
+    assert [problem.split(":")[0] for problem in frame.problems] == [
+        "tape 'origin-mark9'", "tape 'mark1 - mark3'", "tape 'mark1-mark1'", "tape 'mark2-mark3'"]
