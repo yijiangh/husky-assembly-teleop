@@ -64,6 +64,8 @@ class ToolJogInputs:
     readout: viser.GuiHtmlHandle
     buttons: tuple[viser.GuiButtonHandle, ...] = ()
     clearance: viser.GuiCheckboxHandle | None = None
+    #: Tool0 arrows: whether the 3D view shows which way the tool0 jog moves and turns tool0 (`jog_arrows.py`).
+    arrows: viser.GuiCheckboxHandle | None = None
 
 
 @dataclass
@@ -76,6 +78,7 @@ class JogInputs:
         tool: The tool0 jog's handles.
         buttons: The joint jog's buttons; with the tool0 jog's, coloured by Clearance (`jog_clearance_note`).
         note: The line above them saying what Clearance checks.
+        arrows: Joint arrows: whether the 3D view shows which way each joint turns (`jog_arrows.py`).
     """
 
     speed: viser.GuiSliderHandle
@@ -83,6 +86,7 @@ class JogInputs:
     tool: ToolJogInputs
     buttons: tuple[viser.GuiButtonHandle, ...]
     note: viser.GuiHtmlHandle
+    arrows: viser.GuiCheckboxHandle
 
 
 @dataclass
@@ -134,8 +138,11 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
     move_group = gui.add_button_group("Move", ["Hold"],
                                       hint="Brake to a standstill where the arm is, also during a planned path.")
     move_group.on_click(ctx.defer(f"hold {label}", hold))
+    # * Below the joint jog's buttons, so ticking it moves none of them; the tool0 jog's arrows box is below its own.
+    arrows = gui.add_checkbox("Joint arrows", initial_value=False,
+                              hint="Show in the 3D view which way each joint turns: red for its + button, green for −.")
     return JogInputs(speed, clearance, build_tool_jog_inputs(ctx, gui, label, on_tool_hold, clearance, stop_distance),
-                     tuple(buttons), clearance_note)
+                     tuple(buttons), clearance_note, arrows)
 
 
 def jog_clearance_hint(stop_distance: float) -> str:
@@ -157,7 +164,7 @@ def jog_clearance_note(ticked: bool, stop_distance: float) -> str:
 
 def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold: Callable[[int, float], None],
                           clearance: viser.GuiCheckboxHandle, stop_distance: float) -> ToolJogInputs:
-    """Add the tool0 jog: a speed slider in mm/s, a hold button per axis and direction, Clearance, and a readout line.
+    """Add the tool0 jog: speed slider in mm/s, a hold button per axis and direction, Clearance, readout, arrows box.
 
     Its Clearance box is the joint jog's `clearance` shown again below its buttons: ticking either ticks both.
 
@@ -194,7 +201,12 @@ def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_
                                         operator_only=True))
     again.on_update(ctx.defer_value(f"tool clearance {label}", lambda value: setattr(clearance, "value", value),
                                     operator_only=True))
-    return ToolJogInputs(speed=speed, readout=gui.add_html(note_line("")), buttons=tuple(buttons), clearance=again)
+    readout = gui.add_html(note_line(""))
+    # * Last, so ticking it moves no button.
+    arrows = gui.add_checkbox("Tool0 arrows", initial_value=False,
+                              hint="Show in the 3D view which way tool0's + buttons move and turn it, in its axes' "
+                                   "colours (x red, y green, z blue).")
+    return ToolJogInputs(speed=speed, readout=readout, buttons=tuple(buttons), clearance=again, arrows=arrows)
 
 
 def build_compliance_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,

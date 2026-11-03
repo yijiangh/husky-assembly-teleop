@@ -619,17 +619,22 @@ def test_the_jog_buttons_and_their_note_follow_clearance_as_the_dpad_does():
 
 
 def test_each_jog_has_its_clearance_box_below_its_buttons_and_the_two_are_one_setting():
-    """Below the joint jog buttons and below the tool0 buttons, as the D-pad's; unticking either unticks both."""
+    """Below the joint jog buttons and below the tool0 buttons, as the D-pad's; unticking either unticks both.
+
+    Each jog's arrows box comes below its buttons, so ticking it moves none of them.
+    """
     gui = FakeGui()
     ctx = SimpleNamespace(defer=lambda _label, run, operator_only=False: lambda *_event: run(),
                           defer_value=lambda _label, run, operator_only=False: run)
     inputs = build_jog_inputs(ctx, gui, "0804 ur_arm", lambda *_args: None, lambda: None, lambda *_args: None,
                               ARM_STOP_DISTANCE)
     order = [widget.kind for widget in gui.widgets]
-    boxes = [index for index, kind in enumerate(order) if kind == "checkbox"]
+    boxes = [index for index, widget in enumerate(gui.widgets) if widget.label == "Clearance"]
     buttons = [index for index, kind in enumerate(order) if kind == "button"]
     joint, tool = buttons[:len(inputs.buttons)], buttons[len(inputs.buttons):]
     assert len(boxes) == 2 and max(joint) < boxes[0] < min(tool) and max(tool) < boxes[1]
+    labels = [widget.label for widget in gui.widgets]
+    assert max(joint) < labels.index("Joint arrows") < min(tool) and labels[-1] == "Tool0 arrows"
     inputs.tool.clearance.value = False
     inputs.tool.clearance.callback(False)
     assert inputs.clearance.value is False

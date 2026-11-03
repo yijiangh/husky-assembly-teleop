@@ -58,6 +58,7 @@ from scaffolding_assembly_core.ids import robot_id
 from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, JogInputs, ToolJogInputs, build_compliance_inputs,
                         build_free_drive_inputs, build_jog_inputs, build_phone_arm_inputs, build_tool_inputs,
                         jog_clearance_note, pose_from_sliders, pose_plan_line)
+from .jog_arrows import JogArrows, add_jog_arrows, draw_jog_arrows
 from .markers import (add_force_arrows, add_frame_markers, add_target_gizmo, draw_markers, place_markers,
                       target_from_world)
 from .status import (ControllerPanel, arm_status, base_status, build_controller_panel, phone_arm_status,
@@ -115,6 +116,9 @@ class _ArmWidgets:
     frames: dict[str, viser.FrameHandle]
     arrows: dict[str, viser.ArrowsHandle]
     gizmo: viser.TransformControlsHandle
+    jog_arrows: JogArrows
+    #: The Joint arrows box below the joint jog.
+    joint_arrows: viser.GuiCheckboxHandle
     #: Keep on, in the free drive controller's folder.
     free_drive_keep: viser.GuiCheckboxHandle | None = None
     #: The arm's status line on the phone's Control tab, set once that tab is built.
@@ -354,6 +358,7 @@ class RobotControlPlugin(HuskyPlugin):
                            free_drive_keep=built[FREE_DRIVE_CONTROLLER],
                            frames=add_frame_markers(ctx, serial, arm), arrows=add_force_arrows(ctx, serial, arm),
                            gizmo=add_target_gizmo(ctx, serial, arm, partial(self._dragged.__setitem__, key)),
+                           jog_arrows=add_jog_arrows(ctx, serial, arm), joint_arrows=jog.arrows,
                            ft_plots=ft_plots, ft_trace=ft_trace, ft_note=ft_note)
 
     def teardown(self, ctx: PluginContext) -> None:
@@ -898,6 +903,9 @@ class RobotControlPlugin(HuskyPlugin):
                         "no F/T reading: the arm reports no wrench (fake hardware has none)"
                         if widgets.arm.state.wrench is None else "raw: not zeroed, the tool's weight included")
             draw_markers(widgets.frames, widgets.arrows, widgets.gizmo, self._markers.get(key) or {})
+            if widgets.tool_jog is not None:
+                draw_jog_arrows(ctx, widgets.serial, widgets.arm, widgets.jog_arrows, bool(widgets.joint_arrows.value),
+                                bool(widgets.tool_jog.arrows.value))
             applied = self._applied_force.get(key)
             widgets.compliance.wrench_line.content = block(values(
                 f"applied {numbers(applied, 3, 6, 1)} N ({TARGET_WRENCH_FRAME})"))
