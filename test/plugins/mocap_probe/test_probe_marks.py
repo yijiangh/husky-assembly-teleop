@@ -119,6 +119,20 @@ def test_a_moved_mark_exports_only_on_a_second_press_and_too_few_marks_not_at_al
     plugin.teardown(ctx)
 
 
+def test_marks_off_the_tape_warn_of_motives_scale_and_export_only_on_a_second_press(server, tmp_path):  # noqa: F811
+    """Tape 3 mm shorter than Motive puts origin to mark1 (3.52 m): amber chip, readout, a second press to export."""
+    first_calibration(server, tmp_path)
+    path = tmp_path / "data" / "lab" / "main_frame.json"
+    data = json.loads(path.read_text())
+    path.write_text(json.dumps({**data, "tape": {"origin-mark1": 3.5228 - 0.003, "mark1-mark2": 6.9289}}))
+    plugin, ctx = calibrate(server, tmp_path)
+    assert "scale off" in plugin._floor_chips.content
+    assert "tape mm: +3.0 · +0.0" in plugin._floor_status.content
+    plugin._export_floor(ctx)
+    assert "origin-mark1 +3.0 mm off the tape" in plugin._floor_message and not floor_exports(tmp_path)
+    plugin.teardown(ctx)
+
+
 def test_the_marks_check_the_frame_the_relay_applies_and_its_estimate(server, tmp_path):  # noqa: F811
     """The relay applies a frame 2 mm off, its fit says 2 mm back: the marks say 2 mm off, the relay too, 0 apart."""
     first_calibration(server, tmp_path)

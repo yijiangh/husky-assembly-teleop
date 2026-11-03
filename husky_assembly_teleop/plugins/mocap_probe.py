@@ -87,7 +87,7 @@ from ..world.floor_calibration import (ANCHOR_LABEL, FLOOR_LABEL, PLANE_MIN_POIN
                                        Sample, anchor_name, floor_calibration_json, from_raw, pointed_anchors,
                                        samples_from_json, solve_floor, to_raw)
 from ..world.lab import DEFAULT_LAB, replace_text
-from ..world.lab_frame import MARK_WARN, MARKS, lab_frame_file, read_lab_frame
+from ..world.lab_frame import MARK_WARN, MARKS, lab_frame_file, read_lab_frame, tape_scale
 from ..world.measured import TrackedObject
 from ..world.mocap import MARKER_ERROR_LIMIT, MARKER_ERROR_WARN, mocap_check
 from ..world.mocap_frame import FLOOR_PREFIX, camera_label, find_anchors, moved_camera, volume_moved
@@ -279,10 +279,11 @@ class MocapProbePlugin(HuskyPlugin):
         # Per button that acts on its second press ("all", "floor", "export"); an export's key says whether it exports
         # in spite of a warning ("anyway") or is a phone's plain second press ("press").
         self._presses = {which: SecondPress() for which in ("all", "floor", "export")}
-        # The lab frame file, the floor (x, y) it stores per mark and the (x, y, z) per anchor.
+        # The lab frame file, the floor (x, y) it stores per mark, the (x, y, z) per anchor and the taped distances.
         self._lab_frame_path: Path | None = None
         self._ideal_marks: dict[str, np.ndarray] = {}
         self._ideal_anchors: dict[str, np.ndarray] = {}
+        self._tape: dict[tuple[str, str], float] = {}
         # ROS time the probe was last within PROBE_NEAR of each anchor pointed at: its marker is read only after.
         self._probe_near: dict[str, float] = {}
         # The relay's lab_from_raw last seen, and when it announced it (its clock): markers taken before are not used.
@@ -771,6 +772,8 @@ class MocapProbePlugin(HuskyPlugin):
             name, off = solution.worst
             warnings.append(f"{name} lands {off * 1e3:.1f} mm from where it is stored: probe it again (hit badly?), "
                             f"delete its samples, or check the mark")
+        if solution.tape_worst is not None and abs(solution.tape_worst[1]) > MARK_WARN:
+            warnings.append(self._tape_warning(solution))
         unread = {}
         for name, why in self._anchors_now(ctx)[1].items():
             unread.setdefault(why, []).append(name)
@@ -970,14 +973,14 @@ class MocapProbePlugin(HuskyPlugin):
         """Read the stored marks and anchors; none (and why) if the file cannot be read."""
         try:
             lab_frame = read_lab_frame(self._lab_frame_path)
-            self._ideal_marks, self._ideal_anchors = lab_frame.marks, lab_frame.anchors
+            self._ideal_marks, self._ideal_anchors, self._tape = lab_frame.marks, lab_frame.anchors, lab_frame.tape
         except (ValueError, KeyError, TypeError) as error:  # * json.JSONDecodeError is a ValueError
-            self._ideal_marks, self._ideal_anchors = {}, {}
+            self._ideal_marks, self._ideal_anchors, self._tape = {}, {}, {}
             self._report(ctx, f"lab frame not read: {error}", floor=True, warn=True)
 
     def _solve(self, ctx: PluginContext) -> FloorSolution:
         """The floor calibration from the samples, the lab frame's stored marks and anchors, and the anchors now."""
-        return solve_floor(self.samples, self._ideal_marks, self._ideal_anchors, self._anchors_now(ctx)[0])
+        return solve_floor(self.samples, self._ideal_marks, self._ideal_anchors, self._anchors_now(ctx)[0], self._tape)
 
     def _anchor_hints(self, ctx: PluginContext) -> dict[str, np.ndarray]:
         """Where each anchor's marker is looked for, raw: its tips' mean where pointed at, else its stored place.
@@ -1068,6 +1071,19 @@ class MocapProbePlugin(HuskyPlugin):
         # * Indented, which also keeps an empty row one line high.
         return ["anchors mm:", *(f"  {line or '–'}" if row == 0 else f"  {line}" for row, line in enumerate(lines))]
 
+    def _tape_line(self, solution: FloorSolution) -> str:
+        """How much longer Motive puts each taped pair of marks than the tape, mm, in the file's order."""
+        offs = " · ".join("–" if pair not in solution.tape else f"{solution.tape[pair][1] * 1e3:+.1f}"
+                          for pair in self._tape)
+        return f"tape mm: {offs or '– (none in the file)'}"
+
+    @staticmethod
+    def _tape_warning(solution: FloorSolution) -> str:
+        """Why the probed marks disagree with the tape: Motive's scale, or a mark hit badly."""
+        pair, off = solution.tape_worst
+        return (f"marks {pair} {off * 1e3:+.1f} mm off the tape (Motive's scale {tape_scale(solution.tape) * 1e6:+.0f} "
+                f"ppm against all taped pairs): recalibrate Motive if all are off alike, else probe the marks again")
+
     @staticmethod
     def _apart_line(solution: FloorSolution) -> str:
         """How far the marks alone and the anchors alone place the lab apart."""
@@ -1137,6 +1153,8 @@ class MocapProbePlugin(HuskyPlugin):
                           BUSY if moved else OK,
                           f"Fitted to the marks and anchors of {self._lab_frame_path.name}"
                           + (f"; {len(moved)} left out as moved ({few(moved)})" if moved else ""))
+        if solution.tape_worst is not None and abs(solution.tape_worst[1]) > MARK_WARN:
+            state += chip("scale off", BUSY, self._tape_warning(solution))
         if not_found:
             state += chip(f"{not_found[0]} not found" if len(not_found) == 1 else f"{len(not_found)} anchors not found",
                           BUSY, f"{few(not_found)}: no marker within {ANCHOR_REACH * 100:.0f} cm of the stored place."
@@ -1153,8 +1171,8 @@ class MocapProbePlugin(HuskyPlugin):
             floor = [f"floor: {len(plane.residuals)} pts · rms {plane.rms * 1e3:.1f} · max "
                      f"{plane.max_error * 1e3:.1f} mm", f"floor normal: ±{normal_std} per axis"]
         probe = f"probe above floor: {numbers(None if height is None else (height * 1e3,), 1, 6, 1)} mm"
-        return chip_line(state), block(values(*floor, "marks mm:", f"  {marks}", *self._anchor_rows(anchors),
-                                              self._apart_line(solution), *check, probe))
+        return chip_line(state), block(values(*floor, "marks mm:", f"  {marks}", self._tape_line(solution),
+                                              *self._anchor_rows(anchors), self._apart_line(solution), *check, probe))
 
     def _check(self, ctx: PluginContext) -> Check | None:
         """The probe's mocap check (same as the health panel's), or None when nothing is tracked."""

@@ -295,6 +295,25 @@ def test_anchors_are_found_where_the_floor_calibration_saw_them_or_by_their_shap
     assert frame.deciding.source == "anchors"
 
 
+def test_a_scale_change_is_warned_once_instead_of_anchors_moved_and_its_return_logged():
+    """Motive 0.15 % shorter: one warning, announced, none of moved anchors; 0.3 %: again; back: logged at info."""
+    frame = follower()
+    frame.look(anchors_after([]), 0.0)
+    frame.news()
+    shrunk = [tuple(0.9985 * np.asarray(position)) for position in anchors_after([])]
+    events = looks(frame, shrunk, LOOK, 3)
+    assert titles(events, "warn") == [title for title in titles(events) if "SCALE" in title]
+    assert len(titles(events, "warn")) == 1 and "MOTIVE'S SCALE CHANGED" in titles(events, "warn")[0]
+    assert "distances -1500 ppm" in titles(events, "warn")[0] and "ANCHORS MOVED" not in text(events)
+    assert frame.news() and frame.announcement(0.0)["scale_changed"]
+    assert frame.metrics(0.0)["anchor_scale"]["ppm"] == pytest.approx(-1500.0)
+    events = looks(frame, [tuple(0.997 * np.asarray(position)) for position in anchors_after([])], 4 * LOOK)
+    assert ["distances -3000 ppm" in title for title in titles(events, "warn")] == [True]
+    events = looks(frame, anchors_after([]), 5 * LOOK)
+    assert titles(events, "info")[0].startswith("Motive's scale back as at the floor calibration")
+    assert not frame.scale_changed
+
+
 def test_a_new_floor_calibration_starts_unchecked_without_the_refit():
     """The refit belongs to the floor calibration it was fitted against."""
     frame = follower()

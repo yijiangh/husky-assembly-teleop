@@ -18,7 +18,7 @@ from husky_assembly_teleop.world.calibration_sessions import sessions_folder
 from husky_assembly_teleop.world.lab import DEFAULT_LAB, lab_file, read_lab
 from husky_assembly_teleop.world.mocap_frame import (CAMERA_NAMES, FLOOR_SUFFIX, VOLUME, camera_label,
                                                      camera_serial, find_anchors, fit_anchors, fit_cameras,
-                                                     frame_and_cameras, frame_moved, match_anchors,
+                                                     fit_scale, frame_and_cameras, frame_moved, match_anchors,
                                                      newest_floor_calibration, truss_names, volume_moved)
 
 pytestmark = pytest.mark.safety
@@ -247,6 +247,18 @@ def test_anchors_are_matched_by_their_shape_after_a_turn_shift_and_scale_change(
     assert find_anchors(ANCHORS, markers) == {}
     assert match_anchors(ANCHORS, markers) == {"A5": 0, "A1": 1, "A4": 2, "A2": 3}
     assert match_anchors(ANCHORS, markers[:2]) == {}
+
+
+def test_motives_scale_change_is_fitted_from_the_anchors_and_a_moved_one_left_out():
+    """Turned 2°, shifted and 1500 ppm shorter, A2 3 mm moved on its own: -1500 ppm from the other four."""
+    motion = Rotation.from_euler("z", 2.0, degrees=True)
+    now = {name: MocapAnchor(name, tuple(0.9985 * motion.apply(anchor.position) + (0.1, 0.0, 0.0)))
+           for name, anchor in ANCHORS.items()}
+    now["A2"] = MocapAnchor("A2", tuple(np.add(now["A2"].position, (0.003, 0.0, 0.0))))
+    fit = fit_scale(ANCHORS, now)
+    assert fit.scale == pytest.approx(-0.0015, abs=1e-9) and list(fit.left_out) == ["A2"] and fit.residual < 1e-9
+    assert fit.describe().startswith("distances -1500 ppm (7.8 mm across the lab's volume), from 4 anchors")
+    assert fit_scale(ANCHORS, {name: now[name] for name in ("A1", "A3", "A4")}) is None
 
 
 def test_a_moved_frame_is_recovered_from_the_anchors_and_a_moved_anchor_left_out():

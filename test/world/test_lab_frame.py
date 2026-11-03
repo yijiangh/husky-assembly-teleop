@@ -9,8 +9,8 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from repo_paths import DATA
-from husky_assembly_teleop.world.lab_frame import (FORMAT, MARK_WARN, fit_floor_points, floor_xy,
-                                                   lab_frame_file, read_lab_frame)
+from husky_assembly_teleop.world.lab_frame import (FORMAT, MARK_WARN, fit_floor_points, floor_xy, lab_frame_file,
+                                                   read_lab_frame, tape_check, tape_scale)
 
 pytestmark = pytest.mark.safety
 
@@ -83,6 +83,27 @@ def test_file_round_trip(tmp_path):
 
 
 def test_the_labs_frame_file_reads():
-    """The committed file: the four marks, the origin at (0, 0)."""
+    """The committed file: the four marks, the origin at (0, 0), the marks as far apart as the tape within 2 mm."""
     frame = read_lab_frame(DATA / "lab" / "main_frame.json")
     assert sorted(frame.marks) == ["mark1", "mark2", "mark3", "origin"] and frame.marks["origin"].tolist() == [0, 0]
+    check = tape_check(frame.marks, frame.tape)
+    assert len(check) == 3 and max(abs(off) for _, off in check.values()) < MARK_WARN
+
+
+def test_tape_distances_check_motives_scale_and_name_two_marks(tmp_path):
+    """Motive 0.2 % long: each taped pair off by its share, one scale for all; a pair with an unknown mark refused."""
+    measured = {name: in_mocap(xy * 1.002) for name, xy in KNOWN.items()}
+    tape = {("origin", "mark1"): float(np.linalg.norm(KNOWN["mark1"])), ("mark2", "mark3"): 6.7,
+            ("mark1", "mark9"): 1.0}
+    check = tape_check(measured, tape)
+    assert set(check) == {("origin", "mark1"), ("mark2", "mark3")}
+    assert check[("origin", "mark1")] == pytest.approx((tape[("origin", "mark1")], 0.002 * tape[("origin", "mark1")]))
+    assert tape_scale({pair: check[pair] for pair in [("origin", "mark1")]}) == pytest.approx(0.002)
+    assert tape_scale({}) is None
+    path = tmp_path / "main_frame.json"
+    path.write_text(json.dumps({"format": FORMAT, "marks": {name: xy.tolist() for name, xy in KNOWN.items()},
+                                "tape": {"origin-mark1": 3.52}}))
+    assert read_lab_frame(path).tape == {("origin", "mark1"): 3.52}
+    path.write_text(json.dumps({"format": FORMAT, "marks": {"origin": [0, 0]}, "tape": {"origin-mark9": 1.0}}))
+    with pytest.raises(ValueError, match="not between two of its marks"):
+        read_lab_frame(path)

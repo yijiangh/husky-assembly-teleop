@@ -17,7 +17,8 @@ from scipy.spatial.transform import Rotation
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 
 from ..drive import started_at
-from .lab_frame import MARK_WARN, MARKS, FloorPointsFit, fit_floor_points, floor_point, floor_xy, plane_axes
+from .lab_frame import (MARK_WARN, MARKS, FloorPointsFit, fit_floor_points, floor_point, floor_xy, plane_axes,
+                        tape_check, tape_scale)
 from .mocap_frame import volume_moved
 
 #: Labels of the floor calibration's samples: FLOOR_LABEL for floor points, a mark's name for it (`lab_frame.MARKS`);
@@ -201,6 +202,8 @@ class FloorSolution:
         anchor_heights: Each anchor seen above the plane less its stored z, metres.
         moved: Anchors left out of the fit used, over MARK_WARN from their stored place, and how far under it, metres:
             moved, or seen elsewhere by Motive. Still exported for the relay to follow, at their place in this frame.
+        tape: Each taped pair of marks probed (`lab_frame.tape_check`): (the tape's distance, how much longer Motive
+            puts it), metres. One over MARK_WARN is Motive's scale off, or a mark hit badly.
     """
 
     plane: PlaneFit | None
@@ -213,6 +216,15 @@ class FloorSolution:
     fits: dict[str, FloorPointsFit] = field(default_factory=dict)
     anchor_heights: dict[str, float] = field(default_factory=dict)
     moved: dict[str, float] = field(default_factory=dict)
+    tape: dict[tuple[str, str], tuple[float, float]] = field(default_factory=dict)
+
+    @property
+    def tape_worst(self) -> tuple[str, float] | None:
+        """The taped pair farthest off the tape ("mark1-mark3"), and how much longer Motive puts it, metres."""
+        if not self.tape:
+            return None
+        pair, (_, off) = max(self.tape.items(), key=lambda item: abs(item[1][1]))
+        return "-".join(pair), off
 
     @property
     def apart(self) -> float | None:
@@ -266,7 +278,8 @@ def pointed_anchors(samples: list[Sample]) -> dict[str, np.ndarray]:
 
 
 def solve_floor(samples: list[Sample], known: dict[str, np.ndarray], ideal_anchors: dict[str, np.ndarray] | None = None,
-                anchors_now: dict[str, np.ndarray] | None = None) -> FloorSolution:
+                anchors_now: dict[str, np.ndarray] | None = None,
+                tape: dict[tuple[str, str], float] | None = None) -> FloorSolution:
     """Fit the plane to the floor and mark samples, raw, then place the lab frame on it.
 
     With marks (`known`) or anchors (`ideal_anchors`, (x, y, z)) stored, the frame's position and turn on the plane are
@@ -275,6 +288,7 @@ def solve_floor(samples: list[Sample], known: dict[str, np.ndarray], ideal_ancho
     for the first calibration. Anchors are not fitted into the plane: they are the markers of `anchors_now` (raw, one
     reading of them all), pointed at or found near their stored place. An anchor over
     MARK_WARN from its stored place is left out of the fits too (`FloorSolution.moved`); a mark that far is not.
+    The probed marks' distances are checked against the `tape` distances (`FloorSolution.tape`).
     """
     ideal_anchors = ideal_anchors or {}
     used = [sample for sample in samples if sample.label == FLOOR_LABEL or sample.label in MARKS]
@@ -283,7 +297,7 @@ def solve_floor(samples: list[Sample], known: dict[str, np.ndarray], ideal_ancho
     measured = {name: np.mean([sample.raw for sample in used if sample.label == name], axis=0)
                 for name in MARKS if any(sample.label == name for sample in used)}
     anchors = {name: np.asarray(position, dtype=float) for name, position in (anchors_now or {}).items()}
-    solution = FloorSolution(plane, used + pointed, measured, anchors=anchors)
+    solution = FloorSolution(plane, used + pointed, measured, anchors=anchors, tape=tape_check(measured, tape or {}))
     if plane is None:
         return replace(solution, problem=f"the floor needs four floor or mark points, got {len(used)}")
     if not plane.is_usable():
@@ -378,5 +392,8 @@ def floor_calibration_json(solution: FloorSolution, lab_frame_file: str) -> dict
                              for name, position in solution.anchors.items()},
         "fits": {kind: fit_summary(kind) for kind in ("marks", "anchors", "both")},
         "marks_vs_anchors": solution.apart,
+        "tape": {"pairs": {"-".join(pair): {"tape": taped, "probed": taped + off, "off": off}
+                           for pair, (taped, off) in solution.tape.items()},
+                 "scale": tape_scale(solution.tape)} if solution.tape else None,
         "samples": [asdict(sample) for sample in solution.samples],
     }

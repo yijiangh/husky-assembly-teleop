@@ -21,9 +21,9 @@ from scaffolding_assembly_core.geometry import Pose, compose
 
 from ..robot_interface.mocap_definitions import (FRAME_ERROR, FRAME_HELD, FRAME_NONE, FRAME_REFIT_PENDING,
                                                  FRAME_UNCHECKED, FRAME_UNTRUSTED, MocapAnchor, MocapCamera)
-from .mocap_frame import (BACK_SHARE, MIN_POINTS, TRUSS_CAMERAS, VOLUME_MOVED, FloorCalibration, FrameFit,
-                          camera_label, deciding_fit, find_anchors, fit_anchors, fit_cameras, frame_metrics,
-                          match_anchors, off_limit, truss_names, volume_moved)
+from .mocap_frame import (BACK_SHARE, MIN_POINTS, SCALE_CHANGED, TRUSS_CAMERAS, VOLUME_MOVED, FloorCalibration,
+                          FrameFit, ScaleFit, camera_label, deciding_fit, find_anchors, fit_anchors, fit_cameras,
+                          fit_scale, frame_metrics, match_anchors, off_limit, truss_names, volume_moved)
 
 #: An anchor not seen for this long, seconds, is reported missing; one that flickers is not.
 ANCHOR_GONE_SEC = 10.0
@@ -105,6 +105,9 @@ class FrameFollower:
         anchors: The floor calibration's anchors found at the last look, raw, by name.
         anchors_unseen: Those not found at the last look.
         anchors_missing: Those not seen for ANCHOR_GONE_SEC: what is reported.
+        scale_fit: How Motive's scale changed since the floor calibration, by the anchors' newest fit, or None.
+        scale_changed: Whether that change is reported: over SCALE_CHANGED (again once it moves by as much), back only
+            within BACK_SHARE of it.
     """
 
     def __init__(self, truss_serials: Sequence[str] = TRUSS_CAMERAS, use_refit_hint: str = "") -> None:
@@ -138,6 +141,10 @@ class FrameFollower:
         self.anchors_missing: tuple[str, ...] = ()
         self._unseen_since: dict[str, float] = {}
         self._anchors_bumped: tuple[str, ...] = ()
+        self.scale_fit: ScaleFit | None = None
+        self.scale_changed = False
+        # The scale change last warned about, a share.
+        self._scale_warned = 0.0
         self._checked = FRAME_UNCHECKED
         # The state of the last trusted look, held or a refit pending: an untrusted look in between keeps it.
         self._trusted_state = FRAME_HELD
@@ -230,11 +237,12 @@ class FrameFollower:
         """Whether `announcement` says something new since the last call that returned True.
 
         New: the state, the deciding fit's source, the anchors missing, the refit in use, a newer floor calibration,
-        an error, or the pending fit moving the lab's volume over VOLUME_MOVED; not every look's numbers.
+        an error, a scale change reported or gone, or the pending fit moving the lab's volume over VOLUME_MOVED; not
+        every look's numbers.
         """
         pending = self.pending
         key = (self.status, self.floor.floor_file.name if self.floor else None, self.error, self.newer,
-               self.deciding.source if self.deciding else None, self.anchors_missing, self.refit)
+               self.deciding.source if self.deciding else None, self.anchors_missing, self.refit, self.scale_changed)
         moved = (pending is None) != (self._announced_pending is None) or pending is not None and volume_moved(
             pending.raw_cal_from_raw_now, self._announced_pending.raw_cal_from_raw_now) > VOLUME_MOVED
         if key == self._announced and not moved:
@@ -259,6 +267,8 @@ class FrameFollower:
             "anchors_missing": list(self.anchors_missing),
             "anchor_fit": self.anchor_fit.as_dict(in_use) if self.anchor_fit is not None else None,
             "camera_fit": self.camera_fit.as_dict(in_use) if self.camera_fit is not None else None,
+            "scale_changed": self.scale_changed,
+            "anchor_scale": self.scale_fit.as_dict() if self.scale_fit is not None else None,
             "truss_cameras": truss_names(self.cameras, self.truss_serials)}
 
     def metrics(self, now: float) -> dict:
@@ -275,6 +285,7 @@ class FrameFollower:
           (`FrameFit.left_out_errors`), and `status`: used, bumped (left out), seen (under 3 found: no fit) or missing.
         - `truss_camera_poses`: each truss camera's [position, quaternion]: with the floor calibration's file, enough
           to fit both again offline.
+        - `anchor_scale`: how Motive's scale changed since the floor calibration (`ScaleFit.as_dict`), or None.
         """
         sample = frame_metrics(now, self.floor.floor_file.name if self.floor else None, self.status, self.anchor_fit,
                                self.camera_fit, self.anchors_missing, self.refit)
@@ -289,6 +300,7 @@ class FrameFollower:
             name: [_rounded(self.cameras[name].position, POSITION_DECIMALS),
                    _rounded(self.cameras[name].orientation, TURN_DECIMALS)]
             for name in truss_names(self.cameras, self.truss_serials)}
+        sample["anchor_scale"] = self.scale_fit.as_dict() if self.scale_fit is not None else None
         return sample
 
     # --- --- --- --- --- INSIDE --- --- --- --- ---
@@ -342,14 +354,34 @@ class FrameFollower:
         if missing != self.anchors_missing:
             self.anchors_missing = missing
             events.append(self._missing_event(len(expected)))
+        events += self._check_scale()
         bumped = tuple(sorted(fit.bumped)) if fit is not None else ()
         if bumped != self._anchors_bumped:
             self._anchors_bumped = bumped
-            if bumped:
+            # * Under a scale change the anchors' fit without scale leaves out the farthest: none moved on its own.
+            if bumped and not self.scale_changed:
                 events.append(FrameEvent("warn", "ANCHORS MOVED against the others since the floor calibration: "
                                                  "bumped, or Motive lost and found them elsewhere",
                                          tuple(f"{name}: {fit.bumped[name]}" for name in bumped)))
         return events
+
+    def _check_scale(self) -> list[FrameEvent]:
+        """Fit Motive's scale by the anchors; an event when it changes over SCALE_CHANGED, as much again, or back."""
+        self.scale_fit = fit_scale(self.floor.anchors, self.anchors)
+        if self.scale_fit is None:
+            return []
+        change = abs(self.scale_fit.scale)
+        if change > SCALE_CHANGED and (not self.scale_changed
+                                       or abs(self.scale_fit.scale - self._scale_warned) > SCALE_CHANGED):
+            self.scale_changed, self._scale_warned = True, self.scale_fit.scale
+            return [FrameEvent("warn", f"MOTIVE'S SCALE CHANGED since the floor calibration: "
+                                       f"{self.scale_fit.describe()}",
+                               ("no refit can follow a scale: poses are off by it",
+                                "recalibrate Motive, then make a new floor calibration"))]
+        if self.scale_changed and change < BACK_SHARE * SCALE_CHANGED:
+            self.scale_changed = False
+            return [FrameEvent("info", f"Motive's scale back as at the floor calibration: {self.scale_fit.describe()}")]
+        return []
 
     def _missing_event(self, total: int) -> FrameEvent:
         """The anchors reported missing changed: say which, and what holds the frame."""

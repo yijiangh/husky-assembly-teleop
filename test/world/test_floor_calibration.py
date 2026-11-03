@@ -145,6 +145,21 @@ def test_the_frame_is_fitted_to_marks_and_anchors_alike_and_the_two_compared():
     assert data["marks_vs_anchors"] < 1e-9 and data["fits"]["anchors"]["rms"] < 1e-9
 
 
+def test_the_marks_are_checked_against_the_tape_and_exported_with_motives_scale():
+    """Motive 0.2 % long: each taped pair of marks off by its share, the worst named, the scale in the export."""
+    floor = [sample(f"floor_{i}", in_raw([x, y, 0.0])) for i, (x, y) in enumerate(
+        np.random.default_rng(3).uniform(-3, 3, (8, 2)), start=1)]
+    marks = [sample(f"{name}_1", in_raw([*(1.002 * xy), 0.0])) for name, xy in MARKS.items()]
+    tape = {("origin", "mark1"): float(np.linalg.norm(MARKS["mark1"])),
+            ("mark1", "mark2"): float(np.linalg.norm(MARKS["mark1"] - MARKS["mark2"]))}
+    solution = solve_floor([*floor, *marks], MARKS, tape=tape)
+    assert solution.tape_worst == ("mark1-mark2", pytest.approx(0.002 * tape[("mark1", "mark2")]))
+    data = json.loads(json.dumps(floor_calibration_json(solution, "main_frame.json")))
+    assert data["tape"]["scale"] == pytest.approx(0.002)
+    assert data["tape"]["pairs"]["origin-mark1"]["probed"] == pytest.approx(1.002 * tape[("origin", "mark1")])
+    assert solve_floor([*floor, *marks], MARKS).tape_worst is None
+
+
 def test_marks_and_anchors_disagreeing_shows_how_far_apart():
     """The anchors seen 5 mm off in x where the marks say: the two alone place the lab about 5 mm apart."""
     floor = [sample(f"floor_{i}", in_raw([x, y, 0.0])) for i, (x, y) in enumerate(

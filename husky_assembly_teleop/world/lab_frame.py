@@ -9,7 +9,9 @@ with the floor calibration (`world/mocap_frame.py`). Pure data and maths; no UI.
 ! The file (`data/lab/<lab>_frame.json`) defines the lab's frame: written by hand, from a floor calibration's export
   (the marks' floor_xy, the anchors' floor positions), and committed:
   {"format": "husky_lab_frame", "marks": {"origin": [0.0, 0.0], "mark1": [x, y], ...},
-   "anchors": {"A1": [x, y, z], ...}}
+   "anchors": {"A1": [x, y, z], ...}, "tape": {"mark1-mark3": metres, ...}}
+- `tape`: distances between marks measured by tape, mark centre to mark centre: the probe checks Motive's scale
+  against them (`tape_check`).
 """
 
 from __future__ import annotations
@@ -37,10 +39,12 @@ class LabFrame:
     Attributes:
         marks: Each mark's (x, y) on the floor.
         anchors: Each anchor's (x, y, z), z above the floor.
+        tape: Each pair of marks' distance measured by tape, metres.
     """
 
     marks: dict[str, np.ndarray] = field(default_factory=dict)
     anchors: dict[str, np.ndarray] = field(default_factory=dict)
+    tape: dict[tuple[str, str], float] = field(default_factory=dict)
 
 
 def lab_frame_file(data_directory: Path, lab: str) -> Path:
@@ -53,7 +57,8 @@ def read_lab_frame(path: Path) -> LabFrame:
     """The marks and anchors of a lab frame file; none if the file is missing.
 
     Raises:
-        ValueError: If the file is not a lab frame file, or a mark and an anchor share a name.
+        ValueError: If the file is not a lab frame file, a mark and an anchor share a name, or a tape distance is not
+            between two of its marks.
     """
     if not path.exists():
         return LabFrame()
@@ -63,11 +68,33 @@ def read_lab_frame(path: Path) -> LabFrame:
     try:
         marks = {str(name): np.array(xy, dtype=float).reshape(2) for name, xy in data.get("marks", {}).items()}
         anchors = {str(name): np.array(xyz, dtype=float).reshape(3) for name, xyz in data.get("anchors", {}).items()}
+        tape = {tuple(str(pair).split("-")): float(metres) for pair, metres in data.get("tape", {}).items()}
     except (TypeError, ValueError, AttributeError) as error:
-        raise ValueError(f"{path.name}: a mark or anchor does not read ({error!r})") from None
+        raise ValueError(f"{path.name}: a mark, anchor or tape distance does not read ({error!r})") from None
     if set(marks) & set(anchors):
         raise ValueError(f"{path.name}: marks and anchors share names {sorted(set(marks) & set(anchors))}")
-    return LabFrame(marks, anchors)
+    strays = ["-".join(pair) for pair in tape if len(pair) != 2 or not set(pair) <= set(marks)]
+    if strays:
+        raise ValueError(f"{path.name}: tape distances not between two of its marks: {strays}")
+    return LabFrame(marks, anchors, tape)
+
+
+def tape_check(measured: dict[str, np.ndarray], tape: dict[tuple[str, str], float]
+               ) -> dict[tuple[str, str], tuple[float, float]]:
+    """Each taped pair of marks with both probed: (the tape's distance, how much longer Motive puts it), metres."""
+    return {pair: (metres, float(np.linalg.norm(np.subtract(measured[pair[0]], measured[pair[1]]))) - metres)
+            for pair, metres in tape.items() if pair[0] in measured and pair[1] in measured}
+
+
+def tape_scale(check: dict[tuple[str, str], tuple[float, float]]) -> float | None:
+    """How much longer Motive puts distances than the tape, a share (+0.002: 2 mm per metre); None without a pair.
+
+    A least-squares fit of one scale to every pair of `tape_check`, so the longest count most.
+    """
+    if not check:
+        return None
+    taped, off = np.array(list(check.values())).T
+    return float(np.sum(taped * (taped + off)) / np.sum(taped ** 2)) - 1.0
 
 
 @dataclass(frozen=True)

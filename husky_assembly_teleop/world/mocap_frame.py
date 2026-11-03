@@ -10,6 +10,8 @@ calibration's anchors and cameras; a refit is kept only in memory (`frame_follow
 
 - A camera or anchor moved on its own does not fit the others: it is left out and named. The largest residual among
   those that fit is Motive's calibration warping the volume.
+- A refit cannot follow a change of Motive's scale: the anchors are fitted with a scale too (`fit_scale`), only to
+  warn of it.
 - Motive streams anchors as unlabeled markers, with no name: each is the marker nearest where the floor calibration
   measured it (`find_anchors`), or, after Motive's frame moved further, where their shape puts it (`match_anchors`).
 - Floor calibrations are written by the probe only, in the dated calibration session folders below the Drive root
@@ -76,6 +78,9 @@ VOLUME = ((0.0, 3.0), (-3.0, 0.0), (0.0, 3.0))
 #: Two motions of the frame differ once they put a point of VOLUME this far apart, metres: a shift and a turn alike.
 #: Smaller moves are Motive's continuous calibration: no warning, no refit pending.
 VOLUME_MOVED = 1e-3
+#: Motive's scale counts as changed since the floor calibration once it changes the lab volume's diagonal by over
+#: VOLUME_MOVED: about 190 ppm (`fit_scale`). A recalibration was seen to change it by 1550 ppm.
+SCALE_CHANGED = VOLUME_MOVED / float(np.linalg.norm(np.ptp(VOLUME, axis=1)))
 #: A floor calibration's name, in a dated calibration session folder (`calibration_sessions.sessions_folder`):
 #: "<date>_<time>_mocap_floor_calibration.json".
 FLOOR_PREFIX = "mocap_floor_calibration"
@@ -354,7 +359,7 @@ def match_anchors(lab: dict[str, MocapAnchor], markers: Sequence[tuple[float, fl
             for k in np.nonzero(thirds)[0]:
                 if k in (i, j):
                     continue
-                carried = _carry(stored[[a, b, c]], points[[i, j, k]], stored)
+                carried, _ = _carry(stored[[a, b, c]], points[[i, j, k]], stored)
                 found = find_anchors({name: MocapAnchor(name, tuple(point)) for name, point in zip(names, carried)},
                                      markers, radius)
                 if len(found) > len(best):
@@ -364,12 +369,68 @@ def match_anchors(lab: dict[str, MocapAnchor], markers: Sequence[tuple[float, fl
     return best
 
 
-def _carry(source: np.ndarray, target: np.ndarray, points: np.ndarray) -> np.ndarray:
+def _carry(source: np.ndarray, target: np.ndarray, points: np.ndarray) -> tuple[np.ndarray, float]:
     """`points` carried by the turn, shift and scale that take the `source` points onto the `target` ones best."""
     source_mean, target_mean = source.mean(axis=0), target.mean(axis=0)
-    scale = np.sqrt(np.sum((target - target_mean) ** 2) / np.sum((source - source_mean) ** 2))
+    scale = float(np.sqrt(np.sum((target - target_mean) ** 2) / np.sum((source - source_mean) ** 2)))
     rotation, _ = Rotation.align_vectors(target - target_mean, source - source_mean)
-    return scale * rotation.apply(points - source_mean) + target_mean
+    return scale * rotation.apply(points - source_mean) + target_mean, scale
+
+
+@dataclass(frozen=True)
+class ScaleFit:
+    """How Motive's scale changed since the floor calibration, from its anchors then and now.
+
+    Attributes:
+        scale: How much longer Motive puts distances now, a share (-0.0015: 1.5 mm per metre shorter).
+        used: The anchors it was fitted to.
+        left_out: Those off a fit of the others by over ANCHOR_BUMP even with the scale, each how far, metres.
+        residual: Largest distance left between a used anchor and where the fit puts it, metres.
+    """
+
+    scale: float
+    used: tuple[str, ...]
+    left_out: dict[str, float] = field(default_factory=dict)
+    residual: float = 0.0
+
+    @property
+    def volume_change(self) -> float:
+        """How much the scale changes the lab volume's diagonal, metres."""
+        return abs(self.scale) * VOLUME_MOVED / SCALE_CHANGED
+
+    def describe(self) -> str:
+        """One line for people: the change, from how many anchors, those left out."""
+        text = (f"distances {self.scale * 1e6:+.0f} ppm ({self.volume_change * 1e3:.1f} mm across the lab's volume), "
+                f"from {len(self.used)} anchors, largest residual {self.residual * 1e3:.1f} mm")
+        if self.left_out:
+            text += "; left out: " + ", ".join(f"{name} {off * 1e3:.1f} mm" for name, off in self.left_out.items())
+        return text
+
+    def as_dict(self) -> dict:
+        """For the relay's announcements and metrics; metres."""
+        return {"scale": self.scale, "ppm": self.scale * 1e6, "used": list(self.used), "left_out": dict(self.left_out),
+                "residual": self.residual, "volume_change": self.volume_change, "describe": self.describe()}
+
+
+def fit_scale(stored: dict[str, MocapAnchor], now: dict[str, MocapAnchor]) -> ScaleFit | None:
+    """How Motive's scale changed, from the anchors as `stored` (the floor calibration's) and `now`, raw.
+
+    A fit with turn, shift and scale. Each anchor is checked against a fit of the others (a fit through one that
+    moved would hide it); while one is off by over ANCHOR_BUMP, the worst is left out, at most MOST_LEFT_OUT. None
+    without MIN_POINTS that agree.
+    """
+    names, left_out = sorted(name for name in stored if name in now), {}
+    while len(names) >= MIN_POINTS and len(left_out) <= MOST_LEFT_OUT:
+        then, seen = (np.array([anchors[name].position for name in names]) for anchors in (stored, now))
+        others = [np.arange(len(names)) != index for index in range(len(names))]
+        offs = [float(np.linalg.norm(_carry(then[keep], seen[keep], then[index])[0] - seen[index]))
+                for index, keep in enumerate(others)]
+        worst = int(np.argmax(offs))
+        if offs[worst] <= ANCHOR_BUMP:
+            carried, scale = _carry(then, seen, then)
+            return ScaleFit(scale - 1.0, tuple(names), left_out, float(np.max(np.linalg.norm(carried - seen, axis=1))))
+        left_out[names.pop(worst)] = offs[worst]
+    return None
 
 
 def frame_and_cameras(before: dict[str, MocapCamera], now: dict[str, MocapCamera],
