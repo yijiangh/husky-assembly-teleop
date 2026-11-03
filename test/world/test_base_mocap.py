@@ -71,6 +71,14 @@ def test_a_newer_floor_calibration_not_applied_turns_the_chip_amber_if_it_moves_
     assert moves_poses == ("a newer floor calibration waits" in chip.detail)
 
 
+@pytest.mark.parametrize("status", ["held", "untrusted"])
+def test_motives_scale_changed_turns_the_chip_amber_saying_so_held_or_not(status):
+    """The relay reports Motive's scale changed: amber, and the scale is the reason, not a refit."""
+    frame = FloorCalibrationState(status, "f.json", scale="distances -1550 ppm (8.1 mm across the lab's volume), ...")
+    chip = with_relay(Check("mocap", GOOD, "tracking"), None, frame)
+    assert chip.level == WARN and chip.detail.startswith("Motive's scale changed (distances -1550 ppm): recalibrate")
+
+
 def test_a_base_without_a_mocap_id_says_so_whatever_the_frame():
     """No rigid body configured: never measured, so the floor frame cannot put it off; the chip names the config."""
     relay = MocapRelayState(calibrations={}, simulated=False, frame=MOVED)

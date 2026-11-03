@@ -98,6 +98,19 @@ def test_every_frame_state_shows_in_the_relays_words_and_use_refit_only_for_a_pe
     assert plugin._use_refit.disabled is not enabled
 
 
+def test_a_scale_change_the_relay_reports_adds_an_amber_chip(server, tmp_path):  # noqa: F811
+    """Held, but Motive's scale changed: an amber "scale changed" chip, the numbers and what to do on hover."""
+    ctx = make_ctx(server, tmp_path)
+    ctx.world.mocap_relay.state.frame = FloorCalibrationState("held", "f.json", folder=ROBOTS,
+                                                              scale="distances -1550 ppm")
+    plugin = MocapProbePlugin()
+    plugin.setup(ctx)
+    plugin.draw(ctx)
+    assert ">scale changed</span>" in plugin._frame_chips.content
+    assert "distances -1550 ppm" in plugin._frame_chips.content and "recalibrate Motive" in plugin._frame_chips.content
+    plugin.teardown(ctx)
+
+
 def test_use_refit_is_refused_while_anything_moves_and_otherwise_asks_the_relay(server, tmp_path):  # noqa: F811
     """A moving arm refuses it; nothing moving, the relay's answer is shown."""
     ctx = make_ctx(server, tmp_path)

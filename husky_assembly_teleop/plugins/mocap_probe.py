@@ -215,6 +215,9 @@ def frame_chips(frame: FloorCalibrationState | None, anchors_missing: Sequence[s
         html = chip(f"frame {frame.status}", NONE, "a state this monitor does not know: update it")
     if frame.error and frame.status != FRAME_ERROR:
         html += chip("Drive not read", FAIL, hover(f"the frame in use is kept; {frame.error}"))
+    if frame.scale:
+        html += chip("scale changed", BUSY, f"Motive's scale since {frame.floor_calibration}: {frame.scale}.\nNo refit "
+                                            f"can follow it: recalibrate Motive, then a new floor calibration.")
     if frame.newer:
         moves = f" moves points up to {frame.newer_moves * 1e3:.1f} mm" if frame.newer_moves is not None else ""
         html += chip("newer floor calibration", BUSY, f"{frame.newer}{moves}: not applied until Apply floor "

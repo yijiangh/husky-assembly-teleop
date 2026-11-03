@@ -80,6 +80,9 @@ def frame_problem(frame: FloorCalibrationState | None) -> str:
         return ""
     if frame.error and not frame.floor_calibration:
         return "relay could not read its floor calibration: see Mocap probe"
+    if frame.scale:
+        return (f"Motive's scale changed ({frame.scale.split(' (')[0]}): recalibrate Motive, then a new floor "
+                f"calibration (Mocap probe)")
     if frame.status == FRAME_UNCHECKED:
         return "floor frame not checked yet (no anchors or truss cameras seen)"
     if frame.status in (FRAME_REFIT_PENDING, FRAME_UNTRUSTED):

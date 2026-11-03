@@ -255,8 +255,8 @@ calibration**.
   190 ppm) for 3 looks in a row (`SCALE_LOOKS`), the relay warns ("MOTIVE'S SCALE CHANGED … distances −1550 ppm …":
   recalibrate Motive, then make a new floor calibration), again when it grew by as much more, and stops warning of
   anchors moved, which only the scale moved; back under 75 % of it for 3 looks, it logs that at info and reports the
-  anchors still left out afresh. Nothing is corrected: poses follow Motive's scale, and the monitor shows none of it
-  yet (log and `~/frame` only).
+  anchors still left out afresh. Nothing is corrected: poses follow Motive's scale. While it is reported, every
+  base's mocap chip turns amber saying so, and the mocap probe shows a "scale changed" chip.
 - **Thresholds**, side by side: a camera that moved between two readings by over 1 mm or 0.1° is warned about
   ("CAMERAS MOVED", `CAMERA_MOVED`); within one fit, a camera off the others by 2 mm or 0.1°, or an anchor by 2 mm,
   is left out (`BUMP_POSITION`, `BUMP_TURN`, `ANCHOR_BUMP`), and an anchor left out comes back only within 75 % of
@@ -306,7 +306,8 @@ calibration**.
     bad anchor;
   - `truss_camera_poses`: each truss camera's [position, quaternion]. With the floor calibration's file (named in
     `floor_calibration`), a sample holds what both fits need to be made again offline.
-  - `anchor_scale`: how Motive's scale changed since the floor calibration, as on `~/frame`.
+  - `anchor_scale`: how Motive's scale changed since the floor calibration, as on `~/frame`, and `scale_changed`:
+    whether the relay reports it.
 - **Frame log**: the relay appends every sample, one JSON line as published, to `<frame_log>/<YYYYMMDD>.jsonl` (the
   look's local date; default `~/.ros/mocap_frame/`, local beside ROS's own logs, never on the Drive). Day files older
   than `frame_log_days` (default 30) are deleted at the first look and at each day change; `frame_log:=" "` (a space:
@@ -317,7 +318,8 @@ calibration**.
 - **Plot**: `scripts/mocap_frame_plot.py` plots the samples live (`--record` keeps them) or from files (`--file`
   takes files, folders and globs, e.g. `--file ~/.ros/mocap_frame` for every day kept): how far each fit moves the
   lab's volume since the floor calibration, with its uncertainty, how far poses are off now against the transform in
-  use, the largest residual, how many it uses, and how far apart the two are; beside them, per anchor, its error
+  use, the largest residual, how many it uses, how far apart the two are, and Motive's scale by the anchors in ppm
+  against the ±190 ppm the relay warns beyond (crossed while it reports a change); beside them, per anchor, its error
   against the others, its noise and the share of frames it was seen in, crossed where left out. With `--file` it
   prints each anchor's median and 95th percentile. Older recordings, without the per-anchor keys, leave those panels
   empty.

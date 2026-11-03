@@ -291,7 +291,8 @@ class FrameFollower:
           (`FrameFit.left_out_errors`), and `status`: used, bumped (left out), seen (under 3 found: no fit) or missing.
         - `truss_camera_poses`: each truss camera's [position, quaternion]: with the floor calibration's file, enough
           to fit both again offline.
-        - `anchor_scale`: how Motive's scale changed since the floor calibration (`ScaleFit.as_dict`), or None.
+        - `anchor_scale`: how Motive's scale changed since the floor calibration (`ScaleFit.as_dict`), or None, and
+          `scale_changed`: whether the relay reports it.
         """
         sample = frame_metrics(now, self.floor.floor_file.name if self.floor else None, self.status, self.anchor_fit,
                                self.camera_fit, self.anchors_missing, self.refit)
@@ -307,6 +308,7 @@ class FrameFollower:
                    _rounded(self.cameras[name].orientation, TURN_DECIMALS)]
             for name in truss_names(self.cameras, self.truss_serials)}
         sample["anchor_scale"] = self.scale_fit.as_dict() if self.scale_fit is not None else None
+        sample["scale_changed"] = self.scale_changed
         return sample
 
     # --- --- --- --- --- INSIDE --- --- --- --- ---

@@ -67,6 +67,8 @@ class FloorCalibrationState:
         folder: Its floor calibrations' sessions folder below the Drive root, where new ones go ("" from older relays).
         decides: Which fit decides: "anchors", "truss cameras", or "" before one did.
         time: When the relay announced it, on the relay's clock, seconds; None from older relays.
+        scale: The change of Motive's scale since the floor calibration while the relay reports one, for people ("" if
+            none): no refit can follow it.
     """
 
     status: str
@@ -83,12 +85,13 @@ class FloorCalibrationState:
     folder: str = ""
     decides: str = ""
     time: float | None = None
+    scale: str = ""
 
     @property
     def poses_off(self) -> bool:
-        """Whether poses may be off the lab frame: unchecked, untrusted, a refit pending, none read, or a newer one."""
+        """Whether poses may be off the lab frame: unchecked, untrusted, refit pending, none read, newer, or scaled."""
         return self.status in (FRAME_UNCHECKED, FRAME_REFIT_PENDING, FRAME_UNTRUSTED, FRAME_ERROR) or \
-            self.newer_moves_poses
+            self.newer_moves_poses or bool(self.scale)
 
 
 def floor_calibration_state(text: str) -> FloorCalibrationState:
@@ -111,7 +114,9 @@ def floor_calibration_state(text: str) -> FloorCalibrationState:
                                      float(newer["moves_volume"]) if "moves_volume" in newer else None,
                                      bool(newer.get("moves_poses", bool(newer))), str(entry.get("folder") or ""),
                                      str(entry.get("decides") or ""),
-                                     float(entry["time"]) if entry.get("time") is not None else None)
+                                     float(entry["time"]) if entry.get("time") is not None else None,
+                                     (entry.get("anchor_scale") or {}).get("describe", "")
+                                     if entry.get("scale_changed") else "")
     except (KeyError, TypeError, AttributeError, json.JSONDecodeError) as error:
         raise ValueError(f"not the relay's floor calibration announcement: {error!r}") from None
 
