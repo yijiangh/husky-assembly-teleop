@@ -126,7 +126,12 @@ def test_the_floor_calibration_is_kept_and_a_refit_adopted_through_the_relays_se
                                                         "camera_fit": {"describe": "frame moved 0.4 mm"}})))
     frame = relay.state.frame
     assert not frame.poses_off and (frame.anchor_fit, frame.camera_fit) == ("frame moved 0.2 mm", "frame moved 0.4 mm")
-    assert frame.time == 7.0
+    assert frame.time == 7.0 and frame.scale == ""
+    scale = {"describe": "distances -1550 ppm"}
+    for changed, expected in ((False, ""), (True, "distances -1550 ppm")):
+        node.callbacks[FRAME_TOPIC](String(data=json.dumps({"status": "held", "floor_calibration": "f.json",
+                                                            "scale_changed": changed, "anchor_scale": scale})))
+        assert relay.state.frame.scale == expected and relay.state.frame.poses_off == changed
 
 
 def test_the_unlabeled_markers_are_kept_and_an_unreadable_announcement_skipped():

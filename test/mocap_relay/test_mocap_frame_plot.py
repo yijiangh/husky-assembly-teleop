@@ -88,6 +88,18 @@ def test_each_anchors_error_and_noise_are_series_with_gaps_and_left_out_marked(s
     assert "A2" in summary and script.anchor_summary([OLD]) == []
 
 
+def test_the_scale_panel_shows_the_anchors_scale_and_where_the_relay_warned(script):
+    """Samples with the anchors' scale: its line in ppm, a cross where the relay reported it, the warning limits."""
+    samples = [{**OLD, "time": 100.0 + 2 * k, "anchor_scale": {"ppm": -1500.0}, "scale_changed": k >= 2}
+               for k in range(4)]
+    figure = script.plot(samples)
+    axis = figure.axes[5]
+    lines = [line.get_ydata() for line in axis.lines]
+    pyplot.close(figure)
+    assert list(lines[0]) == [-1500.0] * 4 and len(lines[1]) == 2
+    assert sorted(round(float(line[0])) for line in lines[2:]) == [-192, 192]
+
+
 @pytest.mark.parametrize("which", ["old", "new", "both"])
 def test_old_and_new_samples_draw_without_a_window(script, which):
     """Old samples leave the anchors' panels empty; nothing crashes."""
@@ -97,5 +109,5 @@ def test_old_and_new_samples_draw_without_a_window(script, which):
     # ! Closed before asserting: a figure left open fails other tests on the same worker that count open figures.
     axes = figure.axes
     pyplot.close(figure)
-    assert len(axes) == 8
-    assert (len(axes[5].lines) == 0) == (which == "old")
+    assert len(axes) == 9
+    assert (len(axes[6].lines) == 0) == (which == "old")
