@@ -41,7 +41,7 @@ the arm never drifts off the axis; one arm jogs at a time.
    (counting up), `tcp` in the status moves, and on release the pane says `arm left_ur_arm: hold sent` once.
    **(sim: ~10 mm per 2 s on a normal browser; see the note on browsers.)**
    - **If not:** a chip `jog refused` names why (hover): `the joint controller is not running` (click **Joint**
-     under **Run**), `lease refused` (another plugin has the robot's lease: wait or Cancel it), `no joint state`.
+     under **Controller**), `lease refused` (another plugin has the robot's lease: wait or Cancel it), `no joint state`.
 3. Hold **rz+** with the speed at 10: `jogging about tool0 z: +2.0°` after a second (0.2 °/s per mm/s).
 4. Hold **x+** on the `Right` tab while the left arm's button is still held (two fingers, or the phone): the second
    is refused, `jog refused: a200-0806 left_ur_arm is jogging; one arm at a time`. **(sim)**

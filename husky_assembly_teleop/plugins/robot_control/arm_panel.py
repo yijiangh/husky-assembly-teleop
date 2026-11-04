@@ -20,6 +20,7 @@ from ...robot_interface.arm import (CARTESIAN_MOVE_MAX_ROTATION_SPEED, CARTESIAN
 from ...robot_interface.end_effectors import EndEffector, RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ...robot_interface.tool_step import (TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_SPEED_DEFAULT, TOOL_JOG_SPEED_MAX,
                                           TOOL_JOG_SPEED_MIN)
+from ...ui.choice_row import ChoiceRow
 from ...ui.joint_sliders import JOINT_SLIDER_NAMES
 from ...ui.phone import columns_css
 from ...ui.style import BUSY, FAIL, SECTION_CTRL, SECTION_TOOL, block, note, note_line, section, values, warning
@@ -63,7 +64,7 @@ class ToolJogInputs:
     """Handles of the tool0 jog: speed (mm/s), frame (`tool_pad.FRAMES`), buttons, readout, the joint's Clearance."""
 
     speed: viser.GuiSliderHandle
-    frame: viser.GuiDropdownHandle
+    frame: ChoiceRow
     readout: viser.GuiHtmlHandle
     buttons: tuple[viser.GuiButtonHandle, ...] = ()
     clearance: viser.GuiCheckboxHandle | None = None
@@ -186,9 +187,9 @@ def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_
     speed = gui.add_slider("Tool speed", min=TOOL_JOG_SPEED_MIN, max=TOOL_JOG_SPEED_MAX, step=1.0,
                            initial_value=TOOL_JOG_SPEED_DEFAULT,
                            hint=f"mm/s along an axis; a turn runs at {TOOL_JOG_DEG_PER_S_PER_MM_S:g} °/s per mm/s.")
-    frame = gui.add_dropdown("Frame", FRAMES, initial_value=ROBOT_FRAME,
-                             hint="Robot: x forward, y left, z up, whatever the flange's turn. Tool: tool0's own "
-                                  "axes. Taken at each press.")
+    frame = ChoiceRow(ctx, gui, "Frame", FRAMES, ROBOT_FRAME,
+                      "Robot: x forward, y left, z up, whatever the flange's turn. Tool: tool0's own axes. Taken at "
+                      "each press.", height=None)
     gui.add_html(TOOL_JOG_STYLE)
     buttons = []
     with gui.add_folder("Tool0"):

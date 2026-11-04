@@ -39,6 +39,7 @@ from ...shared.assembly_planning.stdout_lines import captured_lines
 from ...shared.motion_planner_contract import CollisionReport, MotionPlanRequest
 from ...shared.planner.planner_panel import PLAN_TAB
 from ...shared.planner.planner_search import with_guesses
+from ...ui.choice_row import ChoiceRow
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, FAIL, NONE, OK, block, chip, chip_line, hover, note_line, values
 from .work import run_collisions, run_ik, run_plan, run_servo_step
@@ -315,12 +316,13 @@ class MotionPlannerPlugin(HuskyPlugin):
             cancel = gui.add_button("Cancel", hint="Cancel every request: queued ones answer 'cancelled' without "
                                                    "running, the running one stops at its next try")
             if serials:
-                robot = gui.add_dropdown("Window", options=serials, initial_value=self._serial,
-                                         hint="The robot whose planning world the PyBullet window shows when it "
-                                              "opens; then it follows the robot being planned for")
+                ChoiceRow(ctx, gui, "Window", tuple(serials), self._serial,
+                          "The robot whose planning world the PyBullet window shows when it opens; then it "
+                          "follows the robot being planned for",
+                          on_choose=lambda serial: setattr(self, "_serial", serial),
+                          labels=tuple(serial.split("-")[-1] for serial in serials), height=None)
                 # * Guessed like the arm planner's, so an untracked robot still shows.
                 add_pybullet_window_toggle(ctx, gui, self._executor, self._window)
-                robot.on_update(ctx.defer_value("window robot", lambda serial: setattr(self, "_serial", str(serial))))
             self._show_tree = gui.add_checkbox("Search tree", True,
                                                hint="While a free search runs, draw its two trees as the arms' tool0 "
                                                     "traces every 2 s; the legend below says what each mark means")

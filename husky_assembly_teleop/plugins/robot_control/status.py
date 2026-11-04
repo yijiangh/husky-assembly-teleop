@@ -20,6 +20,7 @@ from ...robot_interface.mocap_state import MocapBody
 from ...robot_interface.refusal import Refusal
 from ...robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV1State, ScaffoldingV3,
                                               ScaffoldingV3State, robotiq_failure)
+from ...ui.choice_row import ChoiceRow
 from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, REFUSAL_SHOWN, SECTION_CTRL, block, check_chip, chip,
                          chip_line, freshness_chip, hover, note, numbers, section, values)
 from ...world.base_mocap import base_mocap_check
@@ -51,17 +52,19 @@ class ControllerPanel:
 
     Attributes:
         controllers: The controller manager this panel shows and switches.
+        switch: The Controller row, the running one (or the one switched to) filled.
         inputs: Per controller, its inputs folder; only the running one is visible.
     """
 
     controllers: ControllerManagerInterface
+    switch: ChoiceRow
     inputs: dict[str, viser.GuiFolderHandle] = field(default_factory=dict)
 
 
 def build_controller_panel(ctx: PluginContext, gui: viser.GuiApi, controllers: ControllerManagerInterface,
                            input_builders: dict[str, Callable[[], object]], leased: Callable[[Callable], object],
                            ) -> tuple[ControllerPanel, dict[str, object]]:
-    """Build the CTRL section: one button per switchable controller, and a folder of inputs for each.
+    """Build the CTRL section: a Controller row of the switchable controllers, and a folder of inputs for each.
 
     Args:
         ctx: The plugin's context.
@@ -74,12 +77,13 @@ def build_controller_panel(ctx: PluginContext, gui: viser.GuiApi, controllers: C
         tuple[ControllerPanel, dict[str, object]]: The handles, and what each input builder returned.
     """
     gui.add_html(section("ctrl", SECTION_CTRL))
-    by_label = {CONTROLLER_LABELS.get(name, name): name for name in controllers.switchable}
-    switch = gui.add_button_group("Run", list(by_label))
-    switch.on_click(ctx.defer_value(f"switch controller {controllers.namespace}",
-                                    lambda clicked: leased(lambda: controllers.switch(by_label[clicked]))))
+    names = tuple(controllers.switchable)
+    # * None filled at first: `show_only_running` fills the running one every draw, however it was switched.
+    switch = ChoiceRow(ctx, gui, "Controller", names, None, "The controller that runs; a click switches to another.",
+                       on_choose=lambda name: leased(lambda: controllers.switch(name)),
+                       labels=tuple(CONTROLLER_LABELS.get(name, name) for name in names), height=None)
 
-    panel = ControllerPanel(controllers=controllers)
+    panel = ControllerPanel(controllers=controllers, switch=switch)
     built: dict[str, object] = {}
     for controller in controllers.switchable:
         folder = gui.add_folder(CONTROLLER_LABELS.get(controller, controller), visible=False)
@@ -94,9 +98,11 @@ def build_controller_panel(ctx: PluginContext, gui: viser.GuiApi, controllers: C
 
 
 def show_only_running(panel: ControllerPanel) -> None:
-    """Show the running controller's inputs and hide the others."""
+    """Fill the running controller (the one being switched to while a switch is on) and show only its inputs."""
+    state = panel.controllers.state
+    panel.switch.value = state.switch_in_flight or state.active
     for controller, folder in panel.inputs.items():
-        folder.visible = controller == panel.controllers.state.active
+        folder.visible = controller == state.active
 
 
 # --- --- --- --- --- READOUTS --- --- --- --- ---
@@ -112,7 +118,7 @@ def _controller_chip(controllers: ControllerManagerInterface) -> str:
     if state.active is None:
         return chip("no ctrl", NONE, "no controller running, or no answer yet")
     return chip(CONTROLLER_LABELS.get(state.active, state.active), OK,
-                "The controller running now; the Run buttons in Robot control switch it.")
+                "The controller running now; the Controller buttons in Robot control switch it.")
 
 
 def _switch_refused(controllers: ControllerManagerInterface, now: float) -> str:

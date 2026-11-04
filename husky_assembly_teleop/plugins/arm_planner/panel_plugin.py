@@ -22,6 +22,7 @@ from ...shared.collisions_contract import CollisionsContract
 from ...shared.planner.planner_panel import PLAN_TAB, PlannerPanel, unknown_robots_chip
 from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import with_guesses
+from ...ui.choice_row import ChoiceRow
 from ...ui.ghost import RobotGhost
 from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_joint_sliders
 from ...ui.pybullet_window import add_pybullet_window_toggle
@@ -83,6 +84,9 @@ class ArmPlannerPanel(PlannerPanel):
         self._planner: ArmPlannerPlugin = ctx.require(self.planner)
         self._collisions: CollisionsContract = ctx.require("collisions")
         arms = {robot.serial: [arm.name for arm in robot.arms] for robot in ctx.config.robots if robot.arms}
+        #: Each robot's arms' short labels ("Arm", or "Left" and "Right"), for the Arm row.
+        self._arm_labels = {robot.serial: tuple(arm.label for arm in robot.arms) for robot in ctx.config.robots
+                            if robot.arms}
         if not arms:
             self._set_up_idle(ctx, "no robots with arms configured: nothing to plan for")
             return
@@ -92,8 +96,12 @@ class ArmPlannerPanel(PlannerPanel):
 
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
-            self._robot = gui.add_dropdown("Robot", options=list(arms), initial_value=self.serial)
-            self._arm = gui.add_dropdown("Arm", options=arms[self.serial], initial_value=self.arm)
+            self._robot = ChoiceRow(ctx, gui, "Robot", tuple(arms), self.serial,
+                                    on_choose=lambda serial: self._choose(serial, None),
+                                    labels=tuple(serial.split("-")[-1] for serial in arms), height=None)
+            self._arm = ChoiceRow(ctx, gui, "Arm", tuple(arms[self.serial]), self.arm,
+                                  on_choose=lambda arm: self._choose(self.serial, arm),
+                                  labels=self._arm_labels[self.serial], height=None)
 
             gui.add_html(section("target", TARGET))
             self._sliders = add_joint_sliders(gui)
@@ -130,8 +138,6 @@ class ArmPlannerPanel(PlannerPanel):
                     lambda gui, snapshot: planner._world.set_gui(
                         gui, with_guesses(snapshot, robot_id(self.serial))[0], self.serial))
 
-        self._robot.on_update(ctx.defer_value("choose robot", lambda serial: self._choose(str(serial), None)))
-        self._arm.on_update(ctx.defer_value("choose arm", lambda arm: self._choose(self.serial, str(arm))))
         for slider in self._sliders:
             slider.on_update(ctx.defer("target", self._target_changed, operator_only=True))
         load.on_click(ctx.defer_value("load target", lambda label: self._load_target(ctx, label)))
@@ -310,8 +316,7 @@ class ArmPlannerPanel(PlannerPanel):
         self._status.content = self._status_html(ctx)
         # Loading a target from the step can switch the robot or arm; show that here.
         self._robot.value = self.serial
-        if tuple(self._arm.options) != tuple(self._arms[self.serial]):
-            self._arm.options = self._arms[self.serial]
+        self._arm.set_options(tuple(self._arms[self.serial]), self._arm_labels[self.serial])
         self._arm.value = self.arm
         self._details.content = self._details_html()
         self._draw_slider()

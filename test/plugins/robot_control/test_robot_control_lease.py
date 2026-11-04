@@ -157,7 +157,7 @@ def test_every_command_to_alice_is_refused_while_the_executor_leases_every_robot
                                   switch=switches.append)
     build_controller_panel(lab.ctx, lab.ctx.gui, controllers, {}, partial(control._leased, lab.ctx, (SERIAL, "base")))
     grip, = (widget for widget in lab.ctx.gui.of_kind("button_group") if widget.label == "Grip")
-    run, = (widget for widget in lab.ctx.gui.of_kind("button_group") if widget.label == "Run")
+    run, = (widget for widget in lab.ctx.gui.of_kind("button_group") if widget.label == "Controller")
     grip.callback("Open")
     run.callback("Free")
     lab.arm.controllers.state.switch_in_flight = None

@@ -422,7 +422,7 @@ The **Tool pad** has a row per axis of its **Frame**, coloured as the scene draw
 the left shift −/+ along it, on the right turn −/+ about it through the tip, by the **Step size** chosen (0.1 mm and
 0.2° up to 5 mm and 5°). **Robot**, at start, is the robot's frame: x forward, y left, z up, whatever the flange's
 turn (from the joints only: no mocap); **Tool** is tool0's own (z out of the flange). Step size and Frame are
-dropdowns on the laptop and rows of buttons on the phone. Turning keeps the tip in place once the offset is known (until then it
+rows of buttons, taller on the phone. Turning keeps the tip in place once the offset is known (until then it
 turns about tool0), so after the first pose a new tilt is a few turn clicks and a small shift.
 Each step is a short joint move on the joint controller, solved on the URDF; a step that needs more than 10° on a
 joint (the wrist near straight) is refused: move the arm away by free drive. Only **area, e-stop** red stops free

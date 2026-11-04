@@ -3,11 +3,13 @@
 from types import SimpleNamespace
 
 import numpy as np
+from plugin_fakes import FakeGui
 from robot_fakes import fake_arm
 
 from husky_assembly_teleop.plugins.robot_control.arm_panel import pose_plan_line
-from husky_assembly_teleop.plugins.robot_control.status import (arm_status, base_status, phone_arm_status,
-                                                                refusal_chip, tool_status)
+from husky_assembly_teleop.plugins.robot_control.status import (arm_status, base_status, build_controller_panel,
+                                                                phone_arm_status, refusal_chip, show_only_running,
+                                                                tool_status)
 from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.robot_interface.end_effectors import NO_RESULT, RobotiqState
 from husky_assembly_teleop.robot_interface.refusal import Refusal
@@ -98,3 +100,23 @@ def test_the_pose_plan_has_two_rows_before_and_after_the_first_tcp():
     arm.state.tcp_position = None
     without = pose_plan_line(arm, pose)
     assert with_tcp.count("<div>") == without.count("<div>") == 2 and "—" in without
+
+
+def test_the_controller_row_fills_the_running_controller_however_it_was_switched():
+    """None filled before an answer; an outside switch fills it, one in flight its target; a click switches."""
+    gui, switches = FakeGui(), []
+    ctx = SimpleNamespace(defer_value=lambda _label, run, operator_only=False: run)
+    controllers = SimpleNamespace(namespace="/a200_0804/ur5e", switchable=("joint", "free"), switch=switches.append,
+                                  state=SimpleNamespace(active=None, switch_in_flight=None))
+    panel, _built = build_controller_panel(ctx, gui, controllers, {}, lambda command: command())
+    show_only_running(panel)
+    assert panel.switch.value is None
+    controllers.state.active = "free"
+    show_only_running(panel)
+    assert panel.switch.value == "free"
+    controllers.state.switch_in_flight = "joint"
+    show_only_running(panel)
+    assert panel.switch.value == "joint"
+    row, = (widget for widget in gui.of_kind("button_group") if widget.label == "Controller")
+    row.callback("free")
+    assert switches == ["free"]

@@ -286,7 +286,7 @@ place these differently, e.g. Plan in a floating window and big Assembly buttons
 - Buttons are coloured by what they do: teal computes without moving (Live IK, Plan), blue starts a motion (Exec; amber while it asks for a second press with other robots unknown),
   green lets a waiting step go on (Confirm), red stops (Cancel), yellow records (Mark done).
 - **Control** tab: a tab per robot (`0804`, `0805`, `0806`), each with its Base and its arms: their controllers (the
-  `Run` buttons: `Vel` for a base; `Joint`, `Cart`, `Free` for an arm), the drive and jog buttons, the tool buttons
+  `Controller` buttons: `Vel` for a base; `Joint`, `Cart`, `Free` for an arm), the drive and jog buttons, the tool buttons
   (Robotiq: `Gripper: Open / Close / Stop`).
 - **Plan plots** and **Exec plots** open by themselves when a plan or a servo / compliant part has something to show;
   the control at a bar's right end opens or closes it. The **Console** (bottom right) shows the newest log lines.
@@ -655,7 +655,7 @@ click `◀ mv` / `mv ▶`: the step under the buttons follows, except while an E
       Servo by bar **on**, Dry run off. Leave them so.
 - [ ] Control › `0806` › Base, and `0804` › Base: the controllers line shows `platform_velocity_controller` running
       (the base's `ctrl` chip green)
-  - **If not:** button [Run: Vel]. The follower drives only with it.
+  - **If not:** button [Controller: Vel]. The follower drives only with it.
 - [ ] The run line: `no run yet` on the first Load ever. If it says `continuing run <date>_<time>` (an earlier lab test
       on these files): button [Run: New run], then once more when it reads `New run?` (no time limit; a
       second press within half a second counts as a double click and is ignored) → `0/78 done`, every row
@@ -674,7 +674,7 @@ bar; clear floor and workspace.
 
 ### 5.a Each base under its follower: a short drive (Cindy, then Alice)
 
-- [ ] Plan › Base: dropdown [Robot]: `a200-0806` → button [Load: Robot]
+- [ ] Plan › Base: buttons [Robot]: `0806` → button [Load: Robot]
   - **Expect:** the fields `Target x y yaw°` show where she stands (world x, y in metres, yaw in degrees).
 - [ ] fields [Target x y yaw°]: a point about 0.5 m away on open floor (change x or y, whichever way is clear) →
       button [Path: Plan]
@@ -687,7 +687,7 @@ bar; clear floor and workspace.
   - **If not:** she does not start: the base's `ctrl` chip (4.d), her follower in her pane (`pure_pursuit`). She
     drives off the path: Stop all; note what she did.
 - [ ] The same back: the old x, y, yaw → button [Path: Plan] → button [Commit]
-- [ ] The same for Alice: dropdown [Robot]: `a200-0804`.
+- [ ] The same for Alice: buttons [Robot]: `0804`.
 
 ### 5.b Alice's gripper by hand
 
@@ -742,7 +742,7 @@ Then the seven actions in order, each with its procedures (6.1–6.4) and what d
 
 ### 6.1 Procedure B — drive a base (base planner)
 
-- [ ] Plan › Base: dropdown [Robot]: the action's robot (`a200-0806` Cindy, `a200-0804` Alice) → button [Load: Step]
+- [ ] Plan › Base: buttons [Robot]: the action's robot (`0806` Cindy, `0804` Alice) → button [Load: Step]
       → button [Path: Plan]
   - **Expect:** `target +x +y +yaw°` (the design's base for the current step; 6.5 lists them), then after about 2 s
     `Lattice (hybrid A*) (straight): L m, T s` and the path on the floor.
@@ -1014,7 +1014,7 @@ holds B21.
 
 ### 7.b An arm back to the joint controller
 
-- **The page:** Control › robot › the arm: button [Run: Joint].
+- **The page:** Control › robot › the arm: button [Controller: Joint].
 - **The command line,** in pane checks:
 
 **▶ pane checks**
