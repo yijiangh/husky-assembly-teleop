@@ -19,7 +19,7 @@ import pytest
 import viser
 
 from body_definition_fixtures import MARKERS, body, moved
-from calibration_fixtures import record_take
+from calibration_fixtures import RECORDED_DEFAULT, record_take
 from plugin_fakes import WATCHES
 from repo_paths import DATA
 from husky_assembly_teleop.colors import OK, rgb
@@ -44,7 +44,7 @@ from husky_assembly_teleop.robot_interface.tool_step import tool_step_target
 from husky_assembly_teleop.robot_interface.mocap_relay import (FRAME_HELD, FRAME_REFIT_PENDING, FRAME_UNTRUSTED,
                                                                AppliedCalibration, FloorCalibrationState,
                                                                MocapRelayState, applied_calibrations)
-from husky_assembly_teleop.world.calibration_sessions import (SESSIONS_FOLDER, Calibration, default_calibration,
+from husky_assembly_teleop.world.calibration_sessions import (SESSIONS_FOLDER, Calibration,
                                                               read_session_file)
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.kinematics import link_pose
@@ -208,7 +208,7 @@ def make_ctx(server: viser.ViserServer, root) -> SimpleNamespace:
                            state=SimpleNamespace(**vars(tracked(config.mocap_id)), follower=None,
                                                  joint_states_update_time=None, wheel_velocities={}))
     robot = SimpleNamespace(config=config, base=base, arms={ARM: arm}, lease_slot=SimpleNamespace(lease=None))
-    default = announced(default_calibration(config.mocap_id))
+    default = announced(RECORDED_DEFAULT)  # * the default the takes were recorded under
     relay = SimpleNamespace(state=MocapRelayState(calibrations={config.mocap_id: default}, calibrations_time=1.0,
                                                   drive_root=str(root),
                                                   frame=FloorCalibrationState(FRAME_HELD, FLOOR, lab_from_raw=LAB)),
@@ -474,7 +474,7 @@ def test_apply_shows_what_this_run_applied_and_the_relay_live(server, tmp_path, 
     assert run.finished and apply.state(ctx).label == "passes"
     assert {c.label: c.level for c in apply.checks(ctx)}["relay now"] == GOOD
     relay = ctx.world.mocap_relay
-    relay.state.calibrations[run.robot.config.mocap_id] = announced(default_calibration(run.robot.config.mocap_id))
+    relay.state.calibrations[run.robot.config.mocap_id] = announced(RECORDED_DEFAULT)
     assert {c.label: c.level for c in apply.checks(ctx)}["relay now"] == WARN and apply.state(ctx).label == "passes"
     relay.state.calibrations_time = None
     assert {c.label: c.level for c in apply.checks(ctx)}["relay now"] == PENDING

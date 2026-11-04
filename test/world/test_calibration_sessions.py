@@ -144,7 +144,7 @@ def test_a_session_names_the_body_definition_it_was_built_for(tmp_path):
     calibration, warnings = resolve(ALICE_ID, ALICE, tmp_path)
     assert warnings == [] and calibration.body_definition == plate and calibration.sha256 == plain_hash
     assert calibration.as_dict()[DEFINITION_KEY] == body_dict(plate)
-    assert default_calibration(ALICE_ID).body_definition is None
+    assert default_calibration(ALICE_ID).body_definition != plate, "the default keeps its own"
 
 
 def test_a_session_with_a_malformed_body_definition_falls_back(tmp_path):
