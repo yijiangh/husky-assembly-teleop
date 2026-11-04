@@ -280,6 +280,7 @@ What each one does in detail, and the panels and tabs it shows: [doc/lab/plugins
 | `arm_planner_panel` | Plans a collision-free arm motion to a joint target. Experimental. |
 | `collisions` | Lists and draws what collision checks and clearance trips hit. |
 | `base_exp` | Base controller experiments: test paths, recordings, analysis. Experimental. |
+| `insertion_demo` | One bar in and out on demand, Cindy standing still, no mocap: the demo-hall plugin. Experimental. |
 | `example_*` | Minimal plugins, as templates for new ones. |
 
 # Documentation
