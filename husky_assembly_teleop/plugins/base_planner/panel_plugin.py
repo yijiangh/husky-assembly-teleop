@@ -22,6 +22,7 @@ from html import escape
 import viser
 from crl_husky.follower_path import FollowerPath
 
+from ...config import short_serial
 from ...colors import TARGET, WHITE
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
@@ -102,7 +103,7 @@ class BasePlannerPanel(PlannerPanel):
             self._status = gui.add_html("")
             gui.add_html(GAP)
             self._robot = ChoiceRow(ctx, gui, "Robot", tuple(serials), self.serial, on_choose=self._choose_robot,
-                                    labels=tuple(serial.split("-")[-1] for serial in serials), height=None)
+                                    labels=tuple(short_serial(serial) for serial in serials), height=None)
 
             gui.add_html(section("target", TARGET))
             self._target = PlanarPoseInput(ctx, gui, f"{root}/target_gizmo", label="Target",
@@ -237,16 +238,16 @@ class BasePlannerPanel(PlannerPanel):
         if label == "Robot":
             self._target.set(*floor_pose(ctx, self.serial))
             self._has_target = True
-            self._say(f"target set to where {self.serial} is now")
+            self._say(f"target set to where {short_serial(self.serial)} is now")
             return
         if label == "Park":
             park = next(robot for robot in ctx.config.robots if robot.serial == self.serial).park_pose
             if park is None:
-                self._say(f"{self.serial} has no parked pose configured", FAIL)
+                self._say(f"{short_serial(self.serial)} has no parked pose configured", FAIL)
                 return
             self._target.set(*park)
             self._has_target = True
-            self._say(f"target set to the parked pose of {self.serial}")
+            self._say(f"target set to the parked pose of {short_serial(self.serial)}")
             return
 
         found = self._process_step(ctx)
@@ -338,7 +339,7 @@ class BasePlannerPanel(PlannerPanel):
             # * A plan refused for a collision shows it at once; any newer plan takes it away.
             self._reported = plan
             if plan is not None and plan.hit is not None:
-                label = f"{plan.request.serial} {plan.hit.where}"
+                label = f"{short_serial(plan.request.serial)} {plan.hit.where}"
                 self._collisions.replace(self.name, {label: plan.hit}, shown=(label,))
             else:
                 self._collisions.clear(self.name)
@@ -381,7 +382,8 @@ class BasePlannerPanel(PlannerPanel):
     def _status_html(self, ctx: PluginContext) -> str:
         """One line of chips: the robot and whether it is tracked, the plan's state and the last run's."""
         tracked = ctx.scene.snapshot.robots[robot_id(self.serial)].base_tracked
-        chips = chip(escape(f"{self.serial} {'tracked' if tracked else 'not tracked'}"), OK if tracked else BUSY,
+        chips = chip(escape(f"{short_serial(self.serial)} {'tracked' if tracked else 'not tracked'}"),
+                     OK if tracked else BUSY,
                      "mocap tracks the base: plans start from its live pose" if tracked
                      else "plans from where it was last seen; a commit needs the base tracked by mocap")
         if out := self._out_of_stow(ctx, self.serial):

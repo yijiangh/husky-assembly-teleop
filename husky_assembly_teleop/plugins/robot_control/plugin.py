@@ -31,6 +31,7 @@ import numpy as np
 import viser
 from scipy.spatial.transform import Rotation
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.signals import force, torque
@@ -240,7 +241,7 @@ class RobotControlPlugin(HuskyPlugin):
             robots = gui.add_tab_group()
             for serial, robot in ctx.world.robots.items():
                 # "a200-0806" -> "0806"
-                with robots.add_tab(serial.split("-")[-1], icon=viser.Icon.ROBOT):
+                with robots.add_tab(short_serial(serial), icon=viser.Icon.ROBOT):
                     parts = gui.add_tab_group()
                     with parts.add_tab("Base", icon=viser.Icon.CAR):
                         self._bases.append(self._build_base(ctx, gui, serial, robot.base))
@@ -253,7 +254,7 @@ class RobotControlPlugin(HuskyPlugin):
             phone.add_html(PHONE_DPAD_STYLE + f"<style>{big_buttons([FREE_DRIVE_ICON], 64, 28)}</style>")
             robots = phone.add_tab_group()
             for widgets in self._bases:
-                with robots.add_tab(widgets.serial.split("-")[-1], icon=viser.Icon.ROBOT):
+                with robots.add_tab(short_serial(widgets.serial), icon=viser.Icon.ROBOT):
                     widgets.phone_status = phone.add_html("")
                     widgets.phone_speed, buttons = build_velocity_inputs(
                         ctx, phone, widgets.serial, partial(self._on_hold, widgets.serial), widgets.clearance)
@@ -444,7 +445,7 @@ class RobotControlPlugin(HuskyPlugin):
         if soft_stopped and serial in self._tripped:
             return "too close", f"{self._tripped[serial]}: soft stopped; drive clear after Resume, or untick Clearance"
         if soft_stopped:
-            return "soft stopped", f"robot {serial} is soft stopped; press Resume first"
+            return "soft stopped", f"robot {short_serial(serial)} is soft stopped; press Resume first"
         taken = self._leases.taken(ctx, serial)
         return None if taken is None else ("lease refused", taken)
 

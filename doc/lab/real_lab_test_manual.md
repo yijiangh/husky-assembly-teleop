@@ -681,7 +681,7 @@ bar; clear floor and workspace.
   - **Expect:** after about 2 s a path drawn on the floor and `Lattice (hybrid A*) ...: ... m, ... s`.
 - [ ] by eye: the path clear of people and of things the scene does not know (cables, boxes, a cart)
 - [ ] hand on Cindy's e-stop → button [Commit]
-  - **Expect:** `sent to a200-0806's follower`; she drives it smoothly and stops; pane monitor:
+  - **Expect:** `sent to 0806's follower`; she drives it smoothly and stops; pane monitor:
     `base path ... on a200-0806: done`. Control › `0806` › Base reads about the target (the fake lab's follower stopped
     within about 1 cm and 2°; note the real numbers).
   - **If not:** she does not start: the base's `ctrl` chip (4.d), her follower in her pane (`pure_pursuit`). She
@@ -707,7 +707,7 @@ bar; clear floor and workspace.
     SENT`. The anchor is how far her arm's own TCP is from tool0 by the URDF: under 10 mm and 2° the handoff goes
     compliant; above, it closes stiff and says so. Note X and Y.
 - [ ] box [Dry run]: unticked → button [Exec]
-  - **Expect:** the prompt `alice (a200-0804): B21_H_close — CLOSE + compliant handoff on ur_arm: the arm goes
+  - **Expect:** the prompt `alice (0804): B21_H_close — CLOSE + compliant handoff on ur_arm: the arm goes
     COMPLIANT before the close (gives way ≤ 10 mm); jaws 0.8, effort 0.1, ≤ 30 s; then joint control. Watch the other
     robot's tools are not pulled; hand on the e-stop.`
 - [ ] hand on Alice's e-stop → button [Confirm]
@@ -750,7 +750,7 @@ Then the seven actions in order, each with its procedures (6.1–6.4) and what d
     on the action's first movement (the one with empty tools).
 - [ ] by eye: the path clear of people and of things the scene does not know
 - [ ] hand on the robot's e-stop → button [Commit]
-  - **Expect:** `sent to a200-0806's follower`; she drives (in the fake lab about twice the planned time); pane monitor:
+  - **Expect:** `sent to 0806's follower`; she drives (in the fake lab about twice the planned time); pane monitor:
     `base path ... on a200-0806: done`. Control › `0806` › Base then reads about the target.
   - **If not:** `base path ... timed out: still following` (the fake lab's follower sometimes never started a short
     path): button [Path: Plan] and button [Commit] again. To stop a driving base, use Stop all, not the panel's Cancel
@@ -765,7 +765,7 @@ Then the seven actions in order, each with its procedures (6.1–6.4) and what d
 
 **b) Transfer** (`<bar>_J_transfer`)
 - [ ] by eye: the step line reads `<bar>_J_transfer (transfer_free) · then: <bar>_J_place_bar, <bar>_J_grasp · skipped:
-      <bar>_J_load`, and the Exec line `Exec: cindy (a200-0806) moves left_ur_arm, right_ur_arm; then waits for
+      <bar>_J_load`, and the Exec line `Exec: cindy (0806) moves left_ur_arm, right_ur_arm; then waits for
       <bar>_J_place_bar + <bar>_J_grasp by hand; then servos left_ur_arm, right_ur_arm onto the insert start`
 - [ ] button [Live IK: insert start] (about 5 s)
   - **Expect:** pane monitor: `check goal <bar>_J_transfer: goal found (ssik, rank 1 of 64), max |goal - authored| X
@@ -782,7 +782,7 @@ Then the seven actions in order, each with its procedures (6.1–6.4) and what d
   - **Expect:** it starts at the live arms and ends with the **empty** tools at the insert start, clear of the floor,
     the built bars and Alice.
 - [ ] slider [Motion time]: higher = slower (first run) → hand on Cindy's e-stop → button [Exec]
-  - **Expect:** pane monitor (a warning over 60°): `cindy (a200-0806): <bar>_J_transfer — move left_ur_arm,
+  - **Expect:** pane monitor (a warning over 60°): `cindy (0806): <bar>_J_transfer — move left_ur_arm,
     right_ur_arm along the planned path (Rhino obstacles not checked), T s, largest joint travel D°`; both arms move at
     once; `<bar>_J_transfer: arrived, end within ...°`; then the prompt for the bar.
 
@@ -908,7 +908,7 @@ Four steps: approach (and its servo), open, straight in, close with the complian
   - **Expect:** `support_approach solved by arm.plan_arm: N waypoints`; the preview ends with the jaws in front of B21,
     clear of Cindy's arms and tools.
 - [ ] hand on Alice's e-stop → button [Exec]
-  - **Expect:** `alice (a200-0804): B21_H_approach — move ur_arm along the planned path ..., T s, largest joint travel
+  - **Expect:** `alice (0804): B21_H_approach — move ur_arm along the planned path ..., T s, largest joint travel
     D°`, `B21_H_approach: arrived, end within ...°`; then the servo: `[servo] feedback: tool0 (0.2 mm); no MoCap bar
     recorded (no bar held).`, `[servo 0] tool0 pos arm=X mm` and the prompt `B21_H_approach — SERVO 1/8 onto the
     approach pose (tool0): ...`.

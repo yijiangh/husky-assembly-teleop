@@ -15,6 +15,7 @@ from typing import Callable
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.process.solutions import MovementResult
 
+from ...config import short_serial
 from ...shared.assembly_planning.collision import collision_hit, in_process_terms
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.assembly_planning.route_result import GoalCheck, RouteResult
@@ -160,7 +161,7 @@ def _acting(request: MotionPlanRequest, abort: threading.Event) -> str:
     robot = request.snapshot.robots.get(live)
     problems = robot.acting_problems() if robot is not None else ["it is not in the snapshot"]
     if problems:
-        raise _Refused(f"{config.serial} can't be planned for: {'; '.join(problems)}")
+        raise _Refused(f"{short_serial(config.serial)} can't be planned for: {'; '.join(problems)}")
     return config.serial
 
 

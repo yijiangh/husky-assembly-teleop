@@ -11,6 +11,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Callable, Iterator
 
+from ...config import short_serial
 from ...robot_interface.robot_lease import Lease
 
 if TYPE_CHECKING:
@@ -38,7 +39,7 @@ class TeleopLeases:
         lease = ctx.world.robots[serial].lease_slot.lease
         if lease is None or lease is self._leases.get(serial):
             return None
-        return f"{serial} is leased by {lease.holder}"
+        return f"{short_serial(serial)} is leased by {lease.holder}"
 
     @contextmanager
     def use(self, ctx: PluginContext, serial: str) -> Iterator[None]:

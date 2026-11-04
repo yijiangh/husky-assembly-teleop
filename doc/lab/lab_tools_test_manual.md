@@ -123,12 +123,12 @@ did; close it with the control at its bar's right end (nothing closes it for you
 whose curves they are, and the running kind's plots: the servo's five or the compliant part's two.
 
 1. **A servo.** Run B20_J's transfer step (fake lab manual 4.2). **Expect:** when the servo starts, the window
-   opens with the chip `servo: B20_J_transfer on a200-0806`, and per pass one point on `tool0_pos_err [mm]` (L
+   opens with the chip `servo: B20_J_transfer on 0806`, and per pass one point on `tool0_pos_err [mm]` (L
    x/y/z/|d| in reds, R in greens), `tool0_rot_err [deg]`, `base_pos_diff [mm]` and `base_rot_diff [deg]` (blues),
    and `bar` (mocap vs design, FK vs design) when a bar is tracked; x is the pass number. The points stay until the
    next servo.
 2. **A compliant part.** Run an insert with a mating joint (B21_J's, fake lab manual 5.2) or a retreat. **Expect:**
-   the window opens, the servo's plots hidden, with the chip `compliant: B21_J_insert on a200-0806`, then `force [N]` and `torque [Nm]` filling every tick, L reds and
+   the window opens, the servo's plots hidden, with the chip `compliant: B21_J_insert on 0806`, then `force [N]` and `torque [Nm]` filling every tick, L reds and
    R greens, x in seconds since the part started; in the simulation the fake wrench's noise around zero, and the
    contact force (`contact_n`) while a screw is stalled. Without a wrench the lines are zero and a chip says `no force
    reading: the arms report no wrench`.

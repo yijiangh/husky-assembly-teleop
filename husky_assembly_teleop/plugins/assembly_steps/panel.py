@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import viser
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, HANDOFF_PART, INSERT_PART, MAX_TRAJ_TIME,
                                               MOTION_PART, OPEN_PART, PLANNED_MARGIN, RETREAT_PART, SERVO_PART,
@@ -163,8 +164,9 @@ class StepsPanel:
             number, count = plugin.position
             robot = ("the robot this action is for, and its serial" if plugin.serial
                      else "the robot this action is for; no robot of the monitor's config has its serial")
+            serial = short_serial(plugin.serial) if plugin.serial else "not configured"
             chips = (chip(escape(action), SECTION_CTRL, "the run's current action")
-                     + chip(escape(f"{plugin._robot_name} ({plugin.serial or 'not configured'})"), OK, robot)
+                     + chip(escape(f"{plugin._robot_name} ({serial})"), OK, robot)
                      + chip(f"step {number}/{count}", NONE, "this step of the action's steps: a movement, with the "
                                                             "tool movements run with it or after it")
                      + plugin._plan_chip())
@@ -182,8 +184,8 @@ class StepsPanel:
             if step.skipped:
                 text += " · skipped: " + ", ".join(movements[index].id for index in step.skipped)
             self._step.content = block(values(_cut(escape(text))))
-            self._moves.content = block(values(_cut(escape(exec_line(f"{plugin._robot_name} ({plugin.serial})",
-                                                                     plugin.parts())))))
+            who = f"{plugin._robot_name} ({short_serial(plugin.serial)})"
+            self._moves.content = block(values(_cut(escape(exec_line(who, plugin.parts())))))
         self._check.label = plugin.goal_label()
         if self._shown_time != plugin.traj_time:
             self._shown_time = self._time.value = plugin.traj_time

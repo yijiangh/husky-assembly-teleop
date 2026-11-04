@@ -33,6 +33,7 @@ from scaffolding_assembly_core.ids import robot_id, split_link_id
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.assembly_planning.joints import arm_of_flange
@@ -304,7 +305,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return
         live = ctx.scene.snapshot.robots.get(robot_id(self.serial)) if self.serial else None
         if live is None or not is_live(live, ctx.now()):
-            self._say(f"Check tool0: {self._robot_name} ({self.serial}) is not live", failed=True)
+            self._say(f"Check tool0: {self._robot_name} ({short_serial(self.serial)}) is not live", failed=True)
             return
         poses = flange_poses(live, targets)
         errors = tool0_errors(poses, targets)
@@ -490,7 +491,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
             elif primary is None or primary.kind not in MOTION_KINDS:
                 refusal = f"{step.label} has no motion to plan"
             elif live is None or not is_live(live, now):
-                refusal = f"{self._robot_name} ({self.serial}) is not live: plans start from the live robot only"
+                refusal = (f"{self._robot_name} ({short_serial(self.serial)}) is not live: plans start from the live "
+                           f"robot only")
             else:
                 goal_joints = self._goal.joints_near(self._key_of_goal(), live.base)
                 goal_base = self._goal.of(self._key_of_goal()).base if goal_joints is not None else None

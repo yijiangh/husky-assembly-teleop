@@ -74,7 +74,7 @@ def test_answers_without_planning(loaded, work):
     configs = (robot_config(CINDY),)
     assert reason(work(pool, request(loaded), abort, print)) == "no configured robot acts"
     unmeasured = work(pool, request(loaded, configs, frozenset({"left_ur_arm_elbow_joint"})), abort, print)
-    assert reason(unmeasured).startswith("a200-0806 can't be planned for: joints not known")
+    assert reason(unmeasured).startswith("0806 can't be planned for: joints not known")
     abort.set()
     assert reason(work(pool, request(loaded, configs), abort, print)) == "cancelled"
     assert pool.asked == []

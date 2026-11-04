@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import viser
 
+from ....config import short_serial
 from ....shared.guide.both_pages import on_both
 from ....shared.guide.checklist import Checklist
 from ....ui.phone import phone_text
@@ -50,7 +51,7 @@ class Setup(CalibrationStep):
     instructions = "Choose the arm, or a run to resume. Mount the tool body on its flange, then tick the checklist."
 
     def __init__(self, cal: Calibration, choices: list[str]):
-        """Offer `choices`, "<serial> <arm>" of every arm with sweeps."""
+        """Offer `choices`, "<short serial> <arm>" of every arm with sweeps."""
         super().__init__(cal)
         self.choices = choices
         #: The Run dropdown's runs by label.
@@ -102,7 +103,7 @@ class Setup(CalibrationStep):
     def run_changed(self, ctx: PluginContext) -> None:
         """Show the run's arm, tool body, On stand, notes and the boxes that hold, and list the arm's runs."""
         run = self.run
-        self._arm_choice.value = f"{run.serial} {run.arm}"
+        self._arm_choice.value = f"{short_serial(run.serial)} {run.arm}"
         self._tool_id.value = run.tool_body
         self._on_stand.value, self._notes.value = run.on_stand, run.notes
         self._show_ticks()
@@ -142,9 +143,10 @@ class Setup(CalibrationStep):
     def choose(self, ctx: PluginContext, value: str) -> None:
         """Pick the robot and arm: a new run of it."""
         if self.busy("arm not changed"):
-            self._arm_choice.value = f"{self.run.serial} {self.run.arm}"
+            self._arm_choice.value = f"{short_serial(self.run.serial)} {self.run.arm}"
             return
-        serial, arm = value.split(" ", 1)
+        digits, arm = value.split(" ", 1)
+        serial = next(serial for serial in ctx.world.robots if short_serial(serial) == digits)
         self.cal.switch_run(ctx, Run.new(ctx.world.robots[serial], arm, ctx.config.data_directory,
                                          ctx.config.drive_root, ctx.world.mocap_relay))
 

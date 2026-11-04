@@ -153,7 +153,7 @@ def test_a_command_for_another_robot_is_refused():
     lab = Lab()
     names, rows = cindy_path()
     outcome = lab.run(lab.alice, motion_command("a200-0806", CINDY_ARMS, names, rows, 1.0))
-    assert outcome.status == REFUSED and "not a200-0804" in outcome.reason
+    assert outcome.status == REFUSED and "not 0804" in outcome.reason
     assert not lab.alice.arms["ur_arm"]._trajectory.messages
 
 

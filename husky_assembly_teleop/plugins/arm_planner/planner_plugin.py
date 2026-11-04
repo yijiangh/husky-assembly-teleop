@@ -20,6 +20,7 @@ from typing import Callable, Sequence
 
 import numpy as np
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.mocap_state import pose_lost
@@ -120,7 +121,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
-                return PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0)
+                return PlanResult(None, f"{short_serial(serial)} can't be planned for: {'; '.join(problems)}", 0.0)
             stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
             others[:] = stand_ins.warnings
             result = plan_arm(self._world.sync(stand_ins.scene, serial), stand_ins.scene, arm, goal, abort)
@@ -143,7 +144,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             return message, bool(guessed or others or result.path.margin < PLAN_DISTANCE)
 
         return Search(label=f"plan {serial} {arm}",
-                      message=f"planning for {serial} {arm}…{notes}"
+                      message=f"planning for {short_serial(serial)} {arm}…{notes}"
                       + (" (loading the models first)" if loading else ""),
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
                       accepted=accepted, finished=finished)
@@ -176,7 +177,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         def work() -> CollisionHit | None:
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
-                raise ValueError(f"{serial} can't be checked: {'; '.join(problems)}")
+                raise ValueError(f"{short_serial(serial)} can't be checked: {'; '.join(problems)}")
             scene = with_stand_ins(snapshot, {robot_id(serial)}).scene
             result = path_hit(self._world.sync(scene, serial), scene, arm, waypoints, margin)
             self._loaded.add(serial)
@@ -234,7 +235,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         # * The last run's chip goes: every way out below sets this run's, or none for a replaced commit.
         self._motions.pop(key, None)
         if problem := clearance_problem(ctx.scene.snapshot.robots.get(robot_id(serial))):
-            answer(False, f"nothing sent: {serial}: {problem}")
+            answer(False, f"nothing sent: {short_serial(serial)}: {problem}")
             ctx.log_warn(f"{what}: nothing sent: {problem}")  # * the run chip's hover may be cut
             self._motions[key] = Check("refused", BAD, hover(f"{what}: nothing sent: {problem}"))
             return

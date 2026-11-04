@@ -22,6 +22,7 @@ import viser
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...robot_interface.robot_lease import NotLeased
@@ -240,9 +241,10 @@ class MovementExecPlugin(HuskyPlugin):
             return "nothing to run in this step"
         serial = serial_of(request.loaded, request.action, ctx.config.robots)
         if serial != request.serial:
-            return f"{request.action} is for {serial or 'no configured robot'}, not {request.serial}"
+            return (f"{request.action} is for {short_serial(serial) if serial else 'no configured robot'}, not "
+                    f"{short_serial(request.serial)}")
         if request.serial not in ctx.world.robots:
-            return f"{request.serial} is not connected"
+            return f"{short_serial(request.serial)} is not connected"
         if not 0.0 < request.traj_time <= MAX_TRAJ_TIME:
             return f"the motion time must be over 0 and at most {MAX_TRAJ_TIME:.0f} s, not {request.traj_time}"
         motions = [part for part in request.parts if part.kind in MOTION_KINDS]
@@ -269,16 +271,16 @@ class MovementExecPlugin(HuskyPlugin):
             return "the arms moved since this plan was made: replan"
         live = ctx.scene.snapshot.robots.get(robot_id(request.serial))
         if live is None:
-            return f"{request.serial} is not in the scene"
+            return f"{short_serial(request.serial)} is not in the scene"
         distance, turn = pose_error(live.base, basis.base)
         if distance > STALE_BASE[0] or turn > STALE_BASE[1]:
-            return (f"{request.serial}'s base is {distance * 1e3:.1f} mm, {math.degrees(turn):.2f}° from where the "
-                    f"plan was made: replan")
+            return (f"{short_serial(request.serial)}'s base is {distance * 1e3:.1f} mm, {math.degrees(turn):.2f}° from "
+                    f"where the plan was made: replan")
         try:
             motion_command(request.serial, list(ctx.world.robots[request.serial].arms), trajectory.joint_names,
                            trajectory.positions, request.traj_time)
         except ValueError as error:
-            return f"the plan can't be sent to {request.serial}: {error}"
+            return f"the plan can't be sent to {short_serial(request.serial)}: {error}"
         return ""
 
     async def _run(self, job: Job, lease: Lease, future: asyncio.Future) -> None:
@@ -308,9 +310,10 @@ class MovementExecPlugin(HuskyPlugin):
                     if part.routine in TRANSFERS and part.kind in (MOTION_PART, SERVO_PART):
                         self._carried = None  # the transfer runs anew: its servo sets the carry again when due
                     if self._plots is not None and part.kind == SERVO_PART:
-                        self._plots.start_servo(f"{part.movement} on {request.serial}")
+                        self._plots.start_servo(f"{part.movement} on {short_serial(request.serial)}")
                     elif self._plots is not None and part.kind in COMPLIANT_KINDS:
-                        self._plots.start_compliant(list(job.robot.arms), f"{part.movement} on {request.serial}")
+                        self._plots.start_compliant(list(job.robot.arms),
+                                                    f"{part.movement} on {short_serial(request.serial)}")
                         self._plotted_t = None
                     try:
                         await (run_servo if part.kind == SERVO_PART else run_part)(job, run)
@@ -373,8 +376,9 @@ class MovementExecPlugin(HuskyPlugin):
                 # ? A hold is refused on stale joints: then "end" is where they were last seen, not where it stopped.
                 run.outcome.update(end_stale=progress.end_stale, end_age=dict(progress.end_age))
         if refused:
-            run.ended(HOLD_NOT_SENT, HOLD_NOT_SENT, f"HOLD NOT SENT on {', '.join(refused)}: stop {job.request.serial} "
-                                                    f"with the teach pendant or the e-stop (cancelled: {reason})")
+            run.ended(HOLD_NOT_SENT, HOLD_NOT_SENT, f"HOLD NOT SENT on {', '.join(refused)}: stop "
+                                                    f"{short_serial(job.request.serial)} with the teach pendant or the "
+                                                    f"e-stop (cancelled: {reason})")
         elif moved:
             run.ended(FAILED, INTERRUPTED, f"{moved}; every arm held")
         else:
@@ -400,8 +404,8 @@ class MovementExecPlugin(HuskyPlugin):
         run.outcome = {"holds": holds}
         if refused:
             run.ended(HOLD_NOT_SENT, HOLD_NOT_SENT, f"HOLD NOT SENT on {', '.join(refused)}: stop "
-                                                    f"{job.request.serial} with the teach pendant or the e-stop "
-                                                    f"(the executor raised {error!r})")
+                                                    f"{short_serial(job.request.serial)} with the teach pendant or the "
+                                                    f"e-stop (the executor raised {error!r})")
         else:
             run.ended(FAILED, "raised", f"the executor raised {error!r}; every arm held")
         self._record_part(job, run)

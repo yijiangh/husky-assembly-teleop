@@ -24,6 +24,7 @@ from typing import Any, Callable, Collection, ContextManager, Generic
 
 from async_timeout import timeout
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...robot_interface.soft_stop import STOP_ALL_REASON, MotionRefused
@@ -315,7 +316,8 @@ class PlannerService(HuskyPlugin, Generic[R]):
         if running is not None and running.done():
             running = None
         if running is not None and not self.replaces_running:
-            future.set_result((False, f"nothing sent: an earlier commit still moves {serial}; wait, or Hold it"))
+            future.set_result((False, f"nothing sent: an earlier commit still moves {short_serial(serial)}; wait, or "
+                                      f"Hold it"))
             return
         if running is not None:
             self._replaced.add(running)

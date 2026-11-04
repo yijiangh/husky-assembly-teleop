@@ -16,6 +16,7 @@ from typing import Iterable, Mapping
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from ..config import short_serial
 from ..robot_interface.arm import JOINT_STATE_MAX_AGE, ArmInterface
 from ..robot_interface.mocap_state import MocapBody, pose_lost
 from ..robot_interface.soft_stop import MotionRefused
@@ -100,9 +101,10 @@ def take_basis(world: WorldState, now: float, robots: Iterable[str] = (), bases:
     arm_keys = [(serial, name) for serial in robots for name in world.robots[serial].arms] + list(arms)
     joints = {}
     for serial, name in dict.fromkeys(arm_keys):
-        joints[(serial, name)] = _joints(world.robots[serial].arms[name], f"robot {serial} arm {name}", now)
+        what = f"robot {short_serial(serial)} arm {name}"
+        joints[(serial, name)] = _joints(world.robots[serial].arms[name], what, now)
     base_poses = {serial: _pose(world.robots[serial].base.mocap_id, world.robots[serial].base.state,
-                                f"robot {serial} base", now)
+                                f"robot {short_serial(serial)} base", now)
                   for serial in dict.fromkeys(robots + tuple(bases))}
     object_poses = {name: _pose(world.tracked_objects[name].mocap_id, world.tracked_objects[name], name, now)
                     for name in objects}
@@ -120,14 +122,14 @@ def basis_problem(basis: Basis, world: WorldState, now: float, tolerance: Tolera
     """
     try:
         for (serial, name), then in basis.joints.items():
-            what = f"robot {serial} arm {name}"
+            what = f"robot {short_serial(serial)} arm {name}"
             turned = float(np.max(np.abs(_joints(world.robots[serial].arms[name], what, now) - then)))
             if turned > tolerance.joint:
                 return f"{what} moved {np.degrees(turned):.1f} deg"
         for serial, then in basis.bases.items():
             base = world.robots[serial].base
-            moved = _moved(f"robot {serial} base", then, _pose(base.mocap_id, base.state, f"robot {serial} base", now),
-                           tolerance)
+            what = f"robot {short_serial(serial)} base"
+            moved = _moved(what, then, _pose(base.mocap_id, base.state, what, now), tolerance)
             if moved:
                 return moved
         for name, then in basis.objects.items():

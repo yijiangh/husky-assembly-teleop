@@ -85,7 +85,7 @@ def setting(arm: Arm, leased: bool = True):
     @contextmanager
     def lease_robots(*_args):
         if not leased:
-            raise NotLeased("a200-0805 is leased by robot_control")
+            raise NotLeased("0805 is leased by robot_control")
         yield None
 
     async def next_tick():
@@ -227,7 +227,7 @@ def test_without_the_lease_nothing_moves_and_free_drive_is_no_longer_wanted():
 
     play(hand, ctx, run, scenario)
     assert not hand.free_drive and arm.controllers.switches == [] and arm.requests == 0
-    assert procedure.outcome == Check("arm not moved", BAD, "a200-0805 is leased by robot_control")
+    assert procedure.outcome == Check("arm not moved", BAD, "0805 is leased by robot_control")
 
 
 def test_a_step_that_is_not_ready_refuses_free_drive_and_tool_steps():

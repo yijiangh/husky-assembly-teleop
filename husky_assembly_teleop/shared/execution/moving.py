@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Collection
 
+from ...config import short_serial
 from ...robot_interface.arm import JOINT_STATE_MAX_AGE
 
 if TYPE_CHECKING:
@@ -52,10 +53,10 @@ def moving_reason(world: WorldState, now: float, besides: str | None = None, unk
 def robot_moving(serial: str, robot: HuskyRobotInterface, now: float) -> str:
     """Why one robot counts as moving (one of its arms or its base, as `arm_moving` and `base_moving`), or ""."""
     for name, arm in robot.arms.items():
-        why = arm_moving(arm, f"{serial} {name}", now)
+        why = arm_moving(arm, f"{short_serial(serial)} {name}", now)
         if why:
             return why
-    return base_moving(robot.base.state, f"{serial} base", now)
+    return base_moving(robot.base.state, f"{short_serial(serial)} base", now)
 
 
 def arm_moving(arm: ArmInterface, label: str, now: float, within: float = MOVED_WITHIN) -> str:

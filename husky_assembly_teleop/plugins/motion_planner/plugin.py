@@ -29,6 +29,7 @@ import viser
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.scene import Scene
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.assembly_planning.mirrors import MirrorPool
@@ -320,7 +321,7 @@ class MotionPlannerPlugin(HuskyPlugin):
                           "The robot whose planning world the PyBullet window shows when it opens; then it "
                           "follows the robot being planned for",
                           on_choose=lambda serial: setattr(self, "_serial", serial),
-                          labels=tuple(serial.split("-")[-1] for serial in serials), height=None)
+                          labels=tuple(short_serial(serial) for serial in serials), height=None)
                 # * Guessed like the arm planner's, so an untracked robot still shows.
                 add_pybullet_window_toggle(ctx, gui, self._executor, self._window)
             self._show_tree = gui.add_checkbox("Search tree", True,

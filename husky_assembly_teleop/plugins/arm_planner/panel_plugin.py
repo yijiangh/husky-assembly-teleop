@@ -14,6 +14,7 @@ from html import escape
 import numpy as np
 import viser
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.arm_planner_contract import MAX_SLOWDOWN, ArmPlanRequest
@@ -85,7 +86,7 @@ class ArmPlannerPanel(PlannerPanel):
             gui.add_html(GAP)
             self._robot = ChoiceRow(ctx, gui, "Robot", tuple(arms), self.serial,
                                     on_choose=lambda serial: self._choose(serial, None),
-                                    labels=tuple(serial.split("-")[-1] for serial in arms), height=None)
+                                    labels=tuple(short_serial(serial) for serial in arms), height=None)
             self._arm = ChoiceRow(ctx, gui, "Arm", tuple(arms[self.serial]), self.arm,
                                   on_choose=lambda arm: self._choose(self.serial, arm),
                                   labels=self._arm_labels[self.serial], height=None)
@@ -182,7 +183,7 @@ class ArmPlannerPanel(PlannerPanel):
         self._used.touch()
         if label == "Now":
             self._load = self._joints_now(ctx)
-            self._say(f"target set to where {self.serial} {self.arm} is now")
+            self._say(f"target set to where {short_serial(self.serial)} {self.arm} is now")
         elif label == "Stow":
             robot = next(robot for robot in ctx.config.robots if robot.serial == self.serial)
             arm = next(arm for arm in robot.arms if arm.name == self.arm)
@@ -286,7 +287,7 @@ class ArmPlannerPanel(PlannerPanel):
             # * A plan refused for a collision shows it at once; any newer plan takes it away.
             self._reported = plan
             if plan is not None and plan.hit is not None:
-                label = f"{plan.request.serial} {plan.request.arm} {plan.hit.where}"
+                label = f"{short_serial(plan.request.serial)} {plan.request.arm} {plan.hit.where}"
                 self._collisions.replace(self.name, {label: plan.hit}, shown=(label,))
             else:
                 self._collisions.clear(self.name)
@@ -308,7 +309,7 @@ class ArmPlannerPanel(PlannerPanel):
     def _status_html(self, ctx: PluginContext) -> str:
         """One line of chips: the robot and arm and whether the base is tracked, the plan's state and the last run's."""
         tracked = ctx.scene.snapshot.robots[robot_id(self.serial)].base_tracked
-        robot = chip(escape(f"{self.serial} {self.arm} {'tracked' if tracked else 'not tracked'}"),
+        robot = chip(escape(f"{short_serial(self.serial)} {self.arm} {'tracked' if tracked else 'not tracked'}"),
                      OK if tracked else BUSY,
                      "mocap tracks the base: plans start from its live pose" if tracked
                      else "plans from where the base was last seen; a commit needs it tracked by mocap")

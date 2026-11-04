@@ -18,7 +18,7 @@ from husky_assembly_teleop.shared.execution.controllers import (QUERY_TIMEOUT, R
 pytestmark = pytest.mark.safety
 
 START = np.array([0.0, -1.5, 1.5, 0.0, 0.5, 0.0])
-LABEL = "Cindy (a200-0806): B21 insert"
+LABEL = "Cindy (0806): B21 insert"
 #: A FakeContext tick, seconds: a wait may end one tick late.
 TICK = 0.1
 

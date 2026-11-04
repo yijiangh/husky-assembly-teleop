@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable, Mapping, Protocol
 
 
-from ..config import find_robot_serial
+from ..config import find_robot_serial, short_serial
 from .assembly_planning.joints import arm_of_flange
 from .assembly_planning.movement import Routine, UnknownMovement, classify
 from .assembly_planning.steps import OperatorStep, operator_steps, step_index_of
@@ -245,7 +245,7 @@ def step_running(robots: Mapping[str, HuskyRobotInterface]) -> str:
     for serial, robot in robots.items():
         lease = robot.lease_slot.lease
         if lease is not None and lease.owner == STEP_RUNNER:
-            return f"{serial} is leased by {lease.holder}: wait until it is done, or Cancel it"
+            return f"{short_serial(serial)} is leased by {lease.holder}: wait until it is done, or Cancel it"
     return ""
 
 
@@ -317,8 +317,8 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
         """The arm whose flange carries `tool`, and why not if the robot has no `kind` configured there ("" if so)."""
         arm = arm_of_flange(flanges.get(tool, ""))
         fitted = next((each.end_effector for each in config.arms if each.name == arm), None)
-        return arm, "" if fitted == kind else (f"{tool} is a {kind} on {arm or 'no flange'}, but {serial} has "
-                                               f"{fitted or 'nothing'} there")
+        return arm, "" if fitted == kind else (f"{tool} is a {kind} on {arm or 'no flange'}, but "
+                                               f"{short_serial(serial)} has {fitted or 'nothing'} there")
 
     if routine is Routine.INSERT:
         found = [arm_of(tool, "scaffolding_v3") for tool in tightened]

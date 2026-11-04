@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from crl_husky.follower_path import FollowerPath
 
+from ...config import short_serial
 from ...drive import drive_folder, folder_name, started_at
 from ...plugin_api import signals
 from ...plugin_api.concurrency import WaitTimeout
@@ -152,7 +153,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             algorithm, settings = self._algorithm(request)
         except ValueError as error:
             reason = str(error)
-            return Search(label=f"plan {serial}", message=f"planning for {serial}…",
+            return Search(label=f"plan {short_serial(serial)}", message=f"planning for {short_serial(serial)}…",
                           work=lambda: PlanResult(None, reason, 0.0), time_limit=WAIT_MARGIN,
                           accepted=lambda _result: ("", False))
         debug = Debug(on=request.debug)
@@ -192,7 +193,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
-                result, world = PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0), None
+                why = f"{short_serial(serial)} can't be planned for: {'; '.join(problems)}"
+                result, world = PlanResult(None, why, 0.0), None
             else:
                 stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
                 others[:] = setup["stand_ins"] = list(stand_ins.warnings)
@@ -223,7 +225,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             return (f"{how}: {path.length:.2f} m, {path.duration:.1f} s, "
                     f"found in {result.seconds:.1f} s{guess}{stand_ins}"), bool(guessed or others)
 
-        return Search(label=f"plan {serial}", message=f"planning for {serial}…{guess}", work=work,
+        return Search(label=f"plan {serial}", message=f"planning for {short_serial(serial)}…{guess}", work=work,
                       time_limit=TIME_LIMIT + WAIT_MARGIN, accepted=accepted, finished=finished)
 
     def stale_reason(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> str:
@@ -278,8 +280,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         # * The last run's chip goes: every way out below sets this run's, or none for a replaced commit.
         self._runs.pop(serial, None)
         if problem := robot.base.follow_problem():
-            answer(False, f"not committed: {serial}: {problem}")
-            self._refused(ctx, serial, f"not committed: {serial}: {problem}")
+            answer(False, f"not committed: {short_serial(serial)}: {problem}")
+            self._refused(ctx, serial, f"not committed: {short_serial(serial)}: {problem}")
             return
         sent_id, sent_at, started = None, ctx.now(), started_at()
         outcome, rec, clearance, run = "stopped", None, None, None
@@ -297,12 +299,12 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                     sent_id = send_to_onboard_follower(robot.base, path)
                 except ValueError as error:
                     answer(False, f"not committed: {error}")
-                    self._refused(ctx, serial, f"not committed: {serial}: {error}")
+                    self._refused(ctx, serial, f"not committed: {short_serial(serial)}: {error}")
                     return
                 sent_at = ctx.now()
                 run = self._runs[serial] = Run(FollowerPath.from_poses(*path.points.T), sent_id, sent_at, rec)
                 ctx.log_info(f"base path {sent_id} sent to {serial}: {path.length:.2f} m, {len(path.points)} waypoints")
-                answer(True, f"sent to {serial}'s follower (path {sent_id})")
+                answer(True, f"sent to {short_serial(serial)}'s follower (path {sent_id})")
                 limit = path.duration * RUN_FACTOR + RUN_MARGIN
                 try:
                     # * Under way is WARN (sent or following); done, aborted, replaced or silent ends the run.
@@ -313,8 +315,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                     outcome = check.label if check.level == GOOD else f"{check.label}: {check.detail}"
                 except WaitTimeout:
                     outcome = "timed out: still following"
-                    check = Check("timed out", BAD, f"{serial} still followed the path after {limit:.0f} s; "
-                                                    f"its path was stopped")
+                    check = Check("timed out", BAD, f"{short_serial(serial)} still followed the path after "
+                                                    f"{limit:.0f} s; its path was stopped")
                     robot.base.stop_path()
                 self._end(serial, run, check)
                 await ctx.sleep(SETTLE)
@@ -338,7 +340,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             if run is None and isinstance(error, MotionRefused):  # e.g. the clearance cannot check the robot
                 self._refused(ctx, serial, f"nothing sent: {error}")
             else:
-                self._end(serial, run, Check("failed", BAD, hover(f"{serial}: {error}")))
+                self._end(serial, run, Check("failed", BAD, hover(f"{short_serial(serial)}: {error}")))
             raise
         finally:
             if sent_id is not None:

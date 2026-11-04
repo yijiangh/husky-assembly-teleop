@@ -76,5 +76,5 @@ def test_process_robots_are_paired_with_configured_ones_by_serial(tmp_path):
     process = build_process(tmp_path)
     cindy = robot_config_from_serial("0806", DATA)
     lines = robot_differences(process, (cindy,))
-    assert len(lines) == 1 and lines[0].startswith("robots/cindy (a200-0806): ")
+    assert len(lines) == 1 and lines[0].startswith("robots/cindy (0806): ")
     assert robot_differences(process, ()) == []

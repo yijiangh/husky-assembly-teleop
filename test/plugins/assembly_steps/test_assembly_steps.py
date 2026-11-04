@@ -168,7 +168,7 @@ def test_steps_follow_the_run():
     assert "moves left_ur_arm, right_ur_arm; then waits for B20_J_place_bar + B20_J_grasp by hand" in lab.html()
     lab.run.view.current = ("B20_J", 4)
     lab.update()
-    assert lab.plugin.position == (2, 2) and "cindy (a200-0806) inserts rigid (ground bar)" in lab.html()
+    assert lab.plugin.position == (2, 2) and "cindy (0806) inserts rigid (ground bar)" in lab.html()
     lab.run.view.current = ("B20_J", 3)
     lab.update()
     assert lab.plugin.position == (1, 2) and lab.run.selected == []
@@ -536,11 +536,11 @@ def test_exec_asks_for_a_second_press_while_another_robot_is_unknown():
 
 def test_the_exec_line_names_the_servo_after_the_motion():
     """The transfer step ends with its servo onto the insert start, Alice's approach with one onto the approach pose."""
-    assert exec_line("cindy (a200-0806)", Steps(("B20_J", 3)).plugin.parts()).endswith(
+    assert exec_line("cindy (0806)", Steps(("B20_J", 3)).plugin.parts()).endswith(
         "; then waits for B20_J_place_bar + B20_J_grasp by hand; then servos left_ur_arm, "
         "right_ur_arm onto the insert start")
-    assert exec_line("alice (a200-0804)", Steps(("B21_H", 0)).plugin.parts()) == (
-        "Exec: alice (a200-0804) moves ur_arm; then servos ur_arm onto the approach pose")
+    assert exec_line("alice (0804)", Steps(("B21_H", 0)).plugin.parts()) == (
+        "Exec: alice (0804) moves ur_arm; then servos ur_arm onto the approach pose")
 
 
 def test_a_servo_left_alone_runs_again_without_a_plan():

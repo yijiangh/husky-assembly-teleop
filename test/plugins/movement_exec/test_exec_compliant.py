@@ -78,7 +78,7 @@ def test_b21s_insert_ends_when_the_left_screw_stalls_1_s_into_the_compliant_part
     request = replace(along(lab, "B21_J_insert", INSERT_STEP), traj_time=5.0)
     result, _held = execute(lab, request, during=stall_into_the_compliant_part)
     assert result.status == DONE and result.done == (4,), result.reason
-    assert not prompts(lab) and said(lab)[0].startswith("cindy (a200-0806): B21_J_insert — INSERT: rigid ")
+    assert not prompts(lab) and said(lab)[0].startswith("cindy (0806): B21_J_insert — INSERT: rigid ")
     record = record_of(lab)
     outcome = record["outcome"]
     assert record["part"]["kind"] == "insert" and outcome["status"] == STALLED and "STALLED" in outcome["reason"]
@@ -123,7 +123,7 @@ def test_b20s_ground_bar_insert_is_rigid_with_no_tighten():
     # * One Confirm: the servo after the insert asks before aiming tool0 (no MoCap of B20 here).
     result, _held = execute(lab, along(lab, "B20_J_insert", INSERT_STEP), True)
     assert result.status == DONE and result.done == (4, SERVO_INDEX), result.reason
-    assert said(lab)[0].startswith("cindy (a200-0806): B20_J_insert — RIGID insert of a ground bar, no tighten, ")
+    assert said(lab)[0].startswith("cindy (0806): B20_J_insert — RIGID insert of a ground bar, no tighten, ")
     # * The servo's records come after the insert's.
     record = json.loads(json.dumps(next(file for file in reversed(lab.run.files())
                                         if file.get("part", {}).get("kind") == "insert")))
@@ -160,7 +160,7 @@ def test_b20s_retreat_breaks_out_compliant_then_runs_the_tail_replanned_to_the_g
     result, _held = execute(lab, request)
     assert result.status == DONE and result.done == (1, 0), result.reason
     assert not prompts(lab) and said(lab) == [said(lab)[0]] and said(lab)[0].startswith(
-        "cindy (a200-0806): B20_R_retreat — RETREAT: the gripper screws of left_ur_arm + right_ur_arm OPEN; force "
+        "cindy (0806): B20_R_retreat — RETREAT: the gripper screws of left_ur_arm + right_ur_arm OPEN; force "
         "sensors zeroed; COMPLIANT break-out ")
     asked, = planner.requests
     assert asked.goal_poses == request.route.goals and asked.linear_step == TAIL_STEP

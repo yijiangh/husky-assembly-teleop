@@ -121,26 +121,26 @@ def test_an_arm_running_moving_or_unknown_is_moving():
     robots = world(ctx)
     state = robots.robots["a200-0804"].arms["ur_arm"].state
     state.is_executing = True
-    assert moving_reason(robots, ctx.t) == "a200-0804 ur_arm is running a trajectory"
+    assert moving_reason(robots, ctx.t) == "0804 ur_arm is running a trajectory"
     assert moving_reason(robots, ctx.t, besides="a200-0804") == ""
     state.is_executing, state.last_slight_motion_time = False, ctx.t - 1.9
-    assert moving_reason(robots, ctx.t) == "a200-0804 ur_arm moved within the last 2 s"
+    assert moving_reason(robots, ctx.t) == "0804 ur_arm moved within the last 2 s"
     state.last_slight_motion_time = ctx.t - 2.1
     assert moving_reason(robots, ctx.t) == ""
     state.last_update_time = ctx.t - 0.6
-    assert "can't tell whether a200-0804 ur_arm is moving" in moving_reason(robots, ctx.t)
+    assert "can't tell whether 0804 ur_arm is moving" in moving_reason(robots, ctx.t)
 
 
 def test_a_confirm_too_soon_is_ignored_and_answers_reach_only_their_prompt():
     """A Confirm within 0.5 s is ignored; a Cancel counts at once; a new prompt drops the old answer."""
     box = PromptBox()
     assert box.answer(True, 0.0) == "nothing to answer"
-    first = box.ask("cindy (a200-0806)", "B20_R_home — move", 10.0)
-    assert first.line.startswith("cindy (a200-0806): ")
+    first = box.ask("cindy (0806)", "B20_R_home — move", 10.0)
+    assert first.line.startswith("cindy (0806): ")
     assert "double click" in box.answer(True, 10.0 + PROMPT_ARM_S / 2)
     assert box.answer(False, 10.1) == ""
-    second = box.ask("cindy (a200-0806)", "again", 11.0, warn=True)
-    assert second.id != first.id and second.line.startswith("cindy (a200-0806): ")
+    second = box.ask("cindy (0806)", "again", 11.0, warn=True)
+    assert second.id != first.id and second.line.startswith("cindy (0806): ")
 
     async def scenario():
         ctx = FakeContext()
@@ -157,7 +157,7 @@ def test_a_confirm_too_soon_is_ignored_and_answers_reach_only_their_prompt():
 def test_a_cancel_wins_over_a_confirm_not_yet_taken():
     """Confirm then Cancel in the same tick: the wait sees Cancel."""
     box = PromptBox()
-    prompt = box.ask("alice (a200-0804)", "OPEN the gripper", 0.0)
+    prompt = box.ask("alice (0804)", "OPEN the gripper", 0.0)
     box.answer(True, 1.0)
     box.answer(False, 1.0)
 
@@ -170,15 +170,15 @@ def test_a_cancel_wins_over_a_confirm_not_yet_taken():
 def test_poll_gives_an_answer_without_waiting_and_close_drops_a_prompt():
     """`poll`: None until answered, then the answer once, the prompt closed; `close` leaves a newer prompt open."""
     box = PromptBox()
-    first = box.ask("cindy (a200-0806)", "Spiral complete without a stall", 10.0, warn=True)
+    first = box.ask("cindy (0806)", "Spiral complete without a stall", 10.0, warn=True)
     assert box.poll(first) is None and box.current is first
     assert box.answer(True, 10.0 + PROMPT_ARM_S) == ""
     assert box.poll(first) is True and box.current is None and box.poll(first) is None
-    second = box.ask("cindy (a200-0806)", "again", 11.0)
+    second = box.ask("cindy (0806)", "again", 11.0)
     box.answer(False, 11.0)
     box.close(first)
     assert box.current is second and box.poll(second) is False and box.current is None
-    third = box.ask("cindy (a200-0806)", "once more", 12.0)
+    third = box.ask("cindy (0806)", "once more", 12.0)
     box.answer(False, 12.0)
     box.close(third)
     assert box.current is None and box.poll(third) is None and box.answer(False, 12.0) == "nothing to answer"
@@ -241,7 +241,7 @@ def test_an_arm_whose_joint_states_went_stale_is_moving():
 
     asyncio.run(scenario())
     reason = moving_reason(lab.ctx.world, lab.ctx.t)
-    assert "can't tell whether a200-0805 ur_arm is moving" in reason
+    assert "can't tell whether 0805 ur_arm is moving" in reason
     arm.state.last_update_time = None  # never measured this session
     assert moving_reason(lab.ctx.world, lab.ctx.t) == ""
 
@@ -271,12 +271,12 @@ def test_a_driving_base_is_moving():
     base.joint_states_update_time, base.wheel_velocities = lab.ctx.t, {"front_left_wheel_joint": 0.0}
     assert moving_reason(lab.ctx.world, lab.ctx.t) == ""
     base.wheel_velocities = {"front_left_wheel_joint": 0.3}
-    assert "a200-0806 base is driving" in moving_reason(lab.ctx.world, lab.ctx.t)
+    assert "0806 base is driving" in moving_reason(lab.ctx.world, lab.ctx.t)
     base.wheel_velocities = {"front_left_wheel_joint": 0.0}
     base.follower = SimpleNamespace(state="following", update_time=lab.ctx.t)
     assert "following a path" in moving_reason(lab.ctx.world, lab.ctx.t)
     base.follower = None
     lab.ctx.t += 1.0
     lab.tick(lab.ctx.t)
-    assert "can't tell whether a200-0806 base is moving" in moving_reason(lab.ctx.world, lab.ctx.t)
+    assert "can't tell whether 0806 base is moving" in moving_reason(lab.ctx.world, lab.ctx.t)
     assert moving_reason(lab.ctx.world, lab.ctx.t, besides="a200-0806") == ""

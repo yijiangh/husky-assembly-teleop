@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Collection, Coroutine, Iterable, Iterator, Literal, TypeVar
 
+from ..config import short_serial
 from ..robot_interface.robot_lease import Lease, LeaseSlot, leased, take_lease
 from ..robot_interface.soft_stop import MotionRefused
 from ..world.clearance import (STOP_DISTANCE, Clearance, ClearanceRefused, ClearanceTrip, ClearanceWatch,
@@ -333,7 +334,7 @@ class PluginContext:
             robot = snapshot.robots.get(robot_id(serial))
             assumable = assumable_joints(robot.model.movable_joints, unknown_arms) if robot is not None else frozenset()
             if problem := clearance_problem(robot, assumable):
-                raise ClearanceRefused(f"robot {serial} cannot be checked for clearance: {problem}")
+                raise ClearanceRefused(f"robot {short_serial(serial)} cannot be checked for clearance: {problem}")
         own = {robot_id(serial) for serial in serials}
         if problem := others_problem(snapshot, own, unknown_robots):
             raise ClearanceRefused(f"robot {', '.join(serials)} cannot be checked against the others: {problem}")
@@ -647,7 +648,7 @@ class PluginContext:
         task = self._clearances.pop(clearance, None)
         if task is None:
             return
-        clearance.problem = f"robot {serial} {why}"
+        clearance.problem = f"robot {short_serial(serial)} {why}"
         clearance.hit = None if hit is None else replace(hit, where=task.get_name())
         trip = ClearanceTrip(self.now(), serial, task.get_name(), clearance.problem, clearance.hit)
         if clearance.refuse_first and not clearance.checked:
