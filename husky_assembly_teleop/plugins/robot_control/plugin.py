@@ -325,7 +325,7 @@ class RobotControlPlugin(HuskyPlugin):
 
         status = gui.add_html(""), gui.add_html("")
         hold = partial(self._hold_arm, serial, arm)
-        jog_inputs = partial(build_jog_inputs, ctx, gui, label, partial(self._on_jog_hold, ctx, key), hold,
+        jog_inputs = partial(build_jog_inputs, ctx, gui, label, partial(self._on_jog_hold, ctx, key),
                              partial(self._on_tool_jog_hold, ctx, key), ARM_STOP_DISTANCE)
         compliance_inputs = partial(build_compliance_inputs, ctx, gui, label, arm,
                                     load=partial(self._load_pose.add, key),

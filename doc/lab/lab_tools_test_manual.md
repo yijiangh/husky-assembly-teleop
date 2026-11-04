@@ -34,8 +34,8 @@ The old Teleop window: hold a button and tool0 moves along, or turns about, one 
 go: the robot's (x forward, y left, z up) or tool0's own, as **Frame** says. One joint point is streamed every tick 0.2 s ahead on a straight line from where you pressed, so
 the arm never drifts off the axis; one arm jogs at a time.
 
-1. **Control** › `0806` › `Left`: under **Joint**, below **Hold**, the line `tool0 jog · moves while held · one arm at
-   a time`, the **Tool speed** slider at 5 mm/s, **Frame** at Robot, and the **Tool0** folder: `x−  x+  rx−  rx+` /
+1. **Control** › `0806` › `Left`: under **Joint**, below the joint jog, the **TOOL0 JOG** bar (`moves while held · one arm
+   at a time`), the **Tool speed** slider at 5 mm/s, **Frame** at Robot, and the **Tool0** folder: `x−  x+  rx−  rx+` /
    `y−  y+  ry−  ry+` / `z−  z+  rz−  rz+`. Set **Frame** to Tool for steps 2 to 6. **(sim)**
 2. Hold **x+** for 2 s. **Expect:** the line under the buttons reads `jogging along tool0 x: +9.8 mm at 5 mm/s`
    (counting up), `tcp` in the status moves, and on release the pane says `arm left_ur_arm: hold sent` once.

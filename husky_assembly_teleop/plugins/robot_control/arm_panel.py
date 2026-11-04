@@ -106,22 +106,23 @@ class ComplianceInputs:
 # --- --- --- --- --- BUILDERS --- --- --- --- ---
 
 def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold: Callable[[int, float], None],
-                     hold: Callable[[], None], on_tool_hold: Callable[[int, float], None], stop_distance: float
-                     ) -> JogInputs:
-    """Add the joint controller's inputs: speed, a - and + hold button per joint, Clearance, Hold, and the tool0 jog.
+                     on_tool_hold: Callable[[int, float], None], stop_distance: float) -> JogInputs:
+    """Add the joint controller's inputs: the joint jog (speed, - and + per joint, Clearance), then the tool0 jog.
+
+    Each jog sits under its own section bar.
 
     Args:
         ctx: The plugin's context.
         gui: The GUI api, inside the controller's folder.
         label: "<serial> <arm name>", for intent names.
         on_hold: Called every report of a held jog button, with the joint's index and the direction (-1 or +1).
-        hold: Holds the arm where it is.
         on_tool_hold: Called every report of a held tool0 jog button, with the axis (0-5) and the direction.
         stop_distance: The clearance a jog keeps, metres, for the hint.
 
     Returns:
         JogInputs: The handles.
     """
+    gui.add_html(section("joint jog", SECTION_CTRL))
     clearance_note = gui.add_html(jog_clearance_note(True, stop_distance))
     gui.add_html(note("to move to a pose: plan it in Plan › Arm"))
     speed = gui.add_slider("Speed", min=0.05, max=1.0, step=0.05, initial_value=0.5,
@@ -140,9 +141,6 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
     # * Below the buttons it guards, as the D-pad's.
     clearance = ClearanceToggle(jog_clearance_hint(stop_distance))
     clearance.add(ctx, gui, label)
-    move_group = gui.add_button_group("Move", ["Hold"],
-                                      hint="Brake to a standstill where the arm is, also during a planned path.")
-    move_group.on_click(ctx.defer(f"hold {label}", hold))
     # * Below the joint jog's buttons, so ticking it moves none of them; the tool0 jog's arrows box is below its own.
     arrows = gui.add_checkbox("Joint arrows", initial_value=False,
                               hint="Show in the 3D view which way each joint turns: red for its + button, green for −.")
@@ -183,7 +181,7 @@ def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_
     Returns:
         ToolJogInputs: The handles.
     """
-    gui.add_html(note("tool0 jog · moves while held · one arm at a time"))
+    gui.add_html(section("tool0 jog", SECTION_CTRL, "moves while held · one arm at a time"))
     speed = gui.add_slider("Tool speed", min=TOOL_JOG_SPEED_MIN, max=TOOL_JOG_SPEED_MAX, step=1.0,
                            initial_value=TOOL_JOG_SPEED_DEFAULT,
                            hint=f"mm/s along an axis; a turn runs at {TOOL_JOG_DEG_PER_S_PER_MM_S:g} °/s per mm/s.")
