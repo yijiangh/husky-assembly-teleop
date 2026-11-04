@@ -155,14 +155,14 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         self._plan = replace(plan, path=slowed)
 
     def check_path(self, serial: str, arm: str,
-                   waypoints: Sequence[Sequence[float]]) -> asyncio.Future[CollisionHit | None]:
+                   waypoints: Sequence[Sequence[float]], margin: float = 0.0) -> asyncio.Future[CollisionHit | None]:
         """Check a given joint path for one arm for collisions, in the world as it is now (`ArmPlannerContract`)."""
         future = asyncio.get_running_loop().create_future()
         path = np.array(waypoints, dtype=float)
-        self._ctx.submit(f"check path {serial}", lambda: self._start_check(serial, arm, path, future))
+        self._ctx.submit(f"check path {serial}", lambda: self._start_check(serial, arm, path, margin, future))
         return future
 
-    def _start_check(self, serial: str, arm: str, waypoints: np.ndarray,
+    def _start_check(self, serial: str, arm: str, waypoints: np.ndarray, margin: float,
                      future: asyncio.Future[CollisionHit | None]) -> None:
         """Snapshot the world and check the path on the worker, after any search before it. Main thread."""
         snapshot, _guessed = with_guesses(self._ctx.scene.snapshot, robot_id(serial))
@@ -172,7 +172,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             if problems:
                 raise ValueError(f"{serial} can't be checked: {'; '.join(problems)}")
             scene = with_stand_ins(snapshot, {robot_id(serial)}).scene
-            result = path_hit(self._world.sync(scene, serial), scene, arm, waypoints)
+            result = path_hit(self._world.sync(scene, serial), scene, arm, waypoints, margin)
             self._loaded.add(serial)
             return result
 

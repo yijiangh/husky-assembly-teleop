@@ -47,7 +47,7 @@ class ArmPlannerContract(PlannerContract[ArmPlanRequest], Protocol):
         """
 
     def check_path(self, serial: str, arm: str,
-                   waypoints: Sequence[Sequence[float]]) -> asyncio.Future[CollisionHit | None]:
+                   waypoints: Sequence[Sequence[float]], margin: float = 0.0) -> asyncio.Future[CollisionHit | None]:
         """Check a joint path for one arm against the robot itself, the other robots and every scene body.
 
         Each waypoint and the straight joint move between two are checked, in the world as it is now; the robot's
@@ -57,6 +57,8 @@ class ArmPlannerContract(PlannerContract[ArmPlanRequest], Protocol):
             serial: The robot.
             arm: Which of its arms, e.g. "left_ur_arm".
             waypoints: (n, 6) joint values, radians, UR driver order.
+            margin: Closer than this to anything counts as a hit, metres (0: contact only); against the robot
+                itself at most SELF_DISTANCE, as a clearance checks it.
 
         Returns:
             asyncio.Future[CollisionHit | None]: Resolves with the first configuration that collides and every pair

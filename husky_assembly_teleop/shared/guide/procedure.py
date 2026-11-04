@@ -110,6 +110,7 @@ class Procedure:
             replaced.cancel()
             ctx.log_info(f"{label} replaces the procedure waiting for Go")
         self.outcome, self.prompt, self._go = None, "", False
+        self.confirm.press.forget()
         self._task = ctx.spawn(task_name, self._run(ctx, label, work, replaced))
 
     async def _run(self, ctx: PluginContext, label: str, work: Coroutine, replaced: asyncio.Task | None = None) -> None:
@@ -156,9 +157,9 @@ class Procedure:
         self.go()
 
     def cancel(self) -> None:
-        """Cancel the running procedure, or only its `pausable` part while one runs."""
+        """Cancel the running procedure, or only its `pausable` part while one moves; one waiting for Go ends."""
         if self.running:
-            self._paused = self._pausable
+            self._paused = self._pausable and not self.waiting
             self._task.cancel()
 
     async def pausable(self, work: Coroutine) -> bool:
@@ -192,6 +193,7 @@ class Procedure:
             frozenset[str]: Ids of the other robots Go let be unknown during the move (`unknown_allowed`).
         """
         self.prompt, self._go, self.doing, self.go_label = prompt, False, "waiting for Go", go
+        self.confirm.press.forget()  # * a Go pressed for an earlier question never counts for this one
         self._acting, self.unknown_allowed = frozenset(acting), frozenset()
         await ctx.wait_until(lambda: self._go, timeout_s=GO_TIMEOUT, description="Go")
         self.prompt, self._acting = "", frozenset()

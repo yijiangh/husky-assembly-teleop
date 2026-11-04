@@ -714,7 +714,7 @@ def test_a_path_check_during_a_step_moves_nothing_and_leases_nothing(monkeypatch
     checked = []
     planner._world = SimpleNamespace(sync=lambda _snapshot, _serial: "mirror", close=lambda: None)
     monkeypatch.setattr(arm_plugin, "path_hit",
-                        lambda _world, _mirror, arm, waypoints: checked.append((arm, waypoints.shape)))
+                        lambda _world, _mirror, arm, waypoints, _margin: checked.append((arm, waypoints.shape)))
 
     async def scenario():
         future = lab.plugin.request_execute(lab.request("B20_J_transfer"))

@@ -365,6 +365,26 @@ def test_cancel_stops_only_a_pausable_part_and_a_second_cancel_ends_the_procedur
     asyncio.run(scenario())
 
 
+def test_cancel_inside_a_pausable_part_that_waits_for_go_ends_the_procedure():
+    """Waiting for Go inside a pausable part, nothing moves: Cancel ends the whole procedure at once."""
+    procedure, ctx, parts = Procedure(), make_async_ctx(), []
+
+    async def validation():
+        await procedure.pausable(procedure.ask_go(ctx, "move?", "move"))
+        parts.append("went on")
+
+    async def scenario():
+        procedure.start(ctx, "validation", validation(), "validation")
+        await asyncio.sleep(0)
+        assert procedure.waiting
+        procedure.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await procedure._task
+        assert parts == [] and procedure.outcome.label == "validation cancelled"
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("level, color", [(GOOD, OK), (WARN, BUSY), (BAD, FAIL)])
 def test_the_outcome_chip_takes_the_level_it_was_given(server, level, color):
     """A benign outcome ("new run") is green, a refusal red: the level is set where the outcome is, not guessed."""
@@ -491,6 +511,27 @@ def test_a_go_that_moves_a_robot_asks_twice_while_another_robot_is_not_measured(
         await procedure._task
         alice = frozenset({"robots/a200-0804"})
         assert got == [alice] and procedure.outcome is None and procedure.unknown_allowed == alice
+
+    asyncio.run(scenario())
+
+
+def test_a_go_pressed_for_an_earlier_question_never_counts_for_the_next():
+    """A first press, then another procedure asks: its first press only asks again, whatever it asks for."""
+    procedure, clock = Procedure(), SimpleNamespace(now=0.0)
+    ctx = robots_ctx(clock, unknown=True)
+
+    async def scenario():
+        started(procedure, ctx, procedure.ask_go(ctx, "move to take 3?", "move", ["robots/a200-0805"]))
+        await asyncio.sleep(0)
+        procedure.press_go(ctx)
+        started(procedure, ctx, procedure.ask_go(ctx, "move to take 5?", "move", ["robots/a200-0805"]))
+        for _ in range(3):
+            await asyncio.sleep(0)
+        clock.now = 1.0
+        procedure.press_go(ctx)
+        await asyncio.sleep(0)
+        assert procedure.waiting and procedure.outcome.label == "press Go again"
+        procedure.cancel()
 
     asyncio.run(scenario())
 

@@ -32,6 +32,9 @@ if TYPE_CHECKING:
     from ....world.measured import TrackedObject
     from ..run import Run
 
+#: Clearance kept by arm motions during takes and validation, metres (driving keeps the default STOP_DISTANCE). Above
+#: what the arm covers while the check lags a tick or two: 20°/s at 1 m reach is 3.5 cm in 0.1 s.
+ARM_CLEARANCE = 0.05
 #: An arm has arrived once no joint is further than this from the target, radians.
 ARRIVED = math.radians(0.5)
 #: Seconds a move may take beyond its planned duration, and a planned move beyond twice its preview's.
@@ -144,7 +147,12 @@ class ArmMotion:
             if not base_moved(planned_at, ctx.kinematics.base_pose(run.serial)):
                 break
             again = "The base moved: "
-        sent, message = await planner.commit(plan.id, unknown, self.procedure.clearance.value)
+        try:
+            sent, message = await planner.commit(plan.id, unknown, self.procedure.clearance.value)
+        except asyncio.CancelledError:
+            # * Cancelled before the planner answered: it may already be leasing the robot or checking the start.
+            planner.cancel_commit(run.serial)
+            raise
         if not sent:
             raise RuntimeError(f"move to {what} not sent: {message}")
         self.procedure.doing = f"moving to {what}"

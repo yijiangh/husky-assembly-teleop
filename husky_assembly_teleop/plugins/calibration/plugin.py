@@ -32,6 +32,7 @@ from ...world.checks import GOOD
 from ...world.clearance import ARM_STOP_DISTANCE
 from ...world.mocap import mocap_check
 from scaffolding_assembly_core.ids import robot_id
+from .robot.motion import ARM_CLEARANCE
 from .run import Run
 from .steps import STEPS
 from .steps.base import FAILS, TOOL_NAME, WORK, Calibration, CalibrationStep
@@ -200,7 +201,8 @@ class CalibrationPlugin(HuskyPlugin):
         run, tool, procedure, step = self.cal.run, self.cal.tool, self.cal.procedure, self.panel.current
         # * Watched where Go moves the arm, until a procedure moves it: Go's Clearance refuses a start too close.
         goes = run is not None and step.go_moves and (procedure.waiting or not procedure.running)
-        procedure.clearance.watch(ctx, run.serial if goes else None, ARM_STOP_DISTANCE)
+        margin = ARM_CLEARANCE if procedure.waiting and procedure.go_label == "sweep" else ARM_STOP_DISTANCE
+        procedure.clearance.watch(ctx, run.serial if goes else None, margin)
         if run is None:
             return ""
         now = ctx.now()

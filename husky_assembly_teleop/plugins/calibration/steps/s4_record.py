@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from contextlib import nullcontext
 from typing import TYPE_CHECKING
@@ -11,22 +12,19 @@ import viser
 
 from scaffolding_assembly_core.ids import robot_id
 
+from ....shared.planner.planner_service import PlannerService
 from ....world.checks import BAD, GOOD, PENDING, WARN, Check
 from ....world.freeze import take_basis
 from ....ui.style import few, indented
 from ..analysis.checks import take_count_check
 from ..storage.session_files import write_take
-from ..robot.motion import sweep_path
+from ..robot.motion import ARM_CLEARANCE, sweep_path
 from ..robot.sweeps import nearest_take, shortest_order
 from ..views.takes_view import take_index, take_label
 from .base import CalibrationStep, tool_body_check
 
 if TYPE_CHECKING:
     from ....plugin_api.context import PluginContext
-
-#: Clearance kept by arm motions during takes and validation, metres (driving keeps the default STOP_DISTANCE). Above
-#: what the arm covers while the check lags a tick or two: 20°/s at 1 m reach is 3.5 cm in 0.1 s.
-ARM_CLEARANCE = 0.05
 
 
 class Record(CalibrationStep):
@@ -134,8 +132,14 @@ class Record(CalibrationStep):
         takes.in_progress = (index, samples)
         try:
             with ctx.lease_robots([run.serial], f"calibration take {index + 1}"), \
-                    (ctx.clearance([run.serial], ARM_CLEARANCE, unknown_robots=unknown)
-                     if procedure.clearance.value else nullcontext()):
+                    (ctx.clearance([run.serial], ARM_CLEARANCE, unknown_robots=unknown, refuse_first=True)
+                     if procedure.clearance.value else nullcontext()) as clearance:
+                try:
+                    await PlannerService.first_check(ctx, clearance)
+                except asyncio.CancelledError:
+                    if refusal := PlannerService.start_refusal(clearance):
+                        raise RuntimeError(f"take {index + 1}: {refusal}") from None
+                    raise
                 # * Judged again under the lease: the base may have been driven while Go was waited for, and the
                 #   sweeps are checked clear only where it stood then (Sweeps).
                 if (refusal := self.refusal(ctx)) is not None:

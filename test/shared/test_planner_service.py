@@ -221,6 +221,21 @@ def test_commit_sends_only_the_latest_ready_plan():
 
 
 @pytest.mark.safety
+def test_a_commit_given_up_before_it_runs_sends_nothing():
+    """The caller cancels the commit's answer before the commit ran: nothing is sent and nothing fails."""
+    async def scenario(planner, ctx):
+        plan = await planner.request_plan(Request("alice"))
+        planner.commit(plan.id).cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return planner.plan
+
+    planner = Planner()
+    latest = run(planner, scenario)
+    assert planner.sent == [] and latest.state == "ready"
+
+
+@pytest.mark.safety
 def test_a_commit_to_a_soft_stopped_robot_answers_nothing_sent():
     """A send the stopped robot refuses still resolves the commit, and the plan stays ready for after Resume."""
     async def scenario(planner, ctx):

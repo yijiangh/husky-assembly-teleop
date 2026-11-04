@@ -10,6 +10,7 @@ import yaml
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.plugins.arm_planner.planner import path_hit
+from husky_assembly_teleop.plugins.calibration.robot.motion import ARM_CLEARANCE
 from husky_assembly_teleop.plugins.calibration.robot.sweeps import (SWEEPS_FILE, TURN, UNWOUND,
                                                                     ArmSweeps, Sweep, joint_limits, load_sweeps,
                                                                     load_validation_poses, nearest_take,
@@ -239,5 +240,30 @@ def test_validation_poses_are_clear_of_the_robot_itself():
             mirror = world.sync(scene, digits)
             for pose in load_validation_poses(DATA, digits, arm):
                 assert path_hit(mirror, scene, arm, np.array([pose])) is None, (digits, arm, pose)
+    finally:
+        world.close()
+
+
+@pytest.mark.slow
+def test_the_record_clearance_skips_no_take_that_contact_alone_lets_through():
+    """Marker plate on, nothing around: ARM_CLEARANCE skips the same takes as contact; against itself SELF_DISTANCE.
+
+    Cindy's takes that pass her other arm at stow hit already on contact.
+    """
+    world = MirrorPool()
+    try:
+        for digits, arm in ARMS:
+            config = robot_config_from_serial(digits, DATA)
+            tools = tuple("calibration_marker" if config_arm.name == arm else config_arm.end_effector
+                          for config_arm in config.arms)
+            config = robot_config_from_serial(digits, DATA, tools=tools)
+            joints = {name: value for config_arm in config.arms
+                      for name, value in zip(arm_joint_names(config_arm.name), config_arm.stow_joints)}
+            robot = RobotObject(robot_id(digits), config.model, Pose(), joints)
+            scene = Scene(bodies={}, world_poses={}, robots={robot.id: robot})
+            for index, sweep in enumerate(load_sweeps(DATA, digits, arm).sweeps):
+                clear = [path_hit(world.sync(scene, digits), scene, arm, sweep.waypoints(), margin) is None
+                         for margin in (0.0, ARM_CLEARANCE)]
+                assert clear[0] == clear[1], (digits, arm, index + 1)
     finally:
         world.close()

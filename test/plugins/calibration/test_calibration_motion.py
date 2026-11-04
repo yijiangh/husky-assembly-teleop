@@ -113,14 +113,21 @@ def test_a_sweeps_preview_stops_at_each_waypoint_and_moves_each_step_as_the_arm_
     assert np.degrees(path.sample(stop + 0.2)[0]) == pytest.approx(12.0 * (1 - np.cos(0.2 * np.pi)) / 2)
 
 
-def test_cancel_during_a_planned_move_stops_the_planners_motion_on_that_robot():
-    """Cancel while the arm moves: the arm is held and the planner's commit on that robot is cancelled too."""
+@pytest.mark.safety
+@pytest.mark.parametrize("answered", [True, False])
+def test_cancel_during_a_planned_move_stops_the_planners_motion_on_that_robot(answered):
+    """Cancel while the arm moves, or before the planner said it sent: the planner's commit on that robot is cancelled.
+
+    Once moving, the arm is held too.
+    """
     cancelled = []
 
     async def request_plan(_request):
         return SimpleNamespace(state="ready", message="clear", id=7, path=SimpleNamespace(duration=1.0))
 
     async def commit(_plan_id, unknown_robots=(), clearance=True):
+        if not answered:
+            await asyncio.get_running_loop().create_future()  # * still leasing or checking the start
         return True, "sent"
 
     async def wait_until(predicate, timeout_s=None, description=""):
@@ -141,13 +148,13 @@ def test_cancel_during_a_planned_move_stops_the_planners_motion_on_that_robot():
             ArmMotion(procedure).move_to(ctx, run, np.full(6, 0.1), "the start of take 1"))
         for _ in range(5):
             await asyncio.sleep(0)
-        assert procedure.doing == "moving to the start of take 1"
+        assert procedure.doing.startswith("moving" if answered else "planning")
         move.cancel()
         with pytest.raises(asyncio.CancelledError):
             await move
 
     asyncio.run(scenario())
-    assert arm.holds == 1 and cancelled == ["a200-0805"]
+    assert arm.holds == int(answered) and cancelled == ["a200-0805"]
 
 
 @pytest.mark.safety

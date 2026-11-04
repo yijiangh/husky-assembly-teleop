@@ -17,7 +17,7 @@ from typing import Callable, Sequence
 
 import numpy as np
 
-from ...world.clearance import PLAN_DISTANCE
+from ...world.clearance import PLAN_DISTANCE, SELF_DISTANCE
 from ...world.collision_hit import CollisionHit
 from ...shared.assembly_planning.collision import collision_hit, collisions
 from ...shared.assembly_planning.joints import arm_joint_names
@@ -96,7 +96,8 @@ class ArmPath(TimedPath):
                    joint_names=tuple(joint_names), velocities=velocities, rests=rests)
 
 
-def path_hit(mirror: CompasFabMirror, scene: Scene, arm_name: str, waypoints: np.ndarray) -> CollisionHit | None:
+def path_hit(mirror: CompasFabMirror, scene: Scene, arm_name: str, waypoints: np.ndarray,
+             margin: float = 0.0) -> CollisionHit | None:
     """Why a given joint path for one arm collides: its first waypoint, or straight joint move between two, that does.
 
     Args:
@@ -104,12 +105,14 @@ def path_hit(mirror: CompasFabMirror, scene: Scene, arm_name: str, waypoints: np
         scene: The scene the mirror was synced to.
         arm_name: Which arm, e.g. "ur_arm".
         waypoints: (n, 6) joint values, radians, UR driver order; checked as given, moves at JOINT_STEP.
+        margin: Closer than this to anything counts as a hit, metres; against the robot itself at most SELF_DISTANCE,
+            as a clearance checks it.
 
     Returns:
         CollisionHit | None: The first configuration that collides, or None if the whole path is clear.
     """
     names = arm_joint_names(arm_name)
-    check = mirror.search_check(names)
+    check = mirror.search_check(names, margin, min(margin, SELF_DISTANCE))
     previous = None
     for index, waypoint in enumerate(np.asarray(waypoints, dtype=float)):
         for point in [tuple(waypoint)] if previous is None else _extend(previous, waypoint):

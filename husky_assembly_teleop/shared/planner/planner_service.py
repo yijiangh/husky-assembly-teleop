@@ -286,6 +286,8 @@ class PlannerService(HuskyPlugin, Generic[R]):
     def _commit(self, plan_id: int, future: asyncio.Future[tuple[bool, str]], unknown_robots: frozenset[str],
                 clearance: bool) -> None:
         """Start executing plan `plan_id` if it is the latest and ready; otherwise answer why not."""
+        if future.cancelled():
+            return  # * the caller gave up before this ran: nothing is sent
         plan = self._plan
         if plan is None or plan.id != plan_id:
             future.set_result((False, "nothing sent: that plan was replaced or cleared"))
@@ -311,7 +313,7 @@ class PlannerService(HuskyPlugin, Generic[R]):
                        future: asyncio.Future[tuple[bool, str]]) -> None:
         """Lease the plan's robot once the commit it replaces has ended, and `execute` the plan; always answers.
 
-        Ended before `execute` ran, the answer also goes to `commit_refused`.
+        Ended before `execute` ran, the answer also goes to `commit_refused`; given up by the caller, nothing runs.
         """
         def answer(sent: bool, message: str) -> None:
             if future.done():
@@ -325,6 +327,8 @@ class PlannerService(HuskyPlugin, Generic[R]):
             if replacing is not None:
                 await asyncio.gather(replacing, return_exceptions=True)  # it gives the lease back as it ends
             with self._ctx.lease_robots([plan.request.serial], f"commit plan {plan.id}"):
+                if future.cancelled():
+                    return  # * the caller gave up before anything was sent
                 ran = True
                 await self.execute(self._ctx, plan, answer)
         except MotionRefused as refused:
@@ -332,5 +336,5 @@ class PlannerService(HuskyPlugin, Generic[R]):
         finally:
             self._replaced.discard(asyncio.current_task())
             answer(False, "nothing sent: the commit ended before sending")
-            if not ran:
+            if not ran and not future.cancelled():
                 self.commit_refused(plan, future.result()[1])
