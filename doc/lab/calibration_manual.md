@@ -345,12 +345,14 @@ mounted as it was for Record. Expired Setup or marker errors only warn: **Sample
    pose where it can, so no joint turns round on the way and the cables do not wind up. A pose
    that collides, or has no collision-free move from here, is skipped.
 3. Two rows of chips. **spots**: one per spot sampled, "spot 2 · 6" (its samples), coloured by its worst sample
-   (hover for how far they spread), and the next spot. **poses here**: one per pose at this spot, grey until
-   visited, then by the sample's distance from the mean in `tool0` (the position check's 2 / 5 mm), or red if it
-   collides or has no move (hover for why). **markers**: each pose's sample's marker error at this spot (red
-   over 2 mm, amber over 1 mm; a spot chip's hover gives its largest). In the scene, a dot where the
-   tool body was at every sample of the run, in the same colours, and a frame at `base_footprint` where the base
-   stood for each spot ("spot 1", "spot 2", …; the spot in progress last), also for a resumed run's spots.
+   (hover for how far they spread), and the next spot; that one turns amber, **too close to spot n**, once the base
+   moved off spot n but less than 0.5 m and 30°: samples there would join spot n (hover for how much further).
+   **poses here**: one per pose at this spot, grey until visited, then by the sample's distance from the mean in
+   `tool0` (the position check's 2 / 5 mm), or red if it collides or has no move (hover for why). **markers**: each
+   pose's sample's marker error at this spot (red over 2 mm, amber over 1 mm; a spot chip's hover gives its largest).
+   In the scene, a dot where the tool body was at every sample of the run, in the same colours, and a frame at
+   `base_footprint` where the base stood for each spot ("spot 1", "spot 2", …; the spot in progress last), also for a
+   resumed run's spots.
 4. Repeat at 3 spots or more, far apart (0.5 m) or turned (30°), best with headings all round. Each sample is
    written as it is taken, a file each (`validation_pose<n>`), so nothing sampled is lost however the validation
    ends. Spots are counted by where the base stood, not by file: going on at the same place adds to that spot.

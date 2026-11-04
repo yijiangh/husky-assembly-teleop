@@ -313,6 +313,21 @@ def spot_groups(bases: Sequence[Pose]) -> list[list[int]]:
     return groups
 
 
+def too_close_spot(bases: Sequence[Pose], here: Pose) -> tuple[int, float, float] | None:
+    """The spot whose samples `here` would join although the base moved off it (`base_moved`), and how far it is.
+
+    Returns:
+        The spot's index in `spot_groups(bases)`, metres and degrees from its first sample; None at a new spot, or
+        still where that spot was sampled.
+    """
+    for index, group in enumerate(spot_groups(bases)):
+        if not new_spot(bases[group[0]], here):
+            if not base_moved(bases[group[0]], here):
+                return None
+            return (index, *pose_change(bases[group[0]], here))
+    return None
+
+
 def base_spots(bases: Sequence[Pose]) -> int:
     """How many base spots the samples were taken at (`spot_groups`)."""
     return len(spot_groups(bases))

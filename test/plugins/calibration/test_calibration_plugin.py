@@ -496,6 +496,29 @@ def test_apply_shows_what_this_run_applied_and_the_relay_live(server, tmp_path, 
     assert apply.state(ctx).detail.endswith(": Solve, then Apply again")
 
 
+def test_validate_says_when_the_base_moved_off_a_spot_but_not_far_enough(server, tmp_path, monkeypatch):
+    """One spot sampled: the next spot's chip is grey there, amber "too close" 0.3 m off it, grey again 1 m off."""
+    plugin, ctx, _ = make_plugin(server, tmp_path, monkeypatch)
+    walk_to_validate(plugin, ctx)
+    run, validate = plugin.cal.run, plugin.steps[5]
+    plugin.cal.procedure.auto = True
+    validate.start(ctx, "validation", validate._validate(ctx))
+    plugin.cal.procedure.auto = False
+    # * Where the spot was sampled: the fake's samples do not read the base state.
+    base, sampled = run.robot.base.state, run.validation().bases[0]
+    start, base.orientation = np.array(sampled.position), np.array(sampled.orientation)
+    base.position = start
+    plugin.draw(ctx)
+    assert ">spot 2 · 0<" in validate._html.content and "too close" not in validate._html.content
+    base.position = start + (0.0, 0.3, 0.0)
+    plugin.draw(ctx)
+    assert ">too close to spot 1<" in validate._html.content and ">spot 2 · 0<" not in validate._html.content
+    assert "Drive 0.20 m further" in validate._html.content
+    base.position = start + (0.0, 1.0, 0.0)
+    plugin.draw(ctx)
+    assert ">spot 2 · 0<" in validate._html.content and "too close" not in validate._html.content
+
+
 def test_done_at_an_expired_precondition_goes_on_to_the_work_it_is_needed_by(server, tmp_path, monkeypatch):
     """Back at Setup by hand, a box too old: Done goes to Tip offset, the work left, not round the steps."""
     plugin, ctx, _ = make_plugin(server, tmp_path, monkeypatch)

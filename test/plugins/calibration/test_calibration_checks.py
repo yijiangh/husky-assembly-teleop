@@ -12,6 +12,7 @@ from husky_assembly_teleop.plugins.calibration.analysis.checks import (DRIVE_SEC
                                                                        marker_error_detail, marker_error_level,
                                                                        pose_change, punch_checks,
                                                                        sample_marker_error, spot_groups, take_checks,
+                                                                       too_close_spot,
                                                                        take_count_check, tcp_offset_check, tool_check,
                                                                        validation_checks, validation_level, yaw_range)
 from husky_assembly_teleop.robot_interface.mocap_relay import (FRAME_ERROR, FRAME_HELD, FRAME_NONE, FRAME_REFIT_PENDING,
@@ -211,3 +212,13 @@ def test_samples_are_grouped_by_spot_also_when_the_base_drives_back_to_one():
     here, there = Pose((0.0, 0.0, 0.0)), Pose((1.0, 0.0, 0.0))
     nudged = Pose((0.05, 0.0, 0.0))
     assert spot_groups([here, there, nudged, there]) == [[0, 2], [1, 3]] and base_spots([here, there, nudged]) == 2
+
+
+def test_a_base_moved_off_a_spot_but_not_far_enough_is_too_close():
+    """At spot 1: none; 0.3 m off it: too close to it; turned 10° at spot 2: too close to that; 1 m off: none."""
+    bases = [_at(0.0, 0.0), _at(1.0, 0.0)]
+    assert too_close_spot(bases, _at(0.001, 0.0)) is None
+    near, metres, degrees = too_close_spot(bases, Pose((0.0, 0.3, 0.47)))
+    assert near == 0 and metres == pytest.approx(0.3) and degrees == pytest.approx(0.0)
+    assert too_close_spot(bases, _at(1.0, 10.0))[0] == 1
+    assert too_close_spot(bases, Pose((0.0, 1.0, 0.47))) is None and too_close_spot([], _at(0.0, 0.0)) is None
