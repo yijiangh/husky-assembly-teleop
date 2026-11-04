@@ -37,9 +37,9 @@ def snapshot(config, x: float, unmeasured: frozenset = frozenset()) -> Scene:
 
 
 def found(checker: ClearanceChecker, scene: Scene, own: str, assumable: frozenset = frozenset(),
-          allowed: frozenset = frozenset()) -> list:
+          allowed: frozenset = frozenset(), check_self: bool = True) -> list:
     """Check `own` in `scene`, these joints and other robots allowed to be unknown, and wait for the answer."""
-    assert checker.check(scene, [("drive", own, STOP_DISTANCE, assumable, allowed)])
+    assert checker.check(scene, [("drive", own, STOP_DISTANCE, assumable, allowed, check_self)])
     for _ in range(600):
         answer = checker.finished()
         if answer is not None:
@@ -63,8 +63,9 @@ def test_a_robot_at_the_wall_is_too_close_and_one_in_the_open_is_not():
         assert contact.pair[0].startswith(f"{own}/") and contact.pair[1] == WALL.id
         assert contact.depth < STOP_DISTANCE and contact.point_b[0] == pytest.approx(0.9, abs=1e-3)
         assert hit.concave == frozenset() and hit.message.startswith("clearance: ")
-        assert checker.check(snapshot(config, -2.0), [("drive", own, STOP_DISTANCE, frozenset(), frozenset())])
-        assert not checker.check(snapshot(config, -2.0), [("drive", own, STOP_DISTANCE, frozenset(), frozenset())])
+        drive = [("drive", own, STOP_DISTANCE, frozenset(), frozenset(), True)]
+        assert checker.check(snapshot(config, -2.0), drive)
+        assert not checker.check(snapshot(config, -2.0), drive)
     finally:
         checker.close()
 
@@ -169,5 +170,6 @@ def test_an_arm_folded_into_itself_and_a_bar_into_its_robot_are_found_and_named(
         short = Body("bars/s", box_geometry((0.03, 0.03, 0.05)), Attachment(own, "ur_arm_tool0", Pose()),
                      label="a short bar")
         assert found(checker, alone(config, stowed(config), (short,)), own) == [], "held at the flange: allowed"
+        assert found(checker, alone(config, folded), own, check_self=False) == [], "a base drive: its arms stand still"
     finally:
         checker.close()

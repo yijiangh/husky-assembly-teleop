@@ -23,6 +23,7 @@ from ...robot_interface.tool_step import (TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_
 from ...ui.joint_sliders import JOINT_SLIDER_NAMES
 from ...ui.phone import columns_css
 from ...ui.style import BUSY, FAIL, SECTION_CTRL, SECTION_TOOL, block, note, note_line, section, values, warning
+from ...shared.teleop.clearance_toggle import ClearanceToggle
 from ...shared.teleop.dpad import HOLD_CALLBACK_HZ
 from .markers import marker_legend
 
@@ -58,7 +59,7 @@ GRIP_HINTS = {"robotiq": "Stop holds the fingers where they are.",
 
 @dataclass
 class ToolJogInputs:
-    """Handles of the tool0 jog: speed slider (mm/s), buttons, readout line, and Clearance (the joint jog's again)."""
+    """Handles of the tool0 jog: speed slider (mm/s), buttons, readout line, and its Clearance box (the joint jog's)."""
 
     speed: viser.GuiSliderHandle
     readout: viser.GuiHtmlHandle
@@ -74,7 +75,7 @@ class JogInputs:
 
     Attributes:
         speed: The joint jog speed slider, a fraction of JOG_MAX_SPEED.
-        clearance: The Clearance box.
+        clearance: Clearance, a box below the joint jog and one below the tool0 jog.
         tool: The tool0 jog's handles.
         buttons: The joint jog's buttons; with the tool0 jog's, coloured by Clearance (`jog_clearance_note`).
         note: The line above them saying what Clearance checks.
@@ -82,7 +83,7 @@ class JogInputs:
     """
 
     speed: viser.GuiSliderHandle
-    clearance: viser.GuiCheckboxHandle
+    clearance: ClearanceToggle
     tool: ToolJogInputs
     buttons: tuple[viser.GuiButtonHandle, ...]
     note: viser.GuiHtmlHandle
@@ -134,14 +135,15 @@ def build_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold:
                 button.on_hold(ctx.defer(f"jog {name} {label}", lambda joint=joint, direction=direction:
                                          on_hold(joint, direction)), callback_hz=HOLD_CALLBACK_HZ)
     # * Below the buttons it guards, as the D-pad's.
-    clearance = gui.add_checkbox("Clearance", initial_value=True, hint=jog_clearance_hint(stop_distance))
+    clearance = ClearanceToggle(jog_clearance_hint(stop_distance))
+    clearance.add(ctx, gui, label)
     move_group = gui.add_button_group("Move", ["Hold"],
                                       hint="Brake to a standstill where the arm is, also during a planned path.")
     move_group.on_click(ctx.defer(f"hold {label}", hold))
     # * Below the joint jog's buttons, so ticking it moves none of them; the tool0 jog's arrows box is below its own.
     arrows = gui.add_checkbox("Joint arrows", initial_value=False,
                               hint="Show in the 3D view which way each joint turns: red for its + button, green for −.")
-    return JogInputs(speed, clearance, build_tool_jog_inputs(ctx, gui, label, on_tool_hold, clearance, stop_distance),
+    return JogInputs(speed, clearance, build_tool_jog_inputs(ctx, gui, label, on_tool_hold, clearance),
                      tuple(buttons), clearance_note, arrows)
 
 
@@ -163,18 +165,17 @@ def jog_clearance_note(ticked: bool, stop_distance: float) -> str:
 
 
 def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_hold: Callable[[int, float], None],
-                          clearance: viser.GuiCheckboxHandle, stop_distance: float) -> ToolJogInputs:
+                          clearance: ClearanceToggle) -> ToolJogInputs:
     """Add the tool0 jog: speed slider in mm/s, a hold button per axis and direction, Clearance, readout, arrows box.
 
-    Its Clearance box is the joint jog's `clearance` shown again below its buttons: ticking either ticks both.
+    Its Clearance box shows the joint jog's `clearance` again, below its buttons.
 
     Args:
         ctx: The plugin's context.
         gui: The GUI api, inside the joint trajectory controller's folder.
         label: "<serial> <arm name>", for intent names.
         on_hold: Called every report of a held button, with the axis (0-2 moves, 3-5 turns) and the direction.
-        clearance: The joint jog's Clearance box.
-        stop_distance: The clearance a jog keeps, metres, for the hint.
+        clearance: The joint jog's Clearance.
 
     Returns:
         ToolJogInputs: The handles.
@@ -195,12 +196,7 @@ def build_tool_jog_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_
                 # ! Bind loop values as defaults, or every button jogs like the last.
                 button.on_hold(ctx.defer(f"tool jog {name} {label}", lambda axis=axis, direction=direction:
                                          on_hold(axis, direction)), callback_hz=HOLD_CALLBACK_HZ)
-    # * The same Clearance again, below the buttons it guards; an operator's tick on either sets the other.
-    again = gui.add_checkbox("Clearance", initial_value=clearance.value, hint=jog_clearance_hint(stop_distance))
-    clearance.on_update(ctx.defer_value(f"clearance {label}", lambda value: setattr(again, "value", value),
-                                        operator_only=True))
-    again.on_update(ctx.defer_value(f"tool clearance {label}", lambda value: setattr(clearance, "value", value),
-                                    operator_only=True))
+    again = clearance.add(ctx, gui, f"tool {label}")
     readout = gui.add_html(note_line(""))
     # * Last, so ticking it moves no button.
     arrows = gui.add_checkbox("Tool0 arrows", initial_value=False,

@@ -76,7 +76,7 @@ from ..ui.checklist import CheckList
 from ..ui.phone import big_buttons, phone_text
 from ..ui.second_press import SECOND_PRESS_SECONDS, SecondPress, show_waiting
 from ..ui.style import (BUSY, FAIL, INFO, LEVEL_COLORS, NONE, OK, SECTION_CTRL, SECTION_SENSOR, block, check_chip,
-                        chip, chip_line, hover, note, note_line, numbers, section, values)
+                        chip, chip_line, few, hover, note, note_line, numbers, section, values)
 from ..ui.top_down import Dot, FloorGrid, render_top_down, scene_footprints
 from ..world.camera_coverage import (aim_point, camera_fov, coverage_faces, footprint, outlines, plane_point,
                                      rectangle, segments, triangles, view_edges, view_rotation)
@@ -179,11 +179,6 @@ def lab_from_raw(ctx: PluginContext) -> tuple | None:
     """What the relay applies to every raw pose now, ((x, y, z), (qx, qy, qz, qw)), or None for nothing."""
     frame = relay_frame(ctx)
     return frame.lab_from_raw if frame is not None else None
-
-
-def few(names: Sequence[str], shown: int = 3) -> str:
-    """Up to `shown` names, then how many more, e.g. "A1, A2, A3 +2"."""
-    return ", ".join(names[:shown]) + (f" +{len(names) - shown}" if len(names) > shown else "")
 
 
 def frame_chips(frame: FloorCalibrationState | None, anchors_missing: Sequence[str] = ()) -> str:

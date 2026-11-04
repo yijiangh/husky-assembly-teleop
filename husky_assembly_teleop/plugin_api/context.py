@@ -284,7 +284,8 @@ class PluginContext:
     @contextmanager
     def clearance(self, serials: Iterable[str], margin: float = STOP_DISTANCE,
                   unknown_arms: Collection[str] | Literal["all"] = (),
-                  unknown_robots: Collection[str] = (), refuse_first: bool = False) -> Iterator[Clearance]:
+                  unknown_robots: Collection[str] = (), refuse_first: bool = False,
+                  check_self: bool = True) -> Iterator[Clearance]:
         """While the `with` block runs, stop robots that come too close to anything in the scene. Optional.
 
         - Checked against the whole scene: obstacles, process bodies, tracked objects and the other robots. Allowed
@@ -308,6 +309,8 @@ class PluginContext:
             unknown_robots: Ids of other robots that may be unknown.
             refuse_first: Too close at the first check ends it (`refused`) without a soft stop. ! Send nothing until
                 `clearance.checked`, e.g. a drive that must not start in collision.
+            check_self: Also check each robot against itself (SELF_DISTANCE). False only for a base drive: its arms
+                stand still, so they cannot come closer to the rest of the robot.
 
         Raises:
             RuntimeError: Outside a task of this plugin.
@@ -333,7 +336,7 @@ class PluginContext:
         for line in guessed:
             self.log_warn(f"clearance on {', '.join(serials)}: {line}")
         clearance = Clearance(serials, margin, unknown_arms=unknown_arms, unknown_robots=frozenset(unknown_robots),
-                              stand_ins=guessed, refuse_first=refuse_first)
+                              stand_ins=guessed, refuse_first=refuse_first, check_self=check_self)
         self._clearances[clearance] = task
         try:
             yield clearance
@@ -341,7 +344,7 @@ class PluginContext:
             self._clearances.pop(clearance, None)
 
     def watch_clearance(self, serials: Iterable[str], margin: float = STOP_DISTANCE,
-                        unknown_arms: Collection[str] | Literal["all"] = ()) -> ClearanceWatch:
+                        unknown_arms: Collection[str] | Literal["all"] = (), check_self: bool = True) -> ClearanceWatch:
         """Have robots checked as a clearance would check them, every WATCH_EVERY, without ever stopping them.
 
         The answer is in the watch's `found`, until `unwatch_clearance` or this plugin stops. Uses the monitor's
@@ -351,6 +354,7 @@ class PluginContext:
             serials: The robots to check.
             margin: Distance below which a robot counts as too close, metres.
             unknown_arms: Arms whose joints may be unknown, or ALL_ARMS, as for `clearance`.
+            check_self: Also check each robot against itself, as for `clearance`.
 
         Returns:
             ClearanceWatch: The watch, filled in as checks finish.
@@ -359,7 +363,7 @@ class PluginContext:
             >>> watch = ctx.watch_clearance([serial], unknown_arms=ALL_ARMS)
             >>> watch.found.get(serial)  # e.g. "came within 10 cm of wall", or None
         """
-        watch = ClearanceWatch(tuple(serials), margin, unknown_arms)
+        watch = ClearanceWatch(tuple(serials), margin, unknown_arms, check_self)
         self._watches.append(watch)
         return watch
 

@@ -374,7 +374,7 @@ ros2 launch husky_assembly_teleop sim.launch.py robot:=0805 tool:=calibration_ma
 `offsets` entry (for a robot's base: how far the true calibration is from crl-husky's default), adds `delay_sec`
 (Motive's latency) and the other imperfections, and announces "mocap" on the `simulated_parts` of each robot whose
 base it fakes. Per-body arguments take values for every body, or `<id>:<values>` per body. Its arguments:
-`launch/sim_mocap.launch.py`.
+`launch/sim_mocap.launch.py` and [calibration_manual.md](calibration_manual.md), "Testing in a simulation".
 
 ## Rigid Bodies In Motive
 

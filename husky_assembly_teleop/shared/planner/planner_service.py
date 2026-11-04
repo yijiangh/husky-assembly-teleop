@@ -137,9 +137,10 @@ class PlannerService(HuskyPlugin, Generic[R]):
         """Ids of the robots the operator let be unknown when committing `plan`; for `execute`'s clearance."""
         return self._unknown.get(plan.id, frozenset())
 
-    def cancel_commit(self) -> bool:
-        """Stop every motion a commit started that still runs: its task is cancelled, and `execute` stops the robot."""
-        running = [task for task in self._executions.values() if not task.done()]
+    def cancel_commit(self, serial: str | None = None) -> bool:
+        """Stop every motion a commit started that still runs, or only `serial`'s: `execute` stops the robot."""
+        running = [task for robot, task in self._executions.items()
+                   if not task.done() and serial in (None, robot)]
         for task in running:
             task.cancel("commit cancelled by the operator")
         return bool(running)

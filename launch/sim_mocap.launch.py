@@ -13,7 +13,8 @@ would, which the relay then takes in their place:
 - `offsets`: where Motive's body frame sits from the true pose, as a calibration gives it (x,y,z m, roll,pitch,yaw
   deg); for a robot's base, how far its true calibration is from crl-husky's default, so a calibration in the
   simulation has something to find.
-- The other imperfections (delay, noise, dropouts, marker errors, drifts) are all off by default: see the arguments.
+- The other imperfections (delay, noise, dropouts, marker errors, drifts) are all off by default: see the arguments
+  and doc/lab/calibration_manual.md, "Testing in a simulation".
 - It also announces what Motive's model descriptions give the relay: a body definition per faked body (`refines`
   nudges one, as a refine in Motive) and the lab's cameras (`cameras_file`).
 """

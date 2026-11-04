@@ -11,7 +11,8 @@ Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, 
   in `Clearance.unknown_arms` may be unknown (manual moves): they are checked where last seen, or stowed. A robot
   that cannot be checked when a clearance starts refuses it (`ClearanceRefused`), so nothing is sent.
 - A robot is also checked against itself, within SELF_DISTANCE: links, tools and what it holds; pairs that touch by
-  design (joined links, the SRDF's, a tool's flange links) are left out (`BaseCollisionWorld.self_hit`).
+  design (joined links, the SRDF's, a tool's flange links) are left out (`BaseCollisionWorld.self_hit`). Not for a
+  base driven with its arms still (`check_self` False): nothing moves against the rest of the robot then.
 - One worker thread checks one snapshot at a time, a tick or two behind the robot. Not an emergency stop.
 - On a trip, `PluginContext.clearance` soft stops the robot (Resume needed) and cancels the task. The monitor keeps
   the last TRIPS_KEPT trips with what came too close (`ClearanceTrip`), for the collisions plugin.
@@ -64,6 +65,8 @@ class Clearance:
         stand_ins: Other robots not measured when it started, and how they are checked (`StandIns.warnings`).
         refuse_first: Too close at the first check refuses it instead: no soft stop, `refused` set. ! Then send
             nothing until `checked`.
+        check_self: Whether each robot is also checked against itself (SELF_DISTANCE); False for a base drive, whose
+            arms stand still.
         checked: Whether a check found it clear yet.
         refused: Whether it ended at its first check, too close, without a soft stop (`refuse_first`).
     """
@@ -76,6 +79,7 @@ class Clearance:
     unknown_robots: frozenset[str] = frozenset()
     stand_ins: tuple[str, ...] = ()
     refuse_first: bool = False
+    check_self: bool = True
     checked: bool = False
     refused: bool = False
 
@@ -91,6 +95,7 @@ class ClearanceWatch:
         serials: The robots, by serial.
         margin: Distance below which a robot counts as too close, metres.
         unknown_arms: Arms whose joints may be unknown, checked where last seen or stowed, or ALL_ARMS.
+        check_self: Whether each robot is also checked against itself, as `Clearance.check_self`.
         found: Per serial, what the last check found it too close to, e.g. "came within 10 cm of wall"; empty if clear.
         unchecked: Per serial, why the last check could not check it, e.g. "cannot be checked: base not measured".
         checked_at: ROS time of the last finished check, or None before the first.
@@ -99,6 +104,7 @@ class ClearanceWatch:
     serials: tuple[str, ...]
     margin: float
     unknown_arms: Collection[str] | Literal["all"] = ()
+    check_self: bool = True
     found: dict[str, str] = field(default_factory=dict)
     unchecked: dict[str, str] = field(default_factory=dict)
     checked_at: float | None = None
@@ -185,8 +191,9 @@ class ClearanceChecker:
         self._world = BaseCollisionWorld()
         self._pending: Future | None = None
 
-    def check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str], frozenset[str]]]) -> bool:
-        """Start checking each (key, robot id, margin, joints and other robots that may be unknown) in `snapshot`.
+    def check(self, snapshot: Scene,
+              asked: list[tuple[Hashable, str, float, frozenset[str], frozenset[str], bool]]) -> bool:
+        """Start checking each (key, robot id, margin, joints and other robots that may be unknown, `check_self`).
 
         Skipped while the last check runs.
 
@@ -214,32 +221,33 @@ class ClearanceChecker:
         self._executor.submit(self._world.close)
         self._executor.shutdown(wait=True)
 
-    def _check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str], frozenset[str]]]
+    def _check(self, snapshot: Scene, asked: list[tuple[Hashable, str, float, frozenset[str], frozenset[str], bool]]
                ) -> list[tuple[Any, str, CollisionHit | None]]:
         """Sync the world to `snapshot` and say why each robot that is too close, or cannot be checked, is. Worker."""
         found, checked = [], []
-        for key, own, margin, assumable, allowed in asked:
+        for key, own, margin, assumable, allowed, check_self in asked:
             problem = clearance_problem(snapshot.robots.get(own), assumable) or others_problem(snapshot, {own}, allowed)
             if problem:
                 found.append((key, f"cannot be checked: {problem}", None))
             else:
-                checked.append((key, own, margin))
+                checked.append((key, own, margin, check_self))
         # * The unknown joints left may be: take them as known, where the kinematics has them (last seen, or stowed).
         #   A strict clearance on the same robot failed above already.
-        lenient = {own for _key, own, _margin in checked if snapshot.robots.get(own) is not None
+        lenient = {own for _key, own, _margin, _self in checked if snapshot.robots.get(own) is not None
                    and snapshot.robots[own].unmeasured}
         if lenient:
             snapshot = replace(snapshot, robots={object_id: replace(robot, unmeasured=frozenset())
                                                  if object_id in lenient else robot
                                                  for object_id, robot in snapshot.robots.items()})
-        snapshot = with_stand_ins(snapshot, {own for _key, own, _margin in checked}).scene
+        snapshot = with_stand_ins(snapshot, {own for _key, own, _margin, _self in checked}).scene
         self._world.sync(snapshot)
-        for key, own, margin in checked:
+        for key, own, margin, check_self in checked:
             # * Itself only within SELF_DISTANCE: links of one robot sit close by design.
             self_margin = min(margin, SELF_DISTANCE)
             try:
                 hit = self._world.collision_hit(own, margin, "clearance")
-                itself = None if hit is not None else self._world.self_hit(own, self_margin, "clearance")
+                itself = (None if hit is not None or not check_self
+                          else self._world.self_hit(own, self_margin, "clearance"))
             except (ValueError, KeyError, OSError, ET.ParseError) as error:
                 found.append((key, f"cannot be checked: {error}", None))
                 continue

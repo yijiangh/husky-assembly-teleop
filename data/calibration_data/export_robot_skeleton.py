@@ -40,7 +40,8 @@ import shutil
 import pybullet_planning as pp
 
 from config_loader import (
-    load_config, get_robot_urdf, get_joint_names, get_tool0_link_name, HERE,
+    load_config, get_robot_urdf, get_joint_names, get_tool0_link_name, CALIB_DATA_DIR,
+    RHINO_EXPORT_DIR,
 )
 
 # ---- set these once, then just run the file (CLI flags override if you want) ----
@@ -48,10 +49,7 @@ DATA_TO_VISUALISE = '20260608'
 BATCH = 'both'              # 'j0', 'j1', or 'both' (all batches in config.yaml data_batches)
 
 # Shared Google-Drive folder (same one the outlier CSVs go to).
-EXPORT_DIR = (
-    "/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/"
-    "2025-03 Husky Assembly/data_experiment/visualise_calibration_to_rhino"
-)
+EXPORT_DIR = RHINO_EXPORT_DIR
 
 
 def traj_label(file_name, data_batch, take_idx):
@@ -73,7 +71,7 @@ def arm_link_names(arm):
 
 def process_batch(robot, arm_joints, link_ids, tool0_id, flange_id, data_batch, date_folder, arm):
     """Build the skeleton dict for one batch (or None if its analysis file is missing)."""
-    analysis_file = os.path.join(HERE, date_folder, data_batch, f'{data_batch}_analysis.json')
+    analysis_file = os.path.join(CALIB_DATA_DIR, date_folder, data_batch, f'{data_batch}_analysis.json')
     if not os.path.exists(analysis_file):
         print(f'[{data_batch}] skip: {analysis_file} not found')
         return None

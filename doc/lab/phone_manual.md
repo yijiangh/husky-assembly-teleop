@@ -77,6 +77,8 @@ One sub-tab per robot, labelled with its serial (`0804`, `0805`, `0806`).
 - **Speed**: a fraction of the full speed (0.3 m/s, 0.5 rad/s). Separate from the laptop's slider.
 - **D-pad**: forward, back, turn left, turn right; drives while held. It drives only while the base runs its
   velocity controller (**Vel**); switch to it in the laptop's robot panel.
+- **Clearance**, below the D-pad: the laptop's box shown again, ticking either ticks both. Ticked, the base soft
+  stops within 10 cm of anything; unticked, the D-pad is amber and drives without it.
 - One folder per arm (**Arm**, or **Left** and **Right**):
   - The running arm controller: **Joint**, **Cart**, **Free**, or "no ctrl".
   - **Gripper**: **Open**, **Close** and **Stop** (no Stop on the v1 tool, which cannot stop halfway), one command

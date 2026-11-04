@@ -19,6 +19,7 @@ HTML for viser's `add_html`; assigning it in every `draw` is cheap (viser only s
 from __future__ import annotations
 
 from html import escape
+from typing import Sequence
 
 import viser
 from viser import _messages
@@ -51,6 +52,11 @@ def configure_theme(gui: viser.GuiApi, control_width: str = "medium", show_logo:
     gui._websock_interface.queue_message(_messages.ThemeConfigurationMessage(
         titlebar_content=None, control_layout="floating", control_width=control_width, show_logo=show_logo,
         show_share_button=show_share_button, dark_mode=dark_mode, colors=ACTION_SHADES))
+
+
+def few(names: Sequence[str], shown: int = 3) -> str:
+    """Up to `shown` names, then how many more, e.g. "A1, A2, A3 +2"."""
+    return ", ".join(names[:shown]) + (f" +{len(names) - shown}" if len(names) > shown else "")
 
 
 def hover(text: str, where: str = "the console") -> str:

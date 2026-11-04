@@ -78,8 +78,10 @@ class PlannerContract(Protocol[R]):
         soft stops it. The plan's own robot among them: the base planner checks its unknown arms where last seen.
         """
 
-    def cancel_commit(self) -> bool:
+    def cancel_commit(self, serial: str | None = None) -> bool:
         """Stop every motion a commit started that still runs (the planner's `execute` stops the robot); main thread.
+
+        `serial`: only that robot's motion; None for every robot's.
 
         Returns:
             bool: Whether one was running.

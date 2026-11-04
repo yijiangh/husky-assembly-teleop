@@ -224,18 +224,19 @@ class FakeContext:
         self.panels.append(FakePanel(self.gui))
         return self.panels[-1]
 
-    def watch_clearance(self, serials, margin: float = STOP_DISTANCE, unknown_arms=()) -> ClearanceWatch:
+    def watch_clearance(self, serials, margin: float = STOP_DISTANCE, unknown_arms=(),
+                        check_self: bool = True) -> ClearanceWatch:
         """Keep the watch asked for in `watches`; nothing checks it, so it stays clear unless a test fills it in."""
-        self.watches.append(ClearanceWatch(tuple(serials), margin, unknown_arms))
+        self.watches.append(ClearanceWatch(tuple(serials), margin, unknown_arms, check_self))
         return self.watches[-1]
 
     @contextmanager
     def clearance(self, serials, margin: float = STOP_DISTANCE, unknown_arms=(),
-                  unknown_robots=(), refuse_first: bool = False) -> Iterator[Clearance]:
+                  unknown_robots=(), refuse_first: bool = False, check_self: bool = True) -> Iterator[Clearance]:
         """Keep the clearance asked for in `clearances`; nothing checks it, so it counts as checked clear at once."""
         self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms,
                                          unknown_robots=frozenset(unknown_robots), refuse_first=refuse_first,
-                                         checked=True))
+                                         check_self=check_self, checked=True))
         yield self.clearances[-1]
 
     def require(self, name: str) -> Any:

@@ -4,7 +4,7 @@ This no longer generates a derived CSV. The viewer (rhino8_import_outliers.py) r
 raw data directly, so all this does is COPY each batch's `{batch}_analysis.json` into the
 shared Drive folder under a dated subfolder:
 
-    {date}/{batch}/{batch}_analysis.json
+    CALIB_DATA_DIR/{date}/{batch}/{batch}_analysis.json
       -> EXPORT_DIR/{date}/{batch}_analysis.json
 
 `{batch}_analysis.json` (output of 0_circle_fitting.py) already contains, per take, the
@@ -20,22 +20,19 @@ import argparse
 import os
 import shutil
 
-from config_loader import load_config, HERE
+from config_loader import load_config, CALIB_DATA_DIR, RHINO_EXPORT_DIR
 
 # ---- set these once, then just run the file (CLI flags override) ----
 DATA_TO_VISUALISE = '20260615'
 BATCH = 'both'              # 'j0', 'j1', or 'both' (all batches in config.yaml data_batches)
 
 # Shared Google-Drive folder; analysis files land in a dated subfolder under here.
-EXPORT_DIR = (
-    "/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/"
-    "2025-03 Husky Assembly/data_experiment/visualise_calibration_to_rhino"
-)
+EXPORT_DIR = RHINO_EXPORT_DIR
 
 
 def stage_batch(data_batch, date_folder):
     """Copy {date}/{batch}/{batch}_analysis.json into EXPORT_DIR/{date}/. Returns dest or None."""
-    src = os.path.join(HERE, date_folder, data_batch, f'{data_batch}_analysis.json')
+    src = os.path.join(CALIB_DATA_DIR, date_folder, data_batch, f'{data_batch}_analysis.json')
     if not os.path.exists(src):
         print(f'[{data_batch}] skip: {src} not found')
         return None

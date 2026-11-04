@@ -279,6 +279,7 @@ What each one does in detail, and the panels and tabs it shows: [doc/lab/plugins
 | `base_planner_panel` | Plans a collision-free base path and sends it to the onboard follower. Experimental. |
 | `arm_planner_panel` | Plans a collision-free arm motion to a joint target. Experimental. |
 | `collisions` | Lists and draws what collision checks and clearance trips hit. |
+| `calibration` | Calibrates a robot's base rigid body by sweeping one arm's first two joints, Setup to Apply. Experimental. |
 | `base_exp` | Base controller experiments: test paths, recordings, analysis. Experimental. |
 | `example_*` | Minimal plugins, as templates for new ones. |
 

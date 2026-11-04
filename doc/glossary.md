@@ -239,7 +239,7 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **base calibration**: `base_mocap_from_base_footprint`, the one transform per robot from its base rigid body to its
   URDF's base_footprint, applied by the relay. Unqualified, "calibration" means this one; the others say which: the
   floor calibration, Motive's camera calibration, the UR factory calibration (applied to the model at startup), the
-  arm mount check. `doc/calibration_manual.md`.
+  arm mount check. `doc/lab/calibration_manual.md`.
 - **environment sim / real**: every file the monitor writes says which, decided by where its data came from (a
   simulated robot, a simulation's relay), never by the ROS domain. Only calibrations keep simulations' files apart,
   in `data_experiment/sim/calibration_data/domain_<id>/`.
