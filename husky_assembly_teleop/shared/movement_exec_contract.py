@@ -37,6 +37,9 @@ if TYPE_CHECKING:
     from .assembly_planning.route_result import RouteResult
     from .assembly_planning.process_steps import LoadedProcess
 
+#: The margin the assembly planner keeps, metres: contact only, so a plain motion's clearance (`ARM_MOVE.stop_for`)
+#: trips on contact only.
+PLANNED_MARGIN = 0.0
 #: Seconds a motion takes by default, per routine (the old export's values); the operator may slow it, up to
 #: MAX_TRAJ_TIME.
 DEFAULT_TRAJ_TIME = {Routine.FREE_TO_LOAD: 30.0, Routine.TRANSFER_FREE: 10.0, Routine.TRANSFER_HELD: 10.0,

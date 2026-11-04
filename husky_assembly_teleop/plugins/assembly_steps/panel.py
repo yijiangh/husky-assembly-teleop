@@ -17,8 +17,8 @@ import viser
 
 from ...plugin_api.context import PluginContext
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, HANDOFF_PART, INSERT_PART, MAX_TRAJ_TIME,
-                                              MOTION_PART, OPEN_PART, RETREAT_PART, SERVO_PART, WITH_MOTION_PART,
-                                              PartPlan)
+                                              MOTION_PART, OPEN_PART, PLANNED_MARGIN, RETREAT_PART, SERVO_PART,
+                                              WITH_MOTION_PART, PartPlan)
 from ...shared.planner.planner_panel import CommitConfirm, unknown_robots_chip
 from ...shared.teleop.clearance_toggle import close_chip
 from ...shared.runs.runs import (PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
@@ -220,8 +220,7 @@ def exec_clearance_chip(plugin: AssemblyStepsPlugin) -> str:
     if plugin.ignore_built:
         return chip("no clearance", BUSY, "Ignore built bars is ticked: the plan may pass through built bars, so Exec "
                                           "runs it without a clearance")
-    # * The assembly planner checks contact only (margin 0).
-    return close_chip(ARM_MOVE.close_note(0.0))
+    return close_chip(ARM_MOVE.close_note(PLANNED_MARGIN))
 
 
 def exec_line(robot: str, parts: tuple[PartPlan, ...]) -> str:

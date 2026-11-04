@@ -201,7 +201,8 @@ class CalibrationPlugin(HuskyPlugin):
         run, tool, procedure, step = self.cal.run, self.cal.tool, self.cal.procedure, self.panel.current
         # * Watched where Go moves the arm, until a procedure moves it: Go's Clearance refuses a start too close.
         goes = run is not None and step.go_moves and (procedure.waiting or not procedure.running)
-        procedure.clearance.watch(ctx, run.serial if goes else None, ARM_STOP_DISTANCE)
+        margin = ARM_STOP_DISTANCE if procedure.go_margin is None else procedure.go_margin
+        procedure.clearance.watch(ctx, run.serial if goes else None, margin)
         if run is None:
             return ""
         now = ctx.now()

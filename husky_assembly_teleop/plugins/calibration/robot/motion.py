@@ -140,10 +140,15 @@ class ArmMotion:
                 raise NoPlan(f"no move to {what}: {plan.message}")
             # * A plan keeping less than usual has a smaller clearance too (`close_note`): the prompt says so.
             close = planner.close_note(plan) if self.procedure.clearance.value else ""
-            unknown = await self.procedure.optional_go(
-                ctx, plan.path, f"{again}Move to {what}: {plan.message}{f'; {close}' if close else ''}. Scrub Preview "
-                                f"to see the way, check the robot's surroundings, then Go.", "move",
-                [robot_id(run.serial)])
+            # * Watched at the clearance its commit will keep: half the plan's margin when it keeps less than usual.
+            self.procedure.go_margin = planner.stop_distance(plan)
+            try:
+                unknown = await self.procedure.optional_go(
+                    ctx, plan.path, f"{again}Move to {what}: {plan.message}{f'; {close}' if close else ''}. Scrub "
+                                    f"Preview to see the way, check the robot's surroundings, then Go.", "move",
+                    [robot_id(run.serial)])
+            finally:
+                self.procedure.go_margin = None
             if not base_moved(planned_at, ctx.kinematics.base_pose(run.serial)):
                 break
             again = "The base moved: "

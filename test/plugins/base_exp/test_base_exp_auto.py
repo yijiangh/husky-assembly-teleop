@@ -143,6 +143,8 @@ def test_start_with_another_robot_not_measured_asks_however_far_it_stands():
     assert plugin._asks_second_press(ctx, "Start") and "1 other robot not measured" in plugin._auto_alert
     now[0] += 1.0
     assert not plugin._asks_second_press(ctx, "Start") and not plugin._unknown_arms
+    # * Only the robots unknown at the press may stay unknown: one lost later refuses or trips the runs.
+    assert plugin._unknown_others == {other.id}
 
 
 def test_stop_forgets_a_start_waiting_for_its_second_press():

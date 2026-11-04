@@ -166,6 +166,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         #: The alert asking for that second press; it goes when the press stops waiting.
         self._press_again = ""
         self._unknown_arms = False
+        #: The other robots not measured at the last Start's press: its runs check them as stand-ins, no robot else.
+        self._unknown_others: frozenset[str] = frozenset()
         #: The run's error measurement, its latest sample and phase, and the time of the mocap fix measured last.
         self._tracker: Tracker | None = None
         self._sample: Sample | None = None
@@ -260,18 +262,14 @@ class BaseExperimentPlugin(HuskyPlugin):
         """Set Auto runs to one round of the chosen automation."""
         self._auto_runs.value = AUTO_RUNS[str(paths)]
 
-    @staticmethod
-    def _others(ctx: PluginContext, plan: Plan) -> frozenset[str]:
-        """The other robots not measured as a run starts: its clearance may take them as stand-ins, no robot else."""
-        return unknown_robots(ctx.scene.snapshot, {robot_id(plan.serial)})
-
     def _clearance(self, ctx: PluginContext, plan: Plan) -> ContextManager[Clearance]:
         """A run's clearance (`BASE_DRIVE`): a start that close is refused, nothing sent before `first_check`.
 
-        Not against itself, the arms stand still; they may be unknown after Start's second press.
+        Not against itself, the arms stand still; they may be unknown after Start's second press. Other robots may be
+        unknown only if they were at the press (`_unknown_others`): one lost later refuses or trips the run.
         """
         return ctx.clearance([plan.serial], BASE_DRIVE.stop, unknown_arms=ALL_ARMS if self._unknown_arms else (),
-                             unknown_robots=self._others(ctx, plan), refuse_first=True, check_self=False)
+                             unknown_robots=self._unknown_others, refuse_first=True, check_self=False)
 
     def _tracking_signals(self) -> list[Signal]:
         """The monitor's tracking errors of the current run, and their context; unknown outside a run.
@@ -397,7 +395,7 @@ class BaseExperimentPlugin(HuskyPlugin):
                                 f"{'; '.join(reasons)}")
             self._press_again = self._auto_alert
             return True
-        self._unknown_arms = unknown
+        self._unknown_arms, self._unknown_others = unknown, others
         return False
 
     def _drop_press_again(self, now: float) -> None:
@@ -496,7 +494,8 @@ class BaseExperimentPlugin(HuskyPlugin):
             else:
                 self._outcome, finished = follower.state + (f": {follower.reason}" if follower.reason else ""), True
         except WaitTimeout as timeout:
-            self._outcome = "timed out: no answer from the follower"
+            # * Before the send it is the clearance's first check that did not come.
+            self._outcome = "timed out: no answer from the follower" if path_id is not None else f"not sent: {timeout}"
             ctx.log_warn(str(timeout))
         except ValueError as error:
             self._outcome = f"not sent: {error}"
@@ -509,7 +508,8 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._phase = SENT
             if not finished and path_id is not None:
                 base.stop_path()
-            if recorded and experiment:
+            # * A start the clearance refused sent nothing: no run to keep.
+            if recorded and experiment and not (clearance is not None and clearance.refused):
                 self._save(ctx, plan, experiment)
             ctx.log_info(f"base experiment on {plan.serial}: {self._outcome}")
 
@@ -558,7 +558,7 @@ class BaseExperimentPlugin(HuskyPlugin):
                 self._phase = SETTLING
                 experiment["settled"] = await self._settle(ctx, plan.serial)
             self._outcome = E_STOPPED if base.state.estopped else "done"
-        except ClearanceRefused as refused:
+        except (ClearanceRefused, WaitTimeout) as refused:  # * cannot check, or no first check in time: nothing sent
             self._outcome = f"not sent: {refused}"
         except asyncio.CancelledError:
             self._outcome = self._stopped(ctx, clearance)
@@ -566,7 +566,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         finally:
             base.send_twist(0.0, 0.0, require_controller=False)
             self._phase = SENT
-            if experiment:
+            if experiment and not (clearance is not None and clearance.refused):
                 self._save(ctx, plan, experiment)
             ctx.log_info(f"base experiment on {plan.serial}: {plan.label}: {self._outcome}")
 

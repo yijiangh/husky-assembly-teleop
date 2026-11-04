@@ -393,8 +393,11 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
     # --- --- --- --- --- READING --- --- --- --- ---
 
     def plan_margin(self, plan: Plan[BasePlanRequest]) -> float | None:
-        """The margin the path was planned with (the panel's Margin), metres."""
-        return self._algorithm(plan.request)[1].margin
+        """The margin the path was planned with (the panel's Margin), metres; None for a request with bad settings."""
+        try:
+            return self._algorithm(plan.request)[1].margin
+        except ValueError:  # * its plan failed for that reason already
+            return None
 
     def _algorithm(self, request: BasePlanRequest) -> tuple[Algorithm, Any]:
         """The request's algorithm (the default for "") and its default settings with the request's values.

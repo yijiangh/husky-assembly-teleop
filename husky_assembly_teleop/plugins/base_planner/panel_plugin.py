@@ -66,8 +66,9 @@ class BasePlannerPanel(PlannerPanel):
     requires = ("base_planner", "process", "collisions")
     #: Its own ghost kind (`ui.ghost.KIND_COLORS`), in the one target blue.
     target_kind = "base_target"
-    #: The chosen robot's arms are watched where last seen when unknown, as robot_control's D-pad.
-    watch_options = {"unknown_arms": ALL_ARMS}
+    #: The chosen robot's arms are watched where last seen when unknown, as robot_control's D-pad; not against itself,
+    #: as the commit's clearance (the arms stand still).
+    watch_options = {"unknown_arms": ALL_ARMS, "check_self": False}
 
     def __init__(self):
         """Start with no robot chosen and no target."""

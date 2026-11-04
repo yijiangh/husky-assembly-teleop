@@ -345,9 +345,10 @@ class MovementExecPlugin(HuskyPlugin):
             self._record_part(job, run)
             return ExecResult(run.result, f"{part.movement}: {run.reason}", done, end, base)
         moved = None if self._cancel_reason or run.freeze is None else run.freeze.problem
+        reason = self._cancel_reason or (f"freeze broken: {moved}" if moved else cancelled_by(job.ctx))
         if moved is None and clearance is not None and clearance.problem:
             moved = f"soft stopped: {clearance.problem}"
-        reason = self._cancel_reason or (f"freeze broken: {moved}" if moved else cancelled_by(job.ctx))
+            reason = f"clearance tripped: {clearance.problem}"
         refused = progress.hold_not_sent if progress is not None else []
         if progress is not None:
             run.outcome = {"seconds": progress.seconds, "end": progress.end, "holds": dict(progress.holds)}

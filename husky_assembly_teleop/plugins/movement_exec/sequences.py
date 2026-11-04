@@ -47,8 +47,9 @@ from ...shared.execution.tools import (FELL_SHORT, REACHED, ROBOTIQ_CLOSE, ROBOT
 from ...shared.execution.tools import DRY_RUN as TOOL_DRY, REFUSED as TOOL_REFUSED
 from ...shared.motion_planner_contract import MotionPlanRequest
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, DONE, DRY_RUN, FAILED, HANDOFF_PART,
-                                              HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART, OPEN_PART, REFUSED,
-                                              REFUSED_PART, RETREAT_PART, WITH_MOTION_PART, current_primary)
+                                              HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART, OPEN_PART,
+                                              PLANNED_MARGIN, REFUSED, REFUSED_PART, RETREAT_PART, WITH_MOTION_PART,
+                                              current_primary)
 from ...shared.planner.planner_service import PlannerService
 from ...shared.runs.runs import SPLIT_RANGE
 from ...world.clearance import ARM_MOVE
@@ -74,8 +75,6 @@ if TYPE_CHECKING:
     from ...world.freeze import Basis, Freeze
     from ...world.measured import WorldState
 
-#: The margin the assembly planner keeps, metres: contact only, so a plain motion's clearance trips on contact only.
-PLANNED_MARGIN = 0.0
 #: Seconds the arms stand still after the travel to load before the force sensors are zeroed.
 FT_ZERO_SETTLE = 2.0
 #: Seconds the retreat's tail may take to plan; without a plan by then the retreat fails.

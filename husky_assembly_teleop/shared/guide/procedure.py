@@ -55,6 +55,7 @@ class Procedure:
         confirm: Go's second press while other robots are not measured; the panel sets its `button`.
         unknown_allowed: Ids of the other robots the last Go let be unknown during its move, for its clearance.
         clearance: Go's Clearance box: whether what Go moves keeps a clearance.
+        go_margin: The clearance of what the awaited Go moves, metres, for its watch; None for the arm's usual one.
         out_of_reach: Ids of the other robots not measured that what Go moves cannot reach; the plugin sets it.
     """
 
@@ -72,6 +73,7 @@ class Procedure:
         self.confirm = CommitConfirm()
         self.unknown_allowed: frozenset[str] = frozenset()
         self.clearance = ClearanceToggle(GO_CLEARANCE_HINT)
+        self.go_margin: float | None = None
         self.out_of_reach: Callable[[PluginContext], frozenset[str]] = lambda _ctx: frozenset()
         #: Ids of the robots the awaited Go moves; none for a Go that moves nothing.
         self._acting: frozenset[str] = frozenset()

@@ -17,6 +17,7 @@ import viser
 
 from scaffolding_assembly_core.ids import robot_id
 
+from ....plugin_api.concurrency import WaitTimeout
 from ....robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 from ....robot_interface.soft_stop import MotionRefused
 from ....shared.guide.procedure import GO_TIMEOUT, Procedure
@@ -127,7 +128,7 @@ class Driving:
                                 self.on_driven(ctx)
                             await ctx.next_tick()
                         base.send_twist(0.0, 0.0, require_controller=False)
-                except MotionRefused as refused:
+                except (MotionRefused, WaitTimeout) as refused:  # * cannot check, or no first check in time
                     procedure.outcome = Check("D-pad refused", BAD, str(refused))
                     await ctx.wait_until(lambda: not self._holding(ctx), timeout_s=GO_TIMEOUT,
                                          description="D-pad up")
