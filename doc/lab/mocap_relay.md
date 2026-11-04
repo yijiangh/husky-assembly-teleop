@@ -252,10 +252,11 @@ calibration**.
 - **Scale**: a refit turns and shifts, it cannot scale; a recalibration may change Motive's scale too (one changed it
   by −0.16 %). Every look the relay takes the median of how much longer each pair of anchors at least 2 m apart is
   than in the floor calibration, with all anchors and with each left out, and keeps the smallest (`fit_scale`,
-  `SCALE_PAIR_MIN`): one anchor moved, or Motive's solution warped in a corner, reads as no change. Once the scale changed the lab volume's diagonal by over 1 mm (`SCALE_CHANGED`, about
-  190 ppm) for 3 looks in a row (`SCALE_LOOKS`), the relay warns ("MOTIVE'S SCALE CHANGED … distances −1550 ppm …":
-  recalibrate Motive, then make a new floor calibration), again when it grew by as much more, and stops warning of
-  anchors moved, which only the scale moved; back under 75 % of it for 3 looks, it logs that at info and reports the
+  `SCALE_PAIR_MIN`): one anchor moved, or Motive's solution warped in a corner, reads as no change. Once the scale changed the lab volume's diagonal by over 2 mm (`SCALE_CHANGED`, about
+  385 ppm: poses up to 1.6 mm off, as the anchors' fit pins them at the anchors' centre; Motive's continuous
+  calibration sways it by about 200 ppm) for 3 looks in a row (`SCALE_LOOKS`), the relay warns ("MOTIVE'S SCALE CHANGED … distances −1550 ppm …":
+  recalibrate Motive, then make a new floor calibration), again when it grew by as much more. Over about 144 ppm
+  (`SCALE_SEEN`), reported or not, it does not warn of anchors moved, which only the scale moved; back under 75 % of it for 3 looks, it logs that at info and reports the
   anchors still left out afresh. Nothing is corrected: poses follow Motive's scale. While it is reported, every
   base's mocap chip turns amber saying so, and the mocap probe shows a "scale changed" chip.
 - **Thresholds**, side by side: a camera that moved between two readings by over 1 mm or 0.1° is warned about
@@ -264,7 +265,7 @@ calibration**.
   that (`BACK_SHARE`); a fit is trusted with 4 or more that agree and an
   uncertainty within 2 mm (`MIN_POINTS`, `UNCERTAIN_MAX`); a refit is pending once the deciding fit places a point of
   the lab's volume beyond 1 mm, or twice its uncertainty if larger, from the transform in use (`off_limit`,
-  `VOLUME_MOVED`), and is held again only under 75 % of that limit; Motive's scale changed by over about 190 ppm is
+  `VOLUME_MOVED`), and is held again only under 75 % of that limit; Motive's scale changed by over about 385 ppm is
   warned about (`SCALE_CHANGED`). The lab's volume (`VOLUME`) is the central 3 m
   cube where the robots work, one corner at the lab frame's origin, along x, -y and z; judged at its worst corner, so
   a turn counts as much as a shift.

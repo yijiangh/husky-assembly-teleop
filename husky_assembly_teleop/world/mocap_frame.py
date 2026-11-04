@@ -21,7 +21,8 @@ calibration's anchors and cameras; a refit is kept only in memory (`frame_follow
   (0.1°), or an anchor by ANCHOR_BUMP (2 mm), is left out, and an anchor left out comes back within BACK_SHARE of it
   (1.5 mm); a fit is trusted within UNCERTAIN_MAX (2 mm); a refit is pending beyond `off_limit` (VOLUME_MOVED, 1 mm,
   or twice the fit's uncertainty) and the frame held again within BACK_SHARE of it; Motive's scale changed beyond
-  SCALE_CHANGED (about 190 ppm) is warned about; the shape match allows ANCHOR_STRETCH (0.5 %) of scale.
+  SCALE_CHANGED (about 385 ppm, 2 mm across the lab's volume) is warned about; the shape match allows ANCHOR_STRETCH
+  (0.5 %) of scale.
 
 Pure functions of files and numbers; no ROS, any thread.
 """
@@ -84,8 +85,13 @@ VOLUME_MOVED = 1e-3
 #: The lab volume's diagonal, metres.
 VOLUME_DIAGONAL = float(np.linalg.norm(np.ptp(VOLUME, axis=1)))
 #: Motive's scale counts as changed since the floor calibration once it changes the lab volume's diagonal by over
-#: VOLUME_MOVED: about 190 ppm (`fit_scale`). A recalibration was seen to change it by 1550 ppm.
-SCALE_CHANGED = VOLUME_MOVED / VOLUME_DIAGONAL
+#: UNCERTAIN_MAX: about 385 ppm (`fit_scale`). The anchors' rigid fit pins poses at the anchors' centre, at most 4.2 m
+#: from a point of the volume: poses are then up to 1.6 mm off, as much as a fit still trusted. Motive's continuous
+#: calibration sways it by about 200 ppm; a recalibration was seen to change it by 1550 ppm.
+SCALE_CHANGED = UNCERTAIN_MAX / VOLUME_DIAGONAL
+#: Beyond this scale, about 144 ppm, the anchors' rigid fit may leave the farthest out though none moved: no "anchors
+#: moved" warning then, reported as a scale change or not.
+SCALE_SEEN = BACK_SHARE * VOLUME_MOVED / VOLUME_DIAGONAL
 #: Only pairs of anchors at least this far apart, metres, tell the scale (`fit_scale`): 0.5 mm of noise is 250 ppm.
 SCALE_PAIR_MIN = 2.0
 #: A floor calibration's name, in a dated calibration session folder (`calibration_sessions.sessions_folder`):
