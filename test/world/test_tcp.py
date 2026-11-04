@@ -10,6 +10,7 @@ import pytest
 from husky_assembly_teleop.world.tcp import TCP_POSITION_TOLERANCE, tcp_check
 from husky_assembly_teleop.robot_interface.arm import STILL_AFTER
 from husky_assembly_teleop.world.checks import BAD, GOOD, WARN
+from husky_assembly_teleop.ui.style import HOVER_MAX
 from scaffolding_assembly_core.geometry import Pose
 
 pytestmark = pytest.mark.safety
@@ -36,6 +37,7 @@ def test_an_offset_is_amber_and_names_the_tools_tcp():
     """5 mm off: amber, with the size and the TCP the pendant should have."""
     check = tcp_check(arm(position=(0.405, -0.2, 0.3)), EXPECTED, NOW)
     assert check.level == WARN and "5 mm" in check.detail and "150.0" in check.detail
+    assert len(check.detail) <= HOVER_MAX, "kept whole on hover"
     assert 5e-3 > TCP_POSITION_TOLERANCE
 
 

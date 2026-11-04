@@ -522,7 +522,7 @@ class MocapRelay(Node):
                 continue
             calibrations[mocap_id] = calibration
         if problems:
-            log.warn(box(f"calibrations at {why}: {problems} newer calibration(s) refused, see '! refused'",
+            log.warn(box(f"calibrations at {why}: {problems} warning(s), see the lines marked '!'",
                          "\n".join(lines)))
         else:
             log.info("\n".join([good(wrap(lines[0])), *(f"  {line}" for line in lines[1:])]))

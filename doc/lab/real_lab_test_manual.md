@@ -511,13 +511,13 @@ drivers, tools and follower: never while she holds a bar.
   - **Expect:** `real lab: mocap relay on ROS domain 80, Motive 192.168.0.28, calibrations from .../2025-03 Husky
     Assembly`, `Starting mocap relay` with `NatNet: client 192.168.0.203, server 192.168.0.28, unicast`,
     `NatNet client connected.`, then `calibrations at start, Drive root ...` with a block per robot's body: the
-    newest Drive session (e.g. Alice `20260623`, Belle `20261013`, Cindy `20261016`), applied when within
-    5 cm / 5° of crl-husky's default; `Motive latency (mid-exposure to transmit): ... ms`; a
+    newest Drive session (e.g. Alice `20260623`, Belle `20261013`, Cindy `20261016`), applied (with a warning when
+    over 5 cm / 5° from crl-husky's default); `Motive latency (mid-exposure to transmit): ... ms`; a
     `Created mocap publisher for rigid body id=...` line per body.
   - **If not:** `no Zenoh router on this laptop`: 1.c. `Another mocap relay is already running in this ROS domain`:
     another PC runs one (the RobotX PC?). Use it, and note whose it is (its calibrations come from that PC's Drive
-    copy); or stop it there and start this one (Up, Enter). A box `... newer calibration(s) refused`: note it; that
-    robot keeps crl-husky's default.
+    copy); or stop it there and start this one (Up, Enter). A box `... warning(s), see the lines marked '!'`: note
+    it; under `! refused` that robot keeps crl-husky's default, under `! warning` its session is applied anyway.
 
 ---
 
@@ -657,8 +657,8 @@ click `◀ mv` / `mv ▶`: the step under the buttons follows, except while an E
       (the base's `ctrl` chip green)
   - **If not:** button [Run: Vel]. The follower drives only with it.
 - [ ] The run line: `no run yet` on the first Load ever. If it says `continuing run <date>_<time>` (an earlier lab test
-      on these files): button [Run: New run], then once more when it reads `New run: click again` (no time limit; a
-      second click within half a second counts as a double click and is ignored) → `0/78 done`, every row
+      on these files): button [Run: New run], then once more when it reads `New run?` (no time limit; a
+      second press within half a second counts as a double click and is ignored) → `0/78 done`, every row
       `· pending`; the old folder stays.
   - Part 5's tests are recorded in this run; 6.0 starts another one for the assembly.
 
@@ -733,8 +733,8 @@ bar; clear floor and workspace.
 
 ### 6.0 A run of its own
 
-- [ ] Under the run: button [Run: New run], then once more when it reads `New run: click again` (no time limit; a
-      second click within half a second counts as a double click and is ignored)
+- [ ] Under the run: button [Run: New run], then once more when it reads `New run?` (no time limit; a
+      second press within half a second counts as a double click and is ignored)
   - **Expect:** a new run (`0/78 done`, every row `· pending`); the test run's folder stays. Once its robot is live the
     run selects the first pending action's first step: `B20_J · B20_J_transfer`.
 
@@ -989,7 +989,7 @@ test here, run her let-go out of order:
 ### 7.a Driving a base by hand
 
 - **The page:** Control › robot › Base: hold a drive button, at the Speed set. `Clearance` (ticked) soft-stops the base
-  when it comes near anything in the scene; untick it only to drive out of a tight spot. The phone's Control tab has
+  when it comes within 5 cm of anything in the scene ([plugins.md, Clearance](plugins.md#clearance)); untick it only to drive out of a tight spot. The phone's Control tab has
   the same D-pad.
 - **The joystick:** L1 or L2 held, the left stick.
 - **The keyboard,** in pane checks (domain 80 is loaded there):
@@ -1158,7 +1158,7 @@ Nothing here moves a robot.
 - **A motion must stop now:** the robot's remote e-stop; or `Stop all (Esc)` (each robot then waits for its `Resume`
   under Health).
 - **Redo an action:** select it → button [Reopen] (pending again) → its steps again from where the robots stand.
-- **Start the whole test over:** button [Run: New run], then once more when it reads `New run: click again`.
+- **Start the whole test over:** button [Run: New run], then once more when it reads `New run?`.
   Nothing is deleted: the old run's folder stays.
 - **The monitor hangs or the page shows nothing new:** reload the page first; then restart the monitor (7.f).
 

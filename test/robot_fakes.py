@@ -170,6 +170,7 @@ class Controllers:
 
     is_active = ControllerManagerInterface.is_active
     running_problem = ControllerManagerInterface.running_problem
+    last_refusal = None
 
     def __init__(self, state, namespace: str, node: Node | None = None):
         """Read `state`, a ControllerManagerState, at the time of `node`."""

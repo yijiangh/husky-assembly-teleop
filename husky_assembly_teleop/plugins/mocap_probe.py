@@ -4,14 +4,13 @@ A mocap probe: track one rigid body, show its live pose, and record points with 
 Points are numbered per label ("table_1", ...) and shown in the 3D view. Delete and
 Export act on the selected points, so one session can give one file per obstacle.
 "Load points" adds the points of an exported file, unselected; a name already taken is renumbered.
-A big Status tab, readable from across the room, sits in the "Big status" folder at the bottom, closed at start;
-the coverage map and cameras sit in the "Debug" folder above it, also closed, and the floor calibration in its own
-"Floor calibration" folder, closed at start.
+The floor calibration sits in its own "Floor calibration" folder, closed at start, the coverage map and cameras in the
+"Debug" folder, also closed; then the Samples list, which grows, so its rows never move those folders' buttons; and a
+big Status tab, readable from across the room, in the "Big status" folder at the bottom, closed at start.
 The phone's Mocap tab has the same big status over two tabs: Points (Label, Record point, Map coverage, a top-down
 map while mapping with the coverage map, obstacles, robots, points and probe, and the last points) and Floor.
-Its delete-all buttons (every point, or the floor calibration's) and Export floor calibration act on a second tap.
-An export with a warning (a mark off, an anchor not read) goes on a second press within FORCE_SECONDS, the button
-amber meanwhile, on the laptop too.
+Its delete-all buttons (every point, or the floor calibration's) and Export floor calibration act on a second press
+(`SecondPress`). An export with a warning (a mark off, an anchor not read) takes a second press on the laptop too.
 
 Floor calibration: "Floor point" records a "floor" sample, "Mark" one of the marks on the floor (origin, mark1..3),
 "Anchor" the tip near one of Motive's anchor markers: a hint, the anchor being that marker, read with the probe away
@@ -75,8 +74,9 @@ from ..shared.execution.moving import moving_reason
 from ..shared.guide.panel import set_changed
 from ..ui.checklist import CheckList
 from ..ui.phone import big_buttons, phone_text
+from ..ui.second_press import SECOND_PRESS_SECONDS, SecondPress, show_waiting
 from ..ui.style import (BUSY, FAIL, INFO, LEVEL_COLORS, NONE, OK, SECTION_CTRL, SECTION_SENSOR, block, check_chip,
-                        chip, chip_line, note, note_line, numbers, section, values)
+                        chip, chip_line, few, hover, note, note_line, numbers, section, values)
 from ..ui.top_down import Dot, FloorGrid, render_top_down, scene_footprints
 from ..world.camera_coverage import (aim_point, camera_fov, coverage_faces, footprint, outlines, plane_point,
                                      rectangle, segments, triangles, view_edges, view_rotation)
@@ -87,7 +87,7 @@ from ..world.floor_calibration import (ANCHOR_LABEL, FLOOR_LABEL, PLANE_MIN_POIN
                                        Sample, anchor_name, floor_calibration_json, from_raw, pointed_anchors,
                                        samples_from_json, solve_floor, to_raw)
 from ..world.lab import DEFAULT_LAB, replace_text
-from ..world.lab_frame import MARK_WARN, MARKS, lab_frame_file, read_lab_frame
+from ..world.lab_frame import MARK_WARN, MARKS, lab_frame_file, read_lab_frame, tape_scale
 from ..world.measured import TrackedObject
 from ..world.mocap import MARKER_ERROR_LIMIT, MARKER_ERROR_WARN, mocap_check
 from ..world.mocap_frame import FLOOR_PREFIX, camera_label, find_anchors, moved_camera, volume_moved
@@ -115,10 +115,6 @@ PROBE_DOT_COLOR, PROBE_LOST_COLOR, PROBE_RING_COLOR = rgb(WHITE), rgb(NONE), rgb
 FLASH_SECONDS = 0.8
 #: The flash: a fact (the point is recorded), not a tracking level.
 FLASH_COLOR = INFO
-#: Seconds a phone button that acts on its second tap (delete all, export) waits for it.
-CONFIRM_SECONDS = 3.0
-#: Seconds Export floor calibration waits for the second press that exports in spite of a warning, amber meanwhile.
-FORCE_SECONDS = 2.0
 #: The big status panel's word for each mocap check level.
 BIG_WORDS = {GOOD: "TRACKED", WARN: "NOISY", BAD: "NO FIX"}
 #: Metres between the phone map's grid lines.
@@ -185,11 +181,6 @@ def lab_from_raw(ctx: PluginContext) -> tuple | None:
     return frame.lab_from_raw if frame is not None else None
 
 
-def few(names: Sequence[str], shown: int = 3) -> str:
-    """Up to `shown` names, then how many more, e.g. "A1, A2, A3 +2"."""
-    return ", ".join(names[:shown]) + (f" +{len(names) - shown}" if len(names) > shown else "")
-
-
 def frame_chips(frame: FloorCalibrationState | None, anchors_missing: Sequence[str] = ()) -> str:
     """The relay's frame state as a chip in its own words, and a newer floor calibration's.
 
@@ -199,10 +190,10 @@ def frame_chips(frame: FloorCalibrationState | None, anchors_missing: Sequence[s
         return chip("frame ?", NONE, "the mocap relay announced no floor calibration: not running")
     missing = f" ({few(anchors_missing)} missing now)" if anchors_missing else ""
     if frame.status == FRAME_NONE:
-        html = chip("no floor calibration", NONE, "poses are raw (Motive's, Z-up), not in the lab frame: Export floor "
+        html = chip("no floor calibration", BUSY, "poses are raw (Motive's, Z-up), not in the lab frame: Export floor "
                                                   "calibration, then Apply floor calibration")
     elif frame.status == FRAME_ERROR:
-        html = chip("frame: Drive not read", FAIL, frame.error or "the relay could not read a floor calibration")
+        html = chip("frame: Drive not read", FAIL, hover(frame.error or "the relay could not read a floor calibration"))
     elif frame.status == FRAME_UNCHECKED:
         html = chip("frame unchecked", BUSY, f"{frame.floor_calibration} applied; no anchor or truss-camera fit yet, "
                                              f"so poses may be off.\nCheck Motive sees the anchors.")
@@ -218,7 +209,10 @@ def frame_chips(frame: FloorCalibrationState | None, anchors_missing: Sequence[s
     else:
         html = chip(f"frame {frame.status}", NONE, "a state this monitor does not know: update it")
     if frame.error and frame.status != FRAME_ERROR:
-        html += chip("Drive not read", FAIL, f"{frame.error}; the frame in use is kept")
+        html += chip("Drive not read", FAIL, hover(f"the frame in use is kept; {frame.error}"))
+    if frame.scale:
+        html += chip("scale changed", BUSY, f"Motive's scale since {frame.floor_calibration}: {frame.scale}.\nNo refit "
+                                            f"can follow it: recalibrate Motive, then a new floor calibration.")
     if frame.newer:
         moves = f" moves points up to {frame.newer_moves * 1e3:.1f} mm" if frame.newer_moves is not None else ""
         html += chip("newer floor calibration", BUSY, f"{frame.newer}{moves}: not applied until Apply floor "
@@ -280,13 +274,14 @@ class MocapProbePlugin(HuskyPlugin):
         self._message_color = self._floor_message_color = NONE
         # ROS time until which the big status panel shows the blue flash.
         self._flash_until = 0.0
-        # Per button that acts on its second tap ("all", "floor", "export"): the ROS time that tap is due by, and
-        # whether it exports in spite of a warning.
-        self._confirm: dict[str, tuple[float, bool]] = {}
-        # The lab frame file, the floor (x, y) it stores per mark and the (x, y, z) per anchor.
+        # Per button that acts on its second press ("all", "floor", "export"); an export's key says whether it exports
+        # in spite of a warning ("anyway") or is a phone's plain second press ("press").
+        self._presses = {which: SecondPress() for which in ("all", "floor", "export")}
+        # The lab frame file, the floor (x, y) it stores per mark, the (x, y, z) per anchor and the taped distances.
         self._lab_frame_path: Path | None = None
         self._ideal_marks: dict[str, np.ndarray] = {}
         self._ideal_anchors: dict[str, np.ndarray] = {}
+        self._tape: dict[tuple[str, str], float] = {}
         # ROS time the probe was last within PROBE_NEAR of each anchor pointed at: its marker is read only after.
         self._probe_near: dict[str, float] = {}
         # The relay's lab_from_raw last seen, and when it announced it (its clock): markers taken before are not used.
@@ -316,6 +311,8 @@ class MocapProbePlugin(HuskyPlugin):
         self._anchor_tints: dict[str, tuple] = {}
         # Each stored anchor's label in the 3D view, and its text.
         self._anchor_labels: dict[str, tuple] = {}
+        # The relay's last Drive error logged, so each is logged once: its chip's hover is cut.
+        self._frame_error = ""
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the widgets and start tracking DEFAULT_MOCAP_ID.
@@ -329,6 +326,9 @@ class MocapProbePlugin(HuskyPlugin):
             gui.add_html(section("probe", SECTION_SENSOR))
             self._mocap_id = gui.add_number("Mocap ID", initial_value=DEFAULT_MOCAP_ID, min=0, step=1)
             track = gui.add_button("Track", hint="Subscribe to this rigid body; replaces the previous one.")
+            # * The chip on its own line, the pose below it: a pose in the same handle would rebuild the chip on every
+            #   message and drop its hover.
+            self._status_chip: viser.GuiHtmlHandle = gui.add_html(chip_line(""))
             self._status: viser.GuiHtmlHandle = gui.add_html("")
 
             gui.add_html(section("record", SECTION_CTRL))
@@ -337,7 +337,7 @@ class MocapProbePlugin(HuskyPlugin):
                                             f"table -> table_1, table_2, ... Empty gives {DEFAULT_LABEL}_<n>.")
             record = gui.add_button("Record point")
 
-            # * Actions on the selection sit above the list, which grows at the bottom.
+            # * Actions on the selection; the list they act on comes after the folders below.
             gui.add_html(section("selected points", SECTION_CTRL))
             self._file_name = gui.add_text("File name", initial_value="probe_points",
                                            hint=f"Saved on the Drive as {EXPORT_FOLDER}/<date>_<time>_<name>.json")
@@ -345,14 +345,13 @@ class MocapProbePlugin(HuskyPlugin):
             load_points = gui.add_upload_button("Load points", mime_type="application/json", icon=viser.Icon.UPLOAD,
                                                 hint="Add the points of an exported file, unselected.")
             self._result: viser.GuiHtmlHandle = gui.add_html("")
-            self._list = CheckList(ctx, gui, "Samples", empty_text="no samples yet")
 
             # * Its own folder, closed at start: the relay's frame chips and Use refit sit in it too.
             with gui.add_folder("Floor calibration", expand_by_default=False):
                 probe_floor = gui.add_button(
                     "Floor point", icon=viser.Icon.ARROW_BAR_TO_DOWN,
                     hint=f"Record a '{FLOOR_LABEL}' sample, fitted into the floor plane. To drop a bad one, select "
-                         f"only it in the list above and Delete.")
+                         f"only it in the Samples list and Delete.")
                 probe_mark = gui.add_button_group(
                     "Mark", list(MARK_BUTTONS),
                     hint=f"Record the marked point under the tip; it fits the plane too. The lab frame is fitted to "
@@ -369,7 +368,7 @@ class MocapProbePlugin(HuskyPlugin):
                 export_floor = gui.add_button(
                     "Export floor calibration", icon=viser.Icon.FILE_EXPORT,
                     hint=f"Save the floor calibration to the Drive sessions folder the relay reads. With a warning, "
-                         f"press again within {FORCE_SECONDS:g} s to export anyway.")
+                         f"press again within {SECOND_PRESS_SECONDS:g} s to export anyway.")
                 # * The relay's floor calibration on a line always there, then its two buttons, always shown: nothing
                 # * above moves.
                 self._frame_chips: viser.GuiHtmlHandle = gui.add_html(chip_line(""))
@@ -381,13 +380,17 @@ class MocapProbePlugin(HuskyPlugin):
                                              hint="A newer floor calibration is on the Drive (an export): the relay "
                                                   "applies it, and every pose moves by the difference. Refused while "
                                                   "any robot moves.")
+                # * The fit's chips on a line of their own, its numbers below: they change at the mocap rate and
+                #   would drop the chips' hover.
+                self._floor_chips: viser.GuiHtmlHandle = gui.add_html(chip_line(""))
                 self._floor_status: viser.GuiHtmlHandle = gui.add_html("")
-                # * The floor section's last result, wrapped: the phone has no hover to show a cut line.
-                self._floor_result: viser.GuiHtmlHandle = gui.add_html("")
+                # * The floor section's last result on one line, the full text on hover: the Debug folder below
+                #   never moves.
+                self._floor_result: viser.GuiHtmlHandle = gui.add_html(note_line(""))
                 self._use_refit, self._apply_floor = use_refit, apply_floor
 
             # * Rarely used tools in a folder closed at start, so the points' Export is not mistaken for the
-            #   coverage map's; above Big status, which holds no button.
+            #   coverage map's.
             with gui.add_folder("Debug", expand_by_default=False):
                 gui.add_html(section("coverage map", SECTION_SENSOR))
                 self._mapping = gui.add_checkbox("Map coverage", initial_value=False,
@@ -399,6 +402,8 @@ class MocapProbePlugin(HuskyPlugin):
                 coverage_actions = gui.add_button_group("Coverage", ["Export", "Clear"])
                 load = gui.add_upload_button("Load coverage", mime_type="application/json", icon=viser.Icon.UPLOAD,
                                              hint="Replace the map with an exported one; mapping then adds to it.")
+                # * The chip apart from the sample count, which changes every tick while mapping.
+                self._coverage_chip: viser.GuiHtmlHandle = gui.add_html(chip_line(""))
                 self._coverage_status: viser.GuiHtmlHandle = gui.add_html("")
 
                 gui.add_html(section("cameras", SECTION_SENSOR))
@@ -414,6 +419,9 @@ class MocapProbePlugin(HuskyPlugin):
                                                     hint="Metres above the floor: the plane the views are cut with, "
                                                          "e.g. where the markers are.")
                 self._cameras_status: viser.GuiHtmlHandle = gui.add_html("")
+
+            # * The list grows with every point, floor points too: below the folders, so it never moves their buttons.
+            self._list = CheckList(ctx, gui, "Samples", empty_text="no samples yet")
 
             # * The big status tab in a folder, closed at start; last, so opening it moves no button.
             with gui.add_folder("Big status", expand_by_default=False), \
@@ -459,13 +467,13 @@ class MocapProbePlugin(HuskyPlugin):
                 phone_mark = phone.add_button_group("Mark", list(MARK_BUTTONS))
                 phone_anchor = phone.add_button("Anchor", icon=viser.Icon.ANCHOR)
                 phone.add_html(phone_text(self._marks_html()))
+                self._phone_floor_chips = phone.add_html(phone_text(chip_line("")))
                 self._phone_floor_status = phone.add_html("")
                 phone_export_floor = phone.add_button("Export floor calibration", icon=viser.Icon.FILE_EXPORT)
                 phone_delete_floor = phone.add_button("Delete floor points", color=rgb(NONE), icon=viser.Icon.TRASH)
                 self._phone_floor_result = phone.add_html("")
 
-        # * Buttons that act on their second tap, with their label and colour; `draw` turns them amber (BUSY) while
-        # * they wait for that tap, or for the second press that exports in spite of a warning.
+        # * Buttons that act on their second press, with their label and colour; `draw` shows them waiting for it.
         self._confirms = {"all": [(phone_delete_all, "Delete all points", rgb(NONE))],
                           "floor": [(phone_delete_floor, "Delete floor points", rgb(NONE))],
                           "export": [(export_floor, "Export floor calibration", None),
@@ -633,7 +641,7 @@ class MocapProbePlugin(HuskyPlugin):
         self._remove_samples(ctx, doomed)
 
     def _delete_all(self, ctx: PluginContext, which: str) -> None:
-        """Delete every sample, or only the floor calibration's, on the second tap within CONFIRM_SECONDS.
+        """Delete every sample, or only the floor calibration's, on the second press.
 
         Args:
             ctx: This plugin's context.
@@ -641,24 +649,20 @@ class MocapProbePlugin(HuskyPlugin):
         """
         doomed, floor = self._deletable(which), which == "floor"
         if not doomed:
+            self._presses[which].forget()
             self._report(ctx, "no points to delete", floor, log=False)
-        elif not self._second_tap(ctx, which):
-            self._report(ctx, f"tap {self._confirms[which][0][1]} again within {CONFIRM_SECONDS:g} s to delete "
+        elif not self._second_press(ctx, which):
+            self._report(ctx, f"press {self._confirms[which][0][1]} again within {SECOND_PRESS_SECONDS:g} s to delete "
                               f"{len(doomed)} points", floor, log=False, color=BUSY)
         else:
             self._remove_samples(ctx, doomed, floor)
 
-    def _second_tap(self, ctx: PluginContext, which: str, seconds: float = CONFIRM_SECONDS,
-                    anyway: bool = False) -> bool:
-        """Whether a tap on a button that acts on its second tap (`_confirms`) is that one; else arm it for `seconds`.
+    def _second_press(self, ctx: PluginContext, which: str, anyway: bool = False) -> bool:
+        """Whether a press of a button that acts on its second press (`_confirms`) is that one; else it asks.
 
-        `anyway`: the tap exports in spite of a warning; a tap armed without one does not count for it.
+        `anyway`: the press exports in spite of a warning; a press that asked without one does not count for it.
         """
-        due, armed_anyway = self._confirm.pop(which, (-np.inf, False))
-        if ctx.now() <= due and (armed_anyway or not anyway):
-            return True
-        self._confirm[which] = (ctx.now() + seconds, anyway)
-        return False
+        return self._presses[which].press(ctx.now(), "anyway" if anyway else "press")
 
     def _remove_samples(self, ctx: PluginContext, doomed: list[Sample], floor: bool = False) -> None:
         """Remove `doomed` from the samples, the list and the 3D view; say so in the floor section if `floor`."""
@@ -699,24 +703,27 @@ class MocapProbePlugin(HuskyPlugin):
 
         Args:
             ctx: This plugin's context.
-            phone: Pressed on the phone: it writes on the second tap within CONFIRM_SECONDS.
+            phone: Pressed on the phone: it writes on the second press.
         """
         solution = self._solve(ctx)
         problem = self._floor_problem(ctx, solution)
         if problem:
+            self._presses["export"].forget()
             self._report(ctx, f"not exported: {problem}", floor=True, warn=True)
             return
         relay, frame = ctx.world.mocap_relay, relay_frame(ctx)
         path = self._floor_path(ctx, frame)
         if path is None:
+            self._presses["export"].forget()
             return
         warning = self._floor_warning(ctx, solution)
-        if warning and not self._second_tap(ctx, "export", FORCE_SECONDS, anyway=True):
-            self._report(ctx, f"not exported: {warning}; press again within {FORCE_SECONDS:g} s to export anyway",
-                         floor=True, warn=True, color=BUSY)
+        if warning and not self._second_press(ctx, "export", anyway=True):
+            self._report(ctx, f"not exported: {warning}; press again within {SECOND_PRESS_SECONDS:g} s to export "
+                              f"anyway", floor=True, warn=True, color=BUSY)
             return
-        if phone and not warning and not self._second_tap(ctx, "export"):
-            self._report(ctx, f"tap {self._confirms['export'][1][1]} again within {CONFIRM_SECONDS:g} s to export",
+        if phone and not warning and not self._second_press(ctx, "export"):
+            self._report(ctx, f"press {self._confirms['export'][1][1]} again within {SECOND_PRESS_SECONDS:g} s to "
+                              f"export",
                          floor=True, log=False, color=BUSY)
             return
         data = {**floor_calibration_json(solution, self._lab_frame_path.name), **environment(self._simulated(ctx))}
@@ -732,7 +739,7 @@ class MocapProbePlugin(HuskyPlugin):
         path.parent.mkdir(exist_ok=True)
         # * Swapped in whole: the relay reads the newest file and must never find half of one.
         replace_text(path, json.dumps(data, indent=2))
-        self._confirm.pop("export", None)
+        self._presses["export"].forget()
         # * The relay applies it only on command (Apply floor calibration): whatever was measured against an
         #   out-of-date frame is off by its move.
         replaced = (f"; it replaces {frame.floor_calibration or 'the old floor calibration'}, whose poses were off "
@@ -763,6 +770,8 @@ class MocapProbePlugin(HuskyPlugin):
             name, off = solution.worst
             warnings.append(f"{name} lands {off * 1e3:.1f} mm from where it is stored: probe it again (hit badly?), "
                             f"delete its samples, or check the mark")
+        if solution.tape_worst is not None and abs(solution.tape_worst[1]) > MARK_WARN:
+            warnings.append(self._tape_warning(solution))
         unread = {}
         for name, why in self._anchors_now(ctx)[1].items():
             unread.setdefault(why, []).append(name)
@@ -822,8 +831,12 @@ class MocapProbePlugin(HuskyPlugin):
             ctx.spawn(what, self._answered(ctx, what, future))
 
     async def _answered(self, ctx: PluginContext, what: str, future) -> None:
-        """Report the relay's answer to Use refit or Apply floor calibration."""
-        response = await ctx.ros(future)
+        """Report the relay's answer to Use refit or Apply floor calibration, or why there is none."""
+        try:
+            response = await ctx.ros(future)
+        except Exception as error:  # * The service call itself failed: say so, else the line keeps its old text.
+            self._report(ctx, f"{what} failed: {error!r}", floor=True, warn=True)
+            return
         self._show(response.message, OK if response.success else FAIL, floor=True)
         (ctx.log_info if response.success else ctx.log_warn)(f"{what}: {response.message}")
 
@@ -958,14 +971,17 @@ class MocapProbePlugin(HuskyPlugin):
         """Read the stored marks and anchors; none (and why) if the file cannot be read."""
         try:
             lab_frame = read_lab_frame(self._lab_frame_path)
-            self._ideal_marks, self._ideal_anchors = lab_frame.marks, lab_frame.anchors
+            self._ideal_marks, self._ideal_anchors, self._tape = lab_frame.marks, lab_frame.anchors, lab_frame.tape
+            if lab_frame.problems:
+                self._report(ctx, f"{self._lab_frame_path.name}: {'; '.join(lab_frame.problems)}", floor=True,
+                             warn=True)
         except (ValueError, KeyError, TypeError) as error:  # * json.JSONDecodeError is a ValueError
-            self._ideal_marks, self._ideal_anchors = {}, {}
+            self._ideal_marks, self._ideal_anchors, self._tape = {}, {}, {}
             self._report(ctx, f"lab frame not read: {error}", floor=True, warn=True)
 
     def _solve(self, ctx: PluginContext) -> FloorSolution:
         """The floor calibration from the samples, the lab frame's stored marks and anchors, and the anchors now."""
-        return solve_floor(self.samples, self._ideal_marks, self._ideal_anchors, self._anchors_now(ctx)[0])
+        return solve_floor(self.samples, self._ideal_marks, self._ideal_anchors, self._anchors_now(ctx)[0], self._tape)
 
     def _anchor_hints(self, ctx: PluginContext) -> dict[str, np.ndarray]:
         """Where each anchor's marker is looked for, raw: its tips' mean where pointed at, else its stored place.
@@ -1056,6 +1072,22 @@ class MocapProbePlugin(HuskyPlugin):
         # * Indented, which also keeps an empty row one line high.
         return ["anchors mm:", *(f"  {line or '–'}" if row == 0 else f"  {line}" for row, line in enumerate(lines))]
 
+    def _tape_line(self, solution: FloorSolution) -> str:
+        """How much longer Motive puts each taped pair of marks than the tape, mm, in the file's order.
+
+        ! Fits a phone's 40 characters for up to four pairs: keep the file's tape to four.
+        """
+        offs = " · ".join("–" if pair not in solution.tape else f"{solution.tape[pair][1] * 1e3:+.1f}"
+                          for pair in self._tape)
+        return f"tape mm: {offs or '– (none in the file)'}"
+
+    @staticmethod
+    def _tape_warning(solution: FloorSolution) -> str:
+        """Why the probed marks disagree with the tape: Motive's scale, or a mark hit badly."""
+        pair, off = solution.tape_worst
+        return (f"marks {pair} {off * 1e3:+.1f} mm off the tape (Motive's scale {tape_scale(solution.tape) * 1e6:+.0f} "
+                f"ppm against all taped pairs): recalibrate Motive if all are off alike, else probe the marks again")
+
     @staticmethod
     def _apart_line(solution: FloorSolution) -> str:
         """How far the marks alone and the anchors alone place the lab apart."""
@@ -1084,8 +1116,8 @@ class MocapProbePlugin(HuskyPlugin):
         return [f"poses off mm: marks {mm(by_marks)} · relay {mm(by_relay)}", f"marks vs relay: {mm(apart)} mm apart"]
 
     def _floor_html(self, solution: FloorSolution, height: float | None, anchors: list[str],
-                    check: list[str], not_found: Sequence[str] = ()) -> str:
-        """The floor calibration's chips and readout lines, always all there so the buttons never move.
+                    check: list[str], not_found: Sequence[str] = ()) -> tuple[str, str]:
+        """The floor calibration's chip line and its readout lines, for two handles; always all there.
 
         ! Keep each line under 40 characters, so it fits a phone's width.
 
@@ -1095,6 +1127,9 @@ class MocapProbePlugin(HuskyPlugin):
             anchors: The anchors' entries (`_anchor_entries`).
             check: The poses off lines (`_check_lines`).
             not_found: The stored anchors not found near their stored place (`_not_found`): an amber chip.
+
+        Returns:
+            The chips, without live numbers (the readout has them, e.g. a mark's offset), and the readout.
         """
         plane, fit, worst = solution.plane, solution.fit, solution.worst
         if plane is None:
@@ -1113,15 +1148,17 @@ class MocapProbePlugin(HuskyPlugin):
                                                    f"mark and Motive's x place the frame.\nWrite them into the file "
                                                    f"to fix it.")
         elif worst[1] > MARK_WARN:
-            state += chip(f"{worst[0]} off", BUSY, f"{worst[1] * 1e3:.1f} mm from where it is stored: probe it again, "
-                                                   f"delete its samples, or check the mark; Export twice exports "
-                                                   f"anyway")
+            state += chip(f"{worst[0]} off", BUSY, f"over {MARK_WARN * 1e3:g} mm from where it is stored (marks mm "
+                                                   f"line): probe it again, delete its samples, or check the mark; "
+                                                   f"Export twice exports anyway")
         else:
             moved = list(solution.moved)
             state += chip(f"fixed {len(fit.residuals)}/{len(self._ideal_marks) + len(self._ideal_anchors)}",
                           BUSY if moved else OK,
                           f"Fitted to the marks and anchors of {self._lab_frame_path.name}"
                           + (f"; {len(moved)} left out as moved ({few(moved)})" if moved else ""))
+        if solution.tape_worst is not None and abs(solution.tape_worst[1]) > MARK_WARN:
+            state += chip("scale off", BUSY, self._tape_warning(solution))
         if not_found:
             state += chip(f"{not_found[0]} not found" if len(not_found) == 1 else f"{len(not_found)} anchors not found",
                           BUSY, f"{few(not_found)}: no marker within {ANCHOR_REACH * 100:.0f} cm of the stored place."
@@ -1138,8 +1175,8 @@ class MocapProbePlugin(HuskyPlugin):
             floor = [f"floor: {len(plane.residuals)} pts · rms {plane.rms * 1e3:.1f} · max "
                      f"{plane.max_error * 1e3:.1f} mm", f"floor normal: ±{normal_std} per axis"]
         probe = f"probe above floor: {numbers(None if height is None else (height * 1e3,), 1, 6, 1)} mm"
-        return chip_line(state) + block(values(*floor, "marks mm:", f"  {marks}", *self._anchor_rows(anchors),
-                                               self._apart_line(solution), *check, probe))
+        return chip_line(state), block(values(*floor, "marks mm:", f"  {marks}", self._tape_line(solution),
+                                              *self._anchor_rows(anchors), self._apart_line(solution), *check, probe))
 
     def _check(self, ctx: PluginContext) -> Check | None:
         """The probe's mocap check (same as the health panel's), or None when nothing is tracked."""
@@ -1181,19 +1218,19 @@ class MocapProbePlugin(HuskyPlugin):
         if self._coverage_image is not None:
             set_changed(self._coverage_image, visible=self._show_map.value)
 
-    def _coverage_html(self) -> str:
-        """The coverage section's summary: samples, area mapped, overall rate and error, and the map under the probe."""
+    def _coverage_html(self) -> tuple[str, str]:
+        """The coverage section's chip line and summary: samples, area mapped, overall rate and error, the map here."""
         coverage, probe = self.coverage, self._probe
         rate = coverage.tracked_rate()
         smoothed = coverage.smoothed()
         here = smoothed.at(*probe.position[:2]) if probe is not None and probe.position is not None else None
-        state = (chip("mapping", INFO, "Every probe message goes into the coverage map; untick Map coverage to stop.")
+        state = (chip("mapping", BUSY, "Every probe message goes into the coverage map; untick Map coverage to stop.")
                  if self._mapping.value else chip("off", NONE, "Tick Map coverage to map where the probe is tracked."))
-        return block(state + values(
+        return chip_line(state), block(values(
             f"{coverage.count} samples, {smoothed.seen.sum() * COVERAGE_BIN ** 2:.0f} m², "
             f"tracked {'–' if rate is None else f'{rate:.0%}'}", f"err {_error_mm(coverage.total_error())}",
-            "" if here is None else f"here tracked {here[0]:.0%}, err "
-                                    f"{'–' if np.isnan(here[1]) else f'{here[1] * 1e3:.2f} mm'}"))
+            "here tracked –" if here is None else f"here tracked {here[0]:.0%}, err "
+                                                  f"{'–' if np.isnan(here[1]) else f'{here[1] * 1e3:.2f} mm'}"))
 
     def _map_inputs(self, ctx: PluginContext | None) -> tuple[FloorGrid, np.ndarray, Iterable, list[Dot]]:
         """What the phone's map shows: coverage cells, every footprint in the scene, the recorded points and the probe.
@@ -1276,10 +1313,10 @@ class MocapProbePlugin(HuskyPlugin):
         if plane is not None and probe is not None and probe.position is not None and check and check.level != BAD:
             height = plane.height(to_raw(lab_from_raw(ctx), probe.position))
         not_found = self._not_found(ctx)
-        html = self._floor_html(solution, height, self._anchor_entries(ctx, solution),
-                                self._check_lines(ctx, solution), not_found)
-        self._floor_status.content = html
-        self._phone_floor_status.content = phone_text(html)
+        chips, readout = self._floor_html(solution, height, self._anchor_entries(ctx, solution),
+                                          self._check_lines(ctx, solution), not_found)
+        self._floor_chips.content, self._floor_status.content = chips, readout
+        self._phone_floor_chips.content, self._phone_floor_status.content = phone_text(chips), phone_text(readout)
         # * The axes show where the export puts the lab frame; viser sends only the values that changed.
         transform = solution.transform
         self._floor_axes.visible = transform is not None
@@ -1366,6 +1403,10 @@ class MocapProbePlugin(HuskyPlugin):
     def _draw_frame(self, ctx: PluginContext) -> None:
         """The frame the relay holds as chips (`frame_chips`), Use refit enabled while a refit is pending."""
         frame, relay = relay_frame(ctx), ctx.world.mocap_relay
+        error = frame.error if frame is not None else ""
+        if error and error != self._frame_error:
+            ctx.log_warn(f"the mocap relay could not read the floor calibration from the Drive: {error}")
+        self._frame_error = error
         html = frame_chips(frame, relay.state.anchors_missing if relay is not None else ())
         set_changed(self._frame_chips, content=chip_line(html))
         set_changed(self._use_refit, disabled=frame is None or frame.status != FRAME_REFIT_PENDING)
@@ -1462,10 +1503,11 @@ class MocapProbePlugin(HuskyPlugin):
             error_mm = (probe.marker_error * 1e3,)
         self._big.content = self._big_status(ctx, check)
         self._phone_big.content = self._big_status(ctx, check, min_height="24vh")
-        self._status.content = block(state + values(f"xyz {numbers(probe.position if has_pose else None, 3, 8, 4)} m",
-                                                    f"rpy {numbers(rpy, 3, 8, 1)} °",
-                                                    f"err {numbers(error_mm, 1, 8, 2)} mm",
-                                                    dim=check is None or check.level == BAD))
+        self._status_chip.content = chip_line(state)
+        self._status.content = block(values(f"xyz {numbers(probe.position if has_pose else None, 3, 8, 4)} m",
+                                            f"rpy {numbers(rpy, 3, 8, 1)} °",
+                                            f"err {numbers(error_mm, 1, 8, 2)} mm",
+                                            dim=check is None or check.level == BAD))
 
         self._list.sync()
         # * Recolour only the spheres whose selection changed.
@@ -1475,22 +1517,20 @@ class MocapProbePlugin(HuskyPlugin):
         self._highlighted = selected
 
         self._draw_coverage(ctx)
-        self._coverage_status.content = self._coverage_html()
+        self._coverage_chip.content, self._coverage_status.content = self._coverage_html()
         self._draw_floor(ctx, check)
         self._draw_cameras(ctx)
         self._draw_frame(ctx)
         for which, buttons in self._confirms.items():
-            due, anyway = self._confirm.get(which, (-np.inf, False))
-            again = "Tap again: export" if which == "export" else f"Tap again: delete {len(self._deletable(which))}"
+            waiting = self._presses[which].waiting(ctx.now())
             for button, label, color in buttons:
-                if ctx.now() > due:
-                    button.label, button.color = label, color
-                else:
-                    button.label, button.color = "Press again: export anyway" if anyway else again, rgb(BUSY)
+                show_waiting(button, bool(waiting), label, color, "Export anyway?" if waiting == "anyway" else "")
         self._result.content = note_line(self._message, self._message_color)
         self._phone_result.content = phone_text(note_line(self._message, self._message_color))
-        floor_result = note(escape(self._floor_message) or "—", self._floor_message_color)
-        self._floor_result.content, self._phone_floor_result.content = floor_result, phone_text(floor_result)
+        self._floor_result.content = note_line(self._floor_message, self._floor_message_color)
+        # * Wrapped on the phone, which has no hover to show a cut line; last in its tab, so it moves no button.
+        self._phone_floor_result.content = phone_text(note(escape(self._floor_message) or "—",
+                                                           self._floor_message_color))
         if self._mapping.value and self._map_task is None and ctx.now() - self._map_time >= MAP_PERIOD:
             self._map_time = ctx.now()
             self._map_task = ctx.spawn("phone map", self._draw_map(ctx), survives_soft_stop=True)

@@ -235,8 +235,8 @@ unbuilt bars, tick **Ignore built bars** for that plan only.
 
 By hand, in the monitor's **Control** tab (a tab per robot: `0804` Alice, `0806` Cindy):
 - **An arm back to the joint controller:** the arm's **Run: Joint**.
-- **Drive a base:** its **Base** section, hold a drive button. Keep **Clearance** ticked: it soft-stops the base near
-  anything; untick it only to drive out of a tight spot. Hand on the e-stop.
+- **Drive a base:** its **Base** section, hold a drive button. Keep **Clearance** ticked: it soft-stops the base within
+  5 cm of anything; untick it only to drive out of a tight spot. Hand on the e-stop.
 
 For the panels and buttons in detail, see [plugins.md](plugins.md). For what a run records, see
 [run_record.md](../design/run_record.md).

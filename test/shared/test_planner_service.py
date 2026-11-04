@@ -8,18 +8,20 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from plugin_fakes import WATCHES, watch_clearance
 from robot_fakes import lease_test_robots, wait_ticks_until
 
-from husky_assembly_teleop.colors import OK, WARN, rgb
-from husky_assembly_teleop.shared.planner.planner_panel import (COMMIT_CONFIRM_SECONDS, CommitConfirm, PlannerPanel,
-                                                                unknown_robots_chip)
+from husky_assembly_teleop.colors import FAIL, OK, WARN, rgb
+from husky_assembly_teleop.shared.planner.planner_panel import CommitConfirm, PlannerPanel, unknown_robots_chip
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from husky_assembly_teleop.shared.planner.planner_search import Search
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, leased
-from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
+from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON, RobotStopped, SoftStopLatch
 from husky_assembly_teleop.shared.planner.planner_service import PlannerService
+from husky_assembly_teleop.world.checks import BAD, PENDING
+from husky_assembly_teleop.world.clearance import Clearance
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
@@ -37,6 +39,9 @@ class Request:
 
 class Ctx:
     """A plugin context whose intents run at once and whose tasks are plain asyncio tasks."""
+
+    watch_clearance = staticmethod(watch_clearance)
+    unwatch_clearance = staticmethod(WATCHES["unwatch_clearance"])
 
     def __init__(self):
         """No log yet; no robots (`world`, `scene`)."""
@@ -68,7 +73,7 @@ class Planner(PlannerService):
         """Plan with `work(abort)`; send succeeds; nothing is stale."""
         super().__init__()
         self.work, self.time_limit = work, time_limit
-        self.stale, self.taken, self.sent, self.forgotten = "", True, [], []
+        self.stale, self.taken, self.sent, self.forgotten, self.refused = "", True, [], [], []
 
     def make_search(self, ctx, request, abort):
         """Run `work` on the worker."""
@@ -87,6 +92,10 @@ class Planner(PlannerService):
     def forget(self, plan):
         """Keep what was forgotten."""
         self.forgotten.append(plan.id)
+
+    def commit_refused(self, plan, message):
+        """Keep the refusal."""
+        self.refused.append((plan.id, message))
 
 
 def run(planner: Planner, scenario):
@@ -212,6 +221,21 @@ def test_commit_sends_only_the_latest_ready_plan():
 
 
 @pytest.mark.safety
+def test_a_commit_given_up_before_it_runs_sends_nothing():
+    """The caller cancels the commit's answer before the commit ran: nothing is sent and nothing fails."""
+    async def scenario(planner, ctx):
+        plan = await planner.request_plan(Request("alice"))
+        planner.commit(plan.id).cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return planner.plan
+
+    planner = Planner()
+    latest = run(planner, scenario)
+    assert planner.sent == [] and latest.state == "ready"
+
+
+@pytest.mark.safety
 def test_a_commit_to_a_soft_stopped_robot_answers_nothing_sent():
     """A send the stopped robot refuses still resolves the commit, and the plan stays ready for after Resume."""
     async def scenario(planner, ctx):
@@ -291,6 +315,42 @@ def test_a_commit_to_a_robot_leased_elsewhere_sends_nothing():
     committed, latest = run(planner, scenario)
     assert not committed[0] and "robot alice is leased by robot_control: teleop" in committed[1]
     assert planner.sent == [] and latest.state == "ready" and guard.lease.holder == "robot_control: teleop"
+    # * `execute` never ran: the subclass hears of it (a run chip), with the answer.
+    assert planner.refused == [(latest.id, committed[1])]
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("how", ["sent", "refused by execute", "plan not ready"])
+def test_commit_refused_is_only_for_a_commit_that_ended_before_execute(how):
+    """A commit `execute` answered, or one `commit` refused at once (no run started), is no `commit_refused`."""
+    async def scenario(planner, ctx):
+        plan = await planner.request_plan(Request("alice"))
+        if how == "plan not ready":
+            planner.stale = "the robot moved"
+            planner.update(ctx)
+        return await planner.commit(plan.id)
+
+    planner = Planner()
+    planner.taken = how != "refused by execute"
+    committed = run(planner, scenario)
+    assert committed[0] == (how == "sent") and planner.refused == []
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("tripped, reason, label, level", [
+    (True, "", "clearance stop", BAD),
+    (False, STOP_ALL_REASON, "soft stopped", PENDING),
+    (False, "robot alice came within 1 cm of wall", "soft stopped", BAD),
+    (False, None, "cancelled", PENDING),
+])
+def test_the_run_chip_of_a_cancelled_commit_says_who_stopped_it(tripped, reason, label, level):
+    """Its own clearance or another trip is red; the operator's Stop all and Cancel are grey, as expected ends."""
+    latch = SoftStopLatch("alice")
+    latch.stopped, latch.reason = reason is not None, reason or ""
+    ctx = SimpleNamespace(world=SimpleNamespace(robots={"alice": SimpleNamespace(soft_stop_latch=latch)}))
+    clearance = Clearance(("alice",), 0.01, problem="robot alice came within 1 cm of wall" if tripped else None)
+    check = PlannerService.cancelled_check(ctx, "alice", "alice left", clearance, "the arm holds where it was")
+    assert (check.label, check.level) == (label, level)
 
 
 @pytest.mark.safety
@@ -353,6 +413,10 @@ class Panel(PlannerPanel):
     def target_change(self, ctx, plan):
         """The test's target change."""
         return self.change
+
+    def commit_margin(self, ctx):
+        """A commit's clearance: 5 mm."""
+        return 0.005
 
 
 @pytest.mark.safety
@@ -448,30 +512,34 @@ def test_the_unknown_robots_chip_counts_the_others_and_hides_at_zero():
     assert ">1 robot unknown<" in found and 'title="b: base unknown\nHealth shows why."' in found and "me" not in found
 
 
-def test_commit_asks_for_a_second_press_within_two_seconds_while_a_robot_is_unknown():
-    """Robot b lost mocap: the first press asks and turns Commit amber; a second within 2 s sends, letting b be unknown.
+def test_commit_asks_for_a_second_press_within_five_seconds_while_a_robot_is_unknown():
+    """Robot b lost mocap: the first press asks, Commit amber and "Commit?"; a second within 5 s sends.
 
-    Later it asks again. The robot the commit moves is not counted.
+    The second lets b be unknown; a double click does not count; later it asks again. The moving robot is not counted.
     """
     model = SimpleNamespace(movable_joints=())
     lost = RobotObject("robots/b", model, Pose(), {}, base_tracked=False, base_time=1.0)
     ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={lost.id: lost})), t=10.0)
     ctx.now = lambda: ctx.t
     confirm = CommitConfirm()
-    confirm.button = SimpleNamespace(color=rgb(OK))
+    confirm.button = SimpleNamespace(color=rgb(OK), label="Commit")
     asked, allowed = confirm.asks(ctx, ["robots/me"], "Commit")
-    assert asked == "press Commit again within 2 s to move with 1 other robot unknown"
+    assert asked == "press Commit again within 5 s to move with 1 other robot unknown"
     assert allowed == frozenset()
     confirm.draw(ctx.t)
-    assert confirm.button.color == rgb(WARN) and COMMIT_CONFIRM_SECONDS == 2.0
-    ctx.t += 1.5
+    assert (confirm.button.color, confirm.button.label) == (rgb(WARN), "Commit?")
+    ctx.t += 0.2
+    assert confirm.asks(ctx, ["robots/me"], "Commit")[0], "a double click only asks again"
+    ctx.t += 4.0
     assert confirm.asks(ctx, ["robots/me"], "Commit") == ("", {"robots/b"}), "the second press lets b be unknown"
     confirm.draw(ctx.t)
-    assert confirm.button.color == rgb(OK)
+    assert (confirm.button.color, confirm.button.label) == (rgb(OK), "Commit")
     assert confirm.asks(ctx, ["robots/me"], "Commit")[0]
-    ctx.t += 2.5
+    ctx.t += 5.5
     assert confirm.asks(ctx, ["robots/me"], "Commit")[0], "too late: it asks again"
     assert confirm.asks(ctx, ["robots/b"], "Commit") == ("", frozenset()), "the robot it moves is not counted"
+    far = frozenset({"robots/b"})
+    assert confirm.asks(ctx, ["robots/me"], "Commit", far=far) == ("", far), "out of reach: unknown without asking"
 
 
 def test_commit_asks_twice_for_a_panels_own_warning_too():
@@ -481,9 +549,42 @@ def test_commit_asks_twice_for_a_panels_own_warning_too():
     confirm = CommitConfirm()
     assert confirm.asks(ctx, ["robots/me"], "Commit") == ("", frozenset())
     asked, _allowed = confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 40° from stow"])
-    assert asked == "press Commit again within 2 s to move with the arm 40° from stow"
+    assert asked == "press Commit again within 5 s to move with the arm 40° from stow"
     ctx.t += 1.0
     assert confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 40° from stow"]) == ("", frozenset())
+
+
+def test_the_second_press_counts_only_for_the_plan_and_robots_it_asked_about():
+    """Another robot lost, or another plan, between the presses asks again; a warning's drifting number does not."""
+    model = SimpleNamespace(movable_joints=())
+    b, c = (RobotObject(f"robots/{name}", model, Pose(), {}, base_time=1.0) for name in ("b", "c"))
+    b.base_tracked = False
+    ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={b.id: b, c.id: c})), t=10.0)
+    ctx.now = lambda: ctx.t
+    confirm = CommitConfirm()
+    assert confirm.asks(ctx, ["robots/me"], "Commit", subject=1)[0]
+    c.base_tracked = False
+    ctx.t += 1.0
+    assert confirm.asks(ctx, ["robots/me"], "Commit", subject=1)[0].endswith("2 other robots unknown"), "c is new"
+    ctx.t += 1.0
+    assert confirm.asks(ctx, ["robots/me"], "Commit", subject=2)[0], "a new plan asks again"
+    ctx.t += 1.0
+    assert confirm.asks(ctx, ["robots/me"], "Commit", subject=2) == ("", {"robots/b", "robots/c"})
+    assert confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 40° from stow"], 3)[0]
+    ctx.t += 1.0
+    assert confirm.asks(ctx, ["robots/me"], "Commit", ["the arm 41° from stow"], 3)[1] == {"robots/b", "robots/c"}
+
+
+def test_a_refusal_or_cancel_forgets_a_commit_waiting_for_its_second_press():
+    """Said in red (e.g. "not committed: replan") or Cancel pressed: the next Commit asks again."""
+    panel = Panel()
+    panel._api = SimpleNamespace(cancel_commit=lambda: False)
+    panel._confirm.press.press(0.0)
+    panel._say("not committed: the target changed since planning; replan", FAIL)
+    assert panel._confirm.press.waiting(0.1) == ""
+    panel._confirm.press.press(0.0)
+    panel._cancel_commit()
+    assert panel._confirm.press.waiting(0.1) == ""
 
 
 def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():
@@ -492,9 +593,9 @@ def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():
     api, warned = SimpleNamespace(plan=plan), []
     panel = Panel()
     panel._api = api
-    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=warned.append)
+    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=warned.append, **WATCHES)
     panel.update(ctx)
-    panel._say("press Commit again within 2 s to move with the arm 40° from stow")
+    panel._say("press Commit again within 5 s to move with the arm 40° from stow")
     api.plan = Plan(1, plan.request, "ready", PATH, message="found, warned", warning=True)
     panel.update(ctx)
     assert panel._message.startswith("press Commit again") and warned == ["found, warned"]
@@ -504,16 +605,23 @@ def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():
 
 
 def test_a_plan_arriving_counts_as_use_once_a_re_timed_one_does_not():
-    """A ready plan arriving touches the panel's use, so its ghost shows after a long search; re-timed, it does not."""
+    """The panel's own plan arriving touches its use, so its ghost shows after a long search; re-timed, it does not.
+
+    A plan another plugin asked for (calibration's moves) never counts: the panel's ghosts stay hidden.
+    """
     touches = []
     panel = Panel()
     panel._used = SimpleNamespace(touch=lambda: touches.append(True), active=True)
-    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=lambda _line: None)
+    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=lambda _line: None, **WATCHES)
     panel._api = api = SimpleNamespace(plan=Plan(1, Request("alice", 1.0), "planning", None))
+    panel._requested = api.plan.request
     panel.update(ctx)
     assert touches == []
     api.plan = Plan(1, api.plan.request, "ready", PATH, message="found")
     panel.update(ctx)
     api.plan = Plan(1, api.plan.request, "ready", PATH, message="found")
+    panel.update(ctx)
+    assert touches == [True]
+    api.plan = Plan(2, Request("alice", 2.0), "ready", PATH, message="found for another plugin")
     panel.update(ctx)
     assert touches == [True]

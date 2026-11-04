@@ -131,9 +131,40 @@ def test_another_robot_in_a_box_does_not_block_the_plan(world, config):
     scene = snapshot(config, start, (box,))
     scene.robots[other.id] = other
     mirror, scene = synced(world, scene)
-    assert mirror.collisions(full_report=True), "the core's check should see Belle in the box"
+    assert mirror.collisions(full_report=True) == [], "Belle and the box both stand still: never checked"
     result = plan_arm(mirror, scene, ARM, goal, threading.Event())
     assert result.path is not None, result.reason
+
+
+def box_near(world, config, joints, gap: float) -> Body:
+    """A box `gap` from the arm at `joints`, as PyBullet measures it: one 0.3 m above the tool, moved straight at it."""
+    geometry = box_geometry((0.1, 0.1, 0.1))
+    above = np.add(tool_at(world, config, joints).position, (0.0, 0.0, 0.3))
+    far = Body("t/near", geometry, Pose.from_arrays(above, (0, 0, 0, 1)), label="the box")
+    client = world.sync(snapshot(config, joints, (far,)), ALICE).client
+    box = client.rigid_bodies_puids["t/near"][0]
+    points = [point for part in (client.robot_puid, *client.tools_puids.values())
+              for point in p.getClosestPoints(part, box, 1.0, physicsClientId=client.client_id)]
+    nearest = min(points, key=lambda point: point[8])
+    toward = np.subtract(nearest[5], nearest[6]) * (1.0 - gap / nearest[8])
+    return Body("t/near", geometry, Pose.from_arrays(above + toward, (0, 0, 0, 1)), label="the box")
+
+
+@pytest.mark.parametrize("gap", [None, 0.005], ids=["free", "5 mm"])
+def test_a_path_keeps_1_cm_or_as_much_as_a_closer_target_has(world, config, gap):
+    """1 cm from everything where start and target allow it; a target closer than that sets the path's margin."""
+    start, goal = start_and_goal(config)
+    bodies = () if gap is None else (box_near(world, config, goal, gap),)
+    mirror, scene = synced(world, snapshot(config, start, bodies))
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is not None, result.reason
+    margin, note = result.path.margin, planner_module.margin_note(result.path.margin)
+    if gap is None:
+        assert margin == planner_module.PLAN_DISTANCE and note == "keeps 1 cm"
+    else:
+        # * PyBullet measures a gap about 2 mm smaller than it is (each convex shape is padded about 1 mm).
+        assert gap - 0.003 - planner_module.MARGIN_RESOLUTION <= margin <= gap and note.startswith("keeps only")
+    assert result.path.slowed(2.0).margin == margin
 
 
 def test_the_preview_follows_the_cosine_profile_sent():

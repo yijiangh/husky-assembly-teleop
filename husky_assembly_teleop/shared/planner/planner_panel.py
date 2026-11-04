@@ -3,7 +3,9 @@ Planner panels: target, Plan/Play/Clear, a time slider, Commit and ghosts.
 
 `PlannerPanel` is a separate plugin that drives a headless planner (`planner_service.PlannerService`) through its API.
 Subclasses set `planner`, supply `make_request`, `target_change`, `show_target` and `show_path`, and build their
-panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers.
+panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers. Commit's Clearance box sets whether the
+motion runs under a clearance; `clearance_chips` warns while the robot already stands too close, or while the plan
+keeps less than usual, so its clearance is smaller too.
 ! The planning world is the planner's, created on the worker thread; the base only closes it at teardown.
 ! Drive the planner through its public API (set target, plan, cancel, results) from the panel wherever you can,
   so those paths stay ready for other users such as an executor; only debug drawing and internal state reach inside.
@@ -12,7 +14,7 @@ panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers.
 from __future__ import annotations
 
 import asyncio
-import math
+import re
 from html import escape
 from typing import TYPE_CHECKING, Callable, Iterable, Sequence
 
@@ -25,8 +27,10 @@ from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...colors import ACTION, TEAL, WHITE, rgb
 from ...ui.css import button_group_color_css, group_buttons
 from ...ui.phone import columns_css
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, hover, note, section
+from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, again_label, show_waiting
+from ...ui.style import BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, chip, hover, note, section
 from ...world.stand_ins import unknown_parts, unknown_robots
+from ..teleop.clearance_toggle import ClearanceToggle, close_chip
 from scaffolding_assembly_core.ids import robot_id
 from .plan import Plan, PlannerContract
 
@@ -43,8 +47,6 @@ SLIDER_STEP = 0.05
 #: The Path buttons' colour, outlines and Plan filled: the one button of the panel that stands out. Teal, as Plan in
 #: the Assembly tab: it computes, nothing moves.
 PATH_BUTTONS_COLOR = TEAL
-#: Seconds a Commit waits for its second press, e.g. while other robots are not measured (`CommitConfirm`).
-COMMIT_CONFIRM_SECONDS = 2.0
 #: Lays out the Run folder as Commit and Cancel side by side, for an html widget outside that folder.
 COMMIT_STYLE = f"<style>{columns_css(viser.Icon.SEND, 2)}</style>"
 
@@ -53,9 +55,9 @@ COMMIT_STYLE = f"<style>{columns_css(viser.Icon.SEND, 2)}</style>"
 _PLAN_CHIPS = {None: ("no plan", NONE, "Set a target and press Plan."),
                "planning": ("planning…", BUSY, "The planner searches; the line below the buttons says how it goes."),
                "ready": ("plan ready", OK, "Play previews it; Commit sends it."),
-               "stale": ("plan stale: replan", BUSY, "The robot moved since planning; the line below says how. "
-                                                     "Plan again."),
-               "sent": ("sent", OK, "Sent to the robot; Cancel stops it."),
+               "stale": ("plan stale: replan", BUSY, "The plan no longer fits what is measured; the line below the "
+                                                     "buttons says why. Plan again."),
+               "sent": ("sent", INFO, "Sent to the robot; the panel's run chip says how it goes. Cancel stops it."),
                "failed": ("no plan found", FAIL, "The line below the buttons says why."),
                "cancelled": ("cancelled", NONE, "Planning was stopped; Plan tries again.")}
 
@@ -86,12 +88,16 @@ class PlannerPanel(HuskyPlugin):
         self._message, self._message_color = "", NONE
         #: Commit's second press while other robots are not measured.
         self._confirm = CommitConfirm()
+        #: Commit's Clearance box, below it; its hint comes with `_add_path_controls`.
+        self.clearance = ClearanceToggle("")
         #: The planner's plan whose message the panel shows; a new or changed plan replaces the message.
         self._shown: Plan | None = None
         #: How the panel's target differs from the ready plan's, or "": the chip then asks for a replan.
         self._target_moved = ""
         #: When the operator last used this panel; ghosts show only while it counts (`_add_ghosts`).
         self._used: RecentUse | None = None
+        #: The last request this panel's Plan sent: only its plan arriving counts as use, not another plugin's.
+        self._requested = None
         #: Nothing to plan for (e.g. no robots configured): the panel says why, and the hooks do nothing.
         self.idle = False
         self._api: PlannerContract | None = None
@@ -122,6 +128,26 @@ class PlannerPanel(HuskyPlugin):
         """Ids of the robots the plan moves that the second press lets be unknown (`commit_warnings` asks); none."""
         return frozenset()
 
+    def commit_out_of_reach(self, ctx: PluginContext, plan: Plan) -> frozenset[str]:
+        """Ids of other robots not measured that the plan's motion cannot reach: Commit lets them be unknown; none."""
+        return frozenset()
+
+    def commit_margin(self, ctx: PluginContext) -> float:
+        """The margin a commit's clearance keeps, metres (`PlannerContract.stop_distance`), for the watch."""
+        return self._api.stop_distance(self._chosen_plan())
+
+    def clearance_chips(self) -> str:
+        """Commit's clearance chips: the robot already too close (`start_chip`), the plan keeping less than usual."""
+        return self.clearance.start_chip("Commit") + close_chip(self._api.close_note(self._chosen_plan()))
+
+    def _chosen_plan(self) -> Plan | None:
+        """The latest plan if it is for the chosen robot, else None."""
+        plan = self._api.plan
+        return plan if plan is not None and plan.request.serial == self.serial else None
+
+    #: Options of the chosen robot's watch (`ctx.watch_clearance`), e.g. {"unknown_arms": ALL_ARMS}.
+    watch_options: dict = {}
+
     # --- --- --- --- --- SETUP HELPERS --- --- --- --- ---
 
     def _connect(self, ctx: PluginContext) -> None:
@@ -129,14 +155,15 @@ class PlannerPanel(HuskyPlugin):
         self._api = ctx.require(self.planner)
 
     def _add_path_controls(self, ctx: PluginContext, gui: viser.GuiApi, plan_hint: str, commit_hint: str,
-                           before_commit: Callable[[viser.GuiApi], None] | None = None) -> None:
-        """Add the "path" section: Plan/Play/Clear, the time slider and Commit, with their callbacks.
+                           clearance_hint: str, before_commit: Callable[[viser.GuiApi], None] | None = None) -> None:
+        """Add the "path" section: Plan/Play/Clear, the time slider, Commit and its Clearance box, with their callbacks.
 
         Args:
             ctx: This plugin's context.
             gui: GUI api, inside `ctx.view.ui()`.
             plan_hint: Hover text of the Plan/Play/Clear buttons.
             commit_hint: Hover text of Commit.
+            clearance_hint: Hover text of the Clearance box: what a committed motion keeps clear of.
             before_commit: Adds a subclass's own inputs between the time slider and Commit, e.g. the plan's duration.
         """
         gui.add_html(section("path", SECTION_CTRL))
@@ -158,6 +185,9 @@ class PlannerPanel(HuskyPlugin):
                 "Commit", color=rgb(ACTION), icon=viser.Icon.SEND, hint=f"{commit_hint} {CommitConfirm.HINT}")
             cancel = gui.add_button("Cancel", color=rgb(FAIL), icon=viser.Icon.PLAYER_STOP,
                                     hint="Stop the motion Commit started: the planner stops the robot")
+        # * Below the buttons it guards, as the jogs'.
+        self.clearance.hint = clearance_hint
+        self.clearance.add(ctx, gui, "commit")
         plan.on_click(ctx.defer_value("path button", lambda label: self._on_path(ctx, label)))
         # ! Operator drags only: draw writes the slider every tick, and viser calls back for that too, late, which
         #   would set the preview back.
@@ -201,7 +231,7 @@ class PlannerPanel(HuskyPlugin):
                 self._t = 0.0  # play again from the start
             self._playing = not self._playing
         elif label == "Clear":
-            self._api.clear()
+            self._clear_plan()
 
     def _plan(self, ctx: PluginContext) -> None:
         """Ask the planner for a plan to the target, unless one is being planned or there is no target."""
@@ -214,7 +244,14 @@ class PlannerPanel(HuskyPlugin):
             return
         request = self.make_request(ctx)
         if request is not None:
+            self._requested = request
             self._api.request_plan(request)
+
+    def _clear_plan(self) -> None:
+        """Forget the plan (`PlannerContract.clear`) and say so, if there was one; a caller may `_say` more after."""
+        if self._api.plan is not None:
+            self._api.clear()
+            self._say("plan cleared")
 
     def _scrub(self, t: float) -> None:
         """Show the path at time `t`."""
@@ -234,17 +271,18 @@ class PlannerPanel(HuskyPlugin):
         if change:
             self._say(f"not committed: {change}; replan", FAIL)
             return
-        asked, unknown = self._confirm.asks(ctx, [robot_id(plan.request.serial)], "Commit",
-                                            self.commit_warnings(ctx, plan))
+        warnings, far = self.commit_warnings(ctx, plan), self.commit_out_of_reach(ctx, plan)
+        asked, unknown = self._confirm.asks(ctx, [robot_id(plan.request.serial)], "Commit", warnings, plan.id, far)
         if asked:
             self._say(asked, BUSY)
             return
         allowed = unknown | self.commit_unknown(ctx, plan)
-        ctx.spawn(f"commit plan {plan.id}", self._report(self._api.commit(plan.id, allowed)))
+        ctx.spawn(f"commit plan {plan.id}", self._report(self._api.commit(plan.id, allowed, self.clearance.value)))
 
     def _cancel_commit(self) -> None:
-        """Stop the motion a commit started, and say so."""
+        """Stop the motion a commit started, and say so; a Commit waiting for its second press waits no more."""
         self._used.touch()
+        self._confirm.press.forget()
         if self._api.cancel_commit():
             self._say("commit cancelled: the robot stops")
         else:
@@ -279,8 +317,13 @@ class PlannerPanel(HuskyPlugin):
         return selection, serial, robot.name
 
     def _say(self, message: str, color: str = NONE) -> None:
-        """Set the one line of feedback under the buttons: FAIL only for a failure, BUSY for a question or warning."""
+        """Set the one line of feedback under the buttons: FAIL only for a failure, BUSY for a question or warning.
+
+        * A failure (a refusal) forgets a Commit waiting for its second press: the next press asks again.
+        """
         self._message, self._message_color = message, color
+        if color == FAIL:
+            self._confirm.press.forget()
 
     # --- --- --- --- --- TICK --- --- --- --- ---
 
@@ -298,13 +341,17 @@ class PlannerPanel(HuskyPlugin):
                 self._t, self._playing = 0.0, False
             arrived = plan is not None and plan.state == "ready" and (
                 shown is None or plan.id != shown.id or shown.state != "ready")
-            if arrived:
-                self._used.touch()  # * a plan arriving counts as use: its ghost shows after a long search too
+            if arrived and plan.request is self._requested:
+                # * This panel's plan arriving counts as use, so its ghost shows after a long search too; a plan
+                #   another plugin asked for (calibration's moves) does not.
+                self._used.touch()
             # * Only a new plan, state or message is news: a re-timed plan (`set_duration`) keeps the line as it is.
             if plan is not None and (shown is None or (plan.id, plan.state, plan.message)
                                      != (shown.id, shown.state, shown.message)):
                 failed = plan.state == "failed"
-                self._say(plan.message, FAIL if failed else BUSY if plan.warning else NONE)
+                # * A sent plan's message is the commit's answer: green, as `_report` shows it, whichever runs last.
+                self._say(plan.message, FAIL if failed else OK if plan.state == "sent" else BUSY if plan.warning
+                          else NONE)
                 if failed or plan.warning:
                     ctx.log_warn(plan.message)  # * the line's hover may be cut; the console keeps it whole
         if self._playing and plan is not None and plan.path is not None:
@@ -315,6 +362,7 @@ class PlannerPanel(HuskyPlugin):
             self._say(moved)
         self._target_moved = moved
         self._confirm.draw(now)
+        self.clearance.watch(ctx, self.serial, self.commit_margin(ctx), **self.watch_options)
 
     # --- --- --- --- --- DRAW HELPERS --- --- --- --- ---
 
@@ -358,27 +406,27 @@ class PlannerPanel(HuskyPlugin):
 
 
 class CommitConfirm:
-    """Commit's second press: while other robots are not measured, or the panel warns, the first press only asks.
+    """Commit's second press (`SecondPress`): while other robots are unknown, or the panel warns, the first only asks.
 
-    Commit turns amber while it waits. The second press lets the robots unknown then be unknown during the motion: its
-    clearance checks them as stand-ins, and soft stops for any other robot that is not measured (`ctx.clearance`,
-    `unknown_robots`).
+    The second press lets the robots unknown then be unknown during the motion: its clearance checks them as stand-ins,
+    and soft stops for any other robot that is not measured (`ctx.clearance`, `unknown_robots`). It counts only for the
+    plan and the reasons the first asked about: another robot lost, or a new plan, asks again.
     """
 
     #: For Commit's hover text.
-    HINT = f"With other robots not measured, press it twice within {COMMIT_CONFIRM_SECONDS:g} s."
+    HINT = f"With other robots not measured, press it twice within {SECOND_PRESS_SECONDS:g} s."
 
     def __init__(self):
         """Wait for nothing yet; set `button` once it is built."""
         self.button: viser.GuiButtonHandle | None = None
-        #: The button's own colour (None: the theme's), kept at the first `draw` and shown again once it stops waiting.
-        self.ready: tuple[int, int, int] | str | None = None
+        self.press = SecondPress()
+        #: The button's own label and colour (None: the theme's), shown again once it stops waiting.
+        self._label = ""
+        self._color: tuple[int, int, int] | str | None = None
         self._kept = False
-        #: ROS time until which a second press sends; -inf while none is awaited.
-        self.until = -math.inf
 
-    def asks(self, ctx: PluginContext, acting: Iterable[str], label: str,
-             warnings: Sequence[str] = ()) -> tuple[str, frozenset[str]]:
+    def asks(self, ctx: PluginContext, acting: Iterable[str], label: str, warnings: Sequence[str] = (),
+             subject: object = None, far: frozenset[str] = frozenset()) -> tuple[str, frozenset[str]]:
         """What to tell the operator instead of sending ("" to send now), and the robots the commit lets be unknown.
 
         Args:
@@ -386,29 +434,35 @@ class CommitConfirm:
             acting: Ids of the robots the commit moves; not counted.
             label: The button's label, for the message.
             warnings: More reasons to ask first, e.g. "the arm 40° from its stow pose".
+            subject: What is sent, e.g. the plan's id: a second press counts only for the same one.
+            far: Ids of robots not measured that the motion cannot reach (`world.arm_reach.out_of_reach`): they may
+                be unknown without asking.
 
         Returns:
             tuple[str, frozenset[str]]: The question, or ""; the ids of the other robots not measured now.
         """
         unknown = unknown_robots(ctx.scene.snapshot, set(acting))
-        reasons = [*warnings] + ([f"{len(unknown)} other robot{'s' if len(unknown) > 1 else ''} unknown"]
-                                 if unknown else [])
-        if reasons and ctx.now() > self.until:
-            self.until = ctx.now() + COMMIT_CONFIRM_SECONDS
-            return (f"press {label} again within {COMMIT_CONFIRM_SECONDS:g} s to move with "
-                    f"{'; '.join(reasons)}"), frozenset()
-        self.until = -math.inf
-        return "", unknown
+        near = unknown - far
+        reasons = [*warnings] + ([f"{len(near)} other robot{'s' if len(near) > 1 else ''} unknown"] if near else [])
+        if not reasons:
+            self.press.forget()
+            return "", unknown
+        # * The warnings without their numbers, which drift between presses (e.g. "the arm 40° from stow").
+        key = repr((subject, sorted(near), [re.sub(r"[\d.]+", "#", warning) for warning in warnings]))
+        if self.press.press(ctx.now(), key):
+            return "", unknown
+        return (f"press {label} again within {SECOND_PRESS_SECONDS:g} s to move with "
+                f"{'; '.join(reasons)}"), frozenset()
 
     def draw(self, now: float) -> None:
-        """Make the button amber while it waits for its second press, its own colour otherwise."""
+        """Make the button amber and "Commit?" while it waits for its second press, as it was otherwise."""
         if self.button is None:
             return
         if not self._kept:
-            self.ready, self._kept = self.button.color, True
-        color = rgb(BUSY) if now <= self.until else self.ready
-        if self.button.color != color:
-            self.button.color = color
+            self._color, self._kept = self.button.color, True
+        if self.button.label != again_label(self._label):
+            self._label = self.button.label  # * its owner's own label, also after the owner changed it
+        show_waiting(self.button, bool(self.press.waiting(now)), self._label, self._color)
 
 
 def unknown_robots_chip(snapshot: Scene, acting: Iterable[str]) -> str:

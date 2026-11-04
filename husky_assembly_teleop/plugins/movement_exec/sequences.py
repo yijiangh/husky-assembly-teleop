@@ -3,10 +3,12 @@ A step's parts, run one at a time: a motion along its plan, a tool step, or a st
 
 A motion along the plan (plain, an insert, a retreat) runs on Exec without a prompt, as in the old monitor: its line is
 logged, the world checked again and the command rebuilt from the live joints and sent in the same tick, so nothing can
-change between the last check and the send; the other robots are frozen (`ctx.freeze`) until it ends. The Robotiq
-steps and the steps done by hand ask the operator first, the robot named. An insert, a retreat and the Robotiq handoff
-run partly compliant (`shared/execution/`), with the run's settings read once when the part starts. The servo part
-(`servo_part.py`) runs on the same `Job`, `PartRun` and checks; the plugin dispatches it.
+change between the last check and the send; the other robots are frozen (`ctx.freeze`) until it ends. With Exec's
+Clearance ticked a plain motion keeps a clearance too (`motion_clearance`); inserts, retreats, handoffs and the servo
+touch by design and keep none. The Robotiq steps and the steps done by hand ask the operator first, the robot named.
+An insert, a retreat and the Robotiq handoff run partly compliant (`shared/execution/`), with the run's settings read
+once when the part starts. The servo part (`servo_part.py`) runs on the same `Job`, `PartRun` and checks; the plugin
+dispatches it.
 
 ! Main thread, inside the plugin's task.
 """
@@ -15,15 +17,18 @@ from __future__ import annotations
 
 import asyncio
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, ContextManager, Mapping, Sequence
 
 import numpy as np
 from async_timeout import timeout
 
 from scaffolding_assembly_core.ids import robot_id
 
+from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV3
+from ...robot_interface.soft_stop import MotionRefused
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.movement import Routine
 from ...shared.assembly_run_contract import is_live
@@ -43,9 +48,12 @@ from ...shared.execution.tools import (FELL_SHORT, REACHED, ROBOTIQ_CLOSE, ROBOT
 from ...shared.execution.tools import DRY_RUN as TOOL_DRY, REFUSED as TOOL_REFUSED
 from ...shared.motion_planner_contract import MotionPlanRequest
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, DONE, DRY_RUN, FAILED, HANDOFF_PART,
-                                              HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART, OPEN_PART, REFUSED,
-                                              REFUSED_PART, RETREAT_PART, WITH_MOTION_PART, current_primary)
+                                              HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART, OPEN_PART,
+                                              PLANNED_MARGIN, REFUSED, REFUSED_PART, RETREAT_PART, WITH_MOTION_PART,
+                                              current_primary)
+from ...shared.planner.planner_service import PlannerService
 from ...shared.runs.runs import SPLIT_RANGE
+from ...world.clearance import ARM_MOVE
 from ...world.freeze import WorldMoved, take_basis
 
 if TYPE_CHECKING:
@@ -64,6 +72,7 @@ if TYPE_CHECKING:
     from ...shared.execution.basis import PlanBasis
     from ...shared.motion_planner_contract import MotionPlannerContract
     from ...shared.movement_exec_contract import Carried, ExecRequest, PartPlan
+    from ...world.clearance import Clearance
     from ...world.freeze import Basis, Freeze
     from ...world.measured import WorldState
 
@@ -131,6 +140,8 @@ class PartRun:
         base: The acting robot's base then.
         progress: How far a motion's send got, for a cancel's record; None for other parts.
         freeze: The other robots' freeze while a motion runs; its `problem` says why it broke. None for other parts.
+        clearance: The robot's clearance while a motion along the plan runs (`motion_clearance`); its `problem` says
+            why it tripped or refused. None for other parts, or without one.
         servo_file: The servo record's path in the run, once the servo part wrote one.
         servo: The servo's summary for the as-built record (`as_built.servo_block`), once it wrote one.
         servo_plan: The servo part's plan (what it aims at), once made.
@@ -149,6 +160,7 @@ class PartRun:
     base: Pose | None = None
     progress: SendProgress | None = None
     freeze: Freeze | None = None
+    clearance: Clearance | None = None
     servo_file: str | None = None
     servo: dict | None = None
     servo_plan: ServoPlan | None = None
@@ -440,23 +452,32 @@ async def _motion(job: Job, run: PartRun) -> None:
     ignored += " (Rhino obstacles not checked)" if basis is not None and not basis.obstacles_collide else ""
     _say(job, f"{part.movement} — move {arms} along the planned path{ignored}, {command.duration:.0f} s, largest "
               f"joint travel {math.degrees(command.travel):.0f}°", warn=command.travel > LARGE_TRAVEL)
-    # ! Checked again right before the send; the command is rebuilt from the joints now and sent in this same tick.
-    command = world_problem(job, motion=True) or live_command(job)
-    if isinstance(command, str):
-        run.ended(REFUSED, "refused", command)
-        return
-    run.command = command.as_record()
     try:
-        basis = others_basis(job)
-    except WorldMoved as unmeasured:
-        run.ended(REFUSED, "refused", f"can't tell whether the other robots stand still: {unmeasured}")
+        # * The clearance's first check comes before the last check below, so the send still follows it in one tick.
+        with motion_clearance(job) as run.clearance:
+            if run.clearance is not None:
+                await PlannerService.first_check(ctx, run.clearance)
+            # ! Checked again right before the send; the command is rebuilt from the joints now and sent in this same
+            #   tick.
+            command = world_problem(job, motion=True) or live_command(job)
+            if isinstance(command, str):
+                run.ended(REFUSED, "refused", command)
+                return
+            run.command = command.as_record()
+            try:
+                basis = others_basis(job)
+            except WorldMoved as unmeasured:
+                run.ended(REFUSED, "refused", f"can't tell whether the other robots stand still: {unmeasured}")
+                return
+            run.progress = SendProgress()
+            # * Both hold every arm: the watch at another robot's first activity, the freeze once one was displaced (a
+            #   push too) or lost to mocap, which cancels this task.
+            with ctx.freeze(basis) as run.freeze:
+                outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run,
+                                            watch=lambda: others_moving(job), progress=run.progress)
+    except (MotionRefused, WaitTimeout) as refused:  # * the clearance cannot check the robot: nothing sent
+        run.ended(REFUSED, "refused", f"nothing sent: {refused}")
         return
-    run.progress = SendProgress()
-    # * Both hold every arm: the watch at another robot's first activity, the freeze once one was displaced (a push
-    #   too) or lost to mocap, which cancels this task.
-    with ctx.freeze(basis) as run.freeze:
-        outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run, watch=lambda: others_moving(job),
-                                    progress=run.progress)
     run.outcome = outcome.as_record()
     result = {ARRIVED: DONE, SENT_DRY: DRY_RUN, SENT_REFUSED: REFUSED, SENT_NOT_HELD: HOLD_NOT_SENT}.get(
         outcome.status, FAILED)
@@ -475,6 +496,20 @@ async def _motion(job: Job, run: PartRun) -> None:
             f"{job.who}: travel to load done; force sensors zeroed on {sum(zeroed)} of {len(zeroed)} arms")
         if any(zeroed):
             job.ft_zero[job.request.serial] = {"at": ctx.now(), "reason": "travel to load (tools empty)"}
+
+
+def motion_clearance(job: Job) -> ContextManager[Clearance | None]:
+    """The clearance a plain motion along the plan runs under (`ARM_MOVE`), or none.
+
+    None while Clearance is unticked, with Ignore built bars (the plan may pass through them) and on a dry run. The
+    assembly planner checks contact only (PLANNED_MARGIN), so the clearance trips on contact only. A start in
+    contact is refused, nothing sent; a trip soft stops the robot and cancels the part.
+    """
+    request = job.request
+    if job.dry_run or not request.clearance or request.ignore_built():
+        return nullcontext()
+    return job.ctx.clearance([request.serial], ARM_MOVE.stop_for(PLANNED_MARGIN), unknown_robots=request.unknown_robots,
+                             refuse_first=True)
 
 
 async def _insert(job: Job, run: PartRun) -> None:

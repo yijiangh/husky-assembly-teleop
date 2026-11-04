@@ -27,8 +27,8 @@ POINT_IDX = 0              # which point in the take (GH input param POINT overr
 SHOW_TOOL0_FRAME = True    # output a Plane at tool0 (grasshopper mode)
 
 _EXPORT_DIR = (
-    "/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/"
-    "2025-03 Husky Assembly/data_experiment/visualise_calibration_to_rhino"
+    "/home/su/Insync/2025-03 Husky Assembly/data_experiment/"
+    "visualise_calibration_to_rhino"
 )
 SKELETON_JSON = _EXPORT_DIR + r"/20260615_j0_robot_skeleton.json"
 # =======================================================================

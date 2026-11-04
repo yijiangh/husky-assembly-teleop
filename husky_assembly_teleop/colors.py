@@ -50,7 +50,7 @@ HUE_NAMES = {GREEN: "green", AMBER: "amber", RED: "red", GREY: "grey", BLUE: "bl
 
 # * Status: chips put white text on these.
 OK = GREEN          # ok, within limit, ready, done; Go and Confirm buttons
-WARN = AMBER        # moving or in progress, over a warn limit, stale, waiting for a second tap, Clearance off
+WARN = AMBER        # moving or in progress, over a warn limit, stale, waiting for a second press, Clearance off
 FAIL = RED          # failed, refused, over a red limit, collision; Stop and Cancel buttons
 NONE = GREY         # no data yet, pending, not done; also small secondary text
 INFO = BLUE         # a fact or an expected end state (screwed tight, sim), as a filled chip
@@ -76,6 +76,8 @@ ACTUAL = GREY
 TRAIL = AMBER       # where the base drove: it moved
 MEASURED = CYAN     # mocap measurements: recorded probe points, cameras
 FITTED = BLUE       # where a fit puts what was measured: fitted mocap markers, axes and bars
+#: tool0's axes as the scene draws them (x red, y green, z blue): the tool pad's buttons.
+AXIS_X, AXIS_Y, AXIS_Z = RED, GREEN, BLUE
 MOUNTED = NAVY      # the joint halves mounted on a fitted bar, darker than it
 HELD = AMBER        # a body held by a robot's tool: the old orange, in transit
 COLLISION = RED     # what moved into something

@@ -64,7 +64,7 @@ class CollisionHit:
         """str: One line naming the first pair, e.g. "waypoint 10 is in collision: ur_arm tool with ipad_rack"."""
         a, b = self.pairs[0]
         if self.margin > 0.0:
-            return f"{self.where}: {self.name(a)} came within {self.margin * 100:.0f} cm of {self.name(b)}"
+            return f"{self.where}: {self.name(a)} came within {self.margin * 100:g} cm of {self.name(b)}"
         return f"{self.where} is in collision: {self.name(a)} with {self.name(b)}"
 
     def name(self, object_id: str) -> str:

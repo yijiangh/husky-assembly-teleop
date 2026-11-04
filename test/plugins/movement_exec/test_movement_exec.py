@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -26,6 +27,7 @@ from husky_assembly_teleop.plugins.movement_exec.sequences import PartOperator
 from husky_assembly_teleop.robot_interface.base import BaseState, FollowerState
 from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
+from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON
 from husky_assembly_teleop.shared.execution.basis import basis_of
 from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
 from husky_assembly_teleop.shared.execution.stream import arm_base_in_world
@@ -339,6 +341,49 @@ def test_a_cancel_during_the_motion_holds_every_arm():
 
 
 @pytest.mark.safety
+@pytest.mark.parametrize("ticked", [True, False])
+def test_a_motion_keeps_a_contact_clearance_only_while_execs_clearance_is_ticked(ticked):
+    """Ticked, the motion runs under an arm clearance at the assembly planner's margin, contact only; else none."""
+    lab = Lab()
+    result, _held = execute(lab, lab.request(clearance=ticked))
+    assert result.status == DONE, result.reason
+    assert [(clearance.serials, clearance.margin, clearance.refuse_first) for clearance in lab.ctx.clearances] == \
+        ([(("a200-0806",), 0.0, True)] if ticked else [])
+
+
+@pytest.mark.safety
+def test_a_motion_starting_in_contact_is_refused_and_one_that_trips_fails():
+    """A clearance that refuses the start sends nothing (REFUSED); one tripping mid-motion holds every arm (FAILED)."""
+    for refuse in (True, False):
+        lab = Lab()
+        problem = "robot a200-0806 came within 0 cm of wall"
+        if refuse:
+            asked = lab.ctx.clearance
+
+            @contextmanager
+            def unchecked(*args, **kwargs):
+                """The clearance asked for, not checked yet: the part waits for its first check."""
+                with asked(*args, **kwargs) as clearance:
+                    clearance.checked = False
+                    yield clearance
+            lab.ctx.clearance = unchecked
+
+        async def trip(lab):
+            while not (lab.ctx.clearances if refuse else lab.cindy._multi_arm.messages):
+                await asyncio.sleep(0)
+            lab.ctx.clearances[-1].problem, lab.ctx.clearances[-1].refused = problem, refuse
+            lab.plugin._task.cancel()
+
+        result, _held = execute(lab, lab.request(), during=trip)
+        if refuse:
+            assert result.status == REFUSED and "nothing sent" in result.reason and problem in result.reason
+            assert not lab.cindy._multi_arm.messages
+        else:
+            assert result.status == FAILED and f"soft stopped: {problem}" in result.reason
+        assert lab.free()
+
+
+@pytest.mark.safety
 def test_a_request_cancelled_before_it_starts_gives_the_robot_back():
     """A task cancelled before its first step (a soft stop in the same tick): cancelled, the lease given back."""
     lab = Lab()
@@ -558,7 +603,7 @@ def test_a_confirm_clicked_in_the_tick_of_stop_all_runs_after_it_and_moves_nothi
         return await future
 
     result = run_guarded(scenario())
-    assert queued._intents.empty() and lab.cindy.soft_stopped and latch.reason == "Stop all"
+    assert queued._intents.empty() and lab.cindy.soft_stopped and latch.reason == STOP_ALL_REASON
     assert result.status == CANCELLED and "Stop all" in result.reason and result.done == (3,) and lab.free()
     events = [event for event, _fields in lab.run.records]
     assert "confirm" not in events and events[-1] == "soft_stop" and len(lab.cindy._multi_arm.messages) == 1
@@ -719,7 +764,7 @@ def test_a_path_check_during_a_step_moves_nothing_and_leases_nothing(monkeypatch
     checked = []
     planner._world = SimpleNamespace(sync=lambda _snapshot, _serial: "mirror", close=lambda: None)
     monkeypatch.setattr(arm_plugin, "path_hit",
-                        lambda _world, _mirror, arm, waypoints: checked.append((arm, waypoints.shape)))
+                        lambda _world, _mirror, arm, waypoints, _margin: checked.append((arm, waypoints.shape)))
 
     async def scenario():
         future = lab.plugin.request_execute(lab.request("B20_J_transfer"))

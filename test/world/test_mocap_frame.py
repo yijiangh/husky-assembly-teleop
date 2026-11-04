@@ -16,9 +16,10 @@ from repo_paths import DATA
 from husky_assembly_teleop.robot_interface.mocap_definitions import MocapAnchor, MocapCamera, cameras_json, read_cameras
 from husky_assembly_teleop.world.calibration_sessions import sessions_folder
 from husky_assembly_teleop.world.lab import DEFAULT_LAB, lab_file, read_lab
-from husky_assembly_teleop.world.mocap_frame import (CAMERA_NAMES, FLOOR_SUFFIX, VOLUME, camera_label,
-                                                     camera_serial, find_anchors, fit_anchors, fit_cameras,
-                                                     frame_and_cameras, frame_moved, newest_floor_calibration,
+from husky_assembly_teleop.world.mocap_frame import (CAMERA_NAMES, FLOOR_SUFFIX, SCALE_CHANGED, VOLUME,
+                                                     camera_label, camera_serial, find_anchors, fit_anchors,
+                                                     fit_cameras, fit_scale, follow_anchors, frame_and_cameras,
+                                                     frame_moved, match_anchors, newest_floor_calibration,
                                                      truss_names, volume_moved)
 
 pytestmark = pytest.mark.safety
@@ -237,6 +238,71 @@ def test_anchors_are_found_by_the_nearest_marker_within_reach():
     lab = {"A": MocapAnchor("A", (0.0, 0.0, 0.0)), "B": MocapAnchor("B", (1.0, 0.0, 0.0)),
            "C": MocapAnchor("C", (2.0, 0.0, 0.0)), "D": MocapAnchor("D", (2.03, 0.0, 0.0))}
     assert find_anchors(lab, [(0.01, 0.0, 0.0), (1.03, 0.0, 0.0), (2.015, 0.0, 0.0)]) == {"A": 0}
+
+
+def test_anchors_are_matched_by_their_shape_after_a_turn_shift_and_scale_change():
+    """Motive turned 3°, shifted 10 cm and shrank 0.2 %; A3 gone, a loose marker added, all shuffled."""
+    motion = Rotation.from_euler("xyz", (0.5, -0.3, 3.0), degrees=True)
+    seen = {name: 0.998 * motion.apply(anchor.position) + (0.1, -0.05, 0.02) for name, anchor in ANCHORS.items()}
+    markers = [tuple(seen[name]) for name in ("A5", "A1", "A4", "A2")] + [(1.5, 1.1, 1.0)]
+    assert find_anchors(ANCHORS, markers) == {}
+    assert match_anchors(ANCHORS, markers) == {"A5": 0, "A1": 1, "A4": 2, "A2": 3}
+    assert match_anchors(ANCHORS, markers[:3]) == {}
+
+
+def recalibrated_lab(names, strays: int, seed: int = 0) -> tuple[dict, list, list]:
+    """The lab's anchors (main_frame.json) and markers after a recalibration: `names` seen among `strays`, shuffled.
+
+    Returns the anchors, the markers and each name's index among them.
+    """
+    lab = {name: MocapAnchor(name, tuple(xyz)) for name, xyz in json.loads(
+        (DATA / "lab" / "main_frame.json").read_text())["anchors"].items()}
+    motion, rng = Rotation.from_euler("z", 0.6, degrees=True), np.random.default_rng(seed)
+    points = [0.99845 * motion.apply(lab[name].position) + (0.02, -0.01, 0.0) for name in names]
+    points += list(rng.uniform((-4.0, -5.5, 0.0), (4.0, 3.0, 2.0), (strays, 3)))
+    order = rng.permutation(len(points))
+    where = [int(np.nonzero(order == k)[0][0]) for k in range(len(names))]
+    return lab, [tuple(points[index]) for index in order], where
+
+
+@pytest.mark.parametrize("names", [("A5", "A6", "A8", "A9"), ("A1", "A2", "A3", "A4"), ("A1", "A5", "A7", "A9")])
+def test_four_of_the_labs_anchors_among_strays_are_matched_right_though_nearly_symmetric(names):
+    """The lab's floor and post anchors are nearly 180° symmetric: four of them, 20 stray markers, each one right."""
+    lab, markers, where = recalibrated_lab(names, 20)
+    assert match_anchors(lab, markers) == dict(zip(names, where))
+
+
+def test_three_anchors_among_strays_are_not_matched_and_three_found_place_the_others():
+    """Three in view can be any three strays fitting a triangle: none; three found carry the rest onto theirs."""
+    lab, markers, where = recalibrated_lab(("A1", "A3", "A7"), 30)
+    assert match_anchors(lab, markers) == {}
+    names = ("A1", "A3", "A5", "A7", "A8")
+    lab, markers, where = recalibrated_lab(names, 10)
+    assert follow_anchors(lab, markers, dict(zip(names[:3], where[:3]))) == dict(zip(names, where))
+    assert follow_anchors(lab, markers, dict(zip(names[:2], where[:2]))) == {}
+
+
+def test_motives_scale_change_is_the_median_of_the_long_pairs_and_a_moved_anchor_sways_it_little():
+    """Turned 2°, shifted and 1500 ppm shorter, A2 3 mm moved on its own: -1500 ppm within 100 ppm."""
+    motion = Rotation.from_euler("z", 2.0, degrees=True)
+    now = {name: MocapAnchor(name, tuple(0.9985 * motion.apply(anchor.position) + (0.1, 0.0, 0.0)))
+           for name, anchor in ANCHORS.items()}
+    assert fit_scale(ANCHORS, now).scale == pytest.approx(-0.0015, abs=1e-9)
+    now["A2"] = MocapAnchor("A2", tuple(np.add(now["A2"].position, (0.003, 0.0, 0.0))))
+    fit = fit_scale(ANCHORS, now)
+    assert fit.scale == pytest.approx(-0.0015, abs=1e-4) and fit.pairs == 10
+    assert fit.describe().startswith(f"distances {fit.scale * 1e6:+.0f} ppm (7.") and "10 pairs of 5 anchors" in \
+        fit.describe()
+    assert fit_scale(ANCHORS, {name: now[name] for name in ("A1", "A3", "A4")}) is None
+
+
+@pytest.mark.parametrize("shift", [(0.003, 0.0, 0.0), (0.0, 0.01, 0.0), (-0.01, 0.0, 0.0)])
+def test_one_anchor_moved_among_four_is_no_scale_change(shift):
+    """Four anchors in view, the scale unchanged, A1 moved 3 to 10 mm: under SCALE_CHANGED, or none."""
+    now = {name: ANCHORS[name] for name in ("A1", "A2", "A3", "A4")}
+    now["A1"] = MocapAnchor("A1", tuple(np.add(now["A1"].position, shift)))
+    fit = fit_scale(ANCHORS, now)
+    assert fit is None or abs(fit.scale) < SCALE_CHANGED
 
 
 def test_a_moved_frame_is_recovered_from_the_anchors_and_a_moved_anchor_left_out():

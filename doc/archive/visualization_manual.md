@@ -10,7 +10,7 @@ camera placement, circle-fit quality, outlier points, and the robot configuratio
 each calibration point — all in one shared coordinate frame.
 
 > **Audience**: assumes you have already collected calibration data (see
-> [`calibration_manual.md`](../calibration_manual.md)) and have Rhino8 installed. Every
+> [`calibration_manual.md`](../lab/calibration_manual.md)) and have Rhino8 installed. Every
 > importer runs in **both** the Rhino8 ScriptEditor (Python 3) and a Grasshopper
 > GhPython component.
 
@@ -169,7 +169,7 @@ same frame as the cameras, so everything overlays.
 
 ### 3.1 Produce the analysis file
 
-Run the calibration pipeline (see [`calibration_manual.md` §7](../calibration_manual.md#7-running-the-calibration-pipeline)).
+Run the calibration pipeline (see [`calibration_manual.md` §7](../lab/calibration_manual.md#7-running-the-calibration-pipeline)).
 Step 1 of the pipeline,
 [`0_circle_fitting.py`](../../data/calibration_data/0_circle_fitting.py), writes each
 batch's `{batch}_analysis.json` into `data/calibration_data/<date>/<batch>/`.

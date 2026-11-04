@@ -2,7 +2,8 @@
 Small moves of an arm's tool0 given in tool0's own frame, solved into joint angles on the robot's URDF.
 
 The UR driver takes no Cartesian moves, so `tool_step_target` finds the joints with a few Newton steps on the URDF's
-forward kinematics; `ArmInterface.send_tool_step` sends them as a short joint move. A jog while a button is held
+forward kinematics; `ArmInterface.send_tool_step` sends them as a short joint move. A step given in the robot's frame
+is turned into tool0's first (`robot_step_in_tool0`): from the joints only, no mocap. A jog while a button is held
 (`tool_jog_target`) runs on the same solver, one point per tick ahead of the arm along a line from the press pose.
 """
 
@@ -88,28 +89,51 @@ def tool_step_target(urdf: Path, arm: str, joints: Sequence[float], step: Pose,
     return here
 
 
+def robot_step_in_tool0(urdf: Path, arm: str, joints: Sequence[float], step: Pose) -> Pose:
+    """The same step in tool0's frame, at `joints`, as `step` given in the robot's (the URDF root: x forward, z up).
+
+    The shift and the turn's axis keep their direction in the robot, whatever the flange's orientation; the turn still
+    pivots where `tool_step_target` is told.
+    """
+    rotation = Rotation.from_matrix(tool0_pose(urdf, arm, joints)[:3, :3])
+    back = rotation.inv()
+    turn = back * Rotation.from_quat(step.orientation) * rotation
+    return Pose(tuple(back.apply(np.asarray(step.position, dtype=float))), tuple(turn.as_quat()))
+
+
 def tool0_pose(urdf: Path, arm: str, joints: Sequence[float]) -> np.ndarray:
     """Tool0 at `joints` (radians, UR_JOINT_NAMES order) as a 4x4 matrix in the URDF's root: a jog's anchor."""
     names = [f"{arm}_{name}" for name in UR_JOINT_NAMES]
     return link_pose(urdf, Pose(), dict(zip(names, np.asarray(joints, dtype=float))), f"{arm}_tool0").matrix()
 
 
-def jog_offset(axis: int, amount: float) -> np.ndarray:
-    """A move along one tool0 axis (`axis` 0-2, `amount` metres) or a turn about one (3-5, radians), as a 4x4."""
+def jog_offset(axis: int, amount: float, axes: np.ndarray | None = None) -> np.ndarray:
+    """A move along one jog axis (`axis` 0-2, `amount` metres) or a turn about one (3-5, radians), as a 4x4 in tool0.
+
+    `axes`: the jog's axes as columns in tool0's frame; None for tool0's own.
+    """
+    direction = (np.eye(3) if axes is None else np.asarray(axes, dtype=float))[:, axis % 3]
     offset = np.eye(4)
     if axis < 3:
-        offset[axis, 3] = amount
+        offset[:3, 3] = amount * direction
     else:
-        offset[:3, :3] = Rotation.from_rotvec(amount * np.eye(3)[axis - 3]).as_matrix()
+        offset[:3, :3] = Rotation.from_rotvec(amount * direction).as_matrix()
     return offset
 
 
+def robot_axes(anchor: np.ndarray) -> np.ndarray:
+    """The robot's axes (its URDF root's) as columns in the frame of tool0 at `anchor`: a jog along them (`axes`)."""
+    return np.asarray(anchor, dtype=float)[:3, :3].T
+
+
 def tool_jog_target(urdf: Path, arm: str, joints: Sequence[float], anchor: np.ndarray, axis: int, speed: float,
-                    lead: float = TOOL_JOG_LEAD, travelled_before: float = 0.0) -> tuple[np.ndarray, float]:
+                    lead: float = TOOL_JOG_LEAD, travelled_before: float = 0.0,
+                    axes: np.ndarray | None = None) -> tuple[np.ndarray, float]:
     """The joints to send next while a jog button is held: `speed * lead` beyond where tool0 is along the jog.
 
-    The jog runs along a line (or a turn) from `anchor`, the press pose, in tool0's own axes: tool0's progress along
-    it is measured from the live joints, so a lagging arm is never asked to jump and never drifts off the line.
+    The jog runs along a line (or a turn about tool0's origin) from `anchor`, the press pose, along `axes` fixed at
+    the press: tool0's progress along it is measured from the live joints, so a lagging arm is never asked to jump and
+    never drifts off the line.
 
     Args:
         urdf: The robot's URDF.
@@ -120,6 +144,8 @@ def tool_jog_target(urdf: Path, arm: str, joints: Sequence[float], anchor: np.nd
         speed: Metres (or radians) per second, signed.
         lead: How far ahead the point lies, seconds.
         travelled_before: The progress returned last tick, so a turn past 180° keeps counting.
+        axes: The jog's axes as columns in the frame of tool0 at `anchor`, e.g. `robot_axes(anchor)`; None for
+            tool0's own.
 
     Returns:
         tuple[np.ndarray, float]: The joint angles, and the progress along the jog now, metres or radians.
@@ -128,10 +154,12 @@ def tool_jog_target(urdf: Path, arm: str, joints: Sequence[float], anchor: np.nd
         ValueError: If the step is not solved, or needs a joint to move more than TOOL_STEP_MAX_JOINT.
     """
     now = tool0_pose(urdf, arm, joints)
-    travelled = float(_difference(now, anchor, local=True)[axis])
+    direction = (np.eye(3) if axes is None else np.asarray(axes, dtype=float))[:, axis % 3]
+    moved = _difference(now, anchor, local=True)
+    travelled = float((moved[:3] if axis < 3 else moved[3:]) @ direction)
     if axis >= 3:  # the rotation vector wraps at 180°; keep counting from last tick's progress
         travelled += 2.0 * np.pi * np.round((travelled_before - travelled) / (2.0 * np.pi))
-    target = anchor @ jog_offset(axis, travelled + speed * lead)
+    target = anchor @ jog_offset(axis, travelled + speed * lead, axes)
     step = Pose.from_matrix(np.linalg.inv(now) @ target)
     # * Twice the per-tick travel, so a lagging arm's catch-up is not refused as a large step.
     bound = 2.0 * abs(speed) * lead + 1e-6

@@ -14,7 +14,8 @@ from scipy.spatial.transform import Rotation
 
 from repo_paths import DATA
 from husky_assembly_teleop.colors import NONE, WARN, rgb
-from husky_assembly_teleop.plugins.mocap_probe import CONFIRM_SECONDS, MocapProbePlugin
+from husky_assembly_teleop.plugins.mocap_probe import MocapProbePlugin
+from husky_assembly_teleop.ui.second_press import SECOND_PRESS_SECONDS
 from husky_assembly_teleop.robot_interface.mocap_definitions import read_cameras
 from husky_assembly_teleop.robot_interface.mocap_relay import FloorCalibrationState, MocapRelayState
 from husky_assembly_teleop.world.calibration_sessions import SESSIONS_FOLDER
@@ -73,6 +74,33 @@ def make_ctx(server: viser.ViserServer, drive: Path) -> SimpleNamespace:
                            log_info=lambda _text: None, log_warn=lambda _text: None)
 
 
+def test_the_chips_stay_the_same_while_the_probe_moves(server, tmp_path):
+    """Pose, height and sample count change on their own lines: each chip line, and so its hover, stays the same."""
+    ctx = make_ctx(server, tmp_path)
+    ctx.spawn = lambda _name, coroutine, **_options: coroutine.close()
+    plugin = MocapProbePlugin()
+    plugin.setup(ctx)
+    for x, y in np.random.default_rng(0).uniform(-3, 3, (8, 2)):
+        ctx.probe.position = np.array([x, y, 0.02])
+        plugin._record(ctx, FLOOR_LABEL)
+    plugin._set_mapping(ctx, True)
+    chips = (plugin._status_chip, plugin._floor_chips, plugin._phone_floor_chips, plugin._coverage_chip)
+    readouts = (plugin._status, plugin._floor_status, plugin._phone_floor_status, plugin._coverage_status)
+    shown = []
+    for z in (0.10, 0.25):
+        ctx.probe.position = np.array([0.0, 0.0, z])
+        ctx.probe.last_update_time += 0.01
+        plugin.update(ctx)
+        plugin.draw(ctx)
+        shown.append(([handle.content for handle in chips], [handle.content for handle in readouts]))
+    assert shown[0][0] == shown[1][0] and all(a != b for a, b in zip(shown[0][1], shown[1][1]))
+    # * Mapping is in progress (amber); no floor calibration applied keeps the poses raw (amber too).
+    assert f"background:{WARN};" in plugin._coverage_chip.content
+    assert f"background:{WARN};" in plugin._frame_chips.content
+    plugin._set_mapping(ctx, False)
+    plugin.teardown(ctx)
+
+
 def test_probe_floor_and_base_point_then_export(server, tmp_path):
     """Each floor point refits the plane; with the origin point the axes show and the export holds floor_from_raw."""
     (tmp_path / SESSIONS_FOLDER).mkdir(parents=True)
@@ -80,8 +108,8 @@ def test_probe_floor_and_base_point_then_export(server, tmp_path):
     plugin = MocapProbePlugin()
     plugin.setup(ctx)
     plugin.draw(ctx)
-    assert "no fit" in plugin._floor_status.content
-    assert "no fit" in plugin._phone_floor_status.content
+    assert "no fit" in plugin._floor_chips.content
+    assert "no fit" in plugin._phone_floor_chips.content
 
     plugin._export_floor(ctx)
     assert plugin._floor_message.startswith("not exported")
@@ -90,13 +118,13 @@ def test_probe_floor_and_base_point_then_export(server, tmp_path):
         ctx.probe.position = np.array([x, y, 0.02 + rng.normal(0.0, 3e-4)])
         plugin._record(ctx, FLOOR_LABEL)
         plugin.draw(ctx)
-    assert "fit good" in plugin._floor_status.content and "floor: 8 pts" in plugin._floor_status.content
+    assert "fit good" in plugin._floor_chips.content and "floor: 8 pts" in plugin._floor_status.content
     assert not plugin._floor_axes.visible
 
     ctx.probe.position = np.array([1.0, 2.0, 0.025])
     plugin._record(ctx, ORIGIN_LABEL)
     plugin.draw(ctx)
-    assert "frame not fixed" in plugin._floor_status.content and "origin new" in plugin._floor_status.content
+    assert "frame not fixed" in plugin._floor_chips.content and "origin new" in plugin._floor_status.content
     assert plugin._floor_axes.visible
     assert plugin._floor_axes.position == pytest.approx([1.0, 2.0, 0.02], abs=2e-3)
     w, x, y, z = plugin._floor_axes.wxyz
@@ -130,7 +158,7 @@ def test_points_in_one_spot_are_not_exported(server, tmp_path):
         plugin._record(ctx, FLOOR_LABEL)
     plugin._record(ctx, ORIGIN_LABEL)
     plugin.draw(ctx)
-    assert "fit unusable" in plugin._floor_status.content
+    assert "fit unusable" in plugin._floor_chips.content
     assert not plugin._floor_axes.visible
     plugin._export_floor(ctx)
     assert plugin._floor_message.startswith("not exported: the floor fit is unusable")
@@ -156,7 +184,7 @@ def test_without_cameras_from_the_relay_nothing_is_exported(server, tmp_path):
 
 
 def test_phone_delete_all_needs_a_second_tap(server, tmp_path):
-    """The first tap only arms the button (red, with the count); a second tap within CONFIRM_SECONDS deletes."""
+    """The first tap only asks (amber, with the count); a second within SECOND_PRESS_SECONDS deletes, a double not."""
     ctx = make_ctx(server, tmp_path)
     plugin = MocapProbePlugin()
     plugin.setup(ctx)
@@ -168,7 +196,10 @@ def test_phone_delete_all_needs_a_second_tap(server, tmp_path):
     plugin._delete_all(ctx, "floor")
     plugin.draw(ctx)
     assert len(plugin.samples) == 5
-    assert (floor_button.label, floor_button.color) == ("Tap again: delete 3", rgb(WARN))
+    assert (floor_button.label, floor_button.color) == ("Delete floor points?", rgb(WARN))
+    plugin._delete_all(ctx, "floor")
+    assert len(plugin.samples) == 5, "a double click"
+    ctx.now = lambda: NOW + 1.0
     plugin._delete_all(ctx, "floor")
     plugin.draw(ctx)
     assert [sample.name for sample in plugin.samples] == ["table_1", "table_2"]
@@ -176,9 +207,10 @@ def test_phone_delete_all_needs_a_second_tap(server, tmp_path):
 
     # * A second tap too late only arms the button again.
     plugin._delete_all(ctx, "all")
-    ctx.now = lambda: NOW + CONFIRM_SECONDS + 1.0
+    ctx.now = lambda: NOW + SECOND_PRESS_SECONDS + 2.0
     plugin._delete_all(ctx, "all")
     assert len(plugin.samples) == 2
+    ctx.now = lambda: NOW + SECOND_PRESS_SECONDS + 3.0
     plugin._delete_all(ctx, "all")
     plugin.draw(ctx)
     assert not plugin.samples and all_button.label == "Delete all points"
@@ -200,8 +232,9 @@ def test_phone_export_needs_a_second_tap(server, tmp_path):
     button = plugin._confirms["export"][1][0]
     plugin._export_floor(ctx, phone=True)
     plugin.draw(ctx)
-    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Tap again: export", rgb(WARN))
-    assert "again within 3 s" in plugin._floor_result.content
+    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Export floor calibration?", rgb(WARN))
+    assert "again within 5 s" in plugin._floor_result.content
+    ctx.now = lambda: NOW + 1.0
     plugin._export_floor(ctx, phone=True)
     plugin.draw(ctx)
     assert len(floor_exports(tmp_path)) == 1 and button.label == "Export floor calibration"

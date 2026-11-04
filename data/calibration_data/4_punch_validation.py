@@ -27,12 +27,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-from config_loader import HERE, load_config
+from config_loader import CALIB_DATA_DIR, load_config
 
 
 def find_validation_files(date_folder):
     """Find all punch validation JSON files."""
-    punch_dir = os.path.join(HERE, date_folder, "punch_validation")
+    punch_dir = os.path.join(CALIB_DATA_DIR, date_folder, "punch_validation")
     pattern = os.path.join(punch_dir, "punch_validation*.json")
     files = sorted(glob.glob(pattern))
     if not files:
@@ -515,7 +515,7 @@ def main():
         if not selected_takes:
             print(
                 f'No takes found for {arm_index_to_name(arm_selector)} arm '
-                f'in {os.path.join(HERE, date_folder, "punch_validation")}.'
+                f'in {os.path.join(CALIB_DATA_DIR, date_folder, "punch_validation")}.'
             )
             sys.exit(1)
         analyze_take_group(selected_takes, output_dir, arm_label=get_group_label(arm_selector, selected_takes))

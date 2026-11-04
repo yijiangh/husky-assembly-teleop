@@ -79,10 +79,9 @@ def _forward_kinematics_world(planner: PyBulletPlanner, robot_cell_state: RobotC
 
 def collisions(mirror: CompasFabMirror, joints: Mapping[str, float] | None = None,
                full_report: bool = False) -> list[tuple[str, str]]:
-    """What the acting robot, its tools or what they hold collide with at the synced state, some joints changed.
+    """What the acting robot, its tools or what they hold collide with at the synced state (`mirror.collisions`).
 
-    - Its tools against other robots and each other (CC.6) included: the core's mirror checks them.
-    - Pairs without the acting robot's side (another robot, as a tool, in a table) are left out: they never block it.
+    Its tools against other robots and each other (CC.6) included; other robots against static bodies never count.
 
     Args:
         mirror: A synced mirror.
@@ -92,17 +91,7 @@ def collisions(mirror: CompasFabMirror, joints: Mapping[str, float] | None = Non
     Returns:
         list[tuple[str, str]]: Colliding pairs as scene ids; empty if clear.
     """
-    pairs = mirror.collisions(joints, full_report)
-    if not pairs:
-        return []
-    own = _ids_on(mirror, subtree(mirror.cell.robot_model, mirror.cell.robot_model.root.name))
-    if not full_report and (pairs[0][0] in own or pairs[0][1] in own):
-        return pairs
-    # * The first pair was one of the others': only a full report shows whether one of ours hides behind it.
-    if not full_report:
-        pairs = mirror.collisions(joints, full_report=True)
-    pairs = [pair for pair in pairs if pair[0] in own or pair[1] in own]
-    return pairs if full_report else pairs[:1]
+    return mirror.collisions(joints, full_report)
 
 
 def collision_hit(mirror: CompasFabMirror, scene: Scene, where: str, joints: Mapping[str, float] | None = None,

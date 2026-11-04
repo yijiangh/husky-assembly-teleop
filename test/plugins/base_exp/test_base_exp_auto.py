@@ -15,6 +15,7 @@ from husky_assembly_teleop.plugins.base_exp.auto import (GRID, PATH_CLEARANCE, S
                                                          standard_set)
 from husky_assembly_teleop.plugins.base_exp.plan import plan_from
 from husky_assembly_teleop.plugins.base_exp.plugin import BaseExperimentPlugin
+from husky_assembly_teleop.ui.second_press import SECOND_PRESS_SECONDS
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject
@@ -121,11 +122,63 @@ def test_start_with_the_arms_unknown_asks_for_a_second_press():
     assert not plugin._asks_second_press(ctx, "Start auto") and plugin._unknown_arms
     now[0] += 1.0
     assert plugin._asks_second_press(ctx, "Start")
-    now[0] += 5.0
+    now[0] += 6.0
     assert plugin._asks_second_press(ctx, "Start")
     measured = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot.__class__(
         robot.id, cindy.model, Pose(), {})})), now=lambda: now[0])
     assert not plugin._asks_second_press(measured, "Start auto") and not plugin._unknown_arms
+
+
+def test_start_with_another_robot_not_measured_asks_however_far_it_stands():
+    """A base drive changes the distance to every other robot: one not measured, 20 m away, still makes Start ask."""
+    cindy, alice = robot_config_from_serial("0806", DATA), robot_config_from_serial("0804", DATA)
+    own = RobotObject(robot_id(cindy.serial), cindy.model, Pose(), {})
+    other = RobotObject(robot_id(alice.serial), alice.model, Pose((20.0, 0.0, 0.0)), {},
+                        unmeasured=frozenset(alice.model.movable_joints))
+    now = [10.0]
+    ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={own.id: own, other.id: other})),
+                          now=lambda: now[0])
+    plugin = BaseExperimentPlugin()
+    plugin.serial = cindy.serial
+    assert plugin._asks_second_press(ctx, "Start") and "1 other robot not measured" in plugin._auto_alert
+    now[0] += 1.0
+    assert not plugin._asks_second_press(ctx, "Start") and not plugin._unknown_arms
+    # * Only the robots unknown at the press may stay unknown: one lost later refuses or trips the runs.
+    assert plugin._unknown_others == {other.id}
+
+
+def test_stop_forgets_a_start_waiting_for_its_second_press():
+    """Start asks, Stop is pressed: the next Start asks again instead of starting at once."""
+    cindy = robot_config_from_serial("0806", DATA)
+    robot = RobotObject(robot_id(cindy.serial), cindy.model, Pose(), {},
+                        unmeasured=frozenset(cindy.model.movable_joints))
+    base = SimpleNamespace(stop_path=lambda: None)
+    ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot})), now=lambda: 10.0,
+                          world=SimpleNamespace(robots={cindy.serial: SimpleNamespace(base=base)}))
+    plugin = BaseExperimentPlugin()
+    plugin.serial = cindy.serial
+    assert plugin._asks_second_press(ctx, "Start") and plugin._press.waiting(10.0)
+    plugin._on_run(ctx, "Stop")
+    assert plugin._press.waiting(10.0) == ""
+
+
+def test_the_second_press_alert_goes_with_its_window():
+    """The "Press Start again within 5 s" alert is taken down once the 5 s have passed; another alert stays."""
+    cindy = robot_config_from_serial("0806", DATA)
+    robot = RobotObject(robot_id(cindy.serial), cindy.model, Pose(), {},
+                        unmeasured=frozenset(cindy.model.movable_joints))
+    ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={robot.id: robot})), now=lambda: 10.0)
+    plugin = BaseExperimentPlugin()
+    plugin.serial = cindy.serial
+    assert plugin._asks_second_press(ctx, "Start")
+    plugin._drop_press_again(10.0 + SECOND_PRESS_SECONDS / 2)
+    assert plugin._auto_alert.startswith("Press Start again")
+    plugin._drop_press_again(10.0 + SECOND_PRESS_SECONDS + 0.1)
+    assert plugin._auto_alert == ""
+    assert plugin._asks_second_press(ctx, "Start auto")
+    plugin._auto_alert = "Automation stopped"
+    plugin._drop_press_again(10.0 + SECOND_PRESS_SECONDS + 0.1)
+    assert plugin._auto_alert == "Automation stopped"
 
 
 def test_sampler_fills_number_levels_evenly():

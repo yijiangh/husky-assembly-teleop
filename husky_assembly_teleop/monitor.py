@@ -29,7 +29,7 @@ from rclpy.signals import SignalHandlerOptions
 
 from .plugin_api.concurrency import TickTimer
 from .plugin_api.console_log import ROBOTS, RUNTIME, TICKS, ConsoleLog, ConsoleLogger
-from .config import MonitorConfig, config_from_ros_parameters
+from .config import ConfigError, MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
 from scaffolding_assembly_core.geometry import Geometry
 from .world.clearance import (TRIPS_KEPT, WATCH_EVERY, Clearance, ClearanceChecker, ClearanceTrip, ClearanceWatch,
@@ -42,7 +42,7 @@ from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
 from .robot_interface.mocap_relay import MocapRelayInterface
 from .robot_interface.mocap_state import pose_lost
-from .robot_interface.soft_stop import MotionRefused
+from .robot_interface.soft_stop import STOP_ALL_REASON, MotionRefused
 from scaffolding_assembly_core.ids import robot_id, tracked_id
 from scaffolding_assembly_core.scene import Scene
 from .world.scene import PluginScene, take_snapshot, tracked_body
@@ -491,7 +491,7 @@ class HuskyMonitor(Node):
         self.log_warn("SOFT STOP: stopping every robot and cancelling the plugin tasks that may move one")
         for serial, robot in self._world.robots.items():
             try:
-                robot.soft_stop("Stop all")
+                robot.soft_stop(STOP_ALL_REASON)
             except Exception:
                 self.log_error(f"SOFT STOP: stopping {serial} failed:\n{traceback.format_exc()}")
         for loaded in self._loaded.values():
@@ -535,7 +535,7 @@ class HuskyMonitor(Node):
                     assumable = (assumable_joints(robot.model.movable_joints, clearance.unknown_arms)
                                  if robot is not None else frozenset())
                     asked.append(((loaded.ctx, clearance, serial), robot_id(serial), clearance.margin, assumable,
-                                  clearance.unknown_robots))
+                                  clearance.unknown_robots, clearance.check_self))
         watching = now - self._watched_at >= WATCH_EVERY
         for loaded in self._loaded.values() if watching else ():
             if loaded.stopped:
@@ -547,7 +547,7 @@ class HuskyMonitor(Node):
                     if robot is not None:
                         asked.append(((loaded.ctx, watch, serial), own, watch.margin,
                                       assumable_joints(robot.model.movable_joints, watch.unknown_arms),
-                                      unknown_robots(snapshot, {own})))
+                                      unknown_robots(snapshot, {own}), watch.check_self))
         if asked and self._clearances.check(snapshot, asked):
             self._clearances_asked = [key for key, *_rest in asked]
             if watching:
@@ -719,7 +719,7 @@ def main(args: list[str] | None = None) -> None:
     sys.setswitchinterval(GIL_SWITCH_INTERVAL)
     try:
         asyncio.run(_run_monitor())
-    except UnknownPluginError as error:
+    except (ConfigError, UnknownPluginError) as error:
         # * A config mistake: the message says what to fix, and a traceback would only bury it.
         print(f"\n{error}", file=sys.stderr)
         sys.exit(1)

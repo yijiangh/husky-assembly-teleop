@@ -16,7 +16,7 @@ import husky_assembly_teleop.monitor as monitor_module
 from husky_assembly_teleop.monitor import HuskyMonitor
 from husky_assembly_teleop.plugin_api.console_log import ConsoleLog
 from husky_assembly_teleop.plugin_api.plugin import HuskyPlugin
-from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
+from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON, RobotStopped
 from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE, STOP_DISTANCE, WATCH_EVERY
 from husky_assembly_teleop.world.measured import WorldState
 from scaffolding_assembly_core.geometry import Pose
@@ -248,7 +248,7 @@ def test_a_plugin_failing_setup_stops_and_its_dependents_are_never_set_up(monkey
 def test_soft_stop_stops_every_robot_before_plugins_act_and_cancels_their_tasks(monkeypatch):
     """Stop all: each robot's soft stop runs before any plugin update; every task but the survivors is cancelled."""
     calls = []
-    robots = [SimpleNamespace(soft_stop=lambda reason="", index=index: calls.append((f"robot {index}", "soft stop")))
+    robots = [SimpleNamespace(soft_stop=lambda reason="", index=index: calls.append((f"robot {index}", reason)))
               for index in range(2)]
     monitor = build(monkeypatch, Recorder("a", calls), robots=robots)
 
@@ -262,7 +262,8 @@ def test_soft_stop_stops_every_robot_before_plugins_act_and_cancels_their_tasks(
         return move, not load.done()
 
     move, survived = asyncio.run(run())
-    assert calls[1:4] == [("robot 0", "soft stop"), ("robot 1", "soft stop"), ("a", "update")]
+    # * The latch's reason tells the panels the operator stopped it, not a trip.
+    assert calls[1:4] == [("robot 0", STOP_ALL_REASON), ("robot 1", STOP_ALL_REASON), ("a", "update")]
     assert move.cancelled() and survived
     assert "cancelled 'a: move'" in monitor.get_logger().text("warning")
 
@@ -391,8 +392,8 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
         found = ctx.spawn("drive r0", drive("r0"))
         await asyncio.sleep(0)
         await monitor._tick()
-        (key, own, margin, assumable, _allowed), = monitor._clearances.asked[-1]
-        assert own == robot_id("r0") and margin == STOP_DISTANCE and assumable == frozenset()
+        (key, own, margin, assumable, _allowed, check_self), = monitor._clearances.asked[-1]
+        assert own == robot_id("r0") and margin == STOP_DISTANCE and assumable == frozenset() and check_self
         monitor._clearances.found = [(key, "came within 10 cm of wall", None)]
         await monitor._tick()
         lost = ctx.spawn("drive r1", drive("r1"))
@@ -452,7 +453,7 @@ def test_a_watch_joins_a_check_every_half_second_and_only_reports(monkeypatch):
 
     async def run():
         await monitor._tick()
-        (key, own, margin, _assumable, _allowed), = monitor._clearances.asked[-1]
+        (key, own, margin, _assumable, _allowed, _check_self), = monitor._clearances.asked[-1]
         assert key[1] is watch and own == robot_id("r0") and margin == ARM_STOP_DISTANCE
         monitor._clearances.found = [(key, "came within 1 cm of the rack", SimpleNamespace())]
         await monitor._tick()

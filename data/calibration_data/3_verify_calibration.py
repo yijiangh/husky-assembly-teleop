@@ -13,6 +13,7 @@ constant across all configurations, representing the fixed offset between the tw
 
 import os
 import re
+import sys
 import json
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,7 +22,7 @@ import pybullet as p
 
 from config_loader import (
     load_config, get_robot_urdf, get_joint_names,
-    get_tool0_link_name, HERE
+    get_tool0_link_name, CALIB_DATA_DIR
 )
 from logging_utils import setup_logger
 
@@ -34,8 +35,8 @@ ARM = config['arm']
 USE_GUI = config['use_gui']
 
 # File paths
-VALIDATION_DATA_FOLDER = os.path.join(HERE, DATE_FOLDER, VALIDATION_DATA_BATCH)
-CALIBRATION_FILE = os.path.join(HERE, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}_rhino.json')
+VALIDATION_DATA_FOLDER = os.path.join(CALIB_DATA_DIR, DATE_FOLDER, VALIDATION_DATA_BATCH)
+CALIBRATION_FILE = os.path.join(CALIB_DATA_DIR, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}_rhino.json')
 ROBOT_URDF = get_robot_urdf(ROBOT_NAME)
 
 # Configure logging with colored console output
@@ -612,7 +613,16 @@ def main():
     # Compute tool0-flange offsets
     results = compute_tool0_flange_offset(robot, arm_joints, tool0_link_name, calibration_data, VALIDATION_DATA_FOLDER)
     logger.info('Processed %d samples', len(results))
-    
+
+    # ! Nothing to verify yet (e.g. the validation batch is not collected):
+    # ! stop with a clear message instead of a numpy error in the plots below.
+    if not results:
+        logger.error('No calibration_*.json samples in %s -- collect the "%s" batch first '
+                     '(manual section 5), then re-run this step.',
+                     VALIDATION_DATA_FOLDER, VALIDATION_DATA_BATCH)
+        pp.disconnect()
+        sys.exit(1)
+
     if USE_GUI:
         pp.wait_if_gui('Processing complete')
 

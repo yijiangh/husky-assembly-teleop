@@ -20,14 +20,16 @@ from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugin_api.trace import Signal, Trace
 from husky_assembly_teleop.robot_interface.base import BaseInterface, FollowerState
 from husky_assembly_teleop.robot_interface.event import Event
+from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, leased
+from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON, SoftStopLatch
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, steer, timed_path
-from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
+from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin, Run
 from husky_assembly_teleop.plugins.base_planner.tasks import BY_NAME
 from husky_assembly_teleop.plugins.base_planner.world import COLLISION_MARGIN
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
-from husky_assembly_teleop.world.checks import WARN
+from husky_assembly_teleop.world.checks import BAD, GOOD, PENDING, WARN, Check
 from husky_assembly_teleop.world.clearance import ALL_ARMS, STOP_DISTANCE, Clearance
 
 SERIAL = "alice"
@@ -103,9 +105,12 @@ class CommitCtx:
 
     def __init__(self, base: FakeBase):
         """SERIAL is `base`, at ROS time 10 s."""
-        robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL), lease=None)
+        robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL), lease=None,
+                                soft_stop_latch=SoftStopLatch(SERIAL))
         self.world = SimpleNamespace(robots={SERIAL: robot})
         self.config = SimpleNamespace(drive_root=None)
+        #: The clearances the commits asked for.
+        self.clearances: list[Clearance] = []
 
     lease_robots = staticmethod(lease_test_robots)
     wait_until = staticmethod(wait_ticks_until)
@@ -133,10 +138,13 @@ class CommitCtx:
         yield []
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
-        """Never trip; keep the arms it lets be unknown."""
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False,
+                  check_self=True):
+        """Never trip, checked clear at once; keep it, and the arms it lets be unknown."""
         self.unknown_arms = unknown_arms
-        yield Clearance(tuple(serials), margin)
+        self.clearances.append(Clearance(tuple(serials), margin, refuse_first=refuse_first, check_self=check_self,
+                                         checked=True))
+        yield self.clearances[-1]
 
 
 def test_the_planner_offers_the_planner_api():
@@ -144,7 +152,7 @@ def test_the_planner_offers_the_planner_api():
     assert isinstance(BasePlannerPlugin(), PlannerContract)
 
 
-def commit(base: FakeBase, unknown_robots=(), ctx: CommitCtx | None = None):
+def commit(base: FakeBase, unknown_robots=(), ctx: CommitCtx | None = None, clearance: bool = True):
     """Commit a ready plan for SERIAL on `base` through the planner's API; returns (sent, message) and the planner.
 
     The run follows the path until the test ends, which cancels it.
@@ -157,7 +165,7 @@ def commit(base: FakeBase, unknown_robots=(), ctx: CommitCtx | None = None):
     planner._plan = Plan(1, BasePlanRequest(SERIAL, tuple(path.goal)), "ready", path)
 
     async def main():
-        return await planner.commit(1, unknown_robots)
+        return await planner.commit(1, unknown_robots, clearance)
 
     return asyncio.run(main()), planner
 
@@ -172,6 +180,15 @@ def test_only_commits_second_press_lets_the_robots_own_arms_be_unknown(allowed, 
 
 
 @pytest.mark.safety
+@pytest.mark.parametrize("ticked", [True, False])
+def test_commit_keeps_a_clearance_only_while_clearance_is_ticked(ticked):
+    """Ticked, the drive keeps a clearance, refusing a start that close; unticked, nothing soft stops it."""
+    ctx = CommitCtx(FakeBase())
+    (sent, _message), _planner = commit(ctx.world.robots[SERIAL].base, ctx=ctx, clearance=ticked)
+    assert sent and [(c.serials, c.refuse_first) for c in ctx.clearances] == ([((SERIAL,), True)] if ticked else [])
+
+
+@pytest.mark.safety
 def test_commit_sends_a_geometric_path_capped_at_the_planning_speeds():
     """The waypoints go out untimed, with the planning speeds as caps; the planner keeps the path id."""
     base = FakeBase()
@@ -180,7 +197,7 @@ def test_commit_sends_a_geometric_path_capped_at_the_planning_speeds():
     (x, y, yaw, t, linear, angular), = base.sent
     np.testing.assert_array_equal(np.column_stack([x, y, yaw]), planner.plan.path.points)
     assert t is None and (linear, angular) == (MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED)
-    assert planner._sent_id == 7
+    assert planner._runs[SERIAL].path_id == 7
 
 
 @pytest.mark.safety
@@ -199,6 +216,30 @@ def test_commit_refused(base, why):
     """
     (sent, message), planner = commit(base)
     assert not sent and why in message and not base.sent and planner.plan.state == "ready"
+    chip = planner.run_check(None, SERIAL)
+    assert (chip.label, chip.level) == ("refused", BAD) and why in chip.detail
+
+
+@pytest.mark.safety
+def test_a_commit_whose_lease_is_refused_shows_refused():
+    """Another plugin holds the robot: `execute` never runs, and the last run's chip gives way to a red "refused"."""
+    base, guard = FakeBase(), LeaseSlot(SERIAL)
+    Lease("robot_control: teleop", (guard,))
+    ctx = CommitCtx(base)
+    ctx.lease_robots = lambda _serials, label: leased([guard], label)
+    planner = BasePlannerPlugin()
+    planner.setup(ctx)
+    planner._runs[SERIAL] = Run(path_id=6, ended=Check("done", GOOD))
+    path = planned((0.0, 0.0, 0.0), (1.0, 1.0, 0.0))
+    planner._plan = Plan(1, BasePlanRequest(SERIAL, tuple(path.goal)), "ready", path)
+
+    async def main():
+        return await planner.commit(1)
+
+    sent, message = asyncio.run(main())
+    chip = planner.run_check(ctx, SERIAL)
+    assert not sent and not base.sent and "leased by robot_control: teleop" in message
+    assert (chip.label, chip.level) == ("refused", BAD) and "leased by robot_control: teleop" in chip.detail
 
 
 @pytest.mark.safety
@@ -341,9 +382,11 @@ class FakeClock:
                 event.detach(listener)
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
-        """Keep the clearance asked for; the test trips it by setting its problem and cancelling the run."""
-        self.clearances.append(Clearance(tuple(serials), margin))
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False,
+                  check_self=True):
+        """Keep the clearance asked for, checked clear at once; a test trips it: its problem set, the run cancelled."""
+        self.clearances.append(Clearance(tuple(serials), margin, refuse_first=refuse_first, check_self=check_self,
+                                         checked=True))
         yield self.clearances[-1]
 
     async def wait_until(self, predicate, timeout_s=None, description=""):
@@ -370,8 +413,12 @@ class FakeClock:
     log_error = log_info
 
 
-def test_run_is_recorded_until_the_follower_is_done(tmp_path):
-    """The robot's poses from Commit until done (plus settling) are saved, with the outcome."""
+@pytest.mark.parametrize("stopped_while_settling", [False, True])
+def test_run_is_recorded_until_the_follower_is_done(tmp_path, stopped_while_settling):
+    """The robot's poses from Commit until done (plus settling) are saved, with the outcome.
+
+    Stopped (Stop all) while settling after done, the run stays "done": the analysis counts runs by that word.
+    """
     path = planned((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
     follower = FollowerState(controller="pure_pursuit", state="following", reason="", path_id=7, timed=False,
                              piece=0, piece_count=1, turning=False, progress=0.0, reference=np.zeros(3),
@@ -382,7 +429,7 @@ def test_run_is_recorded_until_the_follower_is_done(tmp_path):
                            simulation=SimpleNamespace(node="husky_sim"),
                            follower_reports=Event(f"{SERIAL}_follower"), odometry_messages=Event(f"{SERIAL}_odometry"),
                            mocap_messages=Event(f"{SERIAL}_mocap"))
-    robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL))
+    robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL), soft_stop_latch=SoftStopLatch(SERIAL))
 
     def step(t):
         """Drive along x at 0.2 m/s, reporting twice per tick; the follower reports done at the end."""
@@ -394,13 +441,28 @@ def test_run_is_recorded_until_the_follower_is_done(tmp_path):
             base.follower_reports.fire(replace(follower, update_time=t - late, stamp=t - late - 0.01,
                                                command=np.array([0.2, 0.0])))
 
-    base.follow_problem, base.send_path = (lambda: ""), (lambda *_args: 7)
+    base.follow_problem, base.send_path, base.stop_path = (lambda: ""), (lambda *_args: 7), (lambda: None)
     ctx = FakeClock(robot, step)
     plugin = BasePlannerPlugin()
     plugin._recordings = tmp_path
     answers = []
-    asyncio.run(plugin.execute(ctx, Plan(1, REQUEST, "ready", path), lambda *answer: answers.append(answer)))
-    assert answers == [(True, f"sent to {SERIAL}'s follower (path 7)")] and plugin._sent_id == 7
+
+    async def scenario():
+        task = asyncio.create_task(plugin.execute(ctx, Plan(1, REQUEST, "ready", path),
+                                                  lambda *answer: answers.append(answer)))
+        if stopped_while_settling:
+            while SERIAL not in plugin._runs or plugin._runs[SERIAL].ended is None:
+                await asyncio.sleep(0)
+            robot.soft_stop_latch.stopped, robot.soft_stop_latch.reason = True, STOP_ALL_REASON
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+    assert answers == [(True, f"sent to {SERIAL}'s follower (path 7)")] and plugin._runs[SERIAL].path_id == 7
+    assert (plugin._runs[SERIAL].ended.label, plugin._runs[SERIAL].ended.level) == ("done", GOOD)
 
     folder, = (tmp_path / "trial").iterdir()
     data = np.load(folder / "recording.npz")
@@ -418,11 +480,19 @@ def test_run_is_recorded_until_the_follower_is_done(tmp_path):
 
 
 @pytest.mark.safety
-@pytest.mark.parametrize("how", ["timeout", "cancel", "clearance", "replaced"])
-def test_a_run_that_ends_before_the_follower_stops_the_path(how):
-    """Timed out, cancelled (Stop all, shutdown) or too close to something (clearance): the follower is stopped.
+@pytest.mark.parametrize("how, chip", [
+    ("timeout", ("timed out", BAD)),
+    ("cancel", ("cancelled", PENDING)),
+    ("stop all", ("soft stopped", PENDING)),
+    ("latched", ("soft stopped", BAD)),
+    ("clearance", ("clearance stop", BAD)),
+    ("replaced", None),
+])
+def test_a_run_that_ends_before_the_follower_stops_the_path(how, chip):
+    """Timed out, cancelled (Cancel, Stop all, shutdown) or too close to something (clearance): the follower stops.
 
-    A new commit to this robot only ends the old run: its own path replaces the old one on the follower.
+    A new commit to this robot only ends the old run: its own path replaces the old one on the follower. The run
+    chip is red for a trip (its own clearance, or a soft stop for another reason), grey for Cancel and Stop all.
     """
     path = planned((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
     follower = FollowerState(controller="pure_pursuit", state="following", reason="", path_id=7, timed=False,
@@ -436,7 +506,8 @@ def test_a_run_that_ends_before_the_follower_stops_the_path(how):
                            send_path=lambda *_args: 7,
                            follower_reports=Event(f"{SERIAL}_follower"), odometry_messages=Event(f"{SERIAL}_odometry"),
                            mocap_messages=Event(f"{SERIAL}_mocap"))
-    robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL))
+    latch = SoftStopLatch(SERIAL)
+    robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL), soft_stop_latch=latch)
 
     def step(t):
         follower.update_time = t  # still following, for ever
@@ -454,6 +525,9 @@ def test_a_run_that_ends_before_the_follower_stops_the_path(how):
         await asyncio.sleep(0)
         if how == "clearance":
             ctx.clearances[0].problem = f"robot {SERIAL} came within 10 cm of wall"
+        elif how in ("stop all", "latched"):
+            latch.stopped = True
+            latch.reason = STOP_ALL_REASON if how == "stop all" else f"robot {SERIAL} came within 1 cm of belle"
         elif how == "replaced":
             plugin._replaced.add(task)
         task.cancel()
@@ -462,10 +536,16 @@ def test_a_run_that_ends_before_the_follower_stops_the_path(how):
 
     asyncio.run(scenario())
     assert stops == ([] if how == "replaced" else [how])
-    # * The clearance keeps the margin the path was planned with, so a path the planner found never trips it.
-    assert [(clearance.serials, clearance.margin) for clearance in ctx.clearances] == [((SERIAL,), COLLISION_MARGIN)]
+    # * Planned closer than BASE_PLAN_DISTANCE, the clearance is half the plan's margin, so following the path a
+    #   little off does not trip it; not against itself, the arms stand still.
+    assert [(clearance.serials, clearance.margin, clearance.check_self) for clearance in ctx.clearances] == \
+        [((SERIAL,), COLLISION_MARGIN / 2, False)]
     if how == "clearance":
         assert ctx.logs[-1].endswith(f"soft stopped: robot {SERIAL} came within 10 cm of wall")
+    if chip is None:  # * replaced: the newer commit's run takes the chip's place
+        assert plugin._runs[SERIAL].ended is None
+    else:
+        assert (plugin._runs[SERIAL].ended.label, plugin._runs[SERIAL].ended.level) == chip
 
 
 def test_attempt_counts_for_its_task_only_from_its_start_to_its_target():

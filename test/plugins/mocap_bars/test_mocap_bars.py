@@ -79,6 +79,8 @@ def test_fits_a_streaming_bar_at_most_every_tenth_second_then_around_the_last_fi
     first = state.fit
     assert first.ok and not first.tracked
     assert "fit 8/8" in plugin._readout()[1] and "fit 8/8" in plugin._status.content
+    # * The chip has its own handle, so the refits leave its hover alone.
+    assert "mocap 1020" in plugin._status_chip.content and "fit 8/8" not in plugin._status_chip.content
     # * The fitted pose is the slid, rolled one; each CAD marker got its fake marker, the stray none.
     expected = T @ bar_slide_roll(0.03, 2.0)
     np.testing.assert_allclose(first.T_world_from_bar[:3, 3], expected[:3, 3], atol=2e-3)

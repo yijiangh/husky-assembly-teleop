@@ -36,7 +36,8 @@ Make one:
    and probe again nearby.
 3. **Marks.** **Mark › Origin**, **Mark 1**, **Mark 2**, **Mark 3**, each on its mark, twice each (probing again
    averages). The chip turns "fixed n/m", the lab frame's axes appear at the origin mark, and "marks mm" shows each
-   mark under about 1 mm.
+   mark under about 1 mm. "tape mm" compares the marks' distances with the tape distances in the lab frame file:
+   all off alike by over 2 mm is Motive's scale (chip "scale off"): recalibrate Motive before going on.
 4. **Anchors.** The anchors stored in the lab frame file are found by themselves: each is the unlabeled marker within
    10 cm of its stored place, read 3 s after the probe was last within 0.5 m of it (the probe and your hand hide or
    shift it). Step back and watch "anchors mm" fill in. Point only at one that says "point" (not found near its
@@ -46,8 +47,9 @@ Make one:
 6. **Hold-out check** (optional): without recording, hold the tip on a few new floor spots, some near the edges, and
    read "probe above floor": each should stay within about the plane's max, and not grow with the distance from the
    points.
-7. **Export floor calibration.** On the laptop one press; on the phone two taps within 3 s. With a warning (a mark
-   off, an anchor not read) it says why, the button turns orange, and a second press within 2 s exports anyway. The
+7. **Export floor calibration.** On the laptop one press; on the phone two taps within 5 s. With a warning (a mark
+   off, an anchor not read) it says why, the button turns amber (**Export anyway?**), and a second press
+   within 5 s exports anyway. The
    file goes to `<Drive>/data_experiment/calibration_data/<YYYYMMDD>/<YYYYMMDD>_<HHMMSS>_mocap_floor_calibration.json`
    (a simulation's relay announces its own folder). Nothing changes for anyone yet.
 8. **Apply floor calibration.** Within 30 s the relay finds the new file and the chip "newer floor calibration"
@@ -58,7 +60,8 @@ Make one:
    from the export (`anchors_in_floor.<name>.floor_xyz` for an anchor, `marks.<name>.floor_xy` for a mark) into
    `data/lab/main_frame.json`, commit it, and restart the monitor (the probe reads the file at start). The file
    defines the lab frame: obstacles, the process and every stored position are in it, so never rewrite it to make the
-   numbers look better.
+   numbers look better. Its `tape` holds distances between marks measured by tape (mark centre to mark centre,
+   metres, e.g. `"mark1-mark3": 3.9295`); measure again only when a mark moved.
 
 The first calibration, with no marks or anchors stored: the origin mark and Motive's x place the frame (chip "frame
 not fixed"); write the export's marks and anchors into the file as in step 9 to make that frame the lab's.
@@ -73,6 +76,9 @@ amount in its hover until you act.
   for the session.
 - A relay restart starts from the floor calibration file again, so the refit is pending again: Use refit after each
   restart, or make a new floor calibration (section 2) to keep it.
+- A refit cannot follow a change of Motive's scale: the relay warns "MOTIVE'S SCALE CHANGED" when the anchors' distances
+  changed by over about 190 ppm (1 mm across the lab's volume), and the chip "scale changed" appears. Check the marks against the tape (section 2, step 3),
+  recalibrate Motive if it is off, then make a new floor calibration.
 
 ## 4. What each number means
 
@@ -93,6 +99,7 @@ detail.
 | fixed n/m (green) | the frame is fitted to n of the m marks and anchors stored | — |
 | fixed n/m (amber) | the same, with an anchor left out as moved (over 2 mm from its stored place; hover names it) | export keeps it; update the file if it really moved |
 | `<mark>` off (red) | a mark lands over 2 mm from where it is stored: hit badly, or the mark moved | probe it again, or delete its samples; export asks twice |
+| scale off (amber) | a taped pair of marks is over 2 mm off the tape; hover: the worst pair and Motive's scale against all | all off alike: recalibrate Motive; one: probe its marks again; export asks twice |
 | `<anchor>` not found (red) | no unlabeled marker within 10 cm of the anchor's stored place | check it in Motive; point at it, Anchor, step away |
 
 The relay's frame (laptop):
@@ -105,6 +112,7 @@ The relay's frame (laptop):
 | frame untrusted (red) | the fits disagree or are too uncertain: poses may be off | check in Motive that the anchors are seen and no truss camera was bumped |
 | no floor calibration (grey) | poses are raw (Motive's, Z-up), not in the lab frame | make one |
 | frame: Drive not read (red) | the relay could not read a floor calibration | check the Drive and the relay's log |
+| scale changed (amber) | Motive's scale changed since the floor calibration by the anchors; hover: by how much | recalibrate Motive, then make a new floor calibration |
 | newer floor calibration (amber) | an export the relay has not applied; hover: how far it would move points | Apply floor calibration |
 | frame ? (grey) | no relay announcement | start the relay |
 
@@ -115,6 +123,7 @@ The relay's frame (laptop):
 | `floor: N pts · rms … · max … mm` | the plane fitted to the floor and mark points: how many, their RMS distance from it, the farthest one | max under about 3 mm |
 | `floor normal: ±… per axis` | how well the plane's tilt is known | 0.02° or better |
 | `marks mm` | each mark's distance from its stored place, on the floor; "new" probed but not stored, "–" not probed | each under about 1 mm (over 2 mm: off) |
+| `tape mm` | how much longer Motive puts each taped pair of marks than the tape, in the file's order; "–" not probed | each under about 1 mm (over 2 mm: scale off) |
 | `anchors mm` | each anchor's distance from its stored place, in 3D; "moved" left out of the fit, "new" not stored, "point" not found near its stored place (point at it), "–" not read yet | each under about 1 mm (over 2 mm: moved) |
 | `marks vs anchors: … mm apart` | how far the marks alone and the anchors alone place the lab apart, at the lab volume's worst corner | under about 1 mm |
 | `poses off mm: marks M · relay R` | how far poses are off now, against the frame the relay applies: by the marks you probed (M) and by the relay's own fit to the anchors (R, its drift estimate) | both small; M is the truth |

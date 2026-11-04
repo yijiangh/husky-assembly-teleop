@@ -25,7 +25,7 @@ from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror, with_t
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.process import BodySpec, Movement, State
 from scaffolding_assembly_core.scene import Attachment, Body, Scene
-from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.geometry import Pose, compose, invert
 
 ALICE, BELLE = "0804", "0805"
 #: Their ids in scenes, and Alice's gripper's id.
@@ -107,22 +107,23 @@ def test_other_robot_is_an_obstacle(mirror, configs):
     assert mirror.collisions(full_report=True) == []
 
 
-def test_a_contact_between_other_things_is_a_collision_unless_declared(mirror, configs):
-    """A box inside Belle, far from Alice, still collides: only the scene's `touches` allow it."""
+def test_another_robot_against_a_static_body_never_counts(mirror, configs):
+    """A box inside Belle, far from Alice: both stand still while Alice plans, so they are never checked."""
     inside_belle = Pose((10.0, 0.0, 0.3))
     mirror.sync(world(configs, (Body("t/box", box_geometry((0.2, 0.2, 0.2)), inside_belle),)))
-    assert mirror.collisions(full_report=True) == [(BELLE_ID, "t/box")]
-    mirror.sync(world(configs, (Body("t/box", box_geometry((0.2, 0.2, 0.2)), inside_belle, touches=(BELLE_ID,)),)))
-    assert mirror.collisions() == []
+    assert mirror.collisions(full_report=True) == []
 
 
-def test_a_body_that_may_touch_another_robots_gripper_may_touch_that_robot(mirror, configs):
-    """compas_fab allows only whole tools, and Belle is one: allowing her gripper allows all of her (start check)."""
+def test_a_held_body_that_may_touch_another_robots_gripper_may_touch_that_robot(mirror, configs):
+    """A body Alice holds inside Belle collides; allowing Belle's gripper allows all of her (whole tools only)."""
+    mirror.sync(world(configs))
+    to_belle = compose(invert(tool0(mirror)), Pose((10.0, 0.0, 0.3)))
     belle_gripper = next(iter(configs[BELLE].model.tools.values())).id
-    inside_belle = Pose((10.0, 0.0, 0.3))
-    mirror.sync(world(configs, (Body("t/box", box_geometry((0.2, 0.2, 0.2)), inside_belle,
-                                     touches=(belle_gripper,)),)))
-    assert mirror.collisions() == []
+    for touches, hits in (((ALICE_ID,), [(BELLE_ID, "t/held")]), ((ALICE_ID, belle_gripper), [])):
+        held = Body("t/held", box_geometry((0.2, 0.2, 0.2)), Attachment(ALICE_ID, "ur_arm_tool0", to_belle),
+                    touches=touches)
+        mirror.sync(world(configs, (held,)))
+        assert mirror.collisions(full_report=True) == hits
 
 
 def test_attached_body_moves_with_the_arm(mirror, configs):

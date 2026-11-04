@@ -11,6 +11,7 @@ import json
 import math
 import threading
 from copy import copy
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -220,6 +221,23 @@ def test_a_plan_fills_the_plots_and_carries_its_end_until_another_action():
     lab.run.view.current = ("B21_H", 0)
     lab.update()
     assert lab.process.carries[-1] is None
+
+
+def test_a_plan_with_warnings_says_the_first_and_logs_each(monkeypatch):
+    """The plan line, amber, says the first warning and how many there are; the console has every one."""
+    lab = Steps(("B20_R", 2))
+    answer = lab.planner.request_plan
+
+    def warned(request):
+        route = answer(request).result()
+        return _answered(replace(route, warnings=("the start touches: tool vs bar", "a mismatched grasp")))
+
+    monkeypatch.setattr(lab.planner, "request_plan", warned)
+    asyncio.run(lab.plan())
+    assert lab.plugin._message.endswith("; 2 warnings (console): the start touches: tool vs bar")
+    warns = [line for level, line in lab.ctx.logs if level == "warn"]
+    assert any("the start touches: tool vs bar" in line for line in warns)
+    assert any("a mismatched grasp" in line for line in warns)
 
 
 def test_the_path_ghost_stays_while_there_is_a_plan_whatever_the_panel_was_last_used():
@@ -502,14 +520,16 @@ def test_exec_asks_for_a_second_press_while_another_robot_is_unknown():
         lab.ctx.scene.snapshot.robots[robot_id(lab.alice.config.serial)].base_tracked = False
         lab.plugin._commit(lab.ctx)
         assert lab.executor.requests == [] and lab.plugin.plan_state == "ready"
-        assert lab.plugin._message == "press Exec again within 2 s to move with 1 other robot unknown"
+        assert lab.plugin._message == "press Exec again within 5 s to move with 1 other robot unknown"
         lab.update()
         assert lab.plugin._confirm.button.color == rgb(WARN) and ">1 robot unknown<" in lab.html()
+        assert lab.plugin._confirm.button.label == "Exec?"
+        lab.ctx.t += 1.0
         lab.plugin._commit(lab.ctx)
         assert len(lab.executor.requests) == 1 and lab.plugin.plan_state == "sent"
         assert lab.executor.requests[0].unknown_robots == {robot_id(lab.alice.config.serial)}
         lab.update()
-        assert lab.plugin._confirm.button.color == "blue"
+        assert (lab.plugin._confirm.button.color, lab.plugin._confirm.button.label) == ("blue", "Exec")
 
     asyncio.run(scenario())
 

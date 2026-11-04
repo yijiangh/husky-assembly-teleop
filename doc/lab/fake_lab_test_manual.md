@@ -400,7 +400,7 @@ reload the page and click **Load**.
 **Expect:** `continuing run <date>_<time>`; the done actions are still green; the settings are the run's (the
 workaround box is on, Rhino obstacles off). The robots keep where they are across the restart.
 
-**7.3** Under the run, **New run** twice (the second click waits as long as you need) makes a new run folder (`0/78 done`, every row pending); the old
+**7.3** Under the run, **New run** twice (the second press waits as long as you need) makes a new run folder (`0/78 done`, every row pending); the old
 folder stays.
 
 ---
@@ -412,8 +412,9 @@ folder stays.
 from where they stopped.
 
 **8.2 Stop all during a motion.** Click **Stop all (Esc)** at the top of the page while the arms move. **Expect:**
-`robot a200-0806: SOFT STOP: Stop all`, `cancelled: holding every arm`, every arm's `ctrl` chip amber with `last stop:
-stopped by operator`; each robot stays stopped until its own **Resume** under Health.
+`robot a200-0806: SOFT STOP: Stop all`, `cancelled: holding every arm`, every arm's `arm ctrl` chip under Health
+amber, its hover ending `sync: last stop: stopped by operator`; each robot stays stopped until its own **Resume** under
+Health.
 
 ---
 

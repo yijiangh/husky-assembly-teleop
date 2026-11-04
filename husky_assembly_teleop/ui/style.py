@@ -10,11 +10,16 @@ HTML for viser's `add_html`; assigning it in every `draw` is cheap (viser only s
     a `chip_line`, which is always there and one line high;
   - never hide buttons; grey one out only while a toggle can lift the block (the D-pad under Clearance), else ignore
     and log inapplicable actions, with such a chip.
+! A hover text is only readable while its whole `add_html` handle stays the same: viser rebuilds the handle's HTML
+  on any change, which drops the tooltip. Keep chips apart from live numbers (their own handle), and keep numbers
+  that change every tick out of chip texts and titles. A chip that must change every tick says so in a comment,
+  `# ! Live: …`, with where the operator reads what its hover would have said.
 """
 
 from __future__ import annotations
 
 from html import escape
+from typing import Sequence
 
 import viser
 from viser import _messages
@@ -49,6 +54,11 @@ def configure_theme(gui: viser.GuiApi, control_width: str = "medium", show_logo:
         show_share_button=show_share_button, dark_mode=dark_mode, colors=ACTION_SHADES))
 
 
+def few(names: Sequence[str], shown: int = 3) -> str:
+    """Up to `shown` names, then how many more, e.g. "A1, A2, A3 +2"."""
+    return ", ".join(names[:shown]) + (f" +{len(names) - shown}" if len(names) > shown else "")
+
+
 def hover(text: str, where: str = "the console") -> str:
     """Hover text of at most HOVER_MAX characters: a longer `text` is cut at a word and says where the rest is.
 
@@ -58,13 +68,21 @@ def hover(text: str, where: str = "the console") -> str:
     """
     if len(text) <= HOVER_MAX:
         return text
-    return f"{text[:HOVER_MAX - 10 - len(where)].rsplit(' ', 1)[0]}… full text in {where}"
+    suffix = f"… full text in {where}"
+    return f"{text[:HOVER_MAX - len(suffix)].rsplit(' ', 1)[0]}{suffix}"
+
+
+def _title(title: str) -> str:
+    """`title` as a hover attribute, cut at HOVER_MAX: a backstop; a text that may be long goes through `hover`."""
+    if len(title) > HOVER_MAX:
+        title = f"{title[:HOVER_MAX - 1].rsplit(' ', 1)[0]}…"
+    return escape(title, quote=True)
 
 
 def chip(text: str, color: str, title: str = "") -> str:
-    """A small coloured label; `title` is hover text for extra detail."""
+    """A small coloured label; `title` is hover text for extra detail (cut at HOVER_MAX)."""
     # nowrap: rows wrap between chips, never inside one.
-    return (f'<span title="{escape(title, quote=True)}" style="display:inline-block;white-space:nowrap;'
+    return (f'<span title="{_title(title)}" style="display:inline-block;white-space:nowrap;'
             f'background:{color};color:{WHITE};border-radius:4px;padding:0 5px;'
             f'margin:0 4px 2px 0;font-size:11px;font-weight:600">{text}</span>')
 
@@ -81,7 +99,7 @@ def swatch_chip(text: str, fill: str, border: str, title: str = "", fill_to: str
         dashed: Dash the border.
     """
     background = f"linear-gradient(90deg,{fill},{fill_to})" if fill_to else fill
-    return (f'<span title="{escape(title, quote=True)}" style="display:inline-block;white-space:nowrap;'
+    return (f'<span title="{_title(title)}" style="display:inline-block;white-space:nowrap;'
             f'background:{background};color:{INK};border:1px {"dashed" if dashed else "solid"} {border};'
             f'border-radius:4px;padding:0 5px;margin:0 4px 2px 0;font-size:11px;font-weight:600">{text}</span>')
 
@@ -137,6 +155,25 @@ NESTED_TABS_STYLE = (
 def chip_line(html: str) -> str:
     """A line for chips that come and go: always there, even empty, and one line high, so nothing below it moves."""
     return block(f'{CHIP_LINE_STYLE}<div class="chip-line">{html}</div>')
+
+
+#: The width of a chip row's name, px: every row's chips start at the same place.
+ROW_NAME_WIDTH = 68
+
+
+def chip_row(name: str, chips: str, wrap: bool = False) -> str:
+    """A row of chips after a small grey name in a column of its own: one line high, more chips scroll sideways.
+
+    Args:
+        name: The row's name; "" leaves the column empty.
+        chips: The chips' HTML.
+        wrap: Let the chips wrap onto more lines instead, for rows whose chips are fixed while a step shows.
+    """
+    label = (f'<span title="{escape(name, quote=True)}" style="flex:0 0 {ROW_NAME_WIDTH}px;font-size:0.85em;'
+             f'color:{NONE};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{escape(name)}</span>')
+    body = chips if wrap else f'{CHIP_LINE_STYLE}<div class="chip-line">{chips}</div>'
+    row = f'<div style="display:flex;align-items:baseline">{label}<div style="flex:1;min-width:0">{body}</div></div>'
+    return f'<div style="margin-left:8px">{block(row)}</div>'
 
 
 def note_line(text: str, color: str = NONE) -> str:
@@ -205,9 +242,9 @@ def numbers(items, count: int, width: int, digits: int) -> str:
 
 
 def freshness_chip(label: str, last_update_time: float | None, now: float) -> str:
-    """Green if the last message is recent, amber if stale, gray if none yet (None)."""
+    """Green if the last message is recent, amber if stale, gray if none yet (None); the hover text never ticks."""
     if last_update_time is None:
         return chip(label, NONE, "no data yet")
     if now - last_update_time < STALE_AFTER:
         return chip(label, OK, "messages arriving")
-    return chip(label, BUSY, f"last message {now - last_update_time:.0f}s ago")
+    return chip(label, BUSY, f"no message for over {STALE_AFTER:g} s")

@@ -350,12 +350,22 @@ class MovementExecPlugin(HuskyPlugin):
         """Record a part cut short by a cancel (where the arms stopped, the holds) and say who cancelled it.
 
         Returns:
-            ExecResult: CANCELLED; FAILED when the freeze broke (another robot moved); HOLD_NOT_SENT when an arm
-                refused its hold.
+            ExecResult: CANCELLED; FAILED when the freeze broke (another robot moved) or the clearance tripped;
+                REFUSED when the clearance found the start too close, nothing sent; HOLD_NOT_SENT when an arm refused
+                its hold.
         """
         part, progress = run.part, run.progress
+        clearance = None if self._cancel_reason else run.clearance
+        if clearance is not None and clearance.refused:
+            run.ended(REFUSED, "refused", f"nothing sent: {clearance.problem}; untick Clearance to move out")
+            job.event("cancel", part.movement, {"reason": "clearance refused the start"})
+            self._record_part(job, run)
+            return ExecResult(run.result, f"{part.movement}: {run.reason}", done, end, base)
         moved = None if self._cancel_reason or run.freeze is None else run.freeze.problem
         reason = self._cancel_reason or (f"freeze broken: {moved}" if moved else cancelled_by(job.ctx))
+        if moved is None and clearance is not None and clearance.problem:
+            moved = f"soft stopped: {clearance.problem}"
+            reason = f"clearance tripped: {clearance.problem}"
         refused = progress.hold_not_sent if progress is not None else []
         if progress is not None:
             run.outcome = {"seconds": progress.seconds, "end": progress.end, "holds": dict(progress.holds)}

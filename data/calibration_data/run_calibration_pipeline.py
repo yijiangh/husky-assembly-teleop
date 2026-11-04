@@ -16,6 +16,8 @@ import sys
 import subprocess
 import time
 
+from config_loader import DEFAULT_DATE_FOLDER
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Scripts to run in order
@@ -65,16 +67,15 @@ def main():
         "date_folder",
         nargs="?",
         default=None,
-        help="Name of the date folder to use (optional; defaults to DEFAULT_DATE_FOLDER in config_loader.py)"
+        help="Date folder (optional); else CALIBRATION_DATE, else DEFAULT_DATE_FOLDER in config_loader.py"
     )
     args = parser.parse_args()
 
-    date_folder = args.date_folder
-    if date_folder is not None:
-        print(f"Using date folder: {date_folder}")
-        # Update DEFAULT_DATE_FOLDER would require modifying config_loader
-        # For now, just inform the user
-        print("Note: Make sure config_loader.py DEFAULT_DATE_FOLDER matches this.")
+    # * Each step below is a separate process: it reads the date from CALIBRATION_DATE.
+    date_folder = args.date_folder or DEFAULT_DATE_FOLDER
+    os.environ['CALIBRATION_DATE'] = date_folder
+
+    print(f"Using date folder: {date_folder}")
 
     print()
     total_start = time.time()

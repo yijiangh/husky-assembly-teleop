@@ -92,8 +92,12 @@ async def switch_arms(ctx: PluginContext, arms: Collection[ArmInterface], contro
     if not switching:
         return outcome(True, f"already under {controller}")
     for arm in switching:
+        earlier = arm.controllers.last_refusal
         if not arm.controllers.switch(controller):
-            return outcome(False, f"switch to {controller} FAILED: {arm.state.controllers.switch_error}")
+            # * A refusal from this call is new; else the switch failed and its error is new.
+            refusal = arm.controllers.last_refusal
+            why = refusal.reason if refusal is not earlier else (arm.state.controllers.switch_error or "not sent")
+            return outcome(False, f"switch to {controller} FAILED: {why}")
 
     def errors() -> list[str]:
         """Why the switches asked for failed, if any did."""

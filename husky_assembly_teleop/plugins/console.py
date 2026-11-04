@@ -26,7 +26,7 @@ from rclpy.logging import LoggingSeverity
 from ..plugin_api.console_log import TICKS, Entry
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
-from ..ui.style import BUSY, FAIL, INFO, NONE, chip, chip_line
+from ..ui.style import BUSY, FAIL, INFO, NONE, chip, chip_line, note
 
 SHOW_PLUGINS, SHOW_WARNINGS, SHOW_ALL = "Plugins", "Warnings", "All"
 #: The Source choice that shows every source.
@@ -79,7 +79,9 @@ class ConsolePlugin(HuskyPlugin):
         self._hide: viser.GuiDropdownHandle | None = None
         #: The sources Hide leaves out.
         self._hidden_names: tuple[str, ...] = DEFAULT_HIDDEN
+        #: The chip line, and the counts below it: apart, so a hovered chip keeps its text while they change.
         self._status: viser.GuiHtmlHandle | None = None
+        self._counts: viser.GuiHtmlHandle | None = None
         self._list: viser.GuiHtmlHandle | None = None
         #: The sources offered under Source, what the list was last drawn from, and how many lines it hid.
         self._sources: tuple[str, ...] = ()
@@ -111,6 +113,7 @@ class ConsolePlugin(HuskyPlugin):
             self._hide.on_update(ctx.defer_value("console hide", self._toggle_hidden))
             self._offer_hide()
             self._status = gui.add_html("")
+            self._counts = gui.add_html("")
             self._list = gui.add_html("")
         panel.float(x=-15, y=-15, width=WIDTH, height=HEIGHT)
         panel.minimize()
@@ -160,11 +163,10 @@ class ConsolePlugin(HuskyPlugin):
         self._status.content = chip_line(
             chip(f"showing {self._show.lower()}", INFO, "Which lines show; Show below changes it, Hide leaves out "
                                                         "sources.")
-            + chip(f"late ticks {late:.0%}", BUSY if late > LATE_TICKS_WARN else NONE,
-                   "Share of the last minute's tick periods that were late, a freeze counting for every period it "
-                   "lasted; Show All lists where the time went. Often the power profile: run the monitor under "
-                   "`powerprofilesctl launch -p performance`.")
-            + f'<span style="font-size:11px;color:{NONE}">{self._hidden} hidden</span>')
+            + chip("late ticks", BUSY if late > LATE_TICKS_WARN else NONE,
+                   f"Amber over {LATE_TICKS_WARN:.0%} of the last minute's tick periods late (share below); Show All "
+                   f"says why. Often the power profile: `powerprofilesctl launch -p performance`."))
+        self._counts.content = note(f"late ticks {late:.0%} · {self._hidden} hidden")
 
 
 def hide_summary(hidden: tuple[str, ...]) -> str:

@@ -13,6 +13,7 @@ from controller_manager_msgs.srv import ConfigureController, ListControllers, Sw
 from rclpy.node import Node
 
 from .connections import RosConnections
+from .refusal import Refusal
 
 #: Seconds between list_controllers polls.
 REFRESH_PERIOD = 1.0
@@ -28,8 +29,9 @@ class ControllerManagerState:
         controllers: Reported controller name to lifecycle state.
         active: The running switchable controller, or None if none runs or no answer has arrived.
         switch_in_flight: Controller a switch is waiting on, or None.
-        switch_error: Why the last switch failed, or None. Cleared when a new switch goes out or the running
-            controller is asked for again.
+        switch_error: Why the last switch or stop failed, or None. Cleared when a new switch or stop goes out, a
+            switch succeeds (unless a stop failed), or the running controller is asked for again. A switch refused
+            before it went out is `last_refusal` instead.
         requested: The controller this monitor last switched to, while it is still the running one (or the
             switch is pending); None otherwise, e.g. after a stop or a switch from outside.
         last_update_time: ROS time in seconds of the last answer, or None.
@@ -47,7 +49,14 @@ class ControllerManagerInterface:
     """Tracks and switches the controllers of one controller manager.
 
     ! Nothing blocks: answers land in `state` a few ticks later, so poll it (e.g. with `ctx.wait_until`).
+    * A switch refused by the guard, or while another is pending, leaves its reason in `last_refusal`, for panels;
+      the running controller stays as it is, so it is no failed switch.
     """
+
+    #: The last switch refused before it went out, or None.
+    last_refusal: Refusal | None = None
+    #: Whether `state.switch_error` is a failed stop, which a switch answered later must not clear.
+    _stop_failed = False
 
     def __init__(self, node: Node, namespace: str, switchable: tuple[str, ...],
                  state: ControllerManagerState, guard: Callable[[str], str | None] | None = None):
@@ -139,7 +148,8 @@ class ControllerManagerInterface:
             unguarded: Skip the guard. ! Only for `hold` and `resume`: stopping and recovering need no lease.
 
         Returns:
-            bool: True if the request went out or it already runs. False otherwise; `state.switch_error` says why.
+            bool: True if the request went out or it already runs. False otherwise; `state.switch_error` says why, or
+                `last_refusal` for a refusal by the guard or while another switch is pending.
         """
         if controller not in self.switchable:
             self.state.switch_error = (f"{controller!r} is not one of {self.switchable} "
@@ -147,13 +157,12 @@ class ControllerManagerInterface:
             self._node.get_logger().error(self.state.switch_error)
             return False
         if not unguarded and self._guard is not None and (problem := self._guard(controller)):
-            self.state.switch_error = f"{self.namespace}: not starting {controller}: {problem}"
-            self._node.get_logger().error(self.state.switch_error)
+            self._refused(f"not starting {controller}: {problem}")
             return False
         if self.state.active == controller:
             # Asking for the running one again acknowledges a failed switch away from it.
             self.state.requested = controller
-            self.state.switch_error = None
+            self.state.switch_error, self._stop_failed = None, False
             return True
         if not self._switch_client.service_is_ready():
             self.state.switch_error = f"{self.namespace}: switch_controller is not available"
@@ -161,9 +170,7 @@ class ControllerManagerInterface:
             return False
         if self.state.switch_in_flight is not None:
             # ! Refused, not queued: the pending switch makes the deactivate list below stale.
-            self.state.switch_error = (f"{self.namespace}: still switching to "
-                                       f"{self.state.switch_in_flight!r}, ignoring {controller!r}")
-            self._node.get_logger().error(self.state.switch_error)
+            self._refused(f"still switching to {self.state.switch_in_flight!r}, ignoring {controller!r}")
             return False
 
         # ? Every other active switchable controller, not just `state.active`, which may miss one.
@@ -177,10 +184,16 @@ class ControllerManagerInterface:
 
         self.state.switch_in_flight = controller
         self.state.requested = controller
-        self.state.switch_error = None
+        self.state.switch_error, self._stop_failed = None, False
         future = self._switch_client.call_async(request)
         future.add_done_callback(lambda done: self._on_switch_answer(controller, done))
         return True
+
+    def _refused(self, reason: str) -> None:
+        """Log why a switch was not sent, and keep it as `last_refusal`."""
+        message = f"{self.namespace}: {reason}"
+        self._node.get_logger().error(message)
+        self.last_refusal = Refusal("switch refused", message, self._node.get_clock().now().nanoseconds * 1e-9)
 
     def restart(self, controller: str) -> bool:
         """Start a stopped `controller` afresh: configure it again, then switch to it, both unguarded.
@@ -224,6 +237,7 @@ class ControllerManagerInterface:
         """
         if not self._switch_client.service_is_ready():
             self.state.switch_error = f"{self.namespace}: switch_controller is not available, cannot stop"
+            self._stop_failed = True
             self._node.get_logger().error(self.state.switch_error)
             return False
         request = SwitchController.Request()
@@ -231,7 +245,7 @@ class ControllerManagerInterface:
         request.strictness = SwitchController.Request.BEST_EFFORT
         request.start_asap = True
         self.state.requested = None
-        self.state.switch_error = None
+        self.state.switch_error, self._stop_failed = None, False
         self._switch_client.call_async(request).add_done_callback(self._on_deactivate_answer)
         return True
 
@@ -247,6 +261,7 @@ class ControllerManagerInterface:
             reason = "controller manager rejected it"
         if response is None or not response.ok:
             self.state.switch_error = f"{self.namespace}: STOP FAILED, controllers not deactivated: {reason}"
+            self._stop_failed = True
             self._node.get_logger().error(self.state.switch_error)
         self.refresh()
 
@@ -278,8 +293,12 @@ class ControllerManagerInterface:
             reason = "controller manager rejected the switch"
         if response is not None and response.ok:
             self.state.active = controller
+            if not self._stop_failed:  # ! A failed soft stop stays shown: the controller it should stop runs.
+                self.state.switch_error = None
         else:
-            self.state.switch_error = f"{self.namespace}: switch to {controller!r} failed: {reason}"
-            self._node.get_logger().error(self.state.switch_error)
+            error = f"{self.namespace}: switch to {controller!r} failed: {reason}"
+            self._node.get_logger().error(error)
+            if not self._stop_failed:
+                self.state.switch_error = error
         # Either way, re-read what is really running.
         self.refresh()

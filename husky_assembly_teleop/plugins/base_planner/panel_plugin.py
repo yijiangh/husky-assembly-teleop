@@ -38,7 +38,7 @@ from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, check_chip, chip, chip_line, section,
                          values)
 from ...robot_interface.base import live_report
-from ...world.follower import path_check
+from ...world.clearance import ALL_ARMS, BASE_PLAN_DISTANCE, STOP_DISTANCE
 from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import unknown_parts
 from scaffolding_assembly_core.geometry import Pose
@@ -66,6 +66,9 @@ class BasePlannerPanel(PlannerPanel):
     requires = ("base_planner", "process", "collisions")
     #: Its own ghost kind (`ui.ghost.KIND_COLORS`), in the one target blue.
     target_kind = "base_target"
+    #: The chosen robot's arms are watched where last seen when unknown, as robot_control's D-pad; not against itself,
+    #: as the commit's clearance (the arms stand still).
+    watch_options = {"unknown_arms": ALL_ARMS, "check_self": False}
 
     def __init__(self):
         """Start with no robot chosen and no target."""
@@ -117,7 +120,11 @@ class BasePlannerPanel(PlannerPanel):
                                               "previews; Clear drops the plan. A sent path keeps driving: Stop all "
                                               "stops it.",
                                     commit_hint="Send the path to the onboard follower; it drives at once if Vel "
-                                                "runs. With an arm out of its stow pose, press it twice too.")
+                                                "runs. With an arm out of its stow pose, press it twice too.",
+                                    clearance_hint=f"Soft stop a sent path once the robot comes within "
+                                                   f"{STOP_DISTANCE * 100:g} cm of anything (half the Margin below "
+                                                   f"{BASE_PLAN_DISTANCE * 100:g} cm); a start that close is refused. "
+                                                   f"Untick to drive out of a tight spot.")
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -177,7 +184,7 @@ class BasePlannerPanel(PlannerPanel):
         self._used.touch()
         if serial != self.serial:
             self.serial = serial
-            self._api.clear()
+            self._clear_plan()
 
     def _choose_algorithm(self, label: str) -> None:
         """Show the chosen algorithm's settings; the next plan uses it."""
@@ -349,15 +356,15 @@ class BasePlannerPanel(PlannerPanel):
 
     def _draw_floor(self, ctx: PluginContext) -> None:
         """The plan in blue until committed, the sent path in green, the robot's trail, the follower's points."""
-        planner = self._planner
-        self._markers.paths(self._preview_of(self._api.plan), planner._sent)
-        if planner._trace is None:
+        run = self._planner._runs.get(self.serial)  # * the chosen robot's last run, as its run chip
+        self._markers.paths(self._preview_of(self._api.plan), None if run is None else run.path)
+        if run is None or run.trace is None:
             self._markers.trail(None)
         else:
-            self._markers.trail(planner._trace.values(f"{planner._sent_serial}_floor_pose")[:, :2])
-        follower = None if planner._sent_serial is None else \
-            live_report(ctx.world.robots[planner._sent_serial].base.state.follower, ctx.now())
-        self._markers.follower(follower if follower is not None and follower.path_id == planner._sent_id else None)
+            self._markers.trail(run.trace.values(f"{self.serial}_floor_pose")[:, :2])
+        follower = None if run is None or run.path_id is None else \
+            live_report(ctx.world.robots[self.serial].base.state.follower, ctx.now())
+        self._markers.follower(follower if follower is not None and follower.path_id == run.path_id else None)
 
     def _preview_of(self, plan: Plan[BasePlanRequest] | None) -> FollowerPath | None:
         """The plan's path as the follower will cut it, until it is sent; cut once per plan."""
@@ -376,14 +383,14 @@ class BasePlannerPanel(PlannerPanel):
         if out := self._out_of_stow(ctx, self.serial):
             chips += chip("arm not stowed", BUSY, f"{out}: the base would drive with it out, so Commit asks twice.\n"
                                                   "Stow it in Plan › Arm (Load Stow).")
-        # * The run's chip replaces "sent", and stays while the next plan is made.
-        plan, planner = self._api.plan, self._planner
+        # * The chosen robot's run chip replaces "sent", and stays while the next plan is made.
+        plan = self._api.plan
         if plan is None or plan.state != "sent":
             chips += self._plan_chip()
-        if planner._sent_id is not None:
-            follower = ctx.world.robots[planner._sent_serial].base.state.follower
-            chips += check_chip(path_check(follower, planner._sent_id, planner._sent_at, ctx.now()))
-        return chip_line(chips + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
+        if (run := self._planner.run_check(ctx, self.serial)) is not None:
+            chips += check_chip(run)
+        return chip_line(chips + self.clearance_chips()
+                         + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
 
     def _details_html(self) -> str:
         """Numbers of the target and the plan, and the last message, in a fixed number of rows."""

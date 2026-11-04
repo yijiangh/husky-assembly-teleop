@@ -34,6 +34,7 @@ class ExampleRobotStatePlugin(HuskyPlugin):
     def __init__(self):
         """Start with no widgets; setup builds one per robot."""
         self._rows: dict[str, viser.GuiHtmlHandle] = {}
+        self._chips: dict[str, viser.GuiHtmlHandle] = {}
         #: Each arm's controller last tick, keyed by (serial, arm name).
         self._last_controller: dict[tuple[str, str], str] = {}
 
@@ -50,6 +51,8 @@ class ExampleRobotStatePlugin(HuskyPlugin):
                 # * Config is fixed, so it goes into the section label once.
                 arms = ", ".join(f"{name}:{arm.config.end_effector or '-'}" for name, arm in robot.arms.items())
                 gui.add_html(section(serial, SECTION_SENSOR, arms))
+                # * Chips and numbers in two handles: a number changing would rebuild the chips and drop their hover.
+                self._chips[serial] = gui.add_html("")
                 self._rows[serial] = gui.add_html("")
 
     def update(self, ctx: PluginContext) -> None:
@@ -84,10 +87,12 @@ class ExampleRobotStatePlugin(HuskyPlugin):
             arm_lines = []
             for arm_name, arm in robot.arms.items():
                 controller = arm.state.controllers.active
-                chips += chip(f"{arm_name} {controller or 'no ctrl'}", OK if controller else NONE)
+                chips += chip(f"{arm_name} {controller or 'no ctrl'}", OK if controller else NONE,
+                              "the arm's active controller" if controller else "no controller active: the arm stays")
                 joints = arm.joint_vector()  # None until all six joints have arrived
                 arm_lines.append(arm_name)
                 arm_lines.append(f"  q {numbers(None if joints is None else np.degrees(joints), 6, 6, 1)} °")
 
             # * Viser sends the content only if it changed.
-            self._rows[serial].content = block(chips + base_lines + values(*arm_lines))
+            self._chips[serial].content = block(chips)
+            self._rows[serial].content = block(base_lines + values(*arm_lines))

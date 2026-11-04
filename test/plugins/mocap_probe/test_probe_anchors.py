@@ -193,7 +193,7 @@ def test_an_anchor_moved_from_its_stored_place_is_left_out_and_still_exported(se
     assert data["anchors_in_floor"]["A2"]["moved"] == pytest.approx(0.006)
     assert "A2" not in data["fits"]["both"]["residuals"]
     plugin.draw(ctx)
-    assert "1 left out as moved (A2)" in plugin._floor_status.content and "A2 " in plugin._floor_status.content
+    assert "1 left out as moved (A2)" in plugin._floor_chips.content and "A2 " in plugin._floor_status.content
     plugin.teardown(ctx)
 
 
@@ -216,7 +216,7 @@ def test_stored_anchors_are_found_by_themselves_and_one_not_found_is_asked_for(s
     assert sorted(found) == ["A1", "A2"] and list(missing) == ["A3"] and missing["A3"].endswith("point at it")
     plugin.draw(ctx)
     assert "anchors mm:</div><div>  A1 0.0 · A2 0.0 · A3 point</div>" in plugin._floor_status.content
-    assert "A3 not found" in plugin._floor_status.content and "A3 not found" in plugin._phone_floor_status.content
+    assert "A3 not found" in plugin._floor_chips.content and "A3 not found" in plugin._phone_floor_chips.content
     plugin._show_stored.value = True
     plugin.draw(ctx)
     assert [tuple(sphere.color) for sphere in plugin._anchor_spheres["A3"]] == [NOT_FOUND_COLOR] * 2
@@ -224,6 +224,8 @@ def test_stored_anchors_are_found_by_themselves_and_one_not_found_is_asked_for(s
     plugin._export_floor(ctx)
     assert plugin._floor_message.startswith("not exported: anchors not read (A3: no unlabeled marker within 10 cm of "
                                             "its stored place: point at it)")
+    now = ctx.now()
+    ctx.now = lambda: now + 1.0
     plugin._export_floor(ctx)
     [path] = floor_exports(tmp_path)
     assert sorted(json.loads(path.read_text())["anchors"]) == ["A1", "A2"]

@@ -10,15 +10,19 @@ calibration's anchors and cameras; a refit is kept only in memory (`frame_follow
 
 - A camera or anchor moved on its own does not fit the others: it is left out and named. The largest residual among
   those that fit is Motive's calibration warping the volume.
+- A refit cannot follow a change of Motive's scale: the anchors' distances tell it (`fit_scale`), only to warn of it.
 - Motive streams anchors as unlabeled markers, with no name: each is the marker nearest where the floor calibration
-  measured it (`find_anchors`).
+  measured it (`find_anchors`), or, after Motive's frame moved further, where those found put the others
+  (`follow_anchors`) or their shape puts them (`match_anchors`).
 - Floor calibrations are written by the probe only, in the dated calibration session folders below the Drive root
   (a simulation's in its own, which the robots' relay never reads); a newer one is applied only on command.
 - Thresholds, side by side: a camera moved between two readings over CAMERA_MOVED (1 mm) or CAMERA_TURNED (0.1°) is
   warned about (`mocap_definitions.py`); within one fit, a camera off the others by BUMP_POSITION (2 mm) or BUMP_TURN
   (0.1°), or an anchor by ANCHOR_BUMP (2 mm), is left out, and an anchor left out comes back within BACK_SHARE of it
   (1.5 mm); a fit is trusted within UNCERTAIN_MAX (2 mm); a refit is pending beyond `off_limit` (VOLUME_MOVED, 1 mm,
-  or twice the fit's uncertainty) and the frame held again within BACK_SHARE of it.
+  or twice the fit's uncertainty) and the frame held again within BACK_SHARE of it; Motive's scale changed beyond
+  SCALE_CHANGED (about 385 ppm, 2 mm across the lab's volume) is warned about; the shape match allows ANCHOR_STRETCH
+  (0.5 %) of scale.
 
 Pure functions of files and numbers; no ROS, any thread.
 """
@@ -67,12 +71,29 @@ TRUSS, ANCHORS = "truss cameras", "anchors"
 #: probe) and still be taken for it, metres: under half the distance between two markers, over how far Motive's
 #: continuous calibration moves the frame.
 ANCHOR_RADIUS = 0.02
+#: How much Motive's scale may differ between two calibrations and the anchors still be found by their shape, a share
+#: of each distance between them (`match_anchors`); a recalibration was seen to change it by 0.16 %.
+ANCHOR_STRETCH = 0.005
+#: The smallest triangle of anchors the shape match starts from, square metres: a thinner one pins no turn.
+MIN_TRIANGLE = 0.1
 #: The lab's volume a frame move is judged in, metres, (min, max) per axis: the central 3 m cube where the robots
 #: work, one corner at the lab frame's origin, along x, -y and z.
 VOLUME = ((0.0, 3.0), (-3.0, 0.0), (0.0, 3.0))
 #: Two motions of the frame differ once they put a point of VOLUME this far apart, metres: a shift and a turn alike.
 #: Smaller moves are Motive's continuous calibration: no warning, no refit pending.
 VOLUME_MOVED = 1e-3
+#: The lab volume's diagonal, metres.
+VOLUME_DIAGONAL = float(np.linalg.norm(np.ptp(VOLUME, axis=1)))
+#: Motive's scale counts as changed since the floor calibration once it changes the lab volume's diagonal by over
+#: UNCERTAIN_MAX: about 385 ppm (`fit_scale`). The anchors' rigid fit pins poses at the anchors' centre, at most 4.2 m
+#: from a point of the volume: poses are then up to 1.6 mm off, as much as a fit still trusted. Motive's continuous
+#: calibration sways it by about 200 ppm; a recalibration was seen to change it by 1550 ppm.
+SCALE_CHANGED = UNCERTAIN_MAX / VOLUME_DIAGONAL
+#: Beyond this scale, about 144 ppm, the anchors' rigid fit may leave the farthest out though none moved: no "anchors
+#: moved" warning then, reported as a scale change or not.
+SCALE_SEEN = BACK_SHARE * VOLUME_MOVED / VOLUME_DIAGONAL
+#: Only pairs of anchors at least this far apart, metres, tell the scale (`fit_scale`): 0.5 mm of noise is 250 ppm.
+SCALE_PAIR_MIN = 2.0
 #: A floor calibration's name, in a dated calibration session folder (`calibration_sessions.sessions_folder`):
 #: "<date>_<time>_mocap_floor_calibration.json".
 FLOOR_PREFIX = "mocap_floor_calibration"
@@ -318,6 +339,123 @@ def find_anchors(lab: dict[str, MocapAnchor], markers: Sequence[tuple[float, flo
             found[name] = nearest
     taken = [index for index in found.values()]
     return {name: index for name, index in found.items() if taken.count(index) == 1}
+
+
+def follow_anchors(lab: dict[str, MocapAnchor], markers: Sequence[tuple[float, float, float]],
+                   found: dict[str, int], radius: float = ANCHOR_RADIUS) -> dict[str, int]:
+    """The lab anchors found again, by index, where the turn, shift and scale fitting those `found` put them.
+
+    A quick way to the others after Motive's frame moved; none under three found.
+    """
+    names = [name for name in lab if name in found]
+    if len(names) < 3:
+        return {}
+    points = np.asarray(markers, dtype=float)
+    carried, _ = _carry(np.array([lab[name].position for name in names]), points[[found[name] for name in names]],
+                        np.array([anchor.position for anchor in lab.values()]))
+    return find_anchors({name: MocapAnchor(name, tuple(point)) for name, point in zip(lab, carried)}, markers, radius)
+
+
+def match_anchors(lab: dict[str, MocapAnchor], markers: Sequence[tuple[float, float, float]],
+                  radius: float = ANCHOR_RADIUS) -> dict[str, int]:
+    """Each lab anchor's marker, by index, found by the anchors' shape wherever Motive's frame put them.
+
+    Three anchors are matched to three markers by the distances between them (within `radius` and ANCHOR_STRETCH);
+    the anchors carried by that match (turned, shifted and scaled) are looked for with `find_anchors`. The match
+    finding the most wins, and only with MIN_POINTS: three stray markers can fit any triangle.
+    """
+    names = list(lab)
+    if len(names) < MIN_POINTS or len(markers) < MIN_POINTS:
+        return {}
+    stored, points = np.array([lab[name].position for name in names]), np.asarray(markers, dtype=float)
+    apart_stored = np.linalg.norm(stored[:, None] - stored[None], axis=2)
+    apart = np.linalg.norm(points[:, None] - points[None], axis=2)
+    tolerance = radius + ANCHOR_STRETCH * apart_stored
+
+    def area(triangle: tuple[int, ...]) -> float:
+        first, second, third = stored[list(triangle)]
+        return float(np.linalg.norm(np.cross(second - first, third - first))) / 2
+
+    best: dict[str, int] = {}
+    # * The widest triangles first, as they place the others best; a thin one pins no turn.
+    for a, b, c in sorted(itertools.combinations(range(len(names)), 3), key=area, reverse=True):
+        if area((a, b, c)) < MIN_TRIANGLE:
+            break
+        for i, j in zip(*np.nonzero(np.abs(apart - apart_stored[a, b]) <= tolerance[a, b])):
+            thirds = (np.abs(apart[i] - apart_stored[a, c]) <= tolerance[a, c]) & \
+                     (np.abs(apart[j] - apart_stored[b, c]) <= tolerance[b, c])
+            for k in np.nonzero(thirds)[0]:
+                if k in (i, j):
+                    continue
+                carried, _ = _carry(stored[[a, b, c]], points[[i, j, k]], stored)
+                found = find_anchors({name: MocapAnchor(name, tuple(point)) for name, point in zip(names, carried)},
+                                     markers, radius)
+                if len(found) > len(best):
+                    best = found
+                    if len(best) == len(names):
+                        return best
+    return best if len(best) >= MIN_POINTS else {}
+
+
+def _carry(source: np.ndarray, target: np.ndarray, points: np.ndarray) -> tuple[np.ndarray, float]:
+    """`points` carried by the turn, shift and scale that take the `source` points onto the `target` ones best."""
+    source_mean, target_mean = source.mean(axis=0), target.mean(axis=0)
+    scale = float(np.sqrt(np.sum((target - target_mean) ** 2) / np.sum((source - source_mean) ** 2)))
+    rotation, _ = Rotation.align_vectors(target - target_mean, source - source_mean)
+    return scale * rotation.apply(points - source_mean) + target_mean, scale
+
+
+@dataclass(frozen=True)
+class ScaleFit:
+    """How Motive's scale changed since the floor calibration, from its anchors then and now.
+
+    Attributes:
+        scale: How much longer Motive puts distances now, a share (-0.0015: 1.5 mm per metre shorter).
+        used: The anchors it was found from.
+        pairs: How many pairs of them are at least SCALE_PAIR_MIN apart.
+    """
+
+    scale: float
+    used: tuple[str, ...]
+    pairs: int
+
+    @property
+    def volume_change(self) -> float:
+        """How much the scale changes the lab volume's diagonal, metres."""
+        return abs(self.scale) * VOLUME_DIAGONAL
+
+    def describe(self) -> str:
+        """One line for people: the change, and from what."""
+        return (f"distances {self.scale * 1e6:+.0f} ppm ({self.volume_change * 1e3:.1f} mm across the lab's volume), "
+                f"from {self.pairs} pairs of {len(self.used)} anchors")
+
+    def as_dict(self) -> dict:
+        """For the relay's announcements and metrics; metres."""
+        return {"scale": self.scale, "ppm": self.scale * 1e6, "used": list(self.used), "pairs": self.pairs,
+                "volume_change": self.volume_change, "describe": self.describe()}
+
+
+def fit_scale(stored: dict[str, MocapAnchor], now: dict[str, MocapAnchor]) -> ScaleFit | None:
+    """How Motive's scale changed, from the anchors as `stored` (the floor calibration's) and `now`, raw.
+
+    The median of how much longer each pair of anchors at least SCALE_PAIR_MIN apart is now, taken with every anchor
+    and with each one left out; the smallest change wins, so one anchor moved, or Motive's solution warped in a corner,
+    reads as none. None under MIN_POINTS anchors, or when one left out leaves under three such pairs.
+    """
+    names = sorted(name for name in stored if name in now)
+    if len(names) < MIN_POINTS:
+        return None
+    changes = {}
+    for first, second in itertools.combinations(names, 2):
+        then = float(np.linalg.norm(np.subtract(stored[first].position, stored[second].position)))
+        if then >= SCALE_PAIR_MIN:
+            changes[first, second] = float(np.linalg.norm(np.subtract(now[first].position,
+                                                                      now[second].position))) / then - 1.0
+    sets = [list(changes.values())] + [[change for pair, change in changes.items() if name not in pair]
+                                       for name in names]
+    if min(map(len, sets)) < 3:
+        return None
+    return ScaleFit(min((float(np.median(values)) for values in sets), key=abs), tuple(names), len(changes))
 
 
 def frame_and_cameras(before: dict[str, MocapCamera], now: dict[str, MocapCamera],

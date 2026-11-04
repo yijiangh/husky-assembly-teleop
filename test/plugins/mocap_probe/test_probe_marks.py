@@ -11,7 +11,8 @@ from scipy.spatial.transform import Rotation
 
 from test_floor_calibration_plugin import NOW, floor_exports, make_ctx, server  # noqa: F401 (the viser server fixture)
 from husky_assembly_teleop.colors import WARN, rgb
-from husky_assembly_teleop.plugins.mocap_probe import FORCE_SECONDS, MARK_BUTTONS, MocapProbePlugin
+from husky_assembly_teleop.plugins.mocap_probe import MARK_BUTTONS, MocapProbePlugin
+from husky_assembly_teleop.ui.second_press import SECOND_PRESS_SECONDS
 from husky_assembly_teleop.robot_interface.mocap_relay import FloorCalibrationState
 from husky_assembly_teleop.world.calibration_sessions import SESSIONS_FOLDER
 from husky_assembly_teleop.world.floor_calibration import FLOOR_LABEL
@@ -54,7 +55,7 @@ def first_calibration(server, tmp_path) -> dict:  # noqa: F811
     (tmp_path / SESSIONS_FOLDER).mkdir(parents=True, exist_ok=True)
     (tmp_path / "data" / "lab").mkdir(parents=True, exist_ok=True)
     plugin, ctx = calibrate(server, tmp_path)
-    assert "frame not fixed" in plugin._floor_status.content
+    assert "frame not fixed" in plugin._floor_chips.content
     assert "no marks or anchors stored in main_frame.json" in plugin._marks_html()
     plugin._export_floor(ctx)
     plugin.teardown(ctx)
@@ -71,7 +72,7 @@ def test_the_marks_from_the_first_export_give_every_later_calibration_its_frame(
     assert stored["mark1"] == pytest.approx([3.5, -0.4], abs=1e-6)
 
     plugin, ctx = calibrate(server, tmp_path, moved=True)
-    assert "fixed 4/4" in plugin._floor_status.content
+    assert "fixed 4/4" in plugin._floor_chips.content
     assert "mark1  x +3.500 y -0.400 m" in plugin._marks_html()
     plugin._export_floor(ctx)
     [path] = floor_exports(tmp_path)
@@ -86,22 +87,23 @@ def test_the_marks_from_the_first_export_give_every_later_calibration_its_frame(
 
 
 def test_a_moved_mark_exports_only_on_a_second_press_and_too_few_marks_not_at_all(server, tmp_path):  # noqa: F811
-    """A mark 5 mm off: red chip, exported on a second press within 2 s (amber meanwhile); one mark: no frame.
+    """A mark 5 mm off: red chip, exported on a second press within 5 s (amber meanwhile); one mark: no frame.
 
     A second press too late only arms the button again.
     """
     first_calibration(server, tmp_path)
     plugin, ctx = calibrate(server, tmp_path, marks={**MARKS, "mark2": (-2.005, 4.0)})
-    assert "mark2 off" in plugin._floor_status.content
+    assert "mark2 off" in plugin._floor_chips.content
     plugin._export_floor(ctx)
     assert plugin._floor_message.startswith("not exported: mark2 lands")
-    assert plugin._floor_message.endswith("press again within 2 s to export anyway")
+    assert plugin._floor_message.endswith("press again within 5 s to export anyway")
     button = plugin._confirms["export"][0][0]
     plugin.draw(ctx)
-    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Press again: export anyway", rgb(WARN))
-    ctx.now = lambda: NOW + FORCE_SECONDS + 1.0
+    assert not floor_exports(tmp_path) and (button.label, button.color) == ("Export anyway?", rgb(WARN))
+    ctx.now = lambda: NOW + SECOND_PRESS_SECONDS + 1.0
     plugin._export_floor(ctx)
     assert not floor_exports(tmp_path)
+    ctx.now = lambda: NOW + SECOND_PRESS_SECONDS + 2.0
     plugin._export_floor(ctx)
     plugin.draw(ctx)
     [export] = floor_exports(tmp_path)
@@ -110,10 +112,24 @@ def test_a_moved_mark_exports_only_on_a_second_press_and_too_few_marks_not_at_al
     export.unlink()
     plugin._remove_samples(ctx, [sample for sample in plugin.samples if sample.label in ("mark1", "mark2", "mark3")])
     plugin.draw(ctx)
-    assert "no frame" in plugin._floor_status.content
+    assert "no frame" in plugin._floor_chips.content
     plugin._export_floor(ctx)
     assert "at least two of the marks" in plugin._floor_message
     assert not floor_exports(tmp_path)
+    plugin.teardown(ctx)
+
+
+def test_marks_off_the_tape_warn_of_motives_scale_and_export_only_on_a_second_press(server, tmp_path):  # noqa: F811
+    """Tape 3 mm shorter than Motive puts origin to mark1 (3.52 m): amber chip, readout, a second press to export."""
+    first_calibration(server, tmp_path)
+    path = tmp_path / "data" / "lab" / "main_frame.json"
+    data = json.loads(path.read_text())
+    path.write_text(json.dumps({**data, "tape": {"origin-mark1": 3.5228 - 0.003, "mark1-mark2": 6.9289}}))
+    plugin, ctx = calibrate(server, tmp_path)
+    assert "scale off" in plugin._floor_chips.content
+    assert "tape mm: +3.0 · +0.0" in plugin._floor_status.content
+    plugin._export_floor(ctx)
+    assert "origin-mark1 +3.0 mm off the tape" in plugin._floor_message and not floor_exports(tmp_path)
     plugin.teardown(ctx)
 
 

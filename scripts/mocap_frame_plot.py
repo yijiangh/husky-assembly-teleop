@@ -7,9 +7,10 @@ the floor calibration's anchors and cameras, so using a refit changes none of th
 (dashed, top panel) stepping to the deciding fit, a thin vertical line, and the second panel, how far poses are off now
 (deciding fit against the transform in use), dropping to zero.
 
-- Left, five panels: each fit's move of the lab's volume with its uncertainty, poses off now against the limit a refit
-  is pending beyond, the largest residual, how many points it used, and how far the two fits place the lab apart; a
-  cross marks a sample whose fit is not trusted.
+- Left, six panels: each fit's move of the lab's volume with its uncertainty, poses off now against the limit a refit
+  is pending beyond, the largest residual, how many points it used, how far the two fits place the lab apart (a cross
+  marks a sample whose fit is not trusted), and Motive's scale since the floor calibration by the anchors, against
+  where the relay warns (a cross while it reports a change).
 - Right, one line per anchor: its error against a fit of the other anchors (the one that says an anchor is bad), its
   noise within the look, and the share of the look's frames it was seen in; gaps where it was not found, a cross
   where the fit left it out. Samples from before these were published leave them empty.
@@ -34,6 +35,8 @@ import threading
 from pathlib import Path
 
 import numpy as np
+
+from husky_assembly_teleop.world.mocap_frame import SCALE_CHANGED
 
 #: Where the relay publishes its samples.
 TOPIC = "/mocap_relay/frame_metrics"
@@ -184,17 +187,17 @@ def plot_anchors(samples: list[dict], axes) -> None:
 
 
 def plot(samples: list[dict], figure=None):
-    """Draw the frame's five panels and the anchors' three for `samples` on `figure` (a new one if None); returns it."""
+    """Draw the frame's six panels and the anchors' three for `samples` on `figure` (a new one if None); returns it."""
     import matplotlib.pyplot as plt
     from matplotlib.ticker import MaxNLocator
     if figure is None:
         figure = plt.figure(figsize=(16, 11), facecolor=SURFACE)
     figure.clear()
-    grid = figure.add_gridspec(10, 2, width_ratios=(3, 2))
+    grid = figure.add_gridspec(12, 2, width_ratios=(3, 2))
     axes = [figure.add_subplot(grid[0:2, 0])]
-    axes += [figure.add_subplot(grid[2 * row:2 * row + 2, 0], sharex=axes[0]) for row in range(1, 5)]
-    anchor_axes = [figure.add_subplot(grid[0:4, 1], sharex=axes[0]), figure.add_subplot(grid[4:7, 1], sharex=axes[0]),
-                   figure.add_subplot(grid[7:10, 1], sharex=axes[0])]
+    axes += [figure.add_subplot(grid[2 * row:2 * row + 2, 0], sharex=axes[0]) for row in range(1, 6)]
+    anchor_axes = [figure.add_subplot(grid[0:5, 1], sharex=axes[0]), figure.add_subplot(grid[5:9, 1], sharex=axes[0]),
+                   figure.add_subplot(grid[9:12, 1], sharex=axes[0])]
     minutes, unit = time_axis(samples)
     mm = lambda key: np.array([s[key] * 1e3 if s.get(key) is not None else np.nan for s in samples])  # noqa: E731
     # * A refit used: the transform in use changed between two samples.
@@ -225,6 +228,14 @@ def plot(samples: list[dict], figure=None):
     axes[4].plot(minutes, mm("apart"), color=INK, linewidth=2)
     axes[4].set_title("anchors and truss cameras place the lab apart, both trusted (mm)", loc="left", fontsize=10,
                       color=INK)
+    ppm = np.array([(s.get("anchor_scale") or {}).get("ppm", np.nan) for s in samples], dtype=float)
+    warned = np.array([bool(s.get("scale_changed")) for s in samples])
+    axes[5].plot(minutes, ppm, color=INK, linewidth=2)
+    axes[5].plot(minutes[warned], ppm[warned], linestyle="none", marker="x", markersize=8, color=INK)
+    for limit in (-SCALE_CHANGED * 1e6, SCALE_CHANGED * 1e6):
+        axes[5].axhline(limit, color=MUTED, linewidth=1, linestyle="--")
+    axes[5].set_title("Motive's scale since the floor calibration, by the anchors (ppm; dashed: the relay warns "
+                      "beyond, x: it does)", loc="left", fontsize=10, color=INK)
     axes[0].legend(frameon=False, loc="upper left", fontsize=9, title="band: ± uncertainty · x: not trusted",
                    title_fontsize=8)
     plot_anchors(samples, anchor_axes)

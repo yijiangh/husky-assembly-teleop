@@ -16,6 +16,7 @@ from ...robot_interface.arm import JOINT_STATE_MAX_AGE
 if TYPE_CHECKING:
     from ...robot_interface.arm import ArmInterface
     from ...robot_interface.base import BaseState
+    from ...robot_interface.robot import HuskyRobotInterface
     from ...world.measured import WorldState
 
 #: An arm whose joints moved slightly (`ArmState.last_slight_motion_time`) within this many seconds is moving.
@@ -42,26 +43,32 @@ def moving_reason(world: WorldState, now: float, besides: str | None = None, unk
     for serial, robot in world.robots.items():
         if serial == besides or serial in unknown:
             continue
-        for name, arm in robot.arms.items():
-            why = arm_moving(arm, f"{serial} {name}", now)
-            if why:
-                return why
-        why = base_moving(robot.base.state, f"{serial} base", now)
+        why = robot_moving(serial, robot, now)
         if why:
             return why
     return ""
 
 
-def arm_moving(arm: ArmInterface, label: str, now: float) -> str:
+def robot_moving(serial: str, robot: HuskyRobotInterface, now: float) -> str:
+    """Why one robot counts as moving (one of its arms or its base, as `arm_moving` and `base_moving`), or ""."""
+    for name, arm in robot.arms.items():
+        why = arm_moving(arm, f"{serial} {name}", now)
+        if why:
+            return why
+    return base_moving(robot.base.state, f"{serial} base", now)
+
+
+def arm_moving(arm: ArmInterface, label: str, now: float, within: float = MOVED_WITHIN) -> str:
     """Why an arm counts as moving, or "".
 
-    It moves while `is_executing` holds or its joints moved slightly within MOVED_WITHIN. Joint states never received
+    It moves while `is_executing` holds or its joints moved slightly within `within`. Joint states never received
     this session are not counted (the robot is not running); states older than JOINT_STATE_MAX_AGE count as moving.
 
     Args:
         arm: The arm.
         label: Its name in the reason, e.g. "a200-0805 ur_arm".
         now: ROS time, seconds.
+        within: Seconds since the last slight motion that still count as moving.
     """
     state = arm.state
     if state.last_update_time is None:
@@ -71,8 +78,8 @@ def arm_moving(arm: ArmInterface, label: str, now: float) -> str:
         return f"can't tell whether {label} is moving: its joint states are {age:.1f} s old; {UNTIL_BACK}"
     if state.is_executing:
         return f"{label} is running a trajectory"
-    if state.last_slight_motion_time is not None and now - state.last_slight_motion_time <= MOVED_WITHIN:
-        return f"{label} moved within the last {MOVED_WITHIN:.0f} s"
+    if state.last_slight_motion_time is not None and now - state.last_slight_motion_time <= within:
+        return f"{label} moved within the last {within:g} s"
     return ""
 
 

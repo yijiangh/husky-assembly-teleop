@@ -4,7 +4,7 @@ import re
 
 from husky_assembly_teleop.plugins.health import render_banner, render_line
 from husky_assembly_teleop.ui.style import BUSY, FAIL, INFO as BLUE, OK
-from husky_assembly_teleop.world.checks import BAD, GOOD, INFO, WARN, Check
+from husky_assembly_teleop.world.checks import BAD, GOOD, INFO, PENDING, WARN, Check
 
 
 def _chips(html: str) -> list[tuple[str, str, str]]:
@@ -32,7 +32,7 @@ def test_the_overall_chip_takes_the_worst_robot_and_each_robot_its_own():
     assert (alice[2], alice[1], alice[0]) == ("0804", BUSY, "base battery: low")
     assert (cindy[2], cindy[1]) == ("0806", FAIL)
     assert cindy[0].splitlines() == ["SOFT STOPPED: Stop all", "ur_arm sync: old"]
-    assert (objects[2], objects[1], objects[0]) == ("objects", OK, "all green")
+    assert (objects[2], objects[1], objects[0]) == ("objects", OK, "nothing amber or red")
 
 
 def test_amber_without_red_is_check():
@@ -45,5 +45,14 @@ def test_a_simulated_part_is_blue_but_keeps_its_robot_green():
     """A sim chip is blue on its own line, yet its robot and the overall chip stay green."""
     lines = [("base", [Check("ESTOP", GOOD), Check("sim", INFO, "husky_sim")])]
     assert re.search(f'background:{BLUE};[^"]*">sim<', render_line(*lines[0]))
-    (_title, overall, label), (_robot_title, robot, _serial) = _chips(render_banner({"a200-0804": lines}, []))
+    (title, overall, label), (_robot_title, robot, _serial) = _chips(render_banner({"a200-0804": lines}, []))
     assert (label, overall, robot) == ("ALL GREEN", OK, OK)
+    assert title == "nothing amber or red; facts: 0804 base sim", "the hover never claims every chip is green"
+
+
+def test_grey_chips_are_named_on_an_all_green_banner():
+    """Nothing amber or red, but a tcp not checked yet: the green chip's hover names it rather than say all green."""
+    lines = [("ur_arm", [Check("signal", GOOD), Check("tcp", PENDING, "not checked yet")])]
+    (title, overall, _label), (robot_title, _robot, _serial) = _chips(render_banner({"a200-0804": lines}, []))
+    assert overall == OK and title == "nothing amber or red; not judged yet: 0804 ur_arm tcp"
+    assert robot_title == "nothing amber or red; not judged yet: ur_arm tcp"

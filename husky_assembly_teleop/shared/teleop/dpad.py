@@ -1,4 +1,4 @@
-"""The base's D-pad: four hold buttons that drive while pressed, and a speed slider."""
+"""The base's D-pad: four hold buttons that drive while pressed, a speed slider, and Clearance below."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import viser
 from ...colors import NONE, WARN, rgb
 from ...plugin_api.context import PluginContext
 from ...ui.phone import big_buttons, grid_css
+from .clearance_toggle import ClearanceToggle
 
 #: Base speed at a Speed of 1. Kept low: this is a test panel.
 MAX_LINEAR_SPEED = 0.3   # m/s
@@ -66,15 +67,16 @@ class Hold:
         return self.linear * self.speed.value * MAX_LINEAR_SPEED, self.angular * self.speed.value * MAX_ANGULAR_SPEED
 
 
-def build_velocity_inputs(ctx: PluginContext, gui: viser.GuiApi, serial: str, on_hold: Callable[[Hold], None]
-                          ) -> tuple[viser.GuiSliderHandle, list[viser.GuiButtonHandle]]:
-    """Add the inputs for platform_velocity_controller: a speed slider and the D-pad.
+def build_velocity_inputs(ctx: PluginContext, gui: viser.GuiApi, serial: str, on_hold: Callable[[Hold], None],
+                          clearance: ClearanceToggle) -> tuple[viser.GuiSliderHandle, list[viser.GuiButtonHandle]]:
+    """Add the inputs for platform_velocity_controller: a speed slider, the D-pad, and a box of `clearance` below it.
 
     Args:
         ctx: The plugin's context.
         gui: The GUI api, inside the base's tab.
         serial: The robot's serial, for intent names.
         on_hold: Called with a `Hold` every report of a held button.
+        clearance: Whether the drive keeps its clearance; every D-pad of one base shows the same.
 
     Returns:
         tuple[viser.GuiSliderHandle, list[viser.GuiButtonHandle]]: The speed slider, a fraction of the full speed,
@@ -92,6 +94,7 @@ def build_velocity_inputs(ctx: PluginContext, gui: viser.GuiApi, serial: str, on
                                  lambda linear=linear, angular=angular: on_hold(
                                      Hold(linear, angular, speed, ctx.now()))),
                        callback_hz=HOLD_CALLBACK_HZ)
+    clearance.add(ctx, gui, serial)
     return speed, buttons
 
 

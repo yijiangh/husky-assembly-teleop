@@ -15,14 +15,24 @@ from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...robot_interface.controller_manager import ControllerManagerInterface
 from ...robot_interface.stream_stats import WINDOW, StreamQuality
+from ...robot_interface.mocap_relay import MocapRelayState
 from ...robot_interface.mocap_state import MocapBody
 from ...robot_interface.refusal import Refusal
 from ...robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV1State, ScaffoldingV3,
-                                              ScaffoldingV3State)
+                                              ScaffoldingV3State, robotiq_failure)
 from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, REFUSAL_SHOWN, SECTION_CTRL, block, check_chip, chip,
                          chip_line, freshness_chip, hover, note, numbers, section, values)
+from ...world.base_mocap import base_mocap_check
 from ...world.checks import STALE_AFTER
-from ...world.mocap import MARKER_ERROR_WARN, mocap_check
+from ...world.mocap import MARKER_ERROR_WARN
+
+#: Hover text of a v3 motor's chip by the state its driver reports.
+MOTOR_HINTS = {
+    ScaffoldingV3.IDLE: "Not running.",
+    ScaffoldingV3.TIGHTENING: "Tightening; it stops by itself once tight, Stop halts it now.",
+    ScaffoldingV3.LOOSENING: "Loosening; Stop halts it.",
+    ScaffoldingV3.STALLED: "Screwed tight, as intended; Stop clears the stall before it runs again.",
+}
 
 #: Short button labels for controllers; unlisted ones show their full name.
 CONTROLLER_LABELS = {
@@ -92,29 +102,34 @@ def show_only_running(panel: ControllerPanel) -> None:
 # --- --- --- --- --- READOUTS --- --- --- --- ---
 
 def _controller_chip(controllers: ControllerManagerInterface) -> str:
-    """The running controller, coloured by what the last switch did."""
+    """The running controller, coloured by what the last switch did; a refused switch is `_switch_refused`."""
     state = controllers.state
     if state.switch_in_flight:
         return chip(f"→ {CONTROLLER_LABELS.get(state.switch_in_flight, state.switch_in_flight)}", BUSY,
                     "Switching to this controller; waiting for the controller manager's answer.")
     if state.switch_error:
-        return chip("switch failed", FAIL, hover(f"{state.switch_error}. See the console."))
+        return chip("switch failed", FAIL, hover(state.switch_error))
     if state.active is None:
         return chip("no ctrl", NONE, "no controller running, or no answer yet")
     return chip(CONTROLLER_LABELS.get(state.active, state.active), OK,
                 "The controller running now; the Run buttons in Robot control switch it.")
 
 
+def _switch_refused(controllers: ControllerManagerInterface, now: float) -> str:
+    """A chip for a switch just refused, "" without one; it goes last, with `refused`, so no other chip moves."""
+    return refusal_chip([controllers.last_refusal], now)
+
+
 def refusal_chip(refusals: Iterable[Refusal | None], now: float) -> str:
-    """A chip for the newest of `refusals` up to REFUSAL_SHOWN old, its reason on hover; "" without one."""
+    """A chip for the newest of `refusals` up to REFUSAL_SHOWN old, its reason (logged) on hover; "" without one."""
     recent = [refusal for refusal in refusals if refusal is not None and now - refusal.time <= REFUSAL_SHOWN]
     if not recent:
         return ""
     newest = max(recent, key=lambda refusal: refusal.time)
-    return chip(newest.label, FAIL, newest.reason)
+    return chip(newest.label, FAIL, hover(newest.reason))
 
 
-def phone_base_status(base: BaseInterface, refused: str = "") -> str:
+def phone_base_status(base: BaseInterface, now: float, refused: str = "") -> str:
     """The phone's line for a base: whether its D-pad drives (else switch on the laptop), and `refused`."""
     if base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
         return chip_line(chip("D-pad drives", OK, "The velocity controller runs: holding an arrow drives the base.")
@@ -122,24 +137,38 @@ def phone_base_status(base: BaseInterface, refused: str = "") -> str:
     off = chip("D-pad off: switch on the laptop", BUSY,
                "The velocity controller is off, so the D-pad does nothing. Switch to Vel in Robot control on the "
                "laptop.")
-    return chip_line(_controller_chip(base.controllers) + off + refused)
+    return chip_line(_controller_chip(base.controllers) + off + refused + _switch_refused(base.controllers, now))
 
 
-def phone_arm_status(arm: ArmInterface, refused: str = "") -> str:
+def phone_arm_status(arm: ArmInterface, now: float, refused: str = "") -> str:
     """The phone's line for an arm: its running controller ("Free" while free driving), and `refused`."""
-    return chip_line(_controller_chip(arm.controllers) + refused)
+    return chip_line(_controller_chip(arm.controllers) + refused + _switch_refused(arm.controllers, now))
 
 
-def base_status(base: BaseInterface, now: float, refused: str = "") -> str:
-    """Status HTML for a base: chips with `refused` last, then its pose (placeholders before the first fix) and wifi."""
+def base_status(base: BaseInterface, now: float, refused: str = "",
+                relay: MocapRelayState | None = None) -> tuple[str, str]:
+    """A base's status: its chip line, `refused` last; and its pose (placeholders before the first fix) and wifi.
+
+    ! Two htmls, the numbers apart from the chips: a change rebuilds a whole html, which drops a hovered chip's text.
+
+    Args:
+        base: The base.
+        now: Current ROS time, seconds.
+        refused: Chips for buttons that did nothing (`refusal_chip`).
+        relay: What the mocap relay announces, for the mocap chip (`base_mocap_check`, as in Health); None without.
+
+    Returns:
+        tuple[str, str]: The chip line, and the numbers below it.
+    """
     state = base.state
-    chips = _controller_chip(base.controllers) + check_chip(mocap_check("mocap", base.mocap_id, state, now)) + refused
+    chips = (_controller_chip(base.controllers) + check_chip(base_mocap_check(base.mocap_id, state, relay, now))
+             + refused + _switch_refused(base.controllers, now))
     yaw = None if state.orientation is None else Rotation.from_quat(state.orientation).as_euler(
         "xyz", degrees=True)[2:]
     stale = not state.tracked or now - state.last_fix_time >= STALE_AFTER
-    return chip_line(chips) + block(values(f"xyz {numbers(state.position, 3, 7, 3)} m",
-                                           f"yaw {numbers(yaw, 1, 7, 1)} °", dim=stale) + _mocap_line(state, now)
-                                    + _wifi_line(state.joint_states_stats.quality(now)))
+    return chip_line(chips), block(values(f"xyz {numbers(state.position, 3, 7, 3)} m",
+                                          f"yaw {numbers(yaw, 1, 7, 1)} °", dim=stale) + _mocap_line(state, now)
+                                   + _wifi_line(state.joint_states_stats.quality(now)))
 
 
 def _mocap_line(body: MocapBody, now: float) -> str:
@@ -158,16 +187,19 @@ def _mocap_line(body: MocapBody, now: float) -> str:
                   dim=body.last_update_time is None)
 
 
-def arm_status(arm: ArmInterface, now: float, refused: str = "") -> str:
-    """Status HTML for an arm: chips with `refused` last, then joints, TCP, force and wifi (placeholders if missing)."""
+def arm_status(arm: ArmInterface, now: float, refused: str = "") -> tuple[str, str]:
+    """An arm's status: its chip line, `refused` last; and its joints, TCP, force and wifi (placeholders if missing).
+
+    ! Two htmls, as `base_status`: the numbers change every tick.
+    """
     state = arm.state
     chips = _controller_chip(arm.controllers) + freshness_chip("joints", state.last_update_time, now)
     if state.is_executing:
         chips += chip("moving", BUSY, "The arm runs a trajectory; Hold or Stop all stops it.")
-    chips += refused
+    chips += refused + _switch_refused(arm.controllers, now)
     joints = arm.joint_vector()
     stale = state.last_update_time is None or now - state.last_update_time >= STALE_AFTER
-    return chip_line(chips) + block(values(
+    return chip_line(chips), block(values(
         f"q   {numbers(None if joints is None else np.degrees(joints), 6, 6, 1)} °",
         f"tcp {numbers(state.tcp_position, 3, 6, 3)} m",
         f"F   {numbers(None if state.wrench is None else state.wrench[:3], 3, 6, 1)} N",
@@ -185,18 +217,18 @@ def _wifi_line(quality: StreamQuality) -> str:
     return values(f"wifi {rate} Hz  max gap {gap} ms  delay {delay} ms  ({WINDOW:g} s)", dim=quality.rate is None)
 
 
-def tool_status(state: object, now: float) -> str:
-    """Status HTML for an end effector: chips, then its numbers, one layout per tool kind."""
+def tool_status(state: object, now: float) -> tuple[str, str]:
+    """An end effector's chip line and its numbers ("" if none), apart as in `base_status`; one layout per kind."""
     if isinstance(state, RobotiqState):
         chips = freshness_chip("joints", state.last_update_time, now)
         if state.reactivating:
             chips += chip("reactivating", BUSY, "The gripper opens and closes once; hold nothing in it.")
         elif state.reactivate_error:
-            chips += chip("reactivate failed", FAIL, state.reactivate_error)
+            chips += chip("reactivate failed", FAIL, hover(state.reactivate_error))
         if state.moving:
             chips += chip("moving", BUSY, "The fingers move to their target.")
-        elif state.last_result_ok is False:
-            chips += chip("short of target", FAIL, "the last command did not reach its target")
+        elif failure := robotiq_failure(state):
+            chips += chip(failure[0], FAIL, failure[1])
         # The target until the first joint state arrives.
         shown = state.position if state.position is not None else state.commanded_position
         if shown is not None:
@@ -206,7 +238,7 @@ def tool_status(state: object, now: float) -> str:
         measured = None if state.position is None else [state.position]
         commanded = None if state.commanded_position is None else [state.commanded_position]
         effort = None if state.commanded_effort is None else [state.commanded_effort]
-        return chip_line(chips) + block(values(
+        return chip_line(chips), block(values(
             f"pos {numbers(measured, 1, 6, 3)} rad",
             f"cmd {numbers(commanded, 1, 6, 3)} rad  force {numbers(effort, 1, 5, 2)}", dim=stale))
     if isinstance(state, ScaffoldingV3State):
@@ -218,7 +250,7 @@ def tool_status(state: object, now: float) -> str:
         stale = state.last_update_time is None or now - state.last_update_time >= STALE_AFTER
         current = "—".rjust(6) if state.current is None else f"{state.current:6d}"
         pwm = "—".rjust(4) if state.pwm_pct is None else f"{state.pwm_pct:4d}"
-        return chip_line(chips) + block(values(f"I   {current} mA   pwm {pwm} %", dim=stale))
+        return chip_line(chips), block(values(f"I   {current} mA   pwm {pwm} %", dim=stale))
     if isinstance(state, ScaffoldingV1State):
         chips = freshness_chip("io", state.last_update_time, now)
         if state.last_request_ok is False:
@@ -227,12 +259,12 @@ def tool_status(state: object, now: float) -> str:
         if state.gripper_closed is not None:
             chips += chip("grip closed" if state.gripper_closed else "grip open", NONE,
                           "The tool's gripper output as the arm reports it; the tool itself reports nothing.")
-        return chip_line(chips)
-    return ""
+        return chip_line(chips), ""
+    return "", ""
 
 
 def _motor_chip(name: str, motor_state: str | None) -> str:
     """One v3 motor's chip: amber while it runs, blue when stalled (screwed tight, as intended), green when idle."""
     color = {ScaffoldingV3.IDLE: OK, ScaffoldingV3.STALLED: INFO}.get(motor_state, BUSY)
-    hint = "screwed tight; Stop clears the stall before it runs again" if motor_state == ScaffoldingV3.STALLED else ""
+    hint = MOTOR_HINTS.get(motor_state, "A state the monitor does not know; see the tool driver's log.")
     return chip(f"{name} {str(motor_state).lower()}", color, hint)

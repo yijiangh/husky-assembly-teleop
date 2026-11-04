@@ -119,6 +119,24 @@ ros2 launch husky_assembly_teleop sim.launch.py robot:=0805 fake_motive:=true \
 - Base angle noise turns the base about base_footprint, where a real tracker turns about itself, about 0.48 m higher:
   the same angle moves the footprint a little less than on the robot. No bias.
 
+## Calibration test
+
+```bash
+ros2 launch husky_assembly_teleop sim.launch.py robot:=0805 tool:=calibration_marker fake_motive:=true \
+    offsets:="1850:0.004,-0.003,0.002,0,0,0.5" joint_offsets:=0.2,-0.1,0.15,0,0.3,-0.5 \
+    delay_sec:=0.006 noise:="0.000015,0.003 1866:0.00001,0.015"
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="belle" plugins:="calibration" \
+    tools:="0805:calibration_marker"
+```
+
+- `offsets` for the base: how far its true calibration is from crl-husky's default. Solve should find it;
+  `scripts/solve_calibration.py --truth-error 0.004,-0.003,0.002,0,0,0.5` compares a session with it.
+- `joint_offsets`: the arm's encoders off from the URDF, which Validate should see.
+- Cindy: `tool_left:=calibration_marker` (or `tool_right`), and `tools:="0806:calibration_marker:none"` on the
+  monitor (arms in order left, right).
+- Sessions go to `sim/calibration_data/domain_<ROS_DOMAIN_ID>/` on the Drive; Apply makes the relay use them for the
+  fake Motive's bodies in that domain only. Steps and checks: [calibration_manual.md](calibration_manual.md).
+
 ## Base experiments and the base planner
 
 ```bash

@@ -42,12 +42,16 @@ from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...robot_interface.end_effectors import EndEffectorState, RobotiqState, ScaffoldingV3, ScaffoldingV3State
 from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
-from ...robot_interface.tool_step import TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_LEAD, tool0_pose, tool_jog_target
+from ...robot_interface.tool_step import (TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_LEAD, robot_axes, tool0_pose,
+                                          tool_jog_target)
 from ...ui.phone import big_buttons, phone_text
-from ...ui.style import BUSY, FAIL, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, note_line, numbers, section, values
+from ...ui.style import (BUSY, FAIL, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, hover, note_line, numbers, section,
+                         values)
 from ...ui.trace_plot import TracePlot
+from ...shared.teleop.clearance_toggle import ClearanceToggle
 from ...shared.teleop.dpad import (BLOCKED_COLOR, HOLD_TIMEOUT, PHONE_DPAD_STYLE, UNGUARDED_COLOR, Hold,
                                    build_velocity_inputs, color_dpad)
+from ...shared.teleop.tool_pad import ROBOT_FRAME
 from ...world.clearance import (ALL_ARMS, ARM_STOP_DISTANCE, STOP_DISTANCE, Clearance, ClearanceWatch,
                                 ClearanceRefused)
 from ...world.kinematics import STOW_TOLERANCE, from_stow
@@ -57,6 +61,7 @@ from scaffolding_assembly_core.ids import robot_id
 from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, JogInputs, ToolJogInputs, build_compliance_inputs,
                         build_free_drive_inputs, build_jog_inputs, build_phone_arm_inputs, build_tool_inputs,
                         jog_clearance_note, pose_from_sliders, pose_plan_line)
+from .jog_arrows import JogArrows, add_jog_arrows, draw_jog_arrows
 from .markers import (add_force_arrows, add_frame_markers, add_target_gizmo, draw_markers, place_markers,
                       target_from_world)
 from .status import (ControllerPanel, arm_status, base_status, build_controller_panel, phone_arm_status,
@@ -83,10 +88,12 @@ class _BaseWidgets:
     serial: str
     base: BaseInterface
     panel: ControllerPanel
-    status: viser.GuiHtmlHandle
+    #: The chip line and the numbers below it, apart so a hovered chip keeps its text (`base_status`).
+    status: tuple[viser.GuiHtmlHandle, viser.GuiHtmlHandle]
     speed: viser.GuiSliderHandle
-    #: Clearance: while ticked, driving soft stops the base once it comes too close to anything (`_guard_base`).
-    clearance: viser.GuiCheckboxHandle | None = None
+    #: Clearance, below the D-pad on both pages: while ticked, driving soft stops the base once it comes too close to
+    #: anything (`_guard_base`).
+    clearance: ClearanceToggle | None = None
     #: The same on the phone's Control tab, set once that tab is built.
     phone_status: viser.GuiHtmlHandle | None = None
     phone_speed: viser.GuiSliderHandle | None = None
@@ -101,17 +108,21 @@ class _ArmWidgets:
     serial: str
     arm: ArmInterface
     panel: ControllerPanel
-    status: viser.GuiHtmlHandle
-    tool_status: viser.GuiHtmlHandle | None
+    #: The chip lines and the numbers below them, of the arm and of its tool (`arm_status`, `tool_status`).
+    status: tuple[viser.GuiHtmlHandle, viser.GuiHtmlHandle]
+    tool_status: tuple[viser.GuiHtmlHandle, viser.GuiHtmlHandle] | None
     #: The jog speed slider, a fraction of JOG_MAX_SPEED.
     jog_speed: viser.GuiSliderHandle
-    #: Jog Clearance: while ticked, a joint or tool0 jog soft stops the robot once it comes within ARM_STOP_DISTANCE
-    #: (`_guard_jog`).
-    jog_clearance: viser.GuiCheckboxHandle | None
+    #: Jog Clearance, below the joint and the tool0 jog: while ticked, a jog soft stops the robot once it comes within
+    #: ARM_STOP_DISTANCE (`_guard_jog`).
+    jog_clearance: ClearanceToggle | None
     compliance: ComplianceInputs
     frames: dict[str, viser.FrameHandle]
     arrows: dict[str, viser.ArrowsHandle]
     gizmo: viser.TransformControlsHandle
+    jog_arrows: JogArrows
+    #: The Joint arrows box below the joint jog.
+    joint_arrows: viser.GuiCheckboxHandle
     #: Keep on, in the free drive controller's folder.
     free_drive_keep: viser.GuiCheckboxHandle | None = None
     #: The arm's status line on the phone's Control tab, set once that tab is built.
@@ -131,11 +142,13 @@ class _ArmWidgets:
 class _ToolJog:
     """One press of a tool0 jog button, answered tick by tick until it is released."""
 
-    #: 0-2 moves along tool0's x, y, z; 3-5 turns about them; and the direction.
+    #: 0-2 moves along the jog's x, y, z (`axes`); 3-5 turns about them; and the direction.
     axis: int
     sign: float
     #: Tool0 at the press, 4x4 in the URDF's root: the jog runs along a line from it.
     anchor: np.ndarray
+    #: The jog's axes as columns in tool0's frame at the press (`robot_axes`), or None for tool0's own.
+    axes: np.ndarray | None = None
     #: Tool0's progress along the jog at the last tick, metres or radians.
     travelled: float = 0.0
     #: Whether any point went out, so a release holds the arm.
@@ -243,7 +256,7 @@ class RobotControlPlugin(HuskyPlugin):
                 with robots.add_tab(widgets.serial.split("-")[-1], icon=viser.Icon.ROBOT):
                     widgets.phone_status = phone.add_html("")
                     widgets.phone_speed, buttons = build_velocity_inputs(
-                        ctx, phone, widgets.serial, partial(self._on_hold, widgets.serial))
+                        ctx, phone, widgets.serial, partial(self._on_hold, widgets.serial), widgets.clearance)
                     widgets.dpad += tuple(buttons)
                     for arm_widgets in (arm for arm in self._arms if arm.serial == widgets.serial):
                         name = arm_widgets.arm.config.name
@@ -254,7 +267,8 @@ class RobotControlPlugin(HuskyPlugin):
                                 partial(self._leased, ctx, (widgets.serial, name)))
         # * Watch every base and arm as its drive or jog clearance would check it, in the monitor's clearance world.
         for widgets in self._bases:
-            self._watches[widgets.serial] = ctx.watch_clearance([widgets.serial], STOP_DISTANCE, ALL_ARMS)
+            self._watches[widgets.serial] = ctx.watch_clearance([widgets.serial], STOP_DISTANCE, ALL_ARMS,
+                                                                check_self=False)
         for widgets in self._arms:
             if widgets.jog_clearance is not None:
                 self._watches[(widgets.serial, widgets.arm.config.name)] = ctx.watch_clearance(
@@ -273,16 +287,15 @@ class RobotControlPlugin(HuskyPlugin):
         Returns:
             _BaseWidgets: The handles.
         """
-        status = gui.add_html("")
+        status = gui.add_html(""), gui.add_html("")
         dpad: list[viser.GuiButtonHandle] = []
 
-        def velocity_inputs() -> tuple[viser.GuiSliderHandle, viser.GuiCheckboxHandle]:
-            speed, buttons = build_velocity_inputs(ctx, gui, serial, partial(self._on_hold, serial))
+        def velocity_inputs() -> tuple[viser.GuiSliderHandle, ClearanceToggle]:
+            clearance = ClearanceToggle(
+                f"Soft stop the base within {STOP_DISTANCE * 100:.0f} cm of anything; arms not measured count as last "
+                f"seen or stowed. Untick to drive out of a tight spot; the phone's D-pad has the same box.")
+            speed, buttons = build_velocity_inputs(ctx, gui, serial, partial(self._on_hold, serial), clearance)
             dpad.extend(buttons)
-            clearance = gui.add_checkbox(
-                "Clearance", initial_value=True,
-                hint=f"Soft stop the base within {STOP_DISTANCE * 100:.0f} cm of anything; arms not measured count as "
-                     f"last seen or stowed. Untick to drive out of a tight spot (phone D-pad too).")
             return speed, clearance
 
         panel, built = build_controller_panel(ctx, gui, base.controllers,
@@ -310,7 +323,7 @@ class RobotControlPlugin(HuskyPlugin):
         key = (serial, arm.config.name)
         self._load_pose.add(key)
 
-        status = gui.add_html("")
+        status = gui.add_html(""), gui.add_html("")
         hold = partial(self._hold_arm, serial, arm)
         jog_inputs = partial(build_jog_inputs, ctx, gui, label, partial(self._on_jog_hold, ctx, key), hold,
                              partial(self._on_tool_jog_hold, ctx, key), ARM_STOP_DISTANCE)
@@ -351,6 +364,7 @@ class RobotControlPlugin(HuskyPlugin):
                            free_drive_keep=built[FREE_DRIVE_CONTROLLER],
                            frames=add_frame_markers(ctx, serial, arm), arrows=add_force_arrows(ctx, serial, arm),
                            gizmo=add_target_gizmo(ctx, serial, arm, partial(self._dragged.__setitem__, key)),
+                           jog_arrows=add_jog_arrows(ctx, serial, arm), joint_arrows=jog.arrows,
                            ft_plots=ft_plots, ft_trace=ft_trace, ft_note=ft_note)
 
     def teardown(self, ctx: PluginContext) -> None:
@@ -511,7 +525,8 @@ class RobotControlPlugin(HuskyPlugin):
         """
         serial, clearance = widgets.serial, None
         try:
-            with ctx.clearance([serial], unknown_arms=ALL_ARMS, refuse_first=True,
+            # * Not against itself: driving moves no arm, so nothing comes closer to the rest of the robot.
+            with ctx.clearance([serial], unknown_arms=ALL_ARMS, refuse_first=True, check_self=False,
                                unknown_robots=unknown_robots(ctx.scene.snapshot, {robot_id(serial)})) as clearance:
                 self._base_clearances[serial] = clearance
                 await ctx.wait_until(lambda: not self._leases.held(serial) or not widgets.clearance.value)
@@ -565,12 +580,13 @@ class RobotControlPlugin(HuskyPlugin):
         if problem is None or (not ticked and problem[0] != START_IN_COLLISION):
             return ""
         label, why = problem
+        # * A refused press is logged (`_refuse_start`), what the watch finds standing is not: there the chip's cut.
+        logged = hover if self._start_refused.get(key, ("", ""))[1] == why else str
         if not ticked:
-            return chip(label, FAIL, f"{why}. Clearance is off: the {buttons} moves anyway (amber).\nMove out with "
-                                     f"care.")
-        then = ("Untick Clearance to move out; Collisions shows a refused press's hit." if label == START_IN_COLLISION
-                else "Untick Clearance to move without it.")
-        return chip(label, FAIL, f"{why}: Clearance refuses the {buttons} (grey).\n{then}")
+            return chip(label, FAIL, logged(f"{why}.\nClearance is off: the {buttons} moves anyway; move out with "
+                                            f"care."))
+        then = "move out; Collisions shows the hit" if label == START_IN_COLLISION else "move without it"
+        return chip(label, FAIL, logged(f"{why}.\nClearance refuses the {buttons} (grey); untick it to {then}."))
 
     def _color_buttons(self, buttons, ticked: bool, key: str | tuple[str, str], now: float) -> None:
         """Grey while Clearance would refuse a start, amber while it is unticked, else the theme's colour."""
@@ -583,8 +599,9 @@ class RobotControlPlugin(HuskyPlugin):
         config = next(robot for robot in ctx.config.robots if robot.serial == serial)
         away = from_stow(ctx.scene.snapshot.robots[robot_id(serial)], config)
         if away > STOW_TOLERANCE:
-            chips += chip("arm not stowed", BUSY, f"An arm is {np.degrees(away):.0f}° from its stow pose: the base "
-                                                  f"drives with it out.\nStow it in Plan › Arm (Load Stow).")
+            chips += chip("arm not stowed", BUSY, f"An arm is over {np.degrees(STOW_TOLERANCE):.0f}° from its stow "
+                                                  f"pose: the base drives with it out.\nStow it in Plan › Arm (Load "
+                                                  f"Stow).")
         return chips
 
     def _busy(self, now: float, serial: str) -> bool:
@@ -739,7 +756,9 @@ class RobotControlPlugin(HuskyPlugin):
                     self._refuse(ctx, key, "jog refused", "not jogging: " + (
                         "no joint state yet" if here is None else "no URDF to solve the jog on"))
                     continue
-                jog = _ToolJog(*press, anchor=tool0_pose(arm.urdf, arm.config.name, here))
+                anchor = tool0_pose(arm.urdf, arm.config.name, here)
+                robot = widgets.tool_jog is not None and widgets.tool_jog.frame.value == ROBOT_FRAME
+                jog = _ToolJog(*press, anchor=anchor, axes=robot_axes(anchor) if robot else None)
                 self._tool_jogging[key] = jog
             if jog.stopped or here is None or widgets.tool_jog is None or not self._jog_clear(ctx, widgets):
                 continue
@@ -747,7 +766,7 @@ class RobotControlPlugin(HuskyPlugin):
             speed = jog.sign * (mm_s * 1e-3 if jog.axis < 3 else np.radians(mm_s * TOOL_JOG_DEG_PER_S_PER_MM_S))
             try:
                 joints, jog.travelled = tool_jog_target(arm.urdf, arm.config.name, here, jog.anchor, jog.axis, speed,
-                                                        TOOL_JOG_LEAD, jog.travelled)
+                                                        TOOL_JOG_LEAD, jog.travelled, jog.axes)
             except ValueError as error:
                 self._refuse(ctx, key, "jog stopped", f"jog stopped: {error}")
                 jog.stopped = True
@@ -769,7 +788,8 @@ class RobotControlPlugin(HuskyPlugin):
             return ""
         name = "xyz"[jog.axis % 3]
         progress = (f"{jog.travelled * 1e3:+.1f} mm" if jog.axis < 3 else f"{np.degrees(jog.travelled):+.1f}°")
-        return (f"jogging {'along' if jog.axis < 3 else 'about'} tool0 {name}: {progress} "
+        frame = "tool0" if jog.axes is None else "the robot's"
+        return (f"jogging {'along' if jog.axis < 3 else 'about'} {frame} {name}: {progress} "
                 f"at {widgets.tool_jog.speed.value:g} mm/s")
 
     def _jog_clear(self, ctx: PluginContext, widgets: _ArmWidgets) -> bool:
@@ -856,15 +876,17 @@ class RobotControlPlugin(HuskyPlugin):
         """
         now = ctx.now()
         self._draws += 1
+        relay = None if ctx.world.mocap_relay is None else ctx.world.mocap_relay.state
         for widgets in self._bases:
             show_only_running(widgets.panel)
             ticked = widgets.clearance is None or bool(widgets.clearance.value)
             refused = refusal_chip((self._refusals.get((widgets.serial, BASE)), widgets.base.last_refusal), now) \
                 + self._base_warnings(ctx, widgets.serial, now, ticked)
-            widgets.status.content = base_status(widgets.base, now, refused)
+            for handle, html in zip(widgets.status, base_status(widgets.base, now, refused, relay)):
+                handle.content = html
             self._color_buttons(widgets.dpad, ticked, widgets.serial, now)
             if widgets.phone_status is not None:
-                widgets.phone_status.content = phone_text(phone_base_status(widgets.base, refused))
+                widgets.phone_status.content = phone_text(phone_base_status(widgets.base, now, refused))
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             show_only_running(widgets.panel)
@@ -873,7 +895,8 @@ class RobotControlPlugin(HuskyPlugin):
                                     None if tool is None else tool.last_refusal), now)
             ticked = widgets.jog_clearance is None or bool(widgets.jog_clearance.value)
             refused += self._start_chip(key, now, "jog", ticked)
-            widgets.status.content = arm_status(widgets.arm, now, refused)
+            for handle, html in zip(widgets.status, arm_status(widgets.arm, now, refused)):
+                handle.content = html
             if widgets.jog_clearance is not None:
                 self._color_buttons(widgets.jog_buttons, ticked, key, now)
                 note = jog_clearance_note(ticked, ARM_STOP_DISTANCE)
@@ -890,13 +913,16 @@ class RobotControlPlugin(HuskyPlugin):
                         "no F/T reading: the arm reports no wrench (fake hardware has none)"
                         if widgets.arm.state.wrench is None else "raw: not zeroed, the tool's weight included")
             draw_markers(widgets.frames, widgets.arrows, widgets.gizmo, self._markers.get(key) or {})
+            if widgets.tool_jog is not None:
+                draw_jog_arrows(ctx, widgets.serial, widgets.arm, widgets.jog_arrows, bool(widgets.joint_arrows.value),
+                                bool(widgets.tool_jog.arrows.value), widgets.tool_jog.frame.value == ROBOT_FRAME)
             applied = self._applied_force.get(key)
             widgets.compliance.wrench_line.content = block(values(
                 f"applied {numbers(applied, 3, 6, 1)} N ({TARGET_WRENCH_FRAME})"))
-            if widgets.tool_status is not None:
-                widgets.tool_status.content = tool_status(widgets.arm.state.end_effector, now)
+            for handle, html in zip(widgets.tool_status or (), tool_status(widgets.arm.state.end_effector, now)):
+                handle.content = html
             if widgets.phone_status is not None:
-                widgets.phone_status.content = phone_text(phone_arm_status(widgets.arm, refused))
+                widgets.phone_status.content = phone_text(phone_arm_status(widgets.arm, now, refused))
 
     def _load_pose_sliders(self, widgets: _ArmWidgets) -> None:
         """Set one arm's pose sliders to its TCP, if asked.

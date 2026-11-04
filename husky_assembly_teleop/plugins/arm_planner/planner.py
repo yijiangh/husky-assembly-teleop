@@ -1,7 +1,9 @@
 """
 RRT-Connect over one arm's six joints, avoiding the robot itself, the other robots and every scene body.
 
-Plans on one robot's mirror from a `MirrorPool`; a collision comes back as a `CollisionHit` (`collision_hit`).
+Plans on one robot's mirror from a `MirrorPool`; a collision comes back as a `CollisionHit` (`collision_hit`). A path
+keeps PLAN_DISTANCE from everything, more than a commit's clearance, or as much as its start and target have when one
+is closer (`endpoint_margin`).
 
 ! Worker thread only: sync, search and close on the worker.
 """
@@ -16,6 +18,7 @@ from typing import Callable, Sequence
 
 import numpy as np
 
+from ...world.clearance import PLAN_DISTANCE, SELF_DISTANCE
 from ...world.collision_hit import CollisionHit
 from ...shared.assembly_planning.collision import collision_hit, collisions
 from ...shared.assembly_planning.joints import arm_joint_names
@@ -38,6 +41,8 @@ SAMPLE_SLACK = np.pi
 BLEND_LENGTH = 0.3
 #: Times a rounding that collides is halved before the arm rests at that corner instead.
 BLEND_TRIES = 4
+#: How finely `endpoint_margin` finds the margin of a start or target closer than PLAN_DISTANCE, metres.
+MARGIN_RESOLUTION = 0.0005
 
 
 @dataclass(frozen=True)
@@ -51,12 +56,15 @@ class ArmPath(TimedPath):
         velocities: Joint speeds at each sample, rad/s, shape (n, 6).
         rests: How often the arm comes to rest on the way, at corners left sharp.
         slowdown: How many times longer than its fastest timing it takes (`slowed`).
+        margin: How far it keeps from everything, metres, as checked when planned: PLAN_DISTANCE, or less when its
+            start or target is closer (`endpoint_margin`); 0 is contact only.
     """
 
     joint_names: tuple[str, ...]
     velocities: np.ndarray
     rests: int
     slowdown: float = 1.0
+    margin: float = 0.0
 
     @property
     def fastest(self) -> float:
@@ -92,7 +100,8 @@ class ArmPath(TimedPath):
                    joint_names=tuple(joint_names), velocities=velocities, rests=rests)
 
 
-def path_hit(mirror: CompasFabMirror, scene: Scene, arm_name: str, waypoints: np.ndarray) -> CollisionHit | None:
+def path_hit(mirror: CompasFabMirror, scene: Scene, arm_name: str, waypoints: np.ndarray,
+             margin: float = 0.0) -> CollisionHit | None:
     """Why a given joint path for one arm collides: its first waypoint, or straight joint move between two, that does.
 
     Args:
@@ -100,12 +109,14 @@ def path_hit(mirror: CompasFabMirror, scene: Scene, arm_name: str, waypoints: np
         scene: The scene the mirror was synced to.
         arm_name: Which arm, e.g. "ur_arm".
         waypoints: (n, 6) joint values, radians, UR driver order; checked as given, moves at JOINT_STEP.
+        margin: Closer than this to anything counts as a hit, metres; against the robot itself at most SELF_DISTANCE,
+            as a clearance checks it.
 
     Returns:
         CollisionHit | None: The first configuration that collides, or None if the whole path is clear.
     """
     names = arm_joint_names(arm_name)
-    check = mirror.search_check(names)
+    check = mirror.search_check(names, margin, min(margin, SELF_DISTANCE))
     previous = None
     for index, waypoint in enumerate(np.asarray(waypoints, dtype=float)):
         for point in [tuple(waypoint)] if previous is None else _extend(previous, waypoint):
@@ -197,6 +208,9 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
              abort: threading.Event) -> PlanResult[ArmPath]:
     """Plan a collision-free joint path for one arm within its URDF joint limits, from where it is to `goal`.
 
+    The path keeps PLAN_DISTANCE from everything, or as much as its start and target have when one is closer
+    (`ArmPath.margin`).
+
     Args:
         mirror: The robot's mirror, synced to `scene`.
         scene: The scene the mirror was synced to, for a hit's scene.
@@ -225,7 +239,8 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
     hits = collisions(mirror)
     if hits:
         return refused(collision_hit(mirror, scene, "start", first=hits[0]))
-    check = mirror.search_check(names)
+    margin = endpoint_margin(mirror, names, start, goal)
+    check = mirror.search_check(names, margin)
     pair = check(goal)
     if pair is not None:
         return refused(collision_hit(mirror, scene, "target", dict(zip(names, goal)), names, pair))
@@ -245,5 +260,33 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
                       attempts=ATTEMPTS, improve_time=IMPROVE_TIME)
     if corners.states is None:
         return PlanResult(None, corners.reason, time.time() - started)
-    path = ArmPath.along(names, *round_corners(corners.states, collides))
+    path = replace(ArmPath.along(names, *round_corners(corners.states, collides)), margin=margin)
     return PlanResult(path, seconds=time.time() - started, direct=corners.direct)
+
+
+def endpoint_margin(mirror: CompasFabMirror, names: Sequence[str], start: Sequence[float],
+                    goal: Sequence[float]) -> float:
+    """The margin a path from `start` to `goal` can keep: PLAN_DISTANCE, or how close the nearer end already is.
+
+    Found to within MARGIN_RESOLUTION, rounded down; 0 when an end touches (contact only).
+    """
+    def clear(margin: float) -> bool:
+        check = mirror.search_check(names, margin)
+        return check(start) is None and check(goal) is None
+
+    if clear(PLAN_DISTANCE):
+        return PLAN_DISTANCE
+    low, high = 0.0, PLAN_DISTANCE
+    while high - low > MARGIN_RESOLUTION:
+        middle = (low + high) / 2
+        low, high = (middle, high) if clear(middle) else (low, middle)
+    return low
+
+
+def margin_note(margin: float) -> str:
+    """What a path's margin means for its commit: "keeps 1 cm", or that the start or target is closer."""
+    if margin >= PLAN_DISTANCE:
+        return f"keeps {PLAN_DISTANCE * 100:g} cm"
+    if margin > 0:
+        return f"keeps only {round(margin * 100, 2):g} cm: the start or target is that close"
+    return "only free of contact: the start or target touches"

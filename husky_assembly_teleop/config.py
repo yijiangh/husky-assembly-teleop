@@ -24,6 +24,7 @@ from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX, RobotModel, robot_model
 from scaffolding_assembly_core.urdf import JointOriginChange, apply_ur_calibration
 from .drive import drive_root
+from .terminal_text import did_you_mean, dim, suggested, wrong
 from .tool_urdfs import absolute_mesh_urdf, tool_spec
 
 
@@ -35,6 +36,11 @@ EndEffectorKind = Literal["robotiq", "scaffolding_v1", "scaffolding_v3", "calibr
 END_EFFECTOR_KINDS: tuple[str, ...] = get_args(EndEffectorKind)
 #: Extra names the `tools` parameter and crl-husky's model.yaml use: "robotiq_2F_85", and "none" for a bare arm.
 _TOOL_ALIASES: dict[str, str | None] = {"robotiq_2F_85": "robotiq", "none": None}
+
+
+class ConfigError(ValueError):
+    """A mistake in the run configuration (a launch argument or crl-husky's robot files); the message says the fix."""
+
 
 #: Robot URDFs with absolute mesh paths (`RobotModel.urdf`), in a folder of this process's own, removed when it exits.
 #: ? Per process: two monitors, or a monitor and the tests, must not delete each other's copies.
@@ -256,39 +262,40 @@ def robot_config_from_serial(token: str, data_directory: Path,
         RobotConfig: The robot, its model holding its tools.
 
     Raises:
-        ValueError: If `token` names no known robot, crl-husky has no model.yaml or park.yaml for it, park.yaml has
-            no joints for one of its arms, model.yaml names an unknown tool, or `tools` does not give one tool per
-            arm.
-        FileNotFoundError: If the URDF is missing (usually a wrong `data_directory`), or crl_husky has no
-            mocap_config.json for the robot.
+        ConfigError: If `token` names no known robot, crl-husky has no model.yaml or park.yaml for it, park.yaml has
+            no joints for one of its arms, model.yaml names an unknown tool, `tools` does not give one tool per
+            arm, or the URDF is missing (usually a wrong `data_directory`).
+        FileNotFoundError: If crl_husky has no mocap_config.json for the robot.
     """
     number = _serial_digits(token)
     if number is None:
-        raise ValueError(f"cannot read a robot serial or name out of {token!r}; "
-                         f"expected something like '0806', 'a200-0806' or 'cindy'")
+        raise ConfigError(f"cannot read a robot serial or name out of {wrong(repr(token))}; "
+                          f"expected something like '0806', 'a200-0806' or 'cindy'"
+                          f"{did_you_mean(token.strip().lower(), tuple(_robot_names()))}")
 
     spec = _ROBOTS_BY_SERIAL.get(number)
     if spec is None:
         known = ", ".join(sorted(_ROBOTS_BY_SERIAL))
-        raise ValueError(f"no configuration known for robot {number!r}; known robots are {known}")
+        raise ConfigError(f"no configuration known for robot {wrong(repr(number))}; known robots are {dim(known)}")
 
     model = get_robot_model(number)
     if model is None:
-        raise ValueError(f"crl-husky has no model.yaml for robot {number!r} (config/robots/{number}/)")
+        raise ConfigError(f"crl-husky has no model.yaml for robot {wrong(repr(number))} (config/robots/{number}/)")
     urdf_file = data_directory / _URDF_ROOT / model["urdf"]
     srdf_file = data_directory / _URDF_ROOT / model["srdf"]
     if not urdf_file.is_file():
-        raise FileNotFoundError(f"URDF for robot {number!r} not found at {urdf_file}; "
-                                f"check the data_directory parameter")
+        raise ConfigError(f"URDF for robot {number!r} not found at {wrong(str(urdf_file))}; "
+                          f"check the {suggested('data_directory')} parameter")
 
     park = get_park(number)
     if park is None:
-        raise ValueError(f"crl-husky has no park.yaml for robot {number!r} (config/robots/{number}/)")
+        raise ConfigError(f"crl-husky has no park.yaml for robot {wrong(repr(number))} (config/robots/{number}/)")
     unparked = [arm.name for arm in spec["arms"] if _arm_side(arm.name) not in park["arms"]]
     if unparked:
-        raise ValueError(f"crl-husky's park.yaml for robot {number!r} has no joints for {', '.join(unparked)}")
+        raise ConfigError(f"crl-husky's park.yaml for robot {number!r} has no joints for {wrong(', '.join(unparked))}")
     if "tools" not in model:
-        raise ValueError("crl-husky is too old: its get_robot_model names no tools; update crl-husky (README)")
+        raise ConfigError(f"crl-husky is too old: its get_robot_model names no tools; {suggested('update crl-husky')} "
+                          f"(README)")
     own = {side: _tool_kind(name, f"crl-husky's config/robots/{number}/model.yaml") for side, name in
            model["tools"].items()}
     arms = tuple(replace(arm, stow_joints=park["arms"][_arm_side(arm.name)], end_effector=own.get(_arm_side(arm.name)))
@@ -297,9 +304,10 @@ def robot_config_from_serial(token: str, data_directory: Path,
     if tools is not None:
         if len(tools) != len(arms):
             example = ":".join(tool or "none" for tool in (*tools, *(None,) * len(arms))[:len(arms)])
-            raise ValueError(f"robot {number!r} has {len(arms)} arm(s) ({', '.join(a.name for a in arms)}), "
-                             f"but {len(tools)} tool(s) were given; list one tool per arm in that order, "
-                             f"\"none\" for a bare arm, e.g. tools:=\"{number}:{example}\"")
+            example = f'tools:="{number}:{example}"'
+            raise ConfigError(f"robot {number!r} has {len(arms)} arm(s) ({', '.join(a.name for a in arms)}), "
+                              f"but {wrong(str(len(tools)))} tool(s) were given; list one tool per arm in that "
+                              f"order, \"none\" for a bare arm, e.g. {suggested(example)}")
         arms = tuple(replace(arm, end_effector=tool) for arm, tool in zip(arms, tools))
     urdf = absolute_mesh_urdf(urdf_file, ROBOT_URDF_DIRECTORY / f"a200_{number}.urdf")
     checks = _apply_ur_calibrations(urdf, number, arms)
@@ -410,7 +418,8 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
 
     recording_format = node.get_parameter("recording_format").get_parameter_value().string_value.strip()
     if recording_format not in RECORDING_FORMATS:
-        raise ValueError(f"recording_format must be one of {RECORDING_FORMATS}, not {recording_format!r}")
+        raise ConfigError(f"recording_format must be one of {suggested(' '.join(RECORDING_FORMATS))}, "
+                          f"not {wrong(repr(recording_format))}")
 
     no_default_plugins = node.get_parameter("no_default_plugins").get_parameter_value().bool_value
     viser_port = node.get_parameter("viser_port").value
@@ -446,26 +455,28 @@ def _parse_tools(entries: tuple[str, ...]) -> dict[str, tuple[EndEffectorKind | 
         dict[str, tuple[EndEffectorKind | None, ...]]: The tools per arm by four-digit serial; None for a bare arm.
 
     Raises:
-        ValueError: For an entry without a serial, or an unknown tool name.
+        ConfigError: For an entry without a serial, or an unknown tool name.
     """
     tools = {}
     for entry in entries:
         serial, _, names = entry.partition(":")
         number = _serial_digits(serial)
         if number is None or not names:
-            raise ValueError(f"tools entry {entry!r} should look like '0806:scaffolding_v3:scaffolding_v1'")
+            raise ConfigError(f"tools entry {wrong(repr(entry))} should look like "
+                              f"{suggested('0806:scaffolding_v3:scaffolding_v1')}")
         tools[number] = tuple(_tool_kind(name.strip(), f"tools entry {entry!r}") for name in names.split(":"))
     return tools
 
 
 def _tool_kind(name: str, where: str) -> EndEffectorKind | None:
-    """The end effector a tool name means (None for "none"), or ValueError naming `where` it was read."""
+    """The end effector a tool name means (None for "none"), or ConfigError naming `where` it was read."""
     if name in _TOOL_ALIASES:
         return _TOOL_ALIASES[name]
     if name in END_EFFECTOR_KINDS:
         return name
-    raise ValueError(f"unknown tool {name!r} in {where}; valid tools are "
-                     f"{', '.join((*END_EFFECTOR_KINDS, *_TOOL_ALIASES))}")
+    valid = (*END_EFFECTOR_KINDS, *_TOOL_ALIASES)
+    raise ConfigError(f"unknown tool {wrong(repr(name))} in {where}{did_you_mean(name, valid)}\n"
+                      f"    valid tools    {dim('  '.join(valid))}")
 
 
 def _robots(serials: tuple[str, ...], data_directory: Path,
@@ -483,7 +494,7 @@ def _robots(serials: tuple[str, ...], data_directory: Path,
     # ! A tools entry for a robot that is not loaded is likely a typo that leaves the real robot misconfigured.
     unused = set(tools) - {_serial_digits(serial) for serial in serials}
     if unused:
-        raise ValueError(f"tools given for robot(s) {', '.join(sorted(unused))}, which are not in `robots`")
+        raise ConfigError(f"tools given for robot(s) {wrong(', '.join(sorted(unused)))}, which are not in `robots`")
     return tuple(robot_config_from_serial(serial, data_directory, tools=tools.get(_serial_digits(serial)))
                  for serial in serials)
 
