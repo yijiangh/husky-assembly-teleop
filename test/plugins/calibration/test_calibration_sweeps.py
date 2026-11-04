@@ -10,7 +10,7 @@ import yaml
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.plugins.arm_planner.planner import path_hit
-from husky_assembly_teleop.plugins.calibration.robot.motion import ARM_CLEARANCE
+from husky_assembly_teleop.world.clearance import PLAN_DISTANCE
 from husky_assembly_teleop.plugins.calibration.robot.sweeps import (SWEEPS_FILE, TURN, UNWOUND,
                                                                     ArmSweeps, Sweep, joint_limits, load_sweeps,
                                                                     load_validation_poses, nearest_take,
@@ -245,8 +245,8 @@ def test_validation_poses_are_clear_of_the_robot_itself():
 
 
 @pytest.mark.slow
-def test_the_record_clearance_skips_no_take_that_contact_alone_lets_through():
-    """Marker plate on, nothing around: ARM_CLEARANCE skips the same takes as contact; against itself SELF_DISTANCE.
+def test_the_sweep_check_margin_skips_no_take_that_contact_alone_lets_through():
+    """Marker plate on, nothing around: PLAN_DISTANCE skips the same takes as contact; against itself SELF_DISTANCE.
 
     Cindy's takes that pass her other arm at stow hit already on contact.
     """
@@ -263,7 +263,7 @@ def test_the_record_clearance_skips_no_take_that_contact_alone_lets_through():
             scene = Scene(bodies={}, world_poses={}, robots={robot.id: robot})
             for index, sweep in enumerate(load_sweeps(DATA, digits, arm).sweeps):
                 clear = [path_hit(world.sync(scene, digits), scene, arm, sweep.waypoints(), margin) is None
-                         for margin in (0.0, ARM_CLEARANCE)]
+                         for margin in (0.0, PLAN_DISTANCE)]
                 assert clear[0] == clear[1], (digits, arm, index + 1)
     finally:
         world.close()

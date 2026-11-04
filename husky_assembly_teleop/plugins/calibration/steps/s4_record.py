@@ -14,11 +14,12 @@ from scaffolding_assembly_core.ids import robot_id
 
 from ....shared.planner.planner_service import PlannerService
 from ....world.checks import BAD, GOOD, PENDING, WARN, Check
+from ....world.clearance import ARM_MOVE
 from ....world.freeze import take_basis
 from ....ui.style import few, indented
 from ..analysis.checks import take_count_check
 from ..storage.session_files import write_take
-from ..robot.motion import ARM_CLEARANCE, sweep_path
+from ..robot.motion import sweep_path
 from ..robot.sweeps import nearest_take, shortest_order
 from ..views.takes_view import take_index, take_label
 from .base import CalibrationStep, tool_body_check
@@ -132,7 +133,7 @@ class Record(CalibrationStep):
         takes.in_progress = (index, samples)
         try:
             with ctx.lease_robots([run.serial], f"calibration take {index + 1}"), \
-                    (ctx.clearance([run.serial], ARM_CLEARANCE, unknown_robots=unknown, refuse_first=True)
+                    (ctx.clearance([run.serial], ARM_MOVE.stop, unknown_robots=unknown, refuse_first=True)
                      if procedure.clearance.value else nullcontext()) as clearance:
                 try:
                     await PlannerService.first_check(ctx, clearance)

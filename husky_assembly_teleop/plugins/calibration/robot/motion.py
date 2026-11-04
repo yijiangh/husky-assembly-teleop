@@ -32,9 +32,6 @@ if TYPE_CHECKING:
     from ....world.measured import TrackedObject
     from ..run import Run
 
-#: Clearance kept by arm motions during takes and validation, metres (driving keeps the default STOP_DISTANCE). Above
-#: what the arm covers while the check lags a tick or two: 20°/s at 1 m reach is 3.5 cm in 0.1 s.
-ARM_CLEARANCE = 0.05
 #: An arm has arrived once no joint is further than this from the target, radians.
 ARRIVED = math.radians(0.5)
 #: Seconds a move may take beyond its planned duration, and a planned move beyond twice its preview's.
@@ -121,7 +118,7 @@ class ArmMotion:
 
         Other robots not measured make Go ask twice; the move then checks them as stand-ins. A base driven while Go
         waits (`base_moved`) has the move planned again from where it stands. Go's Clearance box says whether the move
-        runs under the planner's clearance.
+        runs under the planner's clearance; the prompt says when that is below 5 mm (a plan keeping less than 1 cm).
 
         Returns once the arm arrived and the planner gave the robot's lease back.
 
@@ -141,9 +138,17 @@ class ArmMotion:
             plan = await planner.request_plan(ArmPlanRequest(run.serial, run.arm, tuple(float(v) for v in joints)))
             if plan.state != "ready":
                 raise NoPlan(f"no move to {what}: {plan.message}")
-            unknown = await self.procedure.optional_go(
-                ctx, plan.path, f"{again}Move to {what}: {plan.message}. Scrub Preview to see the way, check the "
-                                f"robot's surroundings, then Go.", "move", [robot_id(run.serial)])
+            # * A plan keeping less than usual has a smaller clearance too (`close_note`): the prompt says so.
+            close = planner.close_note(plan) if self.procedure.clearance.value else ""
+            # * Watched at the clearance its commit will keep: half the plan's margin when it keeps less than usual.
+            self.procedure.go_margin = planner.stop_distance(plan)
+            try:
+                unknown = await self.procedure.optional_go(
+                    ctx, plan.path, f"{again}Move to {what}: {plan.message}{f'; {close}' if close else ''}. Scrub "
+                                    f"Preview to see the way, check the robot's surroundings, then Go.", "move",
+                    [robot_id(run.serial)])
+            finally:
+                self.procedure.go_margin = None
             if not base_moved(planned_at, ctx.kinematics.base_pose(run.serial)):
                 break
             again = "The base moved: "

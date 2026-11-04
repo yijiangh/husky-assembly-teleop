@@ -973,7 +973,7 @@ test here, run her let-go out of order:
 ### 7.a Driving a base by hand
 
 - **The page:** Control › robot › Base: hold a drive button, at the Speed set. `Clearance` (ticked) soft-stops the base
-  when it comes near anything in the scene; untick it only to drive out of a tight spot. The phone's Control tab has
+  when it comes within 5 cm of anything in the scene ([plugins.md, Clearance](plugins.md#clearance)); untick it only to drive out of a tight spot. The phone's Control tab has
   the same D-pad.
 - **The joystick:** L1 or L2 held, the left stick.
 - **The keyboard,** in pane checks (domain 80 is loaded there):

@@ -50,8 +50,10 @@ robotics or UI words are not listed. Paths are relative to `husky_assembly_teleo
 - **freeze**: a task's promise that other robots or objects stand still; if one moves, the task is cancelled
   (`WorldMoved`). Not the panels' Live/Paused button, not a frozen dataclass. `world/freeze.py`.
 - **clearance / trip / watch / path clearance**: a clearance soft stops a robot a task drives once it comes within
-  its margin of anything; a trip is one firing; a watch is checked the same way but only reports. The base planner's
-  path clearance is instead a recorded distance. `world/clearance.py`.
+  its margin of anything, always below what its plans keep (arms plan 1 cm, stop at 5 mm; bases plan 10 cm, stop at
+  5 cm; a plan keeping less stops at half of it, `stop_for`); a trip is one firing; a watch is checked the same way
+  but only reports. The Clearance box turns it on or off. The base planner's path clearance is instead a recorded
+  distance. [plugins.md, Clearance](lab/plugins.md#clearance), `world/clearance.py`.
 - **hold**: the arm command "stop and stay" (no lease needed). Not a D-pad hold button, a support robot's bar hold
   (`bar_holding`), or a precondition that holds (below). `robot_interface/arm.py`.
 - **safety sync**: the onboard `multi_arm_safety_sync`, which must vouch for an arm before any arm motion goes out.
@@ -86,8 +88,11 @@ Details: `core:doc/process_format.md`.
   plans it, not base_footprint. `plugins/base_planner/follow.py`.
 - **lattice / lead / portal**: the lattice is the default base planner (hybrid A*); a lead is the straight drive onto
   the target; a portal is a narrow place crossed in one move. `plugins/base_planner/algorithms/lattice.py`.
+- **Margin (base planner)**: the distance a base path keeps from every other robot and body (10 cm at start,
+  `BASE_PLAN_DISTANCE`). `plugins/base_planner/world.py`.
 - **park / stow / parked**: park is the base's floor pose, stow the arm's rest joints (`park.yaml`); inside a mirror,
-  parked means moved far away because absent or unknown.
+  parked means moved far away because absent or unknown. A robot **Parked** in Health is instead taken as known where
+  it stands, measured or not (`world/stand_ins.py`, `parked`).
 
 ## Assembly runs
 

@@ -78,7 +78,8 @@ One sub-tab per robot, labelled with its serial (`0804`, `0805`, `0806`).
 - **D-pad**: forward, back, turn left, turn right; drives while held. It drives only while the base runs its
   velocity controller (**Vel**); switch to it in the laptop's robot panel.
 - **Clearance**, below the D-pad: the laptop's box shown again, ticking either ticks both. Ticked, the base soft
-  stops within 10 cm of anything; unticked, the D-pad is amber and drives without it.
+  stops within 5 cm of anything, and a hold starting that close is refused; unticked, the D-pad is amber and drives
+  without it ([plugins.md, Clearance](plugins.md#clearance)).
 - One folder per arm (**Arm**, or **Left** and **Right**):
   - The running arm controller: **Joint**, **Cart**, **Free**, or "no ctrl".
   - **Gripper**: **Open**, **Close** and **Stop** (no Stop on the v1 tool, which cannot stop halfway), one command

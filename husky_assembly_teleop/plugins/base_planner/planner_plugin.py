@@ -37,7 +37,7 @@ from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import hover
 from ...world.checks import BAD, GOOD, WARN, Check
-from ...world.clearance import ALL_ARMS
+from ...world.clearance import ALL_ARMS, BASE_DRIVE
 from ...world.follower import path_check
 from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import with_stand_ins
@@ -114,6 +114,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
     worker_name = "base-plan"
     # * The follower takes a new path at any time: a new commit to a driving robot replaces its path.
     replaces_running = True
+    kind = BASE_DRIVE
     # * For the selected process step, recorded with each attempt and needed for a process task to count.
     requires = ("process",)
 
@@ -262,8 +263,9 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         """Send the plan to the follower, then record the robot until the follower is done; save it if recorded.
 
         Recording and, committed with Clearance ticked, a clearance start before the send (`commit_clearance`): a
-        soft stop within the margin the path was planned with, not the usual STOP_DISTANCE, so a path the planner
-        found never trips it; a start already that close refuses it. Refused while the base may not follow a path.
+        soft stop within STOP_DISTANCE, or half the plan's margin when that is below BASE_PLAN_DISTANCE, so a path
+        followed a little off does not trip it; a start already that close refuses it. Not checked against itself: the
+        arms stand still. Refused while the base may not follow a path.
         With the robot itself in `unknown_allowed` (Commit's second press), its unknown arms are checked where last
         seen, else stowed.
 
@@ -272,7 +274,6 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         """
         request, path, record = plan.request, plan.path, self._plan_record
         serial = request.serial
-        margin = self._algorithm(request)[1].margin
         robot, allowed = ctx.world.robots[serial], self.unknown_allowed(plan)
         # * The last run's chip goes: every way out below sets this run's, or none for a replaced commit.
         self._runs.pop(serial, None)
@@ -289,8 +290,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                             signals.follower_state(robot, every_message=True),
                             signals.base_floor_pose(robot, every_message=True),
                             signals.wheel_odometry(robot, every_message=True)) as rec, \
-                    self.commit_clearance(ctx, plan, margin,
-                                          unknown_arms=ALL_ARMS if robot_id(serial) in allowed else ()) as clearance:
+                    self.commit_clearance(ctx, plan, unknown_arms=ALL_ARMS if robot_id(serial) in allowed else (),
+                                          check_self=False) as clearance:
                 await self.first_check(ctx, clearance)
                 try:
                     sent_id = send_to_onboard_follower(robot.base, path)
@@ -390,6 +391,13 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             run.ended = check
 
     # --- --- --- --- --- READING --- --- --- --- ---
+
+    def plan_margin(self, plan: Plan[BasePlanRequest]) -> float | None:
+        """The margin the path was planned with (the panel's Margin), metres; None for a request with bad settings."""
+        try:
+            return self._algorithm(plan.request)[1].margin
+        except ValueError:  # * its plan failed for that reason already
+            return None
 
     def _algorithm(self, request: BasePlanRequest) -> tuple[Algorithm, Any]:
         """The request's algorithm (the default for "") and its default settings with the request's values.

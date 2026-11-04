@@ -35,8 +35,8 @@ class ArmPlanRequest:
 class ArmPlannerContract(PlannerContract[ArmPlanRequest], Protocol):
     """What `ctx.require("arm_planner")` offers: the planner contract, re-timing, and path checks.
 
-    `commit(..., clearance=True)` runs the path under an ARM_STOP_DISTANCE clearance; False (Clearance unticked): a path
-    the planner found close to something (only clear of contact where start or target is closer) is never soft stopped.
+    `commit(..., clearance=True)` runs the path under an ARM_MOVE clearance (`stop_distance`: 5 mm, or half the path's
+    margin when its start or target is closer than 1 cm); False (Clearance unticked): nothing soft stops it.
     """
 
     def set_duration(self, plan_id: int, seconds: float) -> None:

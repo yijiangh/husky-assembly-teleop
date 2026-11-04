@@ -192,6 +192,16 @@ class Planner:
         return SimpleNamespace(state="ready", message="clear", id=1,
                                path=TimedPath(np.array([0.0, 1.0]), np.array([self.arm.joints, self.goal])))
 
+    @staticmethod
+    def close_note(_plan):
+        """Every plan keeps the usual margin."""
+        return ""
+
+    @staticmethod
+    def stop_distance(_plan):
+        """The usual arm clearance."""
+        return 0.005
+
     async def commit(self, _plan_id, unknown_robots=(), clearance=True):
         """Move there at once."""
         self.unknown.append(frozenset(unknown_robots))

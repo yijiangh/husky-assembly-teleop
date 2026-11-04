@@ -29,6 +29,7 @@ Add a file with @register; run it with `plugins:="<name>"`. Its tests go in `tes
   move, whoever moved them. Example of both: `examples/lease_and_freeze.py`.
 * Clearances (optional, `ctx.clearance`): while a task drives a robot, the robot is soft stopped and the task
   cancelled once it comes within a margin of anything in the scene. Plugins only provide bodies; the runtime checks.
+  ! Take the margin from the kind of move (`ARM_MOVE`, `BASE_DRIVE`, `stop_for`): always below what its plan kept.
   Strict by default: unknown arm joints trip it too. Manual moves pass `unknown_arms=ALL_ARMS` (or arm names): those
   arms count where last seen, or stowed. The base pose must always be known. Other robots not measured are checked
   as their stand-ins.

@@ -2,7 +2,8 @@
 RRT-Connect over one arm's six joints, avoiding the robot itself, the other robots and every scene body.
 
 Plans on one robot's mirror from a `MirrorPool`; a collision comes back as a `CollisionHit` (`collision_hit`). A path
-keeps PLAN_DISTANCE from everything, more than a commit's clearance, unless its start or target is already closer.
+keeps PLAN_DISTANCE from everything, more than a commit's clearance, or as much as its start and target have when one
+is closer (`endpoint_margin`).
 
 ! Worker thread only: sync, search and close on the worker.
 """
@@ -40,6 +41,8 @@ SAMPLE_SLACK = np.pi
 BLEND_LENGTH = 0.3
 #: Times a rounding that collides is halved before the arm rests at that corner instead.
 BLEND_TRIES = 4
+#: How finely `endpoint_margin` finds the margin of a start or target closer than PLAN_DISTANCE, metres.
+MARGIN_RESOLUTION = 0.0005
 
 
 @dataclass(frozen=True)
@@ -53,7 +56,8 @@ class ArmPath(TimedPath):
         velocities: Joint speeds at each sample, rad/s, shape (n, 6).
         rests: How often the arm comes to rest on the way, at corners left sharp.
         slowdown: How many times longer than its fastest timing it takes (`slowed`).
-        margin: How far it keeps from everything, metres, as checked when planned: PLAN_DISTANCE, or 0 (contact only).
+        margin: How far it keeps from everything, metres, as checked when planned: PLAN_DISTANCE, or less when its
+            start or target is closer (`endpoint_margin`); 0 is contact only.
     """
 
     joint_names: tuple[str, ...]
@@ -204,7 +208,7 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
              abort: threading.Event) -> PlanResult[ArmPath]:
     """Plan a collision-free joint path for one arm within its URDF joint limits, from where it is to `goal`.
 
-    The path keeps PLAN_DISTANCE from everything, or only clear of contact if the start or target is closer
+    The path keeps PLAN_DISTANCE from everything, or as much as its start and target have when one is closer
     (`ArmPath.margin`).
 
     Args:
@@ -235,12 +239,8 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
     hits = collisions(mirror)
     if hits:
         return refused(collision_hit(mirror, scene, "start", first=hits[0]))
-    # * PLAN_DISTANCE all along where start and target both have it; contact only otherwise.
-    margin = PLAN_DISTANCE
+    margin = endpoint_margin(mirror, names, start, goal)
     check = mirror.search_check(names, margin)
-    if check(goal) is not None or check(start) is not None:
-        margin = 0.0
-        check = mirror.search_check(names)
     pair = check(goal)
     if pair is not None:
         return refused(collision_hit(mirror, scene, "target", dict(zip(names, goal)), names, pair))
@@ -264,8 +264,29 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
     return PlanResult(path, seconds=time.time() - started, direct=corners.direct)
 
 
+def endpoint_margin(mirror: CompasFabMirror, names: Sequence[str], start: Sequence[float],
+                    goal: Sequence[float]) -> float:
+    """The margin a path from `start` to `goal` can keep: PLAN_DISTANCE, or how close the nearer end already is.
+
+    Found to within MARGIN_RESOLUTION, rounded down; 0 when an end touches (contact only).
+    """
+    def clear(margin: float) -> bool:
+        check = mirror.search_check(names, margin)
+        return check(start) is None and check(goal) is None
+
+    if clear(PLAN_DISTANCE):
+        return PLAN_DISTANCE
+    low, high = 0.0, PLAN_DISTANCE
+    while high - low > MARGIN_RESOLUTION:
+        middle = (low + high) / 2
+        low, high = (middle, high) if clear(middle) else (low, middle)
+    return low
+
+
 def margin_note(margin: float) -> str:
-    """What a path's margin means for its commit: "keeps 1 cm", or why it keeps only clear of contact."""
+    """What a path's margin means for its commit: "keeps 1 cm", or that the start or target is closer."""
+    if margin >= PLAN_DISTANCE:
+        return f"keeps {PLAN_DISTANCE * 100:g} cm"
     if margin > 0:
-        return f"keeps {margin * 100:g} cm"
-    return f"only free of contact: the start or target is closer than {PLAN_DISTANCE * 100:g} cm"
+        return f"keeps only {round(margin * 100, 2):g} cm: the start or target is that close"
+    return "only free of contact: the start or target touches"

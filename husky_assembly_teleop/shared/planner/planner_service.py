@@ -6,6 +6,7 @@ PlannerService: the base class of a headless planner plugin, which plans, cancel
 * Each commit is one task that has the robot's lease for the whole motion: `execute` sends the plan and watches
   it until it is over, so a freeze or clearance it opens covers the motion too.
 * A commit with Clearance ticked runs under `commit_clearance`: a robot already too close is refused, nothing sent.
+  Its margin is the planner's `kind`'s, or half the plan's closest approach when that is below usual (`plan_margin`).
 ! Requests run in the planner's own context (`ctx.submit`), so soft stop, teardown and its errors apply to them, and
   every future resolves: a cancelled search gives a plan in state "cancelled", a commit to a soft-stopped robot
   answers that nothing was sent.
@@ -28,7 +29,7 @@ from ...plugin_api.plugin import HuskyPlugin
 from ...robot_interface.soft_stop import STOP_ALL_REASON, MotionRefused
 from ...ui.style import hover
 from ...world.checks import BAD, PENDING, Check
-from ...world.clearance import Clearance
+from ...world.clearance import ARM_MOVE, Clearance, MoveKind
 from .plan import Plan, R
 from .planner_search import PlanningWorld, Search
 
@@ -43,6 +44,8 @@ class PlannerService(HuskyPlugin, Generic[R]):
     worker_name = "plan"
     #: Whether a commit to a robot still running an earlier commit replaces that motion, or is refused.
     replaces_running = False
+    #: What its moves keep: the plans' usual margin and the clearance below it.
+    kind: MoveKind = ARM_MOVE
 
     def __init__(self):
         """No plan yet; the worker thread starts with the first search."""
@@ -151,16 +154,27 @@ class PlannerService(HuskyPlugin, Generic[R]):
         """Whether `plan` was committed with Clearance ticked: `execute` then runs it under a clearance."""
         return self._clearance.get(plan.id, True)
 
-    def commit_clearance(self, ctx: PluginContext, plan: Plan[R], margin: float,
-                         **options: Any) -> ContextManager[Clearance | None]:
-        """The clearance `execute` runs `plan` under, or none while committed with Clearance unticked.
+    def plan_margin(self, plan: Plan[R]) -> float | None:
+        """How close `plan` comes to anything at its closest, as planned, metres; None if not known. Subclasses."""
+        return None
+
+    def stop_distance(self, plan: Plan[R] | None) -> float:
+        """The clearance a commit of `plan` keeps, metres (`MoveKind.stop_for`); the usual one for None."""
+        return self.kind.stop_for(None if plan is None else self.plan_margin(plan))
+
+    def close_note(self, plan: Plan[R] | None) -> str:
+        """Why the clearance of `plan` is below the usual one, or "": its amber warning."""
+        return "" if plan is None else self.kind.close_note(self.plan_margin(plan))
+
+    def commit_clearance(self, ctx: PluginContext, plan: Plan[R], **options: Any) -> ContextManager[Clearance | None]:
+        """The clearance `execute` runs `plan` under (`stop_distance`), or none while committed with Clearance unticked.
 
         A start too close refuses it (`refuse_first`): send only after `first_check`. The other robots unknown at the
         commit may be unknown (`unknown_allowed`); `options` go to `ctx.clearance`, e.g. `unknown_arms`.
         """
         if not self.keeps_clearance(plan):
             return nullcontext()
-        return ctx.clearance([plan.request.serial], margin, unknown_robots=self.unknown_allowed(plan),
+        return ctx.clearance([plan.request.serial], self.stop_distance(plan), unknown_robots=self.unknown_allowed(plan),
                              refuse_first=True, **options)
 
     @staticmethod

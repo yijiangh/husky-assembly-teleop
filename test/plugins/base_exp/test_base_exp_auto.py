@@ -129,6 +129,24 @@ def test_start_with_the_arms_unknown_asks_for_a_second_press():
     assert not plugin._asks_second_press(measured, "Start auto") and not plugin._unknown_arms
 
 
+def test_start_with_another_robot_not_measured_asks_however_far_it_stands():
+    """A base drive changes the distance to every other robot: one not measured, 20 m away, still makes Start ask."""
+    cindy, alice = robot_config_from_serial("0806", DATA), robot_config_from_serial("0804", DATA)
+    own = RobotObject(robot_id(cindy.serial), cindy.model, Pose(), {})
+    other = RobotObject(robot_id(alice.serial), alice.model, Pose((20.0, 0.0, 0.0)), {},
+                        unmeasured=frozenset(alice.model.movable_joints))
+    now = [10.0]
+    ctx = SimpleNamespace(scene=SimpleNamespace(snapshot=Scene(robots={own.id: own, other.id: other})),
+                          now=lambda: now[0])
+    plugin = BaseExperimentPlugin()
+    plugin.serial = cindy.serial
+    assert plugin._asks_second_press(ctx, "Start") and "1 other robot not measured" in plugin._auto_alert
+    now[0] += 1.0
+    assert not plugin._asks_second_press(ctx, "Start") and not plugin._unknown_arms
+    # * Only the robots unknown at the press may stay unknown: one lost later refuses or trips the runs.
+    assert plugin._unknown_others == {other.id}
+
+
 def test_stop_forgets_a_start_waiting_for_its_second_press():
     """Start asks, Stop is pressed: the next Start asks again instead of starting at once."""
     cindy = robot_config_from_serial("0806", DATA)

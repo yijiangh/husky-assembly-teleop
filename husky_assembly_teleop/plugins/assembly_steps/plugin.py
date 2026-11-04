@@ -46,18 +46,27 @@ from ...shared.execution.retime import RetimeError, retime
 from ...shared.execution.servo import authored_start, carried_insert_goals, flange_poses, flange_side, tool0_errors
 from ...shared.execution.stream import tool0_world_path
 from ...shared.motion_planner_contract import MotionPlanRequest
-from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_KINDS, REFUSED,
-                                              REFUSED_PART, ExecRequest, ExecResult, PartPlan, current_primary,
-                                              current_step, serial_of, step_parts)
+from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_KINDS,
+                                              PLANNED_MARGIN, REFUSED, REFUSED_PART, ExecRequest, ExecResult, PartPlan,
+                                              current_primary, current_step, serial_of, step_parts)
 from ...shared.planner.planner_search import WAIT_MARGIN, PlanResult
 from ...shared.planner.timed_path import TimedPath
 from ...shared.process_contract import Carry
+from ...shared.teleop.clearance_toggle import ClearanceToggle
+from ...world.clearance import ARM_MOVE
 from ...shared.assembly_tab.layout import ASSEMBLY_TAB
 from ...ui.ghost import RobotGhost
 from .diagnosis import StepDiagnosis, path_line, tool0_line
 from .goal import StepGoal, same_step
 from .panel import StepsPanel
 from .step_panel_base import PlannerPlugin, Search
+
+#: The hover text of Exec's Clearance box.
+EXEC_CLEARANCE_HINT = (f"While ticked, a motion along the plan soft stops once the robot comes within "
+                       f"{ARM_MOVE.stop_for(PLANNED_MARGIN) * 100:g} cm of anything (0: on contact), and one starting "
+                       f"that close is refused; {ARM_MOVE.close_note(PLANNED_MARGIN) or 'as the arm planner'}. Not "
+                       f"with Ignore built bars ticked, nor for inserts, retreats, handoffs and the servo, which touch "
+                       f"by design. Untick to move out of a tight spot.")
 
 if TYPE_CHECKING:
     from ...shared.assembly_planning.process_steps import Step
@@ -99,6 +108,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         #: Seconds the motion should take, the operator's; the default per routine at each new step.
         self.traj_time = 10.0
         self.ignore_built = False
+        #: Exec's Clearance box (`movement_exec`: a motion along the plan keeps a clearance while ticked).
+        self.clearance = ClearanceToggle(EXEC_CLEARANCE_HINT)
         #: Movement indices of the current step done by Exec; the action offered to Mark done after its last step.
         self._done: set[int] = set()
         self._offer: str | None = None
@@ -604,7 +615,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
                               ignore_built=lambda: self.ignore_built,
                               obstacles_collide=lambda: self._obstacles_collide(ctx),
                               transfer_as_free=lambda: self._transfer_as_free(ctx),
-                              unknown_robots=self._unknown_allowed)
+                              unknown_robots=self._unknown_allowed, clearance=self.clearance.value)
         if motion:
             self.plan_state = "sent"  # ! used once: never sent again
         executor: MovementExecContract = ctx.require("movement_exec")

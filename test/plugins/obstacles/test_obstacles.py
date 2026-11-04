@@ -238,7 +238,8 @@ def test_floor_lets_the_platform_touch_it_but_not_what_the_arms_hold(files):
     assert f"{own}/front_left_wheel_link" in floor.touches and f"{own}/base_link" in floor.touches
     assert f"{own}/ur_arm_base_link" in floor.touches and f"{own}/ur_arm_shoulder_link" not in floor.touches
 
-    held = Body("test/held", box_geometry((0.1, 0.1, 0.1)), Attachment(own, None, Pose((0.8, 0.0, 0.1))))
+    # * Its bottom 3 cm above the floor, within STOP_DISTANCE.
+    held = Body("test/held", box_geometry((0.1, 0.1, 0.1)), Attachment(own, None, Pose((0.8, 0.0, 0.08))))
     world = BaseCollisionWorld()
     try:
         for bodies, hit in (((floor,), None), ((floor, held), "floor")):

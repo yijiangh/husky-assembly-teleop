@@ -309,7 +309,7 @@ class PluginContext:
 
         Args:
             serials: The robots to keep clear, e.g. the one this task drives.
-            margin: Distance below which it trips, metres.
+            margin: Distance below which it trips, metres: the move's kind's (`MoveKind.stop_for`), below its plan's.
             unknown_arms: Arms whose joints may be unknown, or ALL_ARMS (`world.clearance`).
             unknown_robots: Ids of other robots that may be unknown.
             refuse_first: Too close at the first check ends it (`refused`) without a soft stop. ! Send nothing until
@@ -366,7 +366,7 @@ class PluginContext:
 
         Example:
             >>> watch = ctx.watch_clearance([serial], unknown_arms=ALL_ARMS)
-            >>> watch.found.get(serial)  # e.g. "came within 10 cm of wall", or None
+            >>> watch.found.get(serial)  # e.g. "came within 5 cm of wall", or None
         """
         watch = ClearanceWatch(tuple(serials), margin, unknown_arms, check_self)
         self._watches.append(watch)

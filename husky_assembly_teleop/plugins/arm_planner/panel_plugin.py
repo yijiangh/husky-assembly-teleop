@@ -109,8 +109,9 @@ class ArmPlannerPanel(PlannerPanel):
                                     clearance_hint=f"Soft stop a committed path once the robot comes within "
                                                    f"{ARM_STOP_DISTANCE * 100:g} cm of anything, itself included; a "
                                                    f"start that close is refused. Plans keep "
-                                                   f"{PLAN_DISTANCE * 100:g} cm unless the start or target is "
-                                                   f"closer: untick to move out of a tight spot.",
+                                                   f"{PLAN_DISTANCE * 100:g} cm, or as much as the start and target "
+                                                   f"have; then the clearance is half that (an amber chip says so). "
+                                                   f"Untick to move out of a tight spot.",
                                     before_commit=lambda gui: self._add_duration(ctx, gui))
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
@@ -245,10 +246,6 @@ class ArmPlannerPanel(PlannerPanel):
             return "the target changed since planning"
         return ""
 
-    def commit_margin(self, ctx: PluginContext) -> float:
-        """A committed path's clearance: ARM_STOP_DISTANCE."""
-        return ARM_STOP_DISTANCE
-
     def commit_out_of_reach(self, ctx: PluginContext, plan: Plan[ArmPlanRequest]) -> frozenset[str]:
         """Other robots whose only unknown arms the planned arm cannot reach, whatever the joints (`out_of_reach`)."""
         return out_of_reach(ctx.scene.snapshot, robot_id(plan.request.serial), [plan.request.arm])
@@ -333,7 +330,7 @@ class ArmPlannerPanel(PlannerPanel):
         chips = robot + (self._plan_chip() if plan is None or plan.state != "sent" else "")
         if motion is not None:
             chips += check_chip(motion)
-        return chip_line(chips + self.clearance.start_chip("Commit")
+        return chip_line(chips + self.clearance_chips()
                          + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
 
     def _draw_duration(self) -> None:

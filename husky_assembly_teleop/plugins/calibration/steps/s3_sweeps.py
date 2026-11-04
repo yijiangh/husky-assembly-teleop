@@ -13,7 +13,7 @@ from ....shared.guide.panel import set_changed
 from ....world.checks import GOOD, PENDING, WARN, Check
 from ....ui.style import few, indented
 from ..analysis.checks import take_count_check
-from ..robot.motion import ARM_CLEARANCE
+from ....world.clearance import PLAN_DISTANCE
 from ..views.takes_view import take_index, take_label
 from .base import CalibrationStep
 
@@ -72,7 +72,7 @@ class Sweeps(CalibrationStep):
         for index, sweep in enumerate(run.sweeps.sweeps):
             procedure.doing = f"checking take {index + 1} of {len(run.sweeps.sweeps)}"
             try:
-                hit = await planner.check_path(run.serial, run.arm, sweep.waypoints(), ARM_CLEARANCE)
+                hit = await planner.check_path(run.serial, run.arm, sweep.waypoints(), PLAN_DISTANCE)
             except (ValueError, RuntimeError) as error:
                 run.collisions[index] = str(error)
             else:

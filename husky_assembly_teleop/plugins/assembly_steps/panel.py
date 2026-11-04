@@ -17,13 +17,15 @@ import viser
 
 from ...plugin_api.context import PluginContext
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, HANDOFF_PART, INSERT_PART, MAX_TRAJ_TIME,
-                                              MOTION_PART, OPEN_PART, RETREAT_PART, SERVO_PART, WITH_MOTION_PART,
-                                              PartPlan)
+                                              MOTION_PART, OPEN_PART, PLANNED_MARGIN, RETREAT_PART, SERVO_PART,
+                                              WITH_MOTION_PART, PartPlan)
 from ...shared.planner.planner_panel import CommitConfirm, unknown_robots_chip
+from ...shared.teleop.clearance_toggle import close_chip
 from ...shared.runs.runs import (PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
                                  RunSettings)
 from ...shared.assembly_tab.layout import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLAN_PLOTS_X,
                                            PLAN_SETTINGS_BAND, SETTINGS_BAND, STEP_BAND, plots_window)
+from ...world.clearance import ARM_MOVE
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
 from .plan_plots import PlanPlots
 from .step_panel_base import SLIDER_STEP
@@ -80,6 +82,7 @@ class StepsPanel:
                 "Exec", color="blue", icon=EXEC_ICON,
                 hint="Run the step's parts on the robot: a motion at once; placing the bar, a Robotiq step and the "
                      f"servo's first pass after Confirm below or on the phone. {CommitConfirm.HINT}")
+            plugin.clearance.add(ctx, gui, "exec")
             # ! Keep changing text BELOW the buttons.
             self._details = gui.add_html("")
         with ctx.view.ui(band=SETTINGS_BAND) as gui:
@@ -168,7 +171,7 @@ class StepsPanel:
             if executor.active:
                 chips += chip(escape(f"exec: {executor.active}"), BUSY,
                               "Exec runs this request; its prompt and Cancel are in the Exec panel")
-            self._status.content = chip_line(chips + unknown)
+            self._status.content = chip_line(chips + exec_clearance_chip(plugin) + unknown)
             movements = view.process.process.actions[action].movements
             routine = plugin.routine()
             text = f"{primary.label} ({routine.value if routine is not None else 'unclassified'})"
@@ -208,6 +211,16 @@ class StepsPanel:
                 self._plots_panel.expand()
             self._plotted, self._plotted_route = plugin.path, route
             self._plots.show(plugin.path, route.result.trajectory if route is not None else None)
+
+
+def exec_clearance_chip(plugin: AssemblyStepsPlugin) -> str:
+    """Amber while a ready plan's Exec runs under a smaller clearance than usual, or none with Ignore built bars."""
+    if plugin.plan_state != "ready" or not plugin.clearance.value:
+        return ""
+    if plugin.ignore_built:
+        return chip("no clearance", BUSY, "Ignore built bars is ticked: the plan may pass through built bars, so Exec "
+                                          "runs it without a clearance")
+    return close_chip(ARM_MOVE.close_note(PLANNED_MARGIN))
 
 
 def exec_line(robot: str, parts: tuple[PartPlan, ...]) -> str:
