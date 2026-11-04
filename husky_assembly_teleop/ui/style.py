@@ -152,6 +152,10 @@ NESTED_TABS_STYLE = (
     '{background-color:var(--mantine-color-default-hover) !important}</style>')
 
 
+#: A small empty space, e.g. between a chip line and a row of buttons right below it.
+GAP = '<div style="height:6px"></div>'
+
+
 def chip_line(html: str) -> str:
     """A line for chips that come and go: always there, even empty, and one line high, so nothing below it moves."""
     return block(f'{CHIP_LINE_STYLE}<div class="chip-line">{html}</div>')

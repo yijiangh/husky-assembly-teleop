@@ -155,7 +155,8 @@ class PlannerPanel(HuskyPlugin):
         self._api = ctx.require(self.planner)
 
     def _add_path_controls(self, ctx: PluginContext, gui: viser.GuiApi, plan_hint: str, commit_hint: str,
-                           clearance_hint: str, before_commit: Callable[[viser.GuiApi], None] | None = None) -> None:
+                           clearance_hint: str, before_plan: Callable[[viser.GuiApi], None] | None = None,
+                           before_commit: Callable[[viser.GuiApi], None] | None = None) -> None:
         """Add the "path" section: Plan/Play/Clear, the time slider, Commit and its Clearance box, with their callbacks.
 
         Args:
@@ -164,9 +165,12 @@ class PlannerPanel(HuskyPlugin):
             plan_hint: Hover text of the Plan/Play/Clear buttons.
             commit_hint: Hover text of Commit.
             clearance_hint: Hover text of the Clearance box: what a committed motion keeps clear of.
-            before_commit: Adds a subclass's own inputs between the time slider and Commit, e.g. the plan's duration.
+            before_plan: Adds a subclass's own inputs between the section bar and Plan, e.g. the plan's margin.
+            before_commit: Adds a subclass's own inputs between the time slider and Commit, e.g. the plan's slow-down.
         """
         gui.add_html(section("path", SECTION_CTRL))
+        if before_plan is not None:
+            before_plan(gui)
         plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
         # * Plan filled, so it never passes for Load's Step (blue outline) right above it.
         uuid = plan._impl.uuid

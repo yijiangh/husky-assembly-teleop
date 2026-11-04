@@ -462,20 +462,20 @@ def test_set_duration_re_times_the_ready_plan_within_its_limits_and_keeps_its_id
     assert planner.plan.path.slowdown == 1.0, "another plan's id changes nothing"
 
 
-def test_the_duration_slider_re_times_the_plan_and_new_plans_take_its_slowdown():
-    """Moving it stretches the plan and keeps the preview's place along it; the next plan comes at the same slowdown."""
+def test_the_slow_down_row_re_times_the_plan_and_new_plans_take_its_slowdown():
+    """A choice stretches the plan and keeps the preview's place along it; the next plans come at the same slowdown."""
     planner = ArmPlannerPlugin()
     panel = make_panel(planner)
     planner._plan = ready_plan()
     panel._t = 1.0
-    panel._set_duration(3 * planner.plan.path.fastest)
+    panel._set_slowdown(3.0)
     assert panel._slowdown == pytest.approx(3.0) and panel._t == pytest.approx(3.0)
     planner._plan = Plan(2, REQUEST, "ready", path=PATH)
     panel.update(SimpleNamespace(now=lambda: 0.0, log_warn=lambda _text: None, **WATCHES))
     assert planner.plan.id == 2 and planner.plan.path.duration == pytest.approx(3 * PATH.duration)
     planner._plan = Plan(3, REQUEST, "planning")
-    panel._set_duration(1.0)
-    assert panel._message == "nothing to re-time: plan first" and panel._slowdown == pytest.approx(3.0)
+    panel._set_slowdown(1.0)
+    assert panel._slowdown == 1.0, "chosen before the plan is ready: the plan takes it once it is"
 
 
 def test_make_request_takes_the_sliders():

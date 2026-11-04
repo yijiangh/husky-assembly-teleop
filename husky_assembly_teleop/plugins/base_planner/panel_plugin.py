@@ -36,7 +36,7 @@ from ...ui.ghost import RobotGhost
 from ...ui.css import group_buttons
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, check_chip, chip, chip_line, section,
+from ...ui.style import (BUSY, FAIL, GAP, NONE, OK, SECTION_CTRL, block, check_chip, chip, chip_line, section,
                          values)
 from ...robot_interface.base import live_report
 from ...world.clearance import ALL_ARMS, BASE_PLAN_DISTANCE, STOP_DISTANCE
@@ -100,6 +100,7 @@ class BasePlannerPanel(PlannerPanel):
 
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
+            gui.add_html(GAP)
             self._robot = ChoiceRow(ctx, gui, "Robot", tuple(serials), self.serial, on_choose=self._choose_robot,
                                     labels=tuple(serial.split("-")[-1] for serial in serials), height=None)
 
@@ -113,9 +114,6 @@ class BasePlannerPanel(PlannerPanel):
             # * Step filled in the target blue: the one pressed at every assembly step, among the outlined ones.
             gui.add_html(f"<style>{group_buttons(load._impl.uuid, 2)} {{ background: {TARGET} !important; "
                          f"color: {WHITE} !important; border-color: {TARGET} !important; }}</style>")
-            # * One margin for every algorithm, in plain sight: the first thing to lower when a start or target
-            #   near a bar counts as a collision.
-            self._margin = add_margin_setting(gui)
 
             self._add_path_controls(ctx, gui,
                                     plan_hint="Plan from the robot's pose to the target around the others; Play "
@@ -126,7 +124,8 @@ class BasePlannerPanel(PlannerPanel):
                                     clearance_hint=f"Soft stop a sent path once the robot comes within "
                                                    f"{STOP_DISTANCE * 100:g} cm of anything (half the Margin below "
                                                    f"{BASE_PLAN_DISTANCE * 100:g} cm); a start that close is refused. "
-                                                   f"Untick to drive out of a tight spot.")
+                                                   f"Untick to drive out of a tight spot.",
+                                    before_plan=self._add_margin)
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -177,6 +176,10 @@ class BasePlannerPanel(PlannerPanel):
         self._markers = Markers(ctx)
         self._debug_view = DebugView(ctx, self._debug_legend, self._debug_layers, self._debug_notes)
         self._add_ghosts(ctx, ctx.config.robots)
+
+    def _add_margin(self, gui: viser.GuiApi) -> None:
+        """Add the Margin slider right above Plan; one for every algorithm, lowered first when a start counts as hit."""
+        self._margin = add_margin_setting(gui)
 
     # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
 

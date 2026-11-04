@@ -26,29 +26,15 @@ from ...ui.choice_row import ChoiceRow
 from ...ui.ghost import RobotGhost
 from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_joint_sliders
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.style import BUSY, FAIL, NONE, OK, block, check_chip, chip, chip_line, section, values
+from ...ui.style import BUSY, FAIL, GAP, NONE, OK, block, check_chip, chip, chip_line, section, values
 from scaffolding_assembly_core.ids import robot_id
 from ...shared.assembly_planning.joints import arm_joint_names
 from .planner_plugin import STALE_JOINT, ArmPlannerPlugin
 from ...world.arm_reach import out_of_reach
 from ...world.clearance import ARM_STOP_DISTANCE, PLAN_DISTANCE
 
-#: The Duration slider's step, seconds.
-DURATION_STEP = 0.1
-
-
-def gray_slider_css(uuid: str) -> str:
-    """CSS that draws one slider in gray, track, thumb, marks and number, so a rarely used one stays in the background.
-
-    * Found by its label (`label[for=<uuid>]`) as `ui.phone`'s helpers find inputs; only colours change.
-    """
-    row, gray = f'div:has(> div > p > label[for="{uuid}"])', "var(--mantine-color-gray-5)"
-    return (f"{row} .mantine-Slider-root {{ --slider-color: {gray}; }} "
-            f"{row} .mantine-Slider-bar, {row} .mantine-Slider-thumb {{ background: {gray} !important; }} "
-            f"{row} .mantine-Slider-mark[data-filled] {{ border-color: {gray} !important; "
-            f"background: {gray} !important; }} "
-            f"{row} label, {row} .mantine-Slider-markLabel, {row} input "
-            f"{{ color: var(--mantine-color-dimmed) !important; }}")
+#: The Slow down row's choices: the plan at its fastest timing, up to MAX_SLOWDOWN times as long.
+SLOWDOWNS = tuple(f"×{factor}" for factor in range(1, int(MAX_SLOWDOWN) + 1))
 
 
 @register
@@ -96,6 +82,7 @@ class ArmPlannerPanel(PlannerPanel):
 
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
+            gui.add_html(GAP)
             self._robot = ChoiceRow(ctx, gui, "Robot", tuple(arms), self.serial,
                                     on_choose=lambda serial: self._choose(serial, None),
                                     labels=tuple(serial.split("-")[-1] for serial in arms), height=None)
@@ -120,7 +107,7 @@ class ArmPlannerPanel(PlannerPanel):
                                                    f"{PLAN_DISTANCE * 100:g} cm, or as much as the start and target "
                                                    f"have; then the clearance is half that (an amber chip says so). "
                                                    f"Untick to move out of a tight spot.",
-                                    before_commit=lambda gui: self._add_duration(ctx, gui))
+                                    before_commit=lambda gui: self._add_slowdown(ctx, gui))
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -144,31 +131,26 @@ class ArmPlannerPanel(PlannerPanel):
 
         self._add_ghosts(ctx, (config for config in ctx.config.robots if config.serial in arms))
 
-    def _add_duration(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
-        """Add the Duration slider below the preview: the plan's seconds, its fastest timing to MAX_SLOWDOWN times."""
-        self._duration = gui.add_slider(
-            "Duration", min=0.0, max=1.0, step=DURATION_STEP, initial_value=0.0,
-            hint=f"Seconds the plan takes, from its planned (fastest) time to {MAX_SLOWDOWN:g}x that. Re-times it "
-                 f"without replanning; Play and Commit follow it.")
-        gui.add_html(f"<style>{gray_slider_css(self._duration._impl.uuid)}</style>")
-        # ! Operator drags only: draw writes the slider every tick.
-        self._duration.on_update(ctx.defer_value("duration", lambda value: self._set_duration(float(value)),
-                                                 operator_only=True))
+    def _add_slowdown(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
+        """Add the Slow down row below the preview: the plan at its fastest timing, up to MAX_SLOWDOWN times as long."""
+        self._slowdown_row = ChoiceRow(
+            ctx, gui, "Slow down", SLOWDOWNS, SLOWDOWNS[0],
+            "How many times as long as its fastest timing the plan takes. Re-times it without replanning; Play, "
+            "Commit and the next plans follow it.",
+            on_choose=lambda label: self._set_slowdown(float(label[1:])), height=None)
 
     # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
 
-    def _set_duration(self, seconds: float) -> None:
-        """Stretch the ready plan to `seconds`; the preview keeps its place along the path."""
+    def _set_slowdown(self, factor: float) -> None:
+        """Take `factor` times the fastest timing: the ready plan now (the preview keeps its place), and the next."""
         self._used.touch()
+        self._slowdown = factor
         plan = self._api.plan
         if plan is None or plan.state != "ready":
-            self._say("nothing to re-time: plan first", FAIL)
             return
         before = plan.path.duration
-        self._api.set_duration(plan.id, seconds)
-        path = self._api.plan.path
-        self._slowdown = path.slowdown
-        self._t *= path.duration / before
+        self._api.set_duration(plan.id, plan.path.fastest * factor)
+        self._t *= self._api.plan.path.duration / before
 
     def _choose(self, serial: str, arm: str | None) -> None:
         """Plan for another robot or arm; the old plan no longer applies.
@@ -320,7 +302,7 @@ class ArmPlannerPanel(PlannerPanel):
         self._arm.value = self.arm
         self._details.content = self._details_html()
         self._draw_slider()
-        self._draw_duration()
+        self._slowdown_row.value = f"×{self._slowdown:g}"
         self._draw_ghosts(ctx)
 
     def _status_html(self, ctx: PluginContext) -> str:
@@ -337,22 +319,6 @@ class ArmPlannerPanel(PlannerPanel):
             chips += check_chip(motion)
         return chip_line(chips + self.clearance_chips()
                          + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
-
-    def _draw_duration(self) -> None:
-        """Fit the Duration slider to the plan: its fastest time up to MAX_SLOWDOWN times that, at its duration."""
-        plan = self._api.plan
-        path = None if plan is None else plan.path
-        if path is None:
-            low, high, value = 0.0, 1.0, 0.0
-        else:
-            low, high, value = path.fastest, path.fastest * MAX_SLOWDOWN, path.duration
-        slider = self._duration
-        # ! Never let min pass max, even between the two writes.
-        if low >= slider.max:
-            slider.max, slider.min = high, low
-        else:
-            slider.min, slider.max = low, high
-        slider.value = round(value, 3)
 
     def _details_html(self) -> str:
         """The plan, the joints at the slider time, and the last message, in a fixed number of rows."""
