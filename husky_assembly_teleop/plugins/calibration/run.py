@@ -241,7 +241,6 @@ class Run:
         punch_offset: The TCP offset of the punch, tool0 to tip, metres: committed from Tip offset, or entered.
         punch_mount: How often the punch was remounted (`remounted`); punch_target: how often the target moved.
         tip_joints: The arm's joints at each pose of the tip offset.
-        tip_bases: The base's pose (base_footprint in the world) at each of them.
         tip_mounts: The punch mount count at each of them.
         acceptances: Per step name, the stamp of the inputs its accepted result was calculated from (`accept`).
         on_stand: Whether the base stands on its stand rather than its wheels; a record for people only.
@@ -285,7 +284,6 @@ class Run:
         self.punch_offset = np.zeros(3)
         self.punch_mount = self.punch_target = 0
         self.tip_joints: list[np.ndarray] = []
-        self.tip_bases: list[Pose] = []
         self.tip_mounts: list[int] = []
         self.acceptances: dict[str, str] = {}
         self.on_stand, self.notes = False, ""
@@ -355,7 +353,6 @@ class Run:
             run.punch_targets = progress.punch_targets or [0] * count
         run.punch_offset = np.array(progress.punch_offset, dtype=float)
         run.tip_joints = [np.array(joints, dtype=float) for joints in progress.tip_joints]
-        run.tip_bases = [pose_from(base) for base in progress.tip_bases]
         run.tip_mounts = progress.tip_mounts or [0] * len(run.tip_joints)
         run.acceptances = dict(progress.acceptances)
         run.on_stand, run.notes = progress.on_stand, progress.notes
@@ -495,7 +492,6 @@ class Run:
         progress.punch_bases = [body_dict(base) if base else None for base in self.punch_bases]
         progress.punch_mounts, progress.punch_targets = list(self.punch_mounts), list(self.punch_targets)
         progress.tip_joints = [[float(v) for v in joints] for joints in self.tip_joints]
-        progress.tip_bases = [pose_list(base) for base in self.tip_bases]
         progress.tip_mounts = list(self.tip_mounts)
         progress.acceptances = dict(self.acceptances)
         progress.on_stand, progress.notes = self.on_stand, self.notes
@@ -633,9 +629,9 @@ class Run:
         """Why Area clear or E-stop at hand do not hold, which every robot move needs; None if they do."""
         return "; ".join(why for label in SAFETY_BOXES if (why := self.box_expired(label, now))) or None
 
-    def checklist_expired(self, now: float) -> str | None:
-        """Why Setup's checklist does not hold: every box that does not, and why; None if it holds."""
-        return "; ".join(why for label in CHECKLIST_BOXES if (why := self.box_expired(label, now))) or None
+    def checklist_expired(self, now: float, boxes: Sequence[str] = CHECKLIST_BOXES) -> str | None:
+        """Why Setup's checklist, or these of its `boxes`, does not hold: each box that does not and why; else None."""
+        return "; ".join(why for label in boxes if (why := self.box_expired(label, now))) or None
 
     def tick(self, label: str, ticked: bool, now: float) -> None:
         """The operator ticked (or unticked) a box of Setup's checklist; Tool on flange for the tool model now."""
@@ -657,7 +653,7 @@ class Run:
     def collisions_expired(self, base: Pose) -> str | None:
         """Why the collision checks do not hold with the base at `base`: not all checked, or moved; None if they do."""
         if self.collision_base is None or len(self.collisions) < len(self.sweeps.sweeps):
-            return "collisions not checked: check them in Sweeps"
+            return "collisions not checked"
         metres, degrees = pose_change(self.collision_base, base)
         if metres > CHECKED_POSITION or math.radians(degrees) > CHECKED_ANGLE:
             # * No distance: the overview shows this in every step; the Live tab plots the base drift, and a take
@@ -967,15 +963,14 @@ class Run:
 
     # --- --- --- --- --- TIP OFFSET --- --- --- --- ---
 
-    def current_tip(self) -> tuple[list[np.ndarray], list[Pose]]:
-        """The tip offset's current poses, those taken since the punch was last remounted: joints and bases."""
-        current = [index for index, mount in enumerate(self.tip_mounts) if mount == self.punch_mount]
-        return [self.tip_joints[index] for index in current], [self.tip_bases[index] for index in current]
+    def current_tip(self) -> list[np.ndarray]:
+        """The tip offset's current poses, those taken since the punch was last remounted: their joints."""
+        return [joints for joints, mount in zip(self.tip_joints, self.tip_mounts) if mount == self.punch_mount]
 
     def tip_tool0s(self) -> list[Pose]:
         """Tool0 in the robot's frame at each current pose of the tip offset, from the URDF."""
         link = f"{self.arm}_tool0"
-        return [link_pose(self.urdf, Pose(), named(self.arm, joints), link) for joints in self.current_tip()[0]]
+        return [link_pose(self.urdf, Pose(), named(self.arm, joints), link) for joints in self.current_tip()]
 
     def tip_pivot(self) -> Pivot | None:
         """The tip fit, the offset solved from the current poses; None with too few. Solved once per set of poses."""
@@ -986,15 +981,12 @@ class Run:
         return self._tip_pivot[1]
 
     def tip_checks(self) -> list[Check]:
-        """The tip fit's checks: its poses, their tilt spread and fit, the base still, the offset plausible."""
-        joints, bases = self.current_tip()
-        return tip_checks(len(joints), self.tip_pivot(), bases)
+        """The tip fit's checks: its poses, their tilt spread and fit, the offset plausible."""
+        return tip_checks(len(self.current_tip()), self.tip_pivot())
 
-    def add_tip_pose(self, joints: np.ndarray, base: Pose) -> None:
-        """Keep a pose of the tip offset; poses from before a remount are dropped first."""
-        joints_now, bases_now = self.current_tip()
-        self.tip_joints = [*joints_now, np.asarray(joints, dtype=float)]
-        self.tip_bases = [*bases_now, base]
+    def add_tip_pose(self, joints: np.ndarray) -> None:
+        """Keep a pose of the tip offset, its joints; poses from before a remount are dropped first."""
+        self.tip_joints = [*self.current_tip(), np.asarray(joints, dtype=float)]
         self.tip_mounts = [self.punch_mount] * len(self.tip_joints)
 
     def commit_tip_offset(self) -> bool:
@@ -1012,7 +1004,7 @@ class Run:
 
     def clear_tip(self) -> None:
         """Forget the tip offset's poses and fit; the punch keeps its TCP offset."""
-        self.tip_joints, self.tip_bases, self.tip_mounts, self._tip_pivot = [], [], [], None
+        self.tip_joints, self.tip_mounts, self._tip_pivot = [], [], None
 
     def remounted(self) -> None:
         """The punch was remounted: the tip poses and the punch takes so far are out of date."""
@@ -1039,7 +1031,7 @@ class Run:
             "Solve": lambda: [path.name for path in self.solve_inputs()],
             "Validate": lambda: [sha(), [path.name for path in self.current_validation_files()]],
             "Apply": lambda: [sha()],
-            "Tip offset": lambda: [self.current_tip()[0], [pose_list(base) for base in self.current_tip()[1]]],
+            "Tip offset": lambda: [self.current_tip()],
             "Punch": lambda: [self.punch_file.name if self.punch_file else None,
                               [take["timestamp"] for take in self.current_punch_takes()], self.punch_offset],
         }

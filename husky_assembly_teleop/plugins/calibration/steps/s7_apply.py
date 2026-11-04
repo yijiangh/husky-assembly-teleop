@@ -31,8 +31,7 @@ class Apply(CalibrationStep):
     """
 
     name = "Apply"
-    instructions = ("Apply with the robot standing still: the calibration gets the name the relay reads, and the "
-                    "relay reloads this robot's calibration only.")
+    instructions = "Press Apply: approve and reload while the robot stands still."
     on_laptop = "Apply on the laptop."
 
     def build(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
@@ -94,9 +93,9 @@ class Apply(CalibrationStep):
         return f"an earlier solution was applied: {then}"
 
     def checks(self, ctx: PluginContext) -> list[Check]:
-        """Whether this run applied the current solution's output (`Run.finished`); what the relay applies now, live.
+        """What the relay applies now, live; whether this run applied is the step's state.
 
-        The live chip only warns: a relay restarted, not announced yet or applying another calibration changes nothing
+        The chip only warns: a relay restarted, not announced yet or applying another calibration changes nothing
         this run did, nor does the relay finding its calibration built for an earlier body definition. A mount check has
         nothing to apply.
         """
@@ -105,10 +104,6 @@ class Apply(CalibrationStep):
         if run.mount_check:
             return [Check("mount check", GOOD, f"written to {solved.output.name if solved and solved.output else '-'}; "
                                                f"nothing to apply: only the robot's first arm calibrates the base")]
-        # * Red only for an earlier solution applied (out of date); nothing applied yet is grey, as the step's state.
-        applied = (Check("applied", GOOD, "this run's calibration was applied") if run.finished else
-                   Check("applied", PENDING, "not applied yet: Apply") if run.applied_sha is None else
-                   Check("applied", BAD, self._earlier_applied()))
         relay, now = run.relay, relay_sha(run)
         applies = f"the relay applies {now[:12]}" if now else "the relay publishes the base uncalibrated"
         entry = run.applied()
@@ -123,7 +118,7 @@ class Apply(CalibrationStep):
         else:
             live = Check("relay now", WARN, f"{applies} now: restarted, or another calibration applied since this "
                                             f"run's")
-        return [applied, live]
+        return [live]
 
     def ready(self, ctx: PluginContext) -> list[Check]:
         """Something to apply, the validation verdict passing or accepted (`Run.validation_good`), and the relay up."""

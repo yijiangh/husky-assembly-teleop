@@ -60,7 +60,6 @@ class Progress:
         punch_bases: The base body's definition at each punch take (`body_dict`), or None if not known.
         punch_mounts: The punch mount count at each punch take; punch_targets: the target count.
         tip_joints: The arm's joints at each pose of the tip offset, UR driver order.
-        tip_bases: The base's pose at each of them, [[x, y, z], [qx, qy, qz, qw]].
         tip_mounts: The punch mount count at each of them.
         on_stand: Whether the base stood on its stand (wheels off the floor) rather than on its wheels; a record only.
         notes: The operator's notes on the run, for people to read; nothing uses them.
@@ -96,7 +95,6 @@ class Progress:
     punch_mounts: list[int] = field(default_factory=list)
     punch_targets: list[int] = field(default_factory=list)
     tip_joints: list[list[float]] = field(default_factory=list)
-    tip_bases: list[list] = field(default_factory=list)
     tip_mounts: list[int] = field(default_factory=list)
     on_stand: bool = False
     notes: str = ""
@@ -153,7 +151,6 @@ class Progress:
                        punch_mounts=[int(n) for n in data.get("punch_mounts", [])],
                        punch_targets=[int(n) for n in data.get("punch_targets", [])],
                        tip_joints=[[float(v) for v in joints] for joints in data.get("tip_joints", [])],
-                       tip_bases=list(data.get("tip_bases", [])),
                        tip_mounts=[int(n) for n in data.get("tip_mounts", [])],
                        on_stand=bool(data.get("on_stand", False)), notes=str(data.get("notes", "")),
                        environment=str(data.get("environment", REAL)), ros_domain=int(data.get("ros_domain", 0)))

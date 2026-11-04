@@ -11,10 +11,10 @@ import viser
 
 from scaffolding_assembly_core.ids import robot_id
 
-from ....world.checks import BAD, GOOD, WARN, Check
+from ....world.checks import BAD, GOOD, PENDING, WARN, Check
 from ....world.freeze import take_basis
 from ....ui.style import few, indented
-from ..analysis.checks import left_out_check, take_count_check
+from ..analysis.checks import take_count_check
 from ..storage.session_files import write_take
 from ..robot.motion import sweep_path
 from ..robot.sweeps import nearest_take, shortest_order
@@ -38,10 +38,10 @@ class Record(CalibrationStep):
     """
 
     name = "Record"
-    instructions = ("Record each take: the arm planner moves to its start (Go once you checked the way), then the "
-                    "joint sweeps and every waypoint is sampled once the tool stands still. Cancel holds the arm. "
-                    "Leave the tool body mounted until Validate is done.")
-    goes = auto = cancels = moves_robot = True
+    instructions = ("Press Record take, then Go: move and Go: sweep once each preview looks clear. Record every clear "
+                    "take. Keep the tool body mounted until Validate is done.")
+    goes = auto = cancels = moves_robot = go_moves = True
+    watches = ("base", "tool")
     needs = ("Setup", "Marker error", "Sweeps")
     refused_without = ("Sweeps",)
     on_laptop = "Record takes on the laptop: each move waits for Go there, after its preview."
@@ -164,28 +164,26 @@ class Record(CalibrationStep):
         return "no take recorded yet" if not self.run.takes else None
 
     def out_of_date(self, ctx: PluginContext) -> str | None:
-        """Too few good takes once the out-of-date ones are left out: its out of date check says which."""
-        takes, _left_out, old = self.checks(ctx)
+        """Too few good takes (or none) once the old ones are left out: its old takes check says which."""
+        takes, old = self.checks(ctx)
         return old.detail if takes.level == BAD and old.level != GOOD else None
 
     def checks(self, ctx: PluginContext) -> list[Check]:
-        """Each current take's circle, and enough good ones per joint; out-of-date takes to record again."""
+        """Enough good takes per joint, and the old ones to record again; the take chips below show each circle."""
         run = self.run
-        current = run.current_takes()
         counts = [sum(run.sweeps.sweeps[index].joint == joint for index in run.good_takes()) for joint in (0, 1)]
-        old = sorted(set(run.takes) - set(current))
-        return [take_count_check(counts, "recorded well (amber ones are left out)"),
-                left_out_check([(index + 1, take.circle) for index, take in sorted(current.items())]),
-                Check("out of date", WARN, f"takes {few([str(i + 1) for i in old], 5)} were recorded with another "
-                                           f"tool body or before a base refine: record them again", str(len(old)))
-                if old else Check("out of date", GOOD, "none", "0")]
+        old = sorted(set(run.takes) - set(run.current_takes()))
+        # * Grey only before the first take: once takes are in, too few good ones is red.
+        takes = (take_count_check(counts, "recorded well (amber ones are left out)") if run.takes else
+                 Check("takes", PENDING, "no take recorded yet", "J0 0 · J1 0"))
+        return [takes,
+                Check("old takes", WARN, f"takes {few([str(i + 1) for i in old], 5)} were recorded with another "
+                                         f"tool body or before a base refine: record them again", str(len(old)))
+                if old else Check("old takes", GOOD, "none", "0")]
 
     def ready(self, ctx: PluginContext) -> list[Check]:
-        """A clear take, a tool body; its preconditions: the checklist, marker errors, collisions; the safety boxes."""
-        usable = self.run.usable()
-        clear = (Check("clear takes", GOOD, f"{len(usable)} takes clear") if usable else
-                 Check("clear takes", BAD, "no clear take: check collisions in Sweeps"))
-        return [clear, tool_body_check(self.cal), *self.needs_checks(ctx)]
+        """A tool body; its preconditions: the checklist, marker errors, a clear take checked here; the safety boxes."""
+        return [tool_body_check(self.cal), *self.needs_checks(ctx)]
 
     def _fill_choices(self) -> None:
         """Fill the Take dropdown with the clear takes, at the suggested one, whenever they change."""

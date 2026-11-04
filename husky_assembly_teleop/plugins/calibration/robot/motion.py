@@ -213,38 +213,42 @@ class ArmMotion:
         calibration = Pose(applied.position, applied.orientation) if applied is not None else Pose()
         return sampler.sample(calibration, applied.sha256 if applied is not None else "", ctx.now())
 
-    async def still_arm(self, ctx: PluginContext, run: Run, what: str) -> tuple[Pose, np.ndarray]:
-        """Wait until the base and the arm stand still with good mocap, then average SAMPLE_TICKS readings.
+    async def still_arm(self, ctx: PluginContext, run: Run, what: str,
+                        with_base: bool = True) -> tuple[Pose | None, np.ndarray]:
+        """Wait until the arm, and the base with good mocap if `with_base`, stand still; average SAMPLE_TICKS readings.
 
         If that takes over SAMPLE_TIMEOUT, say why and wait for Go to try again; Cancel ends the procedure.
 
         Returns:
-            tuple[Pose, np.ndarray]: base_footprint in the world, and the arm's joints.
+            tuple[Pose | None, np.ndarray]: base_footprint in the world (None without the base), and the arm's joints.
         """
         base, arm = run.robot.base, run.robot.arms[run.arm]
         bases, joints, why = [], [], ""
+        parts = "the base and arm" if with_base else "the arm"
 
         def still() -> bool:
             nonlocal why
-            problem, here = mocap_problem(base.mocap_id, base.state, ctx.now()), arm.joint_vector()
+            problem = mocap_problem(base.mocap_id, base.state, ctx.now()) if with_base else None
+            here = arm.joint_vector()
             if problem or here is None:
                 why = problem or "no joint state"
                 bases.clear()
                 joints.clear()
                 return False
-            bases.append(ctx.kinematics.base_pose(run.serial))
+            if with_base:
+                bases.append(ctx.kinematics.base_pose(run.serial))
             joints.append(here)
             del bases[:-SAMPLE_TICKS], joints[:-SAMPLE_TICKS]
-            spread = max(np.ptp([pose.position for pose in bases[-STILL_TICKS:]], axis=0))
+            spread = max(np.ptp([pose.position for pose in bases[-STILL_TICKS:]], axis=0)) if with_base else 0.0
             moving = np.ptp(joints[-STILL_TICKS:], axis=0).max()
-            why = "the base or arm still moves"
-            return len(bases) >= SAMPLE_TICKS and spread <= STILL_SPREAD and moving <= JOINTS_STILL
+            why = f"{parts} still move{'s' if not with_base else ''}"
+            return len(joints) >= SAMPLE_TICKS and spread <= STILL_SPREAD and moving <= JOINTS_STILL
 
-        self.procedure.doing = f"{what}: waiting for the base and arm to stand still"
+        self.procedure.doing = f"{what}: waiting for {parts} to stand still"
         while True:
             try:
-                await ctx.wait_until(still, timeout_s=SAMPLE_TIMEOUT, description="a still base and arm")
-                return mean_pose(bases), np.mean(joints, axis=0)
+                await ctx.wait_until(still, timeout_s=SAMPLE_TIMEOUT, description=f"{parts} to stand still")
+                return (mean_pose(bases) if with_base else None), np.mean(joints, axis=0)
             except WaitTimeout:
                 await self.procedure.ask_go(ctx, f"{what}: no still reading in {SAMPLE_TIMEOUT:g} s: {why}. Go tries "
                                                  f"again, Cancel stops.")

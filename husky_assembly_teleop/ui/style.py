@@ -157,6 +157,25 @@ def chip_line(html: str) -> str:
     return block(f'{CHIP_LINE_STYLE}<div class="chip-line">{html}</div>')
 
 
+#: The width of a chip row's name, px: every row's chips start at the same place.
+ROW_NAME_WIDTH = 68
+
+
+def chip_row(name: str, chips: str, wrap: bool = False) -> str:
+    """A row of chips after a small grey name in a column of its own: one line high, more chips scroll sideways.
+
+    Args:
+        name: The row's name; "" leaves the column empty.
+        chips: The chips' HTML.
+        wrap: Let the chips wrap onto more lines instead, for rows whose chips are fixed while a step shows.
+    """
+    label = (f'<span title="{escape(name, quote=True)}" style="flex:0 0 {ROW_NAME_WIDTH}px;font-size:0.85em;'
+             f'color:{NONE};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{escape(name)}</span>')
+    body = chips if wrap else f'{CHIP_LINE_STYLE}<div class="chip-line">{chips}</div>'
+    row = f'<div style="display:flex;align-items:baseline">{label}<div style="flex:1;min-width:0">{body}</div></div>'
+    return f'<div style="margin-left:8px">{block(row)}</div>'
+
+
 def note_line(text: str, color: str = NONE) -> str:
     """Small text that may come and go, on one line that is always there: cut with "…", the full text on hover.
 

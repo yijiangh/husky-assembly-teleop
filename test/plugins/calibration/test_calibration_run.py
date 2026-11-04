@@ -217,11 +217,11 @@ def test_the_tip_offset_holds_through_refines(tmp_path):
     run = _run(tmp_path)
     start = np.radians([90.0, -100.0, 90.0, -80.0, -90.0, 0.0])
     for joints in [start, tilted(run, start, "x", 20), tilted(run, start, "x", -20), tilted(run, start, "y", 20)]:
-        run.add_tip_pose(joints, Pose())
+        run.add_tip_pose(joints)
     assert run.commit_tip_offset()
     offset = run.punch_offset.copy()
     run.follow(_defined(run, base="refined", tool="refined"))
-    assert len(run.current_tip()[0]) == 4 and np.array_equal(run.punch_offset, offset) and run.tip_offset_used()
+    assert len(run.current_tip()) == 4 and np.array_equal(run.punch_offset, offset) and run.tip_offset_used()
     assert not fails(run.tip_checks())
 
 
@@ -416,16 +416,16 @@ def test_the_tip_fit_becomes_the_tcp_offset_only_once_committed_and_resumes_as_s
     run.punch_offset = np.array([0.0, 0.0, 0.1])
     poses = _tip_poses(run)
     for joints in poses[:3]:
-        run.add_tip_pose(joints, Pose())
+        run.add_tip_pose(joints)
     assert run.tip_pivot() is not None and fails(run.tip_checks())
-    run.add_tip_pose(poses[3], Pose())
+    run.add_tip_pose(poses[3])
     assert not fails(run.tip_checks()) and np.allclose(run.punch_offset, [0.0, 0.0, 0.1])
     assert not run.tip_offset_used() and run.commit_tip_offset() and run.tip_offset_used()
     np.testing.assert_allclose(run.punch_offset, (0.0, 0.0, 0.11), atol=1e-6)
     run.save()
     resumed = Run.resume(_robot(), Progress.load(run.progress.file), DATA, tmp_path)
     np.testing.assert_allclose(resumed.tip_joints, poses)
-    assert resumed.tip_bases == [Pose()] * 4 and np.allclose(resumed.punch_offset, run.punch_offset)
+    assert len(resumed.current_tip()) == 4 and np.allclose(resumed.punch_offset, run.punch_offset)
     assert resumed.tip_offset_used()
     resumed.clear_tip()
     assert resumed.tip_joints == [] and resumed.tip_pivot() is None and not resumed.commit_tip_offset()
@@ -439,7 +439,7 @@ def test_a_remount_puts_the_tip_poses_and_the_punch_takes_out_of_date(tmp_path):
     """
     run = _run(tmp_path)
     for joints in _tip_poses(run):
-        run.add_tip_pose(joints, Pose())
+        run.add_tip_pose(joints)
     run.commit_tip_offset()
     offset = run.punch_offset.copy()
     run.add_punch_take(_punch(run, 0.0), "single")
@@ -449,15 +449,15 @@ def test_a_remount_puts_the_tip_poses_and_the_punch_takes_out_of_date(tmp_path):
         del data[key]
     run.progress.file.write_text(json.dumps(data))
     older = Run.resume(_robot(), Progress.load(run.progress.file), DATA, tmp_path)
-    assert len(older.current_tip()[0]) == 4 and len(older.current_punch_takes()) == 1
+    assert len(older.current_tip()) == 4 and len(older.current_punch_takes()) == 1
     run.remounted()
-    assert run.current_tip() == ([], []) and run.tip_pivot() is None and run.current_punch_takes() == []
+    assert run.current_tip() == [] and run.tip_pivot() is None and run.current_punch_takes() == []
     assert np.array_equal(run.punch_offset, offset) and len(run.tip_joints) == 4
-    run.add_tip_pose(_tip_poses(run)[0], Pose())
-    assert len(run.tip_joints) == 1 and len(run.current_tip()[0]) == 1
+    run.add_tip_pose(_tip_poses(run)[0])
+    assert len(run.tip_joints) == 1 and len(run.current_tip()) == 1
     run.save()
     resumed = Run.resume(_robot(), Progress.load(run.progress.file), DATA, tmp_path)
-    assert resumed.punch_mount == 1 and len(resumed.current_tip()[0]) == 1 and resumed.current_punch_takes() == []
+    assert resumed.punch_mount == 1 and len(resumed.current_tip()) == 1 and resumed.current_punch_takes() == []
 
 
 def test_a_tip_fit_with_a_red_check_is_not_used_on_its_own(tmp_path):
@@ -466,7 +466,7 @@ def test_a_tip_fit_with_a_red_check_is_not_used_on_its_own(tmp_path):
     run.punch_offset = np.array([0.0, 0.0, 0.1])
     start = np.radians([90.0, -100.0, 90.0, -80.0, -90.0, 0.0])
     for joints in [start, tilted(run, start, "x", 5), tilted(run, start, "x", 10), tilted(run, start, "x", -5)]:
-        run.add_tip_pose(joints, Pose())
+        run.add_tip_pose(joints)
     assert run.tip_pivot() is not None and {c.label: c.level for c in run.tip_checks()}[TILT] == BAD
     assert np.allclose(run.punch_offset, [0.0, 0.0, 0.1])
 

@@ -33,10 +33,10 @@ class Validate(CalibrationStep):
     """
 
     name = "Validate"
-    instructions = ("Drive to a spot with the D-pad, then Sample poses here: the arm visits each validation pose. Do "
-                    "it at 3 spots or more, turned differently. Under a good calibration the tool body stays put in "
-                    "tool0.")
-    drives = goes = auto = cancels = moves_robot = True
+    instructions = ("Drive to a spot, press Sample poses here, then Go before each move. Repeat at 3 or more spots, "
+                    "each 0.5 m or 30° from the others.")
+    drives = goes = auto = cancels = moves_robot = go_moves = True
+    watches = ("base", "tool")
     needs = ("Setup", "Marker error")
     on_laptop = "Sample poses here on the laptop: each move waits for Go there, after its preview."
 
@@ -81,29 +81,37 @@ class Validate(CalibrationStep):
         arm, count = run.robot.arms[run.arm], len(run.validation_poses)
         spot = checked = None
         before = len(run.validation_files)
-        while True:
-            here = ctx.kinematics.base_pose(run.serial)
-            if spot is None or new_spot(spot, here):
-                spot, checked = here, None
-                self._pose_states, self._pose_samples = [("pending", "")] * count, {}
-            if checked is None or base_moved(checked, here):
-                await self._check_poses(ctx)
-                checked = here
-            pending = [index for index, (state, _) in enumerate(self._pose_states) if state == "pending"]
-            if not pending:
-                break
-            joints = arm.joint_vector()
-            if joints is None:
-                raise RuntimeError("no joint state of the arm")
-            index, goal = nearest_pose(run.validation_poses, pending, joints, *run.limits, run.stow)
-            if not await procedure.pausable(self._visit(ctx, index, goal)):
-                left = len([state for state, _ in self._pose_states if state == "pending"])
-                await procedure.ask_go(ctx, f"Stopped with {left} of {count} poses left here. Go goes on (drive "
-                                            f"first for another spot); Cancel ends and keeps the samples.",
-                                       "go on")
+        try:
+            while True:
+                here = ctx.kinematics.base_pose(run.serial)
+                if spot is None or new_spot(spot, here):
+                    spot, checked = here, None
+                    self._pose_states, self._pose_samples = [("pending", "")] * count, {}
+                if checked is None or base_moved(checked, here):
+                    await self._check_poses(ctx)
+                    checked = here
+                pending = [index for index, (state, _) in enumerate(self._pose_states) if state == "pending"]
+                if not pending:
+                    break
+                joints = arm.joint_vector()
+                if joints is None:
+                    raise RuntimeError("no joint state of the arm")
+                index, goal = nearest_pose(run.validation_poses, pending, joints, *run.limits, run.stow)
+                if not await procedure.pausable(self._visit(ctx, index, goal)):
+                    left = len([state for state, _ in self._pose_states if state == "pending"])
+                    await procedure.ask_go(ctx, f"Stopped with {left} of {count} poses left here. Go goes on (drive "
+                                                f"first for another spot); Cancel ends and keeps the samples.",
+                                           "go on")
+        finally:
+            # * Whatever ends it: a Sample poses here at the next spot replaces this one while it waits for Go.
+            if len(run.validation_files) > before:
+                self.write_outputs(ctx)
         if len(run.validation_files) == before:
             raise RuntimeError("no validation pose reachable here: drive elsewhere")
 
+    def write_outputs(self, ctx: PluginContext) -> None:
+        """Write the analysis and, under a current solution, the old pipeline's validation log and figures."""
+        run = self.run
         # * The validation outputs read the files in place: current spots archived before come back first.
         run.tidy()
         run.save(start=True)
@@ -177,16 +185,16 @@ class Validate(CalibrationStep):
         run = self.run
         old = len(run.validation_files) - len(run.current_validation_files())
         return run.validation_verdict() + [
-            Check("out of date", WARN, f"{old} samples were taken with another tool body or before a refine: they no "
+            Check("old samples", WARN, f"{old} samples were taken with another tool body or before a refine: they no "
                                        f"longer count, sample again", str(old))
-            if old else Check("out of date", GOOD, "none", "0")]
+            if old else Check("old samples", GOOD, "none", "0")]
 
     def ready(self, ctx: PluginContext) -> list[Check]:
-        """Validation poses, a tool body; the checklist and marker errors, the safety boxes; no solution needed."""
-        run = self.run
-        return [Check("poses", GOOD, f"{len(run.validation_poses)} validation poses") if run.validation_poses else
-                Check("poses", BAD, f"data/calibration/sweeps.yaml lists no validation poses for {run.arm}"),
-                tool_body_check(self.cal), *self.needs_checks(ctx)]
+        """A tool body; the checklist and marker errors, the safety boxes; no solution needed.
+
+        Setup's sweeps chip says whether the arm has validation poses.
+        """
+        return [tool_body_check(self.cal), *self.needs_checks(ctx)]
 
     def draw(self, ctx: PluginContext) -> None:
         """A chip per spot, per pose at this spot and its marker error; in the scene the samples, targets and spots."""

@@ -11,7 +11,7 @@ from ....colors import rgb
 from ....shared.guide.panel import set_changed
 from ....ui.style import BUSY, FAIL, indented, warning, wrapped
 from ....world.checks import BAD, Check
-from ..analysis.checks import DRIVE_SECONDS, PRECONDITION_HOLDS, MARKER_ERROR_LIMIT, marker_checks
+from ..analysis.checks import DRIVE_SECONDS, MARKER_ERROR_LIMIT, marker_checks
 from .base import CalibrationStep
 
 if TYPE_CHECKING:
@@ -34,12 +34,10 @@ class MarkerError(CalibrationStep):
     """
 
     name = "Marker error"
-    instructions = ("Drive around with the D-pad, turning both ways, so Motive sees the rigid bodies from new angles; "
-                    "their marker errors must stay small. If one does not: look at its markers and Recheck; if it "
-                    "stays large, Refine that body in Motive while driving; it ends here once Motive applied it. A "
-                    "measurement holds for "
-                    f"{PRECONDITION_HOLDS / 60:.0f} min.")
+    instructions = ("Drive with the D-pad for 5 s, turning both ways, and stop where the robot will record its takes, "
+                    "with room all round. If a body turns red, follow the note above.")
     drives = moves_robot = precondition = True
+    watches = ("base", "tool")
     needs = ("Setup",)
     on_laptop = "Refining a body: on the laptop, beside Motive."
 

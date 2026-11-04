@@ -28,7 +28,7 @@ from ...ui.phone import big_buttons, phone_text
 from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, again_label
 from ...colors import INK, rgb
 from ...ui.style import (BUSY, CURRENT, FAIL, LEVEL_COLORS, NONE, OK, SECTION_CTRL, WHITE, block, check_chip, chip,
-                         chip_line, hover, note, section, warning)
+                         chip_line, chip_row, hover, note, section, warning)
 from ...world.checks import WARN, Check
 from ..planner.planner_panel import SLIDER_STEP
 from .both_pages import BothPages, on_both
@@ -353,7 +353,8 @@ class GuidePanel:
         step = self.current
         states = [each.state(ctx) for each in self.steps]
         names = [each.name for each in self.steps]
-        needed = {names.index(name) for name in step.needs if self.steps[names.index(name)].expired(ctx) is not None}
+        needed = {names.index(name) for name in step.needs
+                  if step.need_expired(ctx, self.steps[names.index(name)]) is not None}
         self._title_html.content = section(self.title, SECTION_CTRL,
                                            f"{detail} · step {self.index + 1}/{len(self.steps)}")
         self._list_html.content = block("".join(self._row(index, states[index], index in needed)
@@ -390,9 +391,11 @@ class GuidePanel:
         ready = step.ready(ctx)
         self._status_html.content = (
             section(step.name, CURRENT, state.label)
-            + '<div class="guide-chips">' + block("".join(check_chip(check) for check in step.checks(ctx)))
-            + (block("".join(check_chip(check) for check in ready)) if ready else "") + "</div>")
-        self._line_html.content = chip_line(status + extra)
+            # * Each line named: what the step made, whether its buttons can act now, and what happens now.
+            + '<div class="guide-chips">' + chip_row("result", "".join(check_chip(check) for check in step.checks(ctx)),
+                                                     wrap=True)
+            + (chip_row("ready", "".join(check_chip(check) for check in ready), wrap=True) if ready else "") + "</div>")
+        self._line_html.content = chip_row("now", status + extra)
         question = step.question(ctx)
         # * Why the overview says so, for a state no chip names, below the buttons: Done's question says it once asked.
         why = state.detail if state.label in EXPLAINED_BELOW and state.detail and not asked else ""

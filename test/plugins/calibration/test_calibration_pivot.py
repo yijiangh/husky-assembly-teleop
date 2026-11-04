@@ -52,7 +52,7 @@ def test_tilting_about_one_axis_leaves_the_tip_unknown_along_it():
     """Turns about x alone: the tilt is zero, which the checks show red."""
     pivot = pivot_fit(touching([("x", 0), ("x", 30), ("x", -30), ("x", 15)]))
     assert pivot.tilt < 1e-6
-    assert {c.label: c.level for c in tip_checks(4, pivot, [Pose()] * 4)}[TILT] == BAD
+    assert {c.label: c.level for c in tip_checks(4, pivot)}[TILT] == BAD
 
 
 def test_three_poses_are_needed():
@@ -62,21 +62,20 @@ def test_three_poses_are_needed():
 
 
 def test_tip_checks_from_nothing_to_a_good_fit():
-    """The same chips throughout: pending without a fit; green with enough tilted, close poses and a still base."""
-    none = tip_checks(0, None, [])
-    assert [c.label for c in none] == ["poses", TILT, "fit", "base", "TCP offset"]
-    assert [c.level for c in none] == [BAD, PENDING, PENDING, GOOD, PENDING]
-    good = tip_checks(len(TWO_AXES), pivot_fit(touching(TWO_AXES)), [Pose()] * len(TWO_AXES))
-    assert [c.label for c in good] == [c.label for c in none] and [c.level for c in good] == [GOOD] * 5
+    """The same chips throughout: grey before any pose and without a fit; green with enough tilted, close poses."""
+    none = tip_checks(0, None)
+    assert [c.label for c in none] == ["poses", TILT, "fit", "offset"]
+    assert [c.level for c in none] == [PENDING] * 4
+    assert tip_checks(2, None)[0].level == BAD  # * started, too few
+    good = tip_checks(len(TWO_AXES), pivot_fit(touching(TWO_AXES)))
+    assert [c.label for c in good] == [c.label for c in none] and [c.level for c in good] == [GOOD] * 4
     assert max(len(c.detail) for c in good) <= HOVER_MAX
     assert len(TWO_AXES) >= TIP_POSES
 
 
-def test_tip_checks_warn_on_small_tilts_and_block_on_spread_tips_or_a_moved_base():
-    """Tilts of ±10° only warn; tips 2 mm apart or a base moved 2 mm between poses block."""
+def test_tip_checks_warn_on_small_tilts_and_block_on_spread_tips():
+    """Tilts of ±10° only warn; tips 2 mm apart block. The base is not judged: the target is on the robot."""
     small = [("x", 0), ("x", 10), ("x", -10), ("y", 10), ("y", -10)]
-    levels = {c.label: c.level for c in tip_checks(5, pivot_fit(touching(small)), [Pose()] * 5)}
+    levels = {c.label: c.level for c in tip_checks(5, pivot_fit(touching(small)))}
     assert levels[TILT] == WARN and levels["fit"] == GOOD
-    assert fails(tip_checks(5, pivot_fit(touching(TWO_AXES, noise=2e-3)), [Pose()] * 5))
-    moved = [Pose()] * 4 + [Pose((0.002, 0.0, 0.0))]
-    assert {c.label: c.level for c in tip_checks(5, pivot_fit(touching(TWO_AXES)), moved)}["base"] == BAD
+    assert fails(tip_checks(5, pivot_fit(touching(TWO_AXES, noise=2e-3))))

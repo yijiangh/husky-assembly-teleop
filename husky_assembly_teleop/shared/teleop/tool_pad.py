@@ -76,7 +76,8 @@ def build_tool_step_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on
         label: What the pad moves, for intent names.
         on_step: Called with each click's `tool_step` and the frame it is in (one of FRAMES).
         clearance: Whether the steps keep their clearance.
-        phone: For the phone page: the step size as a row of buttons, where a dropdown opens the keyboard.
+        phone: For the phone page: the step size and the frame as rows of buttons, where a dropdown opens the
+            keyboard.
 
     Returns:
         viser.GuiDropdownHandle | ChoiceRow: The step size, its `value` a key of STEP_SIZES.
@@ -85,8 +86,9 @@ def build_tool_step_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on
     hint = f"How far one click shifts tool0; it turns {turns} with them."
     size = (ChoiceRow(ctx, gui, "Step size", tuple(STEP_SIZES), "0.5 mm", hint) if phone
             else gui.add_dropdown("Step size", tuple(STEP_SIZES), initial_value="0.5 mm", hint=hint))
-    frame = ChoiceRow(ctx, gui, "Frame", FRAMES, ROBOT_FRAME,
-                      "Robot: x forward, y left, z up, whatever the flange's turn. Tool: tool0's own axes.")
+    hint = "Robot: x forward, y left, z up, whatever the flange's turn. Tool: tool0's own axes."
+    frame = (ChoiceRow(ctx, gui, "Frame", FRAMES, ROBOT_FRAME, hint) if phone
+             else gui.add_dropdown("Frame", FRAMES, initial_value=ROBOT_FRAME, hint=hint))
     gui.add_html(PAD_STYLE)
     with gui.add_folder("Tool pad"):
         gui.add_html(PAD_HEADER)

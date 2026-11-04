@@ -13,7 +13,7 @@ from ....ui.style import SECTION_CTRL, hover, indented, note, section
 from ....world.calibration_sessions import sessions_folder
 from ....world.checks import BAD, GOOD, PENDING, WARN, Check
 from ....world.mocap import mocap_check
-from ..analysis.checks import CHECKLIST_BOXES, PRECONDITION_HOLDS, MARKER_KIND, TOOL_BOX, tool_check
+from ..analysis.checks import CHECKLIST_BOXES, MARKER_KIND, TOOL_BOX, tool_check
 from ..storage.progress import Progress, runs
 from ..run import Run
 from .base import EXPIRED, HOLDS, NONE_YET, CalibrationStep, lab_frame_check, relay_up_check
@@ -47,7 +47,7 @@ class Setup(CalibrationStep):
 
     name = "Setup"
     precondition = True
-    instructions = "Choose the arm. Mount the tool body on its flange, clear the area, and tick the checklist."
+    instructions = "Choose the arm, or a run to resume. Mount the tool body on its flange, then tick the checklist."
 
     def __init__(self, cal: Calibration, choices: list[str]):
         """Offer `choices`, "<serial> <arm>" of every arm with sweeps."""
@@ -137,17 +137,6 @@ class Setup(CalibrationStep):
         why = self.expired(ctx)
         return Check(EXPIRED, WARN, why) if why else Check(HOLDS, GOOD, "every box ticked within the hour")
 
-    def _checklist_check(self) -> Check:
-        """Green while it holds; amber once every box was ticked but some no longer hold; red while one never was."""
-        run = self.run
-        why = run.checklist_expired(self.cal.wall_now())
-        if why is None:
-            return Check("checklist", GOOD, f"all ticked, within the last {PRECONDITION_HOLDS / 60:.0f} min")
-        never = [label for label in CHECKLIST_BOXES if label not in run.ticks]
-        if never:
-            return Check("checklist", BAD, "; ".join(never))
-        return Check("checklist", WARN, f"{why}: tick again once true")
-
     # --- --- --- --- --- CHOICES --- --- --- --- ---
 
     def choose(self, ctx: PluginContext, value: str) -> None:
@@ -232,14 +221,18 @@ class Setup(CalibrationStep):
     # --- --- --- --- --- CHECKS AND DRAWING --- --- --- --- ---
 
     def checks(self, ctx: PluginContext) -> list[Check]:
-        """Live: sweeps, relay, lab frame, both bodies' mocap, arm, tool model, Drive, soft stop; the checklist."""
+        """Live: sweeps and validation poses, relay, lab frame, both bodies' mocap, arm, tool model, Drive, soft stop.
+
+        The checklist has no chip: its boxes are below, and the step's state says whether they hold.
+        """
         run = self.cal.run
         if run is None:
             return [Check("arm", BAD, "no robot with sweeps for one of its arms")]
         robot, now, tool = run.robot, ctx.now(), self.cal.tool
-        checks = [Check("sweeps", BAD, "; ".join(run.problems)) if run.problems else
-                  Check("sweeps", GOOD, f"{len(run.sweeps.sweeps)} takes for this arm"), relay_up_check(run),
-                  lab_frame_check(run)]
+        problems = run.problems + ([] if run.validation_poses else ["no validation poses for this arm"])
+        checks = [Check("sweeps", BAD, "; ".join(problems)) if problems else
+                  Check("sweeps", GOOD, f"{len(run.sweeps.sweeps)} takes and {len(run.validation_poses)} validation "
+                                        f"poses for this arm"), relay_up_check(run), lab_frame_check(run)]
         checks.append(mocap_check("base mocap", robot.base.mocap_id, robot.base.state, now))
         if run.finished:
             checks.append(Check("tool mocap", PENDING, PUNCH_ONLY))
@@ -249,8 +242,13 @@ class Setup(CalibrationStep):
         joints = robot.arms[run.arm].joint_vector()
         checks.append(Check("arm", GOOD if joints is not None else BAD,
                             "joints measured" if joints is not None else "no joint state"))
-        checks.append(tool_check(robot.config.serial, {a.name: a.end_effector for a in robot.config.arms}, run.arm,
-                                 wanted=None if run.finished else MARKER_KIND))
+        tools = {a.name: a.end_effector for a in robot.config.arms}
+        tool_model = tool_check(robot.config.serial, tools, run.arm, wanted=None if run.finished else MARKER_KIND)
+        if run.finished and tools.get(run.arm) == MARKER_KIND:
+            # * Applied with the marker on: nothing is wrong, only Tip offset and Punch want the bare arm.
+            tool_model = Check(tool_model.label, WARN, "applied: for Tip offset and Punch, restart the monitor with "
+                                                       "the bare arm")
+        checks.append(tool_model)
         try:
             run.sessions()
             self._drive_logged = ""
@@ -264,7 +262,6 @@ class Setup(CalibrationStep):
             checks.append(Check("Drive", BAD, hover(str(error))))
         checks.append(Check("soft stop", BAD, "the robot is soft stopped: Resume it") if robot.base.soft_stopped
                       else Check("soft stop", GOOD, "not soft stopped"))
-        checks.append(self._checklist_check())
         return checks
 
     def draw(self, ctx: PluginContext) -> None:

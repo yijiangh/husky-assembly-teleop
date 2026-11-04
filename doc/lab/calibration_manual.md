@@ -52,17 +52,18 @@ ros2 launch husky_assembly_teleop monitor.launch.py robots:="belle" plugins:="ca
 ## The panel
 
 From top to bottom: the overview of the steps (each row its state in short, why on hover); a **Step** folder with Back
-and Next as small arrows (‹ ›) and Done, the main button, which never move; the current step's chips on fixed lines (its
-checks; its ready checks; and a status line, always there and one line high, with what runs now, how the last action
-ended, a base or tool chip while its mocap has a problem and a lease chip while another plugin holds the robot; more
-chips than fit scroll sideways); a **Step controls** folder with the current step's own controls, its readout below
+and Next as small arrows (‹ ›) and Done, the main button, which never move; the current step's chips on named lines
+(**result**: whether what the step made is good enough, which sets its state; **ready**: whether its buttons can act
+now, red refuses; **now**: always there and one line high, with what runs now, how the last action ended, a base or
+tool chip while the mocap of a body the step uses has a problem, and on steps that move the robot a soft stop chip and
+a lease chip while another plugin holds the robot; more chips than fit scroll sideways); a **Step controls** folder with the current step's own controls, its readout below
 them, and, in the steps that run things, **Auto**, **Preview time**, **Play**, **Go** and **Cancel** (Go only where a
 step can wait for you: Record, Validate, Tip offset, Punch; Cancel there, and in Sweeps while the collision check
 runs); then any
 question waiting for Go and Done's question; and last, under "what to do", the step's instructions. Nothing above a
 button changes height while a step shows, so the buttons never jump.
 
-- The overview has a line per step, always nine: its number, its name (bold for the current one, whose number is ringed
+- The overview has a line per step, always ten: its number, its name (bold for the current one, whose number is ringed
   blue), its state and, in short, why (hover for all of it). Steps with a result have a solid number chip: **passes**
   (green), **fails** or **out of date** (red: built from data that changed since, e.g. Record and Solve after the tool
   body changed), **none yet** or **pending** (grey: nothing to judge yet), **accepted** (amber: a failing result you
@@ -161,15 +162,14 @@ button changes height while a step shows, so the buttons never jump.
 
 | Check | Red means | What to do |
 |---|---|---|
-| sweeps | the sweeps file cannot calibrate this arm (too few takes, a waypoint past a joint limit, ...) | fix `data/calibration/sweeps.yaml` |
+| sweeps | the sweeps file cannot calibrate this arm (too few takes, a waypoint past a joint limit, no validation poses, ...) | fix `data/calibration/sweeps.yaml` |
 | relay up | no calibration announcement from the relay (green: which calibration it applies, and its hash) | start the relay in this domain |
 | frame | the relay does not hold the lab frame: not trusted (the anchors and truss cameras disagree), or its floor calibration unreadable; amber: not checked yet or a refit pending; grey: no announcement yet, or no floor calibration applied (takes are then compared in Motive's own frame); hover for why and the anchors it does not see | check the anchors and truss cameras in Motive; apply a floor calibration or use the refit in the mocap probe while no robot drives |
 | base mocap, tool mocap | no usable pose: no messages, lost, or marked invalid by the relay (amber: high marker error) | check Motive, the markers and the Streaming IDs |
 | arm | no joint states | check the arm's driver |
-| tool model | the arm's tool model is not `calibration_marker`, so the collision checks would miss the plate | restart the monitor with the `-p tools:=...` line it shows |
+| tool model | the arm's tool model is not `calibration_marker`, so the collision checks would miss the plate (amber once applied with the marker still modelled: only Tip offset and Punch want the bare arm) | restart the monitor with the `-p tools:=...` line it shows |
 | Drive | the sessions folder is missing; or the robot's base or arm is simulated and the relay reads Motive, or the other way round | set `HUSKY_DRIVE_ROOT`, sync `data_experiment/calibration_data/`; run a simulated robot with a simulation's relay (`sim:=true`) |
 | soft stop | the robot is soft stopped | Resume it (health panel) |
-| checklist | a box was never ticked, or was unticked (amber: every box was ticked, but some tick is over an hour old, or Tool on flange was ticked for another tool model; hover for which and when) | tick it once it is true |
 
 The first tick starts the run: today's session folder and its run file (see [Files](#files)). Before that, a new
 run writes nothing; later the first take, sample, tip pose, punch take or solve would start it. Setup's state is the
@@ -230,11 +230,10 @@ after driving away. Nothing is checked on its own. **Preview take** and **Waypoi
 - Each take gets a chip, and its tool0 path is drawn at the robot as an arc in the same colour, with its waypoints
   as small translucent spheres: grey not checked, green clear, red collides (the reason is in the chip's tooltip
   and the log). Measured points are blue. A colliding take cannot be recorded.
-- **collisions**: grey while not every take is checked (none yet, or a check cancelled half-way); amber when a take
-  collides, naming them.
-- **takes**: red under two clear takes for J0 or J1, amber under four.
-- **base** (second row): amber once the base moved more than 2 cm or 2° since the check, or a check was cancelled
-  half-way: check collisions again. Record refuses to record until then (its **Sweeps** chip is red).
+- **takes**: grey until every take is checked (none yet, or a check cancelled half-way); red under two clear takes
+  for J0 or J1, amber under four; the hover names the takes that collide.
+- **checked here** (second row): amber once the base moved more than 2 cm or 2° since the check, or a check was
+  cancelled half-way: check collisions again. Record refuses to record until then (its **Sweeps** chip is red).
 - ! Do not move the base from here on.
 
 ### 4. Record
@@ -270,11 +269,10 @@ Record every clear take: two per joint are the minimum, four or more are wanted,
 | Check | Means | What to do |
 |---|---|---|
 | takes | red under two good takes for J0 or J1, amber under four | record more |
-| left out (amber) | a take is left out of Solve: a point over 1.5 mm off its circle, or the joint turned one way in under 90 % of the steps (hover for which) | look for a moving base or a loose tool body; record the take again |
-| out of date (amber) | takes recorded with another tool body or before a change to the base body's definition: left out of Solve | record them again |
+| old takes (amber) | takes recorded with another tool body or before a change to the base body's definition: left out of Solve | record them again |
 
-Recording also needs, in the second row: **clear takes**, a **tool body**, the collision check where the base stands
-(**Sweeps**: red refuses), and **area, e-stop** (Go confirms them). **Setup** (the checklist holds) and **Marker
+Recording also needs, in the second row: a **tool body**, a clear take checked where the base stands (**Sweeps**: red
+refuses), and **area, e-stop** (Go confirms them). **Setup** (Tool on flange and Cameras calibrated hold) and **Marker
 error** (measured within the hour, not red) only warn when expired: the take asks at Go first, and then each
 following take on Auto asks again only about what expired since. Done takes you back to the expired step.
 
@@ -307,8 +305,7 @@ mount check counts as applied (the run finished) once Solve wrote it.
 | Check | Meaning |
 |---|---|
 | change vs applied | how far the result is from the calibration the relay applies now (blue, a fact; grey if it applies none) |
-| J0 axis, J1 axis | how well the takes' circles agree on each axis: largest angle of a circle's normal from it, largest distance of a circle's centre (blue, a fact) |
-| axes | angle between J0 and J1 (90° for a perfect arm) and their skew; amber at 1 mm skew or more |
+| axes | angle between J0 and J1 (90° for a perfect arm) and their skew; amber at 1 mm skew or more; the hover also says how well the circles agree on each axis |
 | relay limits | amber if the result is over 5 cm or 5° from crl-husky's default: the relay applies it with a warning (wrong robot, a failed run, or a redefined rigid body?) |
 
 - Solve again whenever the takes change: it replaces the calibration in progress.
@@ -361,8 +358,8 @@ mounted as it was for Record. Expired Setup or marker errors only warn: **Sample
 
 | Check | Level | Meaning |
 |---|---|---|
-| samples | red under 15 | samples over all spots |
-| spots | red under 3 | base spots sampled, and the range of headings |
+| samples | red under 15, grey before the first | samples over all spots |
+| spots | red under 3, grey before the first sample | base spots sampled, and the range of headings |
 | position | amber over 2 mm, red over 5 mm, grey without a current solution | 95 % of the samples within this distance of their mean |
 | orientation | amber over 0.3°, grey without a current solution | 95 % of each tool body axis within this angle of its mean |
 
@@ -404,12 +401,12 @@ tilts, and the plugin solves where the tip sits in tool0. The pendant stays in R
    flange asks to be ticked again (it was ticked for the tool body's model). The run file keeps the other ticks, for an
    hour, also across the restart; older ones need ticking too. Then Done goes on to Tip offset if every step up to
    Apply passes or is accepted; otherwise to the earlier step with work left.
-2. Place the target fixture where the arm reaches it from several spots, and never move it. An A4 sheet behind it
-   helps to see the tip. Leave the base where it is for every pose.
+2. Fix the target fixture on the robot itself, where the arm reaches it, so it moves with the base: the poses are
+   in the robot's frame, from the joints only, and the base may rock. An A4 sheet behind it helps to see the tip.
 3. Per pose: push the tip near the target by hand while holding **Free drive (hold)**, or with **Keep free drive on**
    ticked when you need both hands at the arm; on release (or unticked) the joint controller holds the arm. Put the
-   tip on the target with the tool pad, then **Record tip pose**: once the base and joints stand still for 0.5 s, 1 s
-   of them is averaged. Tilt the punch about two different axes, 30° or more each way: 4–6 poses.
+   tip on the target with the tool pad, then **Record tip pose**: once the joints stand still for 0.5 s, 1 s of them
+   is averaged. Tilt the punch about two different axes, 30° or more each way: 4–6 poses.
 4. Once four poses are in and none of the checks below is red, **Done** makes the fit Punch's TCP offset and goes on
    to Punch (with a red check, Done turns into Accept as is, which accepts the fit and makes it the offset).
    Poses refine the fit, never the offset in use: the step shows **not in use** (amber) until Done there again. An
@@ -423,7 +420,8 @@ tilts, and the plugin solves where the tip sits in tool0. The pendant stays in R
 The **Tool pad** has a row per axis of its **Frame**, coloured as the scene draws axes (x red, y green, z blue): on
 the left shift −/+ along it, on the right turn −/+ about it through the tip, by the **Step size** chosen (0.1 mm and
 0.2° up to 5 mm and 5°). **Robot**, at start, is the robot's frame: x forward, y left, z up, whatever the flange's
-turn (from the joints only: no mocap); **Tool** is tool0's own (z out of the flange). Turning keeps the tip in place once the offset is known (until then it
+turn (from the joints only: no mocap); **Tool** is tool0's own (z out of the flange). Step size and Frame are
+dropdowns on the laptop and rows of buttons on the phone. Turning keeps the tip in place once the offset is known (until then it
 turns about tool0), so after the first pose a new tilt is a few turn clicks and a small shift.
 Each step is a short joint move on the joint controller, solved on the URDF; a step that needs more than 10° on a
 joint (the wrist near straight) is refused: move the arm away by free drive. Only **area, e-stop** red stops free
@@ -435,21 +433,20 @@ target. Free drive is never checked.
 
 | Check | Level | Meaning |
 |---|---|---|
-| Setup (second row) | amber | Setup's checklist does not hold: a box unticked, ticked over an hour ago, or Tool on flange ticked for another tool model: tick it there (Record tip pose asks at Go first) |
+| Setup (second row) | amber | Tool on flange or Cameras calibrated does not hold: unticked, ticked over an hour ago, or Tool on flange ticked for another tool model: tick it there (Record tip pose asks at Go first) |
 | area, e-stop (second row) | red | Area clear or E-stop at hand not ticked within the hour: free drive and the tool pad refuse until they are ticked again in Setup |
 | tool model (second row) | red | the monitor models a tool on the flange, not the bare arm the punch needs: restart it with the `-p tools:=...` line it shows |
-| tcp (second row) | amber, grey while the arm moves | the TCP the arm reports is not tool0 by the kinematics: set the pendant's active TCP to zero (the old punch procedure set it) |
+| pendant TCP (second row) | amber, grey while the arm moves | the TCP the arm reports is not tool0 by the kinematics: set the pendant's active TCP to zero (the old punch procedure set it) |
 | poses | red under 4 | three solve the offset, the fourth checks it |
-| tilt spread (RMS) | amber under 15°, red under 5°, grey under three poses | the poses' RMS turn from their mean about the axis they turn least about, about a third of how far they are turned apart: along it the offset is unknown; ±30° about two axes gives about 18° |
+| tilt | amber under 15°, red under 5°, grey under three poses | the poses' RMS turn from their mean about the axis they turn least about, about a third of how far they are turned apart: along it the offset is unknown; ±30° about two axes gives about 18° |
 | fit | amber over 0.5 mm, red over 1.5 mm, grey under three poses | each pose's tip from the point that fits them all |
-| base | red over 1 mm or 0.05° | the base moved or turned since the first pose: the poses are in the robot's frame; clear them and start again |
-| TCP offset | red outside 50–300 mm, grey under three poses | the length of the solved offset |
+| offset | red outside 50–300 mm, grey under three poses | the length of the solved offset |
 | in use | amber, grey without a fit | Punch uses another TCP offset than this fit: Done makes it Punch's |
 
 ### 9. Punch
 
-Optional, and the old procedure's last check: a punch tip touches one fixed target from several base spots; under a
-good calibration every take puts the tip at the same point in the world. Each take keeps the base rigid body's own
+Optional, and the old procedure's last check: a punch tip touches one target, fixed in the room (not Tip offset's on
+the robot), from several base spots; under a good calibration every take puts the tip at the same point in the world. Each take keeps the base rigid body's own
 pose, the joints, the TCP offset used, the calibration the relay applied and the lab frame (`lab_from_raw`), so the
 takes are judged under the current solution (or, without one, the calibration the relay applies) and the TCP offset
 now: a new solution, another offset or Apply keep them. A floor calibration applied or a refit used moves the lab frame
@@ -464,20 +461,21 @@ count). Takes, validation samples and tip poses do not depend on it: each uses t
 3. If the target moved, press **Target moved**: the takes so far go out of date.
 
 Punch measures; it has no marker precondition. Below its buttons, **markers** shows the base body's marker error now
-(the **base markers now** chip, red over 2 mm, with the number on its own line below the chips) and the one stored with each take (unknown, "?", for a take from an older punch
+(the **base markers now** chip, red over 2 mm or while the base is not tracked, with the number on its own line
+below the chips) and the one stored with each take (unknown, "?", for a take from an older punch
 file). A take made while it was red is still recorded, and counted in the **takes** check's detail, e.g. "1 taken with the
 base marker error over 2 mm".
 
 | Check | Level | Meaning |
 |---|---|---|
 | Setup, area, e-stop (second row) | amber, red | as in Tip offset; the D-pad too refuses while area, e-stop is red |
-| TCP offset (second row) | red outside 50–300 mm | the length of the offset; Record punch take needs it |
-| tool model, tcp (second row) | red, amber | as in Tip offset |
+| TCP offset (second row) | red unset or outside 50–300 mm | the length of the offset; Record punch take needs it |
+| tool model, pendant TCP (second row) | red, amber | as in Tip offset |
 | takes | red under 4 | 4–6 is the old target; takes from before a base refine, a remount, a target move or a lab frame move are out of date and left out; takes made while the base marker error was red are counted (hover) |
 | tip spread | amber over 2 mm, red over 5 mm, grey under two takes | every tip's distance from their mean, under the current solution and TCP offset (Belle 20261013, taken with the old scripts: 1.53 mm) |
 | headings | amber under 90°, grey under two takes | the range of base headings over the takes |
 | as taken | amber over 2 mm, grey under two takes | end to end: the tips as taken, under the calibration the relay applied and the TCP offset used then |
-| relay applies (second row) | red | the relay announced no calibrations yet; Record punch take needs to know what it applies, not that it applies one |
+| relay up (second row) | red | the relay announced no calibrations yet; Record punch take needs to know what it applies, not that it applies one |
 | frame (second row) | red, amber | as in Setup, but red too before the relay announced a floor calibration: each take stores the lab frame its tip is compared in, and goes out of date once that frame moves. Amber (not checked yet, a refit pending) and grey (no floor calibration applied) do not refuse: the take stores the frame as it is, and a refit used or a floor calibration applied later puts it out of date |
 
 After a take that is out of date, the next take starts a new file, and the old file moves to `archive/`. Takes from a
@@ -485,6 +483,16 @@ punch file written before the base body's own pose was kept are judged under the
 
 The takes go to `punch_validation/` in the old monitor's format, so `4_punch_validation.py` still analyses them (each
 take with the TCP offset it was taken with; the script refuses a file whose takes used different offsets).
+
+### 10. Overview
+
+The run's result in one place, on the laptop: a row per step with its chips (hover for why), the headline numbers
+(change vs applied, the axis fits, the validation spread, the TCP offset) and the session folder with the figures in
+each of its folders. Its **required** chip is the worst state of Setup to Apply; its **optional** chip that of Tip
+offset and Punch, never worse than amber. It is grey until Apply. **Write figures again** rewrites Solve's,
+Validate's and Punch's figures and the analysis from the current solution and takes. Validate writes its own whenever
+a sampling ends, also when the next spot's **Sample poses here** replaces it. The figures also show in the
+**Results** tab at the right edge.
 
 ## On the phone
 

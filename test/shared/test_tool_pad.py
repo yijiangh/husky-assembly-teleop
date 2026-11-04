@@ -53,3 +53,14 @@ def test_on_the_phone_the_step_size_is_a_row_of_buttons_the_chosen_one_filled_an
     frame.callback(TOOL_FRAME)
     plus_x.callback()
     assert steps[-1][1] == TOOL_FRAME
+
+
+def test_on_the_laptop_the_step_size_and_the_frame_are_dropdowns():
+    """The laptop has room: both choices are dropdowns, the frame at Robot; no row of buttons."""
+    gui = FakeGui()
+    ctx = SimpleNamespace(defer=lambda _label, run, operator_only=False: lambda *_event: run(),
+                          defer_value=lambda _label, run, operator_only=False: run)
+    build_tool_step_inputs(ctx, gui, "0805 ur_arm", lambda _step, _frame: None, ClearanceToggle("hint"))
+    dropdowns = {widget.label: widget.options["initial_value"] for widget in gui.widgets if widget.kind == "dropdown"}
+    assert dropdowns == {"Step size": "0.5 mm", "Frame": ROBOT_FRAME}
+    assert not [widget for widget in gui.widgets if widget.kind == "button_group"]

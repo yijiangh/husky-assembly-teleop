@@ -13,6 +13,7 @@ class.
   s7_apply         the relay reloads and applies the new calibration
   s8_tip           optional, for Punch: the punch tip's offset from poses touching one point, the base still
   s9_punch         optional: the punch tip put onto one fixed target from several base spots
+  s10_overview     every step's verdict, the headline numbers, the figures written
 """
 
 from .s1_setup import Setup
@@ -24,6 +25,7 @@ from .s6_validate import Validate
 from .s7_apply import Apply
 from .s8_tip import TipOffset
 from .s9_punch import Punch
+from .s10_overview import Overview
 
 #: The steps, in order.
-STEPS = (Setup, MarkerError, Sweeps, Record, Solve, Validate, Apply, TipOffset, Punch)
+STEPS = (Setup, MarkerError, Sweeps, Record, Solve, Validate, Apply, TipOffset, Punch, Overview)

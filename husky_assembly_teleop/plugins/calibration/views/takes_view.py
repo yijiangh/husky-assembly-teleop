@@ -8,7 +8,6 @@ as out of date: to record again.
 
 from __future__ import annotations
 
-from html import escape
 from typing import TYPE_CHECKING, Iterable
 
 import numpy as np
@@ -18,7 +17,7 @@ from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.kinematics import link_pose
 
 from ....ui.quaternion import quaternion_to_wxyz
-from ....ui.style import BUSY, CHIP_LINE_STYLE, FAIL, INFO, LEVEL_COLORS, NONE, OK, block, chip, hover
+from ....ui.style import BUSY, FAIL, INFO, LEVEL_COLORS, NONE, OK, chip, chip_row, hover
 from ....world.checks import BAD
 from ..analysis.checks import (LEFT_OUT_LIMITS, left_out_reason, marker_error_detail, marker_error_level,
                                sample_marker_error)
@@ -60,25 +59,6 @@ def take_index(label: str) -> int | None:
     """The take index a dropdown label names, or None for no take."""
     parts = label.split()
     return int(parts[1]) - 1 if len(parts) > 1 and parts[0] == "Take" else None
-
-
-#: The width of a chip row's name, px: every row's chips start at the same place.
-ROW_NAME_WIDTH = 68
-
-
-def chip_row(name: str, chips: str, wrap: bool = False) -> str:
-    """A row of chips after a small grey name in a column of its own: one line high, more chips scroll sideways.
-
-    Args:
-        name: The row's name; "" leaves the column empty.
-        chips: The chips' HTML.
-        wrap: Let the chips wrap onto more lines instead, for rows whose chips are fixed while a step shows.
-    """
-    label = (f'<span title="{escape(name, quote=True)}" style="flex:0 0 {ROW_NAME_WIDTH}px;font-size:0.85em;'
-             f'color:{NONE};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{escape(name)}</span>')
-    body = chips if wrap else f'{CHIP_LINE_STYLE}<div class="chip-line">{chips}</div>'
-    row = f'<div style="display:flex;align-items:baseline">{label}<div style="flex:1;min-width:0">{body}</div></div>'
-    return f'<div style="margin-left:8px">{block(row)}</div>'
 
 
 def marker_chip(text: str, errors: list[dict | None]) -> str:

@@ -4,11 +4,11 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from husky_assembly_teleop.plugins.calibration.analysis.fit import Circle, Take, fit_circle
+from husky_assembly_teleop.plugins.calibration.analysis.fit import Take, fit_circle
 from husky_assembly_teleop.plugins.calibration.robot.sampling import (SAMPLE_TICKS, STILL_TICKS, Reading, Sampler,
                                                                       mean_pose)
 from husky_assembly_teleop.plugins.calibration.analysis.checks import (DRIVE_SECONDS, base_spots, frame_check,
-                                                                       left_out_check, marker_checks,
+                                                                       marker_checks,
                                                                        marker_error_detail, marker_error_level,
                                                                        pose_change, punch_checks,
                                                                        sample_marker_error, spot_groups, take_checks,
@@ -17,7 +17,6 @@ from husky_assembly_teleop.plugins.calibration.analysis.checks import (DRIVE_SEC
 from husky_assembly_teleop.robot_interface.mocap_relay import (FRAME_ERROR, FRAME_HELD, FRAME_NONE, FRAME_REFIT_PENDING,
                                                                FRAME_UNCHECKED, FRAME_UNTRUSTED, FloorCalibrationState)
 from husky_assembly_teleop.shared.guide.step import fails
-from husky_assembly_teleop.ui.style import HOVER_MAX
 from husky_assembly_teleop.world.checks import BAD, GOOD, PENDING, WARN
 from scaffolding_assembly_core.geometry import Pose, compose
 
@@ -83,24 +82,10 @@ def test_a_take_must_fit_its_circle_and_sweep_one_way():
     assert WARN in {c.level for c in take_checks("t", fit_circle(Take(0, circle[shuffled], angles)))}
 
 
-def test_the_takes_left_out_are_named_in_short():
-    """The left out chip names each take left out and why in a few words, the first two and how many more."""
-    angles = np.radians(np.arange(0, 360, 12))
-    circle = np.column_stack([0.5 * np.cos(angles), 0.5 * np.sin(angles), np.zeros_like(angles)])
-    noisy = fit_circle(Take(0, circle + np.random.default_rng(0).normal(0, 2e-3, circle.shape), angles))
-    check = left_out_check([(1, fit_circle(Take(0, circle, angles)))] + [(number, noisy) for number in range(2, 32)])
-    assert check.value == "30" and len(check.detail) <= HOVER_MAX
-    assert check.detail.startswith("to record again: take 2 (fit ") and " +28; limits 1.5 mm off" in check.detail
-    # * Far off and unswept takes with long numbers: the hover is cut at a word and points at the take chips.
-    wild = Circle(np.zeros(3), np.array([0.0, 0.0, 1.0]), 0.5, np.array([12.0]), 0.1)
-    cut = left_out_check([(number, wild) for number in range(1000, 1012)])
-    assert cut.value == "12" and cut.detail.endswith("… full text in the take chips")
-
-
 def test_two_takes_per_joint_are_enough_and_four_wanted():
-    """Under two takes for a joint is red, two or three amber, four or more green."""
-    assert [take_count_check(counts, "clear").level for counts in ((1, 6), (2, 6), (6, 3), (4, 4))] == \
-        [BAD, WARN, WARN, GOOD]
+    """Under two takes for a joint is red, none at all too (every take left out or colliding), two or three amber."""
+    assert [take_count_check(counts, "clear").level for counts in ((0, 0), (1, 6), (2, 6), (6, 3), (4, 4))] == \
+        [BAD, BAD, WARN, WARN, GOOD]
 
 
 def test_validation_samples_are_judged_as_the_position_check():
@@ -143,15 +128,16 @@ def test_validation_needs_samples_at_spots_and_judges_the_spread():
 
 
 def test_punch_checks_the_offset_the_takes_and_the_tip_spread():
-    """The offset must be a plausible length; 4 takes are needed; the tips' spread and headings judged from two."""
+    """A set, plausible offset; 4 takes, grey before the first; the tips' spread and headings judged from two."""
     offset = np.array([0.0006, 0.0016, 0.1105])
     assert tcp_offset_check(offset).level == GOOD and tcp_offset_check(offset * 10).level == BAD
+    assert tcp_offset_check(np.zeros(3)).level == BAD and "none yet" in tcp_offset_check(np.zeros(3)).detail
     tips = np.array([[1.0, 2.0, 0.5]] * 4) + np.array([[0, 0, 0], [0.001, 0, 0], [0, 0.001, 0], [0, 0, 0.001]])
     bases = [_at(0.0, yaw) for yaw in (0.0, 45.0, 90.0, 135.0)]
     levels = {c.label: c.level for c in punch_checks(tips, bases)}
     assert levels == {"takes": GOOD, "tip spread": GOOD, "headings": GOOD}
     none = punch_checks(tips[:0], [])
-    assert list(levels) == [c.label for c in none] and [c.level for c in none] == [BAD, PENDING, PENDING]
+    assert list(levels) == [c.label for c in none] and [c.level for c in none] == [PENDING, PENDING, PENDING]
     assert fails(punch_checks(tips[:2], bases[:2]))
     far = tips + np.array([[0.01, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]])
     assert {c.label: c.level for c in punch_checks(far, bases)}["tip spread"] == BAD

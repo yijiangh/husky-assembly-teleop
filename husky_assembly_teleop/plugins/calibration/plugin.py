@@ -156,8 +156,9 @@ class CalibrationPlugin(HuskyPlugin):
         names = [step.name for step in self.steps]
         needs = self.steps[work].needs
         after = self.panel.index if from_here and self.panel.current.name in needs else -1
+        target = self.steps[work]
         expired = [names.index(name) for name in needs
-                   if names.index(name) > after and self.cal.steps[name].expired(ctx) is not None]
+                   if names.index(name) > after and target.need_expired(ctx, self.cal.steps[name]) is not None]
         return min(expired, default=work)
 
     def show_work_left(self, ctx: PluginContext) -> str:
@@ -195,20 +196,25 @@ class CalibrationPlugin(HuskyPlugin):
         self.cal.results.draw()
 
     def _live(self, ctx: PluginContext) -> str:
-        """Chips for live problems: the arm too close for Go, a body's mocap (not in Setup), and a lease in the way."""
-        run, tool, procedure = self.cal.run, self.cal.tool, self.cal.procedure
+        """Chips for the current step's live problems: Go too close, a watched body's mocap, a soft stop, a lease."""
+        run, tool, procedure, step = self.cal.run, self.cal.tool, self.cal.procedure, self.panel.current
         # * Watched where Go moves the arm, until a procedure moves it: Go's Clearance refuses a start too close.
-        goes = run is not None and self.panel.current.goes and (procedure.waiting or not procedure.running)
+        goes = run is not None and step.go_moves and (procedure.waiting or not procedure.running)
         procedure.clearance.watch(ctx, run.serial if goes else None, ARM_STOP_DISTANCE)
         if run is None:
             return ""
         now = ctx.now()
         html = procedure.clearance.start_chip("Go") if goes else ""
-        if self.panel.index != 0:
-            live = [mocap_check("base", run.robot.base.mocap_id, run.robot.base.state, now)]
-            if tool is not None:
-                live.append(mocap_check("tool", tool.mocap_id, tool, now))
-            html += "".join(check_chip(check) for check in live if check.level != GOOD)
+        live = []
+        if "base" in step.watches:
+            live.append(mocap_check("base", run.robot.base.mocap_id, run.robot.base.state, now))
+        if "tool" in step.watches and tool is not None:
+            live.append(mocap_check("tool", tool.mocap_id, tool, now))
+        html += "".join(check_chip(check) for check in live if check.level != GOOD)
+        if not step.moves_robot:
+            return html
+        if run.robot.base.soft_stopped:
+            html += chip("soft stopped", FAIL, "the robot is soft stopped: Resume it in Health")
         lease = run.robot.lease_slot.lease
         # * The lease only when it is in the way: held by someone else, not the planner moving for us.
         if lease is not None and not lease.holder.startswith(self.name) and not procedure.running:

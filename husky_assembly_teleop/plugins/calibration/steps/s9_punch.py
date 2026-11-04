@@ -14,6 +14,7 @@ from scaffolding_assembly_core.kinematics import link_pose
 from ....shared.guide.both_pages import on_both
 from ....ui.phone import phone_text
 from ....ui.style import check_chip, hover, indented
+from ....robot_interface.mocap_state import mocap_problem
 from ....world.checks import BAD, PENDING, WARN, Check
 from ..analysis.checks import (MARKER_ERROR_LIMIT, MARKER_ERROR_WARN, marker_error_level, punch_as_taken_check,
                                punch_checks, sample_marker_error, tcp_offset_check)
@@ -40,10 +41,9 @@ class Punch(CalibrationStep):
     """
 
     name = "Punch"
-    instructions = ("Optional, the old procedure's last check, with the TCP offset from Tip offset (or entered in "
-                    "mm), onto the target fixed in Tip offset. Per take: drive to a new spot, push the tip near the "
-                    "target while holding Free drive (hold) (or with Keep free drive on), put it on the target with "
-                    "the tool pad, then Record punch take. Target moved if it did.")
+    instructions = ("Optional: a last check, with the punch tip on a target fixed in the room where the arm reaches it "
+                    "from several spots. For 4–6 takes: drive to a new spot turned another way, put the tip on the "
+                    "target as in Tip offset, then press Record punch take. If the target moved, press Target moved.")
     drives = goes = cancels = moves_by_hand = moves_robot = True
     needs = ("Setup",)
     on_laptop = "The TCP offset is entered on the laptop."
@@ -114,8 +114,14 @@ class Punch(CalibrationStep):
         file = run.add_punch_take(take, name)
         ctx.log_info(f"punch take {len(run.punch_takes)}: tip at {np.round(tip.position, 4).tolist()} in {file}")
         run.save(start=True)
-        ctx.spawn("punch outputs", self.cal.results.write_and_show(ctx, run, write_punch_outputs, run.session, index),
-                  survives_soft_stop=True)
+        self.write_outputs(ctx)
+
+    def write_outputs(self, ctx: PluginContext) -> None:
+        """Write the old pipeline's punch figures of the current punch file, if it has takes."""
+        if self.run.punch_takes:
+            ctx.spawn("punch outputs", self.cal.results.write_and_show(ctx, self.run, write_punch_outputs,
+                                                                       self.run.session, self._arm_name()[1]),
+                      survives_soft_stop=True)
 
     def _target_moved(self) -> None:
         if self.busy("target move not noted"):
@@ -167,15 +173,20 @@ class Punch(CalibrationStep):
             # * Red here, grey in Setup: a take stores the frame it was made in, and one without would stay current
             # * once the frame moves.
             frame = replace(frame, level=BAD, detail=f"{frame.detail} Each punch take stores the frame its tip is in.")
-        return [*self.needs_checks(ctx), tcp_offset_check(run.punch_offset), relay_up_check(run, "relay applies"),
+        return [*self.needs_checks(ctx), tcp_offset_check(run.punch_offset), relay_up_check(run),
                 frame, punch_tool_check(run), self.cal.tcp_check(ctx, run)]
 
-    def live_markers(self) -> Check:
-        """The base body's marker error now: red over MARKER_ERROR_LIMIT; it only warns, a take is still recorded.
+    def live_markers(self, now: float) -> Check:
+        """The base body now: red while not tracked or over MARKER_ERROR_LIMIT; it only warns.
 
-        No number: the chip shares its handle with the take chips; the number has a handle of its own (`draw`).
+        - A take still waits for tracking (`still_arm`), and is recorded over the limit.
+        - No number: the chip shares its handle with the take chips; the number has a handle of its own (`draw`).
+        - The live line shows no base chip on Punch: this one says it.
         """
-        error = self.run.robot.base.state.marker_error
+        base = self.run.robot.base
+        if problem := mocap_problem(base.mocap_id, base.state, now):
+            return Check("base markers now", BAD, problem)
+        error = base.state.marker_error
         if error is None:
             return Check("base markers now", PENDING, "no marker error from the relay")
         level = marker_error_level(error)
@@ -197,7 +208,7 @@ class Punch(CalibrationStep):
                                                              if len(points) else "—"))
         markers = "".join(marker_chip(f"take {number}", [take.get("marker_errors")])
                           for number, take in enumerate(run.current_punch_takes(), start=1))
-        self._html.content = (chip_row("markers", check_chip(self.live_markers()) + markers)
+        self._html.content = (chip_row("markers", check_chip(self.live_markers(ctx.now())) + markers)
                               + indented(*lines))
         error = run.robot.base.state.marker_error
         self._live_html.content = indented(f"base marker error now: {error * 1e3:.2f} mm" if error is not None else

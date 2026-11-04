@@ -23,15 +23,14 @@ class TipOffset(CalibrationStep):
     """
 
     name = "Tip offset"
-    instructions = ("Optional, for Punch, in place of the pendant's TCP wizard. Stop the monitor, swap the tool body "
-                    "for the punch, start the monitor with the bare arm and choose this run in Setup: it opens at "
-                    "Setup to tick Tool on flange again, then Done comes here. "
-                    "Fix the target where the arm reaches it from several base spots; it must not move until Punch "
-                    "is done. Leave the base where it is. Per pose: push the tip near the target while holding Free "
-                    "drive (hold) (or with Keep free drive on), put it on the target with the tool pad, then Record "
-                    "tip pose. Tilt the punch about two different axes, 30° or more each way. Once the checks pass, "
-                    "Done makes the fit Punch's TCP offset.")
+    instructions = ("Optional, for Punch. Stop the monitor, swap the tool body for the punch, start it with the bare "
+                    "arm, choose this run and tick Tool on flange again. Fix the target on the robot itself, where the "
+                    "arm reaches it. For 4–6 poses: push the tip near the target while holding Free drive (hold), put "
+                    "it on the target with the tool pad, then press Record tip pose. Tilt the punch 30° or more each "
+                    "way about two axes. Done then makes the fit Punch's TCP offset.")
     goes = cancels = moves_by_hand = moves_robot = True
+    #: The target is on the robot: the poses are in the robot's frame, from the joints alone.
+    uses_mocap = False
     needs = ("Setup",)
     on_laptop = ""
 
@@ -64,18 +63,19 @@ class TipOffset(CalibrationStep):
     def enter(self, ctx: PluginContext) -> None:
         """Move by hand; with current poses, ask whether the punch was remounted since."""
         super().enter(ctx)
-        self._asking = bool(self.run.current_tip()[0])
+        self._asking = bool(self.run.current_tip())
 
     def leave(self, ctx: PluginContext) -> None:
         """Stop asking."""
         self._asking = False
 
     async def _record(self, ctx: PluginContext) -> None:
-        """Wait until the base and arm stand still, and keep the pose: the punch was not remounted, then."""
+        """Wait until the arm stands still, and keep the pose: the punch was not remounted, then."""
         run = self.run
-        base, joints = await self.cal.motion.still_arm(ctx, run, "tip pose")
+        # * The target is on the robot: the base may rock, the pose holds in the robot's frame.
+        _base, joints = await self.cal.motion.still_arm(ctx, run, "tip pose", with_base=False)
         self._asking = False
-        run.add_tip_pose(joints, base)
+        run.add_tip_pose(joints)
         run.save(start=True)
         pivot = run.tip_pivot()
         ctx.log_info(f"tip pose {len(run.tip_joints)}" + (
@@ -108,7 +108,7 @@ class TipOffset(CalibrationStep):
 
     def out_of_date(self, ctx: PluginContext) -> str | None:
         """Every pose taken before the punch was remounted."""
-        return "the punch was remounted since these poses" if not self.run.current_tip()[0] else None
+        return "the punch was remounted since these poses" if not self.run.current_tip() else None
 
     def state(self, ctx: PluginContext) -> Check:
         """As any result's; a fit that passes or is accepted but is not Punch's TCP offset, not in use (amber)."""
@@ -121,7 +121,7 @@ class TipOffset(CalibrationStep):
         """Shown again with poses: whether the punch was remounted since; Done, or a new pose, answers no."""
         if not self._asking:
             return ""
-        return (f"Punch remounted since these {len(self.run.current_tip()[0])} poses? If so, press Punch remounted: "
+        return (f"Punch remounted since these {len(self.run.current_tip())} poses? If so, press Punch remounted: "
                 f"they go out of date. If not, record more poses or press Done.")
 
     def checks(self, ctx: PluginContext) -> list[Check]:
@@ -142,7 +142,7 @@ class TipOffset(CalibrationStep):
     def draw(self, ctx: PluginContext) -> None:
         """How many poses; the fit and each tip's distance from the fitted point: always 3 lines."""
         run = self.run
-        pivot, current = run.tip_pivot(), len(run.current_tip()[0])
+        pivot, current = run.tip_pivot(), len(run.current_tip())
         old = len(run.tip_joints) - current
         lines = [f"{current} poses" + (f" ({old} more before the punch was remounted: out of date)" if old else ""),
                  "tip offset —", "tips from the fitted point —"]

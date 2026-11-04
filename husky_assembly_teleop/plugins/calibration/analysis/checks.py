@@ -37,7 +37,8 @@ PRECONDITION_HOLDS = 3600.0
 #: SAFETY_BOXES must also hold for a robot move, or it is refused (a Go prompt confirms them again).
 TOOL_BOX = "Tool on flange"
 SAFETY_BOXES = ("Area clear", "E-stop at hand")
-CHECKLIST_BOXES = (TOOL_BOX, *SAFETY_BOXES, "Cameras calibrated")
+CAMERAS_BOX = "Cameras calibrated"
+CHECKLIST_BOXES = (TOOL_BOX, *SAFETY_BOXES, CAMERAS_BOX)
 #: A take's circle: largest point error, metres, and how consistently the joint turned one way (`Circle.turn`).
 CIRCLE_ERROR = 1.5e-3
 TURN_MIN = 0.9
@@ -68,7 +69,6 @@ PUNCH_OFFSET = (0.05, 0.3)
 TIP_POSES = 4
 TIP_TILT, TIP_TILT_BAD = 15.0, 5.0
 TIP_WARN, TIP_BAD = 0.5e-3, 1.5e-3
-TIP_BASE_MOVED, TIP_BASE_TURNED = 1e-3, 0.05
 #: The end effector kind of the tool body's mount: the collision checks need its model on the flange.
 MARKER_KIND = "calibration_marker"
 
@@ -226,21 +226,6 @@ def left_out_reason(circle: Circle) -> str | None:
                      if check.level != GOOD) or None
 
 
-def left_out_check(circles: Sequence[tuple[int, Circle]]) -> Check:
-    """Judge the recorded takes' circles together: the takes left out of Solve, and why (`take_checks`).
-
-    Args:
-        circles: Each recorded take's number and circle.
-    """
-    if not circles:
-        return Check("left out", PENDING, "no take recorded yet")
-    why = [f"{number} ({reason})" for number, circle in circles if (reason := left_out_reason(circle))]
-    if not why:
-        return Check("left out", GOOD, "none: every take fits its circle and swept one way", "0")
-    return Check("left out", WARN, hover(f"to record again: take {few(why, 2)}; {LEFT_OUT_LIMITS}", "the take chips"),
-                 str(len(why)))
-
-
 def pose_change(before: Pose, after: Pose) -> tuple[float, float]:
     """How far `after` is from `before`: metres and degrees."""
     change = compose(invert(before), after)
@@ -260,7 +245,7 @@ def new_spot(before: Pose, after: Pose) -> bool:
 
 
 #: The chips `solve_checks` returns, pending before a solution.
-SOLVE_LABELS = ("change vs applied", "J0 axis", "J1 axis", "axes", "relay limits")
+SOLVE_LABELS = ("change vs applied", "axes", "relay limits")
 
 
 def solve_checks(solution: Solution, applied: Pose | None, sanity: str | None) -> list[Check]:
@@ -278,12 +263,11 @@ def solve_checks(solution: Solution, applied: Pose | None, sanity: str | None) -
         metres, degrees = pose_change(applied, solution.footprint)
         checks = [Check("change vs applied", INFO, f"{metres * 1e3:.2f} mm, {degrees:.3f}° from the calibration the "
                         f"relay applies now: what Apply will change", f"{metres * 1e3:.1f} mm")]
-    for name, axis in (("J0", solution.j0), ("J1", solution.j1)):
-        detail = (f"normals within {axis.normal_angles.max():.3f}°, centres within "
-                  f"{axis.center_distances.max() * 1e3:.2f} mm of the line")
-        checks.append(Check(f"{name} axis", INFO, detail))
+    lines = "; ".join(f"{name}: normals within {axis.normal_angles.max():.3f}°, centres within "
+                      f"{axis.center_distances.max() * 1e3:.2f} mm of the line"
+                      for name, axis in (("J0", solution.j0), ("J1", solution.j1)))
     checks.append(Check("axes", GOOD if solution.skew < 1e-3 else WARN,
-                        f"{solution.axes_angle:.3f}° apart, {solution.skew * 1e3:.2f} mm skew",
+                        f"{solution.axes_angle:.3f}° apart, {solution.skew * 1e3:.2f} mm skew.\n{lines}",
                         f"{solution.skew * 1e3:.1f} mm skew"))
     checks.append(Check("relay limits", WARN if sanity else GOOD, f"{sanity}: the relay applies it with a warning"
                         if sanity else "within the relay's sanity limits"))
@@ -308,7 +292,7 @@ def yaw_range(poses: Sequence[Pose]) -> float:
     if len(poses) < 2:
         return 0.0
     yaws = np.sort(np.mod([yaw_degrees(pose) for pose in poses], 360.0))
-    return float(360.0 - np.max(np.diff(np.append(yaws, yaws[0] + 360.0))))
+    return max(0.0, float(360.0 - np.max(np.diff(np.append(yaws, yaws[0] + 360.0)))))
 
 
 def spot_groups(bases: Sequence[Pose]) -> list[list[int]]:
@@ -345,11 +329,13 @@ def validation_checks(distances: np.ndarray | None, angles: np.ndarray | None,
         bases: Each sample's base body pose in the world.
     """
     count, spots = len(bases), base_spots(bases)
-    checks = [Check("samples", GOOD if count >= VALIDATION_SAMPLES else BAD,
+    # * Grey before the first sample: nothing is short yet.
+    checks = [Check("samples", GOOD if count >= VALIDATION_SAMPLES else PENDING if not count else BAD,
                     f"{count} samples; {VALIDATION_SAMPLES} needed", f"{count}/{VALIDATION_SAMPLES}"),
-              Check("spots", GOOD if spots >= VALIDATION_SPOTS else BAD,
-                    f"{spots} base spots far enough apart ({SPOT_DISTANCE:g} m or {SPOT_ANGLE:g}°), "
-                    f"{yaw_range(bases):.0f}° of headings; {VALIDATION_SPOTS} needed", f"{spots}/{VALIDATION_SPOTS}")]
+              Check("spots", GOOD if spots >= VALIDATION_SPOTS else PENDING if not count else BAD,
+                    f"{spots} base spot{'' if spots == 1 else 's'}, each {SPOT_DISTANCE:g} m or {SPOT_ANGLE:g}° from "
+                    f"the others, {yaw_range(bases):.0f}° of headings; {VALIDATION_SPOTS} needed",
+                    f"{spots}/{VALIDATION_SPOTS}")]
     if distances is None or not len(distances):
         return checks + [Check("position", PENDING, "no samples yet"), Check("orientation", PENDING, "no samples yet")]
     p95, worst = float(np.percentile(distances, 95)), float(np.percentile(angles, 95, axis=0).max())
@@ -362,50 +348,46 @@ def validation_checks(distances: np.ndarray | None, angles: np.ndarray | None,
               f"95 % of each axis within {worst:.3f}° (target {VALIDATION_ANGLE:g}°)", f"{worst:.2f}°")]
 
 
-def tcp_offset_check(offset: np.ndarray | None) -> Check:
-    """Judge the TCP offset, tool0 to the punch tip, metres: red outside PUNCH_OFFSET; pending without one."""
+def tcp_offset_check(offset: np.ndarray | None, label: str = "TCP offset") -> Check:
+    """Judge the TCP offset, tool0 to the tip: red unset or outside PUNCH_OFFSET; pending without a fit."""
     if offset is None:
-        return Check("TCP offset", PENDING, "no tip offset solved yet")
+        return Check(label, PENDING, "no tip offset solved yet")
     length = float(np.linalg.norm(offset))
-    return Check("TCP offset", GOOD if PUNCH_OFFSET[0] <= length <= PUNCH_OFFSET[1] else BAD,
-                 f"{length * 1e3:.1f} mm from tool0 (expected {PUNCH_OFFSET[0] * 1e3:g}–{PUNCH_OFFSET[1] * 1e3:g} mm: "
-                 f"from Tip offset, or entered in mm)", f"{length * 1e3:.0f} mm")
+    if length == 0.0:
+        return Check(label, BAD, "none yet: Done in Tip offset, or enter it in mm")
+    return Check(label, GOOD if PUNCH_OFFSET[0] <= length <= PUNCH_OFFSET[1] else BAD,
+                 f"the tip {length * 1e3:.1f} mm from tool0 (expected {PUNCH_OFFSET[0] * 1e3:g}–"
+                 f"{PUNCH_OFFSET[1] * 1e3:g} mm)", f"{length * 1e3:.0f} mm")
 
 
-#: The tip offset's tilt chip (`Pivot.tilt`).
-TILT = "tilt spread (RMS)"
+#: The tip offset's tilt chip (`Pivot.tilt`), and its offset chip.
+TILT, TIP_OFFSET = "tilt", "offset"
 
 
-def tip_checks(count: int, pivot: Pivot | None, bases: Sequence[Pose]) -> list[Check]:
-    """Judge a tip offset's poses: enough, tilted about two axes, tips together, the base still between them.
+def tip_checks(count: int, pivot: Pivot | None) -> list[Check]:
+    """Judge a tip offset's poses: enough, tilted about two axes, tips together, a plausible offset.
+
+    The poses are in the robot's frame: the target is on the robot, so the base need not stand still.
 
     Args:
         count: The poses taken.
         pivot: Their fit, or None with too few.
-        bases: Each pose's base_footprint in the world.
     """
-    poses = Check("poses", GOOD if count >= TIP_POSES else BAD, f"{count} of {TIP_POSES} poses", f"{count}/{TIP_POSES}")
-    moves = [pose_change(bases[0], base) for base in bases[1:]]
-    moved, turned = (max(move[0] for move in moves), max(move[1] for move in moves)) if moves else (0.0, 0.0)
-    still = f"{moved * 1e3:.2f} mm and {turned:.3f}° from the first pose"
-    if moved > TIP_BASE_MOVED or turned > TIP_BASE_TURNED:
-        base = Check("base", BAD, f"moved {still} (red over {TIP_BASE_MOVED * 1e3:g} mm or {TIP_BASE_TURNED:g}°): "
-                                  f"the poses are in the robot's frame; clear them and start again")
-    else:
-        base = Check("base", GOOD, f"within {still}")
+    poses = Check("poses", GOOD if count >= TIP_POSES else PENDING if count == 0 else BAD,
+                  f"{count} pose{'' if count == 1 else 's'}; {TIP_POSES} needed", f"{count}/{TIP_POSES}")
     if pivot is None:
         needed = f"{PIVOT_MIN_POSES} poses needed"
-        return [poses, Check(TILT, PENDING, needed), Check("fit", PENDING, needed), base, tcp_offset_check(None)]
+        return [poses, Check(TILT, PENDING, needed), Check("fit", PENDING, needed), tcp_offset_check(None, TIP_OFFSET)]
     tilt, worst = np.degrees(pivot.tilt), float(pivot.residuals.max())
     return [poses,
             Check(TILT, GOOD if tilt >= TIP_TILT else WARN if tilt >= TIP_TILT_BAD else BAD,
-                  f"how far the poses turn about the axis they turn least about: want {TIP_TILT:g}°, red under "
+                  f"tilt spread (RMS), about the axis the poses turn least about: want {TIP_TILT:g}°, red under "
                   f"{TIP_TILT_BAD:g}°; tilt the tip about two different axes, ±30° about each gives about 18°",
                   f"{tilt:.0f}°"),
             Check("fit", GOOD if worst <= TIP_WARN else WARN if worst <= TIP_BAD else BAD,
                   f"every tip within {worst * 1e3:.2f} mm of the fitted point (amber {TIP_WARN * 1e3:g}, red "
                   f"{TIP_BAD * 1e3:g} mm)", f"{worst * 1e3:.2f} mm"),
-            base, tcp_offset_check(pivot.offset)]
+            tcp_offset_check(pivot.offset, TIP_OFFSET)]
 
 
 def punch_checks(tips: np.ndarray, bases: Sequence[Pose]) -> list[Check]:
@@ -415,7 +397,8 @@ def punch_checks(tips: np.ndarray, bases: Sequence[Pose]) -> list[Check]:
         tips: (n, 3) each take's tip in the world, metres.
         bases: Each take's base_footprint in the world.
     """
-    checks = [Check("takes", GOOD if len(tips) >= PUNCH_TAKES else BAD, f"{len(tips)} of {PUNCH_TAKES} takes",
+    checks = [Check("takes", GOOD if len(tips) >= PUNCH_TAKES else PENDING if not len(tips) else BAD,
+                    f"{len(tips)} take{'' if len(tips) == 1 else 's'}; {PUNCH_TAKES} needed",
                     f"{len(tips)}/{PUNCH_TAKES}")]
     if len(tips) < 2:
         return checks + [Check("tip spread", PENDING, "two takes needed"),

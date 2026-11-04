@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import viser
 
 from ....world.checks import BAD, GOOD, PENDING, Check
 from ....ui.style import indented
-from ..analysis.checks import SOLVE_LABELS, mount_checks, solve_checks, tcp_offset_check
+from ..analysis.checks import SOLVE_LABELS, mount_checks, solve_checks, take_count_check, tcp_offset_check
 from ..analysis.old_outputs import write_solve_outputs
 from .base import CalibrationStep
 
@@ -20,8 +21,7 @@ class Solve(CalibrationStep):
     """The solution and its written output, built from the good current takes; needs nothing."""
 
     name = "Solve"
-    instructions = ("Solve with the old pipeline's math, and write the session's files. The calibration is written in "
-                    "progress: no relay applies it until Apply.")
+    instructions = "Press Solve and write. Nothing changes on the robot until Apply."
     on_laptop = "Solve on the laptop."
 
     def build(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
@@ -43,13 +43,19 @@ class Solve(CalibrationStep):
             procedure.outcome = Check("solve not started", BAD, refusal)
             return
         try:
-            solved = run.solve_and_write()
+            run.solve_and_write()
             run.save(start=True)
         except (ValueError, KeyError, OSError) as error:
             procedure.outcome = Check("solve failed", BAD, str(error))
             return
+        self.write_outputs(ctx)
+
+    def write_outputs(self, ctx: PluginContext) -> None:
+        """Write the analysis and, but for a mount check, the old pipeline's files and figures of the solution."""
+        run = self.run
         run.write_analysis()
-        if run.mount_check:
+        solved = run.current_solved()
+        if run.mount_check or solved is None:
             # ? The old pipeline's files are per session, for the arm that calibrates the base: a mount check would
             # ? overwrite them.
             return
@@ -84,10 +90,10 @@ class Solve(CalibrationStep):
         return [solve] + solve_checks(solved.solution, applied, solved.sanity)
 
     def ready(self, ctx: PluginContext) -> list[Check]:
-        """A good take to solve from."""
-        good = self.run.good_takes()
-        return [Check("good takes", GOOD, f"{len(good)} takes pass their checks") if good else
-                Check("good takes", BAD, "no take passes its checks: record takes")]
+        """Enough good takes per joint to solve from: red under 2 a joint, as Record's takes chip."""
+        run = self.run
+        counts = [sum(run.sweeps.sweeps[index].joint == joint for index in run.good_takes()) for joint in (0, 1)]
+        return [replace(take_count_check(counts, "pass their checks"), label="good takes")]
 
     def draw(self, ctx: PluginContext) -> None:
         """How many takes are good, and what was written."""

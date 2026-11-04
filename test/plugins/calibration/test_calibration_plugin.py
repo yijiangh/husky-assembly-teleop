@@ -365,7 +365,7 @@ def test_done_goes_to_the_work_left_through_the_preconditions_it_needs(server, t
     """
     plugin, ctx, _ = make_plugin(server, tmp_path, monkeypatch)
     panel, run = plugin.panel, plugin.cal.run
-    assert states(plugin, ctx) == ["none yet"] * 9
+    assert states(plugin, ctx) == ["none yet"] * 10
     tick_setup(plugin)
     assert done(plugin, ctx) == 1  # * Record is the work left; Marker error and Sweeps, which it needs, come first
     measure_markers(plugin, ctx)
@@ -381,7 +381,7 @@ def test_done_goes_to_the_work_left_through_the_preconditions_it_needs(server, t
     plugin.steps[4]._solve(ctx)
     assert not fails(plugin.steps[4].checks(ctx)) and run.current_solved().output.is_file()
     assert done(plugin, ctx) == 5
-    assert states(plugin, ctx) == ["holds"] * 3 + ["passes"] * 2 + ["none yet"] * 4
+    assert states(plugin, ctx) == ["holds"] * 3 + ["passes"] * 2 + ["none yet"] * 5
     assert run.acceptances == {}
 
 
@@ -460,7 +460,7 @@ def test_take_chips_say_what_to_do_and_marker_chips_name_the_worst_sample(server
 def test_apply_shows_what_this_run_applied_and_the_relay_live(server, tmp_path, monkeypatch):
     """Applied stays passing when the relay restarts or applies another calibration: a live amber chip says so.
 
-    An earlier solution applied is red and out of date: Apply again, after Solve once the takes changed.
+    An earlier solution applied makes the step out of date: Apply again, after Solve once the takes changed.
     """
     plugin, ctx, _ = make_plugin(server, tmp_path, monkeypatch)
     walk_to_validate(plugin, ctx)
@@ -480,9 +480,8 @@ def test_apply_shows_what_this_run_applied_and_the_relay_live(server, tmp_path, 
     assert {c.label: c.level for c in apply.checks(ctx)}["relay now"] == PENDING
     assert apply.state(ctx).label == "passes" and plugin.cal.show_work_left(ctx) == "Tip offset"
     run.applied_sha = "0" * 64  # * an earlier solution's
-    applied = {c.label: c for c in apply.checks(ctx)}["applied"]
-    assert applied.level == BAD and applied.detail.endswith(": Apply again")
-    assert apply.state(ctx).label == "out of date" and apply.state(ctx).detail == applied.detail
+    assert [c.label for c in apply.checks(ctx)] == ["relay now"]  # * whether this run applied is the state
+    assert apply.state(ctx).label == "out of date" and apply.state(ctx).detail.endswith(": Apply again")
     monkeypatch.setattr(run, "current_solved", lambda: None)  # * the takes changed since
     assert apply.state(ctx).detail.endswith(": Solve, then Apply again")
 
@@ -497,7 +496,7 @@ def test_done_at_an_expired_precondition_goes_on_to_the_work_it_is_needed_by(ser
     run.accept("Validate")
     press_go_when_asked(ctx, plugin.cal.procedure)
     apply.start(ctx, "reload", apply._reload(ctx))
-    assert states(plugin, ctx)[5:] == ["accepted", "passes", "none yet", "none yet"]
+    assert states(plugin, ctx)[5:] == ["accepted", "passes", "none yet", "none yet", "passes"]
     run.ticks["Cameras calibrated"] -= PRECONDITION_HOLDS + 60
     plugin.panel.show(ctx, 0)
     assert plugin.steps[0].state(ctx).label == "expired"
@@ -531,7 +530,7 @@ def test_setup_apply_and_punch_need_the_relay_to_have_announced_its_calibrations
 
     def up() -> list:
         return [{c.label: c.level for c in checks}[label] for checks, label in
-                ((setup.checks(ctx), "relay up"), (apply.ready(ctx), "relay up"), (punch.ready(ctx), "relay applies"))]
+                ((setup.checks(ctx), "relay up"), (apply.ready(ctx), "relay up"), (punch.ready(ctx), "relay up"))]
 
     assert up() == [GOOD] * 3
     ctx.world.mocap_relay.state.calibrations_time = None
@@ -603,12 +602,12 @@ def test_the_overview_draws_results_solid_and_preconditions_dashed(server, tmp_p
     plugin, ctx, _ = make_plugin(server, tmp_path, monkeypatch)
     walk_to_validate(plugin, ctx)
     rows = plugin.panel._list_html.content.split('<div style="display:flex')[1:]
-    assert len(rows) == 9 and [("dashed" in row) for row in rows] == [True] * 3 + [False] * 6
+    assert len(rows) == 10 and [("dashed" in row) for row in rows] == [True] * 3 + [False] * 7
     assert "dotted" not in plugin.panel._list_html.content
     ctx.wall += PRECONDITION_HOLDS + 60
     plugin.draw(ctx)
     rows = plugin.panel._list_html.content.split('<div style="display:flex')[1:]
-    assert [("dotted" in row) for row in rows] == [True, True] + [False] * 7  # * Validate needs Setup, Marker error
+    assert [("dotted" in row) for row in rows] == [True, True] + [False] * 8  # * Validate needs Setup, Marker error
     assert ">expired<" in rows[0] and "min ago" in rows[0]
 
 
@@ -674,11 +673,11 @@ def test_a_resumed_run_comes_back_with_its_results_at_the_work_left(server, tmp_
     # * Tool on flange ticked for another tool (a relaunch with the punch): back to Setup, that box unticked.
     assert resumed_at(marker_time=ctx.wall, tool_ticked_for="scaffolding_v3") == 0
     assert [box.label for box in setup._checklist.boxes if not box.value] == ["Tool on flange"]
-    checklist = {c.label: c for c in setup.checks(ctx)}["checklist"]
+    checklist = setup.state(ctx)  # * the checklist's chip is Setup's state
     assert checklist.level == WARN and checklist.detail.startswith("Tool on flange ticked for scaffolding_v3")
 
 
-def test_after_a_restart_an_expired_checklist_is_amber_and_one_never_ticked_red(server, tmp_path, monkeypatch):
+def test_after_a_restart_an_expired_checklist_is_amber_and_one_never_ticked_none_yet(server, tmp_path, monkeypatch):
     """The run file keeps the ticks: past PRECONDITION_HOLDS the boxes untick; Setup says when each was ticked."""
     plugin, ctx, _ = make_plugin(server, tmp_path, monkeypatch)
     walk_to_validate(plugin, ctx)
@@ -692,14 +691,14 @@ def test_after_a_restart_an_expired_checklist_is_amber_and_one_never_ticked_red(
         setup.refresh_runs()
         setup._on_run_choice(ctx, next(label for label, p in setup._runs.items() if p.file == file))
         plugin.draw(ctx)
-        return {c.label: c for c in setup.checks(ctx)}["checklist"]
+        return setup.state(ctx)
 
     ctx.wall += PRECONDITION_HOLDS + 60
     expired = restarted()
     assert expired.level == WARN and "Area clear ticked" in expired.detail and "61 min ago" in expired.detail
     assert plugin.panel.index == 0 and not any(box.value for box in setup._checklist.boxes)
     assert "Area clear ticked" in setup.expired(ctx) and setup.state(ctx).label == "expired"
-    assert restarted(ticks={}).level == BAD
+    assert restarted(ticks={}).level == PENDING
 
 
 def test_a_checklist_ticked_in_part_is_none_yet_and_done_asks_once_more(server, tmp_path, monkeypatch):
@@ -875,10 +874,9 @@ def test_the_procedures_record_solve_validate_apply_tip_and_punch(server, tmp_pa
     metres, degrees = pose_change(solved.applied, solved.solution.footprint)
     # * As the manual's noise-free simulation of Belle: the solver's own error on her calibrated URDF.
     assert not fails(steps[4].checks(ctx)) and metres < 1e-3 and degrees < 0.05
-    # * The change vs applied is against what the relay applies now; with none, there is nothing to compare. It and
-    # * the axes are facts: blue.
-    assert steps[4].checks(ctx)[1].value == f"{metres * 1e3:.1f} mm"
-    assert [c.level for c in steps[4].checks(ctx)[1:4]] == [INFO] * 3
+    # * The change vs applied is against what the relay applies now; with none, there is nothing to compare. It is a
+    # * fact: blue.
+    assert steps[4].checks(ctx)[1].value == f"{metres * 1e3:.1f} mm" and steps[4].checks(ctx)[1].level == INFO
     calibrations = ctx.world.mocap_relay.state.calibrations
     applied = calibrations.pop(run.robot.config.mocap_id)
     assert steps[4].checks(ctx)[1].level == PENDING
@@ -915,7 +913,7 @@ def test_the_procedures_record_solve_validate_apply_tip_and_punch(server, tmp_pa
     assert {c.label: c.level for c in tip.ready(ctx)}["Setup"] == WARN and tip.refusal(ctx) is None
     tick_setup(plugin, ["Tool on flange"])
     ready = {c.label: c.level for c in tip.ready(ctx)}
-    assert ready == {"Setup": GOOD, "area, e-stop": GOOD, "tool model": GOOD, "tcp": GOOD}
+    assert ready == {"Setup": GOOD, "area, e-stop": GOOD, "tool model": GOOD, "pendant TCP": GOOD}
     arm.joints = np.radians([90.0, -100.0, 90.0, -80.0, -90.0, 0.0])
     for joints in tip_poses(run.urdf, arm.joints):
         arm.joints = joints
@@ -932,6 +930,23 @@ def test_the_procedures_record_solve_validate_apply_tip_and_punch(server, tmp_pa
     plugin.draw(ctx)
     assert procedure.outcome is None and len(run.current_punch_takes()) == 1
     assert labels(plugin, ctx) == before
+    # * The Overview: every other step's row, the numbers and the figures each step wrote, written again on request.
+    overview = steps[9]
+    plugin.panel.show(ctx, 9)
+    # * Validate was accepted; Punch, optional, has 1 of 4 takes: amber, never red.
+    assert overview.state(ctx).label == "passes"
+    # * The chip names one step, or counts several; the hover says each step's state.
+    assert [(c.label, c.level, c.value, c.detail) for c in overview.checks(ctx)] == [
+        ("required", WARN, "Validate", "Validate accepted"), ("optional", WARN, "Punch", "Punch fails")]
+    plugin.draw(ctx)
+    content = overview._html.content
+    assert all(f">{step.name}</span>" in content for step in steps[:9]) and ">Overview</span>" not in content
+    assert "validation: 95 % within" in content and "TCP offset: (" in content and str(run.session) in content
+    assert "no figures yet" in content  # * the figures' writers are left out here: they take seconds
+    (run.session / "validation" / "verification_validation.png").write_bytes(b"")
+    overview._write(ctx)
+    plugin.draw(ctx)
+    assert "validation/: verification_validation.png" in overview._html.content
     # * Resumed, the run opens at Punch, the step with work left; Setup asks for the bare arm, not the marker.
     file, setup = run.progress.file, steps[0]
     setup.refresh_runs()
@@ -1006,11 +1021,11 @@ def test_validate_samples_before_solve_and_judges_once_solved(server, tmp_path, 
             record_take(run, joint, take)
     plugin.steps[4]._solve(ctx)
     assert {c.label: c.level for c in validate.checks(ctx)}["position"] == GOOD
-    assert {c.label: c.level for c in validate.checks(ctx)}["out of date"] == GOOD
+    assert {c.label: c.level for c in validate.checks(ctx)}["old samples"] == GOOD
     # * Sampled with another tool body: its chip counts them, and the line below the buttons says why the state is.
     run.validation_files = {path: replace(made, tool_body=made.tool_body + 1)
                             for path, made in run.validation_files.items()}
-    old = {c.label: c for c in validate.checks(ctx)}["out of date"]
+    old = {c.label: c for c in validate.checks(ctx)}["old samples"]
     assert (old.level, old.value) == (WARN, str(len(run.validation_files)))
     assert validate.state(ctx).label == "out of date"
     plugin.draw(ctx)
@@ -1033,11 +1048,15 @@ def test_a_validation_ended_after_a_few_poses_keeps_their_samples(server, tmp_pa
             raise RuntimeError("the arm refused the move")
         taken.append(await sample(*args))
         return taken[-1]
+    written = []
+    monkeypatch.setattr(validate, "write_outputs", written.append)
 
     monkeypatch.setattr(motion, "sample", two_then_fail)
     validate.start(ctx, "validation", validate._validate(ctx))
     assert procedure.outcome.label == "validation failed"
     assert len(run.validation_files) == 2 and run.validation().spot_sizes == [2]
+    # * However it ends (failed, or replaced by Sample poses here at the next spot), what it sampled is written out.
+    assert written == [ctx]
 
 
 def test_tip_offsets_done_commits_the_fit_once_it_passes_or_is_accepted(server, tmp_path, monkeypatch):
@@ -1050,15 +1069,15 @@ def test_tip_offsets_done_commits_the_fit_once_it_passes_or_is_accepted(server, 
     run, tip, panel = plugin.cal.run, plugin.steps[7], plugin.panel
     poses = tip_poses(run.urdf, np.radians([90.0, -100.0, 90.0, -80.0, -90.0, 0.0]))
     for joints in poses[:3]:
-        run.add_tip_pose(joints, FOOTPRINT)
+        run.add_tip_pose(joints)
     panel.show(ctx, 7)
     assert tip.state(ctx).label == "fails" and done(plugin, ctx) == 7 and not run.tip_offset_used()
     done(plugin, ctx)
     assert run.accepted("Tip offset") and run.tip_offset_used()
-    run.add_tip_pose(poses[3], FOOTPRINT)
+    run.add_tip_pose(poses[3])
     assert not run.accepted("Tip offset") and {c.label: c.level for c in tip.checks(ctx)}["in use"] == WARN
     for joints in poses[4:]:
-        run.add_tip_pose(joints, FOOTPRINT)
+        run.add_tip_pose(joints)
     panel.show(ctx, 7)
     plugin.draw(ctx)
     assert "Punch remounted since these 5 poses?" in panel._notes_html.content
@@ -1070,7 +1089,7 @@ def test_tip_offsets_done_commits_the_fit_once_it_passes_or_is_accepted(server, 
     assert "Punch remounted since these 5 poses?" in panel._notes_html.content
     tip._remounted()
     plugin.draw(ctx)
-    assert run.current_tip() == ([], []) and tip.state(ctx).label == "out of date"
+    assert run.current_tip() == [] and tip.state(ctx).label == "out of date"
     assert "Punch remounted since" not in panel._notes_html.content
 
 
@@ -1089,8 +1108,8 @@ def test_punch_shows_the_base_marker_error_now_and_flags_takes_made_while_red(se
     robot.base.state.marker_error = 2.5e-3
     plugin.draw(ctx)
     # * The number in a handle of its own, so the chips' hover holds while it changes.
-    assert punch.live_markers().level == BAD and ">base markers now<" in punch._html.content
-    assert "2.50" not in punch.live_markers().detail and "now: 2.50 mm" in on_phone(punch._live_html).content
+    assert punch.live_markers(ctx.now()).level == BAD and ">base markers now<" in punch._html.content
+    assert "2.50" not in punch.live_markers(ctx.now()).detail and "now: 2.50 mm" in on_phone(punch._live_html).content
     assert "Marker error" not in punch.needs and punch.refusal(ctx) is None
     punch.start(ctx, "punch take", punch._record(ctx))
     assert procedure.outcome is None and run.punch_takes[0]["marker_errors"] == {"base": 2.5e-3}
@@ -1100,7 +1119,7 @@ def test_punch_shows_the_base_marker_error_now_and_flags_takes_made_while_red(se
     robot.base.state.marker_error = 1e-4
     plugin.draw(ctx)
     assert ">take 1 · 2.50 mm<" in punch._html.content and ">take 2 · ?<" in punch._html.content
-    assert punch.live_markers().level == GOOD and "1 taken with" in punch.checks(ctx)[0].detail
+    assert punch.live_markers(ctx.now()).level == GOOD and "1 taken with" in punch.checks(ctx)[0].detail
 
 
 def test_punch_takes_go_out_of_date_once_the_lab_frame_moves(server, tmp_path, monkeypatch):
@@ -1195,9 +1214,9 @@ def test_the_phone_tab_follows_the_laptop_and_moves_the_guide(server, tmp_path, 
     plugin, ctx, _ = make_plugin(server, tmp_path, monkeypatch)
     panel, setup = plugin.panel, plugin.steps[0]
     assert on_phone(panel._status_html).content == f'<div class="phone-text">{panel._status_html.content}</div>'
-    assert [on_phone(folder).visible for folder in panel._folders] == [True] + [False] * 8
+    assert [on_phone(folder).visible for folder in panel._folders] == [True] + [False] * 9
     overview = panel._phone_list_html.content
-    assert overview.count("<span title=") == 9 and overview.count("dashed") == 3 and "box-shadow" in overview
+    assert overview.count("<span title=") == 10 and overview.count("dashed") == 3 and "box-shadow" in overview
     press(on_phone(panel._done_button))
     assert panel.index == 0 and "Done asks again: Setup none yet" in ctx.log[-1]
     boxes = in_folder(server, on_phone(panel._folders[0]))
@@ -1207,7 +1226,7 @@ def test_the_phone_tab_follows_the_laptop_and_moves_the_guide(server, tmp_path, 
     plugin.draw(ctx)
     assert on_phone(panel._done_button).color == panel._done_button.color == rgb(OK)
     press(on_phone(panel._done_button))
-    assert panel.index == 1 and [on_phone(folder).visible for folder in panel._folders] == [False, True] + [False] * 7
+    assert panel.index == 1 and [on_phone(folder).visible for folder in panel._folders] == [False, True] + [False] * 8
     press(on_phone(panel._next_button))
     press(on_phone(panel._back_button))
     press(on_phone(panel._back_button))
@@ -1338,3 +1357,27 @@ def test_the_ghost_shows_only_while_calibration_was_used_last_of_the_plugins_wit
     procedure.preview = 0.5
     plugin.draw(ctx)
     assert ghost.joints is not None
+
+
+def test_each_step_needs_only_the_setup_boxes_it_uses(server, tmp_path, monkeypatch):
+    """Area clear expired: only "area, e-stop" says so where the robot moves; Cameras calibrated: not on Tip offset."""
+    plugin, ctx, _ = make_plugin(server, tmp_path, monkeypatch)
+    tick_setup(plugin)
+    run, steps = plugin.cal.run, plugin.steps
+    setup, record, tip, punch = steps[0], steps[3], steps[7], steps[8]
+    run.ticks["Area clear"] -= PRECONDITION_HOLDS + 60
+    assert setup.expired(ctx) is not None
+    assert record.need_expired(ctx, setup) is None and tip.need_expired(ctx, setup) is None
+    assert {c.label: c.level for c in tip.ready(ctx)}["Setup"] == GOOD
+    assert {c.label: c.level for c in tip.ready(ctx)}["area, e-stop"] == BAD
+    # * Done goes to the work left (Record) by way of what it needs: Marker error, not Setup (Go asks about the box).
+    assert plugin.work_left(ctx) == 1
+    tick_setup(plugin)
+    run.ticks["Cameras calibrated"] -= PRECONDITION_HOLDS + 60
+    assert "Cameras calibrated" in record.need_expired(ctx, setup) and tip.need_expired(ctx, setup) is None
+    assert "Cameras calibrated" in punch.need_expired(ctx, setup)  # * its takes are measured with mocap
+    plugin.panel.show(ctx, 3)
+    plugin.draw(ctx)
+    # * Each chip line is named: the step's result, whether its buttons can act, what happens now.
+    assert all(f">{name}</span>" in plugin.panel._status_html.content for name in ("result", "ready"))
+    assert ">now</span>" in plugin.panel._line_html.content

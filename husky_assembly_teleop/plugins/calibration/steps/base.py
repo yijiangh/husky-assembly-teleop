@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Callable, Coroutine
 
 from ....shared.collisions_contract import CollisionsContract
@@ -14,7 +15,7 @@ from ....ui.phone import phone_text
 from ....ui.style import hover
 from ....world.checks import BAD, GOOD, PENDING, WARN, Check
 from ....world.tcp import tcp_check, tool0_by_kinematics
-from ..analysis.checks import SAFETY_BOXES, frame_check, tool_check
+from ..analysis.checks import CAMERAS_BOX, CHECKLIST_BOXES, SAFETY_BOXES, frame_check, tool_check
 from ..robot.driving import Driving
 from ..robot.hand_moves import HandMoves
 from ..robot.motion import ArmMotion
@@ -40,6 +41,8 @@ EXPIRED, HOLDS = "expired", "holds"
 WORK = (NONE_YET, OUT_OF_DATE, FAILS, PENDING_STATE)
 #: The ready chip saying whether Area clear and E-stop at hand hold, which every robot move needs.
 SAFETY = "area, e-stop"
+#: The chip of the arm's reported TCP against tool0 by the kinematics (`Calibration.tcp_check`).
+PENDANT_TCP = "pendant TCP"
 
 
 def tool_body_check(cal: Calibration) -> Check:
@@ -117,8 +120,9 @@ class Calibration:
         key = (run.serial, run.arm)
         check = tcp_check(run.robot.arms[run.arm], tool0_by_kinematics(ctx.kinematics, run.serial, run.arm), ctx.now())
         if check is not None:
-            self._tcps[key] = check
-        return self._tcps.get(key, Check("tcp", PENDING, "judged once the arm stands still"))
+            # * One label at every level, apart from Punch's TCP offset: the pendant's TCP must be zero.
+            self._tcps[key] = replace(check, label=PENDANT_TCP)
+        return self._tcps.get(key, Check(PENDANT_TCP, PENDING, "judged once the arm stands still"))
 
     @staticmethod
     def wall_now() -> float:
@@ -152,6 +156,12 @@ class CalibrationStep(Step):
     moves_by_hand = False
     #: Whether the step's actions move the robot: its ready checks show whether Area clear and E-stop at hand hold.
     moves_robot = False
+    #: Whether Go moves the arm along a planned path: Clearance may refuse it, and Go confirms expired safety boxes.
+    go_moves = False
+    #: The bodies of "base" and "tool" whose live chip the step shows while one is tracked badly.
+    watches: tuple[str, ...] = ()
+    #: Whether the step measures with mocap: it needs Setup's Cameras calibrated (`need_expired`).
+    uses_mocap = True
     #: The steps in `needs` whose expiry refuses the step's actions instead of asking first.
     refused_without: tuple[str, ...] = ()
     #: The step's readout, below its buttons; on the phone too once built there.
@@ -254,11 +264,23 @@ class CalibrationStep(Step):
         """
         return None
 
+    def need_expired(self, ctx: PluginContext, needed: Step) -> str | None:
+        """Why `needed` has expired for this step; of Setup's checklist only the boxes this step needs.
+
+        - The safety boxes have their own chip where the step moves the robot, and Go asks about them there.
+        - Cameras calibrated only where the step measures with mocap (`uses_mocap`): Tip offset uses the joints alone.
+        """
+        if needed.name != "Setup":
+            return needed.expired(ctx)
+        boxes = [box for box in CHECKLIST_BOXES if not (self.moves_robot and box in SAFETY_BOXES)
+                 and not (box == CAMERAS_BOX and not self.uses_mocap)]
+        return self.run.checklist_expired(self.cal.wall_now(), boxes)
+
     def needs_checks(self, ctx: PluginContext) -> list[Check]:
         """A ready chip per step in `needs`, amber once expired (red if `refused_without`); then the safety boxes'."""
         checks = []
         for name in self.needs:
-            why = self.cal.steps[name].expired(ctx)
+            why = self.need_expired(ctx, self.cal.steps[name])
             if why is None:
                 checks.append(Check(name, GOOD, "holds"))
             elif name in self.refused_without:
@@ -268,10 +290,17 @@ class CalibrationStep(Step):
                                                       f"the {name} step")))
         if self.moves_robot:
             why = self.run.safety_expired(self.cal.wall_now())
-            checks.append(Check(SAFETY, BAD, hover(f"{why}: the robot does not move until Go confirms them, or they "
-                                                   f"are ticked in Setup", "Setup's checklist")) if why else
+            checks.append(Check(SAFETY, BAD, hover(f"{why}: {self._unconfirmed()}", "Setup's checklist")) if why else
                           Check(SAFETY, GOOD, "Area clear and E-stop at hand confirmed within the hour"))
         return checks
+
+    def _unconfirmed(self) -> str:
+        """What the step's moves do while Area clear or E-stop at hand were not confirmed within the hour."""
+        hand = (["the D-pad"] if self.drives else []) + (["Free drive", "the tool pad"] if self.moves_by_hand else [])
+        parts = (["Go asks you to confirm them"] if self.go_moves else []) + (
+            [f"{' and '.join([', '.join(hand[:-1]), hand[-1]] if len(hand) > 1 else hand)} "
+             f"refuse{'s' if len(hand) == 1 else ''} until they are ticked in Setup"] if hand else [])
+        return "; ".join(parts) or "nothing moves until they are ticked in Setup"
 
     def refusal(self, ctx: PluginContext) -> str | None:
         """Why the step's actions cannot run now: its red ready checks but the safety boxes', which Go confirms."""
@@ -342,7 +371,7 @@ class CalibrationStep(Step):
                 run.tick(label, True, self.cal.wall_now())
             run.save(start=True)
         expired = {name: why for name in self.needs if name not in self.refused_without + tuple(self._gone_past)
-                   and (why := self.cal.steps[name].expired(ctx)) is not None}
+                   and (why := self.need_expired(ctx, self.cal.steps[name])) is not None}
         if expired:
             await procedure.ask_go(ctx, f"Expired: {'; '.join(f'{name}: {why}' for name, why in expired.items())}. "
                                         f"Go acts anyway, or Cancel and go back to {next(iter(expired))}.",

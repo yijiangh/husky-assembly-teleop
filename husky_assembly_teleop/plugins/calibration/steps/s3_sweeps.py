@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -18,6 +19,9 @@ from .base import CalibrationStep
 if TYPE_CHECKING:
     from ....plugin_api.context import PluginContext
 
+#: Why Record cannot go on: every take collides where the base stands.
+NONE_CLEAR = "no take clear here"
+
 
 class Sweeps(CalibrationStep):
     """Precondition: the takes' collision checks, holding while the base stands where they were checked; needs nothing.
@@ -27,8 +31,8 @@ class Sweeps(CalibrationStep):
 
     name = "Sweeps"
     precondition = True
-    instructions = ("The arm planner checks every take where the robot stands now; Check collisions again after "
-                    "moving it. Preview a take with the sliders. Don't move the robot after this.")
+    watches = ("base",)
+    instructions = "Press Check collisions, then leave the robot where it stands until every take is recorded."
     on_laptop = "The hits and the take preview show in 3D on the laptop."
 
     def build(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
@@ -81,17 +85,14 @@ class Sweeps(CalibrationStep):
         run.save()
 
     def checks(self, ctx: PluginContext) -> list[Check]:
-        """Every take checked, and enough of them clear; a colliding one is skipped (amber)."""
+        """Enough takes clear per joint, grey until every take is checked; the take chips below name the colliding."""
         run = self.run
-        # * Each take's chip in Step controls says why it collides.
-        colliding = [str(index + 1) for index, why in sorted(run.collisions.items()) if why]
         if len(run.collisions) < len(run.sweeps.sweeps):
-            collisions = Check("collisions", PENDING, "not every take checked: press Check collisions")
-        else:
-            collisions = Check("collisions", WARN if colliding else GOOD,
-                               f"takes {few(colliding, 5)} collide: skipped" if colliding else "every take is clear",
-                               str(len(colliding)))
-        return [collisions, take_count_check([len(run.usable(joint)) for joint in (0, 1)], "clear")]
+            return [Check("takes", PENDING, "not checked yet: press Check collisions")]
+        colliding = [str(index + 1) for index, why in sorted(run.collisions.items()) if why]
+        takes = take_count_check([len(run.usable(joint)) for joint in (0, 1)], "clear")
+        return [replace(takes, detail=f"{takes.detail}; takes {few(colliding, 5)} collide: skipped")
+                if colliding else takes]
 
     def none_yet(self, ctx: PluginContext) -> str | None:
         """Not every take checked yet (none, or a check cancelled half-way): press Check collisions."""
@@ -100,11 +101,15 @@ class Sweeps(CalibrationStep):
     def ready(self, ctx: PluginContext) -> list[Check]:
         """Whether the collision checks hold where the base stands (`expired`): amber, as Record refuses."""
         why = self.expired(ctx)
-        return [Check("base", WARN, why) if why else Check("base", GOOD, "where the collisions were checked")]
+        then = "drive elsewhere in Marker error, then" if why == NONE_CLEAR else ""
+        return [Check("checked here", WARN, f"{why}: {then} press Check collisions".replace(":  ", ": ")) if why else
+                Check("checked here", GOOD, "the base stands where the collisions were checked")]
 
     def expired(self, ctx: PluginContext) -> str | None:
-        """Why the collision checks have expired for Record: not all checked, or the base moved since."""
-        return self.run.collisions_expired(ctx.kinematics.base_pose(self.run.serial))
+        """Why the collision checks have expired for Record: not all checked, the base moved since, or none clear."""
+        run = self.run
+        return run.collisions_expired(ctx.kinematics.base_pose(run.serial)) or (
+            None if run.usable() else NONE_CLEAR)
 
     def preview_joints(self, ctx: PluginContext) -> np.ndarray | None:
         """The previewed take at the previewed waypoint."""
