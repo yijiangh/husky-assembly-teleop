@@ -217,6 +217,15 @@ class GuidePanel:
         owner = self._owner()
         return self.steps[owner].name if owner is not None and owner != self.index else ""
 
+    def _running_chip(self) -> str:
+        """An amber chip saying what the running procedure does: "waits for Go" or "runs"; "" while none runs."""
+        procedure = self.procedure
+        if not procedure.running:
+            return ""
+        if procedure.waiting:
+            return chip("waits for Go", BUSY, f"Go here answers: {procedure.prompt}")
+        return chip("runs", BUSY, f"{procedure.doing or 'Its procedure runs'}; Cancel stops it.")
+
     def _go(self, ctx: PluginContext) -> None:
         """Answer the procedure's question, only on the step that started it."""
         if elsewhere := self._elsewhere():
@@ -355,14 +364,17 @@ class GuidePanel:
         names = [each.name for each in self.steps]
         needed = {names.index(name) for name in step.needs
                   if step.need_expired(ctx, self.steps[names.index(name)]) is not None}
+        owner = self._owner()  # * first: the overview marks the step whose procedure runs
         self._title_html.content = section(self.title, SECTION_CTRL,
                                            f"{detail} · step {self.index + 1}/{len(self.steps)}")
         self._list_html.content = block("".join(self._row(index, states[index], index in needed)
                                                 for index in range(len(self.steps))))
         if self._phone_list_html is not None:
+            # * The step whose procedure runs has a ▶ in its chip, as the laptop's overview marks it.
             set_changed(self._phone_list_html, content=phone_text(block(chip_line("".join(
-                state_chip(str(index + 1), states[index], self.steps[index].precondition, index == self.index,
-                           index in needed) for index in range(len(self.steps)))))))
+                state_chip(f"▶{index + 1}" if index == owner else str(index + 1), states[index],
+                           self.steps[index].precondition, index == self.index, index in needed)
+                for index in range(len(self.steps)))))))
         state = states[self.index]
         asks = self._done_asks(ctx, state)
         if asks is None:
@@ -384,7 +396,14 @@ class GuidePanel:
         again = procedure.outcome is not None and procedure.outcome.label == GO_AGAIN
         if again and not procedure.confirm.press.waiting(now):
             procedure.outcome, again = None, False
-        status = chip(procedure.doing, BUSY, "The step's action runs; Cancel stops it.") if procedure.doing else ""
+        # * On another step the procedure's chip names its step: Back and Next leave it running.
+        elsewhere = self._elsewhere()
+        if elsewhere:
+            what = "waits for Go" if procedure.waiting else (procedure.doing or "runs")
+            status = chip(f"{elsewhere} {what}", BUSY, f"Started in {elsewhere}: go back there for Go and Preview; "
+                                                       f"Cancel stops it from any step.")
+        else:
+            status = chip(procedure.doing, BUSY, "The step's action runs; Cancel stops it.") if procedure.doing else ""
         if procedure.outcome is not None:
             outcome = procedure.outcome
             status += check_chip(replace(outcome, detail=hover(outcome.detail)))
@@ -399,7 +418,6 @@ class GuidePanel:
         question = step.question(ctx)
         # * Why the overview says so, for a state no chip names, below the buttons: Done's question says it once asked.
         why = state.detail if state.label in EXPLAINED_BELOW and state.detail and not asked else ""
-        elsewhere = self._elsewhere()
         if elsewhere and procedure.prompt:
             asking = note(escape(f"{elsewhere} waits for Go: go back to {elsewhere} to answer it."), CURRENT)
         else:
@@ -417,12 +435,17 @@ class GuidePanel:
         step.draw(ctx)
 
     def _row(self, index: int, state: Check, needed: bool) -> str:
-        """One line of the overview: the step's number and name, its state in short, why on hover; the current bold."""
+        """One line of the overview: the step's number and name, its state in short, why on hover; the current bold.
+
+        The step whose procedure runs has an amber chip after its name (`_running_chip`).
+        """
         step, current = self.steps[index], index == self.index
+        running = self._running_chip() if index == self._owner() else ""
         color, why = LEVEL_COLORS[state.level], escape(hover(state.detail, "the step's chips"), quote=True)
         return (f'<div style="display:flex;align-items:center;white-space:nowrap;overflow:hidden;min-height:20px">'
                 f'{state_chip(str(index + 1), state, step.precondition, current, needed)}'
                 f'<span style="font-weight:{700 if current else 400};margin-right:6px">{escape(step.name)}</span>'
+                f'{running}'
                 f'<span style="color:{color};font-size:11px;font-weight:600;margin-right:6px">'
                 f'{escape(state.label)}</span>'
                 f'<span title="{why}" style="color:{NONE};font-size:11px;'

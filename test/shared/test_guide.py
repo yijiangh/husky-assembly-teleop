@@ -633,3 +633,28 @@ def test_go_and_preview_act_only_on_the_step_whose_procedure_waits(server):
         assert not procedure.running
 
     asyncio.run(scenario())
+
+
+def test_the_overview_line_and_phone_mark_the_step_whose_procedure_runs(server):
+    """Left with Next, the waiting step says "waits for Go" in the overview, has ▶ on the phone, the line names it."""
+    panel, _steps, ctx, _dones = make_panel(server)
+    panel.build_phone(ctx, server.phone.gui if hasattr(server, "phone") else server.gui)
+    procedure = panel.procedure
+    ctx.spawn = lambda _name, work: asyncio.get_event_loop().create_task(work)
+    ctx.wait_until = make_async_ctx().wait_until
+
+    async def scenario():
+        procedure.start(ctx, "take", procedure.ask_go(ctx, "move?", "move"), "take")
+        await asyncio.sleep(0)
+        panel.draw(ctx)
+        panel.navigate(ctx, forward=True)
+        panel.draw(ctx)
+        rows = panel._list_html.content
+        assert rows.count("waits for Go") == 1 and rows.index("waits for Go") < rows.index(">s1<")
+        assert "▶1" in panel._phone_list_html.content and "s0 waits for Go" in panel._line_html.content
+        procedure.cancel()
+        await asyncio.sleep(0)
+        panel.draw(ctx)
+        assert "waits for Go" not in panel._list_html.content and "▶" not in panel._phone_list_html.content
+
+    asyncio.run(scenario())
