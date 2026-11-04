@@ -34,7 +34,7 @@ validation sample and a tip pose each use the tool or arm relative to the base, 
 
   acceptance           a failing result accepted by Done pressed twice, stamped on the inputs it was calculated from
                        and what it is judged under (`inputs`, `accept`); holds while they match (`accepted`). A
-                       result missing or out of date is never accepted.
+                       result step's missing result can be accepted too (skipped); one out of date never is.
 
 Preconditions are checked when a step acts (`CalibrationStep.needs`); they hold or have expired, and never put a
 result out of date:

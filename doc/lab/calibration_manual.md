@@ -67,7 +67,7 @@ button changes height while a step shows, so the buttons never jump.
   blue), its state and, in short, why (hover for all of it). Steps with a result have a solid number chip: **passes**
   (green), **fails** or **out of date** (red: built from data that changed since, e.g. Record and Solve after the tool
   body changed), **none yet** or **pending** (grey: nothing to judge yet), **accepted** (amber: a failing result you
-  went on past with Done; a result missing or out of date is never accepted), **not in use** (amber, Tip offset only:
+  went on past with Done, or a missing one you skipped; a result out of date is never accepted), **not in use** (amber, Tip offset only:
   its fit is not Punch's TCP offset; no work left). The steps that gather a precondition for later steps (Setup, Marker
   error, Sweeps) have a dashed one: **holds** (green), **expired** (amber; why and since when on hover), **none yet**,
   **fails**. The current step outlines, dotted blue, the precondition steps it needs that have expired.
@@ -103,8 +103,9 @@ button changes height while a step shows, so the buttons never jump.
   of date or expired) for 5 s; pressed in that time it goes on (to the next step if the
   work left is this one), after it the button is Done again. Accept as is shows the step **accepted** (amber) in the
   overview: the acceptance holds while what the result was calculated from (and, for Punch, the calibration it was
-  judged under) stays the same, and the run file keeps it. Skip records nothing: the step still shows none yet or out of
-  date.
+  judged under) stays the same, and the run file keeps it. Skip on a missing result
+  accepts it the same way, "skipped" (Done elsewhere no longer leads back to it; a result made later ends it). Skip on a
+  result out of date or an expired precondition records nothing: the step still shows out of date or expired.
 - The one time Back, Done and Next do nothing is while something runs: they are grey ("Cancel first").
 - A second panel, docked right, holds **Live** (marker errors; base drift since the collision check, moved in mm and
   turned in degrees) and **Results** (figures). It starts minimized to a thin rail at the screen's right edge: click
