@@ -24,7 +24,9 @@ Each row shows the mark the run gives its action (`request_marks`: pending, done
 Live IK or a plan, the action's later movements are drawn with the joints found, on the live base they were found at,
 and the panel turns to the target of the movement they are for (`request_carry`); the drawing only.
 
-Process folders are given relative to the Drive root (`drive.py`), e.g. "data_design_study/<process>", or absolute.
+Process folders are given relative to the Drive root (`drive.py`), e.g. "data_design_study/<process>", or absolute;
+the Folder list holds the ones found two levels below the root when the monitor starts (`process_folders`), and the
+monitor's `process_directory`.
 Loading an old compas_fab export converts it into `<export>_process` (reused while up to date) and loads that.
 The panel warns where a process robot or its tools differ from the configured real robot (`world/model_check.py`).
 
@@ -64,7 +66,7 @@ from ...shared.assembly_planning.steps import as_run
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
 from .drawing import ProcessDrawing, load_robot_models
-from .loading import load_process
+from .loading import load_process, process_folders
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -78,6 +80,9 @@ BY_HAND_LABEL = "by hand"
 
 #: The movement buttons' only button before a load.
 NO_MOVEMENT = "—"
+
+#: The Folder list's only entry when no process is found.
+NO_FOLDER = "—"
 
 #: Whether the transfer workaround is on when the monitor starts: the transfer runs as a free move with empty tools.
 TRANSFER_AS_FREE = True
@@ -252,11 +257,17 @@ class ProcessPlugin(HuskyPlugin):
         with ctx.view.ui(band=PROCESS_BAND) as gui:
             gui.add_html(section("process", SECTION_CTRL))
             self._status = gui.add_html("")
-            self._folder = gui.add_text("Folder", initial_value=str(folder or ""),
-                                        hint="Process folder under the Drive root (e.g. data_design_study/<process>) "
-                                             "or absolute; an old export is converted next to it.")
-            load = gui.add_button("Load", hint="Load the folder; an old export is converted first (about 15 s) "
-                                               "unless its <export>_process copy is up to date")
+            # * The processes found on the Drive, and the monitor's own process_directory wherever it is.
+            listed = process_folders(ctx.config.drive_root)
+            if folder and str(folder) not in listed:
+                listed.append(str(folder))
+            options = listed or [NO_FOLDER]
+            self._folder = gui.add_dropdown("Folder", options, initial_value=str(folder) if folder else options[0],
+                                            hint="The processes (process.json) and old compas_fab exports two "
+                                                 "folders below the Drive root, as the monitor started, newest "
+                                                 "first; an old export is converted into <export>_process next to it")
+            load = gui.add_button("Load", hint="Load the folder picked above; an old export is converted first "
+                                               "(about 15 s) unless its <export>_process copy is up to date")
             self._transfer = gui.add_checkbox("Transfer workaround", initial_value=TRANSFER_AS_FREE,
                                               hint="Run the transfer as a free move with empty tools to the insert "
                                                    "start; you place the bar there. Lists and draws each jointing "

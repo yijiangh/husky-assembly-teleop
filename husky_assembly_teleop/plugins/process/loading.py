@@ -15,6 +15,21 @@ from scaffolding_assembly_core.legacy.timing import Stopwatch
 from scaffolding_assembly_core.process import Process, read
 
 
+def process_folders(root: Path | None) -> list[str]:
+    """The processes and old exports two levels below the Drive root ("data_design_study/<process>"), newest name first.
+
+    Args:
+        root: The Drive root, or None.
+
+    Returns:
+        list[str]: Their paths relative to the root; empty without a root.
+    """
+    if root is None or not root.is_dir():
+        return []
+    folders = {found.parent for name in (PROCESS_FILE, OLD_EXPORT_FILE) for found in root.glob(f"*/*/{name}")}
+    return sorted((folder.relative_to(root).as_posix() for folder in folders), reverse=True)
+
+
 def load_process(folder: Path, data_directory: Path, report: Callable[[str], None] = lambda _text: None,
                  watch: Stopwatch | None = None) -> Process:
     """Read a process folder; an old compas_fab export is first converted into `<export>_process`.
