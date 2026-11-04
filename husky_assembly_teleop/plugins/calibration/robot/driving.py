@@ -3,8 +3,8 @@ The D-pad of the steps that drive (Marker error, Validate, Punch): drives the ru
 
 The lease, and a clearance while Clearance is ticked, are held only while a button is held, so the arm planner can move
 the arm in between; the D-pad stays off while a procedure works (it drives while one only waits for Go) or a robot move
-is refused (`move_refusal`: Area clear or E-stop at hand). A clearance trip or Stop all ends the drive task; the next
-press starts it again, and a refused press (still soft stopped) says why.
+is refused (`move_refusal`: Area clear or E-stop at hand). A hold starting too close is refused, nothing sent; a
+clearance trip or Stop all ends the drive task; the next press starts it again, and a refused press says why.
 """
 
 from __future__ import annotations
@@ -20,10 +20,11 @@ from scaffolding_assembly_core.ids import robot_id
 from ....robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 from ....robot_interface.soft_stop import MotionRefused
 from ....shared.guide.procedure import GO_TIMEOUT, Procedure
+from ....shared.planner.planner_service import PlannerService
 from ....shared.teleop.clearance_toggle import ClearanceToggle
 from ....shared.teleop.dpad import UNGUARDED_COLOR, Hold, color_dpad
 from ....world.checks import BAD, WARN, Check
-from ....world.clearance import STOP_DISTANCE
+from ....world.clearance import ALL_ARMS, STOP_DISTANCE
 from ....world.stand_ins import unknown_robots
 
 if TYPE_CHECKING:
@@ -38,7 +39,7 @@ class Driving:
         on_driven: Called on every tick the base was sent a twist, e.g. to judge marker errors while moving; None
             for nothing.
         clearance: Clearance, below every D-pad: while ticked, a hold soft stops the base within STOP_DISTANCE of
-            anything.
+            anything, and a hold starting that close is refused.
         buttons: Every D-pad's buttons, amber while Clearance is unticked (`draw`).
     """
 
@@ -46,8 +47,10 @@ class Driving:
         """Not driving; the D-pad stays off while `procedure` runs."""
         self.procedure = procedure
         self.on_driven: Callable[[PluginContext], None] | None = None
-        self.clearance = ClearanceToggle(f"Soft stop the base within {STOP_DISTANCE * 100:.0f} cm of anything. Untick "
-                                         f"to drive out of a tight spot; every D-pad here has the same box.")
+        self.clearance = ClearanceToggle(f"Soft stop the base within {STOP_DISTANCE * 100:g} cm of anything; a hold "
+                                         f"starting that close is refused, and arms not measured count as last seen "
+                                         f"or stowed. Untick to drive out of a tight spot; every D-pad here has the "
+                                         f"same box.")
         self.buttons: list[viser.GuiButtonHandle] = []
         self._held: Hold | None = None
         self._task: asyncio.Task | None = None
@@ -106,9 +109,17 @@ class Driving:
                     # * As robot_control's D-pad: other robots not measured at the press are checked as stand-ins.
                     others = unknown_robots(ctx.scene.snapshot, {robot_id(run.serial)})
                     # * Not against itself: driving moves no arm, so nothing comes closer to the rest of the robot.
-                    guard = (ctx.clearance([run.serial], unknown_robots=others, check_self=False)
+                    #   Arms not measured count as last seen, or stowed. A start too close is refused, nothing sent.
+                    guard = (ctx.clearance([run.serial], unknown_arms=ALL_ARMS, unknown_robots=others,
+                                           refuse_first=True, check_self=False)
                              if self.clearance.value else nullcontext())
-                    with ctx.lease_robots([run.serial], "calibration drive"), guard:
+                    with ctx.lease_robots([run.serial], "calibration drive"), guard as clearance:
+                        try:
+                            await PlannerService.first_check(ctx, clearance)
+                        except asyncio.CancelledError:
+                            if refusal := PlannerService.start_refusal(clearance):
+                                procedure.outcome = Check("D-pad refused", BAD, refusal)
+                            raise
                         if not base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
                             base.controllers.switch(PLATFORM_VELOCITY_CONTROLLER)
                         while self._holding(ctx):

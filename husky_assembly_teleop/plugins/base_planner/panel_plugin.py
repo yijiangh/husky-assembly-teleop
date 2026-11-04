@@ -38,7 +38,7 @@ from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, check_chip, chip, chip_line, section,
                          values)
 from ...robot_interface.base import live_report
-from ...world.clearance import ALL_ARMS
+from ...world.clearance import ALL_ARMS, BASE_PLAN_DISTANCE, STOP_DISTANCE
 from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import unknown_parts
 from scaffolding_assembly_core.geometry import Pose
@@ -120,9 +120,10 @@ class BasePlannerPanel(PlannerPanel):
                                               "stops it.",
                                     commit_hint="Send the path to the onboard follower; it drives at once if Vel "
                                                 "runs. With an arm out of its stow pose, press it twice too.",
-                                    clearance_hint="Soft stop a sent path once the robot comes within the plan's "
-                                                   "Margin of anything; a start that close is refused. Untick to "
-                                                   "drive out of a tight spot.")
+                                    clearance_hint=f"Soft stop a sent path once the robot comes within "
+                                                   f"{STOP_DISTANCE * 100:g} cm of anything (half the Margin below "
+                                                   f"{BASE_PLAN_DISTANCE * 100:g} cm); a start that close is refused. "
+                                                   f"Untick to drive out of a tight spot.")
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -285,10 +286,6 @@ class BasePlannerPanel(PlannerPanel):
         arms = f"{unknown} not measured: checked where last seen, else stowed" if unknown else ""
         return [warning for warning in (out, arms) if warning]
 
-    def commit_margin(self, ctx: PluginContext) -> float:
-        """A sent path's clearance: the panel's Margin."""
-        return float(self._margin.value)
-
     def commit_unknown(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> frozenset[str]:
         """The robot itself while `commit_warnings` names its arms: its drive checks them where last seen."""
         return frozenset({robot_id(plan.request.serial)} if self._unknown_arms(ctx, plan.request.serial) else ())
@@ -391,7 +388,7 @@ class BasePlannerPanel(PlannerPanel):
             chips += self._plan_chip()
         if (run := self._planner.run_check(ctx, self.serial)) is not None:
             chips += check_chip(run)
-        return chip_line(chips + self.clearance.start_chip("Commit")
+        return chip_line(chips + self.clearance_chips()
                          + unknown_robots_chip(ctx.scene.snapshot, [robot_id(self.serial)]))
 
     def _details_html(self) -> str:

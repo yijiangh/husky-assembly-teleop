@@ -2,9 +2,10 @@
 Planner panels: target, Plan/Play/Clear, a time slider, Commit and ghosts.
 
 `PlannerPanel` is a separate plugin that drives a headless planner (`planner_service.PlannerService`) through its API.
-Subclasses set `planner`, supply `make_request`, `target_change`, `show_target`, `show_path` and `commit_margin`, and
-build their panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers. Commit's Clearance box sets
-whether the motion runs under a clearance; `clearance.start_chip` warns while the robot already stands too close.
+Subclasses set `planner`, supply `make_request`, `target_change`, `show_target` and `show_path`, and build their
+panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers. Commit's Clearance box sets whether the
+motion runs under a clearance; `clearance_chips` warns while the robot already stands too close, or while the plan
+keeps less than usual, so its clearance is smaller too.
 ! The planning world is the planner's, created on the worker thread; the base only closes it at teardown.
 ! Drive the planner through its public API (set target, plan, cancel, results) from the panel wherever you can,
   so those paths stay ready for other users such as an executor; only debug drawing and internal state reach inside.
@@ -29,7 +30,7 @@ from ...ui.phone import columns_css
 from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, again_label, show_waiting
 from ...ui.style import BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, chip, hover, note, section
 from ...world.stand_ins import unknown_parts, unknown_robots
-from ..teleop.clearance_toggle import ClearanceToggle
+from ..teleop.clearance_toggle import ClearanceToggle, close_chip
 from scaffolding_assembly_core.ids import robot_id
 from .plan import Plan, PlannerContract
 
@@ -132,8 +133,17 @@ class PlannerPanel(HuskyPlugin):
         return frozenset()
 
     def commit_margin(self, ctx: PluginContext) -> float:
-        """The margin a commit's clearance keeps, metres: the chosen robot is watched at it (`clearance.watch`)."""
-        raise NotImplementedError
+        """The margin a commit's clearance keeps, metres (`PlannerContract.stop_distance`), for the watch."""
+        return self._api.stop_distance(self._chosen_plan())
+
+    def clearance_chips(self) -> str:
+        """Commit's clearance chips: the robot already too close (`start_chip`), the plan keeping less than usual."""
+        return self.clearance.start_chip("Commit") + close_chip(self._api.close_note(self._chosen_plan()))
+
+    def _chosen_plan(self) -> Plan | None:
+        """The latest plan if it is for the chosen robot, else None."""
+        plan = self._api.plan
+        return plan if plan is not None and plan.request.serial == self.serial else None
 
     #: Options of the chosen robot's watch (`ctx.watch_clearance`), e.g. {"unknown_arms": ALL_ARMS}.
     watch_options: dict = {}

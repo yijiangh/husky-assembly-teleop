@@ -3,6 +3,10 @@ Clearances: while a task drives a robot, stop it once it comes too close to anyt
 
 Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, tracked objects) need not know.
 
+- ! A clearance is always below the margin its move was planned with (`MoveKind`): arm plans keep 1 cm and stop at
+  5 mm, base plans keep 10 cm and stop at 5 cm. A plan that keeps less stops at half its closest approach
+  (`MoveKind.stop_for`), with a warning (`close_note`).
+
 - Checked against the whole tick snapshot, other robots included; allowed contacts (`Body.touches`, what a robot
   holds) are skipped.
 - ! Other robots must be measured too, except those in `Clearance.unknown_robots` (unknown when it was committed,
@@ -35,8 +39,10 @@ from .base_collision import BaseCollisionWorld
 from .collision_hit import CollisionHit
 from .stand_ins import unknown_parts, unknown_robots, with_stand_ins
 
-#: Default distance, metres, below which a clearance trips.
-STOP_DISTANCE = 0.1
+#: Distance, metres, below which a base drive's clearance trips (D-pads, planned paths): the default.
+STOP_DISTANCE = 0.05
+#: Distance a base plan keeps where it can (the base planner's Margin at start), metres: more than STOP_DISTANCE.
+BASE_PLAN_DISTANCE = 0.1
 #: Distance kept while an arm moves (jogs, planned paths), metres: tight, so it can still reach close to things.
 ARM_STOP_DISTANCE = 0.005
 #: Distance an arm plan keeps where it can (`plugins/arm_planner/planner.py`), metres: more than ARM_STOP_DISTANCE,
@@ -50,6 +56,51 @@ SELF_DISTANCE = ARM_STOP_DISTANCE
 ALL_ARMS = "all"
 #: Seconds between checks of the watches (`ClearanceWatch`).
 WATCH_EVERY = 0.5
+
+
+@dataclass(frozen=True)
+class MoveKind:
+    """What a kind of move keeps: the margin its plans keep where they can, and the clearance below it.
+
+    Attributes:
+        name: "arm" or "base", for the texts.
+        plan: The margin its plans keep where they can, metres.
+        stop: The clearance it keeps, metres; below `plan`, so following a path a little off does not trip it.
+    """
+
+    name: str
+    plan: float
+    stop: float
+
+    def stop_for(self, plan_margin: float | None = None) -> float:
+        """The clearance for a plan keeping `plan_margin` at its closest: half of it below `plan`, else `stop`.
+
+        None, a move not planned (D-pad, jog), keeps `stop`.
+        """
+        if plan_margin is None or plan_margin >= self.plan:
+            return self.stop
+        return min(self.stop, plan_margin / 2)
+
+    def close_note(self, plan_margin: float | None) -> str:
+        """Why the clearance is below `stop` for a plan this close, or "": for an amber warning."""
+        if plan_margin is None or plan_margin >= self.plan:
+            return ""
+        if plan_margin <= 0:
+            return (f"the plan is only checked free of contact (usual {_cm(self.plan)}), so its clearance trips on "
+                    f"contact only, not at {_cm(self.stop)}")
+        return (f"the plan comes within {_cm(plan_margin)} of something (usual {_cm(self.plan)}), so its clearance "
+                f"is {_cm(self.stop_for(plan_margin))}, not {_cm(self.stop)}")
+
+
+def _cm(metres: float) -> str:
+    """A distance for the texts, in cm, e.g. "0.5 cm"."""
+    return f"{round(metres * 100, 2):g} cm"
+
+
+#: An arm move: plans keep PLAN_DISTANCE, the clearance ARM_STOP_DISTANCE.
+ARM_MOVE = MoveKind("arm", PLAN_DISTANCE, ARM_STOP_DISTANCE)
+#: A base drive: plans keep BASE_PLAN_DISTANCE, the clearance STOP_DISTANCE; the arms stand still.
+BASE_DRIVE = MoveKind("base", BASE_PLAN_DISTANCE, STOP_DISTANCE)
 
 
 @dataclass(eq=False)
@@ -99,7 +150,7 @@ class ClearanceWatch:
         margin: Distance below which a robot counts as too close, metres.
         unknown_arms: Arms whose joints may be unknown, checked where last seen or stowed, or ALL_ARMS.
         check_self: Whether each robot is also checked against itself, as `Clearance.check_self`.
-        found: Per serial, what the last check found it too close to, e.g. "came within 10 cm of wall"; empty if clear.
+        found: Per serial, what the last check found it too close to, e.g. "came within 5 cm of wall"; empty if clear.
         unchecked: Per serial, why the last check could not check it, e.g. "cannot be checked: base not measured".
         checked_at: ROS time of the last finished check, or None before the first.
     """

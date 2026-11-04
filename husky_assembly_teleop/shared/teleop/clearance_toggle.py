@@ -12,6 +12,13 @@ from ...world.clearance import ClearanceWatch
 
 #: The chip while the robot already stands too close for what the buttons start (`ClearanceToggle.start_chip`).
 STARTS_TOO_CLOSE = "starts too close"
+#: The chip while a plan keeps less than usual, so its clearance is smaller too (`close_chip`).
+CLOSE_PLAN = "small clearance"
+
+
+def close_chip(note: str) -> str:
+    """An amber chip saying why a plan's clearance is below the usual one (`MoveKind.close_note`), or "" without."""
+    return chip(CLOSE_PLAN, BUSY, f"{note}.\nA path followed a little off may still trip it.") if note else ""
 
 
 class ClearanceToggle:

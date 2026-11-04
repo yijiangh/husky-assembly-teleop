@@ -76,7 +76,7 @@ def test_a_move_after_go_pressed_twice_lets_the_other_robots_not_measured_be_unk
         while not predicate():
             await asyncio.sleep(0)
 
-    planner = SimpleNamespace(request_plan=request_plan, commit=commit)
+    planner = SimpleNamespace(request_plan=request_plan, commit=commit, close_note=lambda _plan: "")
     clock = SimpleNamespace(now=0.0)
     ctx = SimpleNamespace(now=lambda: clock.now, wait_until=wait_until, require={"arm_planner": planner}.__getitem__,
                           kinematics=SimpleNamespace(base_pose=lambda _serial: Pose()),
@@ -134,7 +134,8 @@ def test_cancel_during_a_planned_move_stops_the_planners_motion_on_that_robot(an
         while not predicate():
             await asyncio.sleep(0)
 
-    planner = SimpleNamespace(request_plan=request_plan, commit=commit, cancel_commit=cancelled.append)
+    planner = SimpleNamespace(request_plan=request_plan, commit=commit, cancel_commit=cancelled.append,
+                              close_note=lambda _plan: "")
     ctx = SimpleNamespace(now=lambda: 0.0, wait_until=wait_until, require={"arm_planner": planner}.__getitem__,
                           kinematics=SimpleNamespace(base_pose=lambda _serial: Pose()),
                           scene=SimpleNamespace(snapshot=SimpleNamespace(robots={})))
@@ -170,7 +171,7 @@ def test_gos_clearance_box_says_whether_a_move_keeps_the_planners_clearance(tick
         committed.append(clearance)
         return False, "stopped here by the test"
 
-    planner = SimpleNamespace(request_plan=request_plan, commit=commit)
+    planner = SimpleNamespace(request_plan=request_plan, commit=commit, close_note=lambda _plan: "")
     ctx = SimpleNamespace(now=lambda: 0.0, require={"arm_planner": planner}.__getitem__,
                           kinematics=SimpleNamespace(base_pose=lambda _serial: Pose()),
                           scene=SimpleNamespace(snapshot=SimpleNamespace(robots={})))

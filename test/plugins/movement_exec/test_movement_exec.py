@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -335,6 +336,49 @@ def test_a_cancel_during_the_motion_holds_every_arm():
     assert holds == [1, 1] and lab.free()
     (event, fields), (last, _fields) = lab.run.records[-2:]
     assert (event, last, fields["data"]["reason"]) == ("cancel", "exec", "operator")
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("ticked", [True, False])
+def test_a_motion_keeps_a_contact_clearance_only_while_execs_clearance_is_ticked(ticked):
+    """Ticked, the motion runs under an arm clearance at the assembly planner's margin, contact only; else none."""
+    lab = Lab()
+    result, _held = execute(lab, lab.request(clearance=ticked))
+    assert result.status == DONE, result.reason
+    assert [(clearance.serials, clearance.margin, clearance.refuse_first) for clearance in lab.ctx.clearances] == \
+        ([(("a200-0806",), 0.0, True)] if ticked else [])
+
+
+@pytest.mark.safety
+def test_a_motion_starting_in_contact_is_refused_and_one_that_trips_fails():
+    """A clearance that refuses the start sends nothing (REFUSED); one tripping mid-motion holds every arm (FAILED)."""
+    for refuse in (True, False):
+        lab = Lab()
+        problem = "robot a200-0806 came within 0 cm of wall"
+        if refuse:
+            asked = lab.ctx.clearance
+
+            @contextmanager
+            def unchecked(*args, **kwargs):
+                """The clearance asked for, not checked yet: the part waits for its first check."""
+                with asked(*args, **kwargs) as clearance:
+                    clearance.checked = False
+                    yield clearance
+            lab.ctx.clearance = unchecked
+
+        async def trip(lab):
+            while not (lab.ctx.clearances if refuse else lab.cindy._multi_arm.messages):
+                await asyncio.sleep(0)
+            lab.ctx.clearances[-1].problem, lab.ctx.clearances[-1].refused = problem, refuse
+            lab.plugin._task.cancel()
+
+        result, _held = execute(lab, lab.request(), during=trip)
+        if refuse:
+            assert result.status == REFUSED and "nothing sent" in result.reason and problem in result.reason
+            assert not lab.cindy._multi_arm.messages
+        else:
+            assert result.status == FAILED and f"soft stopped: {problem}" in result.reason
+        assert lab.free()
 
 
 @pytest.mark.safety

@@ -52,12 +52,19 @@ from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TR
 from ...shared.planner.planner_search import WAIT_MARGIN, PlanResult
 from ...shared.planner.timed_path import TimedPath
 from ...shared.process_contract import Carry
+from ...shared.teleop.clearance_toggle import ClearanceToggle
 from ...shared.assembly_tab.layout import ASSEMBLY_TAB
 from ...ui.ghost import RobotGhost
 from .diagnosis import StepDiagnosis, path_line, tool0_line
 from .goal import StepGoal, same_step
 from .panel import StepsPanel
 from .step_panel_base import PlannerPlugin, Search
+
+#: The hover text of Exec's Clearance box.
+EXEC_CLEARANCE_HINT = ("While ticked, a motion along the plan soft stops if the robot touches anything, and one "
+                       "starting in contact is refused. The assembly planner checks contact only, so this clearance "
+                       "does too (usual 5 mm). Not with Ignore built bars ticked, nor for inserts, retreats, handoffs "
+                       "and the servo, which touch by design. Untick to move out of a tight spot.")
 
 if TYPE_CHECKING:
     from ...shared.assembly_planning.process_steps import Step
@@ -99,6 +106,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         #: Seconds the motion should take, the operator's; the default per routine at each new step.
         self.traj_time = 10.0
         self.ignore_built = False
+        #: Exec's Clearance box (`movement_exec`: a motion along the plan keeps a clearance while ticked).
+        self.clearance = ClearanceToggle(EXEC_CLEARANCE_HINT)
         #: Movement indices of the current step done by Exec; the action offered to Mark done after its last step.
         self._done: set[int] = set()
         self._offer: str | None = None
@@ -604,7 +613,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
                               ignore_built=lambda: self.ignore_built,
                               obstacles_collide=lambda: self._obstacles_collide(ctx),
                               transfer_as_free=lambda: self._transfer_as_free(ctx),
-                              unknown_robots=self._unknown_allowed)
+                              unknown_robots=self._unknown_allowed, clearance=self.clearance.value)
         if motion:
             self.plan_state = "sent"  # ! used once: never sent again
         executor: MovementExecContract = ctx.require("movement_exec")

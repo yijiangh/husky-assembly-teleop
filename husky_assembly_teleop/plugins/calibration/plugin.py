@@ -1,8 +1,9 @@
 """
 The base calibration as a guided procedure: one step at a time (`steps/`); Done goes to the work that is left.
 
-! Every motion runs under the robot's lease. A take also runs under a clearance and freezes the robot's other arm;
-  the D-pad drives under a clearance; free drive and tool steps, small and watched, under none.
+! Every motion runs under the robot's lease, and while its Clearance box is ticked under a clearance (`ARM_MOVE` or
+  `BASE_DRIVE`) that refuses a start too close; a take also freezes the robot's other arm. Free drive, hand guided,
+  runs under none.
 ! The tool body must sit on the flange of the chosen arm, and the base must stand where the sweeps were checked.
 ! Work in progress, not yet tried on a robot: a banner on both tabs says so (`WIP_BANNER`).
 
@@ -32,7 +33,6 @@ from ...world.checks import GOOD
 from ...world.clearance import ARM_STOP_DISTANCE
 from ...world.mocap import mocap_check
 from scaffolding_assembly_core.ids import robot_id
-from .robot.motion import ARM_CLEARANCE
 from .run import Run
 from .steps import STEPS
 from .steps.base import FAILS, TOOL_NAME, WORK, Calibration, CalibrationStep
@@ -201,8 +201,7 @@ class CalibrationPlugin(HuskyPlugin):
         run, tool, procedure, step = self.cal.run, self.cal.tool, self.cal.procedure, self.panel.current
         # * Watched where Go moves the arm, until a procedure moves it: Go's Clearance refuses a start too close.
         goes = run is not None and step.go_moves and (procedure.waiting or not procedure.running)
-        margin = ARM_CLEARANCE if procedure.waiting and procedure.go_label == "sweep" else ARM_STOP_DISTANCE
-        procedure.clearance.watch(ctx, run.serial if goes else None, margin)
+        procedure.clearance.watch(ctx, run.serial if goes else None, ARM_STOP_DISTANCE)
         if run is None:
             return ""
         now = ctx.now()

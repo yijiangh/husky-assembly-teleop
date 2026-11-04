@@ -13,6 +13,7 @@ from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
 from husky_assembly_teleop.shared.guide.procedure import Procedure
 from husky_assembly_teleop.shared.teleop.dpad import UNGUARDED_COLOR, Hold
 from husky_assembly_teleop.world.checks import BAD, Check
+from husky_assembly_teleop.world.clearance import ALL_ARMS
 
 pytestmark = pytest.mark.safety
 
@@ -146,8 +147,8 @@ def test_a_hold_drives_under_a_clearance_only_while_clearance_is_ticked(ticked):
         yield None
 
     @contextmanager
-    def clearance(serials, unknown_robots=(), check_self=True):
-        guarded.append((serials, unknown_robots, check_self))
+    def clearance(serials, unknown_arms=(), unknown_robots=(), refuse_first=False, check_self=True):
+        guarded.append((serials, unknown_arms, unknown_robots, refuse_first, check_self))
         yield None
 
     async def next_tick():
@@ -168,7 +169,8 @@ def test_a_hold_drives_under_a_clearance_only_while_clearance_is_ticked(ticked):
             await task
 
     asyncio.run(scenario())
-    expected = [(["a200-0805"], frozenset({"robots/a200-0804"}), False)]  # * Alice, not measured, as a stand-in
+    # * Alice, not measured, as a stand-in; the robot's own arms may be unknown; a start too close refused.
+    expected = [(["a200-0805"], ALL_ARMS, frozenset({"robots/a200-0804"}), True, False)]
     assert (0.15, 0.0) in sent and guarded == (expected if ticked else [])
     driving.draw()
     assert driving.buttons[0].color == (None if ticked else UNGUARDED_COLOR)

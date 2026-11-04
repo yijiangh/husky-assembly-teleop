@@ -14,7 +14,7 @@ import numpy as np
 from ament_index_python.packages import get_package_share_directory
 
 from ..follow import XICR_SPREAD
-from ..world import COLLISION_MARGIN
+from ....world.clearance import BASE_PLAN_DISTANCE, STOP_DISTANCE
 
 if TYPE_CHECKING:
     import threading
@@ -170,5 +170,7 @@ def add_margin_setting(gui: viser.GuiApi):
     The panel adds it once, above Plan, and sends its value as the request's `margin` setting; no algorithm adds
     one of its own.
     """
-    return gui.add_slider("Margin m", min=0.0, max=0.3, step=0.01, initial_value=COLLISION_MARGIN,
-                          hint="Keep at least this far from the other robots and bodies")
+    return gui.add_slider("Margin m", min=0.0, max=0.3, step=0.01, initial_value=BASE_PLAN_DISTANCE,
+                          hint=f"Keep at least this far from the other robots and bodies. Below "
+                               f"{BASE_PLAN_DISTANCE * 100:g} cm, Commit's clearance is half of it, not "
+                               f"{STOP_DISTANCE * 100:g} cm (an amber chip says so)")

@@ -150,18 +150,20 @@ def box_near(world, config, joints, gap: float) -> Body:
     return Body("t/near", geometry, Pose.from_arrays(above + toward, (0, 0, 0, 1)), label="the box")
 
 
-@pytest.mark.parametrize("gap, margin, note", [
-    (None, planner_module.PLAN_DISTANCE, "keeps 1 cm"),
-    (0.005, 0.0, "only free of contact: the start or target is closer than 1 cm"),
-], ids=["free", "5 mm"])
-def test_a_path_keeps_1_cm_unless_its_target_is_closer(world, config, gap, margin, note):
-    """1 cm from everything where start and target allow it; a target closer than that keeps only clear of contact."""
+@pytest.mark.parametrize("gap", [None, 0.005], ids=["free", "5 mm"])
+def test_a_path_keeps_1_cm_or_as_much_as_a_closer_target_has(world, config, gap):
+    """1 cm from everything where start and target allow it; a target closer than that sets the path's margin."""
     start, goal = start_and_goal(config)
     bodies = () if gap is None else (box_near(world, config, goal, gap),)
     mirror, scene = synced(world, snapshot(config, start, bodies))
     result = plan_arm(mirror, scene, ARM, goal, threading.Event())
     assert result.path is not None, result.reason
-    assert result.path.margin == margin and planner_module.margin_note(result.path.margin) == note
+    margin, note = result.path.margin, planner_module.margin_note(result.path.margin)
+    if gap is None:
+        assert margin == planner_module.PLAN_DISTANCE and note == "keeps 1 cm"
+    else:
+        # * PyBullet measures a gap about 2 mm smaller than it is (each convex shape is padded about 1 mm).
+        assert gap - 0.003 - planner_module.MARGIN_RESOLUTION <= margin <= gap and note.startswith("keeps only")
     assert result.path.slowed(2.0).margin == margin
 
 

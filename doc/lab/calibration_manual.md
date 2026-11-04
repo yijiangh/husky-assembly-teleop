@@ -113,10 +113,11 @@ button changes height while a step shows, so the buttons never jump.
   again"). Scrub **Preview time** first (seconds from the start up to the move's end), or press **Play** to watch it
   in real time: the ghost shows the arm along what Go starts. A sweep stops at each waypoint for its shortest sample,
   1.5 s; readings that come in moving make the real stops longer. After 10 minutes without Go the procedure fails.
-- **Clearance** below Go, ticked, keeps what Go moves clear: a planned move soft stops within 5 mm of anything and is
-  refused if the arm already stands that close, a sweep soft stops within 5 cm of the scene (5 mm of the robot
-  itself). A red "starts too close" chip warns before the press; untick to move out of a tight spot (the chip turns
-  amber: nothing soft stops the arm then).
+- **Clearance** below Go, ticked, keeps what Go moves clear: a planned move or a sweep soft stops within 5 mm of
+  anything, itself included, and is refused if the arm already stands that close. Moves are planned and sweeps
+  checked 1 cm clear; a move whose start or target is closer keeps less, and its clearance is half of that, which
+  Go's prompt says. A red "starts too close" chip warns before the press; untick to move out of a tight spot (the chip
+  turns amber: nothing soft stops the arm then). All moves: [plugins.md, Clearance](plugins.md#clearance).
 - With other robots not measured, a Go that moves the arm asks twice, as the planners' Commit: the first press turns
   it amber and says so below; a second within 5 s moves, with those robots checked as stand-ins (any other robot lost
   soft stops the arm). The D-pad and the tool pad do not ask: a robot not measured at the press is a stand-in. Nor
@@ -182,8 +183,8 @@ Driving shows Motive the rigid bodies from new angles; their marker errors must 
 
 1. Drive with the D-pad in Step controls (hold a button; **Speed** is a fraction of full speed), turning both ways.
    The D-pad holds the robot only while a button is held; on a real base it switches to the velocity controller.
-   **Clearance** below it, ticked, soft stops the base within 10 cm of anything; untick it to drive out of a tight
-   spot (the D-pad turns amber). Every D-pad of the run, on both pages, shows the same box.
+   **Clearance** below it, ticked, soft stops the base within 5 cm of anything, and refuses a hold starting that close;
+   untick it to drive out of a tight spot (the D-pad turns amber). Every D-pad of the run, on both pages, shows the same box.
 2. Finish where the robot is to stand for the sweeps: clear all round.
 
 Check: 5 s driven, and each body's largest marker error while driving: amber over 1 mm (usable, worth a look at
@@ -244,10 +245,10 @@ recorded yet, numbered above it, wrapping round), then **Record take**:
 1. The arm planner plans a move to the take's start. Scrub **Preview time** or press **Play** to see the arm's way as
    a ghost, then **Go: move**.
 2. At the start, preview again to see the arm's way round the take, then **Go: sweep**.
-3. Under the robot's lease, with the robot's base and other arm frozen and a 5 cm clearance to the other robots and
-   scene bodies, each waypoint is one joint move (at least 1 s). Recording is refused once the base has moved over
-   2 cm or 2° since the collision check, judged again under the lease right before the sweep (the base may have been
-   driven while Go waited): check collisions again.
+3. Under the robot's lease, with the robot's base and other arm frozen and a 5 mm clearance to the other robots,
+   scene bodies and itself (Clearance ticked; the sweeps were checked 1 cm clear), each waypoint is one joint move (at
+   least 1 s). Recording is refused once the base has moved over 2 cm or 2° since the collision check, judged again
+   under the lease right before the sweep (the base may have been driven while Go waited): check collisions again.
 4. At each waypoint the plugin waits until the tool stands still on the base (its position spread under 0.2 mm over
    10 ticks) with both bodies tracked, then averages 20 ticks (1 s) into one sample. If that takes over 20 s, the
    step says why; Go tries again, Cancel stops.

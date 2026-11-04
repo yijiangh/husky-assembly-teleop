@@ -10,8 +10,8 @@ from repo_paths import DATA
 
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.world.base_collision import BaseCollisionWorld
-from husky_assembly_teleop.world.clearance import (ALL_ARMS, SELF_DISTANCE, STOP_DISTANCE, ClearanceChecker,
-                                                   assumable_joints)
+from husky_assembly_teleop.world.clearance import (ALL_ARMS, ARM_MOVE, BASE_DRIVE, SELF_DISTANCE, STOP_DISTANCE,
+                                                   ClearanceChecker, assumable_joints)
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.kinematics import link_pose
@@ -56,7 +56,7 @@ def test_a_robot_at_the_wall_is_too_close_and_one_in_the_open_is_not():
     try:
         assert found(checker, snapshot(config, -2.0), own) == []
         (key, why, hit), = found(checker, snapshot(config, 0.6), own)
-        assert (key, why) == ("drive", f"came within 10 cm of {WALL.label}")
+        assert (key, why) == ("drive", f"came within {STOP_DISTANCE * 100:g} cm of {WALL.label}")
         assert hit.robot == own and hit.margin == STOP_DISTANCE and hit.pairs[0] == (own, WALL.id)
         # * The contact names the link that came close (the top plate reaches into the wall here), on the wall's face.
         contact = hit.contacts[0]
@@ -83,7 +83,7 @@ def test_an_unknown_arm_trips_a_strict_clearance_and_counts_as_stowed_in_a_lenie
         assert allowed == unknown == assumable_joints(config.model.movable_joints, ALL_ARMS) & unknown
         assert found(checker, snapshot(config, -2.0, unknown), own, allowed) == []
         (_key, why, hit), = found(checker, snapshot(config, 0.6, unknown), own, allowed)
-        assert why == f"came within 10 cm of {WALL.label}" and hit is not None
+        assert why == f"came within {STOP_DISTANCE * 100:g} cm of {WALL.label}" and hit is not None
         # * Another arm's joints do not cover this one's.
         (_key, why, _hit), = found(checker, snapshot(config, -2.0, unknown), own,
                                    assumable_joints(config.model.movable_joints, ["left_ur_arm"]))
@@ -109,7 +109,7 @@ def test_another_robot_that_lost_mocap_trips_unless_allowed_then_stands_where_la
         assert why == f"cannot be checked: {other.split('/')[1]}: base not measured" and hit is None
         assert found(checker, scene(-3.0), own, allowed=frozenset({other})) == []
         (_key, why, hit), = found(checker, scene(-0.8), own, allowed=frozenset({other}))
-        assert why == f"came within 10 cm of {other}" and hit is not None
+        assert why == f"came within {STOP_DISTANCE * 100:g} cm of {other}" and hit is not None
     finally:
         checker.close()
 
@@ -173,3 +173,14 @@ def test_an_arm_folded_into_itself_and_a_bar_into_its_robot_are_found_and_named(
         assert found(checker, alone(config, folded), own, check_self=False) == [], "a base drive: its arms stand still"
     finally:
         checker.close()
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("kind, plan_margin, stop", [
+    (ARM_MOVE, None, 0.005), (ARM_MOVE, 0.01, 0.005), (ARM_MOVE, 0.006, 0.003), (ARM_MOVE, 0.0, 0.0),
+    (BASE_DRIVE, None, 0.05), (BASE_DRIVE, 0.3, 0.05), (BASE_DRIVE, 0.1, 0.05), (BASE_DRIVE, 0.02, 0.01),
+])
+def test_a_clearance_stays_below_the_margin_its_move_was_planned_with(kind, plan_margin, stop):
+    """Arm 1 cm / 5 mm, base 10 cm / 5 cm; a plan keeping less stops at half of it, and says so."""
+    assert kind.stop_for(plan_margin) == pytest.approx(stop)
+    assert bool(kind.close_note(plan_margin)) == (plan_margin is not None and plan_margin < kind.plan)

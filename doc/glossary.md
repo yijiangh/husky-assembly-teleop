@@ -80,21 +80,14 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **freeze**: a task's promise that other robots or objects stand still (`ctx.freeze` over a measured basis); once
   one moves past its tolerance, or its measurement gets too old, the task is cancelled (`WorldMoved`).
   `world/freeze.py`. Not the panels' **Live/Paused** button, and not a frozen dataclass.
-- **clearance**: the distance kept from everything else. `ctx.clearance` is the runtime's guard: while a task drives a
-  robot, it soft stops that robot and cancels the task once the robot comes within the margin (0.1 m by default) of
-  anything in the snapshot. Another robot not measured trips it unless it is in `unknown_robots` (unknown when the
-  motion was committed or started; then a stand-in); unknown arm joints of its own robot trip it unless
-  `unknown_arms` lets them count where last seen, or stowed. A **trip** is one firing (`ctx.clearance_trips`).
-  robot_control's Clearance boxes turn it on for D-pad driving and, at 1 cm (`ARM_STOP_DISTANCE`), for arm joint
-  jogs; the arm planner's commits and Exec's arm motions (insert, retreat and servo passes included) always keep
-  1 cm; the base planner's commit keeps its panel's **Margin** (2 cm at start, `COLLISION_MARGIN` in
-  `plugins/base_planner/world.py`). A robot is also kept 1 cm from itself
-  (`SELF_DISTANCE`): its links, tools and what it holds, but not pairs that touch by design (joined links, the SRDF's,
-  a tool's flange links). With `refuse_first`, one too close at its first check is only refused, nothing sent
-  (robot_control's drives and jogs). A **clearance watch** (`ctx.watch_clearance`) is checked the same way, every
-  0.5 s, and only reports: robot_control's gray buttons and "starts in collision" chip. `world/clearance.py`. The base
-  planner's **path clearance** is a measured number instead: a planned path's nearest distance to anything, recorded in
-  `experiment.json`.
+- **clearance**: the distance a moving robot keeps from everything, itself included. `ctx.clearance` soft stops the
+  robot and cancels its task once it comes closer; with `refuse_first` a start already that close is refused, nothing
+  sent. Each kind of move (`MoveKind`: `ARM_MOVE`, `BASE_DRIVE`) stops below what its plans keep: arms plan 1 cm and
+  stop at 5 mm, bases plan 10 cm and stop at 5 cm; a plan keeping less stops at half of it (`stop_for`). A **trip** is
+  one firing (`ctx.clearance_trips`); a **clearance watch** (`ctx.watch_clearance`) only reports, for the "starts too
+  close" chips; the **Clearance box** (`ClearanceToggle`) turns it on or off per set of buttons. Operators:
+  [plugins.md, Clearance](lab/plugins.md#clearance); code: `world/clearance.py`. The base planner's **path
+  clearance** is a measured number instead: a planned path's nearest distance to anything, in `experiment.json`.
 - **hold**: the arm command "stop where you are and stay" (`arm.hold()`, the Hold button), which needs no lease and is
   refused only without a fresh measurement. Also: a D-pad **hold button** (counts as released 0.25 s after its last
   report), a support robot's **bar hold** (`bar_holding`), and a guided step's precondition that **holds** (below).
@@ -137,7 +130,8 @@ When a word has more than one meaning, the entry says which is which. Use the qu
 - **lattice**: the default base planner, a hybrid A* over straight drives, arcs and turns on the spot, steered by its
   **cost map** (where the robot's shape fits, learned from hits). `plugins/base_planner/algorithms/lattice.py`.
 - **Margin (base planner)**: the base planner panel's distance, in metres, a path keeps from every other robot and
-  body (2 cm at start, `COLLISION_MARGIN`); the commit's clearance soft stops the base within it.
+  body (10 cm at start, `BASE_PLAN_DISTANCE`); the commit's clearance stops the base at 5 cm, or half the Margin
+  below 10 cm.
   `plugins/base_planner/world.py`.
 - **lead / portal**: the lead is the straight drive onto the target with no turn on the spot; a portal is a narrow
   place the lattice crosses in one move, lined up `PORTAL_LEAD` before it.

@@ -81,6 +81,15 @@ class PlannerContract(Protocol[R]):
         (Clearance unticked): nothing soft stops it.
         """
 
+    def stop_distance(self, plan: Plan[R] | None) -> float:
+        """The clearance a commit of `plan` keeps, metres (`MoveKind.stop_for`).
+
+        Its kind's, or half the plan's closest approach when the plan keeps less than usual; the usual one for None.
+        """
+
+    def close_note(self, plan: Plan[R] | None) -> str:
+        """Why the clearance of `plan` is below the usual one (`MoveKind.close_note`), or "": its amber warning."""
+
     def cancel_commit(self, serial: str | None = None) -> bool:
         """Stop every motion a commit started that still runs (the planner's `execute` stops the robot); main thread.
 

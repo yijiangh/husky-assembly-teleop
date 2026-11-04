@@ -5,8 +5,9 @@ Others use it through `ArmPlannerContract`; its panel is `arm_planner_panel`. Th
 models in a compas_fab world (several seconds).
 
 ! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`), under an
-  ARM_STOP_DISTANCE clearance on the robot (`commit_clearance`) when committed with Clearance ticked, so the base
-  pose must be known to send. Paths keep PLAN_DISTANCE where start and target allow (`planner.PLAN_MARGINS`).
+  ARM_MOVE clearance on the robot (`commit_clearance`) when committed with Clearance ticked, so the base
+  pose must be known to send. Paths keep PLAN_DISTANCE, or as much as start and target have (`endpoint_margin`); then
+  the clearance is half that (`ARM_MOVE`).
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import hover
 from ...world.checks import BAD, GOOD, WARN, Check
-from ...world.clearance import ARM_STOP_DISTANCE, Clearance, clearance_problem
+from ...world.clearance import ARM_MOVE, PLAN_DISTANCE, Clearance, clearance_problem
 from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.ids import robot_id
 from .planner import ArmPath, margin_note, path_hit, plan_arm
@@ -76,6 +77,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
     name = "arm_planner"
     experimental = True
     worker_name = "arm-plan"
+    kind = ARM_MOVE
 
     def __init__(self):
         """Start with no plan; the models load with the first plan of each robot."""
@@ -89,6 +91,10 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         self._motions: dict[tuple[str, str], Check] = {}
         # ! Worker thread only (sync, search, close).
         self._world = MirrorPool()
+
+    def plan_margin(self, plan: Plan[ArmPlanRequest]) -> float | None:
+        """How close the path comes to anything, as planned (`ArmPath.margin`); None without a path."""
+        return None if plan.path is None else plan.path.margin
 
     def setup(self, ctx: PluginContext) -> None:
         """Let the mirrors log through the plugin."""
@@ -133,8 +139,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             stand_ins = f" ({unmeasured(others)})" if others else ""
             message = (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
                        f"{margin_note(result.path.margin)}, found in {result.seconds:.1f} s{notes}{stand_ins}")
-            # * A path only clear of contact warns: its commit may soft stop on the way.
-            return message, bool(guessed or others or not result.path.margin)
+            # * A path keeping less than usual warns: its commit's clearance is smaller too (`close_note`).
+            return message, bool(guessed or others or result.path.margin < PLAN_DISTANCE)
 
         return Search(label=f"plan {serial} {arm}",
                       message=f"planning for {serial} {arm}…{notes}"
@@ -216,7 +222,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       answer: Callable[[bool, str], None]) -> None:
         """Send the plan to the arm and watch it until it is at the end; else hold it (`send_motion`).
 
-        - Committed with Clearance ticked, an ARM_STOP_DISTANCE clearance starts first (`commit_clearance`): one
+        - Committed with Clearance ticked, an ARM_MOVE clearance starts first (`commit_clearance`): one
           that cannot check, or finds the robot too close, refuses the commit (nothing sent); a trip soft stops the
           robot and cancels this.
         - ! The robot's base and every arm must be measured, Clearance on or off: an arm moves beside the other.
@@ -240,7 +246,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
 
         clearance: Clearance | None = None
         try:
-            with self.commit_clearance(ctx, plan, ARM_STOP_DISTANCE) as clearance:
+            with self.commit_clearance(ctx, plan) as clearance:
                 await self.first_check(ctx, clearance)
                 ctx.log_info(f"{what}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
                 outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),

@@ -117,6 +117,8 @@ class ExecRequest:
         transfer_as_free: Reads the process plugin's "Transfer workaround" now, likewise; by default ticked.
         unknown_robots: Ids of the other robots the operator let be unknown (Exec's second press, `CommitConfirm`):
             left out of the freeze and of the check that nothing else moves.
+        clearance: Exec's Clearance box: whether a motion along the plan runs under a clearance (`ARM_MOVE`); by
+            default ticked.
     """
 
     loaded: LoadedProcess
@@ -134,6 +136,7 @@ class ExecRequest:
     obstacles_collide: Callable[[], bool] = lambda: True
     transfer_as_free: Callable[[], bool] = lambda: True
     unknown_robots: frozenset[str] = frozenset()
+    clearance: bool = True
 
 
 @dataclass(frozen=True)
