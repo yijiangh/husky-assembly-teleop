@@ -72,7 +72,12 @@ class HuskyRobotInterface:
         soft_stop_latch: Set from `soft_stop` until `resume`; while set, every part refuses commands that could move.
         lease_slot: Who has the robot's lease (`robot_lease.py`); every part refuses motion and controller switches
             sent without it.
+        parked: Marked parked in Health: the snapshot takes it as known where it is (`stand_ins.parked`); leasing
+            it unparks it.
     """
+
+    #: See the class's attributes; the Parked box in Health sets it.
+    parked = False
 
     def __init__(self, node: Node, config: RobotConfig):
         """Build the base and one ArmInterface per configured arm, without waiting for the robot.

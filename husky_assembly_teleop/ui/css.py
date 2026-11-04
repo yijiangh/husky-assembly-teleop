@@ -66,6 +66,22 @@ def one_row_css(uuid: str) -> str:
             f"{row}::-webkit-scrollbar {{ display: none; }}")
 
 
+def full_row_css(uuid: str) -> str:
+    """CSS that gives a button group the panel's full width, its label column hidden, its buttons on one row sharing it.
+
+    Args:
+        uuid: The button group's uuid, `handle._impl.uuid`.
+
+    Returns:
+        str: CSS rules, without the <style> element.
+    """
+    group = f'div:has(> div > p > label[for="{uuid}"])'
+    return (f"{group} > div:first-child {{ display: none !important; }}"
+            f"{group} > div:last-child {{ flex: 1 1 auto !important; width: 100% !important; "
+            f"max-width: 100% !important; }}"
+            f"{one_row_css(uuid)}{group_buttons(uuid)} {{ padding: 0 6px !important; flex: 1 1 0 !important; }}")
+
+
 def css_string(text: str) -> str:
     """`text` as a quoted CSS string, e.g. for `content:`; a newline becomes a line break."""
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\A ") + '"'

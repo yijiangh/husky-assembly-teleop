@@ -245,8 +245,13 @@ class PluginContext:
         return lease
 
     def _lease_slots(self, serials: Iterable[str]) -> list[LeaseSlot]:
-        """The lease slots of robots `serials`; KeyError for an unknown one."""
-        return [self.world.robots[serial].lease_slot for serial in serials]
+        """The lease slots of robots `serials`; KeyError for an unknown one. Unparks a parked one: it will move."""
+        robots = {serial: self.world.robots[serial] for serial in serials}
+        for serial, robot in robots.items():
+            if robot.parked:
+                robot.parked = False
+                self.log_warn(f"{serial} no longer parked: {self.name} leases it to move it")
+        return [robot.lease_slot for robot in robots.values()]
 
     @contextmanager
     def freeze(self, basis: Basis, tolerance: Tolerance = Tolerance()) -> Iterator[Freeze]:

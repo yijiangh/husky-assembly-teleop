@@ -34,7 +34,8 @@ def _context(unmeasured: frozenset = frozenset()) -> tuple[PluginContext, WorldS
     The snapshot has 0805 tracked, with `unmeasured` joints not known.
     """
     world, log = WorldState(), Log()
-    world.robots["0805"] = SimpleNamespace(arms={"ur_arm": fake_arm(now=NOW)}, lease_slot=LeaseSlot("0805"), lease=None)
+    world.robots["0805"] = SimpleNamespace(arms={"ur_arm": fake_arm(now=NOW)}, lease_slot=LeaseSlot("0805"), lease=None,
+                                           parked=False)
     # * The monitor's log functions also take the source, here the plugin's name.
     monitor = SimpleNamespace(world=world, now=lambda: NOW, log_warn=lambda text, _source: log.warning(text),
                               log_info=lambda text, _source: log.info(text),
@@ -51,6 +52,15 @@ def _context(unmeasured: frozenset = frozenset()) -> tuple[PluginContext, WorldS
 def _turn(world: WorldState, degrees: float) -> None:
     """Turn the arm's first joint by `degrees`."""
     world.robots["0805"].arms["ur_arm"].state.joint_positions["ur_arm_shoulder_pan_joint"] += np.radians(degrees)
+
+
+def test_leasing_a_parked_robot_unparks_it_with_a_warning():
+    """A robot leased to move is no longer out of the way: the lease unparks it and says so."""
+    ctx, world, log = _context()
+    world.robots["0805"].parked = True
+    with ctx.lease_robots(["0805"], "B20 home"):
+        assert not world.robots["0805"].parked
+    assert ("warning", "0805 no longer parked: executor leases it to move it") in log.lines
 
 
 def test_a_plugins_lease_names_the_plugin():

@@ -128,7 +128,7 @@ Load plugins with `plugins:="<name> <name>"` (README, Parameters). A plugin that
 
 ### `health`
 
-Loaded by default. Shows the status of each robot and tracked object, with Unlock, Resume and Reconnect. A chip's colour change is logged once it has held for 1.5 s, one line per row, so a flickering chip makes one line. A signal chip shows a worse level at once and a better one only after it held 1.5 s, so marginal wifi reads steadily amber.
+Loaded by default. Shows the status of each robot and tracked object, with Unlock, Resume and Reconnect. **Parked**, after the robot's buttons and filled while on (a click toggles it), marks a robot standing still out of the way: the snapshot takes it as known where it stands (last seen, else its default pose; `stand_ins.parked`), so no Commit, Exec or Go asks about it and no planner, clearance or chip warns about it while it is not measured; it stays an obstacle there. It is unparked, with a warning, once seen moving (its base measured 2 cm or 2° from where it was parked, or an arm joint 1°) and when a plugin leases it to move it. Not kept across a restart. A chip's colour change is logged once it has held for 1.5 s, one line per row, so a flickering chip makes one line. A signal chip shows a worse level at once and a better one only after it held 1.5 s, so marginal wifi reads steadily amber.
 
 ### `console`
 
