@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from html import escape
 from typing import TYPE_CHECKING
 
@@ -13,7 +14,7 @@ from scaffolding_assembly_core.geometry import compose
 from ....shared.arm_planner_contract import ArmPlannerContract
 from ....ui.style import FAIL, LEVEL_COLORS, NONE, chip
 from ....world.checks import BAD, GOOD, PENDING, WARN, Check
-from ..analysis.checks import base_moved, new_spot, sample_marker_error, validation_level
+from ..analysis.checks import POSES_PER_SPOT, base_moved, new_spot, sample_marker_error, validation_level
 from ..analysis.old_outputs import write_validation_outputs
 from ..robot.motion import NoPlan
 from ..robot.sweeps import nearest_pose
@@ -33,8 +34,8 @@ class Validate(CalibrationStep):
     """
 
     name = "Validate"
-    instructions = ("Drive to a spot, press Sample poses here, then Go before each move. Repeat at 3 or more spots, "
-                    "each 0.5 m or 30° from the others.")
+    instructions = ("Drive to a spot, press Sample poses here, then Go before each move: 3 poses are sampled. Repeat "
+                    "at 3 or more spots, each 0.5 m or 30° from the others.")
     drives = goes = auto = cancels = moves_robot = go_moves = True
     watches = ("base", "tool")
     needs = ("Setup", "Marker error")
@@ -47,13 +48,16 @@ class Validate(CalibrationStep):
         #: each sampled pose's sample among all samples.
         self._pose_states: list[tuple[str, str]] = []
         self._pose_samples: dict[int, int] = {}
+        #: Where the base stood for the current spot; kept across presses, so the same spot keeps its samples.
+        self._spot = None
         self.scene = ValidationView()
 
     def build(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
         """The D-pad, Sample poses here and Clear samples; the readout below them."""
         self.build_movers(ctx, gui)
         button = gui.add_button("Sample poses here", icon=viser.Icon.PLAYER_PLAY,
-                                hint="Visit every validation pose where the base stands, and sample each.")
+                                hint="Sample 3 more validation poses where the base stands: those sampled least so "
+                                     "far, nearest first. Press again at the same spot for 3 more.")
         clear = gui.add_button("Clear all spots", icon=viser.Icon.TRASH,
                                hint="Start the validation again: every spot's file goes to validation/archive/.")
         # * The readout last: its lines come and go, and must not move the buttons.
@@ -63,15 +67,16 @@ class Validate(CalibrationStep):
 
     def run_changed(self, ctx: PluginContext) -> None:
         """Forget the spot shown."""
-        self._pose_states, self._pose_samples = [], {}
+        self._pose_states, self._pose_samples, self._spot = [], {}, None
 
     def leave(self, ctx: PluginContext) -> None:
         """Hide the validation dots, targets and spots."""
         self.scene.hide(ctx)
 
     async def _validate(self, ctx: PluginContext) -> None:
-        """Visit the validation poses clear where the base stands, nearest first, and sample each; a file per sample.
+        """Sample POSES_PER_SPOT more validation poses clear where the base stands; a file per sample.
 
+        - The poses sampled least often in this run go first, so each spot adds other poses; nearest first among them.
         - Each sample is written as it is taken: whatever ends the validation, nothing sampled is lost.
         - The poses are checked for collisions where the base stands, and again once it moved (`base_moved`).
         - Cancel while the arm moves or samples holds the arm: Go goes on, a second Cancel ends. The D-pad drives
@@ -79,28 +84,32 @@ class Validate(CalibrationStep):
         """
         run, procedure = self.run, self.cal.procedure
         arm, count = run.robot.arms[run.arm], len(run.validation_poses)
-        spot = checked = None
+        checked = None
         before = len(run.validation_files)
         try:
             while True:
                 here = ctx.kinematics.base_pose(run.serial)
-                if spot is None or new_spot(spot, here):
-                    spot, checked = here, None
+                # * The same spot as the last press keeps its samples: each press adds POSES_PER_SPOT more.
+                if self._spot is None or new_spot(self._spot, here):
+                    self._spot, checked = here, None
                     self._pose_states, self._pose_samples = [("pending", "")] * count, {}
                 if checked is None or base_moved(checked, here):
                     await self._check_poses(ctx)
                     checked = here
                 pending = [index for index, (state, _) in enumerate(self._pose_states) if state == "pending"]
-                if not pending:
+                if not pending or len(run.validation_files) - before >= POSES_PER_SPOT:
                     break
                 joints = arm.joint_vector()
                 if joints is None:
                     raise RuntimeError("no joint state of the arm")
+                counts = self._sampled_counts(run)
+                fewest = min(counts.get(index + 1, 0) for index in pending)
+                pending = [index for index in pending if counts.get(index + 1, 0) == fewest]
                 index, goal = nearest_pose(run.validation_poses, pending, joints, *run.limits, run.stow)
                 if not await procedure.pausable(self._visit(ctx, index, goal)):
-                    left = len([state for state, _ in self._pose_states if state == "pending"])
-                    await procedure.ask_go(ctx, f"Stopped with {left} of {count} poses left here. Go goes on (drive "
-                                                f"first for another spot); Cancel ends and keeps the samples.",
+                    left = POSES_PER_SPOT - (len(run.validation_files) - before)
+                    await procedure.ask_go(ctx, f"Stopped with {left} of {POSES_PER_SPOT} poses left here. Go goes on "
+                                                f"(drive first for another spot); Cancel ends and keeps the samples.",
                                            "go on")
         finally:
             # * Whatever ends it: a Sample poses here at the next spot replaces this one while it waits for Go.
@@ -108,6 +117,16 @@ class Validate(CalibrationStep):
                 self.write_outputs(ctx)
         if len(run.validation_files) == before:
             raise RuntimeError("no validation pose reachable here: drive elsewhere")
+
+    @staticmethod
+    def _sampled_counts(run) -> dict[int, int]:
+        """How often each validation pose (by number) was sampled in the run's current files."""
+        counts: dict[int, int] = {}
+        for path in run.current_validation_files():
+            number = re.search(r"_pose(\d+)$", path.stem)
+            if number:
+                counts[int(number.group(1))] = counts.get(int(number.group(1)), 0) + 1
+        return counts
 
     def write_outputs(self, ctx: PluginContext) -> None:
         """Write the analysis and, under a current solution, the old pipeline's validation log and figures."""
@@ -160,7 +179,7 @@ class Validate(CalibrationStep):
         if self.busy("spots not cleared"):
             return
         self.run.clear_validation()
-        self._pose_states, self._pose_samples = [], {}
+        self._pose_states, self._pose_samples, self._spot = [], {}, None
         self.run.save()
 
     def none_yet(self, ctx: PluginContext) -> str | None:

@@ -49,10 +49,10 @@ LEFT_OUT_LIMITS = f"limits {CIRCLE_ERROR * 1e3:g} mm off the circle, {TURN_MIN:.
 VALIDATION_WARN = 2e-3
 VALIDATION_DISTANCE = 5e-3
 VALIDATION_ANGLE = 0.3
-#: Validation needs this many samples, at this many base spots; a spot is new this far from the others (metres,
-#: degrees).
-VALIDATION_SAMPLES = 15
-VALIDATION_SPOTS = 3
+#: Validation needs this many base spots, with this many poses sampled at each; a spot is new this far from the
+#: others (metres, degrees). 9 samples judge a ~1 mm calibration within about 10 % of 15 (calib_bench val_count.py).
+VALIDATION_SPOTS, POSES_PER_SPOT = 3, 3
+VALIDATION_SAMPLES = VALIDATION_SPOTS * POSES_PER_SPOT
 SPOT_DISTANCE, SPOT_ANGLE = 0.5, 30.0
 #: Collision checks and planned moves hold while the base stays this close to where it stood: metres, radians.
 CHECKED_POSITION = 0.02

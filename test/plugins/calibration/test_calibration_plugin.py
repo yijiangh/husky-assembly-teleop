@@ -886,12 +886,12 @@ def test_the_procedures_record_solve_validate_apply_tip_and_punch(server, tmp_pa
     plugin.draw(ctx)
     validation = run.validation()
     assert procedure.outcome is None and len(run.validation().spots) == 1
-    assert len(validation.bases) == len(run.validation_poses) and validation.spread[0].max() < 1e-3
-    assert set(steps[5].scene.targets_drawn[1]) == {(40, 160, 70)}  # * every target sampled, within 2 mm: green
-    poses = len(run.validation_poses)
-    assert f"spot 1 · {poses}" in steps[5]._html.content and "spot 2 · 0" in steps[5]._html.content
+    # * Three poses per spot, each within 2 mm: three targets green, the others not sampled here.
+    assert len(validation.bases) == 3 and validation.spread[0].max() < 1e-3
+    assert steps[5].scene.targets_drawn[1].count((40, 160, 70)) == 3
+    assert "spot 1 · 3" in steps[5]._html.content and "spot 2 · 0" in steps[5]._html.content
     assert ">markers</span>" in steps[5]._html.content and ">1 · 0.10 mm<" in steps[5]._html.content
-    assert steps[5].checks(ctx)[0].value == f"{poses}/15"
+    assert steps[5].checks(ctx)[0].value == "3/9"
     spot = server.scene._handle_from_node_name["/plugins/calibration/validation_spots/0"]
     assert np.allclose(spot.position, FOOTPRINT.position, atol=2e-3)  # * where the base stood for the spot
     assert done(plugin, ctx) == 5 and done(plugin, ctx) == 6  # * asked once more: one spot is not enough
@@ -1031,6 +1031,25 @@ def test_validate_samples_before_solve_and_judges_once_solved(server, tmp_path, 
     plugin.draw(ctx)
     notes = plugin.panel._notes_html.content
     assert "Validate out of date: sampled with another tool body or before a refine." in notes
+
+
+def test_each_sample_poses_here_takes_three_poses_not_sampled_before(server, tmp_path, monkeypatch):
+    """Three poses a press; the next takes three others, the same spot keeping the first; spots cover more poses."""
+    plugin, ctx, _ = make_plugin(server, tmp_path, monkeypatch)
+    tick_setup(plugin)
+    run, procedure, validate = plugin.cal.run, plugin.cal.procedure, plugin.steps[5]
+    measure_markers(plugin, ctx)
+    plugin.panel.show(ctx, 5)
+    procedure.auto = True
+    monkeypatch.setattr(validate, "write_outputs", lambda _ctx: None)
+    numbers = []
+    for _ in range(2):
+        validate.start(ctx, "validation", validate._validate(ctx))
+        assert procedure.outcome is None
+        numbers.append({int(path.stem.rsplit("pose", 1)[1]) for path in run.validation_files} - set().union(*numbers))
+    assert [len(each) for each in numbers] == [3, 3] and not numbers[0] & numbers[1]
+    # * Both presses at the same spot: the first three stay sampled here, not grey again.
+    assert sum(state == "sampled" for state, _ in validate._pose_states) == 6
 
 
 def test_a_validation_ended_after_a_few_poses_keeps_their_samples(server, tmp_path, monkeypatch):
@@ -1372,12 +1391,12 @@ def test_each_step_needs_only_the_setup_boxes_it_uses(server, tmp_path, monkeypa
     assert {c.label: c.level for c in tip.ready(ctx)}["area, e-stop"] == BAD
     # * Done goes to the work left (Record) by way of what it needs: Marker error, not Setup (Go asks about the box).
     assert plugin.work_left(ctx) == 1
-    tick_setup(plugin)
-    run.ticks["Cameras calibrated"] -= PRECONDITION_HOLDS + 60
-    assert "Cameras calibrated" in record.need_expired(ctx, setup) and tip.need_expired(ctx, setup) is None
-    assert "Cameras calibrated" in punch.need_expired(ctx, setup)  # * its takes are measured with mocap
     plugin.panel.show(ctx, 3)
     plugin.draw(ctx)
     # * Each chip line is named: the step's result, whether its buttons can act, what happens now.
     assert all(f">{name}</span>" in plugin.panel._status_html.content for name in ("result", "ready"))
     assert ">now</span>" in plugin.panel._line_html.content
+    tick_setup(plugin)
+    run.ticks["Cameras calibrated"] -= PRECONDITION_HOLDS + 60
+    assert "Cameras calibrated" in record.need_expired(ctx, setup) and tip.need_expired(ctx, setup) is None
+    assert "Cameras calibrated" in punch.need_expired(ctx, setup)  # * its takes are measured with mocap

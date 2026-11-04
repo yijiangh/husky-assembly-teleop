@@ -338,8 +338,8 @@ mounted as it was for Record. Expired Setup or marker errors only warn: **Sample
    the chip's colour; they move with the robot, so you can see whether they clear the surroundings.
 2. **Sample poses here**: the arm planner first checks the arm's validation poses for collisions where the base
    stands (a fixed set: `validation` in `data/calibration/sweeps.yaml`, see its header for how they were made), then
-   moves to each clear one and samples it as in Record, with Go before each move unless **Auto**. The next pose is
-   always the one not yet sampled that the arm reaches soonest. Each pose is
+   samples 3 clear ones as in Record, with Go before each move unless **Auto**: the poses sampled least often so
+   far in this run (so each spot adds other poses), the one the arm reaches soonest first. Each pose is
    turned by whole turns to the equivalent nearest where the arm is, keeping every joint within 225° of the stow
    pose where it can, so no joint turns round on the way and the cables do not wind up. A pose
    that collides, or has no collision-free move from here, is skipped.
@@ -358,7 +358,7 @@ mounted as it was for Record. Expired Setup or marker errors only warn: **Sample
 
 | Check | Level | Meaning |
 |---|---|---|
-| samples | red under 15, grey before the first | samples over all spots |
+| samples | red under 9 (3 at each of 3 spots), grey before the first | samples over all spots |
 | spots | red under 3, grey before the first sample | base spots sampled, and the range of headings |
 | position | amber over 2 mm, red over 5 mm, grey without a current solution | 95 % of the samples within this distance of their mean |
 | orientation | amber over 0.3°, grey without a current solution | 95 % of each tool body axis within this angle of its mean |
