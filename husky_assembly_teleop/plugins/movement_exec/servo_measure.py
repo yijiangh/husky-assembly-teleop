@@ -97,14 +97,16 @@ def line(k: int, reading: dict, plan: ServoPlan) -> str:
 def aim_text(plan: ServoPlan, engaged: bool, bar: Mapping | None) -> str:
     """What the next pass aims at, for the pass banner: the mocap bar once engaged, else tool0 and why."""
     short, target = plan.bar.rsplit("/", 1)[-1] if plan.bar else "", SERVO_TARGET[plan.kind]
+    tool0 = f"tool0 at the best rigid fit to the authored targets of {target}" if plan.held else (
+        f"tool0 at the authored targets of {target}")
     if engaged and bar is not None and bar.get("fit") is not None:
         fit = bar["fit"]
         return (f"the mocap bar {short} onto {target} (fit {fit['n_matched']}/{fit['n_design']}, rms "
                 f"{(fit['rms_m'] or 0.0) * 1e3:.1f} mm)")
     if plan.by_bar:
         why = bar["reason"] if bar is not None else "not measured"
-        return f"tool0 at the authored targets of {target} (the mocap bar {short} is not usable: {why})"
-    return f"tool0 at the authored targets of {target}"
+        return f"{tool0} (the mocap bar {short} is not usable: {why})"
+    return tool0
 
 
 def load_line(k: int, reading: Mapping, wrench0: Mapping) -> str:

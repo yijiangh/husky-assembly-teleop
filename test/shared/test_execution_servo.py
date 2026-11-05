@@ -20,8 +20,8 @@ from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_name
 from husky_assembly_teleop.shared.execution.servo import (
     AFTER_INSERT, APPROACH, DONE, FAILED, MAX_FORCE_CHANGE, MIN_TIME, TRANSFER, ServoPlan, bar_on_target, bar_reading,
     bar_targets, base_drift, carried_insert_goals, deviation_text, excursion, flange_poses, flange_side, force_vectors,
-    insert_end_gap, per_axis_angles_deg, recommended_time, servo_kind, servo_plan, stop_after_move, tool0_errors,
-    tracking_gaps, wrench_magnitudes)
+    held_targets, insert_end_gap, per_axis_angles_deg, recommended_time, servo_kind, servo_plan, stop_after_move,
+    tool0_errors, tracking_gaps, wrench_magnitudes)
 from husky_assembly_teleop.shared.runs.runs import RunSettings
 from husky_assembly_teleop.shared.bars.layouts import BarLayout, bar_layouts, fit_bar
 from husky_assembly_teleop.shared.bars.pose import apply_authored_move, bar_start, pose_deviation
@@ -200,6 +200,56 @@ def test_bar_reading_measures_at_the_bar_start():
     assert reading["fk_vs_design"]["dpos_mm"] < 1e-9 and reading["mocap_vs_fk"] == reading["mocap_vs_design"]
     assert reading["bar"] == "bars/B20" and reading["grounded"] and reading["fit"]["ok"]
     assert deviation_text(reading["mocap_vs_design"]) == "1.57 mm/0.100°" and deviation_text(None) == "n/a"
+
+
+def pair(left: tuple, right: tuple, left_turn: tuple = (0.0, 0.0, 0.0), right_turn: tuple = (0.0, 0.0, 0.0)) -> dict:
+    """Two flanges at these positions (metres), turned by these rotation vectors (degrees) from the identity."""
+    return {"left": Pose(left, tuple(Rotation.from_rotvec(left_turn, degrees=True).as_quat())),
+            "right": Pose(right, tuple(Rotation.from_rotvec(right_turn, degrees=True).as_quat()))}
+
+
+@pytest.mark.safety
+def test_held_targets_are_one_rigid_move_of_both_flanges():
+    """Whatever the targets ask, the flanges' relation stays: a held move cannot change it."""
+    live = pair((0.5, -1.0, 0.2), (1.7, -1.0, 0.2), (0.1, 0.0, 0.0), (0.0, 0.2, 0.0))
+    fit = held_targets(pair((0.6, -0.9, 0.3), (1.8, -0.95, 0.31), (0.0, 0.3, 0.0)), live)
+    before, after = compose(invert(live["left"]), live["right"]), compose(invert(fit["left"]), fit["right"])
+    assert np.allclose(before.matrix(), after.matrix())
+
+
+@pytest.mark.safety
+def test_held_targets_reach_both_when_the_span_fits_and_share_what_does_not():
+    """The same span: both on target. A span 0.30 mm longer than the targets': 0.15 mm left at each end."""
+    fit = held_targets(pair((0.0, 0.002, 0.0), (1.2, 0.0, 0.0)), pair((0.0, 0.0, 0.0), (1.2, 0.0, 0.0)))
+    assert np.linalg.norm(np.subtract(fit["left"].position, (0.0, 0.002, 0.0))) < 1e-5
+    assert np.linalg.norm(np.subtract(fit["right"].position, (1.2, 0.0, 0.0))) < 1e-5
+    fit = held_targets(pair((0.0, 0.0, 0.0), (1.2, 0.0, 0.0)), pair((-0.00015, 0.0, 0.0), (1.20015, 0.0, 0.0)))
+    assert np.allclose(fit["left"].position, (-0.00015, 0.0, 0.0))
+    assert np.allclose(fit["right"].position, (1.20015, 0.0, 0.0))
+
+
+@pytest.mark.safety
+def test_held_targets_turn_about_the_bar_by_the_mean_of_both_angle_errors():
+    """Positions cannot see a turn about the line between the flanges: 0.3 and 0.1 deg off about it give 0.2 deg."""
+    fit = held_targets(pair((0.0, 0.0, 0.0), (1.2, 0.0, 0.0), (0.3, 0.0, 0.0), (0.1, 0.0, 0.0)),
+                       pair((0.0, 0.0, 0.0), (1.2, 0.0, 0.0)))
+    assert np.allclose(Rotation.from_quat(fit["left"].orientation).as_rotvec(degrees=True), (0.2, 0.0, 0.0))
+    assert np.allclose(Rotation.from_quat(fit["right"].orientation).as_rotvec(degrees=True), (0.2, 0.0, 0.0))
+
+
+@pytest.mark.safety
+def test_held_targets_do_not_swing_the_far_end_for_the_near_flanges_angle():
+    """B20 on 2026-11-04 after pass 1: aiming the left flange alone swung the right 1.4 mm; this moves it 0.23 mm."""
+    left, right = np.array((0.51630741, -0.97082317, 0.19542025)), np.array((1.71660487, -0.97094768, 0.19575874))
+    left_error = np.array((-0.14580883, 0.02712303, -0.12975429))
+    right_error = np.array((0.15165111, -0.09738819, 0.20873474))
+    live = pair(tuple(left), tuple(right))
+    targets = pair(tuple(left - left_error * 1e-3), tuple(right - right_error * 1e-3), left_turn=(0.066, 0.073, 0.098))
+    fit = held_targets(targets, live)
+    moved = {side: np.linalg.norm(np.subtract(fit[side].position, live[side].position)) * 1e3 for side in live}
+    left_over = {side: np.linalg.norm(np.subtract(fit[side].position, targets[side].position)) * 1e3 for side in live}
+    assert moved["left"] == pytest.approx(0.13, abs=0.01) and moved["right"] == pytest.approx(0.23, abs=0.01)
+    assert left_over["left"] == pytest.approx(0.15, abs=0.01) and left_over["right"] == pytest.approx(0.15, abs=0.01)
 
 
 @pytest.mark.parametrize("fit, source, usable, words", [

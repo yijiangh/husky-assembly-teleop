@@ -170,7 +170,7 @@ class ExecResult:
 
 @dataclass(frozen=True)
 class Carried:
-    """The mocap bar correction a transfer's servo leaves for its insert's plan (`servo.carried_insert_goals`).
+    """The correction a transfer's servo leaves for its insert's plan (`servo.carried_insert_goals`).
 
     Attributes:
         loaded: The loaded process it was measured on, compared by identity.
@@ -207,7 +207,7 @@ class MovementExecContract(Protocol):
 
     @property
     def carried(self) -> Carried | None:
-        """Carried | None: What the last transfer's bar servo left for its insert's plan.
+        """Carried | None: What the last transfer's servo left for its insert's plan.
 
         None once that transfer runs again, another action starts, or the process is loaded again.
         """

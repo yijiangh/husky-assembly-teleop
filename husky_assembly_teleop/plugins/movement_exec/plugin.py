@@ -92,7 +92,7 @@ class MovementExecPlugin(HuskyPlugin):
         self._dry_run_refused = 0
         #: Serial -> ROS time its arms last arrived (a motion or a servo pass): an older plan is refused.
         self._moved_at: dict[str, float] = {}
-        #: What the last transfer's bar servo left for its insert's plan; the panel's servo line: the running servo's
+        #: What the last transfer's servo left for its insert's plan; the panel's servo line: the running servo's
         #: last reading, or how the last one ended, until the next request.
         self._carried: Carried | None = None
         self._servo_line = ""
@@ -121,7 +121,7 @@ class MovementExecPlugin(HuskyPlugin):
 
     @property
     def carried(self) -> Carried | None:
-        """Carried | None: What the last transfer's bar servo left for its insert's plan; dropped on a reload."""
+        """Carried | None: What the last transfer's servo left for its insert's plan; dropped on a reload."""
         if self._carried is not None and self._ctx.require("assembly_run").view.process is not self._carried.loaded:
             self._carried = None
         return self._carried
@@ -316,8 +316,7 @@ class MovementExecPlugin(HuskyPlugin):
                         result = self._raised(job, run, error, tuple(done), end, base)
                         raise
                     finally:
-                        # * However the servo ended: the bar mode engaged, so the insert plans from where it left the
-                        #   flanges.
+                        # * However the servo ended: it moved the flanges, so the insert plans from where it left them.
                         if run.carry is not None:
                             self._carried = run.carry
                     self._record_part(job, run)

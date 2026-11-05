@@ -27,18 +27,20 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from async_timeout import timeout
 
-from scaffolding_assembly_core.geometry import compose
+from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.ids import robot_id
 
 from ...shared.assembly_planning.joints import arm_joint_names
+from ...shared.assembly_planning.route_result import pose_error
 from ...shared.assembly_planning.tamp_route import HELD
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import basis_of
 from ...shared.execution.send import ARRIVED, SendProgress, send_motion
 from ...shared.execution.send import DRY_RUN as SENT_DRY, HOLD_NOT_SENT as SENT_NOT_HELD, REFUSED as SENT_REFUSED
-from ...shared.execution.servo import (BAR_TOL, CONFIRM_TRAVEL, MARKER_MAX_AGE, MAX_PASSES, SETTLE, TOOL0_TOL,
-                                       TRANSFER, ServoPlan, bar_on_target, bar_reading, bar_targets, base_drift,
-                                       deviation_text, excursion, flange_poses, flange_side, force_vectors,
+from ...shared.execution.servo import (BAR_TOL, CONFIRM_TRAVEL, HELD_LEFTOVER_WARN, MARKER_MAX_AGE, MAX_PASSES, SETTLE,
+                                       TOOL0_TOL, TRANSFER, ServoPlan, bar_on_target, bar_reading, bar_targets,
+                                       base_drift, deviation_text, excursion, flange_poses, flange_side, force_vectors,
+                                       held_targets,
                                        recommended_time, servo_plan, stop_after_move, tool0_errors, tracking_gaps,
                                        wrench_magnitudes)
 from ...shared.runs.as_built import servo_block
@@ -135,7 +137,7 @@ class ServoLoop:
         self.job, self.part, self.plan, self.ctx = job, run, plan, job.ctx
         self.serial = job.request.serial
         self.targets = dict(plan.targets)
-        self.engaged = self.warned = False
+        self.engaged = self.warned = self.fitted = False
         self.readings: list[dict] = []
         self.moves: list[dict] = []
         self.passes = 0
@@ -217,7 +219,11 @@ class ServoLoop:
         basis = basis_of(snapshot, loaded, loaded.steps[loaded.index_of(request.action, plan.primary)], self.serial,
                          names, robot.joints, as_free, view.statuses, ignore_built, ctx.now(),
                          obstacles_collide=obstacles)
-        ask = ServoAsk(dict(self.targets), TOOL0_TOL, plan.linear_only, plan.held)
+        targets, leftover = self.targets, ""
+        if plan.held and not self.engaged:
+            targets, self.fitted = held_targets(self.targets, flange_poses(robot, plan.flanges)), True
+            leftover = self._leftover(targets)
+        ask = ServoAsk(dict(targets), TOOL0_TOL, plan.linear_only, plan.held)
         planner: MotionPlannerContract = ctx.require("motion_planner")
         try:
             async with timeout(PLAN_TIME):
@@ -232,7 +238,7 @@ class ServoLoop:
         flanges_move = ", ".join(f"{SIDE.get(side, side)} {mm:.2f} mm" for side, mm in correction.items())
         if step.nothing_left:
             return DONE, "nothing left", (f"nothing left to plan (correction {flanges_move}, under "
-                                          f"{TOOL0_TOL * 1e3:.1f} mm){self._bar_note()}")
+                                          f"{TOOL0_TOL * 1e3:.1f} mm){leftover}{self._bar_note()}")
         if not step.ok:
             return FAILED, "no plan", f"pass {k}: {route.result.reason}"
         trajectory = route.result.trajectory
@@ -303,6 +309,17 @@ class ServoLoop:
                     f"{move['rows']} rows, {path}. Confirm to move; Cancel stops and records.")
         return (f"{plan.target} — SAFEGUARD servo {k}/{MAX_PASSES}: this path {path} ({route.planner}, "
                 f"{move['rows']} rows). Confirm to move, or Cancel to stop and record.")
+
+    def _leftover(self, fitted: dict[str, Pose]) -> str:
+        """What the best rigid move leaves of each flange's authored target, for the result; warns when it is a lot."""
+        errors = {flange: pose_error(pose, self.plan.targets[flange]) for flange, pose in fitted.items()}
+        text = ", ".join(f"{SIDE.get(flange_side(flange), flange_side(flange))} {distance * 1e3:.2f} mm / "
+                         f"{math.degrees(turn):.3f}°" for flange, (distance, turn) in errors.items())
+        worst = max(distance for distance, _turn in errors.values())
+        if worst > HELD_LEFTOVER_WARN:
+            self.ctx.log_warn(f"[servo] the best rigid move leaves {text} from the targets (warns over "
+                              f"{HELD_LEFTOVER_WARN * 1e3:.1f} mm): the flanges' relation differs from the design's")
+        return f"; left from the targets by the best rigid move: {text}"
 
     def _bar_note(self) -> str:
         """How far the mocap bar still is from its target, when steering on it; else ''."""
@@ -419,6 +436,11 @@ class ServoLoop:
             insert = job.request.loaded.steps[plan.step_index]
             run.carry = Carried(job.request.loaded, plan.action, insert.movement_index, self.serial, ctx.now())
             ctx.log_info(f"[servo] the mocap-bar correction is carried into the plan of {insert.movement.id}.")
+        elif self.fitted and plan.kind == TRANSFER and not job.dry_run and (self.moves or run.result == DONE):
+            # ! The insert's move follows one flange too: to the authored end it would turn the bar there instead.
+            insert = job.request.loaded.steps[plan.step_index]
+            run.carry = Carried(job.request.loaded, plan.action, insert.movement_index, self.serial, ctx.now())
+            ctx.log_info(f"[servo] the tool0 correction is carried into the plan of {insert.movement.id}.")
         if self.moves or len(self.readings) > 1 or last is not None:  # (a move cut short counts too)
             payload = servo_payload(plan, robot=robot_id(self.serial), serial=self.serial, readings=self.readings,
                                     moves=self.moves, status=run.result, reason=run.reason, engaged=self.engaged,

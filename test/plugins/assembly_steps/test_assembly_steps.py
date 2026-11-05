@@ -597,7 +597,7 @@ def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch
         ("plan", True), ("plan", False), ("plan", False)]
     lines = [line for line in lab.ctx.lines("info") if line.startswith("[insert plan]")]
     line, = lines
-    assert line.startswith("[insert plan] mocap bar correction carried: B20_J_insert left goal ")
+    assert line.startswith("[insert plan] servo correction carried: B20_J_insert left goal ")
     assert line.endswith(" from the authored end")
 
 

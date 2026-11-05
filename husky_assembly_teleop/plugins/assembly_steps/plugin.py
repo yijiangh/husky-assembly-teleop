@@ -17,7 +17,7 @@ action's last step Mark done (assembly_run's) is suggested.
   movement instead (`_move_on`): the operator clicks Plan again.
 - A plan is used once: Exec takes it, and it is cleared once the step ran; only a request refused before sending
   anything, or a dry run, gives it back (still checked for staleness).
-- An insert after its transfer's mocap bar servo is planned from where the servo left the flanges (`executor.carried`).
+- An insert after its transfer's servo is planned from where the servo left the flanges (`executor.carried`).
 - ! EXPERIMENTAL, with movement_exec the first plugins that run process movements on the robots.
 """
 
@@ -497,11 +497,11 @@ class AssemblyStepsPlugin(PlannerPlugin):
                 carried = ctx.require("movement_exec").carried if primary.routine is Routine.INSERT else None
                 if carried is not None and carried.loaded is view.process and (carried.action, carried.insert) == (
                         action, step.movement_index):
-                    # * The transfer's bar servo left the flanges off the authored start: the insert goes from there.
+                    # * The transfer's servo left the flanges off the authored start: the insert goes from there.
                     goals = carried_insert_goals(view.process, action, carried.insert, live)
                     flange, ends = next(iter(goals)), step.movement.target.robots[step.action.robot].link_poses
                     distance, turn = pose_error(goals[flange], ends[flange])
-                    ctx.log_info(f"[insert plan] mocap bar correction carried: {step.label} {flange_side(flange)} "
+                    ctx.log_info(f"[insert plan] servo correction carried: {step.label} {flange_side(flange)} "
                                  f"goal {distance * 1e3:.2f} mm / {math.degrees(turn):.3f}° from the authored end")
                 elif (primary.routine is Routine.RETREAT_LINEAR
                       and self._assembly_run(ctx).view.settings.retreat_live_axis):

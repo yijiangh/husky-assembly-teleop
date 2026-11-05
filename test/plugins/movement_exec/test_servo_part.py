@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from math import radians
+from typing import Callable
 
 import numpy as np
 import pytest
@@ -34,7 +35,7 @@ from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE
 from husky_assembly_teleop.shared.runs.runs import RunSettings
 from husky_assembly_teleop.shared.bars.layouts import bar_layouts
 from husky_assembly_teleop.world.marker_match import transform_points
-from scaffolding_assembly_core.geometry import Pose, compose
+from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.ids import robot_id, split_link_id
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
@@ -361,7 +362,7 @@ def test_tool0_servo_converges_in_one_pass_and_is_recorded():
     # * The old monitor's console lines, in its order.
     info = lab.ctx.lines("info")
     wanted = ["[servo 0] tool0 pos L=10.00 R=10.00 mm, rot L=",
-              "### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start",
+              "### SERVOING iteration 1/8: aiming tool0 at the best rigid fit to the authored targets",
               "[servo] First move planned: 2 waypoints, travels ",
               "[servo 1] tool0 pos L=", "[servo 1] arms vs last commanded waypoint: L ",
               "### SERVOING converged at iter 1 on tool0 (< 0.2 mm)", "### bar pose at termination"]
@@ -410,6 +411,58 @@ def test_bar_servo_closes_a_flange_side_error_in_one_pass_and_carries_it():
     carried = lab.plugin.carried
     assert carried is not None and carried.loaded is lab.loaded and carried.serial == lab.serial
     assert (carried.action, carried.insert) == ("B20_J", step(lab.loaded, "B20_J_insert").movement_index)
+
+
+@pytest.mark.safety
+def test_tool0_servo_carries_its_correction_into_the_insert():
+    """A held move follows one flange: to the authored end, the insert would turn the bar the servo left aligned."""
+    lab = ServoLab()
+    result = execute(lab, lab.servo_request(), True)
+    assert result.status == DONE, result.reason
+    carried = lab.plugin.carried
+    assert carried is not None and carried.loaded is lab.loaded and carried.serial == lab.serial
+    assert (carried.action, carried.insert) == ("B20_J", step(lab.loaded, "B20_J_insert").movement_index)
+    assert "[servo] the tool0 correction is carried into the plan of B20_J_insert." in lab.ctx.lines("info")
+
+
+def targets_moved(monkeypatch, right_by: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> None:
+    """Make the servo's authored right target differ: `right_by(left, right)` gives its position, metres."""
+    def plan_of(*args, **kwargs):
+        plan = servo_plan(*args, **kwargs)
+        targets = dict(plan.targets)
+        left, right = next(f for f in targets if "left" in f), next(f for f in targets if "right" in f)
+        position = right_by(np.array(targets[left].position), np.array(targets[right].position))
+        targets[right] = Pose(tuple(position), targets[right].orientation)
+        return replace(plan, targets=targets)
+
+    monkeypatch.setattr("husky_assembly_teleop.plugins.movement_exec.servo_part.servo_plan", plan_of)
+
+
+@pytest.mark.safety
+def test_tool0_servo_aims_one_rigid_move_when_the_flanges_relation_differs(monkeypatch):
+    """B20 on 2026-11-04: the far end 2 mm sideways of what the relation gives: both land, in one pass, not eight."""
+    targets_moved(monkeypatch, lambda left, right: right + (0.0, 0.0, 0.002))
+    lab = ServoLab()
+    result = execute(lab, lab.servo_request(), True)
+    assert result.status == DONE and lab.published() == 1, result.reason
+    assert "converged on tool0" in lab.ended()
+    start = lab.servo_record()["servoing_data"][0]["tool0"]
+    live = {side: Pose(*map(tuple, start[side]["observed_pose"])) for side in ("left", "right")}
+    aimed = lab.planner.requests[0].servo.targets
+    left, right = next(f for f in aimed if "left" in f), next(f for f in aimed if "right" in f)
+    assert np.allclose(compose(invert(aimed[left]), aimed[right]).matrix(),
+                       compose(invert(live["left"]), live["right"]).matrix(), atol=1e-9)
+
+
+@pytest.mark.safety
+def test_tool0_servo_stops_when_only_the_span_is_left_and_says_what_is_left(monkeypatch):
+    """Targets 2 mm further apart than the flanges: a rigid move cannot close it: it stops and warns, 1 mm each end."""
+    targets_moved(monkeypatch, lambda left, right: right + (right - left) / np.linalg.norm(right - left) * 0.002)
+    lab = ServoLab()
+    result = execute(lab, lab.servo_request(), True)
+    assert result.status == DONE and lab.published() == 1, result.reason
+    assert "left from the targets by the best rigid move: L 1.00 mm" in lab.ended()
+    assert any("the best rigid move leaves L 1.00 mm" in line for line in lab.ctx.lines("warn"))
 
 
 @pytest.mark.safety
@@ -467,7 +520,8 @@ def test_an_unusable_bar_reading_leaves_the_loop_on_tool0(markers, words):
     reasons = [reading["bar"]["reason"] for reading in record["servoing_data"]]
     assert len(reasons) == 2 and all(words in reason for reason in reasons), reasons
     assert sum("the mocap bar is not usable" in line for line in lab.ctx.lines("warn")) == 1
-    assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start "
+    assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the best rigid fit to the authored targets "
+                               "of the insert start "
                                "(the mocap bar B20 is not usable: ") for line in lab.ctx.lines("info"))
 
 
@@ -498,7 +552,8 @@ def test_servo_by_bar_without_a_bar_goes_on_with_tool0_after_confirm():
     prompts = lab.prompts()
     assert len(prompts) == 2 and "SERVO 1/8 onto the insert start (tool0)" in prompts[1][0]
     info = lab.ctx.lines("info")
-    assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start "
+    assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the best rigid fit to the authored targets "
+                               "of the insert start "
                                "(the mocap bar B20 is not usable: the bar could not be measured") for line in info)
     assert any(line.startswith("### SERVOING converged at iter 1 on tool0 (< 0.2 mm): the mocap bar fit was never "
                                "usable") for line in info)
@@ -735,6 +790,7 @@ def test_a_dry_run_builds_one_pass_and_is_never_done():
     record = lab.servo_record()
     assert record["dry_run"] and [move["outcome"] for move in record["moves"]] == [SENT_DRY]
     assert any("DRY RUN a200-0806 left_ur_arm" in line for line in lab.ctx.lines("warn"))
+    assert lab.plugin.carried is None
 
 
 @pytest.mark.safety
