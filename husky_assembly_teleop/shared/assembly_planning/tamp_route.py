@@ -16,6 +16,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Mapping
 
 import numpy as np
@@ -47,6 +48,11 @@ if TYPE_CHECKING:
 #: tamp's search with the bar held: the bar's step (m, rad), seconds per try; try k is seeded SEED_STEP * k.
 HELD = {"stage": 3, "position_res": 0.01, "rotation_res": 0.025, "max_time": 120.0, "derive_start": False}
 SEED_STEP = 9973
+#: The Drive's benchmark folder, whose `prm/` holds the roadmaps the "prm" planner follows (`Route.roadmap_dir`).
+PRM_BENCH = Path("data_experiment/cdfm_planner_benchmark")
+#: ! tamp's roadmap options that keep it from writing scenes and queries into the roadmap folder: it is on the shared
+#:   Drive, where nothing may be written.
+PRM_OPTIONS = {"workers": 1, "save_query": False, "verbose": False}
 #: A held transfer's right flange may end this far from its target before the grasp counts as mismatched, metres.
 GRASP_MISMATCH = 0.002
 #: A retreat blocked at its full length is tried shorter, in steps of this, down to this, metres.
@@ -298,7 +304,7 @@ class Route(RouteSearch):
         return self.free(goal)
 
     def _transfer_held(self) -> RouteResult:
-        """The transfer with the bar held: tamp's constrained search, each try seeded anew.
+        """The transfer with the bar held: tamp's constrained search, each try seeded anew, or its roadmap, one try.
 
         Returns:
             RouteResult: Solved.
@@ -306,21 +312,24 @@ class Route(RouteSearch):
         Raises:
             Refused: Why it is not, as the failed result's reason.
         """
-        self.planner = "tamp.plan_constrained_dual_arm"
+        prm = self.search.cdfm_planner == "prm"
+        self.planner = "tamp.plan_constrained_dual_arm" + ("/prm" if prm else "")
         goal, targets = self.ik_goal(), {part: part.target for part in self.spec.arms}
-        failures = []
-        for attempt in range(ATTEMPTS):
+        tries, failures = 1 if prm else ATTEMPTS, []
+        for attempt in range(tries):
             self.next_attempt()
-            self.note(f"max_time {HELD['max_time']:.0f} s, seed {SEED_STEP * attempt}", ATTEMPTS)
+            seeded = f"max_time {HELD['max_time']:.0f} s, seed {SEED_STEP * attempt}"
+            self.note("roadmap, no time limit" if prm else seeded, tries)
             started = time.monotonic()
-            path, info = self.held_search(goal, SEED_STEP * attempt, targets)
+            path, info = self.held_search(goal, SEED_STEP * attempt, targets, backend=self.search.cdfm_planner)
             if path is not None:
-                self.note(f"path of {len(path)} waypoints in {time.monotonic() - started:.1f} s", ATTEMPTS)
+                self.note(f"path of {len(path)} waypoints in {time.monotonic() - started:.1f} s", tries)
                 return self.solved(path, targets)
             failures.append(f"no path in {time.monotonic() - started:.0f} s "
                             f"(tamp: {info.get('failure_reason', 'no reason')})")
-            self.note(failures[-1], ATTEMPTS)
-        raise Refused(f"{self.planner}: {'; '.join(failures)} ({ATTEMPTS} tries of {HELD['max_time']:.0f} s)")
+            self.note(failures[-1], tries)
+        budget = "1 try on the roadmap" if prm else f"{tries} tries of {HELD['max_time']:.0f} s"
+        raise Refused(f"{self.planner}: {'; '.join(failures)} ({budget})")
 
     def _insert(self) -> RouteResult:
         """The insert: tamp's straight move with the bar held, to the goal poses given, else the targets, else the line.
@@ -500,26 +509,61 @@ class Route(RouteSearch):
 
     # --- --- --- --- --- SEARCHES --- --- --- --- ---
 
-    def held_search(self, goal: Mapping[str, float], seed: int,
-                    targets: Mapping[ArmPart, Pose | None]) -> tuple[list | None, dict]:
-        """One try of tamp's constrained search with the bar held, to the goal joints; the mirror synced after.
+    def roadmap_dir(self) -> Path:
+        """The folder of the held bar's precomputed roadmap: `<roadmap root>/prm/<process folder name>__<bar>/`.
 
-        A path whose right flange ends over `GRASP_MISMATCH` from its target warns: the grasp differs from the
-        authored one.
+        Raises:
+            Refused: Without a roadmap root (`search.roadmap_root`), or a process read from no folder.
+        """
+        if not self.search.roadmap_root:
+            raise Refused("no roadmap root: set drive_root or Advanced planning's Roadmap root")
+        if self.process.folder is None:
+            raise Refused("the process was read from no folder, so its roadmaps have no name")
+        bar = self.spec.bar.removeprefix("bars/")
+        return Path(self.search.roadmap_root) / "prm" / f"{self.process.folder.name}__{bar}"
+
+    def held_search(self, goal: Mapping[str, float], seed: int, targets: Mapping[ArmPart, Pose | None],
+                    backend: str = "birrt") -> tuple[list | None, dict]:
+        """One try of tamp's constrained planner with the bar held, to the goal joints; the mirror synced after.
+
+        The servo's fallback (servo_route.py) always searches: birrt. A path whose right flange ends over
+        `GRASP_MISMATCH` from its target warns: the grasp differs from the authored one.
 
         Args:
             goal: Goal values by joint name, one per name in `names`.
-            seed: The try's random seed.
+            seed: The try's random seed (the roadmap ignores it).
             targets: Each moving flange's target pose, None where it has none.
+            backend: "birrt" searches; "prm" follows the bar's roadmap (`roadmap_dir`), without a time limit.
 
         Returns:
             tuple[list | None, dict]: The path (None when none was found) and tamp's info.
+
+        Raises:
+            Refused: With "prm", no roadmap root or file, or a roadmap that does not fit this bar and scene.
         """
-        bar = self.planning.ids(self.spec.bar)
-        with self.mirror.lend() as planner, world_frame_fk(planner):
-            path, info = plan_constrained_dual_arm(planner, self.mirror.state, active_bar_id=bar, goal_conf=goal,
-                                                   random_seed=seed, **HELD)
-        self.mirror.sync(self.scene)
+        bar, roadmap = self.planning.ids(self.spec.bar), {}
+        if backend == "prm":
+            folder = self.roadmap_dir()
+            if not (folder / "roadmap.json.gz").is_file():
+                name = self.spec.bar.removeprefix("bars/")
+                raise Refused(f"no roadmap for {name} at {folder}: build it with husky_assembly_tamp's "
+                              f"scripts/prm_runs/process_precompute.sh {self.process.folder.name} {name} "
+                              f"(HUSKY_BENCH_ROOT and HUSKY_DESIGN_STUDY_DIR set)")
+            roadmap = {"backend": "prm", "prm_options": {"roadmap_dir": str(folder), **PRM_OPTIONS}}
+        try:
+            with self.mirror.lend() as planner, world_frame_fk(planner):
+                path, info = plan_constrained_dual_arm(planner, self.mirror.state, active_bar_id=bar, goal_conf=goal,
+                                                       random_seed=seed, **HELD, **roadmap)
+        except ValueError as mismatch:
+            # * The roadmap's RoadmapMismatch and "bar not attached to left tool0" are ValueErrors; the search's is a
+            #   bug, reported as such by `planned`.
+            if not roadmap:
+                raise
+            raise Refused(f"{self.planner}: {mismatch}") from mismatch
+        finally:
+            problem = _sync_again(self)
+            if problem:
+                self.warnings.append(problem)
         right = next((part for part in self.spec.arms if part.side == "right"), None)
         if path is not None and right is not None and targets.get(right) is not None:
             missed = pose_error(self.flange(right, dict(zip(self.names, path[-1]))), targets[right])[0]

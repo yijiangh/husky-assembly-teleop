@@ -41,7 +41,7 @@ from ...shared.assembly_planning.movement import Routine, UnknownMovement, class
 from ...shared.assembly_planning.route_result import (GoalCheck, RouteResult, goal_line, live_retreat_goals,
                                                       pose_error)
 from ...shared.assembly_planning.route_search import ATTEMPTS, FreeSearch
-from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS
+from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS, PRM_BENCH
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
 from ...shared.execution.retime import RetimeError, retime
@@ -352,8 +352,11 @@ class AssemblyStepsPlugin(PlannerPlugin):
     def free_search(self, ctx: PluginContext) -> FreeSearch:
         """The free searches' settings for a plan (`MotionPlanRequest.search`): the run's Advanced planning ones."""
         settings = self._assembly_run(ctx).view.settings
+        # * The Drive convention is resolved here, on the main thread, so the worker never reads the config.
+        root = settings.plan_roadmap_root or (str(ctx.config.drive_root / PRM_BENCH) if ctx.config.drive_root else "")
         return FreeSearch(settings.plan_max_time, settings.plan_max_iterations, settings.plan_joint_resolution,
-                          settings.plan_tries, settings.plan_swept_check)
+                          settings.plan_tries, settings.plan_swept_check, cdfm_planner=settings.plan_cdfm_planner,
+                          roadmap_root=root)
 
     def set_ignore_built(self, ignore: bool) -> None:
         """Plan as if the built bars were not there (for tests in the air); a plan made otherwise goes stale."""
@@ -567,7 +570,9 @@ class AssemblyStepsPlugin(PlannerPlugin):
 
         label = current[3].label if current is not None else "nothing"
         # * Long enough for every try of the free search at the run's settings.
-        # * A held transfer (workaround off) runs HELD's own tries and time, whatever the settings say.
+        # * A held transfer (workaround off) runs HELD's own tries and time, whatever the settings say; that floor
+        #   also covers the roadmap planner's one try, which has no time limit and takes 60 to 130 s; one that overruns
+        #   it is reported timed out while the worker finishes it, and the next plan waits behind it.
         limit = max(search.tries * search.max_time, ATTEMPTS * HELD["max_time"]) + PLAN_TIME_MARGIN
         return Search(self.serial or "", f"plan {label}", f"planning {label}…", None, limit, accepted,
                       run=run)

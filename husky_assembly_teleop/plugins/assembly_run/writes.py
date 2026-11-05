@@ -18,10 +18,10 @@ from ...shared.assembly_run_contract import exported_end, first_pending, is_live
 from ...shared.assembly_planning.steps import first_step
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
-from ...shared.runs.runs import (DONE, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
-                                 SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, Progress, RobotRecord, Run,
-                                 RunError, RunSettings, mark_done, new_run, record_event, record_movement, save_info,
-                                 save_progress, stamp, with_current)
+from ...shared.runs.runs import (CDFM_PLANNERS, DONE, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE,
+                                 PLAN_TRIES_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, Progress,
+                                 RobotRecord, Run, RunError, RunSettings, mark_done, new_run, record_event,
+                                 record_movement, save_info, save_progress, stamp, with_current)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -39,6 +39,8 @@ NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
                    "plan_max_iterations": ("the search's iterations", PLAN_ITERATIONS_RANGE, "whole iterations"),
                    "plan_joint_resolution": ("the search's joint resolution", PLAN_RESOLUTION_RANGE, "rad"),
                    "plan_tries": ("the search's tries", PLAN_TRIES_RANGE, "whole tries")}
+#: Each text setting with a fixed set of values: what a refusal calls it, and its values.
+CHOICE_SETTINGS = {"plan_cdfm_planner": ("the CDFM planner", CDFM_PLANNERS)}
 #: Each setting's type, its default's: a request is converted to it.
 SETTING_TYPES = {each.name: type(each.default) for each in fields(RunSettings)}
 #: How far the loaded process's runs were read; only OPEN allows writes.
@@ -373,7 +375,10 @@ class RunWrites:
         return "" if self._run is not None else self._offered_first() or "no run yet: nothing is done"
 
     def _settings_problem(self, changes: Mapping[str, Any]) -> str:
-        """What is wrong with requested settings, or "": a number out of its range or not whole where it must be."""
+        """What is wrong with requested settings, or "".
+
+        A number out of its range or not whole where it must be, a text that is not one, a choice outside its values.
+        """
         for name, value in changes.items():
             if name not in SETTING_TYPES:
                 return f"there is no setting {name!r}"
@@ -382,6 +387,12 @@ class RunWrites:
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high \
                         or (SETTING_TYPES[name] is int and value != int(value)):
                     return f"{what} must be {low:g} to {high:g} {unit}, not {value!r}"
+            elif SETTING_TYPES[name] is str:
+                if not isinstance(value, str):
+                    return f"{name} must be text, not {value!r}"
+                if name in CHOICE_SETTINGS and value not in CHOICE_SETTINGS[name][1]:
+                    what, choices = CHOICE_SETTINGS[name]
+                    return f"{what} must be one of {', '.join(choices)}, not {value!r}"
             elif not isinstance(value, bool):
                 return f"{name} must be True or False, not {value!r}"
         return ""

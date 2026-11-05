@@ -89,6 +89,20 @@ def test_an_older_run_json_without_the_insert_settings_reads_their_defaults(proc
     assert (settings.plan_max_time, settings.plan_tries, settings.plan_swept_check) == (120.0, 3, True)
 
 
+def test_the_cdfm_planner_settings_read_back_and_an_older_run_json_reads_their_defaults(process, robots):
+    """The CDFM planner and the roadmap root round-trip; a run.json from before them reads birrt and an empty root."""
+    asked = RunSettings(plan_cdfm_planner="prm", plan_roadmap_root="/x")
+    run = new_run(process, robots, asked, now=NOW, transfer_as_free=True)
+    assert read_run(run.folder).info.settings == asked
+    path = run.folder / "run.json"
+    info = json.loads(path.read_text())
+    older = {name: value for name, value in info["settings"].items()
+             if name not in ("plan_cdfm_planner", "plan_roadmap_root")}
+    path.write_text(json.dumps({**info, "settings": older}))
+    settings = read_run(run.folder).info.settings
+    assert settings == RunSettings() and (settings.plan_cdfm_planner, settings.plan_roadmap_root) == ("birrt", "")
+
+
 def test_continue_run_picks_the_newest_matching(process, robots):
     """Of the runs on these files the newest is continued; a run on other files is not, another schema is a problem."""
     older = new_run(process, robots, RunSettings(), now=NOW, transfer_as_free=True)

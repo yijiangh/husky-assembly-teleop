@@ -1011,6 +1011,9 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
                                ({"plan_tries": 0}, "the search's tries must be 1 to 10 whole tries, not 0"),
                                ({"plan_max_time": 1000}, "the search's time per try must be 5 to 600 s, not 1000"),
                                ({"servo_by_bar": 1}, "servo_by_bar must be True or False, not 1"),
+                               ({"plan_cdfm_planner": "astar"},
+                                "the CDFM planner must be one of birrt, prm, not 'astar'"),
+                               ({"plan_roadmap_root": 3}, "plan_roadmap_root must be text, not 3"),
                                ({"rigid_only": True}, "rigid_only")):
             plugin.request_settings(**changes)
             assert plugin._message.startswith("Settings refused") and words in plugin._message

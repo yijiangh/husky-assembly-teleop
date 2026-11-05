@@ -1,11 +1,25 @@
 # CDFM planners: merge `yh/holding-prm`, run the benchmark here, two planners in the monitor
 
-Status (2026-11-05): A (merge) done as tamp 3e26057 on `yh/holding-prm` (unpushed; reviewer: faithful, nits only).
-B: benchmark + both dashboards run in the ROS venv on the mock root (`pyinstrument` installed); fixes on tamp:
-`long_path` import in `export_dashboard.py`, the export's serve message, the `.sh` scripts' exec bit, a README
-section. Found: the Drive's roadmaps and cell caches predate the core's tool-contacts change, so the online
-planner refuses them (`RoadmapMismatch`, touch bodies differ); cells and roadmaps must be rebuilt with the current
-core (`build-cells --force`, then `process_precompute.sh`). C: in progress.
+Status (2026-11-05): DONE. tamp `yh/holding-prm` = 3e26057 (merge, reviewed: faithful) + c84f20f (Ubuntu fixes)
++ 42a2b4b (the roadmap check accepts the monitor's body and tool names), unpushed. Monitor `yh/cdfm-planners` =
+35cfc934 (submodule pointer + this note) + b8003727 (the dropdown, reviewed; `pytest` 2249 passed), unpushed.
+Benchmark + both dashboards checked on the mock root in the ROS venv (`pyinstrument` installed); B21 carry through
+tamp's headless script: BiRRT 150 s, PRM 350 s (1 worker, contended).
+Found and fixed: the Drive's cell caches and roadmaps predate the core's tool-contacts change (rebuild: delete
+`cells/<key>/<bar>`, `build-cells`, then `process_precompute.sh`). 2026-11-05 afternoon, on the user's go: the Drive's
+`cells/261008_…-4be92c6a/{B20,B21,B22}` and `prm/261008_2ModulesDemo_purged_process__{B20,B21,B22}` rebuilt with the
+current core (600 nodes, 8 workers, untracked; the stale B21 cell and roadmap folder deleted first, a copy in the
+session scratchpad `drive_backup_20261105/`); the other Drive roadmaps (RobArch, B3/B18 pilots) are still stale. The monitor names bodies `process/...` and tools
+`tools/<serial>/<arm>`, which the roadmap's signature check now maps to the export's names.
+Fake lab (my session `cdfm_lab`, domain 72): dropdown saved in run.json and read back after a restart; the
+Drive-convention roadmap path; the no-roadmap refusal with the build command; the roadmap fitting the monitor's scene
+and the query running (`prm_no_route` from the stow pose in 1–2 s).
+OPEN (outside this change, for the user): with the workaround off, the travel to load is "not planned: needs the
+transfer start, after M3" and the held transfer plans from the live arms (`HELD["derive_start"] = False`), so from
+the stow pose neither planner gets a transfer. Both backends can derive a start (`derive_start=True`: the BiRRT's
+sweep, the roadmap's carry poses, as `plan_process_carry.py` does) and M0 would then travel to
+`info["derived_start_conf"]`; `assembly_steps` already passes a transfer's start on as `goal_joints`. Decide before
+the lab.
 
 Order of work: A (merge) → B (benchmark + dashboards on the mock root, commit 1 with the submodule pointer) →
 C (dropdown + route, commit 2) → fake-lab check. Subagents: an implementer per part with a reviewer after A and C

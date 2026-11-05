@@ -105,8 +105,9 @@ To see which versions you use and from where:
 </details>
 
 **6. Experiment data** (optional; the relay and the monitor start without it). Point `HUSKY_DRIVE_ROOT` at your synced
-copy of the project's Google Drive folder, in `~/.bashrc`: processes are loaded from there, and experiments and
-calibrations are saved there. Details: [doc/setup/experiment_data.md](doc/setup/experiment_data.md).
+copy of the project's Google Drive folder, in `~/.bashrc`: processes are loaded from there, experiments and
+calibrations are saved there, and the prm planner reads its roadmaps from `data_experiment/cdfm_planner_benchmark/prm/`.
+Details: [doc/setup/experiment_data.md](doc/setup/experiment_data.md).
 
 ```bash
 export HUSKY_DRIVE_ROOT="$HOME/Insync/<account>/Google Drive - Shared with me/2025-03 Husky Assembly"

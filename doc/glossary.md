@@ -121,6 +121,9 @@ Details: `doc/lab/plugins.md`, `doc/design/run_record.md`.
   `shared/execution/servo.py`.
 - **transfer workaround**: a session setting: the transfer runs with empty tools and the operator places the bar at
   the insert start. `plugins/process/`.
+- **CDFM planner**: the held transfer's planner (workaround off): tamp's search "birrt", or the holding roadmap
+  "prm", precomputed per process and bar. `doc/lab/plugins.md` (assembly_steps),
+  `shared/assembly_planning/tamp_route.py`.
 - **carry / basis / robot record**: carry is joints found live that the process panel draws over the authored
   state; basis is what a step's plan was made from; a robot record is where the run last recorded a robot, for the
   report only. `shared/process_contract.py`, `shared/execution/basis.py`, `shared/runs/runs.py`.

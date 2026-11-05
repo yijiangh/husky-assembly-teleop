@@ -12,6 +12,7 @@ import math
 import threading
 from copy import copy
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -330,6 +331,37 @@ def test_a_plan_asks_with_the_runs_advanced_planning_settings():
     sliders["Max iterations"].callback(80.0)
     swept.callback(True)
     assert (lab.run.view.settings.plan_max_iterations, lab.run.view.settings.plan_swept_check) == (80.0, True)
+
+
+def test_a_plan_asks_with_the_runs_cdfm_planner_and_roadmap_root():
+    """The CDFM planner and the roadmap root reach the request's search; an empty root is the Drive's benchmark folder.
+
+    The folder's dropdown and text box show the run's values and ask for changes.
+    """
+    lab = Steps(("B20_R", 2))
+    lab.run.request_settings(plan_cdfm_planner="prm", plan_roadmap_root="/roadmaps")
+    lab.update()
+    asyncio.run(lab.plan())
+    request, = lab.planner.plans
+    assert (request.search.cdfm_planner, request.search.roadmap_root) == ("prm", "/roadmaps")
+    dropdown, = lab.ctx.gui.of_kind("dropdown")
+    text, = lab.ctx.gui.of_kind("text")
+    assert (dropdown.label, dropdown.value, text.label, text.value) == ("CDFM planner", "prm", "Roadmap root",
+                                                                        "/roadmaps")
+    lab.run.request_settings(plan_roadmap_root="")
+    lab.ctx.config.drive_root = Path("/drive")
+    assert lab.plugin.free_search(lab.ctx).roadmap_root == "/drive/data_experiment/cdfm_planner_benchmark"
+    lab.ctx.config.drive_root = None
+    assert lab.plugin.free_search(lab.ctx).roadmap_root == ""
+    dropdown.callback("birrt")
+    text.callback("/oth")
+    text.callback("/other")
+    lab.update()
+    assert lab.run.view.settings.plan_roadmap_root == "", "typed text is not a setting until the typing pauses"
+    lab.ctx.t += 1.5
+    lab.update()
+    settings = lab.run.view.settings
+    assert (settings.plan_cdfm_planner, settings.plan_roadmap_root) == ("birrt", "/other")
 
 
 def test_a_plan_request_carries_the_run_and_the_checked_goal():

@@ -22,8 +22,8 @@ from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, HANDOFF_P
                                               WITH_MOTION_PART, PartPlan)
 from ...shared.planner.planner_panel import CommitConfirm, unknown_robots_chip
 from ...shared.teleop.clearance_toggle import close_chip
-from ...shared.runs.runs import (PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
-                                 RunSettings)
+from ...shared.runs.runs import (CDFM_PLANNERS, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE,
+                                 PLAN_TRIES_RANGE, RunSettings)
 from ...shared.assembly_tab.layout import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLAN_PLOTS_X,
                                            PLAN_SETTINGS_BAND, SETTINGS_BAND, STEP_BAND, plots_window)
 from ...world.clearance import ARM_MOVE
@@ -36,6 +36,9 @@ if TYPE_CHECKING:
     from ...shared.assembly_planning.route_result import RouteResult
     from ...shared.planner.timed_path import TimedPath
     from .plugin import AssemblyStepsPlugin
+
+#: Seconds the Roadmap root box must rest before what was typed becomes the run's setting.
+ROADMAP_SETTLE = 1.0
 
 
 class StepsPanel:
@@ -52,6 +55,8 @@ class StepsPanel:
         # the path and the plan the plots were last filled from.
         self._shown_time: float | None = None
         self._shown_settings: RunSettings | None = None
+        #: The roadmap root as typed, and when (`ctx.now`): sent as one setting once the typing has paused.
+        self._roadmap_typed: tuple[str, float] | None = None
         self._plotted: TimedPath | None = None
         self._plotted_route: RouteResult | None = None
         with ctx.view.ui(band=STEP_BAND) as gui:
@@ -116,6 +121,14 @@ class StepsPanel:
             self._plan_swept = gui.add_checkbox("Swept check", default.plan_swept_check,
                                                 hint="Check a found path between its waypoints, 0.01 rad apart, "
                                                      "before taking it; off, the path is taken as the search found it")
+            self._plan_cdfm = gui.add_dropdown("CDFM planner", options=list(CDFM_PLANNERS),
+                                               initial_value=default.plan_cdfm_planner,
+                                               hint="How a held transfer is planned (Transfer workaround off): birrt "
+                                                    "searches; prm follows a precomputed roadmap of this process and "
+                                                    "bar, one try, about 1 to 2 min, no time limit")
+            self._plan_roadmap = gui.add_text("Roadmap root", initial_value=default.plan_roadmap_root,
+                                              hint="Folder holding prm/<process>__<bar>/ roadmaps; empty: the "
+                                                   "Drive's data_experiment/cdfm_planner_benchmark")
         # * The plan's plots in a window of their own, minimized to its bar until a plan arrives (`draw`).
         with plots_window(ctx.view, "Plan plots", viser.Icon.CHART_LINE, PLAN_PLOTS_X) as self._plots_panel:
             self._plots = PlanPlots(ctx.view.gui)
@@ -138,10 +151,18 @@ class StepsPanel:
         # The iterations and tries go as numbers: the run refuses one that is not whole, then makes it an int.
         settings = ((self._plan_time, "plan_max_time", float), (self._plan_iterations, "plan_max_iterations", float),
                     (self._plan_resolution, "plan_joint_resolution", float), (self._plan_tries, "plan_tries", float),
-                    (self._plan_swept, "plan_swept_check", bool))
+                    (self._plan_swept, "plan_swept_check", bool), (self._plan_cdfm, "plan_cdfm_planner", str))
         for widget, setting, kind in settings:
             widget.on_update(ctx.defer_value(setting, lambda value, setting=setting, kind=kind: ctx.require(
                 "assembly_run").request_settings(**{setting: kind(value)}), operator_only=True))
+        # * The text box calls back per keystroke, and each setting change writes the run's files: the roadmap root
+        #   is kept here and sent by `draw` once the typing has paused (ROADMAP_SETTLE).
+        self._plan_roadmap.on_update(ctx.defer_value("roadmap root", lambda value: self._typed(ctx, str(value)),
+                                                     operator_only=True))
+
+    def _typed(self, ctx: PluginContext, value: str) -> None:
+        """Keep the roadmap root as typed, with the time, for `draw` to send."""
+        self._roadmap_typed = (value, ctx.now())
 
     def draw(self, ctx: PluginContext, plugin: AssemblyStepsPlugin) -> None:
         """Write the current step, its plan and its parts into the widgets, and the plan into the plots.
@@ -193,6 +214,9 @@ class StepsPanel:
         self._minimum.content = block(values(f"min {minimum} s by the arms' limits"))
         self._ignore.value = plugin.ignore_built
         self._diagnosis.value = plugin.visual_diagnosis
+        if self._roadmap_typed is not None and ctx.now() - self._roadmap_typed[1] >= ROADMAP_SETTLE:
+            value, self._roadmap_typed = self._roadmap_typed[0], None
+            ctx.require("assembly_run").request_settings(plan_roadmap_root=value)
         settings = ctx.require("assembly_run").view.settings
         if settings != self._shown_settings:
             # * Only when the run's settings change; the panel's own writes never come back as requests
@@ -201,6 +225,9 @@ class StepsPanel:
             self._plan_time.value, self._plan_iterations.value = settings.plan_max_time, settings.plan_max_iterations
             self._plan_resolution.value, self._plan_tries.value = settings.plan_joint_resolution, settings.plan_tries
             self._plan_swept.value = settings.plan_swept_check
+            self._plan_cdfm.value = settings.plan_cdfm_planner
+            if self._roadmap_typed is None:  # never over what is being typed
+                self._plan_roadmap.value = settings.plan_roadmap_root
         # * While planning, the free search's progress after "planning …": how far its two trees still are apart.
         progress = ctx.require("motion_planner").progress if plugin.plan_state == "planning" else ""
         self._details.content = block(plugin._message_html(progress))
