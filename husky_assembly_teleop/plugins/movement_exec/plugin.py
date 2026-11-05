@@ -39,7 +39,6 @@ from ...shared.assembly_tab.layout import ASSEMBLY_TAB, EXEC_PLOTS_X, plots_wind
 from ...shared.runs.as_built import KIND as AS_BUILT_KIND, bar_lines
 from .as_built import as_built_record
 from .panel import ExecPanel
-from .report import PageServer, build as build_page
 from .plots import ExecPlots
 from .sequences import Job, PartRun, run_part, unknown_serials
 from .servo_part import run_servo
@@ -101,10 +100,6 @@ class MovementExecPlugin(HuskyPlugin):
         self._plots: ExecPlots | None = None
         #: What was said once about nothing to record (the process without markers, no plugin), not to repeat it.
         self._no_bars_said = None
-        #: The as-built page: its server, the build running, and the last build's outcome for the panel.
-        self._page_server = PageServer()
-        self._page_task: asyncio.Task | None = None
-        self._page_line: tuple[str, str] = ("", "")
         self._plotted_t: float | None = None
 
     # --- --- --- --- --- WHAT OTHER PLUGINS CALL (MovementExecContract) --- --- --- --- ---
@@ -220,7 +215,7 @@ class MovementExecPlugin(HuskyPlugin):
         if self._panel is not None:
             recorder = self._job.recorder if self.active and self._job is not None else None
             self._panel.draw(self.active, self.prompt, self._dry_run, (self._last, self._last_failed),
-                             self._dry_run_refused, recorder, self._servo_line, self._page_line)
+                             self._dry_run_refused, recorder, self._servo_line)
             if self._plots is not None:
                 if recorder is not None and recorder.samples and recorder.samples[-1]["t"] != self._plotted_t:
                     self._plotted_t = recorder.samples[-1]["t"]
@@ -491,40 +486,6 @@ class MovementExecPlugin(HuskyPlugin):
             return
         self._record_as_built(ctx, view, "manual", action_id, movement_index, serial, ctx.world.robots[serial],
                               None, None, False, {})
-
-    def request_build_page(self) -> None:
-        """Build the as-built page of today's records on a thread and serve it; the panel shows the link."""
-        ctx = self._ctx
-        if self._page_task is not None and not self._page_task.done():
-            self._page_line = ("the page is still being built", "busy")
-            return
-        view = ctx.require("assembly_run").view
-        if view.process is None:
-            self._page_line = ("no process loaded: nothing to build", "failed")
-            return
-        if ctx.config.drive_root is None:
-            self._page_line = ("no Drive root (drive_root): nothing to build", "failed")
-            return
-        self._page_task = ctx.spawn("build the as-built page", self._build_page(ctx, view.process),
-                                    survives_soft_stop=True)
-
-    async def _build_page(self, ctx: PluginContext, loaded) -> None:
-        """Run the page script for the loaded process (today's file), then serve its folder."""
-        self._page_line = ("building the as-built page of today's records...", "busy")
-        ctx.log_info("[as-built] building the page: scripts/as_built_page.py")
-        path, tail = await ctx.run_in_thread(build_page, ctx.config.drive_root, loaded.source.name, loaded.source)
-        if path is None:
-            ctx.log_warn(f"[as-built] the page was not built:\n{tail}")
-            self._page_line = (f"not built: {tail.splitlines()[-1] if tail else 'see the log'}", "failed")
-            return
-        url = self._page_server.serve(path.parent) + path.name
-        ctx.log_info(f"[as-built] page written: {path}; open {url}")
-        self._page_line = (url, "ok")
-
-    @property
-    def page_line(self) -> tuple[str, str]:
-        """tuple[str, str]: The last page build's outcome for the panel: (a URL or a message, ok/busy/failed)."""
-        return self._page_line
 
     def _as_built(self, job: Job, run: PartRun | None, phase: str) -> None:
         """An as-built record at a part's start or end (or a click mid-request); never raises, the step goes on."""

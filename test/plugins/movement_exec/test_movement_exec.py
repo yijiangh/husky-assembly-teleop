@@ -1145,8 +1145,8 @@ def test_confirm_and_cancel_are_buttons_of_their_own_in_the_assembly_tab():
     lab = Lab()
     buttons = lab.ctx.gui.of_kind("button")
     assert [(button.label, button.color) for button in buttons] == [
-        ("Confirm", "green"), ("Cancel", "red"), ("As-built: record now", None), ("Build as-built page", None),
-        ("Confirm", "green"), ("Cancel", "red")]
+        ("Confirm", "green"), ("Cancel", "red"), ("As-built: record now", None), ("Confirm", "green"),
+        ("Cancel", "red")]
     assert lab.ctx.gui.of_kind("button_group") == []
     buttons[0].callback()
     assert lab.plugin._last == "nothing to answer"

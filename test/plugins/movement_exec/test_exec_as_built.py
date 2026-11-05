@@ -5,10 +5,13 @@ On the fake lab with a fake mocap_bars plugin whose `measure_now` fits B20's fak
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from test_movement_exec import Lab, execute
 
+from husky_assembly_teleop.experiments.as_built.build import result_folder
 from husky_assembly_teleop.shared.bars.layouts import bar_layouts, fake_sensed_markers, fit_bar
 from husky_assembly_teleop.shared.bars.pose import bar_slide_roll
 from husky_assembly_teleop.shared.mocap_bars_contract import BarMeasurement
@@ -132,3 +135,9 @@ def test_record_now_takes_a_manual_record_of_the_current_step_and_the_button_ask
     lab.plugin.request_as_built()
     assert len(as_built(lab)) == 1
     assert "[as-built] the mocap_bars plugin is not loaded: nothing recorded" in lab.ctx.lines("info")
+
+
+def test_the_as_built_page_is_written_to_the_days_result_folder():
+    """The 3D page's path: `<drive>/.../<day>-asbuilt-result/`, the folder the server serves."""
+    assert result_folder(Path("/drive"), "20261104") == Path(
+        "/drive/data_experiment/bar_action_live_replan_exe/20261104-asbuilt-result")

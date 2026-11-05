@@ -224,9 +224,6 @@ class MovementExecContract(Protocol):
     def request_as_built(self) -> None:
         """Measure every MoCap bar now and append an as-built record (phase "manual"), outside a request too."""
 
-    def request_build_page(self) -> None:
-        """Build today's as-built page from the records so far (a subprocess on a thread) and serve it."""
-
     def request_dry_run(self, on: bool) -> None:
         """Turn the dry run on or off; refused while a request runs."""
 
