@@ -73,6 +73,10 @@ class FakeWidget(SimpleNamespace):
 
     on_update = on_hold = on_click
 
+    def remove(self) -> None:
+        """Note that it is gone."""
+        self._impl.removed = True
+
     def add_tab(self, label: str = "", icon: Any = None) -> FakeWidget:
         """A tab group's tab: a folder, as far as a test cares."""
         return FakeWidget(kind="tab", label=label, icon=icon)

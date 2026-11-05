@@ -1,17 +1,28 @@
 """
 Judging a robot base's mocap: its fix (`mocap_check`), and whether what the relay applies to it may put it off.
 
-Health and Robot control show the same chip, built here.
+Health and Robot control show the same chip, built here; `MocapWatch` says which amber chips should ask the operator.
 """
 
 from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Mapping
 
 from ..robot_interface.mocap_definitions import OUT_OF_DATE
 from ..robot_interface.mocap_relay import (FRAME_REFIT_PENDING, FRAME_UNCHECKED, FRAME_UNTRUSTED, TRUTH,
                                            AppliedCalibration, FloorCalibrationState, MocapRelayState)
 from ..robot_interface.mocap_state import MocapBody
-from .checks import BAD, WARN, Check
+from .checks import BAD, GOOD, WARN, Check
 from .mocap import mocap_check
+
+#: Seconds a chip stays amber before it asks: a flicker does not.
+ASK_AFTER = 3.0
+#: Seconds a chip must stay green before what was acknowledged may ask again: a flicker of green does not count.
+ASK_AGAIN_AFTER = 60.0
+#: What `with_relay` adds to the worst reason when there are more.
+_MORE = re.compile(r" \(\+\d+ more\)$")
 
 
 def base_mocap_check(mocap_id: int | None, body: MocapBody, relay: MocapRelayState | None, now: float) -> Check:
@@ -88,3 +99,59 @@ def frame_problem(frame: FloorCalibrationState | None) -> str:
     if frame.status in (FRAME_REFIT_PENDING, FRAME_UNTRUSTED):
         return "Motive's frame moved: poses off until Use refit (Mocap probe → Floor calibration)"
     return "a newer floor calibration waits: Apply it in Mocap probe → Floor calibration"
+
+
+@dataclass
+class _Watched:
+    """One robot's chip as `MocapWatch` follows it: since when amber, since when green, the reasons acknowledged."""
+
+    amber_since: float | None = None
+    green_since: float | None = None
+    acknowledged: set[str] = field(default_factory=set)
+
+
+class MocapWatch:
+    """Which amber mocap chips should ask the operator: amber for ASK_AFTER, for a reason not acknowledged yet.
+
+    A reason acknowledged stays quiet until the chip was green for ASK_AGAIN_AFTER; another reason asks at once.
+    """
+
+    def __init__(self):
+        """Nothing watched yet."""
+        self._robots: dict[str, _Watched] = {}
+        self._asking: dict[str, str] = {}
+
+    def update(self, chips: Mapping[str, Check], now: float) -> dict[str, str]:
+        """Follow this tick's chips and return who asks now.
+
+        Args:
+            chips: Each robot's mocap chip, by serial; a robot without a rigid body is left out by the caller.
+            now: Monotonic time, seconds.
+
+        Returns:
+            dict[str, str]: Why, without "(+N more)", by serial.
+        """
+        self._asking = {}
+        for serial, chip in chips.items():
+            watched = self._robots.setdefault(serial, _Watched())
+            if chip.level != WARN:
+                watched.amber_since = None
+            elif watched.amber_since is None:
+                watched.amber_since = now
+            if chip.level != GOOD:
+                watched.green_since = None
+            elif watched.green_since is None:
+                watched.green_since = now
+            if watched.green_since is not None and now - watched.green_since >= ASK_AGAIN_AFTER:
+                watched.acknowledged.clear()
+            reason = _MORE.sub("", chip.detail)
+            if (watched.amber_since is not None and now - watched.amber_since >= ASK_AFTER
+                    and reason not in watched.acknowledged):
+                self._asking[serial] = reason
+        return dict(self._asking)
+
+    def acknowledge(self) -> None:
+        """Keep quiet about what asks now."""
+        for serial, reason in self._asking.items():
+            self._robots[serial].acknowledged.add(reason)
+        self._asking = {}
