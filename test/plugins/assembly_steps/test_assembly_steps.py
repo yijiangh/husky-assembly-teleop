@@ -272,6 +272,25 @@ def test_the_path_ghost_stays_while_there_is_a_plan_whatever_the_panel_was_last_
     assert calls == ["path hidden"]
 
 
+def test_exec_shows_the_motion_its_confirm_starts_and_then_nothing():
+    """A servo pass replaces the plan in the preview at its own time, at its end; None empties the preview."""
+    lab = Steps(("B20_J", 3))
+    asyncio.run(lab.plan())
+    plugin = lab.plugin
+    route, basis, key = plugin.route, plugin._basis, plugin._key
+    plugin.traj_time = 10.0
+    plugin._preview_motion(key, None, None, 0.0)
+    assert plugin.path is None and plugin.route is None and plugin._basis is None
+    plugin._preview_motion(key, route, basis, 3.0)
+    assert plugin.route is route and plugin._basis is basis and plugin._path_serial == plugin.serial
+    assert plugin._t == plugin.path.duration and not plugin._playing
+    timed_at_three = plugin.path.duration
+    plugin._preview_motion((*key[:2], "another step", key[3]), None, None, 0.0)
+    assert plugin.path is not None, "another step's Exec leaves this step's preview alone"
+    plugin._preview_motion(key, None, None, 0.0)
+    assert plugin.path is None and timed_at_three > 0.0
+
+
 def test_toggling_the_workaround_moves_to_the_steps_primary():
     """B20_J at its travel to load without the workaround; ticked in the process panel, the transfer is current."""
     lab = Steps(("B20_J", 0), transfer_as_free=False)

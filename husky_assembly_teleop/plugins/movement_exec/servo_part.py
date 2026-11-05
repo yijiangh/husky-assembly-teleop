@@ -258,7 +258,15 @@ class ServoLoop:
         if move["prompted"]:
             text = self._prompt(k, route, move, flanges_move)
             self.phase_is(f"pass {k}/{MAX_PASSES}: waiting for Confirm", FAIL if warn else BUSY)
-            if not await confirmed(job, run, text, warn=warn):
+            # ! Not in a dry run: its plan comes back to the requester, who must still have it to show.
+            if not job.dry_run:
+                request.preview(route, basis, traj_time)
+            try:
+                answer = await confirmed(job, run, text, warn=warn)
+            finally:
+                if not job.dry_run:
+                    request.preview(None, None, 0.0)
+            if not answer:
                 return CANCELLED, "cancelled", f"stopped at pass {k}: cancelled at the prompt; nothing sent"
         # ! Checked again after the plan and Confirm, against THIS pass's basis (a servo-only Exec carries none in the
         #   request); the command is rebuilt from the joints now and sent in this same tick.

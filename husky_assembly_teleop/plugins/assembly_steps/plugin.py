@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+from functools import partial
 from typing import TYPE_CHECKING
 
 import viser
@@ -628,7 +629,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
                               ignore_built=lambda: self.ignore_built,
                               obstacles_collide=lambda: self._obstacles_collide(ctx),
                               transfer_as_free=lambda: self._transfer_as_free(ctx),
-                              unknown_robots=self._unknown_allowed, clearance=self.clearance.value)
+                              unknown_robots=self._unknown_allowed, clearance=self.clearance.value,
+                              preview=partial(self._preview_motion, self._key))
         if motion:
             self.plan_state = "sent"  # ! used once: never sent again
         executor: MovementExecContract = ctx.require("movement_exec")
@@ -637,6 +639,26 @@ class AssemblyStepsPlugin(PlannerPlugin):
                   f"step, the servo's first pass)")
         executor.request_execute(request).add_done_callback(
             lambda future: self._executed(ctx, key, motion, future))
+
+    def _preview_motion(self, key: tuple, route: RouteResult | None, basis: PlanBasis | None, seconds: float) -> None:
+        """Show what the open Confirm starts on the Preview time slider, at its end as a plan is; None shows nothing.
+
+        Args:
+            key: The step the Exec runs; another step in the panel by now is left alone.
+            route: The motion, or None.
+            basis: What it was planned from, or None.
+            seconds: How long it will take.
+        """
+        if not same_step(key, self._key):
+            return
+        timed = None if route is None else self._timed(route, seconds)
+        self.path, self._path_serial, self._playing = None, None, False
+        self._t = 0.0
+        self.forget_plan()
+        if isinstance(timed, TimedPath):
+            self._route, self._basis = route, basis
+            self.path, self._path_serial, self._t = timed, self.serial, timed.duration
+            self._used.touch()
 
     def _executed(self, ctx: PluginContext, key: tuple, carried_plan: bool, future: asyncio.Future) -> None:
         """Take an Exec's result: note the parts done; the step done moves on, the action done offers Mark done."""
@@ -712,10 +734,10 @@ class AssemblyStepsPlugin(PlannerPlugin):
         """
         return None if self._key is None else (*self._key[:3], self._obstacles_collide(self._ctx))
 
-    def _timed(self, route: RouteResult) -> TimedPath | str:
-        """The route timed for the arms at the motion time (`retime`), for the preview; or why it can't be."""
+    def _timed(self, route: RouteResult, seconds: float | None = None) -> TimedPath | str:
+        """The route timed for the arms at `seconds`, else the motion time (`retime`), for the preview; or why not."""
         try:
-            timed = retime(route.result.trajectory.positions, self.traj_time)
+            timed = retime(route.result.trajectory.positions, self.traj_time if seconds is None else seconds)
         except RetimeError as error:
             rows = route.result.trajectory.positions
             if rows[0] == rows[-1]:

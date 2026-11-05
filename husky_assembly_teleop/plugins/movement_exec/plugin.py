@@ -325,6 +325,8 @@ class MovementExecPlugin(HuskyPlugin):
                         self._moved_at[request.serial] = ctx.now()
                     if run.result == DONE:
                         done.extend((part.index, *part.also))
+                        if part.kind in MOTION_KINDS:
+                            request.preview(None, None, 0.0)  # * the plan has run: it is no longer what comes next
                     elif run.result != DRY_RUN:
                         result = ExecResult(run.result, f"{part.movement}: {run.reason}", tuple(done), end, base)
                         break

@@ -122,6 +122,8 @@ class ExecRequest:
             left out of the freeze and of the check that nothing else moves.
         clearance: Exec's Clearance box: whether a motion along the plan runs under a clearance (`ARM_MOVE`); by
             default ticked.
+        preview: Shows the motion the open Confirm starts as (route, basis, seconds), or none with (None, None, 0.0),
+            so the requester's preview never shows a path that is not next.
     """
 
     loaded: LoadedProcess
@@ -140,6 +142,7 @@ class ExecRequest:
     transfer_as_free: Callable[[], bool] = lambda: True
     unknown_robots: frozenset[str] = frozenset()
     clearance: bool = True
+    preview: Callable[[RouteResult | None, PlanBasis | None, float], None] = lambda *_: None
 
 
 @dataclass(frozen=True)

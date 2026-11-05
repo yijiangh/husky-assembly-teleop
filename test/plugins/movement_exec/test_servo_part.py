@@ -885,3 +885,36 @@ def test_a_plan_made_before_a_servo_pass_is_refused_at_exec():
     assert lab.published() == 1
     fresh = execute(lab, request, False)  # * the motion runs on Exec; Cancel at the bar's prompt
     assert fresh.status == CANCELLED and fresh.done == (3,)
+
+
+def test_a_prompted_pass_shows_in_the_preview_until_its_confirm():
+    """The whole step: the plan leaves the preview once its motion ran, and the pass shows only while it asks."""
+    lab = ServoLab()
+    shown = []
+    request = replace(lab.step_request(), preview=lambda route, basis, seconds: shown.append((route, basis, seconds)))
+    result = execute(lab, request, True, True)
+    assert result.status == DONE, result.reason
+    assert shown[0] == (None, None, 0.0), "the plan is gone once its motion ran"
+    route, basis, seconds = shown[1]
+    assert route is not None and basis is not None and seconds >= 3.0
+    assert shown[2:] == [(None, None, 0.0)], "the pass leaves the preview at its Confirm"
+
+
+def test_cancel_at_the_prompt_takes_the_pass_out_of_the_preview():
+    """A Cancel answers the prompt: the pass that will never run is not left in the preview."""
+    lab = ServoLab()
+    shown = []
+    request = lab.servo_request(preview=lambda route, basis, seconds: shown.append(route))
+    result = execute(lab, request, False)
+    assert result.status == CANCELLED and lab.published() == 0
+    assert shown[0] is not None and shown[-1] is None and len(shown) == 2
+
+
+def test_a_dry_run_leaves_the_preview_alone():
+    """A dry run's plan comes back to the step panel, so nothing may drop it from the preview."""
+    lab = ServoLab()
+    lab.plugin.request_dry_run(True)
+    shown = []
+    request = replace(lab.step_request(), preview=lambda *args: shown.append(args))
+    result = execute(lab, request, True, True)
+    assert result.status == DRY_RUN and shown == []
