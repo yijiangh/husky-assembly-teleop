@@ -9,10 +9,10 @@ on); the notes under "On the robot" are what to look for.
 
 ## Before you start
 
-**In the simulation.** The fake lab as in `doc/lab/fake_lab_test_manual.md` sections 0 and 1, plus:
+**In the simulation.** The fake lab as in `doc/lab/fake_lab_test_manual.md` Parts 1 and 2, plus:
 
-- the Cartesian controllers built (its section 0.2): the compliant parts need them;
-- `ros-humble-gripper-controllers` installed beside the Robotiq packages (its section 0.1 lists it): the
+- the Cartesian controllers built (its 1.b): the compliant parts need them;
+- `ros-humble-gripper-controllers` installed beside the Robotiq packages (its 1.a lists it): the
   simulated Robotiq's action server needs it, or `B21_H_open` is refused and the handoff cannot run;
 - the simulation's fake force/torque reading, on by default: `sim.launch.py` starts `sim_wrench`,
   a near-zero wrench per simulated arm (`wrench_bias:=`, `contact_n:=` add a standing reading and a contact while a
@@ -142,8 +142,8 @@ With the Cartesian controllers built and the fake wrench on, the fake lab manual
   `contact_n` is set); the `grippers` check still FAILs (the simulated screws loosen until a STOP and never stall).
 - **5.2** B21_J's insert: rigid to the split, the switch to compliance, and since the simulated screw stalls 2 s
   after the tighten (at the switch itself): the left arm straight back under joint control, the right arm finishing
-  its line under compliance, `STALLED`. Set `tighten_s 8` (fake lab manual 3.4) to see the compliant line run.
-- **5.3 step 5** B21_H's handoff: needs the Robotiq's action server (`ros-humble-gripper-controllers`); refused
+  its line under compliance, `STALLED`. Set `tighten_s 8` (fake lab manual 3.e) to see the compliant line run.
+- **5.3 e)** B21_H's handoff: needs the Robotiq's action server (`ros-humble-gripper-controllers`); refused
   without it as `/a200_0804/gripper: the gripper's action server is not available`.
 
 On the robot these are the fake lab manual's own steps, B20 first (a ground bar: always rigid), then the compliant

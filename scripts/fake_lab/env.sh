@@ -78,7 +78,7 @@ fi
 for script in husky_sim_motive husky_sim_wrench; do
     if [ ! -x "$(ros2 pkg prefix husky_assembly_teleop 2>/dev/null)/lib/husky_assembly_teleop/$script" ]; then
         echo "fake lab: the installed husky_assembly_teleop has no $script; build the workspace from this checkout" \
-            "(manual, 0.4), or set FAKE_LAB_OVERLAY" >&2
+            "(manual 1.e), or set FAKE_LAB_OVERLAY" >&2
         return 1
     fi
 done

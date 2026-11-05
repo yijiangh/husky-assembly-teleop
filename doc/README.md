@@ -16,8 +16,8 @@ needed to run the new monitor.
 | Doc | What it covers |
 |---|---|
 | [plugins.md](lab/plugins.md) | The UI's panels, your own layout, the Assembly tab, the phone page, launch examples, and every plugin in detail. |
-| [real_lab_test_manual.md](lab/real_lab_test_manual.md) | The real robots from a laptop on the lab network: the one-time setup (router, time sync, ssh keys), the robots' launches, read-only checks, tests in the air, then the first three bars step by step; `scripts/real_lab/tmux.sh`. |
-| [fake_lab_test_manual.md](lab/fake_lab_test_manual.md) | The same test against three simulated robots, a fake Motive and the relay on one laptop, isolated on Zenoh; known issues; `scripts/fake_lab/tmux.sh`. |
+| [real_lab_test_manual.md](lab/real_lab_test_manual.md) | The real robots from a control PC on the lab network (the RobotX PC or a laptop): the one-time setup (router, time sync, ssh keys), the robots' launches, read-only checks, tests in the air, then the first three bars step by step; `scripts/real_lab/tmux.sh`. |
+| [fake_lab_test_manual.md](lab/fake_lab_test_manual.md) | The same test against three simulated robots, a fake Motive and the relay on one PC, isolated on Zenoh; known issues; `scripts/fake_lab/tmux.sh`. |
 | [real_lab_short_manual.md](lab/real_lab_short_manual.md) | The real-lab test, short: what runs where, the plain commands to start it (`scripts/lab_tmux.sh real` types them into tmux panes), the steps of the first three bars. |
 | [fake_lab_short_manual.md](lab/fake_lab_short_manual.md) | The fake-lab test, short: the plain commands on a laptop in its own domain, a scratch Drive, what differs from the lab. |
 | [lab_tools_test_manual.md](lab/lab_tools_test_manual.md) | The operator's tools (the tool0 jog, the live plots, the relay's base offset, Check tool0, Rhino bar lines, the Exec plots, the compliant parts and more), tested in simulation and on a robot. |

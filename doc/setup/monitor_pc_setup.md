@@ -218,7 +218,7 @@ after. Both restart her Clearpath services: never while she holds a bar.
 
 ## 8. Only if this PC should also run the fake lab
 
-The simulation needs more (`doc/lab/fake_lab_test_manual.md`, section 0): apt `ros-humble-ur-robot-driver
+The simulation needs more (`doc/lab/fake_lab_test_manual.md`, Part 1): apt `ros-humble-ur-robot-driver
 ros-humble-robotiq-description ros-humble-robotiq-controllers ros-humble-gripper-controllers`, and fzi's Cartesian
 controllers built into the workspace (the robots carry their own):
 
@@ -228,7 +228,7 @@ git clone -b ros2 https://github.com/fzi-forschungszentrum-informatik/cartesian_
 touch cartesian_controllers/cartesian_controller_{handles,simulation,tests,utilities}/COLCON_IGNORE
 ```
 
-Then build them as in the fake-lab manual's 0.2.
+Then build them as in the fake-lab manual's 1.b.
 
 ## 9. Check, and report to the user
 

@@ -113,7 +113,7 @@ crl_ros_source 80 && ros2 topic list | grep -c a200 && ros2 topic echo --once /m
 **2.4 Monitor.** This is the README's assembly command, plus the base planner and the lab obstacles:
 
 ```bash
-crl_ros_source 80 && ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps robot_control base_planner_panel obstacles" process_directory:=data_design_study/261103_SRD
+crl_ros_source 80 && ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps doc robot_control base_planner_panel obstacles" process_directory:=data_design_study/261103_SRD
 ```
 
 To keep a log, append `2>&1 | tee -i ~/monitor_$(date +%F_%H%M).log`. Quit with one `Ctrl-C`, then wait: the plugins
@@ -139,7 +139,7 @@ hover a chip to see why it is not. Belle's `mocap` chip may stay amber (1.2 mm m
 1. Assembly › PROCESS: click **Load** once and wait 5–10 s. You should see `76 actions · 269 movements`. The amber
    `robots differ` chip is expected.
 2. Leave **Transfer workaround** ticked: Cindy moves her empty tools to the insert start, where you place the bar by
-   hand. Leave **Rhino obstacles collide** unticked.
+   hand. Leave **Rhino obstacles** on `ghost`.
 3. Settings: leave the defaults (**Insert split mm** 5, **Servo by bar** on, **Dry run** off).
 4. Each base's `ctrl` chip must be green. If it is not, click Control › robot › Base › **Run: Vel**: the follower only
    drives with it.
