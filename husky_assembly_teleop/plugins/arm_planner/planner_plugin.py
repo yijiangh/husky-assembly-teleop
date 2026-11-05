@@ -6,8 +6,8 @@ models in a compas_fab world (several seconds).
 
 ! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`), under an
   ARM_MOVE clearance on the robot (`commit_clearance`) when committed with Clearance ticked, so the base
-  pose must be known to send. Paths keep PLAN_DISTANCE, or as much as start and target have (`endpoint_margin`); then
-  the clearance is half that (`ARM_MOVE`).
+  pose must be known to send. Paths keep PLAN_DISTANCE; only a pair start or target is closer for keeps what they have
+  (`endpoint_margins`), and the clearance is then half the smallest (`ARM_MOVE`).
 """
 
 from __future__ import annotations
@@ -139,7 +139,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             how = "straight" if result.direct else "RRT"
             stand_ins = f" ({unmeasured(others)})" if others else ""
             message = (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
-                       f"{margin_note(result.path.margin)}, found in {result.seconds:.1f} s{notes}{stand_ins}")
+                       f"{margin_note(result.path.margin, result.path.close)}, "
+                       f"found in {result.seconds:.1f} s{notes}{stand_ins}")
             # * A path keeping less than usual warns: its commit's clearance is smaller too (`close_note`).
             return message, bool(guessed or others or result.path.margin < PLAN_DISTANCE)
 

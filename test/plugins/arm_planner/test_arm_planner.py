@@ -167,6 +167,39 @@ def test_a_path_keeps_1_cm_or_as_much_as_a_closer_target_has(world, config, gap)
     assert result.path.slowed(2.0).margin == margin
 
 
+def test_only_the_pair_already_close_keeps_less(world, config):
+    """A box 5 mm from the target keeps that little; another, 7 mm from the arm halfway, still keeps 1 cm."""
+    start, goal = start_and_goal(config)
+    near = box_near(world, config, goal, 0.005)
+    halfway = tuple(np.add(start, goal) / 2)
+    mid = box_near(world, config, halfway, 0.007)
+    mid.id, mid.label = "t/mid", "the halfway box"
+    mirror, scene = synced(world, snapshot(config, start, (near, mid)))
+    close = planner_module.endpoint_margins(mirror, NAMES, start, goal)
+    assert {pair[1] for pair in close} == {"t/near"}, "only the box at the target is closer than usual at an end"
+    check = mirror.search_check(NAMES, planner_module.PLAN_DISTANCE,
+                                pair_margins={frozenset(pair): kept for pair, kept in close.items()})
+    hit = check(halfway)
+    assert hit is not None and hit[1] == "t/mid", "the halfway box keeps its 1 cm"
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is not None, result.reason
+    assert {part[1] for part in result.path.close} == {"t/near"}
+    assert result.path.margin == min(close.values()) == result.path.close[0][2]
+    note = planner_module.margin_note(result.path.margin, result.path.close)
+    assert note.startswith("keeps only") and "t/near" in note and "1 cm from everything else" in note
+
+
+def test_the_fine_check_finds_a_pass_between_two_of_the_search_checks():
+    """Something only between 0.059 and 0.061 rad: the search's 0.05 rad steps never see it, the fine check does."""
+    def check(q):
+        return ("robots/a/link", "t/thin") if 0.059 < q[0] < 0.061 else None
+
+    points = [(0.0,) * 6, (0.1,) + (0.0,) * 5]
+    assert not any(check(q) for q in _extend(*points))
+    assert planner_module.fine_hit(points, check) == ("robots/a/link", "t/thin")
+    assert planner_module.fine_hit([(0.0,) * 6, (0.05,) + (0.0,) * 5], check) is None
+
+
 def test_the_preview_follows_the_cosine_profile_sent():
     """The preview speeds up and slows down as the arm will: slow at the ends, halfway at half time; it clamps."""
     goal = np.array([1.0, 0.5, 0, 0, 0, 0])
