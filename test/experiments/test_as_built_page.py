@@ -10,9 +10,10 @@ import numpy as np
 import pytest
 from planning_fixtures import purged_process
 
-from husky_assembly_teleop.experiments.as_built.build import build_page
+from husky_assembly_teleop.experiments.as_built.build import DEFAULT_ENV_3DM, build_page, default_env_3dm
 from husky_assembly_teleop.experiments.as_built.collect import collect_assembly, options_of, timeline
-from husky_assembly_teleop.experiments.as_built.page import THREE_CORE, pack_link_meshes
+from husky_assembly_teleop.experiments.as_built.page import (THREE_CORE, environment_3dm, matrix_from_pose,
+                                                             pack_link_meshes)
 from husky_assembly_teleop.shared.bars.layouts import bar_layouts, fake_sensed_markers, fit_bar
 from husky_assembly_teleop.shared.bars.pose import pose_deviation
 from husky_assembly_teleop.shared.runs.as_built import append_record, as_built_path, build_record
@@ -171,6 +172,46 @@ def test_build_page_writes_an_offline_html_with_the_scene_and_the_viewer(drive):
     robots = data["actions"][0]["records"][1]["robots"]
     assert robots and robots[0]["name"] == "Cindy" and robots[0]["live"] and "base_link" in robots[0]["links"]
     assert "Cindy" in data["robot_models"] and data["robot_models"]["Cindy"]["footprint"][0] > 0.5
+
+
+def test_a_pose_reads_the_same_in_every_form_records_hold():
+    """A live robot's base is recorded as {position, orientation}, other poses as a flat list, the oldest as a pair."""
+    position, orientation = [1.0, -1.5, 0.0], [0.0, 0.0, 0.70710678, 0.70710678]
+    expected = matrix_from_pose([*position, *orientation])
+    assert np.allclose(expected[:3, 3], position)
+    assert np.allclose(matrix_from_pose({"position": position, "orientation": orientation}), expected)
+    assert np.allclose(matrix_from_pose([position, orientation]), expected)
+    assert matrix_from_pose(None) is None
+
+
+def test_the_room_comes_from_the_rhino_layer_of_either_name(tmp_path):
+    """A process's Rhino file keeps the room on "Environment Obstacles"; other layers are not the room."""
+    r3 = pytest.importorskip("rhino3dm")
+    model = r3.File3dm()
+    room = model.Layers.AddLayer("Environment Obstacles", (128, 128, 128, 255))
+    other = model.Layers.AddLayer("Bar Tube Previews", (128, 128, 128, 255))
+    for layer, size in ((room, 1000.0), (other, 9000.0)):
+        mesh = r3.Mesh()
+        for x, y in ((0.0, 0.0), (size, 0.0), (size, size)):
+            mesh.Vertices.Add(x, y, 0.0)
+        mesh.Faces.AddFace(0, 1, 2)
+        attributes = r3.ObjectAttributes()
+        attributes.LayerIndex = layer
+        model.Objects.AddMesh(mesh, attributes)
+    path = tmp_path / "room.3dm"
+    assert model.Write(str(path), 7)
+    env = environment_3dm(path)
+    assert env is not None
+    assert environment_3dm(path, ("no such layer",)) is None
+
+
+def test_the_default_room_is_the_file_on_this_drive_if_there(tmp_path):
+    """No file: no room, the page still builds. The file there: drawn without being named."""
+    assert default_env_3dm(tmp_path) is None
+    path = tmp_path / DEFAULT_ENV_3DM
+    path.parent.mkdir()
+    path.write_bytes(b"")
+    assert default_env_3dm(tmp_path) == path
 
 
 def test_options_of_reads_the_record_not_a_log():
