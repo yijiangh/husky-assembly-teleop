@@ -16,7 +16,7 @@ from plugin_fakes import WATCHES, ArmDriver, FakeContext, fake_arm, fake_node, f
 from robot_fakes import lease_test_robots, wait_ticks_until
 
 from husky_assembly_teleop.plugins.arm_planner import planner_plugin as arm_plugin
-from husky_assembly_teleop.plugins.arm_planner.panel_plugin import ArmPlannerPanel
+from husky_assembly_teleop.plugins.arm_planner.panel_plugin import BOTH, STEP_IK, STEP_JOINTS, ArmPlannerPanel
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.plugins.arm_planner.planner_plugin import ArmPlannerPlugin
@@ -24,7 +24,7 @@ from husky_assembly_teleop.shared.arm_planner_contract import MAX_SLOWDOWN, ArmP
 from husky_assembly_teleop.shared.execution.send import ARRIVED_TOLERANCE
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
-from husky_assembly_teleop.ui.style import NONE, OK
+from husky_assembly_teleop.ui.style import FAIL, NONE, OK
 from husky_assembly_teleop.world.checks import BAD, GOOD, PENDING, WARN, Check
 from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE, PLAN_DISTANCE, Clearance, ClearanceRefused
 from scaffolding_assembly_core.geometry import Pose
@@ -548,44 +548,111 @@ def test_loading_a_step_for_another_arm_says_so_past_the_next_tick():
     selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="cindy", id="A"),
                                 process=SimpleNamespace(actions={"A": SimpleNamespace(movements=(movement,))}))
     panel._process_step = lambda _ctx: (selection, SERIAL, "Cindy")
-    panel._load_target(None, "Step")
+    panel._load_target(None, STEP_JOINTS)
     panel.update(FakeCtx())
     assert planner.plan is None and panel.arm == "right_ur_arm"
-    assert panel._message == "target from the target of M3 (right_ur_arm)"
+    assert panel._message == "target = the process's joints at the target of M3 (right_ur_arm)"
 
 
-def test_loading_a_two_arm_step_keeps_the_chosen_arm_and_solves_its_goal_at_the_live_base():
-    """Both arms named: the chosen one is loaded, the other named; its tool0 pose is solved by IK at the live base."""
+def _two_arm_step(panel, poses):
+    """Select a step of Cindy's that gives both arms GOAL, with these tool0 poses by link name."""
+    given = {**dict(zip(arm_joint_names(ARM), GOAL)), **dict(zip(arm_joint_names("right_ur_arm"), GOAL))}
+    movement = SimpleNamespace(id="M3", target=SimpleNamespace(joints={"robots/cindy": given}, link_poses=poses))
+    selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="robots/cindy", id="A"),
+                                process=SimpleNamespace(actions={"A": SimpleNamespace(movements=(movement,))}))
+    panel._process_step = lambda _ctx: (selection, SERIAL, "Cindy")
+
+
+def _solving(planner, asked, solved=0.1):
+    """Make `planner.solve_goals` answer every reference joint + `solved`, noting what it was asked."""
+    def solve_goals(serial, targets, reference=None):
+        asked.append((serial, dict(targets), dict(reference)))
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(({name: value + solved for name, value in reference.items()},
+                           "goal by IK at the live base (ssik, rank 1 of 8)"))
+        return future
+
+    planner.solve_goals = solve_goals
+
+
+def _spawning_ctx():
+    ctx = FakeCtx()
+    ctx.spawn = lambda _label, work: asyncio.get_running_loop().create_task(work)
+    return ctx
+
+
+def test_step_joints_loads_the_process_joints_and_solves_nothing():
+    """Step joints: the target is the step's joints as authored, at once; no IK is asked for."""
     planner = ArmPlannerPlugin()
     panel = make_panel(planner)
     panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
     panel._choose(SERIAL, "right_ur_arm")
-    given = {**dict(zip(arm_joint_names(ARM), GOAL)), **dict(zip(arm_joint_names("right_ur_arm"), GOAL))}
-    pose = object()
-    movement = SimpleNamespace(id="M3", target=SimpleNamespace(
-        joints={"robots/cindy": given}, link_poses={"robots/cindy/right_ur_arm_tool0": pose}))
-    selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="robots/cindy", id="A"),
-                                process=SimpleNamespace(actions={"A": SimpleNamespace(movements=(movement,))}))
-    panel._process_step = lambda _ctx: (selection, SERIAL, "Cindy")
-    asked, solved = [], tuple(value + 0.1 for value in GOAL)
+    _two_arm_step(panel, {"robots/cindy/right_ur_arm_tool0": object()})
+    asked = []
 
     async def scenario():
-        def solve_goal(serial, arm, tool0, reference):
-            asked.append((serial, arm, tool0))
-            future = asyncio.get_running_loop().create_future()
-            future.set_result((solved, "goal by IK at the live base (ssik, rank 1 of 8)"))
-            return future
-
-        planner.solve_goal = solve_goal
-        ctx = FakeCtx()
-        ctx.spawn = lambda _label, work: asyncio.get_running_loop().create_task(work)
-        panel._load_target(ctx, "Step")
-        assert panel.arm == "right_ur_arm" and "it moves left_ur_arm too" in panel._message
+        _solving(planner, asked)
+        panel._load_target(_spawning_ctx(), STEP_JOINTS)
         await asyncio.sleep(0.01)
 
     asyncio.run(scenario())
-    assert asked == [(SERIAL, "right_ur_arm", pose)]
-    assert np.allclose(panel._load, solved) and "5.7° from the design's joints" in panel._message
+    assert asked == [] and np.allclose(panel._load, GOAL)
+    assert "process's joints" in panel._message and "it moves left_ur_arm too" in panel._message
+
+
+def test_step_ik_solves_the_chosen_arms_tool0_frame_nearest_the_process_joints():
+    """Step IK, both arms named: the chosen one's tool0 pose is solved at the live base, the step's joints the guess."""
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    panel._choose(SERIAL, "right_ur_arm")
+    pose = object()
+    _two_arm_step(panel, {"robots/cindy/right_ur_arm_tool0": pose})
+    asked = []
+
+    async def scenario():
+        _solving(planner, asked)
+        panel._load_target(_spawning_ctx(), STEP_IK)
+        assert panel.arm == "right_ur_arm" and panel._load is None
+        await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert asked == [(SERIAL, {"right_ur_arm": pose}, dict(zip(arm_joint_names("right_ur_arm"), GOAL)))]
+    assert np.allclose(panel._load, [value + 0.1 for value in GOAL])
+    assert "5.7° from the process's joints" in panel._message and "it moves left_ur_arm too" in panel._message
+
+
+def test_step_ik_refuses_a_step_without_a_tool0_frame():
+    """Step IK on a step that gives the arm no tool0 pose says to use Step joints and sets no target."""
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    panel._choose(SERIAL, "right_ur_arm")
+    _two_arm_step(panel, {})
+    panel._load_target(_spawning_ctx(), STEP_IK)
+    assert panel._message_color == FAIL and "use Step joints" in panel._message and not panel._has_target
+
+
+def test_step_ik_that_finds_no_solution_sets_no_target():
+    """No IK solution: a failure line, and the target stays unset."""
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    panel._choose(SERIAL, "right_ur_arm")
+    _two_arm_step(panel, {"robots/cindy/right_ur_arm_tool0": object()})
+
+    async def scenario():
+        def solve_goals(serial, targets, reference=None):
+            future = asyncio.get_running_loop().create_future()
+            future.set_result((None, "no IK solution clear of collisions"))
+            return future
+
+        planner.solve_goals = solve_goals
+        panel._load_target(_spawning_ctx(), STEP_IK)
+        await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert panel._message_color == FAIL and "no IK solution" in panel._message and not panel._has_target
 
 
 def test_the_status_line_shows_the_chosen_arms_run_chip():
@@ -667,3 +734,30 @@ def test_a_plan_with_every_robot_measured_has_no_such_warning(found_path):
 
     plan = run(planner, ctx, scenario)
     assert plan.state == "ready" and not plan.warning and "not measured" not in plan.message
+
+
+def test_both_plans_every_arm_in_one_search_its_targets_from_step_ik():
+    """Both on a two-arm robot: Step IK fills both targets, solved together at the base; Plan asks for both."""
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    panel._arm_labels = {SERIAL: ("Left", "Right")}
+    assert panel._arm_options(SERIAL) == ((ARM, "right_ur_arm", BOTH), ("Left", "Right", "Both"))
+    panel._choose(SERIAL, BOTH)
+    assert panel.planned_arms == (ARM, "right_ur_arm")
+    _two_arm_step(panel, {"robots/cindy/left_ur_arm_tool0": object(), "robots/cindy/right_ur_arm_tool0": object()})
+    asked = []
+
+    async def scenario():
+        _solving(planner, asked)
+        panel._load_target(_spawning_ctx(), STEP_IK)
+        await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert [(serial, tuple(targets)) for serial, targets, _ in asked] == [(SERIAL, (ARM, "right_ur_arm"))]
+    request = panel.make_request(None)
+    assert request.arms == (ARM, "right_ur_arm") and np.allclose(request.goals, [value + 0.1 for value in GOAL] * 2)
+    plan = SimpleNamespace(request=request)
+    assert panel.target_change(None, plan) == ""
+    panel._choose(SERIAL, ARM)
+    assert panel.target_change(None, plan) == "the robot or arm changed since planning"
