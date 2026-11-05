@@ -12,7 +12,7 @@ REAL_LAB_WS="$(cd "$REAL_LAB_REPO/../.." && pwd)"
 #: The logs of the monitor and the panes.
 REAL_LAB_HOME="${REAL_LAB_HOME:-$HOME/husky_real_lab}"
 #: The process the test uses, relative to the Drive root.
-REAL_LAB_PROCESS="data_design_study/261008_2ModulesDemo_purged_process"
+REAL_LAB_PROCESS="${REAL_LAB_PROCESS:-data_design_study/261103_SRD}"
 #: The Motive PC.
 REAL_LAB_MOTIVE="${REAL_LAB_MOTIVE:-192.168.0.28}"
 # * The Drive: REAL_LAB_DRIVE if set, else the Insync copy of the shared "2025-03 Husky Assembly" folder. The monitor

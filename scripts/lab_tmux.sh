@@ -9,15 +9,14 @@
 
 set -e
 monitor="ros2 launch husky_assembly_teleop monitor.launch.py robots:=\"alice belle cindy\" \
-plugins:=\"assembly_steps robot_control base_planner_panel obstacles\" \
-process_directory:=data_design_study/261008_2ModulesDemo_purged_process"
+plugins:=\"assembly_steps robot_control base_planner_panel obstacles\""
 
 # * Each pane: its name, then the command typed into it; `|now` after it runs it at once (a robot's login: it starts
 #   nothing on her, and her launch waits for her arms). The keepalives survive a short Wi-Fi drop.
 ssh_opts="-o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=30"
 case "$1" in
     real) session=real_lab setup="crl_ros_source 80" panes=(
-              "monitor|$monitor"
+              "monitor|$monitor process_directory:=data_design_study/261103_SRD"
               "relay|ros2 launch husky_assembly_teleop mocap.launch.py"
               "checks|ros2 node list"
               "alice|ssh $ssh_opts administrator@192.168.0.113|now"
@@ -30,7 +29,7 @@ case "$1" in
           setup="crl_ros_source 70; export ZENOH_CONFIG_OVERRIDE='connect/endpoints=[\"tcp/127.0.0.1:7470\"];scouting/multicast/enabled=false'"
           panes=(
               "router|ZENOH_CONFIG_OVERRIDE='listen/endpoints=[\"tcp/127.0.0.1:7470\"];connect/endpoints=[];scouting/multicast/enabled=false' ros2 run rmw_zenoh_cpp rmw_zenohd"
-              "monitor|$monitor drive_root:=$drive"
+              "monitor|$monitor process_directory:=data_design_study/261008_2ModulesDemo_purged_process drive_root:=$drive"
               "relay|ros2 launch husky_assembly_teleop mocap.launch.py sim:=true drive_root:=$drive"
               "robots|ros2 launch husky_assembly_teleop sim.launch.py robot:=all fake_motive:=true"
               "checks|ros2 node list") ;;
