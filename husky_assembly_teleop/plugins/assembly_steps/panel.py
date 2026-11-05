@@ -26,7 +26,7 @@ from ...shared.runs.runs import (PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, P
 from ...shared.assembly_tab.layout import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLAN_PLOTS_X,
                                            PLAN_SETTINGS_BAND, SETTINGS_BAND, STEP_BAND, plots_window)
 from ...world.clearance import ARM_MOVE
-from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
+from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, block, chip, chip_line, section, values
 from .plan_plots import PlanPlots
 from .step_panel_base import SLIDER_STEP
 from scaffolding_assembly_core.ids import robot_id
@@ -86,7 +86,7 @@ class StepsPanel:
             # ! Keep changing text BELOW the buttons.
             self._details = gui.add_html("")
         with ctx.view.ui(band=SETTINGS_BAND) as gui:
-            gui.add_html(section("settings", SECTION_TOOL))
+            gui.add_html(section("settings", SECTION_CTRL))
             self._ignore = gui.add_checkbox("Ignore built bars", False,
                                             hint="Plan as if the built bars were not there: for tests in the air")
             self._diagnosis = gui.add_checkbox("Visual diagnosis", False,

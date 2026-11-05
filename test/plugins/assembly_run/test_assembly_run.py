@@ -1068,6 +1068,32 @@ def test_the_spiral_box_is_greyed_unless_the_steps_insert_has_two_mating_joints(
     asyncio.run(scenario())
 
 
+@pytest.mark.safety
+def test_the_servo_box_is_live_only_on_a_ground_bars_action(tmp_path):
+    """Servo by bar is greyed at start and on a bar that mates with its joints, shown unticked, the setting kept.
+
+    On the ground bar's action it is live and ticked (its default), and a click on it reaches the plugin.
+    """
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        panel = plugin._panel = RunPanel(lab.ctx, plugin)
+        assert panel._servo.disabled
+        plugin.request_set_current("B2_J_joint", 0)  # B2 mates with B1's joint
+        plugin.draw(lab.ctx)
+        assert (panel._servo.disabled, panel._servo.value, plugin.view.settings.servo_by_bar) == (True, False, True)
+        plugin.request_set_current("B1_J_joint", 0)  # B1 stands on its ground half
+        plugin.draw(lab.ctx)
+        assert (panel._servo.disabled, panel._servo.value) == (False, True)
+        panel._servo.callback(False)
+        await settle(plugin)
+        plugin.draw(lab.ctx)
+        assert (panel._servo.disabled, panel._servo.value, plugin.view.settings.servo_by_bar) == (False, False, False)
+
+    asyncio.run(scenario())
+
+
 def test_a_step_picked_while_waiting_stops_the_automatic_selection(tmp_path):
     """A step picked in the process panel while the run waits for Cindy is not overridden: it becomes current."""
     lab = Lab(tmp_path, live_from=None)

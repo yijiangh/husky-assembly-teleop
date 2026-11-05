@@ -15,10 +15,9 @@ from ...plugin_api.context import PluginContext
 from ...shared.runs.runs import DONE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, RunSettings
 from ...shared.assembly_tab.layout import (MARK_BAND, MARK_ICON, REOPEN_ICON, RUN_BAND, RUN_SETTINGS_BAND,
                                            TAB_BUTTONS_CSS)
-from ...ui.css import side_by_side_css
+from ...ui.css import group_tooltips_css, side_by_side_css
 from ...ui.second_press import again_label, show_waiting, waiting_group_css
-from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, hover, section,
-                         values)
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, chip_line, hover, section, values
 from .writes import AGAIN_MARK, AGAIN_NEW_RUN
 
 if TYPE_CHECKING:
@@ -43,6 +42,7 @@ class PanelStatus(NamedTuple):
         robots: One line per configured robot, live or where it was recorded (the plugin's `robot_lines`).
         settings_refused: How many settings requests were refused; a change puts the widgets back.
         spiral_fits: Whether the current step's insert has two mating joints: only then is the Spiral box live.
+        servo_fits: Whether the current action inserts a ground bar: only then is the Servo by bar box live.
     """
 
     run: str
@@ -52,6 +52,7 @@ class PanelStatus(NamedTuple):
     robots: tuple[str, ...]
     settings_refused: int
     spiral_fits: bool
+    servo_fits: bool
 
 
 class RunPanel:
@@ -64,10 +65,10 @@ class RunPanel:
             ctx: The plugin's context.
             plugin: The plugin the buttons call.
         """
-        # The settings the widgets were last set to, the refusals counted then, and whether the spiral fit.
-        self._shown_settings: tuple[RunSettings, int, bool] | None = None
+        # The settings the widgets were last set to, the refusals counted then, and whether the spiral and servo fit.
+        self._shown_settings: tuple[RunSettings, int, bool, bool] | None = None
         with ctx.view.ui(band=MARK_BAND) as gui:
-            gui.add_html(section("action", SECTION_CTRL))
+            gui.add_html(section("mark done", SECTION_CTRL))
             # * Draws nothing: the tab's big buttons when the layout file asks (assembly_run's `big_buttons`), and
             #   Mark done and Reopen side by side once they exist.
             pair = gui.add_html("")
@@ -96,10 +97,11 @@ class RunPanel:
             self._spiral_turns = gui.add_slider("Spiral turns", min=SPIRAL_TURNS_RANGE[0], max=SPIRAL_TURNS_RANGE[1],
                                                 step=1, initial_value=default.spiral_turns,
                                                 hint="Turns the spiral makes on its way out; pitch = 15 mm / turns")
-            self._servo = gui.add_checkbox("Servo by bar", default.servo_by_bar,
+            # * Greyed until the run's current action inserts a ground bar (`draw`): no step yet.
+            self._servo = gui.add_checkbox("Servo by bar", default.servo_by_bar, disabled=True,
                                            hint="Servo a ground bar by its mocap fit instead of tool0 (on by "
-                                                "default). Other bars always servo on tool0: they must mate with "
-                                                "their joints")
+                                                "default); greyed and unticked for any other bar, which always "
+                                                "servos on tool0: it must mate with its joints")
             self._retreat_live = gui.add_checkbox("Retreat live axis", default.retreat_live_axis,
                                                   hint="The retreat backs each tool out along its own live -z as "
                                                        "the encoders read it (the export's distance); off: along "
@@ -109,13 +111,14 @@ class RunPanel:
                                                             "controller instead of the stiff screw-out at the screw "
                                                             "rate (in the lab the compliant tools pushed the bar)")
         with ctx.view.ui(band=RUN_BAND) as gui:
-            gui.add_html(section("run", SECTION_TOOL))
+            gui.add_html(section("run", SECTION_CTRL))
             self._status = gui.add_html("")
-            self._run = gui.add_button_group("Run", [CONTINUE_NEWEST, CONTINUE_MATCH, NEW_RUN],
-                                             hint="Continue the run used last, made on another export of this "
-                                                  "process, in a new run; or write on in an older run made on these "
-                                                  "very files; or start a new run, every action pending (press again "
-                                                  "to confirm). Old runs are kept")
+            # * A tip per button (`group_tooltips_css`), not viser's hint, which covers the whole row.
+            self._run = gui.add_button_group("Run", [CONTINUE_NEWEST, CONTINUE_MATCH, NEW_RUN])
+            tips = ("Continue the run used last; one made on another export of this process goes on in a new run",
+                    "Write on in an older run made on these very files",
+                    "Start a new run, every action pending: press again to confirm. Old runs are kept")
+            gui.add_html(f"<style>{group_tooltips_css(self._run._impl.uuid, tips)}</style>")
             self._robots = gui.add_html("")
             # * Only a <style>: New run amber while it waits for its second press.
             self._waiting_css = gui.add_html("")
@@ -130,8 +133,8 @@ class RunPanel:
                     (self._retreat_live, "retreat_live_axis", bool),
                     (self._retreat_compliant, "retreat_compliant", bool))
         # ! `operator_only`: viser also fires `on_update` when the plugin writes `widget.value` (skipped only when it
-        #   is unchanged), and the Spiral box is shown unticked while greyed: that write must not reach
-        #   `request_settings`, or it would untick the stored setting. The test fake takes every call as the
+        #   is unchanged), and the Spiral and Servo by bar boxes are shown unticked while greyed: that write must not
+        #   reach `request_settings`, or it would untick the stored setting. The test fake takes every call as the
         #   operator's, so no test can show this regression.
         for widget, setting, kind in settings:
             widget.on_update(ctx.defer_value(setting, lambda value, setting=setting, kind=kind:
@@ -185,15 +188,17 @@ class RunPanel:
         css = f"<style>{waiting_group_css(self._run, 2)}</style>" if new_run else ""
         if self._waiting_css.content != css:
             self._waiting_css.content = css
-        if (view.settings, status.settings_refused, status.spiral_fits) != self._shown_settings:
-            # * Only when the settings change, a change was refused or the spiral's fit changes; the plugin's own
-            #   writes never come back as requests (`operator_only` above).
-            self._shown_settings = (view.settings, status.settings_refused, status.spiral_fits)
+        shown = (view.settings, status.settings_refused, status.spiral_fits, status.servo_fits)
+        if shown != self._shown_settings:
+            # * Only when the settings change, a change was refused or a fit changes; the plugin's own writes never
+            #   come back as requests (`operator_only` above).
+            self._shown_settings = shown
             settings = view.settings
-            # * Greyed and shown unticked unless the step's insert has two mating joints; the stored setting is kept.
-            self._spiral.disabled = not status.spiral_fits
+            # * Greyed and shown unticked where they do not apply (the spiral: an insert with two mating joints; the
+            #   servo: a ground bar's action); the stored setting is kept.
+            self._spiral.disabled, self._servo.disabled = not status.spiral_fits, not status.servo_fits
             self._split.value, self._spiral.value = settings.insert_split_mm, settings.spiral and status.spiral_fits
-            self._servo.value = settings.servo_by_bar
+            self._servo.value = settings.servo_by_bar and status.servo_fits
             self._retreat_live.value, self._retreat_compliant.value = (settings.retreat_live_axis,
                                                                        settings.retreat_compliant)
             self._spiral_seconds.value, self._spiral_turns.value = settings.spiral_seconds, settings.spiral_turns

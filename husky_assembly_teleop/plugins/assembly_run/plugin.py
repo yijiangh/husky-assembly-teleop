@@ -32,6 +32,7 @@ from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.assembly_run_contract import RunView, first_pending, is_live
+from ...shared.assembly_planning.movement import mating_drives
 from ...shared.assembly_planning.process_steps import LoadedProcess, loaded_process
 from ...shared.execution.spiral import spiral_fits
 from ...shared.movement_exec_contract import INSERT_PART, current_step, part_plan
@@ -331,7 +332,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         if self._panel is not None:
             status = PanelStatus(self._run.info.name if self._run is not None else "", self.again,
                                  (self._message, self._failed), self._save_error, tuple(self.robot_lines(ctx)),
-                                 self._settings_refused, self._spiral_fits(ctx))
+                                 self._settings_refused, self._spiral_fits(ctx), self._servo_fits(ctx))
             self._panel.draw(self.view, status)
 
     def teardown(self, ctx: PluginContext) -> None:
@@ -378,6 +379,14 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         action, steps, index = found
         part = part_plan(self.view.process, action, steps[index].primary, ctx.config.robots, transfer)
         return part.kind == INSERT_PART and spiral_fits(part.tools)
+
+    def _servo_fits(self, ctx: PluginContext) -> bool:
+        """Whether the current action inserts a ground bar, the only bar the Servo by bar box applies to."""
+        found = current_step(self.view, ctx.require("process").transfer_as_free)
+        if found is None:
+            return False
+        process = self.view.process.process
+        return any(mating_drives(process, movement).grounded for movement in process.actions[found[0]].movements)
 
     # --- --- --- --- --- OPENING A PROCESS'S RUN --- --- --- --- ---
 
