@@ -29,6 +29,7 @@ from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_join
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, FAIL, GAP, NONE, OK, block, check_chip, chip, chip_line, section, values
 from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 from ...shared.assembly_planning.joints import arm_joint_names
 from .planner_plugin import STALE_JOINT, ArmPlannerPlugin
 from ...world.arm_reach import out_of_reach
@@ -198,7 +199,12 @@ class ArmPlannerPanel(PlannerPanel):
         self._has_target = True
 
     def _load_from_step(self, ctx: PluginContext) -> None:
-        """Set robot, arm and target from the process plugin's selected step: its target, else its start."""
+        """Set robot, arm and target from the process plugin's selected step: its target, else its start.
+
+        The arm chosen stays chosen when the step moves it; else the first arm the step names. Where the step gives
+        the arm's tool0 a world pose (a transfer, an approach), the target is then solved by IK at the live base, so a
+        move planned here ends where the step's own move would, not a base error away.
+        """
         found = self._process_step(ctx)
         if found is None:
             return
@@ -209,16 +215,39 @@ class ArmPlannerPanel(PlannerPanel):
             return
         target = movement.target.joints.get(robot) if movement.target is not None else None
         given = target or movement.start.robots[robot].joints or {}
-        # * The arm the step moves: the first of the robot's arms it names every joint of.
-        arm = next((arm for arm in self._arms[serial] if all(name in given for name in arm_joint_names(arm))), None)
-        if arm is None:
+        named = [arm for arm in self._arms[serial] if all(name in given for name in arm_joint_names(arm))]
+        if not named:
             self._say(f"{label} has no joint values for an arm of {robot_name}", FAIL)
             return
+        arm = self.arm if serial == self.serial and self.arm in named else named[0]
         self._choose(serial, arm)
         self._load = np.array([given[name] for name in arm_joint_names(arm)])
         self._has_target = True
         which = "target" if target else "start"
-        self._say(f"target from the {which} of {label} ({arm})")
+        others = [each for each in named if each != arm]
+        also = f"; it moves {', '.join(others)} too: choose it and Load: Step again" if others else ""
+        self._say(f"target from the {which} of {label} ({arm}){also}")
+        # * The authored movement's tool0 pose (the shown transit with the transfer workaround has joints only).
+        authored = next((each for each in selection.process.actions[selection.action.id].movements
+                         if each.id == movement.id), movement)
+        pose = authored.target.link_poses.get(f"{robot}/{arm}{FLANGE_SUFFIX}") if authored.target else None
+        if pose is not None and target:
+            reference = tuple(float(value) for value in self._load)
+            ctx.spawn(f"solve {label} {arm}", self._solve_goal(serial, arm, pose, reference, label, also))
+
+    async def _solve_goal(self, serial: str, arm: str, pose, reference, label: str, also: str) -> None:
+        """Replace the loaded target by the goal at the live base, if found and the arm is still the chosen one."""
+        self._say(f"target from {label} ({arm}): solving the goal at the live base…", BUSY)
+        joints, line = await self._api.solve_goal(serial, arm, pose, reference)
+        if (self.serial, self.arm) != (serial, arm):
+            return
+        if joints is None:
+            self._say(f"target from the design's joints of {label} ({arm}): {line}{also}", BUSY)
+            return
+        self._load = np.array(joints)
+        change = max(abs(a - b) for a, b in zip(joints, reference))
+        self._say(f"target from {label} ({arm}): {line}, {math.degrees(change):.1f}° from the design's "
+                  f"joints{also}")
 
     # --- --- --- --- --- PLANNER PANEL --- --- --- --- ---
 

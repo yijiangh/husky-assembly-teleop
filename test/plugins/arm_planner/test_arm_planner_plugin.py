@@ -544,13 +544,48 @@ def test_loading_a_step_for_another_arm_says_so_past_the_next_tick():
     planner._plan = ready_plan()
     panel.update(FakeCtx())
     given = dict(zip(arm_joint_names("right_ur_arm"), GOAL))
-    movement = SimpleNamespace(id="M3", target=SimpleNamespace(joints={"cindy": given}))
-    selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="cindy"))
+    movement = SimpleNamespace(id="M3", target=SimpleNamespace(joints={"cindy": given}, link_poses={}))
+    selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="cindy", id="A"),
+                                process=SimpleNamespace(actions={"A": SimpleNamespace(movements=(movement,))}))
     panel._process_step = lambda _ctx: (selection, SERIAL, "Cindy")
     panel._load_target(None, "Step")
     panel.update(FakeCtx())
     assert planner.plan is None and panel.arm == "right_ur_arm"
     assert panel._message == "target from the target of M3 (right_ur_arm)"
+
+
+def test_loading_a_two_arm_step_keeps_the_chosen_arm_and_solves_its_goal_at_the_live_base():
+    """Both arms named: the chosen one is loaded, the other named; its tool0 pose is solved by IK at the live base."""
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    panel._choose(SERIAL, "right_ur_arm")
+    given = {**dict(zip(arm_joint_names(ARM), GOAL)), **dict(zip(arm_joint_names("right_ur_arm"), GOAL))}
+    pose = object()
+    movement = SimpleNamespace(id="M3", target=SimpleNamespace(
+        joints={"robots/cindy": given}, link_poses={"robots/cindy/right_ur_arm_tool0": pose}))
+    selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="robots/cindy", id="A"),
+                                process=SimpleNamespace(actions={"A": SimpleNamespace(movements=(movement,))}))
+    panel._process_step = lambda _ctx: (selection, SERIAL, "Cindy")
+    asked, solved = [], tuple(value + 0.1 for value in GOAL)
+
+    async def scenario():
+        def solve_goal(serial, arm, tool0, reference):
+            asked.append((serial, arm, tool0))
+            future = asyncio.get_running_loop().create_future()
+            future.set_result((solved, "goal by IK at the live base (ssik, rank 1 of 8)"))
+            return future
+
+        planner.solve_goal = solve_goal
+        ctx = FakeCtx()
+        ctx.spawn = lambda _label, work: asyncio.get_running_loop().create_task(work)
+        panel._load_target(ctx, "Step")
+        assert panel.arm == "right_ur_arm" and "it moves left_ur_arm too" in panel._message
+        await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert asked == [(SERIAL, "right_ur_arm", pose)]
+    assert np.allclose(panel._load, solved) and "5.7° from the design's joints" in panel._message
 
 
 def test_the_status_line_shows_the_chosen_arms_run_chip():

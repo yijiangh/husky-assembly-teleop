@@ -26,6 +26,7 @@ from ...plugin_api.plugin import register
 from ...robot_interface.mocap_state import pose_lost
 from ...robot_interface.soft_stop import MotionRefused
 from ...shared.arm_planner_contract import MAX_SLOWDOWN, ArmPlanRequest
+from ...shared.assembly_planning.ik import solve_ik
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.execution.send import ARRIVED, HOLD_NOT_SENT, INTERRUPTED, REFUSED, STOPPED, TIMEOUT, ArmMotion, \
@@ -40,6 +41,7 @@ from ...ui.style import hover
 from ...world.checks import BAD, GOOD, WARN, Check
 from ...world.clearance import ARM_MOVE, PLAN_DISTANCE, Clearance, clearance_problem
 from ...world.stand_ins import with_stand_ins
+from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from .planner import ArmPath, margin_note, path_hit, plan_arm
 
@@ -169,6 +171,47 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         path = np.array(waypoints, dtype=float)
         self._ctx.submit(f"check path {serial}", lambda: self._start_check(serial, arm, path, margin, future))
         return future
+
+    def solve_goal(self, serial: str, arm: str, tool0: Pose,
+                   reference: Sequence[float] | None = None) -> asyncio.Future[tuple[tuple[float, ...] | None, str]]:
+        """Joints for `arm` that put its tool0 at `tool0`, by IK at the live base (`ArmPlannerContract`)."""
+        future = asyncio.get_running_loop().create_future()
+        self._ctx.submit(f"solve goal {serial}", lambda: self._start_goal(serial, arm, tool0, reference, future))
+        return future
+
+    def _start_goal(self, serial: str, arm: str, tool0: Pose, reference: Sequence[float] | None,
+                    future: asyncio.Future) -> None:
+        """Snapshot the world and solve the goal on the worker, after any search before it. Main thread."""
+        snapshot, _guessed = with_guesses(self._ctx.scene.snapshot, robot_id(serial))
+        names = arm_joint_names(arm)
+
+        def work() -> tuple[tuple[float, ...] | None, str]:
+            robot = snapshot.robots[robot_id(serial)]
+            problems = robot.acting_problems()
+            if problems:
+                return None, f"{short_serial(serial)} can't be solved for: {'; '.join(problems)}"
+            scene = with_stand_ins(snapshot, {robot_id(serial)}).scene
+            mirror = self._world.sync(scene, serial)
+            self._loaded.add(serial)
+            seed = dict(zip(names, reference)) if reference is not None else None
+            result = solve_ik(mirror, scene.robots[robot_id(serial)], {arm: tool0}, seed, log=self._ctx.log_info)
+            if result.joints is None:
+                return None, f"no goal at the live base: {result.reason}"
+            joints = tuple(float(result.joints[name]) for name in names)
+            return joints, (f"goal by IK at the live base ({result.backend}, rank {result.rank} of "
+                            f"{result.combinations}, {math.degrees(result.max_change):.1f}° from the arm now)")
+
+        async def run() -> None:
+            try:
+                answer = await asyncio.get_running_loop().run_in_executor(self._executor, work)
+            except BaseException as error:
+                if not future.done():
+                    future.set_result((None, f"IK failed: {error!r}"))
+                raise
+            if not future.done():
+                future.set_result(answer)
+
+        self._ctx.spawn(f"solve goal {serial} {arm}", run())
 
     def _start_check(self, serial: str, arm: str, waypoints: np.ndarray, margin: float,
                      future: asyncio.Future[CollisionHit | None]) -> None:

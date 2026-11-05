@@ -10,6 +10,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from scaffolding_assembly_core.geometry import Pose
+
 from ..world.collision_hit import CollisionHit
 from .planner.plan import PlannerContract
 
@@ -44,6 +46,16 @@ class ArmPlannerContract(PlannerContract[ArmPlanRequest], Protocol):
 
         Clamped to its fastest timing up to MAX_SLOWDOWN times that; only a ready plan changes. Play and Commit follow
         it. The plan is replaced, keeping its id.
+        """
+
+    def solve_goal(self, serial: str, arm: str, tool0: Pose,
+                   reference: Sequence[float] | None = None) -> asyncio.Future[tuple[tuple[float, ...] | None, str]]:
+        """Joints that put `arm`'s tool0 at world pose `tool0`, by exact IK at the robot's live base, collision-free.
+
+        The branch nearest `reference` (the arm's joints now if None) wins. Runs after any search in progress.
+
+        Returns:
+            asyncio.Future: (six joint values in the UR driver's order, or None; one line saying how or why not).
         """
 
     def check_path(self, serial: str, arm: str,
