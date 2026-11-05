@@ -14,12 +14,15 @@ from typing import TYPE_CHECKING
 import numpy as np
 import viser
 
+from ...colors import rgb
 from ...plugin_api.context import PluginContext
 from ...robot_interface.end_effectors import ScaffoldingV3
 from ...shared.assembly_tab.layout import CANCEL_ICON, CONFIRM_ICON, EXEC_SETTINGS_BAND, PROMPT_BAND
 from ...ui.css import side_by_side_css
 from ...ui.phone import big_buttons, phone_text
+from ...ui.popup import Popup
 from ...ui.style import BUSY, FAIL, NONE, SECTION_CTRL, block, chip, chip_line, section
+from .servo_measure import GIVE_UP, TOOL0_SERVO
 
 if TYPE_CHECKING:
     from ...shared.execution.operator import Prompt
@@ -61,6 +64,11 @@ class ExecPanel:
             as_built = gui.add_button("As-built: record now",
                                       hint="Measure every MoCap bar now and append a record to the day's as-built "
                                            "file on the Drive (every part's start and end are recorded by themselves)")
+        # * Hidden until a prompt asks to choose; its buttons answer as Cancel and Confirm do.
+        self._choice = Popup(ctx.view, "No usable mocap fit", viser.Icon.ALERT_TRIANGLE,
+                             {GIVE_UP: None, TOOL0_SERVO: rgb(BUSY)})
+        self._choice.buttons[GIVE_UP].on_click(ctx.defer("exec give up", plugin.request_cancel))
+        self._choice.buttons[TOOL0_SERVO].on_click(ctx.defer("exec tool0 servo", plugin.request_confirm))
         confirm.on_click(ctx.defer("exec confirm", plugin.request_confirm))
         cancel.on_click(ctx.defer("exec cancel", plugin.request_cancel))
         as_built.on_click(ctx.defer("as-built record", plugin.request_as_built))
@@ -99,6 +107,10 @@ class ExecPanel:
                           "the request waits for an answer to the question below: Confirm goes on, Cancel says no")
         line = _one_line(escape(prompt.line) if prompt is not None else "no prompt",
                          (FAIL if prompt.warn else BUSY) if prompt is not None else NONE)
+        if prompt is not None and prompt.choose:
+            self._choice.show(block(escape(prompt.line)))
+        elif self._choice.is_open:
+            self._choice.close()
         self._status.content = chip_line(chips)
         self._prompt.content = block(line)
         self._phone_status.content = phone_text(chip_line(chips))

@@ -22,6 +22,7 @@ from robot_lab import LEFT, FakeRun, RobotLab
 from husky_assembly_teleop.monitor import HuskyMonitor
 from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.plugins.movement_exec import plugin as exec_module
+from husky_assembly_teleop.plugins.movement_exec.servo_measure import GIVE_UP, TOOL0_SERVO
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
 from husky_assembly_teleop.plugins.movement_exec.sequences import PartOperator
 from husky_assembly_teleop.robot_interface.base import BaseState, FollowerState
@@ -1144,7 +1145,7 @@ def test_confirm_and_cancel_are_buttons_of_their_own_in_the_assembly_tab():
     """Confirm and Cancel are two buttons, on the desktop as on the phone; the desktop's reach the plugin."""
     lab = Lab()
     buttons = lab.ctx.gui.of_kind("button")
-    assert [(button.label, button.color) for button in buttons] == [
+    assert [(button.label, button.color) for button in buttons if button.label not in (GIVE_UP, TOOL0_SERVO)] == [
         ("Confirm", "green"), ("Cancel", "red"), ("As-built: record now", None), ("Confirm", "green"),
         ("Cancel", "red")]
     assert lab.ctx.gui.of_kind("button_group") == []

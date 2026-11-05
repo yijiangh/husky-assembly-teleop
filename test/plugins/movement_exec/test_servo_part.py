@@ -18,6 +18,7 @@ from plugin_fakes import from_outside
 from robot_lab import FakeRun, RobotLab
 
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
+from husky_assembly_teleop.plugins.movement_exec.servo_measure import GIVE_UP, TOOL0_SERVO
 from husky_assembly_teleop.robot_interface.mocap_state import RawMarkers
 from husky_assembly_teleop.shared.assembly_planning.ik import branches, fitting_solver, ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names, joint_limits, unwrap_to_nearest
@@ -534,12 +535,60 @@ def test_servo_by_bar_without_a_bar_asks_first_and_cancel_records_without_sendin
     assert result.status == CANCELLED and result.done == () and lab.published() == 0 and lab.free()
     text, warn = lab.prompts()[0]
     assert warn and text.startswith("cindy (a200-0806): B20_J_transfer — SERVO by bar: no usable mocap fit of B20 "
-                                    "(asset 1020): the bar could not be measured (no marker sample). Confirm to servo "
-                                    "tool0 onto the authored targets of the insert start instead")
+                                    "(asset 1020): the bar could not be measured (no marker sample). Tool0 servo "
+                                    "(Confirm): servo tool0 onto the authored targets of the insert start instead")
     assert "cancelled at the bar prompt" in result.reason and not lab.planner.requests
     record = lab.servo_record()
     assert len(record["servoing_data"]) == 1 and record["outcome"]["status"] == CANCELLED
     assert "### SERVOING cancelled by user." in lab.ctx.lines("warn")
+
+
+def choose_in_window(lab: ServoLab, button: str, *answers: bool):
+    """Run a request with no usable bar fit: click `button` in the window, answer what comes next; (result, seen)."""
+    window, seen = lab.plugin._panel._choice, {}
+
+    async def scenario():
+        future = lab.plugin.request_execute(lab.servo_request())
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        lab.plugin.draw(lab.ctx)
+        seen["open"], seen["text"] = window.is_open, window._text.content
+        prompt = lab.plugin.prompt
+        while lab.ctx.t - prompt.opened_at < 0.6:
+            await asyncio.sleep(0)
+        window.buttons[button].callback()
+        while lab.plugin.prompt is prompt:
+            await asyncio.sleep(0)
+        for ok in answers:
+            await answer(lab, ok)
+        result = await future
+        lab.plugin.draw(lab.ctx)
+        seen["after"] = window.is_open
+        return result
+    return run_guarded(scenario()), seen
+
+
+@pytest.mark.safety
+def test_no_usable_fit_give_up_stops_with_nothing_sent():
+    """The warning window opens with the question; Give up stops the servo and closes it."""
+    lab = ServoLab()
+    lab.run.request_settings(servo_by_bar=True)
+    assert not lab.plugin._panel._choice.is_open
+    result, seen = choose_in_window(lab, GIVE_UP)
+    assert seen["open"] and "SERVO by bar: no usable mocap fit of B20" in seen["text"] and not seen["after"]
+    assert result.status == CANCELLED and lab.published() == 0
+
+
+@pytest.mark.safety
+def test_no_usable_fit_tool0_servo_goes_on_on_tool0():
+    """Tool0 servo answers as Confirm: the servo goes on, its first pass asks as usual, in the panel only."""
+    lab = ServoLab()
+    lab.run.request_settings(servo_by_bar=True)
+    result, seen = choose_in_window(lab, TOOL0_SERVO, True)
+    assert seen["open"] and not seen["after"]
+    assert result.status == DONE and lab.published() == 1, result.reason
+    assert lab.servo_record()["servo_feedback"] == "tool0"
+    assert [prompt[1] for prompt in lab.prompts()] == [True, False]
 
 
 @pytest.mark.safety

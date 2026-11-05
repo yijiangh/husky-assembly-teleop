@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
 #: How a side reads on the panel line and in the prompt ("arm" stays as it is).
 SIDE = {"left": "L", "right": "R"}
+#: The warning window's answers when a ground bar has no usable mocap fit: Confirm's and Cancel's.
+TOOL0_SERVO, GIVE_UP = "Tool0 servo", "Give up"
 
 
 def say_feedback(job: Job, plan: ServoPlan) -> None:

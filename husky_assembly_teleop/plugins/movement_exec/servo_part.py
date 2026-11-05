@@ -54,8 +54,8 @@ from ...shared.bars.layouts import bar_asset_id, bar_layouts, fit_bar
 from ...world.marker_match import sensed_from_raw
 from .sequences import Job, PartRun, confirmed, live_command_of, others_basis, others_moving, world_problem
 from ...ui.style import BUSY, FAIL, OK
-from .servo_measure import (SIDE, aim_text, end_line, ik_record, insert_end_problem, line, load_line, planned_line,
-                            say_feedback, servo_file, sides)
+from .servo_measure import (GIVE_UP, SIDE, TOOL0_SERVO, aim_text, end_line, ik_record, insert_end_problem, line,
+                            load_line, planned_line, say_feedback, servo_file, sides)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.robot import RobotObject
@@ -187,15 +187,16 @@ class ServoLoop:
         run.ended(FAILED, "not converged", f"ran all {MAX_PASSES} passes without converging")
 
     async def _bar_prompt(self, bar: dict | None) -> bool:
-        """Ask before aiming tool0 when "Servo by bar" applies but reading 0 has no usable fit; False = Cancel."""
+        """Ask in a warning window before aiming tool0 when "Servo by bar" applies but reading 0 has no usable fit."""
         plan = self.plan
         short, mocap_id = plan.bar.rsplit("/", 1)[-1], bar_asset_id(plan.bar)
         why = bar["reason"] if bar is not None else "the bar is not tracked"
         self.phase_is("waiting for Confirm (servo by bar)", FAIL)
-        text = (f"{plan.target} — SERVO by bar: no usable mocap fit of {short} (asset {mocap_id}): {why}. Confirm to "
-                f"servo tool0 onto the authored targets of {SERVO_TARGET[plan.kind]} instead (the bar is only "
-                f"recorded; the loop steers on it if a fit comes later); Cancel stops and records.")
-        return await confirmed(self.job, self.part, text, warn=True)
+        text = (f"{plan.target} — SERVO by bar: no usable mocap fit of {short} (asset {mocap_id}): {why}. "
+                f"{TOOL0_SERVO} (Confirm): servo tool0 onto the authored targets of {SERVO_TARGET[plan.kind]} instead "
+                f"(the bar is only recorded; the loop steers on it if a fit comes later). {GIVE_UP} (Cancel): stops, "
+                f"recording.")
+        return await confirmed(self.job, self.part, text, warn=True, choose=True)
 
     async def _pass(self, k: int) -> tuple[str, str, str] | None:
         """Plan, confirm, move and read once; (result, status, reason) when the loop ends, None to go on."""
