@@ -9,6 +9,7 @@ The flow is `shared.planner.planner_panel.PlannerPanel`; this adds the joint sli
 from __future__ import annotations
 
 import math
+from functools import partial
 from html import escape
 
 import numpy as np
@@ -25,6 +26,7 @@ from ...shared.planner.planner_search import with_guesses
 from ...ui.ghost import RobotGhost
 from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_joint_sliders
 from ...ui.pybullet_window import add_pybullet_window_toggle
+from ...ui.robot_buttons import RobotButtons
 from ...ui.style import BUSY, FAIL, NONE, OK, block, check_chip, chip, chip_line, section, values
 from scaffolding_assembly_core.ids import robot_id
 from ...shared.assembly_planning.joints import arm_joint_names
@@ -92,7 +94,7 @@ class ArmPlannerPanel(PlannerPanel):
 
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
-            self._robot = gui.add_dropdown("Robot", options=list(arms), initial_value=self.serial)
+            self._robot = RobotButtons(gui, list(arms), self.serial)
             self._arm = gui.add_dropdown("Arm", options=arms[self.serial], initial_value=self.arm)
 
             gui.add_html(section("target", TARGET))
@@ -130,7 +132,8 @@ class ArmPlannerPanel(PlannerPanel):
                     lambda gui, snapshot: planner._world.set_gui(
                         gui, with_guesses(snapshot, robot_id(self.serial))[0], self.serial))
 
-        self._robot.on_update(ctx.defer_value("choose robot", lambda serial: self._choose(str(serial), None)))
+        for serial, button in self._robot.buttons.items():
+            button.on_click(ctx.defer("choose robot", partial(self._choose, serial, None)))
         self._arm.on_update(ctx.defer_value("choose arm", lambda arm: self._choose(self.serial, str(arm))))
         for slider in self._sliders:
             slider.on_update(ctx.defer("target", self._target_changed, operator_only=True))
@@ -309,7 +312,7 @@ class ArmPlannerPanel(PlannerPanel):
             return
         self._status.content = self._status_html(ctx)
         # Loading a target from the step can switch the robot or arm; show that here.
-        self._robot.value = self.serial
+        self._robot.show(self.serial)
         if tuple(self._arm.options) != tuple(self._arms[self.serial]):
             self._arm.options = self._arms[self.serial]
         self._arm.value = self.arm

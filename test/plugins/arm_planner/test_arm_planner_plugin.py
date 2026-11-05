@@ -8,13 +8,16 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, robot_config
 from plugin_fakes import WATCHES, ArmDriver, FakeContext, fake_arm, fake_node, fake_robot, watch_clearance
 from robot_fakes import lease_test_robots, wait_ticks_until
+from robot_lab import RobotLab
 
+from husky_assembly_teleop.colors import CURRENT, rgb
 from husky_assembly_teleop.plugins.arm_planner import planner_plugin as arm_plugin
 from husky_assembly_teleop.plugins.arm_planner.panel_plugin import ArmPlannerPanel
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath
@@ -632,3 +635,25 @@ def test_a_plan_with_every_robot_measured_has_no_such_warning(found_path):
 
     plan = run(planner, ctx, scenario)
     assert plan.state == "ready" and not plan.warning and "not measured" not in plan.message
+
+
+def test_the_robot_buttons_choose_the_robot_and_follow_a_switch():
+    """A press plans for that robot; a robot the panel switched to by itself is the one highlighted."""
+    ctx = RobotLab().ctx
+    ctx.view.scene = MagicMock()
+    ctx.plugins.update({"arm_planner": MagicMock(), "collisions": MagicMock(),
+                        "process": SimpleNamespace(selection=None)})
+    panel = ArmPlannerPanel()
+    panel._add_ghosts = lambda *_args: setattr(panel, "_used", MagicMock())
+    panel.setup(ctx)
+    serials = list(panel._robot.buttons)
+    assert panel._robot.buttons[serials[0]].label == serials[0].split("-")[-1] and panel.serial == serials[0]
+    panel._robot.buttons[serials[2]].callback()
+    assert panel.serial == serials[2]
+    panel.serial = serials[1]
+    # * Only the buttons matter here: the rest of the panel's drawing reads a real plan.
+    for part in ("_status_html", "_details_html", "_draw_slider", "_draw_floor", "_draw_duration", "_draw_ghosts",
+                 "_debug_view"):
+        setattr(panel, part, MagicMock())
+    panel.draw(ctx)
+    assert [button.color for button in panel._robot.buttons.values()] == [rgb(NONE), rgb(CURRENT), rgb(NONE)]

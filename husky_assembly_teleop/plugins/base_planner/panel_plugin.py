@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict
+from functools import partial
 from html import escape
 
 import viser
@@ -35,6 +36,7 @@ from ...ui.ghost import RobotGhost
 from ...ui.css import group_buttons
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
+from ...ui.robot_buttons import RobotButtons
 from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, check_chip, chip, chip_line, section,
                          values)
 from ...robot_interface.base import live_report
@@ -99,7 +101,7 @@ class BasePlannerPanel(PlannerPanel):
 
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
-            self._robot = gui.add_dropdown("Robot", options=serials, initial_value=self.serial)
+            self._robot = RobotButtons(gui, serials, self.serial)
 
             gui.add_html(section("target", TARGET))
             self._target = PlanarPoseInput(ctx, gui, f"{root}/target_gizmo", label="Target",
@@ -168,7 +170,8 @@ class BasePlannerPanel(PlannerPanel):
                 self._debug_layers = gui.add_folder("Debug layers")
                 self._debug_notes = gui.add_html("")
 
-        self._robot.on_update(ctx.defer_value("choose robot", lambda serial: self._choose_robot(str(serial))))
+        for serial, button in self._robot.buttons.items():
+            button.on_click(ctx.defer("choose robot", partial(self._choose_robot, serial)))
         self._task.on_update(ctx.defer_value("choose task", lambda name: self._choose_task(ctx, str(name))))
         load.on_click(ctx.defer_value("load target", lambda label: self._load_target(ctx, label)))
         self._algorithm.on_update(ctx.defer_value("choose algorithm", lambda label: self._choose_algorithm(str(label))))
@@ -347,7 +350,7 @@ class BasePlannerPanel(PlannerPanel):
             return
         self._status.content = self._status_html(ctx)
         # Loading a target from the step can switch the robot; show that here.
-        self._robot.value = self.serial
+        self._robot.show(self.serial)
         self._details.content = self._details_html()
         self._draw_slider()
         self._draw_floor(ctx)
