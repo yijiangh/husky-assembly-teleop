@@ -5,13 +5,14 @@
 #     ~/Code/ros2_ws_next/src/husky-assembly-teleop/scripts/real_lab/tmux.sh
 #
 #   ┌──────────────────────────────┬──────────────┐
-#   │ MONITOR                      │ ALICE        │
-#   │                              ├──────────────┤
-#   ├──────────────────────────────┤ BELLE        │
-#   │ CHECKS                       ├──────────────┤
-#   ├──────────────────────────────┤ CINDY        │
-#   │ RELAY                        │              │
+#   │ MONITOR                 30 % │ ALICE        │
+#   ├──────────────────────────────┼──────────────┤
+#   │ CHECKS                  30 % │ BELLE        │
+#   ├──────────────────────────────┼──────────────┤
+#   │ RELAY                   40 % │ CINDY        │
+#   │                              │              │
 #   └──────────────────────────────┴──────────────┘
+#     70 % wide                      30 % wide, three even heights
 #
 # - MONITOR: monitor.sh, typed in: press Enter once the checks pass.
 # - CHECKS: this lab's ROS settings (env.sh) loaded, check_robots.sh typed in.
@@ -63,16 +64,17 @@ tmux set-environment -t "$session" PATH "$PATH"
 lab_tmux_set_environment "$session" REAL_LAB_
 
 # * ------------------------------------------------------------- the other five
-# Right column (40 % wide): ALICE, BELLE, CINDY; then CHECKS and RELAY under MONITOR.
-alice=$(tmux split-window -h -l 40% -t "$monitor" "${environment[@]}" -P -F '#{pane_id}' \
+# Right column (30 % wide): ALICE, BELLE, CINDY, a third each. Left: MONITOR 30 %, CHECKS 30 %, RELAY 40 %.
+# ! Each -l is a share of the pane being split, not of the window.
+alice=$(tmux split-window -h -l 30% -t "$monitor" "${environment[@]}" -P -F '#{pane_id}' \
     "$(start ALICE "Her pendant in Remote (manual 2.a), then Enter: logs in and starts her launch.")")
 belle=$(tmux split-window -v -l 67% -t "$alice" "${environment[@]}" -P -F '#{pane_id}' \
     "$(start BELLE "Her pendant in Remote (manual 2.a), then Enter. She stays parked.")")
 cindy=$(tmux split-window -v -l 50% -t "$belle" "${environment[@]}" -P -F '#{pane_id}' \
     "$(start CINDY "Both pendants in Remote (manual 2.a), then Enter. Never Ctrl-C while she holds a bar.")")
-checks=$(tmux split-window -v -l 50% -t "$monitor" "${environment[@]}" -P -F '#{pane_id}' \
+checks=$(tmux split-window -v -l 69% -t "$monitor" "${environment[@]}" -P -F '#{pane_id}' \
     "$(start CHECKS "Domain 80 on Zenoh, as the robots. Enter: the read-only checks (manual Part 3).")")
-relay=$(tmux split-window -v -l 20% -t "$checks" "${environment[@]}" -P -F '#{pane_id}' \
+relay=$(tmux split-window -v -l 58% -t "$checks" "${environment[@]}" -P -F '#{pane_id}' \
     "$(start RELAY "The mocap relay. Never stop it while a base drives.")")
 
 # * ------------------------------------------------------------- names, buttons and logs
