@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from functools import partial
 from html import escape
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -209,8 +210,8 @@ class MotionPlannerPlugin(HuskyPlugin):
         # ROS logger is safe to call from the worker. ! Neither may print: the worker's stdout is captured.
         self._log: Callable[[str], None] = print
         self._log_tamp: Callable[[str], None] = lambda line: print(line, file=sys.stderr)
-        # The robot whose world the PyBullet window shows when it opens.
-        self._serial: str | None = None
+        # Each robot's PyBullet window checkbox, by serial: one window, so ticking one unticks the others.
+        self._window_boxes: dict[str, viser.GuiCheckboxHandle] = {}
         # The free search's trees, written by the worker; what draw last drew of them, when, and the progress line.
         self._tree = SearchTree(lambda line: self._log(line))
         self._tree_drawn: tuple[TreeView | None, bool] = (None, True)
@@ -309,18 +310,21 @@ class MotionPlannerPlugin(HuskyPlugin):
         self._pool.tree = self._tree
         self._log_tamp = lambda line: ctx.log_info(line, "tamp")
         serials = [config.serial for config in ctx.config.robots if config.arms]
-        self._serial = serials[0] if serials else None
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             cancel = gui.add_button("Cancel", hint="Cancel every request: queued ones answer 'cancelled' without "
                                                    "running, the running one stops at its next try")
             if serials:
-                robot = gui.add_dropdown("Window", options=serials, initial_value=self._serial,
-                                         hint="The robot whose planning world the PyBullet window shows when it "
-                                              "opens; then it follows the robot being planned for")
-                # * Guessed like the arm planner's, so an untracked robot still shows.
-                add_pybullet_window_toggle(ctx, gui, self._executor, self._window)
-                robot.on_update(ctx.defer_value("window robot", lambda serial: setattr(self, "_serial", str(serial))))
+                robots = gui.add_tab_group()
+                for serial in serials:
+                    # "a200-0806" -> "0806", as in Control.
+                    with robots.add_tab(serial.split("-")[-1], icon=viser.Icon.ROBOT):
+                        # * Guessed like the arm planner's, so an untracked robot still shows.
+                        self._window_boxes[serial] = add_pybullet_window_toggle(
+                            ctx, gui, self._executor, partial(self._window, serial),
+                            hint="Show this robot's planning world in PyBullet's own window; there is one window, "
+                                 "and once open it follows the robot being planned for",
+                            on_ticked=partial(self._untick_other_windows, serial))
             self._show_tree = gui.add_checkbox("Search tree", True,
                                                hint="While a free search runs, draw its two trees as the arms' tool0 "
                                                     "traces every 2 s; the legend below says what each mark means")
@@ -332,10 +336,16 @@ class MotionPlannerPlugin(HuskyPlugin):
                 gui.add_html(tree_legend())
         cancel.on_click(ctx.defer("cancel", self.request_cancel))
 
-    def _window(self, gui: bool, snapshot: Scene) -> None:
-        """Open or close the PyBullet window on the chosen robot's world, guessed where not measured. Worker thread."""
+    def _untick_other_windows(self, serial: str) -> None:
+        """Untick every robot's PyBullet window checkbox but this one's: the window moves to this robot."""
+        for other, box in self._window_boxes.items():
+            if other != serial and box.value:
+                box.value = False
+
+    def _window(self, serial: str, gui: bool, snapshot: Scene) -> None:
+        """Open or close the PyBullet window on a robot's world, guessed where not measured. Worker thread."""
         try:
-            self._pool.set_gui(gui, with_guesses(snapshot, robot_id(self._serial))[0], self._serial)
+            self._pool.set_gui(gui, with_guesses(snapshot, robot_id(serial))[0], serial)
         finally:
             self._worlds = self._pool.serials  # ? opening the window can load a robot's world
 
