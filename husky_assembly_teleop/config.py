@@ -523,6 +523,12 @@ def _serial_digits(token: str) -> str | None:
     return None if digits is None else digits.group(1)
 
 
+def robot_name(serial: str) -> str:
+    """The robot's name ("Alice"), for people, from a serial written any way `robots` accepts; else the serial."""
+    digits = _serial_digits(serial)
+    return next((name.capitalize() for name, number in _robot_names().items() if number == digits), serial)
+
+
 def find_robot_serial(robots: tuple[RobotConfig, ...], token: str) -> str | None:
     """The serial ("a200-0804") of the configured robot that `token` ("Alice", "0804") names, or None.
 

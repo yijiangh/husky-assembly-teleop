@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from .bars.layouts import BarLayout
     from .bars.pose import PoseDeviation
 
+#: The side panel tab the mocap plugins' tabs go in: `tab_path = (MOCAP_TAB, label)`.
+MOCAP_TAB = "Mocap"
+
 
 @dataclass(frozen=True)
 class BarMeasurement:

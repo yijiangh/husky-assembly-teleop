@@ -3,7 +3,8 @@
 # settings are in its env.sh.
 
 #: The monitor's plugins, in this order: each after what it needs. Both labs run the same ones.
-LAB_MONITOR_PLUGINS="[assembly_run, base_planner_panel, assembly_steps, robot_control, arm_planner_panel, obstacles]"
+LAB_MONITOR_PLUGINS="[assembly_run, base_planner_panel, assembly_steps, robot_control, arm_planner_panel, obstacles, \
+mocap_streams]"
 
 # Set the array lab_settings to the settings starting with $1 (REAL_LAB_ or FAKE_LAB_) that are set, as name=value.
 lab_collect_settings() {
