@@ -72,7 +72,7 @@ def process_obstacles(process: Process) -> frozenset[str]:
 
 def scene_bodies(process: Process, movement: Movement, robots: tuple[RobotConfig, ...], prefix: str,
                  obstacles_collide: bool = True) -> list[Body]:
-    """Every body of the process scene at a movement's start, as a scene body "<prefix><body id>".
+    """Every body of the process scene at a movement's start (contacts of its start and end), as "<prefix><body id>".
 
     The scene is edited for the live world:
     - a held body is attached to the configured robot with the planned robot's serial (`retarget`); held by a robot

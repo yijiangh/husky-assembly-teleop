@@ -93,7 +93,7 @@ def plan_servo_step(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, 
     spec = classify(loaded.process, step.action, step.movement, transfer_as_free)
     # * The planning scene itself is searched: the bar is in the tools, so it is never hidden.
     planning = scene_for(loaded, step, snapshot, robots, ignore_built=ignore_built,
-                         obstacles_collide=obstacles_collide, end_contacts=True)
+                         obstacles_collide=obstacles_collide)
     if mirror.robot_id != planning.acting:
         raise ValueError(f"{step.label}: the mirror plans for {mirror.robot_id}, the step is {planning.acting}'s")
     config = next(config for config in robots if robot_id(config.serial) == planning.acting)

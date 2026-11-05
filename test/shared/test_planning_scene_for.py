@@ -213,15 +213,14 @@ def test_rhino_obstacles_box(purged, collide):
     assert bodies["obstacles/boxes/A"].enabled
 
 
-def test_end_contacts_let_the_gripper_touch_its_bar(purged):
-    """Alice's B21_H_to_grasp ends on B21: with end_contacts B21 may touch her real gripper, without it may not.
+def test_the_gripper_may_touch_the_bar_its_movement_ends_on(purged):
+    """Alice's B21_H_to_grasp ends on B21 (the core's contacts of a movement's end): B21 may touch her real gripper.
 
     Only the bar the gripper ends on: the halves mounted on it still may not touch the gripper.
     """
     gripper = robot_config(ALICE).model.tools["ur_arm_tool0"].id
-    bodies = _alice_at(purged, "B21_H_to_grasp", end_contacts=True).scene.bodies
+    bodies = _alice_at(purged, "B21_H_to_grasp").scene.bodies
     assert gripper in bodies[B21].touches
-    assert gripper not in _alice_at(purged, "B21_H_to_grasp").scene.bodies[B21].touches
     halves = purged.process.halves_of("bars/B21")
     assert "joints/J21-22_mocap" in halves
     assert not any(gripper in bodies[f"process/{half}"].touches for half in halves)

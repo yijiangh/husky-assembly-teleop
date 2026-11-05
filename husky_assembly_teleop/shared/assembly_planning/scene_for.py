@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 
 from scaffolding_assembly_core.ids import IdMap, split_link_id
 from scaffolding_assembly_core.kinematics import link_pose
-from scaffolding_assembly_core.process.plan_check import end_state
 from scaffolding_assembly_core.process.types import GROUND_PREFIX, HALF_PREFIX
 from scaffolding_assembly_core.scene import Attachment, Scene, world_poses
 
@@ -57,8 +56,8 @@ class PlanningScene:
 
 def scene_for(loaded: LoadedProcess, step: Step, snapshot: Scene, robots: tuple[RobotConfig, ...], *,
               prefix: str = "process/", hide_held: bool = False,
-              ignore_built: bool = False, obstacles_collide: bool = True, keep: tuple[str, ...] = ("obstacles/",),
-              end_contacts: bool = False) -> PlanningScene:
+              ignore_built: bool = False, obstacles_collide: bool = True,
+              keep: tuple[str, ...] = ("obstacles/",)) -> PlanningScene:
     """The planning scene of one step: the snapshot's robots and kept bodies, plus the step's process bodies.
 
     Another robot that is not measured stands where the step's start state has it, field by field; what that leaves
@@ -76,8 +75,6 @@ def scene_for(loaded: LoadedProcess, step: Step, snapshot: Scene, robots: tuple[
         obstacles_collide: Whether the process's obstacles from Rhino count (`scene_bodies`); the measured ones
             kept from the snapshot always do.
         keep: Prefixes of the snapshot bodies to keep; the process bodies replace the rest.
-        end_contacts: Also let each tool touch the body it is on at the movement's end (a linear move into a grasp):
-            the tool with that body only, not the rest of its part.
 
     Returns:
         PlanningScene: A new scene; it shares only Geometry and RobotModel objects.
@@ -122,14 +119,6 @@ def scene_for(loaded: LoadedProcess, step: Step, snapshot: Scene, robots: tuple[
         holder = body.placement.parent if isinstance(body.placement, Attachment) else None
         if (hide_held and holder == acting) or (ignore_built and body_id in built):
             body.enabled = False
-
-    if end_contacts:
-        # * The old monitor's per-movement contacts: the gripper closing on its bar touches it all along the line.
-        for tool, tool_state in end_state(step.movement).tools.items():
-            on = tool_state.on if tool_state is not None else None
-            body = scene.bodies.get(ids(on)) if on is not None and on in ids and tool in ids else None
-            if body is not None and ids(tool) not in body.touches:
-                body.touches = (*body.touches, ids(tool))
 
     # * A half mated to the ground stands on the lab's floor (the obstacles plugin's slab), as the core lets it touch
     #   the process's own ground bodies: its foot reaches a little below z = 0 at its design pose.
