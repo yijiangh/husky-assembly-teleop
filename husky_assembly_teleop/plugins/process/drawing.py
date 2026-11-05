@@ -11,7 +11,7 @@ Drawn from the process alone, with forward kinematics from each robot's yourdfpy
 - `load_robot_models` is slow: run it on the loading thread.
 - `ProcessDrawing` is main thread only; a new state only changes poses, joint values and colours.
 - Robots and their tools are drawn in the goal blue (`ui.ghost.GOAL_COLOR`): the Assembly tab's one blue robot, as the
-  old monitor drew a movement's state; only the live robots show their true colours. "Ghost" only changes their
+  old monitor drew a movement's state; only the live robots show their true colours. "Ghost robots" only changes their
   opacity.
 """
 
@@ -38,7 +38,7 @@ from ...shared.bars.pose import bar_ends
 #: Colour of a body a robot's tool holds, RGB 0-255; other bodies use `process_scene.colors.body_color`.
 ATTACHED_COLOR = rgb(HELD)
 
-#: Opacity of robots, tools and held bodies when "Ghost" is on, and always of bodies that do not stand.
+#: Opacity of robots, tools and held bodies when "Ghost robots" is on, and always of bodies that do not stand.
 GHOST_OPACITY = 0.4
 
 #: Bodies added per tick while building, so a large process never stalls one tick.
@@ -182,7 +182,7 @@ class ProcessDrawing:
                 joints not given are drawn at zero.
             everything: Also draw the bodies that neither stand nor move with a robot (absent ones).
             reference: Process ids drawn see-through where they stand: bodies switched out of collision checks,
-                which the runtime therefore does not draw (the Rhino obstacles while their box is off).
+                which the runtime therefore does not draw (the Rhino obstacles while on ghost).
         """
         # * Robots first: held bodies read their links from the posed models.
         for robot_id, robot in self._robots.items():

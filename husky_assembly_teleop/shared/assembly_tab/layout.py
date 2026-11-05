@@ -26,8 +26,12 @@ ASSEMBLY_TAB = "Assembly"
 ASSEMBLY_ICON = viser.Icon.LIST_CHECK
 
 # * Bands, top to bottom.
-#: process: the process (folder, Load, its boxes), its actions with their marks, the movement slider, its details.
+#: process: the process (folder, Load, its boxes).
 PROCESS_BAND = 50.0
+#: assembly_run: the run's chips, Continue newest / Continue match / New run, where the robots are.
+RUN_BAND = 60.0
+#: process: its actions with their marks, the movement slider, its details.
+ACTIONS_BAND = 70.0
 #: assembly_steps: status, step and Exec lines, Live IK, Plan, Play / Clear, the preview and the motion time.
 STEP_BAND = 100.0
 #: assembly_steps: Exec, and its message line.
@@ -42,8 +46,6 @@ SETTINGS_BAND = 500.0
 RUN_SETTINGS_BAND = 510.0
 #: movement_exec: Dry run.
 EXEC_SETTINGS_BAND = 520.0
-#: assembly_run: the run's chips, Continue newest / Continue match / New run, where the robots are.
-RUN_BAND = 600.0
 #: assembly_steps: the Advanced planning folder, closed by default; last, below every button, so opening it moves none.
 PLAN_SETTINGS_BAND = 650.0
 

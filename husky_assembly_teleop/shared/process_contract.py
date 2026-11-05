@@ -12,6 +12,7 @@ actions and movements are the core's types (`scaffolding_assembly_core.process`)
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping, Protocol
 
 from scaffolding_assembly_core.geometry import Pose
@@ -76,6 +77,11 @@ class Selection:
     process_ids: IdMap | None = None
 
 
+#: The Drive folder of the Rhino files, and the one drawn as the room of the as-built page unless another is chosen.
+RHINO_FOLDER = "assembly - demo"
+DEFAULT_RHINO_FILE = "261019_2ModulesDemo.3dm"
+
+
 class ProcessContract(Protocol):
     """What the process plugin offers other plugins: type `ctx.require("process")` as this."""
 
@@ -84,10 +90,14 @@ class ProcessContract(Protocol):
         """Selection | None: The selected movement, or None while no process with movements is loaded."""
 
     @property
+    def rhino_file(self) -> Path | None:
+        """Path | None: The Rhino file chosen as the as-built page's room, or None for no room."""
+
+    @property
     def obstacles_collide(self) -> bool:
         """bool: Whether the process's obstacles (Rhino's "obstacles/<name>") count in collision checks.
 
-        False: they are only drawn (the panel's "Rhino obstacles collide" box).
+        False: they are drawn see-through or hidden (the panel's "Rhino obstacles" list).
         """
 
     @property

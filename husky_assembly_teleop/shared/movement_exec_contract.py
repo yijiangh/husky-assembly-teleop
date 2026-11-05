@@ -116,7 +116,7 @@ class ExecRequest:
         label: Names the request, e.g. the primary movement's id.
         ignore_built: Reads the requester's "Ignore built bars" now, so a plan made otherwise is refused as stale;
             by default not ticked.
-        obstacles_collide: Reads the process plugin's "Rhino obstacles collide" now, likewise; by default ticked.
+        obstacles_collide: Reads whether the process's "Rhino obstacles" collide now, likewise; by default ticked.
         transfer_as_free: Reads the process plugin's "Transfer workaround" now, likewise; by default ticked.
         unknown_robots: Ids of the other robots the operator let be unknown (Exec's second press, `CommitConfirm`):
             left out of the freeze and of the check that nothing else moves.

@@ -10,7 +10,7 @@ action's last step Mark done (assembly_run's) is suggested.
 
 - Live IK: the goal by IK at the live base, logged, recorded and carried into the process panel's drawing; a plan of
   the same step
-  reuses it while the base stays within 2 mm / 0.5° and the process plugin's "Rhino obstacles collide" is unchanged.
+  reuses it while the base stays within 2 mm / 0.5° and the "Rhino obstacles" collide setting is unchanged.
 - After Live IK or a plan, the process panel draws the action's later movements with the joints found, on the live
   base they were found at, and turns to the step's target (`ProcessContract.request_carry`); a new action drops them.
 - Plan on a movement with nothing to plan (an ungrasp, a grasp, an operator step) says so and selects the next robot
@@ -615,7 +615,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return
         stale = self.stale_reason(ctx) if motion else ""
         if stale:
-            # * Checked here too: an input in the same tick (e.g. Ignore built bars, Rhino obstacles collide) comes
+            # * Checked here too: an input in the same tick (e.g. Ignore built bars, Rhino obstacles) comes
             #   before the update's check.
             self.plan_state = "stale"
             self._say(f"Exec refused, the plan is stale: {stale}", failed=True)
@@ -688,7 +688,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             ctx: This plugin's context.
 
         Returns:
-            bool: The process plugin's "Rhino obstacles collide" box.
+            bool: Whether the process plugin's "Rhino obstacles" collide.
         """
         process: ProcessContract = ctx.require("process")
         return process.obstacles_collide
@@ -706,7 +706,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
         return process.transfer_as_free
 
     def _key_of_goal(self) -> tuple | None:
-        """What a goal check is for: the current (loaded process, action, primary, Rhino obstacles collide).
+        """What a goal check is for: the current (loaded process, action, primary, whether Rhino obstacles collide).
 
         * With the box: a goal checked with the other setting is never shown or reused.
         """
