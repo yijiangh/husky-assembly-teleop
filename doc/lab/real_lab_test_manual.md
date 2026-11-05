@@ -1,13 +1,14 @@
 # Cindy, Alice and Belle: the first three bars with the new monitor — real robots, from Yijiang's laptop
 
-This is the operator manual for the first three bars of the design problem **`261008_2ModulesDemo_purged_process`**
-(the two-module demo, 78 actions) on the real robots, with the new monitor: schedule entries 1–7, **B20_J, B20_R,
+This is the operator manual for the first three bars of the design problem **`261103_SRD`**
+(76 actions) on the real robots, with the new monitor: schedule entries 1–7, **B20_J, B20_R,
 B21_J, B21_H, B21_R, B22_J, B22_R**. It is the fake-lab test (`doc/lab/fake_lab_test_manual.md`) on the real robots: the
-same process, plugins and steps, run from this laptop over Zenoh.
+same plugins and steps, run from this laptop over Zenoh. The fake lab still runs the older
+`261103_SRD`: its base targets differ, and its B20_J has no foundation step.
 
 > **?** Written from the fake-lab runs and the code; not run on the robots yet. Log
-> lines are quoted from the code; a number marked *(fake lab)* is what the simulation gave, and the robots will give
-> their own. Tell me where the page or the robots differ (Part 9).
+> lines are quoted from the code; a number marked *(fake lab)* is what the simulation gave on that older process, and the
+> robots will give their own. Tell me where the page or the robots differ (Part 9).
 
 - **First time:** read Parts 0–5 in order.
 - **Done it before:** use the roadmap (0.2) as a checklist; each row links to its part.
@@ -79,7 +80,7 @@ and button does in detail: `doc/lab/plugins.md`.
 
 ### 0.1 What the test does
 
-Three mobile robots ("huskies") build the first three bars of the two-module demo:
+Three mobile robots ("huskies") build the first three bars of `261103_SRD`:
 - **Cindy** (dual-arm husky, two UR5e arms with scaffolding tools) joints B20, B21 and B22, and backs off after each.
 - **Alice** (single-arm husky, Robotiq 2F-85 gripper) grabs **B21** once Cindy has inserted it, and still holds it at
   the end of the test (in the process she lets go at entry 17, after B34–B37; 6.6 lets her go early).
@@ -185,7 +186,7 @@ Something wrong at any point: Part 8.
 | word | meaning |
 |---|---|
 | **monitor** | the operator program: a web page served by this laptop (`monitor.sh`, 4.a). It drives all three robots |
-| **process** | the design as the monitor runs it: `261008_2ModulesDemo_purged_process`, 78 actions in build order (the *schedule*) |
+| **process** | the design as the monitor runs it: `261103_SRD`, 76 actions in build order (the *schedule*) |
 | **action** | one unit of the schedule: `B20_J` Cindy joints B20, `B20_R` she releases it, `B21_H` Alice holds B21, `B21_HR` she lets go |
 | **movement**, **step** | one part of an action: a free move, a straight move, a gripper or tool step, a step by hand. The process panel picks one; the step line under the buttons names it |
 | **run** | the record of one assembly: `runs/<date>_<time>/` in the process folder on the Drive: which actions are done, where each robot was left, every part executed, the servo readings |
@@ -206,7 +207,7 @@ Something wrong at any point: Part 8.
 | **controllers** | `scaled_joint_trajectory_controller` (**Joint**: stiff, follows joints; the normal one) or `cartesian_compliance_controller` (**Cart**: gives way to forces; only for an insert's last millimetres, a retreat's first ones and the handoff) |
 | **split** | those millimetres under the compliance controller (`Insert split mm`, 5) |
 | **transfer workaround** | the process panel's box: Cindy's transfer runs as a free move with empty tools to the insert start, where you place the bar by hand (this export has no loading pose) |
-| **ground bar / one-mate / two-mate** | B20 stands on ground joints: rigid insert, no tighten. B21 mates on its left joint only, B22 on both |
+| **ground bar / one-mate / two-mate** | B20 stands on ground joints: rigid insert, no tighten, then the operator fixes the foundation. B21 mates on its left joint only, B22 on both |
 | **ghost** | a see-through robot in the 3D view: blue where the selected movement has the robot (after Live IK or a plan, on the live base) and at the base planner's target, green along a plan |
 | **pane** | one of the six terminal areas of 0.7 |
 
@@ -423,7 +424,7 @@ copy). Everyone with the Drive sees the run.
 
 **▶ any terminal**
 ```bash
-P="$HOME/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_design_study/261008_2ModulesDemo_purged_process"
+P="$HOME/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_design_study/261103_SRD"
 ls "$P"                         # expect: actions  meshes  process.json  robots  source  (and runs/ once a run exists)
 ls -a "$P" | grep -c insyncdl   # expect: 0 = Insync has finished syncing
 ls "$P/runs" 2>/dev/null        # runs of earlier tests: kept; this test starts its own (4.d, 6.0)
@@ -540,7 +541,7 @@ pings them, reads their settings over ssh and asks ROS what runs. What the monit
   OK    time: chrony synced, reference ...
   OK    port 8080 free for the monitor
   OK    port 8081 free for the monitor
-  OK    the process on the Drive: data_design_study/261008_2ModulesDemo_purged_process
+  OK    the process on the Drive: data_design_study/261103_SRD
   OK    the Motive PC 192.168.0.28 answers ping
 
 === ROS domain 80 (Zenoh) ===
@@ -630,21 +631,19 @@ What it checks and what a `FAIL` means:
 
 ### 4.c Load the process
 
-- [ ] Assembly › PROCESS: the folder reads `data_design_study/261008_2ModulesDemo_purged_process` → button [Load] once;
+- [ ] Assembly › PROCESS: the folder reads `data_design_study/261103_SRD` → button [Load] once;
       wait 5–10 s
-  - **Expect:** a green chip `261008_2ModulesDemo_purged_process`, `78 actions · 273 movements`, and an amber
+  - **Expect:** a green chip `261103_SRD`, `76 actions · 269 movements`, and an amber
     `robots differ` (this export used the old UR frames; the monitor plans with the configured robots).
-  - **Expect:** ACTIONS `1/78`: `1. B20_J · cindy · 4 mv · pending` on top, in blue, then `2. B20_R · cindy · 3 mv`,
+  - **Expect:** ACTIONS `1/76`: `1. B20_J · cindy · 5 mv · pending` on top, in blue, then `2. B20_R · cindy · 3 mv`,
     `3. B21_J`, `4. B21_H · alice · 4 mv`, `5. B21_R`, `6. B22_J`, `7. B22_R`, every row ending in `· pending`.
-  - **Expect:** under the buttons, `current B20_J · B20_J_transfer (4/5)`, `no run yet` (the first record makes it),
-    `0/78 done`, and `alice`, `belle`, `cindy` each `live now`.
+  - **Expect:** under the buttons, `current B20_J · B20_J_transfer (4/6)`, `no run yet` (the first record makes it),
+    `0/76 done`, and `alice`, `belle`, `cindy` each `live now`.
   - Every Load draws the whole process again, and a page opened later first receives about 200 bodies (20 s): don't
     click Load twice.
 - [ ] The two boxes under Load: box [Transfer workaround]: ticked (B20_J is listed as `J_transit`, `J_M1`, `J_M2`,
-      `J_M4`, 4 mv); box [Rhino obstacles collide]: unticked, with the grey chip `Rhino obstacles: drawn only`. Leave
+      `J_M4`, `J_M5`, 5 mv); box [Rhino obstacles collide]: unticked, with the grey chip `Rhino obstacles: drawn only`. Leave
       both.
-  - Rhino's cabinet `env39` sits 0.38 m nearer the park row than the measured one; ticked, it refuses any base pose on
-    the row.
 
 **The process panel picks the run's current step.** Click an action row or a movement button, drag the Step slider or
 click `◀ mv` / `mv ▶`: the step under the buttons follows, except while an Exec has the robots' leases.
@@ -658,7 +657,7 @@ click `◀ mv` / `mv ▶`: the step under the buttons follows, except while an E
   - **If not:** button [Run: Vel]. The follower drives only with it.
 - [ ] The run line: `no run yet` on the first Load ever. If it says `continuing run <date>_<time>` (an earlier lab test
       on these files): button [Run: New run], then once more when it reads `New run?` (no time limit; a
-      second press within half a second counts as a double click and is ignored) → `0/78 done`, every row
+      second press within half a second counts as a double click and is ignored) → `0/76 done`, every row
       `· pending`; the old folder stays.
   - Part 5's tests are recorded in this run; 6.0 starts another one for the assembly.
 
@@ -735,7 +734,7 @@ bar; clear floor and workspace.
 
 - [ ] Under the run: button [Run: New run], then once more when it reads `New run?` (no time limit; a
       second press within half a second counts as a double click and is ignored)
-  - **Expect:** a new run (`0/78 done`, every row `· pending`); the test run's folder stays. Once its robot is live the
+  - **Expect:** a new run (`0/76 done`, every row `· pending`); the test run's folder stays. Once its robot is live the
     run selects the first pending action's first step: `B20_J · B20_J_transfer`.
 
 Then the seven actions in order, each with its procedures (6.1–6.4) and what differs for it (6.5).
@@ -760,6 +759,7 @@ Then the seven actions in order, each with its procedures (6.1–6.4) and what d
 ### 6.2 Procedure J — jointing a bar (Cindy)
 
 `<bar>` = the bar. Four steps: the transfer, the bar placed and clamped by hand (one prompt), the servo, the insert.
+A ground bar (B20) has a fifth: the foundation fixed by hand.
 
 **a) Base:** Procedure B (6.1) with Cindy.
 
@@ -845,7 +845,18 @@ Then the seven actions in order, each with its procedures (6.1–6.4) and what d
 | **one-mate** (B21) | `B21_J_insert — INSERT: rigid 10.0 mm (3.3 s), then COMPLIANT 5.0 mm (straight line); the joint screw of left_ur_arm TIGHTENS from the start until it stalls (≤ 30 s), then STOP and back to joint control. Watch the bar enter its joint and the held bars stay in their jaws.`; `insert: left_ur_arm joint screw TIGHTENING`, the rigid part, `left_ur_arm, right_ur_arm: cartesian_compliance_controller running (...)`, the compliant line; at the stall `left_ur_arm joint screw STALLED at ...; left_ur_arm back under joint control, right_ur_arm finish the line under compliance`; the right arm settles against the force (at most 3 s) and goes back too; `insert: STALLED: left_ur_arm joint screw STALLED; peak ...`. No servo after it: it is not a ground bar |
 | **two-mate** (B22) | as B21, with `the joint screw of left_ur_arm + right_ur_arm TIGHTENS ...`; it ends when both have stalled. No servo after it |
 
-**f) Mark**
+**f) Fix the foundation** (ground bar only: `B20_J_fix_foundation`)
+- [ ] the step line reads `Operator fixes the foundation (operator)`, and the Exec line `Exec: cindy (a200-0806) waits
+      for B20_J_fix_foundation by hand`
+- [ ] button [Exec]
+  - **Expect:** `B20_J_fix_foundation — Operator fixes the foundation by hand, then Confirm (the robot panels and their
+    free drive refuse while this step has the robots' leases; Cancel to use them).`
+  - The monitor sends the robots nothing here; Cindy keeps holding B20.
+- [ ] by hand: fix the foundation to the ground
+- [ ] button [Confirm]
+  - **Expect:** `Exec B20_J_fix_foundation: done — every part done`.
+
+**g) Mark**
 - [ ] by eye: the line under the buttons says `every step of <bar>_J done: Mark done below` → button [<bar>_J done]
   - **Expect:** `<bar>_J marked done in run ...`, the row turns green `· done`, the count goes up by one, and the
     current step moves to the next action.
@@ -938,19 +949,19 @@ Four steps: approach (and its servo), open, straight in, close with the complian
 
 **g) Mark**
 - [ ] button [B21_H done]
-  - **Expect:** `B21_H marked done in run ...`, `4/78 done`, the current step `B21_R · B21_R_ungrasp (1/3)`.
+  - **Expect:** `B21_H marked done in run ...`, `4/76 done`, the current step `B21_R · B21_R_ungrasp (1/3)`.
 
 ### 6.5 The seven actions
 
 | # | action | procedures | what differs |
 |---|---|---|---|
-| 1 | `B20_J` | B (Cindy), J, ground bar | base target `+0.527 -3.067 +89.6°`, about 5 m from the park row (*fake lab:* 5.24 m planned, about 50 s driven). The servo steers on the **mocap bar** (Servo by bar; B20's balls must stream, 2.f). The insert is rigid, then the servo after the insert. Mark: `1/78 done`, current `B20_R · B20_R_ungrasp (1/3)` |
-| 2 | `B20_R` | R | the first compliant part on a real robot: the Dry run first. Mark: `2/78`, current `B21_J · B21_J_transfer (4/5)` |
-| 3 | `B21_J` | B (Cindy), J, one-mate | base target `+0.947 -3.171 +90.0°`, about 0.8 m. The servo on tool0, B21's mocap fit recorded alongside. The first compliant insert: the Dry run first. The left joint screw tightens into B20. Mark: `3/78`, current `B21_H · B21_H_approach (1/4)` |
-| 4 | `B21_H` | B (Alice), H | base target `+0.638 -1.561 -29.6°`, about 3 m. Mark: `4/78`, current `B21_R · B21_R_ungrasp (1/3)` |
-| 5 | `B21_R` | R, Alice holding B21 | B21 is clamped by Alice: the ungrasp releases Cindy's tools from it. In the retreat's preview, check that both tools back off clear of Alice's gripper. Mark: `5/78` |
-| 6 | `B22_J` | B (Cindy), J, two-mate | base target `+1.166 -3.212 +95.8°`, a short path. The transfer's plan from the retreat pose took up to 110 s in the fake lab; `no path in 120 s`: Plan again. The servo on tool0 (B22 has no mocap balls). Both joint screws tighten, into B21 and B20. **!** Watch B21 while B22 screws in: Alice holds it, and it must not be pushed out of her jaws. Mark: `6/78` |
-| 7 | `B22_R` | R | Mark: `7/78`, and the current step is `B34_J`: the first three bars are built, and the next bar's robot is Cindy again |
+| 1 | `B20_J` | B (Cindy), J, ground bar | base target `+1.116 -1.516 +90.0°`, about 3.5 m from her park pose in a straight line. The servo steers on the **mocap bar** (Servo by bar; B20's balls must stream, 2.f). The insert is rigid, then the servo after the insert, then the foundation by hand (6.2 f). Mark: `1/76 done`, current `B20_R · B20_R_ungrasp (1/3)` |
+| 2 | `B20_R` | R | the first compliant part on a real robot: the Dry run first. Mark: `2/76`, current `B21_J · B21_J_transfer (4/5)` |
+| 3 | `B21_J` | B (Cindy), J, one-mate | base target `+1.919 -1.578 +135.7°`, about 0.8 m. The servo on tool0, B21's mocap fit recorded alongside. The first compliant insert: the Dry run first. The left joint screw tightens into B20. Mark: `3/76`, current `B21_H · B21_H_approach (1/4)` |
+| 4 | `B21_H` | B (Alice), H | base target `+0.875 -0.236 -8.8°`, about 1.7 m from her park pose. Mark: `4/76`, current `B21_R · B21_R_ungrasp (1/3)` |
+| 5 | `B21_R` | R, Alice holding B21 | B21 is clamped by Alice: the ungrasp releases Cindy's tools from it. In the retreat's preview, check that both tools back off clear of Alice's gripper. Mark: `5/76` |
+| 6 | `B22_J` | B (Cindy), J, two-mate | base target `+1.242 -1.591 +80.0°`, a short path. The transfer's plan from the retreat pose took up to 110 s in the fake lab; `no path in 120 s`: Plan again. The servo on tool0 (B22 has no mocap balls). Both joint screws tighten, into B21 and B20. **!** Watch B21 while B22 screws in: Alice holds it, and it must not be pushed out of her jaws. Mark: `6/76` |
+| 7 | `B22_R` | R | Mark: `7/76`, and the current step is `B34_J`: the first three bars are built, and the next bar's robot is Cindy again |
 
 ### 6.6 Optional: Alice lets go of B21
 
@@ -1056,7 +1067,7 @@ The panel shows a `DRY RUN` chip while it is ticked. Untick it before the real E
 
 ### 7.f The run record
 
-The run's folder: `.../261008_2ModulesDemo_purged_process/runs/<date>_<time>/` on the Drive (`doc/design/run_record.md`):
+The run's folder: `.../261103_SRD/runs/<date>_<time>/` on the Drive (`doc/design/run_record.md`):
 `run.json`, `progress.json` (the marks, where each robot was left), `events.jsonl`;
 `movements/<action>/<movement>.<n>.json`, one file per part, the refused and cancelled ones included (an insert's or a
 retreat's keeps its settings, phases, switches, stall times, peak force, end errors and checks);
@@ -1128,7 +1139,7 @@ Nothing here moves a robot.
 - [ ] nothing to click: run the steps as in Part 6.
   - **Expect:** pane monitor, one line per bar at each record and one for the file:
     `[as-built] B20_J_transfer end (done): B20 [before_insert] fit ok 8/8, rms 0.6 mm | vs held_authored:B20_J_transfer dpos 0.4 mm, dang 0.030 deg`,
-    `[as-built] B20_J_transfer end: recorded -> .../20261030-asbuilt/as_built_261008_2ModulesDemo_purged_process.jsonl`.
+    `[as-built] B20_J_transfer end: recorded -> .../20261030-asbuilt/as_built_261103_SRD.jsonl`.
 - [ ] optional: button [As-built: record now] (Assembly tab, under Dry run) at a moment no part covers.
   - **Expect:** the same lines with `manual`.
 - [ ] any time, the progress so far: button [Build as-built page] (next to it)
@@ -1190,8 +1201,6 @@ Nothing here moves a robot.
 | the servo after B20's insert stopped: `the force on an arm changed by ... N` | the bar may push on something (the floor?): look before going on; note it |
 | `no marker sample of bars/B20 (asset 1020)` | Motive does not stream B20's balls (2.f): the servo aims tool0 |
 | the jaws not centred on B21 after the approach | Alice's base calibration is off (6.4 c): stop before the straight approach |
-| B20's ground feet sit 15.6 mm into the floor at their design pose | a Rhino-side fact; the planner lets a half mated to the ground touch the lab floor |
-| Rhino's cabinet `env39` is 0.38 m nearer the park row than the measured one | a Rhino-side fix; with `Rhino obstacles collide` off (the default) it is drawn only |
 | a robot's pane frozen after she rebooted | Enter, then `~` and `.`; then Enter again for `robot.sh` |
 
 ---
@@ -1201,7 +1210,7 @@ Nothing here moves a robot.
 Tell me the step numbers that did not go as written, and what you saw (e.g. "6.2 e) not OK on B21: ..."). A screenshot
 helps for anything on the page. I read the panes and the logs myself:
 - `~/husky_real_lab/logs/`: the monitor's log and the relay's and each robot's pane;
-- the run: `.../261008_2ModulesDemo_purged_process/runs/<date>_<time>/` (movements, servo files, events).
+- the run: `.../261103_SRD/runs/<date>_<time>/` (movements, servo files, events).
 
 Worth noting as you go:
 - **Part 3:** any FAIL or NOTE, and what fixed it.
