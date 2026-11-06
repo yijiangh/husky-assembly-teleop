@@ -109,15 +109,13 @@ class PlanningWorld(BaseCollisionWorld):
         _own, usual, close = keeping
         self._place(own, pose)
         candidates = self._candidates(own, pose, margin)
-        others = [object_id for object_id in candidates if object_id not in close]
-        near = {object_id: max(0.0, close[object_id] + margin - usual) for object_id in candidates
-                if object_id in close}
+        # * Nearest first, up to the first hit, as `BaseCollisionWorld._hit`.
+        margins = [max(0.0, close[object_id] + margin - usual) if object_id in close else margin
+                   for object_id in candidates]
         for part in self._parts(own):
-            hits = self.mirror.collisions(part, margin, others)
-            hits += [object_id for object_id, own_margin in near.items()
-                     if self.mirror.collisions(part, own_margin, [object_id])]
-            if hits:
-                return part, sorted(hits)[0]
+            for object_id, own_margin in zip(candidates, margins):
+                if self.mirror.collisions(part, own_margin, [object_id]):
+                    return part, object_id
         return None
 
     def hit_by(self, own: str, pose, margin: float = COLLISION_MARGIN) -> str | None:
