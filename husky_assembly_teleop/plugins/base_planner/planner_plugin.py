@@ -104,6 +104,8 @@ class Run:
     trace: Trace | None = None
     #: How the run ended, once it did; until then the follower's reports tell (`path_check`).
     ended: Check | None = None
+    #: The ROS time it ended, once it did.
+    ended_at: float | None = None
 
 
 @register
@@ -329,7 +331,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                     check = Check("timed out", BAD, f"{short_serial(serial)} still followed the path after "
                                                     f"{limit:.0f} s; its path was stopped")
                     robot.base.stop_path()
-                self._end(serial, run, check)
+                self._end(ctx, serial, run, check)
                 await ctx.sleep(SETTLE)
         except asyncio.CancelledError:
             if refusal := self.start_refusal(clearance):
@@ -342,8 +344,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 if clearance is not None and clearance.problem:
                     outcome = f"{'refused' if clearance.refused else 'soft stopped'}: {clearance.problem}"
                 if not self.replaced():
-                    self._end(serial, run, self.cancelled_check(ctx, serial, serial, clearance,
-                                                                "the commit was cancelled; the follower stopped"))
+                    self._end(ctx, serial, run, self.cancelled_check(ctx, serial, serial, clearance,
+                                                                     "the commit was cancelled; the follower stopped"))
             if sent_id is not None and not self.replaced():
                 robot.base.stop_path()
             raise
@@ -351,7 +353,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             if run is None and isinstance(error, MotionRefused):  # e.g. the clearance cannot check the robot
                 self._refused(ctx, serial, f"nothing sent: {error}")
             else:
-                self._end(serial, run, Check("failed", BAD, hover(f"{short_serial(serial)}: {error}")))
+                self._end(ctx, serial, run, Check("failed", BAD, hover(f"{short_serial(serial)}: {error}")))
             raise
         finally:
             if sent_id is not None:
@@ -396,12 +398,12 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         ctx.log_warn(message)
         self._runs[serial] = Run(ended=Check("refused", BAD, hover(message)))
 
-    def _end(self, serial: str, run: Run | None, check: Check) -> None:
+    def _end(self, ctx: PluginContext, serial: str, run: Run | None, check: Check) -> None:
         """End `run` (None: nothing sent) with `check`, unless a newer commit to `serial` took its place."""
         if run is None:
-            self._runs[serial] = Run(ended=check)
+            self._runs[serial] = Run(ended=check, ended_at=ctx.now())
         elif self._runs.get(serial) is run:
-            run.ended = check
+            run.ended, run.ended_at = check, ctx.now()
 
     # --- --- --- --- --- READING --- --- --- --- ---
 

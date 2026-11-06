@@ -5,7 +5,8 @@ The flow is `shared.planner.planner_panel.PlannerPanel`; this adds the planar ta
 (`algorithms`) with its settings and debug view, the experiment's task and recording inputs, and the floor drawing.
 The last three sit in a collapsed Advanced folder, so the panel shows only target, plan and commit.
 
-- The floor shows the plan as the follower will cut it, the sent path, and the robot's trail until the next Commit.
+- The floor shows the plan as the follower will cut it; the sent path and the robot's trail while the run is the
+  newest of every robot's, until FLOOR_KEEP seconds after it ended.
 - A task of the experiment's standard set (`tasks`) puts its virtual obstacles into the scene, under this panel's
   name; Load sets the target to its start (to drive there) or its target.
 - A plan refused for a start or target in collision shows the hit in the collisions panel until a newer plan.
@@ -48,12 +49,14 @@ from scaffolding_assembly_core.ids import robot_id
 from .algorithms import ALGORITHMS, Algorithm
 from .algorithms.base import add_margin_setting
 from .debug_view import DebugView
-from .planner_plugin import DEFAULT_EXPERIMENT, BasePlannerPlugin, differs, floor_pose
+from .planner_plugin import DEFAULT_EXPERIMENT, BasePlannerPlugin, Run, differs, floor_pose
 from .recording import RECORDING_FOLDER
 from .tasks import BY_NAME, TASKS
 
 #: The Task dropdown's entry for no task.
 NO_TASK = "(none)"
+#: Seconds the sent path and trail stay on the floor after the run ended.
+FLOOR_KEEP = 30.0
 
 
 @register
@@ -361,7 +364,7 @@ class BasePlannerPanel(PlannerPanel):
 
     def _draw_floor(self, ctx: PluginContext) -> None:
         """The plan in blue until committed, the sent path in green, the robot's trail, the follower's points."""
-        run = self._planner._runs.get(self.serial)  # * the chosen robot's last run, as its run chip
+        run = self._floor_run(ctx)
         self._markers.paths(self._preview_of(self._api.plan), None if run is None else run.path)
         if run is None or run.trace is None:
             self._markers.trail(None)
@@ -370,6 +373,16 @@ class BasePlannerPanel(PlannerPanel):
         follower = None if run is None or run.path_id is None else \
             live_report(ctx.world.robots[self.serial].base.state.follower, ctx.now())
         self._markers.follower(follower if follower is not None and follower.path_id == run.path_id else None)
+
+    def _floor_run(self, ctx: PluginContext) -> Run | None:
+        """The chosen robot's last run while no other base was sent a path since, until FLOOR_KEEP s after its end."""
+        runs = self._planner._runs
+        run = runs.get(self.serial)
+        if run is None or run.path is None:
+            return None
+        if any(other.path is not None and other.sent_at > run.sent_at for other in runs.values()):
+            return None
+        return None if run.ended_at is not None and ctx.now() - run.ended_at > FLOOR_KEEP else run
 
     def _preview_of(self, plan: Plan[BasePlanRequest] | None) -> FollowerPath | None:
         """The plan's path as the follower will cut it, until it is sent; cut once per plan."""
