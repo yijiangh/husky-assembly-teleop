@@ -304,3 +304,28 @@ def test_only_what_the_start_is_already_close_to_keeps_less(world, robots, alice
     with world.keeping(alice, margin, kept):
         for pose in result.path.points:
             assert world.hit_by(alice, tuple(pose), margin) is None
+
+
+@pytest.mark.slow
+def test_no_room_before_something_in_the_way_drives_in_short(world, robots, alice):  # noqa: F811
+    """A wall 15 cm alongside the target, a post across the line behind it: the drive in keeps just the margin.
+
+    The walk for room stops at the post (it names both) instead of going on to the far side of the target.
+    """
+    goal, margin = (0.0, -2.0, 0.0), 0.10
+    at = np.array([-1.0, -3.0])
+    for _ in range(12):
+        # * Move the wall in until it is 15 cm from Alice at the target.
+        wall = Body("test/wall", box_geometry((5.0, 0.1, 1.0)), Pose((*at, 0.5)), label="wall")
+        world.sync(_snapshot(robots, [wall]))
+        clear = world.close_objects(alice, [goal], 1.5).get(wall.id, 1.5)
+        if abs(clear - 0.15) < 0.002:
+            break
+        at = at + np.array([0.0, 1.0]) * (clear - 0.15)
+    post = Body("test/post", box_geometry((0.1, 1.0, 1.0)), Pose((-2.0, goal[1], 0.5)), label="post")
+    world.sync(_snapshot(robots, [wall, post]))
+    debug = Debug(on=True)
+    result = plan(world, alice, (0.0, 0.0, 0.0), goal, threading.Event(), Settings(margin=margin), debug)
+    lead = next(note for note in debug.notes if note.startswith("lead:"))
+    assert "straight in forwards over 0.50 m" in lead and "forwards: wall alongside, then post at" in lead, lead
+    assert result.path is not None, result.reason

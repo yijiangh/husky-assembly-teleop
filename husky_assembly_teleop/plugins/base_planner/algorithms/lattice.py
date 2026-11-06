@@ -343,33 +343,63 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
             f" m, follower model {settings.follower_model} (xICR {x_model:+.3f} m); {len(done)} poses checked in all")
         return PlanResult(timed_path(poses), seconds=time.time() - started, direct=direct)
 
+    def room_along(back) -> tuple[float | None, str]:
+        """How far along `back` from the target the robot first has PORTAL_ROOM beyond the margin, or None and why.
+
+        The walk ends at something within the margin: the robot cannot stand there, so no room lies beyond it.
+        """
+        reach, alongside = 0.0, None
+        while reach < PORTAL_REACH:
+            pose = (*(goal[:2] + reach * back), goal[2])
+            inside = hit_by(pose, margin) if reach > 0.0 else None
+            if inside is not None:
+                return None, (f"{inside} at {reach:.2f} m" if alongside in (inside, None)
+                              else f"{alongside} alongside, then {inside} at {reach:.2f} m")
+            near = hit_by(pose, margin + PORTAL_ROOM)
+            if near is None:
+                return reach, ""
+            alongside = alongside or near
+            reach += PORTAL_STEP
+        return None, f"no room within {PORTAL_REACH:.0f} m, {alongside} alongside"
+
+    def drive_in(back, distance: float) -> tuple[tuple | None, str]:
+        """The start of a straight drive onto the target from `distance` along `back`, or None and what it hits."""
+        x, y = goal[:2] + distance * back
+        pose = (float(x), float(y), goal[2])
+        other = hit_by(pose, margin)
+        what = f"hits {other}" if other is not None else hits([_to_centre(pose, ahead), _to_centre(goal, ahead)], icrs)
+        return (pose, "") if what is None else (None, f"{what} from {distance:.2f} m out")
+
     # * Reach the target driving straight, from the side facing the start first. In a narrow place the drive in starts
-    # * `lead` before where the robot has room again, so it lines up there, not in the narrow place.
+    # * `lead` before where the robot has room again, so it lines up there, not in the narrow place; with no such room,
+    # * a drive in of just `lead` that keeps the margin. Only then the far side, which needs a way round the target.
     arrive, refused = goal, []
     if settings.lead > 0.0:
         heading = np.array([math.cos(goal[2]), math.sin(goal[2])])
         behind = 1.0 if np.dot(heading, np.subtract(goal[:2], start[:2])) >= 0.0 else -1.0
         for side in (behind, -behind):
-            back = -side * heading
-            reach = 0.0
-            while reach < PORTAL_REACH and hit_by((*(goal[:2] + reach * back), goal[2]), margin + PORTAL_ROOM):
-                reach += PORTAL_STEP
-            x, y = goal[:2] + (reach + settings.lead) * back
-            pose = (float(x), float(y), goal[2])
-            other = hit_by(pose, margin)
-            lead = [_to_centre(pose, ahead), _to_centre(goal, ahead)]
-            what = f"hits {other}" if other is not None else hits(lead, icrs)
-            if what is None:
+            name, back = "forwards" if side > 0 else "backwards", -side * heading
+            reach, why = room_along(back)
+            pose = None
+            if reach is not None:
+                pose, why = drive_in(back, reach + settings.lead)
+            if pose is None:
+                refused.append(f"{name}: {why}")
+                if reach != 0.0:  # * at 0 the short drive in is the one just refused
+                    pose, why = drive_in(back, settings.lead)
+                    if pose is None:
+                        refused.append(f"{name} short: {why}")
+            if pose is not None:
                 arrive = pose
                 break
-            refused.append(f"{'forwards' if side > 0 else 'backwards'} {what}")
     tail = [goal] if arrive != goal else []
     debug.path(LEAD_IN[0], [arrive, goal], LEAD_IN[1])
     lead_note = (f"straight in {'forwards' if np.dot(np.subtract(goal[:2], arrive[:2]), heading) > 0 else 'backwards'}"
                  f" over {math.dist(arrive[:2], goal[:2]):.2f} m"
                  if tail else f"no straight drive in ({'; '.join(refused) or 'lead 0'})")
     target_room = room(goal)
-    lap(f"lead: {lead_note}. Room (margin {margin * 100:.0f} cm): start {room(start)}, target {target_room}"
+    passed = f" ({'; '.join(refused)} refused)" if tail and refused else ""
+    lap(f"lead: {lead_note}{passed}. Room (margin {margin * 100:.0f} cm): start {room(start)}, target {target_room}"
         + (f", start of the drive in {room(arrive)}" if tail else ""))
 
     # * From here on in turning-centre poses.
@@ -457,7 +487,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     corners, reason = _search(start_c, arrive_c, tail_c, ahead, cost_map, centred, hits, failure, touched, ends, swing,
                               settings, started + TIME_LIMIT, abort, debug)
     if corners is None:
-        return failed(f"{reason}. Target: {target_room}, {lead_note}")
+        return failed(f"{reason}. Target: {target_room}, {lead_note}{passed}")
     corners = _merged(corners)
     debug.path(SEARCHED[0], [_to_base(pose, ahead) for pose in corners], SEARCHED[1])
     lap(f"search: {reason}; {len(corners)} waypoints")
@@ -827,9 +857,12 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
         debug.path(CLOSEST[0], [base(pose) for pose in poses_to(closest[1])], CLOSEST[1])
         debug.points(CLOSEST[0], [(x, y)], CLOSEST[1])
         near = Counter(what for pose, what in zip(hit, blocked) if math.dist(pose[:2], (x, y)) < NEAR)
-        return (f"{why}; closest {math.dist((x, y), base(arrive)[:2]):.1f} m from the lead's start, at "
+        aim = "the start of the drive in" if tail else "the target"
+        return (f"{why}; closest {math.dist((x, y), base(arrive)[:2]):.1f} m from {aim}, at "
                 f"({x:.2f}, {y:.2f}, {math.degrees(yaw) % 360:.0f}°)"
-                + (f", where moves hit {_most(near)}" if near else ""))
+                + (f", where moves hit {_most(near)}" if near else "")
+                + (f"; in all, moves hit {_most(Counter(blocked))}"
+                   if blocked and Counter(blocked).most_common(1)[0][0] not in near else ""))
 
     try:
         while heap:
