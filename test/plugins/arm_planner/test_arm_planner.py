@@ -8,14 +8,18 @@ import numpy as np
 import pybullet as p
 import pytest
 
+from planning_fixtures import CINDY, design_scene, movement, purged_process, robot_config
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import joint_path_move
 from husky_assembly_teleop.world.lab import floor_body, platform_links
 from husky_assembly_teleop.shared.planner.rrt_connect import Corners
 from husky_assembly_teleop.plugins.arm_planner import planner as planner_module
-from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath, _extend, joint_limits, path_hit, plan_arm
+from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, _extend, joint_limits, path_hit, plan_arm,
+                                                               plan_arms)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
+from husky_assembly_teleop.shared.assembly_planning.movement import classify
+from husky_assembly_teleop.world.stand_ins import with_stand_ins
 from husky_assembly_teleop.shared.assembly_planning.mirrors import MirrorPool
 from scaffolding_assembly_core.geometry import box_geometry
 from scaffolding_assembly_core.robot import RobotObject
@@ -336,7 +340,8 @@ def test_a_target_past_a_joint_limit_is_refused(world):
     goal = np.array(config.arms[0].stow_joints if config.arms[0].name == LEFT else config.arms[1].stow_joints)
     goal[5] = np.radians(250.0)
     result = plan_arm(mirror, scene, LEFT, goal, threading.Event())
-    assert result.path is None and result.reason.startswith("the target is past the joint limits: wrist_3_joint")
+    assert result.path is None
+    assert result.reason.startswith("the target is past the joint limits: left_ur_arm_wrist_3_joint")
 
 
 def test_a_start_past_a_joint_limit_is_refused(world):
@@ -390,3 +395,24 @@ def test_the_floor_lets_wheels_rest_on_it_but_not_an_arm_through_it(world, confi
     rng = np.random.default_rng(0)
     hits = [check(q) for q in rng.uniform(-np.pi, np.pi, size=(400, 6))]
     assert any(hit is not None and floor.id in hit for hit in hits), "no arm pose reached the floor"
+
+
+@pytest.mark.slow
+def test_both_of_cindys_arms_go_home_in_one_search(world):
+    """B20_R's way home, both arms in one search: each ends at its goal, and every step of the path is clear."""
+    purged = purged_process()
+    serial = robot_config(CINDY).serial
+    action, home = movement(purged, "B20_R_home")
+    goal = classify(purged.process, action, home).goal_joints
+    arms = ("left_ur_arm", "right_ur_arm")
+    names = [name for arm in arms for name in arm_joint_names(arm)]
+    scene = with_stand_ins(design_scene(purged, "B20_R_home"), {robot_id(serial)}).scene
+    mirror = world.sync(scene, serial)
+    result = plan_arms(mirror, scene, arms, [goal[name] for name in names], threading.Event())
+    assert result.path is not None, result.reason
+    path = result.path
+    assert path.joint_names == tuple(names)
+    np.testing.assert_allclose(path.goal, [goal[name] for name in names], atol=1e-9)
+    steps = [q for q1, q2 in zip(path.points[:-1], path.points[1:]) for q in _extend(q1, q2)]
+    for q in steps[::5]:
+        assert mirror.collisions(dict(zip(names, q))) == [], f"collides at {q}"

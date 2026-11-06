@@ -107,8 +107,8 @@ def make_planner(ctx: FakeCtx) -> ArmPlannerPlugin:
 @pytest.fixture
 def found_path(monkeypatch):
     """Every search finds PATH."""
-    monkeypatch.setattr(arm_plugin, "plan_arm",
-                        lambda world, mirror, arm, goal, abort: PlanResult(PATH, seconds=0.1))
+    monkeypatch.setattr(arm_plugin, "plan_arms",
+                        lambda world, mirror, arms, goal, abort: PlanResult(PATH, seconds=0.1))
 
 
 def run(planner: ArmPlannerPlugin, ctx: FakeCtx, scenario):
@@ -608,7 +608,7 @@ def test_a_plan_refused_for_a_collision_shows_its_hit_until_the_next_plan(monkey
     """A target in collision lists its hit in the collisions panel, ticked; the next plan found removes it."""
     hit = SimpleNamespace(where="target", message="target is in collision: a with b")
     results = iter([PlanResult(None, hit.message, hit=hit), PlanResult(PATH, seconds=0.1)])
-    monkeypatch.setattr(arm_plugin, "plan_arm", lambda world, mirror, arm, goal, abort: next(results))
+    monkeypatch.setattr(arm_plugin, "plan_arms", lambda world, mirror, arms, goal, abort: next(results))
     ctx = FakeCtx()
     planner = make_planner(ctx)
     panel = make_panel(planner)

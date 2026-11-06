@@ -1,5 +1,5 @@
 """
-RRT-Connect over one arm's six joints, avoiding the robot itself, the other robots and every scene body.
+RRT-Connect over one arm's joints, or several arms' together, avoiding the robot, the other robots and the scene.
 
 Plans on one robot's mirror from a `MirrorPool`; a collision comes back as a `CollisionHit` (`collision_hit`). A path
 keeps PLAN_DISTANCE from everything, more than a commit's clearance; only a pair its start or target is already closer
@@ -25,7 +25,7 @@ from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.planner.timed_path import TimedPath
 from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ...shared.planner.rrt_connect import connect
-from ...robot_interface.arm import UR_JOINT_LIMITS, UR_JOINT_NAMES, joint_path_move
+from ...robot_interface.arm import UR_JOINT_LIMITS, joint_path_move
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 from scaffolding_assembly_core.scene import Scene
 
@@ -90,8 +90,8 @@ class ArmPath(TimedPath):
         """Time a path on `joint_path_move`'s profile.
 
         Args:
-            joint_names: The six joints.
-            points: (n, 6) joint values, radians; the first is the start.
+            joint_names: The joints of each point: one arm's six, or several arms' after each other.
+            points: (n, len(joint_names)) joint values, radians; the first is the start.
             stops: Indices of the points to rest at, as `joint_path_move` takes them; None: every point.
 
         Returns:
@@ -147,13 +147,15 @@ def joint_limits(mirror: CompasFabMirror, joint_names: Sequence[str]) -> tuple[n
 
     Args:
         mirror: The robot's mirror.
-        joint_names: The joints, in UR driver order.
+        joint_names: The joints: one arm's six in UR driver order, or several arms' after each other.
 
     Returns:
         tuple[np.ndarray, np.ndarray]: Lower and upper limits.
     """
     model = mirror.cell.robot_model
-    lower, upper = -np.array(UR_JOINT_LIMITS, dtype=float), np.array(UR_JOINT_LIMITS, dtype=float)
+    arms = max(1, len(joint_names) // len(UR_JOINT_LIMITS))
+    upper = np.tile(np.array(UR_JOINT_LIMITS, dtype=float), arms)[:len(joint_names)]
+    lower = -upper
     for index, name in enumerate(joint_names):
         limit = model.get_joint_by_name(name).limit
         if limit is not None and limit.lower < limit.upper:
@@ -161,9 +163,9 @@ def joint_limits(mirror: CompasFabMirror, joint_names: Sequence[str]) -> tuple[n
     return lower, upper
 
 
-def _outside(q: Sequence[float], lower: np.ndarray, upper: np.ndarray) -> str:
+def _outside(q: Sequence[float], lower: np.ndarray, upper: np.ndarray, names: Sequence[str]) -> str:
     """The joints of `q` past their limits, for a message; empty if none is."""
-    return "; ".join(f"{UR_JOINT_NAMES[i]} at {math.degrees(value):.1f} deg, outside "
+    return "; ".join(f"{names[i]} at {math.degrees(value):.1f} deg, outside "
                      f"{math.degrees(lower[i]):.0f} to {math.degrees(upper[i]):.0f} deg"
                      for i, value in enumerate(q) if not lower[i] - 1e-6 <= value <= upper[i] + 1e-6)
 
@@ -212,7 +214,15 @@ def round_corners(corners: Sequence[Sequence[float]],
 
 def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequence[float],
              abort: threading.Event) -> PlanResult[ArmPath]:
-    """Plan a collision-free joint path for one arm within its URDF joint limits, from where it is to `goal`.
+    """Plan a collision-free joint path for one arm within its URDF joint limits, from where it is to `goal`."""
+    return plan_arms(mirror, scene, (arm_name,), goal, abort)
+
+
+def plan_arms(mirror: CompasFabMirror, scene: Scene, arm_names: Sequence[str], goal: Sequence[float],
+              abort: threading.Event) -> PlanResult[ArmPath]:
+    """Plan a collision-free joint path for one or several arms together, from where they are to `goal`.
+
+    One search over all their joints (twelve for Cindy's two arms), so each arm keeps clear of the other on the way.
 
     The path keeps PLAN_DISTANCE from everything, the robot itself included; only a pair its start or target is
     already closer for keeps as much as it has there (`endpoint_margins`, `ArmPath.close`).
@@ -222,15 +232,15 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
     Args:
         mirror: The robot's mirror, synced to `scene`.
         scene: The scene the mirror was synced to, for a hit's scene.
-        arm_name: Which arm, e.g. "ur_arm".
-        goal: Six joint values, radians, UR driver order.
+        arm_names: Which arms, e.g. ("left_ur_arm", "right_ur_arm").
+        goal: Six joint values per arm, radians, UR driver order, the arms after each other.
         abort: Set from the main thread to end the search early.
 
     Returns:
         PlanResult[ArmPath]: The path, or why there is none.
     """
     started = time.time()
-    names = arm_joint_names(arm_name)
+    names = [name for arm in arm_names for name in arm_joint_names(arm)]
     start = tuple(float(mirror.state.robot_configuration[name]) for name in names)
     goal = tuple(float(value) for value in goal)
 
@@ -238,10 +248,10 @@ def plan_arm(mirror: CompasFabMirror, scene: Scene, arm_name: str, goal: Sequenc
         return PlanResult(None, hit.message, time.time() - started, hit=hit)
 
     lower, upper = joint_limits(mirror, names)
-    if outside := _outside(start, lower, upper):
+    if outside := _outside(start, lower, upper, names):
         return PlanResult(None, f"the arm is past its joint limits: {outside}; move it back inside first",
                           time.time() - started)
-    if outside := _outside(goal, lower, upper):
+    if outside := _outside(goal, lower, upper, names):
         return PlanResult(None, f"the target is past the joint limits: {outside}", time.time() - started)
     # * Check the start in full once; the fast `search_check` skips pairs the arm does not move.
     hits = collisions(mirror)
