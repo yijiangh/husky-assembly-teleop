@@ -23,7 +23,7 @@ from ...world.collision_hit import CollisionHit
 from ...shared.assembly_planning.collision import collision_hit, collisions
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.planner.timed_path import TimedPath
-from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
+from ...shared.planner.planner_search import PlanResult
 from ...shared.planner.rrt_connect import connect
 from ...robot_interface.arm import UR_JOINT_LIMITS, joint_path_move
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
@@ -34,6 +34,9 @@ JOINT_STEP = 0.05
 #: How finely a path found is checked again before it is kept, radians per joint: a pass closer than its margin can
 #: fall between two of the search's checks (the tool moves centimetres in one JOINT_STEP).
 VERIFY_STEP = 0.005
+#: Give up searching after this long, seconds: longer than the shared 20 s (`planner_search.TIME_LIMIT`), as a free
+#: move of both arms between built bars can take most of it.
+TIME_LIMIT = 60.0
 #: Searches the shortest path is kept from, and seconds after which no new one starts once a path is found.
 ATTEMPTS = 3
 IMPROVE_TIME = 3.0

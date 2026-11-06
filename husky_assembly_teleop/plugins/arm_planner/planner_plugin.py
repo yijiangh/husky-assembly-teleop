@@ -32,7 +32,7 @@ from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.execution.send import ARRIVED, HOLD_NOT_SENT, INTERRUPTED, REFUSED, STOPPED, TIMEOUT, ArmMotion, \
     MotionCommand, send_motion
 from ...world.collision_hit import CollisionHit
-from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
+from ...shared.planner.planner_search import PlanResult
 from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import Search, WAIT_MARGIN, unmeasured, with_guesses
 from ...shared.planner.planner_service import PlannerService
@@ -43,7 +43,7 @@ from ...world.clearance import ARM_MOVE, PLAN_DISTANCE, Clearance, clearance_pro
 from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
-from .planner import ArmPath, margin_note, path_hit, plan_arms
+from .planner import TIME_LIMIT, ArmPath, margin_note, path_hit, plan_arms
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far; the panel also
 #: refuses a target this far from the planned goal.
