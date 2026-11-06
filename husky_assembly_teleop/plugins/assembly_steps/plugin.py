@@ -310,9 +310,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         poses = flange_poses(live, targets)
         errors = tool0_errors(poses, targets)
         self._diagnosis(ctx).show_tool0(poses, targets)
-        line = tool0_line(errors)
-        self._say(line)
-        ctx.log_info(f"[tool0 check] {step.label}: {line}")
+        self._say(tool0_line(errors))
+        ctx.log_info(f"[tool0 check] {step.label}: {tool0_line(errors, axes=False)}")
         self._assembly_run(ctx).request_record("check_tool0", action=action, movement=step.movement.id, data={
             side: {key: error[key] for key in ("pos_err_mm", "pos_norm_mm", "rot_err_deg")}
             for side, error in errors.items()})
@@ -413,10 +412,10 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self._say(f"Live IK for {step.label} came after the step changed: not used")
         if check is None:
             if still:
-                self._say("Live IK: no answer in time", failed=True)
+                self._say("Live IK: no answer in time", failed=True, log=False)  # * `solve` logged it
             return None
         if still:
-            self._say(goal_line(check), failed=not check.ok)
+            self._say(goal_line(check), failed=not check.ok, log=False)  # * `solve` logged it
             self._used.touch()  # * an answer arriving counts as use, as a plan does
         if still and check.ok and check.goal_joints:
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
@@ -435,8 +434,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
         """
         moved_on = self._move_on(ctx)
         if moved_on:
-            self._say(moved_on, failed=True)
-            ctx.log_warn(moved_on)
+            self._say(moved_on, failed=True)  # * logged by `_say`
             return
         super()._plan(ctx)
 
@@ -550,7 +548,11 @@ class AssemblyStepsPlugin(PlannerPlugin):
                 "waypoints": route.waypoints, "goal_reused": request.goal_joints is not None,
                 "warnings": list(route.warnings), "obstacles_collide": request.obstacles_collide,
                 "goal_carried": goals is not None and primary.routine is Routine.INSERT,
-                "goal_live": goals is not None and primary.routine is Routine.RETREAT_LINEAR})
+                "goal_live": goals is not None and primary.routine is Routine.RETREAT_LINEAR,
+                # * The flange goals behind the "[insert plan]" or "[retreat live]" line, [x, y, z, qx, qy, qz, qw].
+                "goal_poses": None if goals is None else {flange: [*map(float, pose.position),
+                                                                   *map(float, pose.orientation)]
+                                                          for flange, pose in goals.items()}})
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
                                                    dict(zip(trajectory.joint_names, trajectory.positions[-1])),
                                                    "plan", self._basis.base))
@@ -647,7 +649,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         if not same_step(key, self._key):
             return  # the step changed meanwhile
         self._done.update(result.done)
-        self._say(f"{result.status}: {result.reason}", failed=not result.ok and result.status != DRY_RUN)
+        # * movement_exec logged the result.
+        self._say(f"{result.status}: {result.reason}", failed=not result.ok and result.status != DRY_RUN, log=False)
         if carried_plan and result.status in (REFUSED, DRY_RUN) and key[2] not in result.done:
             # * Nothing of the motion was sent: the plan comes back, checked for staleness first.
             stale = self.stale_reason(ctx)

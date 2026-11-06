@@ -595,6 +595,9 @@ def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch
         assert np.allclose(goal.matrix(), expected, atol=1e-9)
     assert [(event, fields["data"]["goal_carried"]) for event, fields in lab.run.records] == [
         ("plan", True), ("plan", False), ("plan", False)]
+    first = lab.run.records[0][1]["data"]["goal_poses"]
+    assert set(first) == set(carried) and np.allclose(first["robots/cindy/left_ur_arm_tool0"], [
+        *carried["robots/cindy/left_ur_arm_tool0"].position, *carried["robots/cindy/left_ur_arm_tool0"].orientation])
     lines = [line for line in lab.ctx.lines("info") if line.startswith("[insert plan]")]
     line, = lines
     assert line.startswith("[insert plan] mocap bar correction carried: B20_J_insert left goal ")
@@ -613,7 +616,10 @@ def test_the_retreat_is_planned_along_the_live_tool_axis():
     for part in spec.arms:
         expected = live_line_goal(live[part.flange], part.line.distance)
         assert np.allclose(goals[part.flange].matrix(), expected.matrix(), atol=1e-9)
-    assert [fields["data"]["goal_live"] for event, fields in lab.run.records if event == "plan"] == [True]
+    (record,) = [fields["data"] for event, fields in lab.run.records if event == "plan"]
+    assert record["goal_live"] and set(record["goal_poses"]) == set(goals)
+    for flange, pose in goals.items():
+        assert np.allclose(record["goal_poses"][flange], [*pose.position, *pose.orientation])
     line, = [line for line in lab.ctx.lines("info") if line.startswith("[retreat live] B20_R_retreat")]
     assert "goals = the live tool0 poses moved 50 mm back along their own -z (encoders): left along (" in line
     lab.run.request_settings(retreat_live_axis=False)
@@ -635,7 +641,8 @@ def test_check_tool0_draws_the_live_flanges_against_the_targets_and_records_the_
     live = flange_poses(lab.ctx.scene.snapshot.robots[robot_id("a200-0806")], targets)
     expected = tool0_line(tool0_errors(live, targets))
     assert lab.plugin._message == expected and expected.startswith("tool0 live minus target: left ")
-    assert any(line == f"[tool0 check] B20_J_transfer: {expected}" for line in lab.ctx.lines("info"))
+    short = tool0_line(tool0_errors(live, targets), axes=False)
+    assert "(" not in short and any(line == f"[tool0 check] B20_J_transfer: {short}" for line in lab.ctx.lines("info"))
     scene = lab.ctx.view.scene
     assert len([node for node in scene.of_kind("frame") if "/diagnosis/tool0/" in node.name
                 and node.name.endswith(("/target", "/live"))]) == 4
@@ -716,12 +723,20 @@ def test_the_record_is_json():
 
 
 def test_the_log_line():
-    """The line names the movement, the gap, each arm's goal and the base; a failure its reason."""
-    line = goal_line(cindy_check())
-    assert line.startswith("B20_J_transfer at the live base: max |goal - authored goal| = 0.0015 rad; goal (rad) left "
-                           "[+0.0000, +0.1000, +0.2000, +0.3000, +0.4000, +0.5000] right [+0.6000, ")
-    assert line.endswith("; base 1.000 -2.500 m 90.0 deg")
+    """The line names the movement, the base and the gap, no joint lists (the record has them); a failure its reason."""
+    assert goal_line(cindy_check()) == ("B20_J_transfer at the live base 1.000 -2.500 m 90.0 deg: goal within 0.0015 "
+                                        "rad of the authored one")
     assert goal_line(cindy_check(ok=False)) == "B20_J_transfer: no goal at the live base: no IK"
+
+
+def test_a_failed_live_ik_is_warned_once():
+    """The goal check's failure is logged by `solve`; the panel line says it again without a second warning."""
+    lab = Steps(("B20_J", 3))
+    lab.planner.check = cindy_check(ok=False)
+    asyncio.run(lab.plugin.checked_goal(lab.ctx))
+    line = goal_line(lab.planner.check)
+    assert lab.plugin._message == line and lab.plugin._message_failed
+    assert [warned for warned in lab.ctx.lines("warn") if warned == line] == [line]
 
 
 def test_check_goal_asks_with_the_run_and_records_the_answer():

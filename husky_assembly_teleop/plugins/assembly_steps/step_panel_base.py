@@ -100,6 +100,8 @@ class PlannerPlugin(HuskyPlugin):
         self._last_tick: float | None = None
         #: One line of feedback on the last action, whether it was a failure, and its colour.
         self._message, self._message_failed, self._message_color = "", False, NONE
+        #: The context, from setup on: a refusal shown in the panel is logged too.
+        self._ctx: PluginContext | None = None
         #: The running search, and the flag that ends its worker early.
         self._plan_task: asyncio.Task | None = None
         self._abort = threading.Event()
@@ -297,23 +299,27 @@ class PlannerPlugin(HuskyPlugin):
         self._t, self._playing = 0.0, False
         self.forget_plan()
 
-    def _say(self, message: str, failed: bool = False, color: str | None = None) -> None:
+    def _say(self, message: str, failed: bool = False, color: str | None = None, log: bool = True) -> None:
         """Set the one line of feedback under the buttons: red if `failed`, else gray, unless `color` says otherwise.
 
         Args:
             message: The line.
             failed: Whether it says why something failed.
             color: BUSY for a question or warning, OK for something done; None: from `failed`.
+            log: Log a failure as a warning; False where another layer already logged the same fact.
         """
         color = color or (FAIL if failed else NONE)
         self._message, self._message_failed, self._message_color = message, color == FAIL, color
         if color == FAIL:
             self._confirm.press.forget()  # * a refusal: the next Exec asks again
+            if log and self._ctx is not None:
+                self._ctx.log_warn(message)
 
     # --- --- --- --- --- TICK --- --- --- --- ---
 
     def update(self, ctx: PluginContext) -> None:
         """Advance playback, and mark a ready plan stale when `stale_reason` says so."""
+        self._ctx = ctx
         if self.idle:
             return
         now = ctx.now()
@@ -331,6 +337,7 @@ class PlannerPlugin(HuskyPlugin):
             if reason:
                 self.plan_state = "stale"
                 self._say(reason)
+                ctx.log_info(f"plan stale: {reason}")
 
     # --- --- --- --- --- DRAW HELPERS --- --- --- --- ---
 

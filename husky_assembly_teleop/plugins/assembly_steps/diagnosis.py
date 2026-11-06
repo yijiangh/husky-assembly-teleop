@@ -116,18 +116,23 @@ class StepDiagnosis:
                 root.visible = value
 
 
-def tool0_line(errors: Mapping[str, dict]) -> str:
+def tool0_line(errors: Mapping[str, dict], axes: bool = True) -> str:
     """One line of the tool0 check: "tool0 live minus target: left 1.23 mm (dx/dy/dz) axes x/y/z deg | right …".
 
     Args:
         errors: Side -> `tool0_errors`' entry.
+        axes: Each axis's gap, for the panel; False: only the distance and the largest turn, for the log (the record
+            keeps every axis).
     """
     parts = []
     for side, error in errors.items():
         dx, dy, dz = error["pos_err_mm"]
         ax, ay, az = error["rot_err_deg"]
-        parts.append(f"{side} {error['pos_norm_mm']:.2f} mm ({dx:+.2f}/{dy:+.2f}/{dz:+.2f}) "
-                     f"axes {ax:.2f}/{ay:.2f}/{az:.2f}°")
+        if axes:
+            parts.append(f"{side} {error['pos_norm_mm']:.2f} mm ({dx:+.2f}/{dy:+.2f}/{dz:+.2f}) "
+                         f"axes {ax:.2f}/{ay:.2f}/{az:.2f}°")
+        else:
+            parts.append(f"{side} {error['pos_norm_mm']:.2f} mm, {max(abs(ax), abs(ay), abs(az)):.2f}° at most")
     return "tool0 live minus target: " + " | ".join(parts)
 
 
