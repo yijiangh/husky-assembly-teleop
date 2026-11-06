@@ -173,8 +173,11 @@ def test_speed_scales_go_out_to_a_follower_that_takes_them():
         pytest.skip("this build's crl_husky_msgs has no BasePathScaled")
     base = _base()
     base._scaled_path.subscribers = 1
+    paths = []
+    base.paths_sent.attach(paths.append)
     base.send_path([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], None, 0.2, 0.3, [1.0, 0.25])
     scaled, = base._scaled_path.sent
+    assert paths[0].message is scaled  # * the observer's command file keeps the scales
     assert not base._base_path.sent and list(scaled.speed_scale) == [1.0, 0.25]
     assert (scaled.path.max_linear_speed, scaled.path.max_angular_speed) == (0.2, 0.3) and base.scaled_as == "per pose"
 

@@ -199,6 +199,7 @@ def fake_arm(controller: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, joints
     arm._trajectory, arm._target_frame, arm._target_wrench = Publisher(), Publisher(), Publisher()
     arm.trajectories_sent, arm.targets_sent, arm.wrenches_sent = Event("ur_arm_trajectory"), Event("ur_arm_target"), \
         Event("ur_arm_wrench")
+    arm.wrench_messages, arm.ft_zeros_sent = Event("ur_arm_ft"), Event("ur_arm_ft_zero")
     state = arm.state
     state.controllers.active, state.controllers.last_update_time = controller, now
     joints = np.zeros(len(UR_JOINT_NAMES)) if joints is None else np.asarray(joints, dtype=float)

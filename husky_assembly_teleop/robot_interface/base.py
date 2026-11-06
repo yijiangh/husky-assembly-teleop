@@ -7,7 +7,7 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 from crl_husky_msgs.msg import BaseFollowerState, BasePath
@@ -70,6 +70,8 @@ class FollowerState:
         command: Linear (m/s) and angular (rad/s) velocity it sent.
         update_time: ROS time the monitor handled the report, seconds.
         stamp: Time the follower sent the report, and the command in it, seconds on the robot's clock (time synced).
+        pose: The measured pose the follower computed its command from (x, y, yaw), as it received it over wifi; None
+            in reports made without it.
     """
 
     controller: str
@@ -89,6 +91,7 @@ class FollowerState:
     command: np.ndarray
     update_time: float
     stamp: float
+    pose: np.ndarray | None = None
 
 
 @dataclass
@@ -132,6 +135,7 @@ class SentPath:
         speed_caps: Linear (m/s) and angular (rad/s) caps sent with it; 0 keeps the follower's own.
         update_time: ROS time it was sent, seconds.
         stamp: The same; the monitor's clock, also in the message's header.
+        message: The BasePath, or the BasePathScaled carrying it, exactly as sent; or None.
     """
 
     path_id: int
@@ -140,6 +144,7 @@ class SentPath:
     speed_caps: np.ndarray
     update_time: float
     stamp: float
+    message: Any = None
 
 
 @dataclass
@@ -170,6 +175,8 @@ class BaseState:
         joint_states_update_time: ROS time of the last platform joint_states, seconds.
         joint_states_stats: Rate, gaps and delay of the platform's joint_states, to judge the wifi link and the
             robot's clock. Published from boot, also with the velocity controller off.
+        mocap_stats: Rate, gaps and delay of the base's mocap samples (stamped when the cameras captured them), to
+            judge the relay's link.
 
     ! `tracked` False means the pose is stale: grey it out. Drive from it only while `world.mocap.pose_lost` is "":
       `tracked` stays True when the relay goes silent.
@@ -197,6 +204,7 @@ class BaseState:
     wheel_velocities: dict[str, float] = field(default_factory=dict)
     joint_states_update_time: float | None = None
     joint_states_stats: StreamStats = field(default_factory=StreamStats)
+    mocap_stats: StreamStats = field(default_factory=StreamStats)
 
 
 class BaseInterface:
@@ -248,6 +256,7 @@ class BaseInterface:
         self.follower_reports = Event(f"{config.serial}_follower")
         self.odometry_messages = Event(f"{config.serial}_odometry")
         self.mocap_messages = Event(f"{config.serial}_mocap")
+        self.mocap_messages.attach(lambda sample: self.state.mocap_stats.add(sample.update_time, sample.stamp))
         self.twists_sent = Event(f"{config.serial}_twist")
         self.paths_sent = Event(f"{config.serial}_path")
         self.controllers = ControllerManagerInterface(
@@ -460,14 +469,15 @@ class BaseInterface:
         self.twists_sent.fire(SentTwist(np.array([linear, angular]), now, now))
 
     def _publish_path(self, message: BasePath, waypoints: int, timed: bool, scaled=None) -> None:
-        """Publish a path message (as `scaled`, a BasePathScaled, if given), then fire `paths_sent`."""
+        """Publish a path message (as `scaled`, a BasePathScaled, if given), then fire `paths_sent` with that."""
         if scaled is not None:
             self._scaled_path.publish(scaled)
         else:
             self._base_path.publish(message)
         sent = message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec
         self.paths_sent.fire(SentPath(int(message.id), waypoints, int(timed),
-                                      np.array([message.max_linear_speed, message.max_angular_speed]), sent, sent))
+                                      np.array([message.max_linear_speed, message.max_angular_speed]), sent, sent,
+                                      scaled if scaled is not None else message))
 
     def _on_estop(self, message: Bool) -> None:
         """Store whether the platform's emergency stop is engaged."""
@@ -523,7 +533,8 @@ class BaseInterface:
             yaw_error=float(message.yaw_error),
             command=np.array([message.linear_velocity, message.angular_velocity]),
             update_time=self._node.get_clock().now().nanoseconds * 1e-9,
-            stamp=message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec)
+            stamp=message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec,
+            pose=np.array([message.x, message.y, message.yaw]))
         self.follower_reports.fire(self.state.follower)
 
     def _on_odometry(self, message: Odometry) -> None:

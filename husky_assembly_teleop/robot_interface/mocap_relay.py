@@ -174,6 +174,7 @@ class MocapRelayState:
         marker_noise: That look's unlabeled markers, raw (Motive's, Z-up), each with its noise: the RMS distance of its
             frames from its mean, mm, or None.
         metrics_time: ROS time that look last arrived, seconds, or None before.
+        drift: How far Motive's frame drifted by that look, or None before one.
         sources: Where each rigid body streams from now, by id: MOTIVE, FAKE_MOTIVE or TRUTH (`source`).
     """
 
@@ -195,6 +196,7 @@ class MocapRelayState:
     refit_now: tuple | None = None
     marker_noise: tuple[tuple[tuple[float, float, float], float | None], ...] = ()
     metrics_time: float | None = None
+    drift: FrameDrift | None = None
     sources: dict[int, str] = field(default_factory=dict)
 
     def source(self, mocap_id: int) -> str:
@@ -237,6 +239,51 @@ def applied_calibrations(text: str) -> dict[int, AppliedCalibration]:
             for entry in entries}
     except (KeyError, TypeError, IndexError, json.JSONDecodeError) as error:
         raise ValueError(f"not the relay's calibration announcement: {error!r}") from None
+
+
+@dataclass(frozen=True)
+class FrameDrift:
+    """How far Motive's frame drifted, by the relay's last look (`~/frame_metrics`); metres, None while unknown.
+
+    Attributes:
+        status: The frame's state, one of the FRAME_* states.
+        decides: Which fit decides: "anchors", "truss cameras", or None.
+        off: How far the poses published now are off at most in the lab's volume: the deciding fit against the
+            transform in use.
+        off_limit: How far `off` may go before a refit is pending.
+        anchors_moved: How far Motive's frame moved since the floor calibration by the anchors, in the lab's volume.
+        cameras_moved: The same by the truss cameras.
+        apart: How far the two fits disagree, when both are trusted.
+        scale_ppm: How much Motive's scale changed since the floor calibration, parts per million.
+        scale_changed: Whether the relay reports that change.
+        anchors_used: Anchors in the anchors' fit.
+        anchors_residual: The anchors' fit residual.
+    """
+
+    status: str
+    decides: str | None = None
+    off: float | None = None
+    off_limit: float | None = None
+    anchors_moved: float | None = None
+    cameras_moved: float | None = None
+    apart: float | None = None
+    scale_ppm: float | None = None
+    scale_changed: bool = False
+    anchors_used: int | None = None
+    anchors_residual: float | None = None
+
+
+def frame_drift(sample: dict) -> FrameDrift:
+    """The drift numbers of one `~/frame_metrics` sample (`world/mocap_frame.frame_metrics`)."""
+    anchors, cameras = sample.get("anchors") or {}, sample.get("truss_cameras") or {}
+    scale = sample.get("anchor_scale") or {}
+    return FrameDrift(
+        status=str(sample.get("status") or ""), decides=sample.get("decides"), off=sample.get("off"),
+        off_limit=sample.get("off_limit"), anchors_moved=anchors.get("moves_volume"),
+        cameras_moved=cameras.get("moves_volume"), apart=sample.get("apart"), scale_ppm=scale.get("ppm"),
+        scale_changed=bool(sample.get("scale_changed")),
+        anchors_used=len(anchors["used"]) if anchors.get("used") is not None else None,
+        anchors_residual=anchors.get("residual"))
 
 
 class MocapRelayInterface:
@@ -324,6 +371,7 @@ class MocapRelayInterface:
             self.state.marker_noise = tuple(
                 (tuple(map(float, raw)), None if noise is None else float(noise))
                 for raw, noise in zip(markers.get("raw") or [], markers.get("noise_mm") or []))
+            self.state.drift = frame_drift(sample)
         except (KeyError, TypeError, ValueError, AttributeError):
             return
         self.state.metrics_time = self._now()
