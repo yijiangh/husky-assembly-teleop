@@ -417,7 +417,7 @@ def test_test_mode_checks_and_records_but_never_sends():
 
 
 def _far_tcp(arm):
-    arm.state.tcp_position = np.array([0.0, 0.9, 0.163])
+    arm.state.tcp_position = np.array([0.0, 0.94, 0.163])
     return arm.state.tcp_position, TCP_ORIENTATION
 
 
@@ -462,7 +462,7 @@ def _wrong_controller(arm):
     (_stale_tcp, "TCP pose is"),
     (lambda arm: (TCP_POSITION + [0.06, 0.0, 0.0], TCP_ORIENTATION), "too far from the TCP"),
     (lambda arm: (TCP_POSITION, turned(6.0)), "is turned"),
-    (_far_tcp, "out of reach"),
+    (_far_tcp, "out of reach: 0.940 m from the shoulder, over 0.93 m"),
     (_big_step, "jumps"),
     (_big_turn_step, "jumps"),
 ], ids=lambda value: value if isinstance(value, str) else "")
@@ -472,6 +472,13 @@ def test_cartesian_target_refused(make, why):
     assert not arm.send_cartesian_target(*make(arm))
     assert not arm._target_frame.sent
     assert why in arm._node.log.text("error")
+
+
+def test_a_target_as_far_as_b37s_insert_with_its_spiral_is_sent():
+    """B37's left tool0 ends 0.906 m from the shoulder, its 15 mm spiral adds to that: within reach."""
+    arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
+    arm.state.tcp_position = np.array([0.0, 0.921, 0.163])
+    assert arm.send_cartesian_target(arm.state.tcp_position, TCP_ORIENTATION)
 
 
 def test_steps_are_free_again_after_the_window():

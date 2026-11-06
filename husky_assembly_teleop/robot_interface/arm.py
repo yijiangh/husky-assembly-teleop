@@ -88,8 +88,9 @@ MOVING_WITHIN = 0.5
 CARTESIAN_MAX_STEP = 0.01
 CARTESIAN_MAX_STEP_ANGLE = np.radians(3.0)
 CARTESIAN_STEP_WINDOW = 0.5
-#: Rough UR5e reach, metres, from the shoulder (this high above base_link). Targets beyond it are refused.
-UR5E_REACH = 0.85
+#: Farthest Cartesian target, metres, from the shoulder (this high above base_link): under the 0.97 m tool0 reaches
+#: with the arm straight. Targets beyond it are refused.
+UR5E_REACH = 0.93
 UR5E_SHOULDER_HEIGHT = 0.163
 #: Frame of a target wrench. The controller always reads it in the tool frame (`hand_frame_control`).
 TARGET_WRENCH_FRAME = "tool0"
@@ -376,8 +377,9 @@ def cartesian_target_refusal(position: np.ndarray, orientation: np.ndarray,
     if turn > CARTESIAN_START_ANGLE_TOLERANCE:
         return (f"target is turned {np.degrees(turn):.1f} deg from the TCP, over "
                 f"{np.degrees(CARTESIAN_START_ANGLE_TOLERANCE):.0f} deg")
-    if np.linalg.norm(position - [0.0, 0.0, UR5E_SHOULDER_HEIGHT]) > UR5E_REACH:
-        return f"target is out of reach ({UR5E_REACH} m from the shoulder)"
+    reach = np.linalg.norm(position - [0.0, 0.0, UR5E_SHOULDER_HEIGHT])
+    if reach > UR5E_REACH:
+        return f"out of reach: {reach:.3f} m from the shoulder, over {UR5E_REACH} m"
     if previous is None:
         return None
     step = float(np.linalg.norm(position - previous[0]))

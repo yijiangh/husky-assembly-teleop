@@ -429,7 +429,7 @@ def test_target_problem_refuses_what_the_arm_refuses(case, why):
     elif case == "not unit":
         orientation = tcp_q * 1.01
     elif case == "out of reach":
-        tcp_p = position = np.array([0.0, 0.9, 0.163])
+        tcp_p = position = np.array([0.0, 0.94, 0.163])
     elif case.endswith("step"):
         previous = Pose.from_arrays(tcp_p, tcp_q)
         if case == "3.5° step":
