@@ -39,6 +39,10 @@ class _ViserContext(FakeContext):
     """A fake context whose value callbacks are the real ones (`PluginContext.defer_value`), handed viser's events."""
 
     defer_value = PluginContext.defer_value
+    _defer = PluginContext._defer
+
+    def _note_operator(self, label, value) -> None:
+        """Nothing: the operator's actions are not logged here."""
 
 
 def _set_up(process, ctx: FakeContext | None = None) -> tuple[ProcessPlugin, FakeContext]:

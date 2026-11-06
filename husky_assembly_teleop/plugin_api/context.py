@@ -30,6 +30,14 @@ from .trace import MAX_SAMPLES, Signal, Trace
 
 T = TypeVar("T")
 
+#: An operator's change of a value is logged once it stayed this long, seconds: a dragged slider logs its end only.
+VALUE_SETTLED = 0.5
+#: viser's widgets whose value is the button clicked: logged as clicks, at once.
+CLICKED = ("GuiButtonHandle", "GuiButtonGroupHandle")
+#: A click of the same button again within this long, seconds, is a held button's repeat (`on_hold` calls back at
+#: 20 Hz): not logged, so a hold is one line.
+CLICK_REPEAT = 0.25
+
 if TYPE_CHECKING:
     import viser
     from rclpy.task import Future as RosFuture
@@ -92,6 +100,12 @@ class PluginContext:
 
         # Filled from viser threads, drained on the main thread at the start of this plugin's step.
         self._intents: queue.Queue[Intent] = queue.Queue()
+        # The operator's value changes noted by their intents, and label -> (value, ROS time) of changes not logged
+        # yet (`_log_operator`).
+        self._operator_notes: list[tuple[str, Any]] = []
+        self._operator_values: dict[str, tuple[Any, float]] = {}
+        # (label, value) -> ROS time of the operator's last click on it, to log a held button once.
+        self._clicked: dict[tuple[str, Any], float] = {}
 
         # Running tasks. ! Also keeps them alive: asyncio holds only a weak reference.
         self._tasks: set[asyncio.Task] = set()
@@ -461,11 +475,11 @@ class PluginContext:
             ...     button = gui.add_button("Plan movement")
             >>> button.on_click(ctx.defer("plan movement", self.start_planning))
         """
-        return self.defer_value(label, lambda _value: run(), operator_only)
+        return self._defer(label, lambda _value: run(), operator_only, has_value=False)
 
     def defer_value(self, label: str, run: Callable[[object], Any],
                     operator_only: bool = False) -> Callable[..., Awaitable[None]]:
-        """Wrap `run` as a thread-safe viser callback that is handed the widget's new value.
+        """Wrap `run` as a thread-safe viser callback that is handed the widget's new value; an operator's is logged.
 
         ! Use this value, not `widget.value` inside `run`, which could see a later change.
         * `operator_only`: skip changes the plugin made itself (`widget.value = ...`), which viser also calls back for,
@@ -480,12 +494,29 @@ class PluginContext:
             >>> grip = gui.add_button_group("Grip", ["Open", "Close"])
             >>> grip.on_click(ctx.defer_value("grip", lambda label: self.grip(label)))
         """
+        return self._defer(label, run, operator_only, has_value=True)
+
+    def _defer(self, label: str, run: Callable[[object], Any], operator_only: bool,
+               has_value: bool) -> Callable[..., Awaitable[None]]:
+        """`defer_value`; what a client did (the operator) is logged: a click right before it runs, a value settled."""
 
         async def _callback(event: viser.GuiEvent) -> None:
             if operator_only and event.client is None:
                 return
-            value = event.target.value
-            self.submit(label, lambda: run(value))
+            value, operator = event.target.value, event.client is not None
+            # * A click by the widget's type only: a button group's value is the button clicked, not a setting; a
+            #   slider wired with `defer` is a setting, logged once settled (never a line per drag step).
+            click = any(kind.__name__ in CLICKED for kind in type(event.target).__mro__)
+
+            def run_it() -> Any:
+                if operator and click:
+                    if self._first_click(label, value if has_value else None):
+                        self.log_info(f"operator: {label}" + (f": {_short(value)}" if has_value else ""))
+                elif operator:
+                    self._note_operator(label, value)
+                return run(value)
+
+            self.submit(label, run_it)
 
         return _callback
 
@@ -625,8 +656,32 @@ class PluginContext:
             except Exception:
                 failed = True
                 self.log_error(f"intent {intent.label!r} failed:\n{traceback.format_exc()}")
+        self._log_operator()
         if failed:
             raise RuntimeError("one or more intents failed")
+
+    def _first_click(self, label: str, value: Any) -> bool:
+        """Whether a click starts anew, not a held button's repeat within CLICK_REPEAT of the last one."""
+        now, key = self.now(), (label, _short(value))
+        last, self._clicked[key] = self._clicked.get(key), now
+        return last is None or now - last > CLICK_REPEAT
+
+    def _note_operator(self, label: str, value: Any) -> None:
+        """Note an operator's change of a value, for `_log_operator`."""
+        self._operator_notes.append((label, value))
+
+    def _log_operator(self) -> None:
+        """Log each value the operator changed once it settled: a dragged slider logs its end only."""
+        if not self._operator_notes and not self._operator_values:
+            return
+        now = self.now()
+        notes, self._operator_notes = self._operator_notes, []
+        for label, value in notes:
+            self._operator_values[label] = (value, now)
+        for label, (value, since) in list(self._operator_values.items()):
+            if now - since >= VALUE_SETTLED:
+                del self._operator_values[label]
+                self.log_info(f"operator: {label} = {_short(value)}")
 
     def _check_freezes(self) -> None:
         """Cancel the task of every freeze whose basis no longer holds, logging why."""
@@ -656,13 +711,17 @@ class PluginContext:
             last = self._monitor.clearance_trips[-1] if self._monitor.clearance_trips else None
             if last is None or (last.serial, last.task, last.problem) != (serial, trip.task, trip.problem):
                 self._monitor.clearance_tripped(trip)
-                self.log_warn(f"task {task.get_name()!r}: {clearance.problem} at its start; refused, nothing sent")
+                closest = "" if clearance.hit is None else f" ({clearance.hit.closest})"
+                self.log_warn(f"task {task.get_name()!r}: {clearance.problem}{closest} at its start; refused, "
+                              f"nothing sent")
             task.cancel(f"clearance refused: {clearance.problem}")
             return
         self._monitor.clearance_tripped(trip)
         self.world.robots[serial].soft_stop(clearance.problem)
-        self.log_error(f"task {task.get_name()!r}: {clearance.problem}; soft stopped it and cancelling the task")
         task.cancel(f"clearance: {clearance.problem}")
+        closest = "" if clearance.hit is None else f" ({clearance.hit.closest})"
+        self.log_error(f"task {task.get_name()!r}: {clearance.problem}{closest}; soft stopped it and cancelled the "
+                       f"task")
 
     def _wake_tick_waiters(self) -> None:
         """Resume the tasks waiting in `next_tick`. They run once the tick yields."""
@@ -730,3 +789,9 @@ class PluginContext:
             lease.release()
         self._leases.clear()
         return self._cancel_all_tasks()
+
+
+def _short(value: Any) -> str:
+    """A widget value for a log line, cut to 80 characters."""
+    text = repr(value)
+    return text if len(text) <= 80 else text[:77] + "..."
