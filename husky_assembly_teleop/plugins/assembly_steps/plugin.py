@@ -120,6 +120,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         #: The plan behind `path`, and what it was planned from.
         self._route: RouteResult | None = None
         self._basis: PlanBasis | None = None
+        #: The line Plan just said about the next step, which that step keeps; else "".
+        self._moved_on = ""
         #: The step key an Exec runs for, until its result comes back.
         self._executing: tuple | None = None
         #: Visual diagnosis: the real robots see-through and each insert or retreat plan's tool0 path drawn.
@@ -183,10 +185,13 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self._new_step(ctx, key)
 
     def _new_step(self, ctx: PluginContext, key: tuple | None) -> None:
-        """Start a step clean: no plan, nothing done, no offer, no goal; its routine's default motion time.
+        """Start a step clean: no plan, no line from the last step, nothing done, no offer, no goal; its default time.
 
         Another action also drops the joints carried forward in the process panel.
         """
+        if self._message != self._moved_on:
+            self._say("")
+        self._moved_on = ""
         self._clear()
         if self._diagnosis_nodes is not None:
             self._diagnosis_nodes.clear()
@@ -408,8 +413,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         # ! The step may have changed while the planner worked: say and carry only for the step it was solved for;
         #   `solve` logs the answer either way.
         still = same_step(key, self._key_of_goal())
-        if not still and self._message == solving:
-            # * Only this solve's own line is replaced: the new step may have said something since.
+        if not still and self._message in (solving, ""):
+            # * Only this solve's own line or the new step's empty one is replaced: it may have said something since.
             self._say(f"Live IK for {step.label} came after the step changed: not used")
         if check is None:
             if still:
@@ -436,6 +441,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
         moved_on = self._move_on(ctx)
         if moved_on:
             self._say(moved_on, failed=True)
+            self._moved_on = moved_on
             ctx.log_warn(moved_on)
             return
         super()._plan(ctx)

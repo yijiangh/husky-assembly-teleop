@@ -878,6 +878,26 @@ def test_a_step_started_while_waiting_for_a_live_robot_stops_the_automatic_selec
     assert "Select refused: a200-0804 is leased by movement_exec" in plugin._message
 
 
+def test_a_refusal_goes_once_the_current_step_changes(tmp_path):
+    """Select refused while the executor leases a robot; given back, the selection that works takes the refusal away."""
+    lab = Lab(tmp_path, alice=True)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        lab.moving(ALICE, False)
+        plugin.request_mark_done()
+        await settle(plugin)
+        lease = lab.lease_to_exec("a200-0804")
+        plugin.request_set_current("B1_J_joint")
+        assert "Select refused" in plugin._message and plugin._failed
+        lease.release()
+        plugin.request_set_current("B1_J_joint")
+        assert plugin._message == "" and not plugin._failed
+        await settle(plugin)
+
+    asyncio.run(scenario())
+
+
 def test_an_arm_moving_before_the_second_click_refuses_the_mark(tmp_path):
     """Cindy not live: the first click asks for a second; her arm starts moving meanwhile, so the second is refused."""
     lab = Lab(tmp_path, live_from=None)

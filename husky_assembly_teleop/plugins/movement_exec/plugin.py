@@ -87,8 +87,10 @@ class MovementExecPlugin(HuskyPlugin):
         self._active = ""
         #: "operator" once Cancel cancelled the running task; else a cancel came from outside.
         self._cancel_reason = ""
-        #: The last result as one line, and whether it failed; how many dry-run changes were refused.
-        self._last, self._last_failed = "", False
+        #: The last result as one line, whether it failed and whether it left a hold not sent; the run's current step;
+        #: how many dry-run changes were refused.
+        self._last, self._last_failed, self._hold_lost = "", False, False
+        self._step: tuple[str, int] | None = None
         self._dry_run_refused = 0
         #: Serial -> ROS time its arms last arrived (a motion or a servo pass): an older plan is refused.
         self._moved_at: dict[str, float] = {}
@@ -156,6 +158,7 @@ class MovementExecPlugin(HuskyPlugin):
                       measured=self._plots.servo_reading if self._plots is not None else (lambda _reading: None),
                       status=self._plots.status if self._plots is not None else (lambda _text, _color: None))
             self._job, self._active, self._cancel_reason = job, f"{request.robot_name} · {request.label}", ""
+            self._last, self._last_failed, self._hold_lost = "", False, False
             ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
                          + (" (DRY RUN)" if job.dry_run else ""))
             self._task = ctx.spawn(f"exec {request.label}", self._run(job, lease, future))
@@ -209,6 +212,14 @@ class MovementExecPlugin(HuskyPlugin):
         #   part starts (`ExecPlots`).
         with plots_window(ctx.view, "Exec plots", viser.Icon.CHART_DOTS, EXEC_PLOTS_X) as panel:
             self._plots = ExecPlots(ctx.view.gui, panel)
+
+    def update(self, ctx: PluginContext) -> None:
+        """Drop a failure once the step changes; a hold not sent stays until the next request: an arm may move."""
+        current = ctx.require("assembly_run").view.current
+        if current != self._step:
+            self._step = current
+            if self._last_failed and not self._hold_lost:
+                self._last, self._last_failed = "", False
 
     def draw(self, ctx: PluginContext) -> None:
         """Fill the panel, and the Exec plots with the running compliant part's newest sample."""
@@ -419,6 +430,7 @@ class MovementExecPlugin(HuskyPlugin):
         label = request.label if request is not None else "a request"
         self._last = f"{label}: {result.status} — {result.reason}"
         self._last_failed = result.status not in (DONE, DRY_RUN)
+        self._hold_lost = result.status == HOLD_NOT_SENT
         if result.status == HOLD_NOT_SENT:
             ctx.log_error(f"Exec {self._last}")
         else:

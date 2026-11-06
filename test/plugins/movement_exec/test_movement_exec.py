@@ -37,8 +37,8 @@ from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DEFA
                                                                  HANDOFF_PART, HOLD_NOT_SENT, INSERT_PART, LATER,
                                                                  REFUSED, REFUSED_PART, RETREAT_PART, SERVO_INDEX,
                                                                  SERVO_PART,
-                                                                 WITH_MOTION_PART, ExecRequest, PartPlan, part_plan,
-                                                                 step_parts)
+                                                                 WITH_MOTION_PART, ExecRequest, ExecResult, PartPlan,
+                                                                 part_plan, step_parts)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import RouteResult
@@ -267,6 +267,42 @@ def test_a_request_for_another_robot_or_movement_is_refused(changes, words):
     result, held = execute(lab, lab.request(**changes))
     assert result.status == REFUSED and words in result.reason
     assert held is None and lab.published() == 0 and lab.run.records == []
+
+
+def test_a_failure_stays_on_its_step_until_the_next_request_starts():
+    """A refusal stays while the step does; the next Exec takes it away as it starts, and its own end is said."""
+    lab = Lab()
+    lab.plugin.update(lab.ctx)
+    result, _held = execute(lab, lab.request(route=None))
+    assert result.status == REFUSED and lab.plugin._last_failed and "no plan for the motion" in lab.plugin._last
+    lab.plugin.update(lab.ctx)
+    assert lab.plugin._last_failed and "no plan for the motion" in lab.plugin._last
+    seen = []
+
+    async def look(lab):
+        seen.append((lab.plugin._last, lab.plugin._last_failed))
+
+    result, _held = execute(lab, lab.request(), during=look)
+    assert result.status == DONE and seen == [("", False)]
+    assert "every part done" in lab.plugin._last and not lab.plugin._last_failed
+
+
+def test_a_failure_goes_with_its_step_and_a_hold_not_sent_does_not():
+    """Moving on drops a failure but keeps a result that did not fail; a hold not sent stays: the arm may still move."""
+    lab = Lab()
+    lab.plugin.update(lab.ctx)
+    lab.plugin._finished(lab.ctx, None, ExecResult(REFUSED, "the arm is not operational"))
+    lab.run.request_set_current("B20_R", 0)
+    lab.plugin.update(lab.ctx)
+    assert lab.plugin._last == "" and not lab.plugin._last_failed
+    lab.plugin._finished(lab.ctx, None, ExecResult(DONE, "every part done"))
+    lab.run.request_set_current("B20_R", 2)
+    lab.plugin.update(lab.ctx)
+    assert "every part done" in lab.plugin._last
+    lab.plugin._finished(lab.ctx, None, ExecResult(HOLD_NOT_SENT, "HOLD NOT SENT on left_ur_arm"))
+    lab.run.request_set_current("B20_R", 0)
+    lab.plugin.update(lab.ctx)
+    assert "HOLD NOT SENT" in lab.plugin._last and lab.plugin._last_failed
 
 
 @pytest.mark.safety

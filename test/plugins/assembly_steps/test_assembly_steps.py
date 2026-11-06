@@ -323,6 +323,7 @@ def test_plan_on_a_movement_with_nothing_to_plan_moves_on_and_plans_nothing():
     assert lab.planner.plans == [] and lab.run.selected == [("B20_R", 1)]
     assert lab.plugin._message == "B20_R_ungrasp: nothing to plan; moved on to B20_R_retreat: click Plan again"
     lab.update()
+    assert lab.plugin._message == "B20_R_ungrasp: nothing to plan; moved on to B20_R_retreat: click Plan again"
     asyncio.run(lab.plan())
     assert [plan.step.movement.id for plan in lab.planner.plans] == ["B20_R_retreat"]
     for selected, following in ((2, 4), (0, 3)):
@@ -501,6 +502,17 @@ def test_the_last_step_suggests_mark_done():
     lab.update()
     assert lab.run.selected == [] and lab.plugin.offer == "B35_H"
     assert "every step of B35_H done: Mark done below" in lab.html() and lab.run.marked == []
+
+
+def test_the_panels_line_goes_with_its_step():
+    """A refusal stays while the step does, and a new step starts without it."""
+    lab = Steps(("B20_R", 2))
+    lab.plugin._commit(lab.ctx)
+    lab.update()
+    assert "Plan first" in lab.plugin._message and lab.plugin._message_failed
+    lab.run.request_set_current("B20_R", 0)
+    lab.update()
+    assert lab.plugin._message == "" and not lab.plugin._message_failed
 
 
 @pytest.mark.safety
