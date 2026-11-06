@@ -777,7 +777,7 @@ DONE (the current action's `… done` and `Reopen`) and SETTINGS.
 |---|---|
 | `Ignore built bars`, `Visual diagnosis` | unticked |
 | `Insert split mm` | *5* |
-| `Spiral` | unticked and greyed; live only on an insert with two mating joints |
+| `Spiral` | unticked; greyed on a ground bar's action, live on any other bar's |
 | `Spiral s`, `Spiral turns` | *20*, *4* |
 | `Servo by bar` | ticked on a ground bar's action (*B20_J*, *B34_J*, *B46_J*); greyed and unticked on any other, which always servos on tool0 |
 | `Retreat live axis` | ticked |

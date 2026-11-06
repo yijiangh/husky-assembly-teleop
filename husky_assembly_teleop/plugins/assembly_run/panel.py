@@ -41,7 +41,7 @@ class PanelStatus(NamedTuple):
         save_error: The last write that failed, or "".
         robots: One line per configured robot, live or where it was recorded (the plugin's `robot_lines`).
         settings_refused: How many settings requests were refused; a change puts the widgets back.
-        spiral_fits: Whether the current step's insert has two mating joints: only then is the Spiral box live.
+        spiral_fits: Whether the current action tightens a joint screw: only then is the Spiral box live.
         servo_fits: Whether the current action inserts a ground bar: only then is the Servo by bar box live.
     """
 
@@ -87,10 +87,10 @@ class RunPanel:
             self._split = gui.add_slider("Insert split mm", min=0.0, max=30.0, step=0.5,
                                          initial_value=default.insert_split_mm,
                                          hint="The insert's last millimetres run compliant")
-            # * Greyed until the run's current step is an insert with two mating joints (`draw`): no step yet.
+            # * Greyed until the run's current action tightens a joint screw (`draw`): no action yet.
             self._spiral = gui.add_checkbox("Spiral", default.spiral, disabled=True,
-                                            hint="The insert's compliant part searches in a spiral; only for a bar "
-                                                 "with two mating joints, greyed otherwise")
+                                            hint="The insert's compliant part searches in a spiral; greyed for a "
+                                                 "ground bar, whose insert is rigid")
             self._spiral_seconds = gui.add_slider("Spiral s", min=SPIRAL_SECONDS_RANGE[0], max=SPIRAL_SECONDS_RANGE[1],
                                                   step=1.0, initial_value=default.spiral_seconds,
                                                   hint="Seconds the spiral takes to reach its full 15 mm radius")
@@ -194,7 +194,7 @@ class RunPanel:
             #   come back as requests (`operator_only` above).
             self._shown_settings = shown
             settings = view.settings
-            # * Greyed and shown unticked where they do not apply (the spiral: an insert with two mating joints; the
+            # * Greyed and shown unticked where they do not apply (the spiral: an action with no joint screw; the
             #   servo: a ground bar's action); the stored setting is kept.
             self._spiral.disabled, self._servo.disabled = not status.spiral_fits, not status.servo_fits
             self._split.value, self._spiral.value = settings.insert_split_mm, settings.spiral and status.spiral_fits

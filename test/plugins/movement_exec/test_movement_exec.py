@@ -1325,8 +1325,8 @@ def test_an_inserts_rigid_part_whose_hold_is_refused_is_hold_not_sent():
 def test_the_insert_settings_are_read_once_and_reach_its_plan():
     """The split reaches the plan (its line, in a dry run); a spiral too fast is refused before it, nothing sent.
 
-    The spiral's seconds and turns reach B22's line (two mating joints); a split over 30 mm is taken as 30. B21, one
-    mating joint, drops the spiral asked for: its line says so, the setting is recorded, the plan has none.
+    The spiral's seconds and turns reach B22's line (two mating joints) and B21's (one); a split over 30 mm is taken
+    as 30.
     """
     def dry(current, settings: RunSettings) -> Lab:
         lab = compliant_lab(current, settings)
@@ -1353,9 +1353,9 @@ def test_the_insert_settings_are_read_once_and_reach_its_plan():
 
     lab = dry(("B21_J", 4), RunSettings(spiral=True, spiral_seconds=30.0, spiral_turns=6))
     result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP))
-    assert result.status == DRY_RUN and "straight line: no spiral for a bar with one mating joint" in said(lab)[0]
+    assert result.status == DRY_RUN and "spiral 15 mm, 30 s, 6 turns, pitch 2.5 mm" in said(lab)[0]
     command = lab.run.files()[-1]["command"]
-    assert command["settings"]["spiral"] is True and command["plan"]["spiral"] is None
+    assert command["settings"]["spiral"] is True and command["plan"]["spiral"]["turns"] == 6
 
 
 @pytest.mark.parametrize("solved", [True, False])

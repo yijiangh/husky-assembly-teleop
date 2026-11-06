@@ -18,7 +18,7 @@ import numpy as np
 
 from scaffolding_assembly_core.geometry import Pose
 
-from .stream import HOLD_FOR_STALL, Segment, stream
+from .stream import HOLD_FOR_STALL, Segment, line_target, stream
 
 if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
@@ -134,8 +134,8 @@ def _speed(seconds: float, turns: int, radius: float) -> float:
 
 
 def spiral_fits(mating: Collection[str]) -> bool:
-    """Whether an insert may spiral: it needs two mating joints; about one joint the spiral skews the bar."""
-    return len(mating) >= 2
+    """Whether an insert may spiral: it needs a mating joint, whose screw's stall ends the search."""
+    return bool(mating)
 
 
 def spiral_problem(seconds: float, turns: int) -> str:
@@ -153,7 +153,7 @@ def spiral_problem(seconds: float, turns: int) -> str:
 
 
 async def run_spiral(ctx: PluginContext, robot: HuskyRobotInterface, segment: Segment, spiral: Spiral, gate: Gate,
-                     operator: Operator, recorder: Recorder) -> str:
+                     operator: Operator, recorder: Recorder, stall_targets: dict[str, Pose]) -> str:
     """Spiral out along the line and hold its end (A); on Confirm go back to the line's end and hold for the stall (B).
 
     - A: the line over the spiral's seconds plus its offset, held at the end with no time limit. It ends on a stall;
@@ -170,6 +170,8 @@ async def run_spiral(ctx: PluginContext, robot: HuskyRobotInterface, segment: Se
         gate: Whether every mating screw stalled.
         operator: Asks the warning at the spiral's end.
         recorder: Gets a sample each tick; its phase is set to "spiral", then "spiral return".
+        stall_targets: Filled at a stall with each arm's target then; left empty when the stall came before the first
+            target, or with the arms already at the line's end.
 
     Returns:
         str: "stalled", "cancelled" (the operator's Cancel at the spiral's end), "no_stall" (B's time ran out), or
@@ -204,6 +206,9 @@ async def run_spiral(ctx: PluginContext, robot: HuskyRobotInterface, segment: Se
         return ended
     if answer is None:
         ctx.log_info(f"{serial}: {gate.text} STALLED at {spiral.text(last)}")
+        if last > 0.0:
+            stall_targets.update({name: line_target(segment.start[name], segment.end[name], spiral.seconds, last,
+                                                    spiral.offset(last)) for name in segment.start})
         return "stalled"
     if not answer:
         ctx.log_warn(f"{serial}: Cancel at the spiral's end; the insert ends here")
@@ -214,9 +219,19 @@ async def run_spiral(ctx: PluginContext, robot: HuskyRobotInterface, segment: Se
     returning = Segment({name: Pose.from_arrays(np.add(end.position, back), end.orientation)
                          for name, end in segment.end.items()}, segment.end, SPIRAL_RETURN, HOLD_FOR_STALL)
     recorder.phase = "spiral return"
-    ended = await stream(ctx, robot, returning, keep_going=lambda _elapsed: not gate.all_stalled(), recorder=recorder)
+
+    def returning_on(elapsed: float) -> bool:
+        """No stall yet; keeps when, since `stream` does not return its elapsed."""
+        nonlocal last
+        last = elapsed
+        return not gate.all_stalled()
+
+    ended = await stream(ctx, robot, returning, keep_going=returning_on, recorder=recorder)
     if ended == "ended":
         ctx.log_info(f"{serial}: {gate.text} STALLED after the return to the line's end")
+        if last < SPIRAL_RETURN:
+            stall_targets.update({name: line_target(returning.start[name], end, SPIRAL_RETURN, last)
+                                  for name, end in segment.end.items()})
         return "stalled"
     if ended == "time":
         ctx.log_warn(f"{serial}: no stall within {HOLD_FOR_STALL:.0f} s of the return to the line's end")
