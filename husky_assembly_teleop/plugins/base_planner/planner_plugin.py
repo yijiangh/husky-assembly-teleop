@@ -347,7 +347,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                     self._refused(ctx, serial, f"not committed: {short_serial(serial)}: {error}")
                     return
                 sent_at = ctx.now()
-                run = self._runs[serial] = Run(FollowerPath.from_poses(*path.points.T), sent_id, sent_at, rec)
+                run = self._runs[serial] = Run(FollowerPath.from_poses(*path.points.T, None, path.speed_scale), sent_id,
+                                               sent_at, rec)
                 scaled_as = getattr(robot.base, "scaled_as", "")
                 line = (f"base path {sent_id} sent to {serial}: {path.length:.2f} m, {len(path.points)} waypoints"
                         + (f", slowed {scaled_as}" if scaled_as else ""))

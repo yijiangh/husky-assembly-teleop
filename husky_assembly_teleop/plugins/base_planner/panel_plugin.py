@@ -389,7 +389,7 @@ class BasePlannerPanel(PlannerPanel):
         if plan is None or plan.path is None or plan.state == "sent":
             return None
         if self._preview is None or self._preview[0] != plan.id:
-            self._preview = plan.id, FollowerPath.from_poses(*plan.path.points.T)
+            self._preview = plan.id, FollowerPath.from_poses(*plan.path.points.T, None, plan.path.speed_scale)
         return self._preview[1]
 
     def _status_html(self, ctx: PluginContext) -> str:
