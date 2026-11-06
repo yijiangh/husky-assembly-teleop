@@ -490,8 +490,10 @@ class RobotControlPlugin(HuskyPlugin):
                 self._set_pose_sliders(widgets, *target_from_world(ctx, widgets.serial, widgets.arm, dragged))
             target = widgets.arm.from_husky(*pose_from_sliders(widgets.compliance.pose))
             force = np.array([slider.value for slider in widgets.compliance.force])
-            self._markers[key] = place_markers(ctx, widgets.serial, widgets.arm, target, force,
-                                               self._applied_force.get(key))
+            # * Hidden while another plugin drives the robot (an executor's insert runs under the compliance
+            #   controller too): the target and gizmo are this panel's sliders, not what that plugin sends.
+            self._markers[key] = None if self._leases.taken(ctx, widgets.serial) else place_markers(
+                ctx, widgets.serial, widgets.arm, target, force, self._applied_force.get(key))
         self._leases.release_idle(ctx, partial(self._busy, now))
 
     def _drive_clear(self, ctx: PluginContext, widgets: _BaseWidgets) -> bool:
