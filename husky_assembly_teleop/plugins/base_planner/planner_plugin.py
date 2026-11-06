@@ -152,6 +152,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         self._runs: dict[str, Run] = {}
         # The last search's debug record, once it returned.
         self._debug: Debug | None = None
+        #: The panel's Debug view box: while ticked, every search records, whoever asked for it (e.g. the guide).
+        self.debug_view = False
         # The ready plan's setup, planning time and recorded folder (None if not recorded), for its run.
         self._plan_record: dict | None = None
         # The ready plan's path and the joints it was planned with, for `stale_reason`; `forget` drops them.
@@ -179,7 +181,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             return Search(label=f"plan {short_serial(serial)}", message=f"planning for {short_serial(serial)}…",
                           work=lambda: PlanResult(None, reason, 0.0), time_limit=WAIT_MARGIN,
                           accepted=lambda _result: ("", False))
-        debug = Debug(on=request.debug)
+        debug = Debug(on=request.debug or self.debug_view)
         # * Take the snapshot here, on the main thread; the worker syncs from it.
         # * The robot is planned as it is: its arms, and what it holds.
         snapshot, guessed = with_guesses(ctx.scene.snapshot, robot_id(serial))

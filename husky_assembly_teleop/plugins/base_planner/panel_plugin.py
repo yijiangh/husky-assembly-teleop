@@ -168,7 +168,8 @@ class BasePlannerPanel(PlannerPanel):
                 gui.add_html(section("debug", NONE))
                 add_pybullet_window_toggle(ctx, gui, self._planner._executor, self._planner._world.set_gui)
                 self._debug_on = gui.add_checkbox("Debug view", initial_value=False,
-                                                  hint="Record how the next search works, and draw it on the floor")
+                                                  hint="Record how the next searches work, also the guide's, "
+                                                       "and draw them on the floor")
                 self._debug_legend = gui.add_html("")
                 self._debug_layers = gui.add_folder("Debug layers")
                 self._debug_notes = gui.add_html("")
@@ -176,6 +177,9 @@ class BasePlannerPanel(PlannerPanel):
         self._task.on_update(ctx.defer_value("choose task", lambda name: self._choose_task(ctx, str(name))))
         load.on_click(ctx.defer_value("load target", lambda label: self._load_target(ctx, label)))
         self._algorithm.on_update(ctx.defer_value("choose algorithm", lambda label: self._choose_algorithm(str(label))))
+        # * The box is the planner's: searches asked by others (e.g. the guide) record too.
+        self._debug_on.on_update(ctx.defer_value("debug view",
+                                                 lambda on: setattr(self._planner, "debug_view", bool(on))))
 
         self._markers = Markers(ctx)
         self._debug_view = DebugView(ctx, self._debug_legend, self._debug_layers, self._debug_notes)
