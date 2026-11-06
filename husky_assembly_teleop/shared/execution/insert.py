@@ -183,7 +183,8 @@ async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
                      watch: Callable[[], str] | None = None, recorder: Recorder | None = None) -> PartOutcome:
     """Run an insert: checks, the screws, the rigid part, then the compliant part.
 
-    - Refused, nothing sent, unless every check of `part_problem` passes.
+    - Refused, nothing sent, unless every check of `part_problem` passes and the arms would take every compliant
+      target.
     - The compliant line runs from each arm's measured TCP at the handover to its planned end, fixed in the world with
       the base where it stood when the insert started.
 
@@ -214,6 +215,10 @@ async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
         return PartOutcome(REFUSED, f"{problem}; nothing sent", record=record)
     if dry_run:
         return await _dry_run(ctx, robot, plan, record)
+    refused = _compliant_refusal(robot, plan)
+    if refused:
+        ctx.log_warn(f"{label} refused: {refused}; nothing sent")
+        return PartOutcome(REFUSED, f"{refused}; nothing sent", record=record)
     (started, recorder), husky = started_part(ctx, robot, recorder), robot.husky_in_world()
     phase = phase_keeper(ctx, started, record.setdefault("phases", []))
     gate: StallGate | None = None
@@ -292,36 +297,43 @@ async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
 # --- --- --- --- --- PARTS --- --- --- --- ---
 
 async def _dry_run(ctx: PluginContext, robot: HuskyRobotInterface, plan: InsertPlan, record: dict) -> PartOutcome:
-    """Build the rigid part's trajectory, and check every compliant target as the arm would; send nothing.
-
-    The compliant line starts at tool0 at the handover row; its targets are checked by `first_refused_target`.
-    """
+    """Build the rigid part's trajectory, and check every compliant target as the arm would; send nothing."""
     if plan.rigid is not None:
         built = await send_motion(ctx, robot, plan.rigid, dry_run=True)
         if built.status != SENT_DRY:
             return PartOutcome(REFUSED, f"dry run: rigid part: {built.reason}", record=record)
     if plan.compliant:
-        husky = robot.husky_in_world()
-        handover = dict(zip(plan.names, plan.rows[0])) if plan.rigid is None else {
-            name: value for motion in plan.rigid.arms
-            for name, value in zip(arm_joint_names(motion.arm), motion.positions[-1])}
-        start = {name: compose(_arm_base(robot, name, husky),
-                               tool0_in_base_link(robot.config.model.urdf, name, handover)) for name in plan.arms}
-        end = _line_ends(robot, plan, husky)
-        spiral = _spiral(plan, husky)
-        if spiral is None:
-            lines = [(Segment(start, end, plan.compliant_seconds, 0.0), None)]
-        else:
-            back = spiral.offset(spiral.seconds)
-            out = {name: Pose.from_arrays(np.add(pose.position, back), pose.orientation) for name, pose in end.items()}
-            lines = [(Segment(start, end, spiral.seconds, 0.0), spiral.offset),
-                     (Segment(out, end, SPIRAL_RETURN, 0.0), None)]
-        refused = first_refused_target(robot, lines)
-        if refused is not None:
-            name, at, problem = refused
-            return PartOutcome(REFUSED, f"dry run: {name}'s compliant target at {at:.1f} s: {problem}", record=record)
+        refused = _compliant_refusal(robot, plan)
+        if refused:
+            return PartOutcome(REFUSED, f"dry run: {refused}", record=record)
         ctx.log_warn(f"DRY RUN {plan.serial}: insert: every compliant target passed the arm's checks, NOT SENT")
     return PartOutcome(DRY_RUN, "every check passed; nothing sent (dry run)", record=record)
+
+
+def _compliant_refusal(robot: HuskyRobotInterface, plan: InsertPlan) -> str:
+    """Why an arm would refuse a compliant target (`first_refused_target`) from tool0 at the handover; "" if none."""
+    if not plan.compliant:
+        return ""
+    husky = robot.husky_in_world()
+    handover = dict(zip(plan.names, plan.rows[0])) if plan.rigid is None else {
+        name: value for motion in plan.rigid.arms
+        for name, value in zip(arm_joint_names(motion.arm), motion.positions[-1])}
+    start = {name: compose(_arm_base(robot, name, husky),
+                           tool0_in_base_link(robot.config.model.urdf, name, handover)) for name in plan.arms}
+    end = _line_ends(robot, plan, husky)
+    spiral = _spiral(plan, husky)
+    if spiral is None:
+        lines = [(Segment(start, end, plan.compliant_seconds, 0.0), None)]
+    else:
+        back = spiral.offset(spiral.seconds)
+        out = {name: Pose.from_arrays(np.add(pose.position, back), pose.orientation) for name, pose in end.items()}
+        lines = [(Segment(start, end, spiral.seconds, 0.0), spiral.offset),
+                 (Segment(out, end, SPIRAL_RETURN, 0.0), None)]
+    refused = first_refused_target(robot, lines)
+    if refused is None:
+        return ""
+    name, at, problem = refused
+    return f"{name}'s compliant target at {at:.1f} s: {problem}"
 
 
 async def _compliant(ctx: PluginContext, robot: HuskyRobotInterface, plan: InsertPlan, husky: Pose, gate: Gate,

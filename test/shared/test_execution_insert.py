@@ -536,6 +536,16 @@ def test_every_refusal_sends_nothing(change, why):
     assert outcome.status == REFUSED and why in outcome.reason and lab.nothing_sent()
 
 
+@pytest.mark.parametrize("settings", [{}, {"mating": ARMS, "spiral": (20.0, 4)}])
+def test_a_compliant_target_out_of_reach_refuses_before_anything_moves(monkeypatch, settings):
+    """The rigid part would run, but an arm would refuse the compliant line: no screw starts, no arm moves."""
+    monkeypatch.setattr("husky_assembly_teleop.robot_interface.arm.UR5E_REACH", 0.01)
+    lab = Lab()
+    outcome = lab.run(lab.plan(**settings))
+    assert outcome.status == REFUSED and lab.nothing_sent()
+    assert "compliant target at 0.0 s: out of reach" in outcome.reason and outcome.reason.endswith("nothing sent")
+
+
 @pytest.mark.parametrize("settings", [{}, {"mating": ARMS, "spiral": (20.0, 4)}, {"mating": (), "grounded": True}])
 def test_a_dry_run_publishes_nothing(settings):
     """Every check runs (the rigid trajectory built, each compliant target checked); nothing goes out."""
