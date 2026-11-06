@@ -67,7 +67,7 @@ button changes height while a step shows, so the buttons never jump.
   blue), its state and, in short, why (hover for all of it). Steps with a result have a solid number chip: **passes**
   (green), **fails** or **out of date** (red: built from data that changed since, e.g. Record and Solve after the tool
   body changed), **none yet** or **pending** (grey: nothing to judge yet), **accepted** (amber: a failing result you
-  went on past with Done; a result missing or out of date is never accepted), **not in use** (amber, Tip offset only:
+  went on past with Done, or a missing one you skipped; a result out of date is never accepted), **not in use** (amber, Tip offset only:
   its fit is not Punch's TCP offset; no work left). The steps that gather a precondition for later steps (Setup, Marker
   error, Sweeps) have a dashed one: **holds** (green), **expired** (amber; why and since when on hover), **none yet**,
   **fails**. The current step outlines, dotted blue, the precondition steps it needs that have expired.
@@ -103,8 +103,9 @@ button changes height while a step shows, so the buttons never jump.
   of date or expired) for 5 s; pressed in that time it goes on (to the next step if the
   work left is this one), after it the button is Done again. Accept as is shows the step **accepted** (amber) in the
   overview: the acceptance holds while what the result was calculated from (and, for Punch, the calibration it was
-  judged under) stays the same, and the run file keeps it. Skip records nothing: the step still shows none yet or out of
-  date.
+  judged under) stays the same, and the run file keeps it. Skip on a missing result
+  accepts it the same way, "skipped" (Done elsewhere no longer leads back to it; a result made later ends it). Skip on a
+  result out of date or an expired precondition records nothing: the step still shows out of date or expired.
 - The one time Back, Done and Next do nothing is while something runs: they are grey ("Cancel first").
 - A second panel, docked right, holds **Live** (marker errors; base drift since the collision check, moved in mm and
   turned in degrees) and **Results** (figures). It starts minimized to a thin rail at the screen's right edge: click
@@ -345,12 +346,14 @@ mounted as it was for Record. Expired Setup or marker errors only warn: **Sample
    pose where it can, so no joint turns round on the way and the cables do not wind up. A pose
    that collides, or has no collision-free move from here, is skipped.
 3. Two rows of chips. **spots**: one per spot sampled, "spot 2 · 6" (its samples), coloured by its worst sample
-   (hover for how far they spread), and the next spot. **poses here**: one per pose at this spot, grey until
-   visited, then by the sample's distance from the mean in `tool0` (the position check's 2 / 5 mm), or red if it
-   collides or has no move (hover for why). **markers**: each pose's sample's marker error at this spot (red
-   over 2 mm, amber over 1 mm; a spot chip's hover gives its largest). In the scene, a dot where the
-   tool body was at every sample of the run, in the same colours, and a frame at `base_footprint` where the base
-   stood for each spot ("spot 1", "spot 2", …; the spot in progress last), also for a resumed run's spots.
+   (hover for how far they spread), and the next spot; that one turns amber, **too close to spot n**, once the base
+   moved off spot n but less than 0.5 m and 30°: samples there would join spot n (hover for how much further).
+   **poses here**: one per pose at this spot, grey until visited, then by the sample's distance from the mean in
+   `tool0` (the position check's 2 / 5 mm), or red if it collides or has no move (hover for why). **markers**: each
+   pose's sample's marker error at this spot (red over 2 mm, amber over 1 mm; a spot chip's hover gives its largest).
+   In the scene, a dot where the tool body was at every sample of the run, in the same colours, and a frame at
+   `base_footprint` where the base stood for each spot ("spot 1", "spot 2", …; the spot in progress last), also for a
+   resumed run's spots.
 4. Repeat at 3 spots or more, far apart (0.5 m) or turned (30°), best with headings all round. Each sample is
    written as it is taken, a file each (`validation_pose<n>`), so nothing sampled is lost however the validation
    ends. Spots are counted by where the base stood, not by file: going on at the same place adds to that spot.
@@ -422,7 +425,7 @@ The **Tool pad** has a row per axis of its **Frame**, coloured as the scene draw
 the left shift −/+ along it, on the right turn −/+ about it through the tip, by the **Step size** chosen (0.1 mm and
 0.2° up to 5 mm and 5°). **Robot**, at start, is the robot's frame: x forward, y left, z up, whatever the flange's
 turn (from the joints only: no mocap); **Tool** is tool0's own (z out of the flange). Step size and Frame are
-dropdowns on the laptop and rows of buttons on the phone. Turning keeps the tip in place once the offset is known (until then it
+rows of buttons, taller on the phone. Turning keeps the tip in place once the offset is known (until then it
 turns about tool0), so after the first pose a new tilt is a few turn clicks and a small shift.
 Each step is a short joint move on the joint controller, solved on the URDF; a step that needs more than 10° on a
 joint (the wrist near straight) is refused: move the arm away by free drive. Only **area, e-stop** red stops free

@@ -23,6 +23,7 @@ import asyncio
 import numpy as np
 import viser
 
+from ...config import short_serial
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
@@ -141,7 +142,7 @@ class ExampleLeaseAndFreezePlugin(HuskyPlugin):
         chips = ""
         for serial, robot in ctx.world.robots.items():
             lease = robot.lease_slot.lease
-            chips += chip(f"{serial} {'held' if lease else 'free'}", BUSY if lease else NONE,
+            chips += chip(f"{short_serial(serial)} {'held' if lease else 'free'}", BUSY if lease else NONE,
                           f"leased by {lease.holder}" if lease else "nothing in this monitor holds its lease")
         label, reason = self.outcome
         if label:

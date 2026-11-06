@@ -371,7 +371,7 @@ def test_tool0_servo_converges_in_one_pass_and_is_recorded():
     assert None not in found and found == sorted(found), list(zip(wanted, found))
     assert not lab.ctx.world.tracked_objects
     text, warn = lab.prompts()[0]
-    assert text.startswith("cindy (a200-0806): B20_J_transfer — SERVO 1/8 onto the insert start "
+    assert text.startswith("cindy (0806): B20_J_transfer — SERVO 1/8 onto the insert start "
                            "(tool0): stub, 2 rows")
     assert "flanges move L 10.00 mm, R 10.00 mm" in text and not warn
     event, fields = next((event, fields) for event, fields in lab.run.records if event == "servo")
@@ -534,7 +534,7 @@ def test_servo_by_bar_without_a_bar_asks_first_and_cancel_records_without_sendin
     result = execute(lab, lab.servo_request(), False)
     assert result.status == CANCELLED and result.done == () and lab.published() == 0 and lab.free()
     text, warn = lab.prompts()[0]
-    assert warn and text.startswith("cindy (a200-0806): B20_J_transfer — SERVO by bar: no usable mocap fit of B20 "
+    assert warn and text.startswith("cindy (0806): B20_J_transfer — SERVO by bar: no usable mocap fit of B20 "
                                     "(asset 1020): the bar could not be measured (no marker sample). Tool0 servo "
                                     "(Confirm): servo tool0 onto the authored targets of the insert start instead")
     assert "cancelled at the bar prompt" in result.reason and not lab.planner.requests
@@ -721,7 +721,7 @@ def test_another_robot_starting_to_move_during_a_pass_interrupts_and_holds():
             belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
 
     result = execute(lab, lab.servo_request(), True, during=start_belle)
-    assert result.status == FAILED and "a200-0805 ur_arm is running a trajectory" in result.reason
+    assert result.status == FAILED and "0805 ur_arm is running a trajectory" in result.reason
     assert lab.holds() == [1, 1] and result.done == ()
     assert lab.run.files()[-1]["outcome"]["status"] == INTERRUPTED and lab.servo_record() is not None
 
@@ -740,7 +740,7 @@ def test_another_robot_moved_just_before_a_pass_is_refused():
             belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
 
     result = execute(lab, lab.servo_request(), True, during=nudge_belle)
-    assert result.status == REFUSED and "a200-0805 ur_arm" in result.reason, result.reason
+    assert result.status == REFUSED and "0805 ur_arm" in result.reason, result.reason
     assert len(lab.cindy._multi_arm.messages) == 1 and len(lab.planner.requests) == 1 and result.done == ()
 
 
@@ -835,7 +835,7 @@ def test_a_dry_run_builds_one_pass_and_is_never_done():
     lab.plugin.request_dry_run(True)
     result = execute(lab, lab.servo_request(), True)
     assert result.status == DRY_RUN and result.done == () and lab.published() == 0
-    assert lab.prompts()[0][0].startswith("cindy (a200-0806): DRY RUN — ")
+    assert lab.prompts()[0][0].startswith("cindy (0806): DRY RUN — ")
     record = lab.servo_record()
     assert record["dry_run"] and [move["outcome"] for move in record["moves"]] == [SENT_DRY]
     assert any("DRY RUN a200-0806 left_ur_arm" in line for line in lab.ctx.lines("warn"))

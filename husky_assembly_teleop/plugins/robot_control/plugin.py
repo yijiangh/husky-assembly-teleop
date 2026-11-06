@@ -31,6 +31,7 @@ import numpy as np
 import viser
 from scipy.spatial.transform import Rotation
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.signals import force, torque
@@ -240,7 +241,7 @@ class RobotControlPlugin(HuskyPlugin):
             robots = gui.add_tab_group()
             for serial, robot in ctx.world.robots.items():
                 # "a200-0806" -> "0806"
-                with robots.add_tab(serial.split("-")[-1], icon=viser.Icon.ROBOT):
+                with robots.add_tab(short_serial(serial), icon=viser.Icon.ROBOT):
                     parts = gui.add_tab_group()
                     with parts.add_tab("Base", icon=viser.Icon.CAR):
                         self._bases.append(self._build_base(ctx, gui, serial, robot.base))
@@ -253,7 +254,7 @@ class RobotControlPlugin(HuskyPlugin):
             phone.add_html(PHONE_DPAD_STYLE + f"<style>{big_buttons([FREE_DRIVE_ICON], 64, 28)}</style>")
             robots = phone.add_tab_group()
             for widgets in self._bases:
-                with robots.add_tab(widgets.serial.split("-")[-1], icon=viser.Icon.ROBOT):
+                with robots.add_tab(short_serial(widgets.serial), icon=viser.Icon.ROBOT):
                     widgets.phone_status = phone.add_html("")
                     widgets.phone_speed, buttons = build_velocity_inputs(
                         ctx, phone, widgets.serial, partial(self._on_hold, widgets.serial), widgets.clearance)
@@ -325,7 +326,7 @@ class RobotControlPlugin(HuskyPlugin):
 
         status = gui.add_html(""), gui.add_html("")
         hold = partial(self._hold_arm, serial, arm)
-        jog_inputs = partial(build_jog_inputs, ctx, gui, label, partial(self._on_jog_hold, ctx, key), hold,
+        jog_inputs = partial(build_jog_inputs, ctx, gui, label, partial(self._on_jog_hold, ctx, key),
                              partial(self._on_tool_jog_hold, ctx, key), ARM_STOP_DISTANCE)
         compliance_inputs = partial(build_compliance_inputs, ctx, gui, label, arm,
                                     load=partial(self._load_pose.add, key),
@@ -444,7 +445,7 @@ class RobotControlPlugin(HuskyPlugin):
         if soft_stopped and serial in self._tripped:
             return "too close", f"{self._tripped[serial]}: soft stopped; drive clear after Resume, or untick Clearance"
         if soft_stopped:
-            return "soft stopped", f"robot {serial} is soft stopped; press Resume first"
+            return "soft stopped", f"robot {short_serial(serial)} is soft stopped; press Resume first"
         taken = self._leases.taken(ctx, serial)
         return None if taken is None else ("lease refused", taken)
 
@@ -489,8 +490,10 @@ class RobotControlPlugin(HuskyPlugin):
                 self._set_pose_sliders(widgets, *target_from_world(ctx, widgets.serial, widgets.arm, dragged))
             target = widgets.arm.from_husky(*pose_from_sliders(widgets.compliance.pose))
             force = np.array([slider.value for slider in widgets.compliance.force])
-            self._markers[key] = place_markers(ctx, widgets.serial, widgets.arm, target, force,
-                                               self._applied_force.get(key))
+            # * Hidden while another plugin drives the robot (an executor's insert runs under the compliance
+            #   controller too): the target and gizmo are this panel's sliders, not what that plugin sends.
+            self._markers[key] = None if self._leases.taken(ctx, widgets.serial) else place_markers(
+                ctx, widgets.serial, widgets.arm, target, force, self._applied_force.get(key))
         self._leases.release_idle(ctx, partial(self._busy, now))
 
     def _drive_clear(self, ctx: PluginContext, widgets: _BaseWidgets) -> bool:

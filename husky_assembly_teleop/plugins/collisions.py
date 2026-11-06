@@ -26,6 +26,7 @@ import numpy as np
 import trimesh
 import viser
 
+from ..config import short_serial
 from ..colors import BODY, COLLISION, CONTACT, HIT, rgb, rgb01
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
@@ -164,7 +165,7 @@ class CollisionsPlugin(HuskyPlugin):
         hits = {}
         for trip in trips:
             if trip.hit is not None and trip.time > self._cleared_trips:
-                label = f"{time.strftime('%H:%M:%S', time.localtime(trip.time))} {trip.serial}"
+                label = f"{time.strftime('%H:%M:%S', time.localtime(trip.time))} {short_serial(trip.serial)}"
                 hits[label if label not in hits else f"{label} ({len(hits) + 1})"] = trip.hit
         if hits:
             self.replace(CLEARANCE, hits, shown=(list(hits)[-1],))

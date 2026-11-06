@@ -630,8 +630,7 @@ def test_each_jog_has_its_clearance_box_below_its_buttons_and_the_two_are_one_se
     gui = FakeGui()
     ctx = SimpleNamespace(defer=lambda _label, run, operator_only=False: lambda *_event: run(),
                           defer_value=lambda _label, run, operator_only=False: run)
-    inputs = build_jog_inputs(ctx, gui, "0804 ur_arm", lambda *_args: None, lambda: None, lambda *_args: None,
-                              ARM_STOP_DISTANCE)
+    inputs = build_jog_inputs(ctx, gui, "0804 ur_arm", lambda *_args: None, lambda *_args: None, ARM_STOP_DISTANCE)
     order = [widget.kind for widget in gui.widgets]
     boxes = [index for index, widget in enumerate(gui.widgets) if widget.label == "Clearance"]
     buttons = [index for index, kind in enumerate(order) if kind == "button"]

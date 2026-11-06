@@ -6,8 +6,8 @@ models in a compas_fab world (several seconds).
 
 ! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`), under an
   ARM_MOVE clearance on the robot (`commit_clearance`) when committed with Clearance ticked, so the base
-  pose must be known to send. Paths keep PLAN_DISTANCE, or as much as start and target have (`endpoint_margin`); then
-  the clearance is half that (`ARM_MOVE`).
+  pose must be known to send. Paths keep PLAN_DISTANCE; only a pair start or target is closer for keeps what they have
+  (`endpoint_margins`), and the clearance is then half the smallest (`ARM_MOVE`).
 """
 
 from __future__ import annotations
@@ -20,11 +20,13 @@ from typing import Callable, Sequence
 
 import numpy as np
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.mocap_state import pose_lost
 from ...robot_interface.soft_stop import MotionRefused
 from ...shared.arm_planner_contract import MAX_SLOWDOWN, ArmPlanRequest
+from ...shared.assembly_planning.ik import solve_ik
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.execution.send import ARRIVED, HOLD_NOT_SENT, INTERRUPTED, REFUSED, STOPPED, TIMEOUT, ArmMotion, \
@@ -39,8 +41,9 @@ from ...ui.style import hover
 from ...world.checks import BAD, GOOD, WARN, Check
 from ...world.clearance import ARM_MOVE, PLAN_DISTANCE, Clearance, clearance_problem
 from ...world.stand_ins import with_stand_ins
+from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
-from .planner import ArmPath, margin_note, path_hit, plan_arm
+from .planner import ArmPath, margin_note, path_hit, plan_arms
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far; the panel also
 #: refuses a target this far from the planned goal.
@@ -54,20 +57,22 @@ MOTION_LABELS = {ARRIVED: "done", REFUSED: "refused", TIMEOUT: "timed out", STOP
 LOAD_ALLOWANCE = 60.0
 
 
-def arm_command(serial: str, arm_name: str, path: ArmPath) -> MotionCommand:
-    """A path as a command for one arm, in the driver's joint order, timed as planned and previewed.
+def arm_command(serial: str, arm_names: str | Sequence[str], path: ArmPath) -> MotionCommand:
+    """A path as a command for its arms, each in the driver's joint order, timed as planned and previewed.
 
     Args:
         serial: Which robot.
-        arm_name: Which arm.
-        path: The path to follow; its first point must be where the arm is now (`START_TOLERANCE`), else the arm
+        arm_names: Which arm, or arms (in the robot's arm order): one motion each, sent together.
+        path: The path to follow; its first point must be where the arms are now (`START_TOLERANCE`), else an arm
             refuses it.
     """
-    order = [path.joint_names.index(name) for name in arm_joint_names(arm_name)]
-    points = path.points[:, order]
-    travel = float(np.max(np.sum(np.abs(np.diff(points, axis=0)), axis=0)))
-    return MotionCommand(serial, (ArmMotion(arm_name, points, path.velocities[:, order]),), path.duration,
-                         path.fastest, path.duration, travel)
+    motions, travel = [], 0.0
+    for arm_name in ([arm_names] if isinstance(arm_names, str) else arm_names):
+        order = [path.joint_names.index(name) for name in arm_joint_names(arm_name)]
+        points = path.points[:, order]
+        travel = max(travel, float(np.max(np.sum(np.abs(np.diff(points, axis=0)), axis=0))))
+        motions.append(ArmMotion(arm_name, points, path.velocities[:, order]))
+    return MotionCommand(serial, tuple(motions), path.duration, path.fastest, path.duration, travel)
 
 
 @register
@@ -103,7 +108,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
 
     def make_search(self, ctx: PluginContext, request: ArmPlanRequest, abort: threading.Event) -> Search:
         """Search from where the arm is in the tick's snapshot to the request's goal."""
-        serial, arm, goal = request.serial, request.arm, np.array(request.goal)
+        serial, arm, goal = request.serial, request.arm, np.array(request.goals)
+        arms, what = request.arms, " + ".join(request.arms)
         # * Take the snapshot here, on the main thread; the arm starts where it is in it.
         live = ctx.scene.snapshot
         snapshot, guessed = with_guesses(live, robot_id(serial))
@@ -120,10 +126,10 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
-                return PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0)
+                return PlanResult(None, f"{short_serial(serial)} can't be planned for: {'; '.join(problems)}", 0.0)
             stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
             others[:] = stand_ins.warnings
-            result = plan_arm(self._world.sync(stand_ins.scene, serial), stand_ins.scene, arm, goal, abort)
+            result = plan_arms(self._world.sync(stand_ins.scene, serial), stand_ins.scene, arms, goal, abort)
             if result.path is None and others:
                 result = replace(result, reason=f"{result.reason} ({unmeasured(others)})")
             return result
@@ -138,12 +144,13 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             how = "straight" if result.direct else "RRT"
             stand_ins = f" ({unmeasured(others)})" if others else ""
             message = (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
-                       f"{margin_note(result.path.margin)}, found in {result.seconds:.1f} s{notes}{stand_ins}")
+                       f"{margin_note(result.path.margin, result.path.close)}, "
+                       f"found in {result.seconds:.1f} s{notes}{stand_ins}")
             # * A path keeping less than usual warns: its commit's clearance is smaller too (`close_note`).
             return message, bool(guessed or others or result.path.margin < PLAN_DISTANCE)
 
-        return Search(label=f"plan {serial} {arm}",
-                      message=f"planning for {serial} {arm}…{notes}"
+        return Search(label=f"plan {serial} {what}",
+                      message=f"planning for {short_serial(serial)} {what}…{notes}"
                       + (" (loading the models first)" if loading else ""),
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
                       accepted=accepted, finished=finished)
@@ -168,6 +175,61 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         self._ctx.submit(f"check path {serial}", lambda: self._start_check(serial, arm, path, margin, future))
         return future
 
+    def solve_goal(self, serial: str, arm: str, tool0: Pose,
+                   reference: Sequence[float] | None = None) -> asyncio.Future[tuple[tuple[float, ...] | None, str]]:
+        """Joints for `arm` that put its tool0 at `tool0`, by IK at the live base (`ArmPlannerContract`)."""
+        names = arm_joint_names(arm)
+        solved = self.solve_goals(serial, {arm: tool0}, dict(zip(names, reference)) if reference is not None else None)
+        future = asyncio.get_running_loop().create_future()
+
+        def done(answer: asyncio.Future) -> None:
+            joints, line = answer.result()
+            future.set_result((tuple(joints[name] for name in names) if joints is not None else None, line))
+
+        solved.add_done_callback(done)
+        return future
+
+    def solve_goals(self, serial: str, targets, reference=None) -> asyncio.Future:
+        """Joints that put each arm's tool0 at its pose, the arms together, by IK at the live base.
+
+        `ArmPlannerContract.solve_goals`.
+        """
+        future = asyncio.get_running_loop().create_future()
+        self._ctx.submit(f"solve goal {serial}", lambda: self._start_goal(serial, dict(targets), reference, future))
+        return future
+
+    def _start_goal(self, serial: str, targets: dict, reference, future: asyncio.Future) -> None:
+        """Snapshot the world and solve the goal on the worker, after any search before it. Main thread."""
+        snapshot, _guessed = with_guesses(self._ctx.scene.snapshot, robot_id(serial))
+        names = [name for arm in targets for name in arm_joint_names(arm)]
+
+        def work() -> tuple[dict[str, float] | None, str]:
+            robot = snapshot.robots[robot_id(serial)]
+            problems = robot.acting_problems()
+            if problems:
+                return None, f"{short_serial(serial)} can't be solved for: {'; '.join(problems)}"
+            scene = with_stand_ins(snapshot, {robot_id(serial)}).scene
+            mirror = self._world.sync(scene, serial)
+            self._loaded.add(serial)
+            result = solve_ik(mirror, scene.robots[robot_id(serial)], targets, reference, log=self._ctx.log_info)
+            if result.joints is None:
+                return None, f"no goal at the live base: {result.reason}"
+            joints = {name: float(result.joints[name]) for name in names}
+            return joints, (f"goal by IK at the live base ({result.backend}, rank {result.rank} of "
+                            f"{result.combinations}, {math.degrees(result.max_change):.1f}° from the arms now)")
+
+        async def run() -> None:
+            try:
+                answer = await asyncio.get_running_loop().run_in_executor(self._executor, work)
+            except BaseException as error:
+                if not future.done():
+                    future.set_result((None, f"IK failed: {error!r}"))
+                raise
+            if not future.done():
+                future.set_result(answer)
+
+        self._ctx.spawn(f"solve goal {serial} {' + '.join(targets)}", run())
+
     def _start_check(self, serial: str, arm: str, waypoints: np.ndarray, margin: float,
                      future: asyncio.Future[CollisionHit | None]) -> None:
         """Snapshot the world and check the path on the worker, after any search before it. Main thread."""
@@ -176,7 +238,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         def work() -> CollisionHit | None:
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
-                raise ValueError(f"{serial} can't be checked: {'; '.join(problems)}")
+                raise ValueError(f"{short_serial(serial)} can't be checked: {'; '.join(problems)}")
             scene = with_stand_ins(snapshot, {robot_id(serial)}).scene
             result = path_hit(self._world.sync(scene, serial), scene, arm, waypoints, margin)
             self._loaded.add(serial)
@@ -202,7 +264,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         """Stale once the arm or base moves away from the plan's start, or mocap loses a base it tracked then."""
         request = plan.request
         joints = ctx.kinematics.joints(request.serial)
-        here = np.array([joints.get(name, 0.0) for name in arm_joint_names(request.arm)])
+        here = np.array([joints.get(name, 0.0) for arm in request.arms for name in arm_joint_names(arm)])
         if np.max(np.abs(here - plan.path.start)) > STALE_JOINT:
             return "the arm moved since planning"
         # * The base is kept for the latest plan only; `forget` drops it when the plan is replaced or cleared.
@@ -234,7 +296,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         # * The last run's chip goes: every way out below sets this run's, or none for a replaced commit.
         self._motions.pop(key, None)
         if problem := clearance_problem(ctx.scene.snapshot.robots.get(robot_id(serial))):
-            answer(False, f"nothing sent: {serial}: {problem}")
+            answer(False, f"nothing sent: {short_serial(serial)}: {problem}")
             ctx.log_warn(f"{what}: nothing sent: {problem}")  # * the run chip's hover may be cut
             self._motions[key] = Check("refused", BAD, hover(f"{what}: nothing sent: {problem}"))
             return
@@ -249,7 +311,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             with self.commit_clearance(ctx, plan) as clearance:
                 await self.first_check(ctx, clearance)
                 ctx.log_info(f"{what}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
-                outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
+                arms = [arm for arm in ctx.world.robots[serial].arms if arm in plan.request.arms]
+                outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arms, path),
                                             on_sent=sent)
         except asyncio.CancelledError:
             if refusal := self.start_refusal(clearance):

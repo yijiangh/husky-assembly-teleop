@@ -222,8 +222,10 @@ def load_urdf(urdf_file: Path, collision: bool = False) -> yourdfpy.URDF:
         """
         return resolve_mesh_path(fname, urdf_file)
 
-    model = yourdfpy.URDF.load(
-        str(urdf_file),
+    # * Parse the XML alone, then load the meshes through the cache.
+    parsed = yourdfpy.URDF.load(str(urdf_file), build_scene_graph=False, load_meshes=False)
+    model = _CachedMeshURDF(
+        robot=parsed.robot,
         filename_handler=resolve,
         load_meshes=True,
         build_collision_scene_graph=collision,
@@ -232,6 +234,37 @@ def load_urdf(urdf_file: Path, collision: bool = False) -> yourdfpy.URDF:
     for mesh in model.scene.geometry.values():
         make_matte(mesh)
     return model
+
+
+#: Each mesh file parsed so far, by (path, scale, force_mesh, skip_materials); `_CachedMeshURDF` hands out copies.
+_MESH_SCENES: dict[tuple, trimesh.Scene] = {}
+
+
+class _CachedMeshURDF(yourdfpy.URDF):
+    """A yourdfpy URDF that parses each mesh file once per process; the robots share most of their meshes.
+
+    Any thread: two threads may parse the same file at once, and one result is kept.
+    """
+
+    def _geometry2trimeshscene(self, geometry, load_file, force_mesh, skip_materials):
+        """Load one geometry as yourdfpy does, but copy the cached scene for a mesh file read before."""
+        mesh = geometry.mesh
+        if mesh is None or not load_file:
+            return super()._geometry2trimeshscene(geometry, load_file, force_mesh, skip_materials)
+        scale = None if mesh.scale is None else tuple(np.ravel(mesh.scale))
+        key = (self._filename_handler(fname=mesh.filename), scale, force_mesh, skip_materials)
+        scene = _MESH_SCENES.get(key)
+        if scene is None:
+            scene = super()._geometry2trimeshscene(geometry, load_file, force_mesh, skip_materials)
+            if scene is None:
+                return None  # a missing file: yourdfpy has warned
+            _MESH_SCENES[key] = scene
+        # ! A copy: callers restyle the meshes in place (`make_matte`). `copy` drops where each mesh came from, which
+        #   names it in the model (`forearm.obj`); trimesh's own loaders set `_source` the same way.
+        copied = scene.copy()
+        for name, copied_mesh in copied.geometry.items():
+            copied_mesh._source = scene.geometry[name].source
+        return copied
 
 
 @cache

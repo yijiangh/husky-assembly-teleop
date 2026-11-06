@@ -30,6 +30,7 @@ import viser
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.scene import Scene
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.assembly_planning.mirrors import MirrorPool
@@ -317,8 +318,7 @@ class MotionPlannerPlugin(HuskyPlugin):
             if serials:
                 robots = gui.add_tab_group()
                 for serial in serials:
-                    # "a200-0806" -> "0806", as in Control.
-                    with robots.add_tab(serial.split("-")[-1], icon=viser.Icon.ROBOT):
+                    with robots.add_tab(short_serial(serial), icon=viser.Icon.ROBOT):
                         # * Guessed like the arm planner's, so an untracked robot still shows.
                         self._window_boxes[serial] = add_pybullet_window_toggle(
                             ctx, gui, self._executor, partial(self._window, serial),

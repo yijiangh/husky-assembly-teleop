@@ -26,6 +26,7 @@ from async_timeout import timeout
 
 from scaffolding_assembly_core.ids import robot_id
 
+from ...config import short_serial
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV3
 from ...robot_interface.soft_stop import MotionRefused
@@ -122,7 +123,7 @@ class Job:
     @property
     def who(self) -> str:
         """str: The robot as prompts name it, e.g. "alice (a200-0804)"."""
-        return f"{self.request.robot_name} ({self.request.serial})"
+        return f"{self.request.robot_name} ({short_serial(self.request.serial)})"
 
 
 @dataclass

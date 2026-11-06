@@ -18,7 +18,7 @@ from scaffolding_assembly_core.geometry import Pose
 from ...colors import AXIS_X, AXIS_Y, AXIS_Z, rgb
 from ...plugin_api.context import PluginContext
 from ...ui.phone import columns_css
-from .choice_row import ChoiceRow
+from ...ui.choice_row import ChoiceRow
 from .clearance_toggle import ClearanceToggle
 
 #: Step sizes, fine to coarse: label -> (shift in metres, turn in degrees). Labels short: four fit one phone row.
@@ -67,7 +67,7 @@ def tool_step(button: str, size: str) -> Pose:
 
 
 def build_tool_step_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on_step: Callable[[Pose, str], None],
-                           clearance: ClearanceToggle, phone: bool = False) -> viser.GuiDropdownHandle | ChoiceRow:
+                           clearance: ClearanceToggle, phone: bool = False) -> ChoiceRow:
     """Add the step size, the frame, the pad (a row per axis) and a box of `clearance`; a click calls `on_step`.
 
     Args:
@@ -76,19 +76,17 @@ def build_tool_step_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, on
         label: What the pad moves, for intent names.
         on_step: Called with each click's `tool_step` and the frame it is in (one of FRAMES).
         clearance: Whether the steps keep their clearance.
-        phone: For the phone page: the step size and the frame as rows of buttons, where a dropdown opens the
-            keyboard.
+        phone: For the phone page: the step size and the frame rows tall enough for a finger.
 
     Returns:
-        viser.GuiDropdownHandle | ChoiceRow: The step size, its `value` a key of STEP_SIZES.
+        ChoiceRow: The step size, its `value` a key of STEP_SIZES.
     """
     turns = ", ".join(f"{turn:g}°" for _shift, turn in STEP_SIZES.values())
     hint = f"How far one click shifts tool0; it turns {turns} with them."
-    size = (ChoiceRow(ctx, gui, "Step size", tuple(STEP_SIZES), "0.5 mm", hint) if phone
-            else gui.add_dropdown("Step size", tuple(STEP_SIZES), initial_value="0.5 mm", hint=hint))
+    height = 40 if phone else None
+    size = ChoiceRow(ctx, gui, "Step size", tuple(STEP_SIZES), "0.5 mm", hint, height=height)
     hint = "Robot: x forward, y left, z up, whatever the flange's turn. Tool: tool0's own axes."
-    frame = (ChoiceRow(ctx, gui, "Frame", FRAMES, ROBOT_FRAME, hint) if phone
-             else gui.add_dropdown("Frame", FRAMES, initial_value=ROBOT_FRAME, hint=hint))
+    frame = ChoiceRow(ctx, gui, "Frame", FRAMES, ROBOT_FRAME, hint, height=height)
     gui.add_html(PAD_STYLE)
     with gui.add_folder("Tool pad"):
         gui.add_html(PAD_HEADER)

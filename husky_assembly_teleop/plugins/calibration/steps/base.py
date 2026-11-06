@@ -231,11 +231,13 @@ class CalibrationStep(Step):
     def state(self, ctx: PluginContext) -> Check:
         """The step's state: none yet, out of date, fails, accepted, passes; a precondition's expired or holds.
 
-        Only a failing result can be accepted: one missing or out of date stays so.
+        A failing result can be accepted, and a missing one of a result step (skipped); one out of date stays so.
         """
         if self.cal.run is None:
             return Check(NONE_YET, PENDING, "choose an arm in Setup")
         if (why := self.none_yet(ctx)) is not None:
+            if not self.precondition and self.run.accepted(self.name, self.judged_under(ctx)):
+                return Check(ACCEPTED, WARN, f"skipped: {why}", "skipped")
             return Check(NONE_YET, PENDING, why)
         if (why := self.out_of_date(ctx)) is not None:
             return Check(OUT_OF_DATE, BAD, why)

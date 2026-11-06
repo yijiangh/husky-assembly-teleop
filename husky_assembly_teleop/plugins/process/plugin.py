@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
 from async_timeout import timeout
+from ...config import short_serial
 from ...colors import INK, rgb
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
@@ -973,7 +974,7 @@ def robot_differences(process: Process, robots: tuple[RobotConfig, ...]) -> list
             continue  # stands for no configured robot
         differences = model_differences(process_model(process, planned_id), config.model)
         if differences:
-            lines.append(f"{planned_id} ({config.serial}): " + "; ".join(differences))
+            lines.append(f"{planned_id} ({short_serial(config.serial)}): " + "; ".join(differences))
     return lines
 
 

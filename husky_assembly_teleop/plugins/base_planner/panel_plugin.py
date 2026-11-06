@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict
-from functools import partial
 from html import escape
 
 import viser
 from crl_husky.follower_path import FollowerPath
 
+from ...config import short_serial
 from ...colors import TARGET, WHITE
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
@@ -32,12 +32,12 @@ from ...shared.collisions_contract import CollisionsContract
 from ...shared.planner.planner_panel import PLAN_TAB, PlannerPanel, unknown_robots_chip
 from ...shared.planner.plan import Plan
 from ...ui.base_markers import Markers
+from ...ui.choice_row import ChoiceRow
 from ...ui.ghost import RobotGhost
 from ...ui.css import group_buttons
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
-from ...ui.robot_buttons import RobotButtons
-from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, check_chip, chip, chip_line, section,
+from ...ui.style import (BUSY, FAIL, GAP, NONE, OK, SECTION_CTRL, block, check_chip, chip, chip_line, section,
                          values)
 from ...robot_interface.base import live_report
 from ...world.clearance import ALL_ARMS, BASE_PLAN_DISTANCE, STOP_DISTANCE
@@ -101,7 +101,9 @@ class BasePlannerPanel(PlannerPanel):
 
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
-            self._robot = RobotButtons(gui, serials, self.serial)
+            gui.add_html(GAP)
+            self._robot = ChoiceRow(ctx, gui, "Robot", tuple(serials), self.serial, on_choose=self._choose_robot,
+                                    labels=tuple(short_serial(serial) for serial in serials), height=None)
 
             gui.add_html(section("target", TARGET))
             self._target = PlanarPoseInput(ctx, gui, f"{root}/target_gizmo", label="Target",
@@ -113,9 +115,6 @@ class BasePlannerPanel(PlannerPanel):
             # * Step filled in the target blue: the one pressed at every assembly step, among the outlined ones.
             gui.add_html(f"<style>{group_buttons(load._impl.uuid, 2)} {{ background: {TARGET} !important; "
                          f"color: {WHITE} !important; border-color: {TARGET} !important; }}</style>")
-            # * One margin for every algorithm, in plain sight: the first thing to lower when a start or target
-            #   near a bar counts as a collision.
-            self._margin = add_margin_setting(gui)
 
             self._add_path_controls(ctx, gui,
                                     plan_hint="Plan from the robot's pose to the target around the others; Play "
@@ -126,7 +125,8 @@ class BasePlannerPanel(PlannerPanel):
                                     clearance_hint=f"Soft stop a sent path once the robot comes within "
                                                    f"{STOP_DISTANCE * 100:g} cm of anything (half the Margin below "
                                                    f"{BASE_PLAN_DISTANCE * 100:g} cm); a start that close is refused. "
-                                                   f"Untick to drive out of a tight spot.")
+                                                   f"Untick to drive out of a tight spot.",
+                                    before_plan=self._add_margin)
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -170,8 +170,6 @@ class BasePlannerPanel(PlannerPanel):
                 self._debug_layers = gui.add_folder("Debug layers")
                 self._debug_notes = gui.add_html("")
 
-        for serial, button in self._robot.buttons.items():
-            button.on_click(ctx.defer("choose robot", partial(self._choose_robot, serial)))
         self._task.on_update(ctx.defer_value("choose task", lambda name: self._choose_task(ctx, str(name))))
         load.on_click(ctx.defer_value("load target", lambda label: self._load_target(ctx, label)))
         self._algorithm.on_update(ctx.defer_value("choose algorithm", lambda label: self._choose_algorithm(str(label))))
@@ -179,6 +177,10 @@ class BasePlannerPanel(PlannerPanel):
         self._markers = Markers(ctx)
         self._debug_view = DebugView(ctx, self._debug_legend, self._debug_layers, self._debug_notes)
         self._add_ghosts(ctx, ctx.config.robots)
+
+    def _add_margin(self, gui: viser.GuiApi) -> None:
+        """Add the Margin slider right above Plan; one for every algorithm, lowered first when a start counts as hit."""
+        self._margin = add_margin_setting(gui)
 
     # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
 
@@ -236,16 +238,16 @@ class BasePlannerPanel(PlannerPanel):
         if label == "Robot":
             self._target.set(*floor_pose(ctx, self.serial))
             self._has_target = True
-            self._say(f"target set to where {self.serial} is now")
+            self._say(f"target set to where {short_serial(self.serial)} is now")
             return
         if label == "Park":
             park = next(robot for robot in ctx.config.robots if robot.serial == self.serial).park_pose
             if park is None:
-                self._say(f"{self.serial} has no parked pose configured", FAIL)
+                self._say(f"{short_serial(self.serial)} has no parked pose configured", FAIL)
                 return
             self._target.set(*park)
             self._has_target = True
-            self._say(f"target set to the parked pose of {self.serial}")
+            self._say(f"target set to the parked pose of {short_serial(self.serial)}")
             return
 
         found = self._process_step(ctx)
@@ -337,7 +339,7 @@ class BasePlannerPanel(PlannerPanel):
             # * A plan refused for a collision shows it at once; any newer plan takes it away.
             self._reported = plan
             if plan is not None and plan.hit is not None:
-                label = f"{plan.request.serial} {plan.hit.where}"
+                label = f"{short_serial(plan.request.serial)} {plan.hit.where}"
                 self._collisions.replace(self.name, {label: plan.hit}, shown=(label,))
             else:
                 self._collisions.clear(self.name)
@@ -350,7 +352,7 @@ class BasePlannerPanel(PlannerPanel):
             return
         self._status.content = self._status_html(ctx)
         # Loading a target from the step can switch the robot; show that here.
-        self._robot.show(self.serial)
+        self._robot.value = self.serial
         self._details.content = self._details_html()
         self._draw_slider()
         self._draw_floor(ctx)
@@ -380,7 +382,8 @@ class BasePlannerPanel(PlannerPanel):
     def _status_html(self, ctx: PluginContext) -> str:
         """One line of chips: the robot and whether it is tracked, the plan's state and the last run's."""
         tracked = ctx.scene.snapshot.robots[robot_id(self.serial)].base_tracked
-        chips = chip(escape(f"{self.serial} {'tracked' if tracked else 'not tracked'}"), OK if tracked else BUSY,
+        chips = chip(escape(f"{short_serial(self.serial)} {'tracked' if tracked else 'not tracked'}"),
+                     OK if tracked else BUSY,
                      "mocap tracks the base: plans start from its live pose" if tracked
                      else "plans from where it was last seen; a commit needs the base tracked by mocap")
         if out := self._out_of_stow(ctx, self.serial):

@@ -15,6 +15,7 @@ from typing import Callable
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.process.solutions import MovementResult
 
+from ...config import short_serial
 from ...shared.assembly_planning.collision import collision_hit, in_process_terms
 from ...shared.assembly_planning.mirrors import MirrorPool
 from ...shared.assembly_planning.route_result import GoalCheck, RouteResult
@@ -79,7 +80,7 @@ def run_ik(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Event,
 
 
 def run_collisions(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Event, log: Log) -> CollisionReport:
-    """Check what the acting robot collides with in the movement's planning scene (end contacts allowed). Worker thread.
+    """Check what the acting robot collides with in the movement's planning scene. Worker thread.
 
     Args:
         pool: The worker's mirrors.
@@ -94,8 +95,7 @@ def run_collisions(pool: MirrorPool, request: MotionPlanRequest, abort: threadin
     try:
         mirror = pool.mirror(_acting(request, abort))
         planning = scene_for(request.loaded, request.step, request.snapshot, request.robots,
-                             ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide,
-                             end_contacts=True)
+                             ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide)
         mirror.sync(planning.scene)
         joints = dict(request.joints) if request.joints is not None else None
         hit = collision_hit(mirror, planning.scene, "start" if joints is None else "the given joints", joints)
@@ -160,7 +160,7 @@ def _acting(request: MotionPlanRequest, abort: threading.Event) -> str:
     robot = request.snapshot.robots.get(live)
     problems = robot.acting_problems() if robot is not None else ["it is not in the snapshot"]
     if problems:
-        raise _Refused(f"{config.serial} can't be planned for: {'; '.join(problems)}")
+        raise _Refused(f"{short_serial(config.serial)} can't be planned for: {'; '.join(problems)}")
     return config.serial
 
 

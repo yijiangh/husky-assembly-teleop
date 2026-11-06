@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Callable, Sequence
 
 import numpy as np
 
+from ...config import short_serial
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.arm import JOINT_STATE_MAX_AGE
 from ...robot_interface.refusal import newest_reason
@@ -220,10 +221,11 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
     """
     serial = command.serial
     if robot.config.serial != serial:
-        return SendOutcome(REFUSED, f"the command is for {serial}, not {robot.config.serial}")
+        return SendOutcome(REFUSED, f"the command is for {short_serial(serial)}, not "
+                                    f"{short_serial(robot.config.serial)}")
     missing = [motion.arm for motion in command.arms if motion.arm not in robot.arms]
     if missing:
-        return SendOutcome(REFUSED, f"{serial} has no arm {', '.join(missing)}")
+        return SendOutcome(REFUSED, f"{short_serial(serial)} has no arm {', '.join(missing)}")
     arms = {motion.arm: robot.arms[motion.arm] for motion in command.arms}
     try:
         if dry_run:
@@ -238,9 +240,10 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
         else:
             return SendOutcome(REFUSED, f"{len(command.arms)} arms in one command; at most two move together")
     except MotionRefused as refused:
-        return SendOutcome(REFUSED, f"{serial} refused the trajectory: {refused}; nothing sent")
+        return SendOutcome(REFUSED, f"{short_serial(serial)} refused the trajectory: {refused}; nothing sent")
     if not sent:
-        return SendOutcome(REFUSED, f"{serial} refused the trajectory: {newest_reason(*arms.values())}; nothing sent")
+        return SendOutcome(REFUSED, f"{short_serial(serial)} refused the trajectory: "
+                                    f"{newest_reason(*arms.values())}; nothing sent")
     started = ctx.now()
     ctx.log_info(f"{serial}: moving {', '.join(arms)}, {command.duration:.1f} s")
     if on_sent is not None:
@@ -315,7 +318,7 @@ def _dry_run(ctx: PluginContext, command: MotionCommand, arms: dict) -> SendOutc
     """Build each arm's trajectory, every check included, and say so loudly; send nothing."""
     for motion in command.arms:
         if arms[motion.arm].build_trajectory(motion.positions, command.duration, motion.velocities) is None:
-            return SendOutcome(REFUSED, f"{command.serial} {motion.arm} refused the trajectory: "
+            return SendOutcome(REFUSED, f"{short_serial(command.serial)} {motion.arm} refused the trajectory: "
                                         f"{newest_reason(arms[motion.arm])}")
     rule = "#" * 78
     for motion in command.arms:
@@ -336,7 +339,8 @@ def _hold(ctx: PluginContext, robot: HuskyRobotInterface, why: str) -> dict[str,
 
 def _not_held(serial: str, arms: Sequence[str], why: str, log: Callable[[str], None] | None = None) -> str:
     """The loud line for arms that refused their hold, logged as an error if `log` is given."""
-    line = f"HOLD NOT SENT on {', '.join(arms)}: stop {serial} with the teach pendant or the e-stop ({why})"
+    line = (f"HOLD NOT SENT on {', '.join(arms)}: stop {short_serial(serial)} with the teach pendant or the e-stop "
+            f"({why})")
     if log is not None:
         log(line)
     return line

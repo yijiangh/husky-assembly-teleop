@@ -39,6 +39,7 @@ import numpy as np
 import viser
 from crl_husky.follower_path import FollowerPath, wrap
 
+from ...config import short_serial
 from ...colors import CURRENT, rgb
 from ...drive import drive_folder, folder_name
 from ...plugin_api import signals
@@ -371,9 +372,9 @@ class BaseExperimentPlugin(HuskyPlugin):
             return "a run is going on"
         lease = ctx.world.robots[self.serial].lease_slot.lease
         if lease is not None:
-            return f"{self.serial} is leased by {lease.holder}"
+            return f"{short_serial(self.serial)} is leased by {lease.holder}"
         problem = base.follow_problem()
-        return f"{self.serial}: {problem}" if problem else ""
+        return f"{short_serial(self.serial)}: {problem}" if problem else ""
 
     def _asks_second_press(self, ctx: PluginContext, button: str) -> bool:
         """Whether the press only asked: with its arms or another robot not measured, the first press asks for another.
@@ -797,7 +798,7 @@ class BaseExperimentPlugin(HuskyPlugin):
             return
         anchor = self._robot_pose(ctx)
         if anchor is None:
-            self._preview, self._preview_problem = None, f"no mocap pose for {self.serial} yet"
+            self._preview, self._preview_problem = None, f"no mocap pose for {short_serial(self.serial)} yet"
             return
         if not self._inputs_changed and self._anchor is not None and not _moved(anchor, self._anchor):
             return
@@ -875,7 +876,7 @@ class BaseExperimentPlugin(HuskyPlugin):
     def _status_html(self, ctx: PluginContext) -> str:
         """Chips on one line: robot, mocap, follower, velocity controller, run."""
         base = ctx.world.robots[self.serial].base
-        chips = chip(escape(self.serial), SECTION_CTRL, "The robot the experiment drives.")
+        chips = chip(escape(short_serial(self.serial)), SECTION_CTRL, "The robot the experiment drives.")
         lost = pose_lost(base.mocap_id, base.state, ctx.now(), age=False)
         # * Not tracked and no follower are amber, as in the planners: nothing failed yet; Start refuses in red.
         chips += (chip("not tracked", BUSY, lost) if lost

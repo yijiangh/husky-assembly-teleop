@@ -9,12 +9,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 import viser
 
-from scaffolding_assembly_core.geometry import compose
+from scaffolding_assembly_core.geometry import Pose, compose
 
 from ....shared.arm_planner_contract import ArmPlannerContract
+from ....robot_interface.mocap_state import mocap_problem
 from ....ui.style import FAIL, LEVEL_COLORS, NONE, chip
 from ....world.checks import BAD, GOOD, PENDING, WARN, Check
-from ..analysis.checks import POSES_PER_SPOT, base_moved, new_spot, sample_marker_error, validation_level
+from ..analysis.checks import (POSES_PER_SPOT, SPOT_ANGLE, SPOT_DISTANCE, base_moved, new_spot, sample_marker_error,
+                               too_close_spot, validation_level)
 from ..analysis.old_outputs import write_validation_outputs
 from ..robot.motion import NoPlan
 from ..robot.sweeps import nearest_pose
@@ -225,15 +227,26 @@ class Validate(CalibrationStep):
                           if index in self._pose_samples and self._pose_samples[index] < len(validation.marker_errors)
                           else chip(f"{index + 1} · -", NONE, "not sampled here yet")
                           for index in range(len(run.validation_poses)))
-        self._html.content = (chip_row("spots", self._spot_chips(validation)) + chip_row("poses here", poses)
+        spots = self._spot_chips(validation, self._base_body(ctx))
+        self._html.content = (chip_row("spots", spots) + chip_row("poses here", poses)
                               + chip_row("markers", markers))
         self.scene.draw_dots(ctx, validation)
         self.scene.draw_targets(ctx, run, [rgb for _color, rgb, _detail in looks])
         footprint = self.run.footprint()
         self.scene.draw_spots(ctx, [compose(spot, footprint) for spot in validation.spots])
 
-    def _spot_chips(self, validation) -> str:
-        """A chip per spot, "spot 2 · 6" (its samples), by its worst sample's distance from the mean; the next last."""
+    def _base_body(self, ctx: PluginContext) -> Pose | None:
+        """The base rigid body in the world now, as the samples store it; None while mocap cannot tell."""
+        base = self.run.robot.base
+        if mocap_problem(base.mocap_id, base.state, ctx.now()):
+            return None
+        return Pose.from_arrays(base.state.position, base.state.orientation)
+
+    def _spot_chips(self, validation, here: Pose | None) -> str:
+        """A chip per spot, "spot 2 · 6" (its samples), by its worst sample's distance from the mean; the next last.
+
+        The next is amber while the base moved off a spot but not far enough for a new one: samples would join it.
+        """
         distances = validation.spread[0] if validation.spread is not None else None
         chips = ""
         for number, members in enumerate(validation.spot_samples, start=1):
@@ -248,7 +261,14 @@ class Validate(CalibrationStep):
             known = [error for error in worst if error is not None]
             detail += f"; marker errors up to {max(known) * 1e3:.2f} mm" if known else "; marker errors unknown"
             chips += chip(escape(f"spot {number} · {size}"), color, detail)
-        if not self.cal.procedure.running:
+        close = too_close_spot(validation.bases, here) if here is not None else None
+        if close is not None:
+            near, metres, degrees = close
+            chips += chip(escape(f"too close to spot {near + 1}"), LEVEL_COLORS[WARN],
+                          f"{metres:.2f} m, {degrees:.0f}° from spot {near + 1}: samples here join it. Drive "
+                          f"{SPOT_DISTANCE - metres:.2f} m further or turn {SPOT_ANGLE - degrees:.0f}° more for spot "
+                          f"{len(validation.spot_sizes) + 1}")
+        elif not self.cal.procedure.running:
             # * The spot to come: always one, so the row never starts empty.
             chips += chip(escape(f"spot {len(validation.spot_sizes) + 1} · 0"), NONE,
                           "next: drive somewhere new (0.5 m or 30° from the others), then Sample poses here")

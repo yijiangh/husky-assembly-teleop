@@ -31,6 +31,7 @@ from scaffolding_assembly_core.robot import RobotObject
 from sensor_msgs.msg import BatteryState
 from ur_dashboard_msgs.msg import RobotMode, SafetyMode
 
+from ..config import short_serial
 from ..colors import HUE_NAMES, INK, WHITE, rgb
 from ..plugin_api.context import PluginContext
 from ..shared.execution.moving import ask_relay
@@ -135,7 +136,7 @@ def robot_action(ctx: PluginContext, serial: str, clicked: str) -> Refusal | Non
     robot = ctx.world.robots[serial]
     lease = robot.lease_slot.lease
     if clicked in LEASED_ACTIONS and lease is not None:
-        reason = f"robot {serial} is leased by {lease.holder}; try again once it is given back"
+        reason = f"robot {short_serial(serial)} is leased by {lease.holder}; try again once it is given back"
         ctx.log_warn(f"{serial} {clicked} refused: {reason}")
         return Refusal(f"{clicked} refused", reason, ctx.now())
     getattr(robot, ROBOT_ACTIONS[clicked])()
@@ -826,8 +827,8 @@ def render_banner(robots: dict[str, list[tuple[str, list[Check]]]], objects: lis
     """
     if not robots and not objects:
         return chip_line(chip("NOTHING TO CHECK", NONE, "no robots and no tracked objects"))
-    groups = {serial.split("-")[-1]: [(f"{name} " if name else "", check) for name, checks in lines
-                                      for check in checks]
+    groups = {short_serial(serial): [(f"{name} " if name else "", check) for name, checks in lines
+                                     for check in checks]
               for serial, lines in robots.items()}
     if objects:
         groups["objects"] = [("", check) for check in objects]

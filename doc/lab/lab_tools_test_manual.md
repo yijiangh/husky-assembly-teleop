@@ -34,14 +34,14 @@ The old Teleop window: hold a button and tool0 moves along, or turns about, one 
 go: the robot's (x forward, y left, z up) or tool0's own, as **Frame** says. One joint point is streamed every tick 0.2 s ahead on a straight line from where you pressed, so
 the arm never drifts off the axis; one arm jogs at a time.
 
-1. **Control** › `0806` › `Left`: under **Joint**, below **Hold**, the line `tool0 jog · moves while held · one arm at
-   a time`, the **Tool speed** slider at 5 mm/s, **Frame** at Robot, and the **Tool0** folder: `x−  x+  rx−  rx+` /
+1. **Control** › `0806` › `Left`: under **Joint**, below the joint jog, the **TOOL0 JOG** bar (`moves while held · one arm
+   at a time`), the **Tool speed** slider at 5 mm/s, **Frame** at Robot, and the **Tool0** folder: `x−  x+  rx−  rx+` /
    `y−  y+  ry−  ry+` / `z−  z+  rz−  rz+`. Set **Frame** to Tool for steps 2 to 6. **(sim)**
 2. Hold **x+** for 2 s. **Expect:** the line under the buttons reads `jogging along tool0 x: +9.8 mm at 5 mm/s`
    (counting up), `tcp` in the status moves, and on release the pane says `arm left_ur_arm: hold sent` once.
    **(sim: ~10 mm per 2 s on a normal browser; see the note on browsers.)**
    - **If not:** a chip `jog refused` names why (hover): `the joint controller is not running` (click **Joint**
-     under **Run**), `lease refused` (another plugin has the robot's lease: wait or Cancel it), `no joint state`.
+     under **Controller**), `lease refused` (another plugin has the robot's lease: wait or Cancel it), `no joint state`.
 3. Hold **rz+** with the speed at 10: `jogging about tool0 z: +2.0°` after a second (0.2 °/s per mm/s).
 4. Hold **x+** on the `Right` tab while the left arm's button is still held (two fingers, or the phone): the second
    is refused, `jog refused: a200-0806 left_ur_arm is jogging; one arm at a time`. **(sim)**
@@ -123,12 +123,12 @@ did; close it with the control at its bar's right end (nothing closes it for you
 whose curves they are, and the running kind's plots: the servo's five or the compliant part's two.
 
 1. **A servo.** Run B20_J's transfer step (fake lab manual 4.2). **Expect:** when the servo starts, the window
-   opens with the chip `servo: B20_J_transfer on a200-0806`, and per pass one point on `tool0_pos_err [mm]` (L
+   opens with the chip `servo: B20_J_transfer on 0806`, and per pass one point on `tool0_pos_err [mm]` (L
    x/y/z/|d| in reds, R in greens), `tool0_rot_err [deg]`, `base_pos_diff [mm]` and `base_rot_diff [deg]` (blues),
    and `bar` (mocap vs design, FK vs design) when a bar is tracked; x is the pass number. The points stay until the
    next servo.
 2. **A compliant part.** Run an insert with a mating joint (B21_J's, fake lab manual 5.2) or a retreat. **Expect:**
-   the window opens, the servo's plots hidden, with the chip `compliant: B21_J_insert on a200-0806`, then `force [N]` and `torque [Nm]` filling every tick, L reds and
+   the window opens, the servo's plots hidden, with the chip `compliant: B21_J_insert on 0806`, then `force [N]` and `torque [Nm]` filling every tick, L reds and
    R greens, x in seconds since the part started; in the simulation the fake wrench's noise around zero, and the
    contact force (`contact_n`) while a screw is stalled. Without a wrench the lines are zero and a chip says `no force
    reading: the arms report no wrench`.

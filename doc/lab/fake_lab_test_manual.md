@@ -394,19 +394,19 @@ prompt), a Robotiq step and the servo's first pass.
 
 ### 4.1 Cindy's base  [SIM RUN — recorded]
 
-- [ ] Plan › Base: button [0806] → button [Load: Step] → button [Path: Plan]
+- [ ] Plan › Base: buttons [Robot]: `0806` → button [Load: Step] → button [Path: Plan]
   - The panel shows `target +0.527 -3.067 +89.6°`, then after about 2 s `Lattice (hybrid A*) (straight): 5.24 m,
     29.0 s`.
 - [ ] button [Commit]
   - **Expect:** pane monitor: `base path N sent to a200-0806: 5.24 m, ... waypoints`, then after about 50 s
     `base path N on a200-0806: done`.
-  - The panel says `sent to a200-0806's follower`; Cindy drives in the 3D view. Control › `0806` › Base then reads
+  - The panel says `sent to 0806's follower`; Cindy drives in the 3D view. Control › `0806` › Base then reads
     about `xyz +0.53 -3.06`, `yaw +88°`: the simulated follower stops within about 1 cm and 2°.
 
 ### 4.2 B20_J, step 1/2: the transfer, the bar, the grasp, the servo  [SIM RUN — recorded]
 
 - [ ] Assembly › by eye: the step line reads `B20_J_transfer (transfer_free) · then: B20_J_place_bar, B20_J_grasp ·
-      skipped: B20_J_load`, and the Exec line `Exec: cindy (a200-0806) moves left_ur_arm, right_ur_arm; then waits
+      skipped: B20_J_load`, and the Exec line `Exec: cindy (0806) moves left_ur_arm, right_ur_arm; then waits
       for B20_J_place_bar + B20_J_grasp by hand; then servos left_ur_arm, right_ur_arm onto the insert start`
 - [ ] button [Live IK: insert start] (about 5 s)
   - **Expect:** pane monitor: `check goal B20_J_transfer: goal found (ssik, rank 1 of 64), max |goal - authored| 0.06
@@ -419,7 +419,7 @@ prompt), a Robotiq step and the servo's first pass.
     with the control at its bar's right end, or leave it: it only opens again at the next plan.
 - [ ] button [Path: Play]: the preview runs as it will move; slider [Preview time] scrubs it.
 - [ ] button [Exec]: both arms move at once, for 17 s
-  - **Expect:** pane monitor: `cindy (a200-0806): B20_J_transfer — move left_ur_arm, right_ur_arm along the planned
+  - **Expect:** pane monitor: `cindy (0806): B20_J_transfer — move left_ur_arm, right_ur_arm along the planned
     path (Rhino obstacles not checked), 17 s, largest joint travel 214°` (a warning: over 60°), then
     `B20_J_transfer: arrived, end within 0.00°`, then the one prompt for the bar: `B20_J_place_bar + B20_J_grasp —
     Operator places the bar by hand; clamp it: tighten the gripper screws of left_ur_arm, right_ur_arm with the tools'
@@ -510,7 +510,7 @@ plan refuses because an arm still stands at the bar.
 
 ### 5.1 Cindy's base  [SIM RUN — recorded]
 
-- [ ] Plan › Base: button [0806] → button [Load: Step] → button [Path: Plan] → button [Commit]
+- [ ] Plan › Base: buttons [Robot]: `0806` → button [Load: Step] → button [Path: Plan] → button [Commit]
   - **Expect:** pane monitor: `base path N sent to a200-0806: 0.77 m, ... waypoints`, then after about 30 s
     `base path N on a200-0806: done`.
   - **If not:** `base path N on a200-0806: timed out: still following`: the simulated follower sometimes never starts
@@ -548,7 +548,7 @@ As 4.2 and 4.3, with these differences:
 ### 5.3 B21_H: Alice holds B21  [SIM RUN — recorded]
 
 **a) Alice's base**
-- [ ] Plan › Base: button [0804] → button [Load: Step] → button [Path: Plan] → button [Commit]
+- [ ] Plan › Base: buttons [Robot]: `0804` → button [Load: Step] → button [Path: Plan] → button [Commit]
   - **Expect:** pane monitor: `base path N sent to a200-0804: ...`, then after about 50 s `base path N on a200-0804:
     done`.
   - The panel shows `target +0.638 -1.561 -29.6°` and a path of about 3 m. Control › `0804` › Base at about
@@ -561,7 +561,7 @@ As 4.2 and 4.3, with these differences:
 - [ ] button [Plan]
   - **Expect:** pane monitor: `support_approach solved by arm.plan_arm: 2 waypoints`.
 - [ ] button [Exec]: the arm moves at once
-  - **Expect:** pane monitor: `alice (a200-0804): B21_H_approach — move ur_arm along the planned path …, 16 s, largest
+  - **Expect:** pane monitor: `alice (0804): B21_H_approach — move ur_arm along the planned path …, 16 s, largest
     joint travel 206°`, `B21_H_approach: arrived, end within 0.00°`, then the servo: `[servo] feedback: tool0 (0.2 mm);
     no mocap bar recorded (no bar held).`, `nothing left to plan`, `Exec B21_H_approach: done — every part done`.
   - The jaws stop short of B21.

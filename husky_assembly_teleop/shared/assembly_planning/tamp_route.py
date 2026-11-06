@@ -165,8 +165,7 @@ def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot:
     Raises:
         ValueError: If the mirror plans for another robot than the movement's, or `scene_for` refuses the step.
     """
-    options = {"ignore_built": ignore_built, "obstacles_collide": obstacles_collide,
-               "end_contacts": True}
+    options = {"ignore_built": ignore_built, "obstacles_collide": obstacles_collide}
     planning = scene_for(loaded, step, snapshot, robots, **options)
     if mirror.robot_id != planning.acting:
         raise ValueError(f"{step.label}: the mirror plans for {mirror.robot_id}, the movement is {planning.acting}'s")

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from ...world.collision_hit import CollisionHit
 
 #: Give up searching after this long, seconds.
-TIME_LIMIT = 10.0
+TIME_LIMIT = 20.0
 #: Seconds to wait for the worker beyond the search's own time limit.
 WAIT_MARGIN = 5.0
 

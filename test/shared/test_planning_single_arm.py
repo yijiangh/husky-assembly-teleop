@@ -58,15 +58,17 @@ def test_no_move_gives_the_two_ends():
 
 @pytest.fixture(scope="module")
 def alice_grasp():
-    """Alice's mirror, B21_H_to_grasp's step and its scene with and without the end contacts."""
+    """Alice's mirror, B21_H_to_grasp's step and its scene: as planned (the gripper may touch B21), and without that."""
     if ssik_unavailable() is not None:
         pytest.skip(ssik_unavailable())
     loaded = purged_process()
     current = step(loaded, "B21_H_to_grasp")
     configs = tuple(robot_config(serial) for serial in (ALICE, BELLE, CINDY))
     snapshot = design_scene(loaded, "B21_H_to_grasp")
-    scenes = {contacts: scene_for(loaded, current, snapshot, configs, end_contacts=contacts).scene
-              for contacts in (True, False)}
+    scenes = {contacts: scene_for(loaded, current, snapshot, configs).scene for contacts in (True, False)}
+    # * Without: B21 no longer lists the gripper, as before the core allowed a movement's end contacts.
+    bar = scenes[False].bodies["process/bars/B21"]
+    bar.touches = tuple(touch for touch in bar.touches if touch != "tools/a200-0804/ur_arm")
     mirror = CompasFabMirror(ALICE_ID)
     yield mirror, current, scenes
     mirror.close()
@@ -95,8 +97,8 @@ def test_alice_closes_in_on_her_bar(alice_grasp):
 
 
 @pytest.mark.slow
-def test_without_end_contacts_the_gripper_hits_the_bar(alice_grasp):
-    """Without the end contacts the line stops near its end, where the gripper reaches B21."""
+def test_without_its_end_contact_the_gripper_hits_the_bar(alice_grasp):
+    """Without the contact the movement ends in, the line stops near its end, where the gripper reaches B21."""
     mirror, current, scenes = alice_grasp
     mirror.sync(scenes[False])
     path = plan_linear(mirror, scenes[False].robots[ALICE_ID], "ur_arm", current.movement.target.link_poses[FLANGE])

@@ -8,14 +8,18 @@ import numpy as np
 import pybullet as p
 import pytest
 
+from planning_fixtures import CINDY, design_scene, movement, purged_process, robot_config
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import joint_path_move
 from husky_assembly_teleop.world.lab import floor_body, platform_links
 from husky_assembly_teleop.shared.planner.rrt_connect import Corners
 from husky_assembly_teleop.plugins.arm_planner import planner as planner_module
-from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath, _extend, joint_limits, path_hit, plan_arm
+from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, _extend, joint_limits, path_hit, plan_arm,
+                                                               plan_arms)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
+from husky_assembly_teleop.shared.assembly_planning.movement import classify
+from husky_assembly_teleop.world.stand_ins import with_stand_ins
 from husky_assembly_teleop.shared.assembly_planning.mirrors import MirrorPool
 from scaffolding_assembly_core.geometry import box_geometry
 from scaffolding_assembly_core.robot import RobotObject
@@ -167,6 +171,39 @@ def test_a_path_keeps_1_cm_or_as_much_as_a_closer_target_has(world, config, gap)
     assert result.path.slowed(2.0).margin == margin
 
 
+def test_only_the_pair_already_close_keeps_less(world, config):
+    """A box 5 mm from the target keeps that little; another, 7 mm from the arm halfway, still keeps 1 cm."""
+    start, goal = start_and_goal(config)
+    near = box_near(world, config, goal, 0.005)
+    halfway = tuple(np.add(start, goal) / 2)
+    mid = box_near(world, config, halfway, 0.007)
+    mid.id, mid.label = "t/mid", "the halfway box"
+    mirror, scene = synced(world, snapshot(config, start, (near, mid)))
+    close = planner_module.endpoint_margins(mirror, NAMES, start, goal)
+    assert {pair[1] for pair in close} == {"t/near"}, "only the box at the target is closer than usual at an end"
+    check = mirror.search_check(NAMES, planner_module.PLAN_DISTANCE,
+                                pair_margins={frozenset(pair): kept for pair, kept in close.items()})
+    hit = check(halfway)
+    assert hit is not None and hit[1] == "t/mid", "the halfway box keeps its 1 cm"
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is not None, result.reason
+    assert {part[1] for part in result.path.close} == {"t/near"}
+    assert result.path.margin == min(close.values()) == result.path.close[0][2]
+    note = planner_module.margin_note(result.path.margin, result.path.close)
+    assert note.startswith("keeps only") and "t/near" in note and "1 cm from everything else" in note
+
+
+def test_the_fine_check_finds_a_pass_between_two_of_the_search_checks():
+    """Something only between 0.059 and 0.061 rad: the search's 0.05 rad steps never see it, the fine check does."""
+    def check(q):
+        return ("robots/a/link", "t/thin") if 0.059 < q[0] < 0.061 else None
+
+    points = [(0.0,) * 6, (0.1,) + (0.0,) * 5]
+    assert not any(check(q) for q in _extend(*points))
+    assert planner_module.fine_hit(points, check) == ("robots/a/link", "t/thin")
+    assert planner_module.fine_hit([(0.0,) * 6, (0.05,) + (0.0,) * 5], check) is None
+
+
 def test_the_preview_follows_the_cosine_profile_sent():
     """The preview speeds up and slows down as the arm will: slow at the ends, halfway at half time; it clamps."""
     goal = np.array([1.0, 0.5, 0, 0, 0, 0])
@@ -303,7 +340,8 @@ def test_a_target_past_a_joint_limit_is_refused(world):
     goal = np.array(config.arms[0].stow_joints if config.arms[0].name == LEFT else config.arms[1].stow_joints)
     goal[5] = np.radians(250.0)
     result = plan_arm(mirror, scene, LEFT, goal, threading.Event())
-    assert result.path is None and result.reason.startswith("the target is past the joint limits: wrist_3_joint")
+    assert result.path is None
+    assert result.reason.startswith("the target is past the joint limits: left_ur_arm_wrist_3_joint")
 
 
 def test_a_start_past_a_joint_limit_is_refused(world):
@@ -357,3 +395,24 @@ def test_the_floor_lets_wheels_rest_on_it_but_not_an_arm_through_it(world, confi
     rng = np.random.default_rng(0)
     hits = [check(q) for q in rng.uniform(-np.pi, np.pi, size=(400, 6))]
     assert any(hit is not None and floor.id in hit for hit in hits), "no arm pose reached the floor"
+
+
+@pytest.mark.slow
+def test_both_of_cindys_arms_go_home_in_one_search(world):
+    """B20_R's way home, both arms in one search: each ends at its goal, and every step of the path is clear."""
+    purged = purged_process()
+    serial = robot_config(CINDY).serial
+    action, home = movement(purged, "B20_R_home")
+    goal = classify(purged.process, action, home).goal_joints
+    arms = ("left_ur_arm", "right_ur_arm")
+    names = [name for arm in arms for name in arm_joint_names(arm)]
+    scene = with_stand_ins(design_scene(purged, "B20_R_home"), {robot_id(serial)}).scene
+    mirror = world.sync(scene, serial)
+    result = plan_arms(mirror, scene, arms, [goal[name] for name in names], threading.Event())
+    assert result.path is not None, result.reason
+    path = result.path
+    assert path.joint_names == tuple(names)
+    np.testing.assert_allclose(path.goal, [goal[name] for name in names], atol=1e-9)
+    steps = [q for q1, q2 in zip(path.points[:-1], path.points[1:]) for q in _extend(q1, q2)]
+    for q in steps[::5]:
+        assert mirror.collisions(dict(zip(names, q))) == [], f"collides at {q}"

@@ -252,7 +252,7 @@ layout).
   while it asks for a second press with other robots unknown), green lets a waiting step go on (Confirm), red stops
   (Cancel), yellow records (Mark done).
 - **Control** tab: a tab per robot (`0804`, `0805`, `0806`), each with its Base and its arms: their controllers (the
-  `Run` buttons: `Vel` for a base; `Joint`, `Cart`, `Free` for an arm), the drive and jog buttons, the tool buttons
+  `Controller` buttons: `Vel` for a base; `Joint`, `Cart`, `Free` for an arm), the drive and jog buttons, the tool buttons
   (Robotiq: `Gripper: Open / Close / Stop`).
 - **Plan plots** and **Exec plots** open by themselves when a plan or a servo / compliant part has something to show;
   the control at a bar's right end opens or closes it. The **Console** (bottom right) shows the newest log lines, the
@@ -809,7 +809,7 @@ bar; clear floor and workspace.
 
 ### 5.a Each base under its follower: a short drive (Cindy, then Alice)  [TEST — base, arm or gripper move, no bar]
 
-- [ ] `Plan` › `Base`: dropdown `Robot`: *a200-0806* → button `Load: Robot`
+- [ ] `Plan` › `Base`: buttons `Robot`: *0806* → button `Load: Robot`
   - The fields `Target x y yaw°` show where she stands (world x, y in metres, yaw in degrees).
 - [ ] fields `Target x y yaw°`: a point about 0.5 m away on open floor (change x or y, whichever way is clear) →
       button `Path: Plan`
@@ -823,7 +823,7 @@ bar; clear floor and workspace.
   - She drives it smoothly and stops. `Control` › `0806` › Base then reads about the target (the fake lab's follower
     stopped within about 1 cm and 2°): note the real numbers.
 - [ ] The same back: the old x, y, yaw → button `Path: Plan` → button `Commit`
-- [ ] The same for Alice: dropdown `Robot`: *a200-0804*.
+- [ ] The same for Alice: buttons `Robot`: *0804*.
 
 ### 5.b Alice's gripper by hand  [TEST — base, arm or gripper move, no bar]
 
@@ -843,7 +843,7 @@ bar; clear floor and workspace.
   - The anchor is how far her arm's own TCP is from tool0 by the URDF: under 10 mm and 2° the handoff goes compliant;
     above, it closes stiff and says so. Note X and Y.
 - [ ] box `Dry run`: unticked → button `Exec`
-  - **Expect:** pane monitor: *alice (a200-0804): B21_H_close — CLOSE + compliant handoff on ur_arm: the arm goes
+  - **Expect:** pane monitor: *alice (0804): B21_H_close — CLOSE + compliant handoff on ur_arm: the arm goes
     COMPLIANT before the close (gives way ≤ 10 mm); jaws 0.8, effort 0.1, ≤ 30 s; then joint control. ...*
 - [ ] hand on Alice's e-stop → button `Confirm`
   - **Expect,** pane monitor, in order:
@@ -883,7 +883,7 @@ Then the seven actions in order, each with its procedures (6.1–6.4) and what d
 
 ### 6.1 Procedure B — drive a base (base planner)  [REAL RUN — recorded]
 
-- [ ] `Plan` › `Base`: dropdown `Robot`: the action's robot (*a200-0806* Cindy, *a200-0804* Alice) → button `Load: Step`
+- [ ] `Plan` › `Base`: buttons `Robot`: the action's robot (*0806* Cindy, *0804* Alice) → button `Load: Step`
       → button `Path: Plan`
   - The panel shows *target +x +y +yaw°* (the design's base for the current step; 6.5 lists them), then after about
     2 s *Lattice (hybrid A\*) (straight): L m, T s*, and the path on the floor.
@@ -908,7 +908,7 @@ A ground bar (B20) has a fifth: the foundation fixed by hand.
 
 **b) Transfer** (*\<bar>_J_transfer*)
 - [ ] by eye: the step line reads *\<bar>_J_transfer (transfer_free) · then: \<bar>_J_place_bar, \<bar>_J_grasp ·
-      skipped: \<bar>_J_load*, and the Exec line *Exec: cindy (a200-0806) moves left_ur_arm, right_ur_arm; then
+      skipped: \<bar>_J_load*, and the Exec line *Exec: cindy (0806) moves left_ur_arm, right_ur_arm; then
       waits for \<bar>_J_place_bar + \<bar>_J_grasp by hand; then servos left_ur_arm, right_ur_arm onto the insert
       start*
 - [ ] button `Live IK: insert start` (about 5 s)
@@ -926,7 +926,7 @@ A ground bar (B20) has a fifth: the foundation fixed by hand.
   - It starts at the live arms and ends with the empty tools at the insert start, clear of the floor, the built
     bars and Alice.
 - [ ] slider `Motion time`: higher = slower (first run) → hand on Cindy's e-stop → button `Exec`
-  - **Expect:** pane monitor: *cindy (a200-0806): \<bar>_J_transfer — move left_ur_arm, right_ur_arm along the planned
+  - **Expect:** pane monitor: *cindy (0806): \<bar>_J_transfer — move left_ur_arm, right_ur_arm along the planned
     path (Rhino obstacles not checked), T s, largest joint travel D°* (a warning over 60°), then
     *\<bar>_J_transfer: arrived, end within ...°*.
   - Both arms move at once; then the prompt for the bar.
@@ -1001,7 +1001,7 @@ A ground bar (B20) has a fifth: the foundation fixed by hand.
 
 **f) Fix the foundation** (ground bar only: *B20_J_fix_foundation*)
 - [ ] by eye: the step line reads *Operator fixes the foundation (operator)*, and the Exec line *Exec: cindy
-      (a200-0806) waits for B20_J_fix_foundation by hand*
+      (0806) waits for B20_J_fix_foundation by hand*
 - [ ] button `Exec`
   - **Expect:** pane monitor: *B20_J_fix_foundation — Operator fixes the foundation by hand, then Confirm (the robot
     panels and their free drive refuse while this step has the robots' leases; Cancel to use them).*
@@ -1078,7 +1078,7 @@ Four steps: approach (and its servo), open, straight in, close with the complian
   - **Expect:** pane monitor: *support_approach solved by arm.plan_arm: N waypoints*.
   - The preview ends with the jaws in front of B21, clear of Cindy's arms and tools.
 - [ ] hand on Alice's e-stop → button `Exec`
-  - **Expect:** pane monitor: *alice (a200-0804): B21_H_approach — move ur_arm along the planned path ..., T s,
+  - **Expect:** pane monitor: *alice (0804): B21_H_approach — move ur_arm along the planned path ..., T s,
     largest joint travel D°*, *B21_H_approach: arrived, end within ...°*, then the servo's prompt
     *B21_H_approach — SERVO 1/8 onto the approach pose (tool0): ...*.
   - Before the prompt: *[servo] feedback: tool0 (0.2 mm); no mocap bar recorded (no bar held).* and *[servo 0] tool0
@@ -1191,7 +1191,7 @@ holds B21.
 
 ### 7.b An arm back to the joint controller
 
-- **The page:** Control › robot › the arm: button [Run: Joint].
+- **The page:** Control › robot › the arm: button [Controller: Joint].
 - **The command line,** in pane checks:
 
 **▶ pane checks**

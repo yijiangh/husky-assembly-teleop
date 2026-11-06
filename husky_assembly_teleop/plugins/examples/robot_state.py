@@ -20,6 +20,7 @@ from __future__ import annotations
 import numpy as np
 import viser
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import NONE, OK, SECTION_SENSOR, block, chip, freshness_chip, numbers, section, values
@@ -50,7 +51,7 @@ class ExampleRobotStatePlugin(HuskyPlugin):
             for serial, robot in ctx.world.robots.items():
                 # * Config is fixed, so it goes into the section label once.
                 arms = ", ".join(f"{name}:{arm.config.end_effector or '-'}" for name, arm in robot.arms.items())
-                gui.add_html(section(serial, SECTION_SENSOR, arms))
+                gui.add_html(section(short_serial(serial), SECTION_SENSOR, arms))
                 # * Chips and numbers in two handles: a number changing would rebuild the chips and drop their hover.
                 self._chips[serial] = gui.add_html("")
                 self._rows[serial] = gui.add_html("")

@@ -135,7 +135,8 @@ Details: `doc/lab/calibration_manual.md`, `shared/guide/`.
   Calibration says "out of date", never "stale".
 - **precondition holds / expired**: a precondition holds for a while or until the base moves; expired warns, except
   the safety boxes, which refuse.
-- **acceptance**: Done twice on a failing result, kept while its inputs match.
+- **acceptance**: Done twice on a failing result, or on a missing one of a result step (skipped), kept while its inputs
+  match.
 - **work left**: the earliest result step that is missing, out of date, pending, or failing unaccepted.
 
 ## Lab and data

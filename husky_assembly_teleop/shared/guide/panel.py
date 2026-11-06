@@ -442,8 +442,10 @@ class GuidePanel:
         step, current = self.steps[index], index == self.index
         running = self._running_chip() if index == self._owner() else ""
         color, why = LEVEL_COLORS[state.level], escape(hover(state.detail, "the step's chips"), quote=True)
-        return (f'<div style="display:flex;align-items:center;white-space:nowrap;overflow:hidden;min-height:20px">'
-                f'{state_chip(str(index + 1), state, step.precondition, current, needed)}'
+        # * Room around the chip for the current step's ring and an expired precondition's outline: the row hides its
+        # * overflow, so a long state's text cannot widen the panel.
+        return (f'<div style="display:flex;align-items:center;white-space:nowrap;overflow:hidden;min-height:20px;'
+                f'padding:3px 0 3px 3px">{state_chip(str(index + 1), state, step.precondition, current, needed)}'
                 f'<span style="font-weight:{700 if current else 400};margin-right:6px">{escape(step.name)}</span>'
                 f'{running}'
                 f'<span style="color:{color};font-size:11px;font-weight:600;margin-right:6px">'

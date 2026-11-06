@@ -11,7 +11,9 @@ arms stowed.
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 from dataclasses import replace
+from typing import Iterator, Mapping
 
 import numpy as np
 import pybullet as p
@@ -24,9 +26,8 @@ from ...config import RobotConfig
 from ...world.base_collision import BaseCollisionWorld, held_bodies
 from ...world.kinematics import from_stow, stow_joints
 
-#: Keep at least this far from every other robot and body, metres, unless a request says otherwise; the panel's Margin
-#: slider starts at BASE_PLAN_DISTANCE (`world/clearance.py`). A retreat often ends about 3–4 cm from the bar just
-#: built: lower the slider there.
+#: The algorithms' own margin, metres, when called on their own (tests, offline experiments). The planner plugin plans
+#: with the request's margin, else BASE_PLAN_DISTANCE (`world/clearance.py`), as the panel's Margin slider starts.
 COLLISION_MARGIN = 0.02
 #: `clearance` measures up to CLEARANCE_LIMIT, to CLEARANCE_STEP, metres.
 CLEARANCE_LIMIT = 0.30
@@ -60,7 +61,64 @@ def stowed(snapshot: Scene, object_id: str, config: RobotConfig) -> tuple[Scene,
 
 
 class PlanningWorld(BaseCollisionWorld):
-    """The base collision world, plus what the base planner measures: clearance, contact points and floor maps."""
+    """The base collision world, plus what the base planner measures: clearance, contact points and floor maps.
+
+    Inside `keeping`, the objects a start or target is already close to keep their own, smaller margin.
+    """
+
+    #: (robot, its usual margin, object id -> its own margin) while `keeping`, else None.
+    _keeping: tuple[str, float, dict[str, float]] | None = None
+
+    def close_objects(self, own: str, poses, margin: float) -> dict[str, float]:
+        """Every object robot `own` (or what it holds) is closer than `margin` to at any of `poses`, and how close.
+
+        Returns:
+            dict[str, float]: Object id -> the least distance, metres, as PyBullet measures it; 0 where it touches.
+        """
+        found: dict[str, float] = {}
+        client = self.mirror.client_id
+        for pose in poses:
+            self._place(own, pose)
+            candidates = self._candidates(own, pose, margin)
+            for part in self._parts(own):
+                for other in self.mirror.collisions(part, margin, candidates):
+                    points = [point for own_body in self.mirror.body_ids(part) for body in self.mirror.body_ids(other)
+                              for point in p.getClosestPoints(own_body, body, margin, physicsClientId=client)]
+                    nearest = max(0.0, min((point[8] for point in points), default=0.0))
+                    found[other] = min(found.get(other, margin), nearest)
+        return found
+
+    @contextmanager
+    def keeping(self, own: str, margin: float, close: Mapping[str, float]) -> Iterator[None]:
+        """Within the block, robot `own` keeps from each object in `close` its own margin instead of `margin`.
+
+        A check for `margin` plus some extra (room for the follower's drift, a portal's room) keeps that object's
+        margin plus the same extra. Measurements (`clearance`) are unchanged.
+        """
+        self._keeping = (own, float(margin), dict(close))
+        try:
+            yield
+        finally:
+            self._keeping = None
+
+    def _hit(self, own: str, pose, margin: float) -> tuple[str, str] | None:
+        """As `BaseCollisionWorld._hit`, each object in `keeping` checked at its own margin (plus the same extra)."""
+        keeping = self._keeping
+        if keeping is None or keeping[0] != own or not keeping[2]:
+            return super()._hit(own, pose, margin)
+        _own, usual, close = keeping
+        self._place(own, pose)
+        candidates = self._candidates(own, pose, margin)
+        others = [object_id for object_id in candidates if object_id not in close]
+        near = {object_id: max(0.0, close[object_id] + margin - usual) for object_id in candidates
+                if object_id in close}
+        for part in self._parts(own):
+            hits = self.mirror.collisions(part, margin, others)
+            hits += [object_id for object_id, own_margin in near.items()
+                     if self.mirror.collisions(part, own_margin, [object_id])]
+            if hits:
+                return part, sorted(hits)[0]
+        return None
 
     def hit_by(self, own: str, pose, margin: float = COLLISION_MARGIN) -> str | None:
         """Like `BaseCollisionWorld.hit_by`, keeping the planner's own COLLISION_MARGIN by default."""
@@ -100,6 +158,14 @@ class PlanningWorld(BaseCollisionWorld):
             tuple[float, tuple | None]: The clearance, metres (0 where it touches, `limit` if never nearer), and the
             pose where it is least (None if never nearer than `limit`).
         """
+        keeping, self._keeping = self._keeping, None  # * true distances, whatever margins are kept
+        try:
+            return self._clearance(own, poses, limit)
+        finally:
+            self._keeping = keeping
+
+    def _clearance(self, own: str, poses, limit: float) -> tuple[float, tuple | None]:
+        """`clearance`, measured with the usual checks."""
         lowest, where = limit, None
         for pose in poses:
             # * Only a pose nearer than the lowest so far needs measuring.

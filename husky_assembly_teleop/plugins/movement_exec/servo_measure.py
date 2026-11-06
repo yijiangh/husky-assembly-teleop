@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Mapping
 
 from scaffolding_assembly_core.ids import robot_id
 
+from ...config import short_serial
 from ...shared.execution.servo import (AFTER_INSERT, BAR_TOL, GROUNDED_END_TOL, MAX_PASSES, TOOL0_TOL, force_vectors,
                                        insert_end_gap)
 from ...shared.movement_exec_contract import CANCELLED, DONE, SERVO_TARGET
@@ -65,7 +66,7 @@ def insert_end_problem(job: Job, plan: ServoPlan) -> str:
     names, end_row = list(trajectory.joint_names), list(trajectory.positions[-1])
     robot = ctx.scene.snapshot.robots.get(robot_id(request.serial))
     if robot is None:
-        return f"{request.serial} is not in the scene"
+        return f"{short_serial(request.serial)} is not in the scene"
     gap = insert_end_gap(robot, names, end_row, plan.arms)
     if gap > GROUNDED_END_TOL:
         return (f"the flanges stopped {gap * 1e3:.1f} mm from the end of the insert (limit "

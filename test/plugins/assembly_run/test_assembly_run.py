@@ -802,7 +802,7 @@ def test_a_robot_leased_for_a_step_refuses_the_mark(tmp_path):
         lab.moving(ALICE, False)
         lease = lab.lease_to_exec("a200-0804")
         plugin.request_mark_done()
-        assert "a200-0804 is leased by movement_exec: exec B21_H_approach" in plugin._message and runs(lab) == []
+        assert "0804 is leased by movement_exec: exec B21_H_approach" in plugin._message and runs(lab) == []
         lease.release()
         plugin.request_mark_done()
         await settle(plugin)
@@ -824,12 +824,12 @@ def test_a_robot_leased_for_a_step_refuses_selecting_reopening_and_settings(tmp_
         lab.lease_to_exec("a200-0804")
         current, selected = plugin.view.current, list(process.selected)
         plugin.request_set_current("B1_J_joint")
-        assert "Select refused: a200-0804 is leased by movement_exec" in plugin._message
+        assert "Select refused: 0804 is leased by movement_exec" in plugin._message
         plugin.request_reopen("B1_J_joint")
-        assert "Reopen refused: a200-0804 is leased" in plugin._message
+        assert "Reopen refused: 0804 is leased" in plugin._message
         refused = plugin._settings_refused
         plugin.request_settings(spiral=True)
-        assert "Settings refused: a200-0804 is leased" in plugin._message and plugin._settings_refused == refused + 1
+        assert "Settings refused: 0804 is leased" in plugin._message and plugin._settings_refused == refused + 1
         return plugin, process, current, selected
 
     plugin, process, current, selected = asyncio.run(scenario())
@@ -852,7 +852,7 @@ def test_a_step_started_between_the_new_run_clicks_refuses_it(tmp_path):
         lab.ctx.t += 1.0
         plugin.request_new_run()
         await settle(plugin)
-        assert "New run refused: a200-0804 is leased by movement_exec" in plugin._message
+        assert "New run refused: 0804 is leased by movement_exec" in plugin._message
         return plugin, process, current, selected
 
     plugin, process, current, selected = asyncio.run(scenario())
@@ -875,7 +875,7 @@ def test_a_step_started_while_waiting_for_a_live_robot_stops_the_automatic_selec
 
     plugin, process = asyncio.run(scenario())
     assert process.selected == [] and plugin.view.current is None
-    assert "Select refused: a200-0804 is leased by movement_exec" in plugin._message
+    assert "Select refused: 0804 is leased by movement_exec" in plugin._message
 
 
 def test_a_refusal_goes_once_the_current_step_changes(tmp_path):
@@ -957,7 +957,7 @@ def test_a_refused_second_click_ends_the_wait(tmp_path):
             lease = lab.lease_to_exec("a200-0806")
             lab.ctx.t += 1.0
             request()
-            assert "refused: a200-0806 is leased by movement_exec" in plugin._message and plugin.again == ""
+            assert "refused: 0806 is leased by movement_exec" in plugin._message and plugin.again == ""
             lease.release()
             lab.ctx.t += 1.0
             request()

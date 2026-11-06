@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from crl_husky.follower_path import FollowerPath
 
+from ...config import short_serial
 from ...drive import drive_folder, folder_name, started_at
 from ...plugin_api import signals
 from ...plugin_api.concurrency import WaitTimeout
@@ -37,7 +38,7 @@ from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import hover
 from ...world.checks import BAD, GOOD, WARN, Check
-from ...world.clearance import ALL_ARMS, BASE_DRIVE
+from ...world.clearance import ALL_ARMS, BASE_DRIVE, BASE_PLAN_DISTANCE
 from ...world.follower import path_check
 from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import with_stand_ins
@@ -47,7 +48,7 @@ from .algorithms import ALGORITHMS, Algorithm, Debug
 from ...shared.recordings.runs import load_description, save_recording, write_description
 from .recording import RECORDING_FOLDER, attempt_folder, save_plan
 from .tasks import BY_NAME, TASK_ORIGIN
-from .world import PlanningWorld
+from .world import CLEARANCE_STEP, PlanningWorld
 
 if TYPE_CHECKING:
     from ...shared.process_contract import ProcessContract
@@ -152,7 +153,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             algorithm, settings = self._algorithm(request)
         except ValueError as error:
             reason = str(error)
-            return Search(label=f"plan {serial}", message=f"planning for {serial}…",
+            return Search(label=f"plan {short_serial(serial)}", message=f"planning for {short_serial(serial)}…",
                           work=lambda: PlanResult(None, reason, 0.0), time_limit=WAIT_MARGIN,
                           accepted=lambda _result: ("", False))
         debug = Debug(on=request.debug)
@@ -192,13 +193,24 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
-                result, world = PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0), None
+                why = f"{short_serial(serial)} can't be planned for: {'; '.join(problems)}"
+                result, world = PlanResult(None, why, 0.0), None
             else:
                 stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
                 others[:] = setup["stand_ins"] = list(stand_ins.warnings)
                 self._world.sync(stand_ins.scene)
-                result, world = algorithm.plan(self._world, robot_id(serial), start, goal, abort, settings,
-                                               debug), self._world
+                own, world = robot_id(serial), self._world
+                # * Only what the start or target is already closer to keeps less, and only as much as it has there.
+                close = {object_id: kept_margin(distance)
+                         for object_id, distance in world.close_objects(own, (start, goal), settings.margin).items()}
+                setup["close"] = {world.snapshot.label(object_id): margin for object_id, margin in close.items()}
+                with world.keeping(own, settings.margin, close):
+                    result = algorithm.plan(world, own, start, goal, abort, settings, debug)
+                if result.path is not None:
+                    nearest = tuple(sorted(((world.snapshot.label(object_id), margin)
+                                            for object_id, margin in close.items()), key=lambda item: item[1]))
+                    result = replace(result, path=replace(result.path, margin=min([settings.margin, *close.values()]),
+                                                          close=nearest))
                 if result.path is None and others:
                     result = replace(result, reason=f"{result.reason} ({unmeasured(others)})")
             if folder is not None:
@@ -221,9 +233,10 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             path, how = result.path, algorithm.label + (" (straight)" if result.direct else "")
             stand_ins = f" ({unmeasured(others)})" if others else ""
             return (f"{how}: {path.length:.2f} m, {path.duration:.1f} s, "
-                    f"found in {result.seconds:.1f} s{guess}{stand_ins}"), bool(guessed or others)
+                    f"found in {result.seconds:.1f} s{guess}{stand_ins}{close_note(path, settings.margin)}"), \
+                bool(guessed or others or path.close)
 
-        return Search(label=f"plan {serial}", message=f"planning for {serial}…{guess}", work=work,
+        return Search(label=f"plan {serial}", message=f"planning for {short_serial(serial)}…{guess}", work=work,
                       time_limit=TIME_LIMIT + WAIT_MARGIN, accepted=accepted, finished=finished)
 
     def stale_reason(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> str:
@@ -278,8 +291,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         # * The last run's chip goes: every way out below sets this run's, or none for a replaced commit.
         self._runs.pop(serial, None)
         if problem := robot.base.follow_problem():
-            answer(False, f"not committed: {serial}: {problem}")
-            self._refused(ctx, serial, f"not committed: {serial}: {problem}")
+            answer(False, f"not committed: {short_serial(serial)}: {problem}")
+            self._refused(ctx, serial, f"not committed: {short_serial(serial)}: {problem}")
             return
         sent_id, sent_at, started = None, ctx.now(), started_at()
         outcome, rec, clearance, run = "stopped", None, None, None
@@ -297,12 +310,12 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                     sent_id = send_to_onboard_follower(robot.base, path)
                 except ValueError as error:
                     answer(False, f"not committed: {error}")
-                    self._refused(ctx, serial, f"not committed: {serial}: {error}")
+                    self._refused(ctx, serial, f"not committed: {short_serial(serial)}: {error}")
                     return
                 sent_at = ctx.now()
                 run = self._runs[serial] = Run(FollowerPath.from_poses(*path.points.T), sent_id, sent_at, rec)
                 ctx.log_info(f"base path {sent_id} sent to {serial}: {path.length:.2f} m, {len(path.points)} waypoints")
-                answer(True, f"sent to {serial}'s follower (path {sent_id})")
+                answer(True, f"sent to {short_serial(serial)}'s follower (path {sent_id})")
                 limit = path.duration * RUN_FACTOR + RUN_MARGIN
                 try:
                     # * Under way is WARN (sent or following); done, aborted, replaced or silent ends the run.
@@ -313,8 +326,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                     outcome = check.label if check.level == GOOD else f"{check.label}: {check.detail}"
                 except WaitTimeout:
                     outcome = "timed out: still following"
-                    check = Check("timed out", BAD, f"{serial} still followed the path after {limit:.0f} s; "
-                                                    f"its path was stopped")
+                    check = Check("timed out", BAD, f"{short_serial(serial)} still followed the path after "
+                                                    f"{limit:.0f} s; its path was stopped")
                     robot.base.stop_path()
                 self._end(serial, run, check)
                 await ctx.sleep(SETTLE)
@@ -338,7 +351,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             if run is None and isinstance(error, MotionRefused):  # e.g. the clearance cannot check the robot
                 self._refused(ctx, serial, f"nothing sent: {error}")
             else:
-                self._end(serial, run, Check("failed", BAD, hover(f"{serial}: {error}")))
+                self._end(serial, run, Check("failed", BAD, hover(f"{short_serial(serial)}: {error}")))
             raise
         finally:
             if sent_id is not None:
@@ -393,7 +406,12 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
     # --- --- --- --- --- READING --- --- --- --- ---
 
     def plan_margin(self, plan: Plan[BasePlanRequest]) -> float | None:
-        """The margin the path was planned with (the panel's Margin), metres; None for a request with bad settings."""
+        """How far the path keeps from everything, metres; None for a request with bad settings.
+
+        The smallest margin it kept (`BasePath.margin`), else the request's.
+        """
+        if plan.path is not None and plan.path.margin is not None:
+            return plan.path.margin
         try:
             return self._algorithm(plan.request)[1].margin
         except ValueError:  # * its plan failed for that reason already
@@ -410,7 +428,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         if algorithm is None:
             raise ValueError(f"unknown algorithm {label!r}")
         try:
-            return algorithm, replace(algorithm.settings(), **dict(request.settings))
+            # * Without a margin, the one the panel starts at: every caller plans the same way.
+            return algorithm, replace(algorithm.settings(), **{"margin": BASE_PLAN_DISTANCE, **dict(request.settings)})
         except TypeError as error:
             raise ValueError(f"bad settings for {label}: {error}") from None
 
@@ -464,3 +483,21 @@ def _offset(pose, reference) -> tuple[float, float]:
     """How far apart two (x, y, yaw) floor poses are: metres, and radians of turn (at most pi)."""
     dx, dy = pose[0] - reference[0], pose[1] - reference[1]
     return math.hypot(dx, dy), abs(math.atan2(math.sin(pose[2] - reference[2]), math.cos(pose[2] - reference[2])))
+
+
+def kept_margin(distance: float) -> float:
+    """The margin a path keeps from something its start or target is `distance` from: just below, to CLEARANCE_STEP."""
+    return max(0.0, math.floor((distance - 1e-6) / CLEARANCE_STEP) * CLEARANCE_STEP)
+
+
+def close_note(path: BasePath, margin: float) -> str:
+    """The plan line's note on a path keeping less from what its ends are close to; "" if it keeps the margin.
+
+    E.g. "; keeps only 3.5 cm from bars/B25: the start or target is that close; 10 cm from everything else".
+    """
+    if not path.close:
+        return ""
+    label, kept = path.close[0]
+    more = f" (and {len(path.close) - 1} more)" if len(path.close) > 1 else ""
+    return (f"; keeps only {kept * 100:g} cm from {label}{more}: the start or target is that close; "
+            f"{margin * 100:g} cm from everything else")

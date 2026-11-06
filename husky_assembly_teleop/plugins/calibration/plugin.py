@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import viser
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.collisions_contract import CollisionsContract
@@ -35,7 +36,7 @@ from ...world.mocap import mocap_check
 from scaffolding_assembly_core.ids import robot_id
 from .run import Run
 from .steps import STEPS
-from .steps.base import FAILS, TOOL_NAME, WORK, Calibration, CalibrationStep
+from .steps.base import FAILS, NONE_YET, TOOL_NAME, WORK, Calibration, CalibrationStep
 from .steps.s1_setup import Setup
 from .robot.sweeps import load_sweeps, named
 
@@ -71,7 +72,7 @@ class CalibrationPlugin(HuskyPlugin):
         self.cal.procedure.out_of_reach = self._out_of_reach
         # Whether the run took new body definitions whose files were not moved yet (a procedure ran).
         self._untidy = False
-        choices = [f"{serial} {arm}" for serial, robot in ctx.world.robots.items() for arm in robot.arms
+        choices = [f"{short_serial(serial)} {arm}" for serial, robot in ctx.world.robots.items() for arm in robot.arms
                    if self._has_sweeps(ctx, serial, arm)]
         self.steps: list[CalibrationStep] = [Setup(self.cal, choices)] + [step(self.cal) for step in STEPS[1:]]
         self.cal.steps = {step.name: step for step in self.steps}
@@ -172,13 +173,14 @@ class CalibrationPlugin(HuskyPlugin):
     def _done(self, ctx: PluginContext, anyway: bool) -> int:
         """Done: let the step keep what it made, save, and go to the work left (else the next step).
 
-        Pressed again on a failing result, it accepts it (`Run.accept`); a result missing or out of date is left as
-        it is, unstamped.
+        Pressed again on a failing result, or a result step's missing one (skipped), it accepts it (`Run.accept`): Done
+        elsewhere no longer leads back to it. A result out of date is left as it is, unstamped.
         """
         run, step, here = self.cal.run, self.panel.current, self.panel.index
         if run is None:
             return here
-        if anyway and step.state(ctx).label == FAILS:
+        label = step.state(ctx).label
+        if anyway and (label == FAILS or label == NONE_YET and not step.precondition):
             run.accept(step.name, step.judged_under(ctx))
         step.done(ctx)
         run.save()
@@ -190,7 +192,7 @@ class CalibrationPlugin(HuskyPlugin):
     def draw(self, ctx: PluginContext) -> None:
         """The panel, the ghost and the side panel."""
         run = self.cal.run
-        self.panel.draw(ctx, f"{run.serial} {run.arm}" if run else "no arm", self._live(ctx))
+        self.panel.draw(ctx, f"{short_serial(run.serial)} {run.arm}" if run else "no arm", self._live(ctx))
         self._draw_ghost(ctx)
         self.cal.driving.draw()
         self.cal.hand.draw()

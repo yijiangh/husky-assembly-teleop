@@ -494,7 +494,8 @@ def test_a_run_that_ends_before_the_follower_stops_the_path(how, chip):
     A new commit to this robot only ends the old run: its own path replaces the old one on the follower. The run
     chip is red for a trip (its own clearance, or a soft stop for another reason), grey for Cancel and Stop all.
     """
-    path = planned((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
+    # * Planned keeping only 2 cm (its start or target that close to something): the clearance is half of that.
+    path = replace(planned((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)), margin=COLLISION_MARGIN)
     follower = FollowerState(controller="pure_pursuit", state="following", reason="", path_id=7, timed=False,
                              piece=0, piece_count=1, turning=False, progress=0.0, reference=np.zeros(3),
                              lookahead=np.full(2, np.nan), cross_track_error=0.0, along_track_error=np.nan,

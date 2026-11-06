@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, fake_robotiq
 
+from husky_assembly_teleop.config import short_serial
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath
 from husky_assembly_teleop.plugins.arm_planner.planner_plugin import ArmPlannerPlugin
 from husky_assembly_teleop.plugins.base_planner.path import BasePath
@@ -157,7 +158,7 @@ def test_every_command_to_alice_is_refused_while_the_executor_leases_every_robot
                                   switch=switches.append)
     build_controller_panel(lab.ctx, lab.ctx.gui, controllers, {}, partial(control._leased, lab.ctx, (SERIAL, "base")))
     grip, = (widget for widget in lab.ctx.gui.of_kind("button_group") if widget.label == "Grip")
-    run, = (widget for widget in lab.ctx.gui.of_kind("button_group") if widget.label == "Run")
+    run, = (widget for widget in lab.ctx.gui.of_kind("button_group") if widget.label == "Controller")
     grip.callback("Open")
     run.callback("Free")
     lab.arm.controllers.state.switch_in_flight = None
@@ -229,7 +230,7 @@ def test_an_applied_force_keeps_robot_controls_lease_so_exec_stays_busy():
     assert len(lab.arm._target_wrench.messages) == 1 and lab.robot.lease_slot.lease.holder == "robot_control: teleop"
     lab.later(IDLE_AFTER + 2.5)
     lab.plugin._leases.release_idle(lab.ctx, partial(lab.plugin._busy, lab.ctx.t))
-    with pytest.raises(NotLeased, match="a200-0804 is leased by robot_control: teleop"):
+    with pytest.raises(NotLeased, match="0804 is leased by robot_control: teleop"):
         lab.lease_every_robot()
     lab.plugin._apply_force(lab.ctx, KEY, lab.arm, np.zeros(3))
     lab.later(IDLE_AFTER + 0.5)
@@ -261,7 +262,7 @@ def test_a_robot_robot_control_leases_keeps_the_executor_off_every_robot():
     lab.plugin._on_jog_hold(lab.ctx, KEY, 0, 1.0)
     lab.plugin._update_jogs(lab.ctx, lab.ctx.t)
     assert lab.arm._trajectory.messages and lab.robot.lease_slot.lease.holder == "robot_control: teleop"
-    with pytest.raises(NotLeased, match="a200-0804 is leased by robot_control: teleop"):
+    with pytest.raises(NotLeased, match="0804 is leased by robot_control: teleop"):
         lab.lease_every_robot()
     lab.plugin._jog_held.clear()
     lab.plugin._update_jogs(lab.ctx, lab.ctx.t)  # released: the jog is held
@@ -299,7 +300,7 @@ def test_base_exp_does_not_start_while_the_executor_leases_every_robot():
     plugin = BaseExperimentPlugin()
     plugin.serial = SERIAL
     lab.lease_every_robot()
-    assert plugin._start_problem(lab.ctx) == f"{SERIAL} is leased by {EXEC}"
+    assert plugin._start_problem(lab.ctx) == f"{short_serial(SERIAL)} is leased by {EXEC}"
 
 
 def test_ft_zero_needs_the_lease(monkeypatch):
