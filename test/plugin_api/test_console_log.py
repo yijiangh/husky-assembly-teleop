@@ -96,3 +96,24 @@ def test_the_tick_timer_counts_every_tick_but_the_first_with_how_late_it_was():
         timer.stop()
         loop.close()
     assert ticks == [0.0, 0.05]
+
+
+def test_since_gives_the_lines_added_or_repeated_after_a_number():
+    """A reader that kept the last number sees each new line once, and a repeat again with its count."""
+    log = ConsoleLog()
+    log.add(INFO, "robot_control", "a")
+    seen = log.version
+    log.add(INFO, "robot_control", "b")
+    log.add(INFO, "robot_control", "b")
+    new = log.since(seen)
+    assert [(entry.text, entry.count) for entry in new] == [("b", 2)]
+    assert log.since(new[-1].seq) == []
+
+
+def test_a_run_of_repeats_keeps_the_number_of_its_first_line():
+    """Repeats share their first line's number; the same text after another line starts a run of its own."""
+    log = ConsoleLog()
+    for text in ("a", "a", "b", "a", "a"):
+        log.add(INFO, "robot_control", text)
+    first, second, third = log.entries()
+    assert (first.count, first.first_seq) == (2, 1) and (second.first_seq, third.first_seq) == (3, 4)
