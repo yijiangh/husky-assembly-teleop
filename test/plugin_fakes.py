@@ -122,7 +122,8 @@ class FakeScene:
             raise AttributeError(name)
 
         def add(node_name: str, *args: Any, **options: Any) -> SimpleNamespace:
-            node = SimpleNamespace(kind=name[4:], name=node_name, args=args, remove=lambda: None, **options)
+            node = SimpleNamespace(kind=name[4:], name=node_name, args=args, remove=lambda: None,
+                                   on_update=lambda callback: None, **options)
             self.nodes.append(node)
             return node
         return add

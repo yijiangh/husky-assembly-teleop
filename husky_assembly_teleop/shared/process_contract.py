@@ -2,8 +2,9 @@
 What the process plugin offers others: its selected movement (`Selection`), read through `ProcessContract`.
 
 It also says whether the process's obstacles from Rhino count in collision checks (`obstacles_collide`), and whether
-the transfer workaround is on (`transfer_as_free`). Others may show each action's mark in its row (`request_marks`), and
-an action's later movements with joints found live (`request_carry`, a `Carry`).
+the transfer workaround is on (`transfer_as_free`), and where the build stands (`placement`: one rigid move of the
+build, obstacles included; the floor stays, robot bases stay on it). Others may show each action's mark in its row
+(`request_marks`), and an action's later movements with joints found live (`request_carry`, a `Carry`).
 
 Users type `ctx.require("process")` with it: `process: ProcessContract = ctx.require("process")`. The process, its
 actions and movements are the core's types (`scaffolding_assembly_core.process`).
@@ -56,8 +57,8 @@ class Selection:
     except while movement_exec has a robot's lease for a step.
 
     Attributes:
-        process: The loaded process, as authored; `process.folder` is where it was read from (the converted copy of
-            an old export).
+        process: The loaded process, placed (`ProcessContract.placement`); `process.folder` is where it was read
+            from (the converted copy of an old export).
         index: Position of the selected movement in the authored `process.movements()`, from 0.
         action: The action as the panel shows it: with the transfer workaround, a jointing action's movements in run
             order (`steps.as_run`). Its `robot` is "" for a `bar_placing` action.
@@ -84,6 +85,21 @@ class ProcessContract(Protocol):
         """Selection | None: The selected movement, or None while no process with movements is loaded."""
 
     @property
+    def authored(self) -> Process | None:
+        """Process | None: The loaded process as authored, before its placement; the same object until another loads.
+
+        A new placement makes a new `selection.process` but keeps this one: it tells a re-placed process from another.
+        """
+
+    @property
+    def placement(self) -> Pose:
+        """Pose: Where the build stands: its authored world frame in the world (identity: as authored).
+
+        Bars, connector halves, obstacles and arm targets move by it; robot bases too, projected onto the floor
+        plane; the floor ("ground/…") stays. The run keeps it (`RunSettings.placement`).
+        """
+
+    @property
     def obstacles_collide(self) -> bool:
         """bool: Whether the process's obstacles (Rhino's "obstacles/<name>") count in collision checks.
 
@@ -104,6 +120,12 @@ class ProcessContract(Protocol):
         A movement the panel does not list (the workaround's travel to load) selects its action's first one listed.
 
         ! Main thread only.
+        """
+
+    def request_placement(self, placement: Pose) -> None:
+        """Place the build at `placement`, as a run asks when it opens: the selected movement stays selected.
+
+        Never refused for done marks (the panel's own Apply is); refused while a step runs. ! Main thread only.
         """
 
     def request_marks(self, marks: Mapping[str, str]) -> None:

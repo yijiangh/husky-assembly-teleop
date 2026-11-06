@@ -7,7 +7,9 @@ It is split off only to keep each file short, and is never used on its own.
 
 from __future__ import annotations
 
+
 import asyncio
+import math
 from dataclasses import fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping
@@ -43,6 +45,19 @@ NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
 SETTING_TYPES = {each.name: type(each.default) for each in fields(RunSettings)}
 #: How far the loaded process's runs were read; only OPEN allows writes.
 NO_PROCESS, OPENING, OPEN, NOT_OPENED = "", "opening", "open", "not opened"
+
+
+def placement_problem(value: Any) -> str:
+    """What is wrong with a placement setting ([x, y, z, qx, qy, qz, qw], a unit quaternion), or ""."""
+    try:
+        numbers = [float(each) for each in value]
+    except (TypeError, ValueError):
+        return f"the placement must be 7 numbers, not {value!r}"
+    if len(numbers) != 7 or not all(math.isfinite(each) for each in numbers):
+        return f"the placement must be 7 finite numbers, not {value!r}"
+    if abs(math.hypot(*numbers[3:]) - 1.0) > 1e-3:
+        return f"the placement's quaternion is not a unit one: {numbers[3:]}"
+    return ""
 
 
 def _record_file(folder: Path, event: str, ros_time: float, action: str, movement: str,
@@ -377,7 +392,11 @@ class RunWrites:
         for name, value in changes.items():
             if name not in SETTING_TYPES:
                 return f"there is no setting {name!r}"
-            if name in NUMBER_SETTINGS:
+            if name == "placement":
+                problem = placement_problem(value)
+                if problem:
+                    return problem
+            elif name in NUMBER_SETTINGS:
                 what, (low, high), unit = NUMBER_SETTINGS[name]
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high \
                         or (SETTING_TYPES[name] is int and value != int(value)):
