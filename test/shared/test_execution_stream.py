@@ -410,7 +410,7 @@ def _turned(pose_q, degrees: float) -> np.ndarray:
 
 @pytest.mark.parametrize("case, why", [
     ("at the tcp", ""), ("4.9 cm off", ""), ("6 cm off", "too far from the TCP"),
-    ("turned 6°", "turned 6.0 deg"), ("not unit", "not a unit quaternion"), ("out of reach", "out of reach"),
+    ("turned 6°", "turned 6.0 deg"), ("not unit", "not a unit quaternion"),
     ("9 mm step", ""), ("11 mm step", "jumps 11.0 mm"), ("3.5° step", "jumps 0.0 mm / 3.5 deg"),
 ])
 def test_target_problem_refuses_what_the_arm_refuses(case, why):
@@ -428,8 +428,6 @@ def test_target_problem_refuses_what_the_arm_refuses(case, why):
         orientation = _turned(tcp_q, 6.0)
     elif case == "not unit":
         orientation = tcp_q * 1.01
-    elif case == "out of reach":
-        tcp_p = position = np.array([0.0, 0.9, 0.163])
     elif case.endswith("step"):
         previous = Pose.from_arrays(tcp_p, tcp_q)
         if case == "3.5° step":

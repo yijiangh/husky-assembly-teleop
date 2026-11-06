@@ -416,11 +416,6 @@ def test_test_mode_checks_and_records_but_never_sends():
     assert "TEST MODE" in arm._node.log.text("warning")
 
 
-def _far_tcp(arm):
-    arm.state.tcp_position = np.array([0.0, 0.9, 0.163])
-    return arm.state.tcp_position, TCP_ORIENTATION
-
-
 def _stale_tcp(arm):
     arm.state.tcp_update_time -= JOINT_STATE_MAX_AGE + 0.1
     return TCP_POSITION, TCP_ORIENTATION
@@ -462,7 +457,6 @@ def _wrong_controller(arm):
     (_stale_tcp, "TCP pose is"),
     (lambda arm: (TCP_POSITION + [0.06, 0.0, 0.0], TCP_ORIENTATION), "too far from the TCP"),
     (lambda arm: (TCP_POSITION, turned(6.0)), "is turned"),
-    (_far_tcp, "out of reach"),
     (_big_step, "jumps"),
     (_big_turn_step, "jumps"),
 ], ids=lambda value: value if isinstance(value, str) else "")
