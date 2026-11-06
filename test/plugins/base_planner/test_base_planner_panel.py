@@ -11,6 +11,7 @@ from plugin_fakes import WATCHES, FakeGui
 from robot_fakes import lease_test_robots
 from robot_lab import RobotLab
 
+from husky_assembly_teleop.colors import CURRENT, rgb
 from husky_assembly_teleop.plugins.base_planner.panel_plugin import NO_TASK, BasePlannerPanel
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin, Run
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
@@ -321,8 +322,8 @@ def test_each_robot_keeps_its_own_run_chip():
     assert "reached the path" not in shown["cindy"] and "no follower" not in shown["cindy"]
 
 
-def test_the_robot_row_chooses_the_robot_and_follows_a_switch():
-    """A press plans for that robot; a robot the panel switched to by itself is the one filled."""
+def test_the_robot_buttons_choose_the_robot_and_follow_a_switch():
+    """A press plans for that robot; a robot the panel switched to by itself is the one highlighted."""
     ctx = RobotLab().ctx
     ctx.view.scene = MagicMock()
     ctx.plugins.update({"base_planner": MagicMock(), "collisions": MagicMock(),
@@ -330,9 +331,9 @@ def test_the_robot_row_chooses_the_robot_and_follows_a_switch():
     panel = BasePlannerPanel()
     panel._add_ghosts = lambda *_args: setattr(panel, "_used", MagicMock())
     panel.setup(ctx)
-    serials = panel._robot.options
-    assert panel._robot.value == serials[0] and panel.serial == serials[0]
-    panel._robot._choose(serials[2])
+    serials = list(panel._robot.buttons)
+    assert panel._robot.buttons[serials[0]].label == serials[0].split("-")[-1] and panel.serial == serials[0]
+    panel._robot.buttons[serials[2]].callback()
     assert panel.serial == serials[2]
     panel.serial = serials[1]
     # * Only the buttons matter here: the rest of the panel's drawing reads a real plan.
@@ -340,4 +341,4 @@ def test_the_robot_row_chooses_the_robot_and_follows_a_switch():
                  "_debug_view"):
         setattr(panel, part, MagicMock())
     panel.draw(ctx)
-    assert panel._robot.value == serials[1]
+    assert [button.color for button in panel._robot.buttons.values()] == [rgb(NONE), rgb(CURRENT), rgb(NONE)]

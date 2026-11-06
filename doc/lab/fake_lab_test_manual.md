@@ -394,7 +394,7 @@ prompt), a Robotiq step and the servo's first pass.
 
 ### 4.1 Cindy's base  [SIM RUN — recorded]
 
-- [ ] Plan › Base: buttons [Robot]: `0806` → button [Load: Step] → button [Path: Plan]
+- [ ] Plan › Base: button [0806] → button [Load: Step] → button [Path: Plan]
   - The panel shows `target +0.527 -3.067 +89.6°`, then after about 2 s `Lattice (hybrid A*) (straight): 5.24 m,
     29.0 s`.
 - [ ] button [Commit]
@@ -510,7 +510,7 @@ plan refuses because an arm still stands at the bar.
 
 ### 5.1 Cindy's base  [SIM RUN — recorded]
 
-- [ ] Plan › Base: buttons [Robot]: `0806` → button [Load: Step] → button [Path: Plan] → button [Commit]
+- [ ] Plan › Base: button [0806] → button [Load: Step] → button [Path: Plan] → button [Commit]
   - **Expect:** pane monitor: `base path N sent to a200-0806: 0.77 m, ... waypoints`, then after about 30 s
     `base path N on a200-0806: done`.
   - **If not:** `base path N on a200-0806: timed out: still following`: the simulated follower sometimes never starts
@@ -548,7 +548,7 @@ As 4.2 and 4.3, with these differences:
 ### 5.3 B21_H: Alice holds B21  [SIM RUN — recorded]
 
 **a) Alice's base**
-- [ ] Plan › Base: buttons [Robot]: `0804` → button [Load: Step] → button [Path: Plan] → button [Commit]
+- [ ] Plan › Base: button [0804] → button [Load: Step] → button [Path: Plan] → button [Commit]
   - **Expect:** pane monitor: `base path N sent to a200-0804: ...`, then after about 50 s `base path N on a200-0804:
     done`.
   - The panel shows `target +0.638 -1.561 -29.6°` and a path of about 3 m. Control › `0804` › Base at about

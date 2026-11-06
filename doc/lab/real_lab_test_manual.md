@@ -809,7 +809,7 @@ bar; clear floor and workspace.
 
 ### 5.a Each base under its follower: a short drive (Cindy, then Alice)  [TEST — base, arm or gripper move, no bar]
 
-- [ ] `Plan` › `Base`: buttons `Robot`: *0806* → button `Load: Robot`
+- [ ] `Plan` › `Base`: button `0806` → button `Load: Robot`
   - The fields `Target x y yaw°` show where she stands (world x, y in metres, yaw in degrees).
 - [ ] fields `Target x y yaw°`: a point about 0.5 m away on open floor (change x or y, whichever way is clear) →
       button `Path: Plan`
@@ -823,7 +823,7 @@ bar; clear floor and workspace.
   - She drives it smoothly and stops. `Control` › `0806` › Base then reads about the target (the fake lab's follower
     stopped within about 1 cm and 2°): note the real numbers.
 - [ ] The same back: the old x, y, yaw → button `Path: Plan` → button `Commit`
-- [ ] The same for Alice: buttons `Robot`: *0804*.
+- [ ] The same for Alice: button `0804`.
 
 ### 5.b Alice's gripper by hand  [TEST — base, arm or gripper move, no bar]
 
@@ -883,7 +883,7 @@ Then the seven actions in order, each with its procedures (6.1–6.4) and what d
 
 ### 6.1 Procedure B — drive a base (base planner)  [REAL RUN — recorded]
 
-- [ ] `Plan` › `Base`: buttons `Robot`: the action's robot (*0806* Cindy, *0804* Alice) → button `Load: Step`
+- [ ] `Plan` › `Base`: the button of the action's robot (`0806` Cindy, `0804` Alice) → button `Load: Step`
       → button `Path: Plan`
   - The panel shows *target +x +y +yaw°* (the design's base for the current step; 6.5 lists them), then after about
     2 s *Lattice (hybrid A\*) (straight): L m, T s*, and the path on the floor.

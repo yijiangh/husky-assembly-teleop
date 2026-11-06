@@ -17,6 +17,7 @@ from plugin_fakes import WATCHES, ArmDriver, FakeContext, fake_arm, fake_node, f
 from robot_fakes import lease_test_robots, wait_ticks_until
 from robot_lab import RobotLab
 
+from husky_assembly_teleop.colors import CURRENT, rgb
 from husky_assembly_teleop.plugins.arm_planner import planner_plugin as arm_plugin
 from husky_assembly_teleop.plugins.arm_planner.panel_plugin import BOTH, STEP_IK, STEP_JOINTS, ArmPlannerPanel
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath
@@ -738,8 +739,8 @@ def test_a_plan_with_every_robot_measured_has_no_such_warning(found_path):
     assert plan.state == "ready" and not plan.warning and "not measured" not in plan.message
 
 
-def test_the_robot_row_chooses_the_robot_and_follows_a_switch():
-    """A press plans for that robot; a robot the panel switched to by itself is the one filled."""
+def test_the_robot_buttons_choose_the_robot_and_follow_a_switch():
+    """A press plans for that robot; a robot the panel switched to by itself is the one highlighted."""
     ctx = RobotLab().ctx
     ctx.view.scene = MagicMock()
     ctx.plugins.update({"arm_planner": MagicMock(), "collisions": MagicMock(),
@@ -747,9 +748,9 @@ def test_the_robot_row_chooses_the_robot_and_follows_a_switch():
     panel = ArmPlannerPanel()
     panel._add_ghosts = lambda *_args: setattr(panel, "_used", MagicMock())
     panel.setup(ctx)
-    serials = panel._robot.options
-    assert panel._robot.value == serials[0] and panel.serial == serials[0]
-    panel._robot._choose(serials[2])
+    serials = list(panel._robot.buttons)
+    assert panel._robot.buttons[serials[0]].label == serials[0].split("-")[-1] and panel.serial == serials[0]
+    panel._robot.buttons[serials[2]].callback()
     assert panel.serial == serials[2]
     panel.serial = serials[1]
     # * Only the buttons matter here: the rest of the panel's drawing reads a real plan.
@@ -757,7 +758,7 @@ def test_the_robot_row_chooses_the_robot_and_follows_a_switch():
                  "_debug_view"):
         setattr(panel, part, MagicMock())
     panel.draw(ctx)
-    assert panel._robot.value == serials[1]
+    assert [button.color for button in panel._robot.buttons.values()] == [rgb(NONE), rgb(CURRENT), rgb(NONE)]
 
 
 def test_both_plans_every_arm_in_one_search_its_targets_from_step_ik():
