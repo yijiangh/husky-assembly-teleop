@@ -28,6 +28,7 @@ from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 from ...robot_interface.arm import cartesian_target_refusal, pose_between
 from ...robot_interface.end_effectors import ScaffoldingV3State
 from ...robot_interface.mocap_state import pose_lost
+from ...robot_interface.refusal import newest_reason
 from ...robot_interface.soft_stop import MotionRefused
 from ...world.tcp import tool0_in_base_link
 from ..assembly_planning.route_result import pose_error
@@ -247,7 +248,7 @@ def zero_wrench(arms: Collection[ArmInterface]) -> str:
         except MotionRefused as refused:
             return f"{arm.config.name} refused the zero target wrench: {refused}"
         if not sent:
-            return f"{arm.config.name} refused the zero target wrench (its log says why)"
+            return f"{arm.config.name} refused the zero target wrench: {newest_reason(arm)}"
     return ""
 
 
@@ -471,6 +472,6 @@ async def stream(ctx: PluginContext, robot: HuskyRobotInterface, segment: Segmen
             except MotionRefused as refused:
                 return f"refused: {name}: {refused}"
             if not sent:
-                return f"refused: {name} (its log says why)"
+                return f"refused: {name}: {newest_reason(arm)}"
         recorder.tick(now)
         await ctx.next_tick()

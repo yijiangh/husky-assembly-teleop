@@ -1012,7 +1012,7 @@ class ArmInterface:
                                                (self.state.tcp_position, self.state.tcp_orientation),
                                                self._recent_target())
         if refusal is not None:
-            self._refused("target refused", f"not sending a cartesian target: {refusal}")
+            self._refused("target refused", f"target not sent: {refusal}")
             return False
         if self.state.sent_target_time is None or self._now() - self.state.sent_target_time > CARTESIAN_STEP_WINDOW:
             # First target of a move: log how it compares with the driver's TCP.

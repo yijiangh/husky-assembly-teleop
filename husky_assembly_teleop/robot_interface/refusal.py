@@ -7,6 +7,7 @@ Each part keeps its newest as `last_refusal`, so a panel can show it next to the
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .soft_stop import MotionRefused
 
@@ -24,6 +25,12 @@ class Refusal:
     label: str
     reason: str
     time: float
+
+
+def newest_reason(*parts: Any) -> str:
+    """Why one of these parts just refused a command, for a panel: its newest `last_refusal`, as its log says."""
+    refusals = [part.last_refusal for part in parts if part.last_refusal is not None]
+    return max(refusals, key=lambda refusal: refusal.time).reason if refusals else "see the log"
 
 
 def refusal_from(error: MotionRefused, now: float) -> Refusal:
