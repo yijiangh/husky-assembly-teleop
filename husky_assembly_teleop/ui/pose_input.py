@@ -1,5 +1,7 @@
 """
-A floor-pose input (x, y, yaw): number fields plus a 3D gizmo showing the same value.
+Pose inputs: number fields plus a 3D gizmo showing the same value.
+
+`PlanarPoseInput` takes a floor pose (x, y, yaw), `PoseInput` a full one (x, y, z, roll, pitch, yaw).
 
 Build one in `setup` and read `pose` when needed; it is written on the main thread only.
 """
@@ -11,6 +13,9 @@ from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import viser
+from scipy.spatial.transform import Rotation
+
+from scaffolding_assembly_core.geometry import Pose
 
 if TYPE_CHECKING:
     from ..plugin_api.context import PluginContext
@@ -147,3 +152,90 @@ def _wrap(angle: float) -> float:
         float: The wrapped angle.
     """
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+class PoseInput:
+    """A full pose: x, y, z and roll, pitch, yaw number rows and an optional drag gizmo, kept in sync.
+
+    Children added under `gizmo_path` move with the gizmo (e.g. a preview of what the pose places).
+
+    Attributes:
+        pose: Current pose, world frame.
+        gizmo_path: The gizmo's scene path.
+    """
+
+    def __init__(self, ctx: PluginContext, gui: viser.GuiApi, scene_path: str, label: str,
+                 on_change: Callable[[], None] | None = None, gizmo_scale: float = 0.5, hint: str = ""):
+        """Build the rows and a gizmo hidden until "Gizmo" is ticked. Call inside `ctx.view.ui()`.
+
+        Args:
+            ctx: The owning plugin's context.
+            gui: GUI api to add the rows to.
+            scene_path: Gizmo path; must be under `ctx.view.scene_root`.
+            label: Label of the rows, e.g. "Build".
+            on_change: Called on the main thread when the operator edits the pose; not for `set`.
+            gizmo_scale: Gizmo size, metres.
+            hint: Hover text of the rows.
+        """
+        self._on_change = on_change
+        self.pose = Pose()
+        self.gizmo_path = scene_path
+        self._position = gui.add_vector3(f"{label} x y z m", initial_value=(0.0, 0.0, 0.0), step=0.001,
+                                         hint=hint or f"{label}: x, y, z in metres, world frame")
+        self._rpy = gui.add_vector3(f"{label} r p y °", initial_value=(0.0, 0.0, 0.0), step=0.1,
+                                    hint=hint or f"{label}: roll, pitch, yaw in degrees (about x, then y, then z)")
+        self._show = gui.add_checkbox("Gizmo", initial_value=False,
+                                      hint="Show a handle in the 3D view to drag the pose with")
+        self._gizmo = ctx.view.scene.add_transform_controls(scene_path, scale=gizmo_scale, depth_test=False,
+                                                            visible=False)
+        # ! Callbacks only queue the value; it is applied on the main thread.
+        self._position.on_update(ctx.defer_value(f"{label} position typed", lambda _value: self._on_fields()))
+        self._rpy.on_update(ctx.defer_value(f"{label} rotation typed", lambda _value: self._on_fields()))
+        self._show.on_update(ctx.defer_value(f"{label} gizmo shown", self._on_show))
+
+        async def on_drag(event: viser.TransformControlsEvent) -> None:
+            position, wxyz = tuple(event.target.position), tuple(event.target.wxyz)
+            ctx.submit(f"{label} dragged", lambda: self._on_drag(position, wxyz))
+
+        self._gizmo.on_update(on_drag)
+
+    @property
+    def gizmo_shown(self) -> bool:
+        """bool: Whether the gizmo is shown."""
+        return bool(self._show.value)
+
+    def set(self, pose: Pose) -> None:
+        """Set the pose from code, without calling `on_change`. Main thread only."""
+        self._apply(pose, notify=False)
+
+    def _on_fields(self) -> None:
+        """Apply an edit of either row."""
+        rotation = Rotation.from_euler("xyz", [float(value) for value in self._rpy.value], degrees=True)
+        self._apply(Pose.from_arrays([float(value) for value in self._position.value], rotation.as_quat()),
+                    notify=True)
+
+    def _on_drag(self, position, wxyz) -> None:
+        """Apply a gizmo drag."""
+        w, x, y, z = wxyz
+        self._apply(Pose.from_arrays([float(value) for value in position], (x, y, z, w)), notify=True)
+
+    def _on_show(self, shown) -> None:
+        """Show or hide the gizmo."""
+        self._gizmo.visible = bool(shown)
+
+    def _apply(self, pose: Pose, notify: bool) -> None:
+        """Store a pose and copy it into the rows and the gizmo.
+
+        ? Writing a widget queues its callback back here; the tolerance check ends that loop.
+        """
+        turn = (Rotation.from_quat(self.pose.orientation).inv() * Rotation.from_quat(pose.orientation)).magnitude()
+        if np.allclose(pose.position, self.pose.position, atol=SAME_POSE_TOLERANCE) and turn < SAME_POSE_TOLERANCE:
+            return
+        self.pose = pose
+        roll, pitch, yaw = Rotation.from_quat(pose.orientation).as_euler("xyz", degrees=True)
+        self._position.value = tuple(round(float(value), 4) for value in pose.position)
+        self._rpy.value = (round(float(roll), 2), round(float(pitch), 2), round(float(yaw), 2))
+        x, y, z, w = pose.orientation
+        self._gizmo.position, self._gizmo.wxyz = tuple(float(value) for value in pose.position), (w, x, y, z)
+        if notify and self._on_change is not None:
+            self._on_change()

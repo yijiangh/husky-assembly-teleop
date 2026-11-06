@@ -8,11 +8,19 @@ It serves the selected movement, and the maps between process ids and live scene
 Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "process/<body id>"
 (`scene_bodies.py`): the runtime draws it and planners avoid it. A body the plan holds follows the configured real
 robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.ProcessDrawing`), with the other
-bodies on request. The plugin only reads processes: it never edits one.
+bodies on request. The plugin only reads processes: it never edits one, and a placement only moves the copy it serves.
 
 The "Transfer workaround" box (on at start, this session only) runs the transfer as a free move with empty tools
 to the insert start, where the operator places the bar. While it is on, the panel lists and draws each jointing action
-in that order (`steps.as_run`); `process` stays the authored process, and `Selection.index` an authored index.
+in that order (`steps.as_run`); `process` stays the (placed) authored process, and `Selection.index` an authored
+index.
+
+The "build" box places the build: x, y, z and roll, pitch, yaw of the authored world frame in the world
+(`placement.py`), typed or dragged with the gizmo (the bar lines under it show where the build goes), then Apply.
+Bars, connector halves, obstacles and arm targets move; robot bases too, projected onto the floor plane; the floor
+stays. `process` is the placed process, `authored` the one read. Apply is refused once an action is marked done or
+while a step runs; the run keeps the placement and puts it back when it opens (`request_placement`). A new process
+loads at its authored place.
 
 The "Rhino obstacles" list (ghost at start) says what becomes of the process's obstacles ("obstacles/<name>"): disable
 hides them, ghost draws them see-through by the overlay, collide counts them in every collision check. Unless they
@@ -47,6 +55,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
 from async_timeout import timeout
+import numpy as np
 from ...config import short_serial
 from ...colors import INK, rgb
 from ...drive import drive_folder
@@ -54,6 +63,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.assembly_tab.layout import ACTIONS_BAND, ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
 from ...ui.css import group_buttons, group_tooltips_css, one_row_css
+from ...ui.pose_input import PoseInput
 from ...ui.style import (BUSY, CURRENT, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line,
                          hover, section, swatch_chip, values)
 from ...world.model_check import model_differences
@@ -68,8 +78,10 @@ from ...shared.assembly_planning.movement import mating_drives
 from ...shared.assembly_planning.steps import as_run
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
-from .drawing import ProcessDrawing, load_robot_models
+from ...shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH
+from .drawing import ProcessDrawing, bar_lines, load_robot_models
 from .loading import load_process, process_folders, rhino_files
+from .placement import IDENTITY, is_identity, off_floor, placed, placement_text
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -159,8 +171,18 @@ class ProcessPlugin(HuskyPlugin):
 
     def __init__(self):
         """Start with nothing loaded."""
-        #: The loaded process as authored, or None. Replaced on load, never edited.
+        #: The loaded process as authored, or None (`ProcessContract.authored`). Replaced on load, never edited.
+        self.authored: Process | None = None
+        #: Where the build stands (`ProcessContract.placement`), and the authored process placed there, or None.
+        self.placement: Pose = IDENTITY
         self.process: Process | None = None
+        # Why the last Apply of the build box was refused, and when (ROS time); "" after a placement it made.
+        self._placement_refused, self._placement_refused_at = "", 0.0
+        # The authored process the gizmo's preview lines were drawn for.
+        self._preview_for: Process | None = None
+        self._preview = None
+        #: The build box (`setup` makes it); None before.
+        self._pose: PoseInput | None = None
         #: Whether the transfer workaround is on (`ProcessContract.transfer_as_free`).
         self.transfer_as_free = TRANSFER_AS_FREE
         #: The process as the panel shows it: with the workaround, jointing actions in run order (`as_run`).
@@ -295,6 +317,15 @@ class ProcessPlugin(HuskyPlugin):
                      "count. Replan after a change to or from collide.")
             # ! Always one line, so nothing below it moves.
             self._collide_status = gui.add_html("")
+            gui.add_html(section("build", SECTION_CTRL))
+            self._pose = PoseInput(ctx, gui, f"{ctx.view.scene_root}/process_placement", "Build", gizmo_scale=0.8,
+                                   hint="Where the build stands: the authored world frame in the world. Bars, "
+                                        "halves, obstacles and arm targets move; robot bases too, kept on the "
+                                        "floor; the floor stays. Apply to place it.")
+            place = gui.add_button("Apply", hint="Place the build at the pose above: the run keeps it. Refused once "
+                                                 "an action is marked done, or while a step runs. Replan after.")
+            # ! Always one line, so nothing below it moves.
+            self._placement_status = gui.add_html("")
         # * assembly_run's RUN band sits between the process and its actions (`layout.py`).
         with ctx.view.ui(band=ACTIONS_BAND) as gui:
             self._actions_title = gui.add_html(section("actions", SECTION_CTRL))
@@ -337,6 +368,8 @@ class ProcessPlugin(HuskyPlugin):
 
         # ! Route every viser callback through defer so it runs on the main thread.
         load.on_click(ctx.defer("load process", lambda: self.load(ctx, Path(self._folder.value.strip()))))
+        place.on_click(ctx.defer("place the build", lambda: self.apply_placement(ctx, self._pose.pose)))
+        self._ctx = ctx
         # ! Operator clicks only: draw writes the boxes back, and viser calls back for that too, which could undo a
         #   click queued in the same tick.
         self._transfer.on_update(ctx.defer_value("Transfer workaround",
@@ -389,6 +422,18 @@ class ProcessPlugin(HuskyPlugin):
         """
         if self._movements:
             self.select(self._shown_index[max(0, min(int(index), len(self._shown_index) - 1))])
+
+    def request_placement(self, placement: Pose) -> None:
+        """Place the build for the run (`ProcessContract.request_placement`): refused only while a step runs.
+
+        Args:
+            placement: The authored world frame in the world.
+        """
+        refusal = step_running(self._ctx.world.robots)
+        if refusal:
+            self._ctx.log_warn(f"the run's build placement not applied: {refusal}")
+            return
+        self._place(self._ctx, placement)
 
     def request_marks(self, marks: Mapping[str, str]) -> None:
         """Show each action's mark in its row (`ProcessContract.request_marks`), replacing the marks given before.
@@ -455,6 +500,47 @@ class ProcessPlugin(HuskyPlugin):
         """Keep the path of the Rhino file picked; nothing else reads the list."""
         root = ctx.config.drive_root
         self.rhino_file = None if name == NO_RHINO_FILE or root is None else Path(root) / RHINO_FOLDER / name
+
+    def apply_placement(self, ctx: PluginContext, placement: Pose) -> None:
+        """The build box's Apply: place the build, unless an action is marked done or a step runs.
+
+        A refusal shows as a chip under the box for REFUSAL_SHOWN s, and the box goes back to the placement there is.
+
+        Args:
+            ctx: This plugin's context.
+            placement: The authored world frame in the world.
+        """
+        done = [action_id for action_id, mark in self._marks.items() if mark in (MARK_DONE, MARK_ASSUMED)]
+        refusal = ("no process loaded" if self.authored is None
+                   else f"{len(done)} action{'s' if len(done) > 1 else ''} marked done ({done[0]} first): the run is "
+                        f"built there; start a New run to place it elsewhere" if done
+                   else step_running(ctx.world.robots))
+        if refusal:
+            self._placement_refused, self._placement_refused_at = refusal, ctx.now()
+            ctx.log_warn(f"build not placed: {refusal}")
+            self._set_box(self.placement)
+            return
+        self._placement_refused = ""
+        self._place(ctx, placement)
+
+    def _place(self, ctx: PluginContext, placement: Pose) -> None:
+        """Place the authored process at `placement`; the same movement stays selected, the overlay is drawn again."""
+        self._set_box(placement)
+        same = (is_identity(placement) and is_identity(self.placement)) or placement == self.placement
+        if same or self.authored is None:
+            self.placement = placement
+            return
+        self.placement = placement
+        authored = self._authored_index[self.index] if self._movements else 0
+        self.process = placed(self.authored, placement)
+        self._show()
+        self.index = self._shown_index.get(authored, 0)
+        # * Found at the old place: drawn there no more.
+        self._carry = None
+        self._forget_drawing()
+        self._changed()
+        lifted = " (off the floor plane: robot bases stay on the floor, the arms reach the targets by live IK)"
+        ctx.log_info(f"build placed at {placement_text(placement)}{lifted if off_floor(placement) else ''}; replan")
 
     @property
     def obstacles_collide(self) -> bool:
@@ -564,11 +650,7 @@ class ProcessPlugin(HuskyPlugin):
             self._progress = ""
 
         # * Swap in on the main thread; `update` builds the new nodes on demand.
-        if self._build_task is not None:
-            self._build_task.cancel()
-        if self._drawing is not None:
-            self._drawing.remove()
-            self._drawing = None
+        self._forget_drawing()
         self._take(process)
         self._models = models
         # The converted copy, for an old export.
@@ -585,12 +667,28 @@ class ProcessPlugin(HuskyPlugin):
     def _take(self, process: Process) -> None:
         """Make `process` the loaded one, with its movement list and assumed starts, and select its first movement.
 
-        The old process's marks and carried joints go with it.
+        The old process's marks and carried joints go with it; it stands where it was authored until a run or Apply
+        places it.
         """
+        self.authored, self.placement = process, IDENTITY
+        self._set_box(IDENTITY)
         self.process, self.index = process, 0
         self._marks, self._carry = {}, None
         self._show()
         self._obstacles = process_obstacles(process)
+
+    def _set_box(self, placement: Pose) -> None:
+        """Show a placement in the build box, once `setup` made it."""
+        if self._pose is not None:
+            self._pose.set(placement)
+
+    def _forget_drawing(self) -> None:
+        """Drop the overlay (and stop one being built): `update` draws the process again."""
+        if self._build_task is not None:
+            self._build_task.cancel()
+        if self._drawing is not None:
+            self._drawing.remove()
+            self._drawing = None
 
     def _show(self) -> None:
         """Build the shown process (`as_run`), its movement list, assumed starts and the maps to authored indices."""
@@ -632,6 +730,7 @@ class ProcessPlugin(HuskyPlugin):
 
     def update(self, ctx: PluginContext) -> None:
         """Put the selected movement's obstacles into the scene, and start building the process's viser nodes."""
+        self._update_preview(ctx)
         if self._scene_revision != self.revision:
             self._scene_revision = self.revision
             self._put_obstacles(ctx)
@@ -643,6 +742,20 @@ class ProcessPlugin(HuskyPlugin):
             return
         if self._build_task is None or self._build_task.done():
             self._build_task = ctx.spawn("draw the process", self._build(ctx), survives_soft_stop=True)
+
+    def _update_preview(self, ctx: PluginContext) -> None:
+        """Under the gizmo, the authored bar lines, so a drag shows where the build would go; drawn once per process."""
+        if self._preview_for is self.authored or self._pose is None:
+            return
+        self._preview_for = self.authored
+        if self._preview is not None:
+            self._preview.remove()
+            self._preview = None
+        segments = bar_lines(self.authored)[0] if self.authored is not None else ()
+        if len(segments):  # viser needs at least one segment
+            self._preview = ctx.view.scene.add_line_segments(
+                f"{self._pose.gizmo_path}/preview", points=segments.astype("float32"), colors=BAR_LINE_COLOR,
+                thickness=BAR_LINE_WIDTH, thickness_units="screen")
 
     def _put_obstacles(self, ctx: PluginContext) -> None:
         """Replace this plugin's scene bodies with the selected movement's process scene; held bodies follow the real robot.
@@ -675,6 +788,7 @@ class ProcessPlugin(HuskyPlugin):
         self._transfer.value = self.transfer_as_free
         self._rhino_obstacles.value = self.obstacles_mode
         self._collide_status.content = self._collide_html(ctx)
+        self._placement_status.content = self._placement_html(ctx)
         selected = self.selected
         # * One line, even empty: the full error on hover.
         error = " ".join(self._error.split())
@@ -806,6 +920,24 @@ class ProcessPlugin(HuskyPlugin):
             if not any(body_id.startswith(MEASURED_PREFIX) for body_id in ctx.scene.snapshot.bodies):
                 chips += chip("room unchecked", FAIL, "no measured obstacles in the scene: add 'obstacles' to the "
                                                       "plugins, or nothing in the room is checked")
+        return chip_line(chips)
+
+    def _placement_html(self, ctx: PluginContext) -> str:
+        """One line of chips under the build box: an Apply refused in the last REFUSAL_SHOWN s, and the placement."""
+        chips = ""
+        if self._placement_refused and ctx.now() - self._placement_refused_at < REFUSAL_SHOWN:
+            chips += chip("not placed", FAIL, hover(f"Build not placed: {self._placement_refused}"))
+        if is_identity(self.placement):
+            chips += chip("as authored", NONE, "The build stands where the process puts it.")
+        else:
+            chips += chip(f"placed {placement_text(self.placement)}", OK,
+                          "The build is moved by this pose, obstacles included; robot bases stay on the floor, "
+                          "the floor stays.")
+            if off_floor(self.placement):
+                chips += chip("off the floor", BUSY, "A height, roll or pitch: robot bases stay on the floor, so the "
+                                                     "process's joints miss the targets: use Step IK, the live IK.")
+        if not np.allclose(self._pose.pose.matrix(), self.placement.matrix(), atol=1e-6):
+            chips += chip("not applied", BUSY, "The box holds another pose than the build's: Apply to place it.")
         return chip_line(chips)
 
     def _labels(self, action: Action) -> list[MovementLabel]:

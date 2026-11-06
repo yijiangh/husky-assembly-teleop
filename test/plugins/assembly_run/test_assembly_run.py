@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from planning_fixtures import DATA
 from plugin_fakes import FakeContext
@@ -15,6 +16,7 @@ from process_fixtures import JOINTS, build_process, with_action, write_robot_fil
 from husky_assembly_teleop.plugins.assembly_run.panel import RunPanel
 from husky_assembly_teleop.plugins.assembly_run.plugin import AssemblyRunPlugin
 from husky_assembly_teleop.plugins.process.loading import load_process
+from husky_assembly_teleop.plugins.process.placement import placed
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, take_lease
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.assembly_planning.steps import first_step
@@ -49,6 +51,13 @@ class FakeProcess:
         self.loaded, self.index, self.selected = loaded_process(process), 0, []
         self.transfer_as_free = True
         self.marks: dict[str, str] = {}
+        self.authored, self.placement, self.placements = self.loaded.process, Pose(), []
+
+    def request_placement(self, placement) -> None:
+        """Place the build: a new placed process, the same authored one."""
+        self.placements.append(placement)
+        self.placement = placement
+        self.loaded = loaded_process(placed(self.authored, placement))
 
     @property
     def selection(self) -> Selection:
@@ -1312,3 +1321,47 @@ def test_an_as_built_record_goes_to_the_days_file_on_the_drive(tmp_path):
     assert any(line.startswith("[as-built] B1_M2_insert start NOT recorded: FileNotFoundError(")
                for line in lab.ctx.lines("error"))
     assert len(path.read_text().splitlines()) == 1 and not plugin._save_error
+
+
+def test_the_build_placement_is_kept_by_the_run_and_put_back_when_it_opens(tmp_path):
+    """Placed in the process panel: saved in run.json (starting the run); after a restart the run places the build.
+
+    A re-placed process is the same run going on, not another process: the run is not reset.
+    """
+    lab = Lab(tmp_path)
+    placement = Pose((1.0, -0.5, 0.0), (0.0, 0.0, 0.3826834323650898, 0.9238795325112867))
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        process.request_placement(placement)
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        run = plugin._run
+        plugin.update(lab.ctx)
+        assert plugin._run is run and plugin._loaded.process is process.loaded.process
+        again, fresh = await opened(lab)
+        again.update(lab.ctx)
+        return run, again, fresh
+
+    run, again, fresh = asyncio.run(scenario())
+    assert run is not None
+    saved = json.loads((run.folder / "run.json").read_text())["settings"]["placement"]
+    np.testing.assert_allclose(saved, [*placement.position, *placement.orientation])
+    assert again.view.settings.placement_pose == placement
+    assert fresh.placements == [placement] and fresh.placement == placement
+
+
+def test_a_placement_that_is_no_pose_is_refused(tmp_path):
+    """Not 7 numbers, or not a unit quaternion: refused, nothing saved."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        for value, words in (([0.0] * 6, "7 finite numbers"), ([0.0] * 7, "not a unit one"),
+                             ("north", "7 numbers")):
+            plugin.request_settings(placement=value)
+            assert plugin._message.startswith("Settings refused") and words in plugin._message
+        return plugin
+
+    plugin = asyncio.run(scenario())
+    assert plugin.view.settings == RunSettings() and not runs(lab)

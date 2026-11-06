@@ -26,7 +26,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+import numpy as np
 import viser
+
+from scaffolding_assembly_core.geometry import Pose
 
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
@@ -95,6 +98,10 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         #: ! Wrapped once per process: plans and requests compare `_loaded` by identity, so a new wrapper would make
         #:   every plan stale and reset the run.
         self._source: Process | None = None
+        #: The process plugin's authored process behind `_source`: a new placement keeps it, another process doesn't.
+        self._authored: Process | None = None
+        #: The build's placement as last seen, so a change in the process panel is told from one the run made.
+        self._placement_seen = Pose()
         self._ids: IdMap | None = None
         #: How far its runs were read (NO_PROCESS, OPENING, OPEN, NOT_OPENED), and when to read them again.
         self._state, self._retry_at = NO_PROCESS, 0.0
@@ -275,12 +282,20 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         """Open the run of a newly loaded process; open it again if that failed; notice a step picked meanwhile.
 
         It also follows a pick in the process panel (not one made while a step runs), writes it once the picking stops,
-        puts the panel back on the run's movement when a step ends, and gives the panel the actions' marks.
+        puts the panel back on the run's movement when a step ends, gives the panel the actions' marks, and keeps the
+        build's placement and the run's the same (`_follow_placement`).
         """
         process: ProcessContract = ctx.require("process")
         selection = process.selection
         source = selection.process if selection is not None else None
+        if (source is not self._source and source is not None and self._source is not None and self._state == OPEN
+                and process.authored is self._authored):
+            # * The same process placed elsewhere: the run goes on, on the placed process; plans made before are
+            #   stale, as they compare `_loaded` by identity.
+            self._source, self._loaded, self._ids = source, loaded_process(source), None
+            self._changed()
         if source is not self._source:
+            self._source, self._authored, self._placement_seen = source, process.authored, process.placement
             self._source = source
             loaded = loaded_process(source) if source is not None else None
             self._reset(loaded)
@@ -318,6 +333,8 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
                 self._write(ctx, "save the progress", save_progress, self._run)
         if self._state == NOT_OPENED and ctx.now() >= self._retry_at:
             self._open_now(ctx)
+        if self._state == OPEN:
+            self._follow_placement(process)
         view = self.view
         if view.revision != self._marks_revision:
             # * Here, not in draw: draw is skipped while the panels are frozen.
@@ -325,6 +342,27 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             process.request_marks({action: MARK_ASSUMED if action in view.assumed
                                    else MARK_DONE if status == DONE else MARK_PENDING
                                    for action, status in view.statuses.items()})
+
+    def _follow_placement(self, process: ProcessContract) -> None:
+        """Keep the build's placement and the run's the same; whichever changed last wins.
+
+        A placement made in the process panel is saved with the run (one only offered keeps it in memory, for a New
+        run); a run's placement (on Continue, a new run) places the build.
+        """
+        placed, kept = process.placement, self._settings.placement_pose
+        if not _same_pose(placed, self._placement_seen):
+            self._placement_seen = placed
+            if _same_pose(placed, kept):
+                return
+            wanted = (*placed.position, *placed.orientation)
+            if self._run is None and self._offer is not None:
+                self._settings = replace(self._settings, placement=wanted)
+                self._changed()
+            else:
+                self.request_settings(placement=wanted)
+        elif self._run is not None and not _same_pose(placed, kept) and not self._step_running(self._ctx):
+            self._placement_seen = kept
+            process.request_placement(kept)
 
     def draw(self, ctx: PluginContext) -> None:
         """Fill the panel."""
@@ -501,3 +539,8 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._write(ctx, "record the session", record_event, run.folder, "session", ctx.now())
         self._say(f"continuing run {run.info.name}")
         self._changed()
+
+
+def _same_pose(first: Pose, second: Pose) -> bool:
+    """Whether two poses are the same within 1e-9 (a placement read back from run.json included)."""
+    return np.allclose(first.matrix(), second.matrix(), atol=1e-9)

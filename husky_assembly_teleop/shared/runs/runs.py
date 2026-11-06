@@ -103,6 +103,8 @@ class RunSettings:
         plan_joint_resolution: The joint step of its collision checks, radians (PLAN_RESOLUTION_RANGE).
         plan_tries: Tries of a free or one-arm search before giving up (PLAN_TRIES_RANGE).
         plan_swept_check: Check a found path between its waypoints before taking it.
+        placement: Where the build stands, [x, y, z, qx, qy, qz, qw]: the process's authored world frame in the world
+            (`ProcessContract.placement`); the identity: as authored. Fixed once an action is marked done.
     """
 
     insert_split_mm: float = 5.0
@@ -117,6 +119,16 @@ class RunSettings:
     plan_joint_resolution: float = 0.1
     plan_tries: int = 3
     plan_swept_check: bool = True
+    placement: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+    def __post_init__(self):
+        """Hold the placement as a tuple of floats, as run.json's list reads."""
+        object.__setattr__(self, "placement", tuple(float(value) for value in self.placement))
+
+    @property
+    def placement_pose(self) -> Pose:
+        """Pose: `placement` as a pose."""
+        return Pose.from_arrays(self.placement[:3], self.placement[3:])
 
 
 @dataclass(frozen=True)

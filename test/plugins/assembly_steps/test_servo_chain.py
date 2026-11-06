@@ -78,6 +78,19 @@ class FakeProcess:
         at = self.loaded.steps[self.index]
         return Selection(self.loaded.process, self.index, at.action, at.movement)
 
+    @property
+    def authored(self):
+        """The scratch process as read: never placed here."""
+        return self.loaded.process
+
+    @property
+    def placement(self) -> Pose:
+        """Where the design puts it."""
+        return Pose()
+
+    def request_placement(self, placement: Pose) -> None:
+        """Never asked for: the run keeps no placement."""
+
     def request_select(self, index: int) -> None:
         """Select at once."""
         self.index = index
