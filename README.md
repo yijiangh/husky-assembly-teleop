@@ -275,6 +275,7 @@ What each one does in detail, and the panels and tabs it shows: [doc/lab/plugins
 | `assembly_run` | Remembers how far the assembly got: done actions, where each robot was left. Experimental. |
 | `assembly_steps` | The operator's steps: Live IK, Plan, preview, Exec. Experimental. |
 | `movement_exec` | Runs one step on the real robots, with Confirms, compliant inserts and the servo. Experimental. |
+| `assembly_observer` | Records the robots every tick and every event (commands, leases, stops, manual moves, operator clicks, log lines) on this PC for a week; copies a time range to the Drive. Experimental. |
 | `motion_planner` | Plans process movements and checks collisions for other plugins. Experimental. |
 | `base_planner_panel` | Plans a collision-free base path and sends it to the onboard follower. Experimental. |
 | `arm_planner_panel` | Plans a collision-free arm motion to a joint target. Experimental. |
