@@ -238,6 +238,20 @@ def _box(box: Mapping) -> str:
             f"{esc(box.get('why') or '')}</small></span>")
 
 
+def step_rows(rows: Sequence[Mapping]) -> list[list[tuple[str, str]]]:
+    """The cells of the steps' table: each action once, as a heading over its movements, oldest first."""
+    by_action: dict[str, list[Mapping]] = {}
+    for row in rows:
+        by_action.setdefault(row["action"], []).append(row)
+    cells = []
+    for action, steps in by_action.items():
+        cells.append([(f"<b>{esc(action)}</b>", "action"), *(("", "action") for _ in range(4))])
+        cells += [[(esc(row["movement"].replace(f"{action}_", "")), "mono"), (esc(row["time"]), "time"),
+                   (esc(row["part"] or row["routine"] or ""), ""), (esc(row["outcome"] or ""), ""),
+                   (f'<div class="boxes">{"".join(_box(box) for box in row["boxes"])}</div>', "")] for row in steps]
+    return cells
+
+
 def settings_section(day: Mapping) -> str:
     """Section: the tick boxes each step used, and the settings in force over the day."""
     intro = "From each record's own <span class=\"mono\">settings</span> and <span class=\"mono\">options</span>."
@@ -245,12 +259,8 @@ def settings_section(day: Mapping) -> str:
         return section("Settings", "Which settings each step used", intro,
                        '<p class="muted">The old monitor\'s records hold no settings or options, so this day has none '
                        "to show here.</p>")
-    rows = step_options(day["actions"])
-    steps = table(
-        [("Time", ""), ("Action", ""), ("Movement", ""), ("Part", ""), ("Outcome", ""), ("Tick boxes", "")],
-        [[(esc(row["time"]), "time"), (esc(row["action"]), ""), (esc(row["movement"]), "mono"),
-          (esc(row["part"] or row["routine"] or ""), ""), (esc(row["outcome"] or ""), ""),
-          (f'<div class="boxes">{"".join(_box(box) for box in row["boxes"])}</div>', "")] for row in rows])
+    steps = table([("Action and movement", ""), ("Time", ""), ("Part", ""), ("Outcome", ""), ("Tick boxes", "")],
+                  step_rows(step_options(day["actions"])))
     force = table(
         [("Setting", ""), ("Value", ""), ("From", ""), ("To", "")],
         [[(esc(item["key"]), "mono"), (esc(span["value"]), "mono"), (esc(span["from"]), "time"),

@@ -12,7 +12,7 @@ from test_as_built_page import BAR, DAY, bar_entry, drive, record  # noqa: F401 
 from husky_assembly_teleop.experiments.as_built.accuracy import (bar_error_mm, bars_measured, bars_without_markers,
                                                                  fit_quality, placed_motion, read_day, read_servo_runs,
                                                                  servo_run, settings_in_force, step_changes)
-from husky_assembly_teleop.experiments.as_built.accuracy_page import build_report
+from husky_assembly_teleop.experiments.as_built.accuracy_page import build_report, settings_section
 from husky_assembly_teleop.experiments.as_built.collect import _three_places, collect_assembly
 from husky_assembly_teleop.experiments.as_built.old_records import old_bar_lengths, upgrade_record
 from husky_assembly_teleop.shared.runs.as_built import append_record, as_built_path
@@ -237,6 +237,19 @@ def test_the_page_shows_the_3d_pages_numbers_and_says_it_draws_no_conclusions(dr
     assert "http://" not in html and "https://" not in html
     for claim in ("because of", "caused by", "points to", "explains"):
         assert claim not in html.lower(), claim
+
+
+def test_the_settings_table_writes_each_action_once_with_its_movements_under_it():
+    """B20_J twice over, with B20_R between its records: one heading, and short movement names."""
+    def step(time: str, epoch: float, movement: str) -> dict:
+        return shaped(time, epoch, "end", "transfer_free", [], movement=movement, part="motion")
+    actions = [{"action_id": "B20_J", "records": [step("14:00:21", 1.0, "B20_J_transfer"),
+                                                  step("14:20:00", 3.0, "B20_J_insert")]},
+               {"action_id": "B20_R", "records": [step("14:14:50", 2.0, "B20_R_retreat")]}]
+    html = settings_section({"old": False, "actions": actions, "raw": []})
+    assert html.count("<b>B20_J</b>") == 1 and html.count("<b>B20_R</b>") == 1
+    assert html.index("<b>B20_J</b>") < html.index("14:20:00") < html.index("<b>B20_R</b>")
+    assert ">transfer<" in html and "B20_J_transfer" not in html
 
 
 def test_the_default_output_sits_in_the_days_result_folder_and_the_day_defaults_to_the_newest(drive):  # noqa: F811

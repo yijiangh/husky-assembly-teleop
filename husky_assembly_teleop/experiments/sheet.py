@@ -81,6 +81,7 @@ tbody tr:last-child td, tbody tr:last-child th { border-bottom: 0; }
 td.n, th.n { text-align: right; white-space: nowrap; }
 td.time { white-space: nowrap; font-family: var(--font-data); font-size: 0.78rem; }
 td.z { color: var(--muted); }
+td.action { background: var(--band); }
 small { color: var(--muted); }
 .chart { margin: 0; background: var(--sheet); border: 1px solid var(--rule); padding: 16px 16px 12px; display: grid;
   gap: 10px; min-width: 0; }
