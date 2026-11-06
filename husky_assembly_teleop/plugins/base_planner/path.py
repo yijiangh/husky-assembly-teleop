@@ -35,7 +35,16 @@ class BasePath(TimedPath):
 
     `points` are (x, y, yaw) waypoints, metres and radians, world frame, shape (N, 3).
     Yaw is unwrapped so blending never turns the long way.
+
+    Attributes:
+        margin: How far it keeps from everything, metres, as planned: the request's margin, or the smallest in
+            `close`; None when the planner plugin did not set it (an algorithm called on its own).
+        close: The objects it keeps less from, as (label, metres), closest first: those its start or target is already
+            that close to. Everything else keeps `margin`'s usual value.
     """
+
+    margin: float | None = None
+    close: tuple[tuple[str, float], ...] = ()
 
     @property
     def length(self) -> float:

@@ -16,6 +16,8 @@ from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import (MIN_D
 from husky_assembly_teleop.plugins.base_planner.follow import followed, thinned, xicr_range
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE
 from husky_assembly_teleop.plugins.base_planner.tasks import PASSAGE_ANGLE, WHEELS, Task, along, passage, to_lab
+from husky_assembly_teleop.plugins.base_planner.planner_plugin import kept_margin
+from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.scene import Body
 from test_base_planner_rrt import POST, _holding_bar, _snapshot, alice, robots, world  # noqa: F401  (fixtures)
 
@@ -263,3 +265,42 @@ def test_too_narrow_says_where_it_got_stuck_and_what_it_touches(world, robots, a
     assert result.path is None
     assert "closest" in result.reason and "block" in result.reason and "Target: over 30 cm" in result.reason
     assert debug.layers["closest the search got"].points and debug.layers["where the robot touches"].points
+
+
+def _box_at_gap(world, robots, alice, label: str, pose, gap: float, toward) -> Body:  # noqa: F811
+    """A 10 cm post `gap` from Alice at `pose` (as PyBullet measures it), moved in along `toward` from 1 m away."""
+    toward = np.asarray(toward, dtype=float) / np.linalg.norm(toward)
+    at = np.asarray(pose[:2]) - toward * 1.0
+    for _ in range(12):
+        # * The robot's outline is not flat: move by the gap left, measure again, until within 2 mm.
+        body = Body(f"test/{label}", box_geometry((0.1, 0.1, 1.0)), Pose((*at, 0.5)), label=label)
+        world.sync(_snapshot(robots, [body]))
+        clear = world.close_objects(alice, [pose], 1.5).get(body.id, 1.5)
+        if abs(clear - gap) < 0.002:
+            return body
+        at = at + toward * (clear - gap)
+    raise AssertionError(f"could not place {label} {gap} m from the robot")
+
+
+@pytest.mark.slow
+def test_only_what_the_start_is_already_close_to_keeps_less(world, robots, alice):  # noqa: F811
+    """A post 4 cm behind the start (a retreat's end) keeps that much, not refused; another one still keeps 10 cm."""
+    start, goal, margin = (0.0, 0.0, 0.0), (0.0, -2.0, 1.0), 0.10
+    behind = _box_at_gap(world, robots, alice, "behind", start, 0.04, (-1.0, 0.0))
+    aside_pose = (-1.3, -1.0, 0.0)  # * far from the start, the goal and Cindy
+    aside = _box_at_gap(world, robots, alice, "aside", aside_pose, 0.07, (0.0, 1.0))
+    world.sync(_snapshot(robots, [behind, aside]))
+    assert world.hit_by(alice, start, margin) == "behind", "the usual margin refuses the start"
+    close = world.close_objects(alice, (start, goal), margin)
+    assert set(close) == {"test/behind"} and close["test/behind"] == pytest.approx(0.04, abs=0.006)
+    kept = {"test/behind": kept_margin(close["test/behind"])}
+    with world.keeping(alice, margin, kept):
+        assert world.hit_by(alice, start, margin) is None
+        assert world.hit_by(alice, aside_pose, margin) == "aside", "what the ends are not close to keeps 10 cm"
+        assert world.hit_by(alice, start, margin + 0.01) == "behind", "extra room is added to its own margin too"
+        assert world.clearance(alice, [start])[0] == pytest.approx(0.04, abs=0.006), "measurements stay true"
+        result = plan(world, alice, start, goal, threading.Event(), Settings(margin=margin))
+    assert result.path is not None, result.reason
+    with world.keeping(alice, margin, kept):
+        for pose in result.path.points:
+            assert world.hit_by(alice, tuple(pose), margin) is None

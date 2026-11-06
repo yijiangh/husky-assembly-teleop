@@ -38,7 +38,7 @@ from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import hover
 from ...world.checks import BAD, GOOD, WARN, Check
-from ...world.clearance import ALL_ARMS, BASE_DRIVE
+from ...world.clearance import ALL_ARMS, BASE_DRIVE, BASE_PLAN_DISTANCE
 from ...world.follower import path_check
 from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import with_stand_ins
@@ -48,7 +48,7 @@ from .algorithms import ALGORITHMS, Algorithm, Debug
 from ...shared.recordings.runs import load_description, save_recording, write_description
 from .recording import RECORDING_FOLDER, attempt_folder, save_plan
 from .tasks import BY_NAME, TASK_ORIGIN
-from .world import PlanningWorld
+from .world import CLEARANCE_STEP, PlanningWorld
 
 if TYPE_CHECKING:
     from ...shared.process_contract import ProcessContract
@@ -199,8 +199,18 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
                 others[:] = setup["stand_ins"] = list(stand_ins.warnings)
                 self._world.sync(stand_ins.scene)
-                result, world = algorithm.plan(self._world, robot_id(serial), start, goal, abort, settings,
-                                               debug), self._world
+                own, world = robot_id(serial), self._world
+                # * Only what the start or target is already closer to keeps less, and only as much as it has there.
+                close = {object_id: kept_margin(distance)
+                         for object_id, distance in world.close_objects(own, (start, goal), settings.margin).items()}
+                setup["close"] = {world.snapshot.label(object_id): margin for object_id, margin in close.items()}
+                with world.keeping(own, settings.margin, close):
+                    result = algorithm.plan(world, own, start, goal, abort, settings, debug)
+                if result.path is not None:
+                    nearest = tuple(sorted(((world.snapshot.label(object_id), margin)
+                                            for object_id, margin in close.items()), key=lambda item: item[1]))
+                    result = replace(result, path=replace(result.path, margin=min([settings.margin, *close.values()]),
+                                                          close=nearest))
                 if result.path is None and others:
                     result = replace(result, reason=f"{result.reason} ({unmeasured(others)})")
             if folder is not None:
@@ -223,7 +233,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             path, how = result.path, algorithm.label + (" (straight)" if result.direct else "")
             stand_ins = f" ({unmeasured(others)})" if others else ""
             return (f"{how}: {path.length:.2f} m, {path.duration:.1f} s, "
-                    f"found in {result.seconds:.1f} s{guess}{stand_ins}"), bool(guessed or others)
+                    f"found in {result.seconds:.1f} s{guess}{stand_ins}{close_note(path, settings.margin)}"), \
+                bool(guessed or others or path.close)
 
         return Search(label=f"plan {serial}", message=f"planning for {short_serial(serial)}…{guess}", work=work,
                       time_limit=TIME_LIMIT + WAIT_MARGIN, accepted=accepted, finished=finished)
@@ -395,7 +406,12 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
     # --- --- --- --- --- READING --- --- --- --- ---
 
     def plan_margin(self, plan: Plan[BasePlanRequest]) -> float | None:
-        """The margin the path was planned with (the panel's Margin), metres; None for a request with bad settings."""
+        """How far the path keeps from everything, metres; None for a request with bad settings.
+
+        The smallest margin it kept (`BasePath.margin`), else the request's.
+        """
+        if plan.path is not None and plan.path.margin is not None:
+            return plan.path.margin
         try:
             return self._algorithm(plan.request)[1].margin
         except ValueError:  # * its plan failed for that reason already
@@ -412,7 +428,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         if algorithm is None:
             raise ValueError(f"unknown algorithm {label!r}")
         try:
-            return algorithm, replace(algorithm.settings(), **dict(request.settings))
+            # * Without a margin, the one the panel starts at: every caller plans the same way.
+            return algorithm, replace(algorithm.settings(), **{"margin": BASE_PLAN_DISTANCE, **dict(request.settings)})
         except TypeError as error:
             raise ValueError(f"bad settings for {label}: {error}") from None
 
@@ -466,3 +483,21 @@ def _offset(pose, reference) -> tuple[float, float]:
     """How far apart two (x, y, yaw) floor poses are: metres, and radians of turn (at most pi)."""
     dx, dy = pose[0] - reference[0], pose[1] - reference[1]
     return math.hypot(dx, dy), abs(math.atan2(math.sin(pose[2] - reference[2]), math.cos(pose[2] - reference[2])))
+
+
+def kept_margin(distance: float) -> float:
+    """The margin a path keeps from something its start or target is `distance` from: just below, to CLEARANCE_STEP."""
+    return max(0.0, math.floor((distance - 1e-6) / CLEARANCE_STEP) * CLEARANCE_STEP)
+
+
+def close_note(path: BasePath, margin: float) -> str:
+    """The plan line's note on a path keeping less from what its ends are close to; "" if it keeps the margin.
+
+    E.g. "; keeps only 3.5 cm from bars/B25: the start or target is that close; 10 cm from everything else".
+    """
+    if not path.close:
+        return ""
+    label, kept = path.close[0]
+    more = f" (and {len(path.close) - 1} more)" if len(path.close) > 1 else ""
+    return (f"; keeps only {kept * 100:g} cm from {label}{more}: the start or target is that close; "
+            f"{margin * 100:g} cm from everything else")

@@ -119,9 +119,11 @@ follows its plan a little off does not trip it:
 | A base by hand: every D-pad (robot_control, calibration, phone) | (no plan) | 5 cm |
 | Assembly **Exec**, a plain motion along its plan | contact only | contact |
 
-- **A plan that keeps less.** An arm plan whose start or target is closer than 1 cm keeps only as much as they have
-  (the plan's line says "keeps only 0.6 cm"), and a base plan keeps the **Margin** you set, which you may lower below
-  10 cm to get through a tight spot. Then the clearance is half of what the plan keeps (0.3 cm, or 4 cm for an 8 cm
+- **A plan that keeps less.** Arm and base plans follow one rule: everything keeps the usual distance (1 cm for an
+  arm, the **Margin** for a base), and only what the start or target is already closer to keeps as much as it has
+  there (the plan's line names it: "keeps only 0.3 cm between right_ur_arm_wrist_1_link and the right_ur_arm tool",
+  "keeps only 3.5 cm from bars/B25"). A base plan also keeps the **Margin** you set, which you may lower below 10 cm to
+  get through a tight spot. Then the clearance is half of the least the plan keeps (0.15 cm, or 4 cm for an 8 cm
   Margin), and an amber **small clearance** chip says so before you commit (calibration says it in Go's prompt). The
   assembly planner checks contact only,
   so Exec's clearance trips on contact only, with the same chip.
@@ -203,7 +205,7 @@ At the top of the **Assembly** tab. Loads the process picked in **Folder** (the 
 
 ### `base_planner_panel`
 
-In **Plan › Base**: plans a collision-free path for a base around the other robots and scene bodies, keeping the **Margin** (m, 10 cm at start) from everything (Commit's clearance soft stops the base within 5 cm, or half the Margin below 10 cm, with an amber "small clearance" chip; it refuses a start already that close, and the "starts too close" chip warns before the press; **Clearance** below Commit, unticked, drives without it; with another robot not measured Commit asks twice: [Clearance](#clearance)), with the algorithm chosen under Advanced (each with its settings, and a Debug view that draws how the search worked); Commit sends it to the onboard pure pursuit follower (`crl_husky pure_pursuit`, or a simulation in your own ROS domain, never 80: [simulation_manual.md](simulation_manual.md)), which drives it at once if the velocity controller is active. A blue ghost stands at the target (hidden once the robot is there) and a green one rides the planned path. The floor shows the path as the follower cuts it and the robot's trail; with Record ticked each run is saved to `data_experiment/base_planner/` on the Drive (`drive_root`, create the folder in Drive first). Loads `base_planner`, the headless planner it drives (other plugins can request and commit plans through it too), and `process`. Experimental.
+In **Plan › Base**: plans a collision-free path for a base around the other robots and scene bodies, keeping the **Margin** (m, 10 cm at start; a request from another plugin, e.g. the guide's drive, keeps 10 cm too) from everything but what its start or target is already closer to, which keeps as much as it has there (the plan's line names it) (Commit's clearance soft stops the base within 5 cm, or half the Margin below 10 cm, with an amber "small clearance" chip; it refuses a start already that close, and the "starts too close" chip warns before the press; **Clearance** below Commit, unticked, drives without it; with another robot not measured Commit asks twice: [Clearance](#clearance)), with the algorithm chosen under Advanced (each with its settings, and a Debug view that draws how the search worked); Commit sends it to the onboard pure pursuit follower (`crl_husky pure_pursuit`, or a simulation in your own ROS domain, never 80: [simulation_manual.md](simulation_manual.md)), which drives it at once if the velocity controller is active. A blue ghost stands at the target (hidden once the robot is there) and a green one rides the planned path. The floor shows the path as the follower cuts it and the robot's trail; with Record ticked each run is saved to `data_experiment/base_planner/` on the Drive (`drive_root`, create the folder in Drive first). Loads `base_planner`, the headless planner it drives (other plugins can request and commit plans through it too), and `process`. Experimental.
 
 ### `arm_planner_panel`
 
