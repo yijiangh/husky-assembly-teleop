@@ -348,7 +348,7 @@ def load_numbers(record: Mapping) -> dict | None:
 
 
 def options_of(record: Mapping) -> list[dict]:
-    """Each tick box that could change the step: how it was set and whether the step used it (the record says)."""
+    """Each tick box that could change the step: how it was set, if it was used, `shown` if it is about the step."""
     options, servo = record.get("options") or {}, record.get("servo")
     step = record.get("step") or {}
     routine, part_kind = step.get("routine"), (step.get("part") or {}).get("kind")
@@ -372,7 +372,7 @@ def options_of(record: Mapping) -> list[dict]:
     else:
         why = "no servo runs in this step"
     out.append({"key": "servo_bar", "box": by_bar.get("box"), "applies": runs_servo,
-                "used": used if runs_servo else False, "why": why, "shown": runs_servo or bool(by_bar.get("box"))})
+                "used": used if runs_servo else False, "why": why, "shown": runs_servo})
     spiral = options.get("spiral") or {}
     mode = options.get("insert_mode")
     if is_insert and spiral.get("used"):
@@ -386,7 +386,7 @@ def options_of(record: Mapping) -> list[dict]:
         why = ("this insert ran rigid all the way (a grounded bar): the box does not act on it" if is_insert
                else "the box acts on a screwed bar's insert only")
         entry = {"box": spiral.get("box"), "applies": False, "used": False, "why": why}
-    out.append({"key": "spiral", **entry, "shown": is_insert or bool(entry["box"])})
+    out.append({"key": "spiral", **entry, "shown": is_insert and part_kind != "servo"})
     for option in out:
         option["label"] = OPTION_BOXES[option["key"]]
     return out

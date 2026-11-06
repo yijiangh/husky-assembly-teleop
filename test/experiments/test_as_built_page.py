@@ -224,6 +224,20 @@ def test_options_of_reads_the_record_not_a_log():
     assert spiral["label"] == "Insert compliant part: SPIRAL search"
 
 
+def test_a_step_shows_only_the_tick_boxes_it_is_about():
+    """Ticked boxes stay out of a home or retreat; the servo part of an insert shows the servo box, not the spiral."""
+    def shown(routine: str, part: str, servo: dict | None = None) -> list[str]:
+        boxes = {"spiral": {"box": True}, "servo_by_bar": {"box": True}, "transfer_as_free": {"box": True}}
+        record = {"options": boxes,
+                  "step": {"routine": routine, "part": {"kind": part}}, "action": {"kind": "J"}, "servo": servo}
+        return [option["key"] for option in options_of(record) if option["shown"]]
+    assert shown("free_home", "motion") == [] and shown("retreat_linear", "retreat") == []
+    assert shown("operator", "operator") == []
+    assert shown("transfer_free", "motion") == ["free_move"]
+    assert shown("transfer_free", "servo", {"engaged": True}) == ["free_move", "servo_bar"]
+    assert shown("insert", "insert") == ["spiral"] and shown("insert", "servo", {"engaged": True}) == ["servo_bar"]
+
+
 def test_timeline_and_meshes_on_the_fixture_process(tmp_path):
     """The schedule's bars and holders; a link's box and mesh shapes pack into one mesh."""
     from process_fixtures import build_process
