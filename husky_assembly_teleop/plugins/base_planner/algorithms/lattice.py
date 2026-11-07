@@ -418,17 +418,34 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
             reach += PORTAL_STEP
         return None, f"no room within {PORTAL_REACH:.0f} m, {alongside} alongside"
 
-    def drive_in(back, distance: float) -> tuple[tuple | None, str]:
-        """The start of a straight drive onto the target from `distance` along `back`, or None and what it hits."""
-        x, y = goal[:2] + distance * back
-        pose = (float(x), float(y), goal[2])
-        other = hit_by(pose, margin)
-        what = f"hits {other}" if other is not None else hits([_to_centre(pose, ahead), _to_centre(goal, ahead)], icrs)
-        return (pose, "") if what is None else (None, f"{what} from {distance:.2f} m out")
+    def drive_in(back, distance: float, shortest: float = PORTAL_STEP) -> tuple[tuple | None, str]:
+        """The start of a straight drive onto the target along `back`, or None and what it hits.
+
+        From `distance` out, shortened in PORTAL_STEPs down to `shortest` until its start has PORTAL_ROOM beyond the
+        margin: the robot turns onto the drive there. With room nowhere, the one from `distance`.
+        """
+        def start_of(along: float) -> tuple[tuple | None, str]:
+            x, y = goal[:2] + along * back
+            pose = (float(x), float(y), goal[2])
+            other = hit_by(pose, margin)
+            what = (f"hits {other}" if other is not None
+                    else hits([_to_centre(pose, ahead), _to_centre(goal, ahead)], icrs))
+            return (pose, "") if what is None else (None, f"{what} from {along:.2f} m out")
+
+        along = distance
+        while along >= shortest - 1e-9:
+            x, y = goal[:2] + along * back
+            if hit_by((float(x), float(y), goal[2]), margin + PORTAL_ROOM) is None:
+                pose, _ = start_of(along)
+                if pose is not None:
+                    return pose, ""
+            along -= PORTAL_STEP
+        return start_of(distance)
 
     # * Reach the target driving straight, from the side facing the start first. In a narrow place the drive in starts
     # * `lead` before where the robot has room again, so it lines up there, not in the narrow place; with no such room,
-    # * a drive in of just `lead` that keeps the margin. Only then the far side, which needs a way round the target.
+    # * a drive in of just `lead` that keeps the margin. Either is shortened until its start has room to turn onto it.
+    # * Only then the far side, which needs a way round the target.
     arrive, refused = goal, []
     if settings.lead > 0.0:
         heading = np.array([math.cos(goal[2]), math.sin(goal[2])])
@@ -438,7 +455,7 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
             reach, why = room_along(back)
             pose = None
             if reach is not None:
-                pose, why = drive_in(back, reach + settings.lead)
+                pose, why = drive_in(back, reach + settings.lead, max(reach, PORTAL_STEP))
             if pose is None:
                 refused.append(f"{name}: {why}")
                 if reach != 0.0:  # * at 0 the short drive in is the one just refused

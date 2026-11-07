@@ -335,6 +335,31 @@ def test_no_room_before_something_in_the_way_drives_in_short(world, robots, alic
 
 
 @pytest.mark.slow
+def test_a_drive_in_without_room_at_its_start_is_shortened(world, robots, alice):  # noqa: F811
+    """A post 15 cm beside where the full drive in would start, the target roomy: it starts nearer, with room."""
+    goal, margin = (0.0, -2.0, 0.0), 0.10
+    full = (goal[0] - lattice.LEAD, goal[1], goal[2])
+    at = np.array([full[0] - 0.4, goal[1] - 1.0])
+    for _ in range(12):
+        # * Move the post in until it is 15 cm from Alice at the full drive in's start.
+        post = Body("test/post", box_geometry((0.1, 0.1, 1.0)), Pose((*at, 0.5)), label="post")
+        world.sync(_snapshot(robots, [post]))
+        clear = world.close_objects(alice, [full], 1.5).get(post.id, 1.5)
+        if abs(clear - 0.15) < 0.002:
+            break
+        at = at + np.array([0.0, 1.0]) * (clear - 0.15)
+    assert world.hit_by(alice, goal, margin + lattice.PORTAL_ROOM) is None, "the target has room"
+    debug = Debug(on=True)
+    result = plan(world, alice, (0.0, 0.0, 0.0), goal, threading.Event(), Settings(margin=margin, narrow_margin=margin),
+                  debug)
+    lead = next(note for note in debug.notes if note.startswith("lead:"))
+    length = float(lead.split("straight in forwards over ")[1].split(" m")[0])
+    assert 0.0 < length < lattice.LEAD, lead
+    assert world.hit_by(alice, (goal[0] - length, goal[1], goal[2]), margin + lattice.PORTAL_ROOM) is None
+    assert result.path is not None, result.reason
+
+
+@pytest.mark.slow
 def test_parks_in_a_passage_only_the_narrow_margin_fits_and_slows_there(world, robots, alice):  # noqa: F811
     """A passage 3 cm wider each side than the narrow margin needs, too narrow for the margin, the target inside it.
 
