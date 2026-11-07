@@ -12,12 +12,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from scaffolding_assembly_core.ids import IdMap
+from scaffolding_assembly_core.ids import IdMap, link_id
 from scaffolding_assembly_core.ids import robot_id as scene_robot_id
 from scaffolding_assembly_core.process import Movement, Process
-from scaffolding_assembly_core.process.types import OBSTACLE_PREFIX
+from scaffolding_assembly_core.process.types import GROUND_PREFIX, OBSTACLE_PREFIX
 from scaffolding_assembly_core.scene import Attachment, Body, retarget
 
+from ...world.lab import platform_links
 from .colors import body_color
 
 if TYPE_CHECKING:
@@ -78,6 +79,8 @@ def scene_bodies(process: Process, movement: Movement, robots: tuple[RobotConfig
     - a held body is attached to the configured robot with the planned robot's serial (`retarget`); held by a robot
       not configured, it is disabled where the plan has it;
     - `touches` name the real robots, their tools and the prefixed ids; those of robots not configured are dropped;
+    - the process's ground ("ground/…") lets every configured robot's platform links touch it, as the lab's floor does
+      (the process lets only the wheels): the chassis is not kept a margin from the floor it drives on;
     - with `obstacles_collide` False, the process's obstacles (`process_obstacles`) are disabled: left out of every
       collision check, and not drawn by the runtime.
 
@@ -106,13 +109,17 @@ def scene_bodies(process: Process, movement: Movement, robots: tuple[RobotConfig
     moved = retarget({body_id: held[body_id] for body_id in held if held[body_id].parent in ids}, ids, models)
     left_out = frozenset() if obstacles_collide else process_obstacles(process)
 
+    platforms = tuple(link_id(scene_robot_id(config.serial), link) for config in robots if config.model is not None
+                      for link in platform_links(config.model))
     bodies = []
     for body_id, body in scene.bodies.items():
         placement = moved.get(body_id) or scene.world_poses.get(body_id,
                                                                 process.bodies[body_id].assembly_pose)
         enabled = body.enabled and (body_id not in held or body_id in moved) and body_id not in left_out
         bodies.append(Body(ids(body_id), body.geometry, placement,
-                           touches=tuple(ids(other) for other in body.touches if other in ids),
+                           touches=tuple(dict.fromkeys(
+                               [ids(other) for other in body.touches if other in ids]
+                               + (list(platforms) if body_id.startswith(GROUND_PREFIX) else []))),
                            label=body.label or body_id, color=tuple(c / 255 for c in body_color(body_id)) + (1.0,),
                            enabled=enabled))
     return bodies
