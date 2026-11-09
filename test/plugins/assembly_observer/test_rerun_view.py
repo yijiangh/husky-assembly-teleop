@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
+import time
 
 import numpy as np
 import pytest
 
 from husky_assembly_teleop.plugins.assembly_observer import rerun_view
+from husky_assembly_teleop.plugins.assembly_observer.export import copied_sessions, copy_range
 from husky_assembly_teleop.plugins.assembly_observer.rerun_view import _entity, _state_changes, _text_line, log_range
 
-from repo_paths import DATA
+from repo_paths import DATA, REPO
 
 pytest.importorskip("rerun")
 
@@ -108,3 +112,39 @@ def test_stops_and_lost_streams_are_warnings_and_log_lines_keep_their_level():
     assert _text_line({"event": "base stream", "robot": "a200-0806", "value": "back"})[1] == "INFO"
     assert _text_line({"event": "log", "level": "ERROR", "source": "guide", "text": "x"}) == \
         ("log/guide", "ERROR", "[guide] x")
+
+
+@pytest.fixture
+def copy(session, tmp_path):
+    """The session's 1 s to 4 s copied as the panel's Copy to Drive does: `<name>/<stamp>/<session>/`."""
+    # * A copy looks for the session under its day's folder: the fixture's is named for another day.
+    (session / "20261109").rename(session / time.strftime("%Y%m%d", time.localtime(ROS_START + OFFSET)))
+    destination = tmp_path / "drive" / "b20_insert" / "20261109_120000"
+    destination.mkdir(parents=True)
+    start, end = ROS_START + OFFSET + 1.0, ROS_START + OFFSET + 4.0
+    copied = copy_range(session, start, end, destination, {"name": "b20_insert"})
+    assert list(copied) == ["20261109_100000_session"]
+    return destination
+
+
+def test_a_copy_is_found_from_its_folder_a_session_of_it_or_a_folder_of_copies(copy):
+    """A copy's sessions span the range copied, not their last write (the copy's), whichever folder is given."""
+    for folder in (copy, copy / "20261109_100000_session", copy.parent):
+        found = copied_sessions(folder)
+        assert [session["folder"].name for session in found] == ["20261109_100000_session"], folder
+        assert (found[0]["start"], found[0]["end"]) == (ROS_START + OFFSET + 1.0, ROS_START + OFFSET + 4.0)
+    assert copied_sessions(copy / "20261109_100000_session" / "commands") == []
+
+
+def test_a_copy_opens_whole_from_the_script_without_a_range(copy, tmp_path):
+    """`observer_logs.py rerun --folder <copy>` shows every tick and event copied; a start and end narrow it."""
+    def call(*args: str) -> dict:
+        done = subprocess.run([sys.executable, str(REPO / "scripts" / "observer_logs.py"), "rerun", "--folder",
+                               str(copy), "--save", str(tmp_path / "copy.rrd"), *args], capture_output=True, text=True)
+        return json.loads(done.stdout.splitlines()[-1])
+
+    whole = call()
+    assert whole["sessions"] == ["20261109_100000_session"] and whole["rows"] == 61 and whole["events"] == 2
+    assert (tmp_path / "copy.rrd").stat().st_size > 0
+    narrowed = call(time.strftime("%H:%M:%S", time.localtime(ROS_START + OFFSET + 3.0)))
+    assert narrowed["rows"] == 21 and narrowed["events"] == 1  # * 3 s to 4 s: the log line at 3 s only

@@ -2,7 +2,8 @@
 Record everything that happens while the monitor runs, whoever does it: the robots at 20 Hz, and every event.
 
 Recorded on this PC only, kept KEPT_DAYS days; the panel copies a time range to the Drive after an experiment, in
-the helper script's own process (`scripts/observer_logs.py copy`, logic in `export.py`). One session per monitor
+the helper script's own process (`scripts/observer_logs.py copy`, logic in `export.py`), and opens one in the Rerun
+viewer the same way (`observer_logs.py rerun`, `rerun_view.py`). One session per monitor
 start, a folder `~/.ros/assembly_observer/<YYYYMMDD>/<stamp>_session/`:
 
 - experiment.json: the robots and their tools, the commits, sim or real (`shared/recordings/runs.py`).
@@ -32,6 +33,7 @@ import tempfile
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +46,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.recordings.runs import run_folder, write_description
 from ...shared.runs.runs import commits
+from ...ui.css import side_by_side_css
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_SENSOR, block, chip, chip_line, section, values
 from .columns import monitor_signals, object_signals, relay_signals, robot_signals
 from . import export
@@ -58,6 +61,10 @@ LAST_15, LAST_HOUR, WHOLE_DAY = "Last 15 min", "Last hour", "Whole day"
 SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "observer_logs.py"
 #: A copy taking longer is stopped, seconds.
 COPY_TIMEOUT = 15 * 60.0
+#: Sending a range to the Rerun viewer taking longer is stopped, seconds; the viewer stays open.
+RERUN_TIMEOUT = 10 * 60.0
+#: What Open in Rerun says when the venv lacks the viewer's package.
+NO_RERUN = "Rerun is not installed: pip install rerun-sdk==0.39.0 in the venv"
 #: Seconds per chunk file: a crash loses at most this much of the ticks. The trace holds twice as many ticks.
 CHUNK_SECONDS = 60.0
 #: The events file, and the folder of the commands sent in full.
@@ -103,9 +110,11 @@ class AssemblyObserverPlugin(HuskyPlugin):
         self._rows = 0
         self._chunk_started_wall = 0.0
         self._kept_bytes = 0
-        #: The last copy's outcome for the panel (text, colour), and its log line not logged yet.
+        #: The last copy's and the last Open in Rerun's outcome for the panel (text, colour), and their tasks.
         self._copy_line = ("", NONE)
         self._copying = None
+        self._rerun_line = ("", NONE)
+        self._opening = None
 
     # --- --- --- --- --- HOOKS --- --- --- --- ---
 
@@ -193,9 +202,9 @@ class AssemblyObserverPlugin(HuskyPlugin):
         return events
 
     def draw(self, ctx: PluginContext) -> None:
-        """Whether it records, where, how much is kept, and the last copy's outcome."""
-        text, color = self._copy_line
-        self._copied.content = block(chip_line(chip(text, color)) if text else "")
+        """Whether it records, where, how much is kept, and the last copy's and Open in Rerun's outcomes."""
+        self._copied.content = "".join(block(chip_line(chip(text, color))) for text, color in
+                                       (self._copy_line, self._rerun_line) if text)
         if self._folder is None:
             self._chips.content = chip_line(chip("not recording", FAIL, self._problem))
             self._lines.content = block(values(self._problem or "—"))
@@ -275,13 +284,13 @@ class AssemblyObserverPlugin(HuskyPlugin):
     # --- --- --- --- --- PANEL AND COPIES --- --- --- --- ---
 
     def _build_panel(self, ctx: PluginContext) -> None:
-        """The recording's chips and folder, then the copy to the Drive: day, from, to, name, the button, outcome."""
+        """The recording's chips and folder, then the range: day, from, to, name, the two buttons, their outcomes."""
         today = time.strftime(DAY_FORMAT)
         with ctx.view.ui() as gui:
             gui.add_html(section("observer", SECTION_SENSOR))
             self._chips = gui.add_html(chip_line(""))
             self._lines = gui.add_html("")
-            gui.add_html(section("copy to the Drive", SECTION_SENSOR))
+            gui.add_html(section("copy or open a range", SECTION_SENSOR))
             self._day = gui.add_dropdown("Day", options=sorted(set(days(self._root)) | {today}, reverse=True),
                                          initial_value=today, hint=f"Recordings stay on this PC {KEPT_DAYS} days")
             self._from = gui.add_text("From", initial_value=time.strftime("%H:%M"), hint="HH:MM or HH:MM:SS, that day")
@@ -289,11 +298,17 @@ class AssemblyObserverPlugin(HuskyPlugin):
             ranges = gui.add_button_group("Range", [LAST_15, LAST_HOUR, WHOLE_DAY])
             self._name = gui.add_text("Name", initial_value="experiment",
                                       hint="The experiment's folder under data_experiment/assembly_observer/")
+            # * Draws nothing: Copy to Drive and Open in Rerun side by side, once they exist.
+            pair = gui.add_html("")
             copy = gui.add_button("Copy to Drive", hint="Copy what was recorded from From to To into a new folder on "
                                                         "the Drive: its events, the ticks' values, the commands sent")
+            viewer = gui.add_button("Open in Rerun", hint="Show what was recorded from From to To in the Rerun viewer "
+                                                          "on this PC: plots, state timelines, events, robots in 3D")
+            pair.content = f"<style>{side_by_side_css([copy._impl.uuid, viewer._impl.uuid])}</style>"
             self._copied = gui.add_html("")
         ranges.on_click(ctx.defer_value("range", self._pick_range))
         copy.on_click(ctx.defer("copy to the Drive", lambda: self._copy(ctx)))
+        viewer.on_click(ctx.defer("open in rerun", lambda: self._open_rerun(ctx)))
 
     def _pick_range(self, label: str) -> None:
         """Fill Day, From and To from a Range button."""
@@ -305,45 +320,78 @@ class AssemblyObserverPlugin(HuskyPlugin):
         since = now - timedelta(minutes=15 if label == LAST_15 else 60)
         self._from.value, self._to.value = since.strftime("%H:%M:%S"), NOW
 
-    def _copy(self, ctx: PluginContext) -> None:
-        """Copy the range chosen to a new folder on the Drive, in the helper script's own process (SCRIPT)."""
+    def _refusal(self, ctx: PluginContext, running) -> str:
+        """Why the range chosen cannot go to the helper script now, "" if it can.
+
+        When it can and the range reaches into the chunk being recorded, that chunk is saved first.
+
+        Args:
+            ctx: The plugin's context.
+            running: The task of the last run of this button, None before the first.
+        """
         try:
             start, end = wall_time(self._day.value, self._from.value), wall_time(self._day.value, self._to.value)
-            if end <= start:
-                raise ValueError(f"To ({self._to.value}) is not after From ({self._from.value})")
-            drive_folder(ctx.config.drive_root, RECORDING_FOLDER)
-        except (ValueError, OSError) as error:
-            self._copy_line = (f"not copied: {error}", FAIL)
-            ctx.log_warn(f"copy to the Drive refused: {error}")
-            return
-        if self._copying is not None and not self._copying.done():
-            self._copy_line = ("a copy is still running", BUSY)
-            ctx.log_warn("copy to the Drive refused: a copy is still running")
-            return
+        except ValueError as error:
+            return str(error)
+        if end <= start:
+            return f"To ({self._to.value}) is not after From ({self._from.value})"
+        if running is not None and not running.done():
+            return "the last one is still running"
+        if not SCRIPT.is_file():
+            return f"no helper script {SCRIPT} (the monitor installed without --symlink-install?)"
         if self._trace is not None and end >= self._chunk_started_wall:
-            # * The range reaches into the chunk being recorded: save it first. ! This tick's changes first, so the
-            #   new chunk's "state" lines never swallow one (this intent runs before `update`'s look).
+            # * This tick's changes first, so the new chunk's "state" lines never swallow one (this intent runs before
+            #   `update`'s look).
             if self._watcher is not None:
                 self._queue(ctx, self._look(ctx) + self._log_lines(ctx))
             self._end_chunk(ctx)
             self._start_chunk(ctx)
-        if not SCRIPT.is_file():
-            self._copy_line = (f"not copied: no helper script {SCRIPT}", FAIL)
-            ctx.log_warn(f"copy to the Drive refused: no helper script {SCRIPT} (the monitor installed without "
-                         f"--symlink-install?)")
+        return ""
+
+    def _copy(self, ctx: PluginContext) -> None:
+        """Copy the range chosen to a new folder on the Drive, in the helper script's own process (SCRIPT)."""
+        try:
+            drive_folder(ctx.config.drive_root, RECORDING_FOLDER)
+            why = self._refusal(ctx, self._copying)
+        except OSError as error:
+            why = str(error)
+        if why:
+            self._copy_line = (f"not copied: {why}", FAIL)
+            ctx.log_warn(f"copy to the Drive refused: {why}")
             return
         command = [sys.executable, str(SCRIPT), "--root", str(self._root), "copy", self._from.value, self._to.value,
                    "--day", self._day.value, "--name", folder_name(self._name.value, "experiment"),
                    "--drive", str(ctx.config.drive_root), *(["--sim"] if self._simulated else [])]
         self._copy_line = (f"copying {self._day.value} {self._from.value} to {self._to.value}...", BUSY)
         # * Only records: a soft stop leaves the copy running.
-        self._copying = ctx.spawn("copy to the Drive", self._run_copy(ctx, command), survives_soft_stop=True)
+        work = self._run_helper(ctx, command, COPY_TIMEOUT, "_copy_line", copy_line)
+        self._copying = ctx.spawn("copy to the Drive", work, survives_soft_stop=True)
 
-    async def _run_copy(self, ctx: PluginContext, command: list[str]) -> None:
-        """Wait for the writer (the chunk just saved), run the copy, then say what it did on the panel and the log.
+    def _open_rerun(self, ctx: PluginContext) -> None:
+        """Open the range chosen in the Rerun viewer, sent from the helper script's own process (SCRIPT)."""
+        why = NO_RERUN if find_spec("rerun") is None else self._refusal(ctx, self._opening)
+        if why:
+            self._rerun_line = (f"not opened: {why}", FAIL)
+            ctx.log_warn(f"open in Rerun refused: {why}")
+            return
+        command = [sys.executable, str(SCRIPT), "--root", str(self._root), "rerun", self._from.value, self._to.value,
+                   "--day", self._day.value]
+        self._rerun_line = (f"opening {self._day.value} {self._from.value} to {self._to.value} in Rerun...", BUSY)
+        work = self._run_helper(ctx, command, RERUN_TIMEOUT, "_rerun_line", rerun_line)
+        self._opening = ctx.spawn("open in rerun", work, survives_soft_stop=True)
 
-        ! The copy is killed after COPY_TIMEOUT, and when this task is cancelled (the plugin stopping): the monitor
-          never waits on it. Stop all leaves it running: it only copies.
+    async def _run_helper(self, ctx: PluginContext, command: list[str], timeout: float, shown: str, read) -> None:
+        """Wait for the writer (the chunk just saved), run the helper script, then say what it did on the panel and log.
+
+        ! The script is killed after `timeout` and when this task is cancelled (the plugin stopping): the monitor never
+          waits on it. Stop all leaves it running: it only reads and copies. The Rerun viewer it opened stays open.
+
+        Args:
+            ctx: The plugin's context.
+            command: The script's command line.
+            timeout: Seconds it may take.
+            shown: The attribute holding the panel's line for it (`_copy_line`, `_rerun_line`).
+            read: The script's last JSON line -> the line to show and whether it failed.
         """
         await ctx.run_in_thread(self._writer.submit(lambda: None).result)
         try:
@@ -352,8 +400,8 @@ class AssemblyObserverPlugin(HuskyPlugin):
                 started = time.monotonic()
                 try:
                     while process.poll() is None:
-                        if time.monotonic() - started > COPY_TIMEOUT:
-                            raise TimeoutError(f"no end after {COPY_TIMEOUT / 60:.0f} min; stopped")
+                        if time.monotonic() - started > timeout:
+                            raise TimeoutError(f"no end after {timeout / 60:.0f} min; stopped")
                         await ctx.sleep(0.5)
                 finally:
                     _stop(process)
@@ -365,8 +413,8 @@ class AssemblyObserverPlugin(HuskyPlugin):
                 {"error": (stderr.strip().splitlines() or ["no answer"])[-1]}
         except (OSError, ValueError, TimeoutError) as error:
             outcome = {"error": str(error)}
-        line, failed = copy_line(outcome)
-        self._copy_line = (line, FAIL if failed else OK)
+        line, failed = read(outcome)
+        setattr(self, shown, (line, FAIL if failed else OK))
         (ctx.log_warn if failed else ctx.log_info)(line)
 
     def _measure(self) -> None:
@@ -487,6 +535,16 @@ def copy_line(outcome: dict) -> tuple[str, bool]:
     skipped = sum(each.get("skipped", 0) for each in copied.values())
     line = f"copied {len(copied)} session(s), {events} events, {rows} ticks to {outcome['destination']}"
     return line + (f"; {skipped} damaged line(s) or chunk(s) left out" if skipped else ""), False
+
+
+def rerun_line(outcome: dict) -> tuple[str, bool]:
+    """The line Open in Rerun's outcome (the helper script's last JSON line) shows, and whether it failed."""
+    if "error" in outcome:
+        return f"not opened: {outcome['error']}", True
+    if not outcome.get("sessions"):
+        return (outcome.get("notes") or ["nothing was recorded in that range"])[0], True
+    line = f"opened {len(outcome['sessions'])} session(s), {outcome['events']} events, {outcome['rows']} ticks in Rerun"
+    return line + "".join(f"; {note}" for note in outcome.get("notes", ())), False
 
 
 def _save_chunk(trace, path: Path) -> Path:

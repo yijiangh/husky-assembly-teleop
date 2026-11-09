@@ -24,7 +24,7 @@ import numpy as np
 from ...config import short_serial
 from ...plugin_api.trace import load_arrays
 from ...shared.recordings.runs import load_description
-from .export import CHUNKS, EVENTS, SAVED_MARGIN, STATES, sessions
+from .export import CHUNKS, EVENTS, SAVED_MARGIN, STATES, copied_sessions, sessions
 
 #: The one timeline.
 TIMELINE = "time"
@@ -68,24 +68,25 @@ class Model:
 
 
 def log_range(root: Path, start: float, end: float, *, save: Path | None = None, data: Path | None = None,
-              spawn: bool = True) -> dict:
+              spawn: bool = True, copy: bool = False) -> dict:
     """Show (or save) what the observer recorded from wall time `start` to `end` in Rerun.
 
     Args:
-        root: The local recordings.
+        root: The local recordings, or with `copy` a copy of them (`copied_sessions`).
         start: The range's start, wall time, seconds since the epoch.
         end: Its end.
         save: Write an .rrd file here instead of opening the viewer.
         data: The teleop data folder, for the URDFs (each robot's model, its arms' mounts); without it the bases
             are only boxes and the arms are not placed in 3D.
         spawn: Open the viewer (ignored with `save`); False only logs into the current recording (tests).
+        copy: `root` is a copy (`export.copy_range`), not the local recordings.
 
     Returns:
         dict: The sessions shown, the tick rows and events logged, and what could not be shown ("notes").
     """
     import rerun as rr
 
-    found = _sessions(root, start, end)
+    found = _sessions(root, start, end, copy)
     if not found:
         return {"sessions": [], "rows": 0, "events": 0, "notes": [f"no recordings between those times in {root}"]}
     notes: list[str] = []
@@ -110,10 +111,10 @@ def log_range(root: Path, start: float, end: float, *, save: Path | None = None,
 
 # --- --- --- --- --- WHAT TO READ --- --- --- --- ---
 
-def _sessions(root: Path, start: float, end: float) -> list[Session]:
+def _sessions(root: Path, start: float, end: float, copy: bool = False) -> list[Session]:
     """The sessions whose recording overlaps the range, oldest first, with the chunks that may hold its ticks."""
     found = []
-    for kept in sessions(root):
+    for kept in copied_sessions(root) if copy else sessions(root):
         if kept["end"] < start or kept["start"] > end:
             continue
         description = load_description(kept["folder"])

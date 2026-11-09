@@ -52,12 +52,18 @@ def run(lab: RobotLab, plugin: AssemblyObserverPlugin, seconds: float, during=la
     asyncio.run(ticking())
 
 
-def clicked(lab: RobotLab, plugin: AssemblyObserverPlugin) -> None:
-    """Click Copy to Drive and wait for the copy's own process to end."""
+def button(lab: RobotLab, label: str):
+    """The panel's button of that label."""
+    return next(widget for widget in lab.ctx.gui.of_kind("button") if widget.label == label)
+
+
+def clicked(lab: RobotLab, plugin: AssemblyObserverPlugin, label: str = "Copy to Drive") -> None:
+    """Click Copy to Drive (or Open in Rerun) and wait for the helper script's own process to end."""
     async def click() -> None:
-        lab.ctx.gui.of_kind("button")[-1].callback()
-        if plugin._copying is not None:
-            await plugin._copying
+        button(lab, label).callback()
+        task = plugin._copying if label == "Copy to Drive" else plugin._opening
+        if task is not None:
+            await task
     asyncio.run(click())
 
 
@@ -114,7 +120,7 @@ def test_it_records_without_a_drive_and_refuses_a_copy_there(tmp_path, local_roo
     lab.ctx.config.drive_root = tmp_path / "no drive"
     plugin.setup(lab.ctx)
     run(lab, plugin, 0.3)
-    lab.ctx.gui.of_kind("button")[-1].callback()
+    button(lab, "Copy to Drive").callback()
     plugin.draw(lab.ctx)
     plugin.teardown(lab.ctx)
 
@@ -658,6 +664,36 @@ def test_the_helper_script_lists_prints_and_copies(tmp_path):
     assert list(outcome["copied"]) == [plugin._folder.name]
 
 
+def test_open_in_rerun_runs_the_helper_script_on_the_range(tmp_path, monkeypatch, local_root):
+    """Open in Rerun runs `observer_logs.py rerun` on From to To in its own process; the line says what it shows."""
+    script = tmp_path / "stand_in.py"
+    script.write_text("import json, sys\nopen(sys.argv[0] + '.args', 'w').write(json.dumps(sys.argv[1:]))\n"
+                      "print(json.dumps({'sessions': ['s'], 'rows': 7, 'events': 3, 'notes': [], 'saved': None}))\n")
+    monkeypatch.setattr(observer_module, "SCRIPT", script)
+    monkeypatch.setattr(observer_module, "find_spec", lambda name: object())
+    lab, plugin = lab_on_drive(tmp_path), AssemblyObserverPlugin()
+    plugin.setup(lab.ctx)
+    plugin._from.value = "00:00"
+    clicked(lab, plugin, "Open in Rerun")
+    plugin.draw(lab.ctx)
+    plugin.teardown(lab.ctx)
+    args = json.loads(script.with_name("stand_in.py.args").read_text())
+    assert args == ["--root", str(local_root), "rerun", "00:00", "now", "--day", plugin._day.value]
+    assert "opened 1 session(s), 3 events, 7 ticks in Rerun" in plugin._copied.content
+
+
+def test_open_in_rerun_without_rerun_installed_says_how_to_install_it(tmp_path, monkeypatch):
+    """Without the rerun package nothing runs: the line below the buttons says how to install it."""
+    monkeypatch.setattr(observer_module, "find_spec", lambda name: None)
+    lab, plugin = lab_on_drive(tmp_path), AssemblyObserverPlugin()
+    plugin.setup(lab.ctx)
+    plugin._from.value = "00:00"
+    clicked(lab, plugin, "Open in Rerun")
+    plugin.draw(lab.ctx)
+    plugin.teardown(lab.ctx)
+    assert plugin._opening is None and "pip install rerun-sdk==0.39.0" in plugin._copied.content
+
+
 def _hanging_script(tmp_path):
     """A stand-in for the helper script that writes its pid, then never ends."""
     script = tmp_path / "hang.py"
@@ -702,7 +738,7 @@ def test_cancelling_a_copy_stops_its_process(tmp_path, monkeypatch, local_root):
     plugin._from.value = "00:00"
 
     async def click_then_cancel() -> None:
-        lab.ctx.gui.of_kind("button")[-1].callback()
+        button(lab, "Copy to Drive").callback()
         pid_file = local_root.parent / "local.pid"
         while not pid_file.is_file():
             await lab.ctx.sleep(0.1)

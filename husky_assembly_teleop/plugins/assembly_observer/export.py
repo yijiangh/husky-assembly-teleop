@@ -2,8 +2,9 @@
 The observer's local recordings: the days kept, dropping old ones, and copying a time range out (to the Drive).
 
 Local layout: `<root>/<YYYYMMDD>/<stamp>_session[_sim]/` with experiment.json, events.jsonl, chunk_NNN.npz and
-commands/ (`plugin.py`). A copy keeps that layout, one folder per session the range touches, with only what lies in
-the range: the events (from the newest states before it), the chunks' rows, the command files those events name.
+commands/ (`plugin.py`). A copy is `<destination>/<stamp>_session[_sim]/`, one folder per session the range touches,
+with only what lies in the range: the events (from the newest states before it), the chunks' rows, the command files
+those events name; `copied_sessions` finds them.
 
 ! Plain files, no ROS. `copy_range` and `events_in` read whole days: run them in a process of their own
   (`scripts/observer_logs.py`); `days`, `prune` and `size` are quick enough for a worker thread.
@@ -22,7 +23,7 @@ from typing import Iterator
 import numpy as np
 
 from ...plugin_api.trace import load_arrays
-from ...shared.recordings.runs import load_description, write_description
+from ...shared.recordings.runs import DESCRIPTION, load_description, write_description
 
 #: Where the sessions are recorded, on this PC.
 LOCAL_ROOT = Path("~/.ros/assembly_observer").expanduser()
@@ -85,24 +86,45 @@ def size(root: Path) -> int:
 
 def sessions(root: Path) -> list[dict]:
     """Every session kept, oldest first: its folder, start and end (wall time; the end is its last write), size, sim."""
-    found = []
-    for name in reversed(days(root)):
-        for folder in sorted(path for path in (root / name).iterdir() if path.is_dir()):
-            try:
-                description = load_description(folder)
-                started = float(description["wall_time"])
-            except (ValueError, KeyError, TypeError):
-                continue
-            stats = []
-            for path in folder.rglob("*"):
-                try:
-                    stats.append(path.stat())
-                except OSError:
-                    continue  # * renamed or deleted meanwhile: a chunk being saved
-            found.append({"folder": folder, "start": started, "end": max((stat.st_mtime for stat in stats),
-                                                                         default=started),
-                          "bytes": sum(stat.st_size for stat in stats if S_ISREG(stat.st_mode)),
-                          "environment": description.get("environment", "")})
+    return [found for name in reversed(days(root))
+            for folder in sorted(path for path in (root / name).iterdir() if path.is_dir())
+            if (found := _session(folder)) is not None]
+
+
+def copied_sessions(folder: Path) -> list[dict]:
+    """The sessions in a copy (`copy_range`'s destination), one of its sessions, or a folder of copies; oldest first.
+
+    As `sessions`, but a copied session starts and ends with the range it was copied from, not at its last write.
+    """
+    for pattern in (DESCRIPTION, f"*/{DESCRIPTION}", f"*/*/{DESCRIPTION}"):
+        found = [session for path in sorted(folder.glob(pattern)) if (session := _session(path.parent)) is not None]
+        if found:
+            return sorted(found, key=lambda session: session["start"])
+    return []
+
+
+def _session(folder: Path) -> dict | None:
+    """One session's folder, start, end, size and sim (`sessions`); None without a usable description."""
+    try:
+        description = load_description(folder)
+        started = float(description["wall_time"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    stats = []
+    for path in folder.rglob("*"):
+        try:
+            stats.append(path.stat())
+        except OSError:
+            continue  # * renamed or deleted meanwhile: a chunk being saved
+    found = {"folder": folder, "start": started, "end": max((stat.st_mtime for stat in stats), default=started),
+             "bytes": sum(stat.st_size for stat in stats if S_ISREG(stat.st_mode)),
+             "environment": description.get("environment", "")}
+    copied = description.get("copied")
+    if isinstance(copied, dict):
+        try:
+            found["start"], found["end"] = max(started, float(copied["from"])), float(copied["to"])
+        except (KeyError, TypeError, ValueError):
+            pass
     return found
 
 

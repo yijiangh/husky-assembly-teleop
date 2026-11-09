@@ -10,9 +10,11 @@ or `now`. Run from the workspace root with the venv active:
     python src/husky-assembly-teleop/scripts/observer_logs.py events 14:00 now --robot a200-0806 --event "arm moving"
     python src/husky-assembly-teleop/scripts/observer_logs.py copy 14:00 14:30 --name b20_insert
     python src/husky-assembly-teleop/scripts/observer_logs.py rerun 14:00 14:30
+    python src/husky-assembly-teleop/scripts/observer_logs.py rerun --folder <a copy's folder>
 
-`rerun` opens the range in the Rerun viewer (`pip install rerun-sdk`): plots, state timelines, the events and the
-robots in 3D on one timeline (`plugins/assembly_observer/rerun_view.py`); `--save` writes an .rrd file instead.
+`rerun` opens the range in the Rerun viewer (`pip install rerun-sdk==0.39.0`): plots, state timelines, the events and
+the robots in 3D on one timeline (`plugins/assembly_observer/rerun_view.py`); `--save` writes an .rrd file instead.
+With `--folder` it opens a copy (on the Drive, say) whole, or From to To of it.
 
 `copy` writes `<Drive>/data_experiment/assembly_observer/<name>/<stamp>/` (or under `--to`), one folder per session the
 range touches, and ends with one JSON line saying what it copied.
@@ -30,7 +32,8 @@ from pathlib import Path
 
 from husky_assembly_teleop.drive import drive_folder, drive_root, folder_name
 from husky_assembly_teleop.plugins.assembly_observer.export import (DAY_FORMAT, LOCAL_ROOT, RECORDING_FOLDER,
-                                                                    copy_range, events_in, sessions, wall_time)
+                                                                    copied_sessions, copy_range, events_in, sessions,
+                                                                    wall_time)
 from husky_assembly_teleop.shared.recordings.runs import run_folder
 
 #: The teleop data folder: the robots' URDFs, for the arms' mounts in `rerun`.
@@ -48,9 +51,11 @@ def main(argv: list[str] | None = None) -> int:
     for name, text in (("events", "print the events of a time range"), ("copy", "copy a time range"),
                        ("rerun", "open a time range in the Rerun viewer")):
         command = commands.add_parser(name, help=text)
-        command.add_argument("start", help="HH:MM or HH:MM:SS")
-        command.add_argument("end", help="HH:MM or HH:MM:SS, or now")
-        command.add_argument("--day", default=time.strftime(DAY_FORMAT), help="YYYYMMDD (default today)")
+        # * A copy opened in Rerun needs no range: it opens whole.
+        optional = {"nargs": "?"} if name == "rerun" else {}
+        command.add_argument("start", help="HH:MM or HH:MM:SS", **optional)
+        command.add_argument("end", help="HH:MM or HH:MM:SS, or now", **optional)
+        command.add_argument("--day", help="YYYYMMDD (default today, or a copy's first day)")
     events = commands.choices["events"]
     events.add_argument("--grep", help="only lines holding this text")
     events.add_argument("--robot", help="only this robot's events, e.g. a200-0806")
@@ -63,9 +68,16 @@ def main(argv: list[str] | None = None) -> int:
     copy.add_argument("--sim", action="store_true", help="mark the copy's folder as from a simulation")
     viewer = commands.choices["rerun"]
     viewer.add_argument("--save", type=Path, help="write this .rrd file instead of opening the viewer")
+    viewer.add_argument("--folder", type=Path, help="open this copy (`copy`'s folder, one of its sessions, or a "
+                                                    "folder of copies) instead of the recordings on this PC")
     args = parser.parse_args(argv)
     if args.command == "list":
         return _list(args.root)
+    if args.command == "rerun" and args.folder is not None:
+        return _rerun_copy(args)
+    if args.start is None or args.end is None:
+        return _fail("a start and an end are needed (only a copy opens without them: --folder)")
+    args.day = args.day or time.strftime(DAY_FORMAT)
     try:
         start, end = wall_time(args.day, args.start), wall_time(args.day, args.end)
         if end <= start:
@@ -120,15 +132,32 @@ def _copy(args: argparse.Namespace, start: float, end: float) -> int:
     return 0
 
 
-def _rerun(args: argparse.Namespace, start: float, end: float) -> int:
-    """Open the range in Rerun (or save it); the last line printed is JSON: what was shown, or why not."""
+def _rerun_copy(args: argparse.Namespace) -> int:
+    """Open a copy in Rerun: whole, or from `start` to `end` (of `--day`, by default the copy's first day)."""
+    found = copied_sessions(args.folder)
+    if not found:
+        return _fail(f"no copied sessions in {args.folder}")
+    start, end = min(session["start"] for session in found), max(session["end"] for session in found)
+    day = args.day or time.strftime(DAY_FORMAT, time.localtime(start))
+    try:
+        start = wall_time(day, args.start) if args.start is not None else start
+        end = wall_time(day, args.end) if args.end is not None else end
+        if end <= start:
+            raise ValueError(f"the end ({args.end}) is not after the start ({args.start})")
+    except ValueError as error:
+        return _fail(str(error))
+    return _rerun(args, start, end, args.folder, copy=True)
+
+
+def _rerun(args: argparse.Namespace, start: float, end: float, root: Path | None = None, copy: bool = False) -> int:
+    """Open a range of the recordings (or of the copy at `root`) in Rerun, or save it; the last line printed is JSON."""
     try:
         import rerun  # noqa: F401
     except ImportError:
-        return _fail("rerun is not installed: pip install rerun-sdk (in the venv)")
+        return _fail("rerun is not installed: pip install rerun-sdk==0.39.0 (in the venv)")
     from husky_assembly_teleop.plugins.assembly_observer.rerun_view import log_range
     try:
-        shown = log_range(args.root, start, end, save=args.save, data=DATA)
+        shown = log_range(root or args.root, start, end, save=args.save, data=DATA, copy=copy)
     except Exception as error:
         return _fail(repr(error))
     for note in shown["notes"]:

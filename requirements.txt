@@ -27,3 +27,5 @@ scikit-spatial==9.0.1  # the same
 
 # * Optional: ssik>=4.1,<5 with numpy>=1.26,<2, the planners' and the servo's exact IK (`shared/assembly_planning/ik.py`);
 #   without it they use PyBullet's IK, and the tests that need it skip.
+# * Optional: rerun-sdk==0.39.0, the observer's recordings in the Rerun viewer (`assembly_observer/rerun_view.py`);
+#   pinned because its StateTimelineView is unstable between releases. Without it Open in Rerun says so.

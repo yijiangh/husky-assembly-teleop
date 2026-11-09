@@ -71,6 +71,8 @@ python3 -m pip install "viser==1.1.1" "yourdfpy==0.0.60" "trimesh==4.12.2" "asyn
     "scipy>=1.8" "pybullet>=3.2" "compas>=2.0" "matplotlib==3.10.3" "pandas>=2.0" "shapely>=2.1"
 # Optional: the planners' and the servo's exact IK; without it they use PyBullet's IK
 python3 -m pip install "ssik>=4.1,<5" "numpy>=1.26,<2"
+# Optional: the observer's recordings in the Rerun viewer (pinned: its state timelines change between releases)
+python3 -m pip install "rerun-sdk==0.39.0"
 
 # Check: all five should list a location under src/husky-assembly-teleop/external
 python3 -m pip list | grep -iE "pybullet.planning|compas.fab|rs.data.structure|husky.assembly.tamp|scaffolding.assembly.core"
@@ -275,7 +277,7 @@ What each one does in detail, and the panels and tabs it shows: [doc/lab/plugins
 | `assembly_run` | Remembers how far the assembly got: done actions, where each robot was left. Experimental. |
 | `assembly_steps` | The operator's steps: Live IK, Plan, preview, Exec. Experimental. |
 | `movement_exec` | Runs one step on the real robots, with Confirms, compliant inserts and the servo. Experimental. |
-| `assembly_observer` | Records the robots every tick and every event (commands, leases, stops, manual moves, operator clicks, log lines) on this PC for a week; copies a time range to the Drive. Loaded by default. |
+| `assembly_observer` | Records the robots every tick and every event (commands, leases, stops, manual moves, operator clicks, log lines) on this PC for a week; copies a time range to the Drive or opens it in Rerun. Loaded by default. |
 | `motion_planner` | Plans process movements and checks collisions for other plugins. Experimental. |
 | `base_planner_panel` | Plans a collision-free base path and sends it to the onboard follower. Experimental. |
 | `arm_planner_panel` | Plans a collision-free arm motion to a joint target. Experimental. |
