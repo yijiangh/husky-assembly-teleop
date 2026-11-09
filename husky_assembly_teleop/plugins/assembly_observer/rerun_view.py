@@ -1,12 +1,14 @@
 """
 The observer's local recordings in Rerun: one time range of them as one Rerun recording.
 
-Opened by `scripts/observer_logs.py rerun`. Every tick column becomes a plot line (`/<serial>/<signal>/<label>`),
-every switching state a state timeline (`/states/...`), every event and log line a text line (`/events/...`,
-`/log/<source>`), and the poses frames in a 3D view of the lab frame (`/world/...`): each base, its arms' mounts from
-the URDF, tool0, the Cartesian target while the compliance controller runs, the follower's reference and lookahead,
-every tracked object. One timeline, "time": wall time (ROS time plus the session's offset), so it reads as the local
-clock and lines up with `events`.
+Opened by `scripts/observer_logs.py rerun`. Every tick signal becomes one plot entity with a line per channel
+(`/<serial>[/<arm>]/<signal>`; a pose as `.../position` and `.../yaw`, the follower and streams split by meaning), each
+arm's tool0-vs-target error a plot of its own, every switching state a state timeline (`/states/...`), every event and
+log line a text line (`/events/...`, `/log/<source>`), and the poses frames in a 3D view of the lab frame
+(`/world/...`): each base, its arms' mounts from the URDF, tool0, the Cartesian target while the compliance controller
+runs, the follower's reference and lookahead, every tracked object. Two timelines: "time", wall time (ROS time plus
+the session's offset, so it reads as the local clock and lines up with `events`), and "since start", seconds from the
+range's start. A value held over several ticks is logged at its first and last tick only: the lines look the same.
 
 ! Imports rerun only inside `log_range`: the monitor never needs it. Plain files, no ROS; reads whole chunks, so run
   it in a process of its own.
@@ -25,10 +27,11 @@ import numpy as np
 from ...config import short_serial
 from ...plugin_api.trace import load_arrays
 from ...shared.recordings.runs import load_description
+from .columns import NOISE, POSE, STREAM
 from .export import CHUNKS, EVENTS, SAVED_MARGIN, STATES, copied_sessions, sessions
 
-#: The one timeline.
-TIMELINE = "time"
+#: The timelines: wall time, and seconds since the range's start.
+TIMELINE, SINCE_START = "time", "since start"
 #: Axis lengths in the 3D view, metres: a base, an arm's mount, tool0 and target, a tracked object.
 BASE_AXES, MOUNT_AXES, TOOL_AXES, OBJECT_AXES = 0.4, 0.15, 0.1, 0.15
 #: Where each robot's model goes, plus its short serial: rerun escapes slashes in a URDF's entity prefix, so it is
@@ -39,6 +42,13 @@ BODY_HALF, BODY_CENTRE = (0.495, 0.335, 0.19), 0.19
 #: A state's text in a state timeline is cut to this many characters: soft stop reasons are long (the text log has
 #: them whole).
 STATE_TEXT = 60
+#: The follower's channels, plotted as these entities under its signal (the rest under "other").
+FOLLOWER = {"errors": ("cross_track", "along_track", "yaw_error"), "progress": ("progress",), "command": ("v", "w"),
+            "pose": ("x", "y", "yaw"), "reference": ("reference_x", "reference_y", "reference_yaw"),
+            "lookahead": ("lookahead_x", "lookahead_y")}
+#: Line colours of a plot entity's channels, in order (Tableau 10).
+COLORS = ((31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40), (148, 103, 189), (140, 86, 75),
+          (227, 119, 194), (127, 127, 127), (188, 189, 34), (23, 190, 207))
 #: Keys an event's text line leaves out: the times, what the entity says, and what is too long for a line.
 QUIET = ("event", "time", "ros_time", "robot", "status", "flags", "hit", "was", "file")
 #: A text line is cut to this many characters, a field's value in it to this many (the file has them whole).
@@ -242,8 +252,9 @@ def _log_ticks(rr, session: Session, start: float, end: float, models: dict[str,
         if not inside.any():
             continue
         stamps = wall[inside]
-        times = [rr.TimeColumn(TIMELINE, timestamp=stamps)]
         rows += int(inside.sum())
+        tools: dict[str, dict[str, np.ndarray]] = {}
+        plots = []
         for key in arrays:
             if not key.endswith(".labels") or key.removesuffix(".labels") not in arrays:
                 continue
@@ -252,18 +263,27 @@ def _log_ticks(rr, session: Session, start: float, end: float, models: dict[str,
             labels = [str(label) for label in arrays[f"{key}.labels"]]
             units = [str(unit) for unit in arrays.get(f"{key}.units", [""] * len(labels))]
             entity, serial, arm = _entity(key, session)
-            for column, (label, unit) in enumerate(zip(labels, units)):
-                path = f"{entity}/{label}"
-                if path not in named:
-                    rr.log(path, rr.SeriesLines(names=f"{label} [{unit}]" if unit else label), static=True)
-                    named.add(path)
-                rr.send_columns(path, indexes=times, columns=rr.Scalars.columns(scalars=values[:, column]))
-            if labels[:7] == ["x", "y", "z", "qx", "qy", "qz", "qw"]:
-                _log_pose(rr, entity, serial, arm, values, stamps, paths)
+            plots += _plots(entity, arm, labels, units, values)
+            if labels[:7] == list(POSE):
+                _log_pose(rr, entity, serial, arm, values, stamps, start, paths)
+                if arm is not None:
+                    tools.setdefault(entity.rpartition("/")[0], {})[entity.rpartition("/")[2]] = values
             elif entity.endswith("/follower") and serial is not None:
-                _log_follower(rr, short_serial(serial), labels, values, times)
+                _log_follower(rr, short_serial(serial), labels, values, stamps, start)
             elif entity.endswith("/joints") and arm is not None and serial in models:
-                _log_joints(rr, models[serial].tree, short_serial(serial), arm, labels, values, stamps)
+                _log_joints(rr, models[serial].tree, short_serial(serial), arm, labels, values, stamps, start)
+        for arm, poses in tools.items():
+            if "tcp" in poses and "target" in poses:
+                plots.append((f"{arm}/target_error", ["distance [mm]", "angle [deg]"],
+                              _target_error(poses["tcp"], poses["target"])))
+        for path, names, values in plots:
+            if path not in named:
+                rr.log(path, rr.SeriesLines(names=names, colors=[COLORS[i % len(COLORS)] for i in range(len(names))]),
+                       static=True)
+                named.add(path)
+            held = _held(values)
+            rr.send_columns(path, indexes=_times(rr, stamps[~held], start),
+                            columns=rr.Scalars.columns(scalars=values[~held]))
     for short, pieces in paths.items():
         strips = [strip for piece in pieces for strip in _strips(piece)]
         if strips:
@@ -271,8 +291,85 @@ def _log_ticks(rr, session: Session, start: float, end: float, models: dict[str,
     return rows
 
 
+def _times(rr, stamps: np.ndarray, start: float) -> list:
+    """The time columns of these wall times: on both timelines."""
+    return [rr.TimeColumn(TIMELINE, timestamp=stamps), rr.TimeColumn(SINCE_START, duration=stamps - start)]
+
+
+def _set_time(rr, wall: float, start: float) -> None:
+    """Log what follows at this wall time, on both timelines."""
+    rr.set_time(TIMELINE, timestamp=wall)
+    rr.set_time(SINCE_START, duration=wall - start)
+
+
+def _plots(entity: str, arm: str | None, labels: list[str], units: list[str],
+           values: np.ndarray) -> list[tuple[str, list[str], np.ndarray]]:
+    """A signal's plot entities: (path, its lines' names, its values, one column per line).
+
+    A pose is its position, and its yaw for a base or an object (an arm's tool0 and target get their error instead);
+    the follower and the streams are split by what their channels mean; mocap residuals are in mm.
+    """
+    names = [f"{label} [{unit}]" if unit else label for label, unit in zip(labels, units)]
+    what = entity.rpartition("/")[2]
+    if labels[:7] == list(POSE):
+        plots = [(f"{entity}/position", names[:3], values[:, :3])]
+        return plots if arm is not None else plots + [(f"{entity}/yaw", ["yaw [deg]"], _yaw(values[:, 3:7])[:, None])]
+    if labels == list(NOISE):
+        millimetres = np.array([unit == "m" for unit in units])
+        names = [f"{label} [mm]" if metres else name for label, name, metres in zip(labels, names, millimetres)]
+        return [(entity, names, np.where(millimetres, values * 1000.0, values))]
+    if what == "follower":
+        groups = {group: [labels.index(label) for label in channels if label in labels]
+                  for group, channels in FOLLOWER.items()}
+        groups["other"] = [column for column, label in enumerate(labels)
+                           if not any(label in channels for channels in FOLLOWER.values())]
+        return [(f"{entity}/{group}", [names[column] for column in columns], values[:, columns])
+                for group, columns in groups.items() if columns]
+    if what == "streams":  # * "<stream>_<channel>": one entity per channel, a line per stream
+        plots = []
+        for channel in STREAM:
+            columns = [column for column, label in enumerate(labels) if label.endswith(f"_{channel}")]
+            if columns:
+                plots.append((f"{entity}/{channel}", [names[column].replace(f"_{channel}", "") for column in columns],
+                              values[:, columns]))
+        return plots
+    return [(entity, names, values)]
+
+
+def _yaw(xyzw: np.ndarray) -> np.ndarray:
+    """The yaw of each quaternion (x, y, z, w), degrees; NaN where unknown."""
+    x, y, z, w = xyzw.T
+    return np.degrees(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
+
+
+def _target_error(tcp: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Tool0's distance (mm) and rotation angle (deg) to the target per tick, both in base_link; NaN where unknown."""
+    distance = np.linalg.norm(target[:, :3] - tcp[:, :3], axis=1) * 1000.0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        a = tcp[:, 3:7] / np.linalg.norm(tcp[:, 3:7], axis=1, keepdims=True)
+        b = target[:, 3:7] / np.linalg.norm(target[:, 3:7], axis=1, keepdims=True)
+    b = np.where(np.sum(a * b, axis=1, keepdims=True) < 0.0, -b, b)  # * q and -q are the same rotation
+    # * Stable near zero, unlike the arccos of the dot product.
+    angle = np.degrees(4.0 * np.arctan2(np.linalg.norm(a - b, axis=1), np.linalg.norm(a + b, axis=1)))
+    return np.column_stack([distance, angle])
+
+
+def _held(values: np.ndarray) -> np.ndarray:
+    """The rows equal to the row before and the row after (NaN equal to NaN): leaving them out draws the same lines."""
+    same = ~_changed(values)
+    held = np.zeros(len(values), dtype=bool)
+    held[1:-1] = same[1:-1] & same[2:]
+    return held
+
+
+def _changed(values: np.ndarray) -> np.ndarray:
+    """The rows that differ from the row before (NaN equal to NaN), and the first: all a latest-at value needs."""
+    same = ((values[1:] == values[:-1]) | (np.isnan(values[1:]) & np.isnan(values[:-1]))).all(axis=1)
+    return np.concatenate([np.ones(min(len(values), 1), dtype=bool), ~same])
+
+
 def _log_pose(rr, entity: str, serial: str | None, arm: str | None, values: np.ndarray, stamps: np.ndarray,
-              paths: dict[str, list[np.ndarray]]) -> None:
+              start: float, paths: dict[str, list[np.ndarray]]) -> None:
     """A pose signal as a moving frame in 3D; its axes shrink to nothing at the ticks it is unknown."""
     *_, what = entity.split("/")
     if serial is None and entity.startswith("objects/"):
@@ -285,34 +382,39 @@ def _log_pose(rr, entity: str, serial: str | None, arm: str | None, values: np.n
     else:
         return
     known = np.isfinite(values[:, :7]).all(axis=1) & (np.linalg.norm(values[:, 3:7], axis=1) > 0.5)
-    rr.send_columns(path, indexes=[rr.TimeColumn(TIMELINE, timestamp=stamps)],
-                    columns=rr.TransformAxes3D.columns(axis_length=np.where(known, length, 0.0)))
+    lengths = np.where(known, length, 0.0)
+    shown = _changed(lengths[:, None])
+    rr.send_columns(path, indexes=_times(rr, stamps[shown], start),
+                    columns=rr.TransformAxes3D.columns(axis_length=lengths[shown]))
     if known.any():
-        rr.send_columns(path, indexes=[rr.TimeColumn(TIMELINE, timestamp=stamps[known])],
-                        columns=rr.Transform3D.columns(translation=values[known, :3], quaternion=values[known, 3:7]))
+        moved = np.flatnonzero(known)[_changed(values[known, :7])]
+        rr.send_columns(path, indexes=_times(rr, stamps[moved], start),
+                        columns=rr.Transform3D.columns(translation=values[moved, :3], quaternion=values[moved, 3:7]))
 
 
-def _log_joints(rr, tree, short: str, arm: str, labels: list[str], values: np.ndarray, stamps: np.ndarray) -> None:
+def _log_joints(rr, tree, short: str, arm: str, labels: list[str], values: np.ndarray, stamps: np.ndarray,
+                start: float) -> None:
     """An arm's joints as its model's joint transforms; a joint keeps its last known angle while unknown."""
     for column, label in enumerate(labels):
         joint = tree.get_joint_by_name(f"{arm}_{label}_joint")
-        known = np.isfinite(values[:, column])
-        if joint is None or not known.any():
+        known = np.flatnonzero(np.isfinite(values[:, column]))
+        if joint is None or not len(known):
             continue
-        rr.send_columns(f"{MODEL_ROOT}{short}/joints/{joint.name}",
-                        indexes=[rr.TimeColumn(TIMELINE, timestamp=stamps[known])],
+        known = known[_changed(values[known, column][:, None])]
+        rr.send_columns(f"{MODEL_ROOT}{short}/joints/{joint.name}", indexes=_times(rr, stamps[known], start),
                         columns=joint.compute_transform_columns(values[known, column].tolist()))
 
 
-def _log_follower(rr, short: str, labels: list[str], values: np.ndarray, times: list) -> None:
+def _log_follower(rr, short: str, labels: list[str], values: np.ndarray, stamps: np.ndarray, start: float) -> None:
     """The follower's reference and lookahead points, in the lab frame; none at the ticks it is unknown."""
     for name, (x, y) in (("reference", ("reference_x", "reference_y")), ("lookahead", ("lookahead_x", "lookahead_y"))):
         if x not in labels or y not in labels:
             continue
         xy = values[:, [labels.index(x), labels.index(y)]]
+        xy = xy[(moved := _changed(xy))]
         known = np.isfinite(xy).all(axis=1)
         points = np.column_stack([xy[known], np.zeros(int(known.sum()))])
-        rr.send_columns(f"world/follower/{short}/{name}", indexes=times,
+        rr.send_columns(f"world/follower/{short}/{name}", indexes=_times(rr, stamps[moved], start),
                         columns=rr.Points3D.columns(positions=points).partition(known.astype(int)))
 
 
@@ -342,12 +444,12 @@ def _log_events(rr, session: Session, start: float, end: float) -> int:
             states.update(changes)
             continue
         if not started:  # * where things stood at the range's start, then every change
-            rr.set_time(TIMELINE, timestamp=start)
+            _set_time(rr, start, start)
             for path, text in states.items():
                 rr.log(path, rr.StateChange(state=text))
                 shown[path] = text
             started = True
-        rr.set_time(TIMELINE, timestamp=max(wall, start))
+        _set_time(rr, max(wall, start), start)
         for path, text in changes.items():
             if shown.get(path) != text:
                 rr.log(path, rr.StateChange(state=text))
@@ -357,7 +459,7 @@ def _log_events(rr, session: Session, start: float, end: float) -> int:
             rr.log(path, rr.TextLog(text, level=level))
             count += 1
     if not started and states:
-        rr.set_time(TIMELINE, timestamp=start)
+        _set_time(rr, start, start)
         for path, text in states.items():
             rr.log(path, rr.StateChange(state=text))
     return count
@@ -661,25 +763,24 @@ def _blueprint(found: list[Session], objects: list[str], models: dict[str, Model
     tabs = []
     for short, arms in sorted(robots.items()):
         views = [
-            rrb.TimeSeriesView(name=f"{short} follower errors", origin=f"/{short}/follower",
-                               contents=["$origin/cross_track", "$origin/along_track", "$origin/yaw_error"]),
+            rrb.TimeSeriesView(name=f"{short} follower errors", origin=f"/{short}/follower/errors"),
             rrb.TimeSeriesView(name=f"{short} twist sent vs odometry", origin=f"/{short}",
-                               contents=["$origin/twist_sent/**", "$origin/odometry/**"]),
+                               contents=["$origin/twist_sent", "$origin/odometry"]),
             rrb.TimeSeriesView(name=f"{short} mocap", origin=f"/{short}/base_mocap"),
-            rrb.TimeSeriesView(name=f"{short} stream rates", origin=f"/{short}/streams",
-                               contents=["$origin/*_rate"]),
+            rrb.TimeSeriesView(name=f"{short} stream rates", origin=f"/{short}/streams/rate"),
             rrb.TimeSeriesView(name=f"{short} battery", origin=f"/{short}/battery"),
         ]
         for arm in arms:
             views += [rrb.TimeSeriesView(name=f"{short} {arm} joints", origin=f"/{short}/{arm}/joints"),
                       rrb.TimeSeriesView(name=f"{short} {arm} wrench", origin=f"/{short}/{arm}",
-                                         contents=["$origin/wrench/**", "$origin/wrench_peak/**"]),
+                                         contents=["$origin/wrench", "$origin/wrench_peak"]),
+                      rrb.TimeSeriesView(name=f"{short} {arm} tool0 vs target", origin=f"/{short}/{arm}/target_error"),
                       rrb.TimeSeriesView(name=f"{short} {arm} tool", origin=f"/{short}/{arm}/tool")]
         tabs.append(rrb.Grid(*views, name=short))
     lab = [rrb.TimeSeriesView(name="relay drift", origin="/lab/relay_drift"),
            rrb.TimeSeriesView(name="late ticks", origin="/lab/monitor_late_share")]
     if objects:
-        lab.append(rrb.TimeSeriesView(name="objects mocap", origin="/objects", contents=["$origin/*/mocap/**"]))
+        lab.append(rrb.TimeSeriesView(name="objects mocap", origin="/objects", contents=["$origin/*/mocap"]))
     tabs.append(rrb.Grid(*lab, name="lab"))
     # * The models sit at the top level (`MODEL_ROOT`), their collision shapes hidden.
     lab_frame = ["+ /world/**"]
@@ -693,4 +794,4 @@ def _blueprint(found: list[Session], objects: list[str], models: dict[str, Model
                          rrb.TextLogView(name="events and log", origin="/", contents=["/events/**", "/log/**"]),
                          row_shares=[3, 2]),
             column_shares=[2, 3]),
-        collapse_panels=False)
+        rrb.TimePanel(timeline=TIMELINE), collapse_panels=False)

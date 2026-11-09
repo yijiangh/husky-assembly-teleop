@@ -14,7 +14,8 @@ import pytest
 from husky_assembly_teleop.plugins.assembly_observer import rerun_view
 from husky_assembly_teleop.plugins.assembly_observer.export import copied_sessions, copy_range
 from husky_assembly_teleop.plugins.assembly_observer.rerun_view import (
-    LATE_TICKS, _entity, _entries, _run_events, _state_changes, _text_line, log_range)
+    LATE_TICKS, SINCE_START, TIMELINE, _entity, _entries, _held, _run_events, _state_changes, _target_error,
+    _text_line, _yaw, log_range)
 from husky_assembly_teleop.shared.runs.runs import record_event
 
 from repo_paths import DATA, REPO
@@ -36,10 +37,16 @@ def session(tmp_path):
     t = ROS_START + 0.05 * np.arange(100)
     pose = np.tile([1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0], (100, 1)).astype(np.float32)
     pose[40:50] = np.nan  # * mocap lost for half a second
+    tcp = np.tile([0.3, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0], (100, 1)).astype(np.float32)
+    target = np.full((100, 7), np.nan, np.float32)
+    target[30:] = [0.3, 0.004, 0.5, 1.0, 0.0, 0.0, 0.0]  # * the compliance controller holds a target from 1.5 s
+    labels = np.array(["x", "y", "z", "qx", "qy", "qz", "qw"])
     np.savez_compressed(folder / "chunk_001.npz", t=t,
                         **{"0806_base_pose": pose, "0806_base_pose.labels": np.array(["x", "y", "z", "qx", "qy", "qz",
                                                                                       "qw"]),
                            "0806_base_pose.units": np.array(["m"] * 3 + [""] * 4),
+                           "0806_left_ur_arm_tcp": tcp, "0806_left_ur_arm_tcp.labels": labels,
+                           "0806_left_ur_arm_target": target, "0806_left_ur_arm_target.labels": labels,
                            "0806_left_ur_arm_wrench_peak": np.ones((100, 2), np.float32),
                            "0806_left_ur_arm_wrench_peak.labels": np.array(["force", "torque"]),
                            "0806_left_ur_arm_wrench_peak.units": np.array(["N", "N m"])})
@@ -66,6 +73,50 @@ def test_a_range_is_saved_with_its_ticks_and_events_but_not_the_snapshots(sessio
     assert shown["events"] == 2  # * the arm move and the log line; the lease before the range is a state, not a line
     assert shown["notes"] == ["no data folder: no robot models, arms not placed in 3D"]
     assert saved.stat().st_size > 0
+
+
+def test_a_signal_is_one_entity_on_both_timelines_and_held_values_are_logged_twice(session, tmp_path):
+    """One plot entity per signal (a pose: position, yaw) on both timelines; a constant run keeps its two ends."""
+    from rerun.chunk import RrdReader
+
+    saved = tmp_path / "range.rrd"
+    start = ROS_START + OFFSET + 1.0
+    log_range(session, start, ROS_START + OFFSET + 4.0, save=saved)
+    reader = RrdReader(saved)
+    rows: dict[str, list] = {}
+    for chunk in reader.stream(store=reader.recordings()[0]).to_chunks():
+        batch = chunk.to_record_batch()
+        if "Scalars:scalars" in batch.schema.names:
+            assert {TIMELINE, SINCE_START} <= set(chunk.timeline_names)
+            rows.setdefault(chunk.entity_path, []).extend(zip(batch.column(SINCE_START).to_pylist(),
+                                                              batch.column("Scalars:scalars").to_pylist()))
+    assert set(rows) == {"/0806/base_pose/position", "/0806/base_pose/yaw", "/0806/left_ur_arm/tcp/position",
+                         "/0806/left_ur_arm/target/position", "/0806/left_ur_arm/target_error",
+                         "/0806/left_ur_arm/wrench_peak"}
+    since, values = zip(*rows["/0806/left_ur_arm/wrench_peak"])
+    assert [value for value in values] == [[1.0, 1.0]] * 2 and since[0].total_seconds() == 0.0
+    assert since[-1].total_seconds() == pytest.approx(3.0)
+    # * Unknown before 1.5 s, then 4 mm and no angle: each run is its first and last tick.
+    errors = [value for _, value in rows["/0806/left_ur_arm/target_error"]]
+    assert np.isnan(errors[0]).all() and errors[-1] == pytest.approx([4.0, 0.0], abs=1e-3) and len(errors) == 4
+
+
+def test_yaw_and_tool0_error_come_from_the_quaternions():
+    """Yaw in degrees from (x, y, z, w); tool0's error is a distance in mm and a rotation angle, q and -q alike."""
+    half = np.radians(10.0) / 2
+    turned = [0.0, 0.0, np.sin(np.pi / 4), np.cos(np.pi / 4)]
+    assert _yaw(np.array([turned, [np.nan] * 4])) == pytest.approx([90.0, np.nan], nan_ok=True)
+    tcp = np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]] * 3)
+    target = np.array([[0.003, 0.004, 0.0, np.sin(half), 0.0, 0.0, np.cos(half)],
+                       [0.0, 0.0, 0.0, -np.sin(half), 0.0, 0.0, -np.cos(half)], [np.nan] * 7])
+    assert _target_error(tcp, target) == pytest.approx(np.array([[5.0, 10.0], [0.0, 10.0], [np.nan, np.nan]]),
+                                                       nan_ok=True)
+
+
+def test_only_ticks_inside_a_constant_run_are_left_out():
+    """A row equal to both neighbours (NaN equal to NaN) is held; the ends of every run stay."""
+    values = np.array([1.0, 1.0, 1.0, 2.0, np.nan, np.nan, np.nan])[:, None]
+    assert _held(values).tolist() == [False, True, False, False, False, True, False]
 
 
 def test_with_the_data_folder_each_robot_gets_its_urdf_model(session, tmp_path):
