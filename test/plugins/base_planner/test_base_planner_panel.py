@@ -3,13 +3,15 @@
 import asyncio
 from dataclasses import asdict, replace
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 from plugin_fakes import WATCHES, FakeGui
 from robot_fakes import lease_test_robots
+from robot_lab import RobotLab
 
+from husky_assembly_teleop.colors import CURRENT, rgb
 from husky_assembly_teleop.plugins.base_planner.panel_plugin import FLOOR_KEEP, NO_TASK, BasePlannerPanel
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin, Run
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
@@ -318,6 +320,28 @@ def test_each_robot_keeps_its_own_run_chip():
     assert "reached the path" in shown[SERIAL] and "no follower" not in shown[SERIAL]
     assert "no follower" in shown["belle"] and "reached the path" not in shown["belle"]
     assert "reached the path" not in shown["cindy"] and "no follower" not in shown["cindy"]
+
+
+def test_the_robot_buttons_choose_the_robot_and_follow_a_switch():
+    """A press plans for that robot; a robot the panel switched to by itself is the one highlighted."""
+    ctx = RobotLab().ctx
+    ctx.view.scene = MagicMock()
+    ctx.plugins.update({"base_planner": MagicMock(), "collisions": MagicMock(),
+                        "process": SimpleNamespace(selection=None)})
+    panel = BasePlannerPanel()
+    panel._add_ghosts = lambda *_args: setattr(panel, "_used", MagicMock())
+    panel.setup(ctx)
+    serials = list(panel._robot.buttons)
+    assert panel._robot.buttons[serials[0]].label == serials[0].split("-")[-1] and panel.serial == serials[0]
+    panel._robot.buttons[serials[2]].callback()
+    assert panel.serial == serials[2]
+    panel.serial = serials[1]
+    # * Only the buttons matter here: the rest of the panel's drawing reads a real plan.
+    for part in ("_status_html", "_details_html", "_draw_slider", "_draw_floor", "_draw_duration", "_draw_ghosts",
+                 "_debug_view"):
+        setattr(panel, part, MagicMock())
+    panel.draw(ctx)
+    assert [button.color for button in panel._robot.buttons.values()] == [rgb(NONE), rgb(CURRENT), rgb(NONE)]
 
 
 def test_the_floor_shows_a_run_until_another_base_drives_or_it_ended_long_ago():

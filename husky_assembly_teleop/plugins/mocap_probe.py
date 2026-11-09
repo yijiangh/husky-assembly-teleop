@@ -70,7 +70,7 @@ from ..plugin_api.plugin import HuskyPlugin, register
 from ..robot_interface.mocap_definitions import MocapAnchor, MocapCamera, camera_changes, cameras_json
 from ..robot_interface.mocap_relay import (FRAME_ERROR, FRAME_HELD, FRAME_NONE, FRAME_REFIT_PENDING, FRAME_UNCHECKED,
                                            FRAME_UNTRUSTED, FloorCalibrationState)
-from ..shared.execution.moving import moving_reason
+from ..shared.execution.moving import ask_relay
 from ..shared.guide.panel import set_changed
 from ..ui.checklist import CheckList
 from ..ui.phone import big_buttons, phone_text
@@ -819,26 +819,8 @@ class MocapProbePlugin(HuskyPlugin):
                         ctx.world.mocap_relay.reload_floor_calibration)
 
     def _ask_relay(self, ctx: PluginContext, what: str, refused: str, call) -> None:
-        """Call one of the relay's services that move every pose (`call`), unless anything moves; report its answer."""
-        why = moving_reason(ctx.world, ctx.now())
-        future = None if why else call()
-        if why:
-            self._report(ctx, f"{refused}: {why}; every pose changes, so only while nothing moves", floor=True,
-                         warn=True)
-        elif future is None:
-            self._report(ctx, f"{refused}: the mocap relay does not answer", floor=True, warn=True)
-        else:
-            ctx.spawn(what, self._answered(ctx, what, future))
-
-    async def _answered(self, ctx: PluginContext, what: str, future) -> None:
-        """Report the relay's answer to Use refit or Apply floor calibration, or why there is none."""
-        try:
-            response = await ctx.ros(future)
-        except Exception as error:  # * The service call itself failed: say so, else the line keeps its old text.
-            self._report(ctx, f"{what} failed: {error!r}", floor=True, warn=True)
-            return
-        self._show(response.message, OK if response.success else FAIL, floor=True)
-        (ctx.log_info if response.success else ctx.log_warn)(f"{what}: {response.message}")
+        """Call one of the relay's services that move every pose (`ask_relay`); show its answer in the floor section."""
+        ask_relay(ctx, what, refused, call, lambda text, ok: self._show(text, OK if ok else FAIL, floor=True))
 
     def _set_mapping(self, ctx: PluginContext, on: bool) -> None:
         """Start or stop counting probe messages into the coverage map; shows the map on start."""

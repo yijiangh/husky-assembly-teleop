@@ -9,6 +9,7 @@ The flow is `shared.planner.planner_panel.PlannerPanel`; this adds the joint sli
 from __future__ import annotations
 
 import math
+from functools import partial
 from html import escape
 
 import numpy as np
@@ -27,6 +28,7 @@ from ...ui.choice_row import ChoiceRow
 from ...ui.ghost import RobotGhost
 from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_joint_sliders
 from ...ui.pybullet_window import add_pybullet_window_toggle
+from ...ui.robot_buttons import RobotButtons
 from ...ui.style import BUSY, FAIL, GAP, NONE, OK, block, check_chip, chip, chip_line, section, values
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX
@@ -91,9 +93,7 @@ class ArmPlannerPanel(PlannerPanel):
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             gui.add_html(GAP)
-            self._robot = ChoiceRow(ctx, gui, "Robot", tuple(arms), self.serial,
-                                    on_choose=lambda serial: self._choose(serial, None),
-                                    labels=tuple(short_serial(serial) for serial in arms), height=None)
+            self._robot = RobotButtons(gui, list(arms), self.serial)
             options, labels = self._arm_options(self.serial)
             self._arm = ChoiceRow(ctx, gui, "Arm", options, self.arm,
                                   on_choose=lambda arm: self._choose(self.serial, arm), labels=labels, height=None,
@@ -137,6 +137,8 @@ class ArmPlannerPanel(PlannerPanel):
                     lambda gui, snapshot: planner._world.set_gui(
                         gui, with_guesses(snapshot, robot_id(self.serial))[0], self.serial))
 
+        for serial, button in self._robot.buttons.items():
+            button.on_click(ctx.defer("choose robot", partial(self._choose, serial, None)))
         for slider in self._sliders:
             slider.on_update(ctx.defer("target", self._target_changed, operator_only=True))
         load.on_click(ctx.defer_value("load target", lambda label: self._load_target(ctx, label)))
@@ -406,7 +408,7 @@ class ArmPlannerPanel(PlannerPanel):
             return
         self._status.content = self._status_html(ctx)
         # Loading a target from the step can switch the robot or arm; show that here.
-        self._robot.value = self.serial
+        self._robot.show(self.serial)
         self._arm.set_options(*self._arm_options(self.serial))
         self._arm.value = self.arm
         # * With Both the sliders only show the first arm's target: Load sets every arm's.

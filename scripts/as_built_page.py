@@ -25,7 +25,7 @@ import webbrowser
 from pathlib import Path
 
 from husky_assembly_teleop.drive import drive_root
-from husky_assembly_teleop.experiments.as_built.build import build_page
+from husky_assembly_teleop.experiments.as_built.build import build_page, default_env_3dm
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,7 +36,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--process", help="the process folder (default: <drive>/data_design_study/<problem>)")
     parser.add_argument("--drive", help="the Drive root (default: HUSKY_DRIVE_ROOT)")
     parser.add_argument("--out", help="output .html (default: <day>-asbuilt-result/assembly_<day>.html on the drive)")
-    parser.add_argument("--env-3dm", help="a Rhino file: its 'env' layer is the room, its camera layer the rig")
+    parser.add_argument("--env-3dm", help="a Rhino file: its 'env' or 'Environment Obstacles' layer is the room, its "
+                                          "camera layer the rig (default: the demo's file on the Drive)")
+    parser.add_argument("--no-env", action="store_true", help="no room from a Rhino file")
     parser.add_argument("--lab", help="a lab file (data/lab/<name>.json) whose obstacles are drawn as the room")
     parser.add_argument("--no-robots", action="store_true", help="skip the robots (no URDF load, smaller page)")
     parser.add_argument("--no-cameras", action="store_true", help="skip the mocap cameras")
@@ -51,7 +53,8 @@ def main(argv: list[str] | None = None) -> int:
     if lab is not None and not lab.suffix:
         lab = Path(__file__).resolve().parent.parent / "data" / "lab" / f"{lab}.json"
     out = build_page(root, args.day, args.problem, Path(args.process) if args.process else None,
-                     Path(args.out) if args.out else None, args.vendor, Path(args.env_3dm) if args.env_3dm else None,
+                     Path(args.out) if args.out else None, args.vendor,
+                     None if args.no_env else Path(args.env_3dm) if args.env_3dm else default_env_3dm(root),
                      lab, with_robots=not args.no_robots, with_cameras=not args.no_cameras)
     print(f"[assembly] wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
     if args.open:

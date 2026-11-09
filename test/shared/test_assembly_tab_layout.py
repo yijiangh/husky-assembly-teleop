@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from husky_assembly_teleop.shared.assembly_tab.layout import (ASSEMBLY_ICON, CANCEL_ICON, CONFIRM_ICON, EXEC_BAND,
-                                                              EXEC_ICON, EXEC_PLOTS_X, EXEC_SETTINGS_BAND, GOAL_ICON,
-                                                              MARK_BAND, MARK_ICON, PLAN_ICON, PLAN_PLOTS_X,
+from husky_assembly_teleop.shared.assembly_tab.layout import (ACTIONS_BAND, ASSEMBLY_ICON, CANCEL_ICON, CONFIRM_ICON,
+                                                              EXEC_BAND, EXEC_ICON, EXEC_PLOTS_X, EXEC_SETTINGS_BAND,
+                                                              GOAL_ICON, MARK_BAND, MARK_ICON, PLAN_ICON, PLAN_PLOTS_X,
                                                               PLAN_SETTINGS_BAND, PLOTS_WIDTH, PLOTS_Y, PROCESS_BAND,
                                                               PROMPT_BAND, REOPEN_ICON, RUN_BAND, RUN_SETTINGS_BAND,
                                                               SETTINGS_BAND, STEP_BAND)
@@ -15,8 +15,8 @@ def test_bands_run_top_to_bottom_and_icons_are_distinct():
 
     The Advanced planning folder comes last, after every button, so opening it moves none.
     """
-    bands = (PROCESS_BAND, STEP_BAND, EXEC_BAND, PROMPT_BAND, MARK_BAND, SETTINGS_BAND, RUN_SETTINGS_BAND,
-             EXEC_SETTINGS_BAND, RUN_BAND, PLAN_SETTINGS_BAND)
+    bands = (PROCESS_BAND, RUN_BAND, ACTIONS_BAND, STEP_BAND, EXEC_BAND, PROMPT_BAND, MARK_BAND, SETTINGS_BAND,
+             RUN_SETTINGS_BAND, EXEC_SETTINGS_BAND, PLAN_SETTINGS_BAND)
     assert list(bands) == sorted(set(bands))
     icons = (GOAL_ICON, PLAN_ICON, EXEC_ICON, MARK_ICON, REOPEN_ICON, CONFIRM_ICON, CANCEL_ICON)
     assert len(set(icons)) == len(icons) and ASSEMBLY_ICON not in icons

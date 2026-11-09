@@ -40,7 +40,6 @@ from ...shared.assembly_tab.layout import ASSEMBLY_TAB, EXEC_PLOTS_X, plots_wind
 from ...shared.runs.as_built import KIND as AS_BUILT_KIND, bar_lines
 from .as_built import as_built_record
 from .panel import ExecPanel
-from .report import PageServer, build as build_page
 from .plots import ExecPlots
 from .sequences import Job, PartRun, run_part, unknown_serials
 from .servo_part import run_servo
@@ -89,12 +88,14 @@ class MovementExecPlugin(HuskyPlugin):
         self._active = ""
         #: "operator" once Cancel cancelled the running task; else a cancel came from outside.
         self._cancel_reason = ""
-        #: The last result as one line, and whether it failed; how many dry-run changes were refused.
-        self._last, self._last_failed = "", False
+        #: The last result as one line, whether it failed and whether it left a hold not sent; the run's current step;
+        #: how many dry-run changes were refused.
+        self._last, self._last_failed, self._hold_lost = "", False, False
+        self._step: tuple[str, int] | None = None
         self._dry_run_refused = 0
         #: Serial -> ROS time its arms last arrived (a motion or a servo pass): an older plan is refused.
         self._moved_at: dict[str, float] = {}
-        #: What the last transfer's bar servo left for its insert's plan; the panel's servo line: the running servo's
+        #: What the last transfer's servo left for its insert's plan; the panel's servo line: the running servo's
         #: last reading, or how the last one ended, until the next request.
         self._carried: Carried | None = None
         self._servo_line = ""
@@ -102,10 +103,6 @@ class MovementExecPlugin(HuskyPlugin):
         self._plots: ExecPlots | None = None
         #: What was said once about nothing to record (the process without markers, no plugin), not to repeat it.
         self._no_bars_said = None
-        #: The as-built page: its server, the build running, and the last build's outcome for the panel.
-        self._page_server = PageServer()
-        self._page_task: asyncio.Task | None = None
-        self._page_line: tuple[str, str] = ("", "")
         self._plotted_t: float | None = None
 
     # --- --- --- --- --- WHAT OTHER PLUGINS CALL (MovementExecContract) --- --- --- --- ---
@@ -127,7 +124,7 @@ class MovementExecPlugin(HuskyPlugin):
 
     @property
     def carried(self) -> Carried | None:
-        """Carried | None: What the last transfer's bar servo left for its insert's plan; dropped on a reload."""
+        """Carried | None: What the last transfer's servo left for its insert's plan; dropped on a reload."""
         if self._carried is not None and self._ctx.require("assembly_run").view.process is not self._carried.loaded:
             self._carried = None
         return self._carried
@@ -162,6 +159,7 @@ class MovementExecPlugin(HuskyPlugin):
                       measured=self._plots.servo_reading if self._plots is not None else (lambda _reading: None),
                       status=self._plots.status if self._plots is not None else (lambda _text, _color: None))
             self._job, self._active, self._cancel_reason = job, f"{request.robot_name} · {request.label}", ""
+            self._last, self._last_failed, self._hold_lost = "", False, False
             ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
                          + (" (DRY RUN)" if job.dry_run else "") + f"; {_safety_line(request)}")
             self._task = ctx.spawn(f"exec {request.label}", self._run(job, lease, future))
@@ -216,12 +214,20 @@ class MovementExecPlugin(HuskyPlugin):
         with plots_window(ctx.view, "Exec plots", viser.Icon.CHART_DOTS, EXEC_PLOTS_X) as panel:
             self._plots = ExecPlots(ctx.view.gui, panel)
 
+    def update(self, ctx: PluginContext) -> None:
+        """Drop a failure once the step changes; a hold not sent stays until the next request: an arm may move."""
+        current = ctx.require("assembly_run").view.current
+        if current != self._step:
+            self._step = current
+            if self._last_failed and not self._hold_lost:
+                self._last, self._last_failed = "", False
+
     def draw(self, ctx: PluginContext) -> None:
         """Fill the panel, and the Exec plots with the running compliant part's newest sample."""
         if self._panel is not None:
             recorder = self._job.recorder if self.active and self._job is not None else None
             self._panel.draw(self.active, self.prompt, self._dry_run, (self._last, self._last_failed),
-                             self._dry_run_refused, recorder, self._servo_line, self._page_line)
+                             self._dry_run_refused, recorder, self._servo_line)
             if self._plots is not None:
                 if recorder is not None and recorder.samples and recorder.samples[-1]["t"] != self._plotted_t:
                     self._plotted_t = recorder.samples[-1]["t"]
@@ -324,8 +330,7 @@ class MovementExecPlugin(HuskyPlugin):
                         result = self._raised(job, run, error, tuple(done), end, base)
                         raise
                     finally:
-                        # * However the servo ended: the bar mode engaged, so the insert plans from where it left the
-                        #   flanges.
+                        # * However the servo ended: it moved the flanges, so the insert plans from where it left them.
                         if run.carry is not None:
                             self._carried = run.carry
                     self._record_part(job, run)
@@ -334,6 +339,8 @@ class MovementExecPlugin(HuskyPlugin):
                         self._moved_at[request.serial] = ctx.now()
                     if run.result == DONE:
                         done.extend((part.index, *part.also))
+                        if part.kind in MOTION_KINDS:
+                            request.preview(None, None, 0.0)  # * the plan has run: it is no longer what comes next
                     elif run.result != DRY_RUN:
                         result = ExecResult(run.result, f"{part.movement}: {run.reason}", tuple(done), end, base)
                         break
@@ -427,6 +434,7 @@ class MovementExecPlugin(HuskyPlugin):
         label = request.label if request is not None else "a request"
         self._last = f"{label}: {result.status} — {result.reason}"
         self._last_failed = result.status not in (DONE, DRY_RUN)
+        self._hold_lost = result.status == HOLD_NOT_SENT
         if result.status == HOLD_NOT_SENT:
             ctx.log_error(f"Exec {self._last}")
         else:
@@ -495,40 +503,6 @@ class MovementExecPlugin(HuskyPlugin):
             return
         self._record_as_built(ctx, view, "manual", action_id, movement_index, serial, ctx.world.robots[serial],
                               None, None, False, {})
-
-    def request_build_page(self) -> None:
-        """Build the as-built page of today's records on a thread and serve it; the panel shows the link."""
-        ctx = self._ctx
-        if self._page_task is not None and not self._page_task.done():
-            self._page_line = ("the page is still being built", "busy")
-            return
-        view = ctx.require("assembly_run").view
-        if view.process is None:
-            self._page_line = ("no process loaded: nothing to build", "failed")
-            return
-        if ctx.config.drive_root is None:
-            self._page_line = ("no Drive root (drive_root): nothing to build", "failed")
-            return
-        self._page_task = ctx.spawn("build the as-built page", self._build_page(ctx, view.process),
-                                    survives_soft_stop=True)
-
-    async def _build_page(self, ctx: PluginContext, loaded) -> None:
-        """Run the page script for the loaded process (today's file), then serve its folder."""
-        self._page_line = ("building the as-built page of today's records...", "busy")
-        ctx.log_info("[as-built] building the page: scripts/as_built_page.py")
-        path, tail = await ctx.run_in_thread(build_page, ctx.config.drive_root, loaded.source.name, loaded.source)
-        if path is None:
-            ctx.log_warn(f"[as-built] the page was not built:\n{tail}")
-            self._page_line = (f"not built: {tail.splitlines()[-1] if tail else 'see the log'}", "failed")
-            return
-        url = self._page_server.serve(path.parent) + path.name
-        ctx.log_info(f"[as-built] page written: {path}; open {url}")
-        self._page_line = (url, "ok")
-
-    @property
-    def page_line(self) -> tuple[str, str]:
-        """tuple[str, str]: The last page build's outcome for the panel: (a URL or a message, ok/busy/failed)."""
-        return self._page_line
 
     def _as_built(self, job: Job, run: PartRun | None, phase: str) -> None:
         """An as-built record at a part's start or end (or a click mid-request); never raises, the step goes on."""

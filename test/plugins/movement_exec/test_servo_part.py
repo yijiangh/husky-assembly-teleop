@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from math import radians
+from typing import Callable
 
 import numpy as np
 import pytest
@@ -17,6 +18,7 @@ from plugin_fakes import from_outside
 from robot_lab import FakeRun, RobotLab
 
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
+from husky_assembly_teleop.plugins.movement_exec.servo_measure import GIVE_UP, TOOL0_SERVO
 from husky_assembly_teleop.robot_interface.mocap_state import RawMarkers
 from husky_assembly_teleop.shared.assembly_planning.ik import branches, fitting_solver, ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names, joint_limits, unwrap_to_nearest
@@ -34,7 +36,7 @@ from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE
 from husky_assembly_teleop.shared.runs.runs import RunSettings
 from husky_assembly_teleop.shared.bars.layouts import bar_layouts
 from husky_assembly_teleop.world.marker_match import transform_points
-from scaffolding_assembly_core.geometry import Pose, compose
+from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.ids import robot_id, split_link_id
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
@@ -361,7 +363,7 @@ def test_tool0_servo_converges_in_one_pass_and_is_recorded():
     # * The old monitor's console lines, in its order.
     info = lab.ctx.lines("info")
     wanted = ["[servo 0] tool0 pos L=10.00 R=10.00 mm, rot L=",
-              "### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start",
+              "### SERVOING iteration 1/8: aiming tool0 at the best rigid fit to the authored targets",
               "[servo] First move planned: 2 waypoints, travels ",
               "[servo 1] tool0 pos L=", "[servo 1] arms vs last commanded waypoint: L ",
               "### SERVOING converged at iter 1 on tool0 (< 0.2 mm)", "### bar pose at termination"]
@@ -410,6 +412,58 @@ def test_bar_servo_closes_a_flange_side_error_in_one_pass_and_carries_it():
     carried = lab.plugin.carried
     assert carried is not None and carried.loaded is lab.loaded and carried.serial == lab.serial
     assert (carried.action, carried.insert) == ("B20_J", step(lab.loaded, "B20_J_insert").movement_index)
+
+
+@pytest.mark.safety
+def test_tool0_servo_carries_its_correction_into_the_insert():
+    """A held move follows one flange: to the authored end, the insert would turn the bar the servo left aligned."""
+    lab = ServoLab()
+    result = execute(lab, lab.servo_request(), True)
+    assert result.status == DONE, result.reason
+    carried = lab.plugin.carried
+    assert carried is not None and carried.loaded is lab.loaded and carried.serial == lab.serial
+    assert (carried.action, carried.insert) == ("B20_J", step(lab.loaded, "B20_J_insert").movement_index)
+    assert "[servo] the tool0 correction is carried into the plan of B20_J_insert." in lab.ctx.lines("info")
+
+
+def targets_moved(monkeypatch, right_by: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> None:
+    """Make the servo's authored right target differ: `right_by(left, right)` gives its position, metres."""
+    def plan_of(*args, **kwargs):
+        plan = servo_plan(*args, **kwargs)
+        targets = dict(plan.targets)
+        left, right = next(f for f in targets if "left" in f), next(f for f in targets if "right" in f)
+        position = right_by(np.array(targets[left].position), np.array(targets[right].position))
+        targets[right] = Pose(tuple(position), targets[right].orientation)
+        return replace(plan, targets=targets)
+
+    monkeypatch.setattr("husky_assembly_teleop.plugins.movement_exec.servo_part.servo_plan", plan_of)
+
+
+@pytest.mark.safety
+def test_tool0_servo_aims_one_rigid_move_when_the_flanges_relation_differs(monkeypatch):
+    """B20 on 2026-11-04: the far end 2 mm sideways of what the relation gives: both land, in one pass, not eight."""
+    targets_moved(monkeypatch, lambda left, right: right + (0.0, 0.0, 0.002))
+    lab = ServoLab()
+    result = execute(lab, lab.servo_request(), True)
+    assert result.status == DONE and lab.published() == 1, result.reason
+    assert "converged on tool0" in lab.ended()
+    start = lab.servo_record()["servoing_data"][0]["tool0"]
+    live = {side: Pose(*map(tuple, start[side]["observed_pose"])) for side in ("left", "right")}
+    aimed = lab.planner.requests[0].servo.targets
+    left, right = next(f for f in aimed if "left" in f), next(f for f in aimed if "right" in f)
+    assert np.allclose(compose(invert(aimed[left]), aimed[right]).matrix(),
+                       compose(invert(live["left"]), live["right"]).matrix(), atol=1e-9)
+
+
+@pytest.mark.safety
+def test_tool0_servo_stops_when_only_the_span_is_left_and_says_what_is_left(monkeypatch):
+    """Targets 2 mm further apart than the flanges: a rigid move cannot close it: it stops and warns, 1 mm each end."""
+    targets_moved(monkeypatch, lambda left, right: right + (right - left) / np.linalg.norm(right - left) * 0.002)
+    lab = ServoLab()
+    result = execute(lab, lab.servo_request(), True)
+    assert result.status == DONE and lab.published() == 1, result.reason
+    assert "left from the targets by the best rigid move: L 1.00 mm" in lab.ended()
+    assert any("the best rigid move leaves L 1.00 mm" in line for line in lab.ctx.lines("warn"))
 
 
 @pytest.mark.safety
@@ -467,7 +521,8 @@ def test_an_unusable_bar_reading_leaves_the_loop_on_tool0(markers, words):
     reasons = [reading["bar"]["reason"] for reading in record["servoing_data"]]
     assert len(reasons) == 2 and all(words in reason for reason in reasons), reasons
     assert sum("the mocap bar is not usable" in line for line in lab.ctx.lines("warn")) == 1
-    assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start "
+    assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the best rigid fit to the authored targets "
+                               "of the insert start "
                                "(the mocap bar B20 is not usable: ") for line in lab.ctx.lines("info"))
 
 
@@ -480,12 +535,60 @@ def test_servo_by_bar_without_a_bar_asks_first_and_cancel_records_without_sendin
     assert result.status == CANCELLED and result.done == () and lab.published() == 0 and lab.free()
     text, warn = lab.prompts()[0]
     assert warn and text.startswith("cindy (0806): B20_J_transfer — SERVO by bar: no usable mocap fit of B20 "
-                                    "(asset 1020): the bar could not be measured (no marker sample). Confirm to servo "
-                                    "tool0 onto the authored targets of the insert start instead")
+                                    "(asset 1020): the bar could not be measured (no marker sample). Tool0 servo "
+                                    "(Confirm): servo tool0 onto the authored targets of the insert start instead")
     assert "cancelled at the bar prompt" in result.reason and not lab.planner.requests
     record = lab.servo_record()
     assert len(record["servoing_data"]) == 1 and record["outcome"]["status"] == CANCELLED
     assert "### SERVOING cancelled by user." in lab.ctx.lines("warn")
+
+
+def choose_in_window(lab: ServoLab, button: str, *answers: bool):
+    """Run a request with no usable bar fit: click `button` in the window, answer what comes next; (result, seen)."""
+    window, seen = lab.plugin._panel._choice, {}
+
+    async def scenario():
+        future = lab.plugin.request_execute(lab.servo_request())
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        lab.plugin.draw(lab.ctx)
+        seen["open"], seen["text"] = window.is_open, window._text.content
+        prompt = lab.plugin.prompt
+        while lab.ctx.t - prompt.opened_at < 0.6:
+            await asyncio.sleep(0)
+        window.buttons[button].callback()
+        while lab.plugin.prompt is prompt:
+            await asyncio.sleep(0)
+        for ok in answers:
+            await answer(lab, ok)
+        result = await future
+        lab.plugin.draw(lab.ctx)
+        seen["after"] = window.is_open
+        return result
+    return run_guarded(scenario()), seen
+
+
+@pytest.mark.safety
+def test_no_usable_fit_give_up_stops_with_nothing_sent():
+    """The warning window opens with the question; Give up stops the servo and closes it."""
+    lab = ServoLab()
+    lab.run.request_settings(servo_by_bar=True)
+    assert not lab.plugin._panel._choice.is_open
+    result, seen = choose_in_window(lab, GIVE_UP)
+    assert seen["open"] and "SERVO by bar: no usable mocap fit of B20" in seen["text"] and not seen["after"]
+    assert result.status == CANCELLED and lab.published() == 0
+
+
+@pytest.mark.safety
+def test_no_usable_fit_tool0_servo_goes_on_on_tool0():
+    """Tool0 servo answers as Confirm: the servo goes on, its first pass asks as usual, in the panel only."""
+    lab = ServoLab()
+    lab.run.request_settings(servo_by_bar=True)
+    result, seen = choose_in_window(lab, TOOL0_SERVO, True)
+    assert seen["open"] and not seen["after"]
+    assert result.status == DONE and lab.published() == 1, result.reason
+    assert lab.servo_record()["servo_feedback"] == "tool0"
+    assert [prompt[1] for prompt in lab.prompts()] == [True, False]
 
 
 @pytest.mark.safety
@@ -498,7 +601,8 @@ def test_servo_by_bar_without_a_bar_goes_on_with_tool0_after_confirm():
     prompts = lab.prompts()
     assert len(prompts) == 2 and "SERVO 1/8 onto the insert start (tool0)" in prompts[1][0]
     info = lab.ctx.lines("info")
-    assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start "
+    assert any(line.startswith("### SERVOING iteration 1/8: aiming tool0 at the best rigid fit to the authored targets "
+                               "of the insert start "
                                "(the mocap bar B20 is not usable: the bar could not be measured") for line in info)
     assert any(line.startswith("### SERVOING converged at iter 1 on tool0 (< 0.2 mm): the mocap bar fit was never "
                                "usable") for line in info)
@@ -735,6 +839,7 @@ def test_a_dry_run_builds_one_pass_and_is_never_done():
     record = lab.servo_record()
     assert record["dry_run"] and [move["outcome"] for move in record["moves"]] == [SENT_DRY]
     assert any("DRY RUN a200-0806 left_ur_arm" in line for line in lab.ctx.lines("warn"))
+    assert lab.plugin.carried is None
 
 
 @pytest.mark.safety
@@ -780,3 +885,36 @@ def test_a_plan_made_before_a_servo_pass_is_refused_at_exec():
     assert lab.published() == 1
     fresh = execute(lab, request, False)  # * the motion runs on Exec; Cancel at the bar's prompt
     assert fresh.status == CANCELLED and fresh.done == (3,)
+
+
+def test_a_prompted_pass_shows_in_the_preview_until_its_confirm():
+    """The whole step: the plan leaves the preview once its motion ran, and the pass shows only while it asks."""
+    lab = ServoLab()
+    shown = []
+    request = replace(lab.step_request(), preview=lambda route, basis, seconds: shown.append((route, basis, seconds)))
+    result = execute(lab, request, True, True)
+    assert result.status == DONE, result.reason
+    assert shown[0] == (None, None, 0.0), "the plan is gone once its motion ran"
+    route, basis, seconds = shown[1]
+    assert route is not None and basis is not None and seconds >= 3.0
+    assert shown[2:] == [(None, None, 0.0)], "the pass leaves the preview at its Confirm"
+
+
+def test_cancel_at_the_prompt_takes_the_pass_out_of_the_preview():
+    """A Cancel answers the prompt: the pass that will never run is not left in the preview."""
+    lab = ServoLab()
+    shown = []
+    request = lab.servo_request(preview=lambda route, basis, seconds: shown.append(route))
+    result = execute(lab, request, False)
+    assert result.status == CANCELLED and lab.published() == 0
+    assert shown[0] is not None and shown[-1] is None and len(shown) == 2
+
+
+def test_a_dry_run_leaves_the_preview_alone():
+    """A dry run's plan comes back to the step panel, so nothing may drop it from the preview."""
+    lab = ServoLab()
+    lab.plugin.request_dry_run(True)
+    shown = []
+    request = replace(lab.step_request(), preview=lambda *args: shown.append(args))
+    result = execute(lab, request, True, True)
+    assert result.status == DRY_RUN and shown == []

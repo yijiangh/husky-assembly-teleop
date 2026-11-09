@@ -43,7 +43,7 @@ from ..drive import drive_folder, environment, folder_name
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..plugin_api.trace import Signal
-from ..shared.mocap_bars_contract import BarMeasurement
+from ..shared.mocap_bars_contract import MOCAP_TAB, BarMeasurement
 from ..shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH
 from ..shared.recordings.runs import run_folder, save_recording, write_description
 from ..ui.quaternion import quaternion_to_wxyz
@@ -137,6 +137,7 @@ class MocapBarsPlugin(HuskyPlugin):
     """Fits every process bar's markers to its tracked Motive asset and measures its deviation from the plan."""
 
     name = "mocap_bars"
+    tab_path = (MOCAP_TAB, "Bars")
     icon = viser.Icon.RULER_2
     requires = ("process",)
     experimental = True

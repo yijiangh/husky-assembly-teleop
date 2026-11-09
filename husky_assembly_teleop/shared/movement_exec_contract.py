@@ -116,12 +116,14 @@ class ExecRequest:
         label: Names the request, e.g. the primary movement's id.
         ignore_built: Reads the requester's "Ignore built bars" now, so a plan made otherwise is refused as stale;
             by default not ticked.
-        obstacles_collide: Reads the process plugin's "Rhino obstacles collide" now, likewise; by default ticked.
+        obstacles_collide: Reads whether the process's "Rhino obstacles" collide now, likewise; by default ticked.
         transfer_as_free: Reads the process plugin's "Transfer workaround" now, likewise; by default ticked.
         unknown_robots: Ids of the other robots the operator let be unknown (Exec's second press, `CommitConfirm`):
             left out of the freeze and of the check that nothing else moves.
         clearance: Exec's Clearance box: whether a motion along the plan runs under a clearance (`ARM_MOVE`); by
             default ticked.
+        preview: Shows the motion the open Confirm starts as (route, basis, seconds), or none with (None, None, 0.0),
+            so the requester's preview never shows a path that is not next.
     """
 
     loaded: LoadedProcess
@@ -140,6 +142,7 @@ class ExecRequest:
     transfer_as_free: Callable[[], bool] = lambda: True
     unknown_robots: frozenset[str] = frozenset()
     clearance: bool = True
+    preview: Callable[[RouteResult | None, PlanBasis | None, float], None] = lambda *_: None
 
 
 @dataclass(frozen=True)
@@ -170,7 +173,7 @@ class ExecResult:
 
 @dataclass(frozen=True)
 class Carried:
-    """The mocap bar correction a transfer's servo leaves for its insert's plan (`servo.carried_insert_goals`).
+    """The correction a transfer's servo leaves for its insert's plan (`servo.carried_insert_goals`).
 
     Attributes:
         loaded: The loaded process it was measured on, compared by identity.
@@ -207,7 +210,7 @@ class MovementExecContract(Protocol):
 
     @property
     def carried(self) -> Carried | None:
-        """Carried | None: What the last transfer's bar servo left for its insert's plan.
+        """Carried | None: What the last transfer's servo left for its insert's plan.
 
         None once that transfer runs again, another action starts, or the process is loaded again.
         """
@@ -223,9 +226,6 @@ class MovementExecContract(Protocol):
 
     def request_as_built(self) -> None:
         """Measure every MoCap bar now and append an as-built record (phase "manual"), outside a request too."""
-
-    def request_build_page(self) -> None:
-        """Build today's as-built page from the records so far (a subprocess on a thread) and serve it."""
 
     def request_dry_run(self, on: bool) -> None:
         """Turn the dry run on or off; refused while a request runs."""

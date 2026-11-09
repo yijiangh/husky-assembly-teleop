@@ -272,6 +272,25 @@ def test_the_path_ghost_stays_while_there_is_a_plan_whatever_the_panel_was_last_
     assert calls == ["path hidden"]
 
 
+def test_exec_shows_the_motion_its_confirm_starts_and_then_nothing():
+    """A servo pass replaces the plan in the preview at its own time, at its end; None empties the preview."""
+    lab = Steps(("B20_J", 3))
+    asyncio.run(lab.plan())
+    plugin = lab.plugin
+    route, basis, key = plugin.route, plugin._basis, plugin._key
+    plugin.traj_time = 10.0
+    plugin._preview_motion(key, None, None, 0.0)
+    assert plugin.path is None and plugin.route is None and plugin._basis is None
+    plugin._preview_motion(key, route, basis, 3.0)
+    assert plugin.route is route and plugin._basis is basis and plugin._path_serial == plugin.serial
+    assert plugin._t == plugin.path.duration and not plugin._playing
+    timed_at_three = plugin.path.duration
+    plugin._preview_motion((*key[:2], "another step", key[3]), None, None, 0.0)
+    assert plugin.path is not None, "another step's Exec leaves this step's preview alone"
+    plugin._preview_motion(key, None, None, 0.0)
+    assert plugin.path is None and timed_at_three > 0.0
+
+
 def test_toggling_the_workaround_moves_to_the_steps_primary():
     """B20_J at its travel to load without the workaround; ticked in the process panel, the transfer is current."""
     lab = Steps(("B20_J", 0), transfer_as_free=False)
@@ -304,6 +323,7 @@ def test_plan_on_a_movement_with_nothing_to_plan_moves_on_and_plans_nothing():
     assert lab.planner.plans == [] and lab.run.selected == [("B20_R", 1)]
     assert lab.plugin._message == "B20_R_ungrasp: nothing to plan; moved on to B20_R_retreat: click Plan again"
     lab.update()
+    assert lab.plugin._message == "B20_R_ungrasp: nothing to plan; moved on to B20_R_retreat: click Plan again"
     asyncio.run(lab.plan())
     assert [plan.step.movement.id for plan in lab.planner.plans] == ["B20_R_retreat"]
     for selected, following in ((2, 4), (0, 3)):
@@ -484,6 +504,17 @@ def test_the_last_step_suggests_mark_done():
     assert "every step of B35_H done: Mark done below" in lab.html() and lab.run.marked == []
 
 
+def test_the_panels_line_goes_with_its_step():
+    """A refusal stays while the step does, and a new step starts without it."""
+    lab = Steps(("B20_R", 2))
+    lab.plugin._commit(lab.ctx)
+    lab.update()
+    assert "Plan first" in lab.plugin._message and lab.plugin._message_failed
+    lab.run.request_set_current("B20_R", 0)
+    lab.update()
+    assert lab.plugin._message == "" and not lab.plugin._message_failed
+
+
 @pytest.mark.safety
 def test_exec_needs_a_ready_plan_and_uses_it_once():
     """No plan: nothing to Exec. A plan goes with Exec once; a dry run gives it back, a real run clears it."""
@@ -600,7 +631,7 @@ def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch
         *carried["robots/cindy/left_ur_arm_tool0"].position, *carried["robots/cindy/left_ur_arm_tool0"].orientation])
     lines = [line for line in lab.ctx.lines("info") if line.startswith("[insert plan]")]
     line, = lines
-    assert line.startswith("[insert plan] mocap bar correction carried: B20_J_insert left goal ")
+    assert line.startswith("[insert plan] servo correction carried: B20_J_insert left goal ")
     assert line.endswith(" from the authored end")
 
 

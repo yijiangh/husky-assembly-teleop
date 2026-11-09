@@ -9,12 +9,13 @@ robot). Who may command a robot is the robot lease's job (`robot_interface/robot
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Collection
+from typing import TYPE_CHECKING, Any, Callable, Collection
 
 from ...config import short_serial
 from ...robot_interface.arm import JOINT_STATE_MAX_AGE
 
 if TYPE_CHECKING:
+    from ...plugin_api.context import PluginContext
     from ...robot_interface.arm import ArmInterface
     from ...robot_interface.base import BaseState
     from ...robot_interface.robot import HuskyRobotInterface
@@ -107,3 +108,37 @@ def base_moving(state: BaseState, label: str, now: float) -> str:
     if any(abs(speed) > WHEEL_MOVING for speed in state.wheel_velocities.values()):
         return f"{label} is driving"
     return ""
+
+
+def ask_relay(ctx: PluginContext, what: str, refused: str, call: Callable[[], Any],
+              show: Callable[[str, bool], None]) -> None:
+    """Call one of the relay's services that move every pose, unless anything moves; log and show its answer.
+
+    Args:
+        ctx: The plugin's context.
+        what: The request, for the log, e.g. "use refit".
+        refused: What to say when it is not sent, e.g. "refit not used".
+        call: Sends the request and returns its future, or None if the relay does not answer.
+        show: Takes the text to show and whether it went well.
+    """
+    why = moving_reason(ctx.world, ctx.now())
+    future = None if why else call()
+    if why or future is None:
+        text = (f"{refused}: {why}; every pose changes, so only while nothing moves" if why
+                else f"{refused}: the mocap relay does not answer")
+        ctx.log_warn(text)
+        show(text, False)
+        return
+    ctx.spawn(what, _relay_answered(ctx, what, future, show))
+
+
+async def _relay_answered(ctx: PluginContext, what: str, future: Any, show: Callable[[str, bool], None]) -> None:
+    """Log and show the relay's answer to `ask_relay`, or why there is none."""
+    try:
+        response = await ctx.ros(future)
+    except Exception as error:  # * The service call itself failed: say so, else the line keeps its old text.
+        ctx.log_warn(f"{what} failed: {error!r}")
+        show(f"{what} failed: {error!r}", False)
+        return
+    show(response.message, response.success)
+    (ctx.log_info if response.success else ctx.log_warn)(f"{what}: {response.message}")

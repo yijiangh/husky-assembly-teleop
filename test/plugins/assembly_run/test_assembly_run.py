@@ -18,11 +18,9 @@ from husky_assembly_teleop.plugins.assembly_run.plugin import AssemblyRunPlugin
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.plugins.process.placement import placed
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, take_lease
-from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.assembly_planning.steps import first_step
 from husky_assembly_teleop.shared.execution.basis import basis_of, stale_reason
-from husky_assembly_teleop.shared.movement_exec_contract import INSERT_PART, PartPlan, part_plan
 from husky_assembly_teleop.shared.process_contract import Selection
 from husky_assembly_teleop.shared.runs.runs import (ASSUMED, DONE, LIVE, PENDING, RunSettings, find_runs, read_events,
                                                     read_run)
@@ -889,6 +887,26 @@ def test_a_step_started_while_waiting_for_a_live_robot_stops_the_automatic_selec
     assert "Select refused: 0804 is leased by movement_exec" in plugin._message
 
 
+def test_a_refusal_goes_once_the_current_step_changes(tmp_path):
+    """Select refused while the executor leases a robot; given back, the selection that works takes the refusal away."""
+    lab = Lab(tmp_path, alice=True)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        lab.moving(ALICE, False)
+        plugin.request_mark_done()
+        await settle(plugin)
+        lease = lab.lease_to_exec("a200-0804")
+        plugin.request_set_current("B1_J_joint")
+        assert "Select refused" in plugin._message and plugin._failed
+        lease.release()
+        plugin.request_set_current("B1_J_joint")
+        assert plugin._message == "" and not plugin._failed
+        await settle(plugin)
+
+    asyncio.run(scenario())
+
+
 def test_an_arm_moving_before_the_second_click_refuses_the_mark(tmp_path):
     """Cindy not live: the first click asks for a second; her arm starts moving meanwhile, so the second is refused."""
     lab = Lab(tmp_path, live_from=None)
@@ -1045,10 +1063,11 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
 
 
 @pytest.mark.safety
-def test_the_spiral_box_is_greyed_unless_the_steps_insert_has_two_mating_joints(tmp_path, monkeypatch):
-    """The Spiral box is greyed at start, on a by-hand step and on a one-tool insert, shown unticked, the setting kept.
+def test_the_spiral_box_is_greyed_on_a_ground_bars_action_and_live_on_any_other(tmp_path):
+    """The Spiral box is greyed at start and on a ground bar's action, shown unticked, the setting kept.
 
-    With the step's part a two-tool insert it is live and shows the setting, and a click on it reaches the plugin.
+    On an action that tightens a joint screw it is live from its first step, shows the setting, and a click on it
+    reaches the plugin.
     """
     lab = Lab(tmp_path)
 
@@ -1059,20 +1078,41 @@ def test_the_spiral_box_is_greyed_unless_the_steps_insert_has_two_mating_joints(
         plugin.request_settings(spiral=True)
         await settle(plugin)
         plugin.draw(lab.ctx)
-        assert plugin.view.current == ("B1_J_joint", 0)  # the mount, by hand
+        assert plugin.view.current == ("B1_J_joint", 0)  # B1 stands on its ground half
         assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (True, False, True)
-        plugin.request_set_current("B1_J_joint", 2)  # the insert, one tool
-        plugin.draw(lab.ctx)
-        assert len(part_plan(plugin.view.process, "B1_J_joint", 2, lab.ctx.config.robots, True).tools) < 2
-        assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (True, False, True)
-        two_tools = PartPlan(2, "B1_M2_insert", Routine.INSERT, INSERT_PART, ("left_ur_arm", "right_ur_arm"), "insert")
-        monkeypatch.setattr("husky_assembly_teleop.plugins.assembly_run.plugin.part_plan", lambda *_args: two_tools)
+        plugin.request_set_current("B2_J_joint", 0)  # B2 mates with B1's joint
         plugin.draw(lab.ctx)
         assert (panel._spiral.disabled, panel._spiral.value) == (False, True)
         panel._spiral.callback(False)
         await settle(plugin)
         plugin.draw(lab.ctx)
         assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (False, False, False)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.safety
+def test_the_servo_box_is_live_only_on_a_ground_bars_action(tmp_path):
+    """Servo by bar is greyed at start and on a bar that mates with its joints, shown unticked, the setting kept.
+
+    On the ground bar's action it is live and ticked (its default), and a click on it reaches the plugin.
+    """
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        panel = plugin._panel = RunPanel(lab.ctx, plugin)
+        assert panel._servo.disabled
+        plugin.request_set_current("B2_J_joint", 0)  # B2 mates with B1's joint
+        plugin.draw(lab.ctx)
+        assert (panel._servo.disabled, panel._servo.value, plugin.view.settings.servo_by_bar) == (True, False, True)
+        plugin.request_set_current("B1_J_joint", 0)  # B1 stands on its ground half
+        plugin.draw(lab.ctx)
+        assert (panel._servo.disabled, panel._servo.value) == (False, True)
+        panel._servo.callback(False)
+        await settle(plugin)
+        plugin.draw(lab.ctx)
+        assert (panel._servo.disabled, panel._servo.value, plugin.view.settings.servo_by_bar) == (False, False, False)
 
     asyncio.run(scenario())
 

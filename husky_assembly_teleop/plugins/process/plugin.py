@@ -22,12 +22,14 @@ stays. `process` is the placed process, `authored` the one read. Apply is refuse
 while a step runs; the run keeps the placement and puts it back when it opens (`request_placement`). A new process
 loads at its authored place.
 
-The "Rhino obstacles collide" box (off at start) decides whether the process's obstacles ("obstacles/<name>")
-count in every collision check; while off they are disabled scene bodies, drawn see-through by the overlay.
+The "Rhino obstacles" list (ghost at start) says what becomes of the process's obstacles ("obstacles/<name>"): disable
+hides them, ghost draws them see-through by the overlay, collide counts them in every collision check. Unless they
+collide they are disabled scene bodies.
 
 The panel is the top of the side panel's Assembly tab (`shared/assembly_tab/layout.py`), above the steps planned and
 run from it. It lists a window of the schedule's actions around the selected one (`action_window`); click a row to
-jump. The selected action's movements are buttons coloured by kind, the selected one ringed: click one to select it.
+jump, or scroll it a page with ▲ ▼ until the selection changes. The selected action's movements are buttons coloured by
+kind, the selected one ringed: click one to select it.
 Each row shows the mark the run gives its action (`request_marks`: pending, done, done with its end assumed). After a
 Live IK or a plan, the action's later movements are drawn with the joints found, on the live base they were found at,
 and the panel turns to the target of the movement they are for (`request_carry`); the drawing only.
@@ -59,7 +61,7 @@ from ...colors import INK, rgb
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...shared.assembly_tab.layout import ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
+from ...shared.assembly_tab.layout import ACTIONS_BAND, ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
 from ...ui.css import group_buttons, group_tooltips_css, one_row_css
 from ...ui.pose_input import PoseInput
 from ...ui.style import (BUSY, CURRENT, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line,
@@ -70,7 +72,7 @@ from scaffolding_assembly_core.legacy.timing import Stopwatch
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.process import Action, Movement, Process, State, assumed_start_all, joints_at
 from scaffolding_assembly_core.process.scenes import process_model
-from ...shared.process_contract import MARK_ASSUMED, MARK_DONE, Carry, Selection
+from ...shared.process_contract import DEFAULT_RHINO_FILE, MARK_ASSUMED, MARK_DONE, RHINO_FOLDER, Carry, Selection
 from ...shared.assembly_planning.labels import Kind, MovementLabel, label_movement
 from ...shared.assembly_planning.movement import mating_drives
 from ...shared.assembly_planning.steps import as_run
@@ -78,7 +80,7 @@ from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
 from ...shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH
 from .drawing import ProcessDrawing, bar_lines, load_robot_models
-from .loading import load_process, process_folders
+from .loading import load_process, process_folders, rhino_files
 from .placement import IDENTITY, is_identity, off_floor, placed, placement_text
 
 if TYPE_CHECKING:
@@ -102,7 +104,10 @@ TRANSFER_AS_FREE = True
 
 #: Whether the process's obstacles from Rhino count in collision checks when the monitor starts.
 #: ! Off: they were never measured (the cabinet stands 0.38 m off); the `obstacles` plugin's measured ones are the room.
-OBSTACLES_COLLIDE = False
+#: The "Rhino obstacles" list: not shown, shown see-through and left out of collision checks, counted in them.
+OBSTACLES_DISABLE, OBSTACLES_GHOST, OBSTACLES_COLLIDE = "disable", "ghost", "collide"
+#: The Rhino file list's entry for no room on the as-built page.
+NO_RHINO_FILE = "(no room)"
 
 #: Scene ids of the `obstacles` plugin's measured obstacles; not the process's own "process/obstacles/…".
 MEASURED_PREFIX = "obstacles/"
@@ -200,8 +205,10 @@ class ProcessPlugin(HuskyPlugin):
         #: Show the robot at the movement's target instead of its start.
         self.at_target = False
 
-        #: Whether the process's obstacles count in collision checks (`ProcessContract.obstacles_collide`).
-        self.obstacles_collide = OBSTACLES_COLLIDE
+        #: What becomes of the process's obstacles: one of the "Rhino obstacles" list's entries.
+        self.obstacles_mode = OBSTACLES_GHOST
+        #: The Rhino file chosen as the as-built page's room (`ProcessContract.rhino_file`).
+        self.rhino_file: Path | None = None
         # Why the last "Transfer workaround" change was refused, and when (ROS time); "" after a change it made.
         self._transfer_refused, self._transfer_refused_at = "", 0.0
         # The loaded process's obstacles from Rhino, by process id (`process_obstacles`).
@@ -228,17 +235,16 @@ class ProcessPlugin(HuskyPlugin):
         self._models: dict = {}
         #: The process's viser nodes, built after a load; None until built.
         self._drawing: ProcessDrawing | None = None
-        self._visible = True
-        #: Draw the overlay see-through; on at start (View Ghost toggles it), so the real robots show through it.
-        self._ghost = True
-        #: Draw every bar's pink line and name at its assembly pose (View's "Rhino bar lines" box); off at start.
-        self._bar_lines = False
-        # Overlay the bodies that do not stand in the state (absent ones) too.
-        self._everything = False
+        #: The panel's boxes: the overlay drawn ("Process overlay"), its robots see-through ("Ghost robots", so the
+        #: real robots show through), with the bodies that do not stand in the state ("Unbuilt bars"), and every
+        #: bar's pink line and name at its assembly pose ("Rhino bar lines").
+        self._visible, self._ghost, self._everything, self._bar_lines = True, True, False, False
         # True when the drawing is out of date and draw must re-pose it.
         self._stale = True
         # Schedule index of the action list's top row, as last drawn; clicks on a row are read against it.
         self._window_start = 0
+        # The `revision` the operator last scrolled the action list at: until it changes, the list stays where it is.
+        self._scrolled_at = -1
         # The `revision` the scene's obstacles were last put for.
         self._scene_revision = -1
         # What `selection` last returned, kept while nothing in it changes.
@@ -291,15 +297,24 @@ class ProcessPlugin(HuskyPlugin):
                                                  "first; an old export is converted into <export>_process next to it")
             load = gui.add_button("Load", hint="Load the folder picked above; an old export is converted first "
                                                "(about 15 s) unless its <export>_process copy is up to date")
+            rhino = rhino_files(ctx.config.drive_root)
+            chosen = DEFAULT_RHINO_FILE if DEFAULT_RHINO_FILE in rhino else NO_RHINO_FILE
+            self._rhino = gui.add_dropdown("Rhino file", [NO_RHINO_FILE, *rhino], initial_value=chosen,
+                                           hint=f"The Rhino file in \"{RHINO_FOLDER}\" this process was built in, as "
+                                                "the monitor started, newest first: its environment layer is the "
+                                                "room on the as-built page. Only the page reads it.")
+            self._choose_rhino(ctx, chosen)
             self._transfer = gui.add_checkbox("Transfer workaround", initial_value=TRANSFER_AS_FREE,
                                               hint="Run the transfer as a free move with empty tools to the insert "
                                                    "start; you place the bar there. Lists and draws each jointing "
                                                    "action in that order. Replan after a change.")
-            self._collide = gui.add_checkbox("Rhino obstacles collide", initial_value=OBSTACLES_COLLIDE,
-                                             hint="Count the process's obstacles from Rhino (e.g. the cabinet) in "
-                                                  "every collision check: base and arm planners, clearances, "
-                                                  "assembly planning. Off: drawn see-through only; the measured "
-                                                  "obstacles (obstacles plugin) still count. Replan after a change.")
+            self._rhino_obstacles = gui.add_dropdown(
+                "Rhino obstacles", [OBSTACLES_DISABLE, OBSTACLES_GHOST, OBSTACLES_COLLIDE],
+                initial_value=OBSTACLES_GHOST,
+                hint="The process's obstacles from Rhino (e.g. the cabinet). disable: not shown, not checked. ghost: "
+                     "drawn see-through, not checked. collide: counted in every collision check: base and arm "
+                     "planners, clearances, assembly planning. The measured obstacles (obstacles plugin) always "
+                     "count. Replan after a change to or from collide.")
             # ! Always one line, so nothing below it moves.
             self._collide_status = gui.add_html("")
             gui.add_html(section("build", SECTION_CTRL))
@@ -311,20 +326,32 @@ class ProcessPlugin(HuskyPlugin):
                                                  "an action is marked done, or while a step runs. Replan after.")
             # ! Always one line, so nothing below it moves.
             self._placement_status = gui.add_html("")
+        # * assembly_run's RUN band sits between the process and its actions (`layout.py`).
+        with ctx.view.ui(band=ACTIONS_BAND) as gui:
             self._actions_title = gui.add_html(section("actions", SECTION_CTRL))
             # * A window of the schedule that follows the selection: click a row to jump to that action.
             self._action_rows = [gui.add_button("·", color=rgb(NONE)) for _ in range(ACTION_ROWS)]
+            scroll = gui.add_button_group("Scroll", ["▲", "▼"],
+                                          hint="Scroll the list a page up or down; the selection stays, and the list "
+                                               "follows it again once it changes")
             gui.add_html(section("step", SECTION_CTRL))
             self._slider = gui.add_slider("Step", min=0, max=1, step=1, initial_value=0)
             go = gui.add_button_group("Go", ["◀ action", "◀ mv", "mv ▶", "action ▶"],
                                       hint="Previous / next movement, or jump to the previous / next action")
             show = gui.add_button_group("Show", ["Start", "Target"],
                                         hint="The robot at the movement's start state, or at its target configuration")
-            view = gui.add_button_group("View", ["Hide", "Ghost", "All"],
-                                        hint="Hide / show the overlay (robots, tools, held bodies, and the Rhino "
-                                             "obstacles while they don't collide; other standing bodies are scene "
-                                             "bodies, always drawn); ghost (on at start) makes it see-through; all "
-                                             "also overlays absent bodies, see-through")
+            # * What the process draws over the live scene at the selected movement; standing bodies are always drawn.
+            overlay = gui.add_checkbox("Process overlay", initial_value=True,
+                                       hint="Draw the process at this movement over the live scene: the planned "
+                                            "robots in blue with their tools and the bars they hold, and the Rhino "
+                                            "obstacles while they don't collide. Off: the live scene only")
+            ghost = gui.add_checkbox("Ghost robots", initial_value=True,
+                                     hint="The blue planned robots, their tools and the bars they hold: see-through "
+                                          "when ticked, so the real robots show through; solid when not. The Rhino "
+                                          "obstacles and unbuilt bars are always see-through")
+            unbuilt = gui.add_checkbox("Unbuilt bars", initial_value=False,
+                                       hint="Also draw the bars not built yet at this movement, with their joints, "
+                                            "see-through")
             bar_lines = gui.add_checkbox("Rhino bar lines", initial_value=False,
                                          hint="Every bar's centre line and name, pink, where the design puts it "
                                               "once built: a ruler of the Rhino poses.")
@@ -348,9 +375,10 @@ class ProcessPlugin(HuskyPlugin):
         self._transfer.on_update(ctx.defer_value("Transfer workaround",
                                                  lambda value: self.set_transfer_as_free(ctx, bool(value)),
                                                  operator_only=True))
-        self._collide.on_update(ctx.defer_value("Rhino obstacles collide",
-                                                lambda value: self.set_obstacles_collide(ctx, bool(value)),
-                                                operator_only=True))
+        self._rhino.on_update(ctx.defer_value("Rhino file", lambda name: self._choose_rhino(ctx, str(name))))
+        self._rhino_obstacles.on_update(ctx.defer_value("Rhino obstacles",
+                                                        lambda value: self.set_obstacles_mode(ctx, str(value)),
+                                                        operator_only=True))
         # ! Operator drags only: draw writes the slider back, and viser calls back for that too, late, which could
         #   select an older movement after quick clicks on ◀ mv / mv ▶.
         self._slider.on_update(ctx.defer_value("select step", lambda value: self.select(int(value)),
@@ -358,10 +386,12 @@ class ProcessPlugin(HuskyPlugin):
         go.on_click(ctx.defer_value("step button", self._on_go))
         self._moves.on_click(ctx.defer_value("select movement", lambda code: self._on_movement(str(code))))
         show.on_click(ctx.defer_value("show", lambda label: self._set_at_target(label == "Target")))
-        view.on_click(ctx.defer_value("view", self._on_view))
+        for box, name in ((overlay, "_visible"), (ghost, "_ghost"), (unbuilt, "_everything")):
+            box.on_update(ctx.defer_value(box.label, lambda value, name=name: self._set_view(name, bool(value))))
         bar_lines.on_update(ctx.defer_value("Rhino bar lines", lambda value: setattr(self, "_bar_lines", bool(value))))
         for row, button in enumerate(self._action_rows):
             button.on_click(ctx.defer("select action", lambda row=row: self._on_action_row(row)))
+        scroll.on_click(ctx.defer_value("scroll actions", self._on_scroll))
 
     # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
 
@@ -466,6 +496,11 @@ class ProcessPlugin(HuskyPlugin):
         ctx.log_info("Transfer workaround on: jointing actions shown and run transit, place, grasp, insert" if on
                      else "Transfer workaround off: jointing actions as authored")
 
+    def _choose_rhino(self, ctx: PluginContext, name: str) -> None:
+        """Keep the path of the Rhino file picked; nothing else reads the list."""
+        root = ctx.config.drive_root
+        self.rhino_file = None if name == NO_RHINO_FILE or root is None else Path(root) / RHINO_FOLDER / name
+
     def apply_placement(self, ctx: PluginContext, placement: Pose) -> None:
         """The build box's Apply: place the build, unless an action is marked done or a step runs.
 
@@ -507,20 +542,30 @@ class ProcessPlugin(HuskyPlugin):
         lifted = " (off the floor plane: robot bases stay on the floor, the arms reach the targets by live IK)"
         ctx.log_info(f"build placed at {placement_text(placement)}{lifted if off_floor(placement) else ''}; replan")
 
-    def set_obstacles_collide(self, ctx: PluginContext, collide: bool) -> None:
-        """Count the process's obstacles in every collision check, or leave them out; the scene bodies are put again.
+    @property
+    def obstacles_collide(self) -> bool:
+        """bool: Whether the process's obstacles count in collision checks (`ProcessContract.obstacles_collide`)."""
+        return self.obstacles_mode == OBSTACLES_COLLIDE
+
+    def set_obstacles_mode(self, ctx: PluginContext, mode: str) -> None:
+        """Hide the process's obstacles, draw them see-through, or count them in every collision check.
 
         Args:
             ctx: This plugin's context.
-            collide: Whether they count.
+            mode: One of the "Rhino obstacles" list's entries.
         """
         # A repeated value (e.g. two clicks queued in one tick) changes nothing: the bodies are not put again.
-        if collide == self.obstacles_collide:
+        if mode == self.obstacles_mode:
             return
-        self.obstacles_collide = collide
-        self._changed()
-        ctx.log_info("Rhino obstacles now count in every collision check" if collide
-                     else "Rhino obstacles are drawn only: left out of every collision check; replan")
+        collided = self.obstacles_collide
+        self.obstacles_mode = mode
+        if self.obstacles_collide == collided:
+            self._stale = True  # * Only the drawing changes: the plans stand.
+        else:
+            self._changed()
+        ctx.log_info({OBSTACLES_COLLIDE: "Rhino obstacles now count in every collision check",
+                      OBSTACLES_GHOST: "Rhino obstacles are drawn only: left out of every collision check; replan",
+                      OBSTACLES_DISABLE: "Rhino obstacles are hidden: left out of every collision check; replan"}[mode])
 
     def _set_at_target(self, at_target: bool) -> None:
         """Show the start state, or the target."""
@@ -564,14 +609,16 @@ class ProcessPlugin(HuskyPlugin):
         if first is not None:
             self.select(first)
 
-    def _on_view(self, label: str) -> None:
-        """Toggle hiding or ghosting the overlay, or overlaying every body."""
-        if label == "Hide":
-            self._visible = not self._visible
-        elif label == "All":
-            self._everything = not self._everything
-        else:
-            self._ghost = not self._ghost  # `update` applies it, also to a drawing still being built
+    def _on_scroll(self, label: str) -> None:
+        """Scroll the action list a page up ("▲") or down ("▼"), the selection kept."""
+        count = len(self.process.schedule) if self.process is not None else 0
+        page = ACTION_ROWS if label == "▼" else -ACTION_ROWS
+        self._window_start = max(0, min(self._window_start + page, count - ACTION_ROWS))
+        self._scrolled_at = self.revision
+
+    def _set_view(self, name: str, on: bool) -> None:
+        """Turn a box of the overlay on or off: "_visible", "_ghost" or "_everything"; the next draw applies it."""
+        setattr(self, name, on)
         self._stale = True
 
     def _changed(self) -> None:
@@ -739,7 +786,7 @@ class ProcessPlugin(HuskyPlugin):
         """Pose the overlay from the selected state, and fill the panel."""
         self._status.content = self._status_html()
         self._transfer.value = self.transfer_as_free
-        self._collide.value = self.obstacles_collide
+        self._rhino_obstacles.value = self.obstacles_mode
         self._collide_status.content = self._collide_html(ctx)
         self._placement_status.content = self._placement_html(ctx)
         selected = self.selected
@@ -772,7 +819,8 @@ class ProcessPlugin(HuskyPlugin):
                 joints[carry.robot] = {**joints.get(carry.robot, {}), **carry.joints}
                 state = _with_base(state, carry.robot, carry.base)
             # * Left out of collision checks, the Rhino obstacles are drawn by the overlay, not the runtime.
-            drawing.show(state, joints, self._everything, frozenset() if self.obstacles_collide else self._obstacles)
+            drawing.show(state, joints, self._everything,
+                         self._obstacles if self.obstacles_mode == OBSTACLES_GHOST else frozenset())
         except Exception as failure:
             # ! A state that does not fit its process is a data problem: report it, do not raise.
             self._error = f"cannot draw {movement.id}: {type(failure).__name__}: {failure}"
@@ -789,7 +837,9 @@ class ProcessPlugin(HuskyPlugin):
         """
         count = len(self.process.schedule) if self.process is not None else 0
         current = self._action_of[self.index] if self._movements else 0
-        self._window_start = action_window(current, count)
+        # * Scrolled by the operator: kept until the process or the selection changes.
+        if self._scrolled_at != self.revision:
+            self._window_start = action_window(current, count)
         self._actions_title.content = section("actions", SECTION_CTRL, f"{current + 1}/{count}" if count else "")
         for row, button in enumerate(self._action_rows):
             index = self._window_start + row
@@ -864,7 +914,9 @@ class ProcessPlugin(HuskyPlugin):
         if self.obstacles_collide:
             chips += chip("Rhino obstacles collide", OK, "counted in every collision check")
         else:
-            chips += chip("Rhino obstacles: drawn only", NONE, "left out of every collision check")
+            chips += (chip("Rhino obstacles: drawn only", NONE, "left out of every collision check")
+                      if self.obstacles_mode == OBSTACLES_GHOST
+                      else chip("Rhino obstacles: hidden", NONE, "not shown, left out of every collision check"))
             if not any(body_id.startswith(MEASURED_PREFIX) for body_id in ctx.scene.snapshot.bodies):
                 chips += chip("room unchecked", FAIL, "no measured obstacles in the scene: add 'obstacles' to the "
                                                       "plugins, or nothing in the room is checked")

@@ -6,6 +6,7 @@ Pure: any thread, no ROS.
 - `servo_kind` / `servo_plan`: whether a step's primary movement gets a servo, and what it aims at (`ServoPlan`).
 - `flange_poses`, `tool0_errors`, `base_drift`, `wrench_magnitudes`, `force_vectors`, `tracking_gaps`: one reading.
 - `bar_reading`, `bar_on_target`, `bar_targets`: the held bar by mocap, and the flange targets corrected by it.
+- `held_targets`: the targets one rigid move of the held bar can reach, when steering by tool0.
 - `excursion`, `recommended_time`: how far a pass travels, and how long it should take.
 - `stop_after_move`: whether the loop is done, in the old order.
 - `carried_insert_goals`, `insert_end_gap`: the correction carried into the insert, and the gate after it.
@@ -59,6 +60,9 @@ MAX_FORCE_CHANGE = 20.0
 #: A ground bar's insert counts as finished, so the servo after it may run, when both flanges stand within this of its
 #: planned end, metres (`insert_end_gap`).
 GROUNDED_END_TOL = 0.003
+#: A flange further than this from its target after the best rigid move of the held bar gets a warning, metres: what
+#: is left is the flanges' relation differing from the design's, which no held move can change.
+HELD_LEFTOVER_WARN = 0.0005
 #: A later pass travelling further than this (its excursion) asks the operator first, radians.
 CONFIRM_TRAVEL = radians(5.0)
 #: Joint speed a move is timed for, radians per second, and the shortest move, seconds.
@@ -437,6 +441,36 @@ def bar_targets(T_corr: np.ndarray, flanges: Mapping[str, Pose]) -> dict[str, Po
     """
     T_corr = np.asarray(T_corr, dtype=float)
     return {flange: Pose.from_matrix(T_corr @ pose.matrix()) for flange, pose in flanges.items()}
+
+
+def held_targets(targets: Mapping[str, Pose], flanges: Mapping[str, Pose]) -> dict[str, Pose]:
+    """Flange id -> where the one rigid move that best fits the two targets takes it.
+
+    ! Use this to aim a held move by tool0: it follows one flange's target and keeps the flanges' relation, so aiming
+      at the authored targets corrects that flange's angle by swinging the far end of the bar.
+    - The positions come first: the line between the flanges lands on the line between the targets, middle on middle,
+      so a difference in span is shared by both ends.
+    - The turn about that line, which positions cannot see, is the mean of both flanges' angle errors.
+
+    Args:
+        targets: The two flanges' authored targets.
+        flanges: The two flanges' poses, of the same reading.
+    """
+    first, second = flanges
+    live = {flange: np.asarray(flanges[flange].position, dtype=float) for flange in flanges}
+    aimed = {flange: np.asarray(targets[flange].position, dtype=float) for flange in flanges}
+    span, aim = live[second] - live[first], aimed[second] - aimed[first]
+    span, aim = span / np.linalg.norm(span), aim / np.linalg.norm(aim)
+    cross = np.cross(span, aim)
+    size = float(np.linalg.norm(cross))
+    align = Rotation.from_rotvec(cross / size * np.arctan2(size, span @ aim) if size > 0.0 else np.zeros(3))
+    rotation = {flange: Rotation.from_quat(flanges[flange].orientation) for flange in flanges}
+    errors = [Rotation.from_quat(targets[flange].orientation) * (align * rotation[flange]).inv() for flange in flanges]
+    roll = np.mean([error.as_rotvec() @ aim for error in errors])
+    turn = Rotation.from_rotvec(aim * roll) * align
+    middle, aimed_middle = (live[first] + live[second]) / 2.0, (aimed[first] + aimed[second]) / 2.0
+    return {flange: Pose(tuple(map(float, aimed_middle + turn.apply(live[flange] - middle))),
+                         tuple(map(float, (turn * rotation[flange]).as_quat()))) for flange in flanges}
 
 
 # * ================================================================ the stop tests

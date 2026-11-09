@@ -31,6 +31,7 @@ class Prompt:
         text: The question.
         warn: Whether it is a warning (shown in orange, logged as a warning).
         opened_at: ROS time it was asked, seconds.
+        choose: Also ask in the warning window, whose buttons name what Confirm and Cancel do.
     """
 
     id: int
@@ -38,6 +39,7 @@ class Prompt:
     text: str
     warn: bool
     opened_at: float
+    choose: bool = False
 
     @property
     def line(self) -> str:
@@ -58,7 +60,7 @@ class PromptBox:
         self._count = 0
         self._answers: dict[int, bool] = {}
 
-    def ask(self, robot: str, text: str, now: float, warn: bool = False) -> Prompt:
+    def ask(self, robot: str, text: str, now: float, warn: bool = False, choose: bool = False) -> Prompt:
         """Open a prompt, replacing any other; earlier answers are dropped.
 
         Args:
@@ -66,12 +68,13 @@ class PromptBox:
             text: The question.
             now: ROS time, seconds.
             warn: Whether it is a warning.
+            choose: Also ask in the warning window.
 
         Returns:
             Prompt: The prompt; hand it to `wait`, or to `poll` each tick.
         """
         self._count += 1
-        self.current = Prompt(self._count, robot, text, warn, now)
+        self.current = Prompt(self._count, robot, text, warn, now, choose)
         self._answers.clear()
         return self.current
 

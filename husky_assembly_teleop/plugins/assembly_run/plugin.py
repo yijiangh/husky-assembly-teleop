@@ -35,9 +35,9 @@ from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.assembly_run_contract import RunView, first_pending, is_live
+from ...shared.assembly_planning.movement import mating_drives
 from ...shared.assembly_planning.process_steps import LoadedProcess, loaded_process
-from ...shared.execution.spiral import spiral_fits
-from ...shared.movement_exec_contract import INSERT_PART, current_step, part_plan
+from ...shared.movement_exec_contract import current_step
 from ...shared.process_contract import MARK_ASSUMED, MARK_DONE, MARK_PENDING
 from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, RunError, RunSettings, continue_run,
                                  file_hashes, find_runs, made_after, record_event, reopen, save_progress, with_current)
@@ -369,7 +369,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         if self._panel is not None:
             status = PanelStatus(self._run.info.name if self._run is not None else "", self.again,
                                  (self._message, self._failed), self._save_error, tuple(self.robot_lines(ctx)),
-                                 self._settings_refused, self._spiral_fits(ctx))
+                                 self._settings_refused, self._spiral_fits(ctx), self._servo_fits(ctx))
             self._panel.draw(self.view, status)
 
     def teardown(self, ctx: PluginContext) -> None:
@@ -408,14 +408,21 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         return lines
 
     def _spiral_fits(self, ctx: PluginContext) -> bool:
-        """Whether the current step's insert has two mating joints, so the Spiral box is live (`spiral_fits`)."""
-        transfer = ctx.require("process").transfer_as_free
-        found = current_step(self.view, transfer)
+        """Whether the current action tightens a joint screw, so the Spiral box is live: never a ground bar's."""
+        found = current_step(self.view, ctx.require("process").transfer_as_free)
         if found is None:
             return False
-        action, steps, index = found
-        part = part_plan(self.view.process, action, steps[index].primary, ctx.config.robots, transfer)
-        return part.kind == INSERT_PART and spiral_fits(part.tools)
+        process = self.view.process.process
+        return any("tighten" in mating_drives(process, movement).kept.values()
+                   for movement in process.actions[found[0]].movements)
+
+    def _servo_fits(self, ctx: PluginContext) -> bool:
+        """Whether the current action inserts a ground bar, the only bar the Servo by bar box applies to."""
+        found = current_step(self.view, ctx.require("process").transfer_as_free)
+        if found is None:
+            return False
+        process = self.view.process.process
+        return any(mating_drives(process, movement).grounded for movement in process.actions[found[0]].movements)
 
     # --- --- --- --- --- OPENING A PROCESS'S RUN --- --- --- --- ---
 

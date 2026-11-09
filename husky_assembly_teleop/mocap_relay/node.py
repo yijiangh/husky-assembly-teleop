@@ -77,7 +77,7 @@ from ..robot_interface.mocap_definitions import (MATCHES, OUT_OF_DATE, UNKNOWN, 
                                                  MocapCamera, anchors_json, camera_changes, cameras_json,
                                                  definition_check, definitions_json, match, read_cameras,
                                                  read_definitions)
-from ..robot_interface.mocap_relay import FAKE_MOTIVE, MOTIVE, TRUTH
+from ..robot_interface.mocap_relay import FAKE_MOTIVE, MOTIVE, STREAMING_IDS_SERVICE, TRUTH
 from ..world.calibration_sessions import (DESCRIBE_HEADER, Calibration, default_calibration_or_none, explain,
                                           newest_session_file, resolve, robot_mocap_ids, sessions_folder)
 from ..world.frame_follower import FrameEvent, FrameFollower
@@ -87,8 +87,6 @@ from .body_definitions import DescriptionClient, Reply
 from .frame_log import DEFAULT_FOLDER, FrameLog, frame_log_folder
 from .log_text import box, good, wrap
 
-#: The relay's service; whoever serves it is a running relay.
-STREAMING_IDS_SERVICE = "/mocap/get_streaming_ids"
 #: Seconds to look for another relay on the network before starting.
 #: ? The ROS graph fills in shortly after a node starts, so an immediate look can miss it.
 RELAY_DISCOVERY_SEC = 2.0

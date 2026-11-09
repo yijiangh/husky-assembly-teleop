@@ -12,6 +12,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Callable
 
+from crl_husky_msgs.srv import GetStreamingMocapIds
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
@@ -44,6 +45,8 @@ FRAME_TOPIC, USE_REFIT_SERVICE = "/mocap_relay/frame", "/mocap_relay/use_refit"
 RELOAD_FLOOR_SERVICE = "/mocap_relay/reload_floor_calibration"
 #: How Motive's frame moved, every look (JSON in a String, not latched; `FrameFollower.metrics`).
 METRICS_TOPIC = "/mocap_relay/frame_metrics"
+#: The relay's service naming the rigid bodies that stream now; whoever serves it is a running relay.
+STREAMING_IDS_SERVICE = "/mocap/get_streaming_ids"
 
 
 @dataclass(frozen=True)
@@ -176,6 +179,8 @@ class MocapRelayState:
         metrics_time: ROS time that look last arrived, seconds, or None before.
         drift: How far Motive's frame drifted by that look, or None before one.
         sources: Where each rigid body streams from now, by id: MOTIVE, FAKE_MOTIVE or TRUTH (`source`).
+        streaming_ids: The rigid bodies it last said stream now (`ask_streaming_ids`).
+        streaming_ids_time: ROS time it last said so, seconds, or None before.
     """
 
     calibrations: dict[int, AppliedCalibration] = field(default_factory=dict)
@@ -198,6 +203,8 @@ class MocapRelayState:
     metrics_time: float | None = None
     drift: FrameDrift | None = None
     sources: dict[int, str] = field(default_factory=dict)
+    streaming_ids: frozenset[int] = frozenset()
+    streaming_ids_time: float | None = None
 
     def source(self, mocap_id: int) -> str:
         """Where a rigid body streams from now: MOTIVE, FAKE_MOTIVE or TRUTH; one not heard of counts as the mode's.
@@ -298,7 +305,7 @@ class MocapRelayInterface:
         """
         self._ros = RosConnections(node)
         self._now = now
-        self._use_refit_client = self._reload_floor_client = None
+        self._use_refit_client = self._reload_floor_client = self._streaming_ids_client = None
         self._reload_base_clients = {}
         self.state = MocapRelayState()
         self._connect()
@@ -379,6 +386,30 @@ class MocapRelayInterface:
     def _on_frame(self, message: String) -> None:
         """Keep the relay's latest floor calibration announcement."""
         self.state.frame = floor_calibration_state(message.data)
+
+    def ask_streaming_ids(self) -> bool:
+        """Ask the relay which rigid bodies stream now; its answer lands in `state` a few ticks later.
+
+        Returns:
+            bool: Whether the request went out; False if the relay does not answer.
+        """
+        if self._streaming_ids_client is None:
+            self._streaming_ids_client = self._ros.client(GetStreamingMocapIds, STREAMING_IDS_SERVICE)
+        if not self._streaming_ids_client.service_is_ready():
+            return False
+        self._streaming_ids_client.call_async(GetStreamingMocapIds.Request()).add_done_callback(self._on_streaming_ids)
+        return True
+
+    def _on_streaming_ids(self, future) -> None:
+        """Keep the rigid bodies the relay says stream now; an answer that failed is skipped."""
+        try:
+            response = future.result()
+        except Exception:  # pylint: disable=broad-except
+            return  # the next request asks again
+        if response is None:
+            return
+        self.state.streaming_ids = frozenset(int(mocap_id) for mocap_id in response.ids)
+        self.state.streaming_ids_time = self._now()
 
     def use_refit(self):
         """Ask the relay to use the pending refit of the floor calibration: every pose it publishes moves by it.

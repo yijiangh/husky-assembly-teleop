@@ -370,9 +370,10 @@ def run_settings(job: Job) -> dict:
             "retreat_compliant": settings.retreat_compliant}
 
 
-def _ask(job: Job, movement: str, text: str, warn: bool) -> Prompt:
+def _ask(job: Job, movement: str, text: str, warn: bool, choose: bool = False) -> Prompt:
     """Open a prompt after the robot's name ("DRY RUN — " first in a dry run), log it and record it."""
-    prompt = job.prompts.ask(job.who, ("DRY RUN — " if job.dry_run else "") + text, job.ctx.now(), warn)
+    prompt = job.prompts.ask(job.who, ("DRY RUN — " if job.dry_run else "") + text, job.ctx.now(), warn,
+                             choose)
     (job.ctx.log_warn if warn else job.ctx.log_info)(f"waiting for Confirm: {prompt.line}")
     job.event("prompt", movement, {"text": prompt.line, "warn": warn})
     return prompt
@@ -413,7 +414,7 @@ class PartOperator:
         self.job.prompts.close(prompt)
 
 
-async def confirmed(job: Job, run: PartRun, text: str, warn: bool = False) -> bool:
+async def confirmed(job: Job, run: PartRun, text: str, warn: bool = False, choose: bool = False) -> bool:
     """Ask the operator and wait (no time limit); a Cancel ends the part as cancelled.
 
     Args:
@@ -421,12 +422,13 @@ async def confirmed(job: Job, run: PartRun, text: str, warn: bool = False) -> bo
         run: The part.
         text: The question, after the robot's name.
         warn: Ask as a warning.
+        choose: Also ask in the warning window.
 
     Returns:
         bool: True on Confirm.
     """
     ctx, movement = job.ctx, run.part.movement
-    prompt = _ask(job, movement, text, warn)
+    prompt = _ask(job, movement, text, warn, choose)
     if await job.prompts.wait(ctx, prompt):
         job.event("confirm", movement, {"text": prompt.line})
         return True

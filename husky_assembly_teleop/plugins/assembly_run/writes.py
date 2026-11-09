@@ -312,6 +312,8 @@ class RunWrites:
             write: Write progress.json now; False leaves it to the caller (a pick followed in the process panel is
                 written once the picking stops, `FOLLOW_SAVE_AFTER`).
         """
+        if self._failed and current != self._current:
+            self._say("")  # * a failure from the step before is over
         self._current = current
         if self._run is not None:
             self._run = with_current(self._run, current)

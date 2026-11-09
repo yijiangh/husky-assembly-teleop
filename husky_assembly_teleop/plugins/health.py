@@ -10,7 +10,10 @@ Green is fine, amber needs a look, red is broken or silent, blue is a fact to kn
 part's chips), grey has nothing to judge yet; hover a chip for detail.
 Loaded by default (config.DEFAULT_PLUGINS).
 
-! Checks never command or block: each is a pure function of measured state and the clock.
+A base's mocap chip staying amber opens a warning window (`MocapWatch`): Use refit where that helps, else Acknowledge.
+
+! Checks never command or block: each is a pure function of measured state and the clock. Only the operator's press
+  of Use refit asks the relay for anything.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import math
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from html import escape
 
 import numpy as np
 import viser
@@ -28,9 +32,11 @@ from sensor_msgs.msg import BatteryState
 from ur_dashboard_msgs.msg import RobotMode, SafetyMode
 
 from ..config import short_serial
-from ..colors import HUE_NAMES, INK, WHITE
+from ..colors import HUE_NAMES, INK, WHITE, rgb
 from ..plugin_api.context import PluginContext
-from ..world.base_mocap import applied_calibration, applied_frame, with_relay
+from ..shared.execution.moving import ask_relay
+from ..shared.guide.panel import set_changed
+from ..world.base_mocap import MocapWatch, applied_calibration, applied_frame, with_relay
 from ..world.mocap import mocap_check
 from ..world.tcp import tcp_check, tool0_by_kinematics
 from ..plugin_api.plugin import HuskyPlugin, register
@@ -43,13 +49,14 @@ from ..robot_interface.arm import SYNC_STATUS_MAX_AGE, ArmState
 from ..robot_interface.base import JOINT_STATES_RATE as BASE_RATE
 from ..robot_interface.base import BaseState
 from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManagerState
-from ..robot_interface.mocap_relay import AppliedCalibration, FloorCalibrationState
+from ..robot_interface.mocap_relay import FRAME_REFIT_PENDING, AppliedCalibration, FloorCalibrationState
 from ..robot_interface.refusal import Refusal
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
 from ..ui.css import full_row_css, group_buttons, group_tooltips_css
 from ..ui.phone import phone_text
-from ..ui.style import (FAIL, HOVER_MAX, LEVEL_COLORS, NONE, REFUSAL_SHOWN, SECTION_SENSOR, block, check_chip, chip,
-                        chip_line, hover, section)
+from ..ui.popup import Popup
+from ..ui.style import (BUSY, FAIL, HOVER_MAX, LEVEL_COLORS, NONE, REFUSAL_SHOWN, SECTION_SENSOR, block, check_chip,
+                        chip, chip_line, hover, note, section, warning)
 from ..world.checks import BAD, GOOD, INFO, PENDING, STALE_AFTER, WARN, Check
 
 # --- --- --- --- --- THRESHOLDS --- --- --- --- ---
@@ -173,6 +180,11 @@ class HealthPlugin(HuskyPlugin):
         #: Per line ("<serial> <base or arm>"), the signal chip shown and when it was last measured that bad, wall
         #: clock (`_hold_signal`).
         self._signals: dict[str, tuple[Check, float]] = {}
+        #: Which amber mocap chips ask (`MocapWatch`), what they ask now, the window asking, and its last answer's line.
+        self._mocap_watch = MocapWatch()
+        self._mocap_asking: dict[str, str] = {}
+        self._mocap_popup: Popup | None = None
+        self._mocap_note = ""
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the banner, one chip row and action buttons per robot, the objects row, and the same on the phone.
@@ -202,6 +214,40 @@ class HealthPlugin(HuskyPlugin):
             self._phone_banner = phone.add_html("")
         with ctx.view.phone("Health", viser.Icon.HEART_RATE_MONITOR) as phone:
             self._phone_rows = phone.add_html("")
+        self._mocap_popup = Popup(ctx.view, "Mocap amber", viser.Icon.ALERT_TRIANGLE,
+                                  {USE_REFIT: rgb(BUSY), ACKNOWLEDGE: None})
+        self._mocap_popup.buttons[USE_REFIT].on_click(ctx.defer("use refit", lambda: self._use_refit(ctx)))
+        self._mocap_popup.buttons[ACKNOWLEDGE].on_click(ctx.defer("acknowledge mocap", lambda: self._acknowledge(ctx)))
+
+    def _use_refit(self, ctx: PluginContext) -> None:
+        """Ask the relay to use its pending refit, unless anything moves; the window closes once the chips clear."""
+        ask_relay(ctx, "use refit", "refit not used", ctx.world.mocap_relay.use_refit, self._refit_answer)
+
+    def _refit_answer(self, text: str, _ok: bool) -> None:
+        """Keep the relay's answer, or why it was not asked, for the window."""
+        self._mocap_note = text
+
+    def _acknowledge(self, ctx: PluginContext) -> None:
+        """The operator saw it and decides what to do: keep quiet about these reasons, the chips stay amber."""
+        ctx.log_info("mocap amber acknowledged: " + "; ".join(f"{serial}: {why}"
+                                                              for serial, why in self._mocap_asking.items()))
+        self._mocap_watch.acknowledge()
+        self._mocap_asking = {}
+        self._show_mocap_popup(False)
+
+    def _show_mocap_popup(self, refit_pending: bool) -> None:
+        """Show what asks now in the warning window, or close it when nothing does."""
+        if not self._mocap_asking:
+            self._mocap_note = ""
+            if self._mocap_popup.is_open:
+                self._mocap_popup.close()
+            return
+        set_changed(self._mocap_popup.buttons[USE_REFIT], disabled=not refit_pending)
+        robots_by_reason: dict[str, list[str]] = {}
+        for serial, why in self._mocap_asking.items():
+            robots_by_reason.setdefault(why, []).append(serial)
+        text = "".join(warning(f"{escape(', '.join(names))}: {escape(why)}") for why, names in robots_by_reason.items())
+        self._mocap_popup.show(text + (note(escape(self._mocap_note), "inherit") if self._mocap_note else ""))
 
     def _park_css(self, serial: str, parked: bool) -> str:
         """The robot's buttons on one full-width row; Parked filled while it is parked, as a chosen option."""
@@ -274,6 +320,13 @@ class HealthPlugin(HuskyPlugin):
         for row, checks in [*lines, ("objects", self._object_checks)]:
             self._note_changes(row, checks, held)
         self._log_changes(ctx, held)
+        # * Here, not in draw: draw is skipped while the panels are frozen, and this must still show.
+        self._mocap_asking = self._mocap_watch.update(
+            {serial: chip for serial, lines in self._robot_checks.items() for name, checks in lines if name == "base"
+             for chip in checks if chip.label == "mocap" and ctx.world.robots[serial].config.mocap_id is not None},
+            held)
+        self._show_mocap_popup(relay is not None and relay.frame is not None
+                               and relay.frame.status == FRAME_REFIT_PENDING)
 
     def _hold_signal(self, row: str, check: Check, now: float) -> Check:
         """The signal chip to show for `row`: a worse level at once, a better one once it held for LOG_HOLD.
@@ -354,6 +407,8 @@ class HealthPlugin(HuskyPlugin):
         self._phone_rows.content = phone_text("".join(rows))
 
 
+#: The mocap warning window's buttons.
+USE_REFIT, ACKNOWLEDGE = "Use refit", "Acknowledge"
 #: Chip colours by level, for the log.
 LEVEL_NAMES = {level: HUE_NAMES[color] for level, color in LEVEL_COLORS.items()}
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from importlib.util import find_spec
 from types import SimpleNamespace
 
 import numpy as np
@@ -27,7 +28,8 @@ from scaffolding_assembly_core.geometry import Pose
 
 from repo_paths import DATA
 
-pytest.importorskip("rerun")
+# ! Not `pytest.importorskip`: with the ROS pytest plugins it skips the whole session, not this module.
+pytestmark = pytest.mark.skipif(find_spec("rerun") is None, reason="rerun-sdk not installed")
 
 CINDY = "a200-0806"
 #: Format 1's names the viewer special-cases, as a recording holds them. ! A rename fails here: it needs a FORMAT

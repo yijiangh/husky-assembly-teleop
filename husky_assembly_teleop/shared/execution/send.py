@@ -24,6 +24,7 @@ import numpy as np
 from ...config import short_serial
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.arm import JOINT_STATE_MAX_AGE
+from ...robot_interface.refusal import newest_reason
 from ...robot_interface.soft_stop import MotionRefused
 from ..assembly_planning.joints import arm_joint_names
 from .retime import retime
@@ -241,7 +242,8 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
     except MotionRefused as refused:
         return SendOutcome(REFUSED, f"{short_serial(serial)} refused the trajectory: {refused}; nothing sent")
     if not sent:
-        return SendOutcome(REFUSED, f"{short_serial(serial)} refused the trajectory (the log says why); nothing sent")
+        return SendOutcome(REFUSED, f"{short_serial(serial)} refused the trajectory: "
+                                    f"{newest_reason(*arms.values())}; nothing sent")
     started = ctx.now()
     ctx.log_info(f"{serial}: moving {', '.join(arms)}, {command.duration:.1f} s")
     if on_sent is not None:
@@ -316,8 +318,8 @@ def _dry_run(ctx: PluginContext, command: MotionCommand, arms: dict) -> SendOutc
     """Build each arm's trajectory, every check included, and say so loudly; send nothing."""
     for motion in command.arms:
         if arms[motion.arm].build_trajectory(motion.positions, command.duration, motion.velocities) is None:
-            return SendOutcome(REFUSED, f"{short_serial(command.serial)} {motion.arm} refused the trajectory (the log "
-                                        f"says why)")
+            return SendOutcome(REFUSED, f"{short_serial(command.serial)} {motion.arm} refused the trajectory: "
+                                        f"{newest_reason(arms[motion.arm])}")
     rule = "#" * 78
     for motion in command.arms:
         ctx.log_warn(f"\n{rule}\n##  DRY RUN {command.serial} {motion.arm}: passed every check, NOT SENT\n"

@@ -2,7 +2,7 @@
 # 80, this workspace and the Drive. Sourced by robot.sh, relay.sh, monitor.sh and check_robots.sh, and in the session's
 # checks pane.
 #
-# ! This reaches the real robots: a node started with it talks to them through this laptop's Zenoh router (crl-husky's
+# ! This reaches the real robots: a node started with it talks to them through this PC's Zenoh router (crl-husky's
 #   crl-zenoh-router service, manual 1.c). The fake lab (scripts/fake_lab/) has settings of its own.
 # ! Sourced, also into an interactive shell: no set -e here, and it works under set -u (a script's set -euo pipefail).
 
@@ -12,7 +12,7 @@ REAL_LAB_WS="$(cd "$REAL_LAB_REPO/../.." && pwd)"
 #: The logs of the monitor and the panes.
 REAL_LAB_HOME="${REAL_LAB_HOME:-$HOME/husky_real_lab}"
 #: The process the test uses, relative to the Drive root.
-REAL_LAB_PROCESS="data_design_study/261008_2ModulesDemo_purged_process"
+REAL_LAB_PROCESS="${REAL_LAB_PROCESS:-data_design_study/261103_SRD}"
 #: The Motive PC.
 REAL_LAB_MOTIVE="${REAL_LAB_MOTIVE:-192.168.0.28}"
 # * The Drive: REAL_LAB_DRIVE if set, else the Insync copy of the shared "2025-03 Husky Assembly" folder. The monitor
@@ -42,13 +42,13 @@ real_lab_robot() {
     ROBOT_NS="/a200_$ROBOT_SERIAL"
 }
 
-# Whether this laptop's Zenoh router listens: a node started without one waits for it, silently.
+# Whether this PC's Zenoh router listens: a node started without one waits for it, silently.
 real_lab_router_up() {
     ss -Htln 2>/dev/null | awk '$4 == "127.0.0.1:7447" {up = 1} END {exit !up}'
 }
 
 # * ROS: rmw_zenoh in the robots' domain, as every robot and control PC in the lab (crl-husky README, Zenoh). Nodes
-#   connect to this laptop's router on localhost:7447, rmw_zenoh's default.
+#   connect to this PC's router on localhost:7447, rmw_zenoh's default.
 export ROS_DOMAIN_ID=80 RMW_IMPLEMENTATION=rmw_zenoh_cpp
 unset ZENOH_CONFIG_OVERRIDE ZENOH_SESSION_CONFIG_URI
 

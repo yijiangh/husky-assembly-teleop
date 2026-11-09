@@ -348,7 +348,7 @@ def load_numbers(record: Mapping) -> dict | None:
 
 
 def options_of(record: Mapping) -> list[dict]:
-    """Each tick box that could change the step: how it was set and whether the step used it (the record says)."""
+    """Each tick box that could change the step: how it was set, if it was used, `shown` if it is about the step."""
     options, servo = record.get("options") or {}, record.get("servo")
     step = record.get("step") or {}
     routine, part_kind = step.get("routine"), (step.get("part") or {}).get("kind")
@@ -372,7 +372,7 @@ def options_of(record: Mapping) -> list[dict]:
     else:
         why = "no servo runs in this step"
     out.append({"key": "servo_bar", "box": by_bar.get("box"), "applies": runs_servo,
-                "used": used if runs_servo else False, "why": why, "shown": runs_servo or bool(by_bar.get("box"))})
+                "used": used if runs_servo else False, "why": why, "shown": runs_servo})
     spiral = options.get("spiral") or {}
     mode = options.get("insert_mode")
     if is_insert and spiral.get("used"):
@@ -386,7 +386,7 @@ def options_of(record: Mapping) -> list[dict]:
         why = ("this insert ran rigid all the way (a grounded bar): the box does not act on it" if is_insert
                else "the box acts on a screwed bar's insert only")
         entry = {"box": spiral.get("box"), "applies": False, "used": False, "why": why}
-    out.append({"key": "spiral", **entry, "shown": is_insert or bool(entry["box"])})
+    out.append({"key": "spiral", **entry, "shown": is_insert and part_kind != "servo"})
     for option in out:
         option["label"] = OPTION_BOXES[option["key"]]
     return out
@@ -536,6 +536,30 @@ def collect_assembly(day: str, problem: str, drive_root: Path, process_folder: P
     actions = timeline(process)
     print(f"[assembly] {len(records)} records from {path}; process {problem}, {len(actions)} actions, "
           f"{len(seats)} bars.")
+    history, checks = shape_records(records, actions, seats, models, process)
+    return {
+        "problem": problem, "day": day, "source_file": str(path),
+        "assembled": {bar_id: {"start": s["ends"][0], "end": s["ends"][1], "length": s["length"]}
+                      for bar_id, s in seats.items()},
+        "actions": actions, "history": history, "ball_check": checks,
+        "robot_models": models.payload() if models is not None else {}, "monitor_log": None,
+    }
+
+
+def shape_records(records: list[dict], actions: list[dict], seats: Mapping[str, Mapping],
+                  models: RobotModels | None = None, process=None) -> tuple[dict, dict]:
+    """Put every record, shaped with its numbers, under its action in `actions`, in the order given.
+
+    Args:
+        records: The day's records, oldest first.
+        actions: `timeline`'s actions; a record of no action listed is left out.
+        seats: `assembled_bars`: every bar's seat and length; a bar not listed is left out.
+        models: Draw the robots with these, or None.
+        process: The process the robots' models come from, needed with `models`.
+
+    Returns:
+        tuple: (every bar's history, the check of every bar's balls).
+    """
     history: dict = {}
     pairs_of_day: dict = {}
     placed: set = set()
@@ -582,7 +606,9 @@ def collect_assembly(day: str, problem: str, drive_root: Path, process_folder: P
             "stamp": record.get("stamp"), "time": (record.get("stamp") or "T")[11:19], "run_id": record.get("run_id"),
             "robot": (record.get("robot") or "").capitalize(), "redo": redo, "note": None,
             "step": {"index": step.get("index"), "movement_id": step.get("movement_id"), "kind": step.get("routine"),
-                     "phase": step.get("phase"), "outcome": step.get("outcome")},
+                     "part": (step.get("part") or {}).get("kind"), "phase": step.get("phase"),
+                     "outcome": step.get("outcome"), "reason": step.get("reason")},
+            "epoch": epoch, "settings": record.get("settings"),
             "milestone": next((b["milestone"] for b in bars if b["milestone"] not in (None, "bystander")), None),
             "bars": bars, "tool0": tool0, "tool0_worst": worst_tool0, "servo": servo,
             "load": load_numbers(record), "fk_note": (record.get("robot_state") or {}).get("fk_note"),
@@ -620,13 +646,7 @@ def collect_assembly(day: str, problem: str, drive_root: Path, process_folder: P
         ok = [r for r in action["records"] if r["step"]["outcome"] in (None, "ok")] or action["records"]
         values = [b.get("placement") for b in (ok[-1]["bars"] if ok else []) if b.get("placement") is not None]
         action["worst"] = max(values) if values else None
-    return {
-        "problem": problem, "day": day, "source_file": str(path),
-        "assembled": {bar_id: {"start": s["ends"][0], "end": s["ends"][1], "length": s["length"]}
-                      for bar_id, s in seats.items()},
-        "actions": actions, "history": history, "ball_check": checks,
-        "robot_models": models.payload() if models is not None else {}, "monitor_log": None,
-    }
+    return history, checks
 
 
 # * The step controls and their style, put into the shared page template (`page.write_page`).

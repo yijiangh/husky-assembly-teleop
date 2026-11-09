@@ -1,9 +1,10 @@
 # Real lab: the first three bars on Alice, Belle and Cindy
 
-Builds the first seven actions of `data_design_study/261008_2ModulesDemo_purged_process` (B20_J, B20_R, B21_J,
+Builds the first seven actions of `data_design_study/261103_SRD` (B20_J, B20_R, B21_J,
 B21_H, B21_R, B22_J, B22_R) with the monitor on a lab laptop. Cindy inserts B20, B21 and B22. Alice holds B21. Belle
 stays parked but is loaded so the planners know where she is. Practise it first in the fake lab
-([fake_lab_short_manual.md](fake_lab_short_manual.md)); the page and buttons are the same there.
+([fake_lab_short_manual.md](fake_lab_short_manual.md)); the page and buttons are the same there,
+but it runs the older `261008_2ModulesDemo_purged_process`: other base targets, no foundation step.
 
 Replace the placeholders in the commands with your own paths:
 
@@ -112,7 +113,7 @@ crl_ros_source 80 && ros2 topic list | grep -c a200 && ros2 topic echo --once /m
 **2.4 Monitor.** This is the README's assembly command, plus the base planner and the lab obstacles:
 
 ```bash
-crl_ros_source 80 && ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps robot_control base_planner_panel obstacles" process_directory:=data_design_study/261008_2ModulesDemo_purged_process
+crl_ros_source 80 && ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps doc robot_control base_planner_panel obstacles" process_directory:=data_design_study/261103_SRD
 ```
 
 To keep a log, append `2>&1 | tee -i ~/monitor_$(date +%F_%H%M).log`. Quit with one `Ctrl-C`, then wait: the plugins
@@ -135,10 +136,10 @@ hover a chip to see why it is not. Belle's `mocap` chip may stay amber (1.2 mm m
 
 ## 4. Set up
 
-1. Assembly › PROCESS: click **Load** once and wait 5–10 s. You should see `78 actions · 273 movements`. The amber
+1. Assembly › PROCESS: click **Load** once and wait 5–10 s. You should see `76 actions · 269 movements`. The amber
    `robots differ` chip is expected.
 2. Leave **Transfer workaround** ticked: Cindy moves her empty tools to the insert start, where you place the bar by
-   hand. Leave **Rhino obstacles collide** unticked.
+   hand. Leave **Rhino obstacles** on `ghost`.
 3. Settings: leave the defaults (**Insert split mm** 5, **Servo by bar** on, **Dry run** off).
 4. Each base's `ctrl` chip must be green. If it is not, click Control › robot › Base › **Controller: Vel**: the follower only
    drives with it.
@@ -160,7 +161,7 @@ afterwards. Do these without a bar, and do not click Mark done.
 
 ## 6. The assembly
 
-Click **New run**, then click it again. This starts a fresh run (`0/78 done`) at B20_J, separate from the tests. Runs
+Click **New run**, then click it again. This starts a fresh run (`0/76 done`) at B20_J, separate from the tests. Runs
 are recorded on the Drive in the process folder, under `runs/<date>_<time>/`.
 
 Run the seven actions in order. Each action is made of the procedures below. After every Exec, read the log lines
@@ -178,7 +179,9 @@ driving base, use Stop all, not the panel's Cancel.
 3. Servo: scrub the first pass with **Preview time**, then **Confirm**. Later passes run by themselves, unless one
    travels over 5° (`SAFEGUARD`): scrub and Confirm it too.
 4. **Plan** → **Exec**: the insert. Watch the bar enter its joint and the held bars stay in their jaws.
-5. When the line under the buttons says `every step of … done`, click **Mark done**.
+5. Ground bar only (B20): **Exec**, fix the foundation to the ground by hand while Cindy keeps holding the bar, then
+   **Confirm**.
+6. When the line under the buttons says `every step of … done`, click **Mark done**.
 
 **R: Cindy lets go.**
 1. **Plan** → **Exec**: the screws open, the tools break out compliantly and back off. Note any `check FAIL` lines.
@@ -196,12 +199,12 @@ driving base, use Stop all, not the panel's Cancel.
 
 | # | action | procedures | base target (x y yaw) | notes |
 |---|---|---|---|---|
-| 1 | B20_J | B (Cindy), J | +0.527 -3.067 +89.6° | ground bar: rigid insert, no tighten, then a second servo; it stops by itself if the force changes by more than 20 N |
+| 1 | B20_J | B (Cindy), J | +1.116 -1.516 +90.0° | ground bar: rigid insert, no tighten, then a second servo; it stops by itself if the force changes by more than 20 N. Then the foundation by hand (J, step 5) |
 | 2 | B20_R | R | | first retreat: Dry run first |
-| 3 | B21_J | B (Cindy), J | +0.947 -3.171 +90.0° | left joint screw tightens into B20; first compliant insert: Dry run first |
-| 4 | B21_H | B (Alice), H | +0.638 -1.561 -29.6° | |
+| 3 | B21_J | B (Cindy), J | +1.919 -1.578 +135.7° | left joint screw tightens into B20; first compliant insert: Dry run first |
+| 4 | B21_H | B (Alice), H | +0.875 -0.236 -8.8° | |
 | 5 | B21_R | R | | in the preview, check that the tools back off clear of Alice's gripper |
-| 6 | B22_J | B (Cindy), J | +1.166 -3.212 +95.8° | both screws tighten; the transfer plan can take up to 2 min; on `no path in 120 s`, Plan again. Watch that B21 stays in Alice's jaws |
+| 6 | B22_J | B (Cindy), J | +1.242 -1.591 +80.0° | both screws tighten; the transfer plan can take up to 2 min; on `no path in 120 s`, Plan again. Watch that B21 stays in Alice's jaws |
 | 7 | B22_R | R | | afterwards the current step is B34_J |
 
 **Optional: Alice lets go of B21.** In the process she lets go at action 17 (`B21_HR`). To end here: **action ▶**

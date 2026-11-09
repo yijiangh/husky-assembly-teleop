@@ -22,6 +22,7 @@ import numpy as np
 from scaffolding_assembly_core.geometry import Pose
 
 from ...robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER
+from ...robot_interface.refusal import newest_reason
 from ...robot_interface.soft_stop import MotionRefused
 from .compliant_part import enter_compliance, part_outcome, started_part, stop_then_leave
 from .controllers import switch_arms
@@ -208,7 +209,7 @@ def _hold_anchor(arm: ArmInterface, anchor: Pose) -> str:
     name = arm.config.name
     try:
         if not arm.send_cartesian_target(anchor.position, anchor.orientation):
-            return f"{name} refused the anchor target (its log says why)"
+            return f"{name} refused the anchor target: {newest_reason(arm)}"
     except MotionRefused as refused:
         return f"{name}: {refused}"
     return zero_wrench([arm])

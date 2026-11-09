@@ -9,6 +9,7 @@ import pytest
 from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.robot_interface.mocap_relay import (FAKE_MOTIVE, MOTIVE, TRUTH, AppliedCalibration,
                                                                FloorCalibrationState, MocapRelayState)
+from husky_assembly_teleop.world.base_mocap import ASK_AFTER, ASK_AGAIN_AFTER, MocapWatch  # the watch
 from husky_assembly_teleop.world.base_mocap import applied_calibration, applied_frame, base_mocap_check, with_relay
 from husky_assembly_teleop.world.checks import BAD, GOOD, WARN, Check
 
@@ -84,3 +85,60 @@ def test_a_base_without_a_mocap_id_says_so_whatever_the_frame():
     relay = MocapRelayState(calibrations={}, simulated=False, frame=MOVED)
     chip = base_mocap_check(None, BaseState(), relay, 100.0)
     assert chip.level == WARN and chip.detail.startswith("no mocap id configured") and "more" not in chip.detail
+
+
+FRAME_MOVED, MARKERS = "Motive's frame moved: poses off until Use refit", "mean marker error over 1s above 1 mm"
+AMBER, GREEN = Check("mocap", WARN, FRAME_MOVED), Check("mocap", GOOD, "fine")
+
+
+def test_an_amber_chip_asks_only_after_it_stayed_amber():
+    """A flicker of amber asks nothing; "(+N more)" is left out of the reason."""
+    watch = MocapWatch()
+    assert watch.update({"a": Check("mocap", WARN, f"{FRAME_MOVED} (+1 more)")}, 0.0) == {}
+    assert watch.update({"a": GREEN}, ASK_AFTER - 0.1) == {}
+    assert watch.update({"a": AMBER}, ASK_AFTER) == {}
+    assert watch.update({"a": Check("mocap", WARN, f"{FRAME_MOVED} (+1 more)")}, 2 * ASK_AFTER) == {"a": FRAME_MOVED}
+
+
+def test_green_or_red_stops_asking():
+    """It asks only while amber; a lost fix is health's red chip, not this question."""
+    watch = MocapWatch()
+    watch.update({"a": AMBER}, 0.0)
+    assert watch.update({"a": AMBER}, ASK_AFTER) == {"a": FRAME_MOVED}
+    assert watch.update({"a": Check("mocap", BAD, "lost")}, ASK_AFTER + 1) == {}
+    assert watch.update({"a": GREEN}, ASK_AFTER + 2) == {}
+
+
+def test_what_was_acknowledged_stays_quiet_through_flickers_of_green():
+    """Belle's chip flickers: green for a moment must not ask again; green for ASK_AGAIN_AFTER does."""
+    watch = MocapWatch()
+    watch.update({"a": AMBER}, 0.0)
+    watch.update({"a": AMBER}, ASK_AFTER)
+    watch.acknowledge()
+    assert watch.update({"a": AMBER}, ASK_AFTER + 1) == {}
+    watch.update({"a": GREEN}, 10.0)
+    watch.update({"a": AMBER}, 11.0)
+    assert watch.update({"a": AMBER}, 11.0 + ASK_AFTER) == {}
+    watch.update({"a": GREEN}, 20.0)
+    watch.update({"a": GREEN}, 20.0 + ASK_AGAIN_AFTER)
+    watch.update({"a": AMBER}, 100.0)
+    assert watch.update({"a": AMBER}, 100.0 + ASK_AFTER) == {"a": FRAME_MOVED}
+
+
+def test_another_reason_asks_though_the_first_was_acknowledged():
+    """Acknowledging the marker error says nothing about the frame moving later; the marker error stays quiet after."""
+    watch = MocapWatch()
+    watch.update({"a": Check("mocap", WARN, MARKERS)}, 0.0)
+    watch.update({"a": Check("mocap", WARN, MARKERS)}, ASK_AFTER)
+    watch.acknowledge()
+    assert watch.update({"a": AMBER}, ASK_AFTER + 1) == {"a": FRAME_MOVED}
+    assert watch.update({"a": Check("mocap", WARN, MARKERS)}, ASK_AFTER + 2) == {}
+
+
+def test_each_robot_is_followed_on_its_own():
+    """Acknowledging covers what asked then; a robot that starts later still asks."""
+    watch = MocapWatch()
+    watch.update({"a": AMBER, "b": GREEN}, 0.0)
+    assert watch.update({"a": AMBER, "b": AMBER}, ASK_AFTER) == {"a": FRAME_MOVED}
+    watch.acknowledge()
+    assert watch.update({"a": AMBER, "b": AMBER}, 2 * ASK_AFTER) == {"b": FRAME_MOVED}

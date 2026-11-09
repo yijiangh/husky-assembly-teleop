@@ -360,14 +360,39 @@ def test_the_spiral_settings_reach_the_spiral():
 
 # --- --- --- --- --- one-mate bars --- --- --- --- ---
 
-def test_a_one_mate_bar_ignores_the_spiral_and_the_prompt_says_so():
-    """B21-like, the left screw alone mating: the spiral is dropped, even one too fast; a two-mate bar keeps it."""
+def test_a_one_mate_bar_spirals_when_asked_and_the_prompt_says_so():
+    """B21-like, the left screw alone mating: the spiral is kept, and one too fast refused, as for a two-mate bar."""
     lab = Lab()
     plan = lab.plan(spiral=(30.0, 6))
-    assert plan.spiral is None and plan.as_record()["spiral"] is None
-    assert "COMPLIANT 5.0 mm (straight line: no spiral for a bar with one mating joint)" in plan.text
-    assert lab.plan(spiral=(5.0, 4)).spiral is None
-    assert lab.plan(mating=ARMS, spiral=(30.0, 6)).spiral == (30.0, 6)
+    assert plan.spiral == (30.0, 6) and plan.as_record()["spiral"]["turns"] == 6
+    assert "COMPLIANT 5.0 mm (spiral 15 mm, 30 s, 6 turns, pitch 2.5 mm)" in plan.text
+    assert "spiral too fast" in plan_insert(lab.robot, NAMES, ROWS, mating=("left_ur_arm",), grounded=False,
+                                            split_mm=5.0, spiral=(5.0, 4), traj_time=5.0)
+
+
+def test_a_one_mate_bars_stall_in_the_spiral_sends_the_holding_arm_to_its_lines_end():
+    """The left screw stalls 2 s into a 30 s spiral: left back at once; right from its spiral target to its line's end.
+
+    Both arms circle until the stall. The right arm's next target carries on from its last one, its last is its planned
+    end, off the spiral; it settles there and both end under joint control.
+    """
+    lab = Lab(left={"screw_stall_after": 2.0})
+    outcome = lab.run(lab.plan(spiral=(30.0, 6), split_mm=30.0))
+    assert outcome.status == STALLED and outcome.ok, outcome.reason
+    assert [(phase["name"], phase["end"]) for phase in outcome.record["phases"]][1:] == [
+        ("spiral", "stalled"), ("left_ur_arm back", "back"), ("compliant right_ur_arm", "ended"),
+        ("settle right_ur_arm", "settled")]
+    assert outcome.record["settle"]["settled"]
+    assert lab.switches("left_ur_arm") == lab.switches("right_ur_arm") == [COMPLIANCE, JOINT]
+    assert not any(len(message.points) == 1 for message in lab.robot.arms["left_ur_arm"]._trajectory.messages)
+    streamed = lab.streamed("right_ur_arm")
+    assert_same_pose(world_target(lab, "right_ur_arm", streamed[-1], BASE), world_tool0(lab, "right_ur_arm", ROWS[-1]),
+                     1e-9)
+    steps = np.linalg.norm(np.diff([target.position for target in streamed], axis=0), axis=1)
+    assert np.max(steps) < 1e-3
+    assert lab.running() == [JOINT, JOINT] and outcome.record["switch"]["back_ok"]
+    assert any("STALLED in the spiral; left_ur_arm back under joint control" in line for line in lab.ctx.lines("info"))
+    json.dumps(outcome.record, allow_nan=False)
 
 
 def test_a_one_mate_bars_holding_arm_finishes_its_line_and_settles_after_the_stall():
@@ -534,6 +559,17 @@ def test_every_refusal_sends_nothing(change, why):
     change(lab)
     outcome = lab.run(plan)
     assert outcome.status == REFUSED and why in outcome.reason and lab.nothing_sent()
+
+
+@pytest.mark.parametrize("settings", [{}, {"mating": ARMS, "spiral": (20.0, 4)}])
+def test_a_compliant_target_an_arm_would_refuse_stops_the_insert_before_anything_moves(monkeypatch, settings):
+    """The rigid part would run, but an arm would refuse the compliant line: no screw starts, no arm moves."""
+    monkeypatch.setattr("husky_assembly_teleop.robot_interface.arm.CARTESIAN_MAX_STEP", 1e-6)
+    lab = Lab()
+    outcome = lab.run(lab.plan(**settings))
+    assert outcome.status == REFUSED and lab.nothing_sent()
+    assert "compliant target at" in outcome.reason and "jumps" in outcome.reason
+    assert outcome.reason.endswith("nothing sent")
 
 
 @pytest.mark.parametrize("settings", [{}, {"mating": ARMS, "spiral": (20.0, 4)}, {"mating": (), "grounded": True}])

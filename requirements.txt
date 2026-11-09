@@ -13,6 +13,7 @@ yourdfpy==0.0.60  # URDF parsing for viser.extras.ViserUrdf (robot meshes in the
 #   package here already pulls them in, so removing that one cannot break us.
 async-timeout>=4.0  # the asyncio.timeout backport for Python 3.10 (process plugin, planner service)
 scipy>=1.8  # rotations in robot_interface and robot_control
+rhino3dm==8.35.0  # the as-built page: the room from a .3dm
 trimesh==4.12.2  # ! design_io must run in Rhino 8 (Python 3.9): 4.12.2 is the newest release for 3.9
 pybullet>=3.2  # raw client calls in shared/base_collision and plugins/base_planner/world.py
 compas>=2.0  # the core's compas mirrors (arm planner); compas_fab above needs it too

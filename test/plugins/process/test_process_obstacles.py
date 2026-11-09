@@ -26,7 +26,8 @@ from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
 from husky_assembly_teleop.plugins.process.drawing import GHOST_OPACITY, ProcessDrawing, load_robot_models
 from husky_assembly_teleop.plugins.process import plugin as process_plugin
-from husky_assembly_teleop.plugins.process.plugin import BY_HAND_LABEL, ProcessPlugin
+from husky_assembly_teleop.plugins.process.plugin import (BY_HAND_LABEL, OBSTACLES_COLLIDE, OBSTACLES_DISABLE,
+                                                          OBSTACLES_GHOST, ProcessPlugin)
 from husky_assembly_teleop.world.base_collision import BaseCollisionWorld
 from husky_assembly_teleop.world.kinematics import stow_joints
 from husky_assembly_teleop.world.lab import platform_links
@@ -271,41 +272,56 @@ def test_overlay_draws_the_rhino_obstacles_left_out_of_collision_checks(process)
         server.stop()
 
 
-def test_the_box_starts_off_and_a_flip_puts_the_bodies_again(process):
-    """Off at start: the cabinet is a disabled scene body, overlaid see-through; ticking puts it again, enabled.
+def test_the_list_starts_on_ghost_and_collide_puts_the_bodies_again(process):
+    """Ghost at start: the cabinet is a disabled scene body, overlaid see-through; collide puts it again, enabled.
 
-    The same geometry object both ways, so no mirror rebuilds it; ticking again does nothing.
+    The same geometry object both ways, so no mirror rebuilds it; choosing collide again does nothing.
     """
     plugin, ctx, live = _set_up(_with_cabinet(process))
-    assert not plugin.obstacles_collide and plugin._collide.value is False
+    assert not plugin.obstacles_collide and plugin.obstacles_mode == OBSTACLES_GHOST
     plugin.update(ctx)
     plugin.draw(ctx)
     geometry = live.bodies[LIVE_CABINET].geometry
     assert not live.bodies[LIVE_CABINET].enabled and live.bodies["process/ground/WG0"].enabled
     assert plugin._drawing.references[-1] == {CABINET.id}
     revision = plugin.revision
-    plugin._collide.callback(True)
+    plugin._rhino_obstacles.callback(OBSTACLES_COLLIDE)
     assert plugin.revision == revision + 1
     assert ctx.lines("info")[-1] == "Rhino obstacles now count in every collision check"
     plugin.update(ctx)
     plugin.draw(ctx)
     assert live.bodies[LIVE_CABINET].enabled and live.bodies[LIVE_CABINET].geometry is geometry
-    assert plugin._drawing.references[-1] == frozenset() and plugin._collide.value is True
-    plugin._collide.callback(True)
+    assert plugin._drawing.references[-1] == frozenset() and plugin._rhino_obstacles.value == OBSTACLES_COLLIDE
+    plugin._rhino_obstacles.callback(OBSTACLES_COLLIDE)
     assert plugin.revision == revision + 1
 
 
-def test_only_the_operators_click_flips_the_box(process):
+def test_disable_hides_the_obstacles_and_leaves_the_plans_alone(process):
+    """Disable: not drawn by the overlay, still a disabled scene body. Only the drawing changed: plans stand."""
+    plugin, ctx, live = _set_up(_with_cabinet(process))
+    plugin.update(ctx)
+    plugin.draw(ctx)
+    revision = plugin.revision
+    plugin._rhino_obstacles.callback(OBSTACLES_DISABLE)
+    plugin.update(ctx)
+    plugin.draw(ctx)
+    assert plugin.revision == revision and not plugin.obstacles_collide
+    assert not live.bodies[LIVE_CABINET].enabled and plugin._drawing.references[-1] == frozenset()
+    assert "Rhino obstacles: hidden" in plugin._collide_status.content
+    assert ctx.lines("info")[-1] == "Rhino obstacles are hidden: left out of every collision check; replan"
+
+
+def test_only_the_operators_click_changes_the_list(process):
     """The draw's own write-back calls back too, without a client: only a click with a client counts."""
     plugin, _ctx, _live = _set_up(process, _ViserContext())
 
     def event(client) -> SimpleNamespace:
-        """The box's update event, ticked."""
-        return SimpleNamespace(client=client, target=SimpleNamespace(value=True))
+        """The list's update event, on collide."""
+        return SimpleNamespace(client=client, target=SimpleNamespace(value=OBSTACLES_COLLIDE))
 
-    asyncio.run(plugin._collide.callback(event(None)))
+    asyncio.run(plugin._rhino_obstacles.callback(event(None)))
     assert not plugin.obstacles_collide
-    asyncio.run(plugin._collide.callback(event(object())))
+    asyncio.run(plugin._rhino_obstacles.callback(event(object())))
     assert plugin.obstacles_collide
 
 
@@ -334,7 +350,7 @@ def test_the_status_line_says_when_nothing_in_the_room_is_checked(process):
     plugin.draw(ctx)
     assert "drawn only" in plugin._collide_status.content and "room unchecked" not in plugin._collide_status.content
     live.remove("obstacles/boxes/A")
-    plugin.set_obstacles_collide(ctx, True)
+    plugin.set_obstacles_mode(ctx, OBSTACLES_COLLIDE)
     plugin.draw(ctx)
     assert "Rhino obstacles collide" in plugin._collide_status.content
     assert "drawn only" not in plugin._collide_status.content and "room unchecked" not in plugin._collide_status.content

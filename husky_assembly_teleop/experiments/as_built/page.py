@@ -32,7 +32,7 @@ THREE_CORE = VENDOR_DIR / "build" / "three.core.min.js"
 THREE_MODULE = VENDOR_DIR / "build" / "three.module.min.js"
 ORBIT_CONTROLS = VENDOR_DIR / "examples" / "jsm" / "controls" / "OrbitControls.js"
 #: The Rhino layers holding the room's solids and the Motive camera rig.
-ENV_LAYER = "env"
+ENV_LAYERS = ("env", "Environment Obstacles")
 CAMERA_LAYER = "Mocap::mocap_cameras"
 #: How far each camera's view cone is drawn, and how wide: a readable stand-in, not a measured frustum.
 CAMERA_CONE_M = 0.9
@@ -54,10 +54,12 @@ def flatten(matrix: np.ndarray) -> list[float]:
 
 
 def matrix_from_pose(pose) -> np.ndarray | None:
-    """A recorded pose as a 4x4: [x, y, z, qx, qy, qz, qw], or the old [[pos], [quat]]; None when there is none."""
+    """A recorded pose as a 4x4: flat [x, y, z, qx, qy, qz, qw], {position, orientation} or the old pair; else None."""
     if pose is None:
         return None
-    if len(pose) == 2:
+    if isinstance(pose, Mapping):
+        pose = [*pose["position"], *pose["orientation"]]
+    elif len(pose) == 2:
         pose = [*pose[0], *pose[1]]
     return Pose(tuple(map(float, pose[:3])), tuple(map(float, pose[3:7]))).matrix()
 
@@ -200,14 +202,15 @@ def _meshes_of_3dm_solid(geometry, r3) -> list:
     return []
 
 
-def environment_3dm(path: Path, layer: str = ENV_LAYER) -> dict | None:
-    """The room's solids on a Rhino layer (millimetres) as one mesh in metres; None without any (said)."""
+def environment_3dm(path: Path, names: Sequence[str] = ENV_LAYERS) -> dict | None:
+    """The room's solids on the Rhino layers of these names (millimetres) as one mesh in metres; None without any."""
     model, r3 = _read_3dm(path)
     if model is None:
         return None
-    layers = {each.Index for each in model.Layers if each.Name.lower() == layer.lower()}
+    wanted = {name.lower() for name in names}
+    layers = {each.Index for each in model.Layers if each.Name.lower() in wanted}
     if not layers:
-        print(f"  [env] layer {layer!r} not found in {path.name}")
+        print(f"  [env] no layer named {' or '.join(names)} in {path.name}")
         return None
     solids, skipped = [], 0
     for obj in model.Objects:
@@ -225,7 +228,7 @@ def environment_3dm(path: Path, layer: str = ENV_LAYER) -> dict | None:
                 faces.append([face[0], face[1], face[2]] if face[2] == face[3] else list(face))
             solids.append((np.array(vertices), faces))
     if skipped:
-        print(f"  [env] {skipped} solid(s) on layer {layer!r} carry no saved mesh: open {path.name} in Rhino, set "
+        print(f"  [env] {skipped} solid(s) on the room's layer carry no saved mesh: open {path.name} in Rhino, set "
               f"the viewport to Shaded so the meshes are built, and save.")
     print(f"  [env] {len(solids)} solids from {path.name}")
     return _packed_mesh(solids)

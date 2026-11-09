@@ -197,9 +197,9 @@ def test_a_refused_target_ends_the_stream_and_nothing_more_is_sent():
     lab = Lab()
     right = lab.robot.arms["right_ur_arm"]
     lab.later.append((10.25, lambda: setattr(right.state.controllers, "active", SCALED_JOINT_TRAJECTORY_CONTROLLER)))
-    assert lab.run(lab.segment()).startswith("refused: right_ur_arm")
+    ended = lab.run(lab.segment())
+    assert ended == f"refused: right_ur_arm: {right.last_refusal.reason}" and "not active" in ended
     assert (lab.count("left_ur_arm"), lab.count("right_ur_arm")) == (4, 3)
-    assert "not active" in right.last_refusal.reason
 
 
 def test_the_stop_test_runs_before_the_ticks_targets():

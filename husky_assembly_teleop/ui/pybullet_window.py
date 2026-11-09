@@ -19,17 +19,20 @@ if TYPE_CHECKING:
 
 
 def add_pybullet_window_toggle(ctx: PluginContext, gui: viser.GuiApi, executor: Executor,
-                               set_gui: Callable[[bool, Scene], None]) -> None:
-    """Add the checkbox.
+                               set_gui: Callable[[bool, Scene], None],
+                               hint: str = "Show this plugin's PyBullet world in PyBullet's own window",
+                               on_ticked: Callable[[], None] = lambda: None) -> viser.GuiCheckboxHandle:
+    """Add the checkbox and return it.
 
     Args:
         ctx: The owning plugin's context.
         gui: GUI api to add the checkbox to.
         executor: The one worker thread that owns the mirror; `set_gui` runs there.
         set_gui: Opens or closes the window and fills the world from the snapshot; raises if it can't.
+        hint: The checkbox's hint.
+        on_ticked: Called on the main thread when the operator ticks it.
     """
-    checkbox = gui.add_checkbox("PyBullet window", False,
-                                hint="Show this plugin's PyBullet world in PyBullet's own window")
+    checkbox = gui.add_checkbox("PyBullet window", False, hint=hint)
 
     async def apply(wanted: bool) -> None:
         snapshot = ctx.scene.snapshot  # main thread
@@ -37,7 +40,13 @@ def add_pybullet_window_toggle(ctx: PluginContext, gui: viser.GuiApi, executor: 
             await asyncio.get_running_loop().run_in_executor(executor, set_gui, wanted, snapshot)
         except Exception as error:
             ctx.log_warn(f"no PyBullet window: {error}")
-            checkbox.value = False  # ? fires again, asking the worker to close: harmless
+            checkbox.value = False
 
-    checkbox.on_update(ctx.defer_value("pybullet window",
-                                       lambda wanted: ctx.spawn("pybullet window", apply(bool(wanted)))))
+    def changed(wanted: bool) -> None:
+        if wanted:
+            on_ticked()
+        ctx.spawn("pybullet window", apply(bool(wanted)))
+
+    # * Only the operator's changes: unticking it from code must not close a window another checkbox just opened.
+    checkbox.on_update(ctx.defer_value("pybullet window", changed, operator_only=True))
+    return checkbox

@@ -7,7 +7,7 @@ import pytest
 from std_msgs.msg import String
 
 from body_definition_fixtures import body
-from robot_fakes import Node
+from robot_fakes import Client, Node
 from husky_assembly_teleop.robot_interface.mocap_definitions import MocapCamera, cameras_json, definitions_json
 from husky_assembly_teleop.robot_interface.mocap_relay import (USE_REFIT_SERVICE, CALIBRATIONS_TOPIC, CAMERAS_TOPIC,
                                                                DEFINITIONS_TOPIC, FRAME_TOPIC, MARKERS_TOPIC,
@@ -69,6 +69,21 @@ def test_reload_asks_the_relays_service_of_that_rigid_body_only():
     assert MocapRelayInterface(node, lambda: node.now).reload_base_calibration(1850) == "future"
     assert len(node.clients[RELOAD_BASE_SERVICE.format(1850)].requests) == 1
     assert RELOAD_BASE_SERVICE.format(1840) not in node.clients
+
+
+def test_streaming_ids_are_asked_without_waiting_and_land_in_the_state():
+    """A request goes out only while the relay serves it; its answer lands when it comes; a failed one is skipped."""
+    node = RelayNode()
+    relay = MocapRelayInterface(node, lambda: node.now)
+    client = relay._streaming_ids_client = Client(ready=False)
+    assert not relay.ask_streaming_ids() and not client.calls
+    client.ready = True
+    assert relay.ask_streaming_ids() and relay.state.streaming_ids_time is None
+    client.calls[0].answer(SimpleNamespace(ids=[1020, 1840]))
+    assert relay.state.streaming_ids == {1020, 1840} and relay.state.streaming_ids_time == node.now
+    assert relay.ask_streaming_ids()
+    client.calls[1].fail(RuntimeError("gone"))
+    assert relay.state.streaming_ids == {1020, 1840}
 
 
 def test_another_format_is_refused():

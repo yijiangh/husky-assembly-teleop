@@ -10,14 +10,14 @@ action's last step Mark done (assembly_run's) is suggested.
 
 - Live IK: the goal by IK at the live base, logged, recorded and carried into the process panel's drawing; a plan of
   the same step
-  reuses it while the base stays within 2 mm / 0.5° and the process plugin's "Rhino obstacles collide" is unchanged.
+  reuses it while the base stays within 2 mm / 0.5° and the "Rhino obstacles" collide setting is unchanged.
 - After Live IK or a plan, the process panel draws the action's later movements with the joints found, on the live
   base they were found at, and turns to the step's target (`ProcessContract.request_carry`); a new action drops them.
 - Plan on a movement with nothing to plan (an ungrasp, a grasp, an operator step) says so and selects the next robot
   movement instead (`_move_on`): the operator clicks Plan again.
 - A plan is used once: Exec takes it, and it is cleared once the step ran; only a request refused before sending
   anything, or a dry run, gives it back (still checked for staleness).
-- An insert after its transfer's mocap bar servo is planned from where the servo left the flanges (`executor.carried`).
+- An insert after its transfer's servo is planned from where the servo left the flanges (`executor.carried`).
 - ! EXPERIMENTAL, with movement_exec the first plugins that run process movements on the robots.
 """
 
@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+from functools import partial
 from typing import TYPE_CHECKING
 
 import viser
@@ -120,6 +121,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         #: The plan behind `path`, and what it was planned from.
         self._route: RouteResult | None = None
         self._basis: PlanBasis | None = None
+        #: The line Plan just said about the next step, which that step keeps; else "".
+        self._moved_on = ""
         #: The step key an Exec runs for, until its result comes back.
         self._executing: tuple | None = None
         #: Visual diagnosis: the real robots see-through and each insert or retreat plan's tool0 path drawn.
@@ -183,10 +186,13 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self._new_step(ctx, key)
 
     def _new_step(self, ctx: PluginContext, key: tuple | None) -> None:
-        """Start a step clean: no plan, nothing done, no offer, no goal; its routine's default motion time.
+        """Start a step clean: no plan, no line from the last step, nothing done, no offer, no goal; its default time.
 
         Another action also drops the joints carried forward in the process panel.
         """
+        if self._message != self._moved_on:
+            self._say("")
+        self._moved_on = ""
         self._clear()
         if self._diagnosis_nodes is not None:
             self._diagnosis_nodes.clear()
@@ -407,8 +413,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         # ! The step may have changed while the planner worked: say and carry only for the step it was solved for;
         #   `solve` logs the answer either way.
         still = same_step(key, self._key_of_goal())
-        if not still and self._message == solving:
-            # * Only this solve's own line is replaced: the new step may have said something since.
+        if not still and self._message in (solving, ""):
+            # * Only this solve's own line or the new step's empty one is replaced: it may have said something since.
             self._say(f"Live IK for {step.label} came after the step changed: not used")
         if check is None:
             if still:
@@ -435,6 +441,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
         moved_on = self._move_on(ctx)
         if moved_on:
             self._say(moved_on, failed=True)  # * logged by `_say`
+            self._moved_on = moved_on
             return
         super()._plan(ctx)
 
@@ -497,11 +504,11 @@ class AssemblyStepsPlugin(PlannerPlugin):
                 carried = ctx.require("movement_exec").carried if primary.routine is Routine.INSERT else None
                 if carried is not None and carried.loaded is view.process and (carried.action, carried.insert) == (
                         action, step.movement_index):
-                    # * The transfer's bar servo left the flanges off the authored start: the insert goes from there.
+                    # * The transfer's servo left the flanges off the authored start: the insert goes from there.
                     goals = carried_insert_goals(view.process, action, carried.insert, live)
                     flange, ends = next(iter(goals)), step.movement.target.robots[step.action.robot].link_poses
                     distance, turn = pose_error(goals[flange], ends[flange])
-                    ctx.log_info(f"[insert plan] mocap bar correction carried: {step.label} {flange_side(flange)} "
+                    ctx.log_info(f"[insert plan] servo correction carried: {step.label} {flange_side(flange)} "
                                  f"goal {distance * 1e3:.2f} mm / {math.degrees(turn):.3f}° from the authored end")
                 elif (primary.routine is Routine.RETREAT_LINEAR
                       and self._assembly_run(ctx).view.settings.retreat_live_axis):
@@ -619,7 +626,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return
         stale = self.stale_reason(ctx) if motion else ""
         if stale:
-            # * Checked here too: an input in the same tick (e.g. Ignore built bars, Rhino obstacles collide) comes
+            # * Checked here too: an input in the same tick (e.g. Ignore built bars, Rhino obstacles) comes
             #   before the update's check.
             self.plan_state = "stale"
             self._say(f"Exec refused, the plan is stale: {stale}", failed=True)
@@ -632,7 +639,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
                               ignore_built=lambda: self.ignore_built,
                               obstacles_collide=lambda: self._obstacles_collide(ctx),
                               transfer_as_free=lambda: self._transfer_as_free(ctx),
-                              unknown_robots=self._unknown_allowed, clearance=self.clearance.value)
+                              unknown_robots=self._unknown_allowed, clearance=self.clearance.value,
+                              preview=partial(self._preview_motion, self._key))
         if motion:
             self.plan_state = "sent"  # ! used once: never sent again
         executor: MovementExecContract = ctx.require("movement_exec")
@@ -641,6 +649,26 @@ class AssemblyStepsPlugin(PlannerPlugin):
                   f"step, the servo's first pass)")
         executor.request_execute(request).add_done_callback(
             lambda future: self._executed(ctx, key, motion, future))
+
+    def _preview_motion(self, key: tuple, route: RouteResult | None, basis: PlanBasis | None, seconds: float) -> None:
+        """Show what the open Confirm starts on the Preview time slider, at its end as a plan is; None shows nothing.
+
+        Args:
+            key: The step the Exec runs; another step in the panel by now is left alone.
+            route: The motion, or None.
+            basis: What it was planned from, or None.
+            seconds: How long it will take.
+        """
+        if not same_step(key, self._key):
+            return
+        timed = None if route is None else self._timed(route, seconds)
+        self.path, self._path_serial, self._playing = None, None, False
+        self._t = 0.0
+        self.forget_plan()
+        if isinstance(timed, TimedPath):
+            self._route, self._basis = route, basis
+            self.path, self._path_serial, self._t = timed, self.serial, timed.duration
+            self._used.touch()
 
     def _executed(self, ctx: PluginContext, key: tuple, carried_plan: bool, future: asyncio.Future) -> None:
         """Take an Exec's result: note the parts done; the step done moves on, the action done offers Mark done."""
@@ -693,7 +721,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             ctx: This plugin's context.
 
         Returns:
-            bool: The process plugin's "Rhino obstacles collide" box.
+            bool: Whether the process plugin's "Rhino obstacles" collide.
         """
         process: ProcessContract = ctx.require("process")
         return process.obstacles_collide
@@ -711,16 +739,16 @@ class AssemblyStepsPlugin(PlannerPlugin):
         return process.transfer_as_free
 
     def _key_of_goal(self) -> tuple | None:
-        """What a goal check is for: the current (loaded process, action, primary, Rhino obstacles collide).
+        """What a goal check is for: the current (loaded process, action, primary, whether Rhino obstacles collide).
 
         * With the box: a goal checked with the other setting is never shown or reused.
         """
         return None if self._key is None else (*self._key[:3], self._obstacles_collide(self._ctx))
 
-    def _timed(self, route: RouteResult) -> TimedPath | str:
-        """The route timed for the arms at the motion time (`retime`), for the preview; or why it can't be."""
+    def _timed(self, route: RouteResult, seconds: float | None = None) -> TimedPath | str:
+        """The route timed for the arms at `seconds`, else the motion time (`retime`), for the preview; or why not."""
         try:
-            timed = retime(route.result.trajectory.positions, self.traj_time)
+            timed = retime(route.result.trajectory.positions, self.traj_time if seconds is None else seconds)
         except RetimeError as error:
             rows = route.result.trajectory.positions
             if rows[0] == rows[-1]:

@@ -523,6 +523,12 @@ def _serial_digits(token: str) -> str | None:
     return None if digits is None else digits.group(1)
 
 
+def robot_name(serial: str) -> str:
+    """The robot's name ("Alice"), for people, from a serial written any way `robots` accepts; else the serial."""
+    digits = _serial_digits(serial)
+    return next((name.capitalize() for name, number in _robot_names().items() if number == digits), serial)
+
+
 def short_serial(serial: str) -> str:
     """The serial as panels and chips show it: "0806" for "a200-0806"."""
     return serial.split("-")[-1]

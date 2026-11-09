@@ -23,6 +23,7 @@ from husky_assembly_teleop.config import short_serial
 from husky_assembly_teleop.monitor import HuskyMonitor
 from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.plugins.movement_exec import plugin as exec_module
+from husky_assembly_teleop.plugins.movement_exec.servo_measure import GIVE_UP, TOOL0_SERVO
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
 from husky_assembly_teleop.plugins.movement_exec.sequences import PartOperator
 from husky_assembly_teleop.robot_interface.base import BaseState, FollowerState
@@ -37,8 +38,8 @@ from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DEFA
                                                                  HANDOFF_PART, HOLD_NOT_SENT, INSERT_PART, LATER,
                                                                  REFUSED, REFUSED_PART, RETREAT_PART, SERVO_INDEX,
                                                                  SERVO_PART,
-                                                                 WITH_MOTION_PART, ExecRequest, PartPlan, part_plan,
-                                                                 step_parts)
+                                                                 WITH_MOTION_PART, ExecRequest, ExecResult, PartPlan,
+                                                                 part_plan, step_parts)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import RouteResult
@@ -267,6 +268,42 @@ def test_a_request_for_another_robot_or_movement_is_refused(changes, words):
     result, held = execute(lab, lab.request(**changes))
     assert result.status == REFUSED and words in result.reason
     assert held is None and lab.published() == 0 and lab.run.records == []
+
+
+def test_a_failure_stays_on_its_step_until_the_next_request_starts():
+    """A refusal stays while the step does; the next Exec takes it away as it starts, and its own end is said."""
+    lab = Lab()
+    lab.plugin.update(lab.ctx)
+    result, _held = execute(lab, lab.request(route=None))
+    assert result.status == REFUSED and lab.plugin._last_failed and "no plan for the motion" in lab.plugin._last
+    lab.plugin.update(lab.ctx)
+    assert lab.plugin._last_failed and "no plan for the motion" in lab.plugin._last
+    seen = []
+
+    async def look(lab):
+        seen.append((lab.plugin._last, lab.plugin._last_failed))
+
+    result, _held = execute(lab, lab.request(), during=look)
+    assert result.status == DONE and seen == [("", False)]
+    assert "every part done" in lab.plugin._last and not lab.plugin._last_failed
+
+
+def test_a_failure_goes_with_its_step_and_a_hold_not_sent_does_not():
+    """Moving on drops a failure but keeps a result that did not fail; a hold not sent stays: the arm may still move."""
+    lab = Lab()
+    lab.plugin.update(lab.ctx)
+    lab.plugin._finished(lab.ctx, None, ExecResult(REFUSED, "the arm is not operational"))
+    lab.run.request_set_current("B20_R", 0)
+    lab.plugin.update(lab.ctx)
+    assert lab.plugin._last == "" and not lab.plugin._last_failed
+    lab.plugin._finished(lab.ctx, None, ExecResult(DONE, "every part done"))
+    lab.run.request_set_current("B20_R", 2)
+    lab.plugin.update(lab.ctx)
+    assert "every part done" in lab.plugin._last
+    lab.plugin._finished(lab.ctx, None, ExecResult(HOLD_NOT_SENT, "HOLD NOT SENT on left_ur_arm"))
+    lab.run.request_set_current("B20_R", 0)
+    lab.plugin.update(lab.ctx)
+    assert "HOLD NOT SENT" in lab.plugin._last and lab.plugin._last_failed
 
 
 @pytest.mark.safety
@@ -1146,9 +1183,9 @@ def test_confirm_and_cancel_are_buttons_of_their_own_in_the_assembly_tab():
     """Confirm and Cancel are two buttons, on the desktop as on the phone; the desktop's reach the plugin."""
     lab = Lab()
     buttons = lab.ctx.gui.of_kind("button")
-    assert [(button.label, button.color) for button in buttons] == [
-        ("Confirm", "green"), ("Cancel", "red"), ("As-built: record now", None), ("Build as-built page", None),
-        ("Confirm", "green"), ("Cancel", "red")]
+    assert [(button.label, button.color) for button in buttons if button.label not in (GIVE_UP, TOOL0_SERVO)] == [
+        ("Confirm", "green"), ("Cancel", "red"), ("As-built: record now", None), ("Confirm", "green"),
+        ("Cancel", "red")]
     assert lab.ctx.gui.of_kind("button_group") == []
     buttons[0].callback()
     assert lab.plugin._last == "nothing to answer"
@@ -1326,8 +1363,8 @@ def test_an_inserts_rigid_part_whose_hold_is_refused_is_hold_not_sent():
 def test_the_insert_settings_are_read_once_and_reach_its_plan():
     """The split reaches the plan (its line, in a dry run); a spiral too fast is refused before it, nothing sent.
 
-    The spiral's seconds and turns reach B22's line (two mating joints); a split over 30 mm is taken as 30. B21, one
-    mating joint, drops the spiral asked for: its line says so, the setting is recorded, the plan has none.
+    The spiral's seconds and turns reach B22's line (two mating joints) and B21's (one); a split over 30 mm is taken
+    as 30.
     """
     def dry(current, settings: RunSettings) -> Lab:
         lab = compliant_lab(current, settings)
@@ -1354,9 +1391,9 @@ def test_the_insert_settings_are_read_once_and_reach_its_plan():
 
     lab = dry(("B21_J", 4), RunSettings(spiral=True, spiral_seconds=30.0, spiral_turns=6))
     result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP))
-    assert result.status == DRY_RUN and "straight line: no spiral for a bar with one mating joint" in said(lab)[0]
+    assert result.status == DRY_RUN and "spiral 15 mm, 30 s, 6 turns, pitch 2.5 mm" in said(lab)[0]
     command = lab.run.files()[-1]["command"]
-    assert command["settings"]["spiral"] is True and command["plan"]["spiral"] is None
+    assert command["settings"]["spiral"] is True and command["plan"]["spiral"]["turns"] == 6
 
 
 @pytest.mark.parametrize("solved", [True, False])

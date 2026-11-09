@@ -48,3 +48,8 @@ def mean_marker_error(body: MocapBody, now: float) -> float | None:
     """Mean marker error, metres, of the valid samples in the last MARKER_ERROR_WINDOW, or None without one."""
     recent = [error for time, error in body.marker_errors if time > now - MARKER_ERROR_WINDOW]
     return sum(recent) / len(recent) if recent else None
+
+
+def valid_sample_rate(body: MocapBody, now: float) -> float:
+    """Valid samples per second that arrived over the last MARKER_ERROR_WINDOW, Hz."""
+    return sum(1 for time, _error in body.marker_errors if time > now - MARKER_ERROR_WINDOW) / MARKER_ERROR_WINDOW
