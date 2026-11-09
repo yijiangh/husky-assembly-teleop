@@ -13,11 +13,7 @@ source "$here/../lab_common.sh"
 
 # shellcheck disable=SC2016  # expanded by the clean shell
 lab_exec_clean DEMO_ "$here" '
-    if ! demo_cindy_up; then
-        echo "insertion demo: no Zenoh router at $DEMO_CINDY_IP:7447: is the cable in, this laptop on her subnet" \
-            "(manual 1.3), and her launch running?" >&2
-        exit 1
-    fi
-    echo "insertion demo: rigid body $DEMO_BODY (Cindy) fixed at the origin, ROS domain $ROS_DOMAIN_ID via $DEMO_CINDY_IP"
+    demo_need_router || exit 1
+    echo "insertion demo: rigid body $DEMO_BODY (Cindy) fixed at the origin, ROS domain $ROS_DOMAIN_ID via $DEMO_ROUTER"
     exec ros2 run husky_assembly_teleop husky_fixed_base --ros-args -p bodies:="[$DEMO_BODY]"
 '

@@ -21,6 +21,7 @@ needed to run the new monitor.
 | [real_lab_short_manual.md](lab/real_lab_short_manual.md) | The real-lab test, short: what runs where, the plain commands to start it (`scripts/lab_tmux.sh real` types them into tmux panes), the steps of the first three bars. |
 | [fake_lab_short_manual.md](lab/fake_lab_short_manual.md) | The fake-lab test, short: the plain commands on a laptop in its own domain, a scratch Drive, what differs from the lab. |
 | [insertion_demo_manual.md](lab/insertion_demo_manual.md) | The demo-hall setup: Cindy alone over an Ethernet cable, no mocap (`husky_fixed_base`), one bar in and out on demand with the `insertion_demo` plugin; `scripts/insertion_demo/tmux.sh`. |
+| [insertion_demo_sim_manual.md](lab/insertion_demo_sim_manual.md) | The demo's dry run: the same scripts and buttons against a simulated Cindy on one laptop, step by step with what to expect, the interruptions included; `scripts/insertion_demo/sim_tmux.sh`. |
 | [lab_tools_test_manual.md](lab/lab_tools_test_manual.md) | The operator's tools (the tool0 jog, the live plots, the relay's base offset, Check tool0, Rhino bar lines, the Exec plots, the compliant parts and more), tested in simulation and on a robot. |
 | [simulation_manual.md](lab/simulation_manual.md) | Simulated robots and mocap: one robot, several, realistic mocap, base experiments, every argument, what is not simulated. |
 | [phone_manual.md](lab/phone_manual.md) | The phone page: connecting a phone, what each tab is for, what to do after a stop, troubleshooting. |

@@ -92,7 +92,9 @@ visitors may push them; they spring back. **Rigid** holds and brings them back u
 then wherever the push left them: **Approach** before the next **Insert**.
 
 **Cancel** stops the running step and holds the arms; **Stop all** (Esc) too. A compliant step cancelled leaves the
-arms compliant, said loudly: press **Rigid**. **Release** opens the gripper screws (end of the day).
+arms compliant, said loudly: press **Rigid**; after **Stop all**, first **Resume** under Health, then **Rigid**. An
+insert cancelled part way in: **Rigid**, then **Retreat** brings the tools back to the insert's start. **Release**
+opens the gripper screws (end of the day).
 
 ## 4. If something goes wrong
 
@@ -106,6 +108,9 @@ arms compliant, said loudly: press **Rigid**. **Release** opens the gripper scre
 - Everything else: the e-stop, then **Resume** in health once it is released.
 
 ## 5. Before the demo day, in the lab
+
+First on the laptop alone: [insertion_demo_sim_manual.md](insertion_demo_sim_manual.md) runs these scripts and buttons
+against a simulated Cindy (`scripts/insertion_demo/sim_tmux.sh`), the interruptions included.
 
 With the cable, on the real jig: the first jog in **Control** (the clock is not synced: the trajectory must still run),
 then Grasp → Approach → Insert → Retreat → Compliant → Rigid → Approach → Insert. Check that 6 s of loosening frees

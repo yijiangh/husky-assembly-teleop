@@ -4,7 +4,14 @@ Status (2026-11-04): implemented on `yh/insertion-demo` (off `origin/core-port` 
 `husky_fixed_base`, `scripts/insertion_demo/`, `doc/lab/insertion_demo_manual.md`, tests under
 `test/plugins/insertion_demo/` and `test/mocap_relay/test_fixed_base.py`. The plugin's panel is `insertion_demo`'s
 tab (not in the Assembly tab); the process plugin still waits for Load (`process_directory` only fills the box).
-Open: the fake-lab run, the lab check with the cable (section 5 of the manual).
+Open: the lab check with the cable (section 5 of the manual).
+
+Dry run (2026-11-09): `scripts/insertion_demo/sim_tmux.sh` opens the demo against a simulated Cindy on the laptop,
+`doc/lab/insertion_demo_sim_manual.md` is its step-by-step manual. `DEMO_SIM=1` switches `env.sh` to the fake lab's
+settings (domain 71, a loopback router, the scratch Drive `sim_drive.sh` fills); `base.sh` and `monitor.sh` are the
+hall's. Run end to end from the buttons, the interruptions included. Found there: after Stop all, Resume comes
+before Rigid (Rigid alone does not last while the robot is soft stopped); a cancelled insert is undone by Rigid, then
+Retreat.
 
 ## Context
 
