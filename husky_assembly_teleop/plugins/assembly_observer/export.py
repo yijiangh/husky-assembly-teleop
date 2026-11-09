@@ -3,8 +3,8 @@ The observer's local recordings: the days kept, dropping old ones, and copying a
 
 Local layout: `<root>/<YYYYMMDD>/<stamp>_session[_sim]/` with experiment.json, events.jsonl, chunk_NNN.npz and
 commands/ (`plugin.py`). A copy is `<destination>/<stamp>_session[_sim]/`, one folder per session the range touches,
-with only what lies in the range: the events (from the newest states before it), the chunks' rows, the command files
-those events name; `copied_sessions` finds them.
+with only what lies in the range: the events (from the newest states before it, and the process loaded before them),
+the chunks' rows, the command files those events name; `copied_sessions` finds them.
 
 ! Plain files, no ROS. `copy_range` and `events_in` read whole days: run them in a process of their own
   (`scripts/observer_logs.py`); `days`, `prune` and `size` are quick enough for a worker thread.
@@ -13,6 +13,7 @@ those events name; `copied_sessions` finds them.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import time
 from stat import S_ISREG
@@ -35,6 +36,8 @@ NOW = "now"
 EVENTS, COMMANDS, CHUNKS = "events.jsonl", "commands", "chunk_*.npz"
 #: The events that hold every state at a moment (`Watcher.snapshot`).
 STATES = ("state", "relay state", "objects state")
+#: The process plugin's log line naming the process folder it loaded (its runs are under it).
+LOADED = re.compile(r"loaded (/.+?) in \d")
 #: A chunk saved this long before a copy's range is not opened, seconds: a margin for clocks and late saves.
 SAVED_MARGIN = 3600.0
 #: Days kept locally, today included.
@@ -96,7 +99,8 @@ def copied_sessions(folder: Path) -> list[dict]:
 
     As `sessions`, but a copied session starts and ends with the range it was copied from, not at its last write.
     """
-    for pattern in (DESCRIPTION, f"*/{DESCRIPTION}", f"*/*/{DESCRIPTION}"):
+    # * Down to a folder of copies: `<to>/<name>/<stamp>/<session>`.
+    for pattern in (DESCRIPTION, f"*/{DESCRIPTION}", f"*/*/{DESCRIPTION}", f"*/*/*/{DESCRIPTION}"):
         found = [session for path in sorted(folder.glob(pattern)) if (session := _session(path.parent)) is not None]
         if found:
             return sorted(found, key=lambda session: session["start"])
@@ -144,7 +148,8 @@ def copy_range(root: Path, start: float, end: float, destination: Path, about: d
     """Copy what was recorded from wall time `start` to `end` (seconds since the epoch) into `destination`.
 
     Each session copied starts with its newest states before `start` ("state" events) and every event since them,
-    each marked `"before_range": true`, so it says where things stood at `start`. Everything is read line by line and
+    each marked `"before_range": true`, so it says where things stood at `start`; the newest process loaded before
+    them (its log line, `LOADED`) is kept too, for the runs and bar shapes. Everything is read line by line and
     chunk by chunk: memory stays flat however long the session. Damaged lines and chunks (a crash mid-write) are left
     out and counted.
 
@@ -200,9 +205,10 @@ def _copy_session(session: Path, start: float, end: float, target: Path, about: 
     if offset is None:
         return None  # * not a session, or one without a usable description
     low, high = start - offset, end - offset
-    # * First pass, times only: where the newest states before the range are, whether any event lies in it.
-    since, in_range, skipped, cut = low, False, 0, False
-    for line in _lines(session / EVENTS):
+    # * First pass, times only: where the newest states and process loaded before the range are, whether any event
+    # * lies in it.
+    since, loaded, in_range, skipped, cut = low, -1, False, 0, False
+    for index, line in enumerate(_lines(session / EVENTS)):
         event, when = _parsed(line)
         # * A line that does not read counts as damaged unless it is the last: the monitor may be writing it now.
         skipped += cut
@@ -211,6 +217,8 @@ def _copy_session(session: Path, start: float, end: float, target: Path, about: 
             continue
         if when < low and event.get("event") in STATES:
             since = when
+        elif when < low and loaded_folder(event) is not None:
+            loaded = index
         elif low <= when <= high:
             in_range = True
     made = False
@@ -241,12 +249,12 @@ def _copy_session(session: Path, start: float, end: float, target: Path, about: 
         return None
     if not made:
         make_target()
-    # * Second pass: the lines from the newest states on, those before the range marked.
+    # * Second pass: the process loaded and the lines from the newest states on, those before the range marked.
     events, files = 0, set()
     with open(target / EVENTS, "w", encoding="utf-8") as out:
-        for line in _lines(session / EVENTS):
+        for index, line in enumerate(_lines(session / EVENTS)):
             event, when = _parsed(line)
-            if event is None or not since <= when <= high:
+            if event is None or not (since <= when <= high or index == loaded):
                 continue
             if when < low:
                 line = json.dumps({**event, "before_range": True}, allow_nan=False)
@@ -259,6 +267,13 @@ def _copy_session(session: Path, start: float, end: float, target: Path, about: 
             (target / file).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(session / file, target / file)
     return {"events": events, "rows": rows, "files": len(files), "skipped": skipped}
+
+
+def loaded_folder(event: dict) -> Path | None:
+    """The process folder an event says the monitor loaded (the process plugin's log line, `LOADED`), or None."""
+    found = LOADED.match(str(event.get("text"))) if event.get("event") == "log" and \
+        event.get("source") == "process" else None
+    return Path(found.group(1)) if found else None
 
 
 def _per_tick(key: str, value: np.ndarray, ticks: int) -> bool:

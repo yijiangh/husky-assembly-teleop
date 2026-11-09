@@ -385,6 +385,7 @@ class AssemblyObserverPlugin(HuskyPlugin):
 
         ! The script is killed after `timeout` and when this task is cancelled (the plugin stopping): the monitor never
           waits on it. Stop all leaves it running: it only reads and copies. The Rerun viewer it opened stays open.
+        ! Its output goes to files, never a pipe: a viewer it starts inherits them and outlives it.
 
         Args:
             ctx: The plugin's context.
@@ -395,8 +396,8 @@ class AssemblyObserverPlugin(HuskyPlugin):
         """
         await ctx.run_in_thread(self._writer.submit(lambda: None).result)
         try:
-            with tempfile.TemporaryFile("w+") as errors:
-                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=errors, text=True)
+            with tempfile.TemporaryFile("w+") as output, tempfile.TemporaryFile("w+") as errors:
+                process = subprocess.Popen(command, stdout=output, stderr=errors, text=True)
                 started = time.monotonic()
                 try:
                     while process.poll() is None:
@@ -404,11 +405,10 @@ class AssemblyObserverPlugin(HuskyPlugin):
                             raise TimeoutError(f"no end after {timeout / 60:.0f} min; stopped")
                         await ctx.sleep(0.5)
                 finally:
-                    _stop(process)
+                    await _stop(ctx, process)
+                output.seek(0)
                 errors.seek(0)
-                with process.stdout:
-                    stdout = process.stdout.read()
-                stderr = errors.read()
+                stdout, stderr = output.read(), errors.read()
             outcome = json.loads(stdout.strip().splitlines()[-1]) if stdout.strip() else \
                 {"error": (stderr.strip().splitlines() or ["no answer"])[-1]}
         except (OSError, ValueError, TimeoutError) as error:
@@ -511,16 +511,21 @@ class AssemblyObserverPlugin(HuskyPlugin):
 
 # --- --- --- --- --- FILES (writer thread) --- --- --- --- ---
 
-def _stop(process: subprocess.Popen) -> None:
-    """End a copy still running: ask, then kill it after 2 s."""
+async def _stop(ctx: PluginContext, process: subprocess.Popen) -> None:
+    """End a helper script still running: ask, then kill it after 2 s; polls, never blocks the loop."""
     if process.poll() is not None:
         return
     process.terminate()
     try:
-        process.wait(timeout=2.0)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
+        for _ in range(20):
+            await ctx.sleep(0.1)
+            if process.poll() is not None:
+                return
+    finally:
+        if process.poll() is None:
+            process.kill()  # * also when cancelled again meanwhile: reaped by the poll below or by Popen later
+    while process.poll() is None:
+        await ctx.sleep(0.05)
 
 
 def copy_line(outcome: dict) -> tuple[str, bool]:

@@ -682,6 +682,32 @@ def test_open_in_rerun_runs_the_helper_script_on_the_range(tmp_path, monkeypatch
     assert "opened 1 session(s), 3 events, 7 ticks in Rerun" in plugin._copied.content
 
 
+def test_a_viewer_left_running_by_the_helper_script_does_not_hold_the_panel(tmp_path, monkeypatch, local_root):
+    """The script ends but leaves a child (the viewer `rr.spawn` started) holding its output: the line shows at once."""
+    import os
+    import signal
+    import time as clock
+
+    script = tmp_path / "spawns.py"
+    script.write_text("import json, subprocess, sys\nchild = subprocess.Popen(['sleep', '30'])\n"
+                      "open(sys.argv[0] + '.pid', 'w').write(str(child.pid))\n"
+                      "print(json.dumps({'sessions': ['s'], 'rows': 7, 'events': 3, 'notes': [], 'saved': None}))\n")
+    monkeypatch.setattr(observer_module, "SCRIPT", script)
+    monkeypatch.setattr(observer_module, "find_spec", lambda name: object())
+    lab, plugin = lab_on_drive(tmp_path), AssemblyObserverPlugin()
+    plugin.setup(lab.ctx)
+    plugin._from.value = "00:00"
+    started = clock.monotonic()
+    try:
+        clicked(lab, plugin, "Open in Rerun")
+        took = clock.monotonic() - started
+        plugin.draw(lab.ctx)
+        plugin.teardown(lab.ctx)
+    finally:
+        os.kill(int(script.with_name("spawns.py.pid").read_text()), signal.SIGKILL)
+    assert took < 10.0 and "opened 1 session(s), 3 events, 7 ticks in Rerun" in plugin._copied.content
+
+
 def test_open_in_rerun_without_rerun_installed_says_how_to_install_it(tmp_path, monkeypatch):
     """Without the rerun package nothing runs: the line below the buttons says how to install it."""
     monkeypatch.setattr(observer_module, "find_spec", lambda name: None)

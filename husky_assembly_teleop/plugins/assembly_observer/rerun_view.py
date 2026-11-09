@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -37,7 +38,7 @@ from ...plugin_api.trace import load_arrays
 from ...shared.recordings.runs import load_description
 from ...world.lab import BORDER_COLOR, DEFAULT_LAB, LAB_COLOR, lab_file, mesh_directory_of, read_lab, slug
 from .columns import NOISE, POSE, STREAM
-from .export import CHUNKS, EVENTS, SAVED_MARGIN, STATES, copied_sessions, sessions
+from .export import CHUNKS, EVENTS, SAVED_MARGIN, STATES, copied_sessions, loaded_folder, sessions
 
 #: The timelines: wall time, and seconds since the range's start.
 TIMELINE, SINCE_START = "time", "since start"
@@ -71,8 +72,6 @@ LATE_TICKS = "states/lab/late_ticks"
 LATE_TICK = re.compile(r"tick \d+ started [\d.]+ ms late")
 #: A number standing on its own in a log line (not part of a name like B20 or a200-0806).
 NUMBER = re.compile(r"(?<![\w/-])\d+(?:\.\d+)?(?![\w-])")
-#: The process plugin's log line naming the process folder it loaded (its runs are under it).
-LOADED = re.compile(r"loaded (/.+?) in \d")
 #: An assembly run's event as an event here: "run <its event>".
 RUN = "run "
 #: Where each robot's arm ghost goes (its model again, arms only, see-through), plus its short serial.
@@ -96,6 +95,8 @@ class Session:
     robots: dict[str, list[str]]
     #: The chunks that may hold ticks of the range.
     chunks: list[Path] = field(default_factory=list)
+    #: Its end, wall time: its last write (a copy's: the range copied).
+    ended: float = np.inf
 
 
 @dataclass
@@ -158,7 +159,8 @@ def log_range(root: Path, start: float, end: float, *, save: Path | None = None,
     ghosts = _ghosts(found, data, sent, notes)
     objects = sorted({name for session in found for chunk in session.chunks for name in _object_names(chunk)})
     blueprint = _blueprint(found, objects, models, ghosts)
-    rr.init("husky_assembly_observer", recording_id=f"observer_{int(start)}_{int(end)}")
+    # * A new id each time: the same range opened twice in one viewer would merge into one recording, all doubled.
+    rr.init("husky_assembly_observer", recording_id=f"observer_{int(start)}_{int(end)}_{uuid.uuid4().hex[:8]}")
     if save is not None:
         rr.save(save, default_blueprint=blueprint)
     elif spawn:
@@ -166,11 +168,13 @@ def log_range(root: Path, start: float, end: float, *, save: Path | None = None,
         # * Active, not only default: the viewer keeps the layout it last showed for this app and would show that.
         rr.send_blueprint(blueprint, make_active=True, make_default=True)
     _log_static(rr, found, models)
-    _log_scene(rr, found, data, objects, end, notes)
+    _log_scene(rr, found, data, objects, start, end, notes)
     _log_ghosts(rr, ghosts, start)
     _log_sent(rr, sent, ghosts, start, end)
-    rows = sum(_log_ticks(rr, session, start, end, models) for session in found)
-    events = sum(_log_events(rr, session, start, end) for session in found)
+    paths: dict[str, list[np.ndarray]] = {}
+    rows = sum(_log_ticks(rr, session, start, end, models, paths) for session in found)
+    _log_paths(rr, paths)
+    events = sum(_log_events(rr, session, start, end, notes) for session in found)
     recording = rr.get_global_data_recording()
     if recording is not None:
         recording.flush()  # * all of it in the file or the viewer before this returns, not at the process's exit
@@ -194,7 +198,7 @@ def _sessions(root: Path, start: float, end: float, copy: bool = False) -> list[
                   (description.get("robots") or {}).items()}
         chunks = [chunk for chunk in sorted(kept["folder"].glob(CHUNKS))
                   if chunk.stat().st_mtime >= start - SAVED_MARGIN]
-        found.append(Session(kept["folder"], offset, robots, chunks))
+        found.append(Session(kept["folder"], offset, robots, chunks, kept["end"]))
     return found
 
 
@@ -279,10 +283,13 @@ def _log_static(rr, found: list[Session], models: dict[str, Model]) -> None:
 
 # --- --- --- --- --- TICKS --- --- --- --- ---
 
-def _log_ticks(rr, session: Session, start: float, end: float, models: dict[str, Model]) -> int:
-    """Every tick of the range in one session: plot lines, poses, arm joints, the follower's points, base paths."""
+def _log_ticks(rr, session: Session, start: float, end: float, models: dict[str, Model],
+               paths: dict[str, list[np.ndarray]]) -> int:
+    """Every tick of the range in one session: plot lines, poses, arm joints, the follower's points.
+
+    Its base paths are added to `paths` (short serial -> its pieces), logged once for every session (`_log_paths`).
+    """
     named: set[str] = set()
-    paths: dict[str, list[np.ndarray]] = {}
     rows = 0
     for chunk in session.chunks:
         try:
@@ -326,11 +333,15 @@ def _log_ticks(rr, session: Session, start: float, end: float, models: dict[str,
             held = _held(values)
             rr.send_columns(path, indexes=_times(rr, stamps[~held], start),
                             columns=rr.Scalars.columns(scalars=values[~held]))
+    return rows
+
+
+def _log_paths(rr, paths: dict[str, list[np.ndarray]]) -> None:
+    """Each base's path over every session of the range, static: logged once, a second log would replace it."""
     for short, pieces in paths.items():
         strips = [strip for piece in pieces for strip in _strips(piece)]
         if strips:
             rr.log(f"world/paths/{short}", rr.LineStrips3D(strips, radii=0.005), static=True)
-    return rows
 
 
 def _times(rr, stamps: np.ndarray, start: float) -> list:
@@ -473,15 +484,20 @@ def _strips(xyz: np.ndarray) -> Iterator[np.ndarray]:
 
 # --- --- --- --- --- EVENTS --- --- --- --- ---
 
-def _log_events(rr, session: Session, start: float, end: float) -> int:
-    """The range's events and its runs' as text lines and state timelines, those before it as where things stood."""
+def _log_events(rr, session: Session, start: float, end: float, notes: list[str]) -> int:
+    """The range's events and its runs' as text lines and state timelines, those before it as where things stood.
+
+    A session with events but no process loaded (its log line) is noted: its runs' steps cannot be shown.
+    """
     events = list(_read_events(session.folder / EVENTS))
+    if events and not any(loaded_folder(event) for event in events):
+        notes.append(f"{session.folder.name}: no process loaded in its log, so no run steps")
     merged = sorted(events + _run_events(events), key=lambda event: float(event["ros_time"]))
     states: dict[str, str] = {}
     shown: dict[str, str] = {}
     started = False
     count = 0
-    for wall, changes, line in _entries(merged, session.offset):
+    for wall, changes, line in _entries(merged, session.offset, start, end):
         if wall > end:
             continue
         if wall < start and not started:
@@ -530,8 +546,7 @@ def _run_events(events: list[dict]) -> list[dict]:
         return []
     times = [float(event["ros_time"]) for event in events]
     low, high = min(times), max(times)
-    processes = sorted({found.group(1) for event in events if event.get("event") == "log"
-                        and event.get("source") == "process" and (found := LOADED.match(str(event.get("text"))))})
+    processes = sorted({str(folder) for event in events if (folder := loaded_folder(event)) is not None})
     picked = []
     for process in processes:
         for log in sorted(Path(process).glob(f"{RUNS}/*/{EVENTS_FILE}")):
@@ -545,13 +560,15 @@ def _run_events(events: list[dict]) -> list[dict]:
     return picked
 
 
-def _entries(events: Iterable[dict], offset: float) -> Iterator[tuple[float, dict[str, str], tuple | None]]:
+def _entries(events: Iterable[dict], offset: float, start: float = -np.inf,
+             end: float = np.inf) -> Iterator[tuple[float, dict[str, str], tuple | None]]:
     """Each event as (wall time, its state changes, its text line or None), log floods collapsed.
 
     - Late-tick warnings become the state `states/lab/late_ticks`, "late" from the first and "ok" `LATE_QUIET` after
       the last, with a line at each switch.
     - Any other log line repeating (same source, same text but its numbers) less than `REPEAT_GAP` apart is shown
-      once; the repeats are counted in one line at the last of them.
+      once; the repeats are counted in one line at the last of them. Only lines from wall time `start` to `end` count:
+      the first repeat in the range shows, and a flood still going at `end` is counted up to its last repeat before.
     """
     late: list[float] = []  # * the late ticks' times since the state went "late"
     repeats: dict[tuple[str, str], dict] = {}
@@ -560,7 +577,7 @@ def _entries(events: Iterable[dict], offset: float) -> Iterator[tuple[float, dic
         if late and wall - late[-1] > LATE_QUIET:
             yield late[-1] + LATE_QUIET, *_ticks_back(late)
             late = []
-        for key in [key for key, seen in repeats.items() if wall - seen["last"] > REPEAT_GAP]:
+        for key in [key for key, seen in repeats.items() if wall - seen["last"] > REPEAT_GAP or wall > end]:
             if (seen := repeats.pop(key))["more"]:
                 yield seen["last"], {}, _repeated(seen)
         changes, line = _state_changes(event), _text_line(event)
@@ -569,7 +586,7 @@ def _entries(events: Iterable[dict], offset: float) -> Iterator[tuple[float, dic
             if len(late) == 1:
                 yield wall, {LATE_TICKS: "late"}, ("log/ticks", "WARN", line[2])
             continue
-        if event.get("event") == "log":
+        if event.get("event") == "log" and start <= wall <= end:
             key = (str(event.get("source")), NUMBER.sub("#", str(event.get("text"))))
             if (seen := repeats.get(key)) is not None:
                 # * The observer writes a line repeating again with its count so far.
@@ -795,9 +812,13 @@ def _warns(event: dict) -> bool:
 
 # --- --- --- --- --- LAB AND BARS --- --- --- --- ---
 
-def _log_scene(rr, found: list[Session], data: Path | None, objects: list[str], end: float,
+def _log_scene(rr, found: list[Session], data: Path | None, objects: list[str], start: float, end: float,
                notes: list[str]) -> None:
-    """The lab's obstacles from its file in git under /world/lab, and each tracked bar's shape on its object frame."""
+    """The lab's obstacles from its file in git under /world/lab, and each tracked bar's shape on its object frame.
+
+    A bar's shape is hidden from `start` until its pose is known (`_log_bar_shown`): without one it would stand at
+    the lab's origin.
+    """
     if data is not None:
         path = lab_file(data, DEFAULT_LAB)
         try:
@@ -821,6 +842,8 @@ def _log_scene(rr, found: list[Session], data: Path | None, objects: list[str], 
             continue
         _log_body(rr, f"world/objects/{name}/bar", Pose(), bar.geometry.visual or bar.geometry.collision,
                   rgb01(FITTED, 1.0))
+        _set_time(rr, start, start)
+        rr.log(f"world/objects/{name}/bar", rr.Transform3D.from_fields(scale=[HIDDEN_SCALE] * 3))
         # * Mounted halves stay where they sit on their bar, so the assembly poses give the offset.
         for half_id in process.halves_of(bar_id):
             half = process.bodies[half_id]
@@ -836,10 +859,8 @@ def _process(found: list[Session], end: float, notes: list[str]):
     folder = None
     for session in found:
         for event in _read_events(session.folder / EVENTS):
-            loaded = re.match(r"loaded (.+?) in \d", str(event.get("text", "")))
-            if event.get("event") == "log" and event.get("source") == "process" and loaded and \
-                    float(event["ros_time"]) + session.offset <= end:
-                folder = Path(loaded.group(1))
+            if (loaded := loaded_folder(event)) is not None and float(event["ros_time"]) + session.offset <= end:
+                folder = loaded
     if folder is None:
         notes.append("no process loaded: tracked bars are axes only")
         return None
@@ -880,8 +901,9 @@ def _log_bar_shown(rr, path: str, known: np.ndarray, stamps: np.ndarray, start: 
 def _sent(session: Session, start: float, end: float) -> list[Shown]:
     """What the session's sent base paths, arm trajectories and clearance trips draw in 3D, within the range.
 
-    A path shows until its follower stops following, a trajectory's ghost until its last point's time, a trip for
-    `TRIP_SHOWN`; any of them until the next on the same entity replaces it.
+    A path shows until its follower stops following, a trajectory's ghost until its last point's time or a hold sent
+    to its arm, a trip for `TRIP_SHOWN`; any of them until the next on the same entity replaces it, and at most until
+    the session's end.
     """
     drawn: list[Shown] = []
     for event in _read_events(session.folder / EVENTS):
@@ -890,10 +912,11 @@ def _sent(session: Session, start: float, end: float) -> list[Shown]:
         if wall > end or not serial:
             continue
         short = short_serial(serial)
-        if name == "follower" and event.get("value") != "following":
+        if (name == "follower" and event.get("value") != "following") or name == "hold sent":
+            entity = f"world/plans/{short}" if name == "follower" else f"{GHOST_ROOT}{short}/{event.get('arm', '')}"
             for shown in reversed(drawn):
-                if shown.entity == f"world/plans/{short}":
-                    if shown.end is None and shown.start <= wall:
+                if shown.entity == entity:
+                    if shown.start <= wall and (shown.end is None or shown.end > wall):
                         shown.end = wall
                     break
         elif name in ("path sent", "trajectory sent") and event.get("file"):
@@ -923,6 +946,9 @@ def _sent(session: Session, start: float, end: float) -> list[Shown]:
                     labels.append(" / ".join(str(pair.get(side, "")).rsplit("/", 1)[-1] for side in ("a", "b")))
             if strips:
                 drawn.append(Shown(f"world/trips/{short}", wall, wall + TRIP_SHOWN, strips, labels))
+    for shown in drawn:  # * a path still followed when the session ended has no end: it would stay through the next
+        if shown.end is None or shown.end > session.ended:
+            shown.end = max(shown.start, session.ended)
     return _in_range(drawn, start, end)
 
 
@@ -1067,7 +1093,9 @@ def _blueprint(found: list[Session], objects: list[str], models: dict[str, Model
     lab = [rrb.TimeSeriesView(name="relay drift", origin="/lab/relay_drift"),
            rrb.TimeSeriesView(name="late ticks", origin="/lab/monitor_late_share")]
     if objects:
-        lab.append(rrb.TimeSeriesView(name="objects mocap", origin="/objects", contents=["$origin/*/mocap"]))
+        # * Rerun takes a `*` only as a trailing `/**`: every object listed.
+        lab.append(rrb.TimeSeriesView(name="objects mocap", origin="/objects",
+                                      contents=[f"+ $origin/{name}/mocap" for name in objects]))
     tabs.append(rrb.Grid(*lab, name="lab"))
     # * The models sit at the top level (`MODEL_ROOT`), their collision shapes hidden.
     lab_frame = ["+ /world/**"]

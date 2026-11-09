@@ -28,7 +28,10 @@ ROS_START, OFFSET = 1_000.0, 1_794_000_000.0
 
 @pytest.fixture
 def session(tmp_path):
-    """A session of one robot with one arm: 100 ticks at 20 Hz, a lease taken and released, an arm move, a log line."""
+    """A session of one robot with one arm: 100 ticks at 20 Hz, a lease taken and released, an arm move, a log line.
+
+    Before its first states, the process loaded.
+    """
     folder = tmp_path / "20261109" / "20261109_100000_session"
     folder.mkdir(parents=True)
     robots = {"a200-0806": {"arms": {"left_ur_arm": "ScaffoldingV3"}}}
@@ -51,6 +54,8 @@ def session(tmp_path):
                            "0806_left_ur_arm_wrench_peak.labels": np.array(["force", "torque"]),
                            "0806_left_ur_arm_wrench_peak.units": np.array(["N", "N m"])})
     events = [
+        {"event": "log", "ros_time": ROS_START - 0.5, "level": "INFO", "source": "process",
+         "text": f"loaded {tmp_path / 'process'} in 1.0 s; 1 actions"},
         {"event": "state", "ros_time": ROS_START, "robot": "a200-0806", "status": {"lease": None, "e-stop": False},
          "moving": {"base": False, "left_ur_arm": False}},
         {"event": "lease taken", "ros_time": ROS_START + 0.5, "robot": "a200-0806", "holder": "guide"},
@@ -189,6 +194,20 @@ def test_a_copy_is_found_from_its_folder_a_session_of_it_or_a_folder_of_copies(c
     assert copied_sessions(copy / "20261109_100000_session" / "commands") == []
 
 
+def test_a_folder_of_copies_holds_them_by_name_and_stamp(copy):
+    """The copies' root, `<to>/<name>/<stamp>/<session>`, finds them too."""
+    found = copied_sessions(copy.parent.parent)
+    assert [session["folder"].name for session in found] == ["20261109_100000_session"]
+
+
+def test_a_copy_keeps_the_process_loaded_before_its_states(copy, tmp_path):
+    """The process's "loaded" line, older than the newest states before the range, is copied: runs and bars need it."""
+    lines = [json.loads(line) for line in (copy / "20261109_100000_session" / "events.jsonl").read_text().splitlines()]
+    assert [line["event"] for line in lines[:2]] == ["log", "state"] and lines[0]["before_range"]
+    shown = log_range(copy, ROS_START + OFFSET + 1.0, ROS_START + OFFSET + 4.0, save=tmp_path / "copy.rrd", copy=True)
+    assert not [note for note in shown["notes"] if "no process loaded" in note]
+
+
 def test_a_copy_opens_whole_from_the_script_without_a_range(copy, tmp_path):
     """`observer_logs.py rerun --folder <copy>` shows every tick and event copied; a start and end narrow it."""
     def call(*args: str) -> dict:
@@ -235,6 +254,18 @@ def test_late_ticks_become_a_state_and_other_repeats_one_line_with_a_count():
     lines = [(at, line[2]) for at, _, line in entries if line is not None and line[0] == "log/guide"]
     assert lines == [(1.0, "[guide] slow plan 1.2 s"), (2.5, "[guide] slow plan 3.4 s (×3 more)"),
                      (20.0, "[guide] slow plan 9 s")]
+
+
+def test_a_flood_across_the_range_shows_its_first_line_inside_and_its_count_up_to_the_end():
+    """Lines before the range never hide those in it; a flood still going at the range's end is counted up to it."""
+    flood = [{"event": "log", "ros_time": float(t), "level": "WARN", "source": "relay", "text": f"gap {t % 7} frames"}
+             for t in range(1000, 2200)]
+
+    def lines(start, end):
+        return [(at, line[2]) for at, _, line in _entries(flood, 0.0, start, end)
+                if line is not None and start <= at <= end]
+    assert lines(1300.0, 1900.0) == [(1300.0, "[relay] gap 5 frames"), (1900.0, "[relay] gap 3 frames (×600 more)")]
+    assert lines(900.0, 1500.0) == [(1000.0, "[relay] gap 6 frames"), (1500.0, "[relay] gap 2 frames (×500 more)")]
 
 
 def test_a_run_of_the_loaded_process_adds_its_steps_and_their_outcomes(tmp_path):
@@ -354,9 +385,48 @@ def test_a_tracked_bar_gets_its_process_shape_and_its_halves(sent, tmp_path, mon
     saved, notes = tmp_path / "bars.rrd", []
     rr.init("test_bars")
     rr.save(saved)
-    rerun_view._log_scene(rr, found, None, ["fitted_bar_B20", "fitted_bar_B99"], ROS_START + OFFSET + 5.0, notes)
+    rerun_view._log_scene(rr, found, None, ["fitted_bar_B20", "fitted_bar_B99"], ROS_START + OFFSET,
+                          ROS_START + OFFSET + 5.0, notes)
     rr.get_global_data_recording().flush()
     assert folders == [sent / "process"]
     assert notes == ["not in the process, axes only: fitted_bar_B99"]
     assert {"/world/objects/fitted_bar_B20/bar/0", "/world/objects/fitted_bar_B20/bar/joints_J20/0"} <= \
         _entities(saved)
+    # * Hidden from the range's start until its pose is known: else it stands at the lab's origin.
+    from rerun.chunk import RrdReader
+    scales = [(chunk.timeline_names, chunk.to_record_batch().column("Transform3D:scale").to_pylist())
+              for chunk in RrdReader(saved).stream() if chunk.entity_path == "/world/objects/fitted_bar_B20/bar"
+              and "Transform3D:scale" in chunk.to_record_batch().schema.names]
+    assert len(scales) == 1 and {TIMELINE, SINCE_START} <= set(scales[0][0])
+    assert scales[0][1] == [[[pytest.approx(rerun_view.HIDDEN_SCALE)] * 3]]
+
+
+def test_the_objects_mocap_plot_lists_each_object():
+    """Rerun takes a `*` only as a trailing `/**`: the objects' mocap plot names each object's entity."""
+    import rerun.blueprint as rrb
+
+    def views(item):
+        if isinstance(item, rrb.View):
+            yield item
+        for inner in getattr(item, "contents", None) or () if not isinstance(item, rrb.View) else ():
+            yield from views(inner)
+    blueprint = rerun_view._blueprint([], ["fitted_bar_B20", "pipe"], {}, {})
+    plot = next(view for view in views(blueprint.root_container) if view.name == "objects mocap")
+    assert plot.contents == ["+ $origin/fitted_bar_B20/mocap", "+ $origin/pipe/mocap"]
+
+
+def test_a_hold_ends_its_arms_ghost_and_the_session_end_ends_a_path_still_followed(sent):
+    """A hold cuts a trajectory short, so its ghost goes; a path followed when the session ended ends with it."""
+    folder = sent / "20261109" / "20261109_100000_session"
+    events = [event for event in map(json.loads, (folder / "events.jsonl").read_text().splitlines())
+              if not (event["event"] == "follower" and event["value"] == "done")]
+    events.append({"event": "hold sent", "ros_time": ROS_START + 2.5, "robot": "a200-0806", "arm": "left_ur_arm",
+                   "duration": 0.2, "waypoints": 1})
+    (folder / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+    for path in [folder, *folder.rglob("*")]:  # * the session's end is its last write: 5 s
+        os.utime(path, (ROS_START + OFFSET + 5.0,) * 2)
+    wall = ROS_START + OFFSET
+    found = rerun_view._sessions(sent, wall, wall + 10.0)
+    shown = {item.entity: item for item in rerun_view._sent(found[0], wall, wall + 10.0)}
+    assert shown["ghost_0806/left_ur_arm"].end == pytest.approx(wall + 2.5)
+    assert shown["world/plans/0806"].end == pytest.approx(wall + 5.0)
