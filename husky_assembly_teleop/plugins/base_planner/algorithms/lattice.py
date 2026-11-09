@@ -11,6 +11,10 @@ Hybrid A* over the base's floor pose (x, y, yaw) that drives curves where they f
   how far earlier turns and curves may still have the base off the path (`_Node.slack`).
 - Guided by the cost still to go on a coarse map of where the robot's shape fits at each heading (`_CostMap`). The path
   found is shortened, then checked as the follower really drives it, simulated across the range (`follow.followed`).
+- Narrow passages: moves may come as close as the narrow margin where the margin does not fit; the cost map makes
+  such places dear, and the single move and the shortening keep the margin. The planner plugin slows the path there.
+- Searches from the tighter end first, then the other way, each with half the time: a search that starts in a narrow
+  place is already lined up with it.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from collections import Counter
 import math
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from crl_husky.base_model import load_model
@@ -66,6 +70,12 @@ TRACK_BASE = 0.01   # m
 TRACK_GAIN = 0.3
 #: The distance still to go counts this many times: 1 finds the cheapest path, more finds one sooner.
 GREED = 2.5
+#: Where only the narrow margin fits, driving costs NARROW_WEIGHT times more on the cost map.
+NARROW_MARGIN = 0.05  # m
+NARROW_WEIGHT = 2.0
+#: Each search direction stops searching FINISH_RESERVE seconds before its time is up, for the shortening, the check
+#: as followed and the planner plugin's measuring (`planner_plugin.narrowed`).
+FINISH_RESERVE = 3.0  # s
 #: Try to finish from every FINISH_EVERY-th node taken, and from every node within FINISH_NEAR metres of the lead's
 #: start.
 FINISH_EVERY = 10
@@ -163,6 +173,7 @@ class Settings:
         turn_weight: Metres of driving one radian of turning on the spot is worth.
         margin: Keep at least this far from everything else, metres.
         curves: Whether the path may drive curves; else it turns on the spot only.
+        narrow_margin: Where nothing keeps `margin`, keep at least this far, metres; at most `margin`.
     """
 
     x_icr_spread: float = XICR_SPREAD
@@ -171,6 +182,7 @@ class Settings:
     turn_weight: float = TURN_WEIGHT
     margin: float = COLLISION_MARGIN
     curves: bool = True
+    narrow_margin: float = NARROW_MARGIN
 
 
 class Lattice(Algorithm):
@@ -191,14 +203,17 @@ class Lattice(Algorithm):
             gui.add_slider("Turn cost m/rad", min=0.0, max=2.0, step=0.1, initial_value=TURN_WEIGHT,
                            hint="Metres of driving one radian of turning on the spot is worth"),
             gui.add_checkbox("Curves", initial_value=True,
-                             hint="Drive curves where they fit; off: turn on the spot only"))
+                             hint="Drive curves where they fit; off: turn on the spot only"),
+            gui.add_slider("Narrow margin m", min=0.03, max=0.10, step=0.005, initial_value=NARROW_MARGIN,
+                           hint="Where nothing keeps the margin, plan this close, driving slower there"))
 
     def settings(self) -> Settings:
         """The widgets' values, or the defaults."""
         if self._widgets is None:
             return Settings()
-        spread, model, lead, turn_weight, curves = (widget.value for widget in self._widgets)
-        return Settings(float(spread), follower_model(model), float(lead), float(turn_weight), curves=bool(curves))
+        spread, model, lead, turn_weight, curves, narrow = (widget.value for widget in self._widgets)
+        return Settings(float(spread), follower_model(model), float(lead), float(turn_weight), curves=bool(curves),
+                        narrow_margin=float(narrow))
 
     def plan(self, world, own, start, goal, abort, settings, debug) -> PlanResult[BasePath]:
         """See `plan`."""
@@ -225,9 +240,38 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     for layer in (FLOOR, LEARNED, MAP_WAY, MAP_TIGHT, LEAD_IN, PORTALS, PORTAL_LINES, TAKEN, HIT, FINISHES,
                   CLOSEST, SEARCHED, SHORTENED, FOLLOWED, FAILED_AT, TOUCHES):
         debug.layer(*layer)
-    started = phase = time.time()
+    started = time.time()
     start, goal = tuple(map(float, start)), tuple(map(float, goal))
-    margin = settings.margin
+    narrow = min(settings.margin, settings.narrow_margin)
+    for name, pose in (("start", start), ("target", goal)):
+        other = world.hit_by(own, pose, narrow)
+        if other is not None:
+            return PlanResult(None, "cancelled" if abort.is_set() else f"{name} is in collision with {other}",
+                              time.time() - started, hit=world.collision_hit(own, narrow, name, pose))
+    # * From the tighter end first: a search that starts there is lined up with its narrow place already.
+    backwards_first = world.clearance(own, [goal])[0] < world.clearance(own, [start])[0]
+    reasons = []
+    for k, backwards in enumerate((backwards_first, not backwards_first)):
+        debug.note(f"search {'back from the target' if backwards else 'from the start'}")
+        result = _plan_one(world, own, start, goal, abort, settings, debug,
+                           started + TIME_LIMIT * (0.5 if k == 0 else 1.0) - FINISH_RESERVE, backwards)
+        if result.path is not None or abort.is_set():
+            return PlanResult(result.path, result.reason, time.time() - started, hit=result.hit, direct=result.direct)
+        reasons.append(f"{'back from the target' if backwards else 'from the start'}: {result.reason}")
+    return PlanResult(None, "; ".join(reasons), time.time() - started)
+
+
+def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Event, settings: Settings, debug: Debug,
+              deadline: float, backwards: bool) -> PlanResult[BasePath]:
+    """`plan` in one direction, searching until `deadline`.
+
+    `backwards`: the search runs from the start of the drive in back to `start`; the path found is reversed, then
+    driven in onto `goal` as usual.
+    """
+    started = phase = time.time()
+    # * The narrow margin is the hard one; the margin only where a move need not come closer.
+    full = settings.margin
+    margin = min(full, settings.narrow_margin)
 
     def lap(text: str) -> None:
         """Note how long the phase since the last lap took."""
@@ -237,11 +281,6 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
 
     def failed(reason: str, hit: CollisionHit | None = None) -> PlanResult[BasePath]:
         return PlanResult(None, "cancelled" if abort.is_set() else reason, time.time() - started, hit=hit)
-
-    for name, pose in (("start", start), ("target", goal)):
-        other = world.hit_by(own, pose, margin)
-        if other is not None:
-            return failed(f"{name} is in collision with {other}", world.collision_hit(own, margin, name, pose))
 
     try:
         model = load_model(settings.follower_model or FOLLOWER_MODEL)
@@ -262,8 +301,10 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     # The last check that failed: where, with which xICR, and what happened.
     failure: list = []
 
-    def hits(poses, xicrs, extra: float = 0.0) -> str | None:
+    def hits(poses, xicrs, extra: float = 0.0, at: float | None = None) -> str | None:
         """What driving through `poses` (turning-centre poses, yaw unwrapped) comes within the margin plus `extra` of.
+
+        `at` checks against that margin instead of the narrow one.
 
         For some xICR in `xicrs`: "hits <label>", "cancelled" once aborted, or None if nothing. A path that never turns
         drives the same whatever the xICR.
@@ -276,19 +317,32 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
             for pose in points[-1:] + points[:-1]:
                 if abort.is_set():
                     return "cancelled"
-                other = hit_by(pose, margin + extra)
+                other = hit_by(pose, (margin if at is None else at) + extra, at is not None)
                 if other is not None:
-                    failure[:] = [pose, icr, f"hits {other}", margin + extra]
+                    failure[:] = [pose, icr, f"hits {other}", (margin if at is None else at) + extra]
                     return failure[2]
         return None
+
+    def roomy(poses, xicrs, extra: float = 0.0) -> str | None:
+        """`hits` at the full margin, what the ends are close to keeping its own margin (`measured_from`).
+
+        Leaves `failure` as it was: a hit at the full margin is no failure.
+        """
+        kept = list(failure)
+        try:
+            with world.measured_from(full):
+                return hits(poses, xicrs, extra, full)
+        finally:
+            failure[:] = kept
 
     # Checks done, by pose and clearance: moves share their turns and ends. Clearances are rounded up to
     # CLEARANCE_STEP, so moves with nearly the same slack share them too.
     done: dict[tuple, str | None] = {}
 
-    def hit_by(pose, clearance: float) -> str | None:
+    def hit_by(pose, clearance: float, from_full: bool = False) -> str | None:
         clearance = math.ceil(clearance / CLEARANCE_STEP - 1e-9) * CLEARANCE_STEP
-        key = (round(pose[0], 4), round(pose[1], 4), round(pose[2], 4), round(clearance, 4))
+        # * `from_full`: checked from the full margin (`measured_from`), which keeps close objects differently.
+        key = (round(pose[0], 4), round(pose[1], 4), round(pose[2], 4), round(clearance, 4), from_full)
         if key not in done:
             done[key] = world.hit_by(own, pose, clearance)
         return done[key]
@@ -330,11 +384,10 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
 
     def room(pose) -> str:
         """How much room the robot has at `pose`: centimetres to the nearest thing and what it is, as text."""
-        clear, near = world.clearance(own, [pose])
+        clear, near = world.nearest(own, pose)
         if near is None:
             return f"over {CLEARANCE_LIMIT * 100:.0f} cm"
-        touching = hit_by(pose, 0.0)
-        return f"touches {touching}" if touching else f"{clear * 100:.0f} cm to {hit_by(pose, clear + CLEARANCE_STEP)}"
+        return f"touches {near}" if clear <= 0.0 else f"{clear * 100:.0f} cm to {near}"
 
     def found(poses, direct: bool = False) -> PlanResult[BasePath]:
         for trace in traces:
@@ -410,7 +463,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     join = _join(start_c, arrive_c)
     if join:
         poses = [start_c] + join + _continued(tail_c, arrive_c[2], join[-1][2])
-        if not hits(poses, icrs, _track(poses, swing)):
+        if not roomy(poses, icrs, _track(poses, swing)):
             if follows(_sent(poses, ahead)):
                 return found(_sent(poses, ahead), direct=True)
             tried("one move: as followed,")
@@ -425,11 +478,13 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     low = np.minimum.reduce([start[:2], arrive[:2], goal[:2]]) - PADDING
     shape = tuple(int(math.ceil(size / CELL)) + 1 for size in np.maximum.reduce(
         [start[:2], arrive[:2], goal[:2]]) + PADDING - low)
-    cost_map = _CostMap(world, own, low, shape, arrive,
-                        min(settings.turn_weight, CURVE_WEIGHT) if settings.curves else settings.turn_weight, margin)
+    # * Backwards: the cost map leads to the start, and the search starts at the start of the drive in.
+    cost_map = _CostMap(world, own, low, shape, start if backwards else arrive,
+                        min(settings.turn_weight, CURVE_WEIGHT) if settings.curves else settings.turn_weight, full,
+                        margin)
     debug.points(FLOOR[0], cost_map.nowhere(), FLOOR[1])
     debug.points(PORTALS[0], cost_map.portals, PORTALS[1])
-    way = cost_map.way(start)
+    way = cost_map.way(arrive if backwards else start)
     for (x0, y0, _), (x1, y1, fits) in zip(way[:-1], way[1:]):
         if fits:
             debug.lines(MAP_WAY[0], [((x0, y0), (x1, y1))], MAP_WAY[1])
@@ -484,15 +539,23 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
         lead_in, past = xy - (behind + PORTAL_LEAD) * along, xy + (ahead + PORTAL_PAST) * along
         return (float(lead_in[0]), float(lead_in[1]), heading), (float(past[0]), float(past[1]), heading)
 
-    corners, reason = _search(start_c, arrive_c, tail_c, ahead, cost_map, centred, hits, failure, touched, ends, swing,
-                              settings, started + TIME_LIMIT, abort, debug)
+    narrowing = roomy if full > margin + 1e-9 else None
+    if backwards:
+        corners, reason = _search(arrive_c, start_c, [], ahead, cost_map, centred, hits, failure, touched, ends, swing,
+                                  settings, deadline, abort, debug, aim="the start", roomy=narrowing, flip=True)
+        # ? Searched backwards, the drift slack and a big turn's drive after it count in search order; the check as
+        #   followed below decides in driving order.
+        corners = corners and corners[::-1] + tail_c
+    else:
+        corners, reason = _search(start_c, arrive_c, tail_c, ahead, cost_map, centred, hits, failure, touched, ends,
+                                  swing, settings, deadline, abort, debug, roomy=narrowing)
     if corners is None:
         return failed(f"{reason}. Target: {target_room}, {lead_note}{passed}")
     corners = _merged(corners)
     debug.path(SEARCHED[0], [_to_base(pose, ahead) for pose in corners], SEARCHED[1])
     lap(f"search: {reason}; {len(corners)} waypoints")
 
-    shortened = _shortened(corners, bool(tail), hits, ends, swing, settings, time.time() + SHORTEN_TIME)
+    shortened = _shortened(corners, bool(tail), roomy, ends, swing, settings, time.time() + SHORTEN_TIME)
     debug.path(SHORTENED[0], [_to_base(pose, ahead) for pose in shortened], SHORTENED[1])
     lap(f"shortened to {len(shortened)} waypoints")
 
@@ -514,7 +577,7 @@ class _CostMap:
     """
 
     def __init__(self, world: PlanningWorld, own: str, low, shape: tuple[int, int], target, turn_weight: float,
-                 margin: float = 0.0):
+                 margin: float = 0.0, narrow: float | None = None):
         """Map where the robot fits, and run Dijkstra over (x, y, heading) from the target.
 
         Args:
@@ -525,41 +588,57 @@ class _CostMap:
             target: (x, y, yaw) to measure to.
             turn_weight: Metres of driving one radian of turning is worth.
             margin: Grow the robot's shape by this much, metres, to the search-grid cell: as the search checks it.
+            narrow: Where only a shape grown by this much fits, driving costs NARROW_WEIGHT times more; None: `margin`.
         """
         heights = world.floor_heights(own, low, CELL, shape, FLOOR_BOTTOM)
         high, low_only = heights >= BAND, np.isfinite(heights) & (heights < BAND)
         top, under = world.robot_heights(own, CELL, FLOOR_BOTTOM)
         centre = top.shape[0] // 2
-        shapes = [_grown(np.argwhere(np.isfinite(top)) - centre, margin),
-                  _grown(np.argwhere(under < BAND) - centre, margin)]
-        size = int(math.ceil(max(np.abs(np.vstack(shapes)).max(), centre) * math.sqrt(2.0))) + 1
-        # Fine: whether the robot hits something, per heading sample and search-grid cell.
-        hit = np.zeros((SHAPE_HEADINGS, *shape), dtype=bool)
-        for n in range(SHAPE_HEADINGS):
-            yaw = 2.0 * math.pi * n / SHAPE_HEADINGS
-            rotation = np.array([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
-            for cells, things in zip(shapes, (high | low_only, low_only)):
-                mask = np.zeros((2 * size + 1, 2 * size + 1))
-                i, j = np.round(cells @ rotation.T).astype(int).T + size
-                mask[i, j] = 1.0
-                # The robot at a cell hits whatever lies under its shape there: correlate the map with the shape.
-                hit[n] |= fftconvolve(things.astype(float), mask[::-1, ::-1], mode="same") > OVERLAP - 0.5
-        self.portals = _portals(~hit, low)
-        # Room: how much more driving costs, per search-grid cell, from how many headings fit there.
-        room = 1.0 + (TIGHT - 1.0) * np.clip(1.0 - (~hit).sum(axis=0) / ROOMY_FITS, 0.0, 1.0)
-        # Coarse: fits at a cost map heading if it fits at a sample within one sample of it, and in a coarse cell if it
-        # fits in one of the search-grid cells there.
-        per = SHAPE_HEADINGS // MAP_HEADINGS
-        hit = np.stack([hit[(k * per + np.arange(-per + 1, per)) % SHAPE_HEADINGS].all(axis=0)
-                        for k in range(MAP_HEADINGS)])
+
+        def fine(grow: float) -> np.ndarray:
+            """Whether the robot grown by `grow` hits something, per heading sample and search-grid cell."""
+            shapes = [_grown(np.argwhere(np.isfinite(top)) - centre, grow),
+                      _grown(np.argwhere(under < BAND) - centre, grow)]
+            size = int(math.ceil(max(np.abs(np.vstack(shapes)).max(), centre) * math.sqrt(2.0))) + 1
+            out = np.zeros((SHAPE_HEADINGS, *shape), dtype=bool)
+            for n in range(SHAPE_HEADINGS):
+                yaw = 2.0 * math.pi * n / SHAPE_HEADINGS
+                rotation = np.array([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
+                for cells, things in zip(shapes, (high | low_only, low_only)):
+                    mask = np.zeros((2 * size + 1, 2 * size + 1))
+                    i, j = np.round(cells @ rotation.T).astype(int).T + size
+                    mask[i, j] = 1.0
+                    # The robot at a cell hits whatever lies under its shape there: correlate the map with the shape.
+                    out[n] |= fftconvolve(things.astype(float), mask[::-1, ::-1], mode="same") > OVERLAP - 0.5
+            return out
+
         step = int(round(MAP_CELL / CELL))
         nx, ny = (-(-size // step) for size in shape)
-        hit = np.pad(hit, ((0, 0), (0, nx * step - shape[0]), (0, ny * step - shape[1])), constant_values=True)
-        hit = hit.reshape(MAP_HEADINGS, nx, step, ny, step).all(axis=(2, 4)).transpose(1, 2, 0)
+        per = SHAPE_HEADINGS // MAP_HEADINGS
+
+        def coarse(fine_hit: np.ndarray) -> np.ndarray:
+            """Coarse from fine: hits at a cost map heading and cell unless it fits at a nearby sample and fine cell.
+
+            Fits at a cost map heading if it fits at a sample within one sample of it, and in a coarse cell if it fits
+            in one of the search-grid cells there.
+            """
+            out = np.stack([fine_hit[(k * per + np.arange(-per + 1, per)) % SHAPE_HEADINGS].all(axis=0)
+                            for k in range(MAP_HEADINGS)])
+            out = np.pad(out, ((0, 0), (0, nx * step - shape[0]), (0, ny * step - shape[1])), constant_values=True)
+            return out.reshape(MAP_HEADINGS, nx, step, ny, step).all(axis=(2, 4)).transpose(1, 2, 0)
+
+        hit = fine(margin)
+        narrow_hit = hit if narrow is None or narrow >= margin else fine(narrow)
+        self.portals = _portals(~narrow_hit, low)
+        # Room: how much more driving costs, per search-grid cell, from how many headings fit there.
+        room = 1.0 + (TIGHT - 1.0) * np.clip(1.0 - (~hit).sum(axis=0) / ROOMY_FITS, 0.0, 1.0)
+        hit, narrow_hit = coarse(hit), (coarse(narrow_hit) if narrow_hit is not hit else None)
         # A coarse cell has the room of its roomiest search-grid cell, as it fits if one of them fits.
         room = np.pad(room, ((0, nx * step - shape[0]), (0, ny * step - shape[1])), constant_values=TIGHT)
         room = room.reshape(nx, step, ny, step).min(axis=(1, 3))
-        self._low, self._shape, self._hit = np.asarray(low, dtype=float) + (step - 1) * CELL / 2.0, (nx, ny), hit
+        # * Fits: where the robot fits at the narrow margin; where only there, at NARROW_WEIGHT times the room.
+        fits = hit if narrow_hit is None else narrow_hit
+        self._low, self._shape, self._hit = np.asarray(low, dtype=float) + (step - 1) * CELL / 2.0, (nx, ny), fits
 
         index = np.arange(nx * ny * MAP_HEADINGS).reshape(nx, ny, MAP_HEADINGS)
         turn = turn_weight * 2.0 * math.pi / MAP_HEADINGS + 1e-6
@@ -589,7 +668,7 @@ class _CostMap:
                         turn_weight * np.abs(np.angle(np.exp(1j * (headings - target[2])))) + 1e-6)
         # Where the robot does not fit counts BLOCKED times, where it fits with little room more as it has less, and
         # where the search's moves hit, more as they hit.
-        self._fits = np.where(hit, BLOCKED, room[:, :, None])
+        self._fits = np.where(fits, BLOCKED, np.where(hit, NARROW_WEIGHT, 1.0) * room[:, :, None])
         self._hits = np.zeros((nx, ny))
         #: Goes up each time the cost to go is worked out again.
         self.version = 0
@@ -736,7 +815,8 @@ class _Node:
 
 
 def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits, failure: list, touched, ends,
-            swing: float, settings: Settings, deadline: float, abort: threading.Event, debug: Debug):
+            swing: float, settings: Settings, deadline: float, abort: threading.Event, debug: Debug,
+            aim: str | None = None, roomy=None, flip: bool = False):
     """Hybrid A* over turning-centre poses from start to the lead's start; each move is checked once taken.
 
     Args:
@@ -755,6 +835,10 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
         deadline: Give up at this time.
         abort: Set from the main thread to end the search early.
         debug: Where to record the search.
+        aim: What `arrive` is, for the reason; None: the target, or the start of the drive in with a `tail`.
+        roomy: `hits` at the full margin, if it is more than the narrow one: moves clear only at the narrow margin cost
+            NARROW_WEIGHT times as much. None: every clear move costs the same.
+        flip: The search runs back from the target: a move's poses are driven in the other order (`_backwards`).
 
     Returns:
         tuple[list | None, str]: The poses from start to the end of `tail`, or None; and what happened.
@@ -798,9 +882,9 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
             yaw += amount
             end = (x + drive * math.cos(yaw), y + drive * math.sin(yaw), yaw)
             via = ((x, y, yaw), end) if kind == "turn" else (end,)
-        cost, backwards = _cost([parent.pose, *via], settings.turn_weight, parent.backwards)
+        cost, backwards = _cost([parent.pose, *via], settings.turn_weight, parent.backwards, flip)
         slack0, since = _settled(parent.slack0, parent.since, [parent.pose, *via], swing)
-        piece, big = _piece(parent.piece, parent.big, parent.backwards, [parent.pose, *via])
+        piece, big = _piece(parent.piece, parent.big, parent.backwards, [parent.pose, *via], flip)
         return _Node(via[-1], parent.cost + cost, index, via, backwards, slack0, since, piece, big)
 
     def poses_to(index: int) -> list:
@@ -837,7 +921,8 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
     nodes = [_Node(start, 0.0, -1, (start,), False, 0.0, 0.0)]
     # Entries: (cost + greed * to go, cost, tie-break, parent index, move); a node is made only once its entry is taken.
     ties = itertools.count()
-    heap = [(GREED * to_go(start), 0.0, next(ties), -1, None, cost_map.version)]
+    # The last item: the extra cost a move that fits only at the narrow margin was given, once checked (0: not yet).
+    heap = [(GREED * to_go(start), 0.0, next(ties), -1, None, cost_map.version, 0.0)]
     relearned, since_relearn = 0, 0
     closed: set = set()
     entries: dict = {}
@@ -850,6 +935,8 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
     # Per portal centred: what the moves through it hit.
     crossings: dict[int, Counter] = {}
 
+    budget = deadline - time.time()
+
     def stuck(why: str) -> str:
         """Why the search ended without a path, and where it got closest."""
         node = nodes[closest[1]]
@@ -857,8 +944,8 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
         debug.path(CLOSEST[0], [base(pose) for pose in poses_to(closest[1])], CLOSEST[1])
         debug.points(CLOSEST[0], [(x, y)], CLOSEST[1])
         near = Counter(what for pose, what in zip(hit, blocked) if math.dist(pose[:2], (x, y)) < NEAR)
-        aim = "the start of the drive in" if tail else "the target"
-        return (f"{why}; closest {math.dist((x, y), base(arrive)[:2]):.1f} m from {aim}, at "
+        where = aim or ("the start of the drive in" if tail else "the target")
+        return (f"{why}; closest {math.dist((x, y), base(arrive)[:2]):.1f} m from {where}, at "
                 f"({x:.2f}, {y:.2f}, {math.degrees(yaw) % 360:.0f}°)"
                 + (f", where moves hit {_most(near)}" if near else "")
                 + (f"; in all, moves hit {_most(Counter(blocked))}"
@@ -869,13 +956,15 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
             if abort.is_set():
                 return None, "cancelled"
             if time.time() > deadline:
-                return None, stuck(f"no path found in {TIME_LIMIT:.0f} s")
-            _, cost, _, parent_index, move, version = heapq.heappop(heap)
+                return None, stuck(f"no path found in {budget:.0f} s")
+            _, cost, _, parent_index, move, version, dear = heapq.heappop(heap)
             node = nodes[0] if parent_index < 0 else child(nodes[parent_index], parent_index, move)
+            if dear:
+                node = replace(node, cost=node.cost + dear)
             if version != cost_map.version:
                 # * Scored by an older cost map: score it again, and take it when its turn comes.
                 heapq.heappush(heap, (cost + GREED * to_go(node.pose), cost, next(ties), parent_index, move,
-                                      cost_map.version))
+                                      cost_map.version, dear))
                 continue
             key = cell(node.pose)
             if key in closed:
@@ -883,7 +972,14 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
             if parent_index >= 0:
                 parent = nodes[parent_index]
                 poses = [parent.pose, *node.via]
-                what = hits(poses, ends, max(parent.slack, _track(poses, swing)))
+                slack = max(parent.slack, _track(poses, swing))
+                what = hits(poses, ends, slack)
+                if not what and roomy is not None and not dear and roomy(poses, ends, slack):
+                    # * Fits only at the narrow margin: NARROW_WEIGHT times as dear, taken when its turn comes.
+                    dear = (NARROW_WEIGHT - 1.0) * (node.cost - parent.cost) + 1e-9
+                    heapq.heappush(heap, (cost + dear + GREED * to_go(node.pose), cost + dear, next(ties),
+                                          parent_index, move, version, dear))
+                    continue
                 if what:
                     hit.append(base(node.pose))
                     blocked.append(what.removeprefix("hits "))
@@ -907,7 +1003,7 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
             if len(closed) % FINISH_EVERY == 1 or math.dist(node.pose[:2], arrive[:2]) < FINISH_NEAR:
                 join = _join(node.pose, arrive)
                 finish = join and [node.pose] + join + _continued(tail, arrive[2], join[-1][2])
-                if finish and not _cuts_short(node, finish):
+                if finish and not _cuts_short(node, finish, flip):
                     if not hits(finish, ends, max(node.slack, _track(finish, swing))):
                         return poses_to(index) + finish[1:], f"{len(closed)} nodes taken, {len(hit)} moves hit"
                     refused.append(finish)
@@ -917,13 +1013,13 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
                 next_node = child(node, index, move)
                 next_key = cell(next_node.pose)
                 if (next_key in closed or entries.get(next_key, 0) >= MAX_ENTRIES
-                        or _cuts_short(node, [node.pose, *next_node.via])):
+                        or _cuts_short(node, [node.pose, *next_node.via], flip)):
                     continue
                 left = to_go(next_node.pose)
                 if math.isfinite(left):
                     entries[next_key] = entries.get(next_key, 0) + 1
                     heapq.heappush(heap, (next_node.cost + GREED * left, next_node.cost, next(ties), index, move,
-                                          cost_map.version))
+                                          cost_map.version, 0.0))
         return None, stuck("no path inside the planning area")
     finally:
         debug.lines(TAKEN[0], taken, TAKEN[1])
@@ -1016,18 +1112,19 @@ def _drive(a, b) -> tuple[float, bool] | None:
     return round(a[2], 9), _backwards(a, b)
 
 
-def _backwards(a, b) -> bool:
-    """Whether moving from a to b drives backwards."""
-    return math.cos(math.atan2(b[1] - a[1], b[0] - a[0]) - (a[2] + b[2]) / 2.0) < 0.0
+def _backwards(a, b, flip: bool = False) -> bool:
+    """Whether moving from a to b drives backwards; `flip`: the base drives from b to a (a search back from the end)."""
+    return (math.cos(math.atan2(b[1] - a[1], b[0] - a[0]) - (a[2] + b[2]) / 2.0) < 0.0) != flip
 
 
-def _cost(poses, turn_weight: float, backwards: bool = False) -> tuple[float, bool]:
+def _cost(poses, turn_weight: float, backwards: bool = False, flip: bool = False) -> tuple[float, bool]:
     """What driving through `poses` costs, as the search counts it, and whether it ends driving backwards.
 
     Args:
         poses: (x, y, yaw) waypoints, yaw unwrapped.
         turn_weight: Metres one radian of turning on the spot is worth.
         backwards: Whether the base drove backwards before the first pose.
+        flip: The base drives `poses` in the other order (`_backwards`).
     """
     cost = 0.0
     for a, b in zip(poses[:-1], poses[1:]):
@@ -1036,7 +1133,7 @@ def _cost(poses, turn_weight: float, backwards: bool = False) -> tuple[float, bo
         if length < 1e-9:
             cost += turn_weight * turned + STOP
             continue
-        back = _backwards(a, b)
+        back = _backwards(a, b, flip)
         cost += length * (1.0 + (REVERSE_WEIGHT if back else 0.0)) + CURVE_WEIGHT * turned
         cost += STOP if back != backwards else 0.0
         backwards = back
@@ -1053,7 +1150,7 @@ def _track(poses, swing: float) -> float:
     return worst
 
 
-def _piece(piece: float, big: bool, backwards: bool, poses) -> tuple[float, bool]:
+def _piece(piece: float, big: bool, backwards: bool, poses, flip: bool = False) -> tuple[float, bool]:
     """`_Node.piece` and `big` after driving through `poses` from the first.
 
     Starts from `piece`, `big` and `backwards` (whether the base drove backwards before).
@@ -1063,7 +1160,7 @@ def _piece(piece: float, big: bool, backwards: bool, poses) -> tuple[float, bool
         if length < 1e-9:
             piece, big = 0.0, abs(b[2] - a[2]) >= math.radians(BIG_TURN) - 1e-9
             continue
-        back = _backwards(a, b)
+        back = _backwards(a, b, flip)
         piece = (piece if back == backwards else 0.0) + length
         backwards = back
     return piece, big
@@ -1094,12 +1191,12 @@ def _fragile(poses) -> bool:
                for k, (kind, amount) in enumerate(parts))
 
 
-def _cuts_short(node: _Node, poses) -> bool:
+def _cuts_short(node: _Node, poses, flip: bool = False) -> bool:
     """Whether `poses`, from `node`, turn on the spot or change direction before MIN_DRIVE after a big turn."""
     if not node.big or node.piece >= MIN_DRIVE or len(poses) < 2:
         return False
     a, b = poses[0], poses[1]
-    return math.dist(a[:2], b[:2]) < 1e-9 or _backwards(a, b) != node.backwards
+    return math.dist(a[:2], b[:2]) < 1e-9 or _backwards(a, b, flip) != node.backwards
 
 
 def _settled(slack0: float, since: float, poses, swing: float) -> tuple[float, float]:

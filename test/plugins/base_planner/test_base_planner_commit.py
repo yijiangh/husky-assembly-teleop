@@ -190,13 +190,13 @@ def test_commit_keeps_a_clearance_only_while_clearance_is_ticked(ticked):
 
 @pytest.mark.safety
 def test_commit_sends_a_geometric_path_capped_at_the_planning_speeds():
-    """The waypoints go out untimed, with the planning speeds as caps; the planner keeps the path id."""
+    """The waypoints go out untimed, with the planning speeds as caps and no slowing; the planner keeps the path id."""
     base = FakeBase()
     (sent, message), planner = commit(base)
     assert sent and "path 7" in message and planner.plan.state == "sent"
-    (x, y, yaw, t, linear, angular), = base.sent
+    (x, y, yaw, t, linear, angular, scale), = base.sent
     np.testing.assert_array_equal(np.column_stack([x, y, yaw]), planner.plan.path.points)
-    assert t is None and (linear, angular) == (MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED)
+    assert t is None and (linear, angular) == (MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED) and scale is None
     assert planner._runs[SERIAL].path_id == 7
 
 

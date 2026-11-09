@@ -7,9 +7,11 @@ import pytest
 from crl_husky.follower_path import FollowerPath
 
 from husky_assembly_teleop.plugins.base_planner.path import (ARC_STEP, MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED,
-                                                             SETTLE_DISTANCE, densify, move_margins, round_corners,
-                                                             steer, steer_cost, steer_points, timed_path,
-                                                             driven)
+                                                             MIN_SCALE, RAMP_ACCEL, SETTLE_DISTANCE, SLOW_LEAD,
+                                                             SLOW_TIME,
+                                                             densify, move_margins, round_corners, slowed,
+                                                             speed_scales, steer, steer_cost, steer_points,
+                                                             timed_path, driven)
 
 ICR = 0.15
 #: Drive 1 m along x, turn left on the spot, drive 1 m along y.
@@ -159,3 +161,71 @@ def test_a_move_assumes_full_turns_at_both_ends():
     assert margins[0] == margins[-1] == pytest.approx(2.0 * ICR)
     assert margins[1] == pytest.approx(2.0 * ICR * (1.0 - 0.05 / SETTLE_DISTANCE))
     assert margins[len(margins) // 2] == 0.0
+
+
+def test_a_path_that_keeps_the_margin_drives_at_full_speed():
+    """Clearances at or above the margin everywhere: no speed scales, the timing unchanged."""
+    path = plan_straight_line((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
+    assert speed_scales(path.points, np.full(len(path.points), 0.10), 0.10) is None
+    assert slowed(path, None).duration == path.duration
+
+
+def test_a_narrow_part_slows_with_its_clearance_from_a_lead_before_it():
+    """5 cm clearance in the middle of a 4 m drive: a quarter speed there and SLOW_LEAD either side, ramping around."""
+    x = np.linspace(0.0, 4.0, 401)
+    points = np.column_stack([x, 0 * x, 0 * x])
+    clear = np.where((x >= 1.9) & (x <= 2.1), 0.05, 0.20)
+    scale = speed_scales(points, clear, 0.10)
+    slowest = 0.05 / SLOW_TIME / MAX_LINEAR_SPEED
+    assert scale.min() == pytest.approx(slowest)
+    flat = x[np.isclose(scale, slowest)]
+    assert flat.min() == pytest.approx(1.9 - SLOW_LEAD) and flat.max() == pytest.approx(2.1 + SLOW_LEAD)
+    assert scale[0] == 1.0 and scale[-1] == 1.0, "full speed again away from it"
+    assert speed_scales(points, np.full(401, 0.0), 0.10).min() == MIN_SCALE, "never slower than MIN_SCALE"
+
+
+def test_speed_never_changes_faster_than_the_ramp():
+    """Between neighbouring waypoints the speed changes by at most RAMP_ACCEL, slowing down and speeding up."""
+    x = np.linspace(0.0, 4.0, 81)
+    points = np.column_stack([x, 0 * x, 0 * x])
+    clear = np.where((x >= 1.0) & (x <= 1.2), 0.03, np.where((x >= 2.5) & (x <= 2.6), 0.07, 0.20))
+    speed = speed_scales(points, clear, 0.10) * MAX_LINEAR_SPEED
+    step = np.diff(x)
+    assert np.all(np.abs(np.diff(speed ** 2)) <= 2.0 * RAMP_ACCEL * step + 1e-12)
+
+
+def test_slowed_path_takes_longer_where_it_is_slow():
+    """Each leg takes 1 / scale times as long; the follower takes the same scales."""
+    path = plan_straight_line((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
+    scale = np.full(len(path.points), 0.5)
+    assert slowed(path, scale).duration == pytest.approx(2.0 * path.duration)
+    follower = FollowerPath.from_poses(*path.points.T, None, scale)
+    assert follower.pieces[0].scale_at(0.5) == 0.5
+
+
+@pytest.mark.parametrize("model_name", ["ideal", "cindy_tiles", "alice_tiles_2"])
+@pytest.mark.parametrize("corners", [
+    [(0.0, 0.0, 0.0), (0.6, 0.0, 0.0), (0.6, 0.0, math.pi), (-0.6, 0.0, math.pi)],
+    [(0.0, 0.0, 0.0), (0.8, 0.0, 0.0), (0.3, 0.0, 0.0), (0.3, 0.0, math.pi / 2), (0.3, 0.8, math.pi / 2)],
+    "sparse",
+], ids=["turn half round", "there, back, turn, on", "sparse, one leg turns half round"])
+def test_a_trace_is_matched_to_the_waypoints_in_order(model_name, corners):
+    """Through turns on the spot and back over a spot, a followed trace's waypoints rise to the end, never stuck."""
+    from crl_husky.base_model import load_model
+    from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import _sent
+    from husky_assembly_teleop.plugins.base_planner.follow import followed, thinned, xicr_range
+    from husky_assembly_teleop.plugins.base_planner.planner_plugin import NARROW_STEP, trace_indices
+    model = load_model(model_name)
+    if corners == "sparse":
+        # * As the RRT sends it: drives in ARC_STEP steps, the 180 degree turn on the spot in one leg.
+        points = np.array([(0.0, 0.0, 0.0)] + densify([(0.0, 0.0, 0.0), (0.6, 0.0, 0.0), (0.6, 0.0, math.pi),
+                                                       (-0.6, 0.0, math.pi)], ARC_STEP, math.inf))
+    else:
+        points = np.array(_sent(corners, -model["xICR"]))
+    for icr in sorted({*xicr_range(model["xICR"], 0.05), model["xICR"]}):
+        trace, _ = followed(points, icr, model, MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED)
+        indices = trace_indices(points, thinned(trace, NARROW_STEP, NARROW_STEP))
+        assert indices == sorted(indices), "in order"
+        assert indices[-1] >= len(points) - 3, f"reaches the end with xICR {icr:+.3f}: {indices[-10:]}"
+        # * Every stretch of the path gets traced poses: no jump over more than a turn's worth of waypoints.
+        assert max(np.diff(indices), default=0) <= 40

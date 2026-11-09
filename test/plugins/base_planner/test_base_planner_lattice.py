@@ -10,13 +10,13 @@ from crl_husky.base_model import load_model
 from husky_assembly_teleop.plugins.base_planner.algorithms import Debug, lattice
 from husky_assembly_teleop.plugins.base_planner.algorithms.base import FOLLOWER_MODEL
 from crl_husky.pure_pursuit import PurePursuit, PurePursuitParams
-from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import (MIN_DRIVE, Settings, _arc, _fragile,
+from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import (MIN_DRIVE, Settings, _arc, _cost, _fragile,
                                                                            _merged, _sent, _settled, _to_base,
                                                                            _to_centre, plan)
 from husky_assembly_teleop.plugins.base_planner.follow import followed, thinned, xicr_range
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE
 from husky_assembly_teleop.plugins.base_planner.tasks import PASSAGE_ANGLE, WHEELS, Task, along, passage, to_lab
-from husky_assembly_teleop.plugins.base_planner.planner_plugin import kept_margin
+from husky_assembly_teleop.plugins.base_planner.planner_plugin import kept_margin, narrowed
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.scene import Body
 from test_base_planner_rrt import POST, _holding_bar, _snapshot, alice, robots, world  # noqa: F401  (fixtures)
@@ -325,7 +325,42 @@ def test_no_room_before_something_in_the_way_drives_in_short(world, robots, alic
     post = Body("test/post", box_geometry((0.1, 1.0, 1.0)), Pose((-2.0, goal[1], 0.5)), label="post")
     world.sync(_snapshot(robots, [wall, post]))
     debug = Debug(on=True)
-    result = plan(world, alice, (0.0, 0.0, 0.0), goal, threading.Event(), Settings(margin=margin), debug)
+    # * No narrow margin: with one, the wall would count as room for it.
+    result = plan(world, alice, (0.0, 0.0, 0.0), goal, threading.Event(), Settings(margin=margin, narrow_margin=margin),
+                  debug)
     lead = next(note for note in debug.notes if note.startswith("lead:"))
     assert "straight in forwards over 0.50 m" in lead and "forwards: wall alongside, then post at" in lead, lead
     assert result.path is not None, result.reason
+
+
+@pytest.mark.slow
+def test_parks_in_a_passage_only_the_narrow_margin_fits_and_slows_there(world, robots, alice):  # noqa: F811
+    """A passage 3 cm wider each side than the narrow margin needs, too narrow for the margin, the target inside it.
+
+    The search starts at the target (the tighter end), keeps the narrow margin all along, and the path is slowed
+    where it comes closer than the margin.
+    """
+    margin, narrow = 0.10, 0.05
+    world.sync(_snapshot(robots, _passage(WHEELS + 2.0 * narrow + 2.0 * 0.03, depth=1.5)))
+    start, goal = _at(-2.0, 1.0, math.pi / 2.0), _at(0.2, 0.0, ANGLE)
+    debug = Debug(on=True)
+    result = plan(world, alice, start, goal, threading.Event(), Settings(margin=margin, narrow_margin=narrow), debug)
+    assert result.path is not None, result.reason
+    assert debug.notes[0] == "search back from the target"
+    np.testing.assert_allclose(result.path.goal[:2], goal[:2], atol=1e-6)
+    np.testing.assert_allclose(result.path.start[:2], start[:2], atol=1e-6)
+    for pose in result.path.points:
+        assert world.hit_by(alice, tuple(pose), narrow - 0.005) is None
+    slow = narrowed(world, alice, result.path, margin, {}, load_model(FOLLOWER_MODEL), Settings().x_icr_spread)
+    assert slow.speed_scale is not None and slow.speed_scale.min() < 1.0 and slow.speed_scale[0] == 1.0
+    assert narrow - 0.01 <= slow.margin < margin and slow.close
+    assert slow.duration > result.path.duration
+
+
+def test_a_search_back_from_the_target_costs_moves_as_driven():
+    """Flipped (searched from the target), a move ahead in search order is driven backwards, and costs so."""
+    poses = [(0.0, 0.0, 0.0), (0.1, 0.0, 0.0)]
+    ahead, ahead_back = _cost(poses, 0.6)
+    flipped, flipped_back = _cost(poses, 0.6, flip=True)
+    assert not ahead_back and flipped_back and flipped > ahead
+    assert _cost(poses, 0.6, backwards=True, flip=True) == (pytest.approx(flipped - lattice.STOP), True)

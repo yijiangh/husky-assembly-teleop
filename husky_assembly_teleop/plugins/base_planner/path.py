@@ -7,7 +7,7 @@ Pure math, safe on any thread.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import numpy as np
@@ -19,6 +19,15 @@ from ...shared.planner.timed_path import TimedPath, timing
 #: Planning speeds; low, since the onboard follower sets its own speed.
 MAX_LINEAR_SPEED = 0.2   # m/s
 MAX_ANGULAR_SPEED = 0.3  # rad/s
+
+#: Narrow passages: where the path comes closer than its plan margin, the base drives at most clearance / SLOW_TIME
+#: (after a stop it rolls about 0.5 s, `world/clearance.py`), never below MIN_SCALE of full speed, from SLOW_LEAD
+#: before such a part until SLOW_LEAD after it, so it has slowed down on entering. Before and after that the speed
+#: changes by at most RAMP_ACCEL, so it never brakes or speeds up abruptly (the follower allows 0.5 m/s^2).
+SLOW_TIME = 1.0   # s
+SLOW_LEAD = 0.2   # m
+MIN_SCALE = 0.15
+RAMP_ACCEL = 0.1  # m/s^2
 
 #: Closer than this counts as already there; the move only turns.
 POSITION_TOLERANCE = 0.005  # m
@@ -40,11 +49,13 @@ class BasePath(TimedPath):
         margin: How far it keeps from everything, metres, as planned: the request's margin, or the smallest in
             `close`; None when the planner plugin did not set it (an algorithm called on its own).
         close: The objects it keeps less from, as (label, metres), closest first: those its start or target is already
-            that close to. Everything else keeps `margin`'s usual value.
+            that close to, and those a narrow passage passes. Everything else keeps `margin`'s usual value.
+        speed_scale: Speed scale per waypoint for the follower (`speed_scales`), None for full speed all along.
     """
 
     margin: float | None = None
     close: tuple[tuple[str, float], ...] = ()
+    speed_scale: np.ndarray | None = None
 
     @property
     def length(self) -> float:
@@ -294,6 +305,38 @@ def timed_path(poses, linear_speed: float = MAX_LINEAR_SPEED, angular_speed: flo
     poses[:, 2] = np.unwrap(poses[:, 2])
     kept = poses[np.concatenate([[True], np.diff(timing(poses, linear_speed, angular_speed)) > 1e-6])]
     return BasePath(times=timing(kept, linear_speed, angular_speed), points=kept)
+
+
+def speed_scales(points: np.ndarray, clearances: np.ndarray, margin: float) -> np.ndarray | None:
+    """How slow the follower drives each waypoint, from the clearance there: slower where closer than `margin`.
+
+    Args:
+        points: (x, y, yaw) waypoints, shape (N, 3).
+        clearances: The least true distance to everything around each waypoint, metres, shape (N,).
+        margin: The plan's usual margin, metres.
+
+    Returns:
+        np.ndarray | None: Scales in [MIN_SCALE, 1] of both speed caps, per waypoint, ramping at RAMP_ACCEL; None if
+        it keeps `margin` all along.
+    """
+    clearances = np.asarray(clearances, dtype=float)
+    tight = clearances < margin - 1e-9
+    if not tight.any():
+        return None
+    own = MAX_LINEAR_SPEED * np.where(tight, np.clip(clearances / SLOW_TIME / MAX_LINEAR_SPEED, MIN_SCALE, 1.0), 1.0)
+    along = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(np.asarray(points)[:, :2], axis=0).T))])
+    # * The fastest speed from which each slow point is reached (or left) at RAMP_ACCEL, after SLOW_LEAD at its speed.
+    beyond = np.maximum(np.abs(along[:, None] - along[None, :]) - SLOW_LEAD, 0.0)
+    speed = np.sqrt(own[None, :] ** 2 + 2.0 * RAMP_ACCEL * beyond).min(axis=1)
+    return np.minimum(speed / MAX_LINEAR_SPEED, 1.0)
+
+
+def slowed(path: BasePath, scale: np.ndarray | None) -> BasePath:
+    """`path` with speed scales, its times stretched to match: each leg at the smaller scale of its two ends."""
+    if scale is None:
+        return replace(path, speed_scale=None)
+    legs = np.diff(timing(path.points, MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED)) / np.minimum(scale[:-1], scale[1:])
+    return replace(path, times=np.concatenate([[0.0], np.cumsum(legs)]), speed_scale=np.asarray(scale, dtype=float))
 
 
 def _angle(angle: float) -> float:

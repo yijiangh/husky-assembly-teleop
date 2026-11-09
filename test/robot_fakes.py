@@ -71,13 +71,18 @@ def lease_context(**fields) -> SimpleNamespace:
 class Publisher:
     """Keeps what is published."""
 
-    def __init__(self):
-        """Nothing published yet."""
+    def __init__(self, subscribers: int = 0):
+        """Nothing published yet; `subscribers` is what `get_subscription_count` answers."""
         self.sent = []
+        self.subscribers = subscribers
 
     def publish(self, message):
         """Keep the message."""
         self.sent.append(message)
+
+    def get_subscription_count(self) -> int:
+        """How many subscribers the topic has, as set."""
+        return self.subscribers
 
 
 class Future:

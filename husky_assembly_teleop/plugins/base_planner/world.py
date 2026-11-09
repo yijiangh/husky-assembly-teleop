@@ -95,11 +95,26 @@ class PlanningWorld(BaseCollisionWorld):
         A check for `margin` plus some extra (room for the follower's drift, a portal's room) keeps that object's
         margin plus the same extra. Measurements (`clearance`) are unchanged.
         """
-        self._keeping = (own, float(margin), dict(close))
+        before, self._keeping = self._keeping, (own, float(margin), dict(close))
         try:
             yield
         finally:
-            self._keeping = None
+            self._keeping = before
+
+    @contextmanager
+    def measured_from(self, margin: float) -> Iterator[None]:
+        """Within the block, the objects kept (`keeping`) count their margins from `margin`.
+
+        A check for `margin` plus some extra keeps each one its own margin plus that extra. Nothing changes outside
+        `keeping`.
+        """
+        before = self._keeping
+        if before is not None:
+            self._keeping = (before[0], float(margin), before[2])
+        try:
+            yield
+        finally:
+            self._keeping = before
 
     def _hit(self, own: str, pose, margin: float) -> tuple[str, str] | None:
         """As `BaseCollisionWorld._hit`, each object in `keeping` checked at its own margin (plus the same extra)."""
@@ -159,6 +174,20 @@ class PlanningWorld(BaseCollisionWorld):
         keeping, self._keeping = self._keeping, None  # * true distances, whatever margins are kept
         try:
             return self._clearance(own, poses, limit)
+        finally:
+            self._keeping = keeping
+
+    def nearest(self, own: str, pose, limit: float = CLEARANCE_LIMIT) -> tuple[float, str | None]:
+        """The true distance from a robot at one floor pose to the nearest thing, to CLEARANCE_STEP, and its label.
+
+        Returns:
+            tuple[float, str | None]: The clearance, metres (`limit` if nothing is nearer), and the label of what is
+            that close (None if nothing is nearer than `limit`).
+        """
+        keeping, self._keeping = self._keeping, None  # * true distances, whatever margins are kept
+        try:
+            clear, where = self._clearance(own, [pose], limit)
+            return clear, None if where is None else self.hit_by(own, pose, clear + CLEARANCE_STEP)
         finally:
             self._keeping = keeping
 

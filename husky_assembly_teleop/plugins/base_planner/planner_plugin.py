@@ -19,6 +19,7 @@ import threading
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, Callable
 
+import numpy as np
 from crl_husky.follower_path import FollowerPath
 
 from ...config import short_serial
@@ -43,7 +44,10 @@ from ...world.follower import path_check
 from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.ids import robot_id
-from .path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, BasePath
+from crl_husky.base_model import load_model
+from .algorithms.base import FOLLOWER_MODEL
+from .follow import followed, thinned, xicr_range
+from .path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, BasePath, densify, slowed, speed_scales
 from .algorithms import ALGORITHMS, Algorithm, Debug
 from ...shared.recordings.runs import load_description, save_recording, write_description
 from .recording import RECORDING_FOLDER, attempt_folder, save_plan
@@ -58,6 +62,16 @@ STALE_POSITION = 0.05              # m
 STALE_YAW = math.radians(3.0)      # rad
 #: The plan is for the arms as they are: it goes stale once a joint moves this far from where it was planned.
 STALE_JOINT = math.radians(2.0)    # rad
+
+#: Narrow passages: clearance along the path, as planned and as followed, is measured every NARROW_STEP metres (and
+#: radians). A traced pose counts for the waypoint nearest it in position and heading (TRACE_TURN metres per radian)
+#: within TRACE_AHEAD of progress (metres driven plus TRACE_TURN per radian turned) beyond the last one matched.
+NARROW_STEP = 0.05
+TRACE_TURN = 0.3   # m/rad
+TRACE_AHEAD = 0.5  # m
+#: With a narrow margin, what the start or target is closer to than it keeps ARRIVAL_SLACK less than the end has (room
+#: for the follower to arrive a little off), but never less than half of it.
+ARRIVAL_SLACK = 0.01  # m
 
 #: A run ends after the planned duration times RUN_FACTOR plus RUN_MARGIN seconds, done or not; the recording then
 #: goes on for SETTLE seconds, while the robot comes to a stop.
@@ -87,7 +101,7 @@ def send_to_onboard_follower(base: BaseInterface, path: BasePath) -> int:
     Raises:
         ValueError: If the path holds a value that is not finite; nothing is sent.
     """
-    return base.send_path(*path.points.T, None, MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED)
+    return base.send_path(*path.points.T, None, MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED, path.speed_scale)
 
 
 @dataclass(eq=False)
@@ -202,17 +216,20 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 others[:] = setup["stand_ins"] = list(stand_ins.warnings)
                 self._world.sync(stand_ins.scene)
                 own, world = robot_id(serial), self._world
-                # * Only what the start or target is already closer to keeps less, and only as much as it has there.
-                close = {object_id: kept_margin(distance)
-                         for object_id, distance in world.close_objects(own, (start, goal), settings.margin).items()}
+                # * Narrow passages may come as close as the narrow margin (lattice); only what the start or target
+                #   is already closer to keeps less (`end_margins`).
+                narrow = min(settings.margin, getattr(settings, "narrow_margin", settings.margin))
+                close = end_margins(world.close_objects(own, (start, goal), narrow), narrow < settings.margin)
                 setup["close"] = {world.snapshot.label(object_id): margin for object_id, margin in close.items()}
-                with world.keeping(own, settings.margin, close):
+                with world.keeping(own, narrow, close):
                     result = algorithm.plan(world, own, start, goal, abort, settings, debug)
                 if result.path is not None:
-                    nearest = tuple(sorted(((world.snapshot.label(object_id), margin)
-                                            for object_id, margin in close.items()), key=lambda item: item[1]))
-                    result = replace(result, path=replace(result.path, margin=min([settings.margin, *close.values()]),
-                                                          close=nearest))
+                    kept = {world.snapshot.label(object_id): margin for object_id, margin in close.items()}
+                    model = load_model(settings.follower_model or FOLLOWER_MODEL)
+                    slowed_path = narrowed(world, own, result.path, settings.margin, kept, model, settings.x_icr_spread,
+                                           abort)
+                    result = (replace(result, path=slowed_path) if slowed_path is not None
+                              else PlanResult(None, "cancelled", result.seconds))
                 if result.path is None and others:
                     result = replace(result, reason=f"{result.reason} ({unmeasured(others)})")
             if folder is not None:
@@ -316,9 +333,16 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                     return
                 sent_at = ctx.now()
                 run = self._runs[serial] = Run(FollowerPath.from_poses(*path.points.T), sent_id, sent_at, rec)
-                ctx.log_info(f"base path {sent_id} sent to {serial}: {path.length:.2f} m, {len(path.points)} waypoints")
+                scaled_as = getattr(robot.base, "scaled_as", "")
+                line = (f"base path {sent_id} sent to {serial}: {path.length:.2f} m, {len(path.points)} waypoints"
+                        + (f", slowed {scaled_as}" if scaled_as else ""))
+                # * An old follower drives the whole path at the slowest scale: it takes that long.
+                whole = path.speed_scale is not None and scaled_as.startswith("whole path")
+                (ctx.log_warn if whole else ctx.log_info)(line)
                 answer(True, f"sent to {short_serial(serial)}'s follower (path {sent_id})")
-                limit = path.duration * RUN_FACTOR + RUN_MARGIN
+                duration = (slowed(path, np.full(len(path.points), path.speed_scale.min())).duration if whole
+                            else path.duration)
+                limit = duration * RUN_FACTOR + RUN_MARGIN
                 try:
                     # * Under way is WARN (sent or following); done, aborted, replaced or silent ends the run.
                     await ctx.wait_until(lambda: self._path_check(ctx, serial, sent_id, sent_at).level != WARN,
@@ -493,13 +517,107 @@ def kept_margin(distance: float) -> float:
 
 
 def close_note(path: BasePath, margin: float) -> str:
-    """The plan line's note on a path keeping less from what its ends are close to; "" if it keeps the margin.
+    """The plan line's note on a path keeping less from some things; "" if it keeps the margin.
 
-    E.g. "; keeps only 3.5 cm from bars/B25: the start or target is that close; 10 cm from everything else".
+    E.g. "; keeps only 3.5 cm from bars/B25 (the start or target is that close, or a narrow passage); 10 cm from
+    everything else; at 25 % speed over 1.2 m".
     """
     if not path.close:
         return ""
     label, kept = path.close[0]
     more = f" (and {len(path.close) - 1} more)" if len(path.close) > 1 else ""
-    return (f"; keeps only {kept * 100:g} cm from {label}{more}: the start or target is that close; "
-            f"{margin * 100:g} cm from everything else")
+    slow = ""
+    if path.speed_scale is not None:
+        legs = np.hypot(*np.diff(path.points[:, :2], axis=0).T)
+        slow_m = float(legs[np.minimum(path.speed_scale[:-1], path.speed_scale[1:]) < 1.0].sum())
+        slow = f"; at {path.speed_scale.min() * 100:.0f} % speed or more over {slow_m:.1f} m"
+    return (f"; keeps only {kept * 100:g} cm from {label}{more} (the start or target is that close, or a narrow "
+            f"passage); {margin * 100:g} cm from everything else{slow}")
+
+
+def trace_indices(points: np.ndarray, poses) -> list[int]:
+    """For each pose of a trace of the path through `points`, in order, the index of the waypoint it is at.
+
+    By progress, not position alone: the nearest waypoint in position and heading (TRACE_TURN metres per radian), among
+    those within TRACE_AHEAD of progress beyond the last one matched, the later one on a tie. So a turn on the spot,
+    whose waypoints share a spot, and a path that passes a spot twice keep their order.
+    """
+    points = np.asarray(points, dtype=float)
+    steps = np.hypot(*np.diff(points[:, :2], axis=0).T) + TRACE_TURN * np.abs(np.diff(points[:, 2]))
+    progress = np.concatenate([[0.0], np.cumsum(steps)])
+    out, index = [], 0
+    for pose in poses:
+        last = int(np.searchsorted(progress, progress[index] + TRACE_AHEAD, side="right"))
+        # * At least the next waypoint too: a sparse path (RRT) turns on the spot in one leg, more than TRACE_AHEAD.
+        near = points[index:max(last, index + 2)]
+        turn = np.abs(np.angle(np.exp(1j * (near[:, 2] - pose[2]))))
+        cost = np.hypot(*(near[:, :2] - np.asarray(pose[:2])).T) + TRACE_TURN * turn
+        index += int(len(cost) - 1 - np.argmin(cost[::-1]))
+        out.append(index)
+    return out
+
+
+def end_margins(distances: dict[str, float], narrow: bool) -> dict[str, float]:
+    """The margins kept from what the start or target is already closer to than the plan's margin, by object.
+
+    As much as the end has (`kept_margin`); with a narrow margin (`narrow`), ARRIVAL_SLACK less, but at least half.
+    """
+    out = {}
+    for object_id, distance in distances.items():
+        kept = kept_margin(distance)
+        out[object_id] = max(kept - ARRIVAL_SLACK, kept / 2.0) if narrow else kept
+    return out
+
+
+def narrowed(world: PlanningWorld, own: str, path: BasePath, margin: float, kept: dict[str, float], model: dict,
+             spread: float, abort: threading.Event | None = None) -> BasePath | None:
+    """`path` slowed where it comes closer than `margin`, with the smallest margin and the close objects it keeps.
+
+    Measures the true clearance up to `margin` along each leg (every NARROW_STEP), and along the path as the follower
+    drives it at the model's xICR and both ends of the range `spread` (`follow.followed`), each traced pose counting for
+    the nearest waypoint: where the robot really drifts, it slows down too. Worker thread, world synced.
+
+    Args:
+        world: The planning world, synced to the plan's snapshot.
+        own: The robot planned for, by id.
+        path: The planned path.
+        margin: The request's margin, metres.
+        kept: Labels the start or target is already closer to, with the margins kept from them.
+        model: The follower model the path was planned with (`crl_husky.base_model.load_model`).
+        spread: How far the true xICR may be from the model's, either way, metres.
+        abort: Ends the measuring early, returning None; None: never.
+
+    Returns:
+        BasePath | None: The path slowed, with its margin and close list; None if aborted.
+    """
+    points = path.points
+    at_points = np.full(len(points), margin)
+    close = dict(kept)
+
+    def note(where) -> None:
+        least, label = world.nearest(own, where, margin)
+        if label is not None:
+            close[label] = min(close.get(label, margin), kept_margin(least))
+
+    for i in range(len(points) - 1):
+        if abort is not None and abort.is_set():
+            return None
+        poses = [tuple(points[i])] + densify([points[i], points[i + 1]], NARROW_STEP, NARROW_STEP)
+        least, where = world.clearance(own, poses, margin)
+        if where is not None:
+            at_points[i:i + 2] = np.minimum(at_points[i:i + 2], least)
+            note(where)
+    x_model = model["xICR"]
+    for icr in sorted({*xicr_range(x_model, spread), x_model}):
+        trace, _ = followed(points, icr, model, MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED)
+        poses = thinned(trace, NARROW_STEP, NARROW_STEP)
+        for pose, index in zip(poses, trace_indices(points, poses)):
+            if abort is not None and abort.is_set():
+                return None
+            least, where = world.clearance(own, [tuple(pose)], margin)
+            if where is not None:
+                at_points[index] = min(at_points[index], least)
+                note(where)
+    nearest = tuple(sorted(close.items(), key=lambda item: item[1]))
+    least = min([margin, *close.values()])
+    return replace(slowed(path, speed_scales(points, at_points, margin)), margin=least, close=nearest)
