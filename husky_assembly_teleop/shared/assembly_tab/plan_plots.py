@@ -14,13 +14,13 @@ import viser
 import viser.uplot
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
-from ...shared.assembly_planning.joints import arm_side
+from ..assembly_planning.joints import arm_side
 from ...ui.trace_plot import BLANK, COLORS, thinned
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.process.solutions import Trajectory
 
-    from ...shared.planner.timed_path import TimedPath
+    from ..planner.timed_path import TimedPath
 
 #: Short names of the UR joints, in `UR_JOINT_NAMES` order, for the legend.
 SHORT_NAMES = dict(zip(UR_JOINT_NAMES, ("pan", "lift", "elbow", "w1", "w2", "w3")))

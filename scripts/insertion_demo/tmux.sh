@@ -23,7 +23,9 @@ session="${DEMO_SESSION:-insertion_demo}"
 logs="$DEMO_HOME/logs"
 export PATH="$here:$PATH"
 lab_collect_settings DEMO_
-environment=()
+# ! Never the dry run here: a tmux server started by sim_tmux.sh hands its DEMO_SIM to every later pane, and env.sh
+#   would then take these panes for the dry run. Emptied, env.sh reads them as unset.
+environment=(-e "DEMO_SIM=" -e "DEMO_SIM_DOMAIN=")
 for setting in "${lab_settings[@]}"; do
     environment+=(-e "$setting")
 done
@@ -52,7 +54,8 @@ if ! tmux has-session -t "=$session" 2>/dev/null; then
         tmux pipe-pane -o -t "${!pane}" "cat >> '$logs/${pane}_$stamp.log'"
     done
     lab_tmux_wait_for_shells "$monitor" "$checks" "$cindy" "$base"
-    tmux send-keys -t "$checks" "source env.sh" Enter "ros2 node list"
+    # * --no-daemon: a ROS daemon left from another terminal answers with what it saw under its own settings.
+    tmux send-keys -t "$checks" "source env.sh" Enter "ros2 node list --no-daemon"
     tmux send-keys -t "$cindy" "ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 administrator@$DEMO_CINDY_IP"
     tmux send-keys -t "$base" "base.sh"
     tmux send-keys -t "$monitor" "monitor.sh"

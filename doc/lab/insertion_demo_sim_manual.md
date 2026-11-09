@@ -4,7 +4,7 @@ Rehearses the demo of [insertion_demo_manual.md](insertion_demo_manual.md) witho
 same `insertion_demo` plugin, the same `base.sh` and `monitor.sh`. Only Cindy and her router are replaced: her arms
 and scaffolding tools are simulated on this laptop (crl-husky's simulation, as in the fake lab), and every node meets
 through a Zenoh router of the dry run's own. You click through Grasp, Approach, Insert, Retreat, Compliant and Rigid,
-then the interruptions. Plan about 20 minutes.
+each move planned and previewed before **Execute** runs it, then the interruptions. Plan about 20 minutes.
 
 Replace the placeholder with your own path: `<workspace>` is the ROS workspace (the folder holding `src/`, `venv/`,
 `install/`).
@@ -114,10 +114,16 @@ the configured one: robots/cindy (a200-0806): left_ur_arm_tool0: TCP off by 106.
 
 **2.3** Open the **Insertion demo** tab.
 
-**Expect:** the status chips `a200-0806` (green), `B6_J` (blue), `tools` (green), `joint` (green), `idle` (grey);
-**Action** `B6_J`; the sliders **Compliant mm** 10, **Seconds** 10, **Loosen s** 6; the buttons **Grasp**,
-**Release** | **Approach**, **Insert**, **Retreat**, **Cancel** | **Compliant**, **Rigid**. Hovering a Move button
-says what each does. How a step ended, and what a button refused, shows under the buttons and in the `monitor` pane.
+**Expect:** the status chips `a200-0806` (green), `B6_J` (blue), `tools` (green), `joint` (green), `no plan` and
+`idle` (grey); **Action** `B6_J`; the sliders **Compliant mm** 10 and **Loosen s** 6; the buttons **Grasp**,
+**Release** | **Approach**, **Insert**, **Retreat**; under **preview** the sliders **Preview time** and **Motion
+time** 10, the line `min — s by the arms' limits`, the blue **Execute**, then **Play**, **Cancel** | **Compliant**,
+**Rigid**. Hovering a Move button says what each does. How a step ended, and what a button refused, shows under the
+buttons and in the `monitor` pane. At the bottom of the page, two windows minimized to their bars: **Plan plots** and
+**Exec plots**.
+
+Every move takes two clicks: **Approach**, **Insert** or **Retreat** plans the move and shows it in the preview, and
+nothing moves until **Execute**.
 
 ---
 
@@ -133,22 +139,47 @@ says what each does. How a step ended, and what a button refused, shows under th
 **Expect:** in the pane `left_ur_arm + right_ur_arm gripper screws CLOSE`, each gripper `idle -> tightening`, then
 `tightening -> stalled`, and after 2 s `gripper screws closed: stalled after left_ur_arm 2.0 s, right_ur_arm 2.1 s`.
 
-**3.3 Approach.** Click **Approach**. The chip `idle` turns into the running step.
+**3.3 Approach: plan and preview.** Click **Approach**. The chip `idle` reads `plan approach` while the planner runs.
 
 **Expect:** the first plan builds Cindy's planning cell, then `B6_J_transfer: tamp.plan_free_dual_arm try 1/3: path of
 49 waypoints in 2.8 s`, `demo approach: transfer_free solved by tamp.plan_free_dual_arm: 49 waypoints, 1 tries, 4.6 s`,
-`approach along tamp.plan_free_dual_arm, 49 rows, 11.2 s` (longer than **Seconds** when the arms' limits need it),
-`a200-0806: moving left_ur_arm, right_ur_arm, 11.2 s`; both arms move at once; then `approach ARRIVED: arrived, end
-within 0.00°`. The 3D view now also shows the jig's bars on her base and the target in blue: the demo selected the
-step in the process panel. The waypoint counts and times differ from run to run.
+and `approach planned (tamp.plan_free_dual_arm, 49 waypoints): the motion takes 11.2 s; Execute runs it`, also under
+the buttons. Nothing moved. The waypoint counts and times differ from run to run.
+- **Chips:** `no plan` turned into a green `approach ready`.
+- **3D view:** a see-through green Cindy with her arms at the move's end, the insert's start. The jig's bars on her
+  base and the target in blue show too: the demo selected the step in the process panel.
+- **Preview time:** at its right end, 11.2. Drag it to the left: the see-through arms follow the path back to where
+  the real arms stand. **Play** runs it from the start.
+- **Motion time:** 10, and below it `min 11.2 s by the arms' limits`: the move takes the longer of the two. Set it to
+  20: **Preview time** now ends at 20. Set it back to 10.
+- **Plan plots:** the window opened by itself. `joint values (deg)` has a line per joint over the 11.2 s, `L pan` …
+  `R w3`, the right arm's dashed; `joint step (deg)` the largest step between the plan's rows. With **Motion time**
+  at 20 the lines stretch to 20 s. Close the window with the `–` in its bar if it is in the way: the next plan opens
+  it again.
+
+**Cancel** now would drop the plan (`the planned approach dropped`, the chip `no plan`); **Approach** plans again.
+
+**3.4 Approach: Execute.** Click **Execute**.
+
+**Expect:** `approach along tamp.plan_free_dual_arm, 49 waypoints, 11.2 s`, `a200-0806: moving left_ur_arm,
+right_ur_arm, 11.2 s`; the see-through robot is gone and both arms move at once; then `approach ARRIVED: arrived,
+end within 0.00°`. The chip reads `no plan` again and the **Plan plots** are empty: **Execute** once more is refused,
+`nothing planned: press Approach, Insert or Retreat first`. The **Exec plots** stay minimized: an approach is a joint
+motion, without a compliant part.
 
 To see a cancel, click **Cancel** while the arms move. **Expect:** `cancelled: holding every arm`, the arms stop,
 `approach cancelled`. **Approach** again plans from where they stopped.
 
-**3.4 Insert.** Click **Insert**.
+**3.5 Insert.** Click **Insert**.
+
+**Expect:** `demo insert: insert solved by tamp.plan_constrained_dual_arm_linear: 4 waypoints`, `insert planned
+(tamp.plan_constrained_dual_arm_linear, 4 waypoints): the motion takes 10.0 s; Execute runs it`, the chip `insert
+ready`, and the see-through tools 15 mm further along the insert. Click **Execute**.
 
 **Expect:**
-- `demo insert: insert solved by tamp.plan_constrained_dual_arm_linear: 4 waypoints`;
+- the **Exec plots** window opens by itself beside the Plan plots: a chip `compliant: B6_J insert on a200-0806`, and
+  under `force and torque` the plots `force [N]` and `torque [Nm]`, three lines per arm (`L x` … `R z`), growing
+  while the insert runs. The simulated readings are noise around 0. The curves stay until the next compliant part;
 - `INSERT: rigid 5.0 mm (3.4 s), then COMPLIANT 10.0 mm (straight line); the joint screw of left_ur_arm +
   right_ur_arm TIGHTENS from the start until it stalls (≤ 30 s), then STOP and back to joint control. …`;
 - `insert: left_ur_arm + right_ur_arm joint screws TIGHTENING`, `moving left_ur_arm, right_ur_arm, 3.4 s`;
@@ -160,16 +191,22 @@ To see a cancel, click **Cancel** while the arms move. **Expect:** `cancelled: h
   right_ur_arm back under scaled_joint_trajectory_controller`: a retry, not a fault;
 - `insert STALLED: left_ur_arm + right_ur_arm joint screws STALLED`, also under the buttons.
 
-**3.5 Retreat.** Click **Retreat**.
+**3.6 Retreat.** Click **Retreat**.
 
-**Expect:** `unscrew retreat: force sensors zeroed: |F| left_ur_arm 0.1 N -> 0.1 N, …`,
+**Expect:** `retreat planned (the joint screws loosen 6.0 s, then a straight back-out to the insert's start): the
+motion takes 10.0 s; Execute runs it`, the chip `retreat ready`, the see-through tools back at the insert's start.
+No planner runs for this one, and `min — s`: the back-out is a straight line the compliant arms follow in **Motion
+time**. Click **Execute**.
+
+**Expect:** the **Exec plots** start over with the chip `compliant: B6_J retreat on a200-0806` and run for the 6 s of
+loosening and the back-out; `unscrew retreat: force sensors zeroed: |F| left_ur_arm 0.1 N -> 0.1 N, …`,
 `cartesian_compliance_controller running (0.2 s)`, `the joint screws of left_ur_arm + right_ur_arm LOOSEN for 6 s`,
 each joint screw `idle -> loosening`; 6 s later the motors stop (`loosening -> idle`) and the tools back out:
 `back-out: left_ur_arm 3.4 of 3.5 mm, 0.1 mm short, right_ur_arm 3.5 of 3.5 mm, 0.1 mm short`; then `back under
 scaled_joint_trajectory_controller (0.1 s)` and `retreat RETREATED: the screws loosened and the tools backed out to
-the insert's start, the bar still held`. The back-out is short here because the insert stopped 3.5 mm in (3.4).
+the insert's start, the bar still held`. The back-out is short here because the insert stopped 3.5 mm in (3.5).
 
-**3.6 The whole insert.** Give the simulated screws 12 s, so the arms reach the line's end before the stall. In the
+**3.7 The whole insert.** Give the simulated screws 12 s, so the arms reach the line's end before the stall. In the
 `checks` pane (press **Enter** on the typed `ros2 node list --no-daemon` first, or clear the line):
 
 ```shell
@@ -177,31 +214,34 @@ ros2 param set --no-daemon /a200_0806/left_gripper/scaffolding_tool_sim tighten_
 ros2 param set --no-daemon /a200_0806/right_gripper/scaffolding_tool_sim tighten_s 12.0
 ```
 
-**Expect:** `Set parameter successful` twice. Then click **Insert**: after the rigid part and the switch, the arms
-run the compliant line for about 7 s, `insert: tool0 travelled left_ur_arm 10.0 of 10.0 mm, 0.0 mm short, right_ur_arm
-10.0 of 10.0 mm, 0.0 mm short`, no switch error, and `insert STALLED: …` about 12 s after the start. Click **Retreat**:
-`back-out: left_ur_arm 14.7 of 14.9 mm, 0.2 mm short, right_ur_arm 14.6 of 14.9 mm, 0.3 mm short`, `retreat RETREATED:
-…`. The setting lasts until the `sim` pane restarts.
+**Expect:** `Set parameter successful` twice. Then click **Insert** and **Execute**: after the rigid part and the
+switch, the arms run the compliant line for about 7 s, `insert: tool0 travelled left_ur_arm 10.0 of 10.0 mm, 0.0 mm
+short, right_ur_arm 10.0 of 10.0 mm, 0.0 mm short`, no switch error, and `insert STALLED: …` about 12 s after the
+start. Click **Retreat** and **Execute**: `back-out: left_ur_arm 14.7 of 14.9 mm, 0.2 mm short, right_ur_arm 14.6 of
+14.9 mm, 0.3 mm short`, `retreat RETREATED: …`. The setting lasts until the `sim` pane restarts.
 
-**3.7 Compliant and Rigid.** Click **Compliant**.
+**3.8 Compliant and Rigid.** Click **Compliant**.
 
 **Expect:** `compliant: force sensors zeroed: …`, `cartesian_compliance_controller running (0.2 s)`, `compliant:
 COMPLIANT: push the arms; Rigid brings them back under joint control`; the chips `joint` and `idle` both read
-`compliant`. Nobody pushes here: the arms stand still.
+`compliant`. The **Exec plots** start over with `compliant: hold on a200-0806` and keep running until **Rigid**.
+Nobody pushes here: the arms stand still and the force stays around 0.
 
 Click **Insert** meanwhile. **Expect:** `Insert refused: compliant runs: wait, or Cancel it`.
 
 Click **Rigid**. **Expect:** `compliant: left_ur_arm, right_ur_arm back under scaled_joint_trajectory_controller (0.1
 s)`, `both arms back under joint control`; the chips read `joint` and `idle` again.
 
-**3.8 Again.** **Insert**, **Retreat**, as often as you like: each Insert plans from where the arms stand. In the
-hall the arms stand wherever a visitor's push left them after Rigid: **Approach** first, then **Insert**.
+**3.9 Again.** **Insert**, **Execute**, **Retreat**, **Execute**, as often as you like: each Insert plans from where
+the arms stand. In the hall the arms stand wherever a visitor's push left them after Rigid: **Approach** first, then
+**Insert**.
 
 ---
 
 ## 4. Interruptions
 
-**4.1 Cancel during an insert.** With the 12 s screws of 3.6: click **Insert**, and about 7 s later **Cancel**.
+**4.1 Cancel during an insert.** With the 12 s screws of 3.7: click **Insert**, **Execute**, and about 7 s later
+**Cancel**.
 
 **Expect:** the arms stop, `insert: cancelled; left_ur_arm, right_ur_arm held, still under
 cartesian_compliance_controller or switching: switch them back in robot_control`, `insert cancelled`; the first arm
@@ -211,8 +251,8 @@ chip reads `compliant`, the second `idle`.
    `both arms under joint control`.
 2. Click **Insert**. **Expect:** refused, `left_ur_arm's tool0 is 11.0 mm, 0.0° from the insert's start …: press
    Approach first` (your distance differs): the arms stand part way in.
-3. Click **Retreat**. **Expect:** as 3.5: the screws loosen and the tools back out to the insert's start,
-   `retreat RETREATED: …`. **Insert** runs again.
+3. Click **Retreat**, then **Execute**. **Expect:** as 3.6: the screws loosen and the tools back out to the insert's
+   start, `retreat RETREATED: …`. **Insert** runs again.
 
 **4.2 Stop all while compliant.** Click **Compliant**, then **Stop all (Esc)** at the top left of the page.
 
@@ -221,14 +261,15 @@ chip reads `compliant`, the second `idle`.
 cartesian_compliance_controller or switching …`; Health reads `PROBLEMS`, the arms' `arm ctrl` chips amber (`no
 controller active; commands will be refused`); the demo's arm chip reads `mixed`.
 
-1. Click **Approach**. **Expect:** refused, `robot a200-0806 is soft stopped, a multi-arm trajectory not sent; press
-   Resume first; nothing sent`.
+1. Click **Approach**: it still plans (`approach planned …`), since a plan moves nothing. Click **Execute**.
+   **Expect:** `approach REFUSED: a200-0806 refused the trajectory: robot a200-0806 is soft stopped, a multi-arm
+   trajectory not sent; press Resume first; nothing sent`.
 2. Click **Resume** under Health, then **Rigid**, in this order. **Expect:** `resume arms: resuming` and the arm
    chips green again, `ALL GREEN`: the arms are back under the compliance controller. Then `rigid: left_ur_arm,
    right_ur_arm back under scaled_joint_trajectory_controller`, `both arms under joint control`, the demo's chip
    `joint`. Rigid before Resume switches the arms back for a moment only: the stop takes the controller away again,
    and Rigid is needed once more after Resume.
-3. **Approach**, **Insert**, **Retreat** run again.
+3. **Approach**, **Insert**, **Retreat**, each with its **Execute**, run again.
 
 **4.3 Release** (the end of the day). Click **Release**.
 
@@ -253,11 +294,13 @@ These are not mistakes on your side.
 | What you see | Why |
 |---|---|
 | `robots differ` after Load, `TCP off by 106.3 mm` in the pane. | This export's scaffolding tools have their TCP 106.3 mm from the configured tools'. The monitor plans with the configured robot, and the demo's motions are tool0 motions. |
-| An insert's screws stall after 2 s whatever the arms do; the arms stop a few millimetres in. | The simulated tool's `tighten_s`, 2 s by default (3.6 sets it). |
+| An insert's screws stall after 2 s whatever the arms do; the arms stop a few millimetres in. | The simulated tool's `tighten_s`, 2 s by default (3.7 sets it). |
 | Two `controller manager rejected the switch` errors at the end of a short insert. | The switch back came while the switch to compliance was still settling; it is taken on the retry 0.2 s later. |
 | Release ends with `not every gripper screw stalled within 15 s`. | The simulated screws loosen until a STOP instead of stalling fully open. |
 | The `sim` pane's first line names alice, belle and cindy. | The fake lab's script prints it; `robot:=0806` starts Cindy alone. |
 | PyBullet's lines in the `monitor` pane. | The monitor starts with pytest imported, a workaround for a compas_fab bug (`scripts/lab_common.sh`). |
+| A plan fails with `can't be planned for: its base is not tracked`; Health reads `PROBLEMS`, `mocap` red, Cindy drawn away from the blue target. | `base.sh` is not running: press **Enter** in the `base` pane (1.2). |
+| **Execute** refuses with `the arms are … from the plan's start …: plan again`, the chip `approach stale`. | The arms moved since the plan. Press the Move button again. |
 | An arm's chips stay red after start. | Its spawners timed out (`Failed loading controller joint_state_broadcaster` in the `sim` pane). Press Ctrl-C there, **Up**, **Enter**. |
 | `sim.sh` refuses: `simulator nodes of an earlier start still run`. | A start that died part way left its nodes running. Run the `kill -INT …` it prints, then start it again. |
 

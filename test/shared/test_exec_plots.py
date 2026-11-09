@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 from plugin_fakes import FakeGui, FakePanel
 
-from husky_assembly_teleop.plugins.movement_exec.plots import ExecPlots
+from husky_assembly_teleop.shared.assembly_tab.exec_plots import ExecPlots
 
 
 def _plots() -> tuple[ExecPlots, FakeGui, FakePanel]:

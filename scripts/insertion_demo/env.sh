@@ -47,8 +47,11 @@ else
 
     # * ROS: rmw_zenoh in the robots' domain 80, as in the lab. No router on this laptop: every node dials Cindy's
     #   router (crl-zenoh-router on her PC, port 7447, every interface) over the cable, with multicast discovery off.
+    # ! As a Zenoh client, not a peer: her router relays everything for a client. Two peers on one router are told to
+    #   connect to each other directly, and her nodes listen on her loopback only: nothing of hers would arrive, and
+    #   her launch would warn "Unable to connect to any locator of scouted peer … [tcp/127.0.0.1:…]".
     export ROS_DOMAIN_ID=80 RMW_IMPLEMENTATION=rmw_zenoh_cpp
-    export ZENOH_CONFIG_OVERRIDE="connect/endpoints=[\"tcp/$DEMO_ROUTER\"];scouting/multicast/enabled=false"
+    export ZENOH_CONFIG_OVERRIDE="mode=\"client\";connect/endpoints=[\"tcp/$DEMO_ROUTER\"];scouting/multicast/enabled=false"
     unset ZENOH_SESSION_CONFIG_URI
 
     # * The workspace: its venv, ROS, then its install. Their scripts read unset variables: they are sourced with

@@ -13,6 +13,28 @@ hall's. Run end to end from the buttons, the interruptions included. Found there
 before Rigid (Rigid alone does not last while the robot is soft stopped); a cancelled insert is undone by Rigid, then
 Retreat.
 
+Preview before each move (2026-11-09, asked after the first dry run): **Approach**, **Insert** and **Retreat** only
+plan and show the move, as the Assembly tab's Plan does: a see-through robot on the path at **Preview time** (scrub
+or **Play**), timed for **Motion time** (the old **Seconds**; the line below says the arms' minimum). **Execute**
+runs the move shown, once, from the live joints (`live_rows`: refused when the arms left the plan's start).
+**Cancel** with nothing running drops the plan. The retreat has no planner: its preview is the straight back-out
+from the live joints to the insert's start (`parts.back_out_rows`, `parts.timed_preview`).
+
+Plots (2026-11-09, asked next): the Assembly tab's two plot windows in the demo, opening by themselves: **Plan
+plots** when a move is planned, **Exec plots** (force and torque, from the part's `Recorder`) when an insert, a
+retreat or Compliant starts. `PlanPlots` and `ExecPlots` moved from `plugins/assembly_steps` and
+`plugins/movement_exec` to `shared/assembly_tab/`, since plugins never import each other.
+
+Cable check (2026-11-09): Cindy answers at 192.168.131.1 (ssh 22 and her router 7447 open, the arms at .40/.41); her
+bridge has no DHCP, so the laptop's port needs its fixed address (manual 1.3). tmux.sh empties `DEMO_SIM` in its
+panes: a tmux server started by sim_tmux.sh handed it on, and the hall panes took themselves for the dry run.
+
+First run on the cable (2026-11-09): the laptop's nodes as Zenoh peers on her router got nothing of hers (her launch
+warned "Unable to connect to any locator of scouted peer … [tcp/127.0.0.1:…]"): her router relays between routers and
+for clients, not between two peers on it, and her nodes listen on her loopback only. env.sh now sets `mode="client"`.
+Her router is joined to the lab's over WiFi, so base.sh refuses while anything else publishes her body's pose.
+`husky_fixed_base` no longer raises on Ctrl-C (its `_publishers` shadowed rclpy's own list).
+
 ## Context
 
 For the Swiss Robotics Day, Cindy (0806, dual arm, AT3L/AT3R scaffolding tools) shows one diagonal bar (B6 of

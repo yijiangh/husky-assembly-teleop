@@ -183,7 +183,7 @@ When a word has more than one meaning, the entry says which is which. Use the qu
   `plugins/movement_exec/servo_part.py`, `shared/execution/servo.py`.
 - **Plan plots / Exec plots**: the two floating plot windows at the bottom, right of the main panel: assembly_steps' shows a plan's
   joints, movement_exec's a servo's readings pass by pass or a compliant part's force and torque. Each opens by
-  itself when it has something to show. `plugins/assembly_steps/plan_plots.py`, `plugins/movement_exec/plots.py`.
+  itself when it has something to show. `shared/assembly_tab/plan_plots.py`, `shared/assembly_tab/exec_plots.py`.
 - **Check tool0 / Visual diagnosis**: Check tool0 draws each flange's live tool0 (mocap base + FK) against the step's
   authored target and logs the gap; the Visual diagnosis box draws the real robots see-through and each insert or
   retreat plan's tool0 path with its Rhino and planned start and end frames. Nothing moves. `plugins/assembly_steps/`.

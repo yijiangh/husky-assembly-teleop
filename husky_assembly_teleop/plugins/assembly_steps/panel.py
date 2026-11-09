@@ -24,8 +24,8 @@ from ...shared.runs.runs import (PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, P
                                  RunSettings)
 from ...shared.assembly_tab.layout import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLAN_PLOTS_X,
                                            PLAN_SETTINGS_BAND, SETTINGS_BAND, STEP_BAND, plots_window)
+from ...shared.assembly_tab.plan_plots import PlanPlots
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
-from .plan_plots import PlanPlots
 from .step_panel_base import SLIDER_STEP
 from scaffolding_assembly_core.ids import robot_id
 

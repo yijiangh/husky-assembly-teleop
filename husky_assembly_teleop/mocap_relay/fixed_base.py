@@ -74,8 +74,9 @@ class FixedBase(Node):
         rate = float(self.get_parameter("rate_hz").value)
         if rate <= 0.0:
             raise ValueError(f"rate_hz must be positive, not {rate}")
-        self._publishers = {body: self.create_publisher(MocapRigidBodyPose, mocap_topic(body), 10)
-                            for body in self.bodies}
+        # ! Not named `_publishers`: that is rclpy's own list, which `destroy_node` walks.
+        self._by_body = {body: self.create_publisher(MocapRigidBodyPose, mocap_topic(body), 10)
+                         for body in self.bodies}
         self.create_timer(1.0 / rate, self._publish)
         x, y, z = self.pose.position
         yaw = Rotation.from_quat(self.pose.orientation).as_euler("xyz", degrees=True)[2]
@@ -86,7 +87,7 @@ class FixedBase(Node):
     def _publish(self) -> None:
         """One message per body, stamped now."""
         stamp = self.get_clock().now().to_msg()
-        for body, publisher in self._publishers.items():
+        for body, publisher in self._by_body.items():
             publisher.publish(fixed_pose_message(self.pose, stamp))
 
 
@@ -102,11 +103,8 @@ def main(args: Optional[List[str]] = None) -> None:
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
+        # ! Nothing to clean up: on Ctrl-C rclpy's own handler shuts the context down, and a second shutdown raises.
         pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
 
 
 if __name__ == "__main__":

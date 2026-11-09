@@ -35,9 +35,9 @@ from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, 
                                               INSERT_PART, MAX_TRAJ_TIME, MOTION_KINDS, MOTION_PART, REFUSED,
                                               REFUSED_PART, RETREAT_PART, SERVO_PART, Carried, ExecRequest,
                                               ExecResult, serial_of)
+from ...shared.assembly_tab.exec_plots import ExecPlots
 from ...shared.assembly_tab.layout import ASSEMBLY_TAB, EXEC_PLOTS_X, plots_window
 from .panel import ExecPanel
-from .plots import ExecPlots
 from .sequences import Job, PartRun, run_part, unknown_serials
 from .servo_part import run_servo
 

@@ -1,8 +1,8 @@
 """
 The demo's parts on the robot, each from the live joints.
 
-The steps of an action, a path from where the arms are, the check that they stand at the insert's start, the gripper
-screws, the compliant hold, and the removal.
+The steps of an action, a path from where the arms are, a path timed for the preview, the check that they stand at
+the insert's start, the gripper screws, the compliant hold, and the removal.
 
 `run_unscrew_retreat` is the retreat with the bar kept in the tools: the joint screws run in reverse for a set time
 under compliance, then the tools back out along the insert line to where the insert started. Built from the compliant
@@ -32,9 +32,11 @@ from ...shared.execution.basis import STALE_ARM
 from ...shared.execution.compliant_part import (check_part, enter_compliance, phase_keeper, started_part,
                                                 stop_then_leave)
 from ...shared.execution.force_sensors import zero_force_sensors
+from ...shared.execution.retime import RetimeError, retime
 from ...shared.execution.stream import (ARRIVAL, FAILED, REFUSED, RETREATED, PartOutcome, Recorder, Segment,
                                         arm_base_in_world, measured_tool0, progress, stream)
 from ...shared.execution.tools import StallGate, stop_all, stop_and_clear
+from ...shared.planner.timed_path import TimedPath
 from ...world.tcp import tool0_in_base_link
 
 if TYPE_CHECKING:
@@ -103,6 +105,49 @@ def live_rows(robot: HuskyRobotInterface, names: Sequence[str],
     return names, rows
 
 
+def back_out_rows(robot: HuskyRobotInterface, joints: Mapping[str, float],
+                  arms: Iterable[str]) -> tuple[list[str], np.ndarray] | str:
+    """The removal's back-out as a joint path for the preview: the arms' joints now, then `joints`; or why not.
+
+    Returns:
+        tuple[list[str], np.ndarray] | str: (names, two rows), or the refusal (an arm without a joint state).
+    """
+    names, now = [], []
+    for arm in arms:
+        here = robot.arms[arm].joint_vector()
+        if here is None:
+            return f"{arm}: no joint state yet"
+        names += arm_joint_names(arm)
+        now += here.tolist()
+    return names, np.array([now, [joints[name] for name in names]], dtype=float)
+
+
+def timed_preview(rows: Sequence[Sequence[float]], seconds: float,
+                  limits: bool = True) -> tuple[TimedPath, float] | str:
+    """A joint path timed for the preview, as its motion is timed when it runs; or why it can't be.
+
+    Args:
+        rows: The joint path (N x D), radians.
+        seconds: The motion time asked for.
+        limits: Time it as a joint motion (`retime`: the arms' limits may need longer); False: straight from the
+            first row to the last in `seconds`, as the compliant back-out streams its line.
+
+    Returns:
+        tuple[TimedPath, float] | str: The timed path and the shortest time the arms' limits allow (NaN without
+            `limits`); or the refusal.
+    """
+    rows = np.asarray(rows, dtype=float)
+    if not limits:
+        return TimedPath(np.array([0.0, float(seconds)]), rows[[0, -1]]), math.nan
+    try:
+        timed = retime(rows, seconds)
+    except RetimeError as error:
+        if np.array_equal(rows[0], rows[-1]):
+            return "the arms are already there: nothing to move"
+        return f"planned, but it can't be timed for the arms: {error}"
+    return TimedPath(timed.times, timed.positions), timed.minimum
+
+
 def tool0_at(robot: HuskyRobotInterface, joints: Mapping[str, float], arms: Iterable[str]) -> dict[str, Pose] | None:
     """Each arm's tool0 in the world at `joints`, the base where mocap sees it now; None before a base pose."""
     poses = {}
@@ -167,11 +212,11 @@ async def run_grip(ctx: PluginContext, tools: Mapping[str, ScaffoldingV3], close
 
 
 async def run_compliant_hold(ctx: PluginContext, arms: Collection[ArmInterface], released: Callable[[], bool], *,
-                             label: str) -> str:
+                             label: str, recorder: Recorder | None = None) -> str:
     """Put the arms under the compliance controller, zero target wrench, until `released`; then bring them back.
 
     The force sensors are zeroed first, so the arms give way to a push only. A cancel (Cancel, Stop all) only holds:
-    the arms stay compliant, said loudly.
+    the arms stay compliant, said loudly. `recorder` gets a sample each tick of the hold, for a live plot.
 
     Returns:
         str: Why the arms are not under compliance, or not back under joint control; "" when all went well.
@@ -184,7 +229,13 @@ async def run_compliant_hold(ctx: PluginContext, arms: Collection[ArmInterface],
         if failed:
             return failed
         ctx.log_info(f"{label}: COMPLIANT: push the arms; Rigid brings them back under joint control")
-        await ctx.wait_until(released, description="Rigid")
+
+        def done() -> bool:
+            if recorder is not None:
+                recorder.tick(ctx.now())
+            return released()
+
+        await ctx.wait_until(done, description="Rigid")
     except asyncio.CancelledError:
         cancelled = True
         raise

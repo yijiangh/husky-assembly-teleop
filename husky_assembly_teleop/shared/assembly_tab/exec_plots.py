@@ -14,7 +14,7 @@ import numpy as np
 import viser
 
 from ...plugin_api.trace import Signal, Trace
-from ...shared.execution.servo_record import BASE_COLORS, FIRST_ARM_COLORS, SECOND_ARM_COLORS
+from ..execution.servo_record import BASE_COLORS, FIRST_ARM_COLORS, SECOND_ARM_COLORS
 from ...ui.style import NONE, chip, chip_line
 from ...ui.trace_plot import TracePlot
 
