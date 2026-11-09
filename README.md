@@ -19,7 +19,7 @@ Once per PC, on Ubuntu 22.04 with ROS 2 Humble. All commands run in the workspac
 `venv/` and `install/`.
 
 **1. Clone** this repo with its submodules into `src/`, and next to it
-[crl-husky](https://gitlab.inf.ethz.ch/crl/robot-control/crl-husky) on branch `jg/ros2` at fa404f9 or later (ETH
+[crl-husky](https://gitlab.inf.ethz.ch/crl/robot-control/crl-husky) on branch `jg/ros2` at 1956556 or later (ETH
 GitLab: ask the lab for access). crl-husky provides the robot configs, the onboard launch files with the safety sync,
 and `crl_husky_msgs`. The Cartesian controllers are needed only to simulate the arms; the robots carry their own.
 

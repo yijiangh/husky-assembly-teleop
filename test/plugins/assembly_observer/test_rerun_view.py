@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+from importlib.util import find_spec
 
 import numpy as np
 import pytest
@@ -20,7 +21,8 @@ from husky_assembly_teleop.shared.runs.runs import record_event
 
 from repo_paths import DATA, REPO
 
-pytest.importorskip("rerun")
+# ! Not `pytest.importorskip`: with the ROS pytest plugins it skips the whole session, not this module.
+pytestmark = pytest.mark.skipif(find_spec("rerun") is None, reason="rerun-sdk not installed")
 
 #: The session's ROS time at its start, and wall time minus ROS time.
 ROS_START, OFFSET = 1_000.0, 1_794_000_000.0
