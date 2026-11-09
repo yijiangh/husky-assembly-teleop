@@ -33,7 +33,7 @@ PARAMETERS = (
     ("data_directory", "str", "Root for meshes, URDFs and processes; empty for this repo's data/"),
     ("drive_root", "str", "Local copy of the project's Drive folder; empty for $HUSKY_DRIVE_ROOT"),
     ("recording_format", "str", "How runs are saved: npz or json; empty for npz"),
-    ("no_default_plugins", "bool", "true skips the default plugins (health, console)"),
+    ("no_default_plugins", "bool", "true skips the default plugins (health, console, assembly_observer)"),
     ("ghost_timeout", "float", "Seconds a plugin's ghost robots stay after the last input in it; empty for 20"),
     ("layout", "str", "A person's layout file; empty for ~/.config/husky_monitor/layout.json"),
     ("lab", "str", "The lab file obstacles loads: a name in data/lab/ or a .json path; empty for main"),

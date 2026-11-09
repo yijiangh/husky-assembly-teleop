@@ -245,13 +245,13 @@ are always quoted, also for one item, and their items separated by spaces (comma
 | Parameter | Default | Meaning |
 |---|---|---|
 | `robots` | none | Robots to connect to, by serial or name: `0804`, `alice`, `a200-0806`, `Cindy`. Left out, the monitor runs without robots. |
-| `plugins` | none | Plugins to load, see below. `health` and `console` are always added, unless `no_default_plugins:=true`. |
+| `plugins` | none | Plugins to load, see below. `health`, `console` and `assembly_observer` are always added, unless `no_default_plugins:=true`. |
 | `tools` | per robot | Only where the mounted tools differ from the defaults: `<robot>:<tool>[:<tool>...]` per robot, one tool per arm in arm order: `cindy:scaffolding_v3:none`. Tools: `robotiq`, `scaffolding_v1`, `scaffolding_v3`, `none`. Defaults: Alice and Belle `robotiq`, Cindy `scaffolding_v3:scaffolding_v3`. |
 | `process_directory` | none | Process folder (with `process.json`) or old compas_fab export the `process` plugin loads at startup, relative to `drive_root` (e.g. `data_design_study/260814_RobArch_support_ik`) or absolute; without it, pick one in its panel. An export is converted into `<export>_process` next to it. |
 | `data_directory` | `data/` of this repo | Root for meshes, URDFs and processes. |
 | `drive_root` | `$HUSKY_DRIVE_ROOT` | Local copy of the project's Google Drive folder (`2025-03 Husky Assembly`), for experiment data: [doc/setup/experiment_data.md](doc/setup/experiment_data.md). |
 | `recording_format` | `npz` | How runs are saved: `npz` (compact) or `json` (readable text, about twice the size: one row per sample, unknown values as `null`). Both load the same way (`load_recording`). |
-| `no_default_plugins` | `false` | `true` skips the default plugins (`health`, `console`). |
+| `no_default_plugins` | `false` | `true` skips the default plugins (`health`, `console`, `assembly_observer`). |
 | `ghost_timeout` | `20.0` | Seconds a plugin's ghost robots stay after the last input in it; 0 keeps them until another plugin's ghosts show. A layout file's `ghost_timeout` replaces it. |
 | `layout` | `""` | A person's layout file (`ui/layout.py`); empty for `~/.config/husky_monitor/layout.json`. Never in git. See [doc/lab/plugins.md](doc/lab/plugins.md#your-own-layout). |
 | `lab` | `main` | The lab file `obstacles` loads: a name in `data/lab/`, or a path to a .json file. |
@@ -275,7 +275,7 @@ What each one does in detail, and the panels and tabs it shows: [doc/lab/plugins
 | `assembly_run` | Remembers how far the assembly got: done actions, where each robot was left. Experimental. |
 | `assembly_steps` | The operator's steps: Live IK, Plan, preview, Exec. Experimental. |
 | `movement_exec` | Runs one step on the real robots, with Confirms, compliant inserts and the servo. Experimental. |
-| `assembly_observer` | Records the robots every tick and every event (commands, leases, stops, manual moves, operator clicks, log lines) on this PC for a week; copies a time range to the Drive. Experimental. |
+| `assembly_observer` | Records the robots every tick and every event (commands, leases, stops, manual moves, operator clicks, log lines) on this PC for a week; copies a time range to the Drive. Loaded by default. |
 | `motion_planner` | Plans process movements and checks collisions for other plugins. Experimental. |
 | `base_planner_panel` | Plans a collision-free base path and sends it to the onboard follower. Experimental. |
 | `arm_planner_panel` | Plans a collision-free arm motion to a joint target. Experimental. |

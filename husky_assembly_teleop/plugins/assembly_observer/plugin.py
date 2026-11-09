@@ -17,7 +17,8 @@ start, a folder `~/.ros/assembly_observer/<YYYYMMDD>/<stamp>_session/`:
 
 - ! Copies go to `<Drive>/data_experiment/assembly_observer/<name>/<stamp>/`: make that folder in Drive first; it is
   never made here (`drive.py`).
-- It only records, never commands, so a soft stop leaves it running. Files are written on its own writer thread.
+- Loaded by default (config.DEFAULT_PLUGINS). It only records, never commands, so a soft stop leaves it running.
+  Files are written on its own writer thread.
 - Joins the assembly run's log (`runs/<run>/events.jsonl`) by ROS time: both keep it on every line.
 """
 
