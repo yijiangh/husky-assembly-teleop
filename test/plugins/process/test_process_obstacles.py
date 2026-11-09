@@ -30,6 +30,7 @@ from husky_assembly_teleop.plugins.process.plugin import (BY_HAND_LABEL, OBSTACL
                                                           OBSTACLES_GHOST, ProcessPlugin)
 from husky_assembly_teleop.world.base_collision import BaseCollisionWorld
 from husky_assembly_teleop.world.kinematics import stow_joints
+from husky_assembly_teleop.world.lab import platform_links
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.robot import RobotObject
@@ -125,7 +126,11 @@ def test_held_body_follows_the_configured_robot(process):
     assert bodies["process/bars/B1"].enabled
     assert bodies["process/bars/B1"].placement == Attachment("robots/a200-0806", "left_tool0", grasp)
     assert "tools/a200-0806/left" in bodies["process/joints/G1_ground"].touches
-    assert bodies["process/ground/WG0"].touches == ("process/joints/G1_ground", "robots/a200-0806/wheel_link")
+    # * Then the rest of her platform, as on the lab's floor: the chassis drives on the ground too.
+    platform = {f"robots/a200-0806/{link}" for link in platform_links(_real_cindy(process).model)}
+    touches = bodies["process/ground/WG0"].touches
+    assert touches[:2] == ("process/joints/G1_ground", "robots/a200-0806/wheel_link")
+    assert set(touches[1:]) == platform and len(platform) > 1
 
 
 def test_live_ids_both_ways(process):
@@ -210,6 +215,10 @@ class _ViserContext(FakeContext):
     """A fake context whose value callbacks are the real ones (`PluginContext.defer_value`), handed viser's events."""
 
     defer_value = PluginContext.defer_value
+    _defer = PluginContext._defer
+
+    def _note_operator(self, label, value) -> None:
+        """Nothing: the operator's actions are not logged here."""
 
 
 def _set_up(process: Process, ctx: FakeContext | None = None) -> tuple[ProcessPlugin, FakeContext, Scene]:

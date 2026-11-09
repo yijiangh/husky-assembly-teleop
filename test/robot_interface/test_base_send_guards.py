@@ -39,6 +39,7 @@ def _base() -> BaseInterface:
     base.state.controllers.active, base.state.controllers.last_update_time = PLATFORM_VELOCITY_CONTROLLER, NOW
     base.controllers = Controllers(base.state.controllers, "/a200_0804", base._node)
     base._cmd_vel, base._base_path, base._path_ids = Publisher(), Publisher(), itertools.count(1)
+    base._scaled_path, base.scaled_as = Publisher(), ""
     base.twists_sent, base.paths_sent = Event("x_twist"), Event("x_path")
     return base
 
@@ -68,6 +69,11 @@ def test_twist_refused_while_the_controller_state_is_stale():
     (([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], None, math.nan, 0.5), "not finite"),
     (([0.0, 1.0], [0.0], [0.0, 0.0], None, 0.3, 0.5), "differ in length"),
     (([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0], 0.3, 0.5), "differ in length"),
+    (([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], None, 0.3, 0.5, [1.0]), "differ in length"),
+    (([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], None, 0.3, 0.5, [1.0, math.nan]), "not finite"),
+    (([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], None, 0.3, 0.5, [1.0, 0.0]), "speed scales"),
+    (([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], None, 0.3, 0.5, [1.0, 1.2]), "speed scales"),
+    (([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], None, 0.0, 0.5, [1.0, 0.5]), "needs both speed caps"),
 ])
 def test_path_not_finite_or_ragged_is_refused(path, why):
     """send_path raises before it takes a path id or publishes."""
@@ -158,3 +164,49 @@ def test_without_its_lease_a_base_refuses_to_drive_or_switch_but_always_stops(ho
             assert base.send_twist(0.2, 0.0)
             base.send_path(*PATH)
         assert len(base._cmd_vel.sent) == 2 and len(base._base_path.sent) == 2
+
+
+def test_speed_scales_go_out_to_a_follower_that_takes_them():
+    """With a subscriber on base_path_scaled, a slowed path goes there with its scales and the caps as given."""
+    import husky_assembly_teleop.robot_interface.base as module
+    if module.BasePathScaled is None:
+        pytest.skip("this build's crl_husky_msgs has no BasePathScaled")
+    base = _base()
+    base._scaled_path.subscribers = 1
+    paths = []
+    base.paths_sent.attach(paths.append)
+    base.send_path([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], None, 0.2, 0.3, [1.0, 0.25])
+    scaled, = base._scaled_path.sent
+    assert paths[0].message is scaled  # * the observer's command file keeps the scales
+    assert not base._base_path.sent and list(scaled.speed_scale) == [1.0, 0.25]
+    assert (scaled.path.max_linear_speed, scaled.path.max_angular_speed) == (0.2, 0.3) and base.scaled_as == "per pose"
+
+
+def test_without_such_a_follower_the_whole_path_goes_slow():
+    """No subscriber on base_path_scaled (an old follower): the plain path, both caps times the slowest scale."""
+    base = _base()
+    base.send_path([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], None, 0.2, 0.3, [1.0, 0.25])
+    plain, = base._base_path.sent
+    assert not base._scaled_path.sent and base.scaled_as.startswith("whole path at 25 %")
+    assert (plain.max_linear_speed, plain.max_angular_speed) == pytest.approx((0.05, 0.075))
+
+
+def test_a_path_without_scales_goes_out_plain_with_its_caps():
+    """No speed scales: the plain path with the caps as given, even when the follower takes scales."""
+    base = _base()
+    base._scaled_path.subscribers = 1
+    base.send_path([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], None, 0.2, 0.3)
+    plain, = base._base_path.sent
+    assert not base._scaled_path.sent and (plain.max_linear_speed, plain.max_angular_speed) == (0.2, 0.3)
+
+
+def test_a_stop_also_goes_after_scaled_paths():
+    """With a follower on base_path_scaled, a stop goes out on both topics, so it never overtakes a slowed path."""
+    import husky_assembly_teleop.robot_interface.base as module
+    if module.BasePathScaled is None:
+        pytest.skip("this build's crl_husky_msgs has no BasePathScaled")
+    base = _base()
+    base._scaled_path.subscribers, base._path_id = 1, 5
+    base.stop_path()
+    (plain,), (scaled,) = base._base_path.sent, base._scaled_path.sent
+    assert len(plain.x) == 0 and len(scaled.path.x) == 0 and list(scaled.speed_scale) == []

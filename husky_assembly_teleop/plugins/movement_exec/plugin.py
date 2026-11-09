@@ -161,7 +161,7 @@ class MovementExecPlugin(HuskyPlugin):
             self._job, self._active, self._cancel_reason = job, f"{request.robot_name} · {request.label}", ""
             self._last, self._last_failed, self._hold_lost = "", False, False
             ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
-                         + (" (DRY RUN)" if job.dry_run else ""))
+                         + (" (DRY RUN)" if job.dry_run else "") + f"; {_safety_line(request)}")
             self._task = ctx.spawn(f"exec {request.label}", self._run(job, lease, future))
         except BaseException:
             # ! No task runs to give them back (e.g. the plugin is closing, so spawn refuses): every other plugin
@@ -468,7 +468,7 @@ class MovementExecPlugin(HuskyPlugin):
             "part": {"index": part.index, "also": list(part.also), "kind": part.kind, "tools": list(part.tools),
                      "text": part.text},
             "basis": request.basis.as_record() if motion and request.basis is not None else None,
-            "plan": plan, "command": run.command,
+            "plan": plan, "command": run.command, "safety": _safety(request),
             # * Where the robot stood and when, at the part's start and end, as measured then.
             "exec": {"ros_time_start": run.started_at, "ros_time_end": run.ended_at,
                      "base_at_start": _pose_record(run.base_at_start), "base_at_end": _pose_record(run.base)},
@@ -553,3 +553,16 @@ class MovementExecPlugin(HuskyPlugin):
 def _pose_record(pose: Pose | None) -> list[float] | None:
     """A pose as [x, y, z, qx, qy, qz, qw] for the record, or None."""
     return None if pose is None else [*map(float, pose.position), *map(float, pose.orientation)]
+
+
+def _safety(request: ExecRequest) -> dict:
+    """The operator's safety choices for a request, as its records keep them."""
+    return {"clearance": request.clearance, "ignore_built": request.ignore_built(),
+            "unknown_robots": sorted(request.unknown_robots)}
+
+
+def _safety_line(request: ExecRequest) -> str:
+    """The operator's safety choices for a request, for its log line."""
+    unknown = ", ".join(sorted(request.unknown_robots)) or "none"
+    return (f"clearance {'on' if request.clearance else 'off'}, ignore built bars "
+            f"{'on' if request.ignore_built() else 'off'}, robots let be unknown: {unknown}")

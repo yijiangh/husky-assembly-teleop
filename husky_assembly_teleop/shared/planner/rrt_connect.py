@@ -99,7 +99,10 @@ def connect(start: State, goal: State, distance: Callable[[State, State], float]
     if blocked:
         return Corners(None, f"the {' and the '.join(blocked)} is too close to something for the search's checks")
     if best is None:
-        return Corners(None, f"no path found in {time_limit:.0f} s")
+        spent = time.time() - started
+        return Corners(None, f"no path found in {time_limit:.0f} s" if spent >= time_limit else
+                       f"no path found: the search gave up after {MAX_ITERATIONS * (RESTARTS + 1)} tries "
+                       f"({spent:.0f} s)")
     return Corners(best)
 
 

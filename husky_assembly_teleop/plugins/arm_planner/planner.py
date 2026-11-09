@@ -23,7 +23,7 @@ from ...world.collision_hit import CollisionHit
 from ...shared.assembly_planning.collision import collision_hit, collisions
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.planner.timed_path import TimedPath
-from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
+from ...shared.planner.planner_search import PlanResult
 from ...shared.planner.rrt_connect import connect
 from ...robot_interface.arm import UR_JOINT_LIMITS, joint_path_move
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
@@ -34,6 +34,9 @@ JOINT_STEP = 0.05
 #: How finely a path found is checked again before it is kept, radians per joint: a pass closer than its margin can
 #: fall between two of the search's checks (the tool moves centimetres in one JOINT_STEP).
 VERIFY_STEP = 0.005
+#: Give up searching after this long, seconds: longer than the shared 20 s (`planner_search.TIME_LIMIT`), as a free
+#: move of both arms between built bars can take most of it.
+TIME_LIMIT = 60.0
 #: Searches the shortest path is kept from, and seconds after which no new one starts once a path is found.
 ATTEMPTS = 3
 IMPROVE_TIME = 3.0
@@ -44,6 +47,9 @@ SAMPLE_SLACK = np.pi
 BLEND_LENGTH = 0.3
 #: Times a rounding that collides is halved before the arm rests at that corner instead.
 BLEND_TRIES = 4
+#: The most a rounding curve turns between two of its points, radians: its points follow the curve closely enough
+#: for a second timing (Exec's `retime`) to glide along it.
+CURVE_TURN = math.radians(1.0)
 #: How finely `endpoint_margins` rounds down the margin of a pair closer than usual at the start or target, metres.
 MARGIN_RESOLUTION = 0.0005
 
@@ -52,7 +58,9 @@ MARGIN_RESOLUTION = 0.0005
 class ArmPath(TimedPath):
     """A joint path for one arm, timed as it is sent (`joint_path_move`), so the preview shows the arm's motion.
 
-    `points` are joint values in radians, shape (n, 6), in `joint_names` order.
+    `points` are joint values in radians, shape (n, 6), in `joint_names` order: the samples of that timing, 0.2 s
+    apart. ! To time the path again (`retime`, as Exec does), pass `waypoints`, never `points`: on a curve two samples
+    meet at an angle the curve itself never has, and a second timing stops there.
 
     Attributes:
         joint_names: The six joints, in the order of each sample.
@@ -63,6 +71,8 @@ class ArmPath(TimedPath):
             margin in `close`; 0 is contact only.
         close: The pairs it keeps less from, as (part, part, metres), closest first: those its start or target is
             already that close to (`endpoint_margins`). Every other pair keeps PLAN_DISTANCE.
+        shape: Where it goes, untimed: the corners with their rounding curves, densely sampled (`round_corners`), in
+            `joint_names` order; None for a path made from timed points only. `waypoints` gives it.
     """
 
     joint_names: tuple[str, ...]
@@ -71,6 +81,12 @@ class ArmPath(TimedPath):
     slowdown: float = 1.0
     margin: float = 0.0
     close: tuple[tuple[str, str, float], ...] = ()
+    shape: np.ndarray | None = None
+
+    @property
+    def waypoints(self) -> np.ndarray:
+        """np.ndarray: Where it goes, untimed (`shape`): the rows to time again; the points when it has no shape."""
+        return self.points if self.shape is None else self.shape
 
     @property
     def fastest(self) -> float:
@@ -103,7 +119,8 @@ class ArmPath(TimedPath):
         positions, velocities, duration = joint_path_move(points, stops)
         rests = len(points) - 2 if stops is None else len(set(stops) - {0, len(points) - 1})
         return cls(times=np.linspace(0.0, duration, len(positions)), points=positions,
-                   joint_names=tuple(joint_names), velocities=velocities, rests=rests)
+                   joint_names=tuple(joint_names), velocities=velocities, rests=rests,
+                   shape=np.asarray(points, dtype=float))
 
 
 def path_hit(mirror: CompasFabMirror, scene: Scene, arm_name: str, waypoints: np.ndarray,
@@ -196,10 +213,15 @@ def round_corners(corners: Sequence[Sequence[float]],
     for before, corner, after in zip(corners[:-2], corners[1:-1], corners[2:]):
         incoming, outgoing = corner - before, after - corner
         length = min(BLEND_LENGTH, np.linalg.norm(incoming) / 2, np.linalg.norm(outgoing) / 2)
+        turn = math.acos(float(np.clip(incoming @ outgoing / np.linalg.norm(incoming) / np.linalg.norm(outgoing),
+                                       -1.0, 1.0)))
         for _ in range(BLEND_TRIES):
             enter = corner - length * incoming / np.linalg.norm(incoming)
             leave = corner + length * outgoing / np.linalg.norm(outgoing)
-            u = np.linspace(0.0, 1.0, max(3, int(np.ceil(4 * length / JOINT_STEP)) + 1))[:, None]
+            # * Densely enough on length (the collision checks) and on turn: a short curve sampled coarsely meets at
+            #   sharp angles again, where a second timing (Exec's) would stop.
+            u = np.linspace(0.0, 1.0, max(3, int(np.ceil(4 * length / JOINT_STEP)) + 1,
+                                          int(np.ceil(turn / CURVE_TURN)) + 1))[:, None]
             curve = (1 - u) ** 2 * enter + 2 * u * (1 - u) * corner + u ** 2 * leave
             if not any(collides(tuple(q)) for q in curve):
                 points.extend(curve)
@@ -289,7 +311,9 @@ def plan_arms(mirror: CompasFabMirror, scene: Scene, arm_names: Sequence[str], g
             return PlanResult(None, reason, time.time() - started)
         path = replace(ArmPath.along(names, *round_corners(corners.states, collides)),
                        margin=min([PLAN_DISTANCE, *close.values()]), close=nearest)
-        broken = fine_hit(path.points, check)
+        # * Both ways it is driven: through its waypoints (timed again by Exec) and through its 0.2 s samples (sent
+        #   as they are from the panel), which cut across its curves.
+        broken = fine_hit(path.waypoints, check) or fine_hit(path.points, check)
         if broken is None:
             return PlanResult(path, seconds=time.time() - started, direct=corners.direct)
         straight = straight and not corners.direct

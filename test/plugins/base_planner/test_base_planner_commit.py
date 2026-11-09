@@ -190,13 +190,13 @@ def test_commit_keeps_a_clearance_only_while_clearance_is_ticked(ticked):
 
 @pytest.mark.safety
 def test_commit_sends_a_geometric_path_capped_at_the_planning_speeds():
-    """The waypoints go out untimed, with the planning speeds as caps; the planner keeps the path id."""
+    """The waypoints go out untimed, with the planning speeds as caps and no slowing; the planner keeps the path id."""
     base = FakeBase()
     (sent, message), planner = commit(base)
     assert sent and "path 7" in message and planner.plan.state == "sent"
-    (x, y, yaw, t, linear, angular), = base.sent
+    (x, y, yaw, t, linear, angular, scale), = base.sent
     np.testing.assert_array_equal(np.column_stack([x, y, yaw]), planner.plan.path.points)
-    assert t is None and (linear, angular) == (MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED)
+    assert t is None and (linear, angular) == (MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED) and scale is None
     assert planner._runs[SERIAL].path_id == 7
 
 
@@ -292,6 +292,21 @@ def test_the_search_plans_with_the_chosen_follower_model_else_the_robots(chosen)
     request = BasePlanRequest(config.serial, (4.0, 1.0, 0.0), rrt.label, (("follower_model", chosen),))
     planner.make_search(lab.ctx, request, threading.Event()).work()
     assert config.base_model != "ideal" and seen[0].follower_model == (chosen or config.base_model)
+
+
+@pytest.mark.parametrize("asked, box, on", [(False, False, False), (True, False, True), (False, True, True)])
+def test_the_search_records_debug_if_asked_or_the_debug_view_is_on(asked, box, on):
+    """A request without debug (e.g. the guide's) still records while the panel's Debug view box is ticked."""
+    lab, planner, seen = RobotLab(), BasePlannerPlugin(), []
+    planner.debug_view = box
+    default = planner._algorithms[0]
+    default.plan = lambda *args: seen.append(args[6]) or PlanResult(None, "not planned", 0.0)
+    lab.ctx.kinematics = SimpleNamespace(base_pose=lambda _serial: SimpleNamespace(
+        position=np.array([3.0, 1.0, 0.0]), orientation=np.array([0.0, 0.0, 0.0, 1.0])))
+    lab.cindy.base.simulation, lab.ctx.plugins["process"] = None, SimpleNamespace(selection=None)
+    request = BasePlanRequest(lab.configs[2].serial, (4.0, 1.0, 0.0), debug=asked)
+    planner.make_search(lab.ctx, request, threading.Event()).work()
+    assert seen[0].on is on
 
 
 #: A recorded request of experiment "trial".

@@ -95,11 +95,26 @@ class PlanningWorld(BaseCollisionWorld):
         A check for `margin` plus some extra (room for the follower's drift, a portal's room) keeps that object's
         margin plus the same extra. Measurements (`clearance`) are unchanged.
         """
-        self._keeping = (own, float(margin), dict(close))
+        before, self._keeping = self._keeping, (own, float(margin), dict(close))
         try:
             yield
         finally:
-            self._keeping = None
+            self._keeping = before
+
+    @contextmanager
+    def measured_from(self, margin: float) -> Iterator[None]:
+        """Within the block, the objects kept (`keeping`) count their margins from `margin`.
+
+        A check for `margin` plus some extra keeps each one its own margin plus that extra. Nothing changes outside
+        `keeping`.
+        """
+        before = self._keeping
+        if before is not None:
+            self._keeping = (before[0], float(margin), before[2])
+        try:
+            yield
+        finally:
+            self._keeping = before
 
     def _hit(self, own: str, pose, margin: float) -> tuple[str, str] | None:
         """As `BaseCollisionWorld._hit`, each object in `keeping` checked at its own margin (plus the same extra)."""
@@ -109,15 +124,13 @@ class PlanningWorld(BaseCollisionWorld):
         _own, usual, close = keeping
         self._place(own, pose)
         candidates = self._candidates(own, pose, margin)
-        others = [object_id for object_id in candidates if object_id not in close]
-        near = {object_id: max(0.0, close[object_id] + margin - usual) for object_id in candidates
-                if object_id in close}
+        # * Nearest first, up to the first hit, as `BaseCollisionWorld._hit`.
+        margins = [max(0.0, close[object_id] + margin - usual) if object_id in close else margin
+                   for object_id in candidates]
         for part in self._parts(own):
-            hits = self.mirror.collisions(part, margin, others)
-            hits += [object_id for object_id, own_margin in near.items()
-                     if self.mirror.collisions(part, own_margin, [object_id])]
-            if hits:
-                return part, sorted(hits)[0]
+            for object_id, own_margin in zip(candidates, margins):
+                if self.mirror.collisions(part, own_margin, [object_id]):
+                    return part, object_id
         return None
 
     def hit_by(self, own: str, pose, margin: float = COLLISION_MARGIN) -> str | None:
@@ -161,6 +174,20 @@ class PlanningWorld(BaseCollisionWorld):
         keeping, self._keeping = self._keeping, None  # * true distances, whatever margins are kept
         try:
             return self._clearance(own, poses, limit)
+        finally:
+            self._keeping = keeping
+
+    def nearest(self, own: str, pose, limit: float = CLEARANCE_LIMIT) -> tuple[float, str | None]:
+        """The true distance from a robot at one floor pose to the nearest thing, to CLEARANCE_STEP, and its label.
+
+        Returns:
+            tuple[float, str | None]: The clearance, metres (`limit` if nothing is nearer), and the label of what is
+            that close (None if nothing is nearer than `limit`).
+        """
+        keeping, self._keeping = self._keeping, None  # * true distances, whatever margins are kept
+        try:
+            clear, where = self._clearance(own, [pose], limit)
+            return clear, None if where is None else self.hit_by(own, pose, clear + CLEARANCE_STEP)
         finally:
             self._keeping = keeping
 

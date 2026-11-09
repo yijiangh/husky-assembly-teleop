@@ -215,13 +215,18 @@ class BaseCollisionWorld:
         self._place(own, pose)
         candidates = self._candidates(own, pose, margin)
         for part in self._parts(own):
-            hits = self.mirror.collisions(part, margin, candidates)
-            if hits:
-                return part, hits[0]
+            # * One by one, nearest first, up to the first hit: most checks near things hit, and a check costs
+            #   per object.
+            for other in candidates:
+                if self.mirror.collisions(part, margin, [other]):
+                    return part, other
         return None
 
     def _candidates(self, own: str, pose, margin: float) -> list[str]:
-        """The other robots and bodies whose footprint lies within reach of robot `own` at `pose`, plus `margin`."""
+        """The other robots and bodies whose footprint lies within reach of robot `own` at `pose`, plus `margin`.
+
+        Nearest footprint first.
+        """
         x, y, _ = pose
         reach = self._reach.get(own, math.inf) + margin
         parts = self._parts(own)
@@ -231,8 +236,8 @@ class BaseCollisionWorld:
             dx = max(footprint[0] - x, 0.0, x - footprint[2])
             dy = max(footprint[1] - y, 0.0, y - footprint[3])
             if object_id not in parts and math.hypot(dx, dy) <= reach:
-                candidates.append(object_id)
-        return candidates
+                candidates.append((math.hypot(dx, dy), object_id))
+        return [object_id for _, object_id in sorted(candidates)]
 
     def _parts(self, own: str) -> list[str]:
         """A robot and what it holds, robot first."""

@@ -513,6 +513,7 @@ def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
     arm._trajectory, arm._target_frame, arm._target_wrench = Published(), Published(), Published()
     arm.trajectories_sent, arm.targets_sent, arm.wrenches_sent = (Event(f"{name}_trajectory"), Event(f"{name}_target"),
                                                                   Event(f"{name}_wrench"))
+    arm.wrench_messages, arm.ft_zeros_sent = Event(f"{name}_ft"), Event(f"{name}_ft_zero")
     arm._zero_ft = SimpleNamespace(service_is_ready=lambda: True, calls=[])
     arm._zero_ft.call_async = arm._zero_ft.calls.append
     arm.end_effector = end_effector
@@ -526,7 +527,9 @@ def fake_robot(node: SimpleNamespace, serial: str, arms: Sequence[ArmInterface])
     robot._node = node
     robot.config = SimpleNamespace(serial=serial, arms=tuple(arm.config for arm in arms))
     robot.arms = {arm.config.name: arm for arm in arms}
-    robot.base = SimpleNamespace(state=BaseState())  # never measured, as in the simulator
+    # * Never measured, as in the simulator; its command events fire for nothing here.
+    robot.base = SimpleNamespace(state=BaseState(), simulation=None, twists_sent=Event(f"{serial}_twist"),
+                                 paths_sent=Event(f"{serial}_path"))
     robot._multi_arm = Published() if len(arms) == 2 else None
     # * One latch and one lease slot for the whole robot, shared by its arms and tools; the lease starts free.
     robot.soft_stop_latch, robot.lease_slot = SoftStopLatch(serial), LeaseSlot(serial)
@@ -815,6 +818,7 @@ def fake_robotiq(node: SimpleNamespace, namespace: str = "/a200_0804/gripper", p
     gripper.state = RobotiqState(position=position)
     gripper._action = FakeAction()
     gripper._goal, gripper._cancel_on_accept = None, False
+    gripper.commands_sent = Event(f"{namespace}_tool")
     # * Its own latch and lease slot, until `fake_robot` gives it the robot's.
     gripper._latch, gripper._lease_slot = SoftStopLatch(namespace), LeaseSlot(namespace)
     return gripper
@@ -866,6 +870,7 @@ def fake_scaffolding(node: SimpleNamespace, namespace: str = "/a200_0806/left_gr
     tool._node, tool.namespace = node, namespace
     tool.state = ScaffoldingV3State()
     tool._command = Published()
+    tool.commands_sent = Event(f"{namespace}_tool")
     # * Its own latch and lease slot, until `fake_robot` gives it the robot's.
     tool._latch, tool._lease_slot = SoftStopLatch(namespace), LeaseSlot(namespace)
     return tool

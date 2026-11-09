@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 from builtin_interfaces.msg import Duration
@@ -472,12 +472,44 @@ class SentTrajectory:
         hold: 1 for the braking trajectory of `hold`, else 0.
         update_time: ROS time it was sent, seconds.
         stamp: The same; the monitor's clock.
+        message: The JointTrajectory exactly as sent, or None.
     """
 
     target: np.ndarray
     duration: float
     waypoints: int
     hold: int
+    update_time: float
+    stamp: float
+    message: Any = None
+
+
+@dataclass(frozen=True)
+class WrenchReading:
+    """One force/torque reading as it arrived: the record of `ArmInterface.wrench_messages`.
+
+    Attributes:
+        wrench: (fx, fy, fz, tx, ty, tz), newtons and newton-metres.
+        update_time: ROS time the monitor handled it, seconds.
+        stamp: Time the driver stamped it, seconds on the robot's clock.
+    """
+
+    wrench: np.ndarray
+    update_time: float
+    stamp: float
+
+
+@dataclass(frozen=True)
+class SentZero:
+    """A request to zero the force/torque sensor: the record of `ArmInterface.ft_zeros_sent`.
+
+    Attributes:
+        wrench: The reading just before, which the zero tares away, or None before any.
+        update_time: ROS time it was sent, seconds.
+        stamp: The same; the monitor's clock.
+    """
+
+    wrench: np.ndarray | None
     update_time: float
     stamp: float
 
@@ -584,6 +616,9 @@ class ArmInterface:
         self.trajectories_sent = Event(f"{config.name}_trajectory")
         self.targets_sent = Event(f"{config.name}_target")
         self.wrenches_sent = Event(f"{config.name}_wrench")
+        #: Every force/torque reading while anything listens (else only the newest is decoded), and each zeroing.
+        self.wrench_messages = Event(f"{config.name}_ft")
+        self.ft_zeros_sent = Event(f"{config.name}_ft_zero")
 
         self.controllers = ControllerManagerInterface(
             node, self._namespace, ARM_CONTROLLERS, self.state.controllers, guard=self._switch_refusal)
@@ -609,7 +644,7 @@ class ArmInterface:
         self._ros.subscription(IOStates, f"{measured}/io_and_status_controller/io_states",
                                self._on_io_states, sensor, newest_only=True)
         self._ros.subscription(WrenchStamped, f"{measured}/ft_sensor_wrench", self._on_wrench, RECORDED_QOS,
-                               newest_only=True)
+                               newest_only=self.wrench_messages)
 
         # --- --- commands --- ---
         self._trajectory = self._ros.publisher(
@@ -923,7 +958,8 @@ class ArmInterface:
         """
         now = self._now()
         self.trajectories_sent.fire(SentTrajectory(np.array(trajectory.points[-1].positions, dtype=float),
-                                                   float(duration), len(trajectory.points), int(hold), now, now))
+                                                   float(duration), len(trajectory.points), int(hold), now, now,
+                                                   trajectory))
 
     def send_joint_move(self, target: Sequence[float], max_speed: float = JOINT_MOVE_MAX_SPEED,
                         min_duration: float = JOINT_MOVE_MIN_DURATION) -> float | None:
@@ -1174,6 +1210,8 @@ class ArmInterface:
             self._node.get_logger().error(f"arm {self.config.name}: zero_ftsensor is not available")
             return False
         self._zero_ft.call_async(Trigger.Request())
+        now = self._now()
+        self.ft_zeros_sent.fire(SentZero(None if self.state.wrench is None else self.state.wrench.copy(), now, now))
         return True
 
     def request_free_drive(self) -> None:
@@ -1303,6 +1341,9 @@ class ArmInterface:
         """Store the force/torque reading."""
         f, t = message.wrench.force, message.wrench.torque
         self.state.wrench = np.array([f.x, f.y, f.z, t.x, t.y, t.z])
+        if self.wrench_messages.listened:
+            stamp = message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec
+            self.wrench_messages.fire(WrenchReading(self.state.wrench, self._now(), stamp))
 
     def _refused(self, label: str, message: str) -> None:
         """Log why a command was not sent, and keep it as `last_refusal`."""

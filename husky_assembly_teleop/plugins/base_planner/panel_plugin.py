@@ -5,7 +5,8 @@ The flow is `shared.planner.planner_panel.PlannerPanel`; this adds the planar ta
 (`algorithms`) with its settings and debug view, the experiment's task and recording inputs, and the floor drawing.
 The last three sit in a collapsed Advanced folder, so the panel shows only target, plan and commit.
 
-- The floor shows the plan as the follower will cut it, the sent path, and the robot's trail until the next Commit.
+- The floor shows the plan as the follower will cut it; the sent path and the robot's trail while the run is the
+  newest of every robot's, until FLOOR_KEEP seconds after it ended.
 - A task of the experiment's standard set (`tasks`) puts its virtual obstacles into the scene, under this panel's
   name; Load sets the target to its start (to drive there) or its target.
 - A plan refused for a start or target in collision shows the hit in the collisions panel until a newer plan.
@@ -49,12 +50,14 @@ from scaffolding_assembly_core.ids import robot_id
 from .algorithms import ALGORITHMS, Algorithm
 from .algorithms.base import add_margin_setting
 from .debug_view import DebugView
-from .planner_plugin import DEFAULT_EXPERIMENT, BasePlannerPlugin, differs, floor_pose
+from .planner_plugin import DEFAULT_EXPERIMENT, BasePlannerPlugin, Run, differs, floor_pose
 from .recording import RECORDING_FOLDER
 from .tasks import BY_NAME, TASKS
 
 #: The Task dropdown's entry for no task.
 NO_TASK = "(none)"
+#: Seconds the sent path and trail stay on the floor after the run ended.
+FLOOR_KEEP = 30.0
 
 
 @register
@@ -165,7 +168,8 @@ class BasePlannerPanel(PlannerPanel):
                 gui.add_html(section("debug", NONE))
                 add_pybullet_window_toggle(ctx, gui, self._planner._executor, self._planner._world.set_gui)
                 self._debug_on = gui.add_checkbox("Debug view", initial_value=False,
-                                                  hint="Record how the next search works, and draw it on the floor")
+                                                  hint="Record how the next searches work, also the guide's, "
+                                                       "and draw them on the floor")
                 self._debug_legend = gui.add_html("")
                 self._debug_layers = gui.add_folder("Debug layers")
                 self._debug_notes = gui.add_html("")
@@ -175,6 +179,9 @@ class BasePlannerPanel(PlannerPanel):
         self._task.on_update(ctx.defer_value("choose task", lambda name: self._choose_task(ctx, str(name))))
         load.on_click(ctx.defer_value("load target", lambda label: self._load_target(ctx, label)))
         self._algorithm.on_update(ctx.defer_value("choose algorithm", lambda label: self._choose_algorithm(str(label))))
+        # * The box is the planner's: searches asked by others (e.g. the guide) record too.
+        self._debug_on.on_update(ctx.defer_value("debug view",
+                                                 lambda on: setattr(self._planner, "debug_view", bool(on))))
 
         self._markers = Markers(ctx)
         self._debug_view = DebugView(ctx, self._debug_legend, self._debug_layers, self._debug_notes)
@@ -363,7 +370,7 @@ class BasePlannerPanel(PlannerPanel):
 
     def _draw_floor(self, ctx: PluginContext) -> None:
         """The plan in blue until committed, the sent path in green, the robot's trail, the follower's points."""
-        run = self._planner._runs.get(self.serial)  # * the chosen robot's last run, as its run chip
+        run = self._floor_run(ctx)
         self._markers.paths(self._preview_of(self._api.plan), None if run is None else run.path)
         if run is None or run.trace is None:
             self._markers.trail(None)
@@ -373,12 +380,22 @@ class BasePlannerPanel(PlannerPanel):
             live_report(ctx.world.robots[self.serial].base.state.follower, ctx.now())
         self._markers.follower(follower if follower is not None and follower.path_id == run.path_id else None)
 
+    def _floor_run(self, ctx: PluginContext) -> Run | None:
+        """The chosen robot's last run while no other base was sent a path since, until FLOOR_KEEP s after its end."""
+        runs = self._planner._runs
+        run = runs.get(self.serial)
+        if run is None or run.path is None:
+            return None
+        if any(other.path is not None and other.sent_at > run.sent_at for other in runs.values()):
+            return None
+        return None if run.ended_at is not None and ctx.now() - run.ended_at > FLOOR_KEEP else run
+
     def _preview_of(self, plan: Plan[BasePlanRequest] | None) -> FollowerPath | None:
         """The plan's path as the follower will cut it, until it is sent; cut once per plan."""
         if plan is None or plan.path is None or plan.state == "sent":
             return None
         if self._preview is None or self._preview[0] != plan.id:
-            self._preview = plan.id, FollowerPath.from_poses(*plan.path.points.T)
+            self._preview = plan.id, FollowerPath.from_poses(*plan.path.points.T, None, plan.path.speed_scale)
         return self._preview[1]
 
     def _status_html(self, ctx: PluginContext) -> str:

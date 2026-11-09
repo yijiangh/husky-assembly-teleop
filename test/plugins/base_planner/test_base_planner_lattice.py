@@ -10,13 +10,14 @@ from crl_husky.base_model import load_model
 from husky_assembly_teleop.plugins.base_planner.algorithms import Debug, lattice
 from husky_assembly_teleop.plugins.base_planner.algorithms.base import FOLLOWER_MODEL
 from crl_husky.pure_pursuit import PurePursuit, PurePursuitParams
-from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import (MIN_DRIVE, Settings, _arc, _fragile,
+from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import (MIN_DRIVE, Settings, _arc, _cost, _fragile,
                                                                            _merged, _sent, _settled, _to_base,
                                                                            _to_centre, plan)
 from husky_assembly_teleop.plugins.base_planner.follow import followed, thinned, xicr_range
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE
 from husky_assembly_teleop.plugins.base_planner.tasks import PASSAGE_ANGLE, WHEELS, Task, along, passage, to_lab
-from husky_assembly_teleop.plugins.base_planner.planner_plugin import kept_margin
+from husky_assembly_teleop.plugins.base_planner.planner_plugin import (GOAL_SHIFT, GOAL_TURN, kept_margin, narrowed,
+                                                                       roomier_goal)
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.scene import Body
 from test_base_planner_rrt import POST, _holding_bar, _snapshot, alice, robots, world  # noqa: F401  (fixtures)
@@ -304,3 +305,101 @@ def test_only_what_the_start_is_already_close_to_keeps_less(world, robots, alice
     with world.keeping(alice, margin, kept):
         for pose in result.path.points:
             assert world.hit_by(alice, tuple(pose), margin) is None
+
+
+@pytest.mark.slow
+def test_no_room_before_something_in_the_way_drives_in_short(world, robots, alice):  # noqa: F811
+    """A wall 15 cm alongside the target, a post across the line behind it: the drive in keeps just the margin.
+
+    The walk for room stops at the post (it names both) instead of going on to the far side of the target.
+    """
+    goal, margin = (0.0, -2.0, 0.0), 0.10
+    at = np.array([-1.0, -3.0])
+    for _ in range(12):
+        # * Move the wall in until it is 15 cm from Alice at the target.
+        wall = Body("test/wall", box_geometry((5.0, 0.1, 1.0)), Pose((*at, 0.5)), label="wall")
+        world.sync(_snapshot(robots, [wall]))
+        clear = world.close_objects(alice, [goal], 1.5).get(wall.id, 1.5)
+        if abs(clear - 0.15) < 0.002:
+            break
+        at = at + np.array([0.0, 1.0]) * (clear - 0.15)
+    post = Body("test/post", box_geometry((0.1, 1.0, 1.0)), Pose((-2.0, goal[1], 0.5)), label="post")
+    world.sync(_snapshot(robots, [wall, post]))
+    debug = Debug(on=True)
+    # * No narrow margin: with one, the wall would count as room for it.
+    result = plan(world, alice, (0.0, 0.0, 0.0), goal, threading.Event(), Settings(margin=margin, narrow_margin=margin),
+                  debug)
+    lead = next(note for note in debug.notes if note.startswith("lead:"))
+    assert "straight in forwards over 0.50 m" in lead and "forwards: wall alongside, then post at" in lead, lead
+    assert result.path is not None, result.reason
+
+
+@pytest.mark.slow
+def test_a_drive_in_without_room_at_its_start_is_shortened(world, robots, alice):  # noqa: F811
+    """A post 15 cm beside where the full drive in would start, the target roomy: it starts nearer, with room."""
+    goal, margin = (0.0, -2.0, 0.0), 0.10
+    full = (goal[0] - lattice.LEAD, goal[1], goal[2])
+    at = np.array([full[0] - 0.4, goal[1] - 1.0])
+    for _ in range(12):
+        # * Move the post in until it is 15 cm from Alice at the full drive in's start.
+        post = Body("test/post", box_geometry((0.1, 0.1, 1.0)), Pose((*at, 0.5)), label="post")
+        world.sync(_snapshot(robots, [post]))
+        clear = world.close_objects(alice, [full], 1.5).get(post.id, 1.5)
+        if abs(clear - 0.15) < 0.002:
+            break
+        at = at + np.array([0.0, 1.0]) * (clear - 0.15)
+    assert world.hit_by(alice, goal, margin + lattice.PORTAL_ROOM) is None, "the target has room"
+    debug = Debug(on=True)
+    result = plan(world, alice, (0.0, 0.0, 0.0), goal, threading.Event(), Settings(margin=margin, narrow_margin=margin),
+                  debug)
+    lead = next(note for note in debug.notes if note.startswith("lead:"))
+    length = float(lead.split("straight in forwards over ")[1].split(" m")[0])
+    assert 0.0 < length < lattice.LEAD, lead
+    assert world.hit_by(alice, (goal[0] - length, goal[1], goal[2]), margin + lattice.PORTAL_ROOM) is None
+    assert result.path is not None, result.reason
+
+
+@pytest.mark.slow
+def test_parks_in_a_passage_only_the_narrow_margin_fits_and_slows_there(world, robots, alice):  # noqa: F811
+    """A passage 3 cm wider each side than the narrow margin needs, too narrow for the margin, the target inside it.
+
+    The search starts at the target (the tighter end), keeps the narrow margin all along, and the path is slowed
+    where it comes closer than the margin.
+    """
+    margin, narrow = 0.10, 0.05
+    world.sync(_snapshot(robots, _passage(WHEELS + 2.0 * narrow + 2.0 * 0.03, depth=1.5)))
+    start, goal = _at(-2.0, 1.0, math.pi / 2.0), _at(0.2, 0.0, ANGLE)
+    debug = Debug(on=True)
+    result = plan(world, alice, start, goal, threading.Event(), Settings(margin=margin, narrow_margin=narrow), debug)
+    assert result.path is not None, result.reason
+    assert debug.notes[0] == "search back from the target"
+    np.testing.assert_allclose(result.path.goal[:2], goal[:2], atol=1e-6)
+    np.testing.assert_allclose(result.path.start[:2], start[:2], atol=1e-6)
+    for pose in result.path.points:
+        assert world.hit_by(alice, tuple(pose), narrow - 0.005) is None
+    slow = narrowed(world, alice, result.path, margin, {}, load_model(FOLLOWER_MODEL), Settings().x_icr_spread)
+    assert slow.speed_scale is not None and slow.speed_scale.min() < 1.0 and slow.speed_scale[0] == 1.0
+    assert narrow - 0.01 <= slow.margin < margin and slow.close
+    assert slow.duration > result.path.duration
+
+
+@pytest.mark.slow
+def test_a_tight_target_moves_a_little_to_more_room(world, robots, alice):  # noqa: F811
+    """A target 3 cm from a post moves at most GOAL_SHIFT and GOAL_TURN to more room; a roomy one stays."""
+    goal = (0.0, -2.0, 0.0)
+    post = _box_at_gap(world, robots, alice, "post", goal, 0.03, (0.0, 1.0))
+    world.sync(_snapshot(robots, [post]))
+    moved, note = roomier_goal(world, alice, goal, 0.10)
+    assert note.startswith("target moved") and "3 cm there" in note
+    assert math.dist(moved[:2], goal[:2]) <= GOAL_SHIFT + 1e-9 and abs(moved[2] - goal[2]) <= GOAL_TURN + 1e-9
+    assert world.nearest(alice, moved, 0.10)[0] > world.nearest(alice, goal, 0.10)[0] + 0.005
+    assert roomier_goal(world, alice, (-1.0, 0.0, 0.0), 0.10) == ((-1.0, 0.0, 0.0), "")
+
+
+def test_a_search_back_from_the_target_costs_moves_as_driven():
+    """Flipped (searched from the target), a move ahead in search order is driven backwards, and costs so."""
+    poses = [(0.0, 0.0, 0.0), (0.1, 0.0, 0.0)]
+    ahead, ahead_back = _cost(poses, 0.6)
+    flipped, flipped_back = _cost(poses, 0.6, flip=True)
+    assert not ahead_back and flipped_back and flipped > ahead
+    assert _cost(poses, 0.6, backwards=True, flip=True) == (pytest.approx(flipped - lattice.STOP), True)

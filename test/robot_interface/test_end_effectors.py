@@ -12,6 +12,7 @@ from ur_msgs.srv import SetIO
 from husky_assembly_teleop.robot_interface.end_effectors import (FELL_SHORT, REJECTED, RobotiqGripper, RobotiqState,
                                                                  ScaffoldingV1, ScaffoldingV1State, ScaffoldingV3,
                                                                  ScaffoldingV3State)
+from husky_assembly_teleop.robot_interface.event import Event
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped, SoftStopLatch
 
@@ -67,6 +68,7 @@ def robotiq(ready: bool = True) -> RobotiqGripper:
         ActionClient(ready)
     gripper._latch, gripper._lease_slot = SoftStopLatch("0804"), leased_slot("0804")
     gripper._goal, gripper._cancel_on_accept = None, False
+    gripper.commands_sent = Event("gripper_tool")
     return gripper
 
 
@@ -76,6 +78,7 @@ def v3() -> ScaffoldingV3:
     tool._node, tool.namespace, tool.state, tool._command = Node(), "/a200/tool", ScaffoldingV3State(), Publisher()
     tool._latch, tool._lease_slot = SoftStopLatch("0804"), leased_slot("0804")
     tool.state.gripper_motor = tool.state.joint_motor = ScaffoldingV3.IDLE
+    tool.commands_sent = Event("v3_tool")
     return tool
 
 
@@ -85,6 +88,7 @@ def v1(ready: bool = True) -> ScaffoldingV1:
     tool._node, tool.namespace, tool.arm_namespace = Node(), "/a200/tool", "/a200/ur5e"
     tool.state, tool._set_io, tool._latch = ScaffoldingV1State(), Client(ready), SoftStopLatch("0804")
     tool._lease_slot = leased_slot("0804")
+    tool.commands_sent = Event("v1_tool")
     return tool
 
 
@@ -292,3 +296,20 @@ def test_without_its_lease_a_tool_refuses_every_command_but_stop():
         screw.close()
         switched.close()
     assert len(gripper._action.goals) == 1 and len(screw._command.sent) == 2 and len(switched._set_io.calls) == 1
+
+
+def test_every_tool_command_sent_is_fired_with_its_values():
+    """`commands_sent` tells what reached each tool's driver; a refused command is not told."""
+    gripper, unready, tool, output, seen = robotiq(), robotiq(ready=False), v3(), v1(), []
+    for each in (gripper, unready, tool, output):
+        each.commands_sent.attach(seen.append)
+    gripper.move(0.4, 0.5)
+    tool.close()
+    tool.stop()
+    output.open()
+    unready.move(0.4)
+    assert [(sent.command, sent.values) for sent in seen] == [
+        ("move", {"position": 0.4, "effort": 0.5}), ("tighten gripper", {"motor": 1.0, "direction": 1.0}),
+        ("stop", {"motor": 0.0, "direction": 0.0}),
+        ("set output", {"pin": float(ScaffoldingV1.GRIPPER_PIN),
+                        "on": float(not ScaffoldingV1.GRIPPER_CLOSED_WHEN_ON)})]

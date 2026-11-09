@@ -239,3 +239,16 @@ def test_plot_range_ignores_unknown_values():
     assert _nice_range(np.array([[np.nan, 0.0], [np.nan, 0.0]]), 0.02) == (-0.01, 0.01)
     assert _nice_range(np.array([[np.nan], [np.nan]]), 2.0) == (-2.0, 2.0)
     assert _nice_range(np.array([[-0.0021], [0.0043]]), 0.002) == (-0.003, 0.005)
+
+
+def test_a_compact_save_keeps_values_as_float32_and_times_whole(tmp_path):
+    """Compressed, float32 values; ROS times stay float64, so they keep their milliseconds."""
+    signal, source = _counter()
+    trace = Trace([signal])
+    for i in range(3):
+        source.append(i + 0.25)
+        trace.sample(1_793_883_581.0 + 0.05 * i)
+    path = trace.save(tmp_path / "chunk.npz", compact=True)
+    with np.load(path) as data:
+        assert data["count"].dtype == np.float32 and data["count"][:, 0].tolist() == [0.25, 1.25, 2.25]
+        assert data["t"].dtype == np.float64 and np.diff(data["t"]) == pytest.approx([0.05, 0.05])

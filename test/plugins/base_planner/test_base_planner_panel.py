@@ -12,7 +12,7 @@ from robot_fakes import lease_test_robots
 from robot_lab import RobotLab
 
 from husky_assembly_teleop.colors import CURRENT, rgb
-from husky_assembly_teleop.plugins.base_planner.panel_plugin import NO_TASK, BasePlannerPanel
+from husky_assembly_teleop.plugins.base_planner.panel_plugin import FLOOR_KEEP, NO_TASK, BasePlannerPanel
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin, Run
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.ui.ghost import KIND_COLORS
@@ -342,3 +342,23 @@ def test_the_robot_buttons_choose_the_robot_and_follow_a_switch():
         setattr(panel, part, MagicMock())
     panel.draw(ctx)
     assert [button.color for button in panel._robot.buttons.values()] == [rgb(NONE), rgb(CURRENT), rgb(NONE)]
+
+
+def test_the_floor_shows_a_run_until_another_base_drives_or_it_ended_long_ago():
+    """A run's sent path and trail stay while it runs and FLOOR_KEEP s after; another base's newer run takes them."""
+    now = [100.0]
+    ctx = SimpleNamespace(now=lambda: now[0])
+    path = SimpleNamespace()
+    planner = BasePlannerPlugin()
+    alice = Run(path=path, path_id=4, sent_at=10.0)
+    planner._runs = {SERIAL: alice, "belle": Run(ended=Check("refused", BAD, "belle: no follower"), ended_at=50.0)}
+    panel = panel_for(Planner())
+    panel._planner = planner
+    assert panel._floor_run(ctx) is alice, "still running, and a refusal sends no path"
+    alice.ended_at = now[0] - FLOOR_KEEP + 1.0
+    assert panel._floor_run(ctx) is alice, "ended a moment ago"
+    now[0] += 2.0
+    assert panel._floor_run(ctx) is None, "ended long ago"
+    alice.ended_at = None
+    planner._runs["belle"] = Run(path=path, path_id=1, sent_at=20.0)
+    assert panel._floor_run(ctx) is None, "Belle drove since"
