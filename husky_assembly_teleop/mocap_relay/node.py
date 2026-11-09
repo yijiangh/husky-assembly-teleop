@@ -671,17 +671,22 @@ class MocapRelay(Node):
         different calibrations. The ROS graph is per domain, so relays in other domains do not count.
         ? Two relays started within RELAY_DISCOVERY_SEC of each other can miss each other.
 
+        ! Asks for a server: clients of the service (monitors) list its name too.
+
         Raises:
             RuntimeError: If another relay serves STREAMING_IDS_SERVICE.
         """
-        deadline = time.monotonic() + RELAY_DISCOVERY_SEC
-        while time.monotonic() < deadline:
-            names = {name for name, _types in self.get_service_names_and_types()}
-            if STREAMING_IDS_SERVICE in names:
-                raise RuntimeError(
-                    "Another mocap relay is already running in this ROS domain "
-                    f"({STREAMING_IDS_SERVICE} is served). Not starting a second one; use the running relay.")
-            time.sleep(0.1)
+        probe = self.create_client(GetStreamingMocapIds, STREAMING_IDS_SERVICE)
+        try:
+            deadline = time.monotonic() + RELAY_DISCOVERY_SEC
+            while time.monotonic() < deadline:
+                if probe.service_is_ready():
+                    raise RuntimeError(
+                        "Another mocap relay is already running in this ROS domain "
+                        f"({STREAMING_IDS_SERVICE} is served). Not starting a second one; use the running relay.")
+                time.sleep(0.1)
+        finally:
+            self.destroy_client(probe)
 
     def _start_mocap_client(self) -> None:
         """Start the NatNet client and wait briefly for connection."""

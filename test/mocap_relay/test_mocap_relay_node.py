@@ -269,6 +269,22 @@ def test_in_a_simulation_a_fake_motive_stands_in_for_the_truth_while_it_streams(
     assert "rigid body 3: now from the simulator's truth, was the fake Motive" in node.get_logger().text("info")
 
 
+@pytest.mark.parametrize("served", [False, True])
+def test_only_a_served_streaming_ids_service_means_another_relay(monkeypatch, served):
+    """A monitor's client of the streaming-ids service lists its name too; only a server refuses the start."""
+    monkeypatch.setattr("husky_assembly_teleop.mocap_relay.node.RELAY_DISCOVERY_SEC", 0.2)
+    node, destroyed = MocapRelay.__new__(MocapRelay), []
+    probe = SimpleNamespace(service_is_ready=lambda: served)
+    node.create_client = lambda _type, name: probe if name == "/mocap/get_streaming_ids" else None
+    node.destroy_client = destroyed.append
+    if served:
+        with pytest.raises(RuntimeError, match="Another mocap relay is already running"):
+            node._refuse_if_relay_on_network()
+    else:
+        node._refuse_if_relay_on_network()
+    assert destroyed == [probe]
+
+
 @pytest.mark.parametrize("domain, sim", [("80", False), ("70", False), ("70", True)])
 def test_a_simulations_relay_is_refused_in_the_robots_domain(monkeypatch, domain, sim):
     """sim:=true only in a domain of its own: there nothing may stand in for a robot."""
