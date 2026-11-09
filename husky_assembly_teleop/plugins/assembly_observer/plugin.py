@@ -82,6 +82,7 @@ class AssemblyObserverPlugin(HuskyPlugin):
 
     name = "assembly_observer"
     experimental = True
+    hidden = True
     icon = viser.Icon.HISTORY
 
     def __init__(self):
