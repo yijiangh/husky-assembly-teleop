@@ -182,7 +182,7 @@ def test_the_viewer_reads_every_name_of_a_recorded_session(recorded, tmp_path, m
             "/world/0806/left_ur_arm/tcp", "/world/plans/0806", "/world/trips/0806",
             "/ghost_0806/joints/left_ur_arm_shoulder_pan_joint", "/states/0806/lease", "/states/0806/soft_stop",
             "/states/0806/left_ur_arm_motion", "/states/0806/base_motion", "/states/lab/relay_frame_status",
-            "/states/run/step"} <= entities
+            "/states/run/step", "/states/lab/environment"} <= entities
     translations = [chunk for chunk in RrdReader(saved).stream() if chunk.entity_path == "/world/0806"
                     and "Transform3D:translation" in chunk.to_record_batch().schema.names]
     assert translations, "the base pose moves Cindy's frame"
@@ -200,6 +200,9 @@ def test_a_copy_keeps_the_format_and_an_old_or_newer_one_still_shows(recorded, t
     newer = rerun_view.log_range(recorded.parent.parent, description["wall_time"] - 10.0, time.time() + 10.0,
                                  save=tmp_path / "newer.rrd")
     assert newer["rows"] > 0 and any(f"format {FORMAT + 1} is newer" in note for note in newer["notes"])
+    simulated = rerun_view.log_range(recorded.parent.parent, description["wall_time"] - 10.0, time.time() + 10.0,
+                                     save=tmp_path / "sim.rrd", environment="sim")
+    assert simulated["sessions"] == [] and "(sim only)" in simulated["notes"][0]
     del description["format"]
     (recorded / "experiment.json").write_text(json.dumps(description))
     found = rerun_view._sessions(recorded.parent.parent, description["wall_time"] - 10.0, time.time() + 10.0)

@@ -80,6 +80,8 @@ LOG, LOG_LINES_LOST = "log", "log lines lost"
 
 #: A robot's status keys told as "<key>" events with a value (a lease change is LEASE_TAKEN or LEASE_RELEASED).
 LEASE, SOFT_STOP, ESTOP, FOLLOWER_STATE = "lease", "soft stop", "e-stop", "follower"
+#: A robot's status key: "real", "sim", or "sim: <parts>" when only some of its base and arms are simulated.
+ENVIRONMENT = "environment"
 LEASE_TAKEN, LEASE_RELEASED = "lease taken", "lease released"
 #: The follower's value while it follows a path.
 FOLLOWING = "following"

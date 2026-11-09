@@ -10,8 +10,9 @@ runs, the follower's reference and lookahead, every tracked object (a bar with i
 lab's obstacles from its file in git, each sent base path while it is followed, a see-through ghost of an arm at its
 trajectory's end while it runs, and a red line per pair a clearance trip found too close. Two timelines: "time", wall
 time (ROS time plus the session's offset, so it reads as the local clock and lines up with `events`), and "since
-start", seconds from the range's start. A value held over several ticks is logged at its first and last tick only:
-the lines look the same.
+start", seconds from the range's start. Whether each session is a simulation or real is the state
+`/states/lab/environment`, from its start; each robot's `/states/<robot>/environment` says which of its parts are.
+A value held over several ticks is logged at its first and last tick only: the lines look the same.
 
 The names it reads are in `names.py`; a session older than `names.FORMAT` is read through `UPGRADES`, a newer one as
 well as it goes, with a note.
@@ -40,7 +41,7 @@ from ...config import short_serial
 from ...plugin_api.trace import load_arrays
 from ...shared.recordings.runs import load_description
 from ...world.lab import BORDER_COLOR, DEFAULT_LAB, LAB_COLOR, lab_file, mesh_directory_of, read_lab, slug
-from .export import CHUNKS, EVENTS, SAVED_MARGIN, copied_sessions, loaded_folder, sessions
+from .export import BOTH, CHUNKS, EVENTS, SAVED_MARGIN, copied_sessions, loaded_folder, sessions
 from .names import (BACK, BAR_OBJECT, BAR_PREFIX, BASE_MOCAP, BASE_POSE, BATTERY, CLEARANCE_TRIP,
                     ESTOP, FOLLOWER, FOLLOWER_GROUPS, FOLLOWER_STATE, FOLLOWING, FORCE_SENSOR_ZEROED, FORMAT, HOLD_SENT,
                     JOINTS, LATE_SHARE, LATE_TICK, LEASE, LEASE_RELEASED, LEASE_TAKEN, LOG, LOG_LINES_LOST, LOST,
@@ -105,6 +106,10 @@ class Session:
     ended: float = np.inf
     #: The format of its names (`names.FORMAT`); a recording without one is format 1.
     format: int = 1
+    #: "sim" or "real" (`export.sessions`).
+    environment: str = "real"
+    #: Its start, wall time.
+    started: float = -np.inf
 
 
 @dataclass
@@ -140,7 +145,7 @@ class Ghost:
 
 
 def log_range(root: Path, start: float, end: float, *, save: Path | None = None, data: Path | None = None,
-              spawn: bool = True, copy: bool = False) -> dict:
+              spawn: bool = True, copy: bool = False, environment: str = BOTH) -> dict:
     """Show (or save) what the observer recorded from wall time `start` to `end` in Rerun.
 
     Args:
@@ -152,15 +157,18 @@ def log_range(root: Path, start: float, end: float, *, save: Path | None = None,
             are only boxes and the arms are not placed in 3D.
         spawn: Open the viewer (ignored with `save`); False only logs into the current recording (tests).
         copy: `root` is a copy (`export.copy_range`), not the local recordings.
+        environment: Show only "sim" or "real" sessions, or "both".
 
     Returns:
         dict: The sessions shown, the tick rows and events logged, and what could not be shown ("notes").
     """
     import rerun as rr
 
-    found = _sessions(root, start, end, copy)
+    found = _sessions(root, start, end, copy, environment)
     if not found:
-        return {"sessions": [], "rows": 0, "events": 0, "notes": [f"no recordings between those times in {root}"]}
+        only = "" if environment == BOTH else f" ({environment} only)"
+        return {"sessions": [], "rows": 0, "events": 0,
+                "notes": [f"no recordings between those times in {root}{only}"]}
     notes = _newer(found)  # * printed by the helper script, shown on the panel's line
     models = _models(rr, found, data, notes)
     sent = [shown for session in found for shown in _sent(session, start, end)]
@@ -191,10 +199,10 @@ def log_range(root: Path, start: float, end: float, *, save: Path | None = None,
 
 # --- --- --- --- --- WHAT TO READ --- --- --- --- ---
 
-def _sessions(root: Path, start: float, end: float, copy: bool = False) -> list[Session]:
+def _sessions(root: Path, start: float, end: float, copy: bool = False, environment: str = BOTH) -> list[Session]:
     """The sessions whose recording overlaps the range, oldest first, with the chunks that may hold its ticks."""
     found = []
-    for kept in copied_sessions(root) if copy else sessions(root):
+    for kept in copied_sessions(root, environment) if copy else sessions(root, environment):
         if kept["end"] < start or kept["start"] > end:
             continue
         description = load_description(kept["folder"])
@@ -210,7 +218,8 @@ def _sessions(root: Path, start: float, end: float, copy: bool = False) -> list[
             recorded = int(description.get("format", 1))
         except (TypeError, ValueError):
             recorded = FORMAT + 1  # * not a number: unknown, read as a newer format
-        found.append(Session(kept["folder"], offset, robots, chunks, kept["end"], recorded))
+        found.append(Session(kept["folder"], offset, robots, chunks, kept["end"], recorded, kept["environment"],
+                             kept["start"]))
     return found
 
 
@@ -520,11 +529,18 @@ def _strips(xyz: np.ndarray) -> Iterator[np.ndarray]:
 
 # --- --- --- --- --- EVENTS --- --- --- --- ---
 
+#: The state saying whether the session shown is a simulation or real.
+LAB_ENVIRONMENT = "states/lab/environment"
+
+
 def _log_events(rr, session: Session, start: float, end: float, notes: list[str]) -> int:
     """The range's events and its runs' as text lines and state timelines, those before it as where things stood.
 
     A session with events but no process loaded (its log line) is noted: its runs' steps cannot be shown.
     """
+    # * Its own line on the states, so a range over a sim and a real session tells them apart.
+    _set_time(rr, max(session.started, start), start)
+    rr.log(LAB_ENVIRONMENT, rr.StateChange(state=session.environment))
     events = list(_read_events(session))
     if events and not any(loaded_folder(event) for event in events):
         notes.append(f"{session.folder.name}: no process loaded in its log, so no run steps")

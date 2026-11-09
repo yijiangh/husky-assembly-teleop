@@ -17,7 +17,11 @@ the robots in 3D on one timeline (`plugins/assembly_observer/rerun_view.py`); `-
 With `--folder` it opens a copy (on the Drive, say) whole, or From to To of it.
 
 `copy` writes `<Drive>/data_experiment/assembly_observer/<name>/<stamp>/` (or under `--to`), one folder per session the
-range touches, and ends with one JSON line saying what it copied.
+range touches, and ends with one JSON line saying what it copied. The folder is `<stamp>_sim/` when every session
+copied is a simulation.
+
+Every command takes `--env real|sim|both` (default both): only the real sessions, only the simulated ones, or all.
+A session's environment is in its experiment.json, and a simulated one's folder ends in "_sim".
 """
 
 from __future__ import annotations
@@ -31,9 +35,10 @@ from datetime import datetime
 from pathlib import Path
 
 from husky_assembly_teleop.drive import drive_folder, drive_root, folder_name
-from husky_assembly_teleop.plugins.assembly_observer.export import (DAY_FORMAT, LOCAL_ROOT, RECORDING_FOLDER,
-                                                                    copied_sessions, copy_range, events_in, sessions,
-                                                                    wall_time)
+from husky_assembly_teleop.drive import SIM
+from husky_assembly_teleop.plugins.assembly_observer.export import (BOTH, DAY_FORMAT, ENVIRONMENTS, LOCAL_ROOT,
+                                                                    RECORDING_FOLDER, copied_sessions, copy_range,
+                                                                    events_in, sessions, wall_time)
 from husky_assembly_teleop.shared.recordings.runs import run_folder
 
 #: The teleop data folder: the robots' URDFs, for the arms' mounts in `rerun`.
@@ -47,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--root", type=Path, default=LOCAL_ROOT, help=f"the recordings (default {LOCAL_ROOT})")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("list", help="every session kept: when, how long, how big")
+    commands.add_parser("list", help="every session kept: when, how long, how big, sim or real")
     for name, text in (("events", "print the events of a time range"), ("copy", "copy a time range"),
                        ("rerun", "open a time range in the Rerun viewer")):
         command = commands.add_parser(name, help=text)
@@ -65,14 +70,16 @@ def main(argv: list[str] | None = None) -> int:
     copy.add_argument("--name", required=True, help="the experiment's folder name")
     copy.add_argument("--to", type=Path, help=f"copy under this folder (default <Drive>/{RECORDING_FOLDER})")
     copy.add_argument("--drive", type=Path, help="the Drive root (default HUSKY_DRIVE_ROOT)")
-    copy.add_argument("--sim", action="store_true", help="mark the copy's folder as from a simulation")
     viewer = commands.choices["rerun"]
     viewer.add_argument("--save", type=Path, help="write this .rrd file instead of opening the viewer")
     viewer.add_argument("--folder", type=Path, help="open this copy (`copy`'s folder, one of its sessions, or a "
                                                     "folder of copies) instead of the recordings on this PC")
+    for command in commands.choices.values():
+        command.add_argument("--env", choices=ENVIRONMENTS, default=BOTH,
+                             help="only real sessions, only simulated ones, or both (default)")
     args = parser.parse_args(argv)
     if args.command == "list":
-        return _list(args.root)
+        return _list(args.root, args.env)
     if args.command == "rerun" and args.folder is not None:
         return _rerun_copy(args)
     if args.start is None or args.end is None:
@@ -91,20 +98,20 @@ def main(argv: list[str] | None = None) -> int:
     return _copy(args, start, end)
 
 
-def _list(root: Path) -> int:
+def _list(root: Path, environment: str) -> int:
     """Print every session kept, oldest first."""
-    found = sessions(root)
+    found = sessions(root, environment)
     for session in found:
         print(f"{_clock(session['start'], '%Y-%m-%d %H:%M')}  to {_clock(session['end'], '%H:%M')}  "
-              f"{session['bytes'] / 1e6:7.1f} MB  {session['environment'] or '?':4}  {session['folder']}")
+              f"{session['bytes'] / 1e6:7.1f} MB  {session['environment']:4}  {session['folder']}")
     if not found:
-        print(f"no recordings in {root}")
+        print(f"no recordings in {root}" + ("" if environment == BOTH else f" ({environment} only)"))
     return 0
 
 
 def _events(args: argparse.Namespace, start: float, end: float) -> int:
     """Print the range's events, filtered, one per line."""
-    for _session, event in events_in(args.root, start, end):
+    for _session, event in events_in(args.root, start, end, args.env):
         if args.robot and event.get("robot") != args.robot or args.event and event.get("event") != args.event:
             continue
         line = json.dumps(event) if args.json else _readable(event)
@@ -121,22 +128,33 @@ def _copy(args: argparse.Namespace, start: float, end: float) -> int:
         if args.to is not None:
             args.to.mkdir(parents=True, exist_ok=True)  # * a folder of the operator's; the Drive's is never made here
         under = args.to if args.to is not None else drive_folder(args.drive or drive_root(), RECORDING_FOLDER)
-        destination = run_folder(under, name, *(["sim"] if args.sim else []))
+        destination = run_folder(under, name)
         about = {"name": name, "day": args.day, "from_text": args.start, "to_text": args.end}
-        copied = copy_range(args.root, start, end, destination, about)
+        copied = copy_range(args.root, start, end, destination, about, args.env)
+        if not copied:
+            destination.rmdir()
+        elif all(session["environment"] == SIM for session in copied_sessions(destination)):
+            destination = _renamed(destination, f"{destination.name}_sim")
     except Exception as error:
         return _fail(repr(error))
-    if not copied:
-        destination.rmdir()
     print(json.dumps({"destination": str(destination) if copied else None, "copied": copied}))
     return 0
 
 
+def _renamed(folder: Path, name: str) -> Path:
+    """`folder` renamed to `name` beside it, "_2", "_3", … if taken."""
+    target, count = folder.with_name(name), 2
+    while target.exists():
+        target, count = folder.with_name(f"{name}_{count}"), count + 1
+    folder.rename(target)
+    return target
+
+
 def _rerun_copy(args: argparse.Namespace) -> int:
     """Open a copy in Rerun: whole, or from `start` to `end` (of `--day`, by default the copy's first day)."""
-    found = copied_sessions(args.folder)
+    found = copied_sessions(args.folder, args.env)
     if not found:
-        return _fail(f"no copied sessions in {args.folder}")
+        return _fail(f"no copied sessions in {args.folder}" + ("" if args.env == BOTH else f" ({args.env} only)"))
     start, end = min(session["start"] for session in found), max(session["end"] for session in found)
     day = args.day or time.strftime(DAY_FORMAT, time.localtime(start))
     try:
@@ -157,7 +175,8 @@ def _rerun(args: argparse.Namespace, start: float, end: float, root: Path | None
         return _fail("rerun is not installed: pip install rerun-sdk==0.39.0 (in the venv)")
     from husky_assembly_teleop.plugins.assembly_observer.rerun_view import log_range
     try:
-        shown = log_range(root or args.root, start, end, save=args.save, data=DATA, copy=copy)
+        shown = log_range(root or args.root, start, end, save=args.save, data=DATA, copy=copy,
+                          environment=args.env)
     except Exception as error:
         return _fail(repr(error))
     for note in shown["notes"]:

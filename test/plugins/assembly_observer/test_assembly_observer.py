@@ -19,6 +19,7 @@ from husky_assembly_teleop.robot_interface.arm import SentTrajectory, WrenchRead
 from husky_assembly_teleop.robot_interface.base import SentPath
 from husky_assembly_teleop.robot_interface.mocap_relay import FrameDrift, frame_drift
 from husky_assembly_teleop.robot_interface.robot_lease import take_lease
+from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
 from husky_assembly_teleop.shared.recordings.runs import load_description, load_recording
 from scaffolding_assembly_core.geometry import Pose
 
@@ -662,6 +663,77 @@ def test_the_helper_script_lists_prints_and_copies(tmp_path):
                               "--to", str(tmp_path / "out")).splitlines()[-1])
     assert outcome["destination"].startswith(str(tmp_path / "out" / "script_test"))
     assert list(outcome["copied"]) == [plugin._folder.name]
+
+
+def simulated_base(lab: RobotLab) -> None:
+    """Cindy's base announces itself simulated from now on."""
+    lab.cindy.base.simulation = SimulatedPart("base", "husky_sim", "base simulator", lab.ctx.t)
+
+
+def test_a_session_turns_sim_once_a_simulated_part_is_heard(tmp_path):
+    """Real until a simulated base is heard, then "_sim" folder and "environment": "sim"; nothing written is lost."""
+    lab, plugin = lab_on_drive(tmp_path), AssemblyObserverPlugin()
+    plugin.setup(lab.ctx)
+    first = plugin._folder
+    lab.ctx.console_log.add(LoggingSeverity.INFO, "assembly_guide", "before the simulator")
+    run(lab, plugin, 0.5)
+    simulated_base(lab)
+    run(lab, plugin, 0.5)
+    lab.ctx.console_log.add(LoggingSeverity.INFO, "assembly_guide", "after the simulator")
+    run(lab, plugin, 0.5)
+    plugin.teardown(lab.ctx)
+
+    assert plugin._folder == first.with_name(first.name + "_sim") and not first.exists()
+    description = load_description(plugin._folder)
+    assert description["environment"] == "sim" and description["kind"] == "observer session"
+    texts = [event.get("text", "") for event in events_of(plugin._folder)]
+    assert "before the simulator" in texts and "after the simulator" in texts
+    events = events_of(plugin._folder)
+    first_state = next(event for event in events if event["event"] == "state" and event["robot"] == CINDY)
+    assert first_state["status"]["environment"] == "real"
+    changed = [event for event in events if event["event"] == "environment" and event["robot"] == CINDY]
+    assert [(event["value"], event["was"]) for event in changed] == [("sim: base", "real")]
+    assert any("the session is a simulation" in str(line) for line in lab.ctx.logs)
+    assert (plugin._folder / "chunk_001.npz").is_file()
+
+
+def test_the_helper_script_filters_sim_and_real(tmp_path):
+    """--env picks the real or the simulated sessions in list, events and copy; a copy of sim only ends in "_sim"."""
+    import subprocess
+    import sys
+    import time as clock
+
+    from repo_paths import REPO
+
+    folders = {}
+    for environment in ("real", "sim"):
+        lab, plugin = lab_on_drive(tmp_path / environment), AssemblyObserverPlugin()
+        if environment == "sim":
+            simulated_base(lab)
+        plugin.setup(lab.ctx)
+        lab.ctx.console_log.add(LoggingSeverity.INFO, "assembly_guide", f"a {environment} line")
+        run(lab, plugin, 0.5)
+        plugin.teardown(lab.ctx)
+        folders[environment] = plugin._folder
+    assert folders["sim"].name.endswith("_sim") and not folders["real"].name.endswith("_sim")
+    script, root = str(REPO / "scripts" / "observer_logs.py"), str(observer_module.LOCAL_ROOT)
+    day, start = clock.strftime("%Y%m%d"), clock.strftime("%H:%M", clock.localtime(clock.time() - 120))
+
+    def call(*args: str) -> str:
+        return subprocess.run([sys.executable, script, "--root", root, *args], capture_output=True, text=True,
+                              check=True).stdout
+
+    listed = call("list")
+    assert f"real  {folders['real']}" in listed and f"sim   {folders['sim']}" in listed
+    assert f"{folders['real']}\n" not in call("list", "--env", "sim")
+    printed = call("events", start, "now", "--day", day, "--env", "real", "--grep", " line")
+    assert "a real line" in printed and "a sim line" not in printed
+    outcome = json.loads(call("copy", start, "now", "--day", day, "--name", "sims", "--env", "sim",
+                              "--to", str(tmp_path / "out")).splitlines()[-1])
+    assert list(outcome["copied"]) == [folders["sim"].name] and outcome["destination"].endswith("_sim")
+    both = json.loads(call("copy", start, "now", "--day", day, "--name", "all",
+                           "--to", str(tmp_path / "out")).splitlines()[-1])
+    assert len(both["copied"]) == 2 and not both["destination"].endswith("_sim")
 
 
 def test_open_in_rerun_runs_the_helper_script_on_the_range(tmp_path, monkeypatch, local_root):
