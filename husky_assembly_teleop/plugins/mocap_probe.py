@@ -1069,8 +1069,8 @@ class MocapProbePlugin(HuskyPlugin):
     def _tape_warning(solution: FloorSolution) -> str:
         """Why the probed marks disagree with the tape: Motive's scale, or a mark hit badly."""
         pair, off = solution.tape_worst
-        return (f"marks {pair} {off * 1e3:+.1f} mm off the tape (Motive's scale {tape_scale(solution.tape) * 1e6:+.0f} "
-                f"ppm against all taped pairs): recalibrate Motive if all are off alike, else probe the marks again")
+        return (f"marks {pair} {off * 1e3:+.1f} mm off the tape (Motive's scale {tape_scale(solution.tape) * 1e3:+.2f} "
+                f"mm/m against all taped pairs): recalibrate Motive if all are off alike, else probe the marks again")
 
     @staticmethod
     def _apart_line(solution: FloorSolution) -> str:

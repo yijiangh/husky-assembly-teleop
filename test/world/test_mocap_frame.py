@@ -283,7 +283,7 @@ def test_three_anchors_among_strays_are_not_matched_and_three_found_place_the_ot
 
 
 def test_motives_scale_change_is_the_median_of_the_long_pairs_and_a_moved_anchor_sways_it_little():
-    """Turned 2°, shifted and 1500 ppm shorter, A2 3 mm moved on its own: -1500 ppm within 100 ppm."""
+    """Turned 2°, shifted and 1.5 mm/m shorter, A2 3 mm moved on its own: -1.5 mm/m within 0.1 mm/m."""
     motion = Rotation.from_euler("z", 2.0, degrees=True)
     now = {name: MocapAnchor(name, tuple(0.9985 * motion.apply(anchor.position) + (0.1, 0.0, 0.0)))
            for name, anchor in ANCHORS.items()}
@@ -291,7 +291,7 @@ def test_motives_scale_change_is_the_median_of_the_long_pairs_and_a_moved_anchor
     now["A2"] = MocapAnchor("A2", tuple(np.add(now["A2"].position, (0.003, 0.0, 0.0))))
     fit = fit_scale(ANCHORS, now)
     assert fit.scale == pytest.approx(-0.0015, abs=1e-4) and fit.pairs == 10
-    assert fit.describe().startswith(f"distances {fit.scale * 1e6:+.0f} ppm (7.") and "10 pairs of 5 anchors" in \
+    assert fit.describe().startswith(f"distances {fit.scale * 1e3:+.2f} mm/m (7.") and "10 pairs of 5 anchors" in \
         fit.describe()
     assert fit_scale(ANCHORS, {name: now[name] for name in ("A1", "A3", "A4")}) is None
 

@@ -77,7 +77,7 @@ amount in its hover until you act.
 - A relay restart starts from the floor calibration file again, so the refit is pending again: Use refit after each
   restart, or make a new floor calibration (section 2) to keep it.
 - A refit cannot follow a change of Motive's scale: the relay warns "MOTIVE'S SCALE CHANGED" when the anchors' distances
-  changed by over about 190 ppm (1 mm across the lab's volume), and the chip "scale changed" appears. Check the marks against the tape (section 2, step 3),
+  changed by over about 0.39 mm/m (2 mm across the lab's volume), and the chip "scale changed" appears. Check the marks against the tape (section 2, step 3),
   recalibrate Motive if it is off, then make a new floor calibration.
 
 ## 4. What each number means

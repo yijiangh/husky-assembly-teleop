@@ -117,8 +117,8 @@ def relay_signals(relay: MocapRelayInterface | None, now: Callable[[], float]) -
     """The relay's frame drift by its last look, and how old that look is; none without a relay."""
     if relay is None:
         return []
-    labels = ("off", "anchors_moved", "cameras_moved", "apart", "scale_ppm", "anchors_residual")
-    units = ("m", "m", "m", "m", "ppm", "m")
+    labels = ("off", "anchors_moved", "cameras_moved", "apart", "scale", "anchors_residual")
+    units = ("m", "m", "m", "m", "mm/m", "m")
     return [Signal(RELAY_DRIFT, _safe(lambda: _drift(relay)), labels, units)]
 
 
@@ -217,4 +217,4 @@ def _drift(relay: MocapRelayInterface) -> tuple | None:
     if drift is None:
         return None
     return tuple(_number(value) for value in (drift.off, drift.anchors_moved, drift.cameras_moved, drift.apart,
-                                              drift.scale_ppm, drift.anchors_residual))
+                                              drift.scale_mm_per_m, drift.anchors_residual))

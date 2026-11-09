@@ -142,8 +142,8 @@ def test_the_floor_calibration_is_kept_and_a_refit_adopted_through_the_relays_se
     frame = relay.state.frame
     assert not frame.poses_off and (frame.anchor_fit, frame.camera_fit) == ("frame moved 0.2 mm", "frame moved 0.4 mm")
     assert frame.time == 7.0 and frame.scale == ""
-    scale = {"describe": "distances -1550 ppm"}
-    for changed, expected in ((False, ""), (True, "distances -1550 ppm")):
+    scale = {"describe": "distances -1.55 mm/m"}
+    for changed, expected in ((False, ""), (True, "distances -1.55 mm/m")):
         node.callbacks[FRAME_TOPIC](String(data=json.dumps({"status": "held", "floor_calibration": "f.json",
                                                             "scale_changed": changed, "anchor_scale": scale})))
         # * A refit follows Motive's scale: a scale change alone leaves poses where the frame's state says.

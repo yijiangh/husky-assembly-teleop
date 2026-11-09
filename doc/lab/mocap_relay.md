@@ -252,12 +252,12 @@ calibration**.
 - **Scale**: a recalibration may change Motive's scale too (one changed it by −0.16 %). Each fit has a scale, so a
   refit takes poses back to the floor calibration's scale: `lab_from_raw` turns, shifts and scales positions
   (orientations only turn), and the scale counts in how far poses are off, so Motive's continuous calibration
-  swaying it by about 200 ppm (about 1 mm across the lab's volume) can make a refit pending. Apart from the fits, every
+  swaying it by about 0.2 mm/m (about 1 mm across the lab's volume) can make a refit pending. Apart from the fits, every
   look the relay takes the median of how much longer each pair of anchors at least 2 m apart is than in the floor
   calibration, with all anchors and with each left out, and keeps the smallest (`fit_scale`, `SCALE_PAIR_MIN`): one
   anchor moved, or Motive's solution warped in a corner, reads as no change. Once that changed the lab volume's
-  diagonal by over 2 mm (`SCALE_CHANGED`, about 385 ppm) for 3 looks in a row (`SCALE_LOOKS`), the relay warns that
-  Motive was recalibrated ("MOTIVE'S SCALE CHANGED … distances −1550 ppm …": a refit follows it; a new floor
+  diagonal by over 2 mm (`SCALE_CHANGED`, about 0.39 mm/m) for 3 looks in a row (`SCALE_LOOKS`), the relay warns that
+  Motive was recalibrated ("MOTIVE'S SCALE CHANGED … distances −1.55 mm/m …": a refit follows it; a new floor
   calibration on Motive's current calibration needs none), again when it grew by as much more; back under 75 % of it
   for 3 looks, it logs that at info. The mocap probe shows a "scale changed" chip: amber, blue once a refit is in use.
   A recalibration may also warp Motive's volume: anchors that no one scale fits are left out as moved, or the fit is
@@ -268,7 +268,7 @@ calibration**.
   that (`BACK_SHARE`); a fit is trusted with 4 or more that agree and an
   uncertainty within 2 mm (`MIN_POINTS`, `UNCERTAIN_MAX`); a refit is pending once the deciding fit places a point of
   the lab's volume beyond 1 mm, or twice its uncertainty if larger, from the transform in use (`off_limit`,
-  `VOLUME_MOVED`), and is held again only under 75 % of that limit; Motive's scale changed by over about 385 ppm is
+  `VOLUME_MOVED`), and is held again only under 75 % of that limit; Motive's scale changed by over about 0.39 mm/m is
   reported (`SCALE_CHANGED`). The lab's volume (`VOLUME`) is the central 3 m
   cube where the robots work, one corner at the lab frame's origin, along x, -y and z; judged at its worst corner, so
   a turn counts as much as a shift.
@@ -289,7 +289,7 @@ calibration**.
   `floor_calibration`, `simulated`, `folder`, `refit` (the refit in
   use), `pending` (the deciding fit while not held), `newer` (`floor_calibration`, `moves_volume`, `moves_poses`),
   `decides` (`anchors`, `truss cameras` or null), `anchors_missing` (not seen for 10 s), `anchor_fit`, `camera_fit`,
-  `scale_changed`, `anchor_scale` (`scale`, `ppm`, `used`, `pairs`, `volume_change`, `describe`; null under 4 anchors
+  `scale_changed`, `anchor_scale` (`scale`, `mm_per_m`, `used`, `pairs`, `volume_change`, `describe`; null under 4 anchors
   found, or with one left out under 3 pairs of 2 m), `truss_cameras`. Each fit has `raw_cal_from_raw_now`, `scale`, `used`, `bumped`, `missing`, `residual`, `trusted`,
   `source`, `uncertainty`, `consistent`, `moves_volume` (since the floor calibration), `off_now` (against the transform in use)
   and `describe` ("poses off now … mm; since the floor calibration …").
@@ -324,8 +324,8 @@ calibration**.
 - **Plot**: `scripts/mocap_frame_plot.py` plots the samples live (`--record` keeps them) or from files (`--file`
   takes files, folders and globs, e.g. `--file ~/.ros/mocap_frame` for every day kept): how far each fit moves the
   lab's volume since the floor calibration, with its uncertainty, how far poses are off now against the transform in
-  use, the largest residual, how many it uses, how far apart the two are, and Motive's scale by the anchors in ppm
-  against the ±190 ppm the relay warns beyond (crossed while it reports a change); beside them, per anchor, its error
+  use, the largest residual, how many it uses, how far apart the two are, and Motive's scale by the anchors in mm/m
+  against the ±0.39 mm/m the relay warns beyond (crossed while it reports a change); beside them, per anchor, its error
   against the others, its noise and the share of frames it was seen in, crossed where left out. With `--file` it
   prints each anchor's median and 95th percentile. Older recordings, without the per-anchor keys, leave those panels
   empty.

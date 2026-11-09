@@ -267,7 +267,7 @@ class FrameDrift:
         anchors_moved: How far Motive's frame moved since the floor calibration by the anchors, in the lab's volume.
         cameras_moved: The same by the truss cameras.
         apart: How far the two fits disagree, when both are trusted.
-        scale_ppm: How much Motive's scale changed since the floor calibration, parts per million.
+        scale_mm_per_m: How much Motive's scale changed since the floor calibration, mm per metre.
         scale_changed: Whether the relay reports that change.
         anchors_used: Anchors in the anchors' fit.
         anchors_residual: The anchors' fit residual.
@@ -280,10 +280,15 @@ class FrameDrift:
     anchors_moved: float | None = None
     cameras_moved: float | None = None
     apart: float | None = None
-    scale_ppm: float | None = None
+    scale_mm_per_m: float | None = None
     scale_changed: bool = False
     anchors_used: int | None = None
     anchors_residual: float | None = None
+
+
+def _mm_per_m(scale: float | None) -> float | None:
+    """A scale change as a share (-0.0015) in mm per metre (-1.5); from the share, so relays of any age give it."""
+    return None if scale is None else scale * 1e3
 
 
 def frame_drift(sample: dict) -> FrameDrift:
@@ -293,8 +298,8 @@ def frame_drift(sample: dict) -> FrameDrift:
     return FrameDrift(
         status=str(sample.get("status") or ""), decides=sample.get("decides"), off=sample.get("off"),
         off_limit=sample.get("off_limit"), anchors_moved=anchors.get("moves_volume"),
-        cameras_moved=cameras.get("moves_volume"), apart=sample.get("apart"), scale_ppm=scale.get("ppm"),
-        scale_changed=bool(sample.get("scale_changed")),
+        cameras_moved=cameras.get("moves_volume"), apart=sample.get("apart"),
+        scale_mm_per_m=_mm_per_m(scale.get("scale")), scale_changed=bool(sample.get("scale_changed")),
         anchors_used=len(anchors["used"]) if anchors.get("used") is not None else None,
         anchors_residual=anchors.get("residual"))
 

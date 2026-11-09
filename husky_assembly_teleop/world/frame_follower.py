@@ -79,7 +79,7 @@ def fit_table(fits: Sequence[FrameFit], since: str, in_use: ScaledPose = ScaledP
         else:
             metres, turned = fit.moved
             lines.append(f"{head} {used:>5}  {metres * 1e3:5.1f} mm  {np.degrees(turned):5.2f}°  "
-                         f"{(fit.scale - 1.0) * 1e6:+5.0f} ppm  "
+                         f"{(fit.scale - 1.0) * 1e3:+5.2f} mm/m  "
                          f"{volume_moved(fit.motion) * 1e3:5.1f} ± {fit.uncertainty * 1e3:3.1f} mm  "
                          f"{volume_moved(fit.motion, in_use) * 1e3:5.1f} mm  "
                          f"{fit.residual * 1e3:13.1f} mm"

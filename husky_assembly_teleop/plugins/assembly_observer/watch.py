@@ -47,8 +47,8 @@ STREAM_LOST, STREAM_BACK = 1.0, 2.0
 #: Mocap tracking counts as lost once it stayed lost this long, and back once it held this long, seconds: a grasp's
 #: flicker is counted, not told line by line.
 TRACKING_LOST, TRACKING_BACK = 0.5, 0.2
-#: The relay's drift is told again when it changed this much: metres, ppm.
-DRIFT_STEP, SCALE_STEP = 0.0005, 100.0
+#: The relay's drift is told again when it changed this much: metres, mm per metre.
+DRIFT_STEP, SCALE_STEP = 0.0005, 0.1
 #: An event's key for a message sent in full (the message itself), which the plugin writes to a file of its own.
 FILE_KEY = "_message"
 
@@ -566,14 +566,14 @@ def _calibration(calibration) -> dict:
 def _drift_values(drift) -> dict:
     """The relay's drift numbers, as an event keeps them."""
     return {name: getattr(drift, name) for name in ("off", "off_limit", "anchors_moved", "cameras_moved", "apart",
-                                                    "scale_ppm", "anchors_residual")}
+                                                    "scale_mm_per_m", "anchors_residual")}
 
 
 def _drift_moved(told: dict | None, now: dict) -> bool:
     """Whether the drift moved by DRIFT_STEP (or the scale by SCALE_STEP) from what was last told, or appeared."""
     if told is None:
         return True
-    for name, step in (("off", DRIFT_STEP), ("anchors_moved", DRIFT_STEP), ("scale_ppm", SCALE_STEP)):
+    for name, step in (("off", DRIFT_STEP), ("anchors_moved", DRIFT_STEP), ("scale_mm_per_m", SCALE_STEP)):
         before, after = told.get(name), now.get(name)
         if (before is None) != (after is None) or (after is not None and abs(after - before) >= step):
             return True

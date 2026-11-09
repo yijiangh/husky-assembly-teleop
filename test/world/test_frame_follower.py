@@ -128,7 +128,7 @@ def test_a_recalibration_is_a_refit_pending_until_used_then_held_with_lab_from_r
     assert frame.status == FRAME_REFIT_PENDING and frame.news()
     assert titles(events, "warn") == ["REFIT PENDING by the anchors: poses are off by up to 49.0 mm until the refit "
                                       "is used"]
-    assert "anchors trusted 6/6 22.6 mm 0.50° +0 ppm 49.0 ± 0.1 mm 49.0 mm" in text(events)
+    assert "anchors trusted 6/6 22.6 mm 0.50° +0.00 mm/m 49.0 ± 0.1 mm 49.0 mm" in text(events)
     assert "use it with Use refit" in text(events)
     assert frame.announcement(0.0)["pending"]["describe"].startswith("poses off now 49.0 mm")
     used, message, logged = frame.use_refit()
@@ -140,7 +140,7 @@ def test_a_recalibration_is_a_refit_pending_until_used_then_held_with_lab_from_r
     # * After the refit the table's columns differ: moved since the floor calibration, nothing off now.
     events = frame.look([np.add(position, (0.0012, 0.0, 0.0)) for position in anchors_after(RECALIBRATED)], LOOK)
     assert "since 20261024_090000" in text(events)
-    assert re.search(r"anchors trusted 6/6 [\d.]+ mm [\d.]+° [+-]\d+ ppm [\d.]+ ± [\d.]+ mm 1\.2 mm", text(events))
+    assert re.search(r"anchors trusted 6/6 [\d.]+ mm [\d.]+° [+-][\d.]+ mm/m [\d.]+ ± [\d.]+ mm 1\.2 mm", text(events))
 
 
 def test_nothing_pending_and_an_untrusted_fit_are_not_used():
@@ -314,21 +314,21 @@ def test_a_scale_change_held_three_looks_is_warned_and_no_anchor_moved_and_its_r
     assert "SCALE" not in waiting and "ANCHORS MOVED" not in waiting
     events = looks(frame, scaled(-0.0015), 3 * LOOK)
     assert len(scale_warnings(events)) == 1 and "ANCHORS MOVED" not in text(events)
-    assert scale_warnings(events)[0].startswith("MOTIVE'S SCALE CHANGED since the floor calibration: distances -1500 "
-                                                "ppm")
+    assert scale_warnings(events)[0].startswith("MOTIVE'S SCALE CHANGED since the floor calibration: distances -1.50 "
+                                                "mm/m")
     assert "a refit follows the scale too" in text(events)
     assert frame.news() and frame.announcement(0.0)["scale_changed"]
-    assert frame.metrics(0.0)["anchor_scale"]["ppm"] == pytest.approx(-1500.0)
+    assert frame.metrics(0.0)["anchor_scale"]["mm_per_m"] == pytest.approx(-1.5)
     events = looks(frame, scaled(-0.003), 4 * LOOK, 3)
-    assert ["distances -3000 ppm" in title for title in scale_warnings(events)] == [True]
-    assert frame.news() and frame.announcement(0.0)["anchor_scale"]["ppm"] == pytest.approx(-3000.0)
+    assert ["distances -3.00 mm/m" in title for title in scale_warnings(events)] == [True]
+    assert frame.news() and frame.announcement(0.0)["anchor_scale"]["mm_per_m"] == pytest.approx(-3.0)
     events = looks(frame, anchors_after([]), 7 * LOOK, 3)
     assert titles(events, "info")[-1].startswith("Motive's scale back as at the floor calibration")
     assert not frame.scale_changed
 
 
 def test_a_scale_swaying_between_two_values_is_warned_once():
-    """-1200 and -1600 ppm in turn, as a warped solution gives: one warning, the sway never holds three looks."""
+    """-1.2 and -1.6 mm/m in turn, as a warped solution gives: one warning, the sway never holds three looks."""
     frame = follower()
     events = looks(frame, lambda index: scaled(-0.0012 if index % 2 else -0.0016), 0.0, 12)
     assert len(scale_warnings(events)) == 1
