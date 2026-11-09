@@ -13,6 +13,9 @@ time (ROS time plus the session's offset, so it reads as the local clock and lin
 start", seconds from the range's start. A value held over several ticks is logged at its first and last tick only:
 the lines look the same.
 
+The names it reads are in `names.py`; a session older than `names.FORMAT` is read through `UPGRADES`, a newer one as
+well as it goes, with a note.
+
 ! Imports rerun only inside `log_range`: the monitor never needs it. Plain files, no ROS; reads whole chunks, so run
   it in a process of its own.
 """
@@ -24,7 +27,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 import numpy as np
 from trimesh import Trimesh
@@ -37,8 +40,17 @@ from ...config import short_serial
 from ...plugin_api.trace import load_arrays
 from ...shared.recordings.runs import load_description
 from ...world.lab import BORDER_COLOR, DEFAULT_LAB, LAB_COLOR, lab_file, mesh_directory_of, read_lab, slug
-from .columns import NOISE, POSE, STREAM
-from .export import CHUNKS, EVENTS, SAVED_MARGIN, STATES, copied_sessions, loaded_folder, sessions
+from .export import CHUNKS, EVENTS, SAVED_MARGIN, copied_sessions, loaded_folder, sessions
+from .names import (BACK, BAR_OBJECT, BAR_PREFIX, BASE_MOCAP, BASE_POSE, BATTERY, CLEARANCE_TRIP,
+                    ESTOP, FOLLOWER, FOLLOWER_GROUPS, FOLLOWER_STATE, FOLLOWING, FORCE_SENSOR_ZEROED, FORMAT, HOLD_SENT,
+                    JOINTS, LATE_SHARE, LATE_TICK, LEASE, LEASE_RELEASED, LEASE_TAKEN, LOG, LOG_LINES_LOST, LOST,
+                    MOVING, NOISE, OBJECT, OBJECT_MOCAP, OBJECT_POSE, OBJECT_TRACKED, OBJECT_UNTRACKED, ODOMETRY,
+                    PATH_SENT, PATH_STOP_SENT, POSE, PROBLEM, RELAY_DRIFT, RELAY_STATE, RUN, RUN_AS_BUILT,
+                    RUN_CANCEL, RUN_CHECK_GOAL, RUN_CONFIRM, RUN_CONTINUE, RUN_EXEC, RUN_FORGET, RUN_GUIDE,
+                    RUN_MARK_DONE, RUN_NEW, RUN_PLAN, RUN_PROMPT, RUN_REOPEN, RUN_SERVO, RUN_SESSION, RUN_SOFT_STOP,
+                    SESSION_END, SESSION_START, SOFT_STOP, STATE, STATES, STILL, STOP_REASON, STREAM, STREAM_EVENT,
+                    STREAMS, SWITCH_ERROR, TARGET, TCP, TOOL, TOOL_COMMAND_SENT, TRACKING, TRAJECTORY_SENT,
+                    TWIST_SENT, WRENCH, WRENCH_PEAK, WRENCH_SENT, relay_event, signal, urdf_joint)
 
 #: The timelines: wall time, and seconds since the range's start.
 TIMELINE, SINCE_START = "time", "since start"
@@ -52,10 +64,6 @@ BODY_HALF, BODY_CENTRE = (0.495, 0.335, 0.19), 0.19
 #: A state's text in a state timeline is cut to this many characters: soft stop reasons are long (the text log has
 #: them whole).
 STATE_TEXT = 60
-#: The follower's channels, plotted as these entities under its signal (the rest under "other").
-FOLLOWER = {"errors": ("cross_track", "along_track", "yaw_error"), "progress": ("progress",), "command": ("v", "w"),
-            "pose": ("x", "y", "yaw"), "reference": ("reference_x", "reference_y", "reference_yaw"),
-            "lookahead": ("lookahead_x", "lookahead_y")}
 #: Line colours of a plot entity's channels, in order (Tableau 10).
 COLORS = ((31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40), (148, 103, 189), (140, 86, 75),
           (227, 119, 194), (127, 127, 127), (188, 189, 34), (23, 190, 207))
@@ -69,19 +77,17 @@ REPEAT_GAP = 5.0
 #: between two reports (`late_tick_warn_period`, 5 s).
 LATE_QUIET = 15.0
 LATE_TICKS = "states/lab/late_ticks"
-LATE_TICK = re.compile(r"tick \d+ started [\d.]+ ms late")
 #: A number standing on its own in a log line (not part of a name like B20 or a200-0806).
 NUMBER = re.compile(r"(?<![\w/-])\d+(?:\.\d+)?(?![\w-])")
-#: An assembly run's event as an event here: "run <its event>".
-RUN = "run "
 #: Where each robot's arm ghost goes (its model again, arms only, see-through), plus its short serial.
 GHOST_ROOT = "ghost_"
 #: A ghost arm is hidden by scaling its shoulder to this: rerun has no visibility over time for logged data.
 HIDDEN_SCALE = 1e-6
-#: A tracked object named so is a process bar: "fitted_bar_B20" is "bars/B20".
-BAR_OBJECT, BAR_PREFIX = "fitted_bar_", "bars/"
 #: How long a clearance trip's line stays, seconds; a sent path's line height above the floor and width, metres.
 TRIP_SHOWN, PLAN_HEIGHT, PLAN_RADIUS = 2.0, 0.01, 0.01
+#: A recording's format (`names.FORMAT`) -> how its names become the next format's: (a tick signal's name -> its new
+#: name, an event -> the event renamed). A bump of FORMAT adds the format before it here; format 1 is the only one yet.
+UPGRADES: dict[int, tuple[Callable[[str], str], Callable[[dict], dict]]] = {}
 
 
 @dataclass
@@ -97,6 +103,8 @@ class Session:
     chunks: list[Path] = field(default_factory=list)
     #: Its end, wall time: its last write (a copy's: the range copied).
     ended: float = np.inf
+    #: The format of its names (`names.FORMAT`); a recording without one is format 1.
+    format: int = 1
 
 
 @dataclass
@@ -153,11 +161,11 @@ def log_range(root: Path, start: float, end: float, *, save: Path | None = None,
     found = _sessions(root, start, end, copy)
     if not found:
         return {"sessions": [], "rows": 0, "events": 0, "notes": [f"no recordings between those times in {root}"]}
-    notes: list[str] = []
+    notes = _newer(found)  # * printed by the helper script, shown on the panel's line
     models = _models(rr, found, data, notes)
     sent = [shown for session in found for shown in _sent(session, start, end)]
     ghosts = _ghosts(found, data, sent, notes)
-    objects = sorted({name for session in found for chunk in session.chunks for name in _object_names(chunk)})
+    objects = sorted({name for session in found for chunk in session.chunks for name in _object_names(chunk, session)})
     blueprint = _blueprint(found, objects, models, ghosts)
     # * A new id each time: the same range opened twice in one viewer would merge into one recording, all doubled.
     rr.init("husky_assembly_observer", recording_id=f"observer_{int(start)}_{int(end)}_{uuid.uuid4().hex[:8]}")
@@ -198,8 +206,34 @@ def _sessions(root: Path, start: float, end: float, copy: bool = False) -> list[
                   (description.get("robots") or {}).items()}
         chunks = [chunk for chunk in sorted(kept["folder"].glob(CHUNKS))
                   if chunk.stat().st_mtime >= start - SAVED_MARGIN]
-        found.append(Session(kept["folder"], offset, robots, chunks, kept["end"]))
+        try:
+            recorded = int(description.get("format", 1))
+        except (TypeError, ValueError):
+            recorded = FORMAT + 1  # * not a number: unknown, read as a newer format
+        found.append(Session(kept["folder"], offset, robots, chunks, kept["end"], recorded))
     return found
+
+
+def _newer(found: list[Session]) -> list[str]:
+    """A warning per session of a format newer than this viewer knows: it is shown as well as it reads."""
+    return [f"{session.folder.name}: format {session.format} is newer than this viewer's ({FORMAT}): events renamed "
+            f"since show as plain lines, signals renamed since may be missing; update the teleop checkout"
+            for session in found if session.format > FORMAT]
+
+
+def _upgraded_key(key: str, session: Session) -> str:
+    """A chunk array's key in this viewer's names (`UPGRADES`); its ".labels" or ".units" suffix kept."""
+    name, dot, suffix = key.partition(".")
+    for old in range(session.format, FORMAT):
+        name = UPGRADES[old][0](name)
+    return name + dot + suffix
+
+
+def _upgraded_event(event: dict, session: Session) -> dict:
+    """An event in this viewer's names (`UPGRADES`)."""
+    for old in range(session.format, FORMAT):
+        event = UPGRADES[old][1](event)
+    return event
 
 
 def _models(rr, found: list[Session], data: Path | None, notes: list[str]) -> dict[str, Model]:
@@ -230,15 +264,16 @@ def _models(rr, found: list[Session], data: Path | None, notes: list[str]) -> di
     return models
 
 
-def _object_names(chunk: Path) -> list[str]:
+def _object_names(chunk: Path, session: Session) -> list[str]:
     """The tracked objects a chunk has columns for (only its key list is read)."""
     try:
         with np.load(chunk) as arrays:
-            keys = arrays.files
+            keys = [_upgraded_key(key, session) for key in arrays.files]
     except Exception:
         return []
-    return [key.removeprefix("object_").removesuffix("_pose") for key in keys
-            if key.startswith("object_") and key.endswith("_pose")]
+    prefix, suffix = signal(OBJECT, ""), signal("", OBJECT_POSE)
+    return [key.removeprefix(prefix).removesuffix(suffix) for key in keys
+            if key.startswith(prefix) and key.endswith(suffix)]
 
 
 def _entity(key: str, session: Session) -> tuple[str, str | None, str | None]:
@@ -252,8 +287,8 @@ def _entity(key: str, session: Session) -> tuple[str, str | None, str | None]:
             if rest.startswith(f"{arm}_"):
                 return f"{short_serial(serial)}/{arm}/{rest.removeprefix(f'{arm}_')}", serial, arm
         return f"{short_serial(serial)}/{rest}", serial, None
-    if key.startswith("object_"):
-        name, _, what = key.removeprefix("object_").rpartition("_")
+    if key.startswith(signal(OBJECT, "")):
+        name, _, what = key.removeprefix(signal(OBJECT, "")).rpartition("_")
         return f"objects/{name}/{what}", None, None
     return f"lab/{key}", None, None
 
@@ -293,7 +328,7 @@ def _log_ticks(rr, session: Session, start: float, end: float, models: dict[str,
     rows = 0
     for chunk in session.chunks:
         try:
-            arrays = load_arrays(chunk)
+            arrays = {_upgraded_key(key, session): value for key, value in load_arrays(chunk).items()}
             wall = arrays["t"] + session.offset
         except Exception:
             continue  # * damaged by a crash mid-write: `copy` counts those, the viewer only skips them
@@ -317,14 +352,14 @@ def _log_ticks(rr, session: Session, start: float, end: float, models: dict[str,
                 _log_pose(rr, entity, serial, arm, values, stamps, start, paths)
                 if arm is not None:
                     tools.setdefault(entity.rpartition("/")[0], {})[entity.rpartition("/")[2]] = values
-            elif entity.endswith("/follower") and serial is not None:
+            elif entity.endswith(f"/{FOLLOWER}") and serial is not None:
                 _log_follower(rr, short_serial(serial), labels, values, stamps, start)
-            elif entity.endswith("/joints") and arm is not None and serial in models:
+            elif entity.endswith(f"/{JOINTS}") and arm is not None and serial in models:
                 _log_joints(rr, models[serial].tree, short_serial(serial), arm, labels, values, stamps, start)
         for arm, poses in tools.items():
-            if "tcp" in poses and "target" in poses:
+            if TCP in poses and TARGET in poses:
                 plots.append((f"{arm}/target_error", ["distance [mm]", "angle [deg]"],
-                              _target_error(poses["tcp"], poses["target"])))
+                              _target_error(poses[TCP], poses[TARGET])))
         for path, names, values in plots:
             if path not in named:
                 rr.log(path, rr.SeriesLines(names=names, colors=[COLORS[i % len(COLORS)] for i in range(len(names))]),
@@ -371,14 +406,14 @@ def _plots(entity: str, arm: str | None, labels: list[str], units: list[str],
         millimetres = np.array([unit == "m" for unit in units])
         names = [f"{label} [mm]" if metres else name for label, name, metres in zip(labels, names, millimetres)]
         return [(entity, names, np.where(millimetres, values * 1000.0, values))]
-    if what == "follower":
+    if what == FOLLOWER:
         groups = {group: [labels.index(label) for label in channels if label in labels]
-                  for group, channels in FOLLOWER.items()}
+                  for group, channels in FOLLOWER_GROUPS.items()}
         groups["other"] = [column for column, label in enumerate(labels)
-                           if not any(label in channels for channels in FOLLOWER.values())]
+                           if not any(label in channels for channels in FOLLOWER_GROUPS.values())]
         return [(f"{entity}/{group}", [names[column] for column in columns], values[:, columns])
                 for group, columns in groups.items() if columns]
-    if what == "streams":  # * "<stream>_<channel>": one entity per channel, a line per stream
+    if what == STREAMS:  # * "<stream>_<channel>": one entity per channel, a line per stream
         plots = []
         for channel in STREAM:
             columns = [column for column, label in enumerate(labels) if label.endswith(f"_{channel}")]
@@ -427,10 +462,10 @@ def _log_pose(rr, entity: str, serial: str | None, arm: str | None, values: np.n
     *_, what = entity.split("/")
     if serial is None and entity.startswith("objects/"):
         path, length = f"world/objects/{entity.split('/')[1]}", OBJECT_AXES
-    elif serial is not None and arm is None and what == "base_pose":
+    elif serial is not None and arm is None and what == BASE_POSE:
         path, length = f"world/{short_serial(serial)}", BASE_AXES
         paths.setdefault(short_serial(serial), []).append(values[:, :3])
-    elif serial is not None and arm is not None and what in ("tcp", "target"):
+    elif serial is not None and arm is not None and what in (TCP, TARGET):
         path, length = f"world/{short_serial(serial)}/{arm}/{what}", TOOL_AXES
     else:
         return
@@ -451,7 +486,7 @@ def _log_joints(rr, tree, short: str, arm: str, labels: list[str], values: np.nd
                 start: float) -> None:
     """An arm's joints as its model's joint transforms; a joint keeps its last known angle while unknown."""
     for column, label in enumerate(labels):
-        joint = tree.get_joint_by_name(f"{arm}_{label}_joint")
+        joint = tree.get_joint_by_name(urdf_joint(arm, label))
         known = np.flatnonzero(np.isfinite(values[:, column]))
         if joint is None or not len(known):
             continue
@@ -462,7 +497,8 @@ def _log_joints(rr, tree, short: str, arm: str, labels: list[str], values: np.nd
 
 def _log_follower(rr, short: str, labels: list[str], values: np.ndarray, stamps: np.ndarray, start: float) -> None:
     """The follower's reference and lookahead points, in the lab frame; none at the ticks it is unknown."""
-    for name, (x, y) in (("reference", ("reference_x", "reference_y")), ("lookahead", ("lookahead_x", "lookahead_y"))):
+    for name in ("reference", "lookahead"):
+        x, y = FOLLOWER_GROUPS[name][:2]
         if x not in labels or y not in labels:
             continue
         xy = values[:, [labels.index(x), labels.index(y)]]
@@ -489,7 +525,7 @@ def _log_events(rr, session: Session, start: float, end: float, notes: list[str]
 
     A session with events but no process loaded (its log line) is noted: its runs' steps cannot be shown.
     """
-    events = list(_read_events(session.folder / EVENTS))
+    events = list(_read_events(session))
     if events and not any(loaded_folder(event) for event in events):
         notes.append(f"{session.folder.name}: no process loaded in its log, so no run steps")
     merged = sorted(events + _run_events(events), key=lambda event: float(event["ros_time"]))
@@ -525,8 +561,9 @@ def _log_events(rr, session: Session, start: float, end: float, notes: list[str]
     return count
 
 
-def _read_events(path: Path) -> Iterator[dict]:
-    """A session's events, line by line; a line that does not read (cut by a crash) is left out."""
+def _read_events(session: Session) -> Iterator[dict]:
+    """A session's events in this viewer's names, line by line; a line that does not read (a crash) is left out."""
+    path = session.folder / EVENTS
     if not path.is_file():
         return
     with open(path, encoding="utf-8") as lines:
@@ -536,7 +573,7 @@ def _read_events(path: Path) -> Iterator[dict]:
                 float(event["ros_time"])
             except (ValueError, KeyError, TypeError):
                 continue
-            yield event
+            yield _upgraded_event(event, session)
 
 
 def _run_events(events: list[dict]) -> list[dict]:
@@ -581,12 +618,12 @@ def _entries(events: Iterable[dict], offset: float, start: float = -np.inf,
             if (seen := repeats.pop(key))["more"]:
                 yield seen["last"], {}, _repeated(seen)
         changes, line = _state_changes(event), _text_line(event)
-        if event.get("event") == "log" and LATE_TICK.match(str(event.get("text"))):
+        if event.get("event") == LOG and LATE_TICK.match(str(event.get("text"))):
             late.append(wall)
             if len(late) == 1:
                 yield wall, {LATE_TICKS: "late"}, ("log/ticks", "WARN", line[2])
             continue
-        if event.get("event") == "log" and start <= wall <= end:
+        if event.get("event") == LOG and start <= wall <= end:
             key = (str(event.get("source")), NUMBER.sub("#", str(event.get("text"))))
             if (seen := repeats.get(key)) is not None:
                 # * The observer writes a line repeating again with its count so far.
@@ -621,19 +658,19 @@ def _state_changes(event: dict) -> dict[str, str]:
     who = short_serial(event["robot"]) if event.get("robot") else "lab"
     if name.startswith(RUN):
         return _run_changes(name.removeprefix(RUN), event)
-    if name == "state":
+    if name == STATE:
         changes = {}
         for key, value in {**(event.get("status") or {}), **(event.get("flags") or {})}.items():
             changes[_state_path(who, key)] = _state_text(value)
         for part, moving in (event.get("moving") or {}).items():
-            changes[_state_path(who, f"{part} motion")] = "moving" if moving else "still"
+            changes[_state_path(who, f"{part} motion")] = MOVING if moving else STILL
         return changes
-    if name == "relay state":
-        return {_state_path("lab", f"relay {key}"): _state_text(value) for key, value in event.items()
+    if name == RELAY_STATE:
+        return {_state_path("lab", relay_event(key)): _state_text(value) for key, value in event.items()
                 if key not in QUIET and not isinstance(value, (dict, list))}
-    if name in ("lease taken", "lease released"):
-        return {_state_path(who, "lease"): _state_text(event.get("holder") if name == "lease taken" else None)}
-    for part in ("moving", "still"):
+    if name in (LEASE_TAKEN, LEASE_RELEASED):
+        return {_state_path(who, LEASE): _state_text(event.get("holder") if name == LEASE_TAKEN else None)}
+    for part in (MOVING, STILL):
         if name.endswith(f" {part}"):
             subject = event.get("arm") or name.removesuffix(f" {part}")
             return {_state_path(who, f"{subject} motion"): part}
@@ -644,16 +681,16 @@ def _state_changes(event: dict) -> dict[str, str]:
 
 def _run_changes(name: str, event: dict) -> dict[str, str]:
     """A run event's state changes: the run, its action and step (movement), the guide's part and mode."""
-    if name in ("forget", "reopen", "new_run", "continue"):
+    if name in (RUN_FORGET, RUN_REOPEN, RUN_NEW, RUN_CONTINUE):
         return {}  # * many at once, for actions other than the current one
     changes = {_state_path("run", "run"): str(event.get("run"))}
     if event.get("action"):
-        changes[_state_path("run", "action")] = _state_text(f"{event['action']} done" if name == "mark_done"
+        changes[_state_path("run", "action")] = _state_text(f"{event['action']} done" if name == RUN_MARK_DONE
                                                             else event["action"])
     if event.get("movement"):
         changes[_state_path("run", "step")] = _state_text(event["movement"])
     data = event.get("data") or {}
-    if name == "guide":
+    if name == RUN_GUIDE:
         changes[_state_path("run", "guide mode")] = _state_text(data.get("mode"))
         if data.get("event") in ("start", "done"):
             changes[_state_path("run", "guide")] = _state_text(data.get("part") if data["event"] == "start" else
@@ -677,7 +714,7 @@ def _state_text(value: Any) -> str:
 def _text_line(event: dict) -> tuple[str, str, str] | None:
     """An event's text log entity, level and short text; None for what only the state timelines show."""
     name = event.get("event", "")
-    if name == "log":
+    if name == LOG:
         text, *more = str(event.get("text")).strip().splitlines() or [""]
         text = _cut(f"[{event.get('source')}] {text}" + (" …" if more else ""), LINE)
         if event.get("count", 1) > 1:
@@ -698,43 +735,45 @@ def _event_text(name: str, event: dict) -> str:
     by = f" by {_by(event['by'])}" if event.get("by") else ""
     arm = event.get("arm") or ""
     value = event.get("value")
-    if name == "lease taken":
+    if name == LEASE_TAKEN:
         return f"lease → {_by(event.get('holder'))}"
-    if name == "lease released":
+    if name == LEASE_RELEASED:
         return f"lease released by {_by(event.get('holder'))}"
-    if name.endswith(" moving"):
-        return f"{arm or name.removesuffix(' moving')} moving{by}" + \
+    if name.endswith(f" {MOVING}"):
+        return f"{arm or name.removesuffix(f' {MOVING}')} {MOVING}{by}" + \
             ("" if event.get("commanded", True) else " (not commanded)")
-    if name.endswith(" still"):
-        subject = arm or name.removesuffix(" still")
+    if name.endswith(f" {STILL}"):
+        subject = arm or name.removesuffix(f" {STILL}")
         moved = [f"{event['distance']:.2f} m", f"{np.degrees(event['turn']):.0f}°"] if "distance" in event else \
             [f"largest joint {event['largest_joint_change']:.2f} rad"] if "largest_joint_change" in event else []
-        return f"{subject} still after {event.get('seconds', 0.0):.1f} s" + "".join(f", {part}" for part in moved)
-    if name in ("trajectory sent", "hold sent"):
-        what = "hold" if name == "hold sent" else f"trajectory, {event.get('waypoints')} points"
+        return f"{subject} {STILL} after {event.get('seconds', 0.0):.1f} s" + "".join(f", {part}" for part in moved)
+    if name in (TRAJECTORY_SENT, HOLD_SENT):
+        what = "hold" if name == HOLD_SENT else f"trajectory, {event.get('waypoints')} points"
         return f"{arm} {what}, {event.get('duration', 0.0):.1f} s{by}"
-    if name == "tool command sent":
+    if name == TOOL_COMMAND_SENT:
         return f"{arm} tool {event.get('command')} {event.get('position', '')}{by}".replace(" " * 2, " ")
-    if name == "wrench sent":
+    if name == WRENCH_SENT:
         return f"{arm} wrench {np.linalg.norm(event.get('force') or [0]):.1f} N, " \
                f"{np.linalg.norm(event.get('torque') or [0]):.2f} N m{by}"
-    if name == "force sensor zeroed":
+    if name == FORCE_SENSOR_ZEROED:
         return f"{arm} force sensor zeroed{by}"
-    if name in ("path sent", "path stop sent"):
-        return f"base path stop{by}" if name == "path stop sent" else \
+    if name in (PATH_SENT, PATH_STOP_SENT):
+        return f"base path stop{by}" if name == PATH_STOP_SENT else \
             f"base path, {event.get('waypoints')} points{by}"
-    if name == "clearance trip":
+    if name == CLEARANCE_TRIP:
         return f"clearance trip: {event.get('problem')}"
-    if name == "object tracked from now on":
+    if name == OBJECT_TRACKED:
         return f"{event.get('object')} tracked (mocap id {event.get('mocap_id')})"
-    if name in ("session start", "session end"):
+    if name in (SESSION_START, SESSION_END):
         return name
-    if name == "object no longer tracked":
+    if name == OBJECT_UNTRACKED:
         return f"{event.get('object')} no longer tracked"
-    if name.endswith(("stream", "tracking")) and value in ("lost", "back"):
+    if name == LOG_LINES_LOST:
+        return f"up to {event.get('at_most')} log lines lost: pushed out of the console before the observer read them"
+    if name.endswith((STREAM_EVENT, TRACKING)) and value in (LOST, BACK):
         return f"{name} back after {event['lost_for']:.2f} s" if "lost_for" in event else f"{name} {value}"
     if "value" in event and not isinstance(value, (dict, list)):
-        if name.endswith(("soft stop", "stop reason", "switch error", "problem")):
+        if name.endswith((SOFT_STOP, STOP_REASON, SWITCH_ERROR, PROBLEM)):
             return f"{name}: {value}" if value else f"{name} cleared"
         return f"{name} → {_state_text(value) or 'none'}"
     return _fields(name, event)
@@ -744,35 +783,35 @@ def _run_text(name: str, event: dict) -> str | None:
     """An assembly run event as a short sentence; None for what only the state timelines show (or the log has)."""
     data = event.get("data") or {}
     step = event.get("movement") or event.get("action") or ""
-    if name == "exec":
+    if name == RUN_EXEC:
         status = str(data.get("status") or "")
         return f"{step} {data.get('result')}" + (f" ({status})" if status.lower() != data.get("result") else "")
-    if name == "servo":
+    if name == RUN_SERVO:
         return f"{step} servo {data.get('status')}, {data.get('passes')} passes"
-    if name == "plan":
+    if name == RUN_PLAN:
         if data.get("message"):
             return f"{step} planned: {data['message']}"
         return f"{step} planned: {data.get('waypoints')} points in {data.get('seconds', 0.0):.1f} s"
-    if name == "mark_done":
+    if name == RUN_MARK_DONE:
         return f"{event.get('action')} done" + (" (assumed)" if event.get("assumed") else "")
-    if name == "cancel":
+    if name == RUN_CANCEL:
         return f"{step} cancelled: {data.get('reason')}"
-    if name == "soft_stop":
+    if name == RUN_SOFT_STOP:
         return f"{step} soft stop"
-    if name == "prompt":
+    if name == RUN_PROMPT:
         return f"{step} asks: {str(data.get('text')).partition(' — ')[2] or data.get('text')}"
-    if name == "confirm":
+    if name == RUN_CONFIRM:
         return f"{step} confirmed"
-    if name == "check_goal":
+    if name == RUN_CHECK_GOAL:
         return f"{step} goal ok" if data.get("ok") else f"{step} goal refused: {data.get('reason')}"
-    if name == "guide":
+    if name == RUN_GUIDE:
         if data.get("event") in ("start", "done", "mode"):
             return None
         reopened = f" (reopens {len(data['reopened'])})" if data.get("reopened") else ""
         return f"guide {data.get('event')}: {data.get('part')}{reopened}"
-    if name in ("forget", "reopen", "as_built", "session"):
+    if name in (RUN_FORGET, RUN_REOPEN, RUN_AS_BUILT, RUN_SESSION):
         return None  # * forget and reopen come by the dozen with a guide redo; the as-built has its log line
-    if name in ("new_run", "continue"):
+    if name in (RUN_NEW, RUN_CONTINUE):
         return f"run {event.get('run')}: {name.replace('_', ' ')}"
     return _fields(name, event)
 
@@ -801,13 +840,14 @@ def _warns(event: dict) -> bool:
     data = event.get("data") or {}
     if name.startswith(RUN):
         name = name.removeprefix(RUN)
-        return name in ("cancel", "soft_stop") or name == "exec" and data.get("result") in ("failed", "refused") or \
-            name == "servo" and data.get("status") in ("failed", "refused") or \
-            name == "check_goal" and not data.get("ok") or name == "prompt" and bool(data.get("warn")) or \
-            name == "plan" and bool(data.get("warnings"))
-    return (name in ("e-stop", "soft stop") and bool(value)) or name == "clearance trip" or \
-        name.endswith(("switch error", "problem")) and bool(value) or \
-        name.endswith(("stream", "tracking")) and value == "lost"
+        return name in (RUN_CANCEL, RUN_SOFT_STOP) or \
+            name == RUN_EXEC and data.get("result") in ("failed", "refused") or \
+            name == RUN_SERVO and data.get("status") in ("failed", "refused") or \
+            name == RUN_CHECK_GOAL and not data.get("ok") or name == RUN_PROMPT and bool(data.get("warn")) or \
+            name == RUN_PLAN and bool(data.get("warnings"))
+    return (name in (ESTOP, SOFT_STOP) and bool(value)) or name in (CLEARANCE_TRIP, LOG_LINES_LOST) or \
+        name.endswith((SWITCH_ERROR, PROBLEM)) and bool(value) or \
+        name.endswith((STREAM_EVENT, TRACKING)) and value == LOST
 
 
 # --- --- --- --- --- LAB AND BARS --- --- --- --- ---
@@ -858,7 +898,7 @@ def _process(found: list[Session], end: float, notes: list[str]):
     """The process the monitor last loaded by `end` (its "loaded <folder> in" log line), or None (noted)."""
     folder = None
     for session in found:
-        for event in _read_events(session.folder / EVENTS):
+        for event in _read_events(session):
             if (loaded := loaded_folder(event)) is not None and float(event["ros_time"]) + session.offset <= end:
                 folder = loaded
     if folder is None:
@@ -906,25 +946,25 @@ def _sent(session: Session, start: float, end: float) -> list[Shown]:
     the session's end.
     """
     drawn: list[Shown] = []
-    for event in _read_events(session.folder / EVENTS):
+    for event in _read_events(session):
         wall = float(event["ros_time"]) + session.offset
         name, serial = event.get("event"), event.get("robot")
         if wall > end or not serial:
             continue
         short = short_serial(serial)
-        if (name == "follower" and event.get("value") != "following") or name == "hold sent":
-            entity = f"world/plans/{short}" if name == "follower" else f"{GHOST_ROOT}{short}/{event.get('arm', '')}"
+        if (name == FOLLOWER_STATE and event.get("value") != FOLLOWING) or name == HOLD_SENT:
+            entity = f"world/plans/{short}" if name == FOLLOWER_STATE else f"{GHOST_ROOT}{short}/{event.get('arm', '')}"
             for shown in reversed(drawn):
                 if shown.entity == entity:
                     if shown.start <= wall and (shown.end is None or shown.end > wall):
                         shown.end = wall
                     break
-        elif name in ("path sent", "trajectory sent") and event.get("file"):
+        elif name in (PATH_SENT, TRAJECTORY_SENT) and event.get("file"):
             try:
                 sent = json.loads((session.folder / event["file"]).read_text())
             except (OSError, ValueError):
                 continue  # * the event's text line still says it was sent
-            if name == "path sent":
+            if name == PATH_SENT:
                 path = sent.get("path") or {}
                 xyz = np.column_stack([path.get("x", []), path.get("y", []), np.full(len(path.get("x", [])),
                                                                                      PLAN_HEIGHT)])
@@ -937,7 +977,7 @@ def _sent(session: Session, start: float, end: float) -> list[Shown]:
                           zip(sent.get("joint_names", []), last.get("positions", []))}
                 drawn.append(Shown(f"{GHOST_ROOT}{short}/{arm}", wall,
                                    wall + since.get("sec", 0) + since.get("nanosec", 0) * 1e-9, joints))
-        elif name == "clearance trip" and event.get("hit"):
+        elif name == CLEARANCE_TRIP and event.get("hit"):
             strips, labels = [], []
             for pair in event["hit"].get("pairs", []):
                 contact = pair.get("contact")
@@ -1076,26 +1116,26 @@ def _blueprint(found: list[Session], objects: list[str], models: dict[str, Model
     tabs = []
     for short, arms in sorted(robots.items()):
         views = [
-            rrb.TimeSeriesView(name=f"{short} follower errors", origin=f"/{short}/follower/errors"),
+            rrb.TimeSeriesView(name=f"{short} follower errors", origin=f"/{short}/{FOLLOWER}/errors"),
             rrb.TimeSeriesView(name=f"{short} twist sent vs odometry", origin=f"/{short}",
-                               contents=["$origin/twist_sent", "$origin/odometry"]),
-            rrb.TimeSeriesView(name=f"{short} mocap", origin=f"/{short}/base_mocap"),
-            rrb.TimeSeriesView(name=f"{short} stream rates", origin=f"/{short}/streams/rate"),
-            rrb.TimeSeriesView(name=f"{short} battery", origin=f"/{short}/battery"),
+                               contents=[f"$origin/{TWIST_SENT}", f"$origin/{ODOMETRY}"]),
+            rrb.TimeSeriesView(name=f"{short} mocap", origin=f"/{short}/{BASE_MOCAP}"),
+            rrb.TimeSeriesView(name=f"{short} stream rates", origin=f"/{short}/{STREAMS}/{STREAM[0]}"),
+            rrb.TimeSeriesView(name=f"{short} battery", origin=f"/{short}/{BATTERY}"),
         ]
         for arm in arms:
-            views += [rrb.TimeSeriesView(name=f"{short} {arm} joints", origin=f"/{short}/{arm}/joints"),
+            views += [rrb.TimeSeriesView(name=f"{short} {arm} joints", origin=f"/{short}/{arm}/{JOINTS}"),
                       rrb.TimeSeriesView(name=f"{short} {arm} wrench", origin=f"/{short}/{arm}",
-                                         contents=["$origin/wrench", "$origin/wrench_peak"]),
+                                         contents=[f"$origin/{WRENCH}", f"$origin/{WRENCH_PEAK}"]),
                       rrb.TimeSeriesView(name=f"{short} {arm} tool0 vs target", origin=f"/{short}/{arm}/target_error"),
-                      rrb.TimeSeriesView(name=f"{short} {arm} tool", origin=f"/{short}/{arm}/tool")]
+                      rrb.TimeSeriesView(name=f"{short} {arm} tool", origin=f"/{short}/{arm}/{TOOL}")]
         tabs.append(rrb.Grid(*views, name=short))
-    lab = [rrb.TimeSeriesView(name="relay drift", origin="/lab/relay_drift"),
-           rrb.TimeSeriesView(name="late ticks", origin="/lab/monitor_late_share")]
+    lab = [rrb.TimeSeriesView(name="relay drift", origin=f"/lab/{RELAY_DRIFT}"),
+           rrb.TimeSeriesView(name="late ticks", origin=f"/lab/{LATE_SHARE}")]
     if objects:
         # * Rerun takes a `*` only as a trailing `/**`: every object listed.
         lab.append(rrb.TimeSeriesView(name="objects mocap", origin="/objects",
-                                      contents=[f"+ $origin/{name}/mocap" for name in objects]))
+                                      contents=[f"+ $origin/{name}/{OBJECT_MOCAP}" for name in objects]))
     tabs.append(rrb.Grid(*lab, name="lab"))
     # * The models sit at the top level (`MODEL_ROOT`), their collision shapes hidden.
     lab_frame = ["+ /world/**"]

@@ -6,8 +6,9 @@ monitor sends, whoever sent it. A motion says who held the robot's lease when it
 sent: a move with neither came from outside the monitor (free drive, the pendant, a push, a joystick).
 
 - ! Main thread only: `look` from a hook, the listeners fire from the command senders.
-- Each event is {"event", "ros_time", ...}; the robot's serial is "robot" where one applies. A command sent in full
-  (a trajectory, a path) carries its message under FILE_KEY, for the plugin to write to a file of its own.
+- Each event is {"event", "ros_time", ...}, named in `names.py`; the robot's serial is "robot" where one applies. A
+  command sent in full (a trajectory, a path) carries its message under FILE_KEY, for the plugin to write to a file
+  of its own.
 """
 
 from __future__ import annotations
@@ -21,6 +22,12 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from ...robot_interface.end_effectors import RobotiqState, ScaffoldingV1State, ScaffoldingV3, ScaffoldingV3State
+from .names import (ARM_MOVING, ARM_STILL, BACK, BASE_MOVING, BASE_STILL, BASE_STREAMS, CLEARANCE_TRIP, CONTROLLER,
+                    DRIFT, ESTOP, FOLLOWER_STATE, FOLLOWING, FORCE_SENSOR_ZEROED, FRAME_STATUS, HOLD_SENT, LEASE,
+                    LEASE_RELEASED, LEASE_TAKEN, LOST, MOCAP_TRACKING, OBJECT_TRACKED, OBJECT_TRACKING,
+                    OBJECT_UNTRACKED, OBJECTS_STATE, PATH_SENT, PATH_STOP_SENT, PROBLEM, RELAY_STATE, SOFT_STOP, STATE,
+                    STOP_REASON, SWITCH_ERROR, TOOL_COMMAND_SENT, TRAJECTORY_SENT, WRENCH_SENT, relay_event,
+                    stream_event)
 
 if TYPE_CHECKING:
     from ...robot_interface.mocap_relay import MocapRelayInterface
@@ -76,7 +83,7 @@ class _Flag:
         if now - self.since < (self.good_after if good else self.bad_after):
             return None
         # * `since`: when the change began; the event comes once it held.
-        change = {"value": "back" if good else "lost", "since": self.since, "flickers": self.flickers}
+        change = {"value": BACK if good else LOST, "since": self.since, "flickers": self.flickers}
         if good:
             change["lost_for"] = round(self.since - self.told_at, 3)
         self.told, self.told_at, self.since, self.flickers = good, self.since, None, 0
@@ -177,7 +184,7 @@ class Watcher:
 
     def _on_zero(self, serial: str, arm: str, sent) -> None:
         """The force sensor zeroed, with the reading it tares away."""
-        self._heard.append({"event": "force sensor zeroed", "ros_time": sent.update_time, "robot": serial, "arm": arm,
+        self._heard.append({"event": FORCE_SENSOR_ZEROED, "ros_time": sent.update_time, "robot": serial, "arm": arm,
                             "by": self._holder(serial), "wrench_before": _numbers(sent.wrench)})
 
     def _holder(self, serial: str) -> str | None:
@@ -200,7 +207,7 @@ class Watcher:
         """A path, or a stop (no waypoints)."""
         holder = self._note(serial, None, sent.update_time)
         # * A stop is an empty path: nothing more to keep than this line.
-        self._heard.append({"event": "path sent" if sent.waypoints else "path stop sent", "ros_time": sent.update_time,
+        self._heard.append({"event": PATH_SENT if sent.waypoints else PATH_STOP_SENT, "ros_time": sent.update_time,
                             "robot": serial, "by": holder, "path_id": sent.path_id, "waypoints": sent.waypoints,
                             "timed": bool(sent.timed), "speed_caps": _numbers(sent.speed_caps),
                             **(_full(sent.message) if sent.waypoints else {})})
@@ -209,7 +216,7 @@ class Watcher:
         """A joint trajectory, or the braking one of a hold."""
         holder = self._note(serial, arm, sent.update_time, float(sent.duration))
         # * A hold or a one-point step (a jog, every tick) is all in its target: no file of its own.
-        self._heard.append({"event": "hold sent" if sent.hold else "trajectory sent", "ros_time": sent.update_time,
+        self._heard.append({"event": HOLD_SENT if sent.hold else TRAJECTORY_SENT, "ros_time": sent.update_time,
                             "robot": serial, "arm": arm, "by": holder, "duration": float(sent.duration),
                             "waypoints": int(sent.waypoints), "target": _numbers(sent.target),
                             **({} if sent.hold or sent.waypoints <= 1 else _full(sent.message))})
@@ -220,13 +227,13 @@ class Watcher:
         if self._last_wrench.get((serial, arm)) == values:
             return
         self._last_wrench[(serial, arm)] = values
-        self._heard.append({"event": "wrench sent", "ros_time": sent.update_time, "robot": serial, "arm": arm,
+        self._heard.append({"event": WRENCH_SENT, "ros_time": sent.update_time, "robot": serial, "arm": arm,
                             "by": self._holder(serial), "force": list(values[:3]), "torque": list(values[3:])})
 
     def _on_tool(self, serial: str, arm: str, sent) -> None:
         """A tool command."""
         holder = self._note(serial, arm, sent.update_time)
-        self._heard.append({"event": "tool command sent", "ros_time": sent.update_time, "robot": serial, "arm": arm,
+        self._heard.append({"event": TOOL_COMMAND_SENT, "ros_time": sent.update_time, "robot": serial, "arm": arm,
                             "by": holder, "command": sent.command, **sent.values})
 
     # --- --- --- --- --- LOOKING --- --- --- --- ---
@@ -272,7 +279,7 @@ class Watcher:
         flags = {key: flag.told for key, flag in seen.flags.items()} or _flags(robot, now)
         moving = {name: was is not None for name, was in seen.arms_moving.items()}
         moving["base"] = seen.base_moving is not None
-        return {"event": "state", "ros_time": now, "robot": serial, "status": seen.status, "flags": flags,
+        return {"event": STATE, "ros_time": now, "robot": serial, "status": seen.status, "flags": flags,
                 "moving": moving}
 
     def _relay_state(self, now: float) -> list[dict]:
@@ -283,13 +290,13 @@ class Watcher:
         self._relay_seen.update(current)
         drift = self._relay.state.drift
         self._relay_drift = None if drift is None else _drift_values(drift)
-        return [{"event": "relay state", "ros_time": now, **current, "drift": self._relay_drift}]
+        return [{"event": RELAY_STATE, "ros_time": now, **current, "drift": self._relay_drift}]
 
     def _objects_state(self, now: float) -> list[dict]:
         """Each tracked object's mocap tracking now; none without objects."""
         if not self._objects:
             return []
-        return [{"event": "objects state", "ros_time": now, "tracked": {
+        return [{"event": OBJECTS_STATE, "ros_time": now, "tracked": {
             name: body.tracked if body.last_update_time is not None else None for name, body in self._objects.items()}}]
 
     def _trips(self, trips: Iterable[ClearanceTrip]) -> list[dict]:
@@ -299,7 +306,7 @@ class Watcher:
             key = (trip.time, trip.serial, trip.task)
             if key not in self._trips_seen:
                 self._trips_seen.add(key)
-                events.append({"event": "clearance trip", "ros_time": trip.time, "robot": trip.serial,
+                events.append({"event": CLEARANCE_TRIP, "ros_time": trip.time, "robot": trip.serial,
                                "task": trip.task, "problem": trip.problem,
                                "hit": None if trip.hit is None else trip.hit.as_record()})
         return events
@@ -314,12 +321,12 @@ class Watcher:
                 events.append(_changed(key, value, old, serial, now))
         seen.status = status
         for key, good in _flags(robot, now).items():
-            flag = seen.flags.setdefault(key, _Flag(*((TRACKING_LOST, TRACKING_BACK) if key == "mocap tracking"
+            flag = seen.flags.setdefault(key, _Flag(*((TRACKING_LOST, TRACKING_BACK) if key == MOCAP_TRACKING
                                                       else (0.0, STREAM_BACK))))
             change = flag.update(good, now)
             if change is not None:
                 events.append({"event": key, "ros_time": now, "robot": serial, **change})
-        holder = status["lease"]
+        holder = status[LEASE]
         for name, arm in robot.arms.items():
             moving = arm.state.last_slight_motion_time is not None and \
                 now - arm.state.last_slight_motion_time < ARM_STILL_AFTER
@@ -329,12 +336,12 @@ class Watcher:
                 commanded = self._sent_since(serial, name, now - COMMAND_RECENT)
                 by = holder or self._sent_by(serial, name, commanded)
                 seen.arms_moving[name] = _Moving(now, joints, by, commanded)
-                events.append({"event": "arm moving", "ros_time": now, "robot": serial, "arm": name, "by": by,
+                events.append({"event": ARM_MOVING, "ros_time": now, "robot": serial, "arm": name, "by": by,
                                "commanded": commanded, "cause": _cause(by, commanded), "joints": _numbers(joints)})
             elif not moving and was is not None:
                 seen.arms_moving[name] = None
                 moved = None if joints is None or was.start is None else float(np.max(np.abs(joints - was.start)))
-                events.append({"event": "arm still", "ros_time": now, "robot": serial, "arm": name,
+                events.append({"event": ARM_STILL, "ros_time": now, "robot": serial, "arm": name,
                                "seconds": now - was.since, "largest_joint_change": moved,
                                "commanded": was.commanded or self._sent_since(serial, name, was.since),
                                "joints": _numbers(joints)})
@@ -356,16 +363,16 @@ class Watcher:
         moving = _apart(oldest, pose)
         if moving and seen.base_moving is None:
             # * A path runs as long as the follower follows it, pauses between pieces included.
-            following = state.follower is not None and state.follower.state == "following"
+            following = state.follower is not None and state.follower.state == FOLLOWING
             commanded = following or self._sent_since(serial, None, now - COMMAND_RECENT)
             by = holder or self._sent_by(serial, None, commanded)
             seen.base_moving = _Moving(now, oldest, by, commanded)
-            return [{"event": "base moving", "ros_time": now, "robot": serial, "by": by, "commanded": commanded,
+            return [{"event": BASE_MOVING, "ros_time": now, "robot": serial, "by": by, "commanded": commanded,
                      "cause": _cause(by, commanded), "pose": _pose(oldest)}]
         if not moving and seen.base_moving is not None:
             was, seen.base_moving = seen.base_moving, None
             distance = float(np.linalg.norm(pose[0][:2] - was.start[0][:2]))
-            return [{"event": "base still", "ros_time": now, "robot": serial, "seconds": now - was.since,
+            return [{"event": BASE_STILL, "ros_time": now, "robot": serial, "seconds": now - was.since,
                      "distance": distance, "turn": _turn(was.start, pose),
                      "commanded": was.commanded or self._sent_since(serial, None, was.since), "pose": _pose(pose)}]
         return []
@@ -385,16 +392,16 @@ class Watcher:
         for name in self._objects.keys() - flags.keys():
             flags[name] = _Flag(TRACKING_LOST, TRACKING_BACK)
             if not first:
-                events.append({"event": "object tracked from now on", "ros_time": now, "object": name,
+                events.append({"event": OBJECT_TRACKED, "ros_time": now, "object": name,
                                "mocap_id": self._objects[name].mocap_id})
         for name in flags.keys() - self._objects.keys():
             del flags[name]
-            events.append({"event": "object no longer tracked", "ros_time": now, "object": name})
+            events.append({"event": OBJECT_UNTRACKED, "ros_time": now, "object": name})
         for name, flag in flags.items():
             body = self._objects[name]
             change = flag.update(body.tracked if body.last_update_time is not None else None, now)
             if change is not None:
-                events.append({"event": "object mocap tracking", "ros_time": now, "object": name, **change})
+                events.append({"event": OBJECT_TRACKING, "ros_time": now, "object": name, **change})
         self._objects_seen = flags
         return events
 
@@ -406,15 +413,16 @@ class Watcher:
         events = []
         for key, value in current.items():
             if key in self._relay_seen and self._relay_seen[key] != value:
-                events.append({"event": f"relay {key}", "ros_time": now, "value": value, "was": self._relay_seen[key]})
+                events.append({"event": relay_event(key), "ros_time": now, "value": value,
+                               "was": self._relay_seen[key]})
             elif key not in self._relay_seen and value not in (None, {}):
-                events.append({"event": f"relay {key}", "ros_time": now, "value": value, "was": None})
+                events.append({"event": relay_event(key), "ros_time": now, "value": value, "was": None})
             self._relay_seen[key] = value
         drift = self._relay.state.drift
         if drift is not None:
             values = _drift_values(drift)
             if _drift_moved(self._relay_drift, values):
-                events.append({"event": "relay drift", "ros_time": now, "value": values, "was": self._relay_drift})
+                events.append({"event": relay_event(DRIFT), "ros_time": now, "value": values, "was": self._relay_drift})
                 self._relay_drift = values
         return events
 
@@ -423,7 +431,7 @@ class Watcher:
         state = self._relay.state
         frame = state.frame
         current = {
-            "frame status": frame.status if frame else None,
+            FRAME_STATUS: frame.status if frame else None,
             "floor calibration": frame.floor_calibration if frame else None,
             "refit": frame.refit if frame else None,
             "newer floor calibration": frame.newer if frame else None,
@@ -446,10 +454,10 @@ def _status(robot: HuskyRobotInterface, now: float) -> dict:
     base = robot.base.state
     lease = robot.lease_slot.lease
     status = {
-        "lease": lease.holder if lease is not None else None,
-        "soft stop": robot.soft_stop_latch.reason or "stopped" if robot.soft_stopped else None,
-        "e-stop": base.estopped,
-        "follower": None if base.follower is None else f"{base.follower.state} {base.follower.reason}".strip(),
+        LEASE: lease.holder if lease is not None else None,
+        SOFT_STOP: robot.soft_stop_latch.reason or "stopped" if robot.soft_stopped else None,
+        ESTOP: base.estopped,
+        FOLLOWER_STATE: None if base.follower is None else f"{base.follower.state} {base.follower.reason}".strip(),
         "battery charging": base.battery_charging if base.battery_update_time is not None else None,
         "battery health": base.battery_health,
         **_controllers("base", base.controllers),
@@ -460,8 +468,8 @@ def _status(robot: HuskyRobotInterface, now: float) -> dict:
         status[f"{name} safety mode"] = state.safety_mode
         status[f"{name} robot mode"] = state.robot_mode
         status[f"{name} program playing"] = state.program_playing
-        status[f"{name} problem"] = state.problem or None
-        status[f"{name} stop reason"] = state.stop_reason or None
+        status[f"{name} {PROBLEM}"] = state.problem or None
+        status[f"{name} {STOP_REASON}"] = state.stop_reason or None
         status.update(_controllers(name, state.controllers))
         tool = state.end_effector
         if isinstance(tool, ScaffoldingV3State):
@@ -479,16 +487,16 @@ def _status(robot: HuskyRobotInterface, now: float) -> dict:
 def _flags(robot: HuskyRobotInterface, now: float) -> dict[str, bool | None]:
     """A robot's good-or-bad states, told debounced (`_Flag`): its mocap tracking and each stream running."""
     base = robot.base.state
-    flags = {"mocap tracking": base.tracked if base.last_update_time is not None else None,
-             "base stream": _running(base.joint_states_update_time, now),
-             "mocap stream": _running(base.last_update_time, now)}
-    flags.update({f"{name} stream": _running(arm.state.last_update_time, now) for name, arm in robot.arms.items()})
+    flags = {MOCAP_TRACKING: base.tracked if base.last_update_time is not None else None,
+             **{stream_event(stream): _running(update_time, now) for stream, update_time in
+                zip(BASE_STREAMS, (base.joint_states_update_time, base.last_update_time))}}
+    flags.update({stream_event(name): _running(arm.state.last_update_time, now) for name, arm in robot.arms.items()})
     return flags
 
 
 def _controllers(name: str, state) -> dict:
     """A controller manager's running controller (one event per switch) and its last switch error."""
-    return {f"{name} controller": state.active, f"{name} controller switch error": state.switch_error}
+    return {f"{name} {CONTROLLER}": state.active, f"{name} {CONTROLLER} {SWITCH_ERROR}": state.switch_error}
 
 
 def _full(message) -> dict:
@@ -498,8 +506,8 @@ def _full(message) -> dict:
 
 def _changed(key: str, value: Any, old: Any, serial: str, now: float) -> dict:
     """One status change as an event: "lease" taken or given back, "soft stop" set or cleared, ...; else "<key>"."""
-    if key == "lease":
-        name = "lease taken" if value is not None else "lease released"
+    if key == LEASE:
+        name = LEASE_TAKEN if value is not None else LEASE_RELEASED
         return {"event": name, "ros_time": now, "robot": serial, "holder": value if value is not None else old}
     return {"event": key, "ros_time": now, "robot": serial, "value": value, "was": old}
 

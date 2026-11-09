@@ -5,6 +5,7 @@ A state that switches (a flag, a mode, a controller, a motor state) is an event 
 
 Signal names start with the robot's short serial ("0806_base_pose", "0806_ur_arm_joints"), a tracked object's with
 "object_" ("object_B20_pose"), so everything fits one trace. Every value is the newest at the tick: one row per tick.
+The names and channels the viewer reads are in `names.py`.
 
 ! A tick signal that raises fails the observer's tick: every read here goes through `_safe`.
 """
@@ -12,17 +13,17 @@ Signal names start with the robot's short serial ("0806_base_pose", "0806_ur_arm
 from __future__ import annotations
 
 import math
-import re
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 import numpy as np
 
 from ...config import short_serial
-from ...plugin_api.signals import QUATERNION, XYZ
 from ...plugin_api.trace import Signal
 from ...robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER
 from ...robot_interface.end_effectors import RobotiqState, ScaffoldingV3State
-from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
+from .names import (BASE_MOCAP, BASE_POSE, BASE_STREAMS, BATTERY, FOLLOWER, FOLLOWER_CHANNELS, JOINT_CHANNELS,
+                    JOINTS, LATE_SHARE, NOISE, OBJECT_MOCAP, OBJECT_POSE, ODOMETRY, POSE, RELAY_DRIFT, STREAM, STREAMS,
+                    TARGET, TCP, TOOL, TWIST_SENT, WRENCH, WRENCH_PEAK, object_key, signal)
 
 if TYPE_CHECKING:
     from ...robot_interface.arm import ArmInterface
@@ -31,18 +32,10 @@ if TYPE_CHECKING:
     from ...robot_interface.robot import HuskyRobotInterface
     from ...robot_interface.stream_stats import StreamStats
 
-#: A pose's channels.
-POSE = (*XYZ, *QUATERNION)
 POSE_UNITS = ("m",) * 3 + ("",) * 4
-#: How well mocap sees a body: Motive's mean marker error, the markers it labeled, how many of those it filled in
-#: (occluded), and the largest marker residual.
-NOISE = ("marker_error", "markers", "occluded", "largest_residual")
 NOISE_UNITS = ("m", "", "", "m")
-#: A stream's channels (`StreamQuality`).
-STREAM = ("rate", "max_gap", "delay")
+#: A stream's channels' units (`StreamQuality`).
 STREAM_UNITS = ("1/s", "s", "s")
-#: An arm's joints, UR order.
-JOINTS = tuple(name.removesuffix("_joint") for name in UR_JOINT_NAMES)
 #: Seconds between two readings of a stream's quality: it covers the last 2 s, so more often adds nothing but load.
 STREAM_PERIOD = 0.5
 #: A twist older than this no longer moves the base (its cmd_vel timeout), seconds: its column is then unknown.
@@ -64,26 +57,24 @@ def robot_signals(robot: HuskyRobotInterface, now: Callable[[], float],
     prefix = short_serial(serial)
     state = base.state
     signals = [
-        Signal(f"{prefix}_base_pose", _safe(lambda: _pose(state.position, state.orientation)), POSE, POSE_UNITS),
-        Signal(f"{prefix}_base_mocap", _safe(lambda: _noise(state)), NOISE, NOISE_UNITS),
+        Signal(signal(prefix, BASE_POSE), _safe(lambda: _pose(state.position, state.orientation)), POSE, POSE_UNITS),
+        Signal(signal(prefix, BASE_MOCAP), _safe(lambda: _noise(state)), NOISE, NOISE_UNITS),
         # * `x`, `y`, `yaw`: the pose the follower steered from, as it got it over wifi, to compare with the base's.
-        Signal(f"{prefix}_follower", _safe(lambda: _follower(state.follower)),
-               ("progress", "cross_track", "along_track", "yaw_error", "v", "w", "x", "y", "yaw",
-                "reference_x", "reference_y", "reference_yaw", "lookahead_x", "lookahead_y"),
+        Signal(signal(prefix, FOLLOWER), _safe(lambda: _follower(state.follower)), FOLLOWER_CHANNELS,
                ("", "m", "m", "rad", "m/s", "rad/s", "m", "m", "rad", "m", "m", "rad", "m", "m")),
-        Signal(f"{prefix}_odometry", _safe(lambda: None if state.odometry is None else state.odometry.velocity),
+        Signal(signal(prefix, ODOMETRY), _safe(lambda: None if state.odometry is None else state.odometry.velocity),
                ("v", "w"), ("m/s", "rad/s")),
-        Signal(f"{prefix}_twist_sent", _safe(lambda: _twist(twists.get(serial), now())), ("v", "w"),
+        Signal(signal(prefix, TWIST_SENT), _safe(lambda: _twist(twists.get(serial), now())), ("v", "w"),
                ("m/s", "rad/s")),
-        Signal(f"{prefix}_battery", _safe(lambda: _battery(state)), ("charge", "voltage"), ("", "V")),
+        Signal(signal(prefix, BATTERY), _safe(lambda: _battery(state)), ("charge", "voltage"), ("", "V")),
     ]
-    streams = {"base": state.joint_states_stats, "mocap": state.mocap_stats}
+    streams = dict(zip(BASE_STREAMS, (state.joint_states_stats, state.mocap_stats)))
     streams.update({name: arm.state.joint_states_stats for name, arm in robot.arms.items()})
     labels = tuple(f"{name}_{channel}" for name in streams for channel in STREAM)
-    signals.append(Signal(f"{prefix}_streams", _safe(_Every(STREAM_PERIOD, now, lambda: _streams(streams, now()))),
+    signals.append(Signal(signal(prefix, STREAMS), _safe(_Every(STREAM_PERIOD, now, lambda: _streams(streams, now()))),
                           labels, STREAM_UNITS * len(streams)))
     for name, arm in robot.arms.items():
-        signals += arm_signals(f"{prefix}_{name}", arm, lambda name=name: peak(serial, name))
+        signals += arm_signals(signal(prefix, name), arm, lambda name=name: peak(serial, name))
     return signals
 
 
@@ -91,20 +82,20 @@ def arm_signals(prefix: str, arm: ArmInterface, peak: Callable[[], tuple | None]
     """Every tick signal of one arm, named "<prefix>_<what>"; the tool's only for a tool with a continuous value."""
     state = arm.state
     signals = [
-        Signal(f"{prefix}_joints", _safe(arm.joint_vector), JOINTS, "rad"),
-        Signal(f"{prefix}_tcp", _safe(lambda: _pose(state.tcp_position, state.tcp_orientation)), POSE, POSE_UNITS),
-        Signal(f"{prefix}_wrench", _safe(lambda: state.wrench), ("fx", "fy", "fz", "tx", "ty", "tz"),
+        Signal(signal(prefix, JOINTS), _safe(arm.joint_vector), JOINT_CHANNELS, "rad"),
+        Signal(signal(prefix, TCP), _safe(lambda: _pose(state.tcp_position, state.tcp_orientation)), POSE, POSE_UNITS),
+        Signal(signal(prefix, WRENCH), _safe(lambda: state.wrench), ("fx", "fy", "fz", "tx", "ty", "tz"),
                ("N",) * 3 + ("N m",) * 3),
         # * Over every reading since the last tick (up to the robot's rate limiter, 50 Hz), so a short peak shows.
-        Signal(f"{prefix}_wrench_peak", _safe(peak), ("force", "torque"), ("N", "N m")),
-        Signal(f"{prefix}_target", _safe(lambda: _target(state)), POSE, POSE_UNITS),
+        Signal(signal(prefix, WRENCH_PEAK), _safe(peak), ("force", "torque"), ("N", "N m")),
+        Signal(signal(prefix, TARGET), _safe(lambda: _target(state)), POSE, POSE_UNITS),
     ]
     tool = state.end_effector
     if isinstance(tool, ScaffoldingV3State):
-        signals.append(Signal(f"{prefix}_tool", _safe(lambda: (_number(tool.current), _number(tool.pwm_pct))),
+        signals.append(Signal(signal(prefix, TOOL), _safe(lambda: (_number(tool.current), _number(tool.pwm_pct))),
                               ("current", "pwm"), ("", "%")))
     elif isinstance(tool, RobotiqState):
-        signals.append(Signal(f"{prefix}_tool", _safe(lambda: tool.position), ("position",), "rad"))
+        signals.append(Signal(signal(prefix, TOOL), _safe(lambda: tool.position), ("position",), "rad"))
     return signals
 
 
@@ -112,13 +103,13 @@ def object_signals(objects: Mapping[str, MocapBody]) -> list[Signal]:
     """Each tracked object's pose and how well mocap sees it, named "object_<name>_pose" and "object_<name>_mocap"."""
     signals, keys = [], set()
     for name, body in objects.items():
-        key = "object_" + re.sub(r"[^A-Za-z0-9_]", "_", name)
+        key = object_key(name)
         # * Two names alike once made safe ("B-20", "B 20") stay apart by their mocap id.
-        key = f"{key}_{body.mocap_id}" if key in keys else key
+        key = signal(key, str(body.mocap_id)) if key in keys else key
         keys.add(key)
-        signals += [Signal(f"{key}_pose", _safe(lambda body=body: _pose(body.position, body.orientation)), POSE,
-                           POSE_UNITS),
-                    Signal(f"{key}_mocap", _safe(lambda body=body: _noise(body)), NOISE, NOISE_UNITS)]
+        signals += [Signal(signal(key, OBJECT_POSE), _safe(lambda body=body: _pose(body.position, body.orientation)),
+                           POSE, POSE_UNITS),
+                    Signal(signal(key, OBJECT_MOCAP), _safe(lambda body=body: _noise(body)), NOISE, NOISE_UNITS)]
     return signals
 
 
@@ -128,12 +119,12 @@ def relay_signals(relay: MocapRelayInterface | None, now: Callable[[], float]) -
         return []
     labels = ("off", "anchors_moved", "cameras_moved", "apart", "scale_ppm", "anchors_residual")
     units = ("m", "m", "m", "m", "ppm", "m")
-    return [Signal("relay_drift", _safe(lambda: _drift(relay)), labels, units)]
+    return [Signal(RELAY_DRIFT, _safe(lambda: _drift(relay)), labels, units)]
 
 
 def monitor_signals(late_share: Callable[[], float]) -> list[Signal]:
     """The monitor's own health: the share of late ticks over the last minute."""
-    return [Signal("monitor_late_share", _safe(late_share))]
+    return [Signal(LATE_SHARE, _safe(late_share))]
 
 
 # --- --- --- --- --- READERS --- --- --- --- ---

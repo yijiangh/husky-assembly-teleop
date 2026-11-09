@@ -13,7 +13,6 @@ the chunks' rows, the command files those events name; `copied_sessions` finds t
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import time
 from stat import S_ISREG
@@ -25,6 +24,7 @@ import numpy as np
 
 from ...plugin_api.trace import load_arrays
 from ...shared.recordings.runs import DESCRIPTION, load_description, write_description
+from .names import LOADED, LOG, PROCESS, STATES
 
 #: Where the sessions are recorded, on this PC.
 LOCAL_ROOT = Path("~/.ros/assembly_observer").expanduser()
@@ -34,10 +34,6 @@ RECORDING_FOLDER = Path("data_experiment/assembly_observer")
 NOW = "now"
 #: The events file, the folder of commands sent in full, and how the chunk files are named.
 EVENTS, COMMANDS, CHUNKS = "events.jsonl", "commands", "chunk_*.npz"
-#: The events that hold every state at a moment (`Watcher.snapshot`).
-STATES = ("state", "relay state", "objects state")
-#: The process plugin's log line naming the process folder it loaded (its runs are under it).
-LOADED = re.compile(r"loaded (/.+?) in \d")
 #: A chunk saved this long before a copy's range is not opened, seconds: a margin for clocks and late saves.
 SAVED_MARGIN = 3600.0
 #: Days kept locally, today included.
@@ -271,8 +267,8 @@ def _copy_session(session: Path, start: float, end: float, target: Path, about: 
 
 def loaded_folder(event: dict) -> Path | None:
     """The process folder an event says the monitor loaded (the process plugin's log line, `LOADED`), or None."""
-    found = LOADED.match(str(event.get("text"))) if event.get("event") == "log" and \
-        event.get("source") == "process" else None
+    found = LOADED.match(str(event.get("text"))) if event.get("event") == LOG and \
+        event.get("source") == PROCESS else None
     return Path(found.group(1)) if found else None
 
 

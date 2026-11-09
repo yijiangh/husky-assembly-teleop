@@ -6,7 +6,8 @@ the helper script's own process (`scripts/observer_logs.py copy`, logic in `expo
 viewer the same way (`observer_logs.py rerun`, `rerun_view.py`). One session per monitor
 start, a folder `~/.ros/assembly_observer/<YYYYMMDD>/<stamp>_session/`:
 
-- experiment.json: the robots and their tools, the commits, sim or real (`shared/recordings/runs.py`).
+- experiment.json: the robots and their tools, the commits, sim or real, the names' FORMAT
+  (`shared/recordings/runs.py`, `names.py`).
 - chunk_001.npz, chunk_002.npz, ...: every continuous value each tick (`columns.py`) for CHUNK_SECONDS each, or
   until the tracked objects change; compressed, values float32; read one with `load_recording` (pass the file).
   Each opens with a "state" event per robot, the relay and the objects: every state then.
@@ -51,6 +52,7 @@ from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_SENSOR, block, chip, chip_
 from .columns import monitor_signals, object_signals, relay_signals, robot_signals
 from . import export
 from .export import DAY_FORMAT, KEPT_DAYS, NOW, RECORDING_FOLDER, days, prune, size, wall_time
+from .names import FORMAT, LOG, LOG_LINES_LOST, OBSERVER_ERROR, SESSION_END, SESSION_START
 from .watch import FILE_KEY, Watcher
 
 #: Where the sessions are recorded (tests point it elsewhere).
@@ -142,7 +144,9 @@ class AssemblyObserverPlugin(HuskyPlugin):
         if self._folder is None:
             return
         description = {
-            "kind": "observer session", "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            # * FORMAT: the meaning of the names in this session (`names.py`); the viewer reads older ones its way.
+            "kind": "observer session", "format": FORMAT,
+            "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "ros_time": ctx.now(), "wall_time": time.time(), "chunk_seconds": CHUNK_SECONDS,
             "tick_period": getattr(ctx.config, "tick_period", None),
             "robots": {serial: {"arms": {name: type(arm.end_effector).__name__ if arm.end_effector else None
@@ -159,7 +163,7 @@ class AssemblyObserverPlugin(HuskyPlugin):
         self._signals += relay_signals(relay, ctx.now)
         if console is not None:
             self._signals += monitor_signals(console.late_share)
-        self._queue(ctx, [{"event": "session start", "ros_time": ctx.now(), "folder": str(self._folder)}])
+        self._queue(ctx, [{"event": SESSION_START, "ros_time": ctx.now(), "folder": str(self._folder)}])
         self._start_chunk(ctx)
         ctx.log_info(f"recording the session into {self._folder}")
 
@@ -198,7 +202,7 @@ class AssemblyObserverPlugin(HuskyPlugin):
         events = []
         if errors and errors[0] != self._look_error:
             self._look_error = errors[0]
-            events.append({"event": "observer error", "ros_time": ctx.now(), "error": errors[0]})
+            events.append({"event": OBSERVER_ERROR, "ros_time": ctx.now(), "error": errors[0]})
         return events
 
     def draw(self, ctx: PluginContext) -> None:
@@ -224,7 +228,7 @@ class AssemblyObserverPlugin(HuskyPlugin):
             if self._watcher is not None:
                 self._watcher.detach()
                 self._queue(ctx, self._look(ctx) + self._log_lines(ctx) + self._repeat_end(ctx)
-                            + [{"event": "session end", "ros_time": ctx.now()}])
+                            + [{"event": SESSION_END, "ros_time": ctx.now()}])
         finally:
             self._end_chunk(ctx)
             if self._writer is not None:
@@ -445,7 +449,7 @@ class AssemblyObserverPlugin(HuskyPlugin):
         # * Read before `since`; a line pushed out between the two reads is lost untold (a window of microseconds).
         dropped, dropped_seq = console.dropped, console.dropped_seq
         lost = dropped_seq > self._log_seq and dropped > self._log_dropped
-        lost_events = [{"event": "log lines lost", "ros_time": ctx.now(), "at_most": dropped - self._log_dropped}
+        lost_events = [{"event": LOG_LINES_LOST, "ros_time": ctx.now(), "at_most": dropped - self._log_dropped}
                        ] if lost else []
         self._log_dropped = dropped
         entries = console.since(self._log_seq)
@@ -466,7 +470,7 @@ class AssemblyObserverPlugin(HuskyPlugin):
                 self._repeat_written = entry.count
                 lines.append(entry)
             self._repeat_seen = entry
-        return lost_events + [{"event": "log", "ros_time": ctx.now(), "time": _local(entry.time),
+        return lost_events + [{"event": LOG, "ros_time": ctx.now(), "time": _local(entry.time),
                                "level": entry.level.name, "source": entry.source, "text": entry.text,
                                "count": entry.count} for entry in lines]
 
@@ -476,7 +480,7 @@ class AssemblyObserverPlugin(HuskyPlugin):
         if seen is None or seen.count <= self._repeat_written:
             return []
         self._repeat_written = seen.count
-        return [{"event": "log", "ros_time": ctx.now(), "time": _local(seen.time), "level": seen.level.name,
+        return [{"event": LOG, "ros_time": ctx.now(), "time": _local(seen.time), "level": seen.level.name,
                  "source": seen.source, "text": seen.text, "count": seen.count}]
 
     def _queue(self, ctx: PluginContext, events: list[dict]) -> None:
