@@ -280,7 +280,7 @@ In **Where**, "strip" is the minimized strip at the right edge, for tools not ne
 |---|---|---|---|
 | `health` | Main panel, under Stop all; phone **Health** | | The status of each robot and tracked object; Unlock, Resume, Reconnect. |
 | `console` | Its own window, bottom right, minimized | | The newest log lines, filtered by source and level. |
-| `assembly_observer` | Its own tab | | Records the robots every tick and every event (commands, leases, stops, manual moves, operator clicks, log lines) on this PC for a week; copies a time range to the Drive or opens it in Rerun. |
+| `assembly_observer` | Its own tab, in the strip | | Records the robots every tick and every event (commands, leases, stops, manual moves, operator clicks, log lines) on this PC for a week; copies a time range to the Drive or opens it in Rerun. |
 
 ## Assembly
 
