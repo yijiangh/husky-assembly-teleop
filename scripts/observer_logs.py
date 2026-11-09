@@ -9,6 +9,10 @@ or `now`. Run from the workspace root with the venv active:
     python src/husky-assembly-teleop/scripts/observer_logs.py events 14:00 14:15 --grep refused
     python src/husky-assembly-teleop/scripts/observer_logs.py events 14:00 now --robot a200-0806 --event "arm moving"
     python src/husky-assembly-teleop/scripts/observer_logs.py copy 14:00 14:30 --name b20_insert
+    python src/husky-assembly-teleop/scripts/observer_logs.py rerun 14:00 14:30
+
+`rerun` opens the range in the Rerun viewer (`pip install rerun-sdk`): plots, state timelines, the events and the
+robots in 3D on one timeline (`plugins/assembly_observer/rerun_view.py`); `--save` writes an .rrd file instead.
 
 `copy` writes `<Drive>/data_experiment/assembly_observer/<name>/<stamp>/` (or under `--to`), one folder per session the
 range touches, and ends with one JSON line saying what it copied.
@@ -29,6 +33,8 @@ from husky_assembly_teleop.plugins.assembly_observer.export import (DAY_FORMAT, 
                                                                     copy_range, events_in, sessions, wall_time)
 from husky_assembly_teleop.shared.recordings.runs import run_folder
 
+#: The teleop data folder: the robots' URDFs, for the arms' mounts in `rerun`.
+DATA = Path(__file__).resolve().parents[1] / "data"
 #: Keys an event line leaves out when printed: the times it starts with, and what is too long for a line.
 QUIET = ("event", "time", "ros_time", "status", "flags", "hit")
 
@@ -39,7 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=LOCAL_ROOT, help=f"the recordings (default {LOCAL_ROOT})")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="every session kept: when, how long, how big")
-    for name, text in (("events", "print the events of a time range"), ("copy", "copy a time range")):
+    for name, text in (("events", "print the events of a time range"), ("copy", "copy a time range"),
+                       ("rerun", "open a time range in the Rerun viewer")):
         command = commands.add_parser(name, help=text)
         command.add_argument("start", help="HH:MM or HH:MM:SS")
         command.add_argument("end", help="HH:MM or HH:MM:SS, or now")
@@ -54,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     copy.add_argument("--to", type=Path, help=f"copy under this folder (default <Drive>/{RECORDING_FOLDER})")
     copy.add_argument("--drive", type=Path, help="the Drive root (default HUSKY_DRIVE_ROOT)")
     copy.add_argument("--sim", action="store_true", help="mark the copy's folder as from a simulation")
+    viewer = commands.choices["rerun"]
+    viewer.add_argument("--save", type=Path, help="write this .rrd file instead of opening the viewer")
     args = parser.parse_args(argv)
     if args.command == "list":
         return _list(args.root)
@@ -65,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
         return _fail(str(error))
     if args.command == "events":
         return _events(args, start, end)
+    if args.command == "rerun":
+        return _rerun(args, start, end)
     return _copy(args, start, end)
 
 
@@ -106,6 +117,23 @@ def _copy(args: argparse.Namespace, start: float, end: float) -> int:
     if not copied:
         destination.rmdir()
     print(json.dumps({"destination": str(destination) if copied else None, "copied": copied}))
+    return 0
+
+
+def _rerun(args: argparse.Namespace, start: float, end: float) -> int:
+    """Open the range in Rerun (or save it); the last line printed is JSON: what was shown, or why not."""
+    try:
+        import rerun  # noqa: F401
+    except ImportError:
+        return _fail("rerun is not installed: pip install rerun-sdk (in the venv)")
+    from husky_assembly_teleop.plugins.assembly_observer.rerun_view import log_range
+    try:
+        shown = log_range(args.root, start, end, save=args.save, data=DATA)
+    except Exception as error:
+        return _fail(repr(error))
+    for note in shown["notes"]:
+        print(note, file=sys.stderr)
+    print(json.dumps({**shown, "saved": str(args.save) if args.save else None}))
     return 0
 
 
