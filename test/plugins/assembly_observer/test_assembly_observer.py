@@ -688,6 +688,11 @@ def test_a_session_turns_sim_once_a_simulated_part_is_heard(tmp_path):
     assert description["environment"] == "sim" and description["kind"] == "observer session"
     texts = [event.get("text", "") for event in events_of(plugin._folder)]
     assert "before the simulator" in texts and "after the simulator" in texts
+    events = events_of(plugin._folder)
+    first_state = next(event for event in events if event["event"] == "state" and event["robot"] == CINDY)
+    assert first_state["status"]["environment"] == "real"
+    changed = [event for event in events if event["event"] == "environment" and event["robot"] == CINDY]
+    assert [(event["value"], event["was"]) for event in changed] == [("sim: base", "real")]
     assert any("the session is a simulation" in str(line) for line in lab.ctx.logs)
     assert (plugin._folder / "chunk_001.npz").is_file()
 

@@ -23,8 +23,8 @@ from scipy.spatial.transform import Rotation
 
 from ...robot_interface.end_effectors import RobotiqState, ScaffoldingV1State, ScaffoldingV3, ScaffoldingV3State
 from .names import (ARM_MOVING, ARM_STILL, BACK, BASE_MOVING, BASE_STILL, BASE_STREAMS, CLEARANCE_TRIP, CONTROLLER,
-                    DRIFT, ESTOP, FOLLOWER_STATE, FOLLOWING, FORCE_SENSOR_ZEROED, FRAME_STATUS, HOLD_SENT, LEASE,
-                    LEASE_RELEASED, LEASE_TAKEN, LOST, MOCAP_TRACKING, OBJECT_TRACKED, OBJECT_TRACKING,
+                    DRIFT, ENVIRONMENT, ESTOP, FOLLOWER_STATE, FOLLOWING, FORCE_SENSOR_ZEROED, FRAME_STATUS, HOLD_SENT,
+                    LEASE, LEASE_RELEASED, LEASE_TAKEN, LOST, MOCAP_TRACKING, OBJECT_TRACKED, OBJECT_TRACKING,
                     OBJECT_UNTRACKED, OBJECTS_STATE, PATH_SENT, PATH_STOP_SENT, PROBLEM, RELAY_STATE, SOFT_STOP, STATE,
                     STOP_REASON, SWITCH_ERROR, TOOL_COMMAND_SENT, TRAJECTORY_SENT, WRENCH_SENT, relay_event,
                     stream_event)
@@ -457,6 +457,7 @@ def _status(robot: HuskyRobotInterface, now: float) -> dict:
         LEASE: lease.holder if lease is not None else None,
         SOFT_STOP: robot.soft_stop_latch.reason or "stopped" if robot.soft_stopped else None,
         ESTOP: base.estopped,
+        ENVIRONMENT: _environment(robot),
         FOLLOWER_STATE: None if base.follower is None else f"{base.follower.state} {base.follower.reason}".strip(),
         "battery charging": base.battery_charging if base.battery_update_time is not None else None,
         "battery health": base.battery_health,
@@ -482,6 +483,15 @@ def _status(robot: HuskyRobotInterface, now: float) -> dict:
         elif isinstance(tool, ScaffoldingV1State):
             status[f"{name} gripper closed"] = tool.gripper_closed
     return status
+
+
+def _environment(robot: HuskyRobotInterface) -> str:
+    """The robot's "real", "sim", or "sim: <parts>" when only some of its base and arms are simulated."""
+    parts = {"base": robot.base.simulation, **{name: arm.simulation for name, arm in robot.arms.items()}}
+    simulated = [part for part, simulation in parts.items() if simulation is not None]
+    if not simulated:
+        return "real"
+    return "sim" if len(simulated) == len(parts) else f"sim: {', '.join(simulated)}"
 
 
 def _flags(robot: HuskyRobotInterface, now: float) -> dict[str, bool | None]:
