@@ -6,6 +6,9 @@ commands/ (`plugin.py`). A copy is `<destination>/<stamp>_session[_sim]/`, one f
 with only what lies in the range: the events (from the newest states before it, and the process loaded before them),
 the chunks' rows, the command files those events name; `copied_sessions` finds them.
 
+Each reader takes `environment`: SIM or REAL sessions only, or BOTH, by their experiment.json ("environment"; a
+session without one is real, `drive.marked_sim`).
+
 ! Plain files, no ROS. `copy_range` and `events_in` read whole days: run them in a process of their own
   (`scripts/observer_logs.py`); `days`, `prune` and `size` are quick enough for a worker thread.
 """
@@ -22,6 +25,7 @@ from typing import Iterator
 
 import numpy as np
 
+from ...drive import REAL, SIM, marked_sim
 from ...plugin_api.trace import load_arrays
 from ...shared.recordings.runs import DESCRIPTION, load_description, write_description
 from .names import LOADED, LOG, PROCESS, STATES
@@ -40,6 +44,9 @@ SAVED_MARGIN = 3600.0
 KEPT_DAYS = 7
 #: How a day folder is named.
 DAY_FORMAT = "%Y%m%d"
+#: What `environment` takes besides SIM and REAL: every session.
+BOTH = "both"
+ENVIRONMENTS = (REAL, SIM, BOTH)
 
 
 def wall_time(day: str, text: str) -> float:
@@ -83,14 +90,14 @@ def size(root: Path) -> int:
     return sum(path.stat().st_size for path in root.rglob("*") if path.is_file()) if root.is_dir() else 0
 
 
-def sessions(root: Path) -> list[dict]:
-    """Every session kept, oldest first: its folder, start and end (wall time; the end is its last write), size, sim."""
+def sessions(root: Path, environment: str = BOTH) -> list[dict]:
+    """Every session kept, oldest first: folder, start and end (wall time; end = last write), size, environment."""
     return [found for name in reversed(days(root))
             for folder in sorted(path for path in (root / name).iterdir() if path.is_dir())
-            if (found := _session(folder)) is not None]
+            if (found := _session(folder)) is not None and environment in (BOTH, found["environment"])]
 
 
-def copied_sessions(folder: Path) -> list[dict]:
+def copied_sessions(folder: Path, environment: str = BOTH) -> list[dict]:
     """The sessions in a copy (`copy_range`'s destination), one of its sessions, or a folder of copies; oldest first.
 
     As `sessions`, but a copied session starts and ends with the range it was copied from, not at its last write.
@@ -99,7 +106,8 @@ def copied_sessions(folder: Path) -> list[dict]:
     for pattern in (DESCRIPTION, f"*/{DESCRIPTION}", f"*/*/{DESCRIPTION}", f"*/*/*/{DESCRIPTION}"):
         found = [session for path in sorted(folder.glob(pattern)) if (session := _session(path.parent)) is not None]
         if found:
-            return sorted(found, key=lambda session: session["start"])
+            return sorted((session for session in found if environment in (BOTH, session["environment"])),
+                          key=lambda session: session["start"])
     return []
 
 
@@ -118,7 +126,7 @@ def _session(folder: Path) -> dict | None:
             continue  # * renamed or deleted meanwhile: a chunk being saved
     found = {"folder": folder, "start": started, "end": max((stat.st_mtime for stat in stats), default=started),
              "bytes": sum(stat.st_size for stat in stats if S_ISREG(stat.st_mode)),
-             "environment": description.get("environment", "")}
+             "environment": SIM if marked_sim(description) else REAL}
     copied = description.get("copied")
     if isinstance(copied, dict):
         try:
@@ -128,9 +136,9 @@ def _session(folder: Path) -> dict | None:
     return found
 
 
-def events_in(root: Path, start: float, end: float) -> Iterator[tuple[Path, dict]]:
+def events_in(root: Path, start: float, end: float, environment: str = BOTH) -> Iterator[tuple[Path, dict]]:
     """Every event recorded from wall time `start` to `end`, session by session, read line by line."""
-    for session in _sessions_touching(root, start, end):
+    for session in _sessions_touching(root, start, end, environment):
         offset = _offset(session)
         if offset is None:
             continue
@@ -140,7 +148,8 @@ def events_in(root: Path, start: float, end: float) -> Iterator[tuple[Path, dict
                 yield session, event
 
 
-def copy_range(root: Path, start: float, end: float, destination: Path, about: dict) -> dict:
+def copy_range(root: Path, start: float, end: float, destination: Path, about: dict,
+               environment: str = BOTH) -> dict:
     """Copy what was recorded from wall time `start` to `end` (seconds since the epoch) into `destination`.
 
     Each session copied starts with its newest states before `start` ("state" events) and every event since them,
@@ -157,24 +166,34 @@ def copy_range(root: Path, start: float, end: float, destination: Path, about: d
         end: Its end, wall time.
         destination: An existing, empty folder.
         about: What the copy is, written into each session's experiment.json under "copied", e.g. its name.
+        environment: Copy only SIM or REAL sessions, or BOTH.
 
     Returns:
         dict: Per session copied, its events, chunk rows, command files and damaged parts left out ("skipped").
     """
     copied = {}
-    for session in _sessions_touching(root, start, end):
+    for session in _sessions_touching(root, start, end, environment):
         counts = _copy_session(session, start, end, destination / session.name, about)
         if counts is not None:
             copied[session.name] = counts
     return copied
 
 
-def _sessions_touching(root: Path, start: float, end: float) -> list[Path]:
+def _sessions_touching(root: Path, start: float, end: float, environment: str = BOTH) -> list[Path]:
     """The session folders of the days a range touches, a day early too: a session may run past midnight."""
     first = datetime.fromtimestamp(start).date() - timedelta(days=1)
     last = datetime.fromtimestamp(end).date()
     return [folder for name in reversed(days(root)) if first <= _day(name) <= last
-            for folder in sorted(path for path in (root / name).iterdir() if path.is_dir())]
+            for folder in sorted(path for path in (root / name).iterdir() if path.is_dir())
+            if environment == BOTH or environment == (SIM if marked_sim(_description(folder)) else REAL)]
+
+
+def _description(folder: Path) -> dict | None:
+    """A session's experiment.json, None if it has none or it does not read."""
+    try:
+        return load_description(folder)
+    except ValueError:
+        return None
 
 
 def _offset(session: Path) -> float | None:

@@ -387,7 +387,7 @@ class AssemblyObserverPlugin(HuskyPlugin):
             return
         command = [sys.executable, str(SCRIPT), "--root", str(self._root), "copy", self._from.value, self._to.value,
                    "--day", self._day.value, "--name", folder_name(self._name.value, "experiment"),
-                   "--drive", str(ctx.config.drive_root), *(["--sim"] if self._simulated else [])]
+                   "--drive", str(ctx.config.drive_root)]
         self._copy_line = (f"copying {self._day.value} {self._from.value} to {self._to.value}...", BUSY)
         # * Only records: a soft stop leaves the copy running.
         work = self._run_helper(ctx, command, COPY_TIMEOUT, "_copy_line", copy_line)

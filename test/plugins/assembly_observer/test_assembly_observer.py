@@ -697,6 +697,45 @@ def test_a_session_turns_sim_once_a_simulated_part_is_heard(tmp_path):
     assert (plugin._folder / "chunk_001.npz").is_file()
 
 
+def test_the_helper_script_filters_sim_and_real(tmp_path):
+    """--env picks the real or the simulated sessions in list, events and copy; a copy of sim only ends in "_sim"."""
+    import subprocess
+    import sys
+    import time as clock
+
+    from repo_paths import REPO
+
+    folders = {}
+    for environment in ("real", "sim"):
+        lab, plugin = lab_on_drive(tmp_path / environment), AssemblyObserverPlugin()
+        if environment == "sim":
+            simulated_base(lab)
+        plugin.setup(lab.ctx)
+        lab.ctx.console_log.add(LoggingSeverity.INFO, "assembly_guide", f"a {environment} line")
+        run(lab, plugin, 0.5)
+        plugin.teardown(lab.ctx)
+        folders[environment] = plugin._folder
+    assert folders["sim"].name.endswith("_sim") and not folders["real"].name.endswith("_sim")
+    script, root = str(REPO / "scripts" / "observer_logs.py"), str(observer_module.LOCAL_ROOT)
+    day, start = clock.strftime("%Y%m%d"), clock.strftime("%H:%M", clock.localtime(clock.time() - 120))
+
+    def call(*args: str) -> str:
+        return subprocess.run([sys.executable, script, "--root", root, *args], capture_output=True, text=True,
+                              check=True).stdout
+
+    listed = call("list")
+    assert f"real  {folders['real']}" in listed and f"sim   {folders['sim']}" in listed
+    assert f"{folders['real']}\n" not in call("list", "--env", "sim")
+    printed = call("events", start, "now", "--day", day, "--env", "real", "--grep", " line")
+    assert "a real line" in printed and "a sim line" not in printed
+    outcome = json.loads(call("copy", start, "now", "--day", day, "--name", "sims", "--env", "sim",
+                              "--to", str(tmp_path / "out")).splitlines()[-1])
+    assert list(outcome["copied"]) == [folders["sim"].name] and outcome["destination"].endswith("_sim")
+    both = json.loads(call("copy", start, "now", "--day", day, "--name", "all",
+                           "--to", str(tmp_path / "out")).splitlines()[-1])
+    assert len(both["copied"]) == 2 and not both["destination"].endswith("_sim")
+
+
 def test_open_in_rerun_runs_the_helper_script_on_the_range(tmp_path, monkeypatch, local_root):
     """Open in Rerun runs `observer_logs.py rerun` on From to To in its own process; the line says what it shows."""
     script = tmp_path / "stand_in.py"
