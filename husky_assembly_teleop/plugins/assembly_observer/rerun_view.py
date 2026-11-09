@@ -15,9 +15,10 @@ clock and lines up with `events`.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 import numpy as np
 
@@ -39,7 +40,22 @@ BODY_HALF, BODY_CENTRE = (0.495, 0.335, 0.19), 0.19
 #: them whole).
 STATE_TEXT = 60
 #: Keys an event's text line leaves out: the times, what the entity says, and what is too long for a line.
-QUIET = ("event", "time", "ros_time", "robot", "status", "flags", "hit")
+QUIET = ("event", "time", "ros_time", "robot", "status", "flags", "hit", "was", "file")
+#: A text line is cut to this many characters, a field's value in it to this many (the file has them whole).
+LINE, FIELD = 160, 30
+#: Repeats of a log line (same source, same text but its numbers) closer than this are counted, not shown, seconds.
+REPEAT_GAP = 5.0
+#: The late ticks state goes back to "ok" this long after the last late-tick report, seconds: three times the gap
+#: between two reports (`late_tick_warn_period`, 5 s).
+LATE_QUIET = 15.0
+LATE_TICKS = "states/lab/late_ticks"
+LATE_TICK = re.compile(r"tick \d+ started [\d.]+ ms late")
+#: A number standing on its own in a log line (not part of a name like B20 or a200-0806).
+NUMBER = re.compile(r"(?<![\w/-])\d+(?:\.\d+)?(?![\w-])")
+#: The process plugin's log line naming the process folder it loaded (its runs are under it).
+LOADED = re.compile(r"loaded (/.+?) in \d")
+#: An assembly run's event as an event here: "run <its event>".
+RUN = "run "
 
 
 @dataclass
@@ -312,17 +328,17 @@ def _strips(xyz: np.ndarray) -> Iterator[np.ndarray]:
 # --- --- --- --- --- EVENTS --- --- --- --- ---
 
 def _log_events(rr, session: Session, start: float, end: float) -> int:
-    """The range's events as text lines and its states as state timelines, those before it as where things stood."""
+    """The range's events and its runs' as text lines and state timelines, those before it as where things stood."""
+    events = list(_read_events(session.folder / EVENTS))
+    merged = sorted(events + _run_events(events), key=lambda event: float(event["ros_time"]))
     states: dict[str, str] = {}
     shown: dict[str, str] = {}
     started = False
     count = 0
-    for event in _read_events(session.folder / EVENTS):
-        wall = float(event["ros_time"]) + session.offset
+    for wall, changes, line in _entries(merged, session.offset):
         if wall > end:
             continue
-        changes = _state_changes(event)
-        if wall < start:
+        if wall < start and not started:
             states.update(changes)
             continue
         if not started:  # * where things stood at the range's start, then every change
@@ -331,16 +347,15 @@ def _log_events(rr, session: Session, start: float, end: float) -> int:
                 rr.log(path, rr.StateChange(state=text))
                 shown[path] = text
             started = True
-        rr.set_time(TIMELINE, timestamp=wall)
+        rr.set_time(TIMELINE, timestamp=max(wall, start))
         for path, text in changes.items():
             if shown.get(path) != text:
                 rr.log(path, rr.StateChange(state=text))
                 shown[path] = text
-        if event.get("event") in STATES:
-            continue  # * every state at a moment: the timelines show it
-        path, level, text = _text_line(event)
-        rr.log(path, rr.TextLog(text, level=level))
-        count += 1
+        if line is not None:
+            path, level, text = line
+            rr.log(path, rr.TextLog(text, level=level))
+            count += 1
     if not started and states:
         rr.set_time(TIMELINE, timestamp=start)
         for path, text in states.items():
@@ -362,10 +377,87 @@ def _read_events(path: Path) -> Iterator[dict]:
             yield event
 
 
+def _run_events(events: list[dict]) -> list[dict]:
+    """The events of the assembly runs of every process the session loaded, while it ran, named "run <event>"."""
+    from ...shared.runs.runs import EVENTS_FILE, RUNS, read_events
+    if not events:
+        return []
+    times = [float(event["ros_time"]) for event in events]
+    low, high = min(times), max(times)
+    processes = sorted({found.group(1) for event in events if event.get("event") == "log"
+                        and event.get("source") == "process" and (found := LOADED.match(str(event.get("text"))))})
+    picked = []
+    for process in processes:
+        for log in sorted(Path(process).glob(f"{RUNS}/*/{EVENTS_FILE}")):
+            for event in read_events(log.parent):
+                try:
+                    inside = low <= float(event["ros_time"]) <= high
+                except (KeyError, TypeError, ValueError):
+                    continue  # * written outside the monitor (a new run): no ROS time
+                if inside:
+                    picked.append({**event, "event": f"{RUN}{event.get('event')}", "run": log.parent.name})
+    return picked
+
+
+def _entries(events: Iterable[dict], offset: float) -> Iterator[tuple[float, dict[str, str], tuple | None]]:
+    """Each event as (wall time, its state changes, its text line or None), log floods collapsed.
+
+    - Late-tick warnings become the state `states/lab/late_ticks`, "late" from the first and "ok" `LATE_QUIET` after
+      the last, with a line at each switch.
+    - Any other log line repeating (same source, same text but its numbers) less than `REPEAT_GAP` apart is shown
+      once; the repeats are counted in one line at the last of them.
+    """
+    late: list[float] = []  # * the late ticks' times since the state went "late"
+    repeats: dict[tuple[str, str], dict] = {}
+    for event in events:
+        wall = float(event["ros_time"]) + offset
+        if late and wall - late[-1] > LATE_QUIET:
+            yield late[-1] + LATE_QUIET, *_ticks_back(late)
+            late = []
+        for key in [key for key, seen in repeats.items() if wall - seen["last"] > REPEAT_GAP]:
+            if (seen := repeats.pop(key))["more"]:
+                yield seen["last"], {}, _repeated(seen)
+        changes, line = _state_changes(event), _text_line(event)
+        if event.get("event") == "log" and LATE_TICK.match(str(event.get("text"))):
+            late.append(wall)
+            if len(late) == 1:
+                yield wall, {LATE_TICKS: "late"}, ("log/ticks", "WARN", line[2])
+            continue
+        if event.get("event") == "log":
+            key = (str(event.get("source")), NUMBER.sub("#", str(event.get("text"))))
+            if (seen := repeats.get(key)) is not None:
+                # * The observer writes a line repeating again with its count so far.
+                same = seen["event"].get("text") == event.get("text")
+                had, has = int(seen["event"].get("count") or 1), int(event.get("count") or 1)
+                seen.update(more=seen["more"] + (has - had if same and has > had else has), last=wall, event=event)
+                continue
+            repeats[key] = {"more": 0, "last": wall, "event": event}
+        yield wall, changes, line
+    if late:
+        yield late[-1] + LATE_QUIET, *_ticks_back(late)
+    for seen in repeats.values():
+        if seen["more"]:
+            yield seen["last"], {}, _repeated(seen)
+
+
+def _ticks_back(late: list[float]) -> tuple[dict[str, str], tuple[str, str, str]]:
+    """The late ticks state back to "ok", and its line."""
+    return {LATE_TICKS: "ok"}, ("log/ticks", "INFO", f"[ticks] on time again, after {len(late)} late-tick "
+                                                     f"reports in {late[-1] - late[0]:.0f} s")
+
+
+def _repeated(seen: dict) -> tuple[str, str, str]:
+    """The line counting a log line's repeats, with the last one's text."""
+    path, level, text = _text_line(seen["event"])
+    return path, level, f"{re.sub(r' [(]×[0-9]+[)]$', '', text)} (×{seen['more']} more)"
+
+
 def _state_changes(event: dict) -> dict[str, str]:
     """State timeline path -> its new text, for what an event says switched (every state, for a snapshot)."""
     name = event.get("event", "")
     who = short_serial(event["robot"]) if event.get("robot") else "lab"
+    if name.startswith(RUN):
+        return _run_changes(name.removeprefix(RUN), event)
     if name == "state":
         changes = {}
         for key, value in {**(event.get("status") or {}), **(event.get("flags") or {})}.items():
@@ -380,10 +472,30 @@ def _state_changes(event: dict) -> dict[str, str]:
         return {_state_path(who, "lease"): _state_text(event.get("holder") if name == "lease taken" else None)}
     for part in ("moving", "still"):
         if name.endswith(f" {part}"):
-            return {_state_path(who, f"{name.removesuffix(f' {part}')} motion"): part}
+            subject = event.get("arm") or name.removesuffix(f" {part}")
+            return {_state_path(who, f"{subject} motion"): part}
     if "value" in event and not isinstance(event["value"], (dict, list)):
         return {_state_path(who, name): _state_text(event["value"])}
     return {}
+
+
+def _run_changes(name: str, event: dict) -> dict[str, str]:
+    """A run event's state changes: the run, its action and step (movement), the guide's part and mode."""
+    if name in ("forget", "reopen", "new_run", "continue"):
+        return {}  # * many at once, for actions other than the current one
+    changes = {_state_path("run", "run"): str(event.get("run"))}
+    if event.get("action"):
+        changes[_state_path("run", "action")] = _state_text(f"{event['action']} done" if name == "mark_done"
+                                                            else event["action"])
+    if event.get("movement"):
+        changes[_state_path("run", "step")] = _state_text(event["movement"])
+    data = event.get("data") or {}
+    if name == "guide":
+        changes[_state_path("run", "guide mode")] = _state_text(data.get("mode"))
+        if data.get("event") in ("start", "done"):
+            changes[_state_path("run", "guide")] = _state_text(data.get("part") if data["event"] == "start" else
+                                                               "idle")
+    return changes
 
 
 def _state_path(who: str, name: str) -> str:
@@ -396,25 +508,140 @@ def _state_text(value: Any) -> str:
     if value is None:
         return "none"
     text = str(value).lower() if isinstance(value, bool) else str(value)
-    return text if len(text) <= STATE_TEXT else text[:STATE_TEXT - 1] + "…"
+    return _cut(text, STATE_TEXT)
 
 
-def _text_line(event: dict) -> tuple[str, str, str]:
-    """An event's text log entity, level and text."""
+def _text_line(event: dict) -> tuple[str, str, str] | None:
+    """An event's text log entity, level and short text; None for what only the state timelines show."""
     name = event.get("event", "")
     if name == "log":
-        text = f"[{event.get('source')}] {event.get('text')}"
+        text, *more = str(event.get("text")).strip().splitlines() or [""]
+        text = _cut(f"[{event.get('source')}] {text}" + (" …" if more else ""), LINE)
         if event.get("count", 1) > 1:
-            text += f" (x{event['count']})"
+            text += f" (×{event['count']})"
         return f"log/{event.get('source') or 'unknown'}", str(event.get("level") or "INFO"), text
-    who = short_serial(event["robot"]) if event.get("robot") else "lab"
-    rest = " ".join(f"{key}={json.dumps(value)}" for key, value in event.items() if key not in QUIET)
-    return f"events/{who}", "WARN" if _warns(event) else "INFO", f"{who} {name}  {rest}".rstrip()
+    if name.startswith(RUN):
+        text = _run_text(name.removeprefix(RUN), event)
+        return None if text is None else ("events/run", "WARN" if _warns(event) else "INFO", _cut(text, LINE))
+    if name in STATES:
+        return None  # * every state at a moment: the timelines show it
+    who = short_serial(event["robot"]) if event.get("robot") else None
+    text = _event_text(name, event)
+    return f"events/{who or 'lab'}", "WARN" if _warns(event) else "INFO", _cut(f"{who} {text}" if who else text, LINE)
+
+
+def _event_text(name: str, event: dict) -> str:
+    """An observer event as a short sentence, without its robot."""
+    by = f" by {_by(event['by'])}" if event.get("by") else ""
+    arm = event.get("arm") or ""
+    value = event.get("value")
+    if name == "lease taken":
+        return f"lease → {_by(event.get('holder'))}"
+    if name == "lease released":
+        return f"lease released by {_by(event.get('holder'))}"
+    if name.endswith(" moving"):
+        return f"{arm or name.removesuffix(' moving')} moving{by}" + \
+            ("" if event.get("commanded", True) else " (not commanded)")
+    if name.endswith(" still"):
+        subject = arm or name.removesuffix(" still")
+        moved = [f"{event['distance']:.2f} m", f"{np.degrees(event['turn']):.0f}°"] if "distance" in event else \
+            [f"largest joint {event['largest_joint_change']:.2f} rad"] if "largest_joint_change" in event else []
+        return f"{subject} still after {event.get('seconds', 0.0):.1f} s" + "".join(f", {part}" for part in moved)
+    if name in ("trajectory sent", "hold sent"):
+        what = "hold" if name == "hold sent" else f"trajectory, {event.get('waypoints')} points"
+        return f"{arm} {what}, {event.get('duration', 0.0):.1f} s{by}"
+    if name == "tool command sent":
+        return f"{arm} tool {event.get('command')} {event.get('position', '')}{by}".replace(" " * 2, " ")
+    if name == "wrench sent":
+        return f"{arm} wrench {np.linalg.norm(event.get('force') or [0]):.1f} N, " \
+               f"{np.linalg.norm(event.get('torque') or [0]):.2f} N m{by}"
+    if name == "force sensor zeroed":
+        return f"{arm} force sensor zeroed{by}"
+    if name in ("path sent", "path stop sent"):
+        return f"base path stop{by}" if name == "path stop sent" else \
+            f"base path, {event.get('waypoints')} points{by}"
+    if name == "clearance trip":
+        return f"clearance trip: {event.get('problem')}"
+    if name == "object tracked from now on":
+        return f"{event.get('object')} tracked (mocap id {event.get('mocap_id')})"
+    if name in ("session start", "session end"):
+        return name
+    if name == "object no longer tracked":
+        return f"{event.get('object')} no longer tracked"
+    if name.endswith(("stream", "tracking")) and value in ("lost", "back"):
+        return f"{name} back after {event['lost_for']:.2f} s" if "lost_for" in event else f"{name} {value}"
+    if "value" in event and not isinstance(value, (dict, list)):
+        if name.endswith(("soft stop", "stop reason", "switch error", "problem")):
+            return f"{name}: {value}" if value else f"{name} cleared"
+        return f"{name} → {_state_text(value) or 'none'}"
+    return _fields(name, event)
+
+
+def _run_text(name: str, event: dict) -> str | None:
+    """An assembly run event as a short sentence; None for what only the state timelines show (or the log has)."""
+    data = event.get("data") or {}
+    step = event.get("movement") or event.get("action") or ""
+    if name == "exec":
+        status = str(data.get("status") or "")
+        return f"{step} {data.get('result')}" + (f" ({status})" if status.lower() != data.get("result") else "")
+    if name == "servo":
+        return f"{step} servo {data.get('status')}, {data.get('passes')} passes"
+    if name == "plan":
+        if data.get("message"):
+            return f"{step} planned: {data['message']}"
+        return f"{step} planned: {data.get('waypoints')} points in {data.get('seconds', 0.0):.1f} s"
+    if name == "mark_done":
+        return f"{event.get('action')} done" + (" (assumed)" if event.get("assumed") else "")
+    if name == "cancel":
+        return f"{step} cancelled: {data.get('reason')}"
+    if name == "soft_stop":
+        return f"{step} soft stop"
+    if name == "prompt":
+        return f"{step} asks: {str(data.get('text')).partition(' — ')[2] or data.get('text')}"
+    if name == "confirm":
+        return f"{step} confirmed"
+    if name == "check_goal":
+        return f"{step} goal ok" if data.get("ok") else f"{step} goal refused: {data.get('reason')}"
+    if name == "guide":
+        if data.get("event") in ("start", "done", "mode"):
+            return None
+        reopened = f" (reopens {len(data['reopened'])})" if data.get("reopened") else ""
+        return f"guide {data.get('event')}: {data.get('part')}{reopened}"
+    if name in ("forget", "reopen", "as_built", "session"):
+        return None  # * forget and reopen come by the dozen with a guide redo; the as-built has its log line
+    if name in ("new_run", "continue"):
+        return f"run {event.get('run')}: {name.replace('_', ' ')}"
+    return _fields(name, event)
+
+
+def _fields(name: str, event: dict) -> str:
+    """An event without a sentence of its own: its name and its fields, long values cut."""
+    def short(value: Any) -> str:
+        return _cut(value if isinstance(value, str) else json.dumps(value), FIELD)
+    return f"{name}: " + ", ".join(f"{key}={short(value)}" for key, value in event.items() if key not in QUIET)
+
+
+def _by(who: Any) -> str:
+    """Who moves or holds a lease, short: a movement_exec step by its movement."""
+    text = str(who)
+    return _cut(re.sub(r"^movement_exec: exec (\S+):.*$", r"movement_exec: \1", text), FIELD * 2)
+
+
+def _cut(text: str, length: int) -> str:
+    """`text`, cut to `length` characters."""
+    return text if len(text) <= length else text[:length - 1] + "…"
 
 
 def _warns(event: dict) -> bool:
-    """Whether an event is something going wrong: a stop, a trip, a switch error, a stream or tracking lost."""
+    """Whether an event is something going wrong: a stop, a trip, a stream lost, a step failed or cancelled."""
     name, value = event.get("event", ""), event.get("value")
+    data = event.get("data") or {}
+    if name.startswith(RUN):
+        name = name.removeprefix(RUN)
+        return name in ("cancel", "soft_stop") or name == "exec" and data.get("result") in ("failed", "refused") or \
+            name == "servo" and data.get("status") in ("failed", "refused") or \
+            name == "check_goal" and not data.get("ok") or name == "prompt" and bool(data.get("warn")) or \
+            name == "plan" and bool(data.get("warnings"))
     return (name in ("e-stop", "soft stop") and bool(value)) or name == "clearance trip" or \
         name.endswith(("switch error", "problem")) and bool(value) or \
         name.endswith(("stream", "tracking")) and value == "lost"

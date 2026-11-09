@@ -13,7 +13,9 @@ import pytest
 
 from husky_assembly_teleop.plugins.assembly_observer import rerun_view
 from husky_assembly_teleop.plugins.assembly_observer.export import copied_sessions, copy_range
-from husky_assembly_teleop.plugins.assembly_observer.rerun_view import _entity, _state_changes, _text_line, log_range
+from husky_assembly_teleop.plugins.assembly_observer.rerun_view import (
+    LATE_TICKS, _entity, _entries, _run_events, _state_changes, _text_line, log_range)
+from husky_assembly_teleop.shared.runs.runs import record_event
 
 from repo_paths import DATA, REPO
 
@@ -148,3 +150,62 @@ def test_a_copy_opens_whole_from_the_script_without_a_range(copy, tmp_path):
     assert (tmp_path / "copy.rrd").stat().st_size > 0
     narrowed = call(time.strftime("%H:%M:%S", time.localtime(ROS_START + OFFSET + 3.0)))
     assert narrowed["rows"] == 21 and narrowed["events"] == 1  # * 3 s to 4 s: the log line at 3 s only
+
+
+def test_common_events_read_as_short_sentences():
+    """Moves, leases, stops and log lines read as short lines; an unknown kind shows its fields, long ones cut."""
+    by = "movement_exec: exec B20_J_transfer: transfer"
+    moving = {"event": "arm moving", "robot": "a200-0806", "arm": "left_ur_arm", "by": by, "commanded": True}
+    assert _text_line(moving)[2] == "0806 left_ur_arm moving by movement_exec: B20_J_transfer"
+    assert _text_line({"event": "lease taken", "robot": "a200-0806", "holder": "guide"})[2] == "0806 lease → guide"
+    assert _text_line({"event": "soft stop", "robot": "a200-0806", "value": "too close", "was": None}) == \
+        ("events/0806", "WARN", "0806 soft stop: too close")
+    assert _text_line({"event": "base still", "robot": "a200-0804", "seconds": 30.72, "distance": 2.13, "turn": 1.0,
+                       "commanded": True, "pose": [0.0] * 7})[2] == "0804 base still after 30.7 s, 2.13 m, 57°"
+    assert _text_line({"event": "relay frame status", "value": "held", "was": None}) == \
+        ("events/lab", "INFO", "relay frame status → held")
+    late = {"event": "log", "level": "WARN", "source": "ticks", "text": "tick 3 started 50 ms late\n  more"}
+    assert _text_line(late) == ("log/ticks", "WARN", "[ticks] tick 3 started 50 ms late …")
+    unknown = _text_line({"event": "new thing", "robot": "a200-0806", "n": 3, "note": "x" * 100})[2]
+    assert unknown.startswith("0806 new thing: n=3, note=xxx") and unknown.endswith("…")
+    assert _text_line({"event": "state", "robot": "a200-0806", "status": {}}) is None
+
+
+def test_late_ticks_become_a_state_and_other_repeats_one_line_with_a_count():
+    """Late-tick reports switch a state with a line at each switch; a repeating log line shows once, then its count."""
+    def log(at, source, text, count=1):
+        return {"event": "log", "ros_time": at, "level": "WARN", "source": source, "text": text, "count": count}
+    events = [log(t, "ticks", f"tick {int(t)} started {t:.0f} ms late") for t in (0.0, 5.0, 10.0, 40.0)] + \
+        [log(1.0, "guide", "slow plan 1.2 s"), log(2.0, "guide", "slow plan 3.4 s"),
+         log(2.5, "guide", "slow plan 3.4 s", count=3), log(20.0, "guide", "slow plan 9 s")]
+    entries = list(_entries(sorted(events, key=lambda event: event["ros_time"]), 0.0))
+    late = [(at, changes[LATE_TICKS]) for at, changes, _ in entries if LATE_TICKS in changes]
+    assert late == [(0.0, "late"), (25.0, "ok"), (40.0, "late"), (55.0, "ok")]
+    lines = [(at, line[2]) for at, _, line in entries if line is not None and line[0] == "log/guide"]
+    assert lines == [(1.0, "[guide] slow plan 1.2 s"), (2.5, "[guide] slow plan 3.4 s (×3 more)"),
+                     (20.0, "[guide] slow plan 9 s")]
+
+
+def test_a_run_of_the_loaded_process_adds_its_steps_and_their_outcomes(tmp_path):
+    """The runs under a process the session loaded give step states and lines; their events outside it are left out."""
+    run = tmp_path / "process" / "runs" / "20261109_100000"
+    run.mkdir(parents=True)
+    record_event(run, "plan", ROS_START - 50.0, action="B20_J", movement="B20_J_transfer", data={"waypoints": 3})
+    record_event(run, "guide", ROS_START + 1.0, action="B20_J", movement="B20_J_transfer",
+                 data={"event": "start", "part": "B20_J_transfer: transfer", "kind": "move", "mode": "God"})
+    record_event(run, "exec", ROS_START + 2.0, action="B20_J", movement="B20_J_transfer",
+                 data={"status": "FAILED", "result": "failed"})
+    record_event(run, "mark_done", ROS_START + 3.0, action="B20_J", assumed=False)
+    events = [{"event": "session start", "ros_time": ROS_START},
+              {"event": "log", "ros_time": ROS_START + 0.5, "level": "INFO", "source": "process",
+               "text": f"loaded {tmp_path / 'process'} in 1.0 s: read process 0.2 s; 3 actions"},
+              {"event": "session end", "ros_time": ROS_START + 4.0}]
+    found = _run_events(events)
+    assert [event["event"] for event in found] == ["run guide", "run exec", "run mark_done"]
+    entries = list(_entries(sorted(events + found, key=lambda event: event["ros_time"]), 0.0))
+    assert entries[2][1] == {"states/run/run": "20261109_100000", "states/run/action": "B20_J",
+                             "states/run/step": "B20_J_transfer", "states/run/guide_mode": "God",
+                             "states/run/guide": "B20_J_transfer: transfer"}
+    assert entries[2][2] is None  # * the guide's start and done are only states
+    assert entries[3][2] == ("events/run", "WARN", "B20_J_transfer failed")
+    assert entries[4][1]["states/run/action"] == "B20_J done" and entries[4][2][2] == "B20_J done"
