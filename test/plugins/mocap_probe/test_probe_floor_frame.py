@@ -107,7 +107,8 @@ def test_a_scale_change_the_relay_reports_adds_an_amber_chip(server, tmp_path): 
     plugin.setup(ctx)
     plugin.draw(ctx)
     assert ">scale changed</span>" in plugin._frame_chips.content
-    assert "distances -1550 ppm" in plugin._frame_chips.content and "recalibrate Motive" in plugin._frame_chips.content
+    assert "distances -1550 ppm" in plugin._frame_chips.content
+    assert "a refit follows the scale too" in plugin._frame_chips.content
     plugin.teardown(ctx)
 
 

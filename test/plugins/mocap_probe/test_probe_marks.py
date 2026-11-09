@@ -13,6 +13,8 @@ from test_floor_calibration_plugin import NOW, floor_exports, make_ctx, server  
 from husky_assembly_teleop.colors import WARN, rgb
 from husky_assembly_teleop.plugins.mocap_probe import MARK_BUTTONS, MocapProbePlugin
 from husky_assembly_teleop.ui.second_press import SECOND_PRESS_SECONDS
+from scaffolding_assembly_core.geometry import Pose
+from husky_assembly_teleop.robot_interface.mocap_definitions import ScaledPose
 from husky_assembly_teleop.robot_interface.mocap_relay import FloorCalibrationState
 from husky_assembly_teleop.world.calibration_sessions import SESSIONS_FOLDER
 from husky_assembly_teleop.world.floor_calibration import FLOOR_LABEL
@@ -141,7 +143,7 @@ def test_the_marks_check_the_frame_the_relay_applies_and_its_estimate(server, tm
     assert "marks vs relay: – mm apart" in plugin._floor_status.content
     state = ctx.world.mocap_relay.state
     state.frame = FloorCalibrationState("held", lab_from_raw=((-0.998, -2.0, -0.02), (0.0, 0.0, 0.0, 1.0)))
-    state.fit_now, state.metrics_time = ((-0.002, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)), ctx.now()
+    state.fit_now, state.metrics_time = ScaledPose(Pose((-0.002, 0.0, 0.0))), ctx.now()
     plugin.draw(ctx)
     assert "poses off mm: marks 2.0 · relay 2.0" in plugin._floor_status.content
     assert "marks vs relay: 0.0 mm apart" in plugin._floor_status.content

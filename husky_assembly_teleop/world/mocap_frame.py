@@ -4,13 +4,15 @@ The floor calibration the relay applies, and how Motive's frame moved since: fit
 Layers: the relay turns Motive's poses Z-up ("raw"), then puts them in the lab frame (`world/lab_frame.py`) by
 `lab_from_raw`: the floor calibration's `floor_from_raw`, then the refit in use; robot base calibrations go on top. A
 recalibration or Motive's continuous calibration moves Motive's frame and every raw pose with it, while the anchors and
-the truss cameras stay put: a rigid fit of where Motive puts them now against where the floor calibration stored them
-(raw) gives `raw_cal_from_raw_now`, which a refit composes onto floor_from_raw. Every fit is against the floor
-calibration's anchors and cameras; a refit is kept only in memory (`frame_follower.py`).
+the truss cameras stay put: a fit (turn, shift and scale) of where Motive puts them now against where the floor
+calibration stored them (raw) gives `raw_cal_from_raw_now` and `scale` (`FrameFit.motion`), which a refit composes onto
+floor_from_raw. Every fit is against the floor calibration's anchors and cameras; a refit is kept only in memory
+(`frame_follower.py`).
 
 - A camera or anchor moved on its own does not fit the others: it is left out and named. The largest residual among
   those that fit is Motive's calibration warping the volume.
-- A refit cannot follow a change of Motive's scale: the anchors' distances tell it (`fit_scale`), only to warn of it.
+- A refit follows a change of Motive's scale too: poses come out at the floor calibration's scale. The anchors'
+  distances alone tell the change since the floor calibration (`fit_scale`), to report it: a recalibration happened.
 - Motive streams anchors as unlabeled markers, with no name: each is the marker nearest where the floor calibration
   measured it (`find_anchors`), or, after Motive's frame moved further, where those found put the others
   (`follow_anchors`) or their shape puts them (`match_anchors`).
@@ -21,7 +23,7 @@ calibration's anchors and cameras; a refit is kept only in memory (`frame_follow
   (0.1°), or an anchor by ANCHOR_BUMP (2 mm), is left out, and an anchor left out comes back within BACK_SHARE of it
   (1.5 mm); a fit is trusted within UNCERTAIN_MAX (2 mm); a refit is pending beyond `off_limit` (VOLUME_MOVED, 1 mm,
   or twice the fit's uncertainty) and the frame held again within BACK_SHARE of it; Motive's scale changed beyond
-  SCALE_CHANGED (about 385 ppm, 2 mm across the lab's volume) is warned about; the shape match allows ANCHOR_STRETCH
+  SCALE_CHANGED (about 385 ppm, 2 mm across the lab's volume) is reported; the shape match allows ANCHOR_STRETCH
   (0.5 %) of scale.
 
 Pure functions of files and numbers; no ROS, any thread.
@@ -40,7 +42,7 @@ from scipy.spatial.transform import Rotation
 
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 
-from ..robot_interface.mocap_definitions import MocapAnchor, MocapCamera, read_cameras
+from ..robot_interface.mocap_definitions import MocapAnchor, MocapCamera, ScaledPose, read_cameras, scaled
 from .calibration_sessions import SESSION_NAME, misplaced_problem
 
 #: The lab's names for its cameras, by serial: Top/Bottom, Front/Middle/Back (+y is back), Left/Right (+x, facing the
@@ -85,13 +87,9 @@ VOLUME_MOVED = 1e-3
 #: The lab volume's diagonal, metres.
 VOLUME_DIAGONAL = float(np.linalg.norm(np.ptp(VOLUME, axis=1)))
 #: Motive's scale counts as changed since the floor calibration once it changes the lab volume's diagonal by over
-#: UNCERTAIN_MAX: about 385 ppm (`fit_scale`). The anchors' rigid fit pins poses at the anchors' centre, at most 4.2 m
-#: from a point of the volume: poses are then up to 1.6 mm off, as much as a fit still trusted. Motive's continuous
-#: calibration sways it by about 200 ppm; a recalibration was seen to change it by 1550 ppm.
+#: UNCERTAIN_MAX: about 385 ppm (`fit_scale`); reported, as a recalibration happened, while a refit follows it. Motive's
+#: continuous calibration sways it by about 200 ppm; a recalibration was seen to change it by 1550 ppm.
 SCALE_CHANGED = UNCERTAIN_MAX / VOLUME_DIAGONAL
-#: Beyond this scale, about 144 ppm, the anchors' rigid fit may leave the farthest out though none moved: no "anchors
-#: moved" warning then, reported as a scale change or not.
-SCALE_SEEN = BACK_SHARE * VOLUME_MOVED / VOLUME_DIAGONAL
 #: Only pairs of anchors at least this far apart, metres, tell the scale (`fit_scale`): 0.5 mm of noise is 250 ppm.
 SCALE_PAIR_MIN = 2.0
 #: A floor calibration's name, in a dated calibration session folder (`calibration_sessions.sessions_folder`):
@@ -100,11 +98,11 @@ FLOOR_PREFIX = "mocap_floor_calibration"
 FLOOR_SUFFIX = f"_{FLOOR_PREFIX}.json"
 
 
-def moved_camera(pose: Pose, camera: MocapCamera) -> MocapCamera:
-    """A camera's pose moved by `pose` (applied on the world side), e.g. a correction."""
-    moved = compose(pose, Pose(tuple(camera.position), tuple(camera.orientation)))
-    return MocapCamera(camera.name, tuple(float(v) for v in moved.position),
-                       tuple(float(v) for v in moved.orientation))
+def moved_camera(motion: Pose | ScaledPose, camera: MocapCamera) -> MocapCamera:
+    """A camera's pose moved by `motion` (applied on the world side), e.g. a correction."""
+    motion = scaled(motion)
+    return MocapCamera(camera.name, tuple(float(v) for v in motion.apply(camera.position)),
+                       motion.turn(camera.orientation))
 
 
 def camera_serial(name: str) -> str:
@@ -128,7 +126,8 @@ class FrameFit:
     """How Motive's frame moved since the floor calibration, from its truss cameras or anchors then and now.
 
     Attributes:
-        raw_cal_from_raw_now: Raw poses now taken back to raw as at the floor calibration: what undoes the move.
+        raw_cal_from_raw_now: Raw poses now taken back to raw as at the floor calibration: what undoes the move (with
+            `scale`).
         used: The cameras or anchors it was fitted to.
         bumped: Those left out, each with why.
         missing: Those only one of the two readings has.
@@ -141,6 +140,8 @@ class FrameFit:
         residuals: Each one in both readings, used or left out: its distance from where this fit puts it, metres.
         left_out_errors: Each one's distance from where a fit of the others puts it, metres: for those used, the fit
             the agreement check made without it; for those left out, this fit. A large one is a bad point.
+        scale: How much longer the fit makes distances: Motive's scale at the floor calibration over now's, 1.0 for
+            no change.
     """
 
     raw_cal_from_raw_now: Pose
@@ -153,6 +154,12 @@ class FrameFit:
     consistent: bool = True
     residuals: dict[str, float] = field(default_factory=dict)
     left_out_errors: dict[str, float] = field(default_factory=dict)
+    scale: float = 1.0
+
+    @property
+    def motion(self) -> ScaledPose:
+        """ScaledPose: What undoes the move: raw_cal_from_raw_now with the scale."""
+        return ScaledPose(self.raw_cal_from_raw_now, self.scale)
 
     @property
     def trusted(self) -> bool:
@@ -165,18 +172,18 @@ class FrameFit:
         pose = self.raw_cal_from_raw_now
         return float(np.linalg.norm(pose.position)), float(Rotation.from_quat(pose.orientation).magnitude())
 
-    def describe(self, in_use: Pose = Pose()) -> str:
+    def describe(self, in_use: Pose | ScaledPose = Pose()) -> str:
         """One line for people: poses off now against the transform `in_use`, the move, the points, why not trusted.
 
-        `in_use` is the refit in use (its raw_cal_from_raw_now), or none.
+        `in_use` is the refit in use (its motion), or none.
         """
         metres, turned = self.moved
         if len(self.used) < 3:
             return (f"NO FIT: only {len(self.used)} {self.source} in both"
                     + (f"; missing: {', '.join(map(camera_label, self.missing))}" if self.missing else ""))
-        text = (f"poses off now {volume_moved(self.raw_cal_from_raw_now, in_use) * 1e3:.1f} mm; since the floor "
-                f"calibration moved {metres * 1e3:.1f} mm, turned {np.degrees(turned):.2f}°, the lab's volume up to "
-                f"{volume_moved(self.raw_cal_from_raw_now) * 1e3:.1f} ± {self.uncertainty * 1e3:.1f} mm; from "
+        text = (f"poses off now {volume_moved(self.motion, in_use) * 1e3:.1f} mm; since the floor calibration moved "
+                f"{metres * 1e3:.1f} mm, turned {np.degrees(turned):.2f}°, scaled {(self.scale - 1.0) * 1e6:+.0f} ppm, "
+                f"the lab's volume up to {volume_moved(self.motion) * 1e3:.1f} ± {self.uncertainty * 1e3:.1f} mm; from "
                 f"{len(self.used)} {self.source}, largest residual {self.residual * 1e3:.1f} mm")
         if self.bumped:
             text += "; left out: " + "; ".join(sorted(f"{camera_label(name)} {why}"
@@ -192,33 +199,36 @@ class FrameFit:
                      f"do not pin a turn, or scatter)")
         return text
 
-    def as_dict(self, in_use: Pose = Pose()) -> dict:
+    def as_dict(self, in_use: Pose | ScaledPose = Pose()) -> dict:
         """For the relay's announcements: `off_now` and `describe` against the transform `in_use`; metres."""
         pose = self.raw_cal_from_raw_now
-        return {"raw_cal_from_raw_now": [list(pose.position), list(pose.orientation)], "used": list(self.used),
+        return {"raw_cal_from_raw_now": [list(pose.position), list(pose.orientation)], "scale": self.scale,
+                "used": list(self.used),
                 "bumped": dict(self.bumped), "missing": list(self.missing), "residual": self.residual,
                 "trusted": bool(self.trusted), "source": self.source, "uncertainty": float(self.uncertainty),
-                "consistent": bool(self.consistent), "moves_volume": volume_moved(pose),
-                "off_now": volume_moved(pose, in_use), "describe": self.describe(in_use)}
+                "consistent": bool(self.consistent), "moves_volume": volume_moved(self.motion),
+                "off_now": volume_moved(self.motion, in_use), "describe": self.describe(in_use)}
 
 
-def volume_moved(a: Pose, b: Pose = Pose()) -> float:
+def volume_moved(a: Pose | ScaledPose, b: Pose | ScaledPose = Pose()) -> float:
     """How far apart two motions put a point of VOLUME at most, metres: at a corner, as the volume is a box."""
     corners = np.array(list(itertools.product(*VOLUME)))
-    moved = [Rotation.from_quat(pose.orientation).apply(corners) + pose.position for pose in (a, b)]
-    return float(np.max(np.linalg.norm(moved[0] - moved[1], axis=1)))
+    return float(np.max(np.linalg.norm(scaled(a).apply(corners) - scaled(b).apply(corners), axis=1)))
 
 
-def _rigid_fit(now: np.ndarray, stored: np.ndarray) -> tuple[Rotation, np.ndarray]:
-    """The rotation and shift taking the points `now` onto the `stored` ones best (Kabsch)."""
-    rotation, _ = Rotation.align_vectors(stored - stored.mean(axis=0), now - now.mean(axis=0))
-    return rotation, stored.mean(axis=0) - rotation.apply(now.mean(axis=0))
+def _fit(now: np.ndarray, stored: np.ndarray) -> tuple[Rotation, np.ndarray, float]:
+    """The turn, shift and scale taking the points `now` onto the `stored` ones best (Kabsch, then the scale)."""
+    now_mean, stored_mean = now.mean(axis=0), stored.mean(axis=0)
+    rotation, _ = Rotation.align_vectors(stored - stored_mean, now - now_mean)
+    turned = rotation.apply(now - now_mean)
+    scale = float(np.sum((stored - stored_mean) * turned) / np.sum(turned ** 2))
+    return rotation, stored_mean - scale * rotation.apply(now_mean), scale
 
 
-def _misfit(rotation: Rotation, shift: np.ndarray, stored: MocapCamera | MocapAnchor,
+def _misfit(rotation: Rotation, shift: np.ndarray, scale: float, stored: MocapCamera | MocapAnchor,
             now: MocapCamera | MocapAnchor) -> tuple[float, str, float]:
     """How badly a camera or anchor fits a motion of the frame: share of its bump limits, why if over 1, metres off."""
-    off = float(np.linalg.norm(rotation.apply(now.position) + shift - stored.position))
+    off = float(np.linalg.norm(scale * rotation.apply(now.position) + shift - stored.position))
     if isinstance(stored, MocapAnchor):
         return off / ANCHOR_BUMP, f"moved {off * 1e3:.1f} mm against the others" if off > ANCHOR_BUMP else "", off
     turned = (Rotation.from_quat(stored.orientation).inv() * rotation
@@ -235,17 +245,24 @@ def _skew(vector: np.ndarray) -> np.ndarray:
 
 
 def corner_leverage(points: np.ndarray) -> float:
-    """How far a rigid fit to `points` may move the lab volume's worst corner, per metre of scatter at each point.
+    """How far a fit to `points` may move the lab volume's worst corner, per metre of scatter at each point.
 
-    The fit linearised (a small turn and shift): its covariance for unit, isotropic scatter, carried to each corner of
-    VOLUME; the root of the largest trace. Points in two tight pairs, or on a line, pin no turn about it: it grows.
+    The fit linearised (a small turn, shift and scale): its covariance for unit, isotropic scatter, carried to each
+    corner of VOLUME; the root of the largest trace. Points in two tight pairs, or on a line, pin no turn about it: it
+    grows; a corner far from the points' centre carries the scale's uncertainty further.
     """
     centre = points.mean(axis=0)
-    jacobian = np.vstack([np.hstack([-_skew(point - centre), np.eye(3)]) for point in points])
+
+    def row(point) -> np.ndarray:
+        """How a point moves with a small turn, shift and scale about the centre."""
+        arm = np.subtract(point, centre)
+        return np.hstack([-_skew(arm), np.eye(3), arm[:, None]])
+
+    jacobian = np.vstack([row(point) for point in points])
     covariance = np.linalg.pinv(jacobian.T @ jacobian)
     leverage = 0.0
     for corner in itertools.product(*VOLUME):
-        carry = np.hstack([-_skew(np.subtract(corner, centre)), np.eye(3)])
+        carry = row(corner)
         leverage = max(leverage, float(np.sqrt(np.trace(carry @ covariance @ carry.T))))
     return leverage
 
@@ -270,36 +287,36 @@ def fit_frame(stored: dict[str, MocapCamera] | dict[str, MocapAnchor],
     best = None
     for size in range(len(names), max(min(len(names), MIN_POINTS), len(names) - MOST_LEFT_OUT) - 1, -1):
         for subset in itertools.combinations(names, size):
-            rotation, shift = _rigid_fit(np.array([now[n].position for n in subset]),
-                                         np.array([stored[n].position for n in subset]))
-            offs = [float(np.linalg.norm(rotation.apply(now[n].position) + shift - stored[n].position))
+            rotation, shift, scale = _fit(np.array([now[n].position for n in subset]),
+                                          np.array([stored[n].position for n in subset]))
+            offs = [float(np.linalg.norm(scale * rotation.apply(now[n].position) + shift - stored[n].position))
                     for n in subset]
             scores, left_out = [], {}
             for name in subset:
                 others = [n for n in subset if n != name]
-                without = _rigid_fit(np.array([now[n].position for n in others]),
-                                     np.array([stored[n].position for n in others]))
+                without = _fit(np.array([now[n].position for n in others]),
+                               np.array([stored[n].position for n in others]))
                 score, _, left_out[name] = _misfit(*without, stored[name], now[name])
                 scores.append(score / BACK_SHARE if name in held_out else score)
             agree = bool(max(scores) <= 1.0)
             # * Agreement first, then the tightest: the largest residual, then the worst share of a bump limit.
             key = (agree, -max(offs), -max(scores))
             if best is None or key > best[0]:
-                best = (key, subset, rotation, shift, left_out)
+                best = (key, subset, rotation, shift, scale, left_out)
         if best[0][0]:
             break
-    (consistent, _, _), used, rotation, shift, left_out = best
-    residuals = {n: _misfit(rotation, shift, stored[n], now[n])[2] for n in names}
-    bumped = {n: _misfit(rotation, shift, stored[n], now[n])[1] or _why_kept_out(n in held_out, residuals[n], source)
-              for n in names if n not in used}
+    (consistent, _, _), used, rotation, shift, scale, left_out = best
+    residuals = {n: _misfit(rotation, shift, scale, stored[n], now[n])[2] for n in names}
+    bumped = {n: _misfit(rotation, shift, scale, stored[n], now[n])[1]
+              or _why_kept_out(n in held_out, residuals[n], source) for n in names if n not in used}
     seen_now, seen_then = np.array([now[n].position for n in used]), np.array([stored[n].position for n in used])
-    offs = np.linalg.norm(rotation.apply(seen_now) + shift - seen_then, axis=1)
-    # * The scatter of those used, per point and axis (six of 3 n numbers go to the fit), at least the noise floor.
-    dof = max(3 * len(used) - 6, 1)
+    offs = np.linalg.norm(scale * rotation.apply(seen_now) + shift - seen_then, axis=1)
+    # * The scatter of those used, per point and axis (seven of 3 n numbers go to the fit), at least the noise floor.
+    dof = max(3 * len(used) - 7, 1)
     scatter = max(float(np.sqrt(np.sum(offs ** 2) / dof)), ANCHOR_NOISE if source == ANCHORS else CAMERA_NOISE)
     return FrameFit(Pose(tuple(float(v) for v in shift), tuple(float(v) for v in rotation.as_quat())), tuple(used),
                     bumped, missing, float(offs.max()), source, corner_leverage(seen_then) * scatter, consistent,
-                    residuals, {**{n: residuals[n] for n in bumped}, **left_out})
+                    residuals, {**{n: residuals[n] for n in bumped}, **left_out}, scale)
 
 
 def _why_kept_out(held_out: bool, off: float, source: str) -> str:
@@ -468,7 +485,7 @@ def frame_and_cameras(before: dict[str, MocapCamera], now: dict[str, MocapCamera
     fit = fit_cameras(before, now, serials)
     if not fit.trusted:
         return None, now
-    return fit, {name: moved_camera(fit.raw_cal_from_raw_now, camera) for name, camera in now.items()}
+    return fit, {name: moved_camera(fit.motion, camera) for name, camera in now.items()}
 
 
 def off_limit(fit: FrameFit) -> float:
@@ -479,9 +496,9 @@ def off_limit(fit: FrameFit) -> float:
     return max(VOLUME_MOVED, 2.0 * fit.uncertainty)
 
 
-def frame_moved(fit: FrameFit | None, since: Pose = Pose()) -> bool:
+def frame_moved(fit: FrameFit | None, since: Pose | ScaledPose = Pose()) -> bool:
     """Whether a fit moves a point of VOLUME beyond its `off_limit`, against `since`."""
-    return fit is not None and volume_moved(fit.raw_cal_from_raw_now, since) > off_limit(fit)
+    return fit is not None and volume_moved(fit.motion, since) > off_limit(fit)
 
 
 def deciding_fit(anchor_fit: FrameFit | None, camera_fit: FrameFit | None) -> FrameFit | None:
@@ -503,15 +520,15 @@ def frame_metrics(when: float, floor_file: str, status: str, anchor_fit: FrameFi
     """
     decides = deciding_fit(anchor_fit, camera_fit)
     both = anchor_fit is not None and camera_fit is not None and anchor_fit.trusted and camera_fit.trusted
-    used = in_use.raw_cal_from_raw_now if in_use is not None else Pose()
+    used = in_use.motion if in_use is not None else Pose()
     return {"time": when, "floor_calibration": floor_file, "status": status,
             "decides": decides.source if decides is not None else None,
             "anchors": anchor_fit.as_dict(used) if anchor_fit is not None else None,
             "truss_cameras": camera_fit.as_dict(used) if camera_fit is not None else None,
             "refit": in_use.as_dict() if in_use is not None else None,
-            "off": volume_moved(decides.raw_cal_from_raw_now, used) if decides is not None else None,
+            "off": volume_moved(decides.motion, used) if decides is not None else None,
             "off_limit": off_limit(decides) if decides is not None else None,
-            "apart": volume_moved(anchor_fit.raw_cal_from_raw_now, camera_fit.raw_cal_from_raw_now) if both else None,
+            "apart": volume_moved(anchor_fit.motion, camera_fit.motion) if both else None,
             "anchors_missing": list(anchors_missing)}
 
 

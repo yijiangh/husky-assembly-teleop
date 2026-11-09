@@ -18,13 +18,13 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
-from scaffolding_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.geometry import Pose
 
 from .connections import RosConnections
 # * The FRAME_* states are imported from here by the monitor's side.
 from .mocap_definitions import (FRAME_ERROR, FRAME_HELD, FRAME_NONE, FRAME_REFIT_PENDING,  # noqa: F401
                                 FRAME_UNCHECKED, FRAME_UNTRUSTED, UNKNOWN, BodyDefinition, MocapAnchor, MocapCamera,
-                                read_anchors, read_cameras, read_definitions)
+                                ScaledPose, read_anchors, read_cameras, read_definitions)
 
 #: The relay's latched announcement of the base calibrations it applies (JSON in a String), and its service reloading
 #: one robot's rigid body (by id).
@@ -60,7 +60,7 @@ class FloorCalibrationState:
         pending: The deciding fit while the frame is not held (a refit pending, or untrusted), for people ("" if
             none): how far poses are off now.
         lab_from_raw: What the relay applies to every raw (Z-up) pose: the floor calibration's floor_from_raw and
-            the refit in use, ((x, y, z), (qx, qy, qz, qw)), or None for nothing.
+            the refit in use, ((x, y, z), (qx, qy, qz, qw)), or None for nothing; with `lab_scale` (`lab_transform`).
         error: Why the relay could not read the floor calibration at its last start or reload, or "".
         anchor_fit: How Motive's frame moved by the anchors since the floor calibration, for people ("" if none).
         camera_fit: The same by the truss cameras.
@@ -71,7 +71,8 @@ class FloorCalibrationState:
         decides: Which fit decides: "anchors", "truss cameras", or "" before one did.
         time: When the relay announced it, on the relay's clock, seconds; None from older relays.
         scale: The change of Motive's scale since the floor calibration while the relay reports one, for people ("" if
-            none): no refit can follow it.
+            none): Motive was recalibrated; a refit follows it.
+        lab_scale: How much longer `lab_from_raw` makes distances: the refit's scale, 1.0 without one.
     """
 
     status: str
@@ -89,12 +90,18 @@ class FloorCalibrationState:
     decides: str = ""
     time: float | None = None
     scale: str = ""
+    lab_scale: float = 1.0
+
+    @property
+    def lab_transform(self) -> ScaledPose | None:
+        """What the relay applies to every raw pose, its scale too; None for nothing."""
+        return ScaledPose(Pose(*self.lab_from_raw), self.lab_scale) if self.lab_from_raw is not None else None
 
     @property
     def poses_off(self) -> bool:
-        """Whether poses may be off the lab frame: unchecked, untrusted, refit pending, none read, newer, or scaled."""
+        """Whether poses may be off the lab frame: unchecked, untrusted, refit pending, none read, or newer."""
         return self.status in (FRAME_UNCHECKED, FRAME_REFIT_PENDING, FRAME_UNTRUSTED, FRAME_ERROR) or \
-            self.newer_moves_poses or bool(self.scale)
+            self.newer_moves_poses
 
 
 def floor_calibration_state(text: str) -> FloorCalibrationState:
@@ -119,7 +126,7 @@ def floor_calibration_state(text: str) -> FloorCalibrationState:
                                      str(entry.get("decides") or ""),
                                      float(entry["time"]) if entry.get("time") is not None else None,
                                      (entry.get("anchor_scale") or {}).get("describe", "")
-                                     if entry.get("scale_changed") else "")
+                                     if entry.get("scale_changed") else "", float(entry.get("lab_scale", 1.0)))
     except (KeyError, TypeError, AttributeError, json.JSONDecodeError) as error:
         raise ValueError(f"not the relay's floor calibration announcement: {error!r}") from None
 
@@ -171,8 +178,8 @@ class MocapRelayState:
         markers_time: ROS time they last arrived, seconds, or None before.
         markers_stamp: When the relay took them, on its clock (as `FloorCalibrationState.time`), seconds, or None.
         frame: The floor calibration the relay applies, or None before it announced one.
-        fit_now: The deciding fit's raw_cal_from_raw_now from the relay's last look, ((x, y, z), (qx, qy, qz, qw)),
-            or None while it is not trusted (`lab_from_raw_now`).
+        fit_now: The deciding fit's motion from the relay's last look (`FrameFit.motion`), or None while it is not
+            trusted (`lab_from_raw_now`).
         refit_now: The refit in use in that look, the same way, or None.
         marker_noise: That look's unlabeled markers, raw (Motive's, Z-up), each with its noise: the RMS distance of its
             frames from its mean, mm, or None.
@@ -197,8 +204,8 @@ class MocapRelayState:
     markers_time: float | None = None
     markers_stamp: float | None = None
     frame: FloorCalibrationState | None = None
-    fit_now: tuple | None = None
-    refit_now: tuple | None = None
+    fit_now: ScaledPose | None = None
+    refit_now: ScaledPose | None = None
     marker_noise: tuple[tuple[tuple[float, float, float], float | None], ...] = ()
     metrics_time: float | None = None
     drift: FrameDrift | None = None
@@ -214,16 +221,15 @@ class MocapRelayState:
         return self.sources.get(mocap_id, FAKE_MOTIVE if self.simulated else MOTIVE)
 
     @property
-    def lab_from_raw_now(self) -> Pose | None:
+    def lab_from_raw_now(self) -> ScaledPose | None:
         """Where the relay's trusted fit puts the lab frame now: the frame it applies, its refit undone, the fit done.
 
         None without a floor calibration applied or a trusted fit.
         """
-        if self.frame is None or self.frame.lab_from_raw is None or self.fit_now is None:
+        if self.frame is None or self.frame.lab_transform is None or self.fit_now is None:
             return None
-        floor_from_raw = compose(Pose(*self.frame.lab_from_raw), invert(Pose(*self.refit_now)) if self.refit_now
-                                 else Pose())
-        return compose(floor_from_raw, Pose(*self.fit_now))
+        floor_from_raw = self.frame.lab_transform.then(self.refit_now.inverse() if self.refit_now else ScaledPose())
+        return floor_from_raw.then(self.fit_now)
 
 
 def applied_calibrations(text: str) -> dict[int, AppliedCalibration]:
@@ -361,12 +367,13 @@ class MocapRelayInterface:
 
         A look that does not read is skipped.
         """
-        def pose(fit: dict | None) -> tuple | None:
-            """A fit's raw_cal_from_raw_now as ((x, y, z), (qx, qy, qz, qw)), or None for no fit."""
+        def pose(fit: dict | None) -> ScaledPose | None:
+            """A fit's motion (raw_cal_from_raw_now and its scale), or None for no fit."""
             if not fit:
                 return None
             position, orientation = fit["raw_cal_from_raw_now"]
-            return tuple(map(float, position)), tuple(map(float, orientation))
+            return ScaledPose(Pose(tuple(map(float, position)), tuple(map(float, orientation))),
+                              float(fit.get("scale", 1.0)))
 
         try:
             sample = json.loads(message.data)

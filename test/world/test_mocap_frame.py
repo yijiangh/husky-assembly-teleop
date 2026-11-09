@@ -317,16 +317,21 @@ def test_a_moved_frame_is_recovered_from_the_anchors_and_a_moved_anchor_left_out
     np.testing.assert_allclose(back(fit, now["A5"].position), ANCHORS["A5"].position, atol=1e-6)
 
 
-def test_warping_shows_in_the_largest_residual():
-    """Motive sees the truss 0.1 % bigger: no rigid fit takes that out, so the residual shows it."""
+def test_a_scale_change_is_taken_out_by_the_fits_scale_and_warping_shows_in_the_largest_residual():
+    """The truss 0.1 % bigger: the fit's scale takes it out; one half 0.03 % bigger: the residual shows it."""
     centre = np.mean([camera.position for camera in LAB.values()], axis=0)
     grown = {name: MocapCamera(name, tuple(centre + 1.001 * (np.asarray(camera.position) - centre)),
                                camera.orientation) for name, camera in LAB.items()}
-    assert fit_cameras(LAB, grown).residual > 2e-3 and fit_cameras(LAB, LAB).residual < 1e-9
+    fit = fit_cameras(LAB, grown)
+    assert fit.residual < 1e-9 and fit.scale == pytest.approx(1.0 / 1.001) and fit_cameras(LAB, LAB).residual < 1e-9
+    warped = {name: MocapCamera(name, tuple(centre + (1.0003 if camera.position[0] > centre[0] else 1.0)
+                                            * (np.asarray(camera.position) - centre)), camera.orientation)
+              for name, camera in LAB.items()}
+    assert fit_cameras(LAB, warped).residual > 0.5e-3
 
 
 def test_the_labs_anchors_recorded_to_about_a_millimetre_all_stay_in_the_fit():
-    """27 Oct: the six anchors read again were 0.2 to 1.2 mm off their record: all used, held, ± 2 mm at a corner."""
+    """27 Oct: the six anchors read again were 0.2 to 1.2 mm off their record: all used, held, ± 1 mm at a corner."""
     recorded = {"A1": (-0.3413, 2.0523, 1.1459), "A2": (-0.3803, 2.6154, 1.1851), "A3": (2.0987, 2.6008, 1.1644),
                 "A4": (3.4381, -1.6487, 0.012), "A5": (3.5079, -1.9801, 0.0127), "A6": (2.1075, 2.011, 1.1486)}
     off_mm = {"A1": (0.49, 0.27, -0.24), "A2": (0.18, -0.13, -0.01), "A3": (-0.58, -1.01, 0.06),
@@ -336,7 +341,7 @@ def test_the_labs_anchors_recorded_to_about_a_millimetre_all_stay_in_the_fit():
            for name, position in recorded.items()}
     fit = fit_anchors(then, now)
     assert len(fit.used) == 6 and not fit.bumped and not frame_moved(fit)
-    assert volume_moved(fit.raw_cal_from_raw_now) < 0.002 and fit.uncertainty == pytest.approx(0.0012, abs=3e-4)
+    assert volume_moved(fit.raw_cal_from_raw_now) < 0.002 and fit.uncertainty == pytest.approx(0.0008, abs=2e-4)
 
 
 #: The lab's six anchors, 27 Oct, lab frame.

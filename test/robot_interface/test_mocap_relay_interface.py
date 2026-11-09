@@ -146,7 +146,8 @@ def test_the_floor_calibration_is_kept_and_a_refit_adopted_through_the_relays_se
     for changed, expected in ((False, ""), (True, "distances -1550 ppm")):
         node.callbacks[FRAME_TOPIC](String(data=json.dumps({"status": "held", "floor_calibration": "f.json",
                                                             "scale_changed": changed, "anchor_scale": scale})))
-        assert relay.state.frame.scale == expected and relay.state.frame.poses_off == changed
+        # * A refit follows Motive's scale: a scale change alone leaves poses where the frame's state says.
+        assert relay.state.frame.scale == expected and not relay.state.frame.poses_off
 
 
 def test_the_unlabeled_markers_are_kept_and_an_unreadable_announcement_skipped():
@@ -170,17 +171,21 @@ def test_the_markers_noise_from_the_relays_last_look_is_kept():
 
 
 def test_where_the_relays_last_look_puts_the_lab_frame_is_kept():
-    """The frame applied, its refit undone, the trusted deciding fit done; untrusted: none; unreadable: skipped."""
+    """The frame applied, its refit undone, the deciding fit done, scales too; untrusted: none; unreadable: skipped."""
     node = RelayNode()
     relay = MocapRelayInterface(node, lambda: node.now)
-    node.callbacks[FRAME_TOPIC](String(data=json.dumps({"status": "held", "lab_from_raw": [[1, 0, 0], [0, 0, 0, 1]]})))
-    fit = {"raw_cal_from_raw_now": [[0.003, 0, 0], [0, 0, 0, 1]], "trusted": True}
+    node.callbacks[FRAME_TOPIC](String(data=json.dumps({"status": "held", "lab_from_raw": [[1, 0, 0], [0, 0, 0, 1]],
+                                                        "lab_scale": 1.002})))
+    fit = {"raw_cal_from_raw_now": [[0.003, 0, 0], [0, 0, 0, 1]], "scale": 1.0015, "trusted": True}
     sample = {"decides": "truss cameras", "truss_cameras": fit, "anchors": None,
-              "refit": {"raw_cal_from_raw_now": [[0.001, 0, 0], [0, 0, 0, 1]], "trusted": True}}
+              "refit": {"raw_cal_from_raw_now": [[0.001, 0, 0], [0, 0, 0, 1]], "scale": 1.002, "trusted": True}}
     node.callbacks[METRICS_TOPIC](String(data=json.dumps(sample)))
-    assert relay.state.lab_from_raw_now.position == pytest.approx((1.002, 0.0, 0.0))
+    now = relay.state.lab_from_raw_now
+    # * The point at raw (1, 0, 0): fit 1.0015 + 0.003, refit undone, then the frame applied.
+    expected = 1.002 * ((1.0015 + 0.003 - 0.001) / 1.002) + 1.0
+    assert now.apply((1.0, 0.0, 0.0)) == pytest.approx((expected, 0.0, 0.0)) and now.scale == pytest.approx(1.0015)
     assert relay.state.metrics_time == node.now
     node.callbacks[METRICS_TOPIC](String(data="not json"))
-    assert relay.state.lab_from_raw_now.position == pytest.approx((1.002, 0.0, 0.0))
+    assert relay.state.lab_from_raw_now.pose.position == pytest.approx(now.pose.position)
     node.callbacks[METRICS_TOPIC](String(data=json.dumps({**sample, "truss_cameras": {**fit, "trusted": False}})))
     assert relay.state.lab_from_raw_now is None

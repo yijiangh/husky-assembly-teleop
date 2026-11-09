@@ -15,7 +15,7 @@ from scaffolding_assembly_core.geometry import Pose, compose
 from husky_assembly_teleop.robot_interface.mocap_definitions import (FRAME_ERROR, FRAME_HELD, FRAME_NONE,
                                                                      FRAME_REFIT_PENDING, FRAME_UNCHECKED,
                                                                      FRAME_UNTRUSTED, MocapAnchor,
-                                                                     MocapCamera)
+                                                                     MocapCamera, ScaledPose)
 from husky_assembly_teleop.world.frame_follower import ANCHOR_GONE_SEC, FrameFollower
 from husky_assembly_teleop.world.mocap_frame import FloorCalibration, truss_names
 
@@ -128,19 +128,19 @@ def test_a_recalibration_is_a_refit_pending_until_used_then_held_with_lab_from_r
     assert frame.status == FRAME_REFIT_PENDING and frame.news()
     assert titles(events, "warn") == ["REFIT PENDING by the anchors: poses are off by up to 49.0 mm until the refit "
                                       "is used"]
-    assert "anchors trusted 6/6 22.6 mm 0.50° 49.0 ± 0.1 mm 49.0 mm" in text(events)
+    assert "anchors trusted 6/6 22.6 mm 0.50° +0 ppm 49.0 ± 0.1 mm 49.0 mm" in text(events)
     assert "use it with Use refit" in text(events)
     assert frame.announcement(0.0)["pending"]["describe"].startswith("poses off now 49.0 mm")
     used, message, logged = frame.use_refit()
     assert used and message.startswith("refit used") and frame.status == FRAME_HELD and frame.news()
     assert titles(logged, "info") == ["REFIT USED: every pose moved up to 49.0 mm, back into the lab frame"]
     point = np.array([1.0, 2.0, 0.5])
-    np.testing.assert_allclose(compose(frame.lab_from_raw(), Pose(tuple(seen_after(point, RECALIBRATED)))).position,
+    np.testing.assert_allclose(frame.lab_from_raw().apply(seen_after(point, RECALIBRATED)),
                                point + (0.1, 0.0, 0.0), atol=1e-6)
     # * After the refit the table's columns differ: moved since the floor calibration, nothing off now.
     events = frame.look([np.add(position, (0.0012, 0.0, 0.0)) for position in anchors_after(RECALIBRATED)], LOOK)
     assert "since 20261024_090000" in text(events)
-    assert re.search(r"anchors trusted 6/6 [\d.]+ mm [\d.]+° [\d.]+ ± [\d.]+ mm 1\.2 mm", text(events))
+    assert re.search(r"anchors trusted 6/6 [\d.]+ mm [\d.]+° [+-]\d+ ppm [\d.]+ ± [\d.]+ mm 1\.2 mm", text(events))
 
 
 def test_nothing_pending_and_an_untrusted_fit_are_not_used():
@@ -300,7 +300,12 @@ def scaled(share: float) -> list:
     return [tuple((1.0 + share) * np.asarray(position)) for position in anchors_after([])]
 
 
-def test_a_scale_change_held_three_looks_is_warned_instead_of_anchors_moved_and_its_return_logged():
+def scale_warnings(events) -> list[str]:
+    """The warnings of a scale change among the events' titles."""
+    return [title for title in titles(events, "warn") if "SCALE" in title]
+
+
+def test_a_scale_change_held_three_looks_is_warned_and_no_anchor_moved_and_its_return_logged():
     """Motive 0.15 % shorter: warned at the third look, announced, no moved anchors; 0.3 %: again; back: at info."""
     frame = follower()
     frame.look(anchors_after([]), 0.0)
@@ -308,13 +313,14 @@ def test_a_scale_change_held_three_looks_is_warned_instead_of_anchors_moved_and_
     waiting = text(looks(frame, scaled(-0.0015), LOOK, 2))
     assert "SCALE" not in waiting and "ANCHORS MOVED" not in waiting
     events = looks(frame, scaled(-0.0015), 3 * LOOK)
-    assert len(titles(events, "warn")) == 1 and "ANCHORS MOVED" not in text(events)
-    assert titles(events, "warn")[0].startswith("MOTIVE'S SCALE CHANGED since the floor calibration: distances -1500 "
+    assert len(scale_warnings(events)) == 1 and "ANCHORS MOVED" not in text(events)
+    assert scale_warnings(events)[0].startswith("MOTIVE'S SCALE CHANGED since the floor calibration: distances -1500 "
                                                 "ppm")
+    assert "a refit follows the scale too" in text(events)
     assert frame.news() and frame.announcement(0.0)["scale_changed"]
     assert frame.metrics(0.0)["anchor_scale"]["ppm"] == pytest.approx(-1500.0)
     events = looks(frame, scaled(-0.003), 4 * LOOK, 3)
-    assert ["distances -3000 ppm" in title for title in titles(events, "warn")] == [True]
+    assert ["distances -3000 ppm" in title for title in scale_warnings(events)] == [True]
     assert frame.news() and frame.announcement(0.0)["anchor_scale"]["ppm"] == pytest.approx(-3000.0)
     events = looks(frame, anchors_after([]), 7 * LOOK, 3)
     assert titles(events, "info")[-1].startswith("Motive's scale back as at the floor calibration")
@@ -325,7 +331,24 @@ def test_a_scale_swaying_between_two_values_is_warned_once():
     """-1200 and -1600 ppm in turn, as a warped solution gives: one warning, the sway never holds three looks."""
     frame = follower()
     events = looks(frame, lambda index: scaled(-0.0012 if index % 2 else -0.0016), 0.0, 12)
-    assert len(titles(events, "warn")) == 1
+    assert len(scale_warnings(events)) == 1
+
+
+def test_a_refit_follows_a_scale_change_back_to_the_floor_calibrations_scale():
+    """Motive 0.15 % shorter: a trusted refit pending, none left out; used, fixed points land where they were.
+
+    The announcement carries the scale.
+    """
+    frame = follower(floor_from_raw=Pose((0.1, 0.0, 0.0)))
+    frame.look(scaled(-0.0015), 0.0)
+    assert frame.status == FRAME_REFIT_PENDING and frame.deciding.trusted and not frame.deciding.bumped
+    assert frame.deciding.scale == pytest.approx(1.0 / 0.9985)
+    assert frame.use_refit()[0] and frame.status == FRAME_HELD
+    point = np.array([1.0, 2.0, 0.5])
+    np.testing.assert_allclose(frame.lab_from_raw().apply(0.9985 * point), point + (0.1, 0.0, 0.0), atol=1e-6)
+    assert frame.announcement(0.0)["lab_scale"] == pytest.approx(1.0 / 0.9985)
+    looks(frame, scaled(-0.0015), LOOK, 3)
+    assert frame.status == FRAME_HELD
 
 
 def test_a_new_floor_calibration_starts_unchecked_without_the_refit():
@@ -335,15 +358,15 @@ def test_a_new_floor_calibration_starts_unchecked_without_the_refit():
     frame.use_refit()
     frame.use_floor_calibration(FloorCalibration(Path("20261025_090000_mocap_floor_calibration.json"), Pose(),
                                                  cameras_after(RECALIBRATED)))
-    assert frame.refit is None and frame.status == FRAME_UNCHECKED and frame.lab_from_raw() == Pose()
+    assert frame.refit is None and frame.status == FRAME_UNCHECKED and frame.lab_from_raw() == ScaledPose()
 
 
 def test_lab_from_raw_is_the_floor_calibration_then_the_refit():
     """floor_from_raw turned 30° and shifted, then the refit: composed in that order."""
     floor = Pose((1.0, -2.0, 0.0), tuple(Rotation.from_euler("z", 30.0, degrees=True).as_quat()))
     frame = follower(floor_from_raw=floor)
-    assert frame.lab_from_raw() == floor
+    assert frame.lab_from_raw() == ScaledPose(floor)
     recalibrate(frame)
     frame.use_refit()
     expected = compose(floor, frame.refit.raw_cal_from_raw_now)
-    np.testing.assert_allclose(frame.lab_from_raw().position, expected.position, atol=1e-12)
+    np.testing.assert_allclose(frame.lab_from_raw().pose.position, expected.position, atol=1e-12)

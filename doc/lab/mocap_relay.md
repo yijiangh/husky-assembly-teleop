@@ -210,7 +210,7 @@ Calibration is relay-side, not consumer-side.
 
 ## Lab Frame: Layers, Anchors, Refits
 
-Three layers, each a small rigid correction on the one below (`world/mocap_frame.py`):
+Three layers, each a small correction on the one below (`world/mocap_frame.py`):
 
 1. **Raw**: Motive's poses turned Z-up. The relay always does this.
 2. **Floor calibration**: `floor_from_raw` of the newest floor calibration on the Drive, in the dated calibration
@@ -243,22 +243,25 @@ calibration**.
   calibration's. `scripts/mocap_anchors.py --json` lists the relay's markers that stay put.
 - **Following Motive's frame** (`world/frame_follower.py`): a recalibration, or Motive's continuous calibration, moves
   Motive's frame and every raw pose with it, while the anchors and the six truss cameras (the four on top and the two
-  lower ones in the far corners; `truss_cameras`, by serial) stay put. Every look the relay fits, rigidly, where Motive
-  puts them now against where the floor calibration stored them: once by the anchors, once by the truss cameras. The
+  lower ones in the far corners; `truss_cameras`, by serial) stay put. Every look the relay fits (a turn, a shift and a
+  scale) where Motive puts them now against where the floor calibration stored them: once by the anchors, once by the truss cameras. The
   points used are the largest set, of 4 or more, in which each agrees with a fit of the others; the rest are left out
   and named ("ANCHORS MOVED" for an anchor). Each fit reports its largest residual and its uncertainty at the lab
   volume's worst corner ("± … mm": the layout's leverage times the scatter of those used; points in two tight pairs
   pin no turn, and it grows).
-- **Scale**: a refit turns and shifts, it cannot scale; a recalibration may change Motive's scale too (one changed it
-  by −0.16 %). Every look the relay takes the median of how much longer each pair of anchors at least 2 m apart is
-  than in the floor calibration, with all anchors and with each left out, and keeps the smallest (`fit_scale`,
-  `SCALE_PAIR_MIN`): one anchor moved, or Motive's solution warped in a corner, reads as no change. Once the scale changed the lab volume's diagonal by over 2 mm (`SCALE_CHANGED`, about
-  385 ppm: poses up to 1.6 mm off, as the anchors' fit pins them at the anchors' centre; Motive's continuous
-  calibration sways it by about 200 ppm) for 3 looks in a row (`SCALE_LOOKS`), the relay warns ("MOTIVE'S SCALE CHANGED … distances −1550 ppm …":
-  recalibrate Motive, then make a new floor calibration), again when it grew by as much more. Over about 144 ppm
-  (`SCALE_SEEN`), reported or not, it does not warn of anchors moved, which only the scale moved; back under 75 % of it for 3 looks, it logs that at info and reports the
-  anchors still left out afresh. Nothing is corrected: poses follow Motive's scale. While it is reported, every
-  base's mocap chip turns amber saying so, and the mocap probe shows a "scale changed" chip.
+- **Scale**: a recalibration may change Motive's scale too (one changed it by −0.16 %). Each fit has a scale, so a
+  refit takes poses back to the floor calibration's scale: `lab_from_raw` turns, shifts and scales positions
+  (orientations only turn), and the scale counts in how far poses are off, so Motive's continuous calibration
+  swaying it by about 200 ppm (about 1 mm across the lab's volume) can make a refit pending. Apart from the fits, every
+  look the relay takes the median of how much longer each pair of anchors at least 2 m apart is than in the floor
+  calibration, with all anchors and with each left out, and keeps the smallest (`fit_scale`, `SCALE_PAIR_MIN`): one
+  anchor moved, or Motive's solution warped in a corner, reads as no change. Once that changed the lab volume's
+  diagonal by over 2 mm (`SCALE_CHANGED`, about 385 ppm) for 3 looks in a row (`SCALE_LOOKS`), the relay warns that
+  Motive was recalibrated ("MOTIVE'S SCALE CHANGED … distances −1550 ppm …": a refit follows it; a new floor
+  calibration on Motive's current calibration needs none), again when it grew by as much more; back under 75 % of it
+  for 3 looks, it logs that at info. The mocap probe shows a "scale changed" chip: amber, blue once a refit is in use.
+  A recalibration may also warp Motive's volume: anchors that no one scale fits are left out as moved, or the fit is
+  not trusted.
 - **Thresholds**, side by side: a camera that moved between two readings by over 1 mm or 0.1° is warned about
   ("CAMERAS MOVED", `CAMERA_MOVED`); within one fit, a camera off the others by 2 mm or 0.1°, or an anchor by 2 mm,
   is left out (`BUMP_POSITION`, `BUMP_TURN`, `ANCHOR_BUMP`), and an anchor left out comes back only within 75 % of
@@ -266,7 +269,7 @@ calibration**.
   uncertainty within 2 mm (`MIN_POINTS`, `UNCERTAIN_MAX`); a refit is pending once the deciding fit places a point of
   the lab's volume beyond 1 mm, or twice its uncertainty if larger, from the transform in use (`off_limit`,
   `VOLUME_MOVED`), and is held again only under 75 % of that limit; Motive's scale changed by over about 385 ppm is
-  warned about (`SCALE_CHANGED`). The lab's volume (`VOLUME`) is the central 3 m
+  reported (`SCALE_CHANGED`). The lab's volume (`VOLUME`) is the central 3 m
   cube where the robots work, one corner at the lab frame's origin, along x, -y and z; judged at its worst corner, so
   a turn counts as much as a shift.
 - **States** (`~/frame` `status`): `none` (no floor calibration), `unchecked` (applied, no fit has decided yet: after
@@ -282,11 +285,12 @@ calibration**.
 - **`~/frame`** (latched JSON, announced when the state, the deciding source, the anchors missing, the refit, a scale
   change reported, a newer floor calibration or an error changes, or the pending fit moves by over 1 mm): `time`,
   `status`, `error`,
-  `lab_from_raw` ([position, quaternion] or null), `floor_calibration`, `simulated`, `folder`, `refit` (the refit in
+  `lab_from_raw` ([position, quaternion] or null), `lab_scale` (its scale, the refit's; 1 without one),
+  `floor_calibration`, `simulated`, `folder`, `refit` (the refit in
   use), `pending` (the deciding fit while not held), `newer` (`floor_calibration`, `moves_volume`, `moves_poses`),
   `decides` (`anchors`, `truss cameras` or null), `anchors_missing` (not seen for 10 s), `anchor_fit`, `camera_fit`,
   `scale_changed`, `anchor_scale` (`scale`, `ppm`, `used`, `pairs`, `volume_change`, `describe`; null under 4 anchors
-  found, or with one left out under 3 pairs of 2 m), `truss_cameras`. Each fit has `raw_cal_from_raw_now`, `used`, `bumped`, `missing`, `residual`, `trusted`,
+  found, or with one left out under 3 pairs of 2 m), `truss_cameras`. Each fit has `raw_cal_from_raw_now`, `scale`, `used`, `bumped`, `missing`, `residual`, `trusted`,
   `source`, `uncertainty`, `consistent`, `moves_volume` (since the floor calibration), `off_now` (against the transform in use)
   and `describe` ("poses off now … mm; since the floor calibration …").
 - **Using a refit**: nothing changes until told: `ros2 service call /mocap_relay/use_refit std_srvs/srv/Trigger`, or
