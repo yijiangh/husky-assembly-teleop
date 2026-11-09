@@ -260,3 +260,103 @@ def test_a_run_of_the_loaded_process_adds_its_steps_and_their_outcomes(tmp_path)
     assert entries[2][2] is None  # * the guide's start and done are only states
     assert entries[3][2] == ("events/run", "WARN", "B20_J_transfer failed")
     assert entries[4][1]["states/run/action"] == "B20_J done" and entries[4][2][2] == "B20_J done"
+
+
+#: A Cindy trajectory's joints at its end, in the order the trajectory files list them.
+UR_JOINTS = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint", "wrist_1_joint", "wrist_2_joint",
+             "wrist_3_joint"]
+
+
+@pytest.fixture
+def sent(session):
+    """The session plus a path sent at 1 s and followed until 3 s, a 2 s trajectory at 1.5 s and a trip at 2 s."""
+    folder = session / "20261109" / "20261109_100000_session"
+    (folder / "commands").mkdir()
+    (folder / "commands" / "00001_path_sent_a200-0806.json").write_text(json.dumps(
+        {"path": {"header": {"frame_id": "mocap_world"}, "x": [0.0, 1.0, 2.0], "y": [0.0, 0.5, 0.5],
+                  "yaw": [0.0, 0.0, 0.0], "t": []}}))
+    (folder / "commands" / "00002_trajectory_sent_a200-0806_left_ur_arm.json").write_text(json.dumps(
+        {"joint_names": UR_JOINTS, "points": [{"positions": [0.0] * 6, "time_from_start": {"sec": 0, "nanosec": 0}},
+                                              {"positions": [0.5] * 6,
+                                               "time_from_start": {"sec": 2, "nanosec": 0}}]}))
+    hit = {"robot": "robots/a200-0806", "where": "move", "margin": 0.01,
+           "pairs": [{"a": "robots/a200-0806/left_ur_arm_wrist_3_link", "b": "lab/boxes/main_pc_table",
+                      "contact": {"point_a": [1.0, 1.0, 0.8], "point_b": [1.0, 1.05, 0.8], "depth": 0.004}}]}
+    events = [json.loads(line) for line in (folder / "events.jsonl").read_text().splitlines()[:-1]] + [
+        {"event": "path sent", "ros_time": ROS_START + 1.0, "robot": "a200-0806", "by": "base_planner",
+         "file": "commands/00001_path_sent_a200-0806.json"},
+        {"event": "follower", "ros_time": ROS_START + 1.1, "robot": "a200-0806", "value": "following"},
+        {"event": "trajectory sent", "ros_time": ROS_START + 1.5, "robot": "a200-0806", "arm": "left_ur_arm",
+         "file": "commands/00002_trajectory_sent_a200-0806_left_ur_arm.json"},
+        {"event": "clearance trip", "ros_time": ROS_START + 2.0, "robot": "a200-0806", "task": "x", "problem": "y",
+         "hit": hit},
+        {"event": "follower", "ros_time": ROS_START + 3.0, "robot": "a200-0806", "value": "done"},
+        {"event": "log", "ros_time": ROS_START + 0.2, "level": "INFO", "source": "process",
+         "text": f"loaded {session / 'process'} in 1.0 s; 1 actions, 2 movements"},
+    ]
+    (folder / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+    os.utime(folder / "events.jsonl", (ROS_START + OFFSET + 5.0,) * 2)
+    return session
+
+
+def _entities(path) -> set[str]:
+    """The entity paths a saved recording holds."""
+    from rerun.chunk import RrdReader
+    return {chunk.entity_path for chunk in RrdReader(path).stream()}
+
+
+def test_sent_paths_trajectories_and_trips_show_while_they_last(sent):
+    """A path shows from its send until its follower is done, a ghost until its last point, a trip for 2 s."""
+    found = rerun_view._sessions(sent, ROS_START + OFFSET, ROS_START + OFFSET + 5.0)
+    shown = {item.entity: item for item in rerun_view._sent(found[0], ROS_START + OFFSET, ROS_START + OFFSET + 5.0)}
+    wall = ROS_START + OFFSET
+    assert set(shown) == {"world/plans/0806", "ghost_0806/left_ur_arm", "world/trips/0806"}
+    assert (shown["world/plans/0806"].start, shown["world/plans/0806"].end) == (wall + 1.0, wall + 3.0)
+    assert np.allclose(shown["world/plans/0806"].what[0][:, :2], [[0.0, 0.0], [1.0, 0.5], [2.0, 0.5]])
+    assert shown["ghost_0806/left_ur_arm"].end == pytest.approx(wall + 3.5)
+    assert shown["ghost_0806/left_ur_arm"].what == {f"left_ur_arm_{joint}": 0.5 for joint in UR_JOINTS}
+    assert shown["world/trips/0806"].labels == ["left_ur_arm_wrist_3_link / main_pc_table"]
+
+
+def test_a_thing_replaced_before_its_end_keeps_no_end():
+    """The next send on the same entity replaces the last one; only those overlapping the range are kept."""
+    first, second, early = (rerun_view.Shown("world/plans/0806", 1.0, 5.0, None),
+                            rerun_view.Shown("world/plans/0806", 3.0, None, None),
+                            rerun_view.Shown("world/plans/0804", 0.0, 0.5, None))
+    assert rerun_view._in_range([second, first, early], 1.0, 10.0) == [first, second]
+    assert first.end is None
+
+
+def test_the_scene_has_the_lab_the_sent_paths_the_arm_ghost_and_the_trip(sent, tmp_path):
+    """With the data folder the lab's obstacles, the ghost's arm joints, the path and the trip line are logged."""
+    saved = tmp_path / "range.rrd"
+    shown = log_range(sent, ROS_START + OFFSET + 0.5, ROS_START + OFFSET + 4.5, save=saved, data=DATA)
+    assert not [note for note in shown["notes"] if "ghost" in note or "lab" in note]
+    entities = _entities(saved)
+    assert {"/world/lab/main_pc_table/0", "/world/lab/border_x_min/0", "/world/plans/0806", "/world/trips/0806",
+            "/ghost_0806/joints/left_ur_arm_shoulder_pan_joint"} <= entities
+    assert not any(path.startswith("/ghost_0806/joints/right_ur_arm") for path in entities)  # * no trajectory
+    assert not any("collision_geometries" in path or "wheel" in path for path in entities if
+                   path.startswith("/ghost_"))
+
+
+def test_a_tracked_bar_gets_its_process_shape_and_its_halves(sent, tmp_path, monkeypatch):
+    """The bar of a fitted_bar object comes from the process the log says was loaded; others are noted."""
+    import rerun as rr
+    from types import SimpleNamespace
+    from scaffolding_assembly_core.geometry import Pose, box_geometry, cylinder_geometry
+    bodies = {"bars/B20": SimpleNamespace(assembly_pose=Pose((1.0, 0.0, 0.0)), geometry=cylinder_geometry(0.01, 1.0)),
+              "joints/J20": SimpleNamespace(assembly_pose=Pose((1.0, 0.0, 0.2)), geometry=box_geometry((0.05,) * 3))}
+    process = SimpleNamespace(bodies=bodies, halves_of=lambda bar: ("joints/J20",) if bar == "bars/B20" else ())
+    folders = []
+    monkeypatch.setattr(rerun_view, "read", lambda folder: folders.append(folder) or process)
+    found = rerun_view._sessions(sent, ROS_START + OFFSET, ROS_START + OFFSET + 5.0)
+    saved, notes = tmp_path / "bars.rrd", []
+    rr.init("test_bars")
+    rr.save(saved)
+    rerun_view._log_scene(rr, found, None, ["fitted_bar_B20", "fitted_bar_B99"], ROS_START + OFFSET + 5.0, notes)
+    rr.get_global_data_recording().flush()
+    assert folders == [sent / "process"]
+    assert notes == ["not in the process, axes only: fitted_bar_B99"]
+    assert {"/world/objects/fitted_bar_B20/bar/0", "/world/objects/fitted_bar_B20/bar/joints_J20/0"} <= \
+        _entities(saved)

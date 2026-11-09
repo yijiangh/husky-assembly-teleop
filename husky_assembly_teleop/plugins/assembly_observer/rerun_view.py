@@ -6,9 +6,12 @@ Opened by `scripts/observer_logs.py rerun`. Every tick signal becomes one plot e
 arm's tool0-vs-target error a plot of its own, every switching state a state timeline (`/states/...`), every event and
 log line a text line (`/events/...`, `/log/<source>`), and the poses frames in a 3D view of the lab frame
 (`/world/...`): each base, its arms' mounts from the URDF, tool0, the Cartesian target while the compliance controller
-runs, the follower's reference and lookahead, every tracked object. Two timelines: "time", wall time (ROS time plus
-the session's offset, so it reads as the local clock and lines up with `events`), and "since start", seconds from the
-range's start. A value held over several ticks is logged at its first and last tick only: the lines look the same.
+runs, the follower's reference and lookahead, every tracked object (a bar with its process shape). Around them the
+lab's obstacles from its file in git, each sent base path while it is followed, a see-through ghost of an arm at its
+trajectory's end while it runs, and a red line per pair a clearance trip found too close. Two timelines: "time", wall
+time (ROS time plus the session's offset, so it reads as the local clock and lines up with `events`), and "since
+start", seconds from the range's start. A value held over several ticks is logged at its first and last tick only:
+the lines look the same.
 
 ! Imports rerun only inside `log_range`: the monitor never needs it. Plain files, no ROS; reads whole chunks, so run
   it in a process of its own.
@@ -23,10 +26,16 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 import numpy as np
+from trimesh import Trimesh
 
+from scaffolding_assembly_core.geometry import BoxShape, CylinderShape, Pose, compose, invert
+from scaffolding_assembly_core.process.read import read
+
+from ...colors import COLLISION, FITTED, MOUNTED, PLAN, rgb01
 from ...config import short_serial
 from ...plugin_api.trace import load_arrays
 from ...shared.recordings.runs import load_description
+from ...world.lab import BORDER_COLOR, DEFAULT_LAB, LAB_COLOR, lab_file, mesh_directory_of, read_lab, slug
 from .columns import NOISE, POSE, STREAM
 from .export import CHUNKS, EVENTS, SAVED_MARGIN, STATES, copied_sessions, sessions
 
@@ -66,6 +75,14 @@ NUMBER = re.compile(r"(?<![\w/-])\d+(?:\.\d+)?(?![\w-])")
 LOADED = re.compile(r"loaded (/.+?) in \d")
 #: An assembly run's event as an event here: "run <its event>".
 RUN = "run "
+#: Where each robot's arm ghost goes (its model again, arms only, see-through), plus its short serial.
+GHOST_ROOT = "ghost_"
+#: A ghost arm is hidden by scaling its shoulder to this: rerun has no visibility over time for logged data.
+HIDDEN_SCALE = 1e-6
+#: A tracked object named so is a process bar: "fitted_bar_B20" is "bars/B20".
+BAR_OBJECT, BAR_PREFIX = "fitted_bar_", "bars/"
+#: How long a clearance trip's line stays, seconds; a sent path's line height above the floor and width, metres.
+TRIP_SHOWN, PLAN_HEIGHT, PLAN_RADIUS = 2.0, 0.01, 0.01
 
 
 @dataclass
@@ -93,6 +110,26 @@ class Model:
     collisions: str
 
 
+@dataclass
+class Shown:
+    """Something drawn in 3D from `start` to `end` (None: until the next on the same entity replaces it)."""
+
+    entity: str
+    start: float
+    end: float | None
+    #: What to draw: for a path or a trip, line strips (and labels); for a ghost, joint name -> angle.
+    what: Any
+    labels: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Ghost:
+    """One robot's arm ghost: its model again (arms only), and each arm's moving joints, shoulder first."""
+
+    tree: Any
+    arms: dict[str, list[Any]]
+
+
 def log_range(root: Path, start: float, end: float, *, save: Path | None = None, data: Path | None = None,
               spawn: bool = True, copy: bool = False) -> dict:
     """Show (or save) what the observer recorded from wall time `start` to `end` in Rerun.
@@ -117,8 +154,10 @@ def log_range(root: Path, start: float, end: float, *, save: Path | None = None,
         return {"sessions": [], "rows": 0, "events": 0, "notes": [f"no recordings between those times in {root}"]}
     notes: list[str] = []
     models = _models(rr, found, data, notes)
+    sent = [shown for session in found for shown in _sent(session, start, end)]
+    ghosts = _ghosts(found, data, sent, notes)
     objects = sorted({name for session in found for chunk in session.chunks for name in _object_names(chunk)})
-    blueprint = _blueprint(found, objects, models)
+    blueprint = _blueprint(found, objects, models, ghosts)
     rr.init("husky_assembly_observer", recording_id=f"observer_{int(start)}_{int(end)}")
     if save is not None:
         rr.save(save, default_blueprint=blueprint)
@@ -127,6 +166,9 @@ def log_range(root: Path, start: float, end: float, *, save: Path | None = None,
         # * Active, not only default: the viewer keeps the layout it last showed for this app and would show that.
         rr.send_blueprint(blueprint, make_active=True, make_default=True)
     _log_static(rr, found, models)
+    _log_scene(rr, found, data, objects, end, notes)
+    _log_ghosts(rr, ghosts, start)
+    _log_sent(rr, sent, ghosts, start, end)
     rows = sum(_log_ticks(rr, session, start, end, models) for session in found)
     events = sum(_log_events(rr, session, start, end) for session in found)
     recording = rr.get_global_data_recording()
@@ -386,6 +428,8 @@ def _log_pose(rr, entity: str, serial: str | None, arm: str | None, values: np.n
     shown = _changed(lengths[:, None])
     rr.send_columns(path, indexes=_times(rr, stamps[shown], start),
                     columns=rr.TransformAxes3D.columns(axis_length=lengths[shown]))
+    if path.startswith("world/objects/"):
+        _log_bar_shown(rr, path, known, stamps, start)
     if known.any():
         moved = np.flatnonzero(known)[_changed(values[known, :7])]
         rr.send_columns(path, indexes=_times(rr, stamps[moved], start),
@@ -749,9 +793,252 @@ def _warns(event: dict) -> bool:
         name.endswith(("stream", "tracking")) and value == "lost"
 
 
+# --- --- --- --- --- LAB AND BARS --- --- --- --- ---
+
+def _log_scene(rr, found: list[Session], data: Path | None, objects: list[str], end: float,
+               notes: list[str]) -> None:
+    """The lab's obstacles from its file in git under /world/lab, and each tracked bar's shape on its object frame."""
+    if data is not None:
+        path = lab_file(data, DEFAULT_LAB)
+        try:
+            lab = read_lab(path)
+        except (OSError, ValueError) as error:
+            notes.append(f"no lab obstacles ({error})")
+        else:
+            for shape in lab.shapes:
+                _log_body(rr, f"world/lab/{slug(shape.name)}", shape.pose,
+                          shape.geometry(mesh_directory_of(path)).visual, LAB_COLOR)
+            for name, geometry, pose in lab.border.walls() if lab.border is not None else ():
+                _log_body(rr, f"world/lab/{slug(name)}", pose, geometry.visual, BORDER_COLOR)
+    bars = [name for name in objects if name.startswith(BAR_OBJECT)]
+    process = _process(found, end, notes) if bars else None
+    missing = []
+    for name in bars:
+        bar_id = BAR_PREFIX + name.removeprefix(BAR_OBJECT)
+        bar = process.bodies.get(bar_id) if process is not None else None
+        if bar is None:
+            missing.append(name)
+            continue
+        _log_body(rr, f"world/objects/{name}/bar", Pose(), bar.geometry.visual or bar.geometry.collision,
+                  rgb01(FITTED, 1.0))
+        # * Mounted halves stay where they sit on their bar, so the assembly poses give the offset.
+        for half_id in process.halves_of(bar_id):
+            half = process.bodies[half_id]
+            _log_body(rr, f"world/objects/{name}/bar/{slug(half_id)}",
+                      compose(invert(bar.assembly_pose), half.assembly_pose), half.geometry.visual,
+                      rgb01(MOUNTED, 1.0))
+    if missing and process is not None:
+        notes.append(f"not in the process, axes only: {', '.join(missing)}")
+
+
+def _process(found: list[Session], end: float, notes: list[str]):
+    """The process the monitor last loaded by `end` (its "loaded <folder> in" log line), or None (noted)."""
+    folder = None
+    for session in found:
+        for event in _read_events(session.folder / EVENTS):
+            loaded = re.match(r"loaded (.+?) in \d", str(event.get("text", "")))
+            if event.get("event") == "log" and event.get("source") == "process" and loaded and \
+                    float(event["ros_time"]) + session.offset <= end:
+                folder = Path(loaded.group(1))
+    if folder is None:
+        notes.append("no process loaded: tracked bars are axes only")
+        return None
+    try:
+        return read(folder)
+    except Exception as error:  # * moved, another machine's path, an old export: the bars are only axes
+        notes.append(f"process {folder} not read, tracked bars are axes only ({error})")
+        return None
+
+
+def _log_body(rr, path: str, pose, shapes, color: tuple[float, ...]) -> None:
+    """A body's shapes, static, at `pose` in its parent: boxes and cylinders as such, meshes as triangles."""
+    rr.log(path, rr.Transform3D(translation=pose.position, quaternion=pose.orientation), static=True)
+    for index, shape in enumerate(shapes):
+        if isinstance(shape, BoxShape):
+            item = rr.Boxes3D(half_sizes=[np.asarray(shape.size) / 2], centers=[shape.origin.position],
+                              quaternions=[shape.origin.orientation], colors=[color], fill_mode="solid")
+        elif isinstance(shape, CylinderShape):
+            item = rr.Cylinders3D(lengths=[shape.height], radii=[shape.radius], centers=[shape.origin.position],
+                                  quaternions=[shape.origin.orientation], colors=[color], fill_mode="solid")
+        else:
+            mesh = Trimesh(shape.vertices, shape.faces, process=False)
+            item = rr.Mesh3D(vertex_positions=shape.vertices, triangle_indices=shape.faces,
+                             vertex_normals=mesh.vertex_normals, albedo_factor=color)
+        rr.log(f"{path}/{index}", item, static=True)
+
+
+def _log_bar_shown(rr, path: str, known: np.ndarray, stamps: np.ndarray, start: float) -> None:
+    """A tracked bar's shape only at the ticks its pose is known: shrunk to nothing at the others."""
+    scale = np.where(known, 1.0, HIDDEN_SCALE)
+    shown = _changed(scale[:, None])
+    rr.send_columns(f"{path}/bar", indexes=_times(rr, stamps[shown], start),
+                    columns=rr.Transform3D.columns(scale=np.repeat(scale[shown, None], 3, axis=1)))
+
+
+# --- --- --- --- --- SENT COMMANDS --- --- --- --- ---
+
+def _sent(session: Session, start: float, end: float) -> list[Shown]:
+    """What the session's sent base paths, arm trajectories and clearance trips draw in 3D, within the range.
+
+    A path shows until its follower stops following, a trajectory's ghost until its last point's time, a trip for
+    `TRIP_SHOWN`; any of them until the next on the same entity replaces it.
+    """
+    drawn: list[Shown] = []
+    for event in _read_events(session.folder / EVENTS):
+        wall = float(event["ros_time"]) + session.offset
+        name, serial = event.get("event"), event.get("robot")
+        if wall > end or not serial:
+            continue
+        short = short_serial(serial)
+        if name == "follower" and event.get("value") != "following":
+            for shown in reversed(drawn):
+                if shown.entity == f"world/plans/{short}":
+                    if shown.end is None and shown.start <= wall:
+                        shown.end = wall
+                    break
+        elif name in ("path sent", "trajectory sent") and event.get("file"):
+            try:
+                sent = json.loads((session.folder / event["file"]).read_text())
+            except (OSError, ValueError):
+                continue  # * the event's text line still says it was sent
+            if name == "path sent":
+                path = sent.get("path") or {}
+                xyz = np.column_stack([path.get("x", []), path.get("y", []), np.full(len(path.get("x", [])),
+                                                                                     PLAN_HEIGHT)])
+                drawn.append(Shown(f"world/plans/{short}", wall, None, [xyz], [event.get("by") or "sent path"]))
+            elif sent.get("points"):
+                last = sent["points"][-1]
+                since = last.get("time_from_start") or {}
+                arm = event.get("arm", "")
+                joints = {f"{arm}_{joint}": float(value) for joint, value in
+                          zip(sent.get("joint_names", []), last.get("positions", []))}
+                drawn.append(Shown(f"{GHOST_ROOT}{short}/{arm}", wall,
+                                   wall + since.get("sec", 0) + since.get("nanosec", 0) * 1e-9, joints))
+        elif name == "clearance trip" and event.get("hit"):
+            strips, labels = [], []
+            for pair in event["hit"].get("pairs", []):
+                contact = pair.get("contact")
+                if contact:
+                    strips.append([contact["point_a"], contact["point_b"]])
+                    labels.append(" / ".join(str(pair.get(side, "")).rsplit("/", 1)[-1] for side in ("a", "b")))
+            if strips:
+                drawn.append(Shown(f"world/trips/{short}", wall, wall + TRIP_SHOWN, strips, labels))
+    return _in_range(drawn, start, end)
+
+
+def _in_range(drawn: list[Shown], start: float, end: float) -> list[Shown]:
+    """The drawn things that show in the range, oldest first; one replaced by the next on its entity gets no end."""
+    kept = []
+    for entity in sorted({shown.entity for shown in drawn}):
+        items = sorted((shown for shown in drawn if shown.entity == entity), key=lambda shown: shown.start)
+        for shown, after in zip(items, items[1:] + [None]):
+            until = shown.end if shown.end is not None else float("inf")
+            if after is not None and after.start <= until:
+                shown.end, until = None, after.start
+            if shown.start <= end and until >= start:
+                kept.append(shown)
+    return sorted(kept, key=lambda shown: shown.start)
+
+
+def _ghosts(found: list[Session], data: Path | None, sent: list[Shown], notes: list[str]) -> dict[str, Ghost]:
+    """Short serial -> the arm ghost of each robot a trajectory was sent to in the range; noted where none loads."""
+    serials = {short_serial(serial): serial for session in found for serial in session.robots}
+    arms: dict[str, set[str]] = {}
+    for shown in sent:
+        root, _, arm = shown.entity.partition("/")
+        if root.startswith(GHOST_ROOT) and root.removeprefix(GHOST_ROOT) in serials:
+            arms.setdefault(serials[root.removeprefix(GHOST_ROOT)], set()).add(arm)
+    if data is None or not arms:
+        return {}
+    import rerun.urdf
+    from ...config import robot_config_from_serial
+    ghosts = {}
+    for serial, names in sorted(arms.items()):
+        short = short_serial(serial)
+        try:
+            urdf = robot_config_from_serial(serial, data).model.urdf
+            tree = rerun.urdf.UrdfTree.from_file_path(urdf, entity_path_prefix=f"{GHOST_ROOT}{short}",
+                                                      frame_prefix=f"{GHOST_ROOT}{short}/",
+                                                      static_transform_entity_path=f"/{GHOST_ROOT}{short}/tf_static")
+        except Exception as error:  # * any config or URDF problem: that robot's trajectories have no ghost
+            notes.append(f"{short}: no arm ghost ({error})")
+            continue
+        joints = {arm: _arm_joints(tree, arm) for arm in sorted(names)}
+        for arm in [arm for arm, chain in joints.items() if not chain]:
+            notes.append(f"{short}: no arm ghost for {arm} (no {arm}_shoulder_pan_joint in its URDF)")
+            del joints[arm]
+        if joints:
+            ghosts[short] = Ghost(tree, joints)
+    return ghosts
+
+
+def _arm_joints(tree, arm: str) -> list[Any]:
+    """The joints from an arm's shoulder down to its tool, shoulder first; empty if the URDF has no such shoulder."""
+    shoulder = tree.get_joint_by_name(f"{arm}_shoulder_pan_joint")
+    if shoulder is None:
+        return []
+    chain, links = [shoulder], [shoulder.child_link]
+    for link in links:
+        for joint in tree.joints():
+            if joint.parent_link == link:
+                chain.append(joint)
+                links.append(joint.child_link)
+    return chain
+
+
+def _log_ghosts(rr, ghosts: dict[str, Ghost], start: float) -> None:
+    """Each ghost's arm meshes (only those), see-through, hung off its base, hidden until a trajectory shows it."""
+    for short, ghost in ghosts.items():
+        tree, root = ghost.tree, f"/{GHOST_ROOT}{short}"
+        links = {joint.child_link for chain in ghost.arms.values() for joint in chain}
+        every = [tree.root_link().name] + [joint.child_link for joint in tree.joints()]
+        shown = [path for link in links for path in tree.get_visual_geometry_paths(link)]
+        hidden = [path for link in every if link not in links for path in tree.get_visual_geometry_paths(link)]
+        model = (shown or hidden)[0].split("/visual_geometries")[0]
+        rr.send_chunks(tree.stream().filter(content=[f"+ {root}/**", f"- {model}/collision_geometries/**",
+                                                     *(f"- {path}/**" for path in hidden)]))
+        for path in shown:
+            rr.log(path, rr.Asset3D.from_fields(albedo_factor=rgb01(PLAN, 0.4)), static=True)
+        rr.log(f"{root}/attach", rr.Transform3D(child_frame=f"{GHOST_ROOT}{short}/{tree.root_link().name}",
+                                                parent_frame=f"tf#/world/{short}"), static=True)
+        _set_time(rr, start, start)
+        for chain in ghost.arms.values():
+            _log_ghost_arm(rr, root.lstrip("/"), chain, {}, shown=False)
+
+
+def _log_ghost_arm(rr, root: str, chain: list, joints: dict[str, float] | None, shown: bool) -> None:
+    """Show or hide a ghost arm at the current time, its joints set first (those not given at zero; None: kept)."""
+    for joint in chain if joints is not None else ():
+        rr.log(f"{root}/joints/{joint.name}", joint.compute_transform(joints.get(joint.name, 0.0), clamp=False))
+    rr.log(f"{root}/joints/{chain[0].name}", rr.Transform3D.from_fields(scale=[1.0 if shown else HIDDEN_SCALE] * 3))
+
+
+def _log_sent(rr, sent: list[Shown], ghosts: dict[str, Ghost], start: float, end: float) -> None:
+    """Draw each sent path, arm ghost and clearance trip at its time, and take it away at its end."""
+    for shown in sent:
+        root, _, arm = shown.entity.partition("/")
+        ghost = ghosts.get(root.removeprefix(GHOST_ROOT)) if root.startswith(GHOST_ROOT) else None
+        chain = ghost.arms.get(arm) if ghost is not None else None
+        if root.startswith(GHOST_ROOT) and chain is None:
+            continue  # * that robot has no model, noted
+        _set_time(rr, max(shown.start, start), start)
+        if chain is not None:
+            _log_ghost_arm(rr, root, chain, shown.what, shown=True)
+        else:
+            trip = root == "world" and shown.entity.startswith("world/trips/")
+            rr.log(shown.entity, rr.LineStrips3D(shown.what, radii=0.005 if trip else PLAN_RADIUS,
+                                                 colors=rgb01(COLLISION if trip else PLAN, 1.0), labels=shown.labels))
+        if shown.end is not None and shown.end <= end:
+            _set_time(rr, shown.end, start)
+            if chain is not None:
+                _log_ghost_arm(rr, root, chain, None, shown=False)
+            else:
+                rr.log(shown.entity, rr.Clear(recursive=False))
+
+
 # --- --- --- --- --- LAYOUT --- --- --- --- ---
 
-def _blueprint(found: list[Session], objects: list[str], models: dict[str, Model]):
+def _blueprint(found: list[Session], objects: list[str], models: dict[str, Model], ghosts: dict[str, Ghost]):
     """The default layout: the 3D lab and the state timelines left, a plot tab per robot and the text log right."""
     import rerun.blueprint as rrb
 
@@ -786,6 +1073,7 @@ def _blueprint(found: list[Session], objects: list[str], models: dict[str, Model
     lab_frame = ["+ /world/**"]
     for serial, model in models.items():
         lab_frame += [f"+ /{MODEL_ROOT}{short_serial(serial)}/**", f"- /{model.collisions.lstrip('/')}/**"]
+    lab_frame += [f"+ /{GHOST_ROOT}{short}/**" for short in ghosts]
     return rrb.Blueprint(
         rrb.Horizontal(
             rrb.Vertical(rrb.Spatial3DView(name="lab frame", origin="/", contents=lab_frame),
