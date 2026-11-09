@@ -8,6 +8,9 @@ start, a folder `~/.ros/assembly_observer/<YYYYMMDD>/<stamp>_session/`:
 
 - experiment.json: the robots and their tools, the commits, sim or real, the names' FORMAT
   (`shared/recordings/runs.py`, `names.py`).
+- ! Sim or real is known only once the simulators announce themselves (`simulated_parts.py`, the relay's
+  announcement), after the start: a session is real until a simulated base, arm or relay is heard, then sim for
+  good: its folder gets "_sim" (`<stamp>_session_sim/`) and experiment.json says "environment": "sim".
 - chunk_001.npz, chunk_002.npz, ...: every continuous value each tick (`columns.py`) for CHUNK_SECONDS each, or
   until the tracked objects change; compressed, values float32; read one with `load_recording` (pass the file).
   Each opens with a "state" event per robot, the relay and the objects: every state then.
@@ -45,7 +48,7 @@ from rosidl_runtime_py.convert import message_to_ordereddict
 from ...drive import drive_folder, environment, folder_name
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...shared.recordings.runs import run_folder, write_description
+from ...shared.recordings.runs import load_description, run_folder, write_description
 from ...shared.runs.runs import commits
 from ...ui.css import side_by_side_css
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_SENSOR, block, chip, chip_line, section, values
@@ -125,8 +128,7 @@ class AssemblyObserverPlugin(HuskyPlugin):
         """Drop days older than KEPT_DAYS, make the session's folder, start recording and listening, build the panel."""
         robots = dict(ctx.world.robots)
         relay = getattr(ctx.world, "mocap_relay", None)
-        simulated = self._simulated = any(robot.base.simulation is not None for robot in robots.values()) or \
-            bool(relay is not None and relay.state.simulated)
+        simulated = self._simulated = simulating(robots, relay)
         self._root = LOCAL_ROOT
         self._writer = ThreadPoolExecutor(1, "observer-writer")
         self._rows = 2 * math.ceil(CHUNK_SECONDS / getattr(ctx.config, "tick_period", 0.05))
@@ -153,8 +155,9 @@ class AssemblyObserverPlugin(HuskyPlugin):
             "robots": {serial: {"arms": {name: type(arm.end_effector).__name__ if arm.end_effector else None
                                          for name, arm in robot.arms.items()}} for serial, robot in robots.items()},
             "plugins": list(getattr(ctx.config, "enabled_plugins", ())), **environment(simulated)}
-        # * On the writer: the commits ask git.
-        self._write(lambda: write_description(self._folder, {**description, "commits": commits()}))
+        # * On the writer: the commits ask git. The folder as it is now: it may get "_sim" later (`_now_simulated`).
+        folder = self._folder
+        self._write(lambda: write_description(folder, {**description, "commits": commits()}))
         self._write(self._measure)
         self._watcher = Watcher(robots, relay, ctx.now, ctx.world.tracked_objects)
         self._watcher.attach()
@@ -173,11 +176,29 @@ class AssemblyObserverPlugin(HuskyPlugin):
         self._log_pending(ctx)
         if self._watcher is None:
             return
+        if not self._simulated and simulating(ctx.world.robots, getattr(ctx.world, "mocap_relay", None)):
+            self._now_simulated(ctx)
         self._queue(ctx, self._look(ctx) + self._log_lines(ctx))
         # * A new chunk also when the tracked objects change: a chunk's columns are fixed.
         if ctx.now() - self._chunk_started >= CHUNK_SECONDS or tuple(ctx.world.tracked_objects) != self._objects:
             self._end_chunk(ctx)
             self._start_chunk(ctx)
+
+    def _now_simulated(self, ctx: PluginContext) -> None:
+        """Mark the session sim: its folder gets "_sim" and experiment.json says so, on the writer.
+
+        ! The writer runs in order: writes queued before keep the old folder and run before the rename, writes queued
+          after name the new one.
+        """
+        self._simulated = True
+        old = self._folder
+        new = old.with_name(f"{old.name}_sim")
+        count = 2
+        while new.exists():
+            new, count = old.with_name(f"{old.name}_sim_{count}"), count + 1
+        self._folder = new
+        self._write(_mark_sim, old, new)
+        ctx.log_info(f"simulated parts heard: the session is a simulation, recorded into {new}")
 
     def _look(self, ctx: PluginContext) -> list[dict]:
         """The watcher's events; an error is one "observer error" event, never a failed tick.
@@ -514,7 +535,21 @@ class AssemblyObserverPlugin(HuskyPlugin):
             self._write_error = f"a write failed: {error!r}"
 
 
+def simulating(robots: dict, relay) -> bool:
+    """Whether a base or arm is simulated (`simulated_parts.py`) or the relay reads a simulation (`sim:=true`) now."""
+    return any(robot.base.simulation is not None or any(arm.simulation is not None for arm in robot.arms.values())
+               for robot in robots.values()) or bool(relay is not None and relay.state.simulated)
+
+
 # --- --- --- --- --- FILES (writer thread) --- --- --- --- ---
+
+def _mark_sim(old: Path, new: Path) -> None:
+    """Rename a session's folder to its "_sim" name and say "environment": "sim" in its experiment.json."""
+    old.rename(new)
+    description = load_description(new)
+    if description is not None:
+        write_description(new, {**description, **environment(True)})
+
 
 async def _stop(ctx: PluginContext, process: subprocess.Popen) -> None:
     """End a helper script still running: ask, then kill it after 2 s; polls, never blocks the loop."""

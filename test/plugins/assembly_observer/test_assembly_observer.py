@@ -19,6 +19,7 @@ from husky_assembly_teleop.robot_interface.arm import SentTrajectory, WrenchRead
 from husky_assembly_teleop.robot_interface.base import SentPath
 from husky_assembly_teleop.robot_interface.mocap_relay import FrameDrift, frame_drift
 from husky_assembly_teleop.robot_interface.robot_lease import take_lease
+from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
 from husky_assembly_teleop.shared.recordings.runs import load_description, load_recording
 from scaffolding_assembly_core.geometry import Pose
 
@@ -662,6 +663,33 @@ def test_the_helper_script_lists_prints_and_copies(tmp_path):
                               "--to", str(tmp_path / "out")).splitlines()[-1])
     assert outcome["destination"].startswith(str(tmp_path / "out" / "script_test"))
     assert list(outcome["copied"]) == [plugin._folder.name]
+
+
+def simulated_base(lab: RobotLab) -> None:
+    """Cindy's base announces itself simulated from now on."""
+    lab.cindy.base.simulation = SimulatedPart("base", "husky_sim", "base simulator", lab.ctx.t)
+
+
+def test_a_session_turns_sim_once_a_simulated_part_is_heard(tmp_path):
+    """Real until a simulated base is heard, then "_sim" folder and "environment": "sim"; nothing written is lost."""
+    lab, plugin = lab_on_drive(tmp_path), AssemblyObserverPlugin()
+    plugin.setup(lab.ctx)
+    first = plugin._folder
+    lab.ctx.console_log.add(LoggingSeverity.INFO, "assembly_guide", "before the simulator")
+    run(lab, plugin, 0.5)
+    simulated_base(lab)
+    run(lab, plugin, 0.5)
+    lab.ctx.console_log.add(LoggingSeverity.INFO, "assembly_guide", "after the simulator")
+    run(lab, plugin, 0.5)
+    plugin.teardown(lab.ctx)
+
+    assert plugin._folder == first.with_name(first.name + "_sim") and not first.exists()
+    description = load_description(plugin._folder)
+    assert description["environment"] == "sim" and description["kind"] == "observer session"
+    texts = [event.get("text", "") for event in events_of(plugin._folder)]
+    assert "before the simulator" in texts and "after the simulator" in texts
+    assert any("the session is a simulation" in str(line) for line in lab.ctx.logs)
+    assert (plugin._folder / "chunk_001.npz").is_file()
 
 
 def test_open_in_rerun_runs_the_helper_script_on_the_range(tmp_path, monkeypatch, local_root):
