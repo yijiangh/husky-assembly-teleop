@@ -16,7 +16,8 @@ from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import (MIN_D
 from husky_assembly_teleop.plugins.base_planner.follow import followed, thinned, xicr_range
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE
 from husky_assembly_teleop.plugins.base_planner.tasks import PASSAGE_ANGLE, WHEELS, Task, along, passage, to_lab
-from husky_assembly_teleop.plugins.base_planner.planner_plugin import kept_margin, narrowed
+from husky_assembly_teleop.plugins.base_planner.planner_plugin import (GOAL_SHIFT, GOAL_TURN, kept_margin, narrowed,
+                                                                       roomier_goal)
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.scene import Body
 from test_base_planner_rrt import POST, _holding_bar, _snapshot, alice, robots, world  # noqa: F401  (fixtures)
@@ -355,6 +356,19 @@ def test_parks_in_a_passage_only_the_narrow_margin_fits_and_slows_there(world, r
     assert slow.speed_scale is not None and slow.speed_scale.min() < 1.0 and slow.speed_scale[0] == 1.0
     assert narrow - 0.01 <= slow.margin < margin and slow.close
     assert slow.duration > result.path.duration
+
+
+@pytest.mark.slow
+def test_a_tight_target_moves_a_little_to_more_room(world, robots, alice):  # noqa: F811
+    """A target 3 cm from a post moves at most GOAL_SHIFT and GOAL_TURN to more room; a roomy one stays."""
+    goal = (0.0, -2.0, 0.0)
+    post = _box_at_gap(world, robots, alice, "post", goal, 0.03, (0.0, 1.0))
+    world.sync(_snapshot(robots, [post]))
+    moved, note = roomier_goal(world, alice, goal, 0.10)
+    assert note.startswith("target moved") and "3 cm there" in note
+    assert math.dist(moved[:2], goal[:2]) <= GOAL_SHIFT + 1e-9 and abs(moved[2] - goal[2]) <= GOAL_TURN + 1e-9
+    assert world.nearest(alice, moved, 0.10)[0] > world.nearest(alice, goal, 0.10)[0] + 0.005
+    assert roomier_goal(world, alice, (-1.0, 0.0, 0.0), 0.10) == ((-1.0, 0.0, 0.0), "")
 
 
 def test_a_search_back_from_the_target_costs_moves_as_driven():

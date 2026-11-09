@@ -13,8 +13,8 @@ Hybrid A* over the base's floor pose (x, y, yaw) that drives curves where they f
   found is shortened, then checked as the follower really drives it, simulated across the range (`follow.followed`).
 - Narrow passages: moves may come as close as the narrow margin where the margin does not fit; the cost map makes
   such places dear, and the single move and the shortening keep the margin. The planner plugin slows the path there.
-- Searches from the tighter end first, then the other way, each with half the time: a search that starts in a narrow
-  place is already lined up with it.
+- Searches from the tighter end first, then the other way, each with TIME_LIMIT (so up to twice it in all): a search
+  that starts in a narrow place is already lined up with it.
 """
 
 from __future__ import annotations
@@ -119,6 +119,9 @@ PORTAL_LEAD = 1.0             # m: a curve onto it settles (SETTLE_DISTANCE) bef
 PORTAL_PAST = 0.3             # m
 PORTAL_REACH = 3.0            # m, try portals whose lead-in is this close
 PORTAL_TRIES = 2              # portals tried from one node
+#: Centring portals takes at most this share of a search's time: in a cluttered place every one costs hundreds of
+#: checks, and none may have a way through.
+PORTAL_SHARE = 1.0 / 3.0
 #: A portal is centred when first tried: its line turned and shifted sideways to the widest clear room, first ROUGH
 #: then FINE (turns in degrees, shifts in metres); it reaches along that line until the base has PORTAL_ROOM to spare.
 ROUGH = (np.arange(-36.0, 36.1, 3.0), np.linspace(-0.09, 0.09, 10))
@@ -254,7 +257,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     for k, backwards in enumerate((backwards_first, not backwards_first)):
         debug.note(f"search {'back from the target' if backwards else 'from the start'}")
         result = _plan_one(world, own, start, goal, abort, settings, debug,
-                           started + TIME_LIMIT * (0.5 if k == 0 else 1.0) - FINISH_RESERVE, backwards)
+                           started + TIME_LIMIT * (k + 1) - FINISH_RESERVE, backwards)
         if result.path is not None or abort.is_set():
             return PlanResult(result.path, result.reason, time.time() - started, hit=result.hit, direct=result.direct)
         reasons.append(f"{'back from the target' if backwards else 'from the start'}: {result.reason}")
@@ -868,6 +871,8 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
     # from which node.
     through: dict[int, tuple | None] = {}
     tried: set = set()
+    # Seconds spent centring portals, and how many it may take (PORTAL_SHARE of the search's time).
+    centring = [0.0, PORTAL_SHARE * max(deadline - time.time(), 0.0)]
 
     def child(parent: _Node, index: int, move) -> _Node:
         kind, amount, drive = move
@@ -911,7 +916,11 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
         for _, k in sorted(options)[:PORTAL_TRIES]:
             tried.add((index, k))
             if k not in through:
+                if centring[0] >= centring[1]:
+                    continue
+                began = time.time()
                 line = centred(cost_map.portals[k])
+                centring[0] += time.time() - began
                 through[k] = line and tuple(_to_centre(pose, ahead) for pose in line)
                 crossings[k] = Counter()
             if through[k] is not None and _join(node.pose, through[k][0]):

@@ -69,6 +69,13 @@ STALE_JOINT = math.radians(2.0)    # rad
 NARROW_STEP = 0.05
 TRACE_TURN = 0.3   # m/rad
 TRACE_AHEAD = 0.5  # m
+#: A target with less room than the margin may move up to GOAL_SHIFT metres and GOAL_TURN radians, in GOAL_STEP and
+#: GOAL_TURN_STEP steps, to the nearest pose with nearly the most room there (within GOAL_GIVE of it): the arms'
+#: live IK takes up a few centimetres, and the guide counts a drive within 6 cm and 6 degrees as arrived.
+GOAL_SHIFT, GOAL_STEP = 0.04, 0.02            # m
+GOAL_TURN, GOAL_TURN_STEP = math.radians(4.0), math.radians(2.0)
+GOAL_GIVE = 0.01                              # m
+
 #: With a narrow margin, what the start or target is closer to than it keeps ARRIVAL_SLACK less than the end has (room
 #: for the follower to arrive a little off), but never less than half of it.
 ARRIVAL_SLACK = 0.01  # m
@@ -204,6 +211,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         not_saved: list[str] = []
         # The other robots not measured and their stand-ins, from the worker (`with_stand_ins`).
         others: list[str] = []
+        # How the target moved for room, from the worker (`roomier_goal`); empty if it did not.
+        moved: list[str] = []
 
         def work() -> PlanResult:
             # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
@@ -216,13 +225,17 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 others[:] = setup["stand_ins"] = list(stand_ins.warnings)
                 self._world.sync(stand_ins.scene)
                 own, world = robot_id(serial), self._world
+                # * A target with little room moves a little to where there is more (`roomier_goal`).
+                goal_here, note = roomier_goal(world, own, goal, settings.margin)
+                moved[:] = [note] if note else []
+                setup["goal_planned"] = list(goal_here)
                 # * Narrow passages may come as close as the narrow margin (lattice); only what the start or target
                 #   is already closer to keeps less (`end_margins`).
                 narrow = min(settings.margin, getattr(settings, "narrow_margin", settings.margin))
-                close = end_margins(world.close_objects(own, (start, goal), narrow), narrow < settings.margin)
+                close = end_margins(world.close_objects(own, (start, goal_here), narrow), narrow < settings.margin)
                 setup["close"] = {world.snapshot.label(object_id): margin for object_id, margin in close.items()}
                 with world.keeping(own, narrow, close):
-                    result = algorithm.plan(world, own, start, goal, abort, settings, debug)
+                    result = algorithm.plan(world, own, start, goal_here, abort, settings, debug)
                 if result.path is not None:
                     kept = {world.snapshot.label(object_id): margin for object_id, margin in close.items()}
                     model = load_model(settings.follower_model or FOLLOWER_MODEL)
@@ -251,12 +264,14 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             self._start_joints = (result.path, dict(snapshot.robots[robot_id(serial)].joints))
             path, how = result.path, algorithm.label + (" (straight)" if result.direct else "")
             stand_ins = f" ({unmeasured(others)})" if others else ""
-            return (f"{how}: {path.length:.2f} m, {path.duration:.1f} s, "
-                    f"found in {result.seconds:.1f} s{guess}{stand_ins}{close_note(path, settings.margin)}"), \
-                bool(guessed or others or path.close)
+            shift = f"; {moved[0]}" if moved else ""
+            return (f"{how}: {path.length:.2f} m, {path.duration:.1f} s, found in {result.seconds:.1f} s{guess}"
+                    f"{stand_ins}{shift}{close_note(path, settings.margin)}"), \
+                bool(guessed or others or path.close or moved)
 
         return Search(label=f"plan {serial}", message=f"planning for {short_serial(serial)}…{guess}", work=work,
-                      time_limit=TIME_LIMIT + WAIT_MARGIN, accepted=accepted, finished=finished)
+                      # * The lattice searches both ways, each up to TIME_LIMIT.
+                      time_limit=2.0 * TIME_LIMIT + WAIT_MARGIN, accepted=accepted, finished=finished)
 
     def stale_reason(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> str:
         """Stale once the base moves away from the plan's start, or an arm moves from where it was planned."""
@@ -567,6 +582,36 @@ def end_margins(distances: dict[str, float], narrow: bool) -> dict[str, float]:
         kept = kept_margin(distance)
         out[object_id] = max(kept - ARRIVAL_SLACK, kept / 2.0) if narrow else kept
     return out
+
+
+def roomier_goal(world: PlanningWorld, own: str, goal, margin: float) -> tuple[tuple[float, float, float], str]:
+    """The target to plan to: `goal`, or the nearest pose near it with nearly the most room there.
+
+    Only a target with less room than `margin` moves, within GOAL_SHIFT and GOAL_TURN, and only to a pose with more
+    room; of the poses within GOAL_GIVE of the most room found, the nearest (a degree counts like 5 mm). True
+    distances, worker thread, world synced.
+
+    Returns:
+        tuple: The pose (x, y, yaw), and how it moved for the plan's line ("" if it did not).
+    """
+    goal = tuple(float(value) for value in goal)
+    here, _ = world.nearest(own, goal, margin)
+    if here >= margin - 1e-9:
+        return goal, ""
+    shifts = np.arange(-GOAL_SHIFT, GOAL_SHIFT + 1e-9, GOAL_STEP)
+    turns = np.arange(-GOAL_TURN, GOAL_TURN + 1e-9, GOAL_TURN_STEP)
+    room = [(world.nearest(own, (goal[0] + dx, goal[1] + dy, goal[2] + turn), margin)[0], dx, dy, turn)
+            for dx in shifts for dy in shifts if math.hypot(dx, dy) <= GOAL_SHIFT + 1e-9 for turn in turns]
+    most = max(clear for clear, *_ in room)
+    if most <= here + 1e-9:
+        return goal, ""
+    clear, dx, dy, turn = min((entry for entry in room if entry[0] >= most - GOAL_GIVE - 1e-9),
+                              key=lambda entry: math.hypot(entry[1], entry[2]) + 0.005 * abs(math.degrees(entry[3])))
+    if math.hypot(dx, dy) < 1e-9 and abs(turn) < 1e-9:
+        return goal, ""
+    return ((goal[0] + dx, goal[1] + dy, goal[2] + turn),
+            f"target moved {math.hypot(dx, dy) * 100:.0f} cm, {math.degrees(turn):+.0f}° for room ({here * 100:.0f} "
+            f"cm there, {clear * 100:.0f} cm here)")
 
 
 def narrowed(world: PlanningWorld, own: str, path: BasePath, margin: float, kept: dict[str, float], model: dict,
