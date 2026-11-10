@@ -17,7 +17,7 @@ import numpy as np
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import split_link_id
 from scaffolding_assembly_core.process import LineSpec, Movement, Process
-from scaffolding_assembly_core.process.solutions import MovementResult
+from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
 
 from .collision import SweptReport
 from .ik import IkResult
@@ -129,6 +129,31 @@ class GoalCheck:
                                                "colliding": list(ik.colliding) if ik.colliding else None,
                                                "reason": ik.reason},
                 "sources": dict(self.sources), "warnings": list(self.warnings), "seconds": self.seconds}
+
+
+def arm_path_route(robot: str, routine: Routine | None, joint_names: tuple[str, ...], rows, planner: str,
+                   seconds: float = 0.0, goal_joints: Mapping[str, float] | None = None,
+                   warnings: tuple[str, ...] = ()) -> RouteResult:
+    """Another planner's joint path as a route the executor runs, e.g. the arm planner's for one arm.
+
+    The executor times the rows itself (the motion time); its own checks (the plan's basis, the start where the arms
+    are) apply as to any route.
+
+    Args:
+        robot: The process robot id, e.g. "robots/alice".
+        routine: The movement's routine.
+        joint_names: The joints of each row, e.g. one arm's six in the UR driver's order.
+        rows: The path, radians, its first row where it was planned from.
+        planner: Which planner made it, for the records, e.g. "arm_planner.rrt_connect".
+        seconds: Time taken to plan.
+        goal_joints: The joints planned to, by name.
+        warnings: What the planner warned about.
+    """
+    positions = tuple(tuple(float(value) for value in row) for row in rows)
+    trajectory = Trajectory(robot, tuple(joint_names), positions)
+    goal = dict(goal_joints) if goal_joints is not None else dict(zip(joint_names, positions[-1]))
+    return RouteResult(MovementResult("solved", trajectory=trajectory), routine, planner=planner, attempts=1,
+                       seconds=seconds, waypoints=len(positions), goal_joints=goal, warnings=tuple(warnings))
 
 
 def goal_line(check: GoalCheck) -> str:

@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, design_scene, purged_process, robot_config, step
 from plugin_fakes import from_outside
-from robot_lab import FakeRun, RobotLab
+from robot_lab import FakeRun, RobotLab, ShowsCurrent
 
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
 from husky_assembly_teleop.plugins.movement_exec.servo_measure import GIVE_UP, TOOL0_SERVO
@@ -155,7 +155,7 @@ class ServoLab(RobotLab):
         # * tool0 scenarios by default (the setting is on by default): the bar tests tick "Servo by bar" themselves.
         self.run.request_settings(servo_by_bar=False)
         self.planner = StubPlanner(self)
-        self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner}
+        self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "process": ShowsCurrent(self.run)}
         self.plugin = MovementExecPlugin()
         self.plugin.setup(self.ctx)
 

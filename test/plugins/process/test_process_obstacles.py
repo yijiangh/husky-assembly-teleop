@@ -402,3 +402,19 @@ def test_bar_placed_by_hand(tmp_path):
     panel.select(len(panel._movements) - 1)
     action, movement = panel.selected
     assert BY_HAND_LABEL in panel._details_html(action, movement, panel._labels(action))[0]
+
+
+def test_scene_shows_names_the_movement_the_snapshot_holds(process):
+    """The snapshot is taken before the bodies are put: the tick they change, none shows; then the new one."""
+    plugin, ctx, _live = _set_up(process)
+    first, second = _movement(process, 0), _movement(process, 1)
+    plugin.update(ctx)
+    assert plugin.scene_shows is None, "put this tick: not in this tick's snapshot"
+    plugin.update(ctx)
+    assert plugin.scene_shows == (first[0].id, first[1].id)
+    plugin.select(1)
+    assert plugin.scene_shows == (first[0].id, first[1].id), "until the next update, the old one"
+    plugin.update(ctx)
+    assert plugin.scene_shows is None
+    plugin.update(ctx)
+    assert plugin.scene_shows == (second[0].id, second[1].id)

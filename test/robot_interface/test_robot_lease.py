@@ -14,8 +14,8 @@ pytestmark = pytest.mark.safety
 def test_a_free_robot_takes_no_commands():
     """Nobody holds its lease: commands are refused until someone leases it."""
     guard = LeaseSlot("0804")
-    with pytest.raises(NotLeased, match="robot 0804 is not leased; take its lease first, a twist not sent"):
-        guard.check("a twist")
+    with pytest.raises(NotLeased, match="robot 0804 is not leased; take its lease first$"):
+        guard.check()
 
 
 def test_a_lease_takes_every_robot_or_none():

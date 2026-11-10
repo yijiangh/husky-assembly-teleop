@@ -158,6 +158,19 @@ class Procedure:
         self.unknown_allowed = unknown
         self.go()
 
+    def arm_confirm(self, ctx: PluginContext) -> str:
+        """Ask Go's question for other robots not measured now, without going: a Go within its window then goes.
+
+        For a caller that asks its own second press of Go first (e.g. out of order): one second press answers both.
+
+        Returns:
+            str: Go's question ("press Go again … unknown"), or "" when it has none.
+        """
+        if not self.prompt or not self._acting:
+            return ""
+        asked, _unknown = self.confirm.asks(ctx, self._acting, "Go", far=self.out_of_reach(ctx))
+        return asked
+
     def cancel(self) -> None:
         """Cancel the running procedure, or only its `pausable` part while one moves; one waiting for Go ends."""
         if self.running:
@@ -200,6 +213,20 @@ class Procedure:
         await ctx.wait_until(lambda: self._go, timeout_s=GO_TIMEOUT, description="Go")
         self.prompt, self._acting = "", frozenset()
         return self.unknown_allowed
+
+    async def ask_go_while(self, ctx: PluginContext, prompt: str, go: str, holds: Callable[[], bool]) -> bool:
+        """Wait for Go while `holds()`, e.g. while another plugin's question is still open; whether Go was pressed.
+
+        False: the question went away first (answered elsewhere). Go here moves no robot itself: no second press.
+        """
+        self.prompt, self._go, self.doing, self.go_label = prompt, False, "waiting for Go", go
+        self.confirm.press.forget()
+        self._acting, self.unknown_allowed = frozenset(), frozenset()
+        try:
+            await ctx.wait_until(lambda: self._go or not holds(), timeout_s=GO_TIMEOUT, description="Go")
+        finally:
+            self.prompt = ""
+        return self._go
 
     async def preview_go(self, ctx: PluginContext, path: TimedPath, prompt: str, go: str,
                          acting: Iterable[str] = ()) -> frozenset[str]:

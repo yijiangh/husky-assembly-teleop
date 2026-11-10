@@ -79,6 +79,12 @@ class FakeProcess:
         return Selection(self.loaded.process, self.index, at.action, at.movement)
 
     @property
+    def scene_shows(self) -> tuple[str, str]:
+        """The selected movement, shown in the live scene at once."""
+        at = self.loaded.steps[self.index]
+        return at.action.id, at.movement.id
+
+    @property
     def authored(self):
         """The scratch process as read: never placed here."""
         return self.loaded.process

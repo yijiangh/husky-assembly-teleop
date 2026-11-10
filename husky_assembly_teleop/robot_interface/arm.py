@@ -788,8 +788,8 @@ class ArmInterface:
             RobotStopped: If the robot is soft stopped.
             NotLeased: If the running code does not have the robot's lease.
         """
-        self._latch.check(f"a {controller} command to arm {self.config.name}")
-        self._lease_slot.check(f"a {controller} command to arm {self.config.name}")
+        self._latch.check()
+        self._lease_slot.check()
         return self.controllers.running_problem(controller) or self.safety_problem()
 
     def _switch_refusal(self, controller: str) -> str | None:
@@ -1175,7 +1175,7 @@ class ArmInterface:
         Raises:
             NotLeased: If the running code does not have the robot's lease.
         """
-        self._lease_slot.check(f"a zero target wrench to arm {self.config.name}")
+        self._lease_slot.check()
         if self.config.cartesian_test_mode:
             self._log_test_mode("target force", "F [0. 0. 0.] N  T [0. 0. 0.] N m (tool0)")
             return False

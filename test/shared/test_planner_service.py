@@ -199,7 +199,7 @@ def test_a_raising_search_fails_the_plan_and_the_task():
 
 @pytest.mark.safety
 def test_commit_sends_only_the_latest_ready_plan():
-    """Commit refuses a replaced plan and a stale one, and sends the latest ready one, which becomes sent."""
+    """Commit refuses a replaced, a stale and a sent plan, and sends the latest ready one, which becomes sent."""
     async def scenario(planner, ctx):
         old = await planner.request_plan(Request("alice"))
         new = await planner.request_plan(Request("alice"))
@@ -211,13 +211,16 @@ def test_commit_sends_only_the_latest_ready_plan():
         planner.stale = ""
         newest = await planner.request_plan(Request("alice"))
         sent = await planner.commit(newest.id)
-        return refused_old, refused_stale, stale, sent, planner.plan
+        again = await planner.commit(newest.id)
+        return refused_old, refused_stale, stale, sent, again, planner.plan
 
     planner = Planner()
-    refused_old, refused_stale, stale, sent, latest = run(planner, scenario)
-    assert refused_old == (False, "nothing sent: that plan was replaced or cleared")
-    assert not refused_stale[0] and "stale" in refused_stale[1] and stale.state == "stale"
+    refused_old, refused_stale, stale, sent, again, latest = run(planner, scenario)
+    # * Each answer says only why, once: the caller says that nothing was sent.
+    assert refused_old == (False, "that plan was replaced or cleared")
+    assert refused_stale == (False, "the arm moved since planning; plan again") and stale.state == "stale"
     assert sent == (True, "sent") and latest.state == "sent" and planner.sent == [latest.id]
+    assert again == (False, "the plan was sent already")
 
 
 @pytest.mark.safety
@@ -243,12 +246,12 @@ def test_a_commit_to_a_soft_stopped_robot_answers_nothing_sent():
         return await planner.commit(plan.id), planner.plan
 
     async def refused(ctx, plan, answer):
-        raise RobotStopped("robot alice is soft stopped, a path not sent; press Resume first")
+        raise RobotStopped("robot alice is soft stopped; press Resume first")
 
     planner = Planner()
     planner.execute = refused
     committed, latest = run(planner, scenario)
-    assert committed == (False, "nothing sent: robot alice is soft stopped, a path not sent; press Resume first")
+    assert committed == (False, "robot alice is soft stopped; press Resume first")
     assert latest.state == "ready"
 
 
@@ -379,7 +382,7 @@ def test_a_commit_to_a_robot_still_moving_is_refused_or_replaces_the_motion(repl
     if replaces:
         assert committed == (True, "sent 2") and ended[0] == (1, True)
     else:
-        assert committed == (False, "nothing sent: an earlier commit still moves alice; wait, or Hold it")
+        assert committed == (False, "an earlier commit still moves alice; wait, or Hold it")
 
 
 def test_clear_forgets_the_plan():
@@ -413,6 +416,10 @@ class Panel(PlannerPanel):
     def target_change(self, ctx, plan):
         """The test's target change."""
         return self.change
+
+    def take_request(self, ctx, request):
+        """Take another plugin's request as the target."""
+        self.serial, self.goal = request.serial, request.goal
 
     def commit_margin(self, ctx):
         """A commit's clearance: 5 mm."""
@@ -580,7 +587,7 @@ def test_a_refusal_or_cancel_forgets_a_commit_waiting_for_its_second_press():
     panel = Panel()
     panel._api = SimpleNamespace(cancel_commit=lambda: False)
     panel._confirm.press.press(0.0)
-    panel._say("not committed: the target changed since planning; replan", FAIL)
+    panel._say("not sent: the target changed since planning; replan", FAIL)
     assert panel._confirm.press.waiting(0.1) == ""
     panel._confirm.press.press(0.0)
     panel._cancel_commit()
@@ -607,7 +614,7 @@ def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():
 def test_a_plan_arriving_counts_as_use_once_a_re_timed_one_does_not():
     """The panel's own plan arriving touches its use, so its ghost shows after a long search; re-timed, it does not.
 
-    A plan another plugin asked for (calibration's moves) never counts: the panel's ghosts stay hidden.
+    A plan another plugin asked for (e.g. a drive) is the panel's own once shown: it takes its target and counts.
     """
     touches = []
     panel = Panel()
@@ -624,4 +631,4 @@ def test_a_plan_arriving_counts_as_use_once_a_re_timed_one_does_not():
     assert touches == [True]
     api.plan = Plan(2, Request("alice", 2.0), "ready", PATH, message="found for another plugin")
     panel.update(ctx)
-    assert touches == [True]
+    assert touches == [True, True] and panel.goal == 2.0

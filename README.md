@@ -284,12 +284,13 @@ In **Where**, "strip" is the minimized strip at the right edge, for tools not ne
 
 ## Assembly
 
-Name `assembly_steps`: it brings all of these but `doc`. In the lab add `doc`, `robot_control`,
-`base_planner_panel` and `obstacles`.
+Name `assembly_steps`: it brings all of these but `doc` and `assembly_guide`. In the lab add `doc`, `assembly_guide`,
+`robot_control`, `base_planner_panel`, `arm_planner_panel` and `obstacles`.
 
 | Plugin | Where | Also loads | In short |
 |---|---|---|---|
 | `assembly_steps` | **Assembly**; **Plan plots** window | `process`, `assembly_run`, `movement_exec`, `motion_planner`, `mocap_bars`, `collisions` | The operator's steps: Live IK, Plan, preview, Exec. Experimental. |
+| `assembly_guide` | Its own **Assembly guide** tab | `process`, `assembly_run`, `base_planner`, `arm_planner`, `motion_planner`, `movement_exec`, `mocap_bars`, `collisions` | Walks the process part by part, Prepare → Check → Go, through the base planner and the executor; Auto and a simulation-only God mode. Experimental. |
 | `movement_exec` | **Assembly**; **Exec plots** window; phone **Exec** | `process`, `assembly_run`, `motion_planner`, `mocap_bars`, `collisions` | Runs one step on the real robots, with Confirms, compliant inserts and the servo. Experimental. |
 | `assembly_run` | **Assembly** | `process` | Remembers how far the assembly got: done actions, where each robot was left. Experimental. |
 | `doc` | **Doc** | `assembly_run`, `process` | Builds the day's as-built page and reports; lists the loaded process's assembly runs and deletes them, with their as-built rows, after a warning. Experimental. |

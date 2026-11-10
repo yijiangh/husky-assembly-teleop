@@ -168,6 +168,45 @@ def test_the_panel_plans_and_commits_through_the_api():
     assert planner.plan.state == "sent"
 
 
+class FakeTarget:
+    """The target input: its pose, set from code."""
+
+    def __init__(self, pose):
+        """Start at `pose`."""
+        self.pose = pose
+
+    def set(self, x, y, yaw):
+        """Take a new pose."""
+        self.pose = (x, y, yaw)
+
+
+def test_another_plugins_plan_is_the_panels_own():
+    """A plan another plugin asked for (e.g. a drive) sets the panel's robot and target, so Commit sends it."""
+    planner, ctx = Planner(), SimpleNamespace(submit=lambda _label, run: run(), now=lambda: 0.0,
+                                              spawn=lambda _label, work: asyncio.get_running_loop().create_task(work),
+                                              log_info=lambda _text: None, lease_robots=lease_test_robots,
+                                              world=SimpleNamespace(robots={}), config=SimpleNamespace(robots=()),
+                                              scene=SimpleNamespace(snapshot=Scene()), **WATCHES)
+    planner.setup(ctx)
+
+    async def scenario():
+        panel = panel_for(planner)
+        panel.serial, panel._target = "belle", FakeTarget((0.0, 0.0, 0.0))
+        planner.request_plan(BasePlanRequest(SERIAL, GOAL))
+        await asyncio.sleep(0.05)
+        panel.update(ctx)
+        taken = (panel.serial, panel._target.pose, panel._target_moved)
+        panel._commit(ctx)
+        await asyncio.sleep(0.01)
+        return taken, panel._message
+
+    try:
+        taken, committed = asyncio.run(scenario())
+    finally:
+        planner.teardown(ctx)
+    assert taken == (SERIAL, GOAL, "") and committed == "sent" and planner.sent == [planner.plan.id]
+
+
 @pytest.mark.safety
 def test_commits_second_press_lets_the_robots_own_arms_be_unknown():
     """The robot's arms not measured: the first Commit only asks; the second sends, letting the robot be unknown."""

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Callable, Collection, Mapping, Protocol
 
 
 from ..config import find_robot_serial, short_serial
@@ -109,7 +109,8 @@ class ExecRequest:
         parts: The step's parts still to run, in order.
         serial: The acting robot.
         robot_name: Its process name, e.g. "cindy".
-        route: The plan of the step's motion, or None when no motion part is left.
+        route: The plan of the step's motion, or None when no motion part is left: the motion planner's, or another
+            planner's path made a route (`route_result.arm_path_route`, e.g. the arm planner's for one arm).
         route_movement: The movement index the route was planned for, or None.
         basis: What the route was planned from, or None.
         traj_time: Seconds the motion should take (the arm's limits may need longer).
@@ -124,6 +125,7 @@ class ExecRequest:
             default ticked.
         preview: Shows the motion the open Confirm starts as (route, basis, seconds), or none with (None, None, 0.0),
             so the requester's preview never shows a path that is not next.
+        dry_run: Run every check of this request and send nothing, whatever the executor's own Dry run box says.
     """
 
     loaded: LoadedProcess
@@ -143,6 +145,7 @@ class ExecRequest:
     unknown_robots: frozenset[str] = frozenset()
     clearance: bool = True
     preview: Callable[[RouteResult | None, PlanBasis | None, float], None] = lambda *_: None
+    dry_run: bool = False
 
 
 @dataclass(frozen=True)
@@ -214,6 +217,16 @@ class MovementExecContract(Protocol):
 
         None once that transfer runs again, another action starts, or the process is loaded again.
         """
+
+    def finished(self, loaded: LoadedProcess, action: str) -> frozenset[tuple[int, int]]:
+        """(step primary, movement index) of `action` finished for real on `loaded`, by any requester.
+
+        The index is SERVO_INDEX for the step's servo. Kept until `request_forget`, another loaded process or another
+        run: a part run from the Assembly tab counts for every other requester too.
+        """
+
+    def request_forget(self, action: str, done: Collection[tuple[int, int]] | None = None) -> None:
+        """Forget that `action`'s movements (only the (primary, index) pairs in `done`, if given) were finished."""
 
     def request_execute(self, request: ExecRequest) -> asyncio.Future[ExecResult]:
         """Run a step's parts with every robot leased until done; the future gives how it ended."""

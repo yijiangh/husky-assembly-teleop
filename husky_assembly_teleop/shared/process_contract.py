@@ -95,6 +95,15 @@ class ProcessContract(Protocol):
         """Path | None: The Rhino file chosen as the as-built page's room, or None for no room."""
 
     @property
+    def scene_shows(self) -> tuple[str, str] | None:
+        """(action id, movement id) whose process bodies this tick's scene snapshot holds; None for none yet.
+
+        The plugin puts the selected movement's bodies (its built bars, held bars, allowed contacts) in the live scene;
+        the snapshot planners read is taken before any plugin runs, so after a new selection this names the old
+        movement, then None for a tick, then the new one. ! Plan a process movement only once this names it.
+        """
+
+    @property
     def authored(self) -> Process | None:
         """Process | None: The loaded process as authored, before its placement; the same object until another loads.
 

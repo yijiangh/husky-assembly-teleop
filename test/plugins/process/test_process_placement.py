@@ -126,14 +126,17 @@ def test_apply_places_the_build_on_the_same_movement(purged):
     assert "off the floor" in plugin._placement_html(ctx)
 
 
-def test_apply_is_refused_once_an_action_is_done_but_the_run_may_place_it(purged):
-    """A done mark refuses Apply (the box goes back); the run's request still places the build."""
+def test_apply_asks_twice_once_an_action_is_done_and_the_run_may_place_it(purged):
+    """A done mark refuses one Apply (the box goes back), the second places it; the run's request places it too."""
     plugin, ctx = _set_up(purged)
     plugin.request_marks({purged.schedule[0]: MARK_DONE})
     plugin.apply_placement(ctx, ON_FLOOR)
     assert plugin.placement == IDENTITY and plugin.process is purged and plugin._pose.pose == IDENTITY
     assert "not placed" in plugin._placement_html(ctx)
-    assert "marked done" in ctx.lines("warn")[-1]
+    assert "press Apply again" in ctx.lines("warn")[-1]
+    ctx.t += 0.5
+    plugin.apply_placement(ctx, PLACEMENT)
+    assert plugin.placement == PLACEMENT and "placed anyway" in ctx.lines("warn")[-1]
     plugin.request_placement(ON_FLOOR)
     assert plugin.placement == ON_FLOOR and plugin.process is not purged
 

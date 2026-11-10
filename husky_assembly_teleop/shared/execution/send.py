@@ -240,10 +240,9 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
         else:
             return SendOutcome(REFUSED, f"{len(command.arms)} arms in one command; at most two move together")
     except MotionRefused as refused:
-        return SendOutcome(REFUSED, f"{short_serial(serial)} refused the trajectory: {refused}; nothing sent")
+        return SendOutcome(REFUSED, str(refused))
     if not sent:
-        return SendOutcome(REFUSED, f"{short_serial(serial)} refused the trajectory: "
-                                    f"{newest_reason(*arms.values())}; nothing sent")
+        return SendOutcome(REFUSED, f"{short_serial(serial)} refused the trajectory: {newest_reason(*arms.values())}")
     started = ctx.now()
     ctx.log_info(f"{serial}: moving {', '.join(arms)}, {command.duration:.1f} s")
     if on_sent is not None:

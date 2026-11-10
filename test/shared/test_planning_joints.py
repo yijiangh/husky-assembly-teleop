@@ -11,7 +11,7 @@ from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.shared.assembly_planning.joints import (arm_joint_names, arm_of_flange, arm_of_joint,
                                                                    arm_side, joint_limits, outside_limits,
-                                                                   unwrap_to_nearest)
+                                                                   turn_limits, unwrap_to_nearest)
 
 
 def test_a_whole_turn_is_taken_off():
@@ -54,6 +54,19 @@ def test_cindy_joint_limits():
     lower, upper = joint_limits(urdf, ["left_ur_arm_elbow_joint", "left_ur_arm_shoulder_pan_joint"])
     assert lower == pytest.approx([-pi, -2 * pi])
     assert upper == pytest.approx([pi, 2 * pi])
+
+
+def test_a_shoulder_lift_never_unwraps_through_pointing_down():
+    """B169_J_transfer: lift -5, IK -185.1 deg; +174.9 is 0.2 deg nearer but swings down through the platform.
+
+    The lift keeps the turn over the top; the other joints still turn to the nearest value.
+    """
+    names = ["left_ur_arm_shoulder_lift_joint", "left_ur_arm_wrist_3_joint"]
+    limits = turn_limits(robot_config_from_serial("0806", DATA).model.urdf, names)
+    goal = unwrap_to_nearest(np.radians([-185.1, -176.5]), np.radians([-5.0, 81.5]), *limits)
+    assert np.degrees(goal) == pytest.approx([-185.1, 183.5])
+    assert limits[0][0] == pytest.approx(-1.5 * pi) and limits[1][0] == pytest.approx(0.5 * pi)
+    assert limits[0][1] == pytest.approx(-4 / 3 * pi) and limits[1][1] == pytest.approx(4 / 3 * pi), "URDF's own"
 
 
 def test_continuous_joint_has_no_limits(tmp_path):

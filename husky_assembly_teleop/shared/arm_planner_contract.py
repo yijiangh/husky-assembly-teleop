@@ -29,6 +29,9 @@ class ArmPlanRequest:
         goal: The six joint values to reach, radians, in the UR driver's order.
         also: Other arms of the robot planned together with `arm`, each with its six goal values: one search over
             all their joints (Cindy's two arms).
+
+    ! Plans run on the real robots: always in the live scene as it is now. A caller planning a process movement
+      waits until the live scene shows that movement (`ProcessContract.scene_shows`).
     """
 
     serial: str
@@ -66,7 +69,7 @@ class ArmPlannerContract(PlannerContract[ArmPlanRequest], Protocol):
         """Joints that put each arm's tool0 at its world pose, by exact IK at the live base, the arms together.
 
         The combination of branches nearest `reference` (the arms' joints now where not given) that collides with
-        nothing, the arms with each other included, wins. Runs after any search in progress.
+        nothing in the live scene, the arms with each other included, wins. Runs after any search in progress.
 
         Returns:
             asyncio.Future: (joint name -> value for every arm in `targets`, or None; one line saying how or why not).
