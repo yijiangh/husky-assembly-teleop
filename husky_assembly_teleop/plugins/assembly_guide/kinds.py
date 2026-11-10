@@ -299,6 +299,11 @@ class HandKind(Kind):
             if box.value:
                 box.value = False
 
+    def forget(self) -> None:
+        """Untick every box and forget the part they were for: the next part by hand shown starts afresh (Redo)."""
+        self.clear()
+        self._for = None
+
     def tick_all(self) -> None:
         """Tick every box (God mode)."""
         for box in self.boxes[:len(self._items)]:

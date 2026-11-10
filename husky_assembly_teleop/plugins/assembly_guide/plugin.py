@@ -15,7 +15,7 @@ The assembly guide: the process part by part, Prepare → Check → Go, each par
   Control) is at its end: Done goes on with one press; anything else asks twice (Skip).
 - One part is shown, and Prepare, Go and Done act on it, as in the calibration guide; Back and Next move it. The next
   part to do is not kept: it is the first part with no result. A procedure belongs to the part that started it:
-  shown elsewhere, the guide line names it. Redo from here makes a done part and every later one to do again.
+  shown elsewhere, the guide line names it. Redo from here makes a part and every later one to do again.
 - Going out of order (earlier parts of the action not done) asks a second press of Go or Done.
 - ! Judgements may be wrong: each refusal of one gives way to a second press ("trust me"), logged as a warning. Prepare
   twice does a done part again (only it, also in an action the run has marked), Done twice confirms a part by hand
@@ -180,6 +180,9 @@ class AssemblyGuidePlugin(HuskyPlugin):
         #: The parts done by the guide's own judgement (a drive, Done, a skip), by index; those skipped among them.
         self._done: set[int] = set()
         self._skipped: set[int] = set()
+        #: Parts Redo from here made to do again while their robot stood at their end: standing there, measured live,
+        #: is no result for them until they ran again, Done left them, or the robot left that end (`update`).
+        self._reopened: set[int] = set()
         #: Parts whose result is not good, by index, as their result chip: a park that did not get there, a drive the
         #: next part finds no goal from.
         self._flagged: dict[int, Check] = {}
@@ -404,8 +407,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
             loaded = self._run(ctx).view.process
             return part.done_keys <= self._executor(ctx).finished(loaded, part.action)
         if part.kind == PARK:
-            # * Its result is where the robot stands: one parked already has nothing to do.
-            return self.at_end(ctx, part)
+            # * Its result is where the robot stands: one parked already has nothing to do (unless redone).
+            return index not in self._reopened and self.at_end(ctx, part)
         # * A flagged drive is to do again, even when later parts ran.
         return part.kind == DRIVE and index not in self._flagged and self._later_ran(ctx, index)
 
@@ -521,6 +524,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self._done.clear()
             self._skipped.clear()
             self._flagged.clear()
+            self._reopened.clear()
             self._show(ctx, self._part_of(ctx, *picked), select=False)
         elif picked != self._followed:
             self._followed = picked
@@ -536,6 +540,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
                 self._done.clear()
                 self._skipped.clear()
                 self._flagged.clear()
+                self._reopened.clear()
                 ctx.log_info("guide: another run: every part is to do again")
             self._run_folder, self._marks = view.folder, dict(view.statuses)
             return
@@ -646,8 +651,11 @@ class AssemblyGuidePlugin(HuskyPlugin):
         if owner is not None and not self.procedure.waiting:
             return f"{owner.label} is busy ({self.procedure.doing or 'running'}): wait, or Cancel"
         if button == REDO:
-            if not self.is_done(ctx, part, self.index):
-                return "this part is not done: nothing to redo"
+            statuses = self._run(ctx).view.statuses
+            if not any(self.is_done(ctx, each, index) or index in self._skipped or index in self._flagged
+                       or statuses.get(each.action) == MARKED
+                       for index, each in enumerate(self.parts[self.index:], self.index)):
+                return "nothing from this part on is done: nothing to redo"
             if owner is not None:
                 return f"{owner.label} waits for Go: Cancel it first"
             if active := self._executor(ctx).active:
@@ -696,6 +704,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         part = self.parts[index]
         self._done.discard(index)
         self._skipped.discard(index)
+        self._reopened.discard(index)
         self._flagged.pop(index, None)
         if part.kind in EXECUTED and part.done_keys:
             self._executor(ctx).request_forget(part.action, set(part.done_keys))
@@ -749,13 +758,14 @@ class AssemblyGuidePlugin(HuskyPlugin):
         """Confirm a part by hand or Mark done; leave a finished part; any other part on a second press (Skip).
 
         A part by hand needs every box ticked: the executor then records it. Mark done marks the action in the run.
-        Neither is ever skipped, and out of order both ask a second press. Leaving a part shows the next one.
+        Neither is ever skipped, and out of order both ask a second press. Leaving a part shows the next one not done.
         """
         if why := self._cannot(ctx, "Done"):
             self._refuse(ctx, "Done", why)
             return
         part = self.part
-        finished = self.is_done(ctx, part, self.index) or self.at_end(ctx, part)
+        at_end = self.index not in self._reopened and self.at_end(ctx, part)
+        finished = self.is_done(ctx, part, self.index) or at_end
         if not finished and part.kind in (HAND, MARK):
             doubts = self._doubts(ctx, part)
             if doubts and not self._done_press.press(ctx.now(), f"confirm {self.index}"):
@@ -781,6 +791,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self._replacing = part
             self.procedure.cancel()
             ctx.log_info(f"guide: {part.label}: Done drops its plan waiting for Go")
+        self._reopened.discard(self.index)
         if not self.is_done(ctx, part, self.index):
             self._done.add(self.index)
             if not finished:
@@ -791,8 +802,23 @@ class AssemblyGuidePlugin(HuskyPlugin):
                              f"the way")
             else:
                 ctx.log_info(f"guide: {part.label} {'done' if finished else 'skipped'}")
-        if self.index + 1 < len(self.parts):
-            self._show(ctx, self.index + 1)
+        if (following := self._following(ctx, self.index)) is not None:
+            self._show(ctx, following)
+
+    def _following(self, ctx: PluginContext, index: int) -> int | None:
+        """The part going on from part `index` shows: the next one not done, past those done already; else the next.
+
+        None after the last part. Back and Next still step one part at a time.
+        """
+        if index + 1 >= len(self.parts):
+            return None
+        target = self.next_to_do(ctx, index + 1)
+        if target is None:
+            return index + 1
+        if target > index + 1:
+            ctx.log_info(f"guide: on to {self.parts[target].label}; "
+                         f"{', '.join(part.label for part in self.parts[index + 1:target])} done already")
+        return target
 
     def _doubts(self, ctx: PluginContext, part: GuidePart) -> list[str]:
         """What speaks against confirming a part by hand or Mark done now; Done twice goes anyway."""
@@ -855,6 +881,16 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._skipped.difference_update(range(self.index, len(self.parts)))
         self._flagged = {index: flag for index, flag in self._flagged.items() if index < self.index}
         self._outcomes = {index: outcome for index, outcome in self._outcomes.items() if index < self.index}
+        # * Nothing of what ran before counts again: the last plan's goal and basis, the boxes ticked, the presses.
+        self._goal = self._basis = self._planned = self._ran = self._auto_at = None
+        self._unsettled = self._mark_now = self._assume = self._forced = self._by_done = None
+        self.goal_text = ""
+        self._reopened = {index for index in range(self.index, len(self.parts))
+                          if self.parts[index].kind in (DRIVE, MOVE, PARK) and self.at_end(ctx, self.parts[index])}
+        self._hand.forget()
+        self._done_press.forget()
+        self._order_press.forget()
+        self._again_press.forget()
         self._record(ctx, "redo", target, reopened=reopened)
         ctx.log_info(f"guide: redo from {target.label}" + (f"; reopened {', '.join(reopened)}" if reopened else ""))
         self.procedure.outcome = None
@@ -914,9 +950,12 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self.procedure.outcome = Check("rehearsed", GOOD, f"{part.label}: every check passed, nothing sent")
             return
         self._ran = part
+        self._reopened.discard(index)
         self._record(ctx, "done", part)
         ctx.log_info(f"guide: {part.label} done")
-        following = self.parts[index + 1] if index + 1 < len(self.parts) else None
+        after = self._following(ctx, index) if self.mode == OFF else (index + 1 if index + 1 < len(self.parts)
+                                                                      else None)
+        following = self.parts[after] if after is not None else None
         if part.kind == MARK and following is not None:
             # ! The run moves its current step on a mark (to its first pending action): select the next part at once,
             #   or the guide takes that move for the operator's pick.
@@ -926,7 +965,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         if self.kinds[part.kind].manual:
             # * Done was the operator's go-on already; the procedure still runs here, so select it ourselves.
             if self.index == index and following is not None:
-                self._show(ctx, index + 1, select=False)
+                self._show(ctx, after, select=False)
                 self._select(ctx, following)
         else:
             self.procedure.outcome = Check("done", GOOD, f"{part.label} is done: check the result chips, then Done "
@@ -1371,6 +1410,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
             return
         self._forget_redone(ctx)
         self._keep_outcome()
+        # * A part redone counts its end again once its robot left it: getting there afterwards is a new result.
+        self._reopened = {index for index in self._reopened if self.at_end(ctx, self.parts[index])}
         if self.mode == GOD and (problem := simulation_problem(ctx)):
             self._end_auto(ctx, f"not a full simulation any more: {problem}")
         if self.mode == OFF or self.procedure.running:
@@ -1591,7 +1632,10 @@ class AssemblyGuidePlugin(HuskyPlugin):
                           Check("not run", PENDING, "The executor has not finished it in this run"))
         if part.kind in (DRIVE, MOVE, PARK):
             if self.at_end(ctx, part):
-                checks.append(Check("at its end", GOOD, "The robot stands where it ends, measured live"))
+                checks.append(Check("at its end", PENDING, f"The robot stands where it ends, measured live, but "
+                                    f"{REDO} made it to do again: Prepare runs it again")
+                              if index in self._reopened else
+                              Check("at its end", GOOD, "The robot stands where it ends, measured live"))
             elif index in self._done:
                 checks.append(Check("done", GOOD, "Done by the guide"))
             elif part.kind == DRIVE and self._later_ran(ctx, index):
