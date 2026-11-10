@@ -1450,3 +1450,20 @@ def test_each_step_needs_only_the_setup_boxes_it_uses(server, tmp_path, monkeypa
     run.ticks["Cameras calibrated"] -= PRECONDITION_HOLDS + 60
     assert "Cameras calibrated" in record.need_expired(ctx, setup) and tip.need_expired(ctx, setup) is None
     assert "Cameras calibrated" in punch.need_expired(ctx, setup)  # * its takes are measured with mocap
+
+
+def test_picking_another_waypoint_in_sweeps_shows_the_ghost_again(server, tmp_path, monkeypatch):
+    """The ghost hidden by another plugin's: picking a waypoint of the previewed take (take 1) shows it again."""
+    plugin, ctx, ghost = make_plugin(server, tmp_path, monkeypatch)
+    plugin.panel.show(ctx, 2)
+    plugin.draw(ctx)
+    sweeps = plugin.steps[2]
+    assert ghost.joints is not None
+    RecentUse(0.0).touch()  # * e.g. the arm planner panel's Plan pressed
+    plugin.draw(ctx)
+    assert ghost.joints is None
+    sweeps._preview_point.value = 3
+    plugin.draw(ctx)
+    assert ghost.joints is not None
+    assert np.allclose([ghost.joints[name] for name in named(ARM, np.zeros(6))],
+                       plugin.cal.run.sweeps.sweeps[0].waypoints()[2])
