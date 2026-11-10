@@ -39,14 +39,13 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.assembly_planning.joints import arm_of_flange
 from ...shared.assembly_planning.movement import Routine, UnknownMovement, classify
-from ...shared.assembly_planning.route_result import (GoalCheck, RouteResult, goal_line, live_retreat_goals,
-                                                      pose_error)
+from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
 from ...shared.assembly_planning.route_search import ATTEMPTS, FreeSearch
+from ...shared.assembly_planning.step_plan import live_goal_poses, timed_route
 from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
-from ...shared.execution.retime import RetimeError, retime
-from ...shared.execution.servo import authored_start, carried_insert_goals, flange_poses, flange_side, tool0_errors
+from ...shared.execution.servo import authored_start, flange_poses, tool0_errors
 from ...shared.execution.stream import tool0_world_path
 from ...shared.motion_planner_contract import MotionPlanRequest
 from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_KINDS,
@@ -502,25 +501,10 @@ class AssemblyStepsPlugin(PlannerPlugin):
                 goal_joints = self._goal.joints_near(self._key_of_goal(), live.base)
                 goal_base = self._goal.of(self._key_of_goal()).base if goal_joints is not None else None
                 carried = ctx.require("movement_exec").carried if primary.routine is Routine.INSERT else None
-                if carried is not None and carried.loaded is view.process and (carried.action, carried.insert) == (
-                        action, step.movement_index):
-                    # * The transfer's servo left the flanges off the authored start: the insert goes from there.
-                    goals = carried_insert_goals(view.process, action, carried.insert, live)
-                    flange, ends = next(iter(goals)), step.movement.target.robots[step.action.robot].link_poses
-                    distance, turn = pose_error(goals[flange], ends[flange])
-                    ctx.log_info(f"[insert plan] servo correction carried: {step.label} {flange_side(flange)} "
-                                 f"goal {distance * 1e3:.2f} mm / {math.degrees(turn):.3f}° from the authored end")
-                elif (primary.routine is Routine.RETREAT_LINEAR
-                      and self._assembly_run(ctx).view.settings.retreat_live_axis):
-                    # * The retreat backs each tool out along its own live -z (the old monitor since 2026-10-22).
-                    spec = classify(view.process.process, step.action, step.movement, self._transfer_as_free(ctx))
-                    own = step.movement.target.robots.get(step.action.robot) if step.movement.target else None
-                    goals, line, warnings = live_retreat_goals(
-                        step.movement.id, spec, own.link_poses if own is not None else {},
-                        flange_poses(live, [part.flange for part in spec.arms]))
-                    ctx.log_info(line)
-                    for warning in warnings:
-                        ctx.log_warn(warning)
+                goals = live_goal_poses(view.process, action, step, primary.routine, live,
+                                        transfer_as_free=self._transfer_as_free(ctx), carried=carried,
+                                        retreat_live_axis=self._assembly_run(ctx).view.settings.retreat_live_axis,
+                                        log_info=ctx.log_info, log_warn=ctx.log_warn)
                 request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots,
                                             transfer_as_free=self._transfer_as_free(ctx),
                                             ignore_built=self.ignore_built,
@@ -746,13 +730,9 @@ class AssemblyStepsPlugin(PlannerPlugin):
         return None if self._key is None else (*self._key[:3], self._obstacles_collide(self._ctx))
 
     def _timed(self, route: RouteResult, seconds: float | None = None) -> TimedPath | str:
-        """The route timed for the arms at `seconds`, else the motion time (`retime`), for the preview; or why not."""
-        try:
-            timed = retime(route.result.trajectory.positions, self.traj_time if seconds is None else seconds)
-        except RetimeError as error:
-            rows = route.result.trajectory.positions
-            if rows[0] == rows[-1]:
-                return "the arms are already at the goal: nothing to move (mv ▶ in the process panel goes on)"
-            return f"planned, but it can't be timed for the arms: {error}"
-        self.minimum = timed.minimum
-        return TimedPath(timed.times, timed.positions)
+        """The route timed for the arms at `seconds`, else the motion time (`timed_route`), for the preview; or why."""
+        timed = timed_route(route, self.traj_time if seconds is None else seconds)
+        if isinstance(timed, str):
+            return timed + (" (mv ▶ in the process panel goes on)" if "already at the goal" in timed else "")
+        path, self.minimum = timed
+        return path

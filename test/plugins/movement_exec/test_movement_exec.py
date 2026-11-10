@@ -523,6 +523,32 @@ def test_a_dry_run_never_gives_done_and_sends_nothing():
 
 
 @pytest.mark.safety
+def test_a_requests_own_dry_run_sends_nothing_with_the_dry_run_box_off():
+    """A request's own dry run (a rehearsal) of B20_J's transfer step: every check, nothing sent, nothing finished.
+
+    The executor's Dry run box stays off and the requester's preview is never asked to show the motion.
+    """
+    lab = Lab(current=("B20_J", 3))
+    shown = []
+
+    async def scenario():
+        request = lab.request("B20_J_transfer", dry_run=True, preview=lambda *args: shown.append(args))
+        future = lab.plugin.request_execute(request)
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        assert lab.plugin.prompt.text.startswith("DRY RUN — ")
+        await answer(lab, True)
+        await answer(lab, True)  # the servo's bar prompt: no usable mocap fit of B20 (no fake Motive)
+        return await future
+
+    result = run_guarded(scenario())
+    assert result.status == DRY_RUN and result.done == () and lab.published() == 0
+    assert not lab.plugin.dry_run
+    assert lab.plugin.finished(lab.loaded, "B20_J") == frozenset()
+    assert all(route is None for route, _basis, _seconds in shown), "no motion previewed"
+
+
+@pytest.mark.safety
 def test_robotiq_and_refused_parts():
     """Belle's open is a Robotiq part that reaches 0.426; B20_J's transfer with the bar held is a motion (M7)."""
     lab = Lab(current=("B35_H", 1))

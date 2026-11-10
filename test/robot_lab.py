@@ -119,7 +119,7 @@ class FakeRun:
 
     def __init__(self, loaded, current):
         """The run at `current`, every action pending."""
-        self.view = SimpleNamespace(process=loaded, current=current, settings=RunSettings(),
+        self.view = SimpleNamespace(process=loaded, current=current, settings=RunSettings(), folder=None,
                                     statuses={action: "pending" for action in loaded.process.schedule})
         self.records, self.selected, self.marked = [], [], []
 

@@ -101,6 +101,9 @@ class MovementExecPlugin(HuskyPlugin):
         #: last reading, or how the last one ended, until the next request.
         self._carried: Carried | None = None
         self._servo_line = ""
+        #: Action id -> the loaded process and run folder, and the (step primary, movement index) finished for real
+        #: there (`finished`): a new run or another process starts with none.
+        self._finished_moves: dict[str, tuple[object, object, set[tuple[int, int]]]] = {}
         #: The Exec plots window's plots, and the time of the compliant sample last plotted.
         self._plots: ExecPlots | None = None
         #: What was said once about nothing to record (the process without markers, no plugin), not to repeat it.
@@ -131,6 +134,22 @@ class MovementExecPlugin(HuskyPlugin):
             self._carried = None
         return self._carried
 
+    def finished(self, loaded, action: str) -> frozenset[tuple[int, int]]:
+        """(step primary, movement index) of `action` finished for real by any request on `loaded`."""
+        kept = self._finished_moves.get(action)
+        folder = self._ctx.require("assembly_run").view.folder
+        return frozenset(kept[2]) if kept is not None and kept[0] is loaded and kept[1] == folder else frozenset()
+
+    def request_forget(self, action: str, done=None) -> None:
+        """Forget that `action`'s movements (only the (primary, index) pairs in `done`, if given) were finished."""
+        kept = self._finished_moves.get(action)
+        if kept is None:
+            return
+        if done is None:
+            del self._finished_moves[action]
+        else:
+            kept[2].difference_update(done)
+
     def request_execute(self, request: ExecRequest) -> asyncio.Future[ExecResult]:
         """Run a step's parts, leasing every robot until done; a refusal resolves the future at once.
 
@@ -156,7 +175,8 @@ class MovementExecPlugin(HuskyPlugin):
             return future
         try:
             job = Job(ctx, request, ctx.world.robots[request.serial], ctx.require("assembly_run"), self._prompts,
-                      self._dry_run, lambda name, movement, data: self._event(job, name, movement, data),
+                      self._dry_run or request.dry_run,
+                      lambda name, movement, data: self._event(job, name, movement, data),
                       self._moved_at, lambda line: setattr(self, "_servo_line", line),
                       measured=self._plots.servo_reading if self._plots is not None else (lambda _reading: None),
                       status=self._plots.status if self._plots is not None else (lambda _text, _color: None),
@@ -434,6 +454,12 @@ class MovementExecPlugin(HuskyPlugin):
 
     def _finished(self, ctx: PluginContext, request: ExecRequest | None, result: ExecResult) -> None:
         """Log a request's end and show it on the panel."""
+        if request is not None and result.done:
+            folder = ctx.require("assembly_run").view.folder
+            kept = self._finished_moves.get(request.action)
+            if kept is None or kept[0] is not request.loaded or kept[1] != folder:
+                kept = self._finished_moves[request.action] = (request.loaded, folder, set())
+            kept[2].update((request.step.primary, index) for index in result.done)
         label = request.label if request is not None else "a request"
         self._last = f"{label}: {result.status} — {result.reason}"
         self._last_failed = result.status not in (DONE, DRY_RUN)
