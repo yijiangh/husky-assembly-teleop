@@ -34,7 +34,7 @@ from ...robot_interface.soft_stop import MotionRefused
 from ...ui.second_press import SecondPress, show_waiting
 from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, chip, chip_line, note_line, section, values,
                          wrapped)
-from .pose_log import ArmPose, PoseLog, RobotPose, Stop, append_lines
+from .pose_log import SAME_POSE, ArmPose, PoseLog, RobotPose, Stop, append_lines
 
 #: Poses offered per robot, newest first.
 SHOWN = 5
@@ -67,7 +67,8 @@ GUIDE = (
     "3. The pose from before the stop is picked. Check how far each arm is from it and how far its force is off.",
     f"4. Press Go back twice (pendant speed slider at 100 %): the robot moves slowly back and holds if a force goes "
     f"{FORCE_RISE:g} N further off.",
-    "5. Go on only once each force is back near 0 N off.",
+    "5. Go on only once each force is back near 0 N off (a few N: after an e-stop the sensor may read a little "
+    "differently).",
 )
 
 
@@ -316,7 +317,6 @@ class StopRecoveryPlugin(HuskyPlugin):
                 if not sent:
                     self._say(serial, f"Go back refused: {newest_reason(*arms.values())}", FAIL)
                     return
-                self._ended_go_back.add(serial)
                 off = {name: force_off(arm, target.arms[name]) for name, arm in arms.items()}
                 ctx.log_info(f"{robot_name(serial)}: moving back to {target.clock} over {duration:.0f} s")
                 self._say(serial, f"Moving back to {target.clock} ({duration:.0f} s)…", BUSY)
@@ -327,6 +327,11 @@ class StopRecoveryPlugin(HuskyPlugin):
                     self._hold(robot)
                     self._say(serial, "Go back stopped (Stop or Stop all): held where it is", NONE)
                     raise
+                finally:
+                    # * The next rest pose is where this Go back ended only if it moved the robot at all.
+                    if any(np.max(np.abs(arm.joint_vector() - starts[name])) > SAME_POSE
+                           for name, arm in arms.items() if arm.joint_vector() is not None):
+                        self._ended_go_back.add(serial)
         except MotionRefused as refused:
             self._say(serial, f"Go back refused: {refused}", FAIL)
             return
@@ -357,7 +362,7 @@ class StopRecoveryPlugin(HuskyPlugin):
                 self._hold(robot)
                 away = max((step for step in steps if step is not None), default=float("nan"))
                 text = (f"Not back after {ctx.now() - start:.0f} s, {np.degrees(away):.2f}° away: held. Is the "
-                        f"pendant's speed slider at 100 %?")
+                        f"pendant's speed slider at 100 %, or is the arm blocked?")
                 ctx.log_warn(f"{robot_name(serial)}: {text}")
                 self._say(serial, text, FAIL)
                 return False

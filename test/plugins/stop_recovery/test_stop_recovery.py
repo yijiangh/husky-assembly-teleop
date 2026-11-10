@@ -335,6 +335,28 @@ def test_a_real_robot_is_never_offered_a_simulated_pose(tmp_path):
     assert plugin._picked(BELLE) is None
 
 
+@pytest.mark.safety
+def test_a_go_back_that_never_moves_marks_no_later_pose(tmp_path):
+    """A goal the controller drops leaves no mark: the next pose, after a jog, is still picked after the next stop."""
+    lab, plugin = started(tmp_path, RobotLab(follow=0.0))
+
+    async def scenario():
+        await stop_and_sag(lab, plugin, BELLE)
+        await press_twice(lab, plugin, BELLE)
+        await ticks(lab, plugin, 25.0)
+        assert message(plugin, BELLE).startswith("Not back after") and BELLE not in plugin._ended_go_back
+        arm = lab.belle.arms["ur_arm"]
+        sag(arm, -0.3, 27.0, tcp_mm=0.0)  # a jog by hand, no Go back
+        await ticks(lab, plugin, 2.0)
+        jogged = plugin.log.poses[BELLE][-1]
+        assert not jogged.go_back
+        await stop_and_sag(lab, plugin, BELLE, degrees=0.2)
+        assert picked(plugin, BELLE) == jogged
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.safety
 def test_a_robot_stopped_at_start_logs_no_pose_until_it_moves(tmp_path):
     """A monitor started after a stop must not take the sagged pose for the one to go back to."""
     lab = RobotLab()
