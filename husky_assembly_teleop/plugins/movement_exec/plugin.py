@@ -95,6 +95,8 @@ class MovementExecPlugin(HuskyPlugin):
         self._dry_run_refused = 0
         #: Serial -> ROS time its arms last arrived (a motion or a servo pass): an older plan is refused.
         self._moved_at: dict[str, float] = {}
+        #: Serial -> {at, reason} of its force sensors' last zero, for the as-built records of later requests.
+        self._ft_zero: dict[str, dict] = {}
         #: What the last transfer's servo left for its insert's plan; the panel's servo line: the running servo's
         #: last reading, or how the last one ended, until the next request.
         self._carried: Carried | None = None
@@ -157,7 +159,8 @@ class MovementExecPlugin(HuskyPlugin):
                       self._dry_run, lambda name, movement, data: self._event(job, name, movement, data),
                       self._moved_at, lambda line: setattr(self, "_servo_line", line),
                       measured=self._plots.servo_reading if self._plots is not None else (lambda _reading: None),
-                      status=self._plots.status if self._plots is not None else (lambda _text, _color: None))
+                      status=self._plots.status if self._plots is not None else (lambda _text, _color: None),
+                      ft_zero=self._ft_zero)
             self._job, self._active, self._cancel_reason = job, f"{request.robot_name} · {request.label}", ""
             self._last, self._last_failed, self._hold_lost = "", False, False
             ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
