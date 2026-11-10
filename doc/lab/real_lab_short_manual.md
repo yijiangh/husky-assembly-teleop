@@ -113,7 +113,7 @@ crl_ros_source 80 && ros2 topic list | grep -c a200 && ros2 topic echo --once /m
 **2.4 Monitor.** This is the README's assembly command, plus `doc`, the assembly guide, the base and arm planner panels and the lab obstacles:
 
 ```bash
-crl_ros_source 80 && ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps doc assembly_guide robot_control base_planner_panel arm_planner_panel obstacles" process_directory:=data_design_study/261103_SRD
+crl_ros_source 80 && ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps doc assembly_guide robot_control base_planner_panel arm_planner_panel obstacles stop_recovery" process_directory:=data_design_study/261103_SRD
 ```
 
 To keep a log, append `2>&1 | tee -i ~/monitor_$(date +%F_%H%M).log`. Quit with one `Ctrl-C`, then wait: the plugins
@@ -226,6 +226,7 @@ unbuilt bars, tick **Ignore built bars** for that plan only.
 | a robot's chips red, or something does not start | `<workspace>/src/husky-assembly-teleop/scripts/real_lab/check_robots.sh` (add `cindy` to check one robot; read-only, about 20 s): this laptop's network, router and clock, and per robot her launch, controllers (compliance loaded), crl-husky messages and rigid body. Each FAIL says what to do |
 | restart the monitor mid-assembly | `Ctrl-C` once, wait, start it again, reload the page, **Load**: it says `continuing run …` and the done actions stay done. Do not click New run |
 | `HOLD NOT SENT on …` | that arm did not get its hold: stop it with the pendant or the e-stop |
+| an e-stop or protective stop while an arm holds a bar | do not zero its force sensor, open or reactivate its gripper, or restart its launch. Release the e-stop, **Resume**, then **Stop recovery** › the robot › **Go back** twice: it moves back to the pose before the stop. Go on only once its force is back near its value then |
 | an arm still under `cartesian_compliance_controller` | Control › robot › arm › **Controller: Joint** |
 | an arm's `arm` chip is red | hover it. Pendant in Local: switch to Remote. Protective stop: find the cause, then **Unlock**. After Stop all: **Resume**. Launch started before the arm was on and in Remote: `Ctrl-C` her launch (only if she holds nothing) and start it again |
 | an arm behaves oddly or two drivers fight for it | a second launch may run on her: `pgrep -fa "launch crl_husky"` on the robot lists every launch; stop all but one |

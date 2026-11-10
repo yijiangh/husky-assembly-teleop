@@ -32,7 +32,8 @@ The assembly guide: the process part by part, Prepare → Check → Go, each par
   process panel, the parts built again (a setting, the process), or a Mark done with doubts; the guide line says why.
 - ! The guide holds no lease itself: the planner or the executor does while a Go runs.
 
-Run with:  -p plugins:="['assembly_guide', 'base_planner_panel', 'arm_planner_panel', 'robot_control', ...]"
+Run with:  -p plugins:="['assembly_guide', 'base_planner_panel', 'arm_planner_panel', 'robot_control',
+                          'stop_recovery', ...]"
 """
 
 from __future__ import annotations
