@@ -285,7 +285,7 @@ In **Where**, "strip" is the minimized strip at the right edge, for tools not ne
 ## Assembly
 
 Name `assembly_steps`: it brings all of these but `doc` and `assembly_guide`. In the lab add `doc`, `assembly_guide`,
-`robot_control`, `base_planner_panel`, `arm_planner_panel` and `obstacles`.
+`robot_control`, `base_planner_panel`, `arm_planner_panel`, `obstacles` and `stop_recovery`.
 
 | Plugin | Where | Also loads | In short |
 |---|---|---|---|
@@ -310,6 +310,7 @@ Name what you need: `robot_control` to drive, a planner panel to plan, `obstacle
 | `arm_planner` | No tab | | The planner behind that panel; other plugins can use it too. Experimental. |
 | `obstacles` | **Obstacles**, in the strip | | The lab's obstacles for the planners, from `data/lab/<lab>.json`; edit and save them. |
 | `collisions` | **Collisions** | | Lists and draws what collision checks and clearance trips hit. |
+| `stop_recovery` | **Stop recovery** | | Logs each robot's rest poses; after an e-stop or protective stop, moves the robot slowly back to the pose from before, watching its force. |
 
 ## Mocap
 

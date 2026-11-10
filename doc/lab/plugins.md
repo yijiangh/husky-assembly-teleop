@@ -173,7 +173,7 @@ More in the README, "Examples".
 |---|---|
 | Always on | `health`, `console`, `assembly_observer` |
 | Assembly | `assembly_steps`, `movement_exec`, `assembly_guide`, `assembly_run`, `doc`, `process`, `motion_planner` |
-| Driving and planning | `robot_control`, `base_planner_panel`, `base_planner`, `arm_planner_panel`, `arm_planner`, `obstacles`, `collisions` |
+| Driving and planning | `robot_control`, `base_planner_panel`, `base_planner`, `arm_planner_panel`, `arm_planner`, `obstacles`, `collisions`, `stop_recovery` |
 | Mocap | `mocap_streams`, `mocap_bars`, `mocap_probe` |
 | Calibration | `calibration`, and **Floor calibration** in `mocap_probe` |
 | Experiments | `base_exp` |
@@ -251,6 +251,10 @@ The lab's obstacles as collision bodies for the planners: tables, cabinets, trip
 #### `collisions`
 
 In its own **Collisions** tab: lists what collision checks hit, per source (calibration takes, a failed arm or base plan, the motion planner's last answer, base_exp's blocked way back), and draws the ticked hits as they were checked: what moved solid red, what it moved into see-through cyan, the deepest contact with its depth; Focus adds every robot as checked, faint; each drawing goes after 2 minutes, its hit unticked but still listed. "As checked" shows meshes as the convex hulls compas_fab tests. Clearance trips of any plugin (a driven robot stopped for coming within its margin of something) come under **clearance**, the newest ticked, with the gap as "x mm apart". Loaded by calibration, the arm and base planner panels, motion_planner and base_exp; load it by name to see clearance trips with other plugins. It only draws: it sends nothing to a robot.
+
+#### `stop_recovery`
+
+In its own **Stop recovery** tab, with a short guide at the top and a block per robot with arms. It logs every rest pose of each robot: all its arms, once the robot stands after moving while every arm ran (operational), with tool0 and the force; never what an arm does while it is not running, so an e-stopped arm sagging on its brakes leaves the pose from before the stop as the newest. It also logs each stop (the safety sync's reason, the forces then). Poses and stops go to `~/.ros/stop_recovery/<YYYYMMDD>.jsonl` and are read back at start (today's and yesterday's). **Pose** offers the newest five, newest first and picked (one followed by a stop says "before stop hh:mm:ss"); the readout shows per arm how far it is from the pose picked (largest joint step, tool0) and its force now and then. **Go back** asks first and on its second press sends one slow joint move there (at most 2°/s, at least 8 s; a two-arm robot's arms together), under the robot's lease and without a collision check; it is refused while the robot is soft stopped or an arm is not operational or moving, and for more than 3° on a joint or 20 mm at tool0 (plan that with `arm_planner_panel`). The robot is held at once if an arm's force rises 5 N above its value at the start; **Stop** holds it. When it is back, the message gives each force before, after and at the pose. It never touches a tool: after a stop while holding, do not zero the force sensor, open or reactivate the gripper, or restart the arm driver (the Robotiq activates, opens and drops what it holds).
 
 ### Mocap
 
