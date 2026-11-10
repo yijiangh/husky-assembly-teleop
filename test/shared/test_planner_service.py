@@ -414,6 +414,10 @@ class Panel(PlannerPanel):
         """The test's target change."""
         return self.change
 
+    def take_request(self, ctx, request):
+        """Take another plugin's request as the target."""
+        self.serial, self.goal = request.serial, request.goal
+
     def commit_margin(self, ctx):
         """A commit's clearance: 5 mm."""
         return 0.005
@@ -607,7 +611,7 @@ def test_a_re_timed_plan_keeps_the_message_line_and_a_new_message_replaces_it():
 def test_a_plan_arriving_counts_as_use_once_a_re_timed_one_does_not():
     """The panel's own plan arriving touches its use, so its ghost shows after a long search; re-timed, it does not.
 
-    A plan another plugin asked for (calibration's moves) never counts: the panel's ghosts stay hidden.
+    A plan another plugin asked for (e.g. a drive) is the panel's own once shown: it takes its target and counts.
     """
     touches = []
     panel = Panel()
@@ -624,4 +628,4 @@ def test_a_plan_arriving_counts_as_use_once_a_re_timed_one_does_not():
     assert touches == [True]
     api.plan = Plan(2, Request("alice", 2.0), "ready", PATH, message="found for another plugin")
     panel.update(ctx)
-    assert touches == [True]
+    assert touches == [True, True] and panel.goal == 2.0

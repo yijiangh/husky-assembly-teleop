@@ -415,6 +415,7 @@ def make_panel(planner: ArmPlannerPlugin) -> ArmPlannerPanel:
     panel = ArmPlannerPanel()
     panel._api = panel._planner = planner
     panel.serial, panel.arm, panel._has_target, panel._load_now = SERIAL, ARM, True, False
+    panel._arms = {SERIAL: [ARM]}
     panel._sliders = [SimpleNamespace(value=math.degrees(value)) for value in GOAL]
     panel._used = SimpleNamespace(touch=lambda: None, active=True)
     panel._collisions = FakeCollisions()
@@ -786,3 +787,17 @@ def test_both_plans_every_arm_in_one_search_its_targets_from_step_ik():
     assert panel.target_change(None, plan) == ""
     panel._choose(SERIAL, ARM)
     assert panel.target_change(None, plan) == "the robot or arm changed since planning"
+
+
+def test_another_plugins_plan_sets_the_panels_arms_and_targets():
+    """A plan another plugin asked for is the panel's own: two arms choose Both, one arm that arm, targets its goals."""
+    panel = make_panel(ArmPlannerPlugin())
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    other = tuple(float(value) + 0.2 for value in GOAL)
+    both = ArmPlanRequest(SERIAL, ARM, tuple(GOAL), also=(("right_ur_arm", other),))
+    panel.take_request(None, both)
+    assert panel.arm == BOTH and panel.target_change(None, SimpleNamespace(request=both)) == ""
+    single = ArmPlanRequest(SERIAL, "right_ur_arm", other)
+    panel.take_request(None, single)
+    assert panel.arm == "right_ur_arm" and np.allclose(panel._target(), other, atol=0.01)  # sliders round
+    assert panel.target_change(None, SimpleNamespace(request=single)) == ""
