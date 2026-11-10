@@ -346,10 +346,14 @@ def test_a_go_back_that_never_moves_marks_no_later_pose(tmp_path):
         await ticks(lab, plugin, 25.0)
         assert message(plugin, BELLE).startswith("Not back after") and BELLE not in plugin._ended_go_back
         arm = lab.belle.arms["ur_arm"]
+        aimed = picked(plugin, BELLE)
+        driver = next(each for each in lab.drivers if getattr(each, "arm", None) is arm)
+        driver._times = None  # the dropped goal is forgotten: the arm stays where it is put
         sag(arm, -0.3, 27.0, tcp_mm=0.0)  # a jog by hand, no Go back
         await ticks(lab, plugin, 2.0)
+        assert len(plugin.log.poses[BELLE]) == 2
         jogged = plugin.log.poses[BELLE][-1]
-        assert not jogged.go_back
+        assert not jogged.go_back and not np.allclose(jogged.arms["ur_arm"].joints, aimed.arms["ur_arm"].joints)
         await stop_and_sag(lab, plugin, BELLE, degrees=0.2)
         assert picked(plugin, BELLE) == jogged
 
