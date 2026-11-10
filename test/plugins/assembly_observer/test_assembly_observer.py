@@ -300,9 +300,10 @@ def test_the_relays_drift_is_told_when_it_grows():
     sample = {"status": "held", "decides": "anchors", "off": 0.0004, "off_limit": 0.001,
               "anchors": {"moves_volume": 0.0021, "used": ["A1", "A2", "A3", "A4"], "residual": 0.0003},
               "truss_cameras": {"moves_volume": 0.0025}, "apart": 0.0006,
-              "anchor_scale": {"ppm": -40.0}, "scale_changed": False}
+              "anchor_scale": {"scale": -4e-5}, "scale_changed": False}
     drift = frame_drift(sample)
-    assert drift == FrameDrift("held", "anchors", 0.0004, 0.001, 0.0021, 0.0025, 0.0006, -40.0, False, 4, 0.0003)
+    assert drift == FrameDrift("held", "anchors", 0.0004, 0.001, 0.0021, 0.0025, 0.0006, pytest.approx(-0.04), False, 4,
+                               0.0003)
 
     relay = SimpleNamespace(state=SimpleNamespace(frame=None, calibrations={}, drift=drift))
     lab = RobotLab()

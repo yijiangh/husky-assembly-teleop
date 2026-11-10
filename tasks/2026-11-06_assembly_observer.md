@@ -25,7 +25,7 @@ the ranges an experiment needs to the Drive.
 - Wifi health per robot: rate, largest gap and delay of the platform's and each arm's joint_states and of mocap
   (`StreamStats`; mocap got its own), read twice a second.
 - The relay's frame drift: `~/frame_metrics` parsed into `MocapRelayState.drift` (`FrameDrift`), recorded each tick
-  and told as an event when it moves by 0.5 mm / 100 ppm.
+  and told as an event when it moves by 0.5 mm / 0.1 mm/m.
 - Events come from the runtime only (no `requires`): state diffs, command events, clearance trips, relay changes and
   every console log line from INFO up (which carries the guide's, the executor's and the run's messages).
   The assembly run's own log stays where it is; both join by ROS time.

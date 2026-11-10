@@ -2,7 +2,8 @@
 Following Motive's frame for the relay: the frame's state, the refit in use, and what to log and announce.
 
 The relay hands it the floor calibration, Motive's cameras and each look's unlabeled markers (raw, Z-up); it gives back
-`lab_from_raw` (what every raw pose is put in the lab frame by), the frame's state (`~/frame`), a metrics sample
+`lab_from_raw` (what every raw pose is put in the lab frame by: turned, shifted and scaled), the frame's state
+(`~/frame`), a metrics sample
 (`~/frame_metrics`) and log events. The fits themselves are in `mocap_frame.py`.
 
 - States (`status`): FRAME_NONE without a floor calibration (FRAME_ERROR if none could be read), FRAME_UNCHECKED until a
@@ -17,11 +18,10 @@ from typing import Sequence
 
 import numpy as np
 
-from scaffolding_assembly_core.geometry import Pose, compose
-
 from ..robot_interface.mocap_definitions import (FRAME_ERROR, FRAME_HELD, FRAME_NONE, FRAME_REFIT_PENDING,
-                                                 FRAME_UNCHECKED, FRAME_UNTRUSTED, MocapAnchor, MocapCamera)
-from .mocap_frame import (BACK_SHARE, MIN_POINTS, SCALE_CHANGED, SCALE_SEEN, TRUSS_CAMERAS, VOLUME_MOVED,
+                                                 FRAME_UNCHECKED, FRAME_UNTRUSTED, MocapAnchor, MocapCamera,
+                                                 ScaledPose, scaled)
+from .mocap_frame import (BACK_SHARE, MIN_POINTS, SCALE_CHANGED, TRUSS_CAMERAS, VOLUME_MOVED,
                           FloorCalibration, FrameFit, ScaleFit, camera_label, deciding_fit, find_anchors, fit_anchors,
                           fit_cameras, fit_scale, follow_anchors, frame_metrics, match_anchors, off_limit, truss_names,
                           volume_moved)
@@ -58,16 +58,17 @@ def why_untrusted(fit: FrameFit) -> str:
     return text.partition("NOT TRUSTED: ")[2] or text
 
 
-def fit_table(fits: Sequence[FrameFit], since: str, in_use: Pose = Pose(), deciding: FrameFit | None = None,
-              mark: str = "decides") -> list[str]:
+def fit_table(fits: Sequence[FrameFit], since: str, in_use: ScaledPose = ScaledPose(),
+              deciding: FrameFit | None = None, mark: str = "decides") -> list[str]:
     """Lines for people: one row per fit, its trust and the deciding one marked with `mark`, then what each left out.
 
-    Moved, turned and the lab volume (how far the fit moves a point of the lab's volume, ± its uncertainty there) are
-    since the floor calibration `since`; "off now" is against the transform in use (`in_use`): how far poses are off.
+    Moved, turned, scaled and the lab volume (how far the fit moves a point of the lab's volume, ± its uncertainty
+    there) are since the floor calibration `since`; "off now" is against the transform in use (`in_use`): how far poses
+    are off.
     """
-    lines = [f"since {since}: moved, turned, lab volume; off now: against the transform in use",
-             f"{'fit':<13} {'trust':<11} {'used':>5}  {'moved':>8}  {'turned':>6}  {'lab volume':>13}  {'off now':>8}  "
-             f"{'largest residual':>16}"]
+    lines = [f"since {since}: moved, turned, scaled, lab volume; off now: against the transform in use",
+             f"{'fit':<13} {'trust':<11} {'used':>5}  {'moved':>8}  {'turned':>6}  {'scaled':>9}  {'lab volume':>13}  "
+             f"{'off now':>8}  {'largest residual':>16}"]
     notes = []
     for fit in fits:
         used = f"{len(fit.used)}/{len(fit.used) + len(fit.bumped) + len(fit.missing)}"
@@ -78,8 +79,9 @@ def fit_table(fits: Sequence[FrameFit], since: str, in_use: Pose = Pose(), decid
         else:
             metres, turned = fit.moved
             lines.append(f"{head} {used:>5}  {metres * 1e3:5.1f} mm  {np.degrees(turned):5.2f}°  "
-                         f"{volume_moved(fit.raw_cal_from_raw_now) * 1e3:5.1f} ± {fit.uncertainty * 1e3:3.1f} mm  "
-                         f"{volume_moved(fit.raw_cal_from_raw_now, in_use) * 1e3:5.1f} mm  "
+                         f"{fit.scale_change * 1e3:+5.2f} mm/m  "
+                         f"{volume_moved(fit.motion) * 1e3:5.1f} ± {fit.uncertainty * 1e3:3.1f} mm  "
+                         f"{volume_moved(fit.motion, in_use) * 1e3:5.1f} mm  "
                          f"{fit.residual * 1e3:13.1f} mm"
                          + (f"  ← {mark}" if fit is deciding and len(fits) > 1 else ""))
         if fit.bumped:
@@ -103,7 +105,8 @@ class FrameFollower:
         cameras: Motive's cameras now, raw, by name.
         markers: The last look's unlabeled markers, raw, each averaged over the look.
         marker_noise: Each of those markers' (RMS distance from its mean, metres; frames seen in), if given.
-        refit: The refit in use, against the floor calibration's anchors and cameras (kept in memory only), or None.
+        refit: The refit in use, against the floor calibration's anchors and cameras (kept in memory only), or None:
+            its scale too, so poses come out at the floor calibration's scale.
         anchor_fit: The anchors' newest fit, or None before they were looked for.
         camera_fit: The truss cameras' newest fit, or None before any truss camera was heard.
         anchors: The floor calibration's anchors found at the last look, raw, by name.
@@ -198,7 +201,7 @@ class FrameFollower:
         if not fit.trusted:
             return False, f"refit not trusted, not used: {fit.describe(self._in_use())}", []
         table = fit_table(self._fits() or [fit], self.floor.floor_file.name, self._in_use(), fit, "used")
-        moves = volume_moved(fit.raw_cal_from_raw_now, self._in_use())
+        moves = volume_moved(fit.motion, self._in_use())
         self.refit, self._checked, self._trusted_state = fit, FRAME_HELD, FRAME_HELD
         self._logged = (FRAME_HELD, fit.source, fit)
         event = FrameEvent("info", f"REFIT USED: every pose moved up to {moves * 1e3:.1f} mm, back into the lab frame",
@@ -230,13 +233,11 @@ class FrameFollower:
         """The deciding fit while the frame is not held (the refit pending, or the untrusted fit), else None."""
         return self.deciding if self.status in (FRAME_REFIT_PENDING, FRAME_UNTRUSTED) else None
 
-    def lab_from_raw(self) -> Pose | None:
+    def lab_from_raw(self) -> ScaledPose | None:
         """Raw poses into the lab frame: floor_from_raw, then the refit in use; None with no floor calibration."""
         if self.floor is None:
             return None
-        if self.refit is None:
-            return self.floor.floor_from_raw
-        return compose(self.floor.floor_from_raw, self.refit.raw_cal_from_raw_now)
+        return scaled(self.floor.floor_from_raw).then(self._in_use())
 
     def news(self) -> bool:
         """Whether `announcement` says something new since the last call that returned True.
@@ -250,7 +251,7 @@ class FrameFollower:
                self.deciding.source if self.deciding else None, self.anchors_missing, self.refit, self.scale_changed,
                self._scale_warned)
         moved = (pending is None) != (self._announced_pending is None) or pending is not None and volume_moved(
-            pending.raw_cal_from_raw_now, self._announced_pending.raw_cal_from_raw_now) > VOLUME_MOVED
+            pending.motion, self._announced_pending.motion) > VOLUME_MOVED
         if key == self._announced and not moved:
             return False
         self._announced, self._announced_pending = key, pending
@@ -262,7 +263,9 @@ class FrameFollower:
         pending = self.pending
         return {
             "time": now, "status": self.status, "error": self.error,
-            "lab_from_raw": [list(lab_from_raw.position), list(lab_from_raw.orientation)] if lab_from_raw else None,
+            "lab_from_raw": ([list(lab_from_raw.pose.position), list(lab_from_raw.pose.orientation)]
+                             if lab_from_raw else None),
+            "lab_scale": lab_from_raw.scale if lab_from_raw else 1.0,
             "floor_calibration": self.floor.floor_file.name if self.floor else None,
             "refit": self.refit.as_dict() if self.refit is not None else None,
             "pending": pending.as_dict(in_use) if pending is not None else None,
@@ -327,9 +330,9 @@ class FrameFollower:
                 "status": ("seen" if not fitted else "bumped" if name in fit.bumped else
                            "used" if name in fit.used else "missing")}
 
-    def _in_use(self) -> Pose:
+    def _in_use(self) -> ScaledPose:
         """The refit in use as a motion of Motive's frame, or none."""
-        return self.refit.raw_cal_from_raw_now if self.refit is not None else Pose()
+        return self.refit.motion if self.refit is not None else ScaledPose()
 
     def _fits(self) -> list[FrameFit]:
         """The anchors' and the truss cameras' fits, those there are."""
@@ -344,7 +347,7 @@ class FrameFollower:
         cameras' fit puts them, if trusted.
         """
         expected, back = self.floor.anchors, self._in_use()
-        taken_back = [compose(back, Pose(tuple(marker))).position for marker in markers]
+        taken_back = [back.apply(marker) for marker in markers]
         found = find_anchors(expected, taken_back)
         if 3 <= len(found) < len(expected):
             followed = follow_anchors(expected, taken_back, found)
@@ -354,8 +357,8 @@ class FrameFollower:
             found = matched if len(matched) > len(found) else found
         if len(found) < MIN_POINTS and truss_names(self.cameras, self.truss_serials):
             refit = fit_cameras(self.floor.cameras, self.cameras, self.truss_serials)
-            by_cameras = find_anchors(expected, [compose(refit.raw_cal_from_raw_now, Pose(tuple(marker))).position
-                                                 for marker in markers]) if refit.trusted else {}
+            by_cameras = find_anchors(expected, [refit.motion.apply(marker) for marker in markers]
+                                      ) if refit.trusted else {}
             found = by_cameras if len(by_cameras) > len(found) else found
         self._anchor_markers = dict(found)
         self.anchors = {name: MocapAnchor(name, tuple(markers[index])) for name, index in found.items()}
@@ -376,10 +379,7 @@ class FrameFollower:
         bumped = tuple(sorted(fit.bumped)) if fit is not None else ()
         if bumped != self._anchors_bumped:
             self._anchors_bumped = bumped
-            # * Under a scale change, reported or not yet, the anchors' fit without scale leaves out the farthest: none
-            #   moved on its own.
-            scale_off = self.scale_changed or self.scale_fit is not None and abs(self.scale_fit.scale) > SCALE_SEEN
-            if bumped and not scale_off:
+            if bumped:
                 events.append(FrameEvent("warn", "ANCHORS MOVED against the others since the floor calibration: "
                                                  "bumped, or Motive lost and found them elsewhere",
                                          tuple(f"{name}: {fit.bumped[name]}" for name in bumped)))
@@ -405,10 +405,9 @@ class FrameFollower:
             self.scale_changed, self._scale_warned = True, self.scale_fit.scale
             return [FrameEvent("warn", f"MOTIVE'S SCALE CHANGED since the floor calibration: "
                                        f"{self.scale_fit.describe()}",
-                               ("no refit can follow a scale: poses are off by it",
-                                "recalibrate Motive, then make a new floor calibration"))]
-        # * Anchors left out while the scale was changed were never reported: those still out are, from now on.
-        self.scale_changed, self._scale_warned, self._anchors_bumped = False, 0.0, ()
+                               ("Motive was recalibrated: a refit follows the scale too, best while the anchors hold",
+                                "a new floor calibration on Motive's current calibration needs none"))]
+        self.scale_changed, self._scale_warned = False, 0.0
         return [FrameEvent("info", f"Motive's scale back as at the floor calibration: {self.scale_fit.describe()}")]
 
     def _missing_event(self, total: int) -> FrameEvent:
@@ -435,7 +434,7 @@ class FrameFollower:
         fit, in_use = self.deciding, self._in_use()
         if fit is None:
             return []
-        off, limit = volume_moved(fit.raw_cal_from_raw_now, in_use), off_limit(fit)
+        off, limit = volume_moved(fit.motion, in_use), off_limit(fit)
         back = BACK_SHARE * limit
         if not fit.trusted:
             status = FRAME_UNTRUSTED
@@ -445,13 +444,13 @@ class FrameFollower:
         self._checked = status
         logged = self._logged
         if logged is not None and logged[:2] == (status, fit.source) and volume_moved(
-                fit.raw_cal_from_raw_now, logged[2].raw_cal_from_raw_now) <= VOLUME_MOVED:
+                fit.motion, logged[2].motion) <= VOLUME_MOVED:
             return []
         self._logged = (status, fit.source, fit)
         lines = fit_table(self._fits(), self.floor.floor_file.name, in_use, fit)
         if self.anchor_fit is not None and self.camera_fit is not None and self.anchor_fit.trusted \
                 and self.camera_fit.trusted:
-            apart = volume_moved(self.anchor_fit.raw_cal_from_raw_now, self.camera_fit.raw_cal_from_raw_now)
+            apart = volume_moved(self.anchor_fit.motion, self.camera_fit.motion)
             lines.append(f"the two fits place the lab's volume up to {apart * 1e3:.1f} mm apart")
         if self.refit is not None:
             lines.append("a refit is in use")

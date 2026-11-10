@@ -71,7 +71,7 @@ from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.kinematics import link_pose
 
 from ...drive import drive_folder
-from ...robot_interface.mocap_definitions import BodyDefinition, body_dict, body_from_dict, compare
+from ...robot_interface.mocap_definitions import BodyDefinition, ScaledPose, body_dict, body_from_dict, compare
 from ...world.calibration_sessions import (Calibration, default_calibration, read_session_file, sanity_problem,
                                            sessions_folder)
 from ...world.checks import BAD, GOOD, PENDING, Check
@@ -86,8 +86,8 @@ from .analysis.report import write_analysis
 from .robot.sampling import Sample, mean_pose
 from .storage.session_files import (ARCHIVE, BATCHES, PUNCH_BATCH, VALIDATION_BATCH, archive, calibration_file,
                                     mount_check_file, pose_from, pose_list, read_marker_errors, read_punch,
-                                    read_samples, read_take, restore, write_mount_check, write_punch, write_solution,
-                                    write_take)
+                                    read_samples, read_take, restore, take_frame, write_mount_check, write_punch,
+                                    write_solution, write_take)
 from .robot.sweeps import (DEFAULT_TOOL_BODY, ArmSweeps, joint_limits, load_sweeps, load_validation_poses, named,
                            sweep_problems)
 
@@ -566,17 +566,17 @@ class Run:
             self.reset_markers()
         return self.tidy() if tidy else []
 
-    def lab_frame(self) -> Pose | None:
-        """The lab frame the relay applies now, its lab_from_raw; None before it announced one.
+    def lab_frame(self) -> ScaledPose | None:
+        """The lab frame the relay applies now, its lab_from_raw with its scale; None before it announced one.
 
         Without a floor calibration it is the identity: poses are Motive's own.
         """
         frame = self.relay.state.frame if self.relay is not None else None
         if frame is None:
             return None
-        return Pose(*frame.lab_from_raw) if frame.lab_from_raw is not None else Pose()
+        return frame.lab_transform or ScaledPose()
 
-    def frame_moved(self, then: Pose | None) -> str | None:
+    def frame_moved(self, then: Pose | ScaledPose | None) -> str | None:
         """How the lab frame moved since `then`, if by over VOLUME_MOVED at a point of the lab; else None.
 
         A frame not known, then or now, counts as unmoved.
@@ -899,10 +899,9 @@ class Run:
 
     def punch_current(self, index: int) -> bool:
         """Whether a punch take is current: no base body data change, the same punch mount and target, the lab frame."""
-        frame = self.punch_takes[index].get("lab_from_raw")
         return (not self.changes(Made(self.tool_body, self.punch_bases[index]), ("base",))
                 and self.punch_mounts[index] == self.punch_mount and self.punch_targets[index] == self.punch_target
-                and self.frame_moved(pose_from(frame) if frame else None) is None)
+                and self.frame_moved(take_frame(self.punch_takes[index])) is None)
 
     def current_punch_takes(self) -> list[dict]:
         """The punch takes that are current (`punch_current`)."""

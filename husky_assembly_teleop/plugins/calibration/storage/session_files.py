@@ -31,7 +31,7 @@ import numpy as np
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 
 from ....drive import environment
-from ....robot_interface.mocap_definitions import BodyDefinition, body_dict
+from ....robot_interface.mocap_definitions import BodyDefinition, ScaledPose, body_dict
 from ....world.calibration_sessions import DEFINITION_KEY, SESSION_OUTPUT
 from ..analysis.fit import Solution, Take, arm_base_link, tool_points
 
@@ -176,7 +176,7 @@ def _point(pose: Pose) -> dict:
 
 def punch_take(arm_name: str, arm_index: int, tool0: str, joints: np.ndarray, base: Pose, tip: Pose,
                offset: np.ndarray, calibration: Pose = Pose(), calibration_sha: str = "",
-               base_error: float | None = None, lab_from_raw: Pose | None = None) -> dict:
+               base_error: float | None = None, lab_from_raw: ScaledPose | None = None) -> dict:
     """One punch take in the old monitor's format, plus the base body's pose and marker error, calibration, lab frame.
 
     The old keys (`base_pose`, `world_from_punch_tip`) are under the calibration applied then; `base_mocap_pose`, the
@@ -194,8 +194,8 @@ def punch_take(arm_name: str, arm_index: int, tool0: str, joints: np.ndarray, ba
         calibration_sha: Its hash, from the relay; "" for none.
         base_error: The base body's marker error the relay reported at the take, metres; None if unknown. Older
             files have no "marker_errors".
-        lab_from_raw: The lab frame the poses are in, as the relay applied it (`Run.lab_frame`); None if not known,
-            as in older files.
+        lab_from_raw: The lab frame the poses are in, as the relay applied it (`Run.lab_frame`), its scale under
+            "lab_scale"; None if not known, as in older files.
     """
     return {"timestamp": datetime.now().isoformat(), "arm_index": arm_index, "arm_name": arm_name,
             "tool0_link_name": tool0, "joint_conf": [float(v) for v in joints], "base_pose": _point(base),
@@ -203,7 +203,14 @@ def punch_take(arm_name: str, arm_index: int, tool0: str, joints: np.ndarray, ba
             "base_mocap_pose": pose_list(compose(base, invert(calibration))),
             "applied_calibration": {"sha256": calibration_sha, "pose": pose_list(calibration)},
             "marker_errors": {"base": None if base_error is None else float(base_error)},
-            "lab_from_raw": pose_list(lab_from_raw) if lab_from_raw is not None else None}
+            "lab_from_raw": pose_list(lab_from_raw.pose) if lab_from_raw is not None else None,
+            "lab_scale": lab_from_raw.scale if lab_from_raw is not None else None}
+
+
+def take_frame(take: dict) -> ScaledPose | None:
+    """The lab frame a punch take's poses are in (`punch_take`); None if not known. Older takes have no scale: 1."""
+    frame = take.get("lab_from_raw")
+    return ScaledPose(pose_from(frame), float(take.get("lab_scale") or 1.0)) if frame else None
 
 
 def write_punch(path: Path, takes: Sequence[dict]) -> None:

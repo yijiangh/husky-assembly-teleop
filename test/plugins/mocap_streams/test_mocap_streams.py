@@ -16,11 +16,12 @@ from husky_assembly_teleop.plugins.mocap_streams import (ASK_PERIOD, INVALID, MI
                                                          state_since, stream_row, stream_state, summary)
 from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.robot_interface.mocap import store_sample
-from husky_assembly_teleop.robot_interface.mocap_definitions import BodyDefinition
+from husky_assembly_teleop.robot_interface.mocap_definitions import BodyDefinition, ScaledPose
 from husky_assembly_teleop.robot_interface.mocap_relay import FloorCalibrationState, MocapRelayState
 from husky_assembly_teleop.ui.style import BUSY, FAIL, INFO, OK
 from husky_assembly_teleop.world.checks import BAD, PENDING, WARN
 from husky_assembly_teleop.world.measured import TrackedObject
+from scaffolding_assembly_core.geometry import Pose
 
 NOW = 5000.0
 #: 33 minutes: how long B20's asset stopped sending on 2026-11-04 with only a small chip to show it.
@@ -148,11 +149,13 @@ def test_the_relay_line_says_the_frame_and_how_far_it_moved_when_it_knows():
     assert relay_line(silent, NOW) == "relay does not answer; no frame announced; no recent look"
     relay = MocapRelayState(frame=FloorCalibrationState("held"), streaming_ids_time=NOW, metrics_time=NOW)
     assert relay_line(relay, NOW) == "frame held; no trusted fit"
-    relay.fit_now = ((0.001, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    relay.fit_now = ScaledPose(Pose((0.001, 0.0, 0.0)))
     assert relay_line(relay, NOW) == "frame held; poses off 1.0 mm; moved 1.0 mm since the floor calibration"
     relay.refit_now = relay.fit_now
     assert "poses off 0.0 mm; moved 1.0 mm" in relay_line(relay, NOW)
     assert "no recent look" in relay_line(relay, NOW + 60.0)
+    relay.fit_now, relay.refit_now = ScaledPose(scale=1.001), None
+    assert relay_line(relay, NOW).endswith("poses off 5.2 mm; moved 5.2 mm since the floor calibration")
 
 
 def test_durations_read_at_a_scale_that_suits_them():

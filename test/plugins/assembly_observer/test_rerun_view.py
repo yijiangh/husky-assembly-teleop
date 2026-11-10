@@ -120,6 +120,15 @@ def test_yaw_and_tool0_error_come_from_the_quaternions():
                                                        nan_ok=True)
 
 
+def test_the_relays_drift_plots_in_mm_and_its_scale_in_mm_per_m_old_ppm_recordings_too():
+    """Distances in mm beside the scale in mm/m share an axis; a recording before mm/m held the scale in ppm."""
+    for label, unit, scale in (("scale", "mm/m", -1.5), ("scale_ppm", "ppm", -1500.0)):
+        [(path, names, plotted)] = rerun_view._plots("lab/relay_drift", None, ["off", label], ["m", unit],
+                                                     np.array([[0.0012, scale]]))
+        assert path == "lab/relay_drift" and names == ["off [mm]", "scale [mm/m]"]
+        assert plotted == pytest.approx(np.array([[1.2, -1.5]]))
+
+
 def test_only_ticks_inside_a_constant_run_are_left_out():
     """A row equal to both neighbours (NaN equal to NaN) is held; the ends of every run stay."""
     values = np.array([1.0, 1.0, 1.0, 2.0, np.nan, np.nan, np.nan])[:, None]

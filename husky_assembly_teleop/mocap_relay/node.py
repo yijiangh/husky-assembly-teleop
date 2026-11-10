@@ -26,8 +26,8 @@ its base calibration (`world/calibration_sessions.py`).
   `definitions_period_sec` and published when they change; each change is logged. With `sim` a fake Motive's
   announcements (SIM_DEFINITIONS_TOPIC, SIM_CAMERAS_TOPIC) instead.
 - Layers: every pose, marker and camera of Motive (or a fake Motive) is turned Z-up ("raw"), then put in the lab frame
-  by `lab_from_raw`: the newest floor calibration's floor_from_raw and the refit in use (`world/mocap_frame.py`); a
-  robot's base calibration goes on top.
+  by `lab_from_raw`: the newest floor calibration's floor_from_raw and the refit in use, its scale too
+  (`world/mocap_frame.py`); a robot's base calibration goes on top.
 - `~/unlabeled_markers`, `~/anchors` (latched, every `definitions_period_sec`): Motive's unlabeled markers, each
   averaged since the last look, and among them the floor calibration's anchors, found where it saw them.
 - Following Motive's frame (`world/frame_follower.py`, which also decides what is logged): every look fits the anchors
@@ -63,7 +63,6 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from scipy.spatial.transform import Rotation
 from std_msgs.msg import String
 from rcl_interfaces.msg import SetParametersResult
 from std_srvs.srv import Trigger
@@ -71,7 +70,7 @@ from std_srvs.srv import Trigger
 from crl_husky import config_resolver
 from crl_husky.sim.husky_sim import TRUTH_PREFIX
 from crl_husky.simulated_parts import fleet_domain_problem
-from scaffolding_assembly_core.geometry import Pose, invert
+from scaffolding_assembly_core.geometry import Pose
 from ..drive import drive_root
 from ..robot_interface.mocap_definitions import (MATCHES, OUT_OF_DATE, UNKNOWN, BodyDefinition, MocapAnchor,
                                                  MocapCamera, anchors_json, camera_changes, cameras_json,
@@ -416,7 +415,8 @@ class MocapRelay(Node):
         # The frame follower: the floor calibration applied, its fits, its state.
         self._frame = FrameFollower(truss_serials, f"Use refit in the mocap probe, or:\n  ros2 service call "
                                                    f"{self.get_fully_qualified_name()}/use_refit std_srvs/srv/Trigger")
-        # ! Read by the NatNet thread: replaced whole. lab_from_raw as (rotation matrix, shift, quaternion), or None.
+        # ! Read by the NatNet thread: replaced whole. lab_from_raw as (rotation matrix times its scale, shift,
+        # ! quaternion), or None.
         self._lab_from_raw: Optional[Tuple[np.ndarray, np.ndarray, QuatXyzw]] = None
         # Motive's unlabeled markers since the last look, summed by Motive's id as [x, y, z, frames, x² + y² + z²]
         # (raw; the NatNet thread adds under its lock).
@@ -971,7 +971,7 @@ class MocapRelay(Node):
                     metres, turned = fit.moved
                     lines.insert(0, f"the {len(fit.used)} truss cameras moved together {metres * 1e3:.1f} mm, turned "
                                     f"{np.degrees(turned):.2f}°, the lab's volume up to "
-                                    f"{volume_moved(fit.raw_cal_from_raw_now) * 1e3:.1f} mm, since last reported"
+                                    f"{volume_moved(fit.motion) * 1e3:.1f} mm, since last reported"
                                     + ("; each camera below moved against them" if changes else ""))
                 why = "continuous calibration re-solved them, Motive recalibrated, or a camera was bumped"
                 # * The cameras alone cannot tell whether poses moved; while the anchors hold the lab frame, none did.
@@ -983,7 +983,7 @@ class MocapRelay(Node):
                                  f"(frame {self._frame.status}): poses may have moved with them", "\n".join(lines)))
             # * Once the frame move is warned about, the cameras not warned about are kept as seen from the new frame.
             if moved_frame:
-                back = invert(fit.raw_cal_from_raw_now)
+                back = fit.motion.inverse()
                 self._cameras_logged = {name: moved_camera(back, camera)
                                         for name, camera in self._cameras_logged.items()}
             latest = cameras if moved_frame else seen_before
@@ -1055,8 +1055,9 @@ class MocapRelay(Node):
         lab_from_raw = self._lab_from_raw
         if lab_from_raw is None:
             return pos, quat
-        rotation, shift, turn = lab_from_raw
-        return tuple(float(v) for v in rotation @ np.asarray(pos, dtype=float) + shift), quat_multiply_xyzw(turn, quat)
+        scaled_turn, shift, turn = lab_from_raw
+        return (tuple(float(v) for v in scaled_turn @ np.asarray(pos, dtype=float) + shift),
+                quat_multiply_xyzw(turn, quat))
 
     def _publish_cameras(self) -> None:
         """Publish Motive's cameras on `~/cameras`, in the lab frame like every pose."""
@@ -1068,10 +1069,10 @@ class MocapRelay(Node):
 
     def _use_lab_from_raw(self) -> None:
         """Put every pose in the lab frame by the follower's `lab_from_raw` from now on; raw without one."""
-        pose = self._frame.lab_from_raw()
-        self._lab_from_raw = None if pose is None else (Rotation.from_quat(pose.orientation).as_matrix(),
-                                                        np.asarray(pose.position, dtype=float),
-                                                        tuple(float(v) for v in pose.orientation))
+        motion = self._frame.lab_from_raw()
+        self._lab_from_raw = None if motion is None else (motion.matrix()[:3, :3],
+                                                          np.asarray(motion.pose.position, dtype=float),
+                                                          tuple(float(v) for v in motion.pose.orientation))
         if self._cameras is not None:
             self._publish_cameras()
 
