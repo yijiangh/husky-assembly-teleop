@@ -236,7 +236,7 @@ class CalibrationPlugin(HuskyPlugin):
         """Show the arm where a procedure's preview stands, else where the step previews it; hide it otherwise.
 
         Shown only while this was used last of all the plugins with ghosts (`RecentUse`): a new preview, Preview time
-        moved, or another step counts as use.
+        moved, another step, or the ghost's joints changing counts as use.
         """
         run = self.cal.run
         ghost = self._ghosts.get(run.serial) if run is not None else None
@@ -246,7 +246,8 @@ class CalibrationPlugin(HuskyPlugin):
         joints = procedure.previewed()
         if joints is None:
             joints = self.panel.current.preview_joints(ctx)
-        shown = (procedure.preview_path, procedure.preview, self.panel.index, joints is None)
+        shown = (procedure.preview_path, procedure.preview, self.panel.index,
+                 None if joints is None else tuple(joints))
         if shown != self._shown:
             self._shown = shown
             self._used.touch()
