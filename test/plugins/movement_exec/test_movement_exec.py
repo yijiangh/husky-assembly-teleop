@@ -31,6 +31,7 @@ from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON
 from husky_assembly_teleop.shared.execution.basis import basis_of
+from husky_assembly_teleop.shared.runs.runs import record_event
 from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
 from husky_assembly_teleop.shared.execution.stream import arm_base_in_world
 from husky_assembly_teleop.shared.execution.tools import ROBOTIQ_CLOSE
@@ -185,6 +186,45 @@ def test_a_motion_is_sent_on_exec_arrives_and_is_recorded():
     # * Where the robot stood and when, at the part's start and end.
     assert record["exec"]["ros_time_start"] < record["exec"]["ros_time_end"]
     assert len(record["exec"]["base_at_start"]) == 7 and len(record["exec"]["base_at_end"]) == 7
+
+
+def test_a_restart_reads_the_finished_movements_back_from_the_run(tmp_path):
+    """The exec event carries its keys; a new executor on the same run folder finds them finished, once read back."""
+    lab = Lab()
+    result, _held = execute(lab, lab.request())
+    assert result.status == DONE
+    (_event, fields), = [record for record in lab.run.records if record[0] == "exec"]
+    assert fields["data"]["keys"] == [[2, 2]]
+    record_event(tmp_path, "exec", 1.0, action=fields["action"], movement=fields["movement"], data=fields["data"])
+
+    again = Lab()
+    again.run.view.folder = tmp_path
+    loaded = again.run.view.process
+    assert again.plugin.finished(loaded, "B20_R") == frozenset(), "nothing before the log is read"
+
+    async def read_back():
+        again.plugin.update(again.ctx)
+        for _ in range(50):
+            await again.ctx.next_tick()
+            await asyncio.sleep(0.01)
+            if again.plugin.finished(loaded, "B20_R"):
+                return
+
+    run_guarded(read_back())
+    assert again.plugin.finished(loaded, "B20_R") == {(2, 2)}
+    assert any("read back from the run's log" in line for _level, line in again.ctx.logs)
+
+
+def test_a_forget_is_written_into_the_run_only_once_it_exists(tmp_path):
+    """Before the run's first record nothing is written (it would start a run); then each forget, exactly."""
+    lab = Lab()
+    lab.plugin.request_forget("B20_R", {(2, 2)})
+    assert lab.run.records == []
+    lab.run.view.folder = tmp_path
+    lab.plugin.request_forget("B20_R", {(2, 2), (1, 0)})
+    lab.plugin.request_forget("B20_J")
+    assert [(event, fields["action"], fields["data"]) for event, fields in lab.run.records] == [
+        ("forget", "B20_R", {"done": [[1, 0], [2, 2]]}), ("forget", "B20_J", {"done": None})]
 
 
 @pytest.mark.safety
