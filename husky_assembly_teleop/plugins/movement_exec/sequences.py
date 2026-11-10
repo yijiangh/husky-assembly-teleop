@@ -104,6 +104,7 @@ class Job:
         status: Shows the servo's phase in the Exec plots window: (text, chip colour).
         ft_zero: Serial -> {at, reason} of the force sensors' last zero (the travel to load, the transit to the insert
             start, a handoff); the plugin's dict, shared, so the as-built record says what the wrenches are relative to.
+        inserted: The last insert run to its end, for a servo after it sent in a request of its own; the plugin's.
     """
 
     ctx: PluginContext
@@ -120,11 +121,33 @@ class Job:
     measured: Callable[[Mapping[str, Any]], None] = lambda _reading: None
     status: Callable[[str, str], None] = lambda _text, _color: None
     ft_zero: dict[str, dict] = field(default_factory=dict)
+    inserted: Callable[[], InsertEnd | None] = lambda: None
 
     @property
     def who(self) -> str:
         """str: The robot as prompts name it, e.g. "alice (a200-0804)"."""
         return f"{self.request.robot_name} ({short_serial(self.request.serial)})"
+
+
+@dataclass(frozen=True)
+class InsertEnd:
+    """Where an insert's plan ended, kept so the servo after a ground bar's insert may run in a later request.
+
+    Attributes:
+        loaded: The loaded process it ran in.
+        action: Its action.
+        primary: Its step's primary movement index.
+        serial: The robot.
+        names: The plan's joint names.
+        end_row: The plan's last row, radians, in `names`' order.
+    """
+
+    loaded: object
+    action: str
+    primary: int
+    serial: str
+    names: tuple[str, ...]
+    end_row: tuple[float, ...]
 
 
 @dataclass

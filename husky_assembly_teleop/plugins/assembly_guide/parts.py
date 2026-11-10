@@ -130,20 +130,17 @@ def action_parts(loaded, action_id: str, robots, transfer_as_free: bool, park: b
                                base=floor_pose(start.base)))
     for step in steps:
         plans = step_parts(loaded, action_id, step, robots, transfer_as_free)
-        # * One part each, but the ungrasp runs during its retreat, and a ground bar's servo after its insert plans
-        #   from the insert's line: each goes with it, in one request.
+        # * One part each, but the ungrasp runs during its retreat: it goes with it, in one request. A ground bar's
+        #   servo after its insert is a part of its own: the executor keeps the insert's planned end for it.
         retreat = next((plan for plan in plans if plan.kind == RETREAT_PART), None)
-        insert = next((plan for plan in plans if plan.kind == INSERT_PART), None)
-        folded = {id(plan) for plan in plans if (plan.kind == WITH_MOTION_PART and retreat is not None)
-                  or (plan.kind == SERVO_PART and insert is not None)}
+        folded = {id(plan) for plan in plans if plan.kind == WITH_MOTION_PART and retreat is not None}
         for plan in plans:
             if id(plan) in folded:
                 continue
             index = step.primary if plan.index == SERVO_INDEX else plan.index
-            sent = tuple(each for each in plans if each is plan or (id(each) in folded and plan in (retreat, insert)))
-            label = _label(movements[index].id, plan) + (", then its servo" if plan is insert and len(sent) > 1
-                                                         else "")
-            parts.append(GuidePart(action_id, KIND_OF[plan.kind], label, movements[index].id, index, step, sent))
+            sent = tuple(each for each in plans if each is plan or (id(each) in folded and plan is retreat))
+            parts.append(GuidePart(action_id, KIND_OF[plan.kind], _label(movements[index].id, plan),
+                                   movements[index].id, index, step, sent))
     last = len(movements) - 1
     parts.append(GuidePart(action_id, MARK, f"mark {action_id} done", movements[last].id if movements else "", last))
     return parts

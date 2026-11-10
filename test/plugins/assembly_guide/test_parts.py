@@ -25,11 +25,11 @@ def parts(loaded, action: str):
 
 
 def test_a_ground_bar_drives_moves_waits_for_hands_servos_inserts_and_marks(loaded):
-    """B20_J: the servo after the transfer on its own, the one after the ground bar's insert with the insert."""
+    """B20_J: a servo after the transfer and one after the ground bar's insert, each a part of its own."""
     assert [(part.kind, part.label) for part in parts(loaded, "B20_J")] == [
         (DRIVE, "drive to B20_J's start"), (MOVE, "B20_J_transfer: transfer, empty tools"),
         (HAND, "B20_J_place_bar: by hand"), (SERVO, "B20_J_transfer: servo"),
-        (INSERT, "B20_J_insert: insert, then its servo"), (MARK, "mark B20_J done")]
+        (INSERT, "B20_J_insert: insert"), (SERVO, "B20_J_insert: servo"), (MARK, "mark B20_J done")]
 
 
 def test_a_hold_and_a_release(loaded):
@@ -48,7 +48,7 @@ def test_each_part_selects_its_movement_and_says_what_finishes_it(loaded):
     b20 = parts(loaded, "B20_J")
     action = loaded.process.actions["B20_J"]
     assert all(action.movements[part.movement_index].id == part.movement for part in b20)
-    assert b20[3].done_keys == {(3, -1)} and b20[4].done_keys == {(4, 4), (4, -1)}
+    assert b20[3].done_keys == {(3, -1)} and b20[4].done_keys == {(4, 4)} and b20[5].done_keys == {(4, -1)}
     assert b20[2].done_keys == {(3, 1), (3, 2)}
     x, y, yaw = b20[0].base
     assert (round(x, 3), round(y, 3), round(math.degrees(yaw), 1)) == (0.527, -3.067, 89.6)

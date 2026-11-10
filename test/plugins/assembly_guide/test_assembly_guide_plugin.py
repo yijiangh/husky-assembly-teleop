@@ -374,14 +374,14 @@ def test_redo_from_a_marked_action_reopens_every_later_one(monkeypatch):
             lab.guide.done(lab.ctx)
             await lab.ticks()
         assert lab.run.view.statuses["B20_J"] == DONE
-        while lab.guide.part.label != "B20_J_insert: insert, then its servo":
+        while lab.guide.part.label != "B20_J_insert: insert":
             lab.guide.look(lab.ctx, -1)
         lab.guide.redo(lab.ctx)
         lab.ctx.t += 0.5
         lab.guide.redo(lab.ctx)
         await lab.ticks()
         assert lab.run.reopened == ["B20_J"]
-        assert lab.guide.part.label == "B20_J_insert: insert, then its servo"
+        assert lab.guide.part.label == "B20_J_insert: insert"
         assert (lab.process.selection.action.id, lab.process.selection.movement.id) == ("B20_J", "B20_J_insert")
         assert ("B20_J", frozenset({(4, 4), (4, -1)})) in lab.executor.forgot
         assert ("B20_R", frozenset()) in lab.executor.forgot, "every later action entirely"

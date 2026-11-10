@@ -258,7 +258,8 @@ def test_god_mode_runs_b20_j_and_b20_r(monkeypatch):
     finally:
         lab.close()
     assert joint == ["drive to B20_J's start", "B20_J_transfer: transfer, empty tools", "B20_J_place_bar: by hand",
-                     "B20_J_transfer: servo", "B20_J_insert: insert, then its servo", "mark B20_J done"]
+                     "B20_J_transfer: servo", "B20_J_insert: insert", "B20_J_insert: servo",
+                     "mark B20_J done"]
     assert release[-2:] == ["B20_R_home: home", "mark B20_R done"] and "B20_R_retreat: retreat" in release
     planners = {file["movement"]: file["plan"]["planner"] for file in lab.run.files() if file.get("plan")}
     # * The free moves, both of Cindy's arms in one search, on the arm planner; the insert and retreat lines on tamp.
