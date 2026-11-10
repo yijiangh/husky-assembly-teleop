@@ -820,7 +820,7 @@ def test_after_the_insert_a_servo_on_its_own_gates_on_the_insert_run_before():
     insert = lab.at.movement_index
     request = lab.servo_request(route=insert_route(lab, 0.0), route_movement=insert)
     trajectory = request.route.result.trajectory
-    end = InsertEnd(request.loaded, request.action, insert, request.serial, tuple(trajectory.joint_names),
+    end = InsertEnd(request.loaded, request.action, insert, insert, request.serial, tuple(trajectory.joint_names),
                     tuple(trajectory.positions[-1]))
     lab.plugin._inserted = replace(end, action="B21_J")
     result = execute(lab, lab.servo_request())
@@ -828,6 +828,10 @@ def test_after_the_insert_a_servo_on_its_own_gates_on_the_insert_run_before():
     lab.plugin._inserted = end
     result = execute(lab, lab.servo_request())
     assert result.status == DONE and "nothing left to plan" in lab.ended(), result.reason
+    lab.plugin.request_forget(request.action, {(insert, -1)})
+    assert lab.plugin._inserted is end, "the servo done again keeps its insert's end"
+    result = execute(lab, lab.servo_request())
+    assert result.status == DONE, result.reason
     lab.plugin.request_forget(request.action, {(insert, insert)})
     assert lab.plugin._inserted is None
 

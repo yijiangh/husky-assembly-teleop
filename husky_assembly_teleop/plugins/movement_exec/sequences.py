@@ -137,6 +137,7 @@ class InsertEnd:
         loaded: The loaded process it ran in.
         action: Its action.
         primary: Its step's primary movement index.
+        index: The insert's own movement index (the key `request_forget` drops it by).
         serial: The robot.
         names: The plan's joint names.
         end_row: The plan's last row, radians, in `names`' order.
@@ -145,6 +146,7 @@ class InsertEnd:
     loaded: object
     action: str
     primary: int
+    index: int
     serial: str
     names: tuple[str, ...]
     end_row: tuple[float, ...]

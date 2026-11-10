@@ -181,7 +181,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._done: set[int] = set()
         self._skipped: set[int] = set()
         #: Parts Redo from here made to do again while their robot stood at their end: standing there, measured live,
-        #: is no result for them until they ran again, Done left them, or the robot left that end (`update`).
+        #: is no result for them until they ran again, Done accepted them, or the robot, live, left that end (`update`).
         self._reopened: set[int] = set()
         #: Parts whose result is not good, by index, as their result chip: a park that did not get there, a drive the
         #: next part finds no goal from.
@@ -654,7 +654,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
             statuses = self._run(ctx).view.statuses
             if not any(self.is_done(ctx, each, index) or index in self._skipped or index in self._flagged
                        or statuses.get(each.action) == MARKED
-                       for index, each in enumerate(self.parts[self.index:], self.index)):
+                       for index, each in enumerate(self.parts[self.index:], self.index)) \
+                    and not (part.kind == HAND and self._hand.count[0]):
                 return "nothing from this part on is done: nothing to redo"
             if owner is not None:
                 return f"{owner.label} waits for Go: Cancel it first"
@@ -764,8 +765,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self._refuse(ctx, "Done", why)
             return
         part = self.part
-        at_end = self.index not in self._reopened and self.at_end(ctx, part)
-        finished = self.is_done(ctx, part, self.index) or at_end
+        # * A part Redo reopened at its end too: Done accepts where the robot stands.
+        finished = self.is_done(ctx, part, self.index) or self.at_end(ctx, part)
         if not finished and part.kind in (HAND, MARK):
             doubts = self._doubts(ctx, part)
             if doubts and not self._done_press.press(ctx.now(), f"confirm {self.index}"):
@@ -953,8 +954,10 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._reopened.discard(index)
         self._record(ctx, "done", part)
         ctx.log_info(f"guide: {part.label} done")
-        after = self._following(ctx, index) if self.mode == OFF else (index + 1 if index + 1 < len(self.parts)
-                                                                      else None)
+        after = None
+        if part.kind == MARK or (self.mode == OFF and self.kinds[part.kind].manual):
+            after = self._following(ctx, index) if self.mode == OFF else (index + 1 if index + 1 < len(self.parts)
+                                                                          else None)
         following = self.parts[after] if after is not None else None
         if part.kind == MARK and following is not None:
             # ! The run moves its current step on a mark (to its first pending action): select the next part at once,
@@ -1411,7 +1414,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._forget_redone(ctx)
         self._keep_outcome()
         # * A part redone counts its end again once its robot left it: getting there afterwards is a new result.
-        self._reopened = {index for index in self._reopened if self.at_end(ctx, self.parts[index])}
+        self._reopened = {index for index in self._reopened
+                          if not self._robot_live(ctx, self.parts[index]) or self.at_end(ctx, self.parts[index])}
         if self.mode == GOD and (problem := simulation_problem(ctx)):
             self._end_auto(ctx, f"not a full simulation any more: {problem}")
         if self.mode == OFF or self.procedure.running:

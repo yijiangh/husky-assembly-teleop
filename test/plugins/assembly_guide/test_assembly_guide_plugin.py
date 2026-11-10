@@ -773,11 +773,63 @@ def test_redo_makes_a_park_standing_at_its_end_to_do_until_its_robot_left_and_ca
         lab.guide.redo(lab.ctx)
         await lab.ticks()
         assert not lab.guide.is_done(lab.ctx, belle_part, index), "redone, though she stands parked"
+        live = guide_module.is_live
+        monkeypatch.setattr(guide_module, "is_live", lambda robot, now: False)
+        await lab.ticks()
+        monkeypatch.setattr(guide_module, "is_live", live)
+        await lab.ticks()
+        assert not lab.guide.is_done(lab.ctx, belle_part, index), "a reading not live says nothing about where she is"
         lab.bases["a200-0805"] = Pose((x + 1.0, y, 0.0), parked.orientation)
         await lab.ticks()
         lab.bases["a200-0805"] = parked
         await lab.ticks()
         assert lab.guide.is_done(lab.ctx, belle_part, index), "parked again after the redo"
+
+    asyncio.run(walk())
+
+
+def test_done_accepts_a_redone_park_standing_at_its_end_without_a_skip(monkeypatch):
+    """Belle parked, her park redone: one Done leaves it done, not skipped, with no "not parked" warning."""
+    lab = Guide(monkeypatch, "B25_J_transfer")
+    lab.guide.park_idle = True
+    belle = robot_config("a200-0805")
+    x, y, yaw = belle.park_pose
+    lab.bases["a200-0805"] = Pose((x, y, 0.0), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)))
+    lab.belle.arms["ur_arm"].state.joint_positions.update(
+        {f"ur_arm_{name}": float(value) for name, value in zip(UR_JOINT_NAMES, belle.arms[0].stow_joints)})
+
+    async def walk():
+        await lab.ticks()
+        index = lab.guide.index + 1
+        lab.guide.look(lab.ctx, 1)
+        lab.guide.redo(lab.ctx)
+        lab.ctx.t += 0.5
+        lab.guide.redo(lab.ctx)
+        await lab.ticks()
+        assert lab.guide.index == index and not lab.guide.is_done(lab.ctx, lab.guide.part, index)
+        lab.guide.done(lab.ctx)
+        await lab.ticks()
+        assert lab.guide.is_done(lab.ctx, lab.guide.parts[index], index) and index not in lab.guide._skipped
+        assert not any("is not parked" in line for line in lab.ctx.lines("warn"))
+
+    asyncio.run(walk())
+
+
+def test_redo_on_a_part_by_hand_with_boxes_ticked_unticks_them(monkeypatch):
+    """Nothing done from the part by hand on, two boxes ticked: Redo is allowed and unticks them."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        boxes = lab.guide.kinds[HAND].boxes
+        assert lab.guide._cannot(lab.ctx, REDO)
+        boxes[0].value = boxes[1].value = True
+        assert not lab.guide._cannot(lab.ctx, REDO)
+        lab.guide.redo(lab.ctx)
+        lab.ctx.t += 0.5
+        lab.guide.redo(lab.ctx)
+        await lab.ticks()
+        assert lab.guide.part.kind == HAND and lab.guide.kinds[HAND].count == (0, 3)
 
     asyncio.run(walk())
 

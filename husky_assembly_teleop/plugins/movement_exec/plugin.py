@@ -156,7 +156,7 @@ class MovementExecPlugin(HuskyPlugin):
             run.request_record(FORGET_EVENT, action=action,
                                data={"done": None if done is None else sorted([int(p), int(i)] for p, i in done)})
         if self._inserted is not None and self._inserted.action == action and (
-                done is None or any(primary == self._inserted.primary for primary, _index in done)):
+                done is None or (self._inserted.primary, self._inserted.index) in done):
             self._inserted = None  # * its insert is to do again: no servo after it until it ran again
         kept = self._finished_moves.get(action)
         if kept is None:
@@ -375,6 +375,8 @@ class MovementExecPlugin(HuskyPlugin):
                         # * The moment before anything moves; every later start is the end of the part before.
                         self._as_built(job, run, "start")
                         first = False
+                    if part.kind == INSERT_PART:
+                        self._inserted = None  # * however this insert ends, an older one's end no longer holds
                     if part.routine in TRANSFERS and part.kind in (MOTION_PART, SERVO_PART):
                         self._carried = None  # the transfer runs anew: its servo sets the carry again when due
                     if self._plots is not None and part.kind == SERVO_PART:
@@ -399,14 +401,12 @@ class MovementExecPlugin(HuskyPlugin):
                     if run.end is not None:
                         end, base = run.end, run.base
                         self._moved_at[request.serial] = ctx.now()
-                    if part.kind == INSERT_PART:
-                        self._inserted = None
-                        if run.result == DONE and request.route is not None and request.route_movement == \
-                                request.step.primary:
-                            trajectory = request.route.result.trajectory
-                            self._inserted = InsertEnd(request.loaded, request.action, request.step.primary,
-                                                       request.serial, tuple(trajectory.joint_names),
-                                                       tuple(float(value) for value in trajectory.positions[-1]))
+                    if part.kind == INSERT_PART and run.result == DONE and request.route is not None \
+                            and request.route_movement == request.step.primary:
+                        trajectory = request.route.result.trajectory
+                        self._inserted = InsertEnd(request.loaded, request.action, request.step.primary, part.index,
+                                                   request.serial, tuple(trajectory.joint_names),
+                                                   tuple(float(value) for value in trajectory.positions[-1]))
                     if run.result == DONE:
                         done.extend((part.index, *part.also))
                         if part.kind in MOTION_KINDS:
