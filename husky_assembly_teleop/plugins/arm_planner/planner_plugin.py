@@ -296,9 +296,9 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         # * The last run's chip goes: every way out below sets this run's, or none for a replaced commit.
         self._motions.pop(key, None)
         if problem := clearance_problem(ctx.scene.snapshot.robots.get(robot_id(serial))):
-            answer(False, f"nothing sent: {short_serial(serial)}: {problem}")
-            ctx.log_warn(f"{what}: nothing sent: {problem}")  # * the run chip's hover may be cut
-            self._motions[key] = Check("refused", BAD, hover(f"{what}: nothing sent: {problem}"))
+            answer(False, f"{short_serial(serial)}: {problem}")
+            ctx.log_warn(f"{what}: not sent: {problem}")  # * the run chip's hover may be cut
+            self._motions[key] = Check("refused", BAD, hover(f"{what}: {problem}"))
             return
 
         def sent() -> None:
@@ -317,7 +317,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         except asyncio.CancelledError:
             if refusal := self.start_refusal(clearance):
                 answer(False, refusal)
-                ctx.log_warn(f"{what}: {refusal}")
+                ctx.log_warn(f"{what}: not sent: {refusal}")
             if self.replaced():
                 self._motions.pop(key, None)
             else:
@@ -325,8 +325,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                                                           "the commit was cancelled; the arm holds where it was")
             raise
         except MotionRefused as refused:  # e.g. the clearance cannot check the robot: nothing sent
-            ctx.log_warn(f"{what}: nothing sent: {refused}")
-            self._motions[key] = Check("refused", BAD, hover(f"{what}: nothing sent: {refused}"))
+            ctx.log_warn(f"{what}: not sent: {refused}")
+            self._motions[key] = Check("refused", BAD, hover(f"{what}: {refused}"))
             raise
         except Exception as error:
             self._motions[key] = Check("failed", BAD, hover(f"{what}: {error}"))
@@ -342,7 +342,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         """A commit refused before `execute` ran (e.g. another plugin holds the lease): its run chip says refused."""
         key = (plan.request.serial, plan.request.arm)
         what = f"{key[0]} {key[1]}"
-        self._ctx.log_warn(f"{what}: {message}")  # * the run chip's hover may be cut
+        self._ctx.log_warn(f"{what}: not sent: {message}")  # * the run chip's hover may be cut
         self._motions[key] = Check("refused", BAD, hover(f"{what}: {message}"))
 
     def forget(self, plan: Plan[ArmPlanRequest]) -> None:

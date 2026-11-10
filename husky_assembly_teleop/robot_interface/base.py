@@ -361,8 +361,8 @@ class BaseInterface:
             self.last_refusal = Refusal("drive refused", f"the twist is not finite ({linear_x}, {angular_z})", now)
             return False
         if linear_x or angular_z:
-            self._latch.check("a twist")
-            self._lease_slot.check("a twist")
+            self._latch.check()
+            self._lease_slot.check()
         problem = self.controllers.running_problem(PLATFORM_VELOCITY_CONTROLLER) if require_controller else None
         if problem is not None:
             self._node.get_logger().warning(f"{self.controllers.namespace}: not driving, {problem}",
@@ -408,8 +408,8 @@ class BaseInterface:
             RobotStopped: If the robot is soft stopped.
             NotLeased: If the running code does not have the robot's lease.
         """
-        self._latch.check("a path")
-        self._lease_slot.check("a path")
+        self._latch.check()
+        self._lease_slot.check()
         columns = [[float(v) for v in values] for values in (x, y, yaw) + (() if t is None else (t,))]
         caps = [float(max_linear_speed), float(max_angular_speed)]
         scales = [] if speed_scale is None else [float(v) for v in speed_scale]

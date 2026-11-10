@@ -480,7 +480,7 @@ async def _motion(job: Job, run: PartRun) -> None:
                 outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run,
                                             watch=lambda: others_moving(job), progress=run.progress)
     except (MotionRefused, WaitTimeout) as refused:  # * the clearance cannot check the robot: nothing sent
-        run.ended(REFUSED, "refused", f"nothing sent: {refused}")
+        run.ended(REFUSED, "refused", str(refused))
         return
     run.outcome = outcome.as_record()
     result = {ARRIVED: DONE, SENT_DRY: DRY_RUN, SENT_REFUSED: REFUSED, SENT_NOT_HELD: HOLD_NOT_SENT}.get(

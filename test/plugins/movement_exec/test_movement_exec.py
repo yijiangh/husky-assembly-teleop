@@ -454,7 +454,7 @@ def test_a_motion_starting_in_contact_is_refused_and_one_that_trips_fails():
 
         result, _held = execute(lab, lab.request(), during=trip)
         if refuse:
-            assert result.status == REFUSED and "nothing sent" in result.reason and problem in result.reason
+            assert result.status == REFUSED and problem in result.reason and "nothing sent" not in result.reason
             assert not lab.cindy._multi_arm.messages
         else:
             assert result.status == FAILED and f"soft stopped: {problem}" in result.reason

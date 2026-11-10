@@ -236,7 +236,7 @@ class ServoLoop:
                         transfer_as_free=as_free, ignore_built=ignore_built, obstacles_collide=obstacles, servo=ask,
                         label=f"servo {k}/{MAX_PASSES} {plan.target}"))
         except SceneNotShown as shown:
-            return REFUSED, "refused", f"pass {k}: {shown}; nothing sent"
+            return REFUSED, "refused", f"pass {k}: {shown}"
         except asyncio.TimeoutError:
             return FAILED, "no plan", f"pass {k}: no plan within {PLAN_TIME:.0f} s; nothing sent"
         route = step.route

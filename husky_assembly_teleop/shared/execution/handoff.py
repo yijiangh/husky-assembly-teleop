@@ -88,7 +88,7 @@ async def run_handoff(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, 
 
     problem = _problem(ctx, robot, arm, gripper)
     if problem:
-        return ended(REFUSED, f"{problem}; nothing sent")
+        return ended(REFUSED, problem)
     if dry_run:
         distance, angle = fk_tcp_gap(robot, arm)
         stiff = "" if _anchor_ok(distance, angle) else "; the anchor check fails: a real run closes with the arm STIFF"

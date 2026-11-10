@@ -47,15 +47,11 @@ class SoftStopLatch:
         """Why nothing may move this robot now, or None."""
         return f"robot {short_serial(self.serial)} is soft stopped; press Resume first" if self.stopped else None
 
-    def check(self, command: str) -> None:
+    def check(self) -> None:
         """Raise RobotStopped if the robot is soft stopped.
 
-        Args:
-            command: What would be sent, for the message, e.g. "a joint trajectory to left".
-
         Raises:
-            RobotStopped: If the robot is soft stopped; nothing may be sent.
+            RobotStopped: If the robot is soft stopped; nothing may be sent. Its message says only why (`problem`).
         """
-        if self.stopped:
-            raise RobotStopped(f"robot {short_serial(self.serial)} is soft stopped, {command} not sent; press Resume "
-                               f"first")
+        if problem := self.problem():
+            raise RobotStopped(problem)

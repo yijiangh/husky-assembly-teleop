@@ -424,7 +424,7 @@ class MovementExecPlugin(HuskyPlugin):
         part, progress = run.part, run.progress
         clearance = None if self._cancel_reason else run.clearance
         if clearance is not None and clearance.refused:
-            run.ended(REFUSED, "refused", f"nothing sent: {clearance.problem}; untick Clearance to move out")
+            run.ended(REFUSED, "refused", f"{clearance.problem}; untick Clearance to move out")
             job.event("cancel", part.movement, {"reason": "clearance refused the start"})
             self._record_part(job, run)
             return ExecResult(run.result, f"{part.movement}: {run.reason}", done, end, base)

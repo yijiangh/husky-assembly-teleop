@@ -277,7 +277,7 @@ class PlannerPanel(HuskyPlugin):
             return
         change = self.target_change(ctx, plan)
         if change:
-            self._say(f"not committed: {change}; replan", FAIL)
+            self._say(f"not sent: {change}; replan", FAIL)
             return
         warnings, far = self.commit_warnings(ctx, plan), self.commit_out_of_reach(ctx, plan)
         asked, unknown = self._confirm.asks(ctx, [robot_id(plan.request.serial)], "Commit", warnings, plan.id, far)
@@ -297,9 +297,9 @@ class PlannerPanel(HuskyPlugin):
             self._say("nothing to cancel: no commit is running")
 
     async def _report(self, sent: asyncio.Future[tuple[bool, str]]) -> None:
-        """Show how a commit went."""
+        """Show how a commit went; the answer says only why one was not sent."""
         taken, message = await sent
-        self._say(message, OK if taken else FAIL)
+        self._say(message if taken else f"not sent: {message}", OK if taken else FAIL)
 
     def _process_step(self, ctx: PluginContext) -> tuple[Selection, str, str] | None:
         """The process plugin's selected movement, and the configured robot it is for.

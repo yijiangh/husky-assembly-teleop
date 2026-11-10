@@ -285,7 +285,7 @@ def test_a_start_too_close_is_refused_and_nothing_sent():
 
     ctx.clearance = clearance
     _commit(ctx, answers, cancel_after=2, planner=planner)
-    refusal = "nothing sent: came within 0.5 cm of the rack; untick Clearance to move out"
+    refusal = "came within 0.5 cm of the rack; untick Clearance to move out"
     assert answers == [(False, refusal)] and not arm._trajectory.messages
     assert (_chip(planner).label, _chip(planner).level) == ("refused", BAD)
 
@@ -300,7 +300,7 @@ def test_an_arm_moves_only_with_the_base_and_every_arm_measured(measured, why, c
     """The other arm unknown or the base untracked: nothing is sent, Clearance on or off."""
     (ctx, arm), answers, planner = _driven(**measured), [], ArmPlannerPlugin()
     _commit(ctx, answers, clearance=clearance, planner=planner)
-    assert answers == [(False, f"nothing sent: {SERIAL}: {why}")] and not arm._trajectory.messages
+    assert answers == [(False, f"{SERIAL}: {why}")] and not arm._trajectory.messages
     assert (_chip(planner).label, _chip(planner).level) == ("refused", BAD)
 
 
@@ -383,7 +383,7 @@ def test_a_commit_whose_lease_is_refused_shows_refused():
         return future.result()
 
     sent, message = asyncio.run(scenario())
-    assert not sent and message.startswith("nothing sent") and not arm._trajectory.messages
+    assert not sent and "nothing sent" not in message and not arm._trajectory.messages
     assert (_chip(planner).label, _chip(planner).level) == ("refused", BAD)
 
 

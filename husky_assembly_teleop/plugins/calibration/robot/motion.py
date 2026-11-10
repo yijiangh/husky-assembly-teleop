@@ -182,7 +182,8 @@ class ArmMotion:
         duration = arm.send_joint_move(joints, min_duration=STEP_MIN_DURATION)
         if duration is None:
             refusal = arm.last_refusal
-            raise RuntimeError(f"the arm refused the move: {refusal.reason if refusal else 'see the log'}")
+            # * The arm's reason says it did not move ("not sending a trajectory: ...").
+            raise RuntimeError(refusal.reason if refusal else "the arm refused the move; the log says why")
         await wait_holding(ctx, arm, lambda: arrived(arm, joints, ctx.now()), duration + MOVE_MARGIN,
                            "the arm to arrive")
 

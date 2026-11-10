@@ -212,7 +212,7 @@ async def run_insert(ctx: PluginContext, robot: HuskyRobotInterface, plan: Inser
     problem = check_part(ctx, robot, plan.arms, tools, record)
     if problem:
         ctx.log_warn(f"{label} refused: {problem}; nothing sent")
-        return PartOutcome(REFUSED, f"{problem}; nothing sent", record=record)
+        return PartOutcome(REFUSED, problem, record=record)
     if dry_run:
         return await _dry_run(ctx, robot, plan, record)
     refused = _compliant_refusal(robot, plan)
