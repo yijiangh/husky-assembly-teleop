@@ -102,12 +102,13 @@ def test_a_scale_change_the_relay_reports_adds_an_amber_chip(server, tmp_path): 
     """Held, but Motive's scale changed: an amber "scale changed" chip, the numbers and what to do on hover."""
     ctx = make_ctx(server, tmp_path)
     ctx.world.mocap_relay.state.frame = FloorCalibrationState("held", "f.json", folder=ROBOTS,
-                                                              scale="distances -1550 ppm")
+                                                              scale="distances -1.55 mm/m")
     plugin = MocapProbePlugin()
     plugin.setup(ctx)
     plugin.draw(ctx)
     assert ">scale changed</span>" in plugin._frame_chips.content
-    assert "distances -1550 ppm" in plugin._frame_chips.content and "recalibrate Motive" in plugin._frame_chips.content
+    assert "distances -1.55 mm/m" in plugin._frame_chips.content
+    assert "a refit follows the scale too" in plugin._frame_chips.content
     plugin.teardown(ctx)
 
 

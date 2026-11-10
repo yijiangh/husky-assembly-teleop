@@ -175,6 +175,7 @@ def test_the_viewer_reads_every_name_of_a_recorded_session(recorded, tmp_path, m
     assert plots["0806/base_mocap"][0] == "marker_error [mm]" and "objects/B20/mocap" in plots
     assert plots["0806/follower/errors"] == ["cross_track [m]", "along_track [m]", "yaw_error [rad]"]
     assert plots["0806/streams/rate"][:2] == ["base [1/s]", "mocap [1/s]"]
+    assert plots["lab/relay_drift"][3:5] == ["apart [mm]", "scale [mm/m]"]
 
     entities = {chunk.entity_path for chunk in RrdReader(saved).stream()}
     assert {"/world/0806", "/world/objects/B20", "/0806/base_pose/yaw", "/objects/B20/pose/yaw",

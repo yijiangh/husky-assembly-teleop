@@ -404,17 +404,16 @@ def _plots(entity: str, arm: str | None, labels: list[str], units: list[str],
     """A signal's plot entities: (path, its lines' names, its values, one column per line).
 
     A pose is its position, and its yaw for a base or an object (an arm's tool0 and target get their error instead);
-    the follower and the streams are split by what their channels mean; mocap residuals are in mm.
+    the follower and the streams are split by what their channels mean;
+    mocap residuals and the relay's drift are in mm (its scale in mm/m).
     """
     names = [f"{label} [{unit}]" if unit else label for label, unit in zip(labels, units)]
     what = entity.rpartition("/")[2]
     if labels[:7] == list(POSE):
         plots = [(f"{entity}/position", names[:3], values[:, :3])]
         return plots if arm is not None else plots + [(f"{entity}/yaw", ["yaw [deg]"], _yaw(values[:, 3:7])[:, None])]
-    if labels == list(NOISE):
-        millimetres = np.array([unit == "m" for unit in units])
-        names = [f"{label} [mm]" if metres else name for label, name, metres in zip(labels, names, millimetres)]
-        return [(entity, names, np.where(millimetres, values * 1000.0, values))]
+    if labels == list(NOISE) or what == RELAY_DRIFT:
+        return [(entity, *_millimetres(labels, units, values))]
     if what == FOLLOWER:
         groups = {group: [labels.index(label) for label in channels if label in labels]
                   for group, channels in FOLLOWER_GROUPS.items()}
@@ -431,6 +430,20 @@ def _plots(entity: str, arm: str | None, labels: list[str], units: list[str],
                               values[:, columns]))
         return plots
     return [(entity, names, values)]
+
+
+def _millimetres(labels: list[str], units: list[str], values: np.ndarray) -> tuple[list[str], np.ndarray]:
+    """Metres as mm and a scale change as mm/m, so they share an axis: 1 mm/m is 1 mm over a metre.
+
+    Recordings before 9 Nov 2026 hold the scale as "scale_ppm" in ppm.
+    """
+    factors = {"m": ("mm", 1e3), "ppm": ("mm/m", 1e-3)}
+    names, scaled = [], values.copy()
+    for column, (label, unit) in enumerate(zip(labels, units)):
+        unit, factor = factors.get(unit, (unit, 1.0))
+        names.append(f"{label.removesuffix('_ppm')} [{unit}]" if unit else label)
+        scaled[:, column] *= factor
+    return names, scaled
 
 
 def _yaw(xyzw: np.ndarray) -> np.ndarray:

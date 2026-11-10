@@ -14,9 +14,10 @@ from dataclasses import asdict, dataclass, field, replace
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from scaffolding_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.geometry import Pose
 
 from ..drive import started_at
+from ..robot_interface.mocap_definitions import ScaledPose, scaled
 from .lab_frame import (MARK_WARN, MARKS, FloorPointsFit, fit_floor_points, floor_point, floor_xy, plane_axes,
                         tape_check, tape_scale)
 from .mocap_frame import volume_moved
@@ -163,20 +164,18 @@ def floor_from_raw(plane: PlaneFit, origin) -> np.ndarray:
     return transform
 
 
-def to_raw(lab_from_raw: tuple | None, position) -> np.ndarray:
+def to_raw(lab_from_raw: ScaledPose | None, position) -> np.ndarray:
     """A position the relay published, taken back to raw (Motive's, Z-up): its `lab_from_raw` undone."""
     if lab_from_raw is None:
         return np.asarray(position, dtype=float)
-    shift, quaternion = lab_from_raw
-    return Rotation.from_quat(quaternion).inv().apply(np.subtract(position, shift))
+    return lab_from_raw.inverse().apply(position)
 
 
-def from_raw(lab_from_raw: tuple | None, position) -> np.ndarray:
+def from_raw(lab_from_raw: ScaledPose | None, position) -> np.ndarray:
     """A raw position (Motive's, Z-up) in the frame the relay publishes: its `lab_from_raw` done."""
     if lab_from_raw is None:
         return np.asarray(position, dtype=float)
-    shift, quaternion = lab_from_raw
-    return Rotation.from_quat(quaternion).apply(position) + np.asarray(shift, dtype=float)
+    return lab_from_raw.apply(position)
 
 
 def transform_json(matrix: np.ndarray) -> dict:
@@ -234,7 +233,7 @@ class FloorSolution:
         return volume_moved(Pose.from_matrix(self.fits["marks"].floor_from_raw
                                              @ np.linalg.inv(self.fits["anchors"].floor_from_raw)))
 
-    def marks_off(self, lab_from_raw: Pose) -> float | None:
+    def marks_off(self, lab_from_raw: Pose | ScaledPose) -> float | None:
         """How far the marks-only fit and `lab_from_raw` place the lab's volume apart, metres; None without that fit.
 
         The marks are probed on the floor, apart from the anchors the relay follows: a check of a frame the relay
@@ -242,7 +241,8 @@ class FloorSolution:
         """
         if "marks" not in self.fits:
             return None
-        return volume_moved(compose(Pose.from_matrix(self.fits["marks"].floor_from_raw), invert(lab_from_raw)))
+        return volume_moved(scaled(Pose.from_matrix(self.fits["marks"].floor_from_raw)).then(
+            scaled(lab_from_raw).inverse()))
 
     @property
     def offsets(self) -> dict[str, float]:
