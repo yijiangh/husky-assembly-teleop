@@ -597,6 +597,32 @@ def test_a_recalibration_changes_no_pose_until_the_refit_is_used_and_a_restart_s
     assert announced_frame(restarted)["status"] == "refit_pending" and use_refit(restarted).success
 
 
+def test_a_recalibration_that_changed_motives_scale_is_followed_by_the_refit(tmp_path):
+    """10 Nov: Motive 0.62 mm/m shorter, nothing moved: pending by the anchors, then used, positions back.
+
+    Every published position (a body far out, the anchors, the cameras) at the floor calibration's; orientations
+    unchanged.
+    """
+    shrink = 1.0 - 0.62e-3
+    node = floor_relay(tmp_path, LAB_ANCHORS)
+    cameras = {name: replace(camera, position=tuple(shrink * np.asarray(camera.position)))
+               for name, camera in cameras_after([]).items()}
+    node._take_definitions(Reply(2.0, [], [z_up_camera_inverse(camera) for camera in cameras.values()]))
+    see_markers(node, [shrink * np.asarray(point) for point in anchors_after([])])
+    assert announced_frame(node)["status"] == "refit_pending" and announced_frame(node)["decides"] == "anchors"
+    assert use_refit(node).success and announced_frame(node)["lab_scale"] == pytest.approx(1.0 / shrink)
+    point = np.array([3.0, -3.0, 1.0])
+    np.testing.assert_allclose(published_point(node, shrink * point), point, atol=1e-6)
+    turned = tuple(Rotation.from_euler("z", 30.0, degrees=True).as_quat())
+    assert same_rotation(node._in_lab_frame(tuple(shrink * point), turned)[1], turned)
+    see_markers(node, [shrink * np.asarray(point) for point in anchors_after([])])
+    sent = json.loads(node._anchors_publisher.sent[-1].data)["anchors"]
+    np.testing.assert_allclose(sent["A5"], LAB_ANCHORS["A5"], atol=1e-6)
+    published_cameras = read_cameras(node._cameras_publisher.sent[-1].data)
+    for name, camera in LAB_CAMERAS.items():
+        np.testing.assert_allclose(published_cameras[name].position, camera.position, atol=1e-6)
+
+
 def test_nothing_pending_is_refused_by_the_service(tmp_path):
     """Held: the service says so."""
     response = use_refit(floor_relay(tmp_path))

@@ -25,6 +25,7 @@ import viser
 from ..config import robot_name
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
+from ..robot_interface.mocap_definitions import ScaledPose
 from ..robot_interface.mocap_relay import MocapRelayState
 from ..robot_interface.mocap_state import RELAY_SILENT_AFTER, MocapBody
 from ..shared.bars.layouts import bar_layouts
@@ -34,7 +35,6 @@ from ..ui.style import BUSY, LEVEL_COLORS, NONE, block, check_chip, chip, note
 from ..world.checks import BAD, INFO, PENDING, WARN, Check
 from ..world.mocap import mean_marker_error, mocap_check, valid_sample_rate
 from ..world.mocap_frame import volume_moved
-from scaffolding_assembly_core.geometry import Pose
 
 if TYPE_CHECKING:
     from ..shared.process_contract import ProcessContract
@@ -201,7 +201,7 @@ def relay_line(relay: MocapRelayState, now: float) -> str:
     elif relay.fit_now is None:
         parts.append("no trusted fit")
     else:
-        fit, in_use = Pose(*relay.fit_now), Pose(*relay.refit_now) if relay.refit_now else Pose()
+        fit, in_use = relay.fit_now, relay.refit_now or ScaledPose()
         parts += [f"poses off {volume_moved(fit, in_use) * 1e3:.1f} mm",
                   f"moved {volume_moved(fit) * 1e3:.1f} mm since the floor calibration"]
     return "; ".join(parts)

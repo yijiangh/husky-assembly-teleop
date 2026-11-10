@@ -92,6 +92,9 @@ VOLUME_DIAGONAL = float(np.linalg.norm(np.ptp(VOLUME, axis=1)))
 SCALE_CHANGED = UNCERTAIN_MAX / VOLUME_DIAGONAL
 #: Only pairs of anchors at least this far apart, metres, tell the scale (`fit_scale`): 0.5 mm of noise is 0.25 mm/m.
 SCALE_PAIR_MIN = 2.0
+#: A fit is trusted only while it changes Motive's scale by at most this share (`FrameFit.scale_change`): about twice
+#: the largest recalibration seen (1.55 mm/m). More is a wrong match, or a moved anchor pair taken for a scale.
+SCALE_MAX = 3e-3
 #: A floor calibration's name, in a dated calibration session folder (`calibration_sessions.sessions_folder`):
 #: "<date>_<time>_mocap_floor_calibration.json".
 FLOOR_PREFIX = "mocap_floor_calibration"
@@ -162,9 +165,15 @@ class FrameFit:
         return ScaledPose(self.raw_cal_from_raw_now, self.scale)
 
     @property
+    def scale_change(self) -> float:
+        """float: How much longer Motive makes distances now than at the floor calibration, a share: `scale` undone."""
+        return 1.0 / self.scale - 1.0
+
+    @property
     def trusted(self) -> bool:
-        """bool: Whether the fit may be used: MIN_POINTS or more that agree, within UNCERTAIN_MAX at any corner."""
-        return len(self.used) >= MIN_POINTS and self.consistent and self.uncertainty <= UNCERTAIN_MAX
+        """bool: Whether the fit may be used: MIN_POINTS or more agree, UNCERTAIN_MAX at any corner, SCALE_MAX."""
+        return (len(self.used) >= MIN_POINTS and self.consistent and self.uncertainty <= UNCERTAIN_MAX
+                and abs(self.scale_change) <= SCALE_MAX)
 
     @property
     def moved(self) -> tuple[float, float]:
@@ -183,7 +192,7 @@ class FrameFit:
                     + (f"; missing: {', '.join(map(camera_label, self.missing))}" if self.missing else ""))
         text = (f"poses off now {volume_moved(self.motion, in_use) * 1e3:.1f} mm; since the floor calibration moved "
                 f"{metres * 1e3:.1f} mm, turned {np.degrees(turned):.2f}°, "
-                f"scaled {(self.scale - 1.0) * 1e3:+.2f} mm/m, the lab's volume up to "
+                f"scaled {self.scale_change * 1e3:+.2f} mm/m, the lab's volume up to "
                 f"{volume_moved(self.motion) * 1e3:.1f} ± {self.uncertainty * 1e3:.1f} mm; from "
                 f"{len(self.used)} {self.source}, largest residual {self.residual * 1e3:.1f} mm")
         if self.bumped:
@@ -198,6 +207,9 @@ class FrameFit:
         elif self.uncertainty > UNCERTAIN_MAX:
             text += (f"; NOT TRUSTED: ± {self.uncertainty * 1e3:.1f} mm, over {UNCERTAIN_MAX * 1e3:.0f} mm (those left "
                      f"do not pin a turn, or scatter)")
+        elif abs(self.scale_change) > SCALE_MAX:
+            text += (f"; NOT TRUSTED: scaled {self.scale_change * 1e3:+.2f} mm/m, over {SCALE_MAX * 1e3:.0f} mm/m "
+                     f"(a wrong match, or points moved together)")
         return text
 
     def as_dict(self, in_use: Pose | ScaledPose = Pose()) -> dict:

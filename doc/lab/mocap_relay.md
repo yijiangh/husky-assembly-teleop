@@ -261,12 +261,14 @@ calibration**.
   calibration on Motive's current calibration needs none), again when it grew by as much more; back under 75 % of it
   for 3 looks, it logs that at info. The mocap probe shows a "scale changed" chip: amber, blue once a refit is in use.
   A recalibration may also warp Motive's volume: anchors that no one scale fits are left out as moved, or the fit is
-  not trusted.
+  not trusted. A fit's scale shows as Motive's change ("scaled −0.62 mm/m": distances now that much shorter), the
+  same sign as the warning. A fit that changes it by over 3 mm/m (`SCALE_MAX`, about twice the largest
+  recalibration seen) is not trusted: a wrong anchor match, or anchors moved together, could pass as a scale.
 - **Thresholds**, side by side: a camera that moved between two readings by over 1 mm or 0.1° is warned about
   ("CAMERAS MOVED", `CAMERA_MOVED`); within one fit, a camera off the others by 2 mm or 0.1°, or an anchor by 2 mm,
   is left out (`BUMP_POSITION`, `BUMP_TURN`, `ANCHOR_BUMP`), and an anchor left out comes back only within 75 % of
   that (`BACK_SHARE`); a fit is trusted with 4 or more that agree and an
-  uncertainty within 2 mm (`MIN_POINTS`, `UNCERTAIN_MAX`); a refit is pending once the deciding fit places a point of
+  uncertainty within 2 mm (`MIN_POINTS`, `UNCERTAIN_MAX`) and a scale change within 3 mm/m (`SCALE_MAX`); a refit is pending once the deciding fit places a point of
   the lab's volume beyond 1 mm, or twice its uncertainty if larger, from the transform in use (`off_limit`,
   `VOLUME_MOVED`), and is held again only under 75 % of that limit; Motive's scale changed by over about 0.39 mm/m is
   reported (`SCALE_CHANGED`). The lab's volume (`VOLUME`) is the central 3 m

@@ -76,9 +76,12 @@ amount in its hover until you act.
   for the session.
 - A relay restart starts from the floor calibration file again, so the refit is pending again: Use refit after each
   restart, or make a new floor calibration (section 2) to keep it.
-- A refit cannot follow a change of Motive's scale: the relay warns "MOTIVE'S SCALE CHANGED" when the anchors' distances
-  changed by over about 0.39 mm/m (2 mm across the lab's volume), and the chip "scale changed" appears. Check the marks against the tape (section 2, step 3),
-  recalibrate Motive if it is off, then make a new floor calibration.
+- A refit follows a change of Motive's scale too: poses come back at the floor calibration's scale. The relay still
+  warns "MOTIVE'S SCALE CHANGED" when the anchors' distances changed by over about 0.39 mm/m (2 mm across the lab's
+  volume): Motive was recalibrated. The chip "scale changed" is amber until you Use refit, then blue. A fit that would
+  change the scale by over 3 mm/m is not trusted: check in Motive that the anchors are seen and none moved.
+- To keep it, make a new floor calibration on Motive's current calibration (section 2), after checking a tape distance
+  (the marks, section 2, step 3): far off, recalibrate Motive first.
 
 ## 4. What each number means
 
@@ -112,7 +115,7 @@ The relay's frame (laptop):
 | frame untrusted (red) | the fits disagree or are too uncertain: poses may be off | check in Motive that the anchors are seen and no truss camera was bumped |
 | no floor calibration (grey) | poses are raw (Motive's, Z-up), not in the lab frame | make one |
 | frame: Drive not read (red) | the relay could not read a floor calibration | check the Drive and the relay's log |
-| scale changed (amber) | Motive's scale changed since the floor calibration by the anchors; hover: by how much | recalibrate Motive, then make a new floor calibration |
+| scale changed (amber, blue) | Motive's scale changed since the floor calibration by the anchors; hover: by how much; blue once a refit follows it | Use refit (section 3); later a new floor calibration |
 | newer floor calibration (amber) | an export the relay has not applied; hover: how far it would move points | Apply floor calibration |
 | frame ? (grey) | no relay announcement | start the relay |
 
