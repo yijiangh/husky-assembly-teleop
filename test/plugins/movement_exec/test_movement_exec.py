@@ -462,7 +462,8 @@ def test_an_error_inside_holds_and_gives_the_robot_back(monkeypatch):
 def test_the_transfer_with_the_workaround_runs_motion_then_the_bar_placed_and_grasped_by_hand():
     """B20_J's transfer step: the motion, the bar placed and clamped as one part (also 2), the servo.
 
-    Cancel at the bar's prompt leaves done = (3,); the part's record is named after its first movement.
+    Cancel at the bar's prompt leaves done = (3,), the force sensors already zeroed on the empty tools and kept for
+    the next request; the part's record is named after its first movement.
     """
     lab = Lab(current=("B20_J", 3))
     request = lab.request("B20_J_transfer")
@@ -470,6 +471,8 @@ def test_the_transfer_with_the_workaround_runs_motion_then_the_bar_placed_and_gr
         (3, "motion", ()), (1, "operator", (2,)), (SERVO_INDEX, "servo", ())]
     result, _held = execute(lab, request, False)
     assert result.status == CANCELLED and result.done == (3,)
+    assert all(len(arm._zero_ft.calls) == 1 for arm in lab.cindy.arms.values())
+    assert lab.plugin._ft_zero[request.serial]["reason"] == "transit to the insert start (tools empty)"
     assert [file["movement"] for file in lab.run.files()] == ["B20_J_transfer", "B20_J_place_bar"]
 
 
