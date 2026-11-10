@@ -247,6 +247,10 @@ class ProcessPlugin(HuskyPlugin):
         self._scrolled_at = -1
         # The `revision` the scene's obstacles were last put for.
         self._scene_revision = -1
+        #: The (action id, movement id) whose bodies were put last, and those this tick's scene snapshot holds
+        #: (`scene_shows`): the snapshot is taken before any plugin's update, so a put shows from the next tick on.
+        self._put_for: tuple[str, str] | None = None
+        self.scene_shows: tuple[str, str] | None = None
         # What `selection` last returned, kept while nothing in it changes.
         self._selection: Selection | None = None
         #: Each action's mark in its row, by action id (`request_marks`); and the joints carried forward
@@ -730,10 +734,13 @@ class ProcessPlugin(HuskyPlugin):
 
     def update(self, ctx: PluginContext) -> None:
         """Put the selected movement's obstacles into the scene, and start building the process's viser nodes."""
+        self.scene_shows = self._put_for
         self._update_preview(ctx)
         if self._scene_revision != self.revision:
             self._scene_revision = self.revision
             self._put_obstacles(ctx)
+            # * This tick's snapshot was taken before the bodies changed: it shows the new ones from the next tick.
+            self.scene_shows = None
         if self._drawing is not None:
             self._drawing.set_ghost(self._ghost)
             self._drawing.set_bar_lines(self._bar_lines)
@@ -765,6 +772,7 @@ class ProcessPlugin(HuskyPlugin):
         prefix = f"{self.name}/"
         ctx.scene.remove_prefix(prefix)
         self.ids = self.process_ids = None
+        self._put_for = None
         selected = self.selected
         if selected is None:
             return
@@ -781,6 +789,7 @@ class ProcessPlugin(HuskyPlugin):
             bodies = scene_bodies(self.process, movement, robots, prefix, self.obstacles_collide)
         ctx.scene.put_many(bodies)
         self.ids, self.process_ids = live_ids(self.process, robots, prefix)
+        self._put_for = (selected[0].id, movement.id)
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the overlay from the selected state, and fill the panel."""

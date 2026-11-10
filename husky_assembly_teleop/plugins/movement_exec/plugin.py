@@ -71,7 +71,7 @@ class MovementExecPlugin(HuskyPlugin):
     """Runs one step's parts in order on its robot (a motion on Exec, the rest after Confirm) and records them."""
 
     name = "movement_exec"
-    requires = ("motion_planner", "assembly_run", "mocap_bars")
+    requires = ("motion_planner", "assembly_run", "mocap_bars", "process")
     experimental = True
     tab_path = (ASSEMBLY_TAB,)
     icon = viser.Icon.PLAYER_PLAY

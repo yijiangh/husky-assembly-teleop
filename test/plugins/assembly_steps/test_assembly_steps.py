@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, design_scene, purged_process, robot_config, step
-from robot_lab import FakeRun, RobotLab
+from robot_lab import FakeRun, RobotLab, ShowsCurrent
 
 from husky_assembly_teleop.colors import WARN, rgb
 from husky_assembly_teleop.plugins.assembly_steps.diagnosis import tool0_line
@@ -107,9 +107,12 @@ def _answered(value):
     return future
 
 
-def fake_process(transfer_as_free: bool = True) -> SimpleNamespace:
-    """The process plugin as the step panel sees it: its two boxes, and the joints carried forward (`carries`)."""
-    process = SimpleNamespace(obstacles_collide=True, transfer_as_free=transfer_as_free, carries=[])
+def fake_process(run, transfer_as_free: bool = True) -> SimpleNamespace:
+    """The process plugin as the step panel sees it, its live scene showing the run's current movement.
+
+    Its two boxes, and the joints carried forward (`carries`).
+    """
+    process = ShowsCurrent(run, obstacles_collide=True, transfer_as_free=transfer_as_free, carries=[])
     process.request_carry = process.carries.append
     return process
 
@@ -127,7 +130,7 @@ class Steps(RobotLab):
         self.loaded = purged_process()
         self.run = FakeRun(self.loaded, current)
         self.planner, self.executor = FakePlanner(self), FakeExecutor()
-        self.process = fake_process(transfer_as_free)
+        self.process = fake_process(self.run, transfer_as_free)
         self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor,
                             "process": self.process}
         self.ctx.kinematics = SimpleNamespace(base_pose=lambda serial: self.bases[serial],
@@ -793,7 +796,10 @@ def test_check_goal_asks_with_the_run_and_records_the_answer():
 
 
 def test_a_late_live_ik_answer_carries_nothing_once_the_step_changed():
-    """The run moves to another action while Live IK waits: its answer comes; nothing is carried, its line says so."""
+    """The run moves to another action while Live IK waits: its answer is refused (solved among another step's bars).
+
+    Nothing is carried or recorded; its line says why.
+    """
     lab = Steps(("B20_J", 3))
 
     async def scenario():
@@ -806,9 +812,28 @@ def test_a_late_live_ik_answer_carries_nothing_once_the_step_changed():
         answer.set_result(cindy_check())
         return await task
 
-    check = asyncio.run(scenario())
-    assert check.ok and lab.process.carries[-1] is None and goal_line(check) not in lab.plugin._message
+    assert asyncio.run(scenario()) is None
+    assert all(carry is None for carry in lab.process.carries)
+    assert not [event for event, _fields in lab.run.records if event == "check_goal"]
     assert lab.plugin._message == "Live IK for B20_J_transfer came after the step changed: not used"
+
+
+def test_a_live_ik_answer_is_refused_in_red_when_the_scene_changed_under_the_same_step():
+    """The live scene stops showing B20_J's transfer while Live IK waits, the step unchanged: refused, said in red."""
+    lab = Steps(("B20_J", 3))
+
+    async def scenario():
+        answer = asyncio.get_running_loop().create_future()
+        lab.planner.request_ik = lambda request: answer
+        task = asyncio.ensure_future(lab.plugin.checked_goal(lab.ctx))
+        await asyncio.sleep(0)
+        lab.process.held = ("B21_H", "B21_H_transfer")
+        answer.set_result(cindy_check())
+        return await task
+
+    assert asyncio.run(scenario()) is None
+    assert all(carry is None for carry in lab.process.carries)
+    assert lab.plugin._message.startswith("Live IK: the live scene changed while B20_J_transfer was planned")
 
 
 def test_check_goal_refuses_routines_without_an_ik_goal():
@@ -855,7 +880,7 @@ class Walk(RobotLab):
         self.executor = MovementExecPlugin()
         # * The Rhino obstacles count, as the walk was planned before their box.
         self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor,
-                            "process": fake_process()}
+                            "process": fake_process(self.run)}
         self.executor.setup(self.ctx)
         self.ctx.kinematics = SimpleNamespace(base_pose=lambda serial: self.bases[serial], joints=lambda serial: {})
         self.steps = AssemblyStepsPlugin()

@@ -17,7 +17,7 @@ from sensor_msgs.msg import JointState
 import pytest
 from planning_fixtures import purged_process, step
 from plugin_fakes import FakeContext, from_outside
-from robot_lab import LEFT, FakeRun, RobotLab
+from robot_lab import LEFT, FakeRun, RobotLab, ShowsCurrent
 
 from husky_assembly_teleop.config import short_serial
 from husky_assembly_teleop.monitor import HuskyMonitor
@@ -78,7 +78,7 @@ class Lab(RobotLab):
         super().__init__(**driver)
         self.loaded = purged_process()
         self.run = FakeRun(self.loaded, current)
-        self.ctx.plugins = {"assembly_run": self.run,
+        self.ctx.plugins = {"assembly_run": self.run, "process": ShowsCurrent(self.run),
                             "motion_planner": SimpleNamespace(request_servo_step=nothing_left)}
         self.plugin = MovementExecPlugin()
         self.plugin.setup(self.ctx)
