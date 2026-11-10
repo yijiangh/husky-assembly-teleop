@@ -53,7 +53,7 @@ from ...config import find_robot_serial, short_serial
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...shared.assembly_planning.joints import arm_joint_names, joint_limits, unwrap_to_nearest
+from ...shared.assembly_planning.joints import arm_joint_names, turn_limits, unwrap_to_nearest
 from ...shared.assembly_planning.movement import Routine, UnknownMovement, classify
 from ...shared.arm_planner_contract import ArmPlanRequest
 from ...shared.process_scene.live_scene import showing
@@ -1311,9 +1311,10 @@ class AssemblyGuidePlugin(HuskyPlugin):
             if part.routine is not Routine.SUPPORT_APPROACH:
                 # * The process's joints only pick the branch: each joint turns by whole turns to the value nearest
                 #   the arms now, as the motion planner's goals (`ik_goal`); the authored turn may cross the tool.
+                #   A shoulder lift never turns through pointing down (`turn_limits`).
                 robot = ctx.scene.snapshot.robots[robot_id(serial)]
                 goal = unwrap_to_nearest(goal, [robot.joints[name] for name in names],
-                                         *joint_limits(robot.model.urdf, names)).tolist()
+                                         *turn_limits(robot.model.urdf, names)).tolist()
             goal_base = ctx.kinematics.base_pose(serial)
         elif len(reference) == len(names):
             goal = [reference[name] for name in names]

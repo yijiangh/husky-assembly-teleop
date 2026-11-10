@@ -801,3 +801,37 @@ def test_another_plugins_plan_sets_the_panels_arms_and_targets():
     panel.take_request(None, single)
     assert panel.arm == "right_ur_arm" and np.allclose(panel._target(), other, atol=0.01)  # sliders round
     assert panel.target_change(None, SimpleNamespace(request=single)) == ""
+
+
+def failed_plan(monkeypatch, saved) -> tuple[Plan, list[str]]:
+    """Plan REQUEST with a search that fails with a detail, `saved` for `save_problem`: the plan and warnings."""
+    monkeypatch.setattr(arm_plugin, "plan_arms", lambda world, scene, arms, goal, abort: PlanResult(
+        None, "no path found in 60 s", 60.0, detail="9 of 10 poses checked were blocked"))
+    if saved is not None:
+        monkeypatch.setattr(arm_plugin, "save_problem", saved)
+    ctx, warnings = FakeCtx(), []
+    ctx.log_warn = warnings.append
+    planner = make_planner(ctx)
+
+    async def scenario():
+        return await planner.request_plan(REQUEST)
+
+    return run(planner, ctx, scenario), warnings
+
+
+def test_a_failed_search_logs_what_blocked_it_and_where_it_was_saved(monkeypatch, tmp_path):
+    """The plan says only why; the log adds the detail and the folder to replay it from."""
+    problems = []
+    plan, warnings = failed_plan(monkeypatch, lambda problem: problems.append(problem) or tmp_path)
+    assert plan.state == "failed" and plan.message == "no plan: no path found in 60 s"
+    problem, = problems
+    assert (problem.serial, problem.arms, problem.goal) == (SERIAL, (ARM,), tuple(GOAL))
+    assert warnings == [f"no path for {SERIAL} {ARM}: 9 of 10 poses checked were blocked; saved to {tmp_path}; "
+                        f"replay it with scripts/replay_arm_plan.py {tmp_path}"]
+
+
+def test_a_problem_that_cannot_be_saved_still_fails_the_plan_as_usual(monkeypatch):
+    """The fake robot model has no URDF to copy: the log says it was not saved, the plan fails as it would."""
+    plan, warnings = failed_plan(monkeypatch, None)
+    assert plan.state == "failed" and plan.message == "no plan: no path found in 60 s"
+    assert len(warnings) == 1 and "9 of 10 poses checked were blocked; not saved: AttributeError" in warnings[0]

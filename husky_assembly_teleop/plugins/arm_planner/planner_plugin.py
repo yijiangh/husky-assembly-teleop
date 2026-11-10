@@ -44,6 +44,7 @@ from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from .planner import TIME_LIMIT, ArmPath, margin_note, path_hit, plan_arms
+from .problem import problem_of, save_problem
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far; the panel also
 #: refuses a target this far from the planned goal.
@@ -121,6 +122,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         loading = serial not in self._loaded
         # The other robots not measured and their stand-ins, from the worker (`with_stand_ins`).
         others: list[str] = []
+        # A failed search's note and where it was saved, or why not, from the worker, for the log.
+        failed: list[str] = []
 
         def work() -> PlanResult:
             # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
@@ -130,6 +133,13 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
             others[:] = stand_ins.warnings
             result = plan_arms(self._world.sync(stand_ins.scene, serial), stand_ins.scene, arms, goal, abort)
+            if result.path is None and result.detail:
+                failed.append(result.detail)
+                try:
+                    folder = save_problem(problem_of(stand_ins.scene, serial, arms, goal, result))
+                    failed.append(f"saved to {folder}; replay it with scripts/replay_arm_plan.py {folder}")
+                except Exception as error:  # * a debugging aid: never fails the plan
+                    failed.append(f"not saved: {error!r}")
             if result.path is None and others:
                 result = replace(result, reason=f"{result.reason} ({unmeasured(others)})")
             return result
@@ -138,6 +148,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             self._loaded.add(serial)
             for line in others:
                 ctx.log_warn(f"planning for {serial} {arm}: {line}")
+            if failed:
+                ctx.log_warn(f"no path for {serial} {what}: {'; '.join(failed)}")
 
         def accepted(result: PlanResult) -> tuple[str, bool]:
             self._start_base = (result.path, base, tracked)

@@ -3,7 +3,8 @@
 Tests under experiments/ check offline analysis that no robot session runs, so they are marked slow.
 Tests under plugins/<name>/ are marked <name>: `pytest -m <name>` runs that plugin's tests, slow ones too.
 Tests marked old_scripts run only with `--old-scripts`, even under `-m ""`.
-Every test holds TEST_LEASE, which the fake robots in `robot_fakes.py` are leased to.
+Every test holds TEST_LEASE, which the fake robots in `robot_fakes.py` are leased to, and saves failed arm searches
+in its own tmp folder.
 Tests run at low priority (NICENESS), so a monitor running on the same machine keeps its ticks.
 ? Without pytest-xdist or pytest-timeout (requirements.txt), their settings in setup.cfg are accepted and ignored: the
   tests run in one process, with no time limit, and the header says so. Nothing is installed for it.
@@ -79,3 +80,10 @@ def hold_the_test_lease():
     """Run every test holding TEST_LEASE, so fakes leased to it take commands."""
     with TEST_LEASE.use():
         yield
+
+
+@pytest.fixture(autouse=True)
+def arm_problems_in_tmp(tmp_path, monkeypatch):
+    """Save the arm planner's failed searches in the test's own folder, never in ~/.ros."""
+    from husky_assembly_teleop.plugins.arm_planner import problem
+    monkeypatch.setattr(problem, "PROBLEM_ROOT", tmp_path / "arm_planner")

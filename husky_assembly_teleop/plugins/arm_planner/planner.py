@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
@@ -21,7 +22,7 @@ import numpy as np
 from ...world.clearance import PLAN_DISTANCE, SELF_DISTANCE
 from ...world.collision_hit import CollisionHit
 from ...shared.assembly_planning.collision import collision_hit, collisions
-from ...shared.assembly_planning.joints import arm_joint_names
+from ...shared.assembly_planning.joints import LIFT_JOINT, arm_joint_names, within_lift_range
 from ...shared.planner.timed_path import TimedPath
 from ...shared.planner.planner_search import PlanResult
 from ...shared.planner.rrt_connect import connect
@@ -52,6 +53,12 @@ BLEND_TRIES = 4
 CURVE_TURN = math.radians(1.0)
 #: How finely `endpoint_margins` rounds down the margin of a pair closer than usual at the start or target, metres.
 MARGIN_RESOLUTION = 0.0005
+#: Said of a shoulder lift past its limits: no path turns it through pointing down (`within_lift_range`).
+LIFT_NOTE = (" (the upper arm would point down into the platform on the way; the same pose is a whole turn the other "
+             "way)")
+#: The blocking pairs and the joint turns a failed search's note names (`search_note`).
+NOTE_PAIRS = 3
+NOTE_TURNS = 3
 
 
 @dataclass(frozen=True)
@@ -162,6 +169,8 @@ def _extend(q1: Sequence[float], q2: Sequence[float], step: float = JOINT_STEP) 
 def joint_limits(mirror: CompasFabMirror, joint_names: Sequence[str]) -> tuple[np.ndarray, np.ndarray]:
     """Each joint's limits from the robot's URDF, within the UR's own (`UR_JOINT_LIMITS`), radians.
 
+    Each shoulder lift keeps to LIFT_RANGE too (`within_lift_range`): beyond it, past pointing down, is out of reach.
+
     Args:
         mirror: The robot's mirror.
         joint_names: The joints: one arm's six in UR driver order, or several arms' after each other.
@@ -177,13 +186,14 @@ def joint_limits(mirror: CompasFabMirror, joint_names: Sequence[str]) -> tuple[n
         limit = model.get_joint_by_name(name).limit
         if limit is not None and limit.lower < limit.upper:
             lower[index], upper[index] = max(lower[index], limit.lower), min(upper[index], limit.upper)
-    return lower, upper
+    return within_lift_range(joint_names, lower, upper)
 
 
 def _outside(q: Sequence[float], lower: np.ndarray, upper: np.ndarray, names: Sequence[str]) -> str:
     """The joints of `q` past their limits, for a message; empty if none is."""
     return "; ".join(f"{names[i]} at {math.degrees(value):.1f} deg, outside "
                      f"{math.degrees(lower[i]):.0f} to {math.degrees(upper[i]):.0f} deg"
+                     + (LIFT_NOTE if names[i].endswith(LIFT_JOINT) else "")
                      for i, value in enumerate(q) if not lower[i] - 1e-6 <= value <= upper[i] + 1e-6)
 
 
@@ -249,7 +259,7 @@ def plan_arms(mirror: CompasFabMirror, scene: Scene, arm_names: Sequence[str], g
     The path keeps PLAN_DISTANCE from everything, the robot itself included; only a pair its start or target is
     already closer for keeps as much as it has there (`endpoint_margins`, `ArmPath.close`).
     A path found is checked again every VERIFY_STEP (`fine_hit`) and searched for again until one holds those
-    margins, within TIME_LIMIT.
+    margins, within TIME_LIMIT. A failed search says what blocked it in `PlanResult.detail` (`search_note`).
 
     Args:
         mirror: The robot's mirror, synced to `scene`.
@@ -294,8 +304,13 @@ def plan_arms(mirror: CompasFabMirror, scene: Scene, arm_names: Sequence[str], g
     low = np.maximum(np.minimum(start, goal) - SAMPLE_SLACK, lower)
     high = np.minimum(np.maximum(start, goal) + SAMPLE_SLACK, upper)
 
+    # * Every check counted by the pair that blocked it (None: free), for a failed search's `search_note`.
+    seen: Counter[tuple[str, str] | None] = Counter()
+
     def collides(q: tuple[float, ...]) -> bool:
-        return check(q) is not None
+        pair = check(q)
+        seen[None if pair is None else tuple(sorted(pair))] += 1
+        return pair is not None
 
     nearest = tuple(sorted(((*pair, kept) for pair, kept in close.items()), key=lambda item: item[2]))
     # * A path is kept only once checked finely (VERIFY_STEP); else the search runs again in the time left.
@@ -308,7 +323,8 @@ def plan_arms(mirror: CompasFabMirror, scene: Scene, arm_names: Sequence[str], g
             reason = corners.reason if broken is None or corners.reason == "cancelled" else (
                 f"every path found came closer than its margin between {part_name(broken[0])} and "
                 f"{part_name(broken[1])} between the search's checks")
-            return PlanResult(None, reason, time.time() - started)
+            detail = "" if reason == "cancelled" else search_note(seen, names, start, goal)
+            return PlanResult(None, reason, time.time() - started, detail=detail)
         path = replace(ArmPath.along(names, *round_corners(corners.states, collides)),
                        margin=min([PLAN_DISTANCE, *close.values()]), close=nearest)
         # * Both ways it is driven: through its waypoints (timed again by Exec) and through its 0.2 s samples (sent
@@ -317,6 +333,25 @@ def plan_arms(mirror: CompasFabMirror, scene: Scene, arm_names: Sequence[str], g
         if broken is None:
             return PlanResult(path, seconds=time.time() - started, direct=corners.direct)
         straight = straight and not corners.direct
+
+
+def search_note(seen: Counter, names: Sequence[str], start: Sequence[float], goal: Sequence[float]) -> str:
+    """What a search met, for the log: its checks blocked and by which pairs most, and the joints that turn most.
+
+    Args:
+        seen: Checks by the pair that blocked them, (part, part) sorted, or None for a free one.
+        names: The joints searched.
+        start: Where they start, radians.
+        goal: Where they should end, radians.
+    """
+    checks = sum(seen.values())
+    blocked = checks - seen[None]
+    pairs = sorted(((pair, count) for pair, count in seen.items() if pair is not None), key=lambda item: -item[1])
+    most = ", ".join(f"{part_name(first)} vs {part_name(second)} {100 * count / blocked:.0f} %"
+                     for (first, second), count in pairs[:NOTE_PAIRS])
+    turns = sorted(zip(names, np.degrees(np.subtract(goal, start))), key=lambda item: -abs(item[1]))
+    return (f"{blocked} of {checks} poses checked were blocked" + (f", mostly {most}" if most else "")
+            + "; biggest turns: " + ", ".join(f"{name} {turn:+.0f}°" for name, turn in turns[:NOTE_TURNS]))
 
 
 def fine_hit(points: Sequence[Sequence[float]], check: Callable[[tuple[float, ...]], tuple[str, str] | None],
