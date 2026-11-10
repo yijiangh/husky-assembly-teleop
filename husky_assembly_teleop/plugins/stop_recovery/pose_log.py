@@ -4,6 +4,8 @@ Every rest pose and every stop of each robot: kept in memory, appended to a day 
 A pose is all of a robot's arms at rest, logged when the robot comes to rest after moving while it ran (operational).
 ! What an arm does while it is not running (an e-stopped arm sagging on its brakes) is never logged as a pose, so
   the newest pose stays the one from before the stop.
+* Each line says whether the robot was simulated: a real monitor never offers a pose from a simulation, nor the
+  other way round. Order is by wall time, since ROS time may be a simulation's.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from typing import Iterable
 
 #: Where the day files go, one JSON line per pose or stop: <folder>/<yyyymmdd>.jsonl.
 LOG_FOLDER = Path.home() / ".ros" / "stop_recovery"
-#: Poses kept in memory per robot (the panel shows the last few).
+#: Poses and stops kept in memory per robot (the panel shows the last few).
 KEPT = 50
 #: A rest pose this close to the newest one on every joint, radians, is not logged again.
 SAME_POSE = 1e-4
@@ -29,12 +31,12 @@ class ArmPose:
     Attributes:
         joints: Joint angles, radians, UR order.
         tcp: tool0 position in the arm's base_link, metres, or None if not reported.
-        force: The force sensor's force, newtons (magnitude, raw), or None if not reported.
+        force: The force sensor's force (fx, fy, fz), newtons, raw, or None if not reported.
     """
 
     joints: tuple[float, ...]
     tcp: tuple[float, float, float] | None = None
-    force: float | None = None
+    force: tuple[float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -45,18 +47,27 @@ class RobotPose:
         serial: The robot, e.g. "a200-0805".
         ros_time: ROS time it was logged, seconds.
         wall: Local wall time it was logged, "2026-11-10T19:39:20".
+        sim: Whether the robot was simulated.
         arms: Arm name -> its pose.
+        go_back: Whether a Go back ended there (finished, held or stopped).
     """
 
     serial: str
     ros_time: float
     wall: str
+    sim: bool
     arms: dict[str, ArmPose] = field(default_factory=dict)
+    go_back: bool = False
 
     @property
     def clock(self) -> str:
         """Its wall time as "19:39:20"."""
         return self.wall[11:19]
+
+    @property
+    def order(self) -> tuple[str, float]:
+        """Its place among poses and stops: wall time, then ROS time within a second."""
+        return self.wall, self.ros_time
 
     def same_joints(self, other: RobotPose) -> bool:
         """Whether every arm of both is within SAME_POSE on every joint."""
@@ -74,24 +85,36 @@ class Stop:
         serial: The robot.
         ros_time: ROS time, seconds.
         wall: Local wall time, "2026-11-10T19:47:26".
+        sim: Whether the robot was simulated.
         reason: What the safety sync said, e.g. "safety mode ROBOT_EMERGENCY_STOP".
-        forces: Arm name -> force, newtons, when it stopped (None where not reported).
+        forces: Arm name -> force (fx, fy, fz) when it stopped, newtons, or None where not reported.
     """
 
     serial: str
     ros_time: float
     wall: str
+    sim: bool
     reason: str
-    forces: dict[str, float | None] = field(default_factory=dict)
+    forces: dict[str, tuple[float, float, float] | None] = field(default_factory=dict)
 
     @property
     def clock(self) -> str:
         """Its wall time as "19:47:26"."""
         return self.wall[11:19]
 
+    @property
+    def order(self) -> tuple[str, float]:
+        """Its place among poses and stops, as `RobotPose.order`."""
+        return self.wall, self.ros_time
+
+
+def _vector(value) -> tuple[float, ...] | None:
+    """A JSON list as a tuple, None kept."""
+    return None if value is None else tuple(float(each) for each in value)
+
 
 class PoseLog:
-    """The poses and stops of every robot, newest last, and the lines still to write to the day file.
+    """The poses and stops of every robot, oldest first, and the lines still to write to the day file.
 
     Attributes:
         folder: Where the day files are.
@@ -108,9 +131,10 @@ class PoseLog:
         self.unwritten: list[str] = []
 
     def add_pose(self, pose: RobotPose) -> bool:
-        """Log a rest pose unless it is the newest one again; True if logged."""
+        """Log a rest pose unless it is its robot's newest one again (sim or real alike); True if logged."""
         kept = self.poses.setdefault(pose.serial, [])
-        if kept and kept[-1].same_joints(pose):
+        newest = next((each for each in reversed(kept) if each.sim == pose.sim), None)
+        if newest is not None and newest.same_joints(pose):
             return False
         kept.append(pose)
         del kept[:-KEPT]
@@ -124,17 +148,17 @@ class PoseLog:
         del kept[:-KEPT]
         self.unwritten.append(json.dumps({"kind": "stop", **asdict(stop)}))
 
-    def last(self, serial: str, count: int) -> list[RobotPose]:
-        """The newest `count` poses of a robot, newest first."""
-        return list(reversed(self.poses.get(serial, [])[-count:]))
+    def last(self, serial: str, count: int, sim: bool) -> list[RobotPose]:
+        """The newest `count` poses of a robot, simulated or real as `sim`, newest first."""
+        return [pose for pose in reversed(self.poses.get(serial, [])) if pose.sim == sim][:count]
 
     def stop_after(self, pose: RobotPose) -> Stop | None:
-        """The first stop of its robot after `pose` and before the robot's next pose, or None."""
-        poses = self.poses.get(pose.serial, [])
-        later = [each.ros_time for each in poses if each.ros_time > pose.ros_time]
-        until = min(later, default=float("inf"))
+        """The first stop of its robot (sim or real alike) after `pose` and before its next pose, or None."""
+        later = [each.order for each in self.poses.get(pose.serial, [])
+                 if each.sim == pose.sim and each.order > pose.order]
+        until = min(later, default=("~", 0.0))
         return next((stop for stop in self.stops.get(pose.serial, [])
-                     if pose.ros_time < stop.ros_time < until), None)
+                     if stop.sim == pose.sim and pose.order < stop.order < until), None)
 
     def take_unwritten(self) -> list[str]:
         """The lines still to write, now counted as written."""
@@ -157,20 +181,22 @@ class PoseLog:
                     entry = json.loads(line)
                     if entry.get("serial") not in wanted:
                         continue
+                    serial, ros_time, wall, sim = (entry["serial"], float(entry["ros_time"]), entry["wall"],
+                                                   bool(entry["sim"]))
                     if entry.get("kind") == "pose":
-                        arms = {name: ArmPose(tuple(arm["joints"]), None if arm.get("tcp") is None
-                                              else tuple(arm["tcp"]), arm.get("force"))
+                        arms = {name: ArmPose(tuple(arm["joints"]), _vector(arm.get("tcp")),
+                                              _vector(arm.get("force")))
                                 for name, arm in entry["arms"].items()}
-                        self.poses.setdefault(entry["serial"], []).append(
-                            RobotPose(entry["serial"], float(entry["ros_time"]), entry["wall"], arms))
+                        self.poses.setdefault(serial, []).append(
+                            RobotPose(serial, ros_time, wall, sim, arms, bool(entry.get("go_back", False))))
                     elif entry.get("kind") == "stop":
-                        self.stops.setdefault(entry["serial"], []).append(
-                            Stop(entry["serial"], float(entry["ros_time"]), entry["wall"], entry.get("reason", ""),
-                                 dict(entry.get("forces", {}))))
+                        forces = {name: _vector(force) for name, force in entry.get("forces", {}).items()}
+                        self.stops.setdefault(serial, []).append(
+                            Stop(serial, ros_time, wall, sim, entry.get("reason", ""), forces))
                 except (ValueError, KeyError, TypeError):
                     continue
         for kept in (*self.poses.values(), *self.stops.values()):
-            kept.sort(key=lambda each: each.ros_time)
+            kept.sort(key=lambda each: each.order)
             del kept[:-KEPT]
 
 
