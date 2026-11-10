@@ -287,6 +287,12 @@ class BasePlannerPanel(PlannerPanel):
                                task=None if task == NO_TASK else task, record=bool(self._recording.value),
                                experiment=str(self._experiment.value))
 
+    def take_request(self, ctx: PluginContext, request: BasePlanRequest) -> None:
+        """Choose the request's robot and set the target to its goal, keeping the plan."""
+        self.serial = request.serial
+        self._target.set(*request.goal)
+        self._has_target = True
+
     def target_change(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> str:
         """Whether the target moved away from the plan's goal."""
         return "the target changed since planning" if differs(self._target.pose, plan.request.goal) else ""

@@ -114,12 +114,38 @@ class RobotLab:
             + len(self.cindy._multi_arm.messages)
 
 
+class ShowsCurrent(SimpleNamespace):
+    """The process plugin as a planning caller sees it: the live scene shows the run's current movement at once.
+
+    Other fields (the boxes, the selection) are given as keywords; a test may set `held` to another (action id,
+    movement id), or None, to hold the scene back.
+    """
+
+    held = False
+
+    def __init__(self, run: FakeRun, **fields):
+        """Follow `run`'s current step."""
+        super().__init__(run=run, **fields)
+
+    @property
+    def scene_shows(self) -> tuple[str, str] | None:
+        """(action id, movement id) of the run's current movement, as `ProcessContract.scene_shows`."""
+        if self.held is not False:
+            return self.held
+        current = self.run.view.current
+        if current is None:
+            return None
+        action, index = current
+        movements = self.run.view.process.process.actions[action].movements
+        return action, movements[index if index is not None else 0].id
+
+
 class FakeRun:
     """assembly_run as other plugins see it: a view, and what they asked."""
 
     def __init__(self, loaded, current):
         """The run at `current`, every action pending."""
-        self.view = SimpleNamespace(process=loaded, current=current, settings=RunSettings(),
+        self.view = SimpleNamespace(process=loaded, current=current, settings=RunSettings(), folder=None,
                                     statuses={action: "pending" for action in loaded.process.schedule})
         self.records, self.selected, self.marked = [], [], []
 

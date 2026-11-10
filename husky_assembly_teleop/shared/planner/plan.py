@@ -75,6 +75,8 @@ class PlannerContract(Protocol[R]):
                clearance: bool = True) -> asyncio.Future[tuple[bool, str]]:
         """Send plan `plan_id` to the robot if it is still the latest and ready; resolves with (sent, message).
 
+        Not sent, the message says only why (e.g. "the plan was sent already"); the caller says it was not sent.
+
         `unknown_robots`: ids of robots the operator lets be unknown during the motion; any other robot not measured
         soft stops it. The plan's own robot among them: the base planner checks its unknown arms where last seen.
         `clearance`: the motion runs under the planner's clearance, refused if the robot starts too close; False

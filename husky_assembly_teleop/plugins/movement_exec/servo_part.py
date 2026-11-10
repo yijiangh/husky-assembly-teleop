@@ -34,6 +34,7 @@ from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.route_result import pose_error
 from ...shared.assembly_planning.tamp_route import HELD
 from ...shared.assembly_run_contract import is_live
+from ...shared.process_scene.live_scene import SceneNotShown, showing
 from ...shared.execution.basis import basis_of
 from ...shared.execution.send import ARRIVED, SendProgress, send_motion
 from ...shared.execution.send import DRY_RUN as SENT_DRY, HOLD_NOT_SENT as SENT_NOT_HELD, REFUSED as SENT_REFUSED
@@ -208,30 +209,34 @@ class ServoLoop:
         problem = world_problem(job, motion=False)
         if problem:
             return REFUSED, "refused", problem
-        robot = self._live()
-        if robot is None:
-            return REFUSED, "refused", f"{job.who} {NOT_LIVE}"
-        snapshot = ctx.scene.snapshot
+        primary = loaded.steps[loaded.index_of(request.action, plan.primary)]
         names = tuple(name for arm in plan.arms for name in arm_joint_names(arm))
         as_free, ignore_built = request.transfer_as_free(), request.ignore_built()
         obstacles = request.obstacles_collide()
-        # * The basis names the primary's step (what is current); the plan is made in the insert's scene after a
-        #   transfer (`plan.step_index`), where the bar is in the tools.
-        basis = basis_of(snapshot, loaded, loaded.steps[loaded.index_of(request.action, plan.primary)], self.serial,
-                         names, robot.joints, as_free, view.statuses, ignore_built, ctx.now(),
-                         obstacles_collide=obstacles)
-        targets, leftover = self.targets, ""
-        if plan.held and not self.engaged:
-            targets, self.fitted = held_targets(self.targets, flange_poses(robot, plan.flanges)), True
-            leftover = self._leftover(targets)
-        ask = ServoAsk(dict(targets), TOOL0_TOL, plan.linear_only, plan.held)
         planner: MotionPlannerContract = ctx.require("motion_planner")
         try:
-            async with timeout(PLAN_TIME):
-                step = await planner.request_servo_step(MotionPlanRequest(
-                    loaded, loaded.steps[plan.step_index], snapshot, ctx.config.robots,
-                    transfer_as_free=as_free, ignore_built=ignore_built, obstacles_collide=obstacles, servo=ask,
-                    label=f"servo {k}/{MAX_PASSES} {plan.target}"))
+            # * The snapshot after the wait: the live scene then shows the current step (`showing`).
+            async with showing(ctx, ctx.require("process"), request.action, primary.movement.id):
+                robot = self._live()
+                if robot is None:
+                    return REFUSED, "refused", f"{job.who} {NOT_LIVE}"
+                snapshot = ctx.scene.snapshot
+                # * The basis names the primary's step (what is current); the plan is made in the insert's scene
+                #   after a transfer (`plan.step_index`), where the bar is in the tools.
+                basis = basis_of(snapshot, loaded, primary, self.serial, names, robot.joints, as_free, view.statuses,
+                                 ignore_built, ctx.now(), obstacles_collide=obstacles)
+                targets, leftover = self.targets, ""
+                if plan.held and not self.engaged:
+                    targets, self.fitted = held_targets(self.targets, flange_poses(robot, plan.flanges)), True
+                    leftover = self._leftover(targets)
+                ask = ServoAsk(dict(targets), TOOL0_TOL, plan.linear_only, plan.held)
+                async with timeout(PLAN_TIME):
+                    step = await planner.request_servo_step(MotionPlanRequest(
+                        loaded, loaded.steps[plan.step_index], snapshot, ctx.config.robots,
+                        transfer_as_free=as_free, ignore_built=ignore_built, obstacles_collide=obstacles, servo=ask,
+                        label=f"servo {k}/{MAX_PASSES} {plan.target}"))
+        except SceneNotShown as shown:
+            return REFUSED, "refused", f"pass {k}: {shown}"
         except asyncio.TimeoutError:
             return FAILED, "no plan", f"pass {k}: no plan within {PLAN_TIME:.0f} s; nothing sent"
         route = step.route

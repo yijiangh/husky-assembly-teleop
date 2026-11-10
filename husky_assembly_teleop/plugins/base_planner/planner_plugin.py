@@ -327,8 +327,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         # * The last run's chip goes: every way out below sets this run's, or none for a replaced commit.
         self._runs.pop(serial, None)
         if problem := robot.base.follow_problem():
-            answer(False, f"not committed: {short_serial(serial)}: {problem}")
-            self._refused(ctx, serial, f"not committed: {short_serial(serial)}: {problem}")
+            answer(False, f"{short_serial(serial)}: {problem}")
+            self._refused(ctx, serial, f"{short_serial(serial)}: {problem}")
             return
         sent_id, sent_at, started = None, ctx.now(), started_at()
         outcome, rec, clearance, run = "stopped", None, None, None
@@ -345,8 +345,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 try:
                     sent_id = send_to_onboard_follower(robot.base, path)
                 except ValueError as error:
-                    answer(False, f"not committed: {error}")
-                    self._refused(ctx, serial, f"not committed: {short_serial(serial)}: {error}")
+                    answer(False, f"{short_serial(serial)}: {error}")
+                    self._refused(ctx, serial, f"{short_serial(serial)}: {error}")
                     return
                 sent_at = ctx.now()
                 run = self._runs[serial] = Run(FollowerPath.from_poses(*path.points.T, None, path.speed_scale), sent_id,
@@ -378,7 +378,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         except asyncio.CancelledError:
             if refusal := self.start_refusal(clearance):
                 answer(False, refusal)
-                ctx.log_warn(f"{serial}: {refusal}")
+                ctx.log_warn(f"not sent: {refusal}")
             # ! Stop the path, unless a new commit replaces this run: its path replaces this one on the follower.
             # * Cancelled while settling, the run had ended: its outcome and chip stay.
             if run is None or run.ended is None:
@@ -393,7 +393,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             raise
         except Exception as error:
             if run is None and isinstance(error, MotionRefused):  # e.g. the clearance cannot check the robot
-                self._refused(ctx, serial, f"nothing sent: {error}")
+                self._refused(ctx, serial, str(error))
             else:
                 self._end(ctx, serial, run, Check("failed", BAD, hover(f"{short_serial(serial)}: {error}")))
             raise
@@ -436,8 +436,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         ctx.log_info(f"base planner: run saved to {folder}")
 
     def _refused(self, ctx: PluginContext, serial: str, message: str) -> None:
-        """Show a commit to `serial` that sent nothing on its run chip; logged, as the hover may be cut."""
-        ctx.log_warn(message)
+        """Show a commit to `serial` that sent nothing on its "refused" run chip, `message` saying why; logged too."""
+        ctx.log_warn(f"not sent: {message}")  # * the hover may be cut
         self._runs[serial] = Run(ended=Check("refused", BAD, hover(message)))
 
     def _end(self, ctx: PluginContext, serial: str, run: Run | None, check: Check) -> None:

@@ -18,9 +18,9 @@ index.
 The "build" box places the build: x, y, z and roll, pitch, yaw of the authored world frame in the world
 (`placement.py`), typed or dragged with the gizmo (the bar lines under it show where the build goes), then Apply.
 Bars, connector halves, obstacles and arm targets move; robot bases too, projected onto the floor plane; the floor
-stays. `process` is the placed process, `authored` the one read. Apply is refused once an action is marked done or
-while a step runs; the run keeps the placement and puts it back when it opens (`request_placement`). A new process
-loads at its authored place.
+stays. `process` is the placed process, `authored` the one read. Apply is refused while a step runs, and asks a second
+press once an action is marked done; the run keeps the placement and puts it back when it opens (`request_placement`).
+A new process loads at its authored place.
 
 The "Rhino obstacles" list (ghost at start) says what becomes of the process's obstacles ("obstacles/<name>"): disable
 hides them, ghost draws them see-through by the overlay, collide counts them in every collision check. Unless they
@@ -64,6 +64,7 @@ from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.assembly_tab.layout import ACTIONS_BAND, ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
 from ...ui.css import group_buttons, group_tooltips_css, one_row_css
 from ...ui.pose_input import PoseInput
+from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, show_waiting
 from ...ui.style import (BUSY, CURRENT, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line,
                          hover, section, swatch_chip, values)
 from ...world.model_check import model_differences
@@ -178,6 +179,8 @@ class ProcessPlugin(HuskyPlugin):
         self.process: Process | None = None
         # Why the last Apply of the build box was refused, and when (ROS time); "" after a placement it made.
         self._placement_refused, self._placement_refused_at = "", 0.0
+        #: Apply once an action is marked done waits for its second press; the Apply button, once built.
+        self._apply_press, self._apply = SecondPress(), None
         # The authored process the gizmo's preview lines were drawn for.
         self._preview_for: Process | None = None
         self._preview = None
@@ -247,6 +250,10 @@ class ProcessPlugin(HuskyPlugin):
         self._scrolled_at = -1
         # The `revision` the scene's obstacles were last put for.
         self._scene_revision = -1
+        #: The (action id, movement id) whose bodies were put last, and those this tick's scene snapshot holds
+        #: (`scene_shows`): the snapshot is taken before any plugin's update, so a put shows from the next tick on.
+        self._put_for: tuple[str, str] | None = None
+        self.scene_shows: tuple[str, str] | None = None
         # What `selection` last returned, kept while nothing in it changes.
         self._selection: Selection | None = None
         #: Each action's mark in its row, by action id (`request_marks`); and the joints carried forward
@@ -322,8 +329,9 @@ class ProcessPlugin(HuskyPlugin):
                                    hint="Where the build stands: the authored world frame in the world. Bars, "
                                         "halves, obstacles and arm targets move; robot bases too, kept on the "
                                         "floor; the floor stays. Apply to place it.")
-            place = gui.add_button("Apply", hint="Place the build at the pose above: the run keeps it. Refused once "
-                                                 "an action is marked done, or while a step runs. Replan after.")
+            place = self._apply = gui.add_button(
+                "Apply", hint="Place the build at the pose above: the run keeps it. Once an action is marked done, "
+                              "on a second press; refused while a step runs. Replan after.")
             # ! Always one line, so nothing below it moves.
             self._placement_status = gui.add_html("")
         # * assembly_run's RUN band sits between the process and its actions (`layout.py`).
@@ -502,7 +510,7 @@ class ProcessPlugin(HuskyPlugin):
         self.rhino_file = None if name == NO_RHINO_FILE or root is None else Path(root) / RHINO_FOLDER / name
 
     def apply_placement(self, ctx: PluginContext, placement: Pose) -> None:
-        """The build box's Apply: place the build, unless an action is marked done or a step runs.
+        """The build box's Apply: place the build; refused while a step runs, on a second press once an action is done.
 
         A refusal shows as a chip under the box for REFUSAL_SHOWN s, and the box goes back to the placement there is.
 
@@ -511,10 +519,14 @@ class ProcessPlugin(HuskyPlugin):
             placement: The authored world frame in the world.
         """
         done = [action_id for action_id, mark in self._marks.items() if mark in (MARK_DONE, MARK_ASSUMED)]
-        refusal = ("no process loaded" if self.authored is None
-                   else f"{len(done)} action{'s' if len(done) > 1 else ''} marked done ({done[0]} first): the run is "
-                        f"built there; start a New run to place it elsewhere" if done
-                   else step_running(ctx.world.robots))
+        refusal = "no process loaded" if self.authored is None else step_running(ctx.world.robots)
+        if not refusal and done:
+            doubt = (f"{len(done)} action{'s' if len(done) > 1 else ''} marked done ({done[0]} first) where the build "
+                     f"stood")
+            if not self._apply_press.press(ctx.now(), "apply"):
+                refusal = f"{doubt}: press Apply again within {SECOND_PRESS_SECONDS:g} s to place it anyway"
+            else:
+                ctx.log_warn(f"build placed anyway: {doubt}; their marks stay")
         if refusal:
             self._placement_refused, self._placement_refused_at = refusal, ctx.now()
             ctx.log_warn(f"build not placed: {refusal}")
@@ -730,10 +742,13 @@ class ProcessPlugin(HuskyPlugin):
 
     def update(self, ctx: PluginContext) -> None:
         """Put the selected movement's obstacles into the scene, and start building the process's viser nodes."""
+        self.scene_shows = self._put_for
         self._update_preview(ctx)
         if self._scene_revision != self.revision:
             self._scene_revision = self.revision
             self._put_obstacles(ctx)
+            # * This tick's snapshot was taken before the bodies changed: it shows the new ones from the next tick.
+            self.scene_shows = None
         if self._drawing is not None:
             self._drawing.set_ghost(self._ghost)
             self._drawing.set_bar_lines(self._bar_lines)
@@ -765,6 +780,7 @@ class ProcessPlugin(HuskyPlugin):
         prefix = f"{self.name}/"
         ctx.scene.remove_prefix(prefix)
         self.ids = self.process_ids = None
+        self._put_for = None
         selected = self.selected
         if selected is None:
             return
@@ -781,6 +797,7 @@ class ProcessPlugin(HuskyPlugin):
             bodies = scene_bodies(self.process, movement, robots, prefix, self.obstacles_collide)
         ctx.scene.put_many(bodies)
         self.ids, self.process_ids = live_ids(self.process, robots, prefix)
+        self._put_for = (selected[0].id, movement.id)
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the overlay from the selected state, and fill the panel."""
@@ -789,6 +806,8 @@ class ProcessPlugin(HuskyPlugin):
         self._rhino_obstacles.value = self.obstacles_mode
         self._collide_status.content = self._collide_html(ctx)
         self._placement_status.content = self._placement_html(ctx)
+        if self._apply is not None:
+            show_waiting(self._apply, self._apply_press.waiting(ctx.now()) == "apply", "Apply", None)
         selected = self.selected
         # * One line, even empty: the full error on hover.
         error = " ".join(self._error.split())

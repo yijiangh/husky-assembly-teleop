@@ -96,7 +96,7 @@ class PlannerPanel(HuskyPlugin):
         self._target_moved = ""
         #: When the operator last used this panel; ghosts show only while it counts (`_add_ghosts`).
         self._used: RecentUse | None = None
-        #: The last request this panel's Plan sent: only its plan arriving counts as use, not another plugin's.
+        #: The request of the plan the panel shows as its own: its Plan's, or another plugin's it took (`take_request`).
         self._requested = None
         #: Nothing to plan for (e.g. no robots configured): the panel says why, and the hooks do nothing.
         self.idle = False
@@ -110,6 +110,10 @@ class PlannerPanel(HuskyPlugin):
 
     def target_change(self, ctx: PluginContext, plan: Plan) -> str:
         """How the panel's target differs from the plan's, e.g. "the target changed since planning"; "" if not."""
+        raise NotImplementedError
+
+    def take_request(self, ctx: PluginContext, request) -> None:
+        """Choose `request`'s robot and set the target to its goal, as if this panel had asked; never clear the plan."""
         raise NotImplementedError
 
     def show_target(self, ctx: PluginContext, ghost: RobotGhost) -> None:
@@ -273,7 +277,7 @@ class PlannerPanel(HuskyPlugin):
             return
         change = self.target_change(ctx, plan)
         if change:
-            self._say(f"not committed: {change}; replan", FAIL)
+            self._say(f"not sent: {change}; replan", FAIL)
             return
         warnings, far = self.commit_warnings(ctx, plan), self.commit_out_of_reach(ctx, plan)
         asked, unknown = self._confirm.asks(ctx, [robot_id(plan.request.serial)], "Commit", warnings, plan.id, far)
@@ -293,9 +297,9 @@ class PlannerPanel(HuskyPlugin):
             self._say("nothing to cancel: no commit is running")
 
     async def _report(self, sent: asyncio.Future[tuple[bool, str]]) -> None:
-        """Show how a commit went."""
+        """Show how a commit went; the answer says only why one was not sent."""
         taken, message = await sent
-        self._say(message, OK if taken else FAIL)
+        self._say(message if taken else f"not sent: {message}", OK if taken else FAIL)
 
     def _process_step(self, ctx: PluginContext) -> tuple[Selection, str, str] | None:
         """The process plugin's selected movement, and the configured robot it is for.
@@ -343,11 +347,15 @@ class PlannerPanel(HuskyPlugin):
             shown, self._shown = self._shown, plan
             if plan is not None and (shown is None or plan.id != shown.id):
                 self._t, self._playing = 0.0, False
+                if plan.request is not self._requested:
+                    # * Another plugin's plan (e.g. calibration's) is handled as if this panel had asked for
+                    #   it: robot and target follow it, so the ghosts, the chip and Commit do too.
+                    self._requested = plan.request
+                    self.take_request(ctx, plan.request)
             arrived = plan is not None and plan.state == "ready" and (
                 shown is None or plan.id != shown.id or shown.state != "ready")
             if arrived and plan.request is self._requested:
-                # * This panel's plan arriving counts as use, so its ghost shows after a long search too; a plan
-                #   another plugin asked for (calibration's moves) does not.
+                # * A plan arriving counts as use, so its ghost shows after a long search too.
                 self._used.touch()
             # * Only a new plan, state or message is news: a re-timed plan (`set_duration`) keeps the line as it is.
             if plan is not None and (shown is None or (plan.id, plan.state, plan.message)

@@ -285,7 +285,7 @@ def test_a_start_too_close_is_refused_and_nothing_sent():
 
     ctx.clearance = clearance
     _commit(ctx, answers, cancel_after=2, planner=planner)
-    refusal = "nothing sent: came within 0.5 cm of the rack; untick Clearance to move out"
+    refusal = "came within 0.5 cm of the rack; untick Clearance to move out"
     assert answers == [(False, refusal)] and not arm._trajectory.messages
     assert (_chip(planner).label, _chip(planner).level) == ("refused", BAD)
 
@@ -300,7 +300,7 @@ def test_an_arm_moves_only_with_the_base_and_every_arm_measured(measured, why, c
     """The other arm unknown or the base untracked: nothing is sent, Clearance on or off."""
     (ctx, arm), answers, planner = _driven(**measured), [], ArmPlannerPlugin()
     _commit(ctx, answers, clearance=clearance, planner=planner)
-    assert answers == [(False, f"nothing sent: {SERIAL}: {why}")] and not arm._trajectory.messages
+    assert answers == [(False, f"{SERIAL}: {why}")] and not arm._trajectory.messages
     assert (_chip(planner).label, _chip(planner).level) == ("refused", BAD)
 
 
@@ -383,7 +383,7 @@ def test_a_commit_whose_lease_is_refused_shows_refused():
         return future.result()
 
     sent, message = asyncio.run(scenario())
-    assert not sent and message.startswith("nothing sent") and not arm._trajectory.messages
+    assert not sent and "nothing sent" not in message and not arm._trajectory.messages
     assert (_chip(planner).label, _chip(planner).level) == ("refused", BAD)
 
 
@@ -415,6 +415,7 @@ def make_panel(planner: ArmPlannerPlugin) -> ArmPlannerPanel:
     panel = ArmPlannerPanel()
     panel._api = panel._planner = planner
     panel.serial, panel.arm, panel._has_target, panel._load_now = SERIAL, ARM, True, False
+    panel._arms = {SERIAL: [ARM]}
     panel._sliders = [SimpleNamespace(value=math.degrees(value)) for value in GOAL]
     panel._used = SimpleNamespace(touch=lambda: None, active=True)
     panel._collisions = FakeCollisions()
@@ -786,3 +787,51 @@ def test_both_plans_every_arm_in_one_search_its_targets_from_step_ik():
     assert panel.target_change(None, plan) == ""
     panel._choose(SERIAL, ARM)
     assert panel.target_change(None, plan) == "the robot or arm changed since planning"
+
+
+def test_another_plugins_plan_sets_the_panels_arms_and_targets():
+    """A plan another plugin asked for is the panel's own: two arms choose Both, one arm that arm, targets its goals."""
+    panel = make_panel(ArmPlannerPlugin())
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    other = tuple(float(value) + 0.2 for value in GOAL)
+    both = ArmPlanRequest(SERIAL, ARM, tuple(GOAL), also=(("right_ur_arm", other),))
+    panel.take_request(None, both)
+    assert panel.arm == BOTH and panel.target_change(None, SimpleNamespace(request=both)) == ""
+    single = ArmPlanRequest(SERIAL, "right_ur_arm", other)
+    panel.take_request(None, single)
+    assert panel.arm == "right_ur_arm" and np.allclose(panel._target(), other, atol=0.01)  # sliders round
+    assert panel.target_change(None, SimpleNamespace(request=single)) == ""
+
+
+def failed_plan(monkeypatch, saved) -> tuple[Plan, list[str]]:
+    """Plan REQUEST with a search that fails with a detail, `saved` for `save_problem`: the plan and warnings."""
+    monkeypatch.setattr(arm_plugin, "plan_arms", lambda world, scene, arms, goal, abort: PlanResult(
+        None, "no path found in 60 s", 60.0, detail="9 of 10 poses checked were blocked"))
+    if saved is not None:
+        monkeypatch.setattr(arm_plugin, "save_problem", saved)
+    ctx, warnings = FakeCtx(), []
+    ctx.log_warn = warnings.append
+    planner = make_planner(ctx)
+
+    async def scenario():
+        return await planner.request_plan(REQUEST)
+
+    return run(planner, ctx, scenario), warnings
+
+
+def test_a_failed_search_logs_what_blocked_it_and_where_it_was_saved(monkeypatch, tmp_path):
+    """The plan says only why; the log adds the detail and the folder to replay it from."""
+    problems = []
+    plan, warnings = failed_plan(monkeypatch, lambda problem: problems.append(problem) or tmp_path)
+    assert plan.state == "failed" and plan.message == "no plan: no path found in 60 s"
+    problem, = problems
+    assert (problem.serial, problem.arms, problem.goal) == (SERIAL, (ARM,), tuple(GOAL))
+    assert warnings == [f"no path for {SERIAL} {ARM}: 9 of 10 poses checked were blocked; saved to {tmp_path}; "
+                        f"replay it with scripts/replay_arm_plan.py {tmp_path}"]
+
+
+def test_a_problem_that_cannot_be_saved_still_fails_the_plan_as_usual(monkeypatch):
+    """The fake robot model has no URDF to copy: the log says it was not saved, the plan fails as it would."""
+    plan, warnings = failed_plan(monkeypatch, None)
+    assert plan.state == "failed" and plan.message == "no plan: no path found in 60 s"
+    assert len(warnings) == 1 and "9 of 10 poses checked were blocked; not saved: AttributeError" in warnings[0]

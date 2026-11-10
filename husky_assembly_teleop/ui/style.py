@@ -79,11 +79,15 @@ def _title(title: str) -> str:
     return escape(title, quote=True)
 
 
-def chip(text: str, color: str, title: str = "") -> str:
-    """A small coloured label; `title` is hover text for extra detail (cut at HOVER_MAX)."""
+def chip(text: str, color: str, title: str = "", ring: str = "") -> str:
+    """A small coloured label; `title` is hover text for extra detail (cut at HOVER_MAX).
+
+    `ring`: a colour for a ring drawn inside the chip, e.g. to mark the one shown; inside, so a line never clips it.
+    """
     # nowrap: rows wrap between chips, never inside one.
+    inset = f"box-shadow:inset 0 0 0 2px {ring};" if ring else ""
     return (f'<span title="{_title(title)}" style="display:inline-block;white-space:nowrap;'
-            f'background:{color};color:{WHITE};border-radius:4px;padding:0 5px;'
+            f'background:{color};color:{WHITE};border-radius:4px;padding:0 5px;{inset}'
             f'margin:0 4px 2px 0;font-size:11px;font-weight:600">{text}</span>')
 
 

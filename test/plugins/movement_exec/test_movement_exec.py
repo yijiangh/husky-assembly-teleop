@@ -17,7 +17,7 @@ from sensor_msgs.msg import JointState
 import pytest
 from planning_fixtures import purged_process, step
 from plugin_fakes import FakeContext, from_outside
-from robot_lab import LEFT, FakeRun, RobotLab
+from robot_lab import LEFT, FakeRun, RobotLab, ShowsCurrent
 
 from husky_assembly_teleop.config import short_serial
 from husky_assembly_teleop.monitor import HuskyMonitor
@@ -31,6 +31,7 @@ from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON
 from husky_assembly_teleop.shared.execution.basis import basis_of
+from husky_assembly_teleop.shared.runs.runs import record_event
 from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
 from husky_assembly_teleop.shared.execution.stream import arm_base_in_world
 from husky_assembly_teleop.shared.execution.tools import ROBOTIQ_CLOSE
@@ -78,7 +79,7 @@ class Lab(RobotLab):
         super().__init__(**driver)
         self.loaded = purged_process()
         self.run = FakeRun(self.loaded, current)
-        self.ctx.plugins = {"assembly_run": self.run,
+        self.ctx.plugins = {"assembly_run": self.run, "process": ShowsCurrent(self.run),
                             "motion_planner": SimpleNamespace(request_servo_step=nothing_left)}
         self.plugin = MovementExecPlugin()
         self.plugin.setup(self.ctx)
@@ -185,6 +186,45 @@ def test_a_motion_is_sent_on_exec_arrives_and_is_recorded():
     # * Where the robot stood and when, at the part's start and end.
     assert record["exec"]["ros_time_start"] < record["exec"]["ros_time_end"]
     assert len(record["exec"]["base_at_start"]) == 7 and len(record["exec"]["base_at_end"]) == 7
+
+
+def test_a_restart_reads_the_finished_movements_back_from_the_run(tmp_path):
+    """The exec event carries its keys; a new executor on the same run folder finds them finished, once read back."""
+    lab = Lab()
+    result, _held = execute(lab, lab.request())
+    assert result.status == DONE
+    (_event, fields), = [record for record in lab.run.records if record[0] == "exec"]
+    assert fields["data"]["keys"] == [[2, 2]]
+    record_event(tmp_path, "exec", 1.0, action=fields["action"], movement=fields["movement"], data=fields["data"])
+
+    again = Lab()
+    again.run.view.folder = tmp_path
+    loaded = again.run.view.process
+    assert again.plugin.finished(loaded, "B20_R") == frozenset(), "nothing before the log is read"
+
+    async def read_back():
+        again.plugin.update(again.ctx)
+        for _ in range(50):
+            await again.ctx.next_tick()
+            await asyncio.sleep(0.01)
+            if again.plugin.finished(loaded, "B20_R"):
+                return
+
+    run_guarded(read_back())
+    assert again.plugin.finished(loaded, "B20_R") == {(2, 2)}
+    assert any("read back from the run's log" in line for _level, line in again.ctx.logs)
+
+
+def test_a_forget_is_written_into_the_run_only_once_it_exists(tmp_path):
+    """Before the run's first record nothing is written (it would start a run); then each forget, exactly."""
+    lab = Lab()
+    lab.plugin.request_forget("B20_R", {(2, 2)})
+    assert lab.run.records == []
+    lab.run.view.folder = tmp_path
+    lab.plugin.request_forget("B20_R", {(2, 2), (1, 0)})
+    lab.plugin.request_forget("B20_J")
+    assert [(event, fields["action"], fields["data"]) for event, fields in lab.run.records] == [
+        ("forget", "B20_R", {"done": [[1, 0], [2, 2]]}), ("forget", "B20_J", {"done": None})]
 
 
 @pytest.mark.safety
@@ -414,7 +454,7 @@ def test_a_motion_starting_in_contact_is_refused_and_one_that_trips_fails():
 
         result, _held = execute(lab, lab.request(), during=trip)
         if refuse:
-            assert result.status == REFUSED and "nothing sent" in result.reason and problem in result.reason
+            assert result.status == REFUSED and problem in result.reason and "nothing sent" not in result.reason
             assert not lab.cindy._multi_arm.messages
         else:
             assert result.status == FAILED and f"soft stopped: {problem}" in result.reason
@@ -520,6 +560,32 @@ def test_a_dry_run_never_gives_done_and_sends_nothing():
     assert any("DRY RUN a200-0806 left_ur_arm" in line for line in lab.ctx.lines("warn"))
     assert said(lab)[0].startswith("cindy (0806): DRY RUN — B20_J_transfer — move left_ur_arm, right_ur_arm")
     assert lab.run.files()[0]["outcome"]["dry_run"] is True
+
+
+@pytest.mark.safety
+def test_a_requests_own_dry_run_sends_nothing_with_the_dry_run_box_off():
+    """A request's own dry run (a rehearsal) of B20_J's transfer step: every check, nothing sent, nothing finished.
+
+    The executor's Dry run box stays off and the requester's preview is never asked to show the motion.
+    """
+    lab = Lab(current=("B20_J", 3))
+    shown = []
+
+    async def scenario():
+        request = lab.request("B20_J_transfer", dry_run=True, preview=lambda *args: shown.append(args))
+        future = lab.plugin.request_execute(request)
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        assert lab.plugin.prompt.text.startswith("DRY RUN — ")
+        await answer(lab, True)
+        await answer(lab, True)  # the servo's bar prompt: no usable mocap fit of B20 (no fake Motive)
+        return await future
+
+    result = run_guarded(scenario())
+    assert result.status == DRY_RUN and result.done == () and lab.published() == 0
+    assert not lab.plugin.dry_run
+    assert lab.plugin.finished(lab.loaded, "B20_J") == frozenset()
+    assert all(route is None for route, _basis, _seconds in shown), "no motion previewed"
 
 
 @pytest.mark.safety

@@ -26,7 +26,7 @@ import viser
 
 from ...ui.phone import big_buttons, phone_text
 from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, again_label
-from ...colors import INK, rgb
+from ...colors import ACTION_SHADES, DARK_GREY, INK, rgb
 from ...ui.style import (BUSY, CURRENT, FAIL, LEVEL_COLORS, NONE, OK, SECTION_CTRL, WHITE, block, check_chip, chip,
                          chip_line, chip_row, hover, note, section, warning)
 from ...world.checks import WARN, Check
@@ -51,26 +51,90 @@ def set_changed(handle, **values) -> None:
             setattr(handle, name, value)
 
 
-def state_chip(text: str, state: Check, dashed: bool, current: bool = False, needed: bool = False) -> str:
-    """A chip in the colour of a step's state: solid for a result, dashed for a precondition.
+def step_header(where: str, name: str, goal: str, tags: Sequence[str] = ()) -> str:
+    """The step shown, at the top: a light blue card, its name large; three lines, always there.
+
+    The first line says where the step is (grey) with `tags` as small pills on the right (its kind, its robot), the
+    second its name, the third its goal. Each line is cut with "…" and says all on hover, so the card never changes
+    height.
 
     Args:
-        text: The chip's text, e.g. the step's number.
+        where: Where the step is, e.g. "B20_J · part 2 of 7"; "" for none.
+        name: The step's name, e.g. "B20_J_transfer: move"; "" for none.
+        goal: What it is for, in a line; "" for none.
+        tags: Short words shown as pills after `where`, e.g. ("move", "0806").
+    """
+    def line(text: str, style: str) -> str:
+        return (f'<div title="{escape(text, quote=True)}" style="white-space:nowrap;overflow:hidden;'
+                f'text-overflow:ellipsis;{style}">{escape(text) or "&nbsp;"}</div>')
+
+    pills = "".join(f'<span style="flex:none;margin-left:4px;padding:0 6px;border-radius:9px;font-size:10px;'
+                    f'font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:{CURRENT};'
+                    f'background:{WHITE};border:1px solid {CURRENT}">{escape(tag)}</span>' for tag in tags)
+    top = (f'<div style="display:flex;align-items:center;min-height:17px">'
+           f'{line(where, f"flex:1;font-size:11px;font-weight:600;color:{NONE}")}{pills}</div>')
+    card = (f'<div style="background:{ACTION_SHADES[0]};border-left:4px solid {CURRENT};border-radius:4px;'
+            f'padding:5px 10px 6px;margin:4px 0">{top}'
+            + line(name, f"font-size:18px;font-weight:700;line-height:1.35;color:{INK};letter-spacing:-.01em")
+            + line(goal, f"font-size:12px;color:{DARK_GREY}") + "</div>")
+    return block(card)
+
+
+def state_chip(text: str, state: Check, dashed: bool, current: bool = False, needed: bool = False) -> str:
+    """A chip in the colour of a step's state: filled for a result, hollow and dashed for a precondition.
+
+    The colour is the state only. The step shown gets a black ring, a step it needs that is not ready a dotted black
+    outline (never the shown one); both are drawn inside the chip, so a one-line row never clips them.
+
+    Args:
+        text: The chip's text, e.g. the step's number; "▶" in front while its procedure runs.
         state: The step's state (`Step.state`); its label and detail on hover.
         dashed: Whether the step is a precondition step.
-        current: Ring it: the current step.
-        needed: Outline it, dotted: a precondition the current step needs has expired.
+        current: Ring it: the step shown.
+        needed: Outline it, dotted: the step shown needs it and it is not ready.
     """
     color = LEVEL_COLORS[state.level]
     look = (f"background:transparent;color:{color};border:1px dashed {color}" if dashed else
             f"background:{color};color:{WHITE};border:1px solid {color}")
     if current:
-        look += f";box-shadow:0 0 0 2px {CURRENT}"
+        look += f";box-shadow:inset 0 0 0 2px {INK}"
     if needed:
-        look += f";outline:2px dotted {INK};outline-offset:1px"
+        look += f";outline:2px dotted {INK};outline-offset:-3px"
     title = hover(f"{state.label}: {state.detail}", "the step's chips") if state.detail else state.label
     return (f'<span title="{escape(title, quote=True)}" style="display:inline-block;white-space:nowrap;{look};'
             f'border-radius:4px;padding:0 5px;margin:0 6px 2px 2px;font-size:11px;font-weight:600">{text}</span>')
+
+
+def running_chip(procedure: Procedure) -> str:
+    """An amber chip saying what a running procedure does: "waits for Go" or "runs"; "" while none runs."""
+    if not procedure.running:
+        return ""
+    if procedure.waiting:
+        return chip("waits for Go", BUSY, f"Go here answers: {procedure.prompt}")
+    return chip("runs", BUSY, f"{procedure.doing or 'Its procedure runs'}; Cancel stops it.")
+
+
+def overview_row(number: str, name: str, current: bool, running: str, state: Check, why_where: str) -> str:
+    """One line of an overview list: the step's number chip, its name (bold while shown), what runs, its state.
+
+    Args:
+        number: The step's chip (`state_chip`).
+        name: The step's name.
+        current: Whether it is the step shown.
+        running: `running_chip` on the step whose procedure runs, else "".
+        state: Its state: the label after the name, the value small, the detail on hover.
+        why_where: Where the hover says to look for why, e.g. "the step's chips".
+    """
+    color, why = LEVEL_COLORS[state.level], escape(hover(state.detail, why_where), quote=True)
+    # * The row hides its overflow, so a long state's text cannot widen the panel.
+    return (f'<div style="display:flex;align-items:center;white-space:nowrap;overflow:hidden;min-height:20px;'
+            f'padding:3px 0 3px 3px">{number}'
+            f'<span style="font-weight:{700 if current else 400};margin-right:6px">{escape(name)}</span>'
+            f'{running}'
+            f'<span style="color:{color};font-size:11px;font-weight:600;margin-right:6px">'
+            f'{escape(state.label)}</span>'
+            f'<span title="{why}" style="color:{NONE};font-size:11px;'
+            f'overflow:hidden;text-overflow:ellipsis">{escape(state.value)}</span></div>')
 
 
 def step_buttons_css(arrow_width: int) -> str:
@@ -216,15 +280,6 @@ class GuidePanel:
         """The name of the step the running procedure belongs to while another shows, else ""."""
         owner = self._owner()
         return self.steps[owner].name if owner is not None and owner != self.index else ""
-
-    def _running_chip(self) -> str:
-        """An amber chip saying what the running procedure does: "waits for Go" or "runs"; "" while none runs."""
-        procedure = self.procedure
-        if not procedure.running:
-            return ""
-        if procedure.waiting:
-            return chip("waits for Go", BUSY, f"Go here answers: {procedure.prompt}")
-        return chip("runs", BUSY, f"{procedure.doing or 'Its procedure runs'}; Cancel stops it.")
 
     def _go(self, ctx: PluginContext) -> None:
         """Answer the procedure's question, only on the step that started it."""
@@ -435,23 +490,11 @@ class GuidePanel:
         step.draw(ctx)
 
     def _row(self, index: int, state: Check, needed: bool) -> str:
-        """One line of the overview: the step's number and name, its state in short, why on hover; the current bold.
-
-        The step whose procedure runs has an amber chip after its name (`_running_chip`).
-        """
+        """One line of the overview (`overview_row`); the step whose procedure runs has its running chip."""
         step, current = self.steps[index], index == self.index
-        running = self._running_chip() if index == self._owner() else ""
-        color, why = LEVEL_COLORS[state.level], escape(hover(state.detail, "the step's chips"), quote=True)
-        # * Room around the chip for the current step's ring and an expired precondition's outline: the row hides its
-        # * overflow, so a long state's text cannot widen the panel.
-        return (f'<div style="display:flex;align-items:center;white-space:nowrap;overflow:hidden;min-height:20px;'
-                f'padding:3px 0 3px 3px">{state_chip(str(index + 1), state, step.precondition, current, needed)}'
-                f'<span style="font-weight:{700 if current else 400};margin-right:6px">{escape(step.name)}</span>'
-                f'{running}'
-                f'<span style="color:{color};font-size:11px;font-weight:600;margin-right:6px">'
-                f'{escape(state.label)}</span>'
-                f'<span title="{why}" style="color:{NONE};font-size:11px;'
-                f'overflow:hidden;text-overflow:ellipsis">{escape(state.value)}</span></div>')
+        running = running_chip(self.procedure) if index == self._owner() else ""
+        return overview_row(state_chip(str(index + 1), state, step.precondition, current, needed), step.name, current,
+                            running, state, "the step's chips")
 
     def _draw_controls(self, unfinished_step: bool, done_label: str) -> None:
         """Show Back, Done, Next, Go, Cancel, Preview, Play and Auto as what they do now: disabled while they do nothing.

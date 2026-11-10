@@ -329,6 +329,20 @@ class ArmPlannerPanel(PlannerPanel):
         goals = {arm: tuple(float(value) for value in targets[arm]) for arm in arms}
         return ArmPlanRequest(self.serial, arms[0], goals[arms[0]], also=tuple((arm, goals[arm]) for arm in arms[1:]))
 
+    def take_request(self, ctx: PluginContext, request: ArmPlanRequest) -> None:
+        """Choose the request's robot and arms (Both for all of them) and set the targets to its goals, keeping the plan.
+
+        * The sliders are set at once: through `_load` they would lag a tick, and the plan would read as stale.
+        """
+        if request.serial not in self._arms:
+            return
+        self.serial = request.serial
+        everything = len(request.arms) > 1 and set(request.arms) == set(self._arms[request.serial])
+        self.arm, self._both = (BOTH if everything else request.arm), {}
+        self._set_targets({request.arm: request.goal, **dict(request.also)})
+        set_joint_sliders(self._sliders, self._load)
+        self._load, self._load_now, self._has_target = None, False, True
+
     def target_change(self, ctx: PluginContext, plan: Plan[ArmPlanRequest]) -> str:
         """How the chosen arms or their targets differ from the plan's request."""
         request = plan.request

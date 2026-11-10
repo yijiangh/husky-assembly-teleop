@@ -30,6 +30,7 @@ from ...config import short_serial
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV3
 from ...robot_interface.soft_stop import MotionRefused
+from ...shared.process_scene.live_scene import SceneNotShown, showing
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.movement import Routine
 from ...shared.assembly_run_contract import is_live
@@ -479,7 +480,7 @@ async def _motion(job: Job, run: PartRun) -> None:
                 outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run,
                                             watch=lambda: others_moving(job), progress=run.progress)
     except (MotionRefused, WaitTimeout) as refused:  # * the clearance cannot check the robot: nothing sent
-        run.ended(REFUSED, "refused", f"nothing sent: {refused}")
+        run.ended(REFUSED, "refused", str(refused))
         return
     run.outcome = outcome.as_record()
     result = {ARRIVED: DONE, SENT_DRY: DRY_RUN, SENT_REFUSED: REFUSED, SENT_NOT_HELD: HOLD_NOT_SENT}.get(
@@ -638,19 +639,25 @@ async def _replan(job: Job, part: PartPlan) -> RouteResult | None:
     """Plan the retreat's tail again, from the live robot to the plan's goals in TAIL_STEP steps.
 
     Returns:
-        RouteResult | None: The plan, or None without an answer within REPLAN_TIMEOUT.
+        RouteResult | None: The plan, or None without an answer within REPLAN_TIMEOUT or a live scene showing the step.
     """
     ctx, request = job.ctx, job.request
     loaded = request.loaded
-    asked = MotionPlanRequest(loaded, loaded.steps[loaded.index_of(request.action, part.index)], ctx.scene.snapshot,
-                              ctx.config.robots,
-                              transfer_as_free=request.transfer_as_free(), ignore_built=request.ignore_built(),
-                              obstacles_collide=request.obstacles_collide(), goal_poses=request.route.goals,
-                              linear_step=TAIL_STEP, label=f"retreat tail {part.movement}")
     planner: MotionPlannerContract = ctx.require("motion_planner")
+    primary = loaded.steps[loaded.index_of(request.action, request.step.primary)]
     try:
-        async with timeout(REPLAN_TIMEOUT):
-            return await planner.request_plan(asked)
+        # * The snapshot after the wait: the live scene then shows the current step (`showing`).
+        async with showing(ctx, ctx.require("process"), request.action, primary.movement.id):
+            asked = MotionPlanRequest(loaded, loaded.steps[loaded.index_of(request.action, part.index)],
+                                      ctx.scene.snapshot, ctx.config.robots,
+                                      transfer_as_free=request.transfer_as_free(), ignore_built=request.ignore_built(),
+                                      obstacles_collide=request.obstacles_collide(), goal_poses=request.route.goals,
+                                      linear_step=TAIL_STEP, label=f"retreat tail {part.movement}")
+            async with timeout(REPLAN_TIMEOUT):
+                return await planner.request_plan(asked)
+    except SceneNotShown as shown:
+        ctx.log_warn(f"{job.who}: {part.movement}: no tail planned: {shown}")
+        return None
     except asyncio.TimeoutError:
         ctx.log_warn(f"{job.who}: {part.movement}: no tail planned within {REPLAN_TIMEOUT:.0f} s")
         return None

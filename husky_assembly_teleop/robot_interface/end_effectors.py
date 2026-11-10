@@ -188,10 +188,10 @@ class EndEffector(ABC):
         self._node.get_logger().warning(message)
         self.last_refusal = Refusal(label, message, self._node.get_clock().now().nanoseconds * 1e-9)
 
-    def _check(self, command: str) -> None:
+    def _check(self) -> None:
         """Raise RobotStopped if the robot is soft stopped, NotLeased if the running code does not hold its lease."""
-        self._latch.check(command)
-        self._lease_slot.check(command)
+        self._latch.check()
+        self._lease_slot.check()
 
     def _log(self, message: str) -> None:
         """Log `message` at info level, prefixed with the tool's namespace."""
@@ -300,7 +300,7 @@ class RobotiqGripper(EndEffector):
         Raises:
             RobotStopped: If the robot is soft stopped.
         """
-        self._check(f"a gripper move on {self.namespace}")
+        self._check()
         self._move(position, effort)
 
     def _move(self, position: float, effort: float) -> None:
@@ -331,7 +331,7 @@ class RobotiqGripper(EndEffector):
         Raises:
             RobotStopped: If the robot is soft stopped.
         """
-        self._check(f"a gripper reactivation on {self.namespace}")
+        self._check()
         if not self._reactivate.service_is_ready():
             self._refused("reactivate refused", f"{self.namespace}: reactivate_gripper service is not available")
             return
@@ -467,7 +467,7 @@ class ScaffoldingV3(EndEffector):
         """Start `motor` tightening (1) or loosening (-1), unless it is stalled; RobotStopped while soft stopped."""
         name = "gripper" if motor == self.GRIPPER_MOTOR else "joint screw"
         verb = "tighten" if direction > 0 else "loosen"
-        self._check(f"{name} {verb} on {self.namespace}")
+        self._check()
         stalled = self.state.gripper_motor if motor == self.GRIPPER_MOTOR else self.state.joint_motor
         if stalled == self.STALLED:
             self._refused(f"{name} stalled", f"{self.namespace}: {name} is stalled, Stop it before it can "
@@ -542,13 +542,13 @@ class ScaffoldingV1(EndEffector):
 
     def open(self) -> None:
         """Switch the gripper output to open."""
-        self._check(f"a gripper open on {self.namespace}")
+        self._check()
         self._log("gripper open")
         self._set(self.GRIPPER_PIN, not self.GRIPPER_CLOSED_WHEN_ON)
 
     def close(self) -> None:
         """Switch the gripper output to closed."""
-        self._check(f"a gripper close on {self.namespace}")
+        self._check()
         self._log("gripper close")
         self._set(self.GRIPPER_PIN, self.GRIPPER_CLOSED_WHEN_ON)
 

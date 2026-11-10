@@ -16,7 +16,7 @@ from husky_assembly_teleop.shared.guide.procedure import Procedure
 from husky_assembly_teleop.shared.guide.step import Step
 from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.colors import INK, rgb
-from husky_assembly_teleop.ui.style import BUSY, CURRENT, FAIL, OK
+from husky_assembly_teleop.ui.style import BUSY, FAIL, OK
 from husky_assembly_teleop.world.checks import BAD, GOOD, PENDING, WARN, Check
 
 
@@ -248,7 +248,7 @@ def test_the_overview_shows_every_step_state_on_its_own_line(server):
     assert f"1px dashed {BUSY}" in rows[0] and f"outline:2px dotted {INK}" in rows[0]
     assert "ticked 61 min ago" in rows[0]
     assert f"background:{FAIL}" in rows[1] and ">fails<" in rows[1] and "outline" not in rows[1]
-    assert f"background:{OK}" in rows[2] and f"box-shadow:0 0 0 2px {CURRENT}" in rows[2] and ">passes<" in rows[2]
+    assert f"background:{OK}" in rows[2] and f"box-shadow:inset 0 0 0 2px {INK}" in rows[2] and ">passes<" in rows[2]
     steps[0].why = None
     panel.draw(ctx)
     assert "outline:2px dotted" not in panel._list_html.content

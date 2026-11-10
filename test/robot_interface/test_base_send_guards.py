@@ -131,9 +131,9 @@ def test_a_soft_stopped_base_refuses_to_drive_but_still_stops():
     """Twist and path raise RobotStopped and send nothing, the velocity controller may not start; stops still go out."""
     base = _base()
     base._latch.stopped, base._path_id = True, 0
-    with pytest.raises(RobotStopped, match="soft stopped, a twist not sent"):
+    with pytest.raises(RobotStopped, match="robot 0804 is soft stopped; press Resume first"):
         base.send_twist(0.2, 0.0)
-    with pytest.raises(RobotStopped, match="a path not sent"):
+    with pytest.raises(RobotStopped, match="soft stopped"):
         base.send_path(*PATH)
     assert not base._cmd_vel.sent and not base._base_path.sent
     assert "soft stopped" in base._switch_refusal(PLATFORM_VELOCITY_CONTROLLER)
@@ -151,9 +151,9 @@ def test_without_its_lease_a_base_refuses_to_drive_or_switch_but_always_stops(ho
     base._path_id, base._lease_slot.lease = 0, None
     lease = None if holder is None else Lease(holder, (base._lease_slot,))
     why = "is not leased" if holder is None else "is leased by base_planner: commit"
-    with pytest.raises(NotLeased, match=f"{why}.*, a twist not sent"):
+    with pytest.raises(NotLeased, match=why):
         base.send_twist(0.2, 0.0)
-    with pytest.raises(NotLeased, match="a path not sent"):
+    with pytest.raises(NotLeased, match=why):
         base.send_path(*PATH)
     assert why in base._switch_refusal(PLATFORM_VELOCITY_CONTROLLER)
     assert not base._cmd_vel.sent and not base._base_path.sent

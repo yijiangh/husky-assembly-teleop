@@ -64,13 +64,14 @@ question waiting for Go and Done's question; and last, under "what to do", the s
 button changes height while a step shows, so the buttons never jump.
 
 - The overview has a line per step, always ten: its number, its name (bold for the current one, whose number is ringed
-  blue), its state and, in short, why (hover for all of it). Steps with a result have a solid number chip: **passes**
+  black inside), its state and, in short, why (hover for all of it). Steps with a result have a solid number chip: **passes**
   (green), **fails** or **out of date** (red: built from data that changed since, e.g. Record and Solve after the tool
   body changed), **none yet** or **pending** (grey: nothing to judge yet), **accepted** (amber: a failing result you
   went on past with Done, or a missing one you skipped; a result out of date is never accepted), **not in use** (amber, Tip offset only:
   its fit is not Punch's TCP offset; no work left). The steps that gather a precondition for later steps (Setup, Marker
   error, Sweeps) have a dashed one: **holds** (green), **expired** (amber; why and since when on hover), **none yet**,
-  **fails**. The current step outlines, dotted blue, the precondition steps it needs that have expired.
+  **fails**. The current step outlines, dotted black, the precondition steps it needs that have expired. The colour is always
+  the state; the black ring and the dotted outline only say which step shows and what it needs.
 - Check chips: green passes, amber is a warning, red asks you to stop and look, grey has nothing to judge yet (e.g.
   Solve's axes before solving). Hover a chip for its detail. They judge the step's result as it stands now, and
   carry its figure where there is one, e.g. **samples 9/15** or **position 0.8 mm**.
@@ -501,7 +502,7 @@ a sampling ends, also when the next spot's **Sample poses here** replaces it. Th
 ## On the phone
 
 The phone page (`http://<control PC>:8081`) has a **Calibration** tab with the same run: the overview as one row of
-number chips (solid or dashed in the colour of each step's state as on the laptop, the current one ringed blue and
+number chips (solid or dashed in the colour of each step's state as on the laptop, the current one ringed black and
 named with its state above its chips, the expired preconditions it needs outlined), Back, Done and Next, the step's
 chips, its controls and its instructions. Back, Done and Next on either page move both; a tick in Setup's checklist on
 one page ticks the other.
