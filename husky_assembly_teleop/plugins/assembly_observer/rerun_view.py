@@ -6,7 +6,8 @@ Opened by `scripts/observer_logs.py rerun`. Every tick signal becomes one plot e
 arm's tool0-vs-target error a plot of its own, every switching state a state timeline (`/states/...`), every event and
 log line a text line (`/events/...`, `/log/<source>`), and the poses frames in a 3D view of the lab frame
 (`/world/...`): each base, its arms' mounts from the URDF, tool0, the Cartesian target while the compliance controller
-runs, the follower's reference and lookahead, every tracked object (a bar with its process shape). Around them the
+runs, the follower's reference and lookahead, every tracked object, each bar where its raw markers put it (with its
+process shape; older sessions' Motive bar assets are axes only). Around them the
 lab's obstacles from its file in git, each sent base path while it is followed, a see-through ghost of an arm at its
 trajectory's end while it runs, and a red line per pair a clearance trip found too close. Two timelines: "time", wall
 time (ROS time plus the session's offset, so it reads as the local clock and lines up with `events`), and "since
@@ -883,7 +884,7 @@ def _warns(event: dict) -> bool:
 
 def _log_scene(rr, found: list[Session], data: Path | None, objects: list[str], start: float, end: float,
                notes: list[str]) -> None:
-    """The lab's obstacles from its file in git under /world/lab, and each tracked bar's shape on its object frame.
+    """The lab's obstacles from its file in git under /world/lab, and each fitted bar's shape on its object frame.
 
     A bar's shape is hidden from `start` until its pose is known (`_log_bar_shown`): without one it would stand at
     the lab's origin.
