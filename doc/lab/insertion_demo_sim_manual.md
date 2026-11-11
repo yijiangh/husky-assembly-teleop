@@ -264,6 +264,32 @@ press Load in the Assembly tab to use it`. This is the dry run's own copy of the
 the arms stand. In the hall the arms stand wherever a visitor's push left them after Rigid: **Approach** first, then
 **Insert**.
 
+**3.13 The bar carried from the loading pose** (the hall manual's 3.10). It needs the carry saved in the dry run's
+copy of the process, `~/husky_insertion_demo_sim/drive/…/process/solutions/B6_J.json` (planned as the hall manual
+says; a new session keeps it). A **Save** in 3.11 makes it stale: start a new session, which brings the Drive's
+action file back.
+
+1. Assembly tab: **Transfer workaround** ticked, as at start. Insertion demo tab: the chip reads `bar free`. Click
+   **Load**. **Expect:** the console `demo load: free_to_load solved by tamp.plan_free_dual_arm: …`, the line `load
+   planned (tamp.plan_free_dual_arm, … waypoints) …`, the preview's arms raised over the back. **Execute**:
+   `load ARRIVED`.
+2. **Grasp**. Then, Assembly tab: untick **Transfer workaround**. **Expect:** the console `Transfer workaround off:
+   jointing actions as authored`, and the chip `bar held`.
+3. **Approach**. **Expect:** at once, with no planner line in the console, `approach planned (the saved carry, 308
+   waypoints): the motion takes 15.4 s; Execute runs it`, the chip `approach ready`. **Execute**: `approach
+   ARRIVED`, the arms at the insert's start.
+4. **Insert**, **Retreat** and **Return**, each with **Execute**, as 3.5, 3.6 and 3.9.
+5. **Load**. **Expect:** `load planned (the saved carry reversed, 308 waypoints) …`. **Execute**: `load ARRIVED`,
+   the arms over the back again.
+6. **Cycle**. **Expect:** the step chip going through `cycle: approach`, `cycle: insert`, `cycle: retreat`, `cycle:
+   return`, `cycle: load`, and the line `cycle done: back at the loading pose; Cycle runs the next`.
+7. **Preview cycle**. **Expect:** `cycle preview shown (carry, insert, back-out, return, carry back), not to run: …`.
+8. **Approach** now, with the arms at the loading pose after 6: `approach ready`. Press **Load** instead: **Expect**
+   the chip `load refused` and `… not to run: the arms do not stand at the insert's start, where the carry back
+   begins: press Return first`.
+9. Set **Insert mm** to 40, click **Approach**. **Expect:** `approach: the saved carry does not end at the insert's
+   start for Insert mm 40: set Insert mm back to the process's own (30), or Save, Load and plan the carry again`.
+
 ---
 
 ## 4. Interruptions

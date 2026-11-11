@@ -81,7 +81,7 @@ class Panel:
         self.lab.robot.lease_slot.lease = None
         ctx.kinematics = SimpleNamespace(base_pose=lambda _serial: BASE, joints=lambda _serial: {})
         ctx.plugins.update(motion_planner=self.planner, process=SimpleNamespace(
-            selection=SimpleNamespace(process=loaded.process), obstacles_collide=False,
+            selection=SimpleNamespace(process=loaded.process), obstacles_collide=False, transfer_as_free=True,
             request_select=lambda _index: None))
         self.plugin = InsertionDemoPlugin()
         self.plugin.setup(ctx)

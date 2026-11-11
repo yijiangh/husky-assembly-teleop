@@ -178,6 +178,66 @@ It asks first (amber `Save?`): press it again. Then press **Load** in the Assemb
 saved length. Save is never needed to run. Retreat mm is not part of the process and is not saved. Runs and solutions
 recorded for that action no longer match the file afterwards.
 
+**3.10 Carrying the bar from a loading pose.** A variant of the demo: the bar is loaded over Cindy's back and both
+arms carry it to the insert's start and back, along one path planned beforehand (once per process, see below) and
+saved in the process folder as `solutions/B6_J.json`. The Assembly tab's **Transfer workaround** box picks how
+**Approach** and **Load** travel; the chip next to the action reads `bar free` (ticked, as at start) or `bar held`.
+
+1. Box ticked, tools empty: **Load**, **Execute**. A free move from wherever the arms are to the loading pose.
+2. Put B6 into both tools there, **Grasp**.
+3. Untick **Transfer workaround** (Assembly tab). The chip turns to `bar held`.
+4. **Approach**, **Execute**: the saved carry, the bar held, ending at the insert's start. Then **Insert**,
+   **Retreat** and **Return** as in 3.3, 3.4 and 3.6.
+5. **Load**, **Execute**: the same path backwards, from the insert's start to the loading pose.
+
+With `bar held`, **Cycle** runs all of it on one click, from the loading pose and back to it: the carry, the insert,
+the pause, the retreat, the return, the carry back. **Preview cycle** shows that loop as one path.
+
+- No planner runs for a carry: the preview shows the saved path. Away from its start it is only shown (chip
+  `approach refused` or `load refused`): **Approach** wants the arms at the loading pose, **Load** at the insert's
+  start, within 2° at every joint. After a retreat press **Return** first.
+- The carry ends at the process's own insert start. With **Insert mm** moved away from it, Approach and Load say so:
+  set it back, or **Save**, **Load** the process again and plan the carry again.
+- `the saved carry is stale`: the process or the action changed since it was planned (also by **Save**). Plan it again.
+- ! The bar rack on the base is not in the process: the carry over the back is planned blind to it. Run the first
+  carry slowly (**Motion time** up) and watch.
+- ! After an insert and a retreat the grasp is twisted by about 1°; the carry back pulls the arms onto the planned
+  path in its first segment. Watch the first one.
+
+Planning the carry, once per process (about 10 min), in the workspace's venv, from `external/husky_assembly_tamp`.
+The benchmark root and the plans folder are any local folders: only `solutions/B6_J.json` belongs to the process.
+
+```bash
+export HUSKY_BENCH_ROOT=<a local folder>
+PLANS=<a local folder>
+PROC="$HUSKY_DRIVE_ROOT/data_design_study/261104_SRD_insertion/process"
+FINE="--goal joints --cdfm-position-res 0.004 --cdfm-rotation-res 0.01 --save-dir $PLANS --no-plot"
+python scripts/benchmark_cdfm.py build-cells "$PROC" --bars B6
+# 1. The loading pose: tamp's search derives it from its "back" carry pose (the bar fore-aft over the back) and
+#    plans a first carry from it, in about 30 s.
+python -u scripts/plan_process_carry.py "$PROC" --bar B6 --cdfm-backend birrt --cdfm-home-anchor back $FINE \
+    --save-tag direct
+#    Its line "world_from_bar_start: ((x, y, z), (qx, qy, qz, qw))" goes into the roadmap's one carry start,
+#    $HUSKY_BENCH_ROOT/prm/carry/srd_demo/starts.json:
+#      {"starts": [{"world_from_bar": [[x, y, z], [qx, qy, qz, qw]], "label": "back_high"}]}
+# 2. The roadmap anchored on that pose (7 min), then the carry on it (45 s), saved into the process.
+python scripts/prm_pilot.py build --name 261104_SRD_insertion__B6 --problem-dir "$PROC" --bar B6 --nodes 6000 \
+    --starts-file carry/srd_demo/starts.json --workers 10
+python -u scripts/plan_process_carry.py "$PROC" --bar B6 --cdfm-backend prm --prm-run 261104_SRD_insertion__B6 \
+    --prm-workers 8 --prm-tolerances-mm 10,20,30,45 --prm-tube-rounds 2 $FINE --save-tag prm --write-solution
+# 3. Check what was saved: collisions, the grasp between waypoints, the lowest point. Not ok: delete the solution.
+python -u scripts/prm_check_solved.py "$PROC" --bar B6 --solved-dir "$PLANS" --tags prm direct
+```
+
+- The finer steps (`--cdfm-position-res 0.004 --cdfm-rotation-res 0.01`) keep every joint step under the demo's 5°.
+- Step 1's line with `--write-solution` saves the search's own path instead of the roadmap's: the same loading
+  pose, a shorter way (0.68 m of bar travel against 1.04 m on 2026-11-11).
+- From tamp's own back pose (grasp midpoint 0.10 m ahead of the base centre, 1.04 m up) the roadmap found no route
+  past the jig; the search's pose is 0.2 m further back and 0.3 m higher.
+- On 2026-11-11 the carry was planned on the dry run's copy of the process only
+  (`~/husky_insertion_demo_sim/drive/…/process/solutions/B6_J.json`, both plans beside it in `carry_plans/`); for
+  the hall it has to be planned on, or copied to, the Drive's process.
+
 ## 4. If something goes wrong
 
 - `ssh: connect to host 192.168.131.1 port 22: Connection timed out`: the laptop's port has no address on her subnet

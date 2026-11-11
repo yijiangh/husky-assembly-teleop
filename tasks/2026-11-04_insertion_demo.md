@@ -82,6 +82,11 @@ Lengths, preview and Save (2026-11-11, plan approved the same day):
 - Dry run 2026-11-11 (scratch Drive): Preview cycle at 60 / 40, Approach, two Cycles (`rigid 50.0 mm, then COMPLIANT
   10.0 mm`, back-out 40 mm, return 6 waypoints), Save changed 29 lines of `B6_J.json` only, Load then showed 60 / 60.
 
+The bar carried from a loading pose (2026-11-11, branch `yh/insertion-demo-cdfm`, `yh/cdfm-planners` merged in): with
+the Assembly tab's Transfer workaround unticked, **Approach** and the new **Load** replay a carry planned offline by
+tamp and saved as the process's solution, and **Cycle** runs from the loading pose and back to it. Spec, the planning
+results and what is left for the hall: `tasks/2026-11-11_insertion_demo_cdfm.md`.
+
 ## Context
 
 For the Swiss Robotics Day, Cindy (0806, dual arm, AT3L/AT3R scaffolding tools) shows one diagonal bar (B6 of

@@ -28,5 +28,6 @@ fi
 
 copy="$DEMO_HOME/drive/$process"
 mkdir -p "$copy" "$DEMO_HOME/logs"
-rsync -a --delete "$real/$process/" "$copy/"
+# The saved carry (solutions/, planned offline on this copy) is not on the real Drive: keep it.
+rsync -a --delete --exclude=/solutions/ "$real/$process/" "$copy/"
 echo "sim_drive.sh: $copy is ready ($(du -sh "$copy" | cut -f1))"

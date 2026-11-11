@@ -1,8 +1,9 @@
 """
 The demo's parts on the robot, each from the live joints.
 
-The steps of an action, a path from where the arms are, a path timed for the preview, the check that they stand at
-the insert's start, the checks of the way back, the gripper screws, the compliant hold, and the removal.
+The steps of an action, the carry saved for it, a path from where the arms are, a path timed for the preview, the
+check that they stand at the insert's start, the checks of the way back, the gripper screws, the compliant hold, and
+the removal.
 
 `run_unscrew_retreat` is the retreat with the bar kept in the tools: the joint screws run in reverse for a set time
 under compliance, then the tools back out along the insert line to where the insert started. Built from the compliant
@@ -26,7 +27,8 @@ import numpy as np
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.ids import split_link_id
 from scaffolding_assembly_core.kinematics import link_poses
-from scaffolding_assembly_core.process import validate
+from scaffolding_assembly_core.process import ProcessError, validate
+from scaffolding_assembly_core.process.solutions import is_stale, read_solutions
 from scaffolding_assembly_core.process.types import Process
 from scaffolding_assembly_core.process.version import writer_info
 # ? The core writes whole processes only; its one-action serialiser is private.
@@ -68,6 +70,8 @@ JOINT_STEP = math.radians(5.0)
 SAME_LENGTH = 5e-5
 #: The largest tool0 step solved at once along the insert's line, metres.
 LINE_STEP = 0.005
+#: What plans and saves an action's carry, for the refusals that ask for it.
+CARRY_SCRIPT = "husky_assembly_tamp's scripts/plan_process_carry.py --goal joints --write-solution"
 #: Seconds a gripper screw gets to stall after its close or open.
 GRIP_TIMEOUT = 15.0
 JOINT_MOTOR, GRIPPER_MOTOR = ScaffoldingV3.JOINT_MOTOR, ScaffoldingV3.GRIPPER_MOTOR
@@ -98,6 +102,40 @@ def demo_steps(loaded: LoadedProcess, action_id: str) -> tuple[int, int] | str:
     if transfer is None:
         return f"{action_id} has no transfer before its insert"
     return loaded.index_of(action_id, transfer), loaded.index_of(action_id, insert)
+
+
+def load_step(loaded: LoadedProcess, action_id: str) -> int | str:
+    """The index into `loaded.steps` of an action's travel to load, the free move with empty tools; or why none."""
+    action = loaded.process.actions[action_id]
+    for index, movement in enumerate(action.movements):
+        if routine_or_none(action, movement) is Routine.FREE_TO_LOAD:
+            return loaded.index_of(action_id, index)
+    return f"{action_id} has no travel to load"
+
+
+def saved_carry(process: Process, action_id: str, movement_id: str) -> tuple[list[str], np.ndarray] | str:
+    """The carry saved for an action's transfer, from the loading pose to the insert's start; or why there is none.
+
+    Planned offline with the bar held and kept in the process folder's `solutions/<action id>.json` (CARRY_SCRIPT).
+
+    Returns:
+        tuple[list[str], np.ndarray] | str: (joint names, rows), the loading pose first; or the refusal: no file, a
+            process or action changed since it was planned, no path for the movement.
+    """
+    try:
+        solution = read_solutions(process).get(action_id)
+        if solution is None:
+            return f"no carry is saved for {action_id} (solutions/{action_id}.json): plan it with {CARRY_SCRIPT}"
+        if is_stale(process, solution):
+            return (f"the saved carry is stale: the process or {action_id} changed since it was planned (Load the "
+                    f"process again, or plan the carry again with {CARRY_SCRIPT})")
+    except (ProcessError, OSError, ValueError) as error:
+        return f"the saved carry can't be read: {error}"
+    result = solution.movements.get(movement_id)
+    if result is None or result.status != "solved" or result.trajectory is None \
+            or len(result.trajectory.positions) < 2:
+        return f"solutions/{action_id}.json holds no path for {movement_id}: plan it with {CARRY_SCRIPT}"
+    return list(result.trajectory.joint_names), np.array(result.trajectory.positions, dtype=float)
 
 
 # --- --- --- --- --- WHERE THE ARMS ARE --- --- --- --- ---
