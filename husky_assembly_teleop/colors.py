@@ -78,6 +78,7 @@ ACTUAL = GREY
 TRAIL = AMBER       # where the base drove: it moved
 MEASURED = CYAN     # mocap measurements: recorded probe points, cameras
 FITTED = BLUE       # where a fit puts what was measured: fitted mocap markers, axes and bars
+BEFORE_STOP = GRAPE  # where a robot stood before a stop: the pose stop recovery's Go back returns to
 #: tool0's axes as the scene draws them (x red, y green, z blue): the tool pad's buttons.
 AXIS_X, AXIS_Y, AXIS_Z = RED, GREEN, BLUE
 MOUNTED = NAVY      # the joint halves mounted on a fitted bar, darker than it

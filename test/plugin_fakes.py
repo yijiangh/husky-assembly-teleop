@@ -160,6 +160,7 @@ class FakeGui:
         """A widget of `kind`, kept in `widgets`."""
         widget = FakeWidget(kind=kind, label=label, value=values[0] if values else options.get("initial_value"),
                             content="", color=options.get("color"), disabled=options.get("disabled", False),
+                            visible=options.get("visible", True),
                             options=options, _impl=SimpleNamespace(uuid=f"fake-{len(self.widgets)}", removed=False))
         self.widgets.append(widget)
         return widget
