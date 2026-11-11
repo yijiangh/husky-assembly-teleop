@@ -15,6 +15,8 @@ per robot and shows how far each arm is from the one picked, and how far its for
   planner. No collision check: within a sag it is not needed, and a gripper around a bar would always fail it.
 * A robot that runs again after a stop seen by this monitor gets a window beside the main panel with the same controls
   (`Popup`), until Done, or until it rests somewhere else than a Go back left it (recovered some other way).
+* A ghost in its own colour shows the arms at the pose picked, while the robot is in the window, moves back, or its
+  controls were used last; hidden once the arms are there, and while another plugin's ghosts were used last.
 """
 
 from __future__ import annotations
@@ -33,7 +35,9 @@ from ...robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER, STILL_AFT
 from ...robot_interface.refusal import newest_reason
 from ...robot_interface.robot import HuskyRobotInterface
 from ...robot_interface.soft_stop import MotionRefused
+from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.guide.panel import set_changed
+from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.popup import Popup
 from ...ui.second_press import SecondPress, show_waiting
 from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, chip, chip_line, note_line, section, values,
@@ -59,27 +63,23 @@ ARRIVAL_FACTOR, ARRIVAL_SLACK = 2.0, 5.0
 SETTLE = 1.0
 #: A move smaller than this on every joint, radians, is not worth sending: the arm is already there.
 ALREADY_THERE = np.radians(0.01)
-#: The labels of the button that moves back, and of the window's button that closes a robot's part.
-GO_BACK, DONE = "Go back", "Done"
+#: The labels of the button that moves back, the one that ends that move, and the window's that closes a robot's part.
+GO_BACK, CANCEL, DONE = "Go back", "Cancel", "Done"
 
 GUIDE = (
-    "After an e-stop or a protective stop while an arm holds something:",
-    "1. Do not zero the force sensor, open or reactivate the gripper, or restart the robot's launch: the gripper "
-    "would activate, open and drop what it holds.",
-    "2. E-stop: release it, then on the pendant press ON and then START (the brakes release; the arm stays). "
-    "Protective stop: clear its cause, then Unlock in Health. After Stop all: Resume. Wait for “running” here.",
-    "3. The pose from before the stop is picked. Check how far each arm is from it and how far its force is off.",
-    f"4. Press Go back twice (pendant speed slider at 100 %): the robot moves slowly back and holds if a force goes "
-    f"{FORCE_RISE:g} N further off.",
-    "5. Go on only once each force is back near 0 N off (a few N: after an e-stop the sensor may read a little "
-    "differently).",
+    "1. Never zero the force sensor, touch the gripper or restart the robot's launch: the gripper would let go.",
+    "2. E-stop: release it, pendant ON, then START. Protective stop: Unlock in Health. Wait for “running”.",
+    "3. Check the ghost, distance and force for the pose picked, then Go back twice (pendant speed slider 100 %).",
+    "4. Go on once each force is back near 0 N off.",
 )
-#: The window's guide: the robot already runs, so steps 3 to 5.
-POPUP_GUIDE = (
-    "Runs again after a stop. Do not zero the force sensor or touch the gripper.",
-    "Check how far each arm is from the pose picked and how far its force is off, then press Go back twice (pendant "
-    "speed slider at 100 %). Done once each force is back near 0 N off.",
-)
+
+
+def popup_intro(serial: str) -> str:
+    """The window's text for one robot: what happened and what to do, naming it."""
+    name = robot_name(serial)
+    return (f"{name} runs again after a stop. Its ghost shows the pose before the stop. Check how far each arm is "
+            f"from it and how far its force is off, then Go back twice (pendant speed slider 100 %). Done once the "
+            f"forces are near 0 N off. Do not zero {name}'s force sensor or touch its gripper.")
 
 
 def arm_force(arm: ArmInterface) -> np.ndarray | None:
@@ -130,6 +130,12 @@ def distance(arm: ArmInterface, target: ArmPose) -> tuple[float | None, float | 
     return step, gap
 
 
+def away_text(arm: ArmInterface, target: ArmPose) -> str:
+    """How far an arm is from `target`, for people: its largest joint step and its tool0 gap."""
+    step, gap = distance(arm, target)
+    return ("? °" if step is None else f"{np.degrees(step):.2f}°") + ("" if gap is None else f" / {gap * 1000:.1f} mm")
+
+
 def _newtons(value: float | None) -> str:
     return "  —  " if value is None else f"{value:5.1f}"
 
@@ -171,6 +177,11 @@ class StopRecoveryPlugin(HuskyPlugin):
         self._stopped: set[str] = set()
         self._asking: set[str] = set()
         self._popup: Popup | None = None
+        #: Serial -> the ghost of its arms at the pose picked; the robot whose controls were used last; and whether
+        #: this plugin's ghosts were used last of all plugins' (`RecentUse`).
+        self._ghosts: dict[str, RobotGhost] = {}
+        self._focus: str | None = None
+        self._used = RecentUse(0.0)
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -191,12 +202,13 @@ class StopRecoveryPlugin(HuskyPlugin):
                 self._running_since[serial] = float("-inf")
         if not robots:
             return
+        self._ghosts = robot_ghosts(ctx, [robot.config for robot in robots.values()], "before_stop")
         self._popup = Popup(ctx.view, "Back from a stop", viser.Icon.ARROW_BACK_UP)
         with self._popup.body() as gui:
-            gui.add_html(block(wrapped(*POPUP_GUIDE)))
             for serial, robot in robots.items():
                 folder = gui.add_folder(f"{robot_name(serial)} ({short_serial(serial)})", visible=False)
                 with folder:
+                    gui.add_html(block(wrapped(popup_intro(serial))))
                     self._popup_widgets[serial] = self._controls(ctx, gui, serial, popup=True)
                 self._popup_folders[serial] = folder
 
@@ -210,7 +222,11 @@ class StopRecoveryPlugin(HuskyPlugin):
         readout = gui.add_html("")
         go = gui.add_button(GO_BACK, hint=f"Moves {robot_name(serial)} slowly back to the pose picked. "
                                           f"{self._press.hint}")
-        stop = gui.add_button("Stop", color=rgb(FAIL), hint="Holds the robot where it is.")
+        cancel = gui.add_button(CANCEL, color=rgb(FAIL), icon=viser.Icon.PLAYER_STOP,
+                                hint="Ends Go back and holds the robot where it is; other robots carry on.")
+        if not popup:
+            pick.on_update(ctx.defer_value(f"stop recovery pick {serial}", lambda _value: self._use(serial),
+                                           operator_only=True))
         if popup:
             done = gui.add_button(DONE, hint="Closes this robot's part of the window; the Stop recovery tab keeps "
                                              "its poses and buttons.")
@@ -219,19 +235,25 @@ class StopRecoveryPlugin(HuskyPlugin):
                                            lambda value: self._pick_from_popup(serial, value), operator_only=True))
         message = gui.add_html("")
         go.on_click(ctx.defer(f"go back {serial}", lambda: self._go_back(ctx, serial)))
-        stop.on_click(ctx.defer(f"stop {serial}", lambda: self._stop(ctx, serial)))
+        cancel.on_click(ctx.defer(f"cancel go back {serial}", lambda: self._cancel(ctx, serial)))
         widgets = {"status": status, "pick": pick, "readout": readout, "go": go, "message": message}
         return {**widgets, "done": done} if popup else widgets
 
     def _pick_from_popup(self, serial: str, value: object) -> None:
         """An operator's pick in the window: the tab's dropdown holds it."""
+        self._use(serial)
         if value in self._widgets[serial]["options"]:
             self._widgets[serial]["pick"].value = self._mirrored[serial] = value
+
+    def _use(self, serial: str) -> None:
+        """The operator used this robot's controls, or its window part opened: show its ghost."""
+        self._focus = serial
+        self._used.touch()
 
     def _done(self, serial: str) -> None:
         """Close a robot's part of the window (intent); not while it moves back."""
         if self._moving_back(serial):
-            self._say(serial, "Moving back: Stop it first, or wait until it is back", FAIL)
+            self._say(serial, "Moving back: Cancel it first, or wait until it is back", FAIL)
             return
         self._asking.discard(serial)
 
@@ -247,6 +269,7 @@ class StopRecoveryPlugin(HuskyPlugin):
                 self._running_since[serial] = now
                 if serial in self._stopped:
                     self._asking.add(serial)
+                    self._use(serial)
             if self._was_running[serial] and not runs:
                 self._log_stop(ctx, serial, robot)
                 self._stopped.add(serial)
@@ -306,6 +329,11 @@ class StopRecoveryPlugin(HuskyPlugin):
     def _say(self, serial: str, text: str, color: str = NONE) -> None:
         self._messages[serial] = (text, color)
 
+    def _refuse(self, ctx: PluginContext, serial: str, reason: str) -> None:
+        """Say and log why Go back did nothing."""
+        ctx.log_info(f"{robot_name(serial)}: Go back refused: {reason}")
+        self._say(serial, f"Go back refused: {reason}", FAIL)
+
     def _forget_press(self, serial: str) -> None:
         """Forget a first press of this robot's Go back; another robot's waits on."""
         if self._press.key.startswith(f"{serial} "):
@@ -313,12 +341,13 @@ class StopRecoveryPlugin(HuskyPlugin):
 
     def _go_back(self, ctx: PluginContext, serial: str) -> None:
         """Ask, then on the second press start moving the robot back to the pose picked (intent)."""
+        self._use(serial)
         robot = ctx.world.robots[serial]
         target = self._picked(serial)
         refusal = self._refusal(ctx, serial, robot, target)
         if refusal:
             self._forget_press(serial)
-            self._say(serial, f"Go back refused: {refusal}", FAIL)
+            self._refuse(ctx, serial, refusal)
             return
         if not self._press.press(ctx.now(), f"{serial} {target.order}"):
             self._say(serial, f"Move {robot_name(serial)} back to {target.clock}? Press {GO_BACK} again.", BUSY)
@@ -378,17 +407,19 @@ class StopRecoveryPlugin(HuskyPlugin):
                     (name, arm), = arms.items()
                     sent = arm.send_joint_trajectory(moves[name][0], duration, moves[name][1])
                 if not sent:
-                    self._say(serial, f"Go back refused: {newest_reason(*arms.values())}", FAIL)
+                    self._refuse(ctx, serial, newest_reason(*arms.values()))
                     return
                 off = {name: force_off(arm, target.arms[name]) for name, arm in arms.items()}
-                ctx.log_info(f"{robot_name(serial)}: moving back to {target.clock} over {duration:.0f} s")
+                away = ", ".join(f"{name} {away_text(arm, target.arms[name])}, force off "
+                                 f"{_newtons(off[name]).strip()} N" for name, arm in arms.items())
+                ctx.log_info(f"{robot_name(serial)}: moving back to {target.clock} over {duration:.0f} s; {away}")
                 self._say(serial, f"Moving back to {target.clock} ({duration:.0f} s)…", BUSY)
                 try:
                     if not await self._watch(ctx, serial, robot, target, off, duration):
                         return
                 except asyncio.CancelledError:
                     self._hold(robot)
-                    self._say(serial, "Go back stopped (Stop or Stop all): held where it is", NONE)
+                    self._say(serial, "Go back cancelled (Cancel or Stop all): held where it is", NONE)
                     raise
                 finally:
                     # * The next rest pose is where this Go back ended only if it moved the robot at all.
@@ -396,7 +427,7 @@ class StopRecoveryPlugin(HuskyPlugin):
                            for name, arm in arms.items() if arm.joint_vector() is not None):
                         self._ended_go_back.add(serial)
         except MotionRefused as refused:
-            self._say(serial, f"Go back refused: {refused}", FAIL)
+            self._refuse(ctx, serial, str(refused))
             return
         forces = ", ".join(f"{name} {_newtons(off[name]).strip()} → "
                            f"{_newtons(force_off(arm, target.arms[name])).strip()}" for name, arm in arms.items())
@@ -437,14 +468,14 @@ class StopRecoveryPlugin(HuskyPlugin):
         for arm in robot.arms.values():
             arm.hold()
 
-    def _stop(self, ctx: PluginContext, serial: str) -> None:
+    def _cancel(self, ctx: PluginContext, serial: str) -> None:
         """Hold the robot and cancel its move back (intent)."""
         self._forget_press(serial)
         task = self._moves.get(serial)
         if task is not None and not task.done():
             task.cancel()
         self._hold(ctx.world.robots[serial])
-        self._say(serial, "Stopped: held where it is", NONE)
+        self._say(serial, "Cancelled: held where it is", NONE)
 
     # --- --- --- --- --- DRAW --- --- --- --- ---
 
@@ -457,23 +488,44 @@ class StopRecoveryPlugin(HuskyPlugin):
             self._draw_popup_choices(serial)
             target = self._picked(serial)
             stops = [stop for stop in self.log.stops.get(serial, []) if stop.sim == simulated(robot)]
+            # * Two chips: the state now, and the stop the pose picked comes before, if any.
+            last_stop = (chip(f"stop {stops[-1].clock}", INFO, stops[-1].reason)
+                         if stops and target is not None and stops[-1].order > target.order else "")
             if self._moving_back(serial):
-                state = chip("moving back", BUSY, "Go back runs; Stop holds the robot")
+                state = chip("moving back", BUSY, "Go back runs; Cancel holds the robot")
             elif not running(robot):
                 problem = next((arm.state.problem for arm in robot.arms.values() if arm.state.problem), "")
                 state = chip("stopped", FAIL, problem or "not operational")
-            elif stops and target is not None and stops[-1].order > target.order:
-                state = chip(f"running, stopped at {stops[-1].clock}", INFO, stops[-1].reason)
             else:
                 state = chip("running", OK, "every arm is operational")
             readout = block(values(*self._readout(robot, target)))
             text, color = self._messages.get(serial, ("", NONE))
             shown = [widgets] + ([self._popup_widgets[serial]] if serial in self._asking else [])
             for view in shown:
-                set_changed(view["status"], content=chip_line(state))
+                set_changed(view["status"], content=chip_line(state + last_stop))
                 set_changed(view["readout"], content=readout)
                 show_waiting(view["go"], waiting.startswith(f"{serial} "), GO_BACK, None)
                 set_changed(view["message"], content=note_line(text, color))
+            self._draw_ghost(ctx, serial, robot, target)
+
+    def _draw_ghost(self, ctx: PluginContext, serial: str, robot: HuskyRobotInterface,
+                    target: RobotPose | None) -> None:
+        """Show the robot's arms at the pose picked while it is in the window, moves back or was used last."""
+        ghost = self._ghosts.get(serial)
+        if ghost is None:
+            return
+        wanted = serial in self._asking or self._moving_back(serial) or serial == self._focus
+        there = target is None or all(
+            step is not None and step <= ARRIVED
+            for step in (distance(arm, target.arms[name])[0] if name in target.arms else None
+                         for name, arm in robot.arms.items()))
+        if not wanted or there or not self._used.active:
+            ghost.hide()
+            return
+        joints = dict(ctx.kinematics.joints(serial))
+        for name, pose in target.arms.items():
+            joints.update(zip(arm_joint_names(name), pose.joints))
+        ghost.show(ctx.kinematics.base_pose(serial), joints, parts=tuple(f"{name}_" for name in target.arms))
 
     def _show_popup(self) -> None:
         """Show the window with the robots back from a stop, or close it when none is."""

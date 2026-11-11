@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from robot_lab import RobotLab
 
+from husky_assembly_teleop.plugins.stop_recovery import plugin as stop_recovery
 from husky_assembly_teleop.plugins.stop_recovery.plugin import GO_BACK, StopRecoveryPlugin
 from husky_assembly_teleop.plugins.stop_recovery.pose_log import ArmPose, PoseLog, RobotPose
 from husky_assembly_teleop.ui.second_press import DOUBLE_CLICK_SECONDS
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 BELLE, CINDY = "a200-0805", "a200-0806"
 ESTOP = "safety mode ROBOT_EMERGENCY_STOP"
@@ -19,9 +22,36 @@ ESTOP = "safety mode ROBOT_EMERGENCY_STOP"
 REST = 2.0
 
 
+class FakeGhost:
+    """A robot ghost: what it shows now (joints by name and the parts drawn), or None while hidden."""
+
+    def __init__(self):
+        """Hidden."""
+        self.shown: tuple[dict, tuple] | None = None
+
+    def show(self, _base, joints, parts=None) -> None:
+        """Keep what it shows."""
+        self.shown = (dict(joints), parts)
+
+    def hide(self) -> None:
+        """Hide it."""
+        self.shown = None
+
+
+@pytest.fixture(autouse=True)
+def fake_ghosts(monkeypatch):
+    """The plugin's ghosts are `FakeGhost`s: no meshes to load."""
+    monkeypatch.setattr(stop_recovery, "robot_ghosts",
+                        lambda _ctx, configs, _kind: {config.serial: FakeGhost() for config in configs})
+
+
 def started(tmp_path, lab: RobotLab | None = None) -> tuple[RobotLab, StopRecoveryPlugin]:
-    """The three robots and the plugin, logging to `tmp_path`, set up; each arm reads REST N along y and has a TCP."""
+    """The three robots and the plugin, logging to `tmp_path`, set up; each arm reads REST N along y and has a TCP.
+
+    The kinematics give no joints, so a ghost shows only the pose's arms.
+    """
     lab = lab or RobotLab()
+    lab.ctx.kinematics = SimpleNamespace(joints=lambda _serial: {}, base_pose=lambda _serial: None)
     for robot in lab.robots.values():
         for arm in robot.arms.values():
             load(arm, REST)
@@ -155,6 +185,8 @@ def test_go_back_asks_first_then_moves_slowly_back_and_reports_how_far_the_force
         await ticks(lab, plugin, 10.0)
         assert np.allclose(arm.joint_vector(), before["ur_arm"], atol=1e-6)
         assert message(plugin, BELLE) == f"Back at {picked(plugin, BELLE).clock}. Force off by ur_arm 25.0 → 0.5 N"
+        assert any("moving back to" in line and "ur_arm 0.50° / 3.0 mm, force off 25.0 N" in line
+                   for _, line in lab.ctx.logs)
 
     asyncio.run(scenario())
 
@@ -207,6 +239,7 @@ def test_go_back_is_refused_too_far(tmp_path, degrees, tcp_mm, refusal):
         await press_twice(lab, plugin, BELLE)
         assert refusal in message(plugin, BELLE) and "use the arm planner" in message(plugin, BELLE)
         assert sent(lab, BELLE) == 0
+        assert ("info", f"Belle: {message(plugin, BELLE)}") in lab.ctx.logs  # the reason is in the log too
 
     asyncio.run(scenario())
 
@@ -287,18 +320,18 @@ def test_an_arm_that_does_not_arrive_is_held(tmp_path):
 
 
 @pytest.mark.safety
-def test_stop_holds_the_robot_and_ends_go_back(tmp_path):
-    """Stop cancels a running Go back and holds the robot."""
+def test_cancel_holds_the_robot_and_ends_go_back(tmp_path):
+    """Cancel ends a running Go back and holds the robot."""
     lab, plugin = started(tmp_path)
 
     async def scenario():
         await stop_and_sag(lab, plugin, BELLE)
         await press_twice(lab, plugin, BELLE)
         await ticks(lab, plugin, 1.0)
-        plugin._stop(lab.ctx, BELLE)
+        plugin._cancel(lab.ctx, BELLE)
         await ticks(lab, plugin, 0.3)
         assert not plugin._moving_back(BELLE) and len(lab.belle.arms["ur_arm"]._trajectory.messages) >= 2
-        assert message(plugin, BELLE) == "Go back stopped (Stop or Stop all): held where it is"
+        assert message(plugin, BELLE) == "Go back cancelled (Cancel or Stop all): held where it is"
 
     asyncio.run(scenario())
 
@@ -476,5 +509,36 @@ def test_the_window_closes_once_the_robot_rests_somewhere_else_and_hands_its_pic
         arm.state.last_slight_motion_time = lab.ctx.now()
         await ticks(lab, plugin, 3.0)
         assert window(plugin) == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.safety
+def test_a_ghost_shows_the_pose_before_the_stop_until_the_arm_is_back(tmp_path):
+    """Back from a stop, the ghost has the arm at the pose picked; once Go back arrives it hides; Done hides it too."""
+    lab, plugin = started(tmp_path)
+
+    async def scenario():
+        before = await stop_and_sag(lab, plugin, BELLE)
+        ghost = plugin._ghosts[BELLE]
+        assert ghost.shown is not None and ghost.shown[1] == ("ur_arm_",)
+        assert np.allclose([ghost.shown[0][f"ur_arm_{name}"] for name in UR_JOINT_NAMES], before["ur_arm"])
+        assert plugin._ghosts[CINDY].shown is None  # never stopped
+        await press_twice(lab, plugin, BELLE)
+        await ticks(lab, plugin, 12.0)
+        assert message(plugin, BELLE).startswith("Back at") and ghost.shown is None
+
+    asyncio.run(scenario())
+
+
+def test_the_state_and_the_stop_are_two_chips(tmp_path):
+    """Running again, the status line has a running chip and a separate chip for the stop the pose comes before."""
+    lab, plugin = started(tmp_path)
+
+    async def scenario():
+        await stop_and_sag(lab, plugin, BELLE)
+        status = plugin._widgets[BELLE]["status"].content
+        stop = plugin.log.stops[BELLE][-1]
+        assert ">running<" in status and f">stop {stop.clock}<" in status
 
     asyncio.run(scenario())
