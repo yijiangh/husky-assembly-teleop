@@ -53,17 +53,23 @@ def say_feedback(job: Job, plan: ServoPlan) -> None:
 def insert_end_problem(job: Job, plan: ServoPlan) -> str:
     """After a ground bar's insert: why the servo may not run, "" if it may; warns when the guard is off.
 
-    ! The insert's end is the request's insert plan's last row, nothing else: the authored end joints were solved at
-      the design base, so at the live base they stand millimetres off. A servo Exec on its own is refused.
+    ! The insert's end is its plan's last row, nothing else: the authored end joints were solved at the design base,
+      so at the live base they stand millimetres off. The plan is this request's, else the insert the executor ran
+      last (`Job.inserted`: same process, action, step and robot); a servo with neither is refused.
     """
     if plan.kind != AFTER_INSERT:
         return ""
     request, ctx = job.request, job.ctx
     route = request.route
-    if route is None or not route.ok or request.route_movement != plan.primary:
-        return "no insert plan in this request: Exec the insert and its servo together"
-    trajectory = route.result.trajectory
-    names, end_row = list(trajectory.joint_names), list(trajectory.positions[-1])
+    if route is not None and route.ok and request.route_movement == plan.primary:
+        trajectory = route.result.trajectory
+        names, end_row = list(trajectory.joint_names), list(trajectory.positions[-1])
+    else:
+        inserted = job.inserted()
+        if inserted is None or (inserted.loaded, inserted.action, inserted.primary, inserted.serial) != (
+                request.loaded, request.action, plan.primary, request.serial):
+            return "no insert ran before this servo: Exec the insert first"
+        names, end_row = list(inserted.names), list(inserted.end_row)
     robot = ctx.scene.snapshot.robots.get(robot_id(request.serial))
     if robot is None:
         return f"{short_serial(request.serial)} is not in the scene"

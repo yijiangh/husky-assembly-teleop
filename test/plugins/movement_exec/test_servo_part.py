@@ -19,6 +19,7 @@ from robot_lab import FakeRun, RobotLab, ShowsCurrent
 
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
 from husky_assembly_teleop.plugins.movement_exec.servo_measure import GIVE_UP, TOOL0_SERVO
+from husky_assembly_teleop.plugins.movement_exec.sequences import InsertEnd
 from husky_assembly_teleop.robot_interface.mocap_state import RawMarkers
 from husky_assembly_teleop.shared.assembly_planning.ik import branches, fitting_solver, ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names, joint_limits, unwrap_to_nearest
@@ -799,14 +800,40 @@ def test_after_the_insert_the_gate_the_load_guard_and_linear_only():
 
 @pytest.mark.safety
 def test_after_the_insert_without_a_plan_is_refused_and_no_force_reading_warns():
-    """A servo Exec on its own after the insert is refused (no plan to gate on); without F/T the guard is OFF, said."""
+    """A servo Exec on its own with no insert run before is refused; without F/T the load guard is OFF, said."""
     lab = ServoLab("B20_J_insert", shift=(0.0, 0.0, 0.0))
     result = execute(lab, lab.servo_request())
-    assert result.status == REFUSED and "no insert plan in this request" in result.reason, result.reason
+    assert result.status == REFUSED and "no insert ran before this servo" in result.reason, result.reason
     assert lab.published() == 0 and not lab.planner.requests
     result = execute(lab, lab.servo_request(route=insert_route(lab, 0.0), route_movement=lab.at.movement_index))
     assert result.status == DONE and "nothing left to plan" in lab.ended(), result.reason
     assert any("load guard is OFF" in line for line in lab.ctx.lines("warn"))
+
+
+@pytest.mark.safety
+def test_after_the_insert_a_servo_on_its_own_gates_on_the_insert_run_before():
+    """A servo sent on its own after a ground bar's insert gates on the insert the executor ran last.
+
+    Only for the same action, step and robot, and not once that insert is forgotten (Redo).
+    """
+    lab = ServoLab("B20_J_insert", shift=(0.0, 0.0, 0.0))
+    insert = lab.at.movement_index
+    request = lab.servo_request(route=insert_route(lab, 0.0), route_movement=insert)
+    trajectory = request.route.result.trajectory
+    end = InsertEnd(request.loaded, request.action, insert, insert, request.serial, tuple(trajectory.joint_names),
+                    tuple(trajectory.positions[-1]))
+    lab.plugin._inserted = replace(end, action="B21_J")
+    result = execute(lab, lab.servo_request())
+    assert result.status == REFUSED and "no insert ran before this servo" in result.reason, result.reason
+    lab.plugin._inserted = end
+    result = execute(lab, lab.servo_request())
+    assert result.status == DONE and "nothing left to plan" in lab.ended(), result.reason
+    lab.plugin.request_forget(request.action, {(insert, -1)})
+    assert lab.plugin._inserted is end, "the servo done again keeps its insert's end"
+    result = execute(lab, lab.servo_request())
+    assert result.status == DONE, result.reason
+    lab.plugin.request_forget(request.action, {(insert, insert)})
+    assert lab.plugin._inserted is None
 
 
 # --- --- --- --- --- (9) (10) PROMPTS, THE DRY RUN --- --- --- --- ---

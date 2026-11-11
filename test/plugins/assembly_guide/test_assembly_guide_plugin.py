@@ -32,7 +32,7 @@ from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.assembly_planning.steps import first_step
 from husky_assembly_teleop.shared.process_contract import Selection
 from husky_assembly_teleop.shared.runs.runs import DONE
-from husky_assembly_teleop.world.checks import BAD
+from husky_assembly_teleop.world.checks import BAD, Check
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
@@ -178,6 +178,10 @@ class BasePlanner:
     def cancel_commit(self, serial=None):
         """Nothing runs."""
         return False
+
+    def run_check(self, _ctx, _serial):
+        """Every run ended where it went."""
+        return None
 
 
 class Guide(RobotLab):
@@ -374,14 +378,14 @@ def test_redo_from_a_marked_action_reopens_every_later_one(monkeypatch):
             lab.guide.done(lab.ctx)
             await lab.ticks()
         assert lab.run.view.statuses["B20_J"] == DONE
-        while lab.guide.part.label != "B20_J_insert: insert, then its servo":
+        while lab.guide.part.label != "B20_J_insert: insert":
             lab.guide.look(lab.ctx, -1)
         lab.guide.redo(lab.ctx)
         lab.ctx.t += 0.5
         lab.guide.redo(lab.ctx)
         await lab.ticks()
         assert lab.run.reopened == ["B20_J"]
-        assert lab.guide.part.label == "B20_J_insert: insert, then its servo"
+        assert lab.guide.part.label == "B20_J_insert: insert"
         assert (lab.process.selection.action.id, lab.process.selection.movement.id) == ("B20_J", "B20_J_insert")
         assert ("B20_J", frozenset({(4, 4), (4, -1)})) in lab.executor.forgot
         assert ("B20_R", frozenset()) in lab.executor.forgot, "every later action entirely"
@@ -699,13 +703,148 @@ def test_the_needs_line_names_the_planner_and_turns_amber_on_a_fallback(monkeypa
                                                                                                     INFO)
 
 
-def test_redo_only_on_a_done_part(monkeypatch):
-    """A part with no result has nothing to redo; B20_J marked, Redo on its first part reopens it."""
+def test_done_goes_on_past_parts_done_already_and_next_steps_one(monkeypatch):
+    """By hand and the servo ran from the Assembly tab: Done on the transfer shows the insert; Back shows the servo."""
     lab = Guide(monkeypatch)
 
     async def walk():
         await lab.ticks()
-        assert lab.guide._cannot(lab.ctx, REDO) == "this part is not done: nothing to redo"
+        for part in lab.guide.parts:
+            if part.label in ("B20_J_place_bar: by hand", "B20_J_transfer: servo"):
+                lab.executor.done.setdefault(part.action, set()).update(part.done_keys)
+        lab.guide.done(lab.ctx)
+        lab.ctx.t += 0.5
+        lab.guide.done(lab.ctx)
+        await lab.ticks()
+        assert lab.label == "B20_J_transfer: transfer, empty tools"
+        lab.finish("B20_J_transfer: transfer, empty tools")
+        lab.guide.done(lab.ctx)
+        await lab.ticks()
+        assert lab.label == "B20_J_insert: insert"
+        assert any("B20_J_place_bar: by hand, B20_J_transfer: servo done already" in line
+                   for line in lab.ctx.lines("info"))
+        lab.guide.look(lab.ctx, -1)
+        assert lab.label == "B20_J_transfer: servo"
+
+    asyncio.run(walk())
+
+
+def test_redo_unticks_the_boxes_of_a_part_by_hand(monkeypatch):
+    """Two boxes ticked, then Redo from the transfer: the part by hand shows its boxes unticked again."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        boxes = lab.guide.kinds[HAND].boxes
+        boxes[0].value = boxes[1].value = True
+        await lab.ticks()
+        lab.guide.look(lab.ctx, -1)
+        assert lab.label == "B20_J_transfer: transfer, empty tools"
+        lab.guide.redo(lab.ctx)
+        lab.ctx.t += 0.5
+        lab.guide.redo(lab.ctx)
+        await lab.ticks()
+        assert not lab.guide.is_done(lab.ctx, lab.guide.part, lab.guide.index)
+        lab.guide.look(lab.ctx, 1)
+        await lab.ticks()
+        assert lab.guide.part.kind == HAND and lab.guide.kinds[HAND].count == (0, 3)
+
+    asyncio.run(walk())
+
+
+def test_redo_makes_a_park_standing_at_its_end_to_do_until_its_robot_left_and_came_back(monkeypatch):
+    """Belle parked already: done. Redo from Alice's park: Belle's park is to do though she stands parked.
+
+    Once she drove off and back it counts again.
+    """
+    lab = Guide(monkeypatch, "B25_J_transfer")
+    lab.guide.park_idle = True
+    belle = robot_config("a200-0805")
+    x, y, yaw = belle.park_pose
+    parked = Pose((x, y, 0.0), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)))
+    lab.bases["a200-0805"] = parked
+    lab.belle.arms["ur_arm"].state.joint_positions.update(
+        {f"ur_arm_{name}": float(value) for name, value in zip(UR_JOINT_NAMES, belle.arms[0].stow_joints)})
+
+    async def walk():
+        await lab.ticks()
+        assert (lab.guide.part.kind, lab.guide.part.robot) == (PARK, "a200-0804")
+        index = lab.guide.index + 1
+        belle_part = lab.guide.parts[index]
+        assert belle_part.robot == "a200-0805" and lab.guide.is_done(lab.ctx, belle_part, index)
+        lab.guide.redo(lab.ctx)
+        lab.ctx.t += 0.5
+        lab.guide.redo(lab.ctx)
+        await lab.ticks()
+        assert not lab.guide.is_done(lab.ctx, belle_part, index), "redone, though she stands parked"
+        live = guide_module.is_live
+        monkeypatch.setattr(guide_module, "is_live", lambda robot, now: False)
+        await lab.ticks()
+        monkeypatch.setattr(guide_module, "is_live", live)
+        await lab.ticks()
+        assert not lab.guide.is_done(lab.ctx, belle_part, index), "a reading not live says nothing about where she is"
+        lab.bases["a200-0805"] = Pose((x + 1.0, y, 0.0), parked.orientation)
+        await lab.ticks()
+        lab.bases["a200-0805"] = parked
+        await lab.ticks()
+        assert lab.guide.is_done(lab.ctx, belle_part, index), "parked again after the redo"
+
+    asyncio.run(walk())
+
+
+def test_done_accepts_a_redone_park_standing_at_its_end_without_a_skip(monkeypatch):
+    """Belle parked, her park redone: one Done leaves it done, not skipped, with no "not parked" warning."""
+    lab = Guide(monkeypatch, "B25_J_transfer")
+    lab.guide.park_idle = True
+    belle = robot_config("a200-0805")
+    x, y, yaw = belle.park_pose
+    lab.bases["a200-0805"] = Pose((x, y, 0.0), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)))
+    lab.belle.arms["ur_arm"].state.joint_positions.update(
+        {f"ur_arm_{name}": float(value) for name, value in zip(UR_JOINT_NAMES, belle.arms[0].stow_joints)})
+
+    async def walk():
+        await lab.ticks()
+        index = lab.guide.index + 1
+        lab.guide.look(lab.ctx, 1)
+        lab.guide.redo(lab.ctx)
+        lab.ctx.t += 0.5
+        lab.guide.redo(lab.ctx)
+        await lab.ticks()
+        assert lab.guide.index == index and not lab.guide.is_done(lab.ctx, lab.guide.part, index)
+        lab.guide.done(lab.ctx)
+        await lab.ticks()
+        assert lab.guide.is_done(lab.ctx, lab.guide.parts[index], index) and index not in lab.guide._skipped
+        assert not any("is not parked" in line for line in lab.ctx.lines("warn"))
+
+    asyncio.run(walk())
+
+
+def test_redo_on_a_part_by_hand_with_boxes_ticked_unticks_them(monkeypatch):
+    """Nothing done from the part by hand on, two boxes ticked: Redo is allowed and unticks them."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        boxes = lab.guide.kinds[HAND].boxes
+        assert lab.guide._cannot(lab.ctx, REDO)
+        boxes[0].value = boxes[1].value = True
+        assert not lab.guide._cannot(lab.ctx, REDO)
+        lab.guide.redo(lab.ctx)
+        lab.ctx.t += 0.5
+        lab.guide.redo(lab.ctx)
+        await lab.ticks()
+        assert lab.guide.part.kind == HAND and lab.guide.kinds[HAND].count == (0, 3)
+
+    asyncio.run(walk())
+
+
+def test_redo_only_with_a_done_part_from_there_on(monkeypatch):
+    """Nothing done from the part shown on: nothing to redo; B20_J marked, Redo on its first part reopens it."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await lab.ticks()
+        assert lab.guide._cannot(lab.ctx, REDO) == "nothing from this part on is done: nothing to redo"
         lab.run.request_mark_done("B20_J")
         await lab.ticks()
         lab.guide.look(lab.ctx, -lab.guide.index)
@@ -1139,6 +1278,46 @@ def test_a_failure_outlives_showing_another_part(monkeypatch):
         lab.guide.prepare(lab.ctx)
         await lab.ticks()
         assert lab.guide._state(lab.ctx, 0).label == "to do"
+
+    asyncio.run(walk())
+
+
+class StuckBasePlanner(BasePlanner):
+    """Sends, but the base stays where it is; the run ended with `ended`."""
+
+    def __init__(self, bases, ended):
+        """No plan yet."""
+        super().__init__(bases)
+        self.ended = ended
+
+    def commit(self, plan_id, unknown_robots=(), clearance=True):
+        """Sent; nothing moves."""
+        return answered((True, "sent"))
+
+    def run_check(self, _ctx, _serial):
+        """How the run ended."""
+        return self.ended
+
+
+@pytest.mark.parametrize("ended, says", [
+    (Check("aborted", BAD, "path refused: velocity controller gone (no wheel odometry for 0.5 s)"),
+     "the drive aborted: path refused: velocity controller gone"),
+    (None, "cm and"),
+])
+def test_a_drive_that_ends_away_says_why(monkeypatch, ended, says):
+    """The drive ends short: the guide quotes how the run ended, else how far off it stands; never a guess."""
+    lab = Guide(monkeypatch)
+    lab.ctx.plugins["base_planner"] = StuckBasePlanner(lab.bases, ended)
+
+    async def walk():
+        await lab.ticks()
+        lab.guide.prepare(lab.ctx)
+        await lab.ticks()
+        lab.guide.press_go(lab.ctx)
+        await lab.ticks(5)
+        assert lab.guide._state(lab.ctx, 0).label == "failed"
+        assert says in lab.guide._notes.content
+        assert "not live" not in lab.guide._notes.content
 
     asyncio.run(walk())
 
