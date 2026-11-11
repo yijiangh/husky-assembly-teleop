@@ -527,7 +527,7 @@ def test_the_whole_transfer_step_ends_with_the_grasp_and_its_servo():
     result, _held = execute(lab, lab.request("B20_J_transfer"), True, True)
     assert result.status == DONE and result.done == (3, 1, 2, SERVO_INDEX), result.reason
     prompts = [fields["data"]["text"] for event, fields in lab.run.records if event == "prompt"]
-    assert any("SERVO by bar: no usable mocap fit of B20 (asset 1020)" in text for text in prompts), prompts
+    assert any("SERVO by bar: no usable mocap fit of B20: " in text for text in prompts), prompts
     files = lab.run.files()
     assert files[1]["outcome"]["status"] == "confirmed"
     assert files[-2]["kind"] == "transfer" and files[-2]["outcome"]["status"] == DONE

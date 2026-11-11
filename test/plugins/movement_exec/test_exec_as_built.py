@@ -40,7 +40,7 @@ class FakeMocapBars:
         T = hint.matrix() if hint is not None else np.eye(4)
         sensed = fake_sensed_markers(T, self.layout.points, noise_m=0.0)
         fit = fit_bar(sensed, self.layout)
-        found = BarMeasurement(BAR, 1020, self.layout, fit, Pose.from_matrix(fit.T_world_from_bar), sensed, "fake",
+        found = BarMeasurement(BAR, self.layout, fit, Pose.from_matrix(fit.T_world_from_bar), sensed, "fake",
                                10.0, False, None, None)
         self.fits = {BAR: found}
         return dict(self.fits)
@@ -82,7 +82,7 @@ def test_a_motion_records_its_start_and_its_end():
     assert bar["deviation_vs_reference"]["dpos_mm"] == pytest.approx(30.0, abs=0.5)
     assert bar["deviation_vs_reference"]["dang_deg"] == pytest.approx(2.0, abs=0.1)
     assert bar["deviation_vs_assembled"] == bar["deviation_vs_reference"]
-    assert start["instrumented_bars"][0] == {"bar": BAR, "bar_id": "B20", "mocap_id": 1020}
+    assert start["instrumented_bars"][0] == {"bar": BAR, "bar_id": "B20"}
     assert [entry["bar_id"] for entry in start["instrumented_bars"]] == ["B20", "B21", "B34", "B35"]
     # The hint handed to the fit is the seat (the reference), so a fit takes the quick match.
     np.testing.assert_allclose(bars.hints[0][BAR].matrix(), lab.loaded.process.bodies[BAR].assembly_pose.matrix())

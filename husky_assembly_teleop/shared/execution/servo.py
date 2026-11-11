@@ -376,7 +376,8 @@ def bar_reading(plan: ServoPlan, flanges: Mapping[str, Pose], fit: BarFit | None
         plan: The servo's plan: its holder and layout (the bar's length).
         flanges: Flange id -> live world pose of this reading (`flange_poses`).
         fit: The fit of the bar's markers around the FK bar, or None when there was no marker sample.
-        source: Where the markers came from ("asset", or "fake" for a desk rehearsal); None when unknown.
+        source: Where the markers came from ("cloud": the relay's raw markers; "fake" for a desk rehearsal); None
+            when unknown.
         design: The bar pose the servo aims at, B* (`ServoPlan.design_bar`).
 
     Returns:

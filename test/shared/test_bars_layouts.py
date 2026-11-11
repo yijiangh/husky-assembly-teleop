@@ -15,13 +15,14 @@ import pytest
 from bar_fixtures import (BAR_LENGTH, NOW, b20_design, b20_layout, random_rigid, sensed_of, t20_design)
 
 from husky_assembly_teleop.drive import drive_root
-from husky_assembly_teleop.robot_interface.mocap_state import RawMarkers
+from husky_assembly_teleop.robot_interface.mocap_state import MarkerCloud, RawMarkers
 from husky_assembly_teleop.shared.bars.layouts import (
-    BarLayout, bar_asset_id, bar_layouts, bar_markers, fake_sensed_markers, fit_bar)
+    SEARCH_RADIUS, BarLayout, bar_layouts, bar_markers, drawn_bar, fake_sensed_markers, fit_bar, fit_in_cloud)
 from husky_assembly_teleop.shared.bars.pose import bar_slide_roll, pose_deviation
-from husky_assembly_teleop.world.marker_match import sensed_from_raw, transform_points
+from husky_assembly_teleop.world.marker_match import sensed_from_raw, sensed_near, transform_points
 from planning_fixtures import purged_process
 from process_fixtures import build_process
+from scaffolding_assembly_core.geometry import shape_mesh
 
 #: Under the Drive root: the old Rhino export B20's layout came from, and an Oct-1 take of the OLD 4-marker rig.
 OLD_EXPORT = "data_design_study/261016_2ModulesDemo_YH/MoCapMarkers.json"
@@ -43,8 +44,6 @@ def test_bar_layouts_from_the_purged_process():
     layouts = bar_layouts(purged_process().process)
     assert {bar: len(layout.names) for bar, layout in layouts.items()} == {
         "bars/B20": 8, "bars/B21": 8, "bars/B34": 8, "bars/B35": 8}
-    assert {bar: bar_asset_id(bar) for bar in layouts} == {
-        "bars/B20": 1020, "bars/B21": 1021, "bars/B34": 1034, "bars/B35": 1035}
     b20 = layouts["bars/B20"]
     assert b20.bar == "bars/B20" and b20.length == BAR_LENGTH and b20.warnings == ()
     assert b20.names == b20_layout().names
@@ -106,11 +105,49 @@ def test_a_collinear_layout_warns(tmp_path):
     assert fit_bar(sensed_of(transform_points(random_rigid(9), layout.points)), layout).ok is False
 
 
-def test_bar_asset_id():
-    """Bxx streams as 10xx, with or without the "bars/" prefix; anything else has no asset."""
-    assert bar_asset_id("bars/B20") == 1020
-    assert bar_asset_id("B7") == 1007
-    assert bar_asset_id("bars/X1") is None and bar_asset_id("bars/B") is None
+def test_a_drawn_bar_is_its_and_its_halves_visual_shapes_where_they_sit_and_never_collides():
+    """B20's drawing: its own shapes, then each mounted half's moved by where it sits on the bar; no collision."""
+    process = purged_process().process
+    geometry = drawn_bar(process, "bars/B20")
+    bar = process.bodies["bars/B20"]
+    halves = process.halves_of("bars/B20")
+    assert not geometry.collision and halves
+    halves_shapes = sum(len(process.bodies[half].geometry.visual) for half in halves)
+    assert len(geometry.visual) == len(bar.geometry.visual) + halves_shapes
+    # * Placed at the bar's assembly pose, every shape lands where the process has it.
+    half = process.bodies[halves[0]]
+    placed = transform_points(bar.assembly_pose.matrix(),
+                              shape_mesh(geometry.visual[len(bar.geometry.visual)]).vertices)
+    np.testing.assert_allclose(placed, transform_points(half.assembly_pose.matrix(),
+                                                        shape_mesh(half.geometry.visual[0]).vertices), atol=1e-9)
+
+
+def test_fit_in_cloud_uses_only_markers_near_where_the_bar_should_be():
+    """B20 slid 30 mm among 60 far markers: only its own 8 are fitted; looked for elsewhere, nothing is found."""
+    layout = bar_layouts(purged_process().process)["bars/B20"]
+    seat = purged_process().process.bodies["bars/B20"].assembly_pose.matrix()
+    near = transform_points(seat @ bar_slide_roll(0.03, 2.0), layout.points)
+    far = seat[:3, 3] + np.random.default_rng(1).uniform(SEARCH_RADIUS + 0.3, 2.0, (60, 3))
+    positions = np.concatenate([far, near])
+    cloud = MarkerCloud(positions, np.full(len(positions), 0.019), np.full(len(positions), 5e-4),
+                        np.arange(len(positions)), capture_time=NOW, arrival_time=NOW)
+    sensed, fit = fit_in_cloud(cloud, layout, seat, NOW)
+    assert fit.ok and len(sensed.points) == 8 and sensed.source == "cloud" and set(sensed.ids) == set(range(60, 68))
+    np.testing.assert_allclose(fit.T_world_from_bar, seat @ bar_slide_roll(0.03, 2.0), atol=1e-9)
+    elsewhere = seat.copy()
+    elsewhere[:3, 3] += [0.0, 0.0, 3.0]
+    sensed, fit = fit_in_cloud(cloud, layout, elsewhere, NOW)
+    assert not fit.ok and len(sensed.points) == 0
+    assert fit.reason.endswith(f"(markers looked for within {SEARCH_RADIUS * 1e3:.0f} mm of where the bar should be)")
+
+
+def test_sensed_near_drops_noisy_and_odd_sized_markers_and_keeps_unknown_sizes():
+    """Residual over 3 mm or size outside 12-26 mm: dropped and counted; a size of 0 (not reported) is kept."""
+    positions = np.zeros((4, 3))
+    cloud = MarkerCloud(positions, np.array([0.019, 0.0, 0.019, 0.04]), np.array([5e-4, 5e-4, 0.004, 5e-4]),
+                        np.arange(4), capture_time=NOW - 0.1, arrival_time=NOW)
+    sensed = sensed_near(cloud, np.zeros((1, 3)), 0.01, NOW)
+    assert sensed.ids == (0, 1) and sensed.dropped == 2 and sensed.age == pytest.approx(0.1)
 
 
 # * ------------------------------------------------- fitting a sample

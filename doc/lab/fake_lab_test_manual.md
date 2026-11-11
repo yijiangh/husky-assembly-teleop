@@ -428,8 +428,8 @@ prompt), a Robotiq step and the servo's first pass.
     held before you Confirm.
 - [ ] button [Confirm] (here or on the phone's Exec tab: the bar is placed and clamped, in the simulation's mind)
   - **Expect:** pane monitor: `[servo] feedback: the mocap bar bars/B20 (converges at 0.5 mm / 0.1 deg).`, a warning
-    `no marker sample of bars/B20 (asset 1020) within 1 s: is Motive streaming it?`, then the warning prompt
-    `B20_J_transfer — SERVO by bar: no usable mocap fit of B20 (asset 1020): the bar could not be measured (no marker
+    `no marker cloud from the relay within 1 s: bars/B20 is not measured (...)`, then the warning prompt
+    `B20_J_transfer — SERVO by bar: no usable mocap fit of B20: the bar could not be measured (no marker
     sample). Tool0 servo (Confirm): servo tool0 onto the authored targets of the insert start instead (...). Give up
     (Cancel): stops, recording.`, in a warning window beside the main panel with buttons [Give up] and [Tool0 servo]
   - The servo starts by itself. The fake Motive streams no bar markers, so the warnings are right. The **Exec plots**
@@ -706,7 +706,7 @@ These are not mistakes on your side.
 | An insert's screws stall after 2 s whatever the arms do; its path is held 40 % in. | The simulated tool's `tighten_s`, 2 s by default (3.e sets it). |
 | A retreat's gripper motors read `LOOSENING` at the end, never `STALLED`. | The simulated screws loosen until a STOP instead of stalling fully open; the stiff retreat only reports them. A compliant retreat's contact check reads the fake wrench (1.c) and passes near zero. |
 | A base's `xyz` flickers between two poses, pane relay says `rigid body 18xx: now from …` again and again. | A simulator of an earlier launch is still alive in the same domain (`pgrep -af husky_sim`: two with the same `__ns`); stop the old one. |
-| `no marker sample of bars/B20 (asset 1020)`. | The fake Motive streams no bar markers; the servo runs on tool0 and records that the bar could not be measured. |
+| `no marker cloud from the relay within 1 s: bars/B20 is not measured`. | The fake Motive streams no markers; the servo runs on tool0 and records that the bar could not be measured. |
 | A short base path `timed out: still following`. | The simulated follower sometimes never starts a path of a few decimetres. Plan and Commit again. |
 | An arm's chips stay red after start. | Its spawners timed out while three robots started at once (`Failed loading controller joint_state_broadcaster` in pane sim). Restart `sim.sh`. |
 | `sim.sh` refuses: `simulator nodes of an earlier start still run`. | A start that died part way (a missing package or script) left its nodes running. Run the `kill -INT …` it prints, then `sim.sh` again. Started anyway, a second controller manager under the same name answers for an arm at random: its `ctrl` chip flickers, Exec is refused with `scaled_joint_trajectory_controller is not active (active: None)`, and the new start's spawners report `Controller already loaded` then `no controller with this name exists`. |

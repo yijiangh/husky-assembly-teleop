@@ -3,7 +3,9 @@ Which sensed mocap marker is which designed marker of a rigid body, and the pose
 
 Motive's marker ids are not used (they shift); numpy only.
 
-- `sensed_from_raw(raw, now)`: one Motive asset's markers, the untrusted ones dropped.
+- `sensed_from_raw(raw, now)`: one Motive asset's markers, the untrusted ones dropped (bars no longer use assets;
+  kept for the tests' samples, which need Motive's fill-in flags).
+- `sensed_near(cloud, points, radius, now)`: the relay's raw markers near where a body's markers should be, the same.
 - `match_and_fit(sensed, design)`: the full search, every design triangle against every sensed triple.
 - `fit_near_hint(sensed, design, T_hint)`: the quick match around the last pose while following a body live.
 - `BarFit`: what either returns; `ok` False carries a plain-language `reason`.
@@ -17,7 +19,7 @@ from math import ceil
 
 import numpy as np
 
-from ..robot_interface.mocap_state import RawMarkers
+from ..robot_interface.mocap_state import MarkerCloud, RawMarkers
 
 # * A design triangle used to start a match must be at least this high (its smallest altitude). Balls with the
 #   same label on joints with the same roll lie on one line along the bar, and three points on a line leave the
@@ -46,7 +48,8 @@ class Sensed:
         ids: The marker id of each row (Motive's member number; 1.. for a fake).
         residuals: (N,) Motive's fit residual of each row, metres; None when the relay did not send them.
         age: How old the sample is, seconds (0.0 when the relay sent no capture time).
-        source: Where the markers came from: "asset" (a Motive asset) or "fake".
+        source: Where the markers came from: "cloud" (the relay's raw markers near the body), "asset" (a Motive
+            asset) or "fake".
         dropped: Markers dropped for their residual or size.
         occluded: Markers Motive did not see (filled in from its own pose), dropped.
         notes: Checks that could not run, said once in a failed fit's reason.
@@ -214,6 +217,33 @@ def sensed_from_raw(raw: RawMarkers, now: float) -> Sensed:
                   age=0.0 if capture_time is None else now - capture_time, source="asset",
                   dropped=int(len(keep) - np.count_nonzero(keep) - occluded), occluded=occluded,
                   notes=tuple(notes))
+
+
+def sensed_near(cloud: MarkerCloud, points: np.ndarray, radius: float, now: float) -> Sensed:
+    """The cloud's markers within `radius` of any of `points`, ready to fit: residual <= 3 mm, size 12-26 mm.
+
+    * Motive's labels are not used: a marker is whatever is there. A size of 0 (not reported) skips the size check.
+
+    Args:
+        cloud: The relay's newest marker cloud.
+        points: (M, 3) where the body's markers should be, world, metres.
+        radius: How far from one of them a marker may be, metres.
+        now: The current ROS time, seconds, for the sample's age.
+
+    Returns:
+        Sensed: The markers kept (ids are NatNet's), the counts dropped, and the sample's age; source "cloud".
+    """
+    positions = np.asarray(cloud.positions, dtype=float).reshape(-1, 3)
+    points = np.asarray(points, dtype=float).reshape(-1, 3)
+    near = np.zeros(len(positions), dtype=bool)
+    if len(positions) and len(points):
+        near = (np.linalg.norm(positions[:, None, :] - points[None, :, :], axis=2) <= radius).any(axis=1)
+    sizes, residuals = np.asarray(cloud.sizes, dtype=float)[near], np.asarray(cloud.residuals, dtype=float)[near]
+    sized = (MARKER_SIZE_RANGE_M[0] <= sizes) & (sizes <= MARKER_SIZE_RANGE_M[1])
+    keep = (residuals <= MAX_MARKER_ERROR_M) & ((sizes <= 0.0) | sized)
+    return Sensed(points=positions[near][keep], ids=tuple(int(i) for i in np.asarray(cloud.ids)[near][keep]),
+                  residuals=residuals[keep], age=now - cloud.capture_time, source="cloud",
+                  dropped=int(np.count_nonzero(~keep)))
 
 
 # * ================================================================ matcher
@@ -412,8 +442,7 @@ def match_and_fit(sensed_points_m: np.ndarray, design_points_bar_m: np.ndarray, 
     if n_sensed < 3:
         return failed_fit(f"only {n_sensed} markers in view (need at least 3)", n_sensed, n_design)
     if n_sensed > max_sensed:
-        return failed_fit(f"too many markers in view ({n_sensed}, at most {max_sensed}); "
-                          f"disable other assets or use the per-bar asset", n_sensed, n_design)
+        return failed_fit(f"too many markers near the bar ({n_sensed}, at most {max_sensed})", n_sensed, n_design)
 
     # * 2-3. Distance tables and the start triangles of the design.
     sensed_dist = _pairwise_distances(sensed)
@@ -478,16 +507,19 @@ def match_and_fit(sensed_points_m: np.ndarray, design_points_bar_m: np.ndarray, 
 
 
 def fit_near_hint(sensed: np.ndarray, design: np.ndarray, T_hint: np.ndarray, *, gate_m: float,
-                  tol_m: float, min_inliers: int | None) -> BarFit | None:
+                  tol_m: float, min_inliers: int | None, all_markers: bool = True) -> BarFit | None:
     """The quick fit while following a bar live: match around its last pose, no full search.
 
     The design markers are placed at ``T_hint``; each sensed marker within ``gate_m`` of one is taken as that marker
     (closest pairs first, one to one), then the pose is refitted and the markers re-paired within ``tol_m``, until
     the pairs stop changing.
 
-    ! Only a fit that matches EVERY design marker is kept: with a marker missing, following a pose could stay locked
-      on a wrong, partly matching assignment (B20 has one that matches 6 of its 8 balls), so the caller runs the
-      full search with its ambiguity check instead.
+    ! By default only a fit that matches EVERY design marker is kept: with a marker missing, following a pose could
+      stay locked on a wrong, partly matching assignment (B20 has one that matches 6 of its 8 balls), so the caller
+      runs the full search with its ambiguity check instead. `all_markers` False (`min_inliers` will do) only around
+      a pose a fit found moments ago, starting from one the full search found: a wrong assignment then has to lie
+      within `gate_m` of the right one. Such fits chain without another full search while they keep coming; one
+      that misses falls back to it.
 
     Args:
         sensed: (N, 3) sensed points.
@@ -496,6 +528,7 @@ def fit_near_hint(sensed: np.ndarray, design: np.ndarray, T_hint: np.ndarray, *,
         gate_m: How far a sensed marker may be from its design marker at ``T_hint``.
         tol_m: Match distance of the refined fit; every residual must stay below it.
         min_inliers: Matched markers needed; None = as in `match_and_fit`.
+        all_markers: Whether every design marker must match (see above).
 
     Returns:
         BarFit | None: An ok fit marked ``tracked``; None when a design marker is not matched (hidden, or the bar
@@ -515,7 +548,7 @@ def fit_near_hint(sensed: np.ndarray, design: np.ndarray, T_hint: np.ndarray, *,
         if refined == pairs:
             break
         pairs = refined
-    if len(pairs) < max(min_inliers, n_design) or max(residuals.values()) > tol_m:
+    if len(pairs) < (max(min_inliers, n_design) if all_markers else min_inliers) or max(residuals.values()) > tol_m:
         return None
     return BarFit(ok=True, reason="", T_world_from_bar=T, correspondences=pairs,
                   sensed_ids=list(range(n_sensed)), residuals_m=residuals, rms_m=_rms(residuals),

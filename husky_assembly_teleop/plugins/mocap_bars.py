@@ -1,28 +1,35 @@
 """
 Bar marker fitting: where every bar the mocap sees is, against where the process plans it.
 
-Every bar of the loaded process that carries markers is tracked as its Motive asset (bar Bxx streams as asset 10xx;
-the Mocap ID box re-tracks the chosen bar under another id). Each bar's CAD markers are fitted to the measured ones
-without Motive's labels (`shared/bars/layouts.fit_bar`) at most ten times a second:
-matched around the last good fit while it is fresh, else around the planned pose, else by the full search, of which
-at most one runs per tick across the bars. "Ghost bars" draws every fitted bar (the process bar and its mounted
-halves, see-through, the old monitor's MoCap cyan) at its fitted pose; "Show markers" draws the chosen bar's
-measured markers (green the trusted ones the fit used, amber filled in by Motive), its fitted markers (blue:
-markers, axis, a line per residual) and its planned markers and line (grey, pink). The stats block below the buttons
-reads the chosen bar's fit the old monitor's way: each marker's residuals, each plate's ball pair, the spacing
-between plates, the bow, and the deviation from the planned pose; "Measure + log" and "Log live" print the old
-`[mocap bar]` lines. The planned bar is the process body in the live scene (`process/bars/<id>`): a built bar at its
-assembly pose, a held one on the real robot's flange. Record writes a take of the chosen bar's fit to the Drive
-(`data_experiment/mocap_bars/`): a run folder per take with experiment.json and recording.npz
+Every bar of the loaded process that carries markers is fitted to the relay's raw markers near where it should be
+(`shared/bars/layouts.fit_in_cloud`): the markers within SEARCH_RADIUS of its markers at its planned pose, Motive's
+labels and assets never used (Motive mixes up bars that look alike). The planned pose is the process body in the live
+scene (`process/bars/<id>`): a built bar at its assembly pose, a held one on the real robot's flange; a bar the live
+scene lacks is looked for at its assembly pose. Each bar is fitted at most ten times a second: matched around the last
+good fit while it is fresh (a marker may be hidden), else around the planned pose (every marker), else by the full
+search over its nearby markers, of which at most one runs per tick across the bars and only for bars the live scene
+has. Every bar is a body of the live scene, "mocap_bars/<B20>": the process bar and
+its mounted halves, see-through in the old monitor's MoCap cyan, at its fitted pose, shown while its fit is fresh; the
+observer records them every tick. "Show markers" draws the chosen bar's nearby markers
+(green the ones the fit matched, amber the others), its fitted markers (blue: markers, axis, a line per residual) and
+its planned markers and line (grey, pink); "Raw markers" every marker of the cloud. The stats block below the buttons
+reads the chosen bar's fit the old monitor's way: each marker's residuals, each plate's ball pair, the spacing between
+plates, the bow, and the deviation from the planned pose; "Measure + log" and "Log live" print the old `[mocap bar]`
+lines. "Arrows" draws the as-built report's arrows on the chosen bar or every fitted bar, from where it should be to
+its fit: the gap at its start, middle and end, the planned (faint) and fitted axes with the turn about each, both
+"Magnify" times larger (labels true). The fit settings section sets the search radius and the timings below for this
+plugin's fits (the contract's too, so the as-built record's), not servo's. Record writes a take of the chosen bar's
+fit to the Drive (`data_experiment/mocap_bars/`): a run folder per take with experiment.json and recording.npz
 (`shared/recordings/runs.py`). Other plugins read the fits through `MocapBarsContract`.
 
 - ! Marker layouts come only from the process (`BodySpec.markers` of the halves mounted on a bar); old compas_fab
   exports converted on load have none.
+- ! A bar farther than SEARCH_RADIUS from where it should be is not found: the fit is a check of the plan, not a
+  search of the lab.
 - ! The fits run on the main thread: a full search takes ~20 ms (one per tick at most), the match around a hint ~1 ms
   per bar.
 - * Markers dropped for their size or Motive residual are neither fitted nor drawn; a failed fit's reason counts them.
-- * The ghosts are drawn only, in this plugin's view: not scene bodies, so they never collide (the planned ones
-  already do), and hidden while there is no fit.
+- ! The bodies have visual shapes only: they never collide (the planned bars already do) and are never obstacles.
 
 Run with:  plugins:="mocap_bars"  (loads `process`)
 """
@@ -38,7 +45,7 @@ from typing import TYPE_CHECKING, Mapping
 import numpy as np
 import viser
 
-from ..colors import FITTED, GREEN, GREY, MEASURED, WARN, rgb, rgb01
+from ..colors import BLUE, FITTED, GRAPE, GREEN, GREY, INK, LIGHT_GREY, MEASURED, RED, WARN, rgb, rgb01
 from ..drive import drive_folder, environment, folder_name
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
@@ -46,47 +53,65 @@ from ..plugin_api.trace import Signal
 from ..shared.mocap_bars_contract import MOCAP_TAB, BarMeasurement
 from ..shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH
 from ..shared.recordings.runs import run_folder, save_recording, write_description
-from ..ui.quaternion import quaternion_to_wxyz
-from ..ui.scene_view import add_shape
-from ..ui.style import (BUSY, NONE, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, chip_line, note, section,
-                        values)
-from ..shared.bars.layouts import BarLayout, bar_asset_id, bar_layouts, fit_bar
+from ..shared.bars.layouts import SEARCH_RADIUS, BarLayout, bar_layouts, drawn_bar, fit_in_cloud
 from ..shared.bars.pose import PoseDeviation, bar_ends, pose_deviation
 from ..shared.bars.readings import (MATCHED, MISSING, MarkerRow, PlateGeometry, bar_report, marker_rows,
                                     plate_geometry)
-from ..world.marker_match import BarFit, Sensed, sensed_from_raw, transform_points
-from ..world.measured import TrackedObject
-from ..world.mocap import mocap_check
-from scaffolding_assembly_core.geometry import Pose, compose, invert
+from ..ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_SENSOR, block, chip, chip_line, note, section,
+                        values)
+from ..world.marker_match import BarFit, Sensed, transform_points
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.scene import Body
 
 if TYPE_CHECKING:
+    from ..robot_interface.mocap_state import MarkerCloud
     from ..shared.process_contract import ProcessContract
 
-#: Name of a tracked bar in `world.tracked_objects` and on the health panel: "<TRACKED_NAME>/<B20>".
-TRACKED_NAME = "fitted_bar"
 #: Takes go into a folder per experiment under this one, below the Drive root; create it in Drive first.
 RECORDING_FOLDER = "data_experiment/mocap_bars"
 #: Bar dropdown entry while the process has no bar with markers.
 NO_BAR = "–"
-#: Fits run at most this often per bar, seconds (the old "follow live (10 Hz)").
+#: Defaults of the panel's fit settings. Fits run at most this often per bar, seconds (the old "follow live
+#: (10 Hz)").
 FIT_PERIOD = 0.1
 #: A sample older than this is not fitted, seconds: is Motive streaming?
 MAX_MARKER_AGE = 0.5
 #: The last good fit guides the next one while it is younger than this, seconds; after that the planned pose does.
 HINT_MAX_AGE = 1.0
-#: A bar whose full search failed waits this long before the next, seconds: a wrong asset must not search every turn.
+#: A bar whose full search failed waits this long before the next, seconds: a bar not there must not search every turn.
 SEARCH_RETRY = 1.0
 #: "Log live" prints the chosen bar's report this often, seconds.
 LOG_PERIOD = 5.0
-#: Colours: the trusted markers the fit used, markers Motive filled in, the fitted markers, the planned markers.
+#: "Raw markers" redraws the whole cloud at most this often, seconds.
+CLOUD_PERIOD = 0.2
+#: Colours: the nearby markers the fit matched, the other nearby markers, the fitted markers, the planned markers,
+#: the whole cloud.
 MEASURED_COLOR = rgb(GREEN)
-FILLED_COLOR = rgb(WARN)
+STRAY_COLOR = rgb(WARN)
 FIT_COLOR = rgb(FITTED)
 PLANNED_COLOR = rgb(GREY)
-#: The ghost bars' colour, the old monitor's MoCap cyan (r, g, b, alpha from 0 to 1).
+CLOUD_COLOR = rgb(GREY)
+#: The fitted bars' colour, the old monitor's MoCap cyan (r, g, b, alpha from 0 to 1).
 MOCAP_COLOR = rgb01(MEASURED, 0.5)
-#: Size of the drawn markers, metres.
+#: Size of the drawn markers, metres; the whole cloud's smaller, so the chosen bar's stand out.
 MARKER_POINT_SIZE = 0.02
+CLOUD_POINT_SIZE = 0.012
+#: "Arrows": none, the chosen bar's, or every fitted bar's.
+ARROW_MODES = ("off", "chosen bar", "all bars")
+#: The arrows of a gap or a turn are drawn this many times larger by default (the as-built viewer's MAGNIFY): a
+#: millimetre on a 2 m bar cannot be seen. Their labels are the true values.
+MAGNIFY = 20
+#: Length of the axes drawn at a bar's start and radius of the turn arcs around them, metres.
+AXIS_LENGTH = 0.15
+ARC_RADIUS = 0.03
+#: The arrows are redrawn at most this often, seconds.
+ARROW_PERIOD = 0.2
+#: Colours of the arrows: the gaps (the as-built viewer's ink), the turns (its purple), the planned axes (faint), the
+#: fitted x / y / z axes.
+GAP_COLOR = rgb(INK)
+TURN_COLOR = rgb(GRAPE)
+PLANNED_AXIS_COLOR = rgb(LIGHT_GREY)
+AXIS_COLORS = (rgb(RED), rgb(GREEN), rgb(BLUE))
 
 
 def matched_pairs(fit: BarFit) -> np.ndarray:
@@ -100,16 +125,108 @@ def short(bar: str) -> str:
 
 
 @dataclass
+class Arrows:
+    """What the arrows of one or more bars draw: line segments and their colours, and labels.
+
+    Attributes:
+        segments: (2, 3) world points per segment, metres.
+        colors: An rgb colour per segment.
+        labels: (text, world position) per label.
+    """
+
+    segments: list[np.ndarray]
+    colors: list[tuple[int, int, int]]
+    labels: list[tuple[str, np.ndarray]]
+
+
+def _arrow_head(tip: np.ndarray, direction: np.ndarray, size: float) -> list[np.ndarray]:
+    """The two short strokes of an arrow head at `tip`, pointing along `direction`, `size` long."""
+    forward = direction / np.linalg.norm(direction)
+    side = np.cross(forward, (0.0, 0.0, 1.0))
+    if np.linalg.norm(side) < 1e-6:
+        side = np.cross(forward, (1.0, 0.0, 0.0))
+    side /= np.linalg.norm(side)
+    back = tip - forward * size
+    return [np.array([tip, back + side * 0.4 * size]), np.array([tip, back - side * 0.4 * size])]
+
+
+def deviation_arrows(planned: np.ndarray, fitted: np.ndarray, length: float, magnify: float = MAGNIFY,
+                     name: str = "") -> Arrows:
+    """The as-built viewer's arrows for one bar: its gaps and turns from planned to fitted, `magnify` times larger.
+
+    An arrow from each of the planned bar's start, middle and end towards the fitted one's (at least 1 cm long), its
+    true distance at the tip; the planned axes at the start (faint) and the fitted ones (x / y / z), each fitted
+    axis's tip labelled with the turn about it, and a curved arrow sweeping `magnify` times that turn about it.
+
+    Args:
+        planned: 4x4 planned bar pose (origin at the middle, z along the bar).
+        fitted: 4x4 fitted bar pose.
+        length: Bar length, metres.
+        magnify: How many times larger the gaps and turns are drawn.
+        name: Put before the middle gap's label ("B20"), or nothing.
+    """
+    out = Arrows([], [], [])
+
+    def add(segment: np.ndarray, color: tuple[int, int, int]) -> None:
+        out.segments.append(segment)
+        out.colors.append(color)
+
+    half = length / 2.0
+    along = np.array([[0.0, 0.0, -half], [0.0, 0.0, 0.0], [0.0, 0.0, half]])
+    targets, reals = transform_points(planned, along), transform_points(fitted, along)
+    for index, (target, real) in enumerate(zip(targets, reals)):
+        gap = real - target
+        size = float(np.linalg.norm(gap))
+        text = f"{size * 1e3:.2f} mm"
+        if index == 1 and name:
+            text = f"{name} {text}"
+        if size < 1e-7:
+            out.labels.append((text, target))
+            continue
+        shown = max(0.01, magnify * size)
+        tip = target + gap / size * shown
+        add(np.array([target, tip]), GAP_COLOR)
+        for stroke in _arrow_head(tip, gap, min(0.015, 0.3 * shown)):
+            add(stroke, GAP_COLOR)
+        out.labels.append((text, tip))
+    turn = pose_deviation(fitted, planned).rotvec_bar_deg
+    origin, fitted_origin = targets[0], reals[0]
+    axes, fitted_axes = planned[:3, :3].T, fitted[:3, :3].T
+    # * Which way each arc starts from its axis: about x towards y, about y towards x, about z towards y.
+    start_axis = (1, 0, 1)
+    for i in range(3):
+        add(np.array([origin, origin + axes[i] * AXIS_LENGTH]), PLANNED_AXIS_COLOR)
+        add(np.array([fitted_origin, fitted_origin + fitted_axes[i] * AXIS_LENGTH]), AXIS_COLORS[i])
+        # * + 0.0: no "-0.00°".
+        out.labels.append((f"about {'XYZ'[i]}: {round(float(turn[i]), 2) + 0.0:+.2f}°",
+                           fitted_origin + fitted_axes[i] * AXIS_LENGTH))
+        # At most a near full turn, however large the magnified angle; none when too small to see.
+        sweep = float(np.clip(magnify * np.radians(turn[i]), -5.8, 5.8))
+        if abs(sweep) <= 0.05:
+            continue
+        centre, k, v = origin + axes[i] * AXIS_LENGTH * 0.8, axes[i], axes[start_axis[i]]
+        steps = max(4, int(np.ceil(abs(sweep) / 0.05)))
+        angles = np.linspace(0.0, sweep, steps + 1)[:, None]
+        # * Rodrigues for v across k: v cos a + (k x v) sin a.
+        points = centre + ARC_RADIUS * (v * np.cos(angles) + np.cross(k, v) * np.sin(angles))
+        for a, b in zip(points[:-1], points[1:]):
+            add(np.array([a, b]), TURN_COLOR)
+        for stroke in _arrow_head(points[-1], points[-1] - points[-2], min(0.012, 0.5 * ARC_RADIUS * abs(sweep))):
+            add(stroke, TURN_COLOR)
+    return out
+
+
+@dataclass
 class _Followed:
-    """One bar followed live: its layout and tracked asset, the last sample and fit, the hint for the next fit.
+    """One bar followed live: its layout, the last sample and fit, the hint for the next fit.
 
     Attributes:
         layout: The bar's designed markers.
-        obj: Its tracked Motive asset.
-        sensed: The sample last fitted, or None.
+        assembled: Its assembly pose, 4x4: where it is looked for while the live scene lacks it.
+        sensed: The markers near it last fitted, or None.
         fit: The last fit, ok or not; None before any.
         pose: The fitted pose when `fit` is ok, else None.
-        fitted_update: The mocap message time of the sample last fitted (ok or by the full search).
+        fitted_cloud: The marker cloud last fitted (ok or by the full search), so each is fitted once.
         next_fit_at: When the next fit may run.
         last_ok: (time, 4x4 pose) of the last good fit: the hint the next fit starts from while fresh.
         planned: Where the process places the bar this tick, or None.
@@ -119,11 +236,11 @@ class _Followed:
     """
 
     layout: BarLayout
-    obj: TrackedObject
+    assembled: np.ndarray
     sensed: Sensed | None = None
     fit: BarFit | None = None
     pose: Pose | None = None
-    fitted_update: float | None = None
+    fitted_cloud: MarkerCloud | None = None
     next_fit_at: float = 0.0
     last_ok: tuple[float, np.ndarray] | None = None
     planned: Pose | None = None
@@ -134,7 +251,7 @@ class _Followed:
 
 @register
 class MocapBarsPlugin(HuskyPlugin):
-    """Fits every process bar's markers to its tracked Motive asset and measures its deviation from the plan."""
+    """Fits every process bar to the raw markers near where it should be and measures its deviation from the plan."""
 
     name = "mocap_bars"
     tab_path = (MOCAP_TAB, "Bars")
@@ -155,13 +272,21 @@ class MocapBarsPlugin(HuskyPlugin):
         self._stats_rows = 3
         #: What the scene last showed of the chosen bar, so marker nodes are only resent when they change.
         self._drawn: tuple | None = None
-        #: Bar id -> its ghost's frame node, and the process the ghosts were built from.
-        self._ghosts: dict[str, viser.FrameHandle] = {}
-        self._ghosts_of = None
+        #: The cloud "Raw markers" last drew (None: hidden), and when.
+        self._drawn_cloud: MarkerCloud | None = None
+        self._cloud_drawn_at = -np.inf
         self._take: asyncio.Task | None = None
         self._message = ""
         self._next_log_at = 0.0
+        #: The relay the cloud comes from, or None (tests).
+        self._relay = None
         self._now = 0.0
+        #: The settings' sliders (None before setup: the module's defaults hold).
+        self._radius_mm = self._fit_period = self._marker_age = self._hint_age = self._search_retry = None
+        #: What the arrows last drew (bars, poses, mode, magnify), when, and their label nodes, reused.
+        self._arrows_drawn: tuple | None = None
+        self._arrows_drawn_at = -np.inf
+        self._arrow_labels: list = []
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the panel and the marker nodes, and find the Drive folder for takes.
@@ -178,20 +303,40 @@ class MocapBarsPlugin(HuskyPlugin):
             gui.add_html(section("bar", SECTION_SENSOR))
             self._bar = gui.add_dropdown("Bar", options=[NO_BAR],
                                          hint="The bar the markers, the stats and a take are of; every bar of the "
-                                              "loaded process with 3 or more markers on its halves is tracked.")
-            self._mocap_id = gui.add_number("Mocap ID", initial_value=0, min=0, step=1,
-                                            hint="The Motive rigid body made of this bar's markers (Bxx -> 10xx).")
-            track = gui.add_button("Track", hint="Track the chosen bar as the Mocap ID instead.")
+                                              "loaded process with 3 or more markers on its halves is fitted.")
             # * The chip on its own line, the fit below it: the fit's numbers change on every refit and would drop the
             #   chip's hover.
             self._status_chip: viser.GuiHtmlHandle = gui.add_html(chip_line(""))
             self._status: viser.GuiHtmlHandle = gui.add_html("")
             self._show_markers = gui.add_checkbox("Show markers", initial_value=True)
-            self._ghost_bars = gui.add_checkbox("Ghost bars", initial_value=True,
-                                                hint="Every fitted bar drawn see-through at its MoCap pose.")
+            self._raw_markers = gui.add_checkbox("Raw markers", initial_value=False,
+                                                 hint="Every marker the cameras see, small and grey.")
             self._log_live = gui.add_checkbox("Log live", initial_value=False,
                                               hint=f"Print the chosen bar's fit report every {LOG_PERIOD:.0f} s.")
             measure = gui.add_button("Measure + log", hint="Fit the chosen bar afresh and print its report.")
+            self._arrows = gui.add_dropdown("Arrows", options=list(ARROW_MODES), initial_value=ARROW_MODES[1],
+                                            hint="The as-built report's arrows from where the bar should be to its "
+                                                 "fit: the gap at its start, middle and end and the turn about each "
+                                                 "axis, magnified; the labels are the true values.")
+            self._magnify = gui.add_slider("Magnify", min=1, max=50, step=1, initial_value=MAGNIFY,
+                                           hint="How many times larger the arrows draw the gaps and turns.")
+
+            gui.add_html(section("fit settings", SECTION_CTRL))
+            self._radius_mm = gui.add_slider("Search mm", min=10, max=150, step=5, initial_value=SEARCH_RADIUS * 1e3,
+                                             hint="Markers farther than this from every marker of a bar where it "
+                                                  "should be are not its own: a bar farther off is not found. Servo "
+                                                  "keeps its own 50 mm.")
+            self._fit_period = gui.add_slider("Fit every s", min=0.05, max=1.0, step=0.05, initial_value=FIT_PERIOD,
+                                              hint="Each bar is refitted at most this often.")
+            self._marker_age = gui.add_slider("Marker age s", min=0.1, max=2.0, step=0.1,
+                                              initial_value=MAX_MARKER_AGE,
+                                              hint="Older markers are not fitted, and a bar fitted to them hides.")
+            self._hint_age = gui.add_slider("Hint age s", min=0.2, max=5.0, step=0.1, initial_value=HINT_MAX_AGE,
+                                            hint="A good fit younger than this is where the next fit starts (a "
+                                                 "hidden marker allowed); after that, where the bar should be.")
+            self._search_retry = gui.add_slider("Retry search s", min=0.2, max=10.0, step=0.2,
+                                                initial_value=SEARCH_RETRY,
+                                                hint="A bar whose full search failed waits this long for the next.")
 
             gui.add_html(section("record", SECTION_CTRL))
             self._experiment = gui.add_text("Experiment", initial_value="bar_accuracy",
@@ -205,6 +350,9 @@ class MocapBarsPlugin(HuskyPlugin):
 
         scene, root = ctx.view.scene, ctx.view.scene_root
         # * Always float32: the default float16 rounds world positions to millimetres.
+        self._cloud_points = scene.add_point_cloud(f"{root}/cloud", points=np.zeros((0, 3)), colors=CLOUD_COLOR,
+                                                   point_size=CLOUD_POINT_SIZE, point_shape="circle",
+                                                   precision="float32", visible=False)
         self._measured_cloud = scene.add_point_cloud(f"{root}/measured", points=np.zeros((0, 3)), colors=MEASURED_COLOR,
                                                      point_size=MARKER_POINT_SIZE, point_shape="circle",
                                                      precision="float32", visible=False)
@@ -221,88 +369,61 @@ class MocapBarsPlugin(HuskyPlugin):
                                                      colors=BAR_LINE_COLOR, thickness=BAR_LINE_WIDTH,
                                                      thickness_units="screen", visible=False)
         self._planned_label = scene.add_label(f"{root}/planned_label", "", visible=False)
+        self._scene, self._root = scene, root
+        # * Every bar's arrows in one node: gaps, axes, arcs and their heads.
+        self._arrow_lines = scene.add_line_segments(f"{root}/arrows", points=np.zeros((1, 2, 3)), colors=GAP_COLOR,
+                                                    thickness=2.5, thickness_units="screen", visible=False)
 
         # ! Callbacks run on a viser thread: hand every action to the main thread.
         self._bar.on_update(ctx.defer_value("choose bar", self._choose))
-        track.on_click(ctx.defer("track bar", lambda: self._track(ctx)))
         measure.on_click(ctx.defer("measure bar", lambda: self._measure_and_log(ctx)))
         record.on_click(ctx.defer("record take", lambda: self._start_take(ctx)))
-
-    def teardown(self, ctx: PluginContext) -> None:
-        """Stop tracking every bar.
-
-        Args:
-            ctx: This plugin's context.
-        """
-        for bar in list(self._bars):
-            ctx.untrack_object(f"{TRACKED_NAME}/{short(bar)}")
-        self._bars = {}
 
     # --- --- --- --- --- THE CONTRACT --- --- --- --- ---
 
     @property
     def fits(self) -> Mapping[str, BarMeasurement]:
-        """Mapping[str, BarMeasurement]: Bar id -> its latest measurement, every tracked bar that had a sample."""
+        """Mapping[str, BarMeasurement]: Bar id -> its latest measurement, every bar fitted since the last cloud."""
         return {bar: self._measurement(bar, state) for bar, state in self._bars.items() if state.fit is not None}
 
     def measure_now(self, hints: Mapping[str, Pose] | None = None) -> dict[str, BarMeasurement]:
-        """Fit every tracked bar afresh from its newest sample (around its hint, else the full search); kept."""
-        now = self._now
+        """Fit every bar afresh from the newest cloud, near its hint (else where it should be); kept.
+
+        The full search runs only for a bar in the live scene, as in `update`.
+        """
+        cloud, now = self._cloud, self._now
+        if cloud is None:
+            return {}
         for bar, state in self._bars.items():
-            if state.obj.markers is None:
-                continue
             hint = hints.get(bar) if hints else None
-            self._refit(state, now, None if hint is None else hint.matrix(), full_search=True)
+            self._refit(state, cloud, now, None if hint is None else hint.matrix(),
+                        full_search=state.planned is not None)
         return {bar: self._measurement(bar, state) for bar, state in self._bars.items() if state.fit is not None}
 
     def _measurement(self, bar: str, state: _Followed) -> BarMeasurement:
         """The bar's latest fit as the contract hands it on."""
-        return BarMeasurement(bar, state.obj.mocap_id, state.layout, state.fit, state.pose, state.sensed,
+        return BarMeasurement(bar, state.layout, state.fit, state.pose, state.sensed,
                               state.sensed.source if state.sensed is not None else "", state.measured_at,
                               state.fit.tracked, state.planned, state.deviation)
 
     # --- --- --- --- --- ACTIONS (run as intents) --- --- --- --- ---
 
     def _choose(self, bar_id: str) -> None:
-        """Show this bar's markers and stats from now on; the Mocap ID box shows its asset."""
+        """Show this bar's markers and stats from now on."""
         self._bar_id = bar_id if bar_id in self._bars else None
-        if self._bar_id is not None:
-            self._mocap_id.value = self._bars[self._bar_id].obj.mocap_id
         self._drawn = None
 
-    def _track(self, ctx: PluginContext) -> None:
-        """Track the chosen bar as the rigid body in "Mocap ID" instead of its own asset."""
-        state = self._bars.get(self._bar_id)
-        if state is None:
-            self._message = "choose a bar first"
-            return
-        mocap_id = int(self._mocap_id.value)
-        state.obj = self._track_bar(ctx, self._bar_id, mocap_id)
-        self._forget_fit(state)
-        self._message = f"{short(self._bar_id)}: tracking mocap id {mocap_id}"
-        ctx.log_info(self._message)
-
-    def _track_bar(self, ctx: PluginContext, bar: str, mocap_id: int) -> TrackedObject:
-        """Track `bar` as `mocap_id`, replacing an earlier tracking of it."""
-        name = f"{TRACKED_NAME}/{short(bar)}"
-        ctx.untrack_object(name)
-        # * No geometry: the process draws the bar; this is a frame and its markers.
-        return ctx.track_object(name, mocap_id, label=f"bar {short(bar)} markers ({mocap_id})")
-
     def _follow_all(self, ctx: PluginContext, loaded) -> None:
-        """Track every bar of the loaded process that has a marker layout, each as its own Motive asset."""
-        for bar in list(self._bars):
-            ctx.untrack_object(f"{TRACKED_NAME}/{short(bar)}")
+        """Fit every bar of the loaded process that has a marker layout from now on, each a scene body, hidden."""
         self._bars = {}
+        ctx.scene.remove_prefix(f"{self.name}/")
         layouts = bar_layouts(loaded) if loaded is not None else {}
         for bar, layout in layouts.items():
-            mocap_id = bar_asset_id(bar)
-            if mocap_id is None:
-                ctx.log_warn(f"{bar} has no Motive asset id by the Bxx -> 10xx rule: not tracked")
-                continue
             for warning in layout.warnings:
                 ctx.log_warn(warning)
-            self._bars[bar] = _Followed(layout, self._track_bar(ctx, bar, mocap_id))
+            self._bars[bar] = _Followed(layout, loaded.bodies[bar].assembly_pose.matrix())
+            ctx.scene.put(Body(self._body_id(bar), drawn_bar(loaded, bar), Pose(), label=f"{short(bar)} (MoCap)",
+                               color=MOCAP_COLOR, enabled=False), drawn_only=True)
         self._turn = 0
         markers = max((len(layout.points) for layout in layouts.values()), default=0)
         plates = max((len({name.rsplit("/", 1)[0] for name in layout.names}) for layout in layouts.values()),
@@ -312,27 +433,18 @@ class MocapBarsPlugin(HuskyPlugin):
         self._bar.options = list(self._bars) or [NO_BAR]
         self._bar_id = next(iter(self._bars), None)
         self._bar.value = self._bar_id or NO_BAR
-        if self._bar_id is not None:
-            self._mocap_id.value = self._bars[self._bar_id].obj.mocap_id
         self._drawn = None
         if self._bars:
-            ctx.log_info("tracking " + ", ".join(f"{short(bar)} as asset {state.obj.mocap_id}"
-                                                 for bar, state in self._bars.items()))
-
-    @staticmethod
-    def _forget_fit(state: _Followed) -> None:
-        """Drop a bar's fit and its hint: a new rigid body starts from a full search."""
-        state.sensed = state.fitted_update = state.fit = state.pose = state.last_ok = state.rows = None
-        state.next_fit_at = 0.0
+            ctx.log_info(f"fitting {', '.join(short(bar) for bar in self._bars)} to the raw markers within "
+                         f"{self.search_radius * 1e3:.0f} mm of where each should be")
 
     def _measure_and_log(self, ctx: PluginContext) -> None:
-        """Fit the chosen bar afresh (around its planned pose, else the full search) and print its report."""
+        """Fit the chosen bar afresh (around where it should be, else the full search) and print its report."""
         state = self._bars.get(self._bar_id)
-        if state is None or state.obj.markers is None:
-            self._message = "no mocap message of the chosen bar yet"
+        if state is None or self._cloud is None:
+            self._message = "no marker cloud from the relay yet"
             return
-        self._refit(state, self._now, state.planned.matrix() if state.planned is not None else None,
-                    full_search=True)
+        self._refit(state, self._cloud, self._now, None, full_search=True)
         self._log_report(ctx, self._bar_id, state)
 
     def _log_report(self, ctx: PluginContext, bar: str, state: _Followed) -> None:
@@ -363,8 +475,10 @@ class MocapBarsPlugin(HuskyPlugin):
             await ctx.sleep(seconds)
         process: ProcessContract = ctx.require("process")
         selection = process.selection
-        relay = ctx.world.mocap_relay
-        description = {"bar": bar_id, "mocap_id": state.obj.mocap_id,
+        relay = getattr(ctx.world, "mocap_relay", None)
+        radius_mm = self.search_radius * 1e3
+        description = {"bar": bar_id, "markers": f"the relay's raw markers within {radius_mm:.0f} mm of where the bar "
+                                                 f"should be",
                        **environment(relay is not None and relay.state.simulated),
                        "process": str(selection.process.folder) if selection is not None else None,
                        "step": selection.movement.id if selection is not None else None, "seconds": seconds,
@@ -425,8 +539,28 @@ class MocapBarsPlugin(HuskyPlugin):
 
     # --- --- --- --- --- UPDATE --- --- --- --- ---
 
+    @property
+    def _cloud(self) -> MarkerCloud | None:
+        """The relay's newest marker cloud, or None without a relay or before one."""
+        return self._relay.state.marker_cloud if self._relay is not None else None
+
+    @staticmethod
+    def _setting(slider, default: float) -> float:
+        """A settings slider's value, or the module's default before setup."""
+        return float(slider.value) if slider is not None else default
+
+    @property
+    def search_radius(self) -> float:
+        """float: How far from where a bar's markers should be its markers are looked for, metres."""
+        return self._setting(self._radius_mm, SEARCH_RADIUS * 1e3) / 1e3
+
+    @property
+    def max_marker_age(self) -> float:
+        """float: Markers older than this are not fitted and their bar hides, seconds."""
+        return self._setting(self._marker_age, MAX_MARKER_AGE)
+
     def update(self, ctx: PluginContext) -> None:
-        """Follow the loaded process, refit each bar on a new mocap message at most every FIT_PERIOD, compare.
+        """Follow the loaded process, refit each bar on a new marker cloud at most every FIT_PERIOD, compare.
 
         Args:
             ctx: This plugin's context.
@@ -437,114 +571,155 @@ class MocapBarsPlugin(HuskyPlugin):
         if loaded is not self._layouts_of:
             self._layouts_of = loaded
             self._follow_all(ctx, loaded)
+        self._relay = getattr(ctx.world, "mocap_relay", None)
+        cloud = self._cloud
         ids = selection.ids if selection is not None else None
+        snapshot = ctx.scene.snapshot
         now = self._now = ctx.now()
         searches = []
         for bar, state in self._bars.items():
             live_id = ids.get(bar) if ids is not None else None
-            state.planned = ctx.scene.snapshot.world_poses.get(live_id) if live_id else None
-            obj = state.obj
-            if obj.markers is None:
-                state.fit = state.pose = state.rows = None
-            elif obj.last_update_time != state.fitted_update and now >= state.next_fit_at:
-                if state.last_ok is not None and now - state.last_ok[0] <= HINT_MAX_AGE:
-                    hint = state.last_ok[1]
-                else:
-                    hint = state.planned.matrix() if state.planned is not None else None
-                # * The quick match around the hint; a bar it misses waits for its turn at the full search.
-                if hint is None or not self._refit(state, now, hint, full_search=False):
+            # * Only while its body is shown: an unbuilt bar sits disabled at its seat in the live scene.
+            body = snapshot.bodies.get(live_id) if live_id else None
+            state.planned = snapshot.world_poses.get(live_id) if body is not None and body.enabled else None
+            if cloud is None:
+                state.fit = state.pose = state.rows = state.sensed = None
+            elif cloud is not state.fitted_cloud and now >= state.next_fit_at:
+                fresh = state.last_ok is not None and now - state.last_ok[0] <= self._setting(self._hint_age,
+                                                                                              HINT_MAX_AGE)
+                # * The quick match around the last fit (a marker may be hidden), else where the bar should be (all
+                #   markers); a bar it misses waits for its turn at the full search.
+                self._refit(state, cloud, now, state.last_ok[1] if fresh else None, full_search=False,
+                            partial_hint=fresh)
+                if state.fitted_cloud is not cloud:
                     searches.append(bar)
             state.deviation = (pose_deviation(state.pose.matrix(), state.planned.matrix())
                                if state.pose is not None and state.planned is not None else None)
         if searches:
-            self._search_one(searches, now)
+            self._search_one(searches, cloud, now)
+        self._place_bodies(ctx, now)
         chosen = self._bars.get(self._bar_id)
         if chosen is not None and self._log_live.value and now >= self._next_log_at and chosen.fit is not None:
             self._next_log_at = now + LOG_PERIOD
             self._log_report(ctx, self._bar_id, chosen)
 
-    def _search_one(self, bars: list[str], now: float) -> None:
+    def _body_id(self, bar: str) -> str:
+        """A bar's scene body: "mocap_bars/B20"."""
+        return f"{self.name}/{short(bar)}"
+
+    def _place_bodies(self, ctx: PluginContext, now: float) -> None:
+        """Move each bar's body to its fit; shown only while the fit is ok and its markers under MAX_MARKER_AGE old."""
+        for bar, state in self._bars.items():
+            body = ctx.scene.bodies.get(self._body_id(bar))
+            if body is None:
+                continue
+            body.enabled = state.pose is not None and now - state.measured_at <= self.max_marker_age
+            if body.enabled:
+                body.placement = state.pose
+
+    def _search_one(self, bars: list[str], cloud: MarkerCloud, now: float) -> None:
         """The full search for one of `bars`, the first at or after the turn; the others wait for the next tick."""
         order = list(self._bars)
         indices = sorted(order.index(bar) for bar in bars)
         index = next((i for i in indices if i >= self._turn), indices[0])
         state = self._bars[order[index]]
-        self._refit(state, now, None, full_search=True)
+        self._refit(state, cloud, now, None, full_search=True)
         self._turn = (index + 1) % len(order)
         state.deviation = (pose_deviation(state.pose.matrix(), state.planned.matrix())
                            if state.pose is not None and state.planned is not None else None)
 
-    def _refit(self, state: _Followed, now: float, hint: np.ndarray | None, full_search: bool) -> bool:
-        """Fit a bar's layout to its newest sample; True when the fit is ok.
+    def _refit(self, state: _Followed, cloud: MarkerCloud, now: float, hint: np.ndarray | None,
+               full_search: bool, partial_hint: bool = False) -> bool:
+        """Fit a bar's layout to the cloud's markers near where it should be; True when the fit is ok.
 
-        A good fit, or a full search's failure (kept for its reason, the bar then waits SEARCH_RETRY), replaces the
-        bar's fit and sample; a hint match that misses with the search withheld leaves the last fit as it was.
+        Where it should be is its planned pose, else its assembly pose; `hint` (else that) is matched around first,
+        needing every marker unless `partial_hint` (a fresh good fit). A good fit, or a failure kept for its reason
+        (the bar then waits SEARCH_RETRY), replaces the bar's fit and sample. A hint match that misses with the search
+        withheld leaves the last fit as it was for the full search's turn, but only for a bar shown in the live scene
+        with 3 or more markers near it: with fewer no fit is possible, and a bar not shown (not built yet; its
+        neighbours' markers sit there) never gets the ~20 ms search.
         """
-        obj = state.obj
-        sensed = sensed_from_raw(obj.markers, now)
-        fit = fit_bar(sensed, state.layout, max_age=MAX_MARKER_AGE, hint=hint, full_search=full_search)
+        where = state.planned.matrix() if state.planned is not None else state.assembled
+        radius, max_age = self.search_radius, self.max_marker_age
+        sensed, fit = fit_in_cloud(cloud, state.layout, where, now, radius=radius, hint=hint, max_age=max_age,
+                                   full_search=full_search, hint_all_markers=not partial_hint)
         if not fit.ok and not full_search:
-            return False
+            if len(sensed.points) < 3:
+                # * The full search says why at once.
+                sensed, fit = fit_in_cloud(cloud, state.layout, where, now, radius=radius, max_age=max_age)
+            elif state.planned is not None:
+                return False
+            else:
+                fit.reason = (f"not shown in the step's scene (not built yet?): matched only around its assembly "
+                              f"pose, every marker needed ({len(sensed.points)} markers near)")
         state.sensed, state.fit, state.rows = sensed, fit, None
-        state.measured_at = obj.markers.capture_time if obj.markers.capture_time is not None else (obj.last_update_time
-                                                                                                   or now)
-        state.fitted_update = obj.last_update_time
+        state.measured_at = cloud.capture_time
+        state.fitted_cloud = cloud
         if fit.ok:
             state.pose = Pose.from_matrix(fit.T_world_from_bar)
             state.last_ok = (now, fit.T_world_from_bar)
-            state.next_fit_at = now + FIT_PERIOD
+            state.next_fit_at = now + self._setting(self._fit_period, FIT_PERIOD)
             return True
-        state.pose, state.next_fit_at = None, now + SEARCH_RETRY
+        state.pose, state.next_fit_at = None, now + self._setting(self._search_retry, SEARCH_RETRY)
         return False
 
     # --- --- --- --- --- DRAW --- --- --- --- ---
 
     def draw(self, ctx: PluginContext) -> None:
-        """Show the tracking state, the fits and the deviations, and move the marker and ghost nodes.
+        """Show the markers' state, the fits and the deviations, and move the marker nodes.
 
         Args:
             ctx: This plugin's context.
         """
-        state = self._bars.get(self._bar_id)
-        if state is None:
-            chips = chip("not tracking", NONE, "no bar with markers in the loaded process")
-        else:
-            chips = check_chip(mocap_check(f"mocap {state.obj.mocap_id}", state.obj.mocap_id, state.obj, ctx.now()))
-        self._status_chip.content = chip_line(chips)
+        self._status_chip.content = chip_line(self._cloud_chip(ctx.now()))
         self._status.content = block(values(*self._status_lines()))
         running = self._take is not None and not self._take.done()
         recording = chip("recording", BUSY, "A take is being recorded; it is saved to the Drive when its seconds are "
                                             "up.")
         self._result.content = (recording if running else "") + (
             note(escape(self._message)) if self._message else "")
-        self._draw_ghosts(ctx)
         self._draw_markers()
+        self._draw_cloud(ctx.now())
+        self._draw_arrows(ctx.now())
         self._stats.content = self._stats_block()
 
+    def _cloud_chip(self, now: float) -> str:
+        """The marker cloud's chip: grey before one, red while stale, green while fresh; its age only in the hover."""
+        if not self._bars:
+            return chip("no bars", NONE, "no bar with markers in the loaded process")
+        cloud = self._cloud
+        if cloud is None:
+            return chip("no markers", FAIL if self._relay is not None else NONE,
+                        "no marker cloud from the relay yet: is it running, and new enough to send ~/markers?")
+        age = self.max_marker_age
+        if now - cloud.capture_time > age:
+            return chip("markers stale", FAIL, f"the newest marker cloud is over {age:g} s old: is Motive streaming?")
+        return chip("markers", OK, "the relay's raw markers arrive")
+
     def _status_lines(self) -> list[str]:
-        """What is tracked, the chosen bar's markers and fit, its deviation: always 3 lines, "—" when missing."""
+        """The bars fitted, the chosen bar's markers and fit, its deviation: always 3 lines, "—" when missing."""
         lines = self._readout()
         return lines + ["—"] * (3 - len(lines))
 
     def _readout(self) -> list[str]:
-        """Up to 3 lines: the tracked bars, the chosen bar's counts and fit (or why it failed), its deviation."""
+        """Up to 3 lines: the bars fitted, the chosen bar's counts and fit (or why it failed), its deviation."""
         if not self._bars:
             return ["no bar with markers in the loaded process"]
-        lines = ["tracking " + " ".join(f"{short(bar)}:{state.obj.mocap_id}" for bar, state in self._bars.items())]
+        fitted = [short(bar) for bar, state in self._bars.items() if state.pose is not None]
+        lines = [f"fitted {len(fitted)} of {len(self._bars)}: " + (" ".join(fitted) or "none")]
         state, bar_id = self._bars.get(self._bar_id), self._bar_id
         if state is None:
             return lines
-        obj, fit = state.obj, state.fit
-        if obj.markers is None:
-            lines.append(f"{short(bar_id)}: {len(state.layout.points)} CAD markers; no mocap message yet")
+        sensed, fit = state.sensed, state.fit
+        if sensed is None:
+            lines.append(f"{short(bar_id)}: {len(state.layout.points)} CAD markers; no marker cloud yet")
             return lines
         if fit is None or not fit.ok:
-            lines.append(f"{short(bar_id)}: markers {len(obj.markers.ids)}, measured "
-                         f"{int(obj.markers.measured.sum())}; {fit.reason if fit is not None else 'no fit yet'}")
+            lines.append(f"{short(bar_id)}: {len(sensed.points)} markers near; "
+                         f"{fit.reason if fit is not None else 'no fit yet'}")
             return lines
-        lines.append(f"{short(bar_id)}: markers {len(obj.markers.ids)}, measured {int(obj.markers.measured.sum())}; "
-                     f"fit {fit.n_matched}/{fit.n_design}  rms {fit.rms_m * 1e3:.2f}  max "
-                     f"{fit.max_residual_m * 1e3:.2f} mm")
+        lines.append(f"{short(bar_id)}: {len(sensed.points)} markers near; fit {fit.n_matched}/{fit.n_design}  rms "
+                     f"{fit.rms_m * 1e3:.2f}  max {fit.max_residual_m * 1e3:.2f} mm")
         deviation = state.deviation
         lines.append("no planned pose: is the bar in the selected step?" if deviation is None else
                      f"vs planned  dpos {deviation.dpos_mm:.1f} mm  dang {deviation.dang_deg:.2f}°  "
@@ -600,69 +775,27 @@ class MocapBarsPlugin(HuskyPlugin):
                      f"dz(along) {deviation.dpos_bar_mm[2]:+.1f} mm")
         return lines
 
-    def _draw_ghosts(self, ctx: PluginContext) -> None:
-        """Every fitted bar's body and mounted halves at its fitted pose, while "Ghost bars" is ticked."""
-        process = self._layouts_of
-        if self._ghosts_of is not process:
-            self._ghosts_of = process
-            for frame in self._ghosts.values():
-                frame.remove()
-            self._ghosts = {}
-        for bar, state in self._bars.items():
-            frame = self._ghosts.get(bar)
-            show = self._ghost_bars.value and state.pose is not None
-            if frame is None:
-                if not show:
-                    continue
-                frame = self._ghosts[bar] = self._build_ghost(ctx, process, bar)
-            frame.visible = show
-            if show:
-                frame.position = state.pose.position
-                frame.wxyz = quaternion_to_wxyz(state.pose.orientation)
-
-    def _build_ghost(self, ctx: PluginContext, process, bar_id: str) -> viser.FrameHandle:
-        """A frame holding the bar's visual shapes and its mounted halves', see-through, at the origin."""
-        scene = ctx.view.scene
-        frame = scene.add_frame(f"{ctx.view.scene_root}/ghosts/{short(bar_id)}", show_axes=False, visible=False)
-        bar = process.bodies.get(bar_id) if process is not None else None
-        if bar is None:
-            return frame
-        for index, shape in enumerate(bar.geometry.visual):
-            add_shape(scene, f"{frame.name}/{index}", shape, MOCAP_COLOR)
-        # * Mounted halves stay where they sit on their bar, so the assembly poses give the offset.
-        for half_id in sorted(process.bodies):
-            half = process.bodies[half_id]
-            if half.mount != bar_id:
-                continue
-            offset = compose(invert(bar.assembly_pose), half.assembly_pose)
-            half_frame = scene.add_frame(f"{frame.name}/{half_id.replace('/', '_')}", show_axes=False,
-                                         position=offset.position, wxyz=quaternion_to_wxyz(offset.orientation))
-            for index, shape in enumerate(half.geometry.visual):
-                add_shape(scene, f"{half_frame.name}/{index}", shape, MOCAP_COLOR)
-        return frame
-
     def _draw_markers(self) -> None:
-        """Show the chosen bar's measured markers, its fitted and planned markers, resent only when they changed."""
+        """Show the chosen bar's nearby markers, its fitted and planned markers, resent only when they changed."""
         state = self._bars.get(self._bar_id)
-        obj = state.obj if state is not None else None
-        markers = obj.markers if obj is not None and self._show_markers.value else None
-        sensed = state.sensed if markers is not None else None
-        fit = state.fit if state is not None and state.fit is not None and state.fit.ok else None
+        sensed = state.sensed if state is not None and self._show_markers.value else None
+        fit = state.fit if sensed is not None and state.fit is not None and state.fit.ok else None
         planned = state.planned if state is not None else None
         # ? Identity, not id(): a freed sample's id can be reused by the next one.
-        shown = (markers, sensed, fit, planned, self._bar_id)
+        shown = (sensed, fit, planned, self._bar_id)
         if self._drawn is not None and all(a is b for a, b in zip(self._drawn, shown)):
             return
         self._drawn = shown
-        # * MEASURED: the trusted markers the last fit used; WARN: the ones Motive filled in from its own pose.
-        self._measured_cloud.visible = sensed is not None and len(markers.ids) > 0
+        # * MEASURED: the markers the fit matched; WARN: the other markers near the bar (strays, another bar's).
+        self._measured_cloud.visible = sensed is not None and len(sensed.points) > 0
         if self._measured_cloud.visible:
-            filled = markers.positions[~markers.measured]
-            self._measured_cloud.points = np.concatenate([sensed.points, filled]).astype(np.float32)
-            self._measured_cloud.colors = np.array([MEASURED_COLOR] * len(sensed.points) + [FILLED_COLOR] * len(filled),
-                                                   dtype=np.uint8).reshape(-1, 3)
+            matched = np.zeros(len(sensed.points), dtype=bool)
+            if fit is not None:
+                matched[list(fit.correspondences)] = True
+            self._measured_cloud.points = sensed.points.astype(np.float32)
+            self._measured_cloud.colors = np.where(matched[:, None], MEASURED_COLOR, STRAY_COLOR).astype(np.uint8)
         layout = state.layout.points if state is not None else None
-        self._planned_cloud.visible = layout is not None and planned is not None and markers is not None
+        self._planned_cloud.visible = layout is not None and planned is not None and sensed is not None
         self._planned_line.visible = self._planned_label.visible = self._planned_cloud.visible
         if self._planned_cloud.visible:
             T = planned.matrix()
@@ -670,7 +803,7 @@ class MocapBarsPlugin(HuskyPlugin):
             self._planned_line.points = bar_ends(T, state.layout.length).astype(np.float32).reshape(1, 2, 3)
             self._planned_label.text = f"{short(self._bar_id)} Rhino"
             self._planned_label.position = tuple(float(v) for v in T[:3, 3])
-        self._fit_cloud.visible = self._fit_lines.visible = fit is not None and markers is not None
+        self._fit_cloud.visible = self._fit_lines.visible = fit is not None
         if not self._fit_cloud.visible:
             return
         world_from_bar = fit.T_world_from_bar
@@ -683,6 +816,59 @@ class MocapBarsPlugin(HuskyPlugin):
                              axis=1)
         self._fit_lines.points = np.concatenate([axis[None], residuals]).astype(np.float32)
         self._fit_lines.colors = np.full((len(residuals) + 1, 2, 3), FIT_COLOR, dtype=np.uint8)
+
+    def _draw_cloud(self, now: float) -> None:
+        """Every marker of the newest cloud while "Raw markers" is ticked, at most every CLOUD_PERIOD."""
+        cloud = self._cloud if self._raw_markers.value else None
+        if cloud is self._drawn_cloud or (cloud is not None and self._drawn_cloud is not None
+                                          and now - self._cloud_drawn_at < CLOUD_PERIOD):
+            return
+        self._drawn_cloud, self._cloud_drawn_at = cloud, now
+        self._cloud_points.visible = cloud is not None
+        if cloud is not None:
+            self._cloud_points.points = cloud.positions.astype(np.float32)
+
+    def _draw_arrows(self, now: float) -> None:
+        """The chosen bar's (or every bar's) deviation arrows, for bars with a fresh fit and a planned pose.
+
+        Redrawn when the mode or magnification changed at once, else at most every ARROW_PERIOD while a pose changed.
+        """
+        mode, magnify = self._arrows.value, float(self._magnify.value)
+        names = [] if mode == ARROW_MODES[0] else [self._bar_id] if mode == ARROW_MODES[1] else list(self._bars)
+        shown = []
+        for bar in names:
+            state = self._bars.get(bar)
+            if (state is not None and state.pose is not None and state.planned is not None
+                    and now - state.measured_at <= self.max_marker_age):
+                shown.append((bar, state.pose, state.planned))
+        key = (mode, magnify, tuple(shown))
+        last = self._arrows_drawn
+        if last is not None:
+            same = last[:2] == key[:2] and len(last[2]) == len(shown) and all(
+                a[0] == b[0] and a[1] is b[1] and a[2] is b[2] for a, b in zip(last[2], shown))
+            if same or (last[:2] == key[:2] and now - self._arrows_drawn_at < ARROW_PERIOD):
+                return
+        self._arrows_drawn, self._arrows_drawn_at = key, now
+        arrows = Arrows([], [], [])
+        for bar, pose, planned in shown:
+            one = deviation_arrows(planned.matrix(), pose.matrix(), self._bars[bar].layout.length, magnify,
+                                   short(bar) if mode == ARROW_MODES[2] else "")
+            arrows.segments += one.segments
+            arrows.colors += one.colors
+            arrows.labels += one.labels
+        self._arrow_lines.visible = bool(arrows.segments)
+        if arrows.segments:
+            self._arrow_lines.points = np.array(arrows.segments, dtype=np.float32)
+            self._arrow_lines.colors = np.repeat(np.array(arrows.colors, dtype=np.uint8)[:, None], 2, axis=1)
+        for index, (text, position) in enumerate(arrows.labels):
+            where = tuple(float(v) for v in position)
+            if index == len(self._arrow_labels):
+                self._arrow_labels.append(self._scene.add_label(f"{self._root}/arrow_labels/{index}", text=text,
+                                                                position=where))
+            label = self._arrow_labels[index]
+            label.text, label.position, label.visible = text, where, True
+        for label in self._arrow_labels[len(arrows.labels):]:
+            label.visible = False
 
 
 def _plain(name: str) -> str:

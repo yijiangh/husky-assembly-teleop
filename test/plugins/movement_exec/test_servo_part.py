@@ -6,6 +6,8 @@ record and the carry. Nothing is sent before Confirm; every arm is held on a can
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import asyncio
 from dataclasses import replace
 from math import radians
@@ -20,7 +22,7 @@ from robot_lab import FakeRun, RobotLab, ShowsCurrent
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
 from husky_assembly_teleop.plugins.movement_exec.servo_measure import GIVE_UP, TOOL0_SERVO
 from husky_assembly_teleop.plugins.movement_exec.sequences import InsertEnd
-from husky_assembly_teleop.robot_interface.mocap_state import RawMarkers
+from husky_assembly_teleop.robot_interface.mocap_state import MarkerCloud
 from husky_assembly_teleop.shared.assembly_planning.ik import branches, fitting_solver, ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names, joint_limits, unwrap_to_nearest
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
@@ -48,7 +50,7 @@ pytestmark = pytest.mark.skipif(ssik_unavailable() is not None, reason=ssik_unav
 #: Wall-clock seconds a scenario may take: a guard missing makes a test wait forever, this makes it fail instead.
 WALL_LIMIT = 40.0
 #: The bar whose markers the transfer and insert tests stream, and its tracked name in the servo.
-BAR, TRACKED = "bars/B20", "servo_B20"
+BAR = "bars/B20"
 ARMS = ("left_ur_arm", "right_ur_arm")
 
 
@@ -132,8 +134,8 @@ def _resolved(step: ServoStep) -> asyncio.Future:
 class ServoLab(RobotLab):
     """The acting robot at a movement's authored target joints, where the design has it, its base shifted.
 
-    movement_exec is set up with a `StubPlanner`; `stream(t)` (set by the bar tests) feeds the servo's tracked bar its
-    markers every tick.
+    movement_exec is set up with a `StubPlanner`; `stream(t)` (set by the bar tests) is the relay's marker cloud every
+    tick.
     """
 
     stream = None
@@ -169,9 +171,8 @@ class ServoLab(RobotLab):
     def tick(self, t: float) -> None:
         """As the lab's, then the bar's markers into the servo's tracked object."""
         super().tick(t)
-        obj = self.ctx.world.tracked_objects.get(TRACKED)
-        if obj is not None and self.stream is not None:
-            obj.markers, obj.last_update_time = self.stream(t), t
+        if self.stream is not None:
+            self.ctx.world.mocap_relay = SimpleNamespace(state=SimpleNamespace(marker_cloud=self.stream(t)))
 
     @property
     def robot(self):
@@ -231,15 +232,14 @@ class ServoLab(RobotLab):
         plan = self.bar_plan()
         holder, grasp = plan.holder
 
-        def stream(t: float) -> RawMarkers:
+        def stream(t: float) -> MarkerCloud:
             flange = flange_poses(self.measured(), [holder])[holder]
             B_fk = compose(flange, grasp).matrix()
             T = E @ B_fk if where == "world" else B_fk @ E
             points = plan.layout.points[:count].copy()
             points[:, 0] += np.where(np.arange(count) % 2 == 0, pattern, -pattern)
-            return RawMarkers(ids=np.arange(1, count + 1), positions=transform_points(T, points),
-                              measured=np.ones(count, dtype=bool), residuals=np.full(count, 5e-4),
-                              sizes=np.full(count, 0.019), capture_time=t - age)
+            return MarkerCloud(transform_points(T, points), np.full(count, 0.019), np.full(count, 5e-4),
+                               np.arange(1, count + 1), capture_time=t - age, arrival_time=t)
         self.stream = stream
 
     def servo_record(self) -> dict | None:
@@ -353,12 +353,11 @@ def test_tool0_servo_converges_in_one_pass_and_is_recorded():
         lab.plugin.draw(lab.ctx)
         seen["line"] = lab.plugin._panel._servo.content
         seen["chip"] = lab.plugin._plots._note.content
-        seen["tracked"] = TRACKED in lab.ctx.world.tracked_objects
 
     result = execute(lab, lab.servo_request(), True, during=look)
     assert result.status == DONE and result.done == (SERVO_INDEX,), result.reason
     assert "converged on tool0" in lab.ended() and lab.published() == 1 and lab.free()
-    assert "pass 1/8: moving (3 s) · servo 0/8 · tool0 L 10.00 R 10.00 mm" in seen["line"] and seen["tracked"]
+    assert "pass 1/8: moving (3 s) · servo 0/8 · tool0 L 10.00 R 10.00 mm" in seen["line"]
     assert "pass 1/8: moving (3 s)" in seen["chip"]
     assert "done: converged on tool0 (&lt; 0.2 mm)" in lab.plugin._plots._note.content
     # * The old monitor's console lines, in its order.
@@ -370,7 +369,6 @@ def test_tool0_servo_converges_in_one_pass_and_is_recorded():
               "### SERVOING converged at iter 1 on tool0 (< 0.2 mm)", "### bar pose at termination"]
     found = [next((i for i, line in enumerate(info) if line.startswith(want)), None) for want in wanted]
     assert None not in found and found == sorted(found), list(zip(wanted, found))
-    assert not lab.ctx.world.tracked_objects
     text, warn = lab.prompts()[0]
     assert text.startswith("cindy (0806): B20_J_transfer — SERVO 1/8 onto the insert start "
                            "(tool0): stub, 2 rows")
@@ -517,7 +515,7 @@ def test_an_unusable_bar_reading_leaves_the_loop_on_tool0(markers, words):
     record = lab.servo_record()
     prompts = lab.prompts()
     assert record["servo_feedback"] == "tool0" and "(tool0)" in prompts[1][0]
-    assert prompts[0][1] and "SERVO by bar: no usable mocap fit of B20 (asset 1020): " in prompts[0][0]
+    assert prompts[0][1] and "SERVO by bar: no usable mocap fit of B20: " in prompts[0][0]
     assert words in prompts[0][0]
     reasons = [reading["bar"]["reason"] for reading in record["servoing_data"]]
     assert len(reasons) == 2 and all(words in reason for reason in reasons), reasons
@@ -535,8 +533,8 @@ def test_servo_by_bar_without_a_bar_asks_first_and_cancel_records_without_sendin
     result = execute(lab, lab.servo_request(), False)
     assert result.status == CANCELLED and result.done == () and lab.published() == 0 and lab.free()
     text, warn = lab.prompts()[0]
-    assert warn and text.startswith("cindy (0806): B20_J_transfer — SERVO by bar: no usable mocap fit of B20 "
-                                    "(asset 1020): the bar could not be measured (no marker sample). Tool0 servo "
+    assert warn and text.startswith("cindy (0806): B20_J_transfer — SERVO by bar: no usable mocap fit of B20: "
+                                    "the bar could not be measured (no marker sample). Tool0 servo "
                                     "(Confirm): servo tool0 onto the authored targets of the insert start instead")
     assert "cancelled at the bar prompt" in result.reason and not lab.planner.requests
     record = lab.servo_record()
@@ -895,7 +893,7 @@ def test_alice_approach_servos_one_arm_along_two_rows():
     assert "onto the approach pose (tool0)" in text and "flanges move arm 10.00 mm" in text
     record = lab.servo_record()
     assert record["planner_mode"] == "single_arm_joint" and record["bar_name"] is None
-    assert list(record["servoing_data"][0]["tool0"]) == ["arm"] and not lab.ctx.world.tracked_objects
+    assert list(record["servoing_data"][0]["tool0"]) == ["arm"]
 
 
 @pytest.mark.safety

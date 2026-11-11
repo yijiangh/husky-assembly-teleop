@@ -1,30 +1,38 @@
 """
-Each bar's marker layout from the process, the Motive asset that streams it, and its fit to sensed markers.
+Each bar's marker layout from the process, and its fit to sensed markers.
 
 - `bar_layouts(process)`: the markers of the connector halves mounted on each bar, in the bar's frame, with the bar's
-  length; `bar_asset_id` names the Motive asset that streams them (Bxx -> 10xx).
-- `fit_bar(sensed, layout)`: matches a sample (`world.marker_match.sensed_from_raw`) to a layout.
+  length.
+- `fit_in_cloud(cloud, layout, where)`: fits a bar to the relay's raw markers near where it should be; Motive's
+  labels and assets are never used (it mixes up bars that look alike).
+- `fit_bar(sensed, layout)`: matches a sample (`world.marker_match.sensed_near`) to a layout.
+- `drawn_bar(process, bar)`: the bar's and its mounted halves' visual shapes in the bar's frame, no collision shapes.
 - `fake_sensed_markers`: a made-up sample for the tests and a desk rehearsal.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from ...world.marker_match import (MARKER_SIZE_RANGE_M, MATCH_TOL_M, MAX_MARKER_ERROR_M, MIN_TRIANGLE_HEIGHT_M,
                                    TRACK_GATE_M, BarFit, Sensed, design_triangles, failed_fit, fit_near_hint,
-                                   match_and_fit, transform_points)
+                                   match_and_fit, sensed_near, transform_points)
 from .pose import bar_slide_roll
-from scaffolding_assembly_core.geometry import compose, invert
+from scaffolding_assembly_core.geometry import Geometry, Pose, Shape, TriMesh, compose, invert
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.process import Process
 
-#: The lab convention for a bar's own Motive asset: bar Bxx streams as rigid body 1000 + xx.
-BAR_ASSET_BASE = 1000
+    from ...robot_interface.mocap_state import MarkerCloud
+
+#: Raw markers farther than this from every marker of a bar where it should be are not its own, metres: well over the
+#: few millimetres a bar sits off its plan, under the gap to most other bars.
+SEARCH_RADIUS = 0.05
+#: The full search takes at most this many markers near a bar: its 8, and its neighbours' halves at each joint.
+MAX_NEAR = 32
 
 # What a fake marker reports as its Motive residual, and how far the fake stray marker sits from the bar.
 _FAKE_MARKER_ERROR_M = 0.0005
@@ -97,35 +105,77 @@ def bar_layouts(process: Process) -> dict[str, BarLayout]:
     return layouts
 
 
-def bar_asset_id(bar: str) -> int | None:
-    """The Motive streaming id of a bar's own asset by the lab convention: "bars/B20" -> 1020.
+def drawn_bar(process: Process, bar: str) -> Geometry:
+    """A bar and the connector halves mounted on it as visual shapes in the bar's frame: drawn, never collides.
+
+    A body without visual shapes is drawn with its collision ones.
 
     Args:
-        bar: The bar's body id, or a bare "B20".
-
-    Returns:
-        int | None: `BAR_ASSET_BASE` + the bar number; None when the id has no bar number.
+        process: The process.
+        bar: The bar's body id.
     """
-    name = bar.rsplit("/", 1)[-1]
-    number = name[1:] if name[:1] == "B" else ""
-    return BAR_ASSET_BASE + int(number) if number.isdigit() else None
+    body = process.bodies[bar]
+    shapes = list(body.geometry.visual or body.geometry.collision)
+    for half_id in process.halves_of(bar):
+        half = process.bodies[half_id]
+        # * Mounted halves stay where they sit on their bar, so the assembly poses give the offset.
+        offset = compose(invert(body.assembly_pose), half.assembly_pose)
+        shapes += [_moved(shape, offset) for shape in half.geometry.visual or half.geometry.collision]
+    return Geometry(tuple(shapes), ())
+
+
+def _moved(shape: Shape, offset: Pose) -> Shape:
+    """A shape moved by `offset` in its body's frame."""
+    if isinstance(shape, TriMesh):
+        T = offset.matrix()
+        vertices = shape.vertices @ T[:3, :3].T + T[:3, 3]
+        vertices.setflags(write=False)
+        return TriMesh(vertices, shape.faces, shape.convex)
+    return replace(shape, origin=compose(offset, shape.origin))
 
 
 # * ================================================================ the fit
 
+def fit_in_cloud(cloud: MarkerCloud, layout: BarLayout, where: np.ndarray, now: float, *,
+                 radius: float = SEARCH_RADIUS, hint: np.ndarray | None = None, **kwargs) -> tuple[Sensed, BarFit]:
+    """Fit a bar to the cloud's markers within `radius` of where its markers should be.
+
+    Args:
+        cloud: The relay's newest marker cloud.
+        layout: The bar's designed markers.
+        where: 4x4 pose the bar should have (its live-scene pose, the FK bar, ...): the markers are looked for there.
+        now: The current ROS time, seconds.
+        radius: How far a marker may be from where one of the bar's should be, metres.
+        hint: 4x4 pose to match around first; None = `where`.
+        **kwargs: Passed on to `fit_bar` (``max_age``, ``full_search``, ``tol_m``, ...).
+
+    Returns:
+        tuple[Sensed, BarFit]: The markers near the bar, and the fit.
+    """
+    where = np.asarray(where, dtype=float)
+    sensed = sensed_near(cloud, transform_points(where, layout.points), radius, now)
+    fit = fit_bar(sensed, layout, hint=where if hint is None else hint, **{"max_sensed": MAX_NEAR, **kwargs})
+    if not fit.ok:
+        fit.reason += f" (markers looked for within {radius * 1e3:.0f} mm of where the bar should be)"
+    return sensed, fit
+
+
 def fit_bar(sensed: Sensed, layout: BarLayout, *, max_age: float | None = None, hint: np.ndarray | None = None,
-            gate_m: float = TRACK_GATE_M, full_search: bool = True, **kwargs) -> BarFit:
+            gate_m: float = TRACK_GATE_M, full_search: bool = True, hint_all_markers: bool = True,
+            **kwargs) -> BarFit:
     """Fit a bar's layout to one sample of sensed markers.
 
     * With `hint` (following live: the bar's last good pose, or the FK bar) the markers are first matched around that
       pose (`fit_near_hint`, ~1 ms); when the bar moved too far for that, the full search (`match_and_fit`) runs.
 
     Args:
-        sensed: The sample, from `sensed_from_raw` or `fake_sensed_markers`.
+        sensed: The sample, from `sensed_near` or `fake_sensed_markers`.
         layout: The bar's designed markers.
         max_age: Refuse a sample older than this, seconds; None to never refuse.
         hint: 4x4 bar pose to match around first; None = the full search only.
         gate_m: With `hint`: how far a marker may be from where that pose puts it.
+        hint_all_markers: Whether the match around `hint` must find every marker; False only when `hint` is a fit
+            the full search found moments ago (`fit_near_hint`).
         full_search: Run the full search when there is no hint or the match around it fails; False gives a failed
             fit saying the search waits its turn (a plugin following several bars runs one search per tick).
         **kwargs: Passed on to `match_and_fit` (``tol_m``, ``min_inliers``, ...).
@@ -144,7 +194,8 @@ def fit_bar(sensed: Sensed, layout: BarLayout, *, max_age: float | None = None, 
     fit = None
     if hint is not None:
         fit = fit_near_hint(sensed.points, points, np.asarray(hint, dtype=float), gate_m=gate_m,
-                            tol_m=kwargs.get("tol_m", MATCH_TOL_M), min_inliers=kwargs.get("min_inliers"))
+                            tol_m=kwargs.get("tol_m", MATCH_TOL_M), min_inliers=kwargs.get("min_inliers"),
+                            all_markers=hint_all_markers)
     if fit is None and not full_search:
         fit = failed_fit("no match around the last pose (the full search waits its turn)", len(sensed.points),
                          len(points))
