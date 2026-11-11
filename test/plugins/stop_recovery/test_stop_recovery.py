@@ -408,3 +408,73 @@ def test_the_button_waits_amber_after_the_first_press(tmp_path):
         assert plugin._widgets[BELLE]["go"].label == f"{GO_BACK}?"
 
     asyncio.run(scenario())
+
+
+def window(plugin: StopRecoveryPlugin) -> list[str]:
+    """The robots the window shows, or none while it is closed."""
+    if not plugin._popup.is_open:
+        return []
+    return [serial for serial, folder in plugin._popup_folders.items() if folder.visible]
+
+
+@pytest.mark.safety
+def test_a_robot_running_again_after_a_stop_gets_the_window_and_goes_back_from_it(tmp_path):
+    """Back from an e-stop, the robot shows in the window with the pose before the stop picked.
+
+    Go back there moves it back, and the window stays until Done.
+    """
+    lab, plugin = started(tmp_path)
+
+    async def scenario():
+        await ticks(lab, plugin, 0.5)
+        assert window(plugin) == []
+        estop(lab.belle, True)
+        await ticks(lab, plugin, 0.3)
+        sag(lab.belle.arms["ur_arm"], 0.5, 27.0)
+        await ticks(lab, plugin, 0.5)
+        assert window(plugin) == []  # opens once it runs again
+        estop(lab.belle, False)
+        await ticks(lab, plugin, 0.5)
+        assert window(plugin) == [BELLE]
+        popup = plugin._popup_widgets[BELLE]
+        assert popup["pick"].value == plugin._widgets[BELLE]["pick"].value and "before stop" in popup["pick"].value
+        popup["go"].callback(None)
+        await ticks(lab, plugin, DOUBLE_CLICK_SECONDS + 0.1)
+        assert popup["go"].label == f"{GO_BACK}?"
+        popup["go"].callback(None)
+        await ticks(lab, plugin, 0.2)
+        assert plugin._moving_back(BELLE)
+        popup["done"].callback(None)  # refused while it moves
+        await ticks(lab, plugin, 12.0)
+        assert message(plugin, BELLE).startswith("Back at") and window(plugin) == [BELLE]
+        popup["done"].callback(None)
+        await ticks(lab, plugin, 0.2)
+        assert window(plugin) == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.safety
+def test_the_window_closes_once_the_robot_rests_somewhere_else_and_hands_its_pick_to_the_tab(tmp_path):
+    """A pick in the window is the tab's pick; moved on some other way, the robot leaves the window."""
+    lab, plugin = started(tmp_path)
+
+    async def scenario():
+        before = await stop_and_sag(lab, plugin, BELLE)
+        older = RobotPose(BELLE, 1.0, "2026-01-01T08:00:00", False,
+                          {"ur_arm": ArmPose(tuple(before["ur_arm"]), None, (0.0, REST, 0.0))})
+        plugin.log.poses[BELLE].insert(0, older)
+        await ticks(lab, plugin, 0.2)
+        assert window(plugin) == [BELLE]
+        popup, tab = plugin._popup_widgets[BELLE], plugin._widgets[BELLE]
+        label = next(label for label in tab["options"] if label.startswith("08:00:00"))
+        popup["pick"].value = label
+        popup["pick"].callback(label)
+        assert tab["pick"].value == label and picked(plugin, BELLE) is older
+        arm = lab.belle.arms["ur_arm"]
+        arm.state.joint_positions[f"{arm.config.name}_wrist_1_joint"] += np.radians(5.0)
+        arm.state.last_slight_motion_time = lab.ctx.now()
+        await ticks(lab, plugin, 3.0)
+        assert window(plugin) == []
+
+    asyncio.run(scenario())

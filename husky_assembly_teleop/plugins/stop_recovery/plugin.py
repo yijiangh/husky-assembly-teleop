@@ -13,6 +13,8 @@ per robot and shows how far each arm is from the one picked, and how far its for
   cancel out, as long as nobody zeroes the sensor in between.
 * ! It never touches a tool, and is refused for more than MAX_JOINT_STEP or MAX_TCP_STEP: farther is a job for the arm
   planner. No collision check: within a sag it is not needed, and a gripper around a bar would always fail it.
+* A robot that runs again after a stop seen by this monitor gets a window beside the main panel with the same controls
+  (`Popup`), until Done, or until it rests somewhere else than a Go back left it (recovered some other way).
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ from ...robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER, STILL_AFT
 from ...robot_interface.refusal import newest_reason
 from ...robot_interface.robot import HuskyRobotInterface
 from ...robot_interface.soft_stop import MotionRefused
+from ...shared.guide.panel import set_changed
+from ...ui.popup import Popup
 from ...ui.second_press import SecondPress, show_waiting
 from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, chip, chip_line, note_line, section, values,
                          wrapped)
@@ -55,8 +59,8 @@ ARRIVAL_FACTOR, ARRIVAL_SLACK = 2.0, 5.0
 SETTLE = 1.0
 #: A move smaller than this on every joint, radians, is not worth sending: the arm is already there.
 ALREADY_THERE = np.radians(0.01)
-#: The label of the button that moves back.
-GO_BACK = "Go back"
+#: The labels of the button that moves back, and of the window's button that closes a robot's part.
+GO_BACK, DONE = "Go back", "Done"
 
 GUIDE = (
     "After an e-stop or a protective stop while an arm holds something:",
@@ -69,6 +73,12 @@ GUIDE = (
     f"{FORCE_RISE:g} N further off.",
     "5. Go on only once each force is back near 0 N off (a few N: after an e-stop the sensor may read a little "
     "differently).",
+)
+#: The window's guide: the robot already runs, so steps 3 to 5.
+POPUP_GUIDE = (
+    "Runs again after a stop. Do not zero the force sensor or touch the gripper.",
+    "Check how far each arm is from the pose picked and how far its force is off, then press Go back twice (pendant "
+    "speed slider at 100 %). Done once each force is back near 0 N off.",
 )
 
 
@@ -151,7 +161,16 @@ class StopRecoveryPlugin(HuskyPlugin):
         self._messages: dict[str, tuple[str, str]] = {}
         self._press = SecondPress()
         self._writer: asyncio.Task | None = None
+        #: Serial -> its controls in the tab, which hold the pick and its options; and in the window.
         self._widgets: dict[str, dict] = {}
+        self._popup_widgets: dict[str, dict] = {}
+        #: Serial -> its folder in the window, and the pick last copied into the window's dropdown.
+        self._popup_folders: dict[str, viser.GuiFolderHandle] = {}
+        self._mirrored: dict[str, str] = {}
+        #: Serials stopped while this monitor watched, and those whose window part shows (running again since).
+        self._stopped: set[str] = set()
+        self._asking: set[str] = set()
+        self._popup: Popup | None = None
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -166,19 +185,55 @@ class StopRecoveryPlugin(HuskyPlugin):
             for serial, robot in robots.items():
                 gui.add_html(section(f"{robot_name(serial)} ({short_serial(serial)})", SECTION_CTRL,
                                      ", ".join(robot.arms)))
-                status = gui.add_html("")
-                pick = gui.add_dropdown("Pose", ("no pose yet",), initial_value="no pose yet")
-                readout = gui.add_html("")
-                go = gui.add_button(GO_BACK, hint=f"Moves {robot_name(serial)} slowly back to the pose picked. "
-                                                  f"{self._press.hint}")
-                stop = gui.add_button("Stop", color=rgb(FAIL), hint="Holds the robot where it is.")
-                message = gui.add_html("")
-                go.on_click(ctx.defer(f"go back {serial}", lambda serial=serial: self._go_back(ctx, serial)))
-                stop.on_click(ctx.defer(f"stop {serial}", lambda serial=serial: self._stop(ctx, serial)))
-                self._widgets[serial] = {"status": status, "pick": pick, "readout": readout, "go": go,
-                                         "message": message, "options": {}, "default": None}
+                self._widgets[serial] = {**self._controls(ctx, gui, serial, popup=False), "options": {},
+                                         "default": None}
                 self._moved_running[serial] = self._was_running[serial] = running(robot)
                 self._running_since[serial] = float("-inf")
+        if not robots:
+            return
+        self._popup = Popup(ctx.view, "Back from a stop", viser.Icon.ARROW_BACK_UP)
+        with self._popup.body() as gui:
+            gui.add_html(block(wrapped(*POPUP_GUIDE)))
+            for serial, robot in robots.items():
+                folder = gui.add_folder(f"{robot_name(serial)} ({short_serial(serial)})", visible=False)
+                with folder:
+                    self._popup_widgets[serial] = self._controls(ctx, gui, serial, popup=True)
+                self._popup_folders[serial] = folder
+
+    def _controls(self, ctx: PluginContext, gui: viser.GuiApi, serial: str, popup: bool) -> dict:
+        """One robot's state, pose pick, distances, buttons and message; in the window also Done.
+
+        The tab's dropdown holds the pick; the window's hands an operator's pick to it.
+        """
+        status = gui.add_html("")
+        pick = gui.add_dropdown("Pose", ("no pose yet",), initial_value="no pose yet")
+        readout = gui.add_html("")
+        go = gui.add_button(GO_BACK, hint=f"Moves {robot_name(serial)} slowly back to the pose picked. "
+                                          f"{self._press.hint}")
+        stop = gui.add_button("Stop", color=rgb(FAIL), hint="Holds the robot where it is.")
+        if popup:
+            done = gui.add_button(DONE, hint="Closes this robot's part of the window; the Stop recovery tab keeps "
+                                             "its poses and buttons.")
+            done.on_click(ctx.defer(f"stop recovery done {serial}", lambda: self._done(serial)))
+            pick.on_update(ctx.defer_value(f"stop recovery pick {serial}",
+                                           lambda value: self._pick_from_popup(serial, value), operator_only=True))
+        message = gui.add_html("")
+        go.on_click(ctx.defer(f"go back {serial}", lambda: self._go_back(ctx, serial)))
+        stop.on_click(ctx.defer(f"stop {serial}", lambda: self._stop(ctx, serial)))
+        widgets = {"status": status, "pick": pick, "readout": readout, "go": go, "message": message}
+        return {**widgets, "done": done} if popup else widgets
+
+    def _pick_from_popup(self, serial: str, value: object) -> None:
+        """An operator's pick in the window: the tab's dropdown holds it."""
+        if value in self._widgets[serial]["options"]:
+            self._widgets[serial]["pick"].value = self._mirrored[serial] = value
+
+    def _done(self, serial: str) -> None:
+        """Close a robot's part of the window (intent); not while it moves back."""
+        if self._moving_back(serial):
+            self._say(serial, "Moving back: Stop it first, or wait until it is back", FAIL)
+            return
+        self._asking.discard(serial)
 
     # --- --- --- --- --- LOGGING --- --- --- --- ---
 
@@ -190,8 +245,11 @@ class StopRecoveryPlugin(HuskyPlugin):
             runs = running(robot)
             if runs and not self._was_running[serial]:
                 self._running_since[serial] = now
+                if serial in self._stopped:
+                    self._asking.add(serial)
             if self._was_running[serial] and not runs:
                 self._log_stop(ctx, serial, robot)
+                self._stopped.add(serial)
                 # ! Motion seen just before the stop was reported may be the sag itself: forget it.
                 self._moved_running[serial] = False
             self._was_running[serial] = runs
@@ -208,7 +266,12 @@ class StopRecoveryPlugin(HuskyPlugin):
                     self.log.add_pose(RobotPose(serial, now, datetime.now().isoformat(timespec="seconds"),
                                                 simulated(robot), arms, go_back=serial in self._ended_go_back))
                     self._moved_running[serial], self._logged_at[serial] = False, now
+                    # * Resting somewhere a Go back did not leave it: recovered some other way, the window is done.
+                    if serial not in self._ended_go_back:
+                        self._asking.discard(serial)
                     self._ended_go_back.discard(serial)
+        # * Here, not in draw: draw is skipped while the panels are paused, and the window must still open.
+        self._show_popup()
         if self.log.unwritten and (self._writer is None or self._writer.done()):
             lines, path = self.log.take_unwritten(), self.log.day_file(datetime.now())
             self._writer = ctx.spawn("stop recovery log", self._write(ctx, path, lines), survives_soft_stop=True)
@@ -386,11 +449,12 @@ class StopRecoveryPlugin(HuskyPlugin):
     # --- --- --- --- --- DRAW --- --- --- --- ---
 
     def draw(self, ctx: PluginContext) -> None:
-        """Show each robot's state, its poses to pick from, the distances and forces, and its message."""
+        """Show each robot's state, poses to pick, distances, forces and message; in the window too while it shows."""
         waiting = self._press.waiting(ctx.now())
         for serial, widgets in self._widgets.items():
             robot = ctx.world.robots[serial]
             self._draw_choices(serial, widgets, simulated(robot))
+            self._draw_popup_choices(serial)
             target = self._picked(serial)
             stops = [stop for stop in self.log.stops.get(serial, []) if stop.sim == simulated(robot)]
             if self._moving_back(serial):
@@ -402,11 +466,38 @@ class StopRecoveryPlugin(HuskyPlugin):
                 state = chip(f"running, stopped at {stops[-1].clock}", INFO, stops[-1].reason)
             else:
                 state = chip("running", OK, "every arm is operational")
-            widgets["status"].content = chip_line(state)
-            widgets["readout"].content = block(values(*self._readout(robot, target)))
-            show_waiting(widgets["go"], waiting.startswith(f"{serial} "), GO_BACK, None)
+            readout = block(values(*self._readout(robot, target)))
             text, color = self._messages.get(serial, ("", NONE))
-            widgets["message"].content = note_line(text, color)
+            shown = [widgets] + ([self._popup_widgets[serial]] if serial in self._asking else [])
+            for view in shown:
+                set_changed(view["status"], content=chip_line(state))
+                set_changed(view["readout"], content=readout)
+                show_waiting(view["go"], waiting.startswith(f"{serial} "), GO_BACK, None)
+                set_changed(view["message"], content=note_line(text, color))
+
+    def _show_popup(self) -> None:
+        """Show the window with the robots back from a stop, or close it when none is."""
+        if self._popup is None:
+            return
+        for serial, folder in self._popup_folders.items():
+            if folder.visible != (serial in self._asking):
+                folder.visible = serial in self._asking
+        if self._asking:
+            self._popup.show("")
+        elif self._popup.is_open:
+            self._popup.close()
+
+    def _draw_popup_choices(self, serial: str) -> None:
+        """Give the window's dropdown the tab's options and, when it changed, the tab's pick."""
+        widgets, popup = self._widgets[serial], self._popup_widgets.get(serial)
+        if popup is None:
+            return
+        options = tuple(widgets["options"]) or ("no pose yet",)
+        if tuple(popup["pick"].options) != options:
+            popup["pick"].options = options
+            self._mirrored.pop(serial, None)
+        if self._mirrored.get(serial) != widgets["pick"].value:
+            popup["pick"].value = self._mirrored[serial] = widgets["pick"].value
 
     def _draw_choices(self, serial: str, widgets: dict, sim: bool) -> None:
         """Offer the newest SHOWN poses, newest first; when they change, pick the default unless one was picked."""
