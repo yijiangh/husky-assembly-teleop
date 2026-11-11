@@ -122,6 +122,10 @@ class BasePlanner:
         """Nothing runs."""
         return False
 
+    def run_check(self, _ctx, _serial):
+        """Every run ended where it went."""
+        return None
+
 
 class GuideLab(RobotLab):
     """The robots at `movement`'s start as the design has them, the guide in God mode on the real layers below."""

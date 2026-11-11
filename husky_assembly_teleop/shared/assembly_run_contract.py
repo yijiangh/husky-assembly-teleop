@@ -100,9 +100,24 @@ def is_live(robot: RobotObject, now: float) -> bool:
         robot: The robot in this tick's snapshot.
         now: ROS time now, seconds.
     """
-    return (robot.enabled and robot.base_tracked and not robot.unmeasured
-            and robot.base_time is not None and now - robot.base_time <= LIVE_BASE_AGE
-            and robot.joints_time is not None and now - robot.joints_time <= LIVE_JOINTS_AGE)
+    return not live_problem(robot, now)
+
+
+def live_problem(robot: RobotObject, now: float) -> str:
+    """Why a snapshot robot is not live (`is_live`), e.g. "its base pose is 1.4 s old"; "" when it is."""
+    if not robot.enabled:
+        return "it is disabled"
+    if not robot.base_tracked or robot.base_time is None:
+        return "its base is not tracked"
+    if robot.unmeasured:
+        return f"{len(robot.unmeasured)} of its joints were never measured"
+    if robot.joints_time is None:
+        return "its joints were never measured"
+    if now - robot.base_time > LIVE_BASE_AGE:
+        return f"its base pose is {now - robot.base_time:.1f} s old (at most {LIVE_BASE_AGE:g} s)"
+    if now - robot.joints_time > LIVE_JOINTS_AGE:
+        return f"its joints are {now - robot.joints_time:.1f} s old (at most {LIVE_JOINTS_AGE:g} s)"
+    return ""
 
 
 def live_record(robot: RobotObject, at: str) -> RobotRecord:

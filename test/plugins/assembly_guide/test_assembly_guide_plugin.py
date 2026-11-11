@@ -32,7 +32,7 @@ from husky_assembly_teleop.shared.planner.timed_path import TimedPath
 from husky_assembly_teleop.shared.assembly_planning.steps import first_step
 from husky_assembly_teleop.shared.process_contract import Selection
 from husky_assembly_teleop.shared.runs.runs import DONE
-from husky_assembly_teleop.world.checks import BAD
+from husky_assembly_teleop.world.checks import BAD, Check
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
@@ -178,6 +178,10 @@ class BasePlanner:
     def cancel_commit(self, serial=None):
         """Nothing runs."""
         return False
+
+    def run_check(self, _ctx, _serial):
+        """Every run ended where it went."""
+        return None
 
 
 class Guide(RobotLab):
@@ -1274,6 +1278,46 @@ def test_a_failure_outlives_showing_another_part(monkeypatch):
         lab.guide.prepare(lab.ctx)
         await lab.ticks()
         assert lab.guide._state(lab.ctx, 0).label == "to do"
+
+    asyncio.run(walk())
+
+
+class StuckBasePlanner(BasePlanner):
+    """Sends, but the base stays where it is; the run ended with `ended`."""
+
+    def __init__(self, bases, ended):
+        """No plan yet."""
+        super().__init__(bases)
+        self.ended = ended
+
+    def commit(self, plan_id, unknown_robots=(), clearance=True):
+        """Sent; nothing moves."""
+        return answered((True, "sent"))
+
+    def run_check(self, _ctx, _serial):
+        """How the run ended."""
+        return self.ended
+
+
+@pytest.mark.parametrize("ended, says", [
+    (Check("aborted", BAD, "path refused: velocity controller gone (no wheel odometry for 0.5 s)"),
+     "the drive aborted: path refused: velocity controller gone"),
+    (None, "cm and"),
+])
+def test_a_drive_that_ends_away_says_why(monkeypatch, ended, says):
+    """The drive ends short: the guide quotes how the run ended, else how far off it stands; never a guess."""
+    lab = Guide(monkeypatch)
+    lab.ctx.plugins["base_planner"] = StuckBasePlanner(lab.bases, ended)
+
+    async def walk():
+        await lab.ticks()
+        lab.guide.prepare(lab.ctx)
+        await lab.ticks()
+        lab.guide.press_go(lab.ctx)
+        await lab.ticks(5)
+        assert lab.guide._state(lab.ctx, 0).label == "failed"
+        assert says in lab.guide._notes.content
+        assert "not live" not in lab.guide._notes.content
 
     asyncio.run(walk())
 

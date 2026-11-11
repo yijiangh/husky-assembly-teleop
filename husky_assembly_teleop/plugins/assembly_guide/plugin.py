@@ -61,7 +61,7 @@ from ...shared.process_scene.live_scene import showing
 from ...shared.assembly_planning.route_result import arm_path_route, goal_line, pose_error
 from ...shared.assembly_planning.step_plan import live_goal_poses, timed_route
 from ...shared.assembly_planning.tamp_route import IK_GOALS
-from ...shared.assembly_run_contract import is_live
+from ...shared.assembly_run_contract import is_live, live_problem
 from ...shared.base_planner_contract import BasePlanRequest
 from ...shared.execution.basis import STALE_BASE, basis_of, stale_reason
 from ...shared.execution.moving import moving_reason, robot_moving
@@ -82,7 +82,7 @@ from ...world.arm_reach import out_of_reach
 from ...world.checks import BAD, GOOD, INFO, PENDING, WARN, Check
 from .kinds import KINDS, HandKind, Kind, description
 from .parts import (ARM_ARRIVED, DRIVE, EXECUTED, GRIPPER, HAND, INSERT, MARK, MOVE, NOTHING_TO_MOVE, PARK, REFUSED,
-                    RETREAT, SERVO, GuidePart, arm_arrived, base_arrived, schedule_parts)
+                    RETREAT, SERVO, GuidePart, arm_arrived, base_arrived, floor_pose, schedule_parts)
 
 if TYPE_CHECKING:
     from ...shared.arm_planner_contract import ArmPlannerContract
@@ -1019,7 +1019,24 @@ class AssemblyGuidePlugin(HuskyPlugin):
             await self._drive(ctx, part, again=again)
             return
         if not self.at_end(ctx, part):
-            raise RuntimeError("the drive ended away from its goal, or the robot is not live: Prepare again")
+            raise RuntimeError(f"{self._drive_failure(ctx, planner, part, serial)}: Prepare again")
+
+    def _drive_failure(self, ctx: PluginContext, planner: BasePlannerContract, part: GuidePart, serial: str) -> str:
+        """Why a drive did not end at its goal: how the run ended, else why the robot is not live, else how far off."""
+        check = planner.run_check(ctx, serial)
+        if check is not None and check.level >= WARN:
+            return f"the drive {check.label}: {check.detail}" if check.detail else f"the drive {check.label}"
+        if problem := self._not_live(ctx, serial):
+            return f"the drive ended, but {self._who(serial)} is not live: {problem}"
+        x, y, yaw = floor_pose(ctx.kinematics.base_pose(serial))
+        turn = math.degrees((yaw - part.base[2] + math.pi) % (2 * math.pi) - math.pi)
+        return (f"the drive ended {100 * math.hypot(x - part.base[0], y - part.base[1]):.0f} cm and {abs(turn):.1f}° "
+                f"from its goal")
+
+    def _not_live(self, ctx: PluginContext, serial: str) -> str:
+        """Why `serial` is not live (`live_problem`); "" when it is."""
+        robot = ctx.scene.snapshot.robots.get(robot_id(serial))
+        return "it is not in the scene" if robot is None else live_problem(robot, ctx.now())
 
     def _not_parked(self, ctx: PluginContext, index: int, why: str) -> None:
         """Leave a park that did not get there, flagged "not parked", with a warning; the guide goes on."""
@@ -1076,8 +1093,10 @@ class AssemblyGuidePlugin(HuskyPlugin):
                 await ctx.wait_until(lambda: self.stowed(ctx, part), timeout_s=STOW_SETTLE,
                                      description=f"{serial}'s arms to show stowed")
             except WaitTimeout as error:
-                raise RuntimeError(f"the stow ended away from {serial}'s stow joints, or the robot is not live: "
-                                   f"Prepare again") from error
+                problem = self._not_live(ctx, serial)
+                raise RuntimeError(f"the stow ended, but {self._who(serial)} is not live: {problem}: Prepare again"
+                                   if problem else f"the stow ended away from {self._who(serial)}'s stow joints: "
+                                                   f"Prepare again") from error
         await self._drive(ctx, part, again=again)
 
     async def _commit(self, ctx: PluginContext, planner, plan, unknown: frozenset[str], serial: str,
