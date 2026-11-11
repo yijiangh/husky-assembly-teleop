@@ -90,7 +90,7 @@ The **Insertion demo** tab. Its status line: Cindy live or not, the action (`B6_
 arms run (`joint` / `compliant`), the planned move, the running step. What a button refuses, and how each step ended,
 shows below the buttons and in the console.
 
-**Every move takes two clicks.** **Approach**, **Insert**, **Retreat** or **Return** only plans the move and shows
+**Every move takes two clicks.** **Transit**, **Insert**, **Retreat** or **Return** only plans the move and shows
 it: a see-through robot stands on the path at **Preview time** (drag the slider, or **Play**). **Motion time** sets how
 long the move takes (10 s by default; the line below says the shortest the arms' limits allow). **Execute** then
 runs the move shown, once. **Cancel**, with nothing running, drops the planned move.
@@ -110,11 +110,11 @@ they stall (30 s at most), Loosen in reverse for **Loosen s**, and **Stop** halt
 runs them (a Tighten or Loosen under way ends `cancelled`). For a screw left half in, or to show the tools on their
 own.
 
-**3.2 Approach.** A free dual-arm move from where the arms are to the insert's start (the transfer workaround: the
+**3.2 Transit.** A free dual-arm move from where the arms are to the insert's start (the transfer workaround: the
 bar in the tools is hidden from the planner, as in the lab). Look at the preview, then **Execute**, and watch the
 bar clear the rack and the jig.
 
-**3.3 Insert.** Refused unless both tool0s stand within 5 mm / 3° of the insert's start (then: Approach first). Plans
+**3.3 Insert.** Refused unless both tool0s stand within 5 mm / 3° of the insert's start (then: Transit first). Plans
 the process's insert from the live joints; **Execute** runs it: rigid up to the last **Compliant mm** (10 of the
 15 mm by default), then compliant along the line while both joint screws tighten, until they stall (30 s at most);
 then STOP and back under joint control.
@@ -126,7 +126,7 @@ right after.
 
 **3.5 Compliant / Rigid.** **Compliant** zeroes the force sensors and puts both arms under the compliance controller:
 visitors may push them; they spring back, and the **Exec plots** show each push. **Rigid** holds and brings them back
-under joint control. The arms are then wherever the push left them: **Approach** before the next **Insert**.
+under joint control. The arms are then wherever the push left them: **Transit** before the next **Insert**.
 **Zero F/T** zeroes both force sensors where the arms stand. Do it with no bar in the tools (before 3.1, or after
 **Release**): a bar zeroed away reads as a push later, and the compliance sags under its weight.
 
@@ -136,22 +136,22 @@ within 2 mm and 1° along the path, no joint steps over 5° between two waypoint
 and 3° of the insert's start (the planner steers only the left arm; the right ends where the grasp, twisted a little
 by the compliant insert and retreat, puts it). A path that fails is still shown in the preview, with the chip
 `return refused` and the reason below the buttons, but **Execute** refuses it and the cycle stops there: look at it,
-then press **Return** again, or **Approach**. **Execute** runs a good one as a joint motion.
+then press **Return** again, or **Transit**. **Execute** runs a good one as a joint motion.
 
 **3.7 Cycle.** One click runs a whole cycle: the insert as 3.3, a pause of **Settle s** (0 by default) once the
 screws stalled and the arms are back under joint control, the retreat as 3.4, a moment until the arms stand still
 (an arm still moving refuses a trajectory), then Return planned, checked and run.
 The line below the buttons ends with `cycle done … Cycle runs the next`: click again for the next visitor. It
-refuses until the arms stand at the insert's start (`press Approach or Return first`), and it stops at the first
+refuses until the arms stand at the insert's start (`press Transit or Return first`), and it stops at the first
 step that does not end well (`cycle stopped at …` with that step's reason), the arms left as that step leaves
 them: an insert that never stalls ends it with the bar in; the operator then presses **Retreat**.
-**Preview cycle** plans the same moves without sending anything and shows them as one path (the approach first when
+**Preview cycle** plans the same moves without sending anything and shows them as one path (the transit first when
 the arms are not at the insert's start, then the insert, the back-out, the return): scrub or **Play** it; the chip
 reads `cycle preview` and **Execute** refuses it. Use it after changing a length below, before **Cycle**.
 
 **3.8 Stow.** With the bar unmounted and put away (**Release**, take it out), **Stow** plans a free dual-arm move from
-wherever the arms are to their park pose (crl-husky's park.yaml, where the simulator starts them), with the approach's
-planner; **Execute** runs it over **Motion time**. The held bar is hidden from the planner, as for Approach: never
+wherever the arms are to their park pose (crl-husky's park.yaml, where the simulator starts them), with the transit's
+planner; **Execute** runs it over **Motion time**. The held bar is hidden from the planner, as for Transit: never
 with the bar still in the tools.
 
 **Cancel** stops the running step and holds the arms; **Stop all** (Esc) too. A compliant step cancelled leaves the
@@ -165,11 +165,11 @@ in its joints (cut during the insert, the pause or the retreat), then **Return**
 
 **3.9 A longer insert and retreat.** **Insert mm** sets how far before its end the insert starts, **Retreat mm** how
 far the retreat backs the tools out, both on the insert's own line; they start at the process's length (15). They act
-at once, with nothing saved: **Approach** goes to the new start, **Insert** and **Cycle** want the arms there,
+at once, with nothing saved: **Transit** goes to the new start, **Insert** and **Cycle** want the arms there,
 **Retreat** backs out to Retreat mm, and **Return** goes from there to the insert's start. The new start's joints are
 solved on the robot model in 5 mm steps from the process's start, with no collision check: the planners check when
 they plan, so look at the preview. A length the arms can't reach is refused with the reason. For a longer compliant
-part raise **Compliant mm** too. First time on the robot: **Preview cycle**, then **Approach**, **Execute**, then one
+part raise **Compliant mm** too. First time on the robot: **Preview cycle**, then **Transit**, **Execute**, then one
 manual Insert and Retreat before **Cycle**.
 
 **Save** writes the insert's start for **Insert mm** into the loaded process: the insert's start joints and line
@@ -180,29 +180,38 @@ recorded for that action no longer match the file afterwards.
 
 **3.10 Carrying the bar from a loading pose.** A variant of the demo: the bar is loaded over Cindy's back and both
 arms carry it to the insert's start and back, along one path planned beforehand (once per process, see below) and
-saved in the process folder as `solutions/B6_J.json`. The Assembly tab's **Transfer workaround** box picks how
-**Approach** and **Load** travel; the chip next to the action reads `bar free` (ticked, as at start) or `bar held`.
+saved in the process folder as `solutions/B6_J.json`. Untick the Assembly tab's **Transfer workaround** box once and
+leave it: the **Transit** button then reads **Transfer**, and the chip next to the action `bar held`.
 
-1. Box ticked, tools empty: **Load**, **Execute**. A free move from wherever the arms are to the loading pose.
+1. Tools empty: **Release**, then **Load**, **Execute**. A free move from wherever the arms are to the loading pose.
 2. Put B6 into both tools there, **Grasp**.
-3. Untick **Transfer workaround** (Assembly tab). The chip turns to `bar held`.
-4. **Approach**, **Execute**: the saved carry, the bar held, ending at the insert's start. Then **Insert**,
+3. **Transfer**, **Execute**: the saved path, the bar held, ending at the insert's start. Then **Insert**,
    **Retreat** and **Return** as in 3.3, 3.4 and 3.6.
-5. **Load**, **Execute**: the same path backwards, from the insert's start to the loading pose.
+4. **Load**, **Execute**: the same path backwards, from the insert's start to the loading pose.
 
-With `bar held`, **Cycle** runs all of it on one click, from the loading pose and back to it: the carry, the insert,
-the pause, the retreat, the return, the carry back. **Preview cycle** shows that loop as one path.
+**Cycle** runs steps 3 and 4 on one click, from the loading pose and back to it: the transfer, the insert, the pause,
+the retreat, the return, the transfer back. **Preview cycle** shows that loop as one path.
 
-- No planner runs for a carry: the preview shows the saved path. Away from its start it is only shown (chip
-  `approach refused` or `load refused`): **Approach** wants the arms at the loading pose, **Load** at the insert's
-  start, within 2° at every joint. After a retreat press **Return** first.
-- The carry ends at the process's own insert start. With **Insert mm** moved away from it, Approach and Load say so:
-  set it back, or **Save**, **Load** the process again and plan the carry again.
+- Checking a transfer before **Execute**: the green preview robot carries the bar and its joint halves, so scrub
+  **Preview time** and look for anything they touch. The **Plan plots** window shows, below the joints, how far one
+  tool0 seen from the other moves from where it is at the first waypoint, at every waypoint and halfway between: its
+  position in mm, and the angle of its x, y and z axis in degrees. Both must stay near zero (the saved path: under
+  0.05 mm and 0.01°); the line below the buttons gives the largest. Insert, Retreat and Return show the same.
+- No planner runs for a transfer: the preview shows the saved path. **Transfer** wants the arms at the loading pose
+  within 2° at every joint; away from it the path is only shown (chip `transfer refused`).
+- **Load** picks its move by where the arms stand. At the insert's start (within 2°): the saved path backwards, the
+  bar held. Anywhere else: a free move to the loading pose, for empty tools, planned only after a **Release** that
+  ran to its end; a **Grasp**, or a gripper screw closed by a button on the tool, takes that back. Otherwise it
+  refuses: `the tools may hold the bar: press Return first`.
+- The saved path ends at the process's own insert start. With **Insert mm** moved away from it, Transfer and Load say
+  so: set it back, or **Save**, **Load** the process again and plan the path again.
 - `the saved carry is stale`: the process or the action changed since it was planned (also by **Save**). Plan it again.
-- ! The bar rack on the base is not in the process: the carry over the back is planned blind to it. Run the first
-  carry slowly (**Motion time** up) and watch.
-- ! After an insert and a retreat the grasp is twisted by about 1°; the carry back pulls the arms onto the planned
+- ! The bar rack on the base is not in the process: the path over the back is planned blind to it. Run the first
+  transfer slowly (**Motion time** up) and watch.
+- ! After an insert and a retreat the grasp is twisted by about 1°; the transfer back pulls the arms onto the planned
   path in its first segment. Watch the first one.
+- With the box ticked (chip `bar free`) the button reads **Transit** and plans the free move of 3.2, and **Load** is
+  always the free move.
 
 Planning the carry, once per process (about 10 min), in the workspace's venv, from `external/husky_assembly_tamp`.
 The benchmark root and the plans folder are any local folders: only `solutions/B6_J.json` belongs to the process.
@@ -260,7 +269,7 @@ python -u scripts/prm_check_solved.py "$PROC" --bar B6 --solved-dir "$PLANS" --t
   **Run** › Joint.
 - "no tool status": her scaffolding tool driver is silent; restart her launch.
 - "return: refused: the arms' relative pose drifts …" or "… a joint jumps …": the planner's way back bends the grasp
-  or flips an arm; press **Return** again (a new plan from the live joints), else **Approach**.
+  or flips an arm; press **Return** again (a new plan from the live joints), else **Transit**.
 - "cycle stopped at …": that step's reason follows; see 3.7 and the Cancel paragraph for what to press next.
 - The tighten never stalls: the insert ends NO_STALL after 30 s and comes back under joint control; Retreat still
   works.
@@ -272,6 +281,6 @@ First on the laptop alone: [insertion_demo_sim_manual.md](insertion_demo_sim_man
 against a simulated Cindy (`scripts/insertion_demo/sim_tmux.sh`), the interruptions included.
 
 With the cable, on the real jig: the first jog in **Control** (the clock is not synced: the trajectory must still run),
-then Grasp → Approach → Insert → Retreat → Return → Compliant → Rigid → Approach → Insert, then one **Cycle**. Check
+then Grasp → Transit → Insert → Retreat → Return → Compliant → Rigid → Transit → Insert, then one **Cycle**. Check
 that 6 s of loosening frees the bar, that the tighten still stalls, that Return's checks pass on the real grasp, and
 that the rack on her base is out of the arms' way: the planner does not know it (it is not in the process).

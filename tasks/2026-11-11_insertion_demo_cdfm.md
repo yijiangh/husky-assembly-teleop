@@ -42,6 +42,30 @@ Decisions made with the user: the loading pose computed by tamp from its "back" 
 - Tests: `test/plugins/insertion_demo/test_demo_carry.py`. Docs: `doc/lab/plugins.md`, the hall manual's 3.10 (the
   sequence and the planning commands), the dry run manual's 3.13.
 
+## Changed the same day, after the first try in the hall
+
+The user found the ticking and unticking confusing, and wanted to check a transfer before running it.
+
+- **The box is unticked once and stays.** The first Move button is its own button and reads **Transit** (box ticked:
+  the free move, the bar hidden) or **Transfer** (unticked: the saved path, the bar held); the steps are named
+  `transit` and `transfer`. The Move row is back to five buttons on one line.
+- **Load with the box unticked** picks its move by where the arms stand: at the insert's start the saved path
+  reversed (the bar held); elsewhere the free move to the loading pose, planned only after a **Release** that ran to
+  its end (stalled, or opened for its whole 15 s: the simulated screws never stall open), and no gripper screw seen
+  tightening since. Otherwise it refuses, so a held bar is never taken on a free move by mistake.
+- **The grasp plots**: Plan plots gets two more plots for a move that holds the bar (`PlanPlots(grasp=True)`,
+  `parts.grasp_drift`): one tool0 seen from the other against where it is at the first waypoint, its position (mm)
+  and the angle of its x, y and z axis (deg), at every waypoint and halfway between (the old monitor's bar-hold
+  drift, tamp's per-axis angles). The largest of each is in the line below the buttons. Shown for Transfer, Load
+  along the saved path, Insert, Return and a cycle preview that holds the bar all along.
+- **The bar on the preview robot**: on a move that holds the bar the green robot carries the bar and its joint halves
+  (`parts.held_bodies` from the insert's start state, `RobotGhost.hold` hangs them on the holding link's frame).
+- The cycle is unchanged: box unticked, from the loading pose: transfer, insert, settle, retreat, return, transfer
+  reversed; box ticked: insert, settle, retreat, return (tamp's constrained dual-arm linear move). A live CDFM plan
+  for the way back was considered and dropped at the user's word.
+- Checked in the dry run (box unticked all along): Load refused, Release, Load (free), Execute, Grasp, Transfer with
+  the bar on the preview robot and the plots (0.01 mm, 0.002° on the saved path), one whole Cycle.
+
 ## What the planning showed (2026-11-11, on the dry run's copy of the process, a mock benchmark root)
 
 - tamp's own back pose (grasp midpoint 0.10, 0, 1.04 m in the base frame, roll 17.27° so both tools face up) is
@@ -90,5 +114,4 @@ Decisions made with the user: the loading pose computed by tamp from its "back" 
 - After an insert and retreat the grasp is twisted about 1°; the carry back pulls the arms onto the planned path in
   its first segment. The 2° start check per joint is the only gate.
 - The script plans on the process's robot model; the monitor checks the path on its own and refuses over 2 mm / 1°.
-- Six Move buttons wrap onto two rows on the laptop (Stow alone on the second).
 - When this branch is pushed: tamp's `yh/holding-prm` first (its ac08ae7 is not on the remote).

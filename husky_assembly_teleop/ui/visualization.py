@@ -149,6 +149,12 @@ class FastViserUrdf(viser.extras.ViserUrdf):
                                     w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
                                     w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2)
 
+    def link_frame(self, link: str) -> viser.SceneNodeHandle | None:
+        """The visual tree's frame of a link, which moves with it; None for the root link or one the model lacks."""
+        visual_root = f"{self._root_node_name}/visual".replace("//", "/")
+        return next((frame for joint, frame in zip(self._joint_map_values, self._joint_frames)
+                     if joint.child == link and frame.name.startswith(f"{visual_root}/")), None)
+
     def add_tools(self, tools: Mapping[str, Tool], color: tuple[float, ...] = TOOL_COLOR,
                   collision_color: tuple[float, ...] = COLLISION_COLOR) -> None:
         """Hang each mounted tool's shapes on its flange's frame, so they move with the arm in the same update.

@@ -98,7 +98,7 @@ def test_return_plans_the_insert_backwards_to_the_start_and_execute_runs_it(monk
     flanges = InsertionDemoPlugin._flanges(panel.plugin._demo(panel.ctx))
 
     async def scenario():
-        assert (await panel.click("Move", "Return")).startswith("return planned (a planner, 5 waypoints)")
+        assert (await panel.click("Move", "Return")).startswith("return planned (a planner, 5 waypoints")
         request = panel.planner.requests[-1]
         assert request.label == "demo return" and set(request.goal_poses) == set(flanges.values())
         for arm, end in lab.ends().items():
@@ -213,7 +213,7 @@ def test_preview_cycle_shows_the_whole_cycle_as_one_path_and_sends_nothing(monke
 
     async def scenario():
         shown = await panel.click("Preview cycle")
-        assert shown.startswith(f"{PREVIEW} shown (insert, back-out, return), not to run"), shown
+        assert shown.startswith(f"{PREVIEW} shown (insert, back-out, return"), shown
         assert [request.label for request in panel.planner.requests] == ["demo preview insert", "demo preview return"]
         planned = panel.plugin._planned
         assert planned.step == PREVIEW and planned.parts == 3 and planned.refused
@@ -229,16 +229,16 @@ def test_preview_cycle_shows_the_whole_cycle_as_one_path_and_sends_nothing(monke
     asyncio.run(scenario())
 
 
-def test_preview_cycle_away_from_the_start_plans_the_approach_first(monkeypatch):
-    """With the arms off the insert's start the preview begins with the approach from where they stand."""
-    panel = at_start(monkeypatch, {"demo preview approach": np.linspace(INSERTED, START, 3),
+def test_preview_cycle_away_from_the_start_plans_the_transit_first(monkeypatch):
+    """With the arms off the insert's start the preview begins with the transit from where they stand."""
+    panel = at_start(monkeypatch, {"demo preview transit": np.linspace(INSERTED, START, 3),
                                    "demo preview insert": np.linspace(START, INSERTED, 5),
                                    "demo preview return": np.array([START, START])}, Lab(at=INSERTED))
 
     async def scenario():
         shown = await panel.click("Preview cycle")
-        assert shown.startswith(f"{PREVIEW} shown (approach, insert, back-out, return)"), shown
-        assert panel.planner.requests[0].label == "demo preview approach" and panel.lab.nothing_sent()
+        assert shown.startswith(f"{PREVIEW} shown (transit, insert, back-out, return)"), shown
+        assert panel.planner.requests[0].label == "demo preview transit" and panel.lab.nothing_sent()
 
     asyncio.run(scenario())
 

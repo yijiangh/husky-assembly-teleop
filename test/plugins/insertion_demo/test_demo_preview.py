@@ -30,12 +30,17 @@ class Ghost:
     """The preview robot: keeps the joints it was last shown at, None while hidden."""
 
     def __init__(self, *_args):
-        """Hidden."""
-        self.shown = None
+        """Hidden, nothing in its tools."""
+        self.shown, self.held = None, {}
 
     def show(self, base, joints, parts=None) -> None:
         """Keep where it stands."""
         self.shown = (base, dict(joints))
+
+    def hold(self, bodies) -> list:
+        """Keep the bodies hung in its tools; every one finds its link."""
+        self.held = dict(bodies)
+        return []
 
     def hide(self) -> None:
         """Hidden again."""
@@ -135,15 +140,15 @@ def test_the_back_out_path_goes_from_the_live_joints_to_the_insert_start():
 
 # --- --- --- --- --- plan, preview, Execute --- --- --- --- ---
 
-def test_approach_only_plans_and_shows_then_execute_runs_it_once(monkeypatch):
-    """Approach: the planner is asked, nothing is sent, the preview stands at the end; Execute: the arms arrive."""
+def test_transit_only_plans_and_shows_then_execute_runs_it_once(monkeypatch):
+    """Transit: the planner is asked, nothing is sent, the preview stands at the end; Execute: the arms arrive."""
     panel = Panel(monkeypatch, np.linspace(INSERTED, START, 5))
 
     async def scenario():
-        planned = await panel.click("Move", "Approach")
-        assert planned.startswith("approach planned (a planner, 5 waypoints): the motion takes 10.0 s")
+        planned = await panel.click("Transit")
+        assert planned.startswith("transit planned (a planner, 5 waypoints): the motion takes 10.0 s")
         assert len(panel.planner.requests) == 1 and panel.lab.nothing_sent()
-        assert "approach ready" in panel.widget("").content  # the status line is the first unlabelled widget
+        assert "transit ready" in panel.widget("").content  # the status line is the first unlabelled widget
         slider, ghost = panel.widget("Preview time"), panel.plugin._ghost
         assert slider.max == pytest.approx(10.0, abs=0.1) and slider.value == pytest.approx(slider.max)
         np.testing.assert_allclose([ghost.shown[1][name] for name in NAMES], START, atol=1e-9)
@@ -155,7 +160,7 @@ def test_approach_only_plans_and_shows_then_execute_runs_it_once(monkeypatch):
         panel.widget("Motion time").callback(20.0)
         panel.draw()
         assert slider.max == pytest.approx(20.0, abs=0.1) and panel.lab.nothing_sent()
-        assert (await panel.click("Execute")).startswith("approach ARRIVED")
+        assert (await panel.click("Execute")).startswith("transit ARRIVED")
         np.testing.assert_allclose(panel.joints(), START, atol=1e-3)
         assert ghost.shown is None and "no plan" in panel.widget("").content
         assert "nothing planned" in await panel.click("Execute")
@@ -241,7 +246,7 @@ def moved_to(panel: Panel, slider: str, mm: float) -> dict[str, float]:
     return line_start(panel.lab.urdf, arms, start, step.movement.target.joints[step.action.robot], mm / 1e3)
 
 
-def test_insert_mm_moves_the_start_the_approach_goes_to_and_retreat_mm_the_back_outs_end(monkeypatch):
+def test_insert_mm_moves_the_start_the_transit_goes_to_and_retreat_mm_the_back_outs_end(monkeypatch):
     """At the process's own length the planner solves the start itself; at 60 mm it gets the joints 60 mm back."""
     panel = Panel(monkeypatch, np.linspace(INSERTED, START, 5))
 
@@ -249,11 +254,11 @@ def test_insert_mm_moves_the_start_the_approach_goes_to_and_retreat_mm_the_back_
         # * The process's own length is read, not assumed: the demo's Save rewrites the insert's start.
         own = panel.plugin._authored_mm
         assert panel.widget("Insert mm").value == panel.widget("Retreat mm").value == own and own not in (40.0, 60.0)
-        await panel.click("Move", "Approach")
+        await panel.click("Transit")
         assert panel.planner.requests[-1].goal_joints is None
         longer = moved_to(panel, "Insert mm", 60.0)
         assert panel.plugin._planned is None, "a new length drops the move planned for the old one"
-        await panel.click("Move", "Approach")
+        await panel.click("Transit")
         assert panel.planner.requests[-1].goal_joints == {name: longer[name] for name in NAMES}
         assert "60.0 mm" not in await panel.click("Move", "Insert"), "the arms are not there: refused as before"
         back = moved_to(panel, "Retreat mm", 40.0)
@@ -304,8 +309,8 @@ def test_execute_refuses_a_plan_the_arms_left(monkeypatch):
     panel = Panel(monkeypatch, np.linspace(INSERTED + 2 * STALE_ARM, START, 5))
 
     async def scenario():
-        await panel.click("Move", "Approach")
-        assert "approach stale" in panel.widget("").content
+        await panel.click("Transit")
+        assert "transit stale" in panel.widget("").content
         assert "plan again" in await panel.click("Execute")
         assert panel.lab.nothing_sent() and panel.plugin._planned is None
 
@@ -317,10 +322,10 @@ def test_cancel_drops_a_planned_move_and_insert_away_from_its_start_plans_nothin
     panel = Panel(monkeypatch, np.linspace(INSERTED, START, 5))
 
     async def scenario():
-        await panel.click("Move", "Approach")
-        assert await panel.click("Path", "Cancel") == "the planned approach dropped"
+        await panel.click("Transit")
+        assert await panel.click("Path", "Cancel") == "the planned transit dropped"
         assert panel.plugin._planned is None and panel.plugin._ghost.shown is None
-        assert "press Approach first" in await panel.click("Move", "Insert")
+        assert "press Transit first" in await panel.click("Move", "Insert")
         assert len(panel.planner.requests) == 1 and panel.plugin._planned is None and panel.lab.nothing_sent()
 
     asyncio.run(scenario())
@@ -344,9 +349,9 @@ def test_retreat_shows_the_back_out_before_anything_is_sent(monkeypatch):
 # --- --- --- --- --- the plot windows --- --- --- --- ---
 
 def test_a_planned_move_fills_the_plan_plots_and_opens_their_window_once(monkeypatch):
-    """Approach: every joint along the preview, the window forward; a retime redraws only; Execute empties the plots.
+    """Transit: every joint along the preview, the window forward; a retime redraws only; Execute empties the plots.
 
-    The approach is a joint motion, so the Exec plots stay minimized.
+    The transit is a joint motion, so the Exec plots stay minimized.
     """
     panel = Panel(monkeypatch, np.linspace(INSERTED, START, 5))
     plan_window, exec_window = panel.ctx.panels
@@ -354,11 +359,14 @@ def test_a_planned_move_fills_the_plan_plots_and_opens_their_window_once(monkeyp
     assert plan_window.calls == exec_window.calls == ["minimize"]
 
     async def scenario():
-        await panel.click("Move", "Approach")
+        await panel.click("Transit")
         assert plan_window.calls == ["minimize", "expand"], "a new plan brings the window forward"
         assert len(values.data) == 1 + len(NAMES) and values.data[0][-1] == pytest.approx(10.0, abs=0.1)
         assert [series["label"] for series in values.series[1:3]] == ["L pan", "L lift"]
         assert list(steps.data[0]) == [1.0, 2.0, 3.0, 4.0]
+        # * A free move: no bar in the preview robot's tools, the grasp plots empty.
+        assert panel.plugin._ghost.held == {} and panel.plugin._planned.drift is None
+        assert all(math.isnan(plot.data[1][0]) for plot in panel.ctx.gui.of_kind("uplot")[2:4])
         panel.widget("Motion time").value = 20.0
         panel.widget("Motion time").callback(20.0)
         panel.draw()

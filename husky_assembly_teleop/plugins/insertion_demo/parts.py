@@ -24,10 +24,11 @@ from typing import TYPE_CHECKING, Callable, Collection, Iterable, Mapping, Seque
 
 import numpy as np
 
-from scaffolding_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.geometry import Geometry, Pose, compose, invert
 from scaffolding_assembly_core.ids import split_link_id
 from scaffolding_assembly_core.kinematics import link_poses
-from scaffolding_assembly_core.process import ProcessError, validate
+from scaffolding_assembly_core.process import Holder, ProcessError, validate
+from scaffolding_assembly_core.process.relations import is_present, placement
 from scaffolding_assembly_core.process.solutions import is_stale, read_solutions
 from scaffolding_assembly_core.process.types import Process
 from scaffolding_assembly_core.process.version import writer_info
@@ -42,6 +43,7 @@ from ...robot_interface.tool_step import tool_step_target
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.movement import Routine, routine_or_none
 from ...shared.assembly_planning.route_result import pose_error
+from ...shared.assembly_tab.plan_plots import GraspDrift
 from ...shared.execution.basis import STALE_ARM
 from ...shared.execution.compliant_part import (check_part, enter_compliance, phase_keeper, started_part,
                                                 stop_then_leave, tool0_by_arm)
@@ -111,6 +113,25 @@ def load_step(loaded: LoadedProcess, action_id: str) -> int | str:
         if routine_or_none(action, movement) is Routine.FREE_TO_LOAD:
             return loaded.index_of(action_id, index)
     return f"{action_id} has no travel to load"
+
+
+def held_bodies(loaded: LoadedProcess, index: int) -> dict[str, tuple[str, Pose, Geometry]]:
+    """What the acting robot's tools hold at a step's start: the bar and the joint halves mounted on it.
+
+    Returns:
+        dict[str, tuple[str, Pose, Geometry]]: Body id -> (the holding link's name, the body's pose in that link's
+            frame, its shapes).
+    """
+    step = loaded.steps[index]
+    process, state = loaded.process, step.movement.start
+    held = {}
+    for body_id, body in process.bodies.items():
+        where = placement(process, state, body_id)
+        if isinstance(where, Holder) and is_present(process, state, body_id):
+            holder, link = split_link_id(where.to)
+            if holder == step.action.robot:
+                held[body_id] = (link, where.grasp, body.geometry)
+    return held
 
 
 def saved_carry(process: Process, action_id: str, movement_id: str) -> tuple[list[str], np.ndarray] | str:
@@ -334,13 +355,54 @@ def save_action(process: Process, action_id: str) -> Path:
     return path
 
 
+def relative_tool0(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence[Sequence[float]],
+                   arms: Sequence[str]) -> list[Pose]:
+    """The second arm's tool0 seen from the first's at every row, both through their base_link in the husky frame."""
+    first, second = arms[0], arms[1]
+    bases = {arm: robot.arms[arm].base_in_husky for arm in (first, second)}
+    seen = []
+    for row in rows:
+        tool0 = tool0_by_arm(robot.config.model.urdf, (first, second), names, row)
+        in_husky = {arm: compose(bases[arm], tool0[arm]) for arm in (first, second)}
+        seen.append(compose(invert(in_husky[first]), in_husky[second]))
+    return seen
+
+
+def with_midpoints(rows: Sequence[Sequence[float]]) -> np.ndarray:
+    """A joint path with the row halfway between each two put in between: 2 N - 1 rows."""
+    rows = np.asarray(rows, dtype=float)
+    dense = np.empty((2 * len(rows) - 1, rows.shape[1]))
+    dense[::2] = rows
+    dense[1::2] = (rows[:-1] + rows[1:]) / 2
+    return dense
+
+
+def grasp_drift(relative: Sequence[Pose], per_waypoint: int = 1) -> GraspDrift:
+    """How far the tools' relative pose moves along a path from where it is at the first row.
+
+    Args:
+        relative: One tool0 seen from the other at every row (`relative_tool0`).
+        per_waypoint: Rows per waypoint: 2 for a path given `with_midpoints`.
+
+    Returns:
+        GraspDrift: Per row, the distance in millimetres and the angle of each axis in degrees.
+    """
+    positions = np.array([pose.position for pose in relative], dtype=float)
+    turns = Rotation.from_quat([pose.orientation for pose in relative]).as_matrix()
+    # * Each axis against where it pointed at the first row: the columns' dot products.
+    cosines = np.einsum("ji,nji->ni", turns[0], turns)
+    return GraspDrift(np.arange(len(relative), dtype=float) / per_waypoint,
+                      np.linalg.norm(positions - positions[0], axis=1) * 1e3,
+                      np.degrees(np.arccos(np.clip(cosines, -1.0, 1.0))))
+
+
 def return_problem(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence[Sequence[float]],
-                   arms: Sequence[str]) -> str:
+                   arms: Sequence[str], relative: Sequence[Pose] | None = None) -> str:
     """Why a planned way back may not run, or "" if it may.
 
     The planner keeps the bar's grasp by construction; this checks that its IK did: along `rows` the second arm's
     tool0 seen from the first stays within COUPLING of where it starts, and no joint steps over JOINT_STEP between
-    two waypoints.
+    two waypoints. `relative` is `relative_tool0` of the rows, when the caller has it.
     """
     rows = np.asarray(rows, dtype=float)
     if len(rows) < 2:
@@ -352,18 +414,10 @@ def return_problem(robot: HuskyRobotInterface, names: Sequence[str], rows: Seque
                 f"(over {math.degrees(JOINT_STEP):.0f}°)")
     if len(arms) < 2:
         return ""
-    first, second = arms[0], arms[1]
-    bases = {arm: robot.arms[arm].base_in_husky for arm in (first, second)}
-
-    def relative(row: np.ndarray) -> Pose:
-        """The second arm's tool0 seen from the first's, both through their base_link in the husky frame."""
-        tool0 = tool0_by_arm(robot.config.model.urdf, (first, second), names, row)
-        in_husky = {arm: compose(bases[arm], tool0[arm]) for arm in (first, second)}
-        return compose(invert(in_husky[first]), in_husky[second])
-
-    held = relative(rows[0])
-    for k, row in enumerate(rows[1:], start=1):
-        distance, turn = pose_error(relative(row), held)
+    if relative is None:
+        relative = relative_tool0(robot, names, rows, arms)
+    for k, seen in enumerate(relative[1:], start=1):
+        distance, turn = pose_error(seen, relative[0])
         if distance > COUPLING[0] or turn > COUPLING[1]:
             return (f"the arms' relative pose drifts {distance * 1e3:.1f} mm, {math.degrees(turn):.1f}° at waypoint "
                     f"{k} (over {COUPLING[0] * 1e3:.0f} mm, {math.degrees(COUPLING[1]):.0f}°)")

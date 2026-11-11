@@ -1,8 +1,9 @@
-"""The demo with the bar carried: Approach and Load replay the saved carry, the cycle runs from the loading pose."""
+"""The demo with the bar carried: Transfer and Load replay the saved carry, the cycle runs from the loading pose."""
 
 from __future__ import annotations
 
 import asyncio
+import math
 import shutil
 
 import numpy as np
@@ -73,9 +74,9 @@ def test_the_travel_to_load_is_the_actions_free_move_without_a_target():
     assert load_step(loaded, "B6_R") == "B6_R has no travel to load"
 
 
-# --- --- --- --- --- Approach and Load, the bar held --- --- --- --- ---
+# --- --- --- --- --- Transfer and Load, the bar held --- --- --- --- ---
 
-def test_held_approach_shows_the_saved_carry_without_a_planner_and_execute_runs_it(monkeypatch):
+def test_the_transfer_shows_the_saved_carry_without_a_planner_and_execute_runs_it(monkeypatch):
     """From the loading pose: the carry as saved, no request to the planner; Execute ends at the insert's start."""
     carry = a_carry()
     assert np.max(np.abs(carry[0] - START)) > STALE_ARM, "the loading pose is not the insert's start"
@@ -83,12 +84,20 @@ def test_held_approach_shows_the_saved_carry_without_a_planner_and_execute_runs_
 
     async def scenario():
         assert "bar held" in panel.widget("").content
-        shown = await panel.click("Move", "Approach")
-        assert shown.startswith("approach planned (the saved carry, 9 waypoints)"), shown
+        shown = await panel.click("Transfer")
+        assert shown.startswith("transfer planned (the saved carry, 9 waypoints"), shown
         assert panel.planner.requests == [] and panel.lab.nothing_sent()
         np.testing.assert_allclose(panel.plugin._planned.rows, carry)
-        assert "approach ready" in panel.widget("").content
-        assert (await panel.click("Execute")).startswith("approach ARRIVED")
+        assert "transfer ready" in panel.widget("").content
+        # * The bar and its two joint halves hang in the preview robot's left tool; the grasp is plotted.
+        assert sorted(panel.plugin._ghost.held) == ["bars/B6", "joints/J3-6_male", "joints/J4-6_male"]
+        assert {link for link, _pose, _shapes in panel.plugin._ghost.held.values()} == {"left_ur_arm_tool0"}
+        position, axes = panel.ctx.gui.of_kind("uplot")[2:4]
+        drift = panel.plugin._planned.drift
+        assert list(position.data[0]) == list(np.arange(17) / 2) and len(axes.data) == 4, "rows and midpoints"
+        assert drift.mm.max() < 2.0 and drift.deg.max() < 0.2 and "relative pose moves at most" in shown
+        assert (await panel.click("Execute")).startswith("transfer ARRIVED")
+        assert panel.plugin._ghost.held == {} and math.isnan(position.data[1][0]), "gone with the plan"
         np.testing.assert_allclose(panel.joints(), START, atol=1e-3)
 
     asyncio.run(scenario())
@@ -101,7 +110,7 @@ def test_held_load_runs_the_carry_reversed_from_the_insert_start(monkeypatch):
 
     async def scenario():
         shown = await panel.click("Move", "Load")
-        assert shown.startswith("load planned (the saved carry reversed, 9 waypoints)"), shown
+        assert shown.startswith("load planned (the saved carry reversed, 9 waypoints"), shown
         np.testing.assert_allclose(panel.plugin._planned.rows, carry[::-1])
         assert panel.planner.requests == []
         assert (await panel.click("Execute")).startswith("load ARRIVED")
@@ -110,27 +119,46 @@ def test_held_load_runs_the_carry_reversed_from_the_insert_start(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_a_carry_is_only_shown_when_the_arms_are_not_at_its_start(monkeypatch):
-    """Approach away from the loading pose, Load away from the insert's start: shown, Execute refuses, nothing sent."""
+def test_a_transfer_is_only_shown_when_the_arms_are_not_at_the_loading_pose(monkeypatch):
+    """Transfer away from the loading pose: shown, Execute refuses, nothing sent."""
     carry = a_carry()
     panel = carried(monkeypatch, {}, START, carry)
 
     async def scenario():
-        shown = await panel.click("Move", "Approach")
+        shown = await panel.click("Transfer")
         assert "not to run: the arms do not stand at the loading pose" in shown, shown
-        assert "approach refused" in panel.widget("").content and panel.plugin._ghost.shown is not None
-        assert (await panel.click("Execute")).startswith("Execute refused: the approach shown is not to run")
+        assert "transfer refused" in panel.widget("").content and panel.plugin._ghost.shown is not None
+        assert (await panel.click("Execute")).startswith("Execute refused: the transfer shown is not to run")
         assert panel.lab.nothing_sent()
 
     asyncio.run(scenario())
-    away = carried(monkeypatch, {}, carry[0], carry)
 
-    async def back():
-        shown = await away.click("Move", "Load")
-        assert "not to run: the arms do not stand at the insert's start" in shown and "Return" in shown, shown
-        assert away.lab.nothing_sent()
 
-    asyncio.run(back())
+def test_held_load_away_from_the_insert_start_is_a_free_move_only_after_release(monkeypatch):
+    """The box unticked, the arms inserted: Load refuses while the tools may hold the bar.
+
+    After Release it plans the travel to load as a free move, the preview robot's tools empty; a Grasp makes it
+    refuse again.
+    """
+    carry = a_carry()
+    panel = carried(monkeypatch, {"demo load": np.linspace(INSERTED, carry[0], 5)}, INSERTED, carry)
+
+    async def scenario():
+        refused = await panel.click("Move", "Load")
+        assert refused.startswith("load: the arms do not stand at the insert's start") and "Return" in refused
+        assert panel.planner.requests == [] and panel.plugin._planned is None
+        await panel.click("Bar", "Release")
+        assert panel.plugin._released, panel.plugin.outcome
+        shown = await panel.click("Move", "Load")
+        assert shown.startswith("load planned (a planner, 5 waypoints)") and "tools must be empty" in shown, shown
+        request, = panel.planner.requests
+        assert request.step.movement.id == "B6_J_load" and request.goal_joints == dict(zip(NAMES, carry[0].tolist()))
+        assert panel.plugin._ghost.held == {} and panel.plugin._planned.drift is None
+        await panel.click("Bar", "Grasp")
+        assert (await panel.click("Move", "Load")).startswith("load: the arms do not stand at the insert's start")
+        assert motions(panel) == 0, "no arm moved"
+
+    asyncio.run(scenario())
 
 
 def test_a_carry_that_is_missing_drifts_or_ends_off_the_insert_start_is_refused(monkeypatch):
@@ -138,13 +166,13 @@ def test_a_carry_that_is_missing_drifts_or_ends_off_the_insert_start_is_refused(
     carry = a_carry()
     drifting = carry.copy()
     drifting[4, :6] += 0.05
-    for saved, why in (("no carry is saved for B6_J", "approach: no carry is saved for B6_J"),
-                       (drifting, "approach: the saved carry is refused: "),
-                       (carry[:-1], "approach: the saved carry does not end at the insert's start for Insert mm")):
+    for saved, why in (("no carry is saved for B6_J", "transfer: no carry is saved for B6_J"),
+                       (drifting, "transfer: the saved carry is refused: "),
+                       (carry[:-1], "transfer: the saved carry does not end at the insert's start for Insert mm")):
         panel = carried(monkeypatch, {}, carry[0], saved)
 
         async def scenario():
-            shown = await panel.click("Move", "Approach")
+            shown = await panel.click("Transfer")
             assert shown.startswith(why), shown
             assert panel.plugin._planned is None and panel.lab.nothing_sent()
 
@@ -157,7 +185,7 @@ def test_unticking_or_ticking_the_box_drops_the_planned_move(monkeypatch):
     panel = carried(monkeypatch, {}, carry[0], carry)
 
     async def scenario():
-        await panel.click("Move", "Approach")
+        await panel.click("Transfer")
         assert panel.plugin._planned is not None
         panel.ctx.plugins["process"].transfer_as_free = True
         panel.draw()
@@ -204,7 +232,7 @@ def test_a_held_cycle_carries_the_bar_in_and_back_to_the_loading_pose(monkeypatc
         steps = await run_to_the_end(panel, "Cycle")
         assert panel.plugin.outcome.startswith("cycle done: back at the loading pose"), panel.plugin.outcome
         names = [name for name, _t in steps if name and name != "cycle: rest" and "plan" not in name]
-        assert names == ["cycle: approach", "cycle: insert", "cycle: settle", "cycle: retreat", "cycle: return",
+        assert names == ["cycle: transfer", "cycle: insert", "cycle: settle", "cycle: retreat", "cycle: return",
                          "cycle: load"], names
         assert [request.label for request in panel.planner.requests] == ["demo cycle insert", "demo return"]
         assert motions(panel) == 4, "the carry, the insert's rigid part, the return, the carry back"
@@ -221,7 +249,7 @@ def test_a_held_cycle_away_from_the_loading_pose_stops_before_anything_moves(mon
 
     async def scenario():
         await run_to_the_end(panel, "Cycle")
-        assert panel.plugin.outcome.startswith("cycle stopped at plan approach"), panel.plugin.outcome
+        assert panel.plugin.outcome.startswith("cycle stopped at plan transfer"), panel.plugin.outcome
         assert "loading pose" in panel.plugin.outcome and panel.lab.nothing_sent()
 
     asyncio.run(scenario())
@@ -235,7 +263,7 @@ def test_a_held_preview_cycle_has_the_carry_at_both_ends(monkeypatch):
 
     async def scenario():
         shown = await panel.click("Preview cycle")
-        assert shown.startswith(f"{PREVIEW} shown (carry, insert, back-out, return, carry back), not to run"), shown
+        assert shown.startswith(f"{PREVIEW} shown (transfer, insert, back-out, return, transfer back"), shown
         planned = panel.plugin._planned
         assert planned.parts == 5
         np.testing.assert_allclose(planned.rows[0], carry[0])

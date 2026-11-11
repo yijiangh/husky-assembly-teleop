@@ -16,12 +16,13 @@ import numpy as np
 
 from ..colors import PLAN, TARGET, rgb01
 from .quaternion import quaternion_to_wxyz
+from .scene_view import add_shape
 from .visualization import FastViserUrdf, shared_urdf
 
 if TYPE_CHECKING:
     from ..config import RobotConfig
     from ..plugin_api.context import PluginContext
-    from scaffolding_assembly_core.geometry import Pose
+    from scaffolding_assembly_core.geometry import Geometry, Pose
 
 #: Colours (r, g, b, alpha from 0 to 1) shared by the plugins: every target (process movement, arm and base planner)
 #: in the one target blue, where a plan has the robot in the plan green; only the live robots show their true colours.
@@ -72,7 +73,10 @@ class RobotGhost:
             kind: A key of KIND_COLORS: "target", "base_target", "path" or "goal". Sets the colour.
         """
         path = f"{ctx.view.scene_root}/ghosts/{kind}/{config.serial}"
-        color = KIND_COLORS[kind]
+        color = self._color = KIND_COLORS[kind]
+        self._scene = ctx.view.scene
+        #: The frames of the bodies hung on links (`hold`); their shapes hang below them.
+        self._held: list = []
         self._frame = ctx.view.scene.add_frame(path, show_axes=False, visible=False)
         self._urdf = FastViserUrdf(ctx.view, shared_urdf(config.model.urdf), root_node_name=path,
                                    mesh_color_override=color)
@@ -106,6 +110,32 @@ class RobotGhost:
         self._frame.wxyz = quaternion_to_wxyz(base.orientation)
         self._urdf.update_cfg(np.array(values))
         self._frame.visible = True
+
+    def hold(self, bodies: Mapping[str, tuple[str, Pose, Geometry]]) -> list[str]:
+        """Hang bodies on the robot's links, in its colour, in place of those hung before; they move and hide with it.
+
+        Args:
+            bodies: Body id -> (the holding link's name, the body's pose in that link's frame, its shapes); empty
+                takes every held body away.
+
+        Returns:
+            list[str]: The bodies not drawn: the robot's model has no such link.
+        """
+        for frame in self._held:
+            frame.remove()
+        self._held, missing = [], []
+        for body_id, (link, pose, geometry) in bodies.items():
+            parent = self._urdf.link_frame(link)
+            if parent is None:
+                missing.append(body_id)
+                continue
+            path = f"{parent.name}/held_{body_id.replace('/', '_')}"
+            self._held.append(self._scene.add_frame(path, show_axes=False,
+                                                    position=tuple(float(v) for v in pose.position),
+                                                    wxyz=quaternion_to_wxyz(pose.orientation)))
+            for index, shape in enumerate(geometry.visual):
+                add_shape(self._scene, f"{path}/{index}", shape, self._color)
+        return missing
 
     def hide(self) -> None:
         """Hide the robot."""

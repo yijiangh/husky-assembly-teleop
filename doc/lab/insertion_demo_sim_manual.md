@@ -3,7 +3,7 @@
 Rehearses the demo of [insertion_demo_manual.md](insertion_demo_manual.md) without the robot: the same process, the
 same `insertion_demo` plugin, the same `base.sh` and `monitor.sh`. Only Cindy and her router are replaced: her arms
 and scaffolding tools are simulated on this laptop (crl-husky's simulation, as in the fake lab), and every node meets
-through a Zenoh router of the dry run's own. You click through Grasp, Approach, Insert, Retreat, Compliant and Rigid,
+through a Zenoh router of the dry run's own. You click through Grasp, Transit, Insert, Retreat, Compliant and Rigid,
 each move planned and previewed before **Execute** runs it, then the interruptions. Plan about 20 minutes.
 
 Replace the placeholder with your own path: `<workspace>` is the ROS workspace (the folder holding `src/`, `venv/`,
@@ -114,38 +114,40 @@ the configured one: robots/cindy (a200-0806): left_ur_arm_tool0: TCP off by 106.
 
 **2.3** Open the **Insertion demo** tab.
 
-**Expect:** the status chips `a200-0806` (green), `B6_J` (blue), `tools` (green), `joint` (green), `no plan` and
+**Expect:** the status chips `a200-0806` (green), `B6_J` (blue), `bar free` (grey), `tools` (green), `joint` (green),
+`no plan` and
 `idle` (grey); **Action** `B6_J`; the sliders **Compliant mm** 10, **Loosen s** 6, **Insert mm** 15 and **Retreat mm** 15; the buttons **Save**, **Grasp**,
-**Release** | **Tighten**, **Loosen**, **Stop** | **Approach**, **Insert**, **Retreat**, **Return**, **Stow**; under **preview** the sliders
+**Release** | **Tighten**, **Loosen**, **Stop** | the blue **Transit** | **Insert**, **Retreat**, **Return**, **Load**,
+**Stow**; under **preview** the sliders
 **Preview time** and **Motion time** 10, the line `min — s by the arms' limits`, the blue **Execute**, then **Play**,
 **Cancel** | **Compliant**, **Rigid**, **Zero F/T**; under **autonomous** the slider **Settle s** 0 and the buttons **Preview cycle** and **Cycle**. Hovering
 a Move button says what each does. How a step ended, and what a button refused, shows under the buttons and in the
 `monitor` pane. At the bottom of the page, two windows minimized to their bars: **Plan plots** and **Exec plots**.
 
-Every move takes two clicks: **Approach**, **Insert**, **Retreat** or **Return** plans the move and shows it in the
+Every move takes two clicks: **Transit**, **Insert**, **Retreat** or **Return** plans the move and shows it in the
 preview, and nothing moves until **Execute**. **Cycle** alone runs a whole cycle on one click (3.10).
 
 ---
 
 ## 3. The demo cycle
 
-**3.1 Insert before Approach is refused.** Click **Insert**.
+**3.1 Insert before Transit is refused.** Click **Insert**.
 
 **Expect:** under the buttons, `insert: left_ur_arm's tool0 is 158.1 mm, 178.8° from the insert's start (limit 5 mm,
-3°): press Approach first`. Nothing moves.
+3°): press Transit first`. Nothing moves.
 
 **3.2 Grasp.** Click **Grasp** (in the hall: after putting the bar into both tools).
 
 **Expect:** in the pane `left_ur_arm + right_ur_arm gripper screws CLOSE`, each gripper `idle -> tightening`, then
 `tightening -> stalled`, and after 2 s `gripper screws closed: stalled after left_ur_arm 2.0 s, right_ur_arm 2.1 s`.
 
-**3.3 Approach: plan and preview.** Click **Approach**. The chip `idle` reads `plan approach` while the planner runs.
+**3.3 Transit: plan and preview.** Click **Transit**. The chip `idle` reads `plan transit` while the planner runs.
 
 **Expect:** the first plan builds Cindy's planning cell, then `B6_J_transfer: tamp.plan_free_dual_arm try 1/3: path of
-49 waypoints in 2.8 s`, `demo approach: transfer_free solved by tamp.plan_free_dual_arm: 49 waypoints, 1 tries, 4.6 s`,
-and `approach planned (tamp.plan_free_dual_arm, 49 waypoints): the motion takes 11.2 s; Execute runs it`, also under
+49 waypoints in 2.8 s`, `demo transit: transfer_free solved by tamp.plan_free_dual_arm: 49 waypoints, 1 tries, 4.6 s`,
+and `transit planned (tamp.plan_free_dual_arm, 49 waypoints): the motion takes 11.2 s; Execute runs it`, also under
 the buttons. Nothing moved. The waypoint counts and times differ from run to run.
-- **Chips:** `no plan` turned into a green `approach ready`.
+- **Chips:** `no plan` turned into a green `transit ready`.
 - **3D view:** a see-through green Cindy with her arms at the move's end, the insert's start. The jig's bars on her
   base and the target in blue show too: the demo selected the step in the process panel.
 - **Preview time:** at its right end, 11.2. Drag it to the left: the see-through arms follow the path back to where
@@ -157,18 +159,18 @@ the buttons. Nothing moved. The waypoint counts and times differ from run to run
   at 20 the lines stretch to 20 s. Close the window with the `–` in its bar if it is in the way: the next plan opens
   it again.
 
-**Cancel** now would drop the plan (`the planned approach dropped`, the chip `no plan`); **Approach** plans again.
+**Cancel** now would drop the plan (`the planned transit dropped`, the chip `no plan`); **Transit** plans again.
 
-**3.4 Approach: Execute.** Click **Execute**.
+**3.4 Transit: Execute.** Click **Execute**.
 
-**Expect:** `approach along tamp.plan_free_dual_arm, 49 waypoints, 11.2 s`, `a200-0806: moving left_ur_arm,
-right_ur_arm, 11.2 s`; the see-through robot is gone and both arms move at once; then `approach ARRIVED: arrived,
+**Expect:** `transit along tamp.plan_free_dual_arm, 49 waypoints, 11.2 s`, `a200-0806: moving left_ur_arm,
+right_ur_arm, 11.2 s`; the see-through robot is gone and both arms move at once; then `transit ARRIVED: arrived,
 end within 0.00°`. The chip reads `no plan` again and the **Plan plots** are empty: **Execute** once more is refused,
-`nothing planned: press Approach, Insert or Retreat first`. The **Exec plots** stay minimized: an approach is a joint
+`nothing planned: press Transit, Insert or Retreat first`. The **Exec plots** stay minimized: a transit is a joint
 motion, without a compliant part.
 
 To see a cancel, click **Cancel** while the arms move. **Expect:** `cancelled: holding every arm`, the arms stop,
-`approach cancelled`. **Approach** again plans from where they stopped.
+`transit cancelled`. **Transit** again plans from where they stopped.
 
 **3.5 Insert.** Click **Insert**.
 
@@ -250,45 +252,52 @@ settling 0 s before the retreat`; at once the retreat as in 3.6 (the **Exec plot
 then `demo return` planned, the **Plan plots** with the way back, `return ARRIVED: …` and the line `cycle done
 (return ARRIVED: …): back at the insert's start; Cycle runs the next`. About 50 s in all. Click **Cycle** again at
 once: the same again. Click **Cycle** with the arms elsewhere (after a **Compliant** / **Rigid**, say): `Cycle
-refused: left_ur_arm's tool0 is … from the insert's start …: press Approach or Return first`.
+refused: left_ur_arm's tool0 is … from the insert's start …: press Transit or Return first`.
 
 **3.11 A longer insert, previewed first.** Set **Insert mm** to 60 and **Retreat mm** to 40, then click **Preview
-cycle**. **Expect:** the console `demo preview approach`, `demo preview insert`, `demo preview return`; the line
-`cycle preview shown (approach, insert, back-out, return), not to run: …`; the chip `cycle preview`; **Play** shows
+cycle**. **Expect:** the console `demo preview transit`, `demo preview insert`, `demo preview return`; the line
+`cycle preview shown (transit, insert, back-out, return), not to run: …`; the chip `cycle preview`; **Play** shows
 the arms going 60 mm back from the joint, in, out 40 mm, and back to the 60 mm start. Nothing moved. **Execute**
-is refused. Then **Approach**, **Execute**, and **Cycle**: the same for real, ending `cycle done …`. Click **Save**:
+is refused. Then **Transit**, **Execute**, and **Cycle**: the same for real, ending `cycle done …`. Click **Save**:
 it turns amber `Save?`; click it again: `saved: the insert starts 60 mm before its end in process/actions/B6_J.json;
 press Load in the Assembly tab to use it`. This is the dry run's own copy of the process; in the hall it is the Drive.
 
 **3.12 Again.** **Insert**, **Execute**, **Retreat**, **Execute**, as often as you like: each Insert plans from where
-the arms stand. In the hall the arms stand wherever a visitor's push left them after Rigid: **Approach** first, then
+the arms stand. In the hall the arms stand wherever a visitor's push left them after Rigid: **Transit** first, then
 **Insert**.
 
-**3.13 The bar carried from the loading pose** (the hall manual's 3.10). It needs the carry saved in the dry run's
+**3.13 The bar carried from the loading pose** (the hall manual's 3.10). It needs the saved path in the dry run's
 copy of the process, `~/husky_insertion_demo_sim/drive/…/process/solutions/B6_J.json` (planned as the hall manual
 says; a new session keeps it). A **Save** in 3.11 makes it stale: start a new session, which brings the Drive's
 action file back.
 
-1. Assembly tab: **Transfer workaround** ticked, as at start. Insertion demo tab: the chip reads `bar free`. Click
-   **Load**. **Expect:** the console `demo load: free_to_load solved by tamp.plan_free_dual_arm: …`, the line `load
-   planned (tamp.plan_free_dual_arm, … waypoints) …`, the preview's arms raised over the back. **Execute**:
-   `load ARRIVED`.
-2. **Grasp**. Then, Assembly tab: untick **Transfer workaround**. **Expect:** the console `Transfer workaround off:
-   jointing actions as authored`, and the chip `bar held`.
-3. **Approach**. **Expect:** at once, with no planner line in the console, `approach planned (the saved carry, 308
-   waypoints): the motion takes 15.4 s; Execute runs it`, the chip `approach ready`. **Execute**: `approach
-   ARRIVED`, the arms at the insert's start.
-4. **Insert**, **Retreat** and **Return**, each with **Execute**, as 3.5, 3.6 and 3.9.
-5. **Load**. **Expect:** `load planned (the saved carry reversed, 308 waypoints) …`. **Execute**: `load ARRIVED`,
+1. Assembly tab: untick **Transfer workaround**, and leave it. **Expect:** the console `Transfer workaround off:
+   jointing actions as authored`; in the Insertion demo tab the first Move button reads **Transfer** and the chip
+   `bar held`.
+2. **Load**. **Expect:** `load: the arms do not stand at the insert's start, … the tools may hold the bar: press
+   Return first. With empty tools: Release, then Load plans a free move to the loading pose`.
+3. **Release**. **Expect:** 15 s later `not every gripper screw stalled within 15 s of its open; motors stopped` (a
+   simulated screw never stalls on a loosen). **Load**: the console `demo load: free_to_load solved by
+   tamp.plan_free_dual_arm: …`, the line `load planned (tamp.plan_free_dual_arm, … waypoints): … (a free move: the
+   tools must be empty)`, the preview's arms raised over the back, no bar in its tools. **Execute**: `load ARRIVED`.
+4. **Grasp**, then **Transfer**. **Expect:** at once, with no planner line in the console, `transfer planned (the
+   saved carry, 308 waypoints; the tools' relative pose moves at most 0.01 mm, 0.00°): the motion takes 15.4 s;
+   Execute runs it`, the chip `transfer ready`. The green preview robot carries a green bar with its two joint halves:
+   drag **Preview time** and they move with its tools. In **Plan plots**, below the joints: `tools' relative pose vs
+   first waypoint: position (mm)` staying under 0.01, and `… axis angles (deg)` with an x, y and z line under 0.002.
+5. **Execute**: `transfer ARRIVED`, the arms at the insert's start.
+6. **Insert**, **Retreat** and **Return**, each with **Execute**, as 3.5, 3.6 and 3.9; the preview robot carries the
+   bar in each, and the two plots fill.
+7. **Load**. **Expect:** `load planned (the saved carry reversed, 308 waypoints; …) …`. **Execute**: `load ARRIVED`,
    the arms over the back again.
-6. **Cycle**. **Expect:** the step chip going through `cycle: approach`, `cycle: insert`, `cycle: retreat`, `cycle:
+8. **Cycle**. **Expect:** the step chip going through `cycle: transfer`, `cycle: insert`, `cycle: retreat`, `cycle:
    return`, `cycle: load`, and the line `cycle done: back at the loading pose; Cycle runs the next`.
-7. **Preview cycle**. **Expect:** `cycle preview shown (carry, insert, back-out, return, carry back), not to run: …`.
-8. **Approach** now, with the arms at the loading pose after 6: `approach ready`. Press **Load** instead: **Expect**
-   the chip `load refused` and `… not to run: the arms do not stand at the insert's start, where the carry back
-   begins: press Return first`.
-9. Set **Insert mm** to 40, click **Approach**. **Expect:** `approach: the saved carry does not end at the insert's
-   start for Insert mm 40: set Insert mm back to the process's own (30), or Save, Load and plan the carry again`.
+9. **Preview cycle**. **Expect:** `cycle preview shown (transfer, insert, back-out, return, transfer back; …), not to
+   run: …`.
+10. Tick **Transfer workaround** again: the button reads **Transit**, the chip `bar free`. **Transit** plans the free
+    move of 3.3: no bar in the preview robot's tools, the two plots of the tools' relative pose empty. Untick it.
+11. Set **Insert mm** to 40, click **Transfer**. **Expect:** `transfer: the saved carry does not end at the insert's
+    start for Insert mm 40: set Insert mm back to the process's own (30), or Save, Load and plan the carry again`.
 
 ---
 
@@ -304,7 +313,7 @@ chip reads `compliant`, the second `idle`.
 1. Click **Rigid**. **Expect:** `rigid: left_ur_arm, right_ur_arm back under scaled_joint_trajectory_controller`,
    `both arms under joint control`.
 2. Click **Insert**. **Expect:** refused, `left_ur_arm's tool0 is 11.0 mm, 0.0° from the insert's start …: press
-   Approach first` (your distance differs): the arms stand part way in.
+   Transit first` (your distance differs): the arms stand part way in.
 3. Click **Retreat**, then **Execute**. **Expect:** as 3.6: the screws loosen and the tools back out to the insert's
    start, `retreat RETREATED: …`. **Insert** runs again.
 
@@ -315,15 +324,15 @@ chip reads `compliant`, the second `idle`.
 cartesian_compliance_controller or switching …`; Health reads `PROBLEMS`, the arms' `arm ctrl` chips amber (`no
 controller active; commands will be refused`); the demo's arm chip reads `mixed`.
 
-1. Click **Approach**: it still plans (`approach planned …`), since a plan moves nothing. Click **Execute**.
-   **Expect:** `approach REFUSED: a200-0806 refused the trajectory: robot a200-0806 is soft stopped, a multi-arm
+1. Click **Transit**: it still plans (`transit planned …`), since a plan moves nothing. Click **Execute**.
+   **Expect:** `transit REFUSED: a200-0806 refused the trajectory: robot a200-0806 is soft stopped, a multi-arm
    trajectory not sent; press Resume first; nothing sent`.
 2. Click **Resume** under Health, then **Rigid**, in this order. **Expect:** `resume arms: resuming` and the arm
    chips green again, `ALL GREEN`: the arms are back under the compliance controller. Then `rigid: left_ur_arm,
    right_ur_arm back under scaled_joint_trajectory_controller`, `both arms under joint control`, the demo's chip
    `joint`. Rigid before Resume switches the arms back for a moment only: the stop takes the controller away again,
    and Rigid is needed once more after Resume.
-3. **Approach**, **Insert**, **Retreat**, each with its **Execute**, run again.
+3. **Transit**, **Insert**, **Retreat**, each with its **Execute**, run again.
 
 **4.3 Cancel during a cycle.** Click **Cycle**, with **Settle s** at 5, and during `cycle: settle` (the 5 s after `insert STALLED`) click
 **Cancel**.
@@ -373,7 +382,7 @@ These are not mistakes on your side.
 | The `sim` pane's first line names alice, belle and cindy. | The fake lab's script prints it; `robot:=0806` starts Cindy alone. |
 | PyBullet's lines in the `monitor` pane. | The monitor starts with pytest imported, a workaround for a compas_fab bug (`scripts/lab_common.sh`). |
 | A plan fails with `can't be planned for: its base is not tracked`; Health reads `PROBLEMS`, `mocap` red, Cindy drawn away from the blue target. | `base.sh` is not running: press **Enter** in the `base` pane (1.2). |
-| **Execute** refuses with `the arms are … from the plan's start …: plan again`, the chip `approach stale`. | The arms moved since the plan. Press the Move button again. |
+| **Execute** refuses with `the arms are … from the plan's start …: plan again`, the chip `transit stale`. | The arms moved since the plan. Press the Move button again. |
 | An arm's chips stay red after start. | Its spawners timed out (`Failed loading controller joint_state_broadcaster` in the `sim` pane). Press Ctrl-C there, **Up**, **Enter**. |
 | `sim.sh` refuses: `simulator nodes of an earlier start still run`. | A start that died part way left its nodes running. Run the `kill -INT …` it prints, then start it again. |
 
