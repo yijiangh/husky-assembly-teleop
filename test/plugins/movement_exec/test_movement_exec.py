@@ -271,7 +271,7 @@ def test_a_refused_lease_is_busy_and_leases_nothing(monkeypatch):
     """The robots' lease refused: busy, naming the lease, nothing leased or sent."""
     lab = Lab()
 
-    def refused(_serials, _label):
+    def refused(_serials, _label, moves=None):
         raise NotLeased("robot 0806 is leased by a plugin: teleop")
 
     monkeypatch.setattr(lab.ctx, "take_lease", refused)
@@ -950,6 +950,60 @@ def test_a_robot_whose_link_dropped_while_moving_refuses_the_request():
     assert result.status == REFUSED and "can't tell whether 0805 ur_arm is moving" in result.reason
     assert result.reason.endswith("until they come back (check its link in Health) or the monitor restarts")
     assert lab.free() and not lab.cindy._multi_arm.messages
+
+
+async def belle_link_drops(lab) -> None:
+    """Belle's joint states stop while she moves: she counts as moving for good ("can't tell")."""
+    belle = lab.belle.arms["ur_arm"]
+    driver = next(driver for driver in lab.drivers if getattr(driver, "arm", None) is belle)
+    with from_outside(lab.belle):
+        belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
+    for _ in range(5):
+        await lab.ctx.next_tick()
+    driver.silent_from = lab.ctx.t
+    for _ in range(8):
+        await lab.ctx.next_tick()
+
+
+@pytest.mark.safety
+def test_a_robot_parked_in_health_does_not_refuse_the_request():
+    """Belle's link dropped, but she is parked in Health: Cindy's motion runs, Belle left out of the freeze too."""
+    lab = Lab()
+
+    async def scenario():
+        await belle_link_drops(lab)
+        lab.belle.parked = True
+        future = lab.plugin.request_execute(lab.request())
+        while lab.plugin.prompt is None and not future.done():
+            await asyncio.sleep(0)
+        if not future.done():
+            await answer(lab, True)
+        return await future
+
+    result = run_guarded(scenario())
+    assert result.status == DONE, result.reason
+    assert lab.belle.parked, "every robot leased, only Cindy moved: Belle stays parked"
+
+
+@pytest.mark.safety
+def test_a_part_by_hand_runs_while_another_robot_cannot_be_told_still():
+    """Belle's link dropped, not parked: the bar placed by hand still runs (it sends nothing); a motion is refused."""
+    lab = Lab(current=("B20_J", 3))
+    request = lab.request("B20_J_transfer")
+    mount = request.parts[1]
+
+    async def scenario():
+        await belle_link_drops(lab)
+        refused = await lab.plugin.request_execute(request)
+        future = lab.plugin.request_execute(replace(request, parts=(mount,)))
+        while lab.plugin.prompt is None and not future.done():
+            await asyncio.sleep(0)
+        await answer(lab, True)
+        return refused, await future
+
+    refused, result = run_guarded(scenario())
+    assert refused.status == REFUSED and "can't tell whether 0805 ur_arm is moving" in refused.reason
+    assert result.status == DONE and result.done == (1, 2), result.reason
 
 
 @pytest.mark.safety

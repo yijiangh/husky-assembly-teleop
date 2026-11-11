@@ -242,7 +242,7 @@ class PluginContext:
         with leased(self._lease_slots(serials), f"{self.name}: {label}", owner=self.name) as lease:
             yield lease
 
-    def take_lease(self, serials: Iterable[str], label: str) -> Lease:
+    def take_lease(self, serials: Iterable[str], label: str, moves: Iterable[str] | None = None) -> Lease:
         """Lease robots across ticks, until `lease.release()` or this plugin stops; send under `with lease.use():`.
 
         For leases no single task spans, e.g. teleop that keeps a robot's lease while its buttons are in use.
@@ -250,20 +250,26 @@ class PluginContext:
         Args:
             serials: The robots to lease, all or none.
             label: What the lease is for, after this plugin's name in messages.
+            moves: The robots among them it will move, which are unparked; None: every one. The others are only held
+                (no other plugin commands them) and stay parked.
 
         Raises:
             NotLeased: If any of them is leased already; none is leased then.
             KeyError: If a serial is not a connected robot.
         """
-        lease = take_lease(self._lease_slots(serials), f"{self.name}: {label}", owner=self.name)
+        lease = take_lease(self._lease_slots(serials, moves), f"{self.name}: {label}", owner=self.name)
         self._leases = {kept for kept in self._leases if kept.active} | {lease}
         return lease
 
-    def _lease_slots(self, serials: Iterable[str]) -> list[LeaseSlot]:
-        """The lease slots of robots `serials`; KeyError for an unknown one. Unparks a parked one: it will move."""
+    def _lease_slots(self, serials: Iterable[str], moves: Iterable[str] | None = None) -> list[LeaseSlot]:
+        """The lease slots of robots `serials`; KeyError for an unknown one.
+
+        Unparks a parked one it will move (`moves`; None: every one).
+        """
         robots = {serial: self.world.robots[serial] for serial in serials}
+        moving = set(robots) if moves is None else set(moves)
         for serial, robot in robots.items():
-            if robot.parked:
+            if robot.parked and serial in moving:
                 robot.parked = False
                 self.log_warn(f"{serial} no longer parked: {self.name} leases it to move it")
         return [robot.lease_slot for robot in robots.values()]

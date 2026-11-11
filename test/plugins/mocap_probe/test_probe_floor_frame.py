@@ -120,7 +120,8 @@ def test_use_refit_is_refused_while_anything_moves_and_otherwise_asks_the_relay(
     asked = []
     relay.use_refit = lambda: asked.append(True) or "future"
     arm = SimpleNamespace(state=SimpleNamespace(last_update_time=99.9, is_executing=True, last_slight_motion_time=None))
-    ctx.world.robots = {"a200-0805": SimpleNamespace(arms={"ur_arm": arm}, base=SimpleNamespace(state=None))}
+    ctx.world.robots = {"a200-0805": SimpleNamespace(arms={"ur_arm": arm}, base=SimpleNamespace(state=None),
+                                                     parked=False)}
     tasks = []
     ctx.spawn = lambda _label, work: tasks.append(work)
 

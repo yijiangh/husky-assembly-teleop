@@ -1075,6 +1075,22 @@ def test_no_goal_at_the_live_base_flags_the_drive_before_and_it_drives_again(mon
     asyncio.run(walk())
 
 
+def test_a_part_by_hand_does_not_wait_for_every_robot_to_stand_still(monkeypatch):
+    """Another robot counts as moving for good (its link dropped): the part by hand is sent at once all the same."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        monkeypatch.setattr(guide_module, "moving_reason", lambda *_args, **_kwargs: "can't tell whether 0805 moves")
+        lab.guide.kinds[HAND].tick_all()
+        lab.guide.done(lab.ctx)
+        await lab.ticks(2)
+        assert len(lab.executor.requests) == 1 and lab.executor.prompt is not None
+        assert lab.guide.procedure.doing != "waiting for every robot to stand still"
+
+    asyncio.run(walk())
+
+
 def test_done_twice_confirms_a_part_by_hand_with_its_boxes_unticked(monkeypatch):
     """Trust me: the second Done ticks every box, warns and records the part."""
     lab = Guide(monkeypatch)

@@ -49,10 +49,10 @@ from ...shared.execution.tools import (FELL_SHORT, REACHED, ROBOTIQ_CLOSE, ROBOT
                                        robotiq_move)
 from ...shared.execution.tools import DRY_RUN as TOOL_DRY, REFUSED as TOOL_REFUSED
 from ...shared.motion_planner_contract import MotionPlanRequest
-from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, DONE, DRY_RUN, FAILED, HANDOFF_PART,
-                                              HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART, OPEN_PART,
-                                              PLANNED_MARGIN, REFUSED, REFUSED_PART, RETREAT_PART, WITH_MOTION_PART,
-                                              current_primary)
+from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, DONE, DRY_RUN, FAILED, HAND_KINDS,
+                                              HANDOFF_PART, HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART,
+                                              OPEN_PART, PLANNED_MARGIN, REFUSED, REFUSED_PART, RETREAT_PART,
+                                              WITH_MOTION_PART, current_primary)
 from ...shared.planner.planner_service import PlannerService
 from ...shared.runs.runs import SPLIT_RANGE
 from ...world.clearance import ARM_MOVE
@@ -215,7 +215,7 @@ async def run_part(job: Job, run: PartRun) -> None:
     if kind == REFUSED_PART:
         run.ended(REFUSED, "refused", run.part.text)
         return
-    problem = world_problem(job, motion=kind in MOTION_KINDS)
+    problem = world_problem(job, motion=kind in MOTION_KINDS, still=kind not in HAND_KINDS)
     if problem:
         run.ended(REFUSED, "refused", problem)
         return
@@ -235,11 +235,12 @@ def part_started(job: Job, run: PartRun) -> None:
     run.base_at_start = snapshot.base if snapshot is not None else None
 
 
-def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None) -> str:
+def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None, still: bool = True) -> str:
     """Why a part may not run now; "" if it may.
 
     Every part: the process and the current action are still the request's, the robot is not soft stopped (Stop all,
-    or a clearance tripped: its commands are refused until Resume), and nothing else moves (`others_moving`). A motion
+    or a clearance tripped: its commands are refused until Resume), and nothing else moves (`others_moving`; not for
+    a part by hand, `still` False: it sends nothing). A motion
     also: the robot is live, the safety sync vouches for each of its arms (`ArmInterface.safety_problem`:
     else the arm refuses the trajectory anyway), the plan was made after the robot's arms last moved (`Job.moved_at`)
     and is not stale (`stale_reason`).
@@ -247,6 +248,7 @@ def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None) -> str
     Args:
         job: The request being run.
         motion: Whether the part moves the arms.
+        still: Whether every other robot must stand still; False for a part by hand.
         basis: What the motion's plan was made from; None: the request's.
     """
     request, view, ctx = job.request, job.run.view, job.ctx
@@ -256,7 +258,7 @@ def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None) -> str
         return f"the current action is no longer {request.action}"
     if job.robot.soft_stopped:
         return f"{job.who} is soft stopped; press Resume first"
-    moving = others_moving(job)
+    moving = others_moving(job) if still else ""
     if moving or not motion:
         return moving
     snapshot = ctx.scene.snapshot
@@ -301,14 +303,14 @@ def others_basis(job: Job) -> Basis:
 
     Arms that never sent joint states and bases never fixed by mocap this session are left out, as `moving_reason`
     leaves them out (that robot is not running, or not tracked: the plan did not check against it), and so are the
-    robots the operator let be unknown.
+    robots the operator let be unknown and the robots parked in Health.
 
     Raises:
         WorldMoved: If one of them can no longer be measured (stale joints, mocap lost).
     """
     unknown = unknown_serials(job.ctx.world, job.request)
     others = [(serial, robot) for serial, robot in job.ctx.world.robots.items()
-              if serial != job.request.serial and serial not in unknown]
+              if serial != job.request.serial and serial not in unknown and not robot.parked]
     return take_basis(job.ctx.world, job.ctx.now(),
                       arms=[(serial, name) for serial, robot in others for name, arm in robot.arms.items()
                             if arm.state.last_update_time is not None],
