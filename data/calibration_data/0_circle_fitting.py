@@ -12,7 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pybullet_planning as pp
 from circle_fitting_3d import Circle3D
-from config_loader import load_config, HERE
+from config_loader import load_config, CALIB_DATA_DIR
 from logging_utils import setup_logger
 
 # Load configuration
@@ -37,7 +37,7 @@ def traj_label(file_name, fallback_idx=0):
 
 def process_data_batch(data_batch, date_folder, export=True):
     """Process a single data batch (j0 or j1) for circle fitting."""
-    data_folder = os.path.join(HERE, date_folder, data_batch)
+    data_folder = os.path.join(CALIB_DATA_DIR, date_folder, data_batch)
     
     # Create file handler for this batch
     file_handler = logging.FileHandler(os.path.join(data_folder, f'circle_fitting_log_{data_batch}.txt'), mode='w')

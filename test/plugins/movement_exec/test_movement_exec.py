@@ -8,15 +8,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
+from sensor_msgs.msg import JointState
 import pytest
 from planning_fixtures import purged_process, step
 from plugin_fakes import FakeContext, from_outside
 from robot_lab import LEFT, FakeRun, RobotLab
 
+from husky_assembly_teleop.config import short_serial
 from husky_assembly_teleop.monitor import HuskyMonitor
 from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.plugins.movement_exec import plugin as exec_module
@@ -46,6 +49,7 @@ from husky_assembly_teleop.world.tcp import tool0_in_base_link
 from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 
 #: Wall-clock seconds a scenario may take: a guard missing makes a test wait forever, this makes it fail instead.
@@ -170,7 +174,7 @@ def test_a_motion_is_sent_on_exec_arrives_and_is_recorded():
     events = [event for event, _fields in lab.run.records]
     assert events == ["exec"] and lab.plugin.prompt is None
     line, = said(lab)
-    assert line.startswith("cindy (a200-0806): B20_R_home — move left_ur_arm, right_ur_arm along the planned path, "
+    assert line.startswith("cindy (0806): B20_R_home — move left_ur_arm, right_ur_arm along the planned path, "
                            "2 s, largest joint travel 11°")
     assert ("info", line) in lab.ctx.logs
     record, = lab.run.files()
@@ -227,11 +231,11 @@ def test_a_refused_lease_is_busy_and_leases_nothing(monkeypatch):
     lab = Lab()
 
     def refused(_serials, _label):
-        raise NotLeased("robot a200-0806 is leased by a plugin: teleop")
+        raise NotLeased("robot 0806 is leased by a plugin: teleop")
 
     monkeypatch.setattr(lab.ctx, "take_lease", refused)
     result, held = execute(lab, lab.request())
-    assert result.status == REFUSED and result.reason == "busy: robot a200-0806 is leased by a plugin: teleop"
+    assert result.status == REFUSED and result.reason == "busy: robot 0806 is leased by a plugin: teleop"
     assert held is None and lab.free() and lab.published() == 0
 
 
@@ -252,7 +256,7 @@ def test_a_second_request_is_busy():
 
 
 @pytest.mark.parametrize("changes, words", [
-    (dict(serial="a200-0804"), "B20_R is for a200-0806, not a200-0804"),
+    (dict(serial="a200-0804"), "B20_R is for 0806, not 0804"),
     (dict(route_movement=1), "the plan is for movement 1"),
     (dict(route=None), "no plan"),
 ])
@@ -274,7 +278,7 @@ def test_a_base_moved_3_mm_since_planning_is_refused_at_the_request():
     lab.tick(lab.ctx.t)
     result, held = execute(lab, request)
     assert result.status == REFUSED and held is None and lab.published() == 0
-    assert "a200-0806's base is 3.0 mm" in result.reason and "from where the plan was made" in result.reason
+    assert "0806's base is 3.0 mm" in result.reason and "from where the plan was made" in result.reason
 
 
 @pytest.mark.safety
@@ -289,7 +293,7 @@ def test_a_base_moved_3_mm_as_exec_runs_is_refused_before_the_send():
         return await future
 
     result = run_guarded(scenario())
-    assert result.status == REFUSED and "a200-0806's base moved 3.0 mm" in result.reason
+    assert result.status == REFUSED and "0806's base moved 3.0 mm" in result.reason
     assert "since planning" in result.reason and lab.published() == 0
 
 
@@ -335,6 +339,49 @@ def test_a_cancel_during_the_motion_holds_every_arm():
     assert holds == [1, 1] and lab.free()
     (event, fields), (last, _fields) = lab.run.records[-2:]
     assert (event, last, fields["data"]["reason"]) == ("cancel", "exec", "operator")
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("ticked", [True, False])
+def test_a_motion_keeps_a_contact_clearance_only_while_execs_clearance_is_ticked(ticked):
+    """Ticked, the motion runs under an arm clearance at the assembly planner's margin, contact only; else none."""
+    lab = Lab()
+    result, _held = execute(lab, lab.request(clearance=ticked))
+    assert result.status == DONE, result.reason
+    assert [(clearance.serials, clearance.margin, clearance.refuse_first) for clearance in lab.ctx.clearances] == \
+        ([(("a200-0806",), 0.0, True)] if ticked else [])
+
+
+@pytest.mark.safety
+def test_a_motion_starting_in_contact_is_refused_and_one_that_trips_fails():
+    """A clearance that refuses the start sends nothing (REFUSED); one tripping mid-motion holds every arm (FAILED)."""
+    for refuse in (True, False):
+        lab = Lab()
+        problem = "robot 0806 came within 0 cm of wall"
+        if refuse:
+            asked = lab.ctx.clearance
+
+            @contextmanager
+            def unchecked(*args, **kwargs):
+                """The clearance asked for, not checked yet: the part waits for its first check."""
+                with asked(*args, **kwargs) as clearance:
+                    clearance.checked = False
+                    yield clearance
+            lab.ctx.clearance = unchecked
+
+        async def trip(lab):
+            while not (lab.ctx.clearances if refuse else lab.cindy._multi_arm.messages):
+                await asyncio.sleep(0)
+            lab.ctx.clearances[-1].problem, lab.ctx.clearances[-1].refused = problem, refuse
+            lab.plugin._task.cancel()
+
+        result, _held = execute(lab, lab.request(), during=trip)
+        if refuse:
+            assert result.status == REFUSED and "nothing sent" in result.reason and problem in result.reason
+            assert not lab.cindy._multi_arm.messages
+        else:
+            assert result.status == FAILED and f"soft stopped: {problem}" in result.reason
+        assert lab.free()
 
 
 @pytest.mark.safety
@@ -396,8 +443,11 @@ def test_the_whole_transfer_step_ends_with_the_grasp_and_its_servo():
     still recorded, and its line stays on the panel.
     """
     lab = Lab(current=("B20_J", 3))
-    result, _held = execute(lab, lab.request("B20_J_transfer"), True)
+    # * Two Confirms: the bar placed and clamped, then the servo's "no usable mocap fit of B20" (no fake Motive).
+    result, _held = execute(lab, lab.request("B20_J_transfer"), True, True)
     assert result.status == DONE and result.done == (3, 1, 2, SERVO_INDEX), result.reason
+    prompts = [fields["data"]["text"] for event, fields in lab.run.records if event == "prompt"]
+    assert any("SERVO by bar: no usable mocap fit of B20 (asset 1020)" in text for text in prompts), prompts
     files = lab.run.files()
     assert files[1]["outcome"]["status"] == "confirmed"
     assert files[-2]["kind"] == "transfer" and files[-2]["outcome"]["status"] == DONE
@@ -421,13 +471,14 @@ def test_a_dry_run_never_gives_done_and_sends_nothing():
         lab.plugin.request_dry_run(False)
         assert lab.plugin.prompt.text.startswith("DRY RUN — B20_J_place_bar + B20_J_grasp — ")
         await answer(lab, True)
+        await answer(lab, True)  # the servo's bar prompt: no usable mocap fit of B20 (no fake Motive)
         return await future
 
     result = run_guarded(scenario())
     assert result.status == DRY_RUN and result.done == () and lab.published() == 0
     assert lab.plugin.dry_run and any("Dry run not changed" in line for line in lab.ctx.lines("warn"))
     assert any("DRY RUN a200-0806 left_ur_arm" in line for line in lab.ctx.lines("warn"))
-    assert said(lab)[0].startswith("cindy (a200-0806): DRY RUN — B20_J_transfer — move left_ur_arm, right_ur_arm")
+    assert said(lab)[0].startswith("cindy (0806): DRY RUN — B20_J_transfer — move left_ur_arm, right_ur_arm")
     assert lab.run.files()[0]["outcome"]["dry_run"] is True
 
 
@@ -574,7 +625,7 @@ def test_a_soft_stop_latched_as_exec_runs_refuses_the_step_saying_resume():
         return await future
 
     result = run_guarded(scenario())
-    assert result.status == REFUSED and result.reason == ("B20_R_home: cindy (a200-0806) is soft stopped; press "
+    assert result.status == REFUSED and result.reason == ("B20_R_home: cindy (0806) is soft stopped; press "
                                                           "Resume first")
     assert lab.published() == 0 and lab.free()
 
@@ -652,7 +703,7 @@ def test_robot_control_cannot_move_another_robot_while_a_step_runs():
 
     result = run_guarded(scenario())
     assert result.status == DONE and not belle._trajectory.messages and len(lab.cindy._multi_arm.messages) == 1
-    assert any("a200-0805 is leased by movement_exec: exec B20_R_home" in line for line in lab.ctx.lines("warn"))
+    assert any("0805 is leased by movement_exec: exec B20_R_home" in line for line in lab.ctx.lines("warn"))
     assert lab.free()
 
 
@@ -668,7 +719,8 @@ def test_exec_is_busy_while_another_plugin_leases_any_robot():
         other.world = lab.ctx.world
         lease = other.take_lease([serial], "teleop" if holder == "robot_control" else "commit plan 1")
         result, held = execute(lab, lab.request())
-        assert result.status == REFUSED and result.reason == f"busy: robot {serial} is leased by {lease.holder}"
+        expected = f"busy: robot {short_serial(serial)} is leased by {lease.holder}"
+        assert result.status == REFUSED and result.reason == expected
         # ? `held` is Cindy's lease right after the request: the commit's own, when the commit leases her.
         assert held in (None, lease) and lab.ctx.world.robots[serial].lease_slot.lease is lease
         assert lab.published() == 0 and lab.run.records == []
@@ -697,7 +749,7 @@ def test_no_other_plugin_gets_a_lease_while_a_step_runs():
 
     result = run_guarded(scenario())
     assert result.status == DONE and lab.free() and lab.belle.lease_slot.lease is None
-    assert refusals == [f"robot {serial} is leased by movement_exec: exec B20_R_home"
+    assert refusals == [f"robot {short_serial(serial)} is leased by movement_exec: exec B20_R_home"
                         for serial in ("a200-0805", "a200-0806")]
 
 
@@ -714,7 +766,7 @@ def test_a_path_check_during_a_step_moves_nothing_and_leases_nothing(monkeypatch
     checked = []
     planner._world = SimpleNamespace(sync=lambda _snapshot, _serial: "mirror", close=lambda: None)
     monkeypatch.setattr(arm_plugin, "path_hit",
-                        lambda _world, _mirror, arm, waypoints: checked.append((arm, waypoints.shape)))
+                        lambda _world, _mirror, arm, waypoints, _margin: checked.append((arm, waypoints.shape)))
 
     async def scenario():
         future = lab.plugin.request_execute(lab.request("B20_J_transfer"))
@@ -747,7 +799,7 @@ def test_another_robot_moving_when_exec_runs_refuses_it():
         return await future
 
     result = run_guarded(scenario())
-    assert result.status == REFUSED and "a200-0805 ur_arm is running a trajectory" in result.reason
+    assert result.status == REFUSED and "0805 ur_arm is running a trajectory" in result.reason
     assert not lab.cindy._multi_arm.messages
 
 
@@ -766,7 +818,7 @@ def test_another_robot_starting_to_move_during_the_motion_holds_the_acting_robot
             belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
 
     result, _held = execute(lab, lab.request(delta=0.6), during=start_belle)
-    assert result.status == FAILED and "a200-0805 ur_arm is running a trajectory" in result.reason
+    assert result.status == FAILED and "0805 ur_arm is running a trajectory" in result.reason
     holds = [sum(len(message.points) == 1 for message in arm._trajectory.messages) for arm in lab.cindy.arms.values()]
     assert holds == [1, 1] and lab.run.files()[-1]["outcome"]["status"] == "INTERRUPTED"
 
@@ -789,7 +841,7 @@ def test_a_robot_whose_link_dropped_while_moving_refuses_the_request():
         return await lab.plugin.request_execute(lab.request())
 
     result = run_guarded(scenario())
-    assert result.status == REFUSED and "can't tell whether a200-0805 ur_arm is moving" in result.reason
+    assert result.status == REFUSED and "can't tell whether 0805 ur_arm is moving" in result.reason
     assert result.reason.endswith("until they come back (check its link in Health) or the monitor restarts")
     assert lab.free() and not lab.cindy._multi_arm.messages
 
@@ -902,7 +954,7 @@ def test_another_robot_moving_at_a_robotiq_prompt_refuses_it_after_confirm():
         return await future
 
     result = run_guarded(scenario())
-    assert result.status == REFUSED and "a200-0804 ur_arm is running a trajectory" in result.reason
+    assert result.status == REFUSED and "0804 ur_arm is running a trajectory" in result.reason
     assert lab.belle.arms["ur_arm"].end_effector._action.goals == []
 
 
@@ -969,7 +1021,7 @@ def test_a_base_path_sent_just_before_the_lease_holds_the_acting_robots_arms_onc
             along_track_error=np.nan, yaw_error=0.0, command=np.zeros(2), update_time=lab.ctx.t, stamp=lab.ctx.t)
 
     result, _held = execute(lab, lab.request(delta=0.6), during=follow_soon)
-    assert result.status == FAILED and "a200-0805 base is following a path" in result.reason
+    assert result.status == FAILED and "0805 base is following a path" in result.reason
     assert lab.run.files()[-1]["outcome"]["status"] == "INTERRUPTED"
 
 
@@ -1014,12 +1066,12 @@ def test_a_base_driving_or_pushed_during_the_motion_holds_the_acting_robots_arms
         mocap.state.position = np.array([0.02, 0.0, 0.0])
 
     result, _held = execute(lab, lab.request(delta=0.6), during=push_soon)
-    assert result.status == FAILED and "robot a200-0805 base moved 20 mm" in result.reason
+    assert result.status == FAILED and "robot 0805 base moved 20 mm" in result.reason
     assert "Stop all" not in result.reason and lab.free()
     holds = [sum(len(message.points) == 1 for message in arm._trajectory.messages) for arm in lab.cindy.arms.values()]
     assert holds == [1, 1] and lab.run.files()[-1]["outcome"]["status"] == "INTERRUPTED"
     (_event, fields), = [record for record in lab.run.records if record[0] == "cancel"]
-    assert fields["data"]["reason"] == "freeze broken: robot a200-0805 base moved 20 mm, 0.0 deg"
+    assert fields["data"]["reason"] == "freeze broken: robot 0805 base moved 20 mm, 0.0 deg"
 
 
 @pytest.mark.safety
@@ -1034,7 +1086,7 @@ def test_another_robot_lost_by_mocap_during_the_motion_holds_the_acting_robots_a
         mocap.lost = True
 
     result, _held = execute(lab, lab.request(delta=0.6), during=hide_soon)
-    assert result.status == FAILED and "robot a200-0805 base: no valid mocap pose" in result.reason
+    assert result.status == FAILED and "robot 0805 base: no valid mocap pose" in result.reason
 
 
 @pytest.mark.safety
@@ -1052,7 +1104,7 @@ def test_another_robot_lost_by_mocap_when_exec_runs_refuses_it():
         return await lab.plugin.request_execute(lab.request())
 
     result = run_guarded(scenario())
-    assert result.status == REFUSED and "can't tell whether the other robots stand still: robot a200-0805 base" \
+    assert result.status == REFUSED and "can't tell whether the other robots stand still: robot 0805 base" \
         in result.reason
     assert not lab.cindy._multi_arm.messages and lab.free()
 
@@ -1069,7 +1121,7 @@ def test_an_arm_the_safety_sync_does_not_vouch_for_is_refused_before_the_prompt(
     arm.state.status_update_time = lab.ctx.t - 5.0
     result, held = execute(lab, request, True)
     assert result.status == REFUSED and lab.published() == 0 and lab.run.records[0][0] == "exec"
-    assert result.reason == ("B20_R_home: cindy (a200-0806) right_ur_arm: its safety is not known: no recent status "
+    assert result.reason == ("B20_R_home: cindy (0806) right_ur_arm: its safety is not known: no recent status "
                              "from multi_arm_safety_sync; start it on the robot")
 
 
@@ -1086,7 +1138,7 @@ def test_a_program_stopped_as_exec_runs_is_refused_before_the_send():
 
     result = run_guarded(scenario())
     assert result.status == REFUSED and lab.published() == 0
-    assert result.reason == ("B20_R_home: cindy (a200-0806) left_ur_arm: its program is stopped (Stop all, or the sync "
+    assert result.reason == ("B20_R_home: cindy (0806) left_ur_arm: its program is stopped (Stop all, or the sync "
                              "stopped it); press Resume")
 
 
@@ -1094,7 +1146,9 @@ def test_confirm_and_cancel_are_buttons_of_their_own_in_the_assembly_tab():
     """Confirm and Cancel are two buttons, on the desktop as on the phone; the desktop's reach the plugin."""
     lab = Lab()
     buttons = lab.ctx.gui.of_kind("button")
-    assert [(button.label, button.color) for button in buttons] == [("Confirm", "green"), ("Cancel", "red")] * 2
+    assert [(button.label, button.color) for button in buttons] == [
+        ("Confirm", "green"), ("Cancel", "red"), ("As-built: record now", None), ("Build as-built page", None),
+        ("Confirm", "green"), ("Cancel", "red")]
     assert lab.ctx.gui.of_kind("button_group") == []
     buttons[0].callback()
     assert lab.plugin._last == "nothing to answer"
@@ -1223,14 +1277,14 @@ def test_b21s_insert_tightens_the_left_screw_only_and_ends_when_it_stalls():
 
     result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP), during=watch_panel)
     assert result.status == DONE and result.done == (4,), result.reason
-    assert not prompts(lab) and said(lab)[0].startswith("cindy (a200-0806): B21_J_insert — INSERT: rigid ")
+    assert not prompts(lab) and said(lab)[0].startswith("cindy (0806): B21_J_insert — INSERT: rigid ")
     joint = ScaffoldingV3.JOINT_MOTOR
     assert (joint, 1) in commands(lab, "left_ur_arm") and (joint, 1) not in commands(lab, "right_ur_arm")
     assert commands(lab, "right_ur_arm")[0] == (0, 0)
     record = json.loads(json.dumps(lab.run.files()[-1]))
     assert record["part"]["kind"] == "insert" and record["outcome"]["status"] == "STALLED"
     assert record["outcome"]["settings"] == record["command"]["settings"] == {
-        "split_mm": 5.0, "spiral": False, "spiral_seconds": 20.0, "spiral_turns": 4}
+        "split_mm": 5.0, "spiral": False, "spiral_seconds": 20.0, "spiral_turns": 4, "retreat_compliant": False}
     assert [phase["name"] for phase in record["outcome"]["phases"]] == ["rigid", "switch", "compliant"]
     assert record["plan"]["planner"] == "fake" and result.end is not None
     line, = lines
@@ -1264,7 +1318,7 @@ def test_an_inserts_rigid_part_whose_hold_is_refused_is_hold_not_sent():
     lab.plugin.draw(lab.ctx)
     assert any("HOLD NOT SENT" in widget.content for widget in lab.ctx.gui.of_kind("html"))
     lines = [line for _level, line in lab.ctx.logs if "HOLD NOT SENT on" in line]
-    assert len(lines) == 2 and lines[0].startswith("HOLD NOT SENT on left_ur_arm, right_ur_arm: stop a200-0806")
+    assert len(lines) == 2 and lines[0].startswith("HOLD NOT SENT on left_ur_arm, right_ur_arm: stop 0806")
     assert lines[1].startswith("Exec ")
 
 
@@ -1283,7 +1337,7 @@ def test_the_insert_settings_are_read_once_and_reach_its_plan():
     lab = dry(("B21_J", 4), RunSettings(insert_split_mm=8.0))
     result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP))
     assert result.status == DRY_RUN and lab.published() == 0 and not prompts(lab)
-    assert said(lab)[0].startswith("cindy (a200-0806): DRY RUN — B21_J_insert — INSERT: rigid ")
+    assert said(lab)[0].startswith("cindy (0806): DRY RUN — B21_J_insert — INSERT: rigid ")
     assert "then COMPLIANT 8.0 mm" in said(lab)[0]
     assert lab.run.files()[-1]["command"]["settings"]["split_mm"] == 8.0
 
@@ -1308,12 +1362,12 @@ def test_the_insert_settings_are_read_once_and_reach_its_plan():
 @pytest.mark.parametrize("solved", [True, False])
 @pytest.mark.safety
 def test_b20s_retreat_opens_the_screws_replans_its_tail_and_its_ungrasp_is_done(solved):
-    """B20_R's step: no prompt; the gripper screws open, the tail is replanned and run; the retreat and its ungrasp done.
+    """B20_R's step with "Retreat compliant": no prompt; the screws open, the tail replanned and run; both done.
 
     The replan asks for the plan's goals in 1 mm steps. A tail not planned fails the retreat (A4): no tail, the
     ungrasp not done.
     """
-    lab = compliant_lab(("B20_R", 1))
+    lab = compliant_lab(("B20_R", 1), RunSettings(retreat_compliant=True))
     request = along(lab, "B20_R_retreat", RETREAT_STEP, goals=True)
     start = np.array(request.route.result.trajectory.positions[0])
     planner = lab.ctx.plugins["motion_planner"] = TailPlanner(lab, start + RETREAT_STEP, solved)
@@ -1322,7 +1376,7 @@ def test_b20s_retreat_opens_the_screws_replans_its_tail_and_its_ungrasp_is_done(
     assert asked.goal_poses == request.route.goals and asked.linear_step == TAIL_STEP
     assert asked.step.movement.id == "B20_R_retreat" and asked.snapshot is not None
     assert not prompts(lab) and len(said(lab)) == 1 and said(lab)[0].startswith(
-        "cindy (a200-0806): B20_R_retreat — RETREAT: the gripper screws of left_ur_arm + right_ur_arm OPEN")
+        "cindy (0806): B20_R_retreat — RETREAT: the gripper screws of left_ur_arm + right_ur_arm OPEN")
     for arm in lab.tools:
         assert (ScaffoldingV3.GRIPPER_MOTOR, -1) in commands(lab, arm)
     files = [json.loads(json.dumps(file)) for file in lab.run.files()]
@@ -1349,7 +1403,7 @@ def test_b21_hs_close_is_the_compliant_handoff():
     result, _held = execute(lab, request, False)
     assert result.status == CANCELLED and gripper._action.goals == [] and lab.alice.arms["ur_arm"].controllers \
         .switches == []
-    assert prompts(lab)[0].startswith("alice (a200-0804): B21_H_close — CLOSE + compliant handoff on ur_arm")
+    assert prompts(lab)[0].startswith("alice (0804): B21_H_close — CLOSE + compliant handoff on ur_arm")
     run_guarded(settle(lab))
     result, _held = execute(lab, request, True)
     assert result.status == DONE and result.done == (3,), result.reason
@@ -1370,7 +1424,7 @@ def test_a_compliant_parts_question_names_the_robot_and_is_recorded():
               lambda *args: events.append(args))
     operator = PartOperator(job, "B21_J_insert")
     prompt = operator.open("Spiral complete without a stall", warn=True)
-    assert prompt.line == "cindy (a200-0806): B21_J_insert — Spiral complete without a stall" and prompt.warn
+    assert prompt.line == "cindy (0806): B21_J_insert — Spiral complete without a stall" and prompt.warn
     assert operator.poll(prompt) is None
     lab.ctx.t += 1.0
     lab.plugin.request_confirm()
@@ -1378,3 +1432,60 @@ def test_a_compliant_parts_question_names_the_robot_and_is_recorded():
     assert [event for event, _movement, _data in events] == ["prompt", "confirm"]
     operator.close(operator.open("again"))
     assert lab.plugin.prompt is None and len(events) == 3
+
+
+@pytest.mark.safety
+def test_b20s_retreat_backs_out_stiff_by_default_and_its_ungrasp_is_done():
+    """B20_R's step: no prompt, no planner; the jaws LOOSEN as the 12 mm lead goes out, then the rest; both done.
+
+    The whole step runs under the joint controller: no switch, no force zero, no tail replan.
+    """
+    lab = compliant_lab(("B20_R", 1))
+    request = along(lab, "B20_R_retreat", RETREAT_STEP, goals=True)
+    start = np.array(request.route.result.trajectory.positions[0])
+    lab.ctx.plugins["motion_planner"] = TailPlanner(lab, start + RETREAT_STEP)
+    result, _held = execute(lab, request)
+    assert result.status == DONE and result.done == (1, 0), result.reason
+    assert not lab.ctx.plugins["motion_planner"].requests, "no tail replan: the rest is the plan's own rows"
+    assert not prompts(lab) and said(lab)[0].startswith(
+        "cindy (0806): B20_R_retreat — RETREAT, stiff: the M1 screws of left_ur_arm + right_ur_arm LOOSEN while "
+        "both tools back straight out 12.0 mm at 2.40 mm/s (5.0 s, joint controller), then ")
+    files = [json.loads(json.dumps(file)) for file in lab.run.files()]
+    assert [(file["movement"], file["outcome"]["status"]) for file in files] == [
+        ("B20_R_retreat", "RETREATED"), ("B20_R_ungrasp", "opened")]
+    outcome = files[0]["outcome"]
+    assert outcome["plan"]["stiff"] and outcome["plan"]["screw_out_s"] == pytest.approx(5.0, abs=0.05)
+    assert [(phase["name"], phase["end"]) for phase in outcome["phases"]] == [("screw-out", "ARRIVED"),
+                                                                              ("rigid", "ARRIVED")]
+    loosening = {"left_ur_arm": "LOOSENING", "right_ur_arm": "LOOSENING"}
+    assert any(entry["states"] == loosening for entry in outcome["motor_states"][:3]), outcome["motor_states"]
+    assert "ft_zero" not in outcome and "tail" not in outcome and outcome["checks"]
+    for arm in lab.tools:
+        sent = commands(lab, arm)
+        assert sent[0][1] == 0 and sent[1] == (ScaffoldingV3.GRIPPER_MOTOR, -1) and sent[-1][1] == 0, sent
+    for arm in lab.cindy.arms.values():
+        assert arm.controllers.switches == []
+    assert len(lab.cindy._multi_arm.messages) == 2, "the lead, then the rest"
+    live = np.concatenate([arm.joint_vector() for arm in lab.cindy.arms.values()])
+    np.testing.assert_allclose(live, start + RETREAT_STEP, atol=np.radians(0.5))  # a send arrives within 0.5°
+    assert any("screw-out done after 5." in line for line in lab.ctx.lines("info"))
+    assert any(line.startswith("a200-0806: retreat: RETREATED: retreated ") for line in lab.ctx.lines("info"))
+
+
+@pytest.mark.safety
+def test_a_stiff_retreat_whose_arms_moved_over_half_a_degree_since_the_plan_is_refused():
+    """The arms 0.6° from the plan's start: refused before anything is sent (the insert's limit stays 2°)."""
+    lab = compliant_lab(("B20_R", 1))
+    request = along(lab, "B20_R_retreat", RETREAT_STEP, goals=True)
+    left = lab.cindy.arms["left_ur_arm"]
+    joints = left.joint_vector().copy()
+    joints[2] += np.radians(0.6)
+    state = JointState(name=list(UR_JOINT_NAMES), position=[float(value) for value in joints])
+    left._on_joint_state(state)
+    lab.ctx.t += 2.5  # long enough ago that the arm does not count as moving
+    lab.tick(lab.ctx.t)
+    result, _held = execute(lab, request)
+    assert result.status == REFUSED and "from the plan's start (over 0.57°): replan" in result.reason, result.reason
+    assert lab.published() == 0
+    for arm in lab.tools:
+        assert commands(lab, arm) == []

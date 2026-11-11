@@ -5,8 +5,13 @@ It runs after a transfer, a support robot's approach or a ground bar's insert, f
 checks of every part again (process and action unchanged, others still, the robot live), a plan on the motion planner
 (`request_servo_step`), the operator's Confirm on the first pass (plain) and on any later one travelling over
 CONFIRM_TRAVEL (a warning), the move, a settle, a reading. With "Servo by bar" the loop steers on the mocap bar once a
-usable fit comes (`bar_reading`), else on tool0. Done = converged, already on target, or nothing left to plan; every
-other end leaves the step pending.
+usable fit comes (`bar_reading`), else on tool0: a first reading without a usable fit asks the operator first (lab
+2026-10-29: Motive streamed no bar, and the loop chased tool0 for eight passes unasked). Done = converged, already on
+target, or nothing left to plan; every other end leaves the step pending.
+
+The console gets the old monitor's lines: the pass banner with what it aims at, the plan, each reading's tool0, tracking
+and load lines, and one `### SERVOING ...` line saying how it ended; the panel line and the Exec plots chip say which
+phase the pass is in.
 
 ! Main thread, inside the plugin's task. A cancel during a move leaves every arm held (`send_motion`); `run_servo`'s
   `finally` still untracks the bar and writes the record, then the cancel goes on.
@@ -16,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -35,6 +41,7 @@ from ...shared.execution.servo import (BAR_TOL, CONFIRM_TRAVEL, MARKER_MAX_AGE, 
                                        deviation_text, excursion, flange_poses, flange_side, force_vectors,
                                        recommended_time, servo_plan, stop_after_move, tool0_errors, tracking_gaps,
                                        wrench_magnitudes)
+from ...shared.runs.as_built import servo_block
 from ...shared.execution.servo_record import plot_servo, servo_payload
 from ...shared.motion_planner_contract import MotionPlanRequest, ServoAsk
 from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HOLD_NOT_SENT, MAX_TRAJ_TIME,
@@ -44,7 +51,9 @@ from ...world.freeze import WorldMoved
 from ...shared.bars.layouts import bar_asset_id, bar_layouts, fit_bar
 from ...world.marker_match import sensed_from_raw
 from .sequences import Job, PartRun, confirmed, live_command_of, others_basis, others_moving, world_problem
-from .servo_measure import SIDE, ik_record, insert_end_problem, line, say_feedback, servo_file, sides
+from ...ui.style import BUSY, FAIL, OK
+from .servo_measure import (SIDE, aim_text, end_line, ik_record, insert_end_problem, line, load_line, planned_line,
+                            say_feedback, servo_file, sides)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.robot import RobotObject
@@ -79,6 +88,7 @@ async def run_servo(job: Job, run: PartRun) -> None:
     if isinstance(plan, str):
         run.ended(REFUSED, "refused", plan)
         return
+    run.servo_plan = plan
     say_feedback(job, plan)
     problem = insert_end_problem(job, plan)
     if problem:
@@ -100,10 +110,13 @@ async def run_servo(job: Job, run: PartRun) -> None:
             run.ended(CANCELLED if cancelled else FAILED, "cancelled" if cancelled else "raised", f"{what} {where}")
         raise
     finally:
-        loop.close()
-        # * Left on the panel after the request ends: a servo that moved nothing still says what it found.
+        # * The end line first, as the old monitor: then the bar pose at termination, the carry and the saved path.
         if run.result:
-            job.show(f"servo {run.result}: {run.reason}")
+            failed = run.result not in (DONE, DRY_RUN)
+            (job.ctx.log_warn if failed else job.ctx.log_info)(end_line(run.result, run.status, run.reason,
+                                                                        loop.passes))
+            loop.phase_is(f"servo {run.result}: {run.reason}", FAIL if failed else OK)
+        loop.close()
 
 
 class ServoLoop:
@@ -130,21 +143,38 @@ class ServoLoop:
         self.start_base = None
         self.tracked: TrackedObject | None = None
         self.name = f"servo_{plan.bar.rsplit('/', 1)[-1]}" if plan.bar else ""
+        #: The wrenches at reading 0 (the load line's reference), the last reading's panel line, the phase shown.
+        self.wrench0: dict | None = None
+        self.line = ""
+        self.phase = ""
+
+    def phase_is(self, text: str, color: str = BUSY) -> None:
+        """Show where the loop is: the Exec plots chip, and the panel line as "<phase> · <last reading>"."""
+        self.phase = text
+        self.job.status(text, color)
+        self.job.show(f"{text} · {self.line}" if self.line else text)
 
     async def run(self) -> None:
         """Track the bar, read once, then up to MAX_PASSES passes; ends through `run.ended`."""
         job, run, plan = self.job, self.part, self.plan
+        if plan.layout is not None and plan.holder is not None:
+            self.phase_is("reading 0: waiting for the bar's markers")
         await self._track()
         robot = self._live()
         if robot is None:
             run.ended(REFUSED, "refused", f"{job.who} {NOT_LIVE}")
             return
         self.start_base = robot.base
+        self.phase_is("reading 0: measuring")
         bar = self._measure(robot, 0, None, None).get("bar")
         if plan.by_bar and bar is not None and bar_on_target(bar):
             run.ended(DONE, "on target", f"the mocap bar is already on its target "
                                          f"({deviation_text(bar['mocap_vs_design'])}, under {BAR_TOL[0] * 1e3:.1f} mm "
                                          f"/ {math.degrees(BAR_TOL[1]):.1f} deg)")
+            return
+        if plan.by_bar and not self.engaged and not await self._bar_prompt(bar):
+            run.ended(CANCELLED, "cancelled",
+                      "stopped before the first pass: cancelled at the bar prompt; nothing sent")
             return
         for k in range(1, MAX_PASSES + 1):
             self.passes = k
@@ -154,10 +184,24 @@ class ServoLoop:
                 return
         run.ended(FAILED, "not converged", f"ran all {MAX_PASSES} passes without converging")
 
+    async def _bar_prompt(self, bar: dict | None) -> bool:
+        """Ask before aiming tool0 when "Servo by bar" applies but reading 0 has no usable fit; False = Cancel."""
+        plan = self.plan
+        short, mocap_id = plan.bar.rsplit("/", 1)[-1], bar_asset_id(plan.bar)
+        why = bar["reason"] if bar is not None else "the bar is not tracked"
+        self.phase_is("waiting for Confirm (servo by bar)", FAIL)
+        text = (f"{plan.target} — SERVO by bar: no usable mocap fit of {short} (asset {mocap_id}): {why}. Confirm to "
+                f"servo tool0 onto the authored targets of {SERVO_TARGET[plan.kind]} instead (the bar is only "
+                f"recorded; the loop steers on it if a fit comes later); Cancel stops and records.")
+        return await confirmed(self.job, self.part, text, warn=True)
+
     async def _pass(self, k: int) -> tuple[str, str, str] | None:
         """Plan, confirm, move and read once; (result, status, reason) when the loop ends, None to go on."""
         job, run, plan, ctx = self.job, self.part, self.plan, self.ctx
         request, view, loaded = job.request, job.run.view, job.request.loaded
+        ctx.log_info(f"### SERVOING iteration {k}/{MAX_PASSES}: aiming "
+                     f"{aim_text(plan, self.engaged, self.readings[-1].get('bar') if self.readings else None)}")
+        self.phase_is(f"pass {k}/{MAX_PASSES}: planning")
         problem = world_problem(job, motion=False)
         if problem:
             return REFUSED, "refused", problem
@@ -203,8 +247,10 @@ class ServoLoop:
         move = {"planner": route.planner, "attempts": route.attempts, "rows": waypoints, "ik": ik_record(route.ik),
                 "correction_mm": correction, "excursion_deg": math.degrees(travel), "net_deg": math.degrees(net),
                 "traj_time": traj_time, "duration": None, "prompted": k == 1 or warn, "outcome": None}
+        ctx.log_info(planned_line(k, route.planner, move, flanges_move))
         if move["prompted"]:
             text = self._prompt(k, route, move, flanges_move)
+            self.phase_is(f"pass {k}/{MAX_PASSES}: waiting for Confirm", FAIL if warn else BUSY)
             if not await confirmed(job, run, text, warn=warn):
                 return CANCELLED, "cancelled", f"stopped at pass {k}: cancelled at the prompt; nothing sent"
         # ! Checked again after the plan and Confirm, against THIS pass's basis (a servo-only Exec carries none in the
@@ -219,6 +265,7 @@ class ServoLoop:
             return REFUSED, "refused", f"can't tell whether the other robots stand still: {unmeasured}"
         run.progress = SendProgress()
         self.moves.append(move)
+        self.phase_is(f"pass {k}/{MAX_PASSES}: moving ({traj_time:.0f} s)")
         with ctx.freeze(others) as run.freeze:
             outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run, watch=lambda: others_moving(job),
                                         progress=run.progress)
@@ -232,11 +279,13 @@ class ServoLoop:
         job.moved_at[self.serial] = ctx.now()
         run.end = {name: value for arm, joints in (outcome.end or {}).items() if joints is not None
                    for name, value in zip(arm_joint_names(arm), joints)}
+        self.phase_is(f"pass {k}/{MAX_PASSES}: settling {SETTLE:.0f} s")
         await ctx.sleep(SETTLE)
         robot = self._live()
         if robot is None:
             return FAILED, "not live", f"{job.who} {NOT_LIVE} after pass {k}: no reading"
         run.base = robot.base
+        self.phase_is(f"pass {k}/{MAX_PASSES}: measuring")
         reading = self._measure(robot, k, joint_names, rows[-1])
         stop = stop_after_move(reading, plan, self.engaged)
         if stop is not None:
@@ -289,13 +338,22 @@ class ServoLoop:
         if end_row is not None:
             gaps = tracking_gaps(robot, names, end_row, plan.arms)
             reading["track_mm"] = {side: gap * 1e3 for side, gap in gaps.items()}
+        # * The old monitor's three lines, in its order.
         tool0 = " ".join(f"{SIDE.get(side, side)}={err['pos_norm_mm']:.2f}" for side, err in reading["tool0"].items())
-        track = f" | track {sides(reading['track_mm'], '.2f')} mm" if "track_mm" in reading else ""
-        ctx.log_info(f"[servo {k}] tool0 pos {tool0} mm{track}")
+        rot = " ".join(f"{SIDE.get(side, side)}={'/'.join(f'{a:.2f}' for a in err['rot_err_deg'])}"
+                       for side, err in reading["tool0"].items())
+        ctx.log_info(f"[servo {k}] tool0 pos {tool0} mm, rot {rot} deg")
+        if "track_mm" in reading:
+            ctx.log_info(f"[servo {k}] arms vs last commanded waypoint: {sides(reading['track_mm'], '.2f')} mm")
+        if reading["wrench"] is not None:
+            if self.wrench0 is None:
+                self.wrench0 = reading["wrench"]
+            ctx.log_info(load_line(k, reading, self.wrench0))
         if plan.layout is not None and plan.holder is not None:
             reading["bar"] = self._bar(flanges, k)
         self.readings.append(reading)
-        job.show(line(k, reading, plan))
+        self.line = line(k, reading, plan)
+        job.show(f"{self.phase} · {self.line}" if self.phase else self.line)
         job.measured(reading)
         return reading
 
@@ -366,6 +424,10 @@ class ServoLoop:
                                     moves=self.moves, status=run.result, reason=run.reason, engaged=self.engaged,
                                     dry_run=job.dry_run)
             reserved, run.servo_file = servo_file(job.run.view, plan) or (None, None)
+            run.servo = servo_block(payload, run.servo_file)
             job.run.request_record("servo", action=plan.action, movement=plan.target,
                                    data={"status": run.result, "passes": len(self.moves)}, file=payload, kind="servo",
                                    figure=plot_servo, reserved=reserved)
+            if run.servo_file is not None:  # the writer writes it right after
+                ctx.log_info(f"Servoing data saved to {Path(job.run.view.folder) / run.servo_file} (its .png beside "
+                             f"it)")

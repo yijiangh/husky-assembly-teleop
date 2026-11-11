@@ -11,6 +11,15 @@ from plugin_fakes import FakeGui, FakePanel
 from husky_assembly_teleop.shared.assembly_tab.exec_plots import ExecPlots
 
 
+class FakeUplot:
+    """What `gui.add_uplot` gives back: keeps the data set on it."""
+
+    def __init__(self, **fields):
+        """Keep the data, scales, series and legend the plot was built with."""
+        self.data, self.scales = fields.get("data"), fields.get("scales")
+        self.series, self.legend = fields.get("series"), fields.get("legend")
+
+
 def _plots() -> tuple[ExecPlots, FakeGui, FakePanel]:
     gui = FakeGui()
     window = FakePanel(gui)
@@ -79,4 +88,37 @@ def test_compliant_samples_split_force_and_torque_per_arm_and_say_when_a_wrench_
     np.testing.assert_allclose(plots._compliant.values("force")[-1], [0] * 6)
     assert "no force reading" in plots._note.content
     plots.draw()
-    assert len(plots._plots) == 7
+    assert len(plots._plots) == 8
+
+
+def test_reading_0_shows_at_once_with_dots_and_the_last_values_under_each_plot():
+    """Every servo plot marks its samples with dots and keeps its legend still; the readouts hold the last pass.
+
+    One reading drawn is one point at x = 0; the readouts show its numbers; a new servo blanks them again.
+    """
+    plots, _gui, _window = _plots()
+    plot = plots._plots[0]
+    assert plot.handle.series[1]["points"]["show"] and plot.handle.legend["live"] is False
+    plots.start_servo("B20_J_transfer on a200-0806")
+    assert "pass  —" in plots._last["tool0_pos_err"].content and "—" in plots._last["bar"].content
+    plots.servo_reading({**_reading(0), "force_change_N": {"left": 3.1, "right": 2.0}})
+    plots.draw()
+    assert plot.handle.data[0].tolist() == [0.0]
+    readout = plots._last["tool0_pos_err"].content
+    assert "pass  0" in readout and "+1.00" in readout and "+3.00" in readout
+    assert "+3.10" in plots._last["force_change"].content and "+1.50" in plots._last["bar"].content
+    assert plots._servo.values("force_change")[-1].tolist() == [3.1, 2.0]
+    plots.start_servo("another")
+    assert "pass  —" in plots._last["tool0_pos_err"].content
+
+
+def test_x_is_the_pass_even_without_reading_0_and_the_status_chip_sits_beside_the_label():
+    """A first reading at pass 2 is drawn at x = 2; `status` adds a phase chip after the servo's label."""
+    plots, _gui, _window = _plots()
+    plots.start_servo("B20_J_transfer on a200-0806")
+    plots.servo_reading(_reading(2))
+    plots.draw()
+    assert plots._plots[0].handle.data[0].tolist() == [2.0]
+    plots.status("pass 1/8: planning", "#e8590c")
+    assert "servo: B20_J_transfer on a200-0806" in plots._note.content and "pass 1/8: planning" in plots._note.content
+    assert plots._note.content.index("servo:") < plots._note.content.index("pass 1/8")

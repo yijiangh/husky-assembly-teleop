@@ -33,31 +33,42 @@ from scaffolding_assembly_core.ids import robot_id, split_link_id
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.assembly_planning.joints import arm_of_flange
 from ...shared.assembly_planning.movement import Routine, UnknownMovement, classify
-from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line, pose_error
+from ...shared.assembly_planning.route_result import (GoalCheck, RouteResult, goal_line, live_retreat_goals,
+                                                      pose_error)
 from ...shared.assembly_planning.route_search import ATTEMPTS, FreeSearch
-from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS
+from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS, PRM_BENCH
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
 from ...shared.execution.retime import RetimeError, retime
 from ...shared.execution.servo import authored_start, carried_insert_goals, flange_poses, flange_side, tool0_errors
 from ...shared.execution.stream import tool0_world_path
 from ...shared.motion_planner_contract import MotionPlanRequest
-from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_KINDS, REFUSED,
-                                              REFUSED_PART, ExecRequest, ExecResult, PartPlan, current_primary,
-                                              current_step, serial_of, step_parts)
+from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_KINDS,
+                                              PLANNED_MARGIN, REFUSED, REFUSED_PART, ExecRequest, ExecResult, PartPlan,
+                                              current_primary, current_step, serial_of, step_parts)
 from ...shared.planner.planner_search import WAIT_MARGIN, PlanResult
 from ...shared.planner.timed_path import TimedPath
 from ...shared.process_contract import Carry
+from ...shared.teleop.clearance_toggle import ClearanceToggle
+from ...world.clearance import ARM_MOVE
 from ...shared.assembly_tab.layout import ASSEMBLY_TAB
 from ...ui.ghost import RobotGhost
 from .diagnosis import StepDiagnosis, path_line, tool0_line
 from .goal import StepGoal, same_step
 from .panel import StepsPanel
 from .step_panel_base import PlannerPlugin, Search
+
+#: The hover text of Exec's Clearance box.
+EXEC_CLEARANCE_HINT = (f"While ticked, a motion along the plan soft stops once the robot comes within "
+                       f"{ARM_MOVE.stop_for(PLANNED_MARGIN) * 100:g} cm of anything (0: on contact), and one starting "
+                       f"that close is refused; {ARM_MOVE.close_note(PLANNED_MARGIN) or 'as the arm planner'}. Not "
+                       f"with Ignore built bars ticked, nor for inserts, retreats, handoffs and the servo, which touch "
+                       f"by design. Untick to move out of a tight spot.")
 
 if TYPE_CHECKING:
     from ...shared.assembly_planning.process_steps import Step
@@ -99,6 +110,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         #: Seconds the motion should take, the operator's; the default per routine at each new step.
         self.traj_time = 10.0
         self.ignore_built = False
+        #: Exec's Clearance box (`movement_exec`: a motion along the plan keeps a clearance while ticked).
+        self.clearance = ClearanceToggle(EXEC_CLEARANCE_HINT)
         #: Movement indices of the current step done by Exec; the action offered to Mark done after its last step.
         self._done: set[int] = set()
         self._offer: str | None = None
@@ -292,7 +305,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return
         live = ctx.scene.snapshot.robots.get(robot_id(self.serial)) if self.serial else None
         if live is None or not is_live(live, ctx.now()):
-            self._say(f"Check tool0: {self._robot_name} ({self.serial}) is not live", failed=True)
+            self._say(f"Check tool0: {self._robot_name} ({short_serial(self.serial)}) is not live", failed=True)
             return
         poses = flange_poses(live, targets)
         errors = tool0_errors(poses, targets)
@@ -339,8 +352,11 @@ class AssemblyStepsPlugin(PlannerPlugin):
     def free_search(self, ctx: PluginContext) -> FreeSearch:
         """The free searches' settings for a plan (`MotionPlanRequest.search`): the run's Advanced planning ones."""
         settings = self._assembly_run(ctx).view.settings
+        # * The Drive convention is resolved here, on the main thread, so the worker never reads the config.
+        root = settings.plan_roadmap_root or (str(ctx.config.drive_root / PRM_BENCH) if ctx.config.drive_root else "")
         return FreeSearch(settings.plan_max_time, settings.plan_max_iterations, settings.plan_joint_resolution,
-                          settings.plan_tries, settings.plan_swept_check)
+                          settings.plan_tries, settings.plan_swept_check, cdfm_planner=settings.plan_cdfm_planner,
+                          roadmap_root=root)
 
     def set_ignore_built(self, ignore: bool) -> None:
         """Plan as if the built bars were not there (for tests in the air); a plan made otherwise goes stale."""
@@ -478,7 +494,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
             elif primary is None or primary.kind not in MOTION_KINDS:
                 refusal = f"{step.label} has no motion to plan"
             elif live is None or not is_live(live, now):
-                refusal = f"{self._robot_name} ({self.serial}) is not live: plans start from the live robot only"
+                refusal = (f"{self._robot_name} ({short_serial(self.serial)}) is not live: plans start from the live "
+                           f"robot only")
             else:
                 goal_joints = self._goal.joints_near(self._key_of_goal(), live.base)
                 goal_base = self._goal.of(self._key_of_goal()).base if goal_joints is not None else None
@@ -491,6 +508,17 @@ class AssemblyStepsPlugin(PlannerPlugin):
                     distance, turn = pose_error(goals[flange], ends[flange])
                     ctx.log_info(f"[insert plan] mocap bar correction carried: {step.label} {flange_side(flange)} "
                                  f"goal {distance * 1e3:.2f} mm / {math.degrees(turn):.3f}° from the authored end")
+                elif (primary.routine is Routine.RETREAT_LINEAR
+                      and self._assembly_run(ctx).view.settings.retreat_live_axis):
+                    # * The retreat backs each tool out along its own live -z (the old monitor since 2026-10-22).
+                    spec = classify(view.process.process, step.action, step.movement, self._transfer_as_free(ctx))
+                    own = step.movement.target.robots.get(step.action.robot) if step.movement.target else None
+                    goals, line, warnings = live_retreat_goals(
+                        step.movement.id, spec, own.link_poses if own is not None else {},
+                        flange_poses(live, [part.flange for part in spec.arms]))
+                    ctx.log_info(line)
+                    for warning in warnings:
+                        ctx.log_warn(warning)
                 request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots,
                                             transfer_as_free=self._transfer_as_free(ctx),
                                             ignore_built=self.ignore_built,
@@ -524,7 +552,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
                 "planner": route.planner, "attempts": route.attempts, "seconds": route.seconds,
                 "waypoints": route.waypoints, "goal_reused": request.goal_joints is not None,
                 "warnings": list(route.warnings), "obstacles_collide": request.obstacles_collide,
-                "goal_carried": goals is not None})
+                "goal_carried": goals is not None and primary.routine is Routine.INSERT,
+                "goal_live": goals is not None and primary.routine is Routine.RETREAT_LINEAR})
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
                                                    dict(zip(trajectory.joint_names, trajectory.positions[-1])),
                                                    "plan", self._basis.base))
@@ -541,7 +570,9 @@ class AssemblyStepsPlugin(PlannerPlugin):
 
         label = current[3].label if current is not None else "nothing"
         # * Long enough for every try of the free search at the run's settings.
-        # * A held transfer (workaround off) runs HELD's own tries and time, whatever the settings say.
+        # * A held transfer (workaround off) runs HELD's own tries and time, whatever the settings say; that floor
+        #   also covers the roadmap planner's one try, which has no time limit and takes 60 to 130 s; one that overruns
+        #   it is reported timed out while the worker finishes it, and the next plan waits behind it.
         limit = max(search.tries * search.max_time, ATTEMPTS * HELD["max_time"]) + PLAN_TIME_MARGIN
         return Search(self.serial or "", f"plan {label}", f"planning {label}…", None, limit, accepted,
                       run=run)
@@ -604,7 +635,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
                               ignore_built=lambda: self.ignore_built,
                               obstacles_collide=lambda: self._obstacles_collide(ctx),
                               transfer_as_free=lambda: self._transfer_as_free(ctx),
-                              unknown_robots=self._unknown_allowed)
+                              unknown_robots=self._unknown_allowed, clearance=self.clearance.value)
         if motion:
             self.plan_state = "sent"  # ! used once: never sent again
         executor: MovementExecContract = ctx.require("movement_exec")

@@ -100,18 +100,20 @@ def authored_insert(action_id: str = "B6_J"):
 
 
 def test_a_longer_insert_starts_further_back_on_the_same_line_with_the_grasp_kept():
-    """15 mm is the process's own start; 60 mm puts both tool0s 60 mm before the end, turned by nothing."""
+    """The process's own length gives its own start; 60 mm puts both tool0s 60 mm before the end, turned by nothing."""
     urdf = robot_config(CINDY).model.urdf
     _loaded, _transfer, _insert, start, end = authored_insert()
-    assert [line_length(urdf, arm, start, end) for arm in ARMS] == pytest.approx([0.015, 0.015], abs=1e-6)
-    assert line_start(urdf, ARMS, start, end, 0.015) == start
+    # * Read, not assumed: the demo's Save rewrites the insert's start in this process.
+    own = line_length(urdf, next(iter(ARMS)), start, end)
+    assert [line_length(urdf, arm, start, end) for arm in ARMS] == pytest.approx([own, own], abs=1e-6)
+    assert line_start(urdf, ARMS, start, end, own) == start
     longer = line_start(urdf, ARMS, start, end, 0.060)
     for arm in ARMS:
         was, now, seat = (tool0_in_base_link(urdf, arm, joints) for joints in (start, longer, end))
         distance, turn = pose_error(now, seat)
         assert distance == pytest.approx(0.060, abs=1e-6) and turn == pytest.approx(0.0, abs=1e-6)
         # * On the authored line: the authored start lies between the new start and the end.
-        assert pose_error(now, was)[0] == pytest.approx(0.045, abs=1e-6)
+        assert pose_error(now, was)[0] == pytest.approx(0.060 - own, abs=1e-6)
     assert "before the insert's end" in line_start(urdf, ARMS, start, end, 2.0), "out of reach is said, not solved"
 
 

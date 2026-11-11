@@ -3,10 +3,12 @@ A step's parts, run one at a time: a motion along its plan, a tool step, or a st
 
 A motion along the plan (plain, an insert, a retreat) runs on Exec without a prompt, as in the old monitor: its line is
 logged, the world checked again and the command rebuilt from the live joints and sent in the same tick, so nothing can
-change between the last check and the send; the other robots are frozen (`ctx.freeze`) until it ends. The Robotiq
-steps and the steps done by hand ask the operator first, the robot named. An insert, a retreat and the Robotiq handoff
-run partly compliant (`shared/execution/`), with the run's settings read once when the part starts. The servo part
-(`servo_part.py`) runs on the same `Job`, `PartRun` and checks; the plugin dispatches it.
+change between the last check and the send; the other robots are frozen (`ctx.freeze`) until it ends. With Exec's
+Clearance ticked a plain motion keeps a clearance too (`motion_clearance`); inserts, retreats, handoffs and the servo
+touch by design and keep none. The Robotiq steps and the steps done by hand ask the operator first, the robot named.
+An insert, a retreat and the Robotiq handoff run partly compliant (`shared/execution/`), with the run's settings read
+once when the part starts. The servo part (`servo_part.py`) runs on the same `Job`, `PartRun` and checks; the plugin
+dispatches it.
 
 ! Main thread, inside the plugin's task.
 """
@@ -15,15 +17,19 @@ from __future__ import annotations
 
 import asyncio
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, ContextManager, Mapping, Sequence
 
 import numpy as np
 from async_timeout import timeout
 
 from scaffolding_assembly_core.ids import robot_id
 
+from ...config import short_serial
+from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV3
+from ...robot_interface.soft_stop import MotionRefused
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.movement import Routine
 from ...shared.assembly_run_contract import is_live
@@ -31,7 +37,8 @@ from ...shared.execution.basis import STALE_ARM, stale_reason
 from ...shared.execution.handoff import handoff_text, run_handoff
 from ...shared.execution.insert import plan_insert, run_insert
 from ...shared.execution.moving import base_moving, moving_reason
-from ...shared.execution.retreat import TAIL_STEP, plan_retreat, run_retreat
+from ...shared.execution.retreat import (START_TOL, TAIL_STEP, RetreatPlan, StiffRetreatPlan, plan_retreat,
+                                         plan_stiff_retreat, run_retreat, run_stiff_retreat)
 from ...shared.execution.send import ARRIVED, LARGE_TRAVEL, SendProgress, motion_command, send_motion
 from ...shared.execution.send import DRY_RUN as SENT_DRY, HOLD_NOT_SENT as SENT_NOT_HELD, REFUSED as SENT_REFUSED
 from ...shared.execution.stream import CANCELLED as PART_CANCELLED, DRY_RUN as PART_DRY, REFUSED as PART_REFUSED
@@ -42,12 +49,16 @@ from ...shared.execution.tools import (FELL_SHORT, REACHED, ROBOTIQ_CLOSE, ROBOT
 from ...shared.execution.tools import DRY_RUN as TOOL_DRY, REFUSED as TOOL_REFUSED
 from ...shared.motion_planner_contract import MotionPlanRequest
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, DONE, DRY_RUN, FAILED, HANDOFF_PART,
-                                              HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART, OPEN_PART, REFUSED,
-                                              REFUSED_PART, RETREAT_PART, WITH_MOTION_PART, current_primary)
+                                              HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART, OPEN_PART,
+                                              PLANNED_MARGIN, REFUSED, REFUSED_PART, RETREAT_PART, WITH_MOTION_PART,
+                                              current_primary)
+from ...shared.planner.planner_service import PlannerService
 from ...shared.runs.runs import SPLIT_RANGE
+from ...world.clearance import ARM_MOVE
 from ...world.freeze import WorldMoved, take_basis
 
 if TYPE_CHECKING:
+    from ...shared.execution.servo import ServoPlan
     from scaffolding_assembly_core.geometry import Pose
 
     from ...plugin_api.context import PluginContext
@@ -56,13 +67,13 @@ if TYPE_CHECKING:
     from ...shared.assembly_run_contract import AssemblyRunContract
     from ...shared.execution.insert import InsertPlan
     from ...shared.execution.operator import Prompt, PromptBox
-    from ...shared.execution.retreat import RetreatPlan
     from ...shared.execution.send import MotionCommand
     from ...shared.execution.stream import PartOutcome
     from ...shared.execution.tools import ToolOutcome
     from ...shared.execution.basis import PlanBasis
     from ...shared.motion_planner_contract import MotionPlannerContract
     from ...shared.movement_exec_contract import Carried, ExecRequest, PartPlan
+    from ...world.clearance import Clearance
     from ...world.freeze import Basis, Freeze
     from ...world.measured import WorldState
 
@@ -89,6 +100,9 @@ class Job:
         opened: The arms whose gripper screws a retreat of this request opened (its ungrasp is then done).
         recorder: The samples of the compliant part running (insert, retreat, handoff), for the panel; else None.
         measured: Gets each servo reading as it is taken, for the Exec plots window.
+        status: Shows the servo's phase in the Exec plots window: (text, chip colour).
+        ft_zero: Serial -> {at, reason} of the force sensors' last zero (the travel to load, a handoff); the plugin's
+            dict, shared, so the as-built record says what the wrenches are relative to.
     """
 
     ctx: PluginContext
@@ -103,11 +117,13 @@ class Job:
     opened: set[str] = field(default_factory=set)
     recorder: Recorder | None = None
     measured: Callable[[Mapping[str, Any]], None] = lambda _reading: None
+    status: Callable[[str, str], None] = lambda _text, _color: None
+    ft_zero: dict[str, dict] = field(default_factory=dict)
 
     @property
     def who(self) -> str:
         """str: The robot as prompts name it, e.g. "alice (a200-0804)"."""
-        return f"{self.request.robot_name} ({self.request.serial})"
+        return f"{self.request.robot_name} ({short_serial(self.request.serial)})"
 
 
 @dataclass
@@ -125,7 +141,11 @@ class PartRun:
         base: The acting robot's base then.
         progress: How far a motion's send got, for a cancel's record; None for other parts.
         freeze: The other robots' freeze while a motion runs; its `problem` says why it broke. None for other parts.
+        clearance: The robot's clearance while a motion along the plan runs (`motion_clearance`); its `problem` says
+            why it tripped or refused. None for other parts, or without one.
         servo_file: The servo record's path in the run, once the servo part wrote one.
+        servo: The servo's summary for the as-built record (`as_built.servo_block`), once it wrote one.
+        servo_plan: The servo part's plan (what it aims at), once made.
         carry: What a transfer's bar servo leaves for its insert's plan, once it did.
         started_at: ROS time the part started, after its checks; `ended_at` when it ended, however.
         base_at_start: The acting robot's base when the part started.
@@ -141,7 +161,10 @@ class PartRun:
     base: Pose | None = None
     progress: SendProgress | None = None
     freeze: Freeze | None = None
+    clearance: Clearance | None = None
     servo_file: str | None = None
+    servo: dict | None = None
+    servo_plan: ServoPlan | None = None
     carry: Carried | None = None
     started_at: float | None = None
     ended_at: float | None = None
@@ -266,33 +289,36 @@ def others_basis(job: Job) -> Basis:
                       bases=[serial for serial, robot in others if robot.base.state.last_fix_time is not None])
 
 
-def live_path(job: Job) -> tuple[list[str], np.ndarray] | str:
+def live_path(job: Job, tolerance: float = STALE_ARM) -> tuple[list[str], np.ndarray] | str:
     """The request's plan with its first row replaced by the arms' joints now (`live_path_of`); or why it can't be.
 
     Args:
         job: The request being run.
+        tolerance: How far the arms may be from the plan's start, radians.
 
     Returns:
-        tuple[list[str], np.ndarray] | str: (names, rows), or the refusal (no plan, arms over STALE_ARM from its
+        tuple[list[str], np.ndarray] | str: (names, rows), or the refusal (no plan, arms over `tolerance` from its
             start).
     """
     route = job.request.route
     trajectory = route.result.trajectory if route is not None and route.ok else None
     if trajectory is None:
         return "no plan for this motion: Plan first"
-    return live_path_of(job, list(trajectory.joint_names), trajectory.positions)
+    return live_path_of(job, list(trajectory.joint_names), trajectory.positions, tolerance)
 
 
-def live_path_of(job: Job, names: Sequence[str], rows: Sequence[Sequence[float]]) -> tuple[list[str], np.ndarray] | str:
+def live_path_of(job: Job, names: Sequence[str], rows: Sequence[Sequence[float]],
+                 tolerance: float = STALE_ARM) -> tuple[list[str], np.ndarray] | str:
     """A path with its first row replaced by the arms' joints now; or why it can't be.
 
     Args:
         job: The request being run.
         names: The path's joint names.
         rows: The path, radians, its first row where it was planned from.
+        tolerance: How far the arms may be from the path's start, radians (a stiff retreat allows 0.57°).
 
     Returns:
-        tuple[list[str], np.ndarray] | str: (names, rows), or the refusal (arms over STALE_ARM from the path's
+        tuple[list[str], np.ndarray] | str: (names, rows), or the refusal (arms over `tolerance` from the path's
             start, a joint without a state).
     """
     names, rows = list(names), np.array(rows, dtype=float)
@@ -306,8 +332,8 @@ def live_path_of(job: Job, names: Sequence[str], rows: Sequence[Sequence[float]]
         return f"no joint state for {', '.join(missing)}"
     now = np.array([live[name] for name in names])
     gap = float(np.max(np.abs(now - rows[0])))
-    if gap > STALE_ARM:
-        return (f"the arms are {math.degrees(gap):.1f}° from the plan's start (over {math.degrees(STALE_ARM):.0f}°): "
+    if gap > tolerance:
+        return (f"the arms are {math.degrees(gap):.2f}° from the plan's start (over {math.degrees(tolerance):.2f}°): "
                 f"replan")
     # * Row 0 is where the arms are, so the trajectory starts without a jump.
     rows[0] = now
@@ -340,7 +366,8 @@ def run_settings(job: Job) -> dict:
     settings = job.run.view.settings
     return {"split_mm": min(max(float(settings.insert_split_mm), SPLIT_RANGE[0]), SPLIT_RANGE[1]),
             "spiral": settings.spiral,
-            "spiral_seconds": settings.spiral_seconds, "spiral_turns": settings.spiral_turns}
+            "spiral_seconds": settings.spiral_seconds, "spiral_turns": settings.spiral_turns,
+            "retreat_compliant": settings.retreat_compliant}
 
 
 def _ask(job: Job, movement: str, text: str, warn: bool) -> Prompt:
@@ -426,23 +453,32 @@ async def _motion(job: Job, run: PartRun) -> None:
     ignored += " (Rhino obstacles not checked)" if basis is not None and not basis.obstacles_collide else ""
     _say(job, f"{part.movement} — move {arms} along the planned path{ignored}, {command.duration:.0f} s, largest "
               f"joint travel {math.degrees(command.travel):.0f}°", warn=command.travel > LARGE_TRAVEL)
-    # ! Checked again right before the send; the command is rebuilt from the joints now and sent in this same tick.
-    command = world_problem(job, motion=True) or live_command(job)
-    if isinstance(command, str):
-        run.ended(REFUSED, "refused", command)
-        return
-    run.command = command.as_record()
     try:
-        basis = others_basis(job)
-    except WorldMoved as unmeasured:
-        run.ended(REFUSED, "refused", f"can't tell whether the other robots stand still: {unmeasured}")
+        # * The clearance's first check comes before the last check below, so the send still follows it in one tick.
+        with motion_clearance(job) as run.clearance:
+            if run.clearance is not None:
+                await PlannerService.first_check(ctx, run.clearance)
+            # ! Checked again right before the send; the command is rebuilt from the joints now and sent in this same
+            #   tick.
+            command = world_problem(job, motion=True) or live_command(job)
+            if isinstance(command, str):
+                run.ended(REFUSED, "refused", command)
+                return
+            run.command = command.as_record()
+            try:
+                basis = others_basis(job)
+            except WorldMoved as unmeasured:
+                run.ended(REFUSED, "refused", f"can't tell whether the other robots stand still: {unmeasured}")
+                return
+            run.progress = SendProgress()
+            # * Both hold every arm: the watch at another robot's first activity, the freeze once one was displaced (a
+            #   push too) or lost to mocap, which cancels this task.
+            with ctx.freeze(basis) as run.freeze:
+                outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run,
+                                            watch=lambda: others_moving(job), progress=run.progress)
+    except (MotionRefused, WaitTimeout) as refused:  # * the clearance cannot check the robot: nothing sent
+        run.ended(REFUSED, "refused", f"nothing sent: {refused}")
         return
-    run.progress = SendProgress()
-    # * Both hold every arm: the watch at another robot's first activity, the freeze once one was displaced (a push
-    #   too) or lost to mocap, which cancels this task.
-    with ctx.freeze(basis) as run.freeze:
-        outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run, watch=lambda: others_moving(job),
-                                    progress=run.progress)
     run.outcome = outcome.as_record()
     result = {ARRIVED: DONE, SENT_DRY: DRY_RUN, SENT_REFUSED: REFUSED, SENT_NOT_HELD: HOLD_NOT_SENT}.get(
         outcome.status, FAILED)
@@ -459,6 +495,22 @@ async def _motion(job: Job, run: PartRun) -> None:
         zeroed = [arm.zero_ft_sensor() for arm in job.robot.arms.values()]
         (ctx.log_info if all(zeroed) else ctx.log_warn)(
             f"{job.who}: travel to load done; force sensors zeroed on {sum(zeroed)} of {len(zeroed)} arms")
+        if any(zeroed):
+            job.ft_zero[job.request.serial] = {"at": ctx.now(), "reason": "travel to load (tools empty)"}
+
+
+def motion_clearance(job: Job) -> ContextManager[Clearance | None]:
+    """The clearance a plain motion along the plan runs under (`ARM_MOVE`), or none.
+
+    None while Clearance is unticked, with Ignore built bars (the plan may pass through them) and on a dry run. The
+    assembly planner checks contact only (PLANNED_MARGIN), so the clearance trips on contact only. A start in
+    contact is refused, nothing sent; a trip soft stops the robot and cancels the part.
+    """
+    request = job.request
+    if job.dry_run or not request.clearance or request.ignore_built():
+        return nullcontext()
+    return job.ctx.clearance([request.serial], ARM_MOVE.stop_for(PLANNED_MARGIN), unknown_robots=request.unknown_robots,
+                             refuse_first=True)
 
 
 async def _insert(job: Job, run: PartRun) -> None:
@@ -488,9 +540,11 @@ async def _insert(job: Job, run: PartRun) -> None:
 
 
 async def _retreat(job: Job, run: PartRun) -> None:
-    """Back the tools out of the bar (`run_retreat`); done, its arms count as opened for the ungrasp it runs.
+    """Back the tools out of the bar; done, its arms count as opened for the ungrasp it runs.
 
-    The gripper screws open, a compliant break-out, then the rest replanned (`_replan`) and run rigid.
+    Stiff by default (`run_stiff_retreat`): the gripper screws loosen while the tools back out at the screw rate,
+    then the rest of the plan rigid. With the run's "Retreat compliant": the screws open, a compliant break-out,
+    then the rest replanned (`_replan`) and run rigid (`run_retreat`).
     """
     part, robot = run.part, job.robot
     tools = {name: robot.arms[name].end_effector for name in part.tools if name in robot.arms}
@@ -499,21 +553,33 @@ async def _retreat(job: Job, run: PartRun) -> None:
         return
     settings = run_settings(job)
     goals = job.request.route.goals if job.request.route is not None else {}
+    if settings["retreat_compliant"]:
+        def plan_of(names: list[str], rows: np.ndarray) -> RetreatPlan | str:
+            return plan_retreat(robot, names, rows, goals, split_mm=settings["split_mm"],
+                                traj_time=job.request.traj_time)
 
-    def plan_of(names: list[str], rows: np.ndarray) -> RetreatPlan | str:
-        return plan_retreat(robot, names, rows, goals, split_mm=settings["split_mm"], traj_time=job.request.traj_time)
+        def start(plan: RetreatPlan, recorder: Recorder) -> Awaitable[PartOutcome]:
+            return run_retreat(job.ctx, robot, plan, tools, replan=lambda: _replan(job, part), dry_run=job.dry_run,
+                               watch=lambda: others_moving(job), recorder=recorder)
 
-    def start(plan: RetreatPlan, recorder: Recorder) -> Awaitable[PartOutcome]:
-        return run_retreat(job.ctx, robot, plan, tools, replan=lambda: _replan(job, part), dry_run=job.dry_run,
-                           watch=lambda: others_moving(job), recorder=recorder)
+        outcome = await _along_plan(job, run, settings, plan_of, start)
+    else:
+        def plan_stiff(names: list[str], rows: np.ndarray) -> StiffRetreatPlan | str:
+            return plan_stiff_retreat(robot, names, rows, goals, traj_time=job.request.traj_time)
 
-    outcome = await _along_plan(job, run, settings, plan_of, start)
+        def start_stiff(plan: StiffRetreatPlan, recorder: Recorder) -> Awaitable[PartOutcome]:
+            return run_stiff_retreat(job.ctx, robot, plan, tools, dry_run=job.dry_run,
+                                     watch=lambda: others_moving(job), recorder=recorder)
+
+        # * 0.57° from the plan's start at most: a stiff jump holding a bar must not happen.
+        outcome = await _along_plan(job, run, settings, plan_stiff, start_stiff, tolerance=START_TOL)
     if outcome is not None and outcome.ok:
         job.opened.update(part.tools)
 
 
 async def _along_plan(job: Job, run: PartRun, settings: dict, plan_of: Callable[[list[str], np.ndarray], Any],
-                      start: Callable[[Any, Recorder], Awaitable[PartOutcome]]) -> PartOutcome | None:
+                      start: Callable[[Any, Recorder], Awaitable[PartOutcome]],
+                      tolerance: float = STALE_ARM) -> PartOutcome | None:
     """Run a compliant part along the plan as `_motion` runs a motion: plan, log, check and plan again, run.
 
     Args:
@@ -522,6 +588,7 @@ async def _along_plan(job: Job, run: PartRun, settings: dict, plan_of: Callable[
         settings: The run's settings it runs with (`run_settings`), recorded.
         plan_of: The plan's names and rows from the live joints -> the part's plan, or why not.
         start: Runs the plan under the other robots' freeze, its samples into the recorder given.
+        tolerance: How far the arms may be from the plan's start, radians.
 
     Returns:
         PartOutcome | None: How the part ran; None if it did not start.
@@ -529,7 +596,7 @@ async def _along_plan(job: Job, run: PartRun, settings: dict, plan_of: Callable[
     ctx, part = job.ctx, run.part
 
     def planned() -> Any:
-        path = live_path(job)
+        path = live_path(job, tolerance)
         return path if isinstance(path, str) else plan_of(*path)
 
     plan = planned()

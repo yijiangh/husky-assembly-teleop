@@ -21,11 +21,13 @@ from typing import TYPE_CHECKING, Callable, Sequence
 
 import numpy as np
 
+from ...config import short_serial
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.arm import JOINT_STATE_MAX_AGE
 from ...robot_interface.soft_stop import MotionRefused
 from ..assembly_planning.joints import arm_joint_names
 from .retime import retime
+from .retime import constant_speed as even_speed
 
 if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
@@ -150,7 +152,7 @@ class SendProgress:
 
 
 def motion_command(serial: str, arm_names: Sequence[str], joint_names: Sequence[str],
-                   rows: Sequence[Sequence[float]], traj_time: float) -> MotionCommand:
+                   rows: Sequence[Sequence[float]], traj_time: float, *, constant_speed: bool = False) -> MotionCommand:
     """Time a planned path for a robot's arms: every column together, then split per arm by joint name.
 
     Args:
@@ -159,6 +161,8 @@ def motion_command(serial: str, arm_names: Sequence[str], joint_names: Sequence[
         joint_names: The path's columns.
         rows: The path (N x len(joint_names)), radians; the first row is where the arms are.
         traj_time: Seconds asked for; the arms' limits may need longer (`retime`).
+        constant_speed: Run the whole path at one speed over `traj_time` (`retime.constant_speed`), not on the
+            cosine profile: a retreat's screw-out keeps the screws' rate.
 
     Returns:
         MotionCommand: The command.
@@ -184,7 +188,7 @@ def motion_command(serial: str, arm_names: Sequence[str], joint_names: Sequence[
     if stray or not moving:
         raise ValueError(f"the path's joints {stray or names} belong to no arm of {serial} ({', '.join(arm_names)})")
     ordered = rows[:, columns]
-    timed = retime(ordered, traj_time)
+    timed = even_speed(ordered, traj_time) if constant_speed else retime(ordered, traj_time)
     travel = float(np.max(np.sum(np.abs(np.diff(ordered, axis=0)), axis=0)))
     arms = tuple(ArmMotion(arm, timed.positions[:, 6 * k:6 * k + 6], timed.velocities[:, 6 * k:6 * k + 6])
                  for k, arm in enumerate(moving))
@@ -216,10 +220,11 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
     """
     serial = command.serial
     if robot.config.serial != serial:
-        return SendOutcome(REFUSED, f"the command is for {serial}, not {robot.config.serial}")
+        return SendOutcome(REFUSED, f"the command is for {short_serial(serial)}, not "
+                                    f"{short_serial(robot.config.serial)}")
     missing = [motion.arm for motion in command.arms if motion.arm not in robot.arms]
     if missing:
-        return SendOutcome(REFUSED, f"{serial} has no arm {', '.join(missing)}")
+        return SendOutcome(REFUSED, f"{short_serial(serial)} has no arm {', '.join(missing)}")
     arms = {motion.arm: robot.arms[motion.arm] for motion in command.arms}
     try:
         if dry_run:
@@ -234,9 +239,9 @@ async def send_motion(ctx: PluginContext, robot: HuskyRobotInterface, command: M
         else:
             return SendOutcome(REFUSED, f"{len(command.arms)} arms in one command; at most two move together")
     except MotionRefused as refused:
-        return SendOutcome(REFUSED, f"{serial} refused the trajectory: {refused}; nothing sent")
+        return SendOutcome(REFUSED, f"{short_serial(serial)} refused the trajectory: {refused}; nothing sent")
     if not sent:
-        return SendOutcome(REFUSED, f"{serial} refused the trajectory (the log says why); nothing sent")
+        return SendOutcome(REFUSED, f"{short_serial(serial)} refused the trajectory (the log says why); nothing sent")
     started = ctx.now()
     ctx.log_info(f"{serial}: moving {', '.join(arms)}, {command.duration:.1f} s")
     if on_sent is not None:
@@ -311,7 +316,8 @@ def _dry_run(ctx: PluginContext, command: MotionCommand, arms: dict) -> SendOutc
     """Build each arm's trajectory, every check included, and say so loudly; send nothing."""
     for motion in command.arms:
         if arms[motion.arm].build_trajectory(motion.positions, command.duration, motion.velocities) is None:
-            return SendOutcome(REFUSED, f"{command.serial} {motion.arm} refused the trajectory (the log says why)")
+            return SendOutcome(REFUSED, f"{short_serial(command.serial)} {motion.arm} refused the trajectory (the log "
+                                        f"says why)")
     rule = "#" * 78
     for motion in command.arms:
         ctx.log_warn(f"\n{rule}\n##  DRY RUN {command.serial} {motion.arm}: passed every check, NOT SENT\n"
@@ -331,7 +337,8 @@ def _hold(ctx: PluginContext, robot: HuskyRobotInterface, why: str) -> dict[str,
 
 def _not_held(serial: str, arms: Sequence[str], why: str, log: Callable[[str], None] | None = None) -> str:
     """The loud line for arms that refused their hold, logged as an error if `log` is given."""
-    line = f"HOLD NOT SENT on {', '.join(arms)}: stop {serial} with the teach pendant or the e-stop ({why})"
+    line = (f"HOLD NOT SENT on {', '.join(arms)}: stop {short_serial(serial)} with the teach pendant or the e-stop "
+            f"({why})")
     if log is not None:
         log(line)
     return line

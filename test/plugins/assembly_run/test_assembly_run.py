@@ -804,7 +804,7 @@ def test_a_robot_leased_for_a_step_refuses_the_mark(tmp_path):
         lab.moving(ALICE, False)
         lease = lab.lease_to_exec("a200-0804")
         plugin.request_mark_done()
-        assert "a200-0804 is leased by movement_exec: exec B21_H_approach" in plugin._message and runs(lab) == []
+        assert "0804 is leased by movement_exec: exec B21_H_approach" in plugin._message and runs(lab) == []
         lease.release()
         plugin.request_mark_done()
         await settle(plugin)
@@ -826,12 +826,12 @@ def test_a_robot_leased_for_a_step_refuses_selecting_reopening_and_settings(tmp_
         lab.lease_to_exec("a200-0804")
         current, selected = plugin.view.current, list(process.selected)
         plugin.request_set_current("B1_J_joint")
-        assert "Select refused: a200-0804 is leased by movement_exec" in plugin._message
+        assert "Select refused: 0804 is leased by movement_exec" in plugin._message
         plugin.request_reopen("B1_J_joint")
-        assert "Reopen refused: a200-0804 is leased" in plugin._message
+        assert "Reopen refused: 0804 is leased" in plugin._message
         refused = plugin._settings_refused
         plugin.request_settings(spiral=True)
-        assert "Settings refused: a200-0804 is leased" in plugin._message and plugin._settings_refused == refused + 1
+        assert "Settings refused: 0804 is leased" in plugin._message and plugin._settings_refused == refused + 1
         return plugin, process, current, selected
 
     plugin, process, current, selected = asyncio.run(scenario())
@@ -854,7 +854,7 @@ def test_a_step_started_between_the_new_run_clicks_refuses_it(tmp_path):
         lab.ctx.t += 1.0
         plugin.request_new_run()
         await settle(plugin)
-        assert "New run refused: a200-0804 is leased by movement_exec" in plugin._message
+        assert "New run refused: 0804 is leased by movement_exec" in plugin._message
         return plugin, process, current, selected
 
     plugin, process, current, selected = asyncio.run(scenario())
@@ -877,7 +877,7 @@ def test_a_step_started_while_waiting_for_a_live_robot_stops_the_automatic_selec
 
     plugin, process = asyncio.run(scenario())
     assert process.selected == [] and plugin.view.current is None
-    assert "Select refused: a200-0804 is leased by movement_exec" in plugin._message
+    assert "Select refused: 0804 is leased by movement_exec" in plugin._message
 
 
 def test_an_arm_moving_before_the_second_click_refuses_the_mark(tmp_path):
@@ -939,7 +939,7 @@ def test_a_refused_second_click_ends_the_wait(tmp_path):
             lease = lab.lease_to_exec("a200-0806")
             lab.ctx.t += 1.0
             request()
-            assert "refused: a200-0806 is leased by movement_exec" in plugin._message and plugin.again == ""
+            assert "refused: 0806 is leased by movement_exec" in plugin._message and plugin.again == ""
             lease.release()
             lab.ctx.t += 1.0
             request()
@@ -1011,6 +1011,9 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
                                ({"plan_tries": 0}, "the search's tries must be 1 to 10 whole tries, not 0"),
                                ({"plan_max_time": 1000}, "the search's time per try must be 5 to 600 s, not 1000"),
                                ({"servo_by_bar": 1}, "servo_by_bar must be True or False, not 1"),
+                               ({"plan_cdfm_planner": "astar"},
+                                "the CDFM planner must be one of birrt, prm, not 'astar'"),
+                               ({"plan_roadmap_root": 3}, "plan_roadmap_root must be text, not 3"),
                                ({"rigid_only": True}, "rigid_only")):
             plugin.request_settings(**changes)
             assert plugin._message.startswith("Settings refused") and words in plugin._message
@@ -1018,7 +1021,8 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
         panel = plugin._panel = RunPanel(lab.ctx, plugin)
         labels = [widget.label for widget in lab.ctx.gui.widgets if widget.kind in ("slider", "checkbox")]
         # * No Rigid insert: a ground bar always inserts rigid, every other bar rigid then compliant.
-        assert labels == ["Insert split mm", "Spiral", "Spiral s", "Spiral turns", "Servo by bar"]
+        assert labels == ["Insert split mm", "Spiral", "Spiral s", "Spiral turns", "Servo by bar",
+                          "Retreat live axis", "Retreat compliant"]
         panel._servo.callback(False)
         panel._spiral_seconds.callback(30.0)
         panel._spiral_turns.callback(6.0)
@@ -1233,3 +1237,41 @@ def test_the_re_review_messages(tmp_path, monkeypatch):
         assert failing._message == "could not open the run (bad hashes): trying again in 5 s" and failing._failed
 
     asyncio.run(scenario())
+
+
+def test_an_as_built_record_goes_to_the_days_file_on_the_drive(tmp_path):
+    """Kind "as_built" goes to <drive>/.../<day>-asbuilt/as_built_<problem>.jsonl, an event naming the path.
+
+    The saved robots are filled in; without the Drive's runs folder the record is said lost and the run goes on.
+    """
+    lab = Lab(tmp_path)
+    root = tmp_path / "drive"
+    (root / "data_experiment" / "bar_action_live_replan_exe").mkdir(parents=True)
+    lab.ctx.config.drive_root = root
+    record = {"stamp": "2026-10-30T14:15:01", "problem": "p", "bars": {"B1": {"milestone": "before_insert"}},
+              "robots": {}}
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        plugin.request_record("as_built", action="B1_J_joint", movement="B1_M2_insert",
+                              data={"phase": "end", "outcome": "ok", "bars": 1}, file=record, kind="as_built")
+        await settle(plugin)
+        lab.ctx.config.drive_root = tmp_path / "nowhere"
+        plugin.request_record("as_built", action="B1_J_joint", movement="B1_M2_insert", data={"phase": "start"},
+                              file=record, kind="as_built")
+        await settle(plugin)
+        return plugin
+
+    plugin = asyncio.run(scenario())
+    path = root / "data_experiment/bar_action_live_replan_exe/20261030-asbuilt/as_built_p.jsonl"
+    lines = path.read_text().splitlines()
+    assert len(lines) == 1
+    written = json.loads(lines[0])
+    assert written["bars"] == record["bars"] and written["robots"] == {}, "no saved robots yet in this run"
+    events = read_events(plugin.view.folder)
+    assert events[1]["event"] == "as_built" and events[1]["file"] == str(path)
+    assert events[1]["data"] == {"phase": "end", "outcome": "ok", "bars": 1}
+    assert any(line == f"[as-built] B1_M2_insert end: recorded -> {path}" for line in lab.ctx.lines("info"))
+    assert any(line.startswith("[as-built] B1_M2_insert start NOT recorded: FileNotFoundError(")
+               for line in lab.ctx.lines("error"))
+    assert len(path.read_text().splitlines()) == 1 and not plugin._save_error

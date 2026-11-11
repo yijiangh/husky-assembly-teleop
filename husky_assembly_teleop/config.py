@@ -523,6 +523,11 @@ def _serial_digits(token: str) -> str | None:
     return None if digits is None else digits.group(1)
 
 
+def short_serial(serial: str) -> str:
+    """The serial as panels and chips show it: "0806" for "a200-0806"."""
+    return serial.split("-")[-1]
+
+
 def find_robot_serial(robots: tuple[RobotConfig, ...], token: str) -> str | None:
     """The serial ("a200-0804") of the configured robot that `token` ("Alice", "0804") names, or None.
 

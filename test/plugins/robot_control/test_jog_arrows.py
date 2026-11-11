@@ -63,3 +63,17 @@ def test_each_box_shows_its_own_arrows():
     assert not arrows.joint_group.visible and arrows.tool0.visible
     draw_jog_arrows(ctx, "0804", arm, arrows, False, False)
     assert not arrows.joint_group.visible and not arrows.tool0.visible
+
+
+def test_in_the_robots_frame_tool0s_arrows_keep_the_robots_axes_at_tool0():
+    """Frame at Robot: tool0's arrows sit at tool0 but turned as the robot's base, not as the flange."""
+    arm, ctx = arm_and_context()
+    base = Pose(orientation=tuple(Rotation.from_euler("z", 30, degrees=True).as_quat()))
+    tool0 = Pose((0.5, 0.1, 0.8), tuple(Rotation.from_euler("xy", (90, 20), degrees=True).as_quat()))
+    ctx.kinematics = SimpleNamespace(link_pose=lambda _serial, link: tool0 if link.endswith("tool0") else Pose(),
+                                     base_pose=lambda _serial: base)
+    arrows = add_jog_arrows(ctx, "0804", arm)
+    draw_jog_arrows(ctx, "0804", arm, arrows, False, True, robot_frame=True)
+    np.testing.assert_allclose(arrows.tool0.position, tool0.position)
+    turned = Rotation.from_quat(np.roll(arrows.tool0.wxyz, -1)) * Rotation.from_quat(base.orientation).inv()
+    assert turned.magnitude() < 1e-9, "the robot's axes, not tool0's"

@@ -126,7 +126,7 @@ def test_monitor_snapshot_has_robot_objects_and_tracked_bodies(cindy):
     """
     kinematics = Kinematics((cindy,), log_warn=print)
     base = SimpleNamespace(mocap_id=None, state=SimpleNamespace(tracked=False, last_fix_time=None))
-    robot = SimpleNamespace(config=cindy, base=base, arms={})
+    robot = SimpleNamespace(config=cindy, base=base, arms={}, parked=False)
     probe = SimpleNamespace(position=np.array([1.0, 2.0, 3.0]), orientation=np.array([0.0, 0.0, 0.0, 1.0]),
                             tracked=True, last_fix_time=None)
     world = SimpleNamespace(robots={cindy.serial: robot}, tracked_objects={"probe": probe})
@@ -165,7 +165,7 @@ def test_lost_mocap_and_stale_joint_states_are_unknown(cindy):
     arms = {"left_ur_arm": SimpleNamespace(state=SimpleNamespace(last_update_time=10.0)),
             "right_ur_arm": SimpleNamespace(state=SimpleNamespace(last_update_time=None))}
     world = SimpleNamespace(robots={cindy.serial: SimpleNamespace(
-        config=cindy, base=SimpleNamespace(mocap_id=3, state=state), arms=arms)}, tracked_objects={})
+        config=cindy, base=SimpleNamespace(mocap_id=3, state=state), arms=arms, parked=False)}, tracked_objects={})
     right = frozenset(name for name in cindy.model.movable_joints if name.startswith("right_ur_arm_"))
 
     fresh = take_snapshot(Scene(), world, kinematics, tick=1, time=10.1).robots["robots/a200-0806"]
@@ -176,3 +176,9 @@ def test_lost_mocap_and_stale_joint_states_are_unknown(cindy):
     assert not old.base_tracked and old.base.position == pytest.approx((1.0, 2.0, 0.0)) and old.base_time == 10.0
     assert old.unmeasured == frozenset(cindy.model.movable_joints)
     assert all(old.joints[name] == 0.5 for name in left), "the last value is kept"
+
+    # * Parked in Health: known where it stands, measured or not; the values are the same.
+    world.robots[cindy.serial].parked = True
+    parked = take_snapshot(Scene(), world, kinematics, tick=3, time=15.0).robots["robots/a200-0806"]
+    assert parked.base_tracked and not parked.unmeasured and not parked.acting_problems()
+    assert parked.base.position == old.base.position and parked.joints == old.joints

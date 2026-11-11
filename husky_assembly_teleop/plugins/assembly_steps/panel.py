@@ -15,16 +15,19 @@ from typing import TYPE_CHECKING
 
 import viser
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, HANDOFF_PART, INSERT_PART, MAX_TRAJ_TIME,
-                                              MOTION_PART, OPEN_PART, RETREAT_PART, SERVO_PART, WITH_MOTION_PART,
-                                              PartPlan)
+                                              MOTION_PART, OPEN_PART, PLANNED_MARGIN, RETREAT_PART, SERVO_PART,
+                                              WITH_MOTION_PART, PartPlan)
 from ...shared.planner.planner_panel import CommitConfirm, unknown_robots_chip
-from ...shared.runs.runs import (PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
-                                 RunSettings)
+from ...shared.teleop.clearance_toggle import close_chip
+from ...shared.runs.runs import (CDFM_PLANNERS, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE,
+                                 PLAN_TRIES_RANGE, RunSettings)
 from ...shared.assembly_tab.layout import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLAN_PLOTS_X,
                                            PLAN_SETTINGS_BAND, SETTINGS_BAND, STEP_BAND, plots_window)
 from ...shared.assembly_tab.plan_plots import PlanPlots
+from ...world.clearance import ARM_MOVE
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
 from .step_panel_base import SLIDER_STEP
 from scaffolding_assembly_core.ids import robot_id
@@ -33,6 +36,9 @@ if TYPE_CHECKING:
     from ...shared.assembly_planning.route_result import RouteResult
     from ...shared.planner.timed_path import TimedPath
     from .plugin import AssemblyStepsPlugin
+
+#: Seconds the Roadmap root box must rest before what was typed becomes the run's setting.
+ROADMAP_SETTLE = 1.0
 
 
 class StepsPanel:
@@ -49,6 +55,8 @@ class StepsPanel:
         # the path and the plan the plots were last filled from.
         self._shown_time: float | None = None
         self._shown_settings: RunSettings | None = None
+        #: The roadmap root as typed, and when (`ctx.now`): sent as one setting once the typing has paused.
+        self._roadmap_typed: tuple[str, float] | None = None
         self._plotted: TimedPath | None = None
         self._plotted_route: RouteResult | None = None
         with ctx.view.ui(band=STEP_BAND) as gui:
@@ -80,6 +88,7 @@ class StepsPanel:
                 "Exec", color="blue", icon=EXEC_ICON,
                 hint="Run the step's parts on the robot: a motion at once; placing the bar, a Robotiq step and the "
                      f"servo's first pass after Confirm below or on the phone. {CommitConfirm.HINT}")
+            plugin.clearance.add(ctx, gui, "exec")
             # ! Keep changing text BELOW the buttons.
             self._details = gui.add_html("")
         with ctx.view.ui(band=SETTINGS_BAND) as gui:
@@ -112,6 +121,14 @@ class StepsPanel:
             self._plan_swept = gui.add_checkbox("Swept check", default.plan_swept_check,
                                                 hint="Check a found path between its waypoints, 0.01 rad apart, "
                                                      "before taking it; off, the path is taken as the search found it")
+            self._plan_cdfm = gui.add_dropdown("CDFM planner", options=list(CDFM_PLANNERS),
+                                               initial_value=default.plan_cdfm_planner,
+                                               hint="How a held transfer is planned (Transfer workaround off): birrt "
+                                                    "searches; prm follows a precomputed roadmap of this process and "
+                                                    "bar, one try, about 1 to 2 min, no time limit")
+            self._plan_roadmap = gui.add_text("Roadmap root", initial_value=default.plan_roadmap_root,
+                                              hint="Folder holding prm/<process>__<bar>/ roadmaps; empty: the "
+                                                   "Drive's data_experiment/cdfm_planner_benchmark")
         # * The plan's plots in a window of their own, minimized to its bar until a plan arrives (`draw`).
         with plots_window(ctx.view, "Plan plots", viser.Icon.CHART_LINE, PLAN_PLOTS_X) as self._plots_panel:
             self._plots = PlanPlots(ctx.view.gui)
@@ -134,10 +151,18 @@ class StepsPanel:
         # The iterations and tries go as numbers: the run refuses one that is not whole, then makes it an int.
         settings = ((self._plan_time, "plan_max_time", float), (self._plan_iterations, "plan_max_iterations", float),
                     (self._plan_resolution, "plan_joint_resolution", float), (self._plan_tries, "plan_tries", float),
-                    (self._plan_swept, "plan_swept_check", bool))
+                    (self._plan_swept, "plan_swept_check", bool), (self._plan_cdfm, "plan_cdfm_planner", str))
         for widget, setting, kind in settings:
             widget.on_update(ctx.defer_value(setting, lambda value, setting=setting, kind=kind: ctx.require(
                 "assembly_run").request_settings(**{setting: kind(value)}), operator_only=True))
+        # * The text box calls back per keystroke, and each setting change writes the run's files: the roadmap root
+        #   is kept here and sent by `draw` once the typing has paused (ROADMAP_SETTLE).
+        self._plan_roadmap.on_update(ctx.defer_value("roadmap root", lambda value: self._typed(ctx, str(value)),
+                                                     operator_only=True))
+
+    def _typed(self, ctx: PluginContext, value: str) -> None:
+        """Keep the roadmap root as typed, with the time, for `draw` to send."""
+        self._roadmap_typed = (value, ctx.now())
 
     def draw(self, ctx: PluginContext, plugin: AssemblyStepsPlugin) -> None:
         """Write the current step, its plan and its parts into the widgets, and the plan into the plots.
@@ -160,15 +185,16 @@ class StepsPanel:
             number, count = plugin.position
             robot = ("the robot this action is for, and its serial" if plugin.serial
                      else "the robot this action is for; no robot of the monitor's config has its serial")
+            serial = short_serial(plugin.serial) if plugin.serial else "not configured"
             chips = (chip(escape(action), SECTION_CTRL, "the run's current action")
-                     + chip(escape(f"{plugin._robot_name} ({plugin.serial or 'not configured'})"), OK, robot)
+                     + chip(escape(f"{plugin._robot_name} ({serial})"), OK, robot)
                      + chip(f"step {number}/{count}", NONE, "this step of the action's steps: a movement, with the "
                                                             "tool movements run with it or after it")
                      + plugin._plan_chip())
             if executor.active:
                 chips += chip(escape(f"exec: {executor.active}"), BUSY,
                               "Exec runs this request; its prompt and Cancel are in the Exec panel")
-            self._status.content = chip_line(chips + unknown)
+            self._status.content = chip_line(chips + exec_clearance_chip(plugin) + unknown)
             movements = view.process.process.actions[action].movements
             routine = plugin.routine()
             text = f"{primary.label} ({routine.value if routine is not None else 'unclassified'})"
@@ -179,8 +205,8 @@ class StepsPanel:
             if step.skipped:
                 text += " · skipped: " + ", ".join(movements[index].id for index in step.skipped)
             self._step.content = block(values(_cut(escape(text))))
-            self._moves.content = block(values(_cut(escape(exec_line(f"{plugin._robot_name} ({plugin.serial})",
-                                                                     plugin.parts())))))
+            who = f"{plugin._robot_name} ({short_serial(plugin.serial)})"
+            self._moves.content = block(values(_cut(escape(exec_line(who, plugin.parts())))))
         self._check.label = plugin.goal_label()
         if self._shown_time != plugin.traj_time:
             self._shown_time = self._time.value = plugin.traj_time
@@ -188,6 +214,9 @@ class StepsPanel:
         self._minimum.content = block(values(f"min {minimum} s by the arms' limits"))
         self._ignore.value = plugin.ignore_built
         self._diagnosis.value = plugin.visual_diagnosis
+        if self._roadmap_typed is not None and ctx.now() - self._roadmap_typed[1] >= ROADMAP_SETTLE:
+            value, self._roadmap_typed = self._roadmap_typed[0], None
+            ctx.require("assembly_run").request_settings(plan_roadmap_root=value)
         settings = ctx.require("assembly_run").view.settings
         if settings != self._shown_settings:
             # * Only when the run's settings change; the panel's own writes never come back as requests
@@ -196,6 +225,9 @@ class StepsPanel:
             self._plan_time.value, self._plan_iterations.value = settings.plan_max_time, settings.plan_max_iterations
             self._plan_resolution.value, self._plan_tries.value = settings.plan_joint_resolution, settings.plan_tries
             self._plan_swept.value = settings.plan_swept_check
+            self._plan_cdfm.value = settings.plan_cdfm_planner
+            if self._roadmap_typed is None:  # never over what is being typed
+                self._plan_roadmap.value = settings.plan_roadmap_root
         # * While planning, the free search's progress after "planning …": how far its two trees still are apart.
         progress = ctx.require("motion_planner").progress if plugin.plan_state == "planning" else ""
         self._details.content = block(plugin._message_html(progress))
@@ -208,6 +240,16 @@ class StepsPanel:
                 self._plots_panel.expand()
             self._plotted, self._plotted_route = plugin.path, route
             self._plots.show(plugin.path, route.result.trajectory if route is not None else None)
+
+
+def exec_clearance_chip(plugin: AssemblyStepsPlugin) -> str:
+    """Amber while a ready plan's Exec runs under a smaller clearance than usual, or none with Ignore built bars."""
+    if plugin.plan_state != "ready" or not plugin.clearance.value:
+        return ""
+    if plugin.ignore_built:
+        return chip("no clearance", BUSY, "Ignore built bars is ticked: the plan may pass through built bars, so Exec "
+                                          "runs it without a clearance")
+    return close_chip(ARM_MOVE.close_note(PLANNED_MARGIN))
 
 
 def exec_line(robot: str, parts: tuple[PartPlan, ...]) -> str:
@@ -224,7 +266,8 @@ def exec_line(robot: str, parts: tuple[PartPlan, ...]) -> str:
         tools = ", ".join(part.tools)
         insert = f"inserts, the joint screw of {tools} tightening" if part.tools else "inserts rigid (ground bar)"
         words.append({MOTION_PART: f"moves {tools}", INSERT_PART: insert,
-                      RETREAT_PART: f"retreats {tools}, compliant first", OPEN_PART: f"opens the Robotiq on {tools}",
+                      RETREAT_PART: f"retreats {tools}, the jaws loosening as it backs out",
+                      OPEN_PART: f"opens the Robotiq on {tools}",
                       HANDOFF_PART: f"closes the Robotiq on {tools}, the arm compliant",
                       WITH_MOTION_PART: f"opens the gripper screws on {tools} in the retreat",
                       BY_HAND_PART: f"waits for {part.movement} by hand",

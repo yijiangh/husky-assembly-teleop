@@ -1,11 +1,16 @@
 """
-The retreat: a bar's tools let go of it and back out of their joints, compliant first, then rigid.
+The retreat: a bar's tools let go of it and back out of their joints, stiff (the default) or compliant first.
 
-The gripper screws open, then each tool0 is streamed under the compliance controller from where it is to the split
-point, so the tools can slide out of the joints. Back under joint control, the rest of the path is replanned from where
-the tools ended and runs at once. The retreat checks before that tail only report.
+Stiff (`plan_stiff_retreat`, `run_stiff_retreat`; the old monitor's default since 2026-10-28): under the
+joint controller the whole way, both gripper screws LOOSEN while the tools back straight out the first 12 mm of the
+planned path at the screws' own rate (2.4 mm/s), so the screws neither push nor pull the bar, then the rest of the path
+runs rigid; the path checks only report. Compliant (`plan_retreat`, `run_retreat`; the run setting "Retreat compliant",
+kept for tests): the gripper screws open, each tool0 is streamed under the compliance controller from where it is to
+the split point, then back under joint control the rest is replanned from where the tools ended and runs at once;
+in the lab the compliant tools pushed the bar away (2026-10-27).
 
-- ! Every ending, a cancel included, stops every tool and brings the arms back under joint control.
+- ! Every ending, a cancel included, stops every tool and (the compliant variant) brings the arms back under joint
+  control.
 - ! The replan comes from the caller (`run_retreat`'s `replan`): this layer never imports a plugin.
 - ! Main thread, from a plugin task.
 """
@@ -45,6 +50,21 @@ if TYPE_CHECKING:
     from ...robot_interface.robot import HuskyRobotInterface
     from ..assembly_planning.route_result import RouteResult
 
+# * The gripper screws: the thread's pitch, how much of it is engaged at a full grasp, how much further
+#   the tools back out so the thread is clear, and the motor's rate (measured 2026-10-28).
+SCREW_PITCH_MM = 2.0
+SCREW_ENGAGEMENT_MM = 8.0
+SCREW_OUT_MARGIN_MM = 4.0
+SCREW_RPM = 72.0
+#: How far the tools back out while the screws loosen, and how fast: 12 mm at 2.4 mm/s = 5.0 s. No faster (the tools
+#: would pull the bar), no slower (the screws would push it away).
+SCREW_OUT_MM = SCREW_ENGAGEMENT_MM + SCREW_OUT_MARGIN_MM
+SCREW_RATE_MM_S = SCREW_PITCH_MM * SCREW_RPM / 60.0
+#: The live joints may be this far from a stiff retreat's planned start, radians: no jump holding a bar.
+START_TOL = 0.01
+#: Seconds to wait for the arms to stand still between the screw-out and the rest: an arm refuses a trajectory within
+#: MOVING_WITHIN of its last motion.
+STILL_WAIT = MOVING_WITHIN + 1.0
 #: The tail's replanned line moves in steps of this, metres and radians.
 TAIL_STEP = 0.001
 TAIL_ANGLE = 0.05
@@ -162,10 +182,11 @@ def plan_retreat(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequenc
 def retreat_checks(*, names: Sequence[str], tail: Sequence[Sequence[float]], live: Mapping[str, float],
                    reached: Mapping[str, Mapping[str, float] | None] | None, forces: Mapping[str, float | None],
                    grippers: Mapping[str, str | None], paths: Mapping[str, Sequence[Pose]],
-                   goals: Mapping[str, Pose], seconds: float) -> list[str]:
+                   goals: Mapping[str, Pose], seconds: float, path_only: bool = False) -> list[str]:
     """The retreat checks before its tail, one "PASS …" or "FAIL …" line each; a report only.
 
-    ! A check without its measurement fails.
+    ! A check without its measurement fails. With `path_only` (the stiff retreat, checked before anything is sent)
+      only each arm's path, the joints and the speed are checked.
 
     Args:
         names: The tail's joint names.
@@ -190,8 +211,9 @@ def retreat_checks(*, names: Sequence[str], tail: Sequence[Sequence[float]], liv
 
     tail = np.asarray(tail, dtype=float)
     gap = max(abs(value - live[name]) for name, value in zip(names, tail[0]))
-    note(gap <= CHECK_START, f"start: first row {gap:.4f} rad from the live joints (limit {CHECK_START})")
-    if reached is not None:
+    if not path_only:
+        note(gap <= CHECK_START, f"start: first row {gap:.4f} rad from the live joints (limit {CHECK_START})")
+    if reached is not None and not path_only:
         if any(each is None for each in reached.values()):
             note(False, "break-out: a tool0 was not measured")
         else:
@@ -201,12 +223,13 @@ def retreat_checks(*, names: Sequence[str], tail: Sequence[Sequence[float]], liv
                  f"break-out: worst tool0 {worst:.1f} mm short of its end (limit {CHECK_ARRIVAL * 1e3:.0f}), "
                  f"travelled {' / '.join(f'{value:.1f}' for value in done)} mm (spread limit "
                  f"{CHECK_SPREAD * 1e3:.0f})")
-    readings = ", ".join(f"{arm} {newtons(force)}" for arm, force in forces.items())
-    note(all(force is not None and force <= CHECK_FORCE for force in forces.values()),
-         f"contact: |F| {readings} (limit {CHECK_FORCE:.0f} N)")
-    states = ", ".join(f"{arm} {state or 'no status'}" for arm, state in grippers.items())
-    note(all(state == ScaffoldingV3.STALLED for state in grippers.values()),
-         f"grippers: {states} (want {ScaffoldingV3.STALLED} = fully open)")
+    if not path_only:
+        readings = ", ".join(f"{arm} {newtons(force)}" for arm, force in forces.items())
+        note(all(force is not None and force <= CHECK_FORCE for force in forces.values()),
+             f"contact: |F| {readings} (limit {CHECK_FORCE:.0f} N)")
+        states = ", ".join(f"{arm} {state or 'no status'}" for arm, state in grippers.items())
+        note(all(state == ScaffoldingV3.STALLED for state in grippers.values()),
+             f"grippers: {states} (want {ScaffoldingV3.STALLED} = fully open)")
     lengths = []
     for arm, path in paths.items():
         points, goal = np.array([pose.position for pose in path]), np.asarray(goals[arm].position)
@@ -231,6 +254,242 @@ def retreat_checks(*, names: Sequence[str], tail: Sequence[Sequence[float]], liv
     note(speed <= CHECK_SPEED, f"speed: tool0 {speed * 1e3:.1f} mm/s over {seconds:.1f} s (limit "
                                f"{CHECK_SPEED * 1e3:.0f})")
     return lines
+
+
+@dataclass(frozen=True)
+class StiffRetreatPlan:
+    """A stiff retreat worked out from its planned path: the screw-out lead, the rigid rest, its prompt.
+
+    Attributes:
+        serial: The robot.
+        arms: The moving arms, in the robot's arm order.
+        names: The path's joint names.
+        lead: The first SCREW_OUT_MM of the path (rows), row 0 where the arms are.
+        rest: The rest of the path (rows), its first row the cut.
+        screw_out_mm: The lead's length (a touch over 12 mm along a bent line).
+        screw_out_seconds: The lead's time at SCREW_RATE_MM_S.
+        rest_mm: The rest's length, millimetres.
+        rest_seconds: The rest's share of the operator's time.
+        total_mm: The path's length: the furthest any arm's tool0 travels.
+        goals: Arm name -> the world pose its tool0 retreats to, from the plan; the checks measure against it.
+        text: The prompt after "<robot> (<serial>): <movement> — ".
+    """
+
+    serial: str
+    arms: tuple[str, ...]
+    names: tuple[str, ...]
+    lead: np.ndarray
+    rest: np.ndarray
+    screw_out_mm: float
+    screw_out_seconds: float
+    rest_mm: float
+    rest_seconds: float
+    total_mm: float
+    goals: Mapping[str, Pose]
+    text: str
+
+    def as_record(self) -> dict:
+        """The plan as JSON values."""
+        return {"serial": self.serial, "arms": list(self.arms), "stiff": True, "screw_out_mm": self.screw_out_mm,
+                "screw_out_s": self.screw_out_seconds, "rate_mm_s": SCREW_RATE_MM_S, "rest_mm": self.rest_mm,
+                "rest_s": self.rest_seconds, "total_mm": self.total_mm}
+
+
+def plan_stiff_retreat(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence[Sequence[float]],
+                       goals: Mapping[str, Pose], *, traj_time: float) -> StiffRetreatPlan | str:
+    """Work out a stiff retreat from its planned path: the 12 mm screw-out lead at the screw rate, the rest rigid.
+
+    Args:
+        robot: The robot; its URDF gives each arm's tool0.
+        names: The path's joint names.
+        rows: The path (N x joints); row 0 is where the arms are.
+        goals: Process flange id -> the world pose its tool0 was planned to end at (`RouteResult.goals`).
+        traj_time: Seconds the operator asked for the whole path; the rest takes its share by distance.
+
+    Returns:
+        StiffRetreatPlan | str: The plan, or why not: no arm moves, the path not longer than the screw-out, a moving
+        arm without its goal.
+    """
+    serial, urdf = robot.config.serial, robot.config.model.urdf
+    rows = np.asarray(rows, dtype=float)
+    arms = moving_arms(robot, names)
+    if not arms:
+        return f"the path moves no arm of {serial}"
+    tool0 = partial(tool0_by_arm, urdf, arms, names)
+    lead, rest, achieved, total = split_rows(
+        rows, lambda row: [pose.position for pose in tool0(row).values()], SCREW_OUT_MM, from_start=True)
+    if total <= 0.0:
+        return "the path does not move the tools"
+    if rest is None or lead is None:
+        return (f"stiff screw-out: the planned retreat ({total:.0f} mm) is not longer than the {SCREW_OUT_MM:.0f} mm "
+                f"screw-out: Plan again")
+    by_arm = {arm_of_flange(split_link_id(flange)[1]): pose for flange, pose in goals.items()}
+    missing = [arm for arm in arms if arm not in by_arm]
+    if missing:
+        return f"no retreat goal for {', '.join(missing)} in the plan: Plan again"
+    screw_out_mm = total - achieved
+    seconds = screw_out_mm / SCREW_RATE_MM_S
+    rest_seconds = split_seconds(traj_time, achieved, total, from_start=True)[1]
+    both = len(arms) > 1
+    tools = "both tools" if both else "the tool"
+    text = (f"RETREAT, stiff: the M1 screws of {' + '.join(arms)} LOOSEN while {tools} back straight out "
+            f"{screw_out_mm:.1f} mm at {SCREW_RATE_MM_S:.2f} mm/s ({seconds:.1f} s, joint controller), then "
+            f"{achieved:.0f} mm rigid ({rest_seconds:.1f} s). Watch {tools} let go and back off along "
+            f"{'their lines' if both else 'its line'}.")
+    return StiffRetreatPlan(serial, arms, tuple(names), lead, rest, screw_out_mm, seconds, achieved, rest_seconds,
+                            total, {arm: by_arm[arm] for arm in arms}, text)
+
+
+async def run_stiff_retreat(ctx: PluginContext, robot: HuskyRobotInterface, plan: StiffRetreatPlan,
+                            tools: Mapping[str, ScaffoldingV3], *, dry_run: bool = False,
+                            watch: Callable[[], str] | None = None, recorder: Recorder | None = None) -> PartOutcome:
+    """Run a stiff retreat: both jaws LOOSEN as the lead goes out at the screw rate, then the rest.
+
+    Refused, nothing sent, unless every check of `part_problem` passes; the path checks only report. The lead and the
+    LOOSEN go out in one tick; the rest is sent once the arms stand still, from the joints then (over START_TOL from
+    the cut: FAILED, nothing more sent). Every tool is STOPped at the end, however it ends; a cancel during the lead
+    holds every arm and sends no rest.
+
+    Args:
+        ctx: The plugin's context.
+        robot: The robot; its serial is the plan's.
+        plan: The retreat (`plan_stiff_retreat`), its lead's row 0 at the live joints.
+        tools: Arm name -> the scaffolding tool on each moving arm.
+        dry_run: Build the lead's trajectory, every check, and send nothing.
+        watch: Checked every tick while the arms move: why the retreat must stop (e.g. another robot moves), or "".
+        recorder: Gets the samples (e.g. for a live readout), made at the start; None: its own.
+
+    Returns:
+        PartOutcome: RETREATED, REFUSED (nothing sent), FAILED, HOLD_NOT_SENT or DRY_RUN; its record: the plan, the
+            checks, the phases "screw-out" and "rigid", the motor states as they changed, each send's outcome.
+
+    Raises:
+        asyncio.CancelledError: When cancelled; every arm was held and every tool stopped first.
+    """
+    label = f"{plan.serial}: retreat"
+    arms = [robot.arms[name] for name in plan.arms]
+    record = {"plan": plan.as_record()}
+    problem = check_part(ctx, robot, plan.arms, tools, record)
+    if problem:
+        ctx.log_error(f"{label} REFUSED: {problem}; nothing sent")
+        return part_outcome(REFUSED, problem, 0.0, record)
+    try:
+        lead = motion_command(plan.serial, list(robot.arms), plan.names, plan.lead, plan.screw_out_seconds,
+                              constant_speed=True)
+    except ValueError as error:
+        return part_outcome(REFUSED, f"the screw-out can't be timed: {error}", 0.0, record)
+    rows = np.vstack([plan.lead, plan.rest[1:]])
+    lines = record["checks"] = _checks(robot, plan, tools, plan.names, rows, None,
+                                       plan.screw_out_seconds + plan.rest_seconds, path_only=True)
+    for line in lines:
+        (ctx.log_info if line.startswith("PASS") else ctx.log_warn)(f"{label}: check {line}")
+    failures = sum(line.startswith("FAIL") for line in lines)
+    ctx.log_info(f"{label}: stiff screw-out: both jaws LOOSEN while both tools back straight out "
+                 f"{plan.screw_out_mm:.1f} mm at {SCREW_RATE_MM_S:.2f} mm/s ({lead.duration:.1f} s, joint controller), "
+                 f"then {plan.rest_mm:.0f} mm rigid ({plan.rest_seconds:.1f} s); "
+                 + (f"{failures} check(s) FAILED on the planned path" if failures else "every check passed"))
+    if dry_run:
+        sent = await send_motion(ctx, robot, lead, dry_run=True)
+        if not sent.ok:
+            return part_outcome(REFUSED, sent.reason, 0.0, record)
+        ctx.log_warn(f"DRY RUN {label}: the screw-out passed every check, NOT SENT; the rest is built from where it "
+                     f"ends when it runs")
+        return part_outcome(DRY_RUN, "every check passed; nothing sent (dry run)", 0.0, record)
+    started, recorder = started_part(ctx, robot, recorder)
+    phase = phase_keeper(ctx, started, record.setdefault("phases", []))
+    states = record["motor_states"] = []
+    short = {name: name.split("_")[0][0].upper() for name in plan.arms}
+
+    def motors() -> dict[str, str | None]:
+        """Each moving arm's gripper motor state."""
+        return {name: tools[name].state.gripper_motor for name in plan.arms if name in tools}
+
+    def motors_text(now: Mapping[str, str | None]) -> str:
+        return "/".join(short[name] for name in now) + " " + "/".join(str(state) for state in now.values())
+
+    def sample() -> str:
+        """Keep a sample each tick, log the motors when their states change; why it must stop (`watch`), or ""."""
+        recorder.tick(ctx.now())
+        now = motors()
+        if not states or states[-1]["states"] != now:
+            states.append({"t": round(ctx.now() - started, 1), "states": dict(now)})
+            ctx.log_info(f"{label}: screw-out t={ctx.now() - started:.1f}s: gripper motors {motors_text(now)}")
+        return watch() if watch is not None else ""
+
+    async def steps() -> tuple[str, str]:
+        """Run every step; the status and the reason it ended with."""
+        not_cleared = await stop_and_clear(ctx, tools, GRIPPER_MOTOR)
+        if not_cleared is not None:
+            return FAILED, f"{not_cleared.reason}; nothing loosened"
+        # * The LOOSEN and the lead in one tick: the tools back out as the screws turn.
+        try:
+            for tool in tools.values():
+                tool.open()
+        except MotionRefused as refused:
+            return FAILED, f"{refused}; not every gripper screw loosened"
+        ctx.log_info(f"{label}: LOOSEN the gripper screws of {' + '.join(tools)}")
+        since, recorder.phase = ctx.now(), "screw-out"
+        try:
+            sent = await send_motion(ctx, robot, lead, watch=sample)
+        except asyncio.CancelledError:
+            ctx.log_warn(f"{label}: cancelled during the screw-out: the rest of the way out is not sent; every arm "
+                         f"held, the gripper motors stop now")
+            raise
+        phase("screw-out", since, sent.status)
+        record["screw_out"] = {"rows": len(lead.arms[0].positions), "seconds": lead.duration,
+                               "mm": plan.screw_out_mm, "outcome": sent.as_record()}
+        if not sent.ok:
+            status = HOLD_NOT_SENT if sent.status == SENT_NOT_HELD else FAILED
+            return status, f"the screw-out ended {sent.status}: {sent.reason}; the rest is not sent"
+        ctx.log_info(f"{label}: screw-out done after {ctx.now() - since:.1f} s (gripper motors "
+                     f"{motors_text(motors())}, still loosening); now the rest of the way out.")
+
+        def still() -> bool:
+            """No arm moved within MOVING_WITHIN: the rest would be refused otherwise."""
+            now = ctx.now()
+            return all(arm.state.last_motion_time is None or now - arm.state.last_motion_time >= MOVING_WITHIN
+                       for arm in arms)
+
+        try:
+            await ctx.wait_until(still, timeout_s=STILL_WAIT, description="the arms to stand still after the screw-out")
+        except WaitTimeout:
+            pass
+        rest = np.array(plan.rest, dtype=float)
+        live = {}
+        for name, arm in robot.arms.items():
+            live.update(zip(arm_joint_names(name), arm.joint_vector().tolist()))
+        now = np.array([live[name] for name in plan.names])
+        gap = float(np.max(np.abs(now - rest[0])))
+        if gap > START_TOL:
+            return FAILED, (f"after the screw-out the arms are {math.degrees(gap):.2f}° from the cut (over "
+                            f"{math.degrees(START_TOL):.2f}°); the rest is not sent")
+        rest[0] = now
+        try:
+            command = motion_command(plan.serial, list(robot.arms), plan.names, rest, plan.rest_seconds)
+        except ValueError as error:
+            return FAILED, f"the rest can't be sent: {error}"
+        ctx.log_info(f"{label}: rigid chunk: {len(command.arms[0].positions)} rows over {command.duration:.1f} s")
+        since, recorder.phase = ctx.now(), "rigid"
+        sent = await send_motion(ctx, robot, command, watch=sample)
+        phase("rigid", since, sent.status)
+        record["rigid"] = {"rows": len(command.arms[0].positions), "seconds": command.duration, "mm": plan.rest_mm,
+                           "outcome": sent.as_record()}
+        if not sent.ok:
+            status = HOLD_NOT_SENT if sent.status == SENT_NOT_HELD else FAILED
+            return status, f"the rest ended {sent.status}: {sent.reason}"
+        return RETREATED, (f"retreated {plan.total_mm:.0f} mm; {failures} check(s) FAILED on the planned path"
+                           if failures else f"retreated {plan.total_mm:.0f} mm; every check passed")
+
+    try:
+        status, reason = await steps()
+    finally:
+        stop_all(tools)
+        record["grippers_at_end"] = motors()
+    # * A refused hold was said loudly by `send_motion`; once is enough.
+    if status != HOLD_NOT_SENT:
+        (ctx.log_info if status == RETREATED else ctx.log_error)(
+            f"{label}: {status}: {reason}; the gripper motors stopped ({motors_text(motors())} at the end)")
+    return part_outcome(status, reason, ctx.now() - started, {**record, **recorder.as_record()})
 
 
 async def run_retreat(ctx: PluginContext, robot: HuskyRobotInterface, plan: RetreatPlan,
@@ -402,8 +661,9 @@ async def _break_out(ctx: PluginContext, robot: HuskyRobotInterface, plan: Retre
     return ""
 
 
-def _checks(robot: HuskyRobotInterface, plan: RetreatPlan, tools: Mapping[str, ScaffoldingV3], names: Sequence[str],
-            tail: Sequence[Sequence[float]], reached: Mapping | None, seconds: float) -> list[str]:
+def _checks(robot: HuskyRobotInterface, plan: RetreatPlan | StiffRetreatPlan, tools: Mapping[str, ScaffoldingV3],
+            names: Sequence[str], tail: Sequence[Sequence[float]], reached: Mapping | None, seconds: float,
+            path_only: bool = False) -> list[str]:
     """`retreat_checks` on the tail with what the robot and its tools measure now."""
     urdf, rows = robot.config.model.urdf, np.asarray(tail, dtype=float)
     live = {}
@@ -416,7 +676,7 @@ def _checks(robot: HuskyRobotInterface, plan: RetreatPlan, tools: Mapping[str, S
     return retreat_checks(names=names, tail=rows, live=live, reached=reached,
                           forces={name: force_magnitude(robot.arms[name].state.wrench) for name in plan.arms},
                           grippers={name: tool.state.gripper_motor for name, tool in tools.items()},
-                          paths=paths, goals=plan.goals, seconds=seconds)
+                          paths=paths, goals=plan.goals, seconds=seconds, path_only=path_only)
 
 
 def _dry_run(ctx: PluginContext, robot: HuskyRobotInterface, plan: RetreatPlan, ends: Mapping[str, Pose], label: str,

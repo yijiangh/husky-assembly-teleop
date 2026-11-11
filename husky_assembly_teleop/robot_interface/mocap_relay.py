@@ -155,6 +155,7 @@ class MocapRelayState:
         simulated: Whether the relay reads a simulation's inputs only (`sim:=true`), else Motive's only: whatever is
             measured through it is all simulated or all real.
         calibrations_time: ROS time the last announcement arrived, seconds, or None before one.
+        drive_root: The Drive folder the relay reads calibration sessions from, as it announced it; None without one.
         body_definitions: Motive's rigid body definitions, by streaming id (a fake Motive's in a simulation).
         definitions_time: ROS time they last arrived, seconds, or None before.
         cameras: Motive's cameras, by name (a fake Motive's in a simulation).
@@ -179,6 +180,7 @@ class MocapRelayState:
     calibrations: dict[int, AppliedCalibration] = field(default_factory=dict)
     simulated: bool = False
     calibrations_time: float | None = None
+    drive_root: str | None = None
     body_definitions: dict[int, BodyDefinition] = field(default_factory=dict)
     definitions_time: float | None = None
     cameras: dict[str, MocapCamera] = field(default_factory=dict)
@@ -271,6 +273,7 @@ class MocapRelayInterface:
         self.state.calibrations = applied_calibrations(message.data)
         announcement = json.loads(message.data)
         self.state.simulated = bool(announcement.get("simulated"))
+        self.state.drive_root = announcement.get("drive_root") or None
         self.state.sources = {int(rb_id): str(source) for rb_id, source in (announcement.get("sources") or {}).items()}
         self.state.calibrations_time = self._now()
 

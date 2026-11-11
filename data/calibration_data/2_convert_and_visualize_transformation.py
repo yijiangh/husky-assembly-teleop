@@ -14,7 +14,7 @@ import numpy as np
 import pybullet as p
 import pybullet_planning as pp
 
-from config_loader import load_config, get_robot_urdf, get_arm_base_link_name, HERE
+from config_loader import load_config, get_robot_urdf, get_arm_base_link_name, CALIB_DATA_DIR
 from logging_utils import setup_logger
 
 # Load configuration
@@ -28,11 +28,11 @@ USE_GUI = config['use_gui']
 ARM_BASE_LINK_NAME = get_arm_base_link_name(ROBOT_NAME, ARM)
 
 # File paths
-CALIBRATION_FILE = os.path.join(HERE, DATE_FOLDER, 'base_frame_calibration.json')
-OUTPUT_FILE = os.path.join(HERE, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}_rhino.json')
+CALIBRATION_FILE = os.path.join(CALIB_DATA_DIR, DATE_FOLDER, 'base_frame_calibration.json')
+OUTPUT_FILE = os.path.join(CALIB_DATA_DIR, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}_rhino.json')
 
 # Configure logging with colored output
-log_file = os.path.join(HERE, DATE_FOLDER, 'compute_tf_log.txt')
+log_file = os.path.join(CALIB_DATA_DIR, DATE_FOLDER, 'compute_tf_log.txt')
 logger = setup_logger(log_file=log_file)
 
 

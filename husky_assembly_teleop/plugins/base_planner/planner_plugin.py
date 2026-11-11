@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from crl_husky.follower_path import FollowerPath
 
+from ...config import short_serial
 from ...drive import drive_folder, folder_name, started_at
 from ...plugin_api import signals
 from ...plugin_api.concurrency import WaitTimeout
@@ -37,7 +38,7 @@ from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import hover
 from ...world.checks import BAD, GOOD, WARN, Check
-from ...world.clearance import ALL_ARMS
+from ...world.clearance import ALL_ARMS, BASE_DRIVE
 from ...world.follower import path_check
 from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import with_stand_ins
@@ -114,6 +115,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
     worker_name = "base-plan"
     # * The follower takes a new path at any time: a new commit to a driving robot replaces its path.
     replaces_running = True
+    kind = BASE_DRIVE
     # * For the selected process step, recorded with each attempt and needed for a process task to count.
     requires = ("process",)
 
@@ -151,7 +153,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             algorithm, settings = self._algorithm(request)
         except ValueError as error:
             reason = str(error)
-            return Search(label=f"plan {serial}", message=f"planning for {serial}…",
+            return Search(label=f"plan {short_serial(serial)}", message=f"planning for {short_serial(serial)}…",
                           work=lambda: PlanResult(None, reason, 0.0), time_limit=WAIT_MARGIN,
                           accepted=lambda _result: ("", False))
         debug = Debug(on=request.debug)
@@ -191,7 +193,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
-                result, world = PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0), None
+                why = f"{short_serial(serial)} can't be planned for: {'; '.join(problems)}"
+                result, world = PlanResult(None, why, 0.0), None
             else:
                 stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
                 others[:] = setup["stand_ins"] = list(stand_ins.warnings)
@@ -222,7 +225,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             return (f"{how}: {path.length:.2f} m, {path.duration:.1f} s, "
                     f"found in {result.seconds:.1f} s{guess}{stand_ins}"), bool(guessed or others)
 
-        return Search(label=f"plan {serial}", message=f"planning for {serial}…{guess}", work=work,
+        return Search(label=f"plan {serial}", message=f"planning for {short_serial(serial)}…{guess}", work=work,
                       time_limit=TIME_LIMIT + WAIT_MARGIN, accepted=accepted, finished=finished)
 
     def stale_reason(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> str:
@@ -261,23 +264,24 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                       answer: Callable[[bool, str], None]) -> None:
         """Send the plan to the follower, then record the robot until the follower is done; save it if recorded.
 
-        Recording and a clearance start before the send: a soft stop within the margin the path was planned with,
-        not the usual STOP_DISTANCE, so a path the planner found never trips it. Refused while the base may not
-        follow a path. With the robot itself in `unknown_allowed` (Commit's second press), its unknown arms are
-        checked where last seen, else stowed.
+        Recording and, committed with Clearance ticked, a clearance start before the send (`commit_clearance`): a
+        soft stop within STOP_DISTANCE, or half the plan's margin when that is below BASE_PLAN_DISTANCE, so a path
+        followed a little off does not trip it; a start already that close refuses it. Not checked against itself: the
+        arms stand still. Refused while the base may not follow a path.
+        With the robot itself in `unknown_allowed` (Commit's second press), its unknown arms are checked where last
+        seen, else stowed.
 
         ? The margin is no stopping distance: at the planning speed the robot rolls ~10 cm after a trip. Revisit
           with the speed-aware clearance (tasks/2026-10-21_collision_view.md, follow-ups).
         """
         request, path, record = plan.request, plan.path, self._plan_record
         serial = request.serial
-        margin = self._algorithm(request)[1].margin
         robot, allowed = ctx.world.robots[serial], self.unknown_allowed(plan)
         # * The last run's chip goes: every way out below sets this run's, or none for a replaced commit.
         self._runs.pop(serial, None)
         if problem := robot.base.follow_problem():
-            answer(False, f"not committed: {serial}: {problem}")
-            self._refused(ctx, serial, f"not committed: {serial}: {problem}")
+            answer(False, f"not committed: {short_serial(serial)}: {problem}")
+            self._refused(ctx, serial, f"not committed: {short_serial(serial)}: {problem}")
             return
         sent_id, sent_at, started = None, ctx.now(), started_at()
         outcome, rec, clearance, run = "stopped", None, None, None
@@ -288,18 +292,19 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                             signals.follower_state(robot, every_message=True),
                             signals.base_floor_pose(robot, every_message=True),
                             signals.wheel_odometry(robot, every_message=True)) as rec, \
-                    ctx.clearance([serial], margin, unknown_arms=ALL_ARMS if robot_id(serial) in allowed else (),
-                                  unknown_robots=allowed) as clearance:
+                    self.commit_clearance(ctx, plan, unknown_arms=ALL_ARMS if robot_id(serial) in allowed else (),
+                                          check_self=False) as clearance:
+                await self.first_check(ctx, clearance)
                 try:
                     sent_id = send_to_onboard_follower(robot.base, path)
                 except ValueError as error:
                     answer(False, f"not committed: {error}")
-                    self._refused(ctx, serial, f"not committed: {serial}: {error}")
+                    self._refused(ctx, serial, f"not committed: {short_serial(serial)}: {error}")
                     return
                 sent_at = ctx.now()
                 run = self._runs[serial] = Run(FollowerPath.from_poses(*path.points.T), sent_id, sent_at, rec)
                 ctx.log_info(f"base path {sent_id} sent to {serial}: {path.length:.2f} m, {len(path.points)} waypoints")
-                answer(True, f"sent to {serial}'s follower (path {sent_id})")
+                answer(True, f"sent to {short_serial(serial)}'s follower (path {sent_id})")
                 limit = path.duration * RUN_FACTOR + RUN_MARGIN
                 try:
                     # * Under way is WARN (sent or following); done, aborted, replaced or silent ends the run.
@@ -310,18 +315,21 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                     outcome = check.label if check.level == GOOD else f"{check.label}: {check.detail}"
                 except WaitTimeout:
                     outcome = "timed out: still following"
-                    check = Check("timed out", BAD, f"{serial} still followed the path after {limit:.0f} s; "
-                                                    f"its path was stopped")
+                    check = Check("timed out", BAD, f"{short_serial(serial)} still followed the path after "
+                                                    f"{limit:.0f} s; its path was stopped")
                     robot.base.stop_path()
                 self._end(serial, run, check)
                 await ctx.sleep(SETTLE)
         except asyncio.CancelledError:
+            if refusal := self.start_refusal(clearance):
+                answer(False, refusal)
+                ctx.log_warn(f"{serial}: {refusal}")
             # ! Stop the path, unless a new commit replaces this run: its path replaces this one on the follower.
             # * Cancelled while settling, the run had ended: its outcome and chip stay.
             if run is None or run.ended is None:
                 outcome = "replaced by a new commit" if self.replaced() else "stopped"
                 if clearance is not None and clearance.problem:
-                    outcome = f"soft stopped: {clearance.problem}"
+                    outcome = f"{'refused' if clearance.refused else 'soft stopped'}: {clearance.problem}"
                 if not self.replaced():
                     self._end(serial, run, self.cancelled_check(ctx, serial, serial, clearance,
                                                                 "the commit was cancelled; the follower stopped"))
@@ -332,7 +340,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             if run is None and isinstance(error, MotionRefused):  # e.g. the clearance cannot check the robot
                 self._refused(ctx, serial, f"nothing sent: {error}")
             else:
-                self._end(serial, run, Check("failed", BAD, hover(f"{serial}: {error}")))
+                self._end(serial, run, Check("failed", BAD, hover(f"{short_serial(serial)}: {error}")))
             raise
         finally:
             if sent_id is not None:
@@ -385,6 +393,13 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             run.ended = check
 
     # --- --- --- --- --- READING --- --- --- --- ---
+
+    def plan_margin(self, plan: Plan[BasePlanRequest]) -> float | None:
+        """The margin the path was planned with (the panel's Margin), metres; None for a request with bad settings."""
+        try:
+            return self._algorithm(plan.request)[1].margin
+        except ValueError:  # * its plan failed for that reason already
+            return None
 
     def _algorithm(self, request: BasePlanRequest) -> tuple[Algorithm, Any]:
         """The request's algorithm (the default for "") and its default settings with the request's values.

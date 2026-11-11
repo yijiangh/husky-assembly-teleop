@@ -89,6 +89,10 @@ class Step:
         """Why this step's precondition has expired for the steps that `need` it; None while it holds or it has none."""
         return None
 
+    def need_expired(self, ctx: PluginContext, needed: Step) -> str | None:
+        """Why the precondition step `needed` has expired for this step; by default its own `expired`."""
+        return needed.expired(ctx)
+
     def ready(self, ctx: PluginContext) -> list[Check]:
         """Judge whether the step's actions can run now; shown while one is not green."""
         return []

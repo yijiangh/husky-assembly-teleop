@@ -71,15 +71,29 @@ class PlannerContract(Protocol[R]):
     def clear(self) -> None:
         """End a search in progress and forget the plan. ! A sent plan's motion goes on: `cancel_commit` stops it."""
 
-    def commit(self, plan_id: int, unknown_robots: Collection[str] = ()) -> asyncio.Future[tuple[bool, str]]:
+    def commit(self, plan_id: int, unknown_robots: Collection[str] = (),
+               clearance: bool = True) -> asyncio.Future[tuple[bool, str]]:
         """Send plan `plan_id` to the robot if it is still the latest and ready; resolves with (sent, message).
 
         `unknown_robots`: ids of robots the operator lets be unknown during the motion; any other robot not measured
         soft stops it. The plan's own robot among them: the base planner checks its unknown arms where last seen.
+        `clearance`: the motion runs under the planner's clearance, refused if the robot starts too close; False
+        (Clearance unticked): nothing soft stops it.
         """
 
-    def cancel_commit(self) -> bool:
+    def stop_distance(self, plan: Plan[R] | None) -> float:
+        """The clearance a commit of `plan` keeps, metres (`MoveKind.stop_for`).
+
+        Its kind's, or half the plan's closest approach when the plan keeps less than usual; the usual one for None.
+        """
+
+    def close_note(self, plan: Plan[R] | None) -> str:
+        """Why the clearance of `plan` is below the usual one (`MoveKind.close_note`), or "": its amber warning."""
+
+    def cancel_commit(self, serial: str | None = None) -> bool:
         """Stop every motion a commit started that still runs (the planner's `execute` stops the robot); main thread.
+
+        `serial`: only that robot's motion; None for every robot's.
 
         Returns:
             bool: Whether one was running.

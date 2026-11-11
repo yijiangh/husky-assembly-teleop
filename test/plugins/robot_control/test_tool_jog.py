@@ -1,4 +1,4 @@
-"""The tool0 jog of robot_control: a held button streams points along tool0's own axis, a release holds the arm."""
+"""The tool0 jog of robot_control: a held button streams points along tool0's or the robot's axis; release holds."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTR
 from husky_assembly_teleop.robot_interface.robot_lease import Lease
 from husky_assembly_teleop.robot_interface.tool_step import _difference, tool0_pose
 from husky_assembly_teleop.shared.teleop.dpad import HOLD_TIMEOUT
+from husky_assembly_teleop.shared.teleop.tool_pad import ROBOT_FRAME, TOOL_FRAME
 from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
@@ -32,8 +33,8 @@ TICK = 0.05
 class Bench:
     """A robot_control plugin over one or two robots with a real arm each, run by an ArmDriver, on Belle's URDF."""
 
-    def __init__(self, robots: tuple[str, ...] = (SERIAL,), mm_s: float = 5.0):
-        """Every arm at JOINTS under the joint controller, the jog speed at `mm_s`, Clearance not built."""
+    def __init__(self, robots: tuple[str, ...] = (SERIAL,), mm_s: float = 5.0, frame: str = TOOL_FRAME):
+        """Every arm at JOINTS under the joint controller, the jog speed at `mm_s` in `frame`, Clearance not built."""
         self.ctx = FakeContext(name="robot_control", step=self._step)
         node = fake_node(self.ctx.now, self.ctx.logs)
         self.plugin, self.arms, self.drivers = RobotControlPlugin(), {}, []
@@ -43,7 +44,8 @@ class Bench:
             self.ctx.world.robots[serial] = robot = fake_robot(node, serial, [arm])
             self.arms[serial], widgets = arm, SimpleNamespace(
                 serial=serial, arm=arm, jog_speed=SimpleNamespace(value=1.0), jog_clearance=None, free_drive_keep=None,
-                tool_jog=SimpleNamespace(speed=SimpleNamespace(value=mm_s), readout=SimpleNamespace(content="")))
+                tool_jog=SimpleNamespace(speed=SimpleNamespace(value=mm_s), frame=SimpleNamespace(value=frame),
+                                         readout=SimpleNamespace(content="")))
             self.plugin._arms.append(widgets)
             self.drivers.append(ArmDriver(arm, robot))
         self.anchor = tool0_pose(URDF, ARM, JOINTS)
@@ -80,6 +82,17 @@ def test_a_held_button_streams_one_point_per_tick_and_tool0_moves_along_its_axis
     assert 3e-3 < along <= 5.1e-3, along
     assert np.linalg.norm(beside) < 5e-5 and np.degrees(np.linalg.norm(turn)) < 0.01
     assert "jogging along tool0 x" in bench.plugin._tool_jog_readout((SERIAL, ARM), bench.plugin._arms[0])
+
+
+def test_in_the_robots_frame_a_held_button_moves_tool0_along_the_robots_axis():
+    """Robot frame, +z for a second at 5 mm/s: tool0 rises about 5 mm in the robot, nothing sideways or turned."""
+    bench = Bench(frame=ROBOT_FRAME)
+    bench.ticks(20, press=(2, 1.0))
+    moved = tool0_pose(URDF, ARM, bench.arms[SERIAL].joint_vector())
+    shift = moved[:3, 3] - bench.anchor[:3, 3]
+    assert 3e-3 < shift[2] <= 5.1e-3 and np.linalg.norm(shift[:2]) < 5e-5, shift
+    assert np.degrees(np.linalg.norm(bench.progress()[3:])) < 0.01
+    assert "jogging along the robot's z" in bench.plugin._tool_jog_readout((SERIAL, ARM), bench.plugin._arms[0])
 
 
 def test_a_held_turn_button_turns_tool0_about_its_own_axis():

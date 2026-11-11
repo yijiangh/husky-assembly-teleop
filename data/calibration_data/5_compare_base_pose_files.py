@@ -4,7 +4,7 @@ This script compares takes from two JSON recordings (e.g., two mocap captures) a
 quantifies base frame differences in translation and orientation.
 
 Default input targets:
-    data/calibration_data/20260303/base_by_Bob/*20260310*.json
+    <CALIB_DATA_DIR (gdrive)>/20260303/base_by_Bob/*20260310*.json
 
 It computes, per matched take index:
 - Position delta (dx, dy, dz) in mm and translation norm
@@ -24,9 +24,10 @@ from typing import List
 import matplotlib.pyplot as plt
 import numpy as np
 
+from config_loader import CALIB_DATA_DIR
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_FOLDER = os.path.join(HERE, '20260303', 'base_by_Bob')
+
+DEFAULT_FOLDER = os.path.join(CALIB_DATA_DIR, '20260303', 'base_by_Bob')
 DEFAULT_GLOB = '*20260310*.json'
 
 

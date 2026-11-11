@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Mapping
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 
+from ...config import short_serial
 from ..assembly_planning.route_result import pose_error
 
 if TYPE_CHECKING:
@@ -143,21 +144,21 @@ def stale_reason(basis: PlanBasis, snapshot: Scene, *, loaded: LoadedProcess | N
         return "an action was marked done or reopened since planning"
     robot = snapshot.robots.get(robot_id(basis.serial))
     if robot is None:
-        return f"{basis.serial} is no longer in the scene"
+        return f"{short_serial(basis.serial)} is no longer in the scene"
     moved = max((abs(float(robot.joints.get(name, math.inf)) - value) for name, value in basis.start.items()),
                 default=0.0)
     if moved > STALE_ARM:
-        return (f"{basis.serial}'s arm moved {math.degrees(moved):.1f}° since planning "
+        return (f"{short_serial(basis.serial)}'s arm moved {math.degrees(moved):.1f}° since planning "
                 f"(replan beyond {math.degrees(STALE_ARM):.1f}°)")
     distance, turn = pose_error(robot.base, basis.base)
     if distance > STALE_BASE[0] or turn > STALE_BASE[1]:
-        return (f"{basis.serial}'s base moved {distance * 1e3:.1f} mm, {math.degrees(turn):.2f}° since planning "
-                f"(replan beyond {STALE_BASE[0] * 1e3:.0f} mm or {math.degrees(STALE_BASE[1]):.1f}°)")
+        return (f"{short_serial(basis.serial)}'s base moved {distance * 1e3:.1f} mm, {math.degrees(turn):.2f}° since "
+                f"planning (replan beyond {STALE_BASE[0] * 1e3:.0f} mm or {math.degrees(STALE_BASE[1]):.1f}°)")
     if basis.goal_base is not None:
         distance, turn = pose_error(robot.base, basis.goal_base)
         if distance > STALE_BASE[0] or turn > STALE_BASE[1]:
-            return (f"{basis.serial}'s base is {distance * 1e3:.1f} mm, {math.degrees(turn):.2f}° from where its goal "
-                    f"was solved (Live IK again and replan beyond {STALE_BASE[0] * 1e3:.0f} mm or "
+            return (f"{short_serial(basis.serial)}'s base is {distance * 1e3:.1f} mm, {math.degrees(turn):.2f}° from "
+                    f"where its goal was solved (Live IK again and replan beyond {STALE_BASE[0] * 1e3:.0f} mm or "
                     f"{math.degrees(STALE_BASE[1]):.1f}°)")
     for live, (base, joints) in basis.others.items():
         other = snapshot.robots.get(live)

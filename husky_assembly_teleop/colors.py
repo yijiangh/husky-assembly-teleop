@@ -60,6 +60,8 @@ ACTION = BLUE
 #: ACTION as viser's 10-shade theme palette (`ui.style.configure_theme`): Mantine fills with shade 6 in the light
 #: theme and 8 in the dark, hovers one darker; the lighter shades are Mantine's blue.
 ACTION_SHADES = ("#e7f5ff", "#d0ebff", "#a5d8ff", "#74c0fc", "#4dabf7", "#339af0", ACTION, "#1864ab", ACTION, "#1864ab")
+#: A choice row's chosen option, filled, with white text; the others are outlined in NONE grey.
+CHOSEN = INK
 
 # * Panel sections: the kind of controls below the bar.
 SECTION_CTRL = BLUE
@@ -76,6 +78,8 @@ ACTUAL = GREY
 TRAIL = AMBER       # where the base drove: it moved
 MEASURED = CYAN     # mocap measurements: recorded probe points, cameras
 FITTED = BLUE       # where a fit puts what was measured: fitted mocap markers, axes and bars
+#: tool0's axes as the scene draws them (x red, y green, z blue): the tool pad's buttons.
+AXIS_X, AXIS_Y, AXIS_Z = RED, GREEN, BLUE
 MOUNTED = NAVY      # the joint halves mounted on a fitted bar, darker than it
 HELD = AMBER        # a body held by a robot's tool: the old orange, in transit
 COLLISION = RED     # what moved into something

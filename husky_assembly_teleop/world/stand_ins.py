@@ -8,6 +8,7 @@ takes those values as known for every robot but the ones checked, and says which
 - Used by the base and arm planners, clearances and the process planner (`scene_for`, which lays the process design
   over them first); the robots they act for are left as they are (`with_guesses`).
 - ! Every robot not live gets a warning: show it to the operator. A disabled robot is absent on purpose: left out.
+- A robot parked in Health stands in for good, silently: the snapshot takes it as known where it is (`parked`).
 - Pure: runs on any thread.
 """
 
@@ -59,6 +60,14 @@ def with_stand_ins(snapshot: Scene, acting: Collection[str]) -> StandIns:
     if not warnings:
         return StandIns(snapshot, sources, ())
     return StandIns(replace(snapshot, robots=robots), sources, tuple(warnings))
+
+
+def parked(robot: RobotObject) -> RobotObject:
+    """A robot parked in Health as the snapshot holds it: its stand-in values taken as known, so nothing warns or asks.
+
+    Its base and joints stay where last seen, else at the default pose; Health unparks it once seen moving.
+    """
+    return replace(robot, base_tracked=True, unmeasured=frozenset()) if robot.acting_problems() else robot
 
 
 def unknown_robots(snapshot: Scene, acting: Collection[str]) -> frozenset[str]:

@@ -4,7 +4,7 @@ The camera name / position / orientation come from the NatNet "camera descriptio
 (NatNetClient.__unpack_camera_description, Type 5), saved per-take by
 husky_monitor.get_mocap_camera_inventory() into each take JSON under
 data/mocap_experiments/<date>/<session>/takes/*.json as `mocap_camera_inventory`.
-NOTE: calibration trajectory files (data/calibration_data/<date>/) do NOT carry
+NOTE: calibration trajectory files (gdrive data_experiment/calibration_data/<date>/) do NOT carry
 camera inventory -- only mocap_experiments takes do.
 
 That saved data is RAW MOCAP (y-up) meters: position=(x,y,z), orientation
@@ -36,8 +36,8 @@ MOCAP_EXPERIMENTS_DIR = (
 
 # Default output folder (csv + json land next to the Rhino importer script).
 OUTPUT_DIR = (
-    "/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/"
-    "2025-03 Husky Assembly/data_experiment/visualise_mocap_camera"
+    "/home/su/Insync/2025-03 Husky Assembly/data_experiment/"
+    "visualise_mocap_camera"
 )
 
 

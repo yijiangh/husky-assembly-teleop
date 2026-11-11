@@ -242,11 +242,13 @@ def moved_to(panel: Panel, slider: str, mm: float) -> dict[str, float]:
 
 
 def test_insert_mm_moves_the_start_the_approach_goes_to_and_retreat_mm_the_back_outs_end(monkeypatch):
-    """At the process's 15 mm the planner solves the start itself; at 60 mm it gets the joints 60 mm back."""
+    """At the process's own length the planner solves the start itself; at 60 mm it gets the joints 60 mm back."""
     panel = Panel(monkeypatch, np.linspace(INSERTED, START, 5))
 
     async def scenario():
-        assert panel.widget("Insert mm").value == panel.widget("Retreat mm").value == 15.0
+        # * The process's own length is read, not assumed: the demo's Save rewrites the insert's start.
+        own = panel.plugin._authored_mm
+        assert panel.widget("Insert mm").value == panel.widget("Retreat mm").value == own and own not in (40.0, 60.0)
         await panel.click("Move", "Approach")
         assert panel.planner.requests[-1].goal_joints is None
         longer = moved_to(panel, "Insert mm", 60.0)

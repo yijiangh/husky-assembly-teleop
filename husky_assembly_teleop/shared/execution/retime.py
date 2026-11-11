@@ -18,6 +18,8 @@ longer at a time until it isn't.
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -139,6 +141,37 @@ def retime(path: Sequence[Sequence[float]], duration: float = 0.0, *, max_speed:
                     tuple(stops))
     _check(timed, line, samples, spacing)
     return timed
+
+
+def constant_speed(path: Sequence[Sequence[float]], duration: float,
+                   spacing: float = JOINT_MOVE_WAYPOINT_SPACING) -> Retimed:
+    """Time a short path at one speed: samples evenly along its arc over `duration` (a retreat's screw-out).
+
+    The cosine profile would run a 5 s, 12 mm line at up to 1.6 times the screws' rate and lag them in between; this
+    keeps the tools at the rate the whole way. Even along the joint arc is even along the tool's travel on a straight
+    line. The first and last rows are exact; the end velocities are zero.
+
+    Args:
+        path: Joint rows (N x D), radians; the first is where the arm is.
+        duration: Seconds for the whole path, rounded up to whole `spacing` steps.
+        spacing: Seconds between samples.
+
+    Returns:
+        Retimed: The timed path, one stop at each end.
+
+    Raises:
+        RetimeError: As `retime`, for a path that does not move, is not finite or leaves the UR limits.
+    """
+    line = _polyline(_distinct(path))
+    count = max(int(math.ceil(duration / spacing - 1e-9)), 1)
+    where = np.linspace(0.0, line.arc[-1], count + 1)
+    segment = np.clip(np.searchsorted(line.arc, where, side="right") - 1, 0, len(line.rows) - 2)
+    positions = line.rows[segment] + (where - line.arc[segment])[:, None] * line.directions[segment]
+    positions[0], positions[-1] = line.rows[0], line.rows[-1]
+    velocities = np.zeros_like(positions)
+    velocities[1:-1] = (positions[2:] - positions[:-2]) / (2.0 * spacing)
+    seconds = count * spacing
+    return Retimed(positions, velocities, seconds, seconds, (0, len(line.rows) - 1))
 
 
 def sampled_limits(positions: np.ndarray, duration: float, velocities: np.ndarray | None) -> tuple[float, float]:

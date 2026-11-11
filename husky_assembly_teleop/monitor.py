@@ -535,7 +535,7 @@ class HuskyMonitor(Node):
                     assumable = (assumable_joints(robot.model.movable_joints, clearance.unknown_arms)
                                  if robot is not None else frozenset())
                     asked.append(((loaded.ctx, clearance, serial), robot_id(serial), clearance.margin, assumable,
-                                  clearance.unknown_robots))
+                                  clearance.unknown_robots, clearance.check_self))
         watching = now - self._watched_at >= WATCH_EVERY
         for loaded in self._loaded.values() if watching else ():
             if loaded.stopped:
@@ -547,7 +547,7 @@ class HuskyMonitor(Node):
                     if robot is not None:
                         asked.append(((loaded.ctx, watch, serial), own, watch.margin,
                                       assumable_joints(robot.model.movable_joints, watch.unknown_arms),
-                                      unknown_robots(snapshot, {own})))
+                                      unknown_robots(snapshot, {own}), watch.check_self))
         if asked and self._clearances.check(snapshot, asked):
             self._clearances_asked = [key for key, *_rest in asked]
             if watching:

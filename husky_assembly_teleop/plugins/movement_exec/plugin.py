@@ -22,6 +22,7 @@ import viser
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...robot_interface.robot_lease import NotLeased
@@ -33,11 +34,14 @@ from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import INTERRUPTED, motion_command
 from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HANDOFF_PART, HOLD_NOT_SENT,
                                               INSERT_PART, MAX_TRAJ_TIME, MOTION_KINDS, MOTION_PART, REFUSED,
-                                              REFUSED_PART, RETREAT_PART, SERVO_PART, Carried, ExecRequest,
-                                              ExecResult, serial_of)
+                                              REFUSED_PART, RETREAT_PART, SERVO_INDEX, SERVO_PART, WITH_MOTION_PART,
+                                              Carried, ExecRequest, ExecResult, serial_of)
 from ...shared.assembly_tab.exec_plots import ExecPlots
 from ...shared.assembly_tab.layout import ASSEMBLY_TAB, EXEC_PLOTS_X, plots_window
+from ...shared.runs.as_built import KIND as AS_BUILT_KIND, bar_lines
+from .as_built import as_built_record
 from .panel import ExecPanel
+from .report import PageServer, build as build_page
 from .sequences import Job, PartRun, run_part, unknown_serials
 from .servo_part import run_servo
 
@@ -57,6 +61,8 @@ def cancelled_by(ctx: PluginContext) -> str:
     return CLOSED if ctx.closed else STOP_ALL
 
 
+#: Parts no as-built record is taken around: nothing moves in them.
+AS_BUILT_SKIPPED = frozenset({WITH_MOTION_PART, REFUSED_PART})
 #: The parts that run partly under the compliance controller, whose force and torque the Exec plots window shows.
 COMPLIANT_KINDS = (INSERT_PART, RETREAT_PART, HANDOFF_PART)
 
@@ -66,7 +72,7 @@ class MovementExecPlugin(HuskyPlugin):
     """Runs one step's parts in order on its robot (a motion on Exec, the rest after Confirm) and records them."""
 
     name = "movement_exec"
-    requires = ("motion_planner", "assembly_run")
+    requires = ("motion_planner", "assembly_run", "mocap_bars")
     experimental = True
     tab_path = (ASSEMBLY_TAB,)
     icon = viser.Icon.PLAYER_PLAY
@@ -94,6 +100,12 @@ class MovementExecPlugin(HuskyPlugin):
         self._servo_line = ""
         #: The Exec plots window's plots, and the time of the compliant sample last plotted.
         self._plots: ExecPlots | None = None
+        #: What was said once about nothing to record (the process without markers, no plugin), not to repeat it.
+        self._no_bars_said = None
+        #: The as-built page: its server, the build running, and the last build's outcome for the panel.
+        self._page_server = PageServer()
+        self._page_task: asyncio.Task | None = None
+        self._page_line: tuple[str, str] = ("", "")
         self._plotted_t: float | None = None
 
     # --- --- --- --- --- WHAT OTHER PLUGINS CALL (MovementExecContract) --- --- --- --- ---
@@ -147,7 +159,8 @@ class MovementExecPlugin(HuskyPlugin):
             job = Job(ctx, request, ctx.world.robots[request.serial], ctx.require("assembly_run"), self._prompts,
                       self._dry_run, lambda name, movement, data: self._event(job, name, movement, data),
                       self._moved_at, lambda line: setattr(self, "_servo_line", line),
-                      measured=self._plots.servo_reading if self._plots is not None else (lambda _reading: None))
+                      measured=self._plots.servo_reading if self._plots is not None else (lambda _reading: None),
+                      status=self._plots.status if self._plots is not None else (lambda _text, _color: None))
             self._job, self._active, self._cancel_reason = job, f"{request.robot_name} · {request.label}", ""
             ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
                          + (" (DRY RUN)" if job.dry_run else ""))
@@ -208,7 +221,7 @@ class MovementExecPlugin(HuskyPlugin):
         if self._panel is not None:
             recorder = self._job.recorder if self.active and self._job is not None else None
             self._panel.draw(self.active, self.prompt, self._dry_run, (self._last, self._last_failed),
-                             self._dry_run_refused, recorder, self._servo_line)
+                             self._dry_run_refused, recorder, self._servo_line, self._page_line)
             if self._plots is not None:
                 if recorder is not None and recorder.samples and recorder.samples[-1]["t"] != self._plotted_t:
                     self._plotted_t = recorder.samples[-1]["t"]
@@ -228,9 +241,10 @@ class MovementExecPlugin(HuskyPlugin):
             return "nothing to run in this step"
         serial = serial_of(request.loaded, request.action, ctx.config.robots)
         if serial != request.serial:
-            return f"{request.action} is for {serial or 'no configured robot'}, not {request.serial}"
+            return (f"{request.action} is for {short_serial(serial) if serial else 'no configured robot'}, not "
+                    f"{short_serial(request.serial)}")
         if request.serial not in ctx.world.robots:
-            return f"{request.serial} is not connected"
+            return f"{short_serial(request.serial)} is not connected"
         if not 0.0 < request.traj_time <= MAX_TRAJ_TIME:
             return f"the motion time must be over 0 and at most {MAX_TRAJ_TIME:.0f} s, not {request.traj_time}"
         motions = [part for part in request.parts if part.kind in MOTION_KINDS]
@@ -257,16 +271,16 @@ class MovementExecPlugin(HuskyPlugin):
             return "the arms moved since this plan was made: replan"
         live = ctx.scene.snapshot.robots.get(robot_id(request.serial))
         if live is None:
-            return f"{request.serial} is not in the scene"
+            return f"{short_serial(request.serial)} is not in the scene"
         distance, turn = pose_error(live.base, basis.base)
         if distance > STALE_BASE[0] or turn > STALE_BASE[1]:
-            return (f"{request.serial}'s base is {distance * 1e3:.1f} mm, {math.degrees(turn):.2f}° from where the "
-                    f"plan was made: replan")
+            return (f"{short_serial(request.serial)}'s base is {distance * 1e3:.1f} mm, {math.degrees(turn):.2f}° from "
+                    f"where the plan was made: replan")
         try:
             motion_command(request.serial, list(ctx.world.robots[request.serial].arms), trajectory.joint_names,
                            trajectory.positions, request.traj_time)
         except ValueError as error:
-            return f"the plan can't be sent to {request.serial}: {error}"
+            return f"the plan can't be sent to {short_serial(request.serial)}: {error}"
         return ""
 
     async def _run(self, job: Job, lease: Lease, future: asyncio.Future) -> None:
@@ -284,16 +298,22 @@ class MovementExecPlugin(HuskyPlugin):
         if self._carried is not None and self._carried.action != request.action:
             self._carried = None
         self._servo_line = ""
+        first = True
         try:
             with lease.use():
                 for part in request.parts:
                     run = PartRun(part)
+                    if first and part.kind not in AS_BUILT_SKIPPED:
+                        # * The moment before anything moves; every later start is the end of the part before.
+                        self._as_built(job, run, "start")
+                        first = False
                     if part.routine in TRANSFERS and part.kind in (MOTION_PART, SERVO_PART):
                         self._carried = None  # the transfer runs anew: its servo sets the carry again when due
                     if self._plots is not None and part.kind == SERVO_PART:
-                        self._plots.start_servo(f"{part.movement} on {request.serial}")
+                        self._plots.start_servo(f"{part.movement} on {short_serial(request.serial)}")
                     elif self._plots is not None and part.kind in COMPLIANT_KINDS:
-                        self._plots.start_compliant(list(job.robot.arms), f"{part.movement} on {request.serial}")
+                        self._plots.start_compliant(list(job.robot.arms),
+                                                    f"{part.movement} on {short_serial(request.serial)}")
                         self._plotted_t = None
                     try:
                         await (run_servo if part.kind == SERVO_PART else run_part)(job, run)
@@ -333,12 +353,22 @@ class MovementExecPlugin(HuskyPlugin):
         """Record a part cut short by a cancel (where the arms stopped, the holds) and say who cancelled it.
 
         Returns:
-            ExecResult: CANCELLED; FAILED when the freeze broke (another robot moved); HOLD_NOT_SENT when an arm
-                refused its hold.
+            ExecResult: CANCELLED; FAILED when the freeze broke (another robot moved) or the clearance tripped;
+                REFUSED when the clearance found the start too close, nothing sent; HOLD_NOT_SENT when an arm refused
+                its hold.
         """
         part, progress = run.part, run.progress
+        clearance = None if self._cancel_reason else run.clearance
+        if clearance is not None and clearance.refused:
+            run.ended(REFUSED, "refused", f"nothing sent: {clearance.problem}; untick Clearance to move out")
+            job.event("cancel", part.movement, {"reason": "clearance refused the start"})
+            self._record_part(job, run)
+            return ExecResult(run.result, f"{part.movement}: {run.reason}", done, end, base)
         moved = None if self._cancel_reason or run.freeze is None else run.freeze.problem
         reason = self._cancel_reason or (f"freeze broken: {moved}" if moved else cancelled_by(job.ctx))
+        if moved is None and clearance is not None and clearance.problem:
+            moved = f"soft stopped: {clearance.problem}"
+            reason = f"clearance tripped: {clearance.problem}"
         refused = progress.hold_not_sent if progress is not None else []
         if progress is not None:
             run.outcome = {"seconds": progress.seconds, "end": progress.end, "holds": dict(progress.holds)}
@@ -346,8 +376,9 @@ class MovementExecPlugin(HuskyPlugin):
                 # ? A hold is refused on stale joints: then "end" is where they were last seen, not where it stopped.
                 run.outcome.update(end_stale=progress.end_stale, end_age=dict(progress.end_age))
         if refused:
-            run.ended(HOLD_NOT_SENT, HOLD_NOT_SENT, f"HOLD NOT SENT on {', '.join(refused)}: stop {job.request.serial} "
-                                                    f"with the teach pendant or the e-stop (cancelled: {reason})")
+            run.ended(HOLD_NOT_SENT, HOLD_NOT_SENT, f"HOLD NOT SENT on {', '.join(refused)}: stop "
+                                                    f"{short_serial(job.request.serial)} with the teach pendant or the "
+                                                    f"e-stop (cancelled: {reason})")
         elif moved:
             run.ended(FAILED, INTERRUPTED, f"{moved}; every arm held")
         else:
@@ -373,8 +404,8 @@ class MovementExecPlugin(HuskyPlugin):
         run.outcome = {"holds": holds}
         if refused:
             run.ended(HOLD_NOT_SENT, HOLD_NOT_SENT, f"HOLD NOT SENT on {', '.join(refused)}: stop "
-                                                    f"{job.request.serial} with the teach pendant or the e-stop "
-                                                    f"(the executor raised {error!r})")
+                                                    f"{short_serial(job.request.serial)} with the teach pendant or the "
+                                                    f"e-stop (the executor raised {error!r})")
         else:
             run.ended(FAILED, "raised", f"the executor raised {error!r}; every arm held")
         self._record_part(job, run)
@@ -439,6 +470,110 @@ class MovementExecPlugin(HuskyPlugin):
             payload["servo_file"] = run.servo_file
         job.run.request_record("exec", action=request.action, movement=movement,
                                data={"status": run.status, "result": run.result}, file=payload)
+        if part.kind not in AS_BUILT_SKIPPED:
+            self._as_built(job, run, "end")
+
+    # --- --- --- --- --- THE AS-BUILT RECORD --- --- --- --- ---
+
+    def request_as_built(self) -> None:
+        """Measure every MoCap bar now and append an as-built record (phase "manual"); the current step's context."""
+        ctx = self._ctx
+        view = ctx.require("assembly_run").view
+        if view.process is None:
+            ctx.log_warn("[as-built] no process loaded: nothing recorded")
+            return
+        if self._job is not None and self.active:
+            job = self._job
+            self._as_built(job, None, "manual")
+            return
+        action_id, movement_index = view.current if view.current is not None else (None, None)
+        serial = serial_of(view.process, action_id, ctx.config.robots) if action_id else None
+        if serial is None or serial not in ctx.world.robots:
+            serial = next(iter(ctx.world.robots), None)
+        if serial is None:
+            ctx.log_warn("[as-built] no robot: nothing recorded")
+            return
+        self._record_as_built(ctx, view, "manual", action_id, movement_index, serial, ctx.world.robots[serial],
+                              None, None, False, {})
+
+    def request_build_page(self) -> None:
+        """Build the as-built page of today's records on a thread and serve it; the panel shows the link."""
+        ctx = self._ctx
+        if self._page_task is not None and not self._page_task.done():
+            self._page_line = ("the page is still being built", "busy")
+            return
+        view = ctx.require("assembly_run").view
+        if view.process is None:
+            self._page_line = ("no process loaded: nothing to build", "failed")
+            return
+        if ctx.config.drive_root is None:
+            self._page_line = ("no Drive root (drive_root): nothing to build", "failed")
+            return
+        self._page_task = ctx.spawn("build the as-built page", self._build_page(ctx, view.process),
+                                    survives_soft_stop=True)
+
+    async def _build_page(self, ctx: PluginContext, loaded) -> None:
+        """Run the page script for the loaded process (today's file), then serve its folder."""
+        self._page_line = ("building the as-built page of today's records...", "busy")
+        ctx.log_info("[as-built] building the page: scripts/as_built_page.py")
+        path, tail = await ctx.run_in_thread(build_page, ctx.config.drive_root, loaded.source.name, loaded.source)
+        if path is None:
+            ctx.log_warn(f"[as-built] the page was not built:\n{tail}")
+            self._page_line = (f"not built: {tail.splitlines()[-1] if tail else 'see the log'}", "failed")
+            return
+        url = self._page_server.serve(path.parent) + path.name
+        ctx.log_info(f"[as-built] page written: {path}; open {url}")
+        self._page_line = (url, "ok")
+
+    @property
+    def page_line(self) -> tuple[str, str]:
+        """tuple[str, str]: The last page build's outcome for the panel: (a URL or a message, ok/busy/failed)."""
+        return self._page_line
+
+    def _as_built(self, job: Job, run: PartRun | None, phase: str) -> None:
+        """An as-built record at a part's start or end (or a click mid-request); never raises, the step goes on."""
+        request = job.request
+        part = run.part if run is not None else None
+        movement_index = None if part is None else (request.step.primary if part.index == SERVO_INDEX
+                                                    else part.index)
+        self._record_as_built(job.ctx, job.run.view, phase, request.action, movement_index, request.serial,
+                              job.robot, request, run, job.dry_run, job.ft_zero)
+
+    def _record_as_built(self, ctx: PluginContext, view, phase: str, action_id: str | None,
+                         movement_index: int | None, serial: str, robot, request: ExecRequest | None,
+                         run: PartRun | None, dry_run: bool, ft_zero: Mapping[str, Mapping]) -> None:
+        """Build the record and hand it to assembly_run; an error is one log line."""
+        movement = run.part.movement if run is not None else "(no step loaded)"
+        if request is not None and run is None:
+            movement = request.label
+        ended = f" ({run.result or 'running'})" if run is not None and phase == "end" else ""
+        head = f"[as-built] {movement} {phase}{ended}"
+        try:
+            bars_plugin = ctx.require("mocap_bars")
+        except KeyError:
+            if self._no_bars_said != "no plugin":
+                self._no_bars_said = "no plugin"
+                ctx.log_info("[as-built] the mocap_bars plugin is not loaded: nothing recorded")
+            return
+        try:
+            record = as_built_record(ctx, bars_plugin, view.process, view, action_id=action_id,
+                                     movement_index=movement_index, serial=serial, robot=robot, phase=phase,
+                                     request=request, run=run, dry_run=dry_run, ft_zero=ft_zero)
+            if record is None:
+                if self._no_bars_said != view.process.source:
+                    self._no_bars_said = view.process.source
+                    ctx.log_info("[as-built] no bar with MoCap markers in this process: nothing recorded")
+                return
+            for line in bar_lines(record):
+                ctx.log_info(f"{head}: {line}")
+            ctx.require("assembly_run").request_record(
+                AS_BUILT_KIND, action=action_id, movement=movement if run is not None else None,
+                data={"phase": phase, "outcome": (record.get("step") or {}).get("outcome"),
+                      "bars": len(record["bars"]),
+                      "milestones": {bar: entry["milestone"] for bar, entry in record["bars"].items()}},
+                file=record, kind=AS_BUILT_KIND)
+        except Exception as error:
+            ctx.log_error(f"[as-built] {phase} of {movement} NOT recorded: {error!r}")
 
 
 def _pose_record(pose: Pose | None) -> list[float] | None:

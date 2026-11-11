@@ -129,14 +129,14 @@ def test_the_flip_is_refused_while_a_step_has_a_robots_lease(small):
     revision = plugin.revision
     plugin._transfer.callback(False)
     assert plugin.transfer_as_free and plugin.revision == revision
-    assert ctx.lines("warn") == ["Transfer workaround not changed: a200-0806 is leased by movement_exec: exec "
+    assert ctx.lines("warn") == ["Transfer workaround not changed: 0806 is leased by movement_exec: exec "
                                  "B1_M2_insert: wait until it is done, or Cancel it"]
     plugin._transfer.value = False
     plugin.draw(ctx)
     assert plugin._transfer.value is True
     status = plugin._collide_status.content
     assert status.count('class="chip-line"') == 1 and status.index("workaround refused") < status.index("Rhino")
-    assert "Transfer workaround not changed: a200-0806 is leased by movement_exec" in status
+    assert "Transfer workaround not changed: 0806 is leased by movement_exec" in status
     ctx.t += REFUSAL_SHOWN
     plugin.draw(ctx)
     assert "workaround refused" not in plugin._collide_status.content

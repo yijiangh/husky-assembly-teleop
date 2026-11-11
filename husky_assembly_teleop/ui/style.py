@@ -19,6 +19,7 @@ HTML for viser's `add_html`; assigning it in every `draw` is cheap (viser only s
 from __future__ import annotations
 
 from html import escape
+from typing import Sequence
 
 import viser
 from viser import _messages
@@ -51,6 +52,11 @@ def configure_theme(gui: viser.GuiApi, control_width: str = "medium", show_logo:
     gui._websock_interface.queue_message(_messages.ThemeConfigurationMessage(
         titlebar_content=None, control_layout="floating", control_width=control_width, show_logo=show_logo,
         show_share_button=show_share_button, dark_mode=dark_mode, colors=ACTION_SHADES))
+
+
+def few(names: Sequence[str], shown: int = 3) -> str:
+    """Up to `shown` names, then how many more, e.g. "A1, A2, A3 +2"."""
+    return ", ".join(names[:shown]) + (f" +{len(names) - shown}" if len(names) > shown else "")
 
 
 def hover(text: str, where: str = "the console") -> str:
@@ -146,9 +152,32 @@ NESTED_TABS_STYLE = (
     '{background-color:var(--mantine-color-default-hover) !important}</style>')
 
 
+#: A small empty space, e.g. between a chip line and a row of buttons right below it.
+GAP = '<div style="height:6px"></div>'
+
+
 def chip_line(html: str) -> str:
     """A line for chips that come and go: always there, even empty, and one line high, so nothing below it moves."""
     return block(f'{CHIP_LINE_STYLE}<div class="chip-line">{html}</div>')
+
+
+#: The width of a chip row's name, px: every row's chips start at the same place.
+ROW_NAME_WIDTH = 68
+
+
+def chip_row(name: str, chips: str, wrap: bool = False) -> str:
+    """A row of chips after a small grey name in a column of its own: one line high, more chips scroll sideways.
+
+    Args:
+        name: The row's name; "" leaves the column empty.
+        chips: The chips' HTML.
+        wrap: Let the chips wrap onto more lines instead, for rows whose chips are fixed while a step shows.
+    """
+    label = (f'<span title="{escape(name, quote=True)}" style="flex:0 0 {ROW_NAME_WIDTH}px;font-size:0.85em;'
+             f'color:{NONE};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{escape(name)}</span>')
+    body = chips if wrap else f'{CHIP_LINE_STYLE}<div class="chip-line">{chips}</div>'
+    row = f'<div style="display:flex;align-items:baseline">{label}<div style="flex:1;min-width:0">{body}</div></div>'
+    return f'<div style="margin-left:8px">{block(row)}</div>'
 
 
 def note_line(text: str, color: str = NONE) -> str:

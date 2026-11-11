@@ -49,7 +49,7 @@ _JOINT_GOALS = (GoalSource.JOINTS, GoalSource.NEXT_START, GoalSource.STOW)
 
 @dataclass(frozen=True)
 class FreeSearch:
-    """The operator's settings of the free searches (Advanced planning): tamp's free dual-arm search and the one-arm one.
+    """The Advanced planning settings: tamp's free dual-arm search, the one-arm one, and the held transfer's planner.
 
     Attributes:
         max_time: Seconds per try of tamp's free search.
@@ -57,6 +57,8 @@ class FreeSearch:
         joint_resolution: The joint step of its collision checks, radians.
         tries: Tries before giving up, each a new random search; the one-arm search's too.
         swept_check: Check a found path between its waypoints (`swept_check`); off, the path is taken as found.
+        cdfm_planner: The held transfer's planner: "birrt" searches, "prm" follows the bar's precomputed roadmap.
+        roadmap_root: The folder holding the `prm/<process folder name>__<bar>/` roadmaps; "" when there is none.
     """
 
     max_time: float = 120.0
@@ -64,6 +66,8 @@ class FreeSearch:
     joint_resolution: float = 0.1
     tries: int = 3
     swept_check: bool = True
+    cdfm_planner: str = "birrt"
+    roadmap_root: str = ""
 
     def tamp(self) -> dict:
         """The keyword arguments of tamp's `plan_free_dual_arm`."""

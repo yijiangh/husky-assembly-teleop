@@ -38,10 +38,12 @@ case "$1" in
 esac
 
 if ! tmux has-session -t "=$session" 2>/dev/null; then
+    # * Built at this terminal's size: a resize on attach makes bash redraw the long typed commands in the wrong place.
+    if [ -t 1 ]; then size=(-x "$(tput cols)" -y "$(tput lines)"); else size=(-x 220 -y 60); fi
     ids=()
     for i in "${!panes[@]}"; do
         if [ "$i" = 0 ]; then
-            ids+=("$(tmux new-session -d -s "$session" -x 220 -y 60 -P -F '#{pane_id}')")
+            ids+=("$(tmux new-session -d -s "$session" "${size[@]}" -P -F '#{pane_id}')")
         else
             ids+=("$(tmux split-window -t "$session" -P -F '#{pane_id}')")
             tmux select-layout -t "$session" tiled
@@ -52,10 +54,19 @@ if ! tmux has-session -t "=$session" 2>/dev/null; then
     tmux set-option -t "$session" pane-border-status top
     tmux set-option -t "$session" pane-border-format " #{@name} "
     tmux set-option -t "$session" mouse on
-    sleep 1  # the shells' prompts first, so the typed command shows after them
+    sleep 1  # the shells' prompts first
+    # ! The command is typed only once the setup is done and the screen cleared (each pane signals its channel):
+    #   keys typed while the setup runs are echoed where its output is, and then drawn again at the prompt.
+    for i in "${!panes[@]}"; do
+        tmux send-keys -t "${ids[i]}" "$setup; clear; tmux wait-for -S ${session}_${i}" Enter
+    done
+    for i in "${!panes[@]}"; do
+        timeout 60 tmux wait-for "${session}_${i}" || echo "$0: pane ${panes[i]%%|*}: setup not done after 60 s" >&2
+    done
+    sleep 0.5  # the prompts after the clear
     for i in "${!panes[@]}"; do
         command="${panes[i]#*|}"
-        tmux send-keys -t "${ids[i]}" "$setup" Enter "${command%|now}"
+        tmux send-keys -t "${ids[i]}" "${command%|now}"
         [ "$command" = "${command%|now}" ] || tmux send-keys -t "${ids[i]}" Enter
     done
     tmux select-pane -t "${ids[0]}"

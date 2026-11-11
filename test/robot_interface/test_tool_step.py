@@ -11,8 +11,8 @@ from scipy.spatial.transform import Rotation
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import TOOL_STEP_MIN_DURATION
 from husky_assembly_teleop.robot_interface.tool_step import (TOOL_JOG_LEAD, TOOL_JOG_SPEED_MAX, TOOL_STEP_MAX,
-                                                             TOOL_STEP_MAX_ANGLE, _difference, tool0_pose,
-                                                             tool_jog_target, tool_step_target)
+                                                             TOOL_STEP_MAX_ANGLE, _difference, robot_step_in_tool0,
+                                                             tool0_pose, tool_jog_target, tool_step_target)
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
@@ -55,6 +55,27 @@ def test_a_turn_about_the_tip_keeps_the_tip_in_place(axis):
     np.testing.assert_allclose(after.position, before.position, atol=1e-7)
     turned = Rotation.from_quat(invert(tool0(JOINTS)).orientation) * Rotation.from_quat(tool0(joints).orientation)
     assert turned.magnitude() == pytest.approx(np.radians(5.0), abs=1e-6)
+
+
+@pytest.mark.parametrize("shift", [(1e-3, 0.0, 0.0), (0.0, -1e-3, 0.0), (0.0, 0.0, 2e-3)])
+def test_a_shift_in_the_robots_frame_moves_tool0_along_the_robots_axes(shift):
+    """Whatever the flange's turn: tool0 moves by the shift as the robot sees it, and does not turn."""
+    step = robot_step_in_tool0(URDF, ARM, JOINTS, Pose(shift))
+    joints = tool_step_target(URDF, ARM, JOINTS, step)
+    np.testing.assert_allclose(np.subtract(tool0(joints).position, tool0(JOINTS).position), shift, atol=1e-7)
+    turned = Rotation.from_quat(invert(tool0(JOINTS)).orientation) * Rotation.from_quat(tool0(joints).orientation)
+    assert turned.magnitude() < 1e-6
+
+
+@pytest.mark.parametrize("axis", "xyz")
+def test_a_turn_in_the_robots_frame_turns_about_the_robots_axis_through_the_tip(axis):
+    """4° about the robot's axis: the tip stays put and tool0 turns about that axis as the robot sees it."""
+    joints = tool_step_target(URDF, ARM, JOINTS, robot_step_in_tool0(URDF, ARM, JOINTS, turn(axis, 4.0)), TIP)
+    before, after = compose(tool0(JOINTS), Pose(TIP)), compose(tool0(joints), Pose(TIP))
+    np.testing.assert_allclose(after.position, before.position, atol=1e-7)
+    turned = Rotation.from_quat(tool0(joints).orientation) * Rotation.from_quat(tool0(JOINTS).orientation).inv()
+    np.testing.assert_allclose(turned.as_rotvec(), Rotation.from_euler(axis, 4.0, degrees=True).as_rotvec(),
+                               atol=1e-6)
 
 
 @pytest.mark.parametrize("step", [Pose((TOOL_STEP_MAX * 1.01, 0.0, 0.0)),

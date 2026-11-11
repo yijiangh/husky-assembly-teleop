@@ -2,13 +2,15 @@
 The guided procedure's panel: the overview of the steps, the current step, Back / Next / Done, the procedure's controls.
 
 - Back and Next move one step and nothing else: they never refuse, write or start work. Done leaves a step whose
-  result is finished for the work that is left (`on_done`); on an unfinished one (`step.unfinished`) its first press
-  says why, and a second goes on anyway. None of them moves while a procedure runs.
+  result is finished for the work that is left (`on_done`); on an unfinished one (`step.unfinished`), or one whose
+  precondition has expired (`Step.expired`), it is amber: its first press says why, and a second goes on anyway.
+  None of them moves while a procedure runs.
 - The overview shows every step's state (`Step.state`) on a fixed line: result steps solid, precondition steps
   dashed; the current step outlines the precondition steps it needs that have expired.
 - ! Nothing above the step's controls may change height while a step shows, or the buttons jump: its chips sit on
   fixed lines (the checks, the ready checks, one status line always there), and text that comes and goes (the Go
-  question, the step's `question`, Done's question) goes below the controls.
+  question, the step's `question`, Done's question, why a state no chip names holds: `EXPLAINED_BELOW`) goes below
+  the controls.
 - `build_phone` adds the same on the phone page (`BothPages`): the overview as one row, the chips, Back / Next / Done
   and Cancel, and each step's phone controls (`Step.build_phone`). Go, Auto and Preview stay on the laptop, where the
   ghost shows the move.
@@ -26,14 +28,19 @@ from ...ui.phone import big_buttons, phone_text
 from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, again_label
 from ...colors import INK, rgb
 from ...ui.style import (BUSY, CURRENT, FAIL, LEVEL_COLORS, NONE, OK, SECTION_CTRL, WHITE, block, check_chip, chip,
-                         chip_line, hover, note, section, warning)
-from ...world.checks import Check
+                         chip_line, chip_row, hover, note, section, warning)
+from ...world.checks import WARN, Check
+from ..planner.planner_panel import SLIDER_STEP
 from .both_pages import BothPages, on_both
-from .procedure import Procedure
+from .procedure import GO_AGAIN, Procedure
 from .step import Step, unfinished
 
 if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
+
+
+#: The step states whose reason no chip of the step names: the line below the buttons says it.
+EXPLAINED_BELOW = ("expired", "out of date", "pending")
 
 
 def set_changed(handle, **values) -> None:
@@ -113,18 +120,23 @@ class GuidePanel:
             title: The panel's title, e.g. "base calibration".
             steps: The steps, in order.
             procedure: The procedure the steps run.
-            on_done: Called when Done leaves the current step, with whether it is unfinished and Done was pressed
-                again: keep what the step made, and return the step to go to. Without it Done goes to the next step.
+            on_done: Called when Done leaves the current step, with whether it is unfinished or expired and Done was
+                pressed again: keep what the step made, and return the step to go to. Without it Done goes to the
+                next step.
             auto_hint: The Auto checkbox's hint: what Auto skips.
         """
         self.title = title
         self.steps = list(steps)
         self.procedure = procedure
         self.index = 0
-        #: Done's second press on an unfinished step, keyed by the step's index: it leaves the step as it stands.
+        #: Done's second press on an unfinished or expired step, keyed by the step's index: it leaves it as it stands.
         self._press = SecondPress()
-        #: The path Preview was last reset for.
+        #: The path Preview was last reset for; whether Play plays it, and the tick time it last moved on from.
         self._previewing = None
+        self._playing = False
+        self._played_at: float | None = None
+        #: The running procedure's task and the step that started it: Go and Preview act only on that step.
+        self._owned: tuple[object, int] | None = None
         #: The phone page's overview, once `build_phone` made it.
         self._phone_list_html = None
         self._on_done = on_done
@@ -164,10 +176,16 @@ class GuidePanel:
                 with folder:
                     step.build(ctx, gui)
             self._auto = gui.add_checkbox("Auto", initial_value=False, hint=self._auto_hint)
-            self._preview = gui.add_slider("Preview", min=0.0, max=1.0, step=0.01, initial_value=0.0,
-                                           hint="Scrub what Go starts; the ghost shows the robot.")
+            self._preview = gui.add_slider("Preview time", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
+                                           hint="Scrub what Go starts, seconds from its start; the ghost shows the "
+                                                "robot.")
+            self._play_button = gui.add_button("Play", icon=viser.Icon.PLAYER_PLAY,
+                                               hint="Play what Go starts in real time, from the Preview time; "
+                                                    "press again to pause.")
             self._go_button = gui.add_button("Go", color=rgb(OK), icon=viser.Icon.PLAYER_PLAY)
             self._cancel_button = gui.add_button("Cancel", color=rgb(FAIL), icon=viser.Icon.PLAYER_STOP)
+            # * Below the buttons it guards, as the jogs'.
+            self._go_clearance = self.procedure.clearance.add(ctx, gui, "go")
         self._notes_html = gui.add_html("")
         self._text_html = gui.add_html("")
         procedure = self.procedure
@@ -175,9 +193,55 @@ class GuidePanel:
                                              operator_only=True))
         self._preview.on_update(ctx.defer_value("preview", lambda value: setattr(procedure, "preview", float(value)),
                                                 operator_only=True))
-        self._go_button.on_click(ctx.defer("go", procedure.go))
+        self._play_button.on_click(ctx.defer("play", self._play))
+        procedure.confirm.button = self._go_button
+        self._go_button.on_click(ctx.defer("go", lambda: self._go(ctx)))
         self._cancel_button.on_click(ctx.defer("cancel", procedure.cancel))
         self._wire_steps(ctx, self._back_button, self._done_button, self._next_button)
+
+    def _owner(self) -> int | None:
+        """The index of the step whose button started the running procedure; None while none runs.
+
+        Noted when the panel first sees the procedure, which a step's own button starts while that step shows.
+        """
+        procedure = self.procedure
+        if not procedure.running:
+            self._owned = None
+            return None
+        if self._owned is None or self._owned[0] is not procedure._task:
+            self._owned = (procedure._task, self.index)
+        return self._owned[1]
+
+    def _elsewhere(self) -> str:
+        """The name of the step the running procedure belongs to while another shows, else ""."""
+        owner = self._owner()
+        return self.steps[owner].name if owner is not None and owner != self.index else ""
+
+    def _running_chip(self) -> str:
+        """An amber chip saying what the running procedure does: "waits for Go" or "runs"; "" while none runs."""
+        procedure = self.procedure
+        if not procedure.running:
+            return ""
+        if procedure.waiting:
+            return chip("waits for Go", BUSY, f"Go here answers: {procedure.prompt}")
+        return chip("runs", BUSY, f"{procedure.doing or 'Its procedure runs'}; Cancel stops it.")
+
+    def _go(self, ctx: PluginContext) -> None:
+        """Answer the procedure's question, only on the step that started it."""
+        if elsewhere := self._elsewhere():
+            ctx.log_info(f"Go ignored: it answers {elsewhere}'s question; go back to {elsewhere}")
+            return
+        self.procedure.press_go(ctx)
+
+    def _play(self) -> None:
+        """Play the preview, again from its start once at its end, or pause it."""
+        procedure = self.procedure
+        path = procedure.preview_path
+        if path is None:
+            return
+        if not self._playing and procedure.preview >= path.duration:
+            procedure.preview = 0.0
+        self._playing = not self._playing
 
     def _wire_steps(self, ctx: PluginContext, back, done, forward) -> None:
         """Make one page's Back, Done and Next buttons act."""
@@ -224,33 +288,52 @@ class GuidePanel:
     # --- --- --- --- --- NAVIGATION --- --- --- --- ---
 
     def _busy(self, ctx: PluginContext, button: str) -> bool:
-        """Whether a procedure runs, so `button` does nothing; says so."""
-        if self.procedure.running:
-            ctx.log_info(f"{button} ignored: {self.procedure.doing or 'a procedure'} runs; Cancel it first")
-        return self.procedure.running
+        """Whether a working procedure keeps `button` from acting; says so. One that only waits for Go is ended.
+
+        ! Done is never disabled: it ends a procedure of this step waiting for Go (nothing moves), and refuses only
+          while it moves. Another step's procedure it leaves alone.
+        """
+        procedure = self.procedure
+        if self._elsewhere():
+            return False
+        if procedure.waiting:
+            ctx.log_info(f"{button}: ended what waited for Go ({procedure.prompt})")
+            procedure.cancel()
+            return False
+        if procedure.running:
+            why = f"{procedure.doing or 'a procedure'} runs; Cancel it first"
+            ctx.log_info(f"{button} ignored: {why}")
+            procedure.outcome = Check(f"{button.lower()} refused", WARN, why)
+        return procedure.running
 
     def navigate(self, ctx: PluginContext, forward: bool) -> None:
-        """Go one step back or forward; nothing else."""
-        if self._busy(ctx, "Next" if forward else "Back"):
-            return
+        """Show the step before or after; nothing else: a running procedure goes on, still shown in the line."""
+        self._owner()  # * notes the step a procedure started this tick belongs to, before leaving it
         index = min(self.index + 1, len(self.steps) - 1) if forward else max(self.index - 1, 0)
         if index != self.index:
             self.show(ctx, index)
 
     def done(self, ctx: PluginContext) -> None:
-        """Leave the current step for the work that is left; an unfinished one only on the second press."""
+        """Leave the current step for the work that is left; an unfinished or expired one only on the second press."""
         if self._busy(ctx, "Done"):
             return
-        state = self.current.state(ctx)
-        anyway = unfinished(state)
+        why = self._done_asks(ctx, self.current.state(ctx))
+        anyway = why is not None
         if anyway and not self._press.press(ctx.now(), str(self.index)):
-            ctx.log_info(f"Done asks again: {self.current.name} {state.label}: {state.detail}")
+            ctx.log_info(f"Done asks again: {self.current.name} {why}")
             return
         if anyway:
-            ctx.log_warn(f"{self.current.name}: left as it stands ({state.label}: {state.detail})")
+            ctx.log_warn(f"{self.current.name}: left as it stands ({why})")
         index = (self._on_done(ctx, anyway) if self._on_done is not None
                  else min(self.index + 1, len(self.steps) - 1))
         self.show(ctx, index)
+
+    def _done_asks(self, ctx: PluginContext, state: Check) -> str | None:
+        """Why Done asks once more on the current step: its state unfinished, or its precondition expired; else None."""
+        if unfinished(state):
+            return f"{state.label}: {state.detail}"
+        expired = self.current.expired(ctx)
+        return f"expired: {expired}" if expired is not None else None
 
     def _confirming(self, ctx: PluginContext) -> bool:
         """Whether a first Done on the current step still waits for its second."""
@@ -279,74 +362,128 @@ class GuidePanel:
         step = self.current
         states = [each.state(ctx) for each in self.steps]
         names = [each.name for each in self.steps]
-        needed = {names.index(name) for name in step.needs if self.steps[names.index(name)].expired(ctx) is not None}
+        needed = {names.index(name) for name in step.needs
+                  if step.need_expired(ctx, self.steps[names.index(name)]) is not None}
+        owner = self._owner()  # * first: the overview marks the step whose procedure runs
         self._title_html.content = section(self.title, SECTION_CTRL,
                                            f"{detail} · step {self.index + 1}/{len(self.steps)}")
         self._list_html.content = block("".join(self._row(index, states[index], index in needed)
                                                 for index in range(len(self.steps))))
         if self._phone_list_html is not None:
+            # * The step whose procedure runs has a ▶ in its chip, as the laptop's overview marks it.
             set_changed(self._phone_list_html, content=phone_text(block(chip_line("".join(
-                state_chip(str(index + 1), states[index], self.steps[index].precondition, index == self.index,
-                           index in needed) for index in range(len(self.steps)))))))
+                state_chip(f"▶{index + 1}" if index == owner else str(index + 1), states[index],
+                           self.steps[index].precondition, index == self.index, index in needed)
+                for index in range(len(self.steps)))))))
         state = states[self.index]
-        if not unfinished(state):
+        asks = self._done_asks(ctx, state)
+        if asks is None:
             self._press.forget()
         asked = self._confirming(ctx)
         # * A failing result is accepted as it stands; one missing or out of date is only skipped.
         anyway = "Accept as is" if state.label == "fails" else "Skip"
         procedure = self.procedure
-        status = chip(procedure.doing, BUSY, "The step's action runs; Cancel stops it.") if procedure.doing else ""
+        now = ctx.now()
+        path = procedure.preview_path
+        if path is None:
+            self._playing = False
+        elif self._playing and self._played_at is not None:
+            procedure.preview = min(procedure.preview + now - self._played_at, path.duration)
+            self._playing = procedure.preview < path.duration
+        self._played_at = now
+        # * Go is amber while it waits for its second press; the question goes with the wait.
+        procedure.confirm.draw(now)
+        again = procedure.outcome is not None and procedure.outcome.label == GO_AGAIN
+        if again and not procedure.confirm.press.waiting(now):
+            procedure.outcome, again = None, False
+        # * On another step the procedure's chip names its step: Back and Next leave it running.
+        elsewhere = self._elsewhere()
+        if elsewhere:
+            what = "waits for Go" if procedure.waiting else (procedure.doing or "runs")
+            status = chip(f"{elsewhere} {what}", BUSY, f"Started in {elsewhere}: go back there for Go and Preview; "
+                                                       f"Cancel stops it from any step.")
+        else:
+            status = chip(procedure.doing, BUSY, "The step's action runs; Cancel stops it.") if procedure.doing else ""
         if procedure.outcome is not None:
             outcome = procedure.outcome
             status += check_chip(replace(outcome, detail=hover(outcome.detail)))
         ready = step.ready(ctx)
         self._status_html.content = (
             section(step.name, CURRENT, state.label)
-            + '<div class="guide-chips">' + block("".join(check_chip(check) for check in step.checks(ctx)))
-            + (block("".join(check_chip(check) for check in ready)) if ready else "") + "</div>")
-        self._line_html.content = chip_line(status + extra)
+            # * Each line named: what the step made, whether its buttons can act now, and what happens now.
+            + '<div class="guide-chips">' + chip_row("result", "".join(check_chip(check) for check in step.checks(ctx)),
+                                                     wrap=True)
+            + (chip_row("ready", "".join(check_chip(check) for check in ready), wrap=True) if ready else "") + "</div>")
+        self._line_html.content = chip_row("now", status + extra)
         question = step.question(ctx)
+        # * Why the overview says so, for a state no chip names, below the buttons: Done's question says it once asked.
+        why = state.detail if state.label in EXPLAINED_BELOW and state.detail and not asked else ""
+        if elsewhere and procedure.prompt:
+            asking = note(escape(f"{elsewhere} waits for Go: go back to {elsewhere} to answer it."), CURRENT)
+        else:
+            asking = note(escape(procedure.prompt), CURRENT) if procedure.prompt else ""
         self._notes_html.content = (
-            (note(escape(procedure.prompt), CURRENT) if procedure.prompt else "")
+            asking
+            + (warning(escape(f"{step.name} {state.label}: {why.rstrip('.')}.")) if why else "")
+            + (warning(escape(procedure.outcome.detail)) if again else "")
             + (warning(escape(question)) if question else "")
-            + (warning(escape(f"{step.name}: {state.label}: {state.detail}. Press Done again within "
-                              f"{SECOND_PRESS_SECONDS:g} s to {anyway.lower()}: it goes on as it stands."))
+            + (warning(escape(f"{step.name}: {asks}. Press Done again within {SECOND_PRESS_SECONDS:g} s to "
+                              f"{anyway.lower()}: it goes on as it stands."))
                if asked else ""))
         self._text_html.content = section("what to do", CURRENT) + block(f"<div>{escape(step.instructions)}</div>")
-        self._draw_controls(unfinished(state), again_label(anyway) if asked else "Done")
+        self._draw_controls(asks is not None, again_label(anyway) if asked else "Done")
         step.draw(ctx)
 
     def _row(self, index: int, state: Check, needed: bool) -> str:
-        """One line of the overview: the step's number and name, its state in short, why on hover; the current bold."""
+        """One line of the overview: the step's number and name, its state in short, why on hover; the current bold.
+
+        The step whose procedure runs has an amber chip after its name (`_running_chip`).
+        """
         step, current = self.steps[index], index == self.index
+        running = self._running_chip() if index == self._owner() else ""
         color, why = LEVEL_COLORS[state.level], escape(hover(state.detail, "the step's chips"), quote=True)
-        return (f'<div style="display:flex;align-items:center;white-space:nowrap;overflow:hidden;min-height:20px">'
-                f'{state_chip(str(index + 1), state, step.precondition, current, needed)}'
+        # * Room around the chip for the current step's ring and an expired precondition's outline: the row hides its
+        # * overflow, so a long state's text cannot widen the panel.
+        return (f'<div style="display:flex;align-items:center;white-space:nowrap;overflow:hidden;min-height:20px;'
+                f'padding:3px 0 3px 3px">{state_chip(str(index + 1), state, step.precondition, current, needed)}'
                 f'<span style="font-weight:{700 if current else 400};margin-right:6px">{escape(step.name)}</span>'
+                f'{running}'
                 f'<span style="color:{color};font-size:11px;font-weight:600;margin-right:6px">'
                 f'{escape(state.label)}</span>'
                 f'<span title="{why}" style="color:{NONE};font-size:11px;'
                 f'overflow:hidden;text-overflow:ellipsis">{escape(state.value)}</span></div>')
 
     def _draw_controls(self, unfinished_step: bool, done_label: str) -> None:
-        """Show Back, Done, Next, Go, Cancel, Preview and Auto as what they do now: disabled while they do nothing.
+        """Show Back, Done, Next, Go, Cancel, Preview, Play and Auto as what they do now: disabled while they do nothing.
 
-        Done is amber while the step is unfinished (it asks once more, then labelled `done_label`), green otherwise.
+        Done is never disabled, Back and Next only on the first and last step. Done is amber while the step is
+        unfinished or expired (it asks once more, then labelled `done_label`), else green.
         """
         step, procedure = self.current, self.procedure
         set_changed(self._auto, visible=step.auto)
-        set_changed(self._preview, visible=step.auto, disabled=procedure.preview_path is None)
-        if procedure.preview_path is not self._previewing:
-            # * Only when a new preview starts: the operator's own drags reach the procedure a tick later.
-            self._previewing = procedure.preview_path
+        path = procedure.preview_path
+        # * Go and Preview act for the step that started the procedure only: greyed on every other.
+        elsewhere = bool(self._elsewhere())
+        set_changed(self._preview, visible=step.auto, disabled=path is None or elsewhere)
+        set_changed(self._play_button, visible=step.auto, disabled=path is None or elsewhere,
+                    label="Pause" if self._playing else "Play")
+        if path is not self._previewing:
+            # * Only when a new preview starts, and while it plays: the operator's own drags reach the procedure a
+            #   tick later. The end first, so the value is not clamped to the last path's.
+            self._previewing, self._playing = path, False
+            self._preview.max = max(path.duration, SLIDER_STEP) if path is not None else 1.0
             self._preview.value = procedure.preview
-        set_changed(self._go_button, visible=step.goes, disabled=not procedure.prompt,
+        elif self._playing:
+            self._preview.value = round(procedure.preview, 3)
+        set_changed(self._go_button, visible=step.goes, disabled=not procedure.prompt or elsewhere,
                     label=f"Go: {procedure.go_label}" if procedure.prompt else "Go")
         set_changed(self._cancel_button, visible=step.cancels or procedure.running, disabled=not procedure.running)
-        running = procedure.running
-        back = (None, running or self.index == 0)
-        forward = (None, running or self.index >= len(self.steps) - 1)
-        done = (rgb(BUSY if unfinished_step else OK), running)
+        set_changed(self._go_clearance, visible=step.goes)
+        # ! Never disabled while a procedure runs: Back and Next only show another step, Done ends one waiting for Go
+        #   or says why not (`_busy`).
+        back = (None, self.index == 0)
+        forward = (None, self.index >= len(self.steps) - 1)
+        done = (rgb(BUSY if unfinished_step else OK), False)
         for button, (color, disabled) in ((self._back_button, back), (self._done_button, done),
                                           (self._next_button, forward)):
             set_changed(button, color=color, disabled=disabled)

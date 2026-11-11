@@ -4,21 +4,50 @@ Shared configuration loader for calibration pipeline.
 This module provides common configuration and utility functions used across
 all calibration scripts (0_circle_fitting.py through 3_verify_calibration.py).
 
+The dated dataset folders (<date>/config.yaml, j0/, j1/, ...) live on the
+gdrive under CALIB_DATA_DIR, NOT next to these scripts. HERE is only this
+scripts folder (used for sibling scripts and the repo-relative URDF path).
+
 Usage:
-    from config_loader import load_config, HERE
-    
+    from config_loader import load_config, CALIB_DATA_DIR
+
     config = load_config('20250617')  # Pass the date folder name
     # or
     config = load_config()  # Uses DEFAULT_DATE_FOLDER
 """
 
 import os
+import sys
+
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# Default date folder - change this to switch between calibration datasets
-DEFAULT_DATE_FOLDER = '20260623'
+# * These scripts are launched directly (e.g. "python 4_punch_validation.py"),
+# * which puts only this folder on the import path, so add the repository root
+# * before importing the package. Run them with the venv and ROS sourced.
+_REPO_ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
+if _REPO_ROOT not in sys.path:
+    sys.path.append(_REPO_ROOT)
+
+from crl_husky import config_resolver
+
+from husky_assembly_teleop.drive import drive_root
+
+# * The Drive's experiment folder (HUSKY_DRIVE_ROOT), or "" without a Drive.
+EXPERIMENT_DATA_DIRECTORY = os.path.join(str(drive_root()), 'data_experiment') if drive_root() else ''
+
+# * Root holding the dated calibration datasets: CALIBRATION_DATA_DIR if set
+# * (scripts/compare_calibration.py points it at a copy), else the Drive's.
+# * Build every dataset path as os.path.join(CALIB_DATA_DIR, <date>, ...), never from HERE.
+CALIB_DATA_DIR = os.environ.get('CALIBRATION_DATA_DIR') or os.path.join(EXPERIMENT_DATA_DIRECTORY, 'calibration_data')
+
+# Shared gdrive folder where the Rhino/Grasshopper visualisation inputs are staged.
+RHINO_EXPORT_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'visualise_calibration_to_rhino')
+
+# Date folder every script reads/writes when no folder is passed explicitly:
+# CALIBRATION_DATE if set, else the one below.
+DEFAULT_DATE_FOLDER = os.environ.get('CALIBRATION_DATE') or '20261016'
 
 
 
@@ -35,8 +64,12 @@ def load_config(date_folder=None):
     """
     if date_folder is None:
         date_folder = DEFAULT_DATE_FOLDER
-    
-    config_file = os.path.join(HERE, date_folder, 'config.yaml')
+
+    # Print the active folder so it is always obvious WHICH dataset a script
+    # just analysed (the usual source of "why is this the old data?").
+    print(f"[config_loader] Using calibration date folder: {date_folder}")
+
+    config_file = os.path.join(CALIB_DATA_DIR, date_folder, 'config.yaml')
     
     if not os.path.exists(config_file):
         raise FileNotFoundError(f"Config file not found: {config_file}")
@@ -54,26 +87,27 @@ def get_data_folder(date_folder=None):
     """Get the path to the data folder for the specified date."""
     if date_folder is None:
         date_folder = DEFAULT_DATE_FOLDER
-    return os.path.join(HERE, date_folder)
+    return os.path.join(CALIB_DATA_DIR, date_folder)
 
 
-def get_robot_urdf(robot_name):
-    """Get the URDF path for the specified robot."""
-    base_path = os.path.join(HERE, '..')
-    
-    if robot_name == '0806':
-        urdf_path = os.path.join(
-            base_path, 
-            'husky_urdf', 'mt_husky_dual_ur5_e_moveit_config', 'urdf', 
-            'husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf'
-        )
-    else:
-        urdf_path = os.path.join(
-            base_path,
-            'husky_urdf', 'mt_husky_moveit_config', 'urdf', 
-            'husky_ur5_e_no_base_joint_Alice_Calibrated.urdf'
-        )
-    
+def get_robot_urdf(robot_name: str) -> str:
+    """Get the URDF path for the specified robot.
+
+    * Each husky has its own kinematically calibrated URDF (Alice and Belle
+    * differ by up to ~0.5 mm per link): the one crl-husky's model.yaml names,
+    * as the monitor uses.
+
+    Args:
+        robot_name (str): Serial number from config.yaml, e.g. '0805'.
+
+    Returns:
+        str: Path of the robot's URDF.
+    """
+    model = config_resolver.get_robot_model(robot_name)
+    if model is None:
+        raise ValueError(f"crl-husky has no model.yaml for robot {robot_name!r}")
+    urdf_path = os.path.join(_REPO_ROOT, 'data', 'husky_urdf', model['urdf'])
+
     if not os.path.exists(urdf_path):
         raise FileNotFoundError(f"URDF file not found: {urdf_path}")
     

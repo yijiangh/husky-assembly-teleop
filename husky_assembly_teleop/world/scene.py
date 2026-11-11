@@ -10,6 +10,7 @@ the previous tick. Each measured robot is a `RobotObject` "robots/<serial>"; eac
 
 - Missing measurements are unknown: a base is untracked once its mocap pose is lost (`pose_lost`), an arm's joints
   are unmeasured once its joint states are older than JOINT_STATE_MAX_AGE. They keep their last value.
+- A robot parked in Health is known where it is (`stand_ins.parked`), measured or not.
 
 - ! Main thread only: the live scene, its `Body` objects and `take_snapshot`. A copy can be read from any thread;
   treat it as read-only.
@@ -27,6 +28,7 @@ from scaffolding_assembly_core.scene import Attachment, Body, Scene, world_poses
 
 from ..robot_interface.arm import JOINT_STATE_MAX_AGE
 from ..robot_interface.mocap_state import pose_lost
+from .stand_ins import parked
 
 if TYPE_CHECKING:
     from .kinematics import Kinematics
@@ -78,6 +80,8 @@ def take_snapshot(scene: Scene, world: WorldState, kinematics: Kinematics, tick:
                                  or any(name.startswith(f"{arm}_") for arm in stale)),
             base_time=robot.base.state.last_fix_time,
             joints_time=None if None in arm_times else min(arm_times, default=None))
+        if robot.parked:
+            robots[robot_id(serial)] = parked(robots[robot_id(serial)])
     scene.robots = robots
 
     for name, obj in world.tracked_objects.items():

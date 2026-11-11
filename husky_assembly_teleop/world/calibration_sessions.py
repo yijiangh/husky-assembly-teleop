@@ -3,8 +3,8 @@ Which base calibration the mocap relay applies to each robot's rigid body: crl-h
 
 - Default: the one in the robot's `mocap_config.json` in crl-husky (`config_resolver`), always there and rough.
 - Newer: the newest calibration session on the Drive, `data_experiment/calibration_data/<YYYYMMDD>/
-  calibrated_transformation_<digits>_rhino.json` (the robot's four serial digits), used only if it passes
-  `sanity_problem` against the default.
+  calibrated_transformation_<digits>_rhino.json` (the robot's four serial digits), used if it reads; far from the
+  default (`sanity_problem`) it is used with a warning.
 - Rigid bodies of no robot (probe, bars) get none: Motive's pivot defines them.
 - A session names the base body definition it was built for (`body_definition`), which the relay checks.
 
@@ -35,8 +35,8 @@ SIM_SESSIONS_ROOT = Path("data_experiment") / "sim" / "calibration_data"
 SESSION_NAME = re.compile(r"\d{8}")
 #: The pipeline's output in a session, per robot's four serial digits.
 SESSION_OUTPUT = "calibrated_transformation_{digits}_rhino.json"
-#: A Drive calibration further than this from the default is refused: metres, radians.
-#: ? A recalibration moves the base by millimetres; centimetres mean a wrong robot or a failed run.
+#: A Drive calibration further than this from the default is applied with a warning: metres, radians.
+#: ? A recalibration moves the base by millimetres; centimetres mean a wrong robot, a failed run or a redefined body.
 SANITY_POSITION = 0.05
 SANITY_ANGLE = np.radians(5.0)
 BASE_KEY = "base_mocap_from_base_footprint"
@@ -239,12 +239,12 @@ def offset(candidate: Calibration, default: Calibration) -> tuple[float, float]:
 
 
 def sanity_problem(candidate: Calibration, default: Calibration) -> str | None:
-    """Why a newer calibration is too far from the default to be trusted, or None."""
+    """Why a newer calibration is suspiciously far from the default, or None."""
     distance, angle = offset(candidate, default)
     if distance > SANITY_POSITION or angle > SANITY_ANGLE:
         return (f"{candidate.source} is {distance * 1e3:.0f} mm / {np.degrees(angle):.1f}° from the default "
                 f"(over {SANITY_POSITION * 1e3:.0f} mm / {np.degrees(SANITY_ANGLE):.0f}°): "
-                f"wrong robot or a failed run?")
+                f"wrong robot, a failed run or a redefined rigid body?")
     return None
 
 
@@ -252,7 +252,8 @@ def resolve(mocap_id: int, robot_serial: str, root: Path | None,
             sessions: Path = SESSIONS_FOLDER) -> tuple[Calibration | None, list[str]]:
     """The calibration to apply to a robot's rigid body, and warnings about what was passed over.
 
-    The newest Drive session if there is one and it passes the sanity check, else the default.
+    The newest Drive session if there is one and it reads, else the default. One far from the default is used too,
+    with a warning (`sanity_problem`).
 
     Args:
         mocap_id: The rigid body.
@@ -282,14 +283,13 @@ def resolve(mocap_id: int, robot_serial: str, root: Path | None,
         return candidate, warnings
     problem = sanity_problem(candidate, default)
     if problem is not None:
-        warnings.append(f"{problem}; using the default")
-        return default, warnings
+        warnings.append(f"{problem}; applied anyway")
     return candidate, warnings
 
 
 def explain(mocap_id: int, robot_serial: str, calibration: Calibration | None, warnings: list[str],
             root: Path | None, width: int = 96, sessions: Path = SESSIONS_FOLDER) -> list[str]:
-    """Table lines for one robot, under DESCRIBE_HEADER: its row, where it came from, and why a newer one was refused.
+    """Table lines for one robot, under DESCRIBE_HEADER: its row, where it came from, and what `resolve` warned about.
 
     Args:
         mocap_id: The rigid body.
@@ -317,7 +317,9 @@ def explain(mocap_id: int, robot_serial: str, calibration: Calibration | None, w
                                 f"{distance * 1e3:.1f} mm / {np.degrees(angle):.2f}°"))
     if root is not None and calibration is not None and not calibration.session and not warnings:
         lines.append(detail("Drive", "no session for this robot"))
-    lines += [detail("! refused", warning) for warning in warnings]
+    # * A session in use only warns; with the default in use, the session was refused.
+    label = "! warning" if calibration is not None and calibration.session else "! refused"
+    lines += [detail(label, warning) for warning in warnings]
     return lines
 
 

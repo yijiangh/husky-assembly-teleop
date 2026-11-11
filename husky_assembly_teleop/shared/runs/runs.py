@@ -78,6 +78,8 @@ PLAN_TIME_RANGE = (5.0, 600.0)
 PLAN_ITERATIONS_RANGE = (1, 1000)
 PLAN_RESOLUTION_RANGE = (0.01, 0.5)
 PLAN_TRIES_RANGE = (1, 10)
+#: The held transfer's planners (`RunSettings.plan_cdfm_planner`): tamp's search, or its precomputed roadmap.
+CDFM_PLANNERS = ("birrt", "prm")
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,10 @@ class RunSettings:
         spiral: The insert's compliant part searches in a spiral.
         servo_by_bar: Servo a ground bar by its mocap fit instead of tool0; on by default. Other bars always
             servo on tool0 (`servo_plan`).
+        retreat_compliant: The retreat breaks out under the compliance controller (the 2026-10-27 way, kept for
+            tests) instead of the stiff screw-out at the screw rate (the default, the old monitor's since 10-28).
+        retreat_live_axis: The retreat backs each tool out along its own live -z as the encoders read it, the
+            export's distance; off: along the export's axis.
         spiral_seconds: How long the spiral takes to reach its full radius, seconds (SPIRAL_SECONDS_RANGE).
         spiral_turns: How many turns it makes on the way (SPIRAL_TURNS_RANGE).
         plan_max_time: Seconds per try of tamp's free search (PLAN_TIME_RANGE); `FreeSearch`'s defaults, the five.
@@ -99,11 +105,17 @@ class RunSettings:
         plan_joint_resolution: The joint step of its collision checks, radians (PLAN_RESOLUTION_RANGE).
         plan_tries: Tries of a free or one-arm search before giving up (PLAN_TRIES_RANGE).
         plan_swept_check: Check a found path between its waypoints before taking it.
+        plan_cdfm_planner: The held transfer's planner (CDFM_PLANNERS): "birrt" searches, "prm" follows a roadmap
+            precomputed for the process and the bar.
+        plan_roadmap_root: The folder holding the `prm/<process folder name>__<bar>/` roadmaps for "prm"; empty:
+            `<drive_root>/data_experiment/cdfm_planner_benchmark`.
     """
 
     insert_split_mm: float = 5.0
     spiral: bool = False
     servo_by_bar: bool = True
+    retreat_compliant: bool = False
+    retreat_live_axis: bool = True
     spiral_seconds: float = 20.0
     spiral_turns: int = 4
     plan_max_time: float = 120.0
@@ -111,6 +123,8 @@ class RunSettings:
     plan_joint_resolution: float = 0.1
     plan_tries: int = 3
     plan_swept_check: bool = True
+    plan_cdfm_planner: str = "birrt"
+    plan_roadmap_root: str = ""
 
 
 @dataclass(frozen=True)

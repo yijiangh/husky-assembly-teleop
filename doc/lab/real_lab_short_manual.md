@@ -131,7 +131,7 @@ hover a chip to see why it is not. Belle's `mocap` chip may stay amber (1.2 mm m
 - Preview every motion with **Play** before **Exec**.
 - On Cindy's tools, press one button at a time: B1 and B2 together put that arm in free drive.
 - If an arm is left under the compliance controller (`ARMS MAY BE LEFT UNDER cartesian_compliance_controller`), switch
-  it back before anything else: Control › robot › arm › **Run: Joint**.
+  it back before anything else: Control › robot › arm › **Controller: Joint**.
 
 ## 4. Set up
 
@@ -140,7 +140,7 @@ hover a chip to see why it is not. Belle's `mocap` chip may stay amber (1.2 mm m
 2. Leave **Transfer workaround** ticked: Cindy moves her empty tools to the insert start, where you place the bar by
    hand. Leave **Rhino obstacles collide** unticked.
 3. Settings: leave the defaults (**Insert split mm** 5, **Servo by bar** on, **Dry run** off).
-4. Each base's `ctrl` chip must be green. If it is not, click Control › robot › Base › **Run: Vel**: the follower only
+4. Each base's `ctrl` chip must be green. If it is not, click Control › robot › Base › **Controller: Vel**: the follower only
    drives with it.
 5. At the start of a session: Load continues the run used last if it was made on these process files. If the run
    line says `continuing run …`, click **New run** twice, so the tests below get a run of their own. (After a restart
@@ -223,7 +223,7 @@ unbuilt bars, tick **Ignore built bars** for that plan only.
 | a robot's chips red, or something does not start | `<workspace>/src/husky-assembly-teleop/scripts/real_lab/check_robots.sh` (add `cindy` to check one robot; read-only, about 20 s): this laptop's network, router and clock, and per robot her launch, controllers (compliance loaded), crl-husky messages and rigid body. Each FAIL says what to do |
 | restart the monitor mid-assembly | `Ctrl-C` once, wait, start it again, reload the page, **Load**: it says `continuing run …` and the done actions stay done. Do not click New run |
 | `HOLD NOT SENT on …` | that arm did not get its hold: stop it with the pendant or the e-stop |
-| an arm still under `cartesian_compliance_controller` | Control › robot › arm › **Run: Joint** |
+| an arm still under `cartesian_compliance_controller` | Control › robot › arm › **Controller: Joint** |
 | an arm's `arm` chip is red | hover it. Pendant in Local: switch to Remote. Protective stop: find the cause, then **Unlock**. After Stop all: **Resume**. Launch started before the arm was on and in Remote: `Ctrl-C` her launch (only if she holds nothing) and start it again |
 | an arm behaves oddly or two drivers fight for it | a second launch may run on her: `pgrep -fa "launch crl_husky"` on the robot lists every launch; stop all but one |
 | a motion times out and is held mid-path | the pendant's speed slider is below 100 % |
@@ -234,9 +234,9 @@ unbuilt bars, tick **Ignore built bars** for that plan only.
 | redo an action | select it, click **Reopen**, then run its steps again from where the robots stand |
 
 By hand, in the monitor's **Control** tab (a tab per robot: `0804` Alice, `0806` Cindy):
-- **An arm back to the joint controller:** the arm's **Run: Joint**.
-- **Drive a base:** its **Base** section, hold a drive button. Keep **Clearance** ticked: it soft-stops the base near
-  anything; untick it only to drive out of a tight spot. Hand on the e-stop.
+- **An arm back to the joint controller:** the arm's **Controller: Joint**.
+- **Drive a base:** its **Base** section, hold a drive button. Keep **Clearance** ticked: it soft-stops the base within
+  5 cm of anything; untick it only to drive out of a tight spot. Hand on the e-stop.
 
 For the panels and buttons in detail, see [plugins.md](plugins.md). For what a run records, see
 [run_record.md](../design/run_record.md).

@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable, Mapping, Protocol
 
 
-from ..config import find_robot_serial
+from ..config import find_robot_serial, short_serial
 from .assembly_planning.joints import arm_of_flange
 from .assembly_planning.movement import Routine, UnknownMovement, classify
 from .assembly_planning.steps import OperatorStep, operator_steps, step_index_of
@@ -37,6 +37,9 @@ if TYPE_CHECKING:
     from .assembly_planning.route_result import RouteResult
     from .assembly_planning.process_steps import LoadedProcess
 
+#: The margin the assembly planner keeps, metres: contact only, so a plain motion's clearance (`ARM_MOVE.stop_for`)
+#: trips on contact only.
+PLANNED_MARGIN = 0.0
 #: Seconds a motion takes by default, per routine (the old export's values); the operator may slow it, up to
 #: MAX_TRAJ_TIME.
 DEFAULT_TRAJ_TIME = {Routine.FREE_TO_LOAD: 30.0, Routine.TRANSFER_FREE: 10.0, Routine.TRANSFER_HELD: 10.0,
@@ -117,6 +120,8 @@ class ExecRequest:
         transfer_as_free: Reads the process plugin's "Transfer workaround" now, likewise; by default ticked.
         unknown_robots: Ids of the other robots the operator let be unknown (Exec's second press, `CommitConfirm`):
             left out of the freeze and of the check that nothing else moves.
+        clearance: Exec's Clearance box: whether a motion along the plan runs under a clearance (`ARM_MOVE`); by
+            default ticked.
     """
 
     loaded: LoadedProcess
@@ -134,6 +139,7 @@ class ExecRequest:
     obstacles_collide: Callable[[], bool] = lambda: True
     transfer_as_free: Callable[[], bool] = lambda: True
     unknown_robots: frozenset[str] = frozenset()
+    clearance: bool = True
 
 
 @dataclass(frozen=True)
@@ -215,6 +221,12 @@ class MovementExecContract(Protocol):
     def request_cancel(self) -> None:
         """Cancel the open prompt, else the running request (every arm is held)."""
 
+    def request_as_built(self) -> None:
+        """Measure every MoCap bar now and append an as-built record (phase "manual"), outside a request too."""
+
+    def request_build_page(self) -> None:
+        """Build today's as-built page from the records so far (a subprocess on a thread) and serve it."""
+
     def request_dry_run(self, on: bool) -> None:
         """Turn the dry run on or off; refused while a request runs."""
 
@@ -233,7 +245,7 @@ def step_running(robots: Mapping[str, HuskyRobotInterface]) -> str:
     for serial, robot in robots.items():
         lease = robot.lease_slot.lease
         if lease is not None and lease.owner == STEP_RUNNER:
-            return f"{serial} is leased by {lease.holder}: wait until it is done, or Cancel it"
+            return f"{short_serial(serial)} is leased by {lease.holder}: wait until it is done, or Cancel it"
     return ""
 
 
@@ -285,8 +297,8 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
     if routine is Routine.BASE_ONLY:
         return part(routine, BASE_PART, f"drive the base for {movement.label or movement.id} by hand")
     if routine is Routine.RETREAT_LINEAR:
-        return part(routine, RETREAT_PART, f"retreat {', '.join(moving)}: open, compliant break-out, then rigid",
-                    moving)
+        what = f"retreat {', '.join(moving)}: the jaws loosen while the tools back out at the screw rate, then rigid"
+        return part(routine, RETREAT_PART, what, moving)
     if routine is Routine.INSERT and spec.drives.grounded:
         return part(routine, INSERT_PART, "rigid, ground bar, no tighten")
     tightened = [tool for tool, drive in spec.drives.kept.items() if drive == "tighten"]
@@ -305,8 +317,8 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
         """The arm whose flange carries `tool`, and why not if the robot has no `kind` configured there ("" if so)."""
         arm = arm_of_flange(flanges.get(tool, ""))
         fitted = next((each.end_effector for each in config.arms if each.name == arm), None)
-        return arm, "" if fitted == kind else (f"{tool} is a {kind} on {arm or 'no flange'}, but {serial} has "
-                                               f"{fitted or 'nothing'} there")
+        return arm, "" if fitted == kind else (f"{tool} is a {kind} on {arm or 'no flange'}, but "
+                                               f"{short_serial(serial)} has {fitted or 'nothing'} there")
 
     if routine is Routine.INSERT:
         found = [arm_of(tool, "scaffolding_v3") for tool in tightened]

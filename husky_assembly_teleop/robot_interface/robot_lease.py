@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterable, Iterator
 
+from ..config import short_serial
 from .soft_stop import MotionRefused
 
 
@@ -92,10 +93,10 @@ class LeaseSlot:
         """Why code holding `held` (by default the running code's leases) may not command this robot, or None."""
         lease = self.lease
         if lease is None:
-            return f"robot {self.serial} is not leased; take its lease first"
+            return f"robot {short_serial(self.serial)} is not leased; take its lease first"
         if lease in (held_leases() if held is None else held):
             return None
-        return f"robot {self.serial} is leased by {lease.holder}"
+        return f"robot {short_serial(self.serial)} is leased by {lease.holder}"
 
     def check(self, command: str) -> None:
         """Raise NotLeased unless the running code holds this robot's lease.
@@ -118,7 +119,8 @@ def take_lease(guards: Iterable[LeaseSlot], holder: str, owner: str = "") -> Lea
         NotLeased: If any of them is leased already, by anyone; none is leased then.
     """
     guards = tuple(dict.fromkeys(guards))
-    taken = [f"robot {guard.serial} is leased by {guard.lease.holder}" for guard in guards if guard.lease is not None]
+    taken = [f"robot {short_serial(guard.serial)} is leased by {guard.lease.holder}" for guard in guards
+             if guard.lease is not None]
     if taken:
         raise NotLeased("; ".join(taken))
     return Lease(holder, guards, owner)

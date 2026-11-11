@@ -13,14 +13,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping
 
 from ...plugin_api.context import PluginContext
+from ...shared.runs.as_built import KIND as AS_BUILT_KIND, append_record, as_built_path, day_of, with_saved_robots
 from ...shared.assembly_run_contract import exported_end, first_pending, is_live, live_record
 from ...shared.assembly_planning.steps import first_step
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
-from ...shared.runs.runs import (DONE, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
-                                 SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, Progress, RobotRecord, Run,
-                                 RunError, RunSettings, mark_done, new_run, record_event, record_movement, save_info,
-                                 save_progress, stamp, with_current)
+from ...shared.runs.runs import (CDFM_PLANNERS, DONE, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE,
+                                 PLAN_TRIES_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, Progress,
+                                 RobotRecord, Run, RunError, RunSettings, mark_done, new_run, record_event,
+                                 record_movement, save_info, save_progress, stamp, with_current)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -38,6 +39,8 @@ NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
                    "plan_max_iterations": ("the search's iterations", PLAN_ITERATIONS_RANGE, "whole iterations"),
                    "plan_joint_resolution": ("the search's joint resolution", PLAN_RESOLUTION_RANGE, "rad"),
                    "plan_tries": ("the search's tries", PLAN_TRIES_RANGE, "whole tries")}
+#: Each text setting with a fixed set of values: what a refusal calls it, and its values.
+CHOICE_SETTINGS = {"plan_cdfm_planner": ("the CDFM planner", CDFM_PLANNERS)}
 #: Each setting's type, its default's: a request is converted to it.
 SETTING_TYPES = {each.name: type(each.default) for each in fields(RunSettings)}
 #: How far the loaded process's runs were read; only OPEN allows writes.
@@ -71,6 +74,20 @@ def _record_file(folder: Path, event: str, ros_time: float, action: str, movemen
             data = {**(data or {}), "figure_error": repr(error)}
     record_event(folder, event, ros_time, action=action, movement=movement, file=str(path.relative_to(folder)),
                  **({"data": dict(data)} if data else {}))
+
+
+def _append_as_built(folder: Path, ros_time: float, action: str | None, movement: str | None, record: Mapping[str, Any],
+                     data: Mapping[str, Any] | None, drive_root: Path | None, saved: Mapping[str, RobotRecord]) -> Path:
+    """Append an as-built record to the day's file on the Drive, then write an event naming it. Writer thread.
+
+    Raises:
+        FileNotFoundError: The Drive's runs folder is not there (`as_built_path`).
+    """
+    record = with_saved_robots(dict(record), saved)
+    path = append_record(as_built_path(drive_root, record["problem"], day_of(record["stamp"])), record)
+    record_event(folder, AS_BUILT_KIND, ros_time, action=action, movement=movement, file=str(path),
+                 **({"data": dict(data)} if data else {}))
+    return path
 
 
 class RunWrites:
@@ -232,7 +249,13 @@ class RunWrites:
                       reserved: Path | None = None) -> None:
         """Queue a record's writes: a `kind` record with its figure and the event naming it, or the event alone."""
         folder = self._run.folder
-        if file is not None:
+        if file is not None and kind == AS_BUILT_KIND:
+            # * On the Drive, not in the run folder: one file per lab day, every robot's monitor appending.
+            head = f"[as-built] {movement or '(no step loaded)'} {(data or {}).get('phase', '')}".rstrip()
+            done = asyncio.wrap_future(self._writer.submit(_append_as_built, folder, ctx.now(), action, movement, file,
+                                                           data, ctx.config.drive_root, self._run.progress.robots))
+            done.add_done_callback(lambda job: self._as_built_written(ctx, head, job))
+        elif file is not None:
             self._write(ctx, f"record {event}", _record_file, folder, event, ctx.now(), action, movement, file, data,
                         kind, figure, reserved)
         else:
@@ -352,7 +375,10 @@ class RunWrites:
         return "" if self._run is not None else self._offered_first() or "no run yet: nothing is done"
 
     def _settings_problem(self, changes: Mapping[str, Any]) -> str:
-        """What is wrong with requested settings, or "": a number out of its range or not whole where it must be."""
+        """What is wrong with requested settings, or "".
+
+        A number out of its range or not whole where it must be, a text that is not one, a choice outside its values.
+        """
         for name, value in changes.items():
             if name not in SETTING_TYPES:
                 return f"there is no setting {name!r}"
@@ -361,6 +387,12 @@ class RunWrites:
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high \
                         or (SETTING_TYPES[name] is int and value != int(value)):
                     return f"{what} must be {low:g} to {high:g} {unit}, not {value!r}"
+            elif SETTING_TYPES[name] is str:
+                if not isinstance(value, str):
+                    return f"{name} must be text, not {value!r}"
+                if name in CHOICE_SETTINGS and value not in CHOICE_SETTINGS[name][1]:
+                    what, choices = CHOICE_SETTINGS[name]
+                    return f"{what} must be one of {', '.join(choices)}, not {value!r}"
             elif not isinstance(value, bool):
                 return f"{name} must be True or False, not {value!r}"
         return ""
@@ -386,6 +418,15 @@ class RunWrites:
         """Queue a write after every earlier one; a failure shows in the panel and the log."""
         done = asyncio.wrap_future(self._writer.submit(function, *args, **kwargs))
         done.add_done_callback(lambda job: self._written(ctx, what, job))
+
+    def _as_built_written(self, ctx: PluginContext, head: str, job: asyncio.Future) -> None:
+        """Say where an as-built record went, or that it did not (the Drive not mounted): the step goes on."""
+        if job.cancelled():
+            return
+        if job.exception() is not None:
+            ctx.log_error(f"{head} NOT recorded: {job.exception()!r}")
+            return
+        ctx.log_info(f"{head}: recorded -> {job.result()}")
 
     def _written(self, ctx: PluginContext, what: str, job: asyncio.Future) -> None:
         """Report a write that failed."""

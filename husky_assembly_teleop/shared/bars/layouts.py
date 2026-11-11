@@ -114,7 +114,7 @@ def bar_asset_id(bar: str) -> int | None:
 # * ================================================================ the fit
 
 def fit_bar(sensed: Sensed, layout: BarLayout, *, max_age: float | None = None, hint: np.ndarray | None = None,
-            gate_m: float = TRACK_GATE_M, **kwargs) -> BarFit:
+            gate_m: float = TRACK_GATE_M, full_search: bool = True, **kwargs) -> BarFit:
     """Fit a bar's layout to one sample of sensed markers.
 
     * With `hint` (following live: the bar's last good pose, or the FK bar) the markers are first matched around that
@@ -126,6 +126,8 @@ def fit_bar(sensed: Sensed, layout: BarLayout, *, max_age: float | None = None, 
         max_age: Refuse a sample older than this, seconds; None to never refuse.
         hint: 4x4 bar pose to match around first; None = the full search only.
         gate_m: With `hint`: how far a marker may be from where that pose puts it.
+        full_search: Run the full search when there is no hint or the match around it fails; False gives a failed
+            fit saying the search waits its turn (a plugin following several bars runs one search per tick).
         **kwargs: Passed on to `match_and_fit` (``tol_m``, ``min_inliers``, ...).
 
     Returns:
@@ -143,7 +145,10 @@ def fit_bar(sensed: Sensed, layout: BarLayout, *, max_age: float | None = None, 
     if hint is not None:
         fit = fit_near_hint(sensed.points, points, np.asarray(hint, dtype=float), gate_m=gate_m,
                             tol_m=kwargs.get("tol_m", MATCH_TOL_M), min_inliers=kwargs.get("min_inliers"))
-    if fit is None:
+    if fit is None and not full_search:
+        fit = failed_fit("no match around the last pose (the full search waits its turn)", len(sensed.points),
+                         len(points))
+    elif fit is None:
         fit = match_and_fit(sensed.points, points, **kwargs)
     fit.bar_name = layout.bar
     fit.sensed_ids = list(sensed.ids)

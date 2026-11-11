@@ -5,8 +5,9 @@ Others use it through `ArmPlannerContract`; its panel is `arm_planner_panel`. Th
 models in a compas_fab world (several seconds).
 
 ! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`), under an
-  ARM_STOP_DISTANCE clearance on the robot (`ctx.clearance`) while `clearance` is on, so the base pose must be known
-  to send.
+  ARM_MOVE clearance on the robot (`commit_clearance`) when committed with Clearance ticked, so the base
+  pose must be known to send. Paths keep PLAN_DISTANCE, or as much as start and target have (`endpoint_margin`); then
+  the clearance is half that (`ARM_MOVE`).
 """
 
 from __future__ import annotations
@@ -14,12 +15,12 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
-from contextlib import nullcontext
 from dataclasses import replace
 from typing import Callable, Sequence
 
 import numpy as np
 
+from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.mocap_state import pose_lost
@@ -37,10 +38,10 @@ from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import hover
 from ...world.checks import BAD, GOOD, WARN, Check
-from ...world.clearance import ARM_STOP_DISTANCE, Clearance, clearance_problem
+from ...world.clearance import ARM_MOVE, PLAN_DISTANCE, Clearance, clearance_problem
 from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.ids import robot_id
-from .planner import ArmPath, path_hit, plan_arm
+from .planner import ArmPath, margin_note, path_hit, plan_arm
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far; the panel also
 #: refuses a target this far from the planned goal.
@@ -77,12 +78,11 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
     name = "arm_planner"
     experimental = True
     worker_name = "arm-plan"
+    kind = ARM_MOVE
 
     def __init__(self):
         """Start with no plan; the models load with the first plan of each robot."""
         super().__init__()
-        #: Whether commits run under a clearance (`ArmPlannerContract.clearance`); the panel's Clearance box sets it.
-        self.clearance = True
         #: Robots whose models the worker has loaded, so later plans need no load allowance.
         self._loaded: set[str] = set()
         #: The latest plan's path, the base's floor pose (x, y, yaw) it was planned from, and whether mocap tracked
@@ -92,6 +92,10 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         self._motions: dict[tuple[str, str], Check] = {}
         # ! Worker thread only (sync, search, close).
         self._world = MirrorPool()
+
+    def plan_margin(self, plan: Plan[ArmPlanRequest]) -> float | None:
+        """How close the path comes to anything, as planned (`ArmPath.margin`); None without a path."""
+        return None if plan.path is None else plan.path.margin
 
     def setup(self, ctx: PluginContext) -> None:
         """Let the mirrors log through the plugin."""
@@ -117,7 +121,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
-                return PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0)
+                return PlanResult(None, f"{short_serial(serial)} can't be planned for: {'; '.join(problems)}", 0.0)
             stand_ins = with_stand_ins(snapshot, {robot_id(serial)})
             others[:] = stand_ins.warnings
             result = plan_arm(self._world.sync(stand_ins.scene, serial), stand_ins.scene, arm, goal, abort)
@@ -134,11 +138,13 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             self._start_base = (result.path, base, tracked)
             how = "straight" if result.direct else "RRT"
             stand_ins = f" ({unmeasured(others)})" if others else ""
-            return (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
-                    f"found in {result.seconds:.1f} s{notes}{stand_ins}"), bool(guessed or others)
+            message = (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
+                       f"{margin_note(result.path.margin)}, found in {result.seconds:.1f} s{notes}{stand_ins}")
+            # * A path keeping less than usual warns: its commit's clearance is smaller too (`close_note`).
+            return message, bool(guessed or others or result.path.margin < PLAN_DISTANCE)
 
         return Search(label=f"plan {serial} {arm}",
-                      message=f"planning for {serial} {arm}…{notes}"
+                      message=f"planning for {short_serial(serial)} {arm}…{notes}"
                       + (" (loading the models first)" if loading else ""),
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
                       accepted=accepted, finished=finished)
@@ -156,14 +162,14 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         self._plan = replace(plan, path=slowed)
 
     def check_path(self, serial: str, arm: str,
-                   waypoints: Sequence[Sequence[float]]) -> asyncio.Future[CollisionHit | None]:
+                   waypoints: Sequence[Sequence[float]], margin: float = 0.0) -> asyncio.Future[CollisionHit | None]:
         """Check a given joint path for one arm for collisions, in the world as it is now (`ArmPlannerContract`)."""
         future = asyncio.get_running_loop().create_future()
         path = np.array(waypoints, dtype=float)
-        self._ctx.submit(f"check path {serial}", lambda: self._start_check(serial, arm, path, future))
+        self._ctx.submit(f"check path {serial}", lambda: self._start_check(serial, arm, path, margin, future))
         return future
 
-    def _start_check(self, serial: str, arm: str, waypoints: np.ndarray,
+    def _start_check(self, serial: str, arm: str, waypoints: np.ndarray, margin: float,
                      future: asyncio.Future[CollisionHit | None]) -> None:
         """Snapshot the world and check the path on the worker, after any search before it. Main thread."""
         snapshot, _guessed = with_guesses(self._ctx.scene.snapshot, robot_id(serial))
@@ -171,9 +177,9 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         def work() -> CollisionHit | None:
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
-                raise ValueError(f"{serial} can't be checked: {'; '.join(problems)}")
+                raise ValueError(f"{short_serial(serial)} can't be checked: {'; '.join(problems)}")
             scene = with_stand_ins(snapshot, {robot_id(serial)}).scene
-            result = path_hit(self._world.sync(scene, serial), scene, arm, waypoints)
+            result = path_hit(self._world.sync(scene, serial), scene, arm, waypoints, margin)
             self._loaded.add(serial)
             return result
 
@@ -217,9 +223,9 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
                       answer: Callable[[bool, str], None]) -> None:
         """Send the plan to the arm and watch it until it is at the end; else hold it (`send_motion`).
 
-        - While `clearance` is on, an ARM_STOP_DISTANCE clearance starts first: one that cannot check refuses the
-          commit (nothing sent), a trip soft stops the robot and cancels this. The other robots unknown at the commit
-          may be unknown (`unknown_allowed`).
+        - Committed with Clearance ticked, an ARM_MOVE clearance starts first (`commit_clearance`): one
+          that cannot check, or finds the robot too close, refuses the commit (nothing sent); a trip soft stops the
+          robot and cancels this.
         - ! The robot's base and every arm must be measured, Clearance on or off: an arm moves beside the other.
         - ! Arrival is judged on the joints, not `is_executing`, which clears during a slow move (the pendant's speed
           slider): the lease would go back mid-motion.
@@ -229,7 +235,7 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         # * The last run's chip goes: every way out below sets this run's, or none for a replaced commit.
         self._motions.pop(key, None)
         if problem := clearance_problem(ctx.scene.snapshot.robots.get(robot_id(serial))):
-            answer(False, f"nothing sent: {serial}: {problem}")
+            answer(False, f"nothing sent: {short_serial(serial)}: {problem}")
             ctx.log_warn(f"{what}: nothing sent: {problem}")  # * the run chip's hover may be cut
             self._motions[key] = Check("refused", BAD, hover(f"{what}: nothing sent: {problem}"))
             return
@@ -239,15 +245,17 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             # * Not Hold: it stops the arm but not this commit, which then ends "stopped short".
             self._motions[key] = Check("moving", WARN, f"{what} follows the path; Cancel or Stop all stops it")
 
-        guard = (ctx.clearance([serial], ARM_STOP_DISTANCE, unknown_robots=self.unknown_allowed(plan))
-                 if self.clearance else nullcontext())
         clearance: Clearance | None = None
         try:
-            with guard as clearance:
+            with self.commit_clearance(ctx, plan) as clearance:
+                await self.first_check(ctx, clearance)
                 ctx.log_info(f"{what}: sending a path of {path.duration:.1f} s, {path.rests} rests on the way")
                 outcome = await send_motion(ctx, ctx.world.robots[serial], arm_command(serial, arm_name, path),
                                             on_sent=sent)
         except asyncio.CancelledError:
+            if refusal := self.start_refusal(clearance):
+                answer(False, refusal)
+                ctx.log_warn(f"{what}: {refusal}")
             if self.replaced():
                 self._motions.pop(key, None)
             else:

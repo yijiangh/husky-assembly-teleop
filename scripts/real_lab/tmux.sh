@@ -1,24 +1,27 @@
 #!/bin/bash
-# Real lab: the tmux session "real_lab" for the test with the real robots, that you and Claude share; then attach to it.
+# * Opens the six terminal panes of the real-lab test in tmux: the session "real_lab" that you and Claude share
+#   (real-lab manual, 0.7).
+#
+#     ~/Code/ros2_ws_next/src/husky-assembly-teleop/scripts/real_lab/tmux.sh
 #
 #   ┌──────────────────────────────┬──────────────┐
-#   │ monitor                      │ alice        │
+#   │ MONITOR                      │ ALICE        │
 #   │                              ├──────────────┤
-#   ├──────────────────────────────┤ belle        │
-#   │ checks                       ├──────────────┤
-#   ├──────────────────────────────┤ cindy        │
-#   │ relay                        │              │
+#   ├──────────────────────────────┤ BELLE        │
+#   │ CHECKS                       ├──────────────┤
+#   ├──────────────────────────────┤ CINDY        │
+#   │ RELAY                        │              │
 #   └──────────────────────────────┴──────────────┘
 #
-# - "relay": the mocap relay (relay.sh), started at once.
-# - "alice", "belle", "cindy": robot.sh <robot>, typed in but not started: press Enter once her pendants are in Remote.
-# - "checks": this lab's ROS settings (env.sh) loaded, check_robots.sh typed in.
-# - "monitor": monitor.sh, typed in: press Enter once the checks pass.
-# Each pane's name is in its top border, the scripts are on its PATH (Up, Enter runs one again), and the relay's and
-# the robots' panes are logged to ~/husky_real_lab/logs/. Detach with Ctrl-b d: everything keeps running. Running this
-# again only re-attaches.
-#
-# Claude reads the panes (tmux capture-pane) and never types into them.
+# - MONITOR: monitor.sh, typed in: press Enter once the checks pass.
+# - CHECKS: this lab's ROS settings (env.sh) loaded, check_robots.sh typed in.
+# - RELAY: the mocap relay (relay.sh), started at once.
+# - ALICE, BELLE, CINDY: robot.sh <robot>, typed in: press Enter once her pendants are in Remote.
+# - Each pane's name sits on its top border, with two mouse buttons at its right: [z] zooms the pane ([u] unzooms),
+#   [x] closes it after a Yes. Each pane prints what it is for; the scripts are on its PATH (Up, Enter runs one again).
+# - The relay's and the robots' panes are logged to ~/husky_real_lab/logs/.
+# - Detach with Ctrl-b d: everything keeps running. Running this again only re-attaches.
+# - Claude reads the panes (tmux capture-pane) and never types into them.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,42 +42,56 @@ start() {
     printf "printf '\\\\033[1m%%s\\\\033[0m  %%s\\\\n\\\\n' %q %q; exec bash" "$1" "$2"
 }
 
-if ! tmux has-session -t "=$session" 2>/dev/null; then
-    mkdir -p "$logs"
-    stamp=$(date +%Y%m%d_%H%M%S)
-    hint="Press Enter once the checks pass (manual 4.a). Ctrl-C once stops it."
-    # * Said in the pane: attaching clears this terminal. Its monitor would hold port 8080.
-    if tmux has-session -t =fake_lab 2>/dev/null; then
-        hint="! The fake lab still runs: stop it first (manual 1.a). Then: $hint"
-    fi
-    monitor=$(tmux new-session -d -s "$session" -n lab -x 220 -y 60 "${environment[@]}" -P -F '#{pane_id}' \
-        "$(start monitor "$hint")")
-    tmux set-option -t "$session" history-limit 50000
-    # * A pane you add later (Ctrl-b ") gets them too.
-    tmux set-environment -t "$session" PATH "$PATH"
-    lab_tmux_set_environment "$session" REAL_LAB_
-    alice=$(tmux split-window -h -l 40% -t "$monitor" "${environment[@]}" -P -F '#{pane_id}' \
-        "$(start alice "Her pendant in Remote (manual 2.a), then Enter: logs in and starts her launch.")")
-    belle=$(tmux split-window -v -l 67% -t "$alice" "${environment[@]}" -P -F '#{pane_id}' \
-        "$(start belle "Her pendant in Remote (manual 2.a), then Enter. She stays parked.")")
-    cindy=$(tmux split-window -v -l 50% -t "$belle" "${environment[@]}" -P -F '#{pane_id}' \
-        "$(start cindy "Both pendants in Remote (manual 2.a), then Enter. Never Ctrl-C while she holds a bar.")")
-    checks=$(tmux split-window -v -l 45% -t "$monitor" "${environment[@]}" -P -F '#{pane_id}' \
-        "$(start checks "Domain 80 on Zenoh, as the robots. Enter: the read-only checks (manual Part 3).")")
-    relay=$(tmux split-window -v -l 8 -t "$checks" "${environment[@]}" -P -F '#{pane_id}' \
-        "$(start relay "The mocap relay. Never stop it while a base drives.")")
-    lab_tmux_name_panes "$session" " #{@name} " "$monitor" monitor "$checks" checks "$relay" relay \
-        "$alice" alice "$belle" belle "$cindy" cindy
-    for pane in relay alice belle cindy; do
-        tmux pipe-pane -o -t "${!pane}" "cat >> '$logs/${pane}_$stamp.log'"
-    done
-    lab_tmux_wait_for_shells "$monitor" "$checks" "$relay" "$alice" "$belle" "$cindy"
-    tmux send-keys -t "$relay" "relay.sh" Enter
-    tmux send-keys -t "$checks" "source env.sh" Enter "check_robots.sh"
-    for robot in alice belle cindy; do
-        tmux send-keys -t "${!robot}" "robot.sh $robot"
-    done
-    tmux send-keys -t "$monitor" "monitor.sh"
-    tmux select-pane -t "$monitor"
+if tmux has-session -t "=$session" 2>/dev/null; then
+    lab_tmux_attach "$session"
+    exit 0
 fi
+
+# * ------------------------------------------------------------- MONITOR and the session
+mkdir -p "$logs"
+stamp=$(date +%Y%m%d_%H%M%S)
+hint="Press Enter once the checks pass (manual 4.a). Ctrl-C once stops it."
+# * Said in the pane: attaching clears this terminal. Its monitor would hold port 8080.
+if tmux has-session -t =fake_lab 2>/dev/null; then
+    hint="! The fake lab still runs: stop it first (manual 1.a). Then: $hint"
+fi
+monitor=$(tmux new-session -d -s "$session" -n lab -x 220 -y 60 "${environment[@]}" -P -F '#{pane_id}' \
+    "$(start MONITOR "$hint")")
+tmux set-option -t "$session" history-limit 50000
+# * A pane you add later (Ctrl-b ") gets them too.
+tmux set-environment -t "$session" PATH "$PATH"
+lab_tmux_set_environment "$session" REAL_LAB_
+
+# * ------------------------------------------------------------- the other five
+# Right column (40 % wide): ALICE, BELLE, CINDY; then CHECKS and RELAY under MONITOR.
+alice=$(tmux split-window -h -l 40% -t "$monitor" "${environment[@]}" -P -F '#{pane_id}' \
+    "$(start ALICE "Her pendant in Remote (manual 2.a), then Enter: logs in and starts her launch.")")
+belle=$(tmux split-window -v -l 67% -t "$alice" "${environment[@]}" -P -F '#{pane_id}' \
+    "$(start BELLE "Her pendant in Remote (manual 2.a), then Enter. She stays parked.")")
+cindy=$(tmux split-window -v -l 50% -t "$belle" "${environment[@]}" -P -F '#{pane_id}' \
+    "$(start CINDY "Both pendants in Remote (manual 2.a), then Enter. Never Ctrl-C while she holds a bar.")")
+checks=$(tmux split-window -v -l 50% -t "$monitor" "${environment[@]}" -P -F '#{pane_id}' \
+    "$(start CHECKS "Domain 80 on Zenoh, as the robots. Enter: the read-only checks (manual Part 3).")")
+relay=$(tmux split-window -v -l 20% -t "$checks" "${environment[@]}" -P -F '#{pane_id}' \
+    "$(start RELAY "The mocap relay. Never stop it while a base drives.")")
+
+# * ------------------------------------------------------------- names, buttons and logs
+# * The name, then tmux's own mouse buttons at the right: [z] zooms ([u] unzooms), [x] asks, then closes the pane.
+buttons="#[range=control|8][#{?window_zoomed_flag,u,z}]#[norange] #[range=control|9][x]#[norange]"
+lab_tmux_name_panes "$session" " #{@name} #[align=right]$buttons " "$monitor" MONITOR "$checks" CHECKS \
+    "$relay" RELAY "$alice" ALICE "$belle" BELLE "$cindy" CINDY
+for pane in relay alice belle cindy; do
+    tmux pipe-pane -o -t "${!pane}" "cat >> '$logs/${pane}_$stamp.log'"
+done
+
+# * ------------------------------------------------------------- what each pane starts with
+lab_tmux_wait_for_shells "$monitor" "$checks" "$relay" "$alice" "$belle" "$cindy"
+tmux send-keys -t "$relay" "relay.sh" Enter
+tmux send-keys -t "$checks" "source env.sh" Enter "check_robots.sh"
+for robot in alice belle cindy; do
+    tmux send-keys -t "${!robot}" "robot.sh $robot"
+done
+tmux send-keys -t "$monitor" "monitor.sh"
+tmux select-pane -t "$monitor"
+
 lab_tmux_attach "$session"

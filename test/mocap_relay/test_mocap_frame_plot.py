@@ -16,7 +16,7 @@ from repo_paths import REPO
 from scaffolding_assembly_core.geometry import Pose
 from husky_assembly_teleop.robot_interface.mocap_definitions import MocapAnchor
 from husky_assembly_teleop.world.frame_follower import FrameFollower
-from husky_assembly_teleop.world.mocap_frame import FloorCalibration
+from husky_assembly_teleop.world.mocap_frame import SCALE_CHANGED, FloorCalibration
 
 pytestmark = pytest.mark.slow
 
@@ -97,7 +97,8 @@ def test_the_scale_panel_shows_the_anchors_scale_and_where_the_relay_warned(scri
     lines = [line.get_ydata() for line in axis.lines]
     pyplot.close(figure)
     assert list(lines[0]) == [-1500.0] * 4 and len(lines[1]) == 2
-    assert sorted(round(float(line[0])) for line in lines[2:]) == [-192, 192]
+    limit = round(SCALE_CHANGED * 1e6)  # * where the relay warns of a scale change, ppm
+    assert sorted(round(float(line[0])) for line in lines[2:]) == [-limit, limit]
 
 
 @pytest.mark.parametrize("which", ["old", "new", "both"])

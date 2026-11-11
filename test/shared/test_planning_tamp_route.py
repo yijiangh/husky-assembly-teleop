@@ -8,6 +8,7 @@ import re
 import threading
 from contextlib import suppress
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -320,17 +321,41 @@ def test_an_insert_out_of_reach_names_its_waypoint(purged, configs, mirrors):
 
 @pytest.mark.slow
 def test_a_retreat_into_a_box_names_the_waypoint_and_the_pair(purged, configs, mirrors):
-    """A 2 cm box behind Cindy's left tool, clear at the start: the retreat stops at the step that reaches it."""
-    cindy = movement(purged, "B20_R_retreat")[1].start.robots["robots/cindy"]
-    tool0 = link_pose(robot_config(CINDY).model.urdf, cindy.base, cindy.joints, "left_ur_arm_tool0")
-    behind = Pose(tuple(np.add(tool0.position, (0.0, -0.08, -0.06))))
-    box = Body("obstacles/box", box_geometry((0.02, 0.02, 0.02)), behind)
-    row, = run_check(purged, configs, ["B20_R"], only=["B20_R_retreat"], extra_bodies=(box,), mirrors=mirrors,
-                     verbose=False, log=lambda _line: None)
-    found = re.search(r"no_candidate at waypoint (\d+)/11, the nearest step collides: (.*)$", row.reason)
+    """A 2 cm box 8 cm behind Cindy's left tool: every line from 50 down to 25 mm reaches it; the step is named."""
+    row = _retreat_past_box(purged, configs, mirrors, 0.08)
+    found = re.search(r"^no straight retreat of 25-50 mm: .*no_candidate at waypoint (\d+)/11, the nearest step "
+                      r"collides: (.*)$", row.reason)
     assert row.status == "failed" and found and int(found.group(1)) > 1, row.reason
     assert ("tools/cindy/AT3L", "obstacles/box") in row.route.colliding
     assert not any("touches" in warning for warning in row.route.warnings)
+
+
+@pytest.mark.slow
+def test_a_retreat_blocked_at_full_length_plans_a_shorter_line_and_warns(purged, configs, mirrors):
+    """The box 10 cm behind: the 50 mm line reaches it, a 35 mm one does not; planned shorter, with the warning."""
+    row = _retreat_past_box(purged, configs, mirrors, 0.10)
+    assert row.route.ok, row.reason
+    warning, = [warning for warning in row.route.warnings if warning.startswith("the full 50 mm retreat")]
+    assert re.search(r"^the full 50 mm retreat has no collision-free straight line \(.*no_candidate at waypoint "
+                     r"\d+/11.*\); planned a SHORTER one: (25|30|35|40|45) mm back; the free move home starts from "
+                     r"there$", warning), warning
+    shorter = float(warning.split("SHORTER one: ")[1].split(" mm")[0]) * 1e-3
+    spec = classify(purged.process, *movement(purged, "B20_R_retreat"))
+    cindy = movement(purged, "B20_R_retreat")[1].start.robots["robots/cindy"]
+    for part in spec.arms:
+        start = link_pose(robot_config(CINDY).model.urdf, cindy.base, cindy.joints, f"{part.arm}_tool0")
+        assert pose_error(start, row.route.goals[part.flange])[0] == pytest.approx(shorter, abs=1e-6)
+
+
+def _retreat_past_box(purged, configs, mirrors, behind: float):
+    """B20_R_retreat planned with a 2 cm box `behind` metres behind Cindy's left tool0 (and 6 cm below)."""
+    cindy = movement(purged, "B20_R_retreat")[1].start.robots["robots/cindy"]
+    tool0 = link_pose(robot_config(CINDY).model.urdf, cindy.base, cindy.joints, "left_ur_arm_tool0")
+    box = Body("obstacles/box", box_geometry((0.02, 0.02, 0.02)),
+               Pose(tuple(np.add(tool0.position, (0.0, -behind, -0.06)))))
+    row, = run_check(purged, configs, ["B20_R"], only=["B20_R_retreat"], extra_bodies=(box,), mirrors=mirrors,
+                     verbose=False, log=lambda _line: None)
+    return row
 
 
 def _retreat_goals(purged, snapshot: Scene, distance: float) -> dict[str, Pose]:
@@ -377,6 +402,83 @@ def test_the_search_settings_reach_tamps_free_search(purged, configs, mirrors, m
     answer[0] = None
     plan_movement(_cindys(mirrors), purged, home, snapshot, configs, log=lambda _line: None)
     assert asked == [FreeSearch().tamp()] * 3
+
+
+def _held_transfer(purged, configs, mirrors, monkeypatch, search: FreeSearch, answer=None):
+    """B20's transfer with the bar held, on a fake constrained planner: the route, and the fake's keyword arguments.
+
+    The fake answers [start, goal]; `answer` is returned instead, or raised when it is an exception.
+    """
+    calls = []
+
+    def plan(_planner, state, **options):
+        calls.append(options)
+        if isinstance(answer, Exception):
+            raise answer
+        if answer is not None:
+            return answer
+        goal = options["goal_conf"]
+        return [[float(state.robot_configuration[name]) for name in goal], [float(goal[name]) for name in goal]], {}
+
+    monkeypatch.setattr(tamp_route, "plan_constrained_dual_arm", plan)
+    route = plan_movement(_cindys(mirrors), purged, step(purged, "B20_J_transfer"),
+                          design_scene(purged, "B20_J_transfer"), configs, search=search, log=lambda _line: None)
+    return route, calls
+
+
+def _roadmap(purged, root) -> Path:
+    """An empty roadmap file for B20 under `root`, where the prm planner looks; its folder."""
+    folder = root / "prm" / f"{purged.process.folder.name}__B20"
+    folder.mkdir(parents=True)
+    (folder / "roadmap.json.gz").touch()
+    return folder
+
+
+@pytest.mark.slow
+def test_the_prm_planner_follows_the_bars_roadmap_in_one_try(purged, configs, mirrors, monkeypatch, tmp_path):
+    """With the roadmap there, one call with backend prm, its folder and the options that write nothing into it."""
+    folder = _roadmap(purged, tmp_path)
+    search = FreeSearch(cdfm_planner="prm", roadmap_root=str(tmp_path))
+    route, calls = _held_transfer(purged, configs, mirrors, monkeypatch, search)
+    assert route.ok and route.planner == "tamp.plan_constrained_dual_arm/prm" and route.attempts == 1
+    call, = calls
+    assert (call["backend"], call["active_bar_id"], call["max_time"]) == ("prm", "process/bars/B20", 120.0)
+    assert call["prm_options"] == {"roadmap_dir": str(folder), "workers": 1, "save_query": False, "verbose": False}
+
+
+@pytest.mark.slow
+def test_the_prm_planner_refuses_without_a_roadmap_or_a_root(purged, configs, mirrors, monkeypatch, tmp_path):
+    """No roadmap file: failed naming the folder and the build command, tamp never called; no root: failed too."""
+    search = FreeSearch(cdfm_planner="prm", roadmap_root=str(tmp_path))
+    route, calls = _held_transfer(purged, configs, mirrors, monkeypatch, search)
+    folder = tmp_path / "prm" / f"{purged.process.folder.name}__B20"
+    assert not route.ok and calls == []
+    assert f"no roadmap for B20 at {folder}" in route.result.reason
+    assert "scripts/prm_runs/process_precompute.sh 261008_2ModulesDemo_purged_process B20" in route.result.reason
+    route, calls = _held_transfer(purged, configs, mirrors, monkeypatch, FreeSearch(cdfm_planner="prm"))
+    assert not route.ok and calls == [] and route.result.reason.startswith("no roadmap root")
+
+
+@pytest.mark.slow
+def test_a_roadmap_that_does_not_fit_fails_with_tamps_reason(purged, configs, mirrors, monkeypatch, tmp_path):
+    """A ValueError from tamp (a roadmap built for another bar, a mismatch): failed with its text, the planner named."""
+    _roadmap(purged, tmp_path)
+    search = FreeSearch(cdfm_planner="prm", roadmap_root=str(tmp_path))
+    route, calls = _held_transfer(purged, configs, mirrors, monkeypatch, search,
+                                  ValueError("roadmap built for bars/B21"))
+    assert not route.ok and len(calls) == 1
+    assert route.result.reason == "tamp.plan_constrained_dual_arm/prm: roadmap built for bars/B21"
+
+
+@pytest.mark.slow
+def test_the_birrt_planner_searches_three_seeded_tries(purged, configs, mirrors, monkeypatch):
+    """The default planner: three tries of tamp's search, no backend asked, seeded apart; the reason names them."""
+    route, calls = _held_transfer(purged, configs, mirrors, monkeypatch, FreeSearch(),
+                                  (None, {"failure_reason": "birrt_failed"}))
+    assert not route.ok and route.planner == "tamp.plan_constrained_dual_arm" and route.attempts == 3
+    assert [call["random_seed"] for call in calls] == [0, 9973, 2 * 9973]
+    assert not any("backend" in call or "prm_options" in call for call in calls)
+    assert route.result.reason.endswith("(tamp: birrt_failed) (3 tries of 120 s)")
 
 
 @pytest.mark.slow

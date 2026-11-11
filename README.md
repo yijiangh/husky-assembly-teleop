@@ -105,8 +105,9 @@ To see which versions you use and from where:
 </details>
 
 **6. Experiment data** (optional; the relay and the monitor start without it). Point `HUSKY_DRIVE_ROOT` at your synced
-copy of the project's Google Drive folder, in `~/.bashrc`: processes are loaded from there, and experiments and
-calibrations are saved there. Details: [doc/setup/experiment_data.md](doc/setup/experiment_data.md).
+copy of the project's Google Drive folder, in `~/.bashrc`: processes are loaded from there, experiments and
+calibrations are saved there, and the prm planner reads its roadmaps from `data_experiment/cdfm_planner_benchmark/prm/`.
+Details: [doc/setup/experiment_data.md](doc/setup/experiment_data.md).
 
 ```bash
 export HUSKY_DRIVE_ROOT="$HOME/Insync/<account>/Google Drive - Shared with me/2025-03 Husky Assembly"
@@ -279,6 +280,7 @@ What each one does in detail, and the panels and tabs it shows: [doc/lab/plugins
 | `base_planner_panel` | Plans a collision-free base path and sends it to the onboard follower. Experimental. |
 | `arm_planner_panel` | Plans a collision-free arm motion to a joint target. Experimental. |
 | `collisions` | Lists and draws what collision checks and clearance trips hit. |
+| `calibration` | Calibrates a robot's base rigid body by sweeping one arm's first two joints, Setup to Apply. Experimental. |
 | `base_exp` | Base controller experiments: test paths, recordings, analysis. Experimental. |
 | `insertion_demo` | One bar in and out on demand, Cindy standing still, no mocap: the demo-hall plugin. Experimental. |
 | `example_*` | Minimal plugins, as templates for new ones. |

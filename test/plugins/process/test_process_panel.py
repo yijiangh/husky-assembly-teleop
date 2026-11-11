@@ -10,8 +10,9 @@ from planning_fixtures import purged_process
 from plugin_fakes import FakeContext
 from process_fixtures import build_process
 
-from husky_assembly_teleop.plugins.process.loading import load_process
-from husky_assembly_teleop.plugins.process.plugin import NO_MOVEMENT, ProcessPlugin, _movement_css, action_window
+from husky_assembly_teleop.plugins.process.loading import load_process, process_folders
+from husky_assembly_teleop.plugins.process.plugin import (NO_FOLDER, NO_MOVEMENT, ProcessPlugin, _movement_css,
+                                                          action_window)
 from husky_assembly_teleop.shared.assembly_planning.labels import INSERT_TIGHTEN
 from scaffolding_assembly_core.process import write
 
@@ -32,6 +33,27 @@ def test_action_window_centres_the_selection():
     assert action_window(1, 48, rows=7) == 0
     assert action_window(47, 48, rows=7) == 41
     assert action_window(2, 4, rows=7) == 0
+
+
+def test_the_folder_lists_the_processes_and_the_configured_one(tmp_path):
+    """Processes and old exports two levels below the Drive root, newest name first, and the monitor's own folder."""
+    for path in ("study/260101_a/process.json", "study/260202_b/ActionSchedule.json", "study/notes/readme.txt",
+                 "study/deep/c/process.json"):
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text("{}")
+    assert process_folders(tmp_path) == ["study/260202_b", "study/260101_a"] and process_folders(None) == []
+
+    def folder(configured: str | None, root=tmp_path):
+        ctx = FakeContext(drive_root=root)
+        ctx.config.process_directory = configured
+        ProcessPlugin().setup(ctx)
+        widget = next(widget for widget in ctx.gui.widgets if widget.label == "Folder")
+        return widget.value, widget.options["initial_value"]
+
+    assert folder("study/260101_a") == (["study/260202_b", "study/260101_a"], "study/260101_a")
+    assert folder(None) == (["study/260202_b", "study/260101_a"], "study/260202_b")
+    assert folder("/elsewhere/p") == (["study/260202_b", "study/260101_a", "/elsewhere/p"], "/elsewhere/p")
+    assert folder(None, root=None) == ([NO_FOLDER], NO_FOLDER)
 
 
 def test_the_details_and_the_error_line_keep_their_height(tmp_path):

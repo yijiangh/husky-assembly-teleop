@@ -392,8 +392,8 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
         found = ctx.spawn("drive r0", drive("r0"))
         await asyncio.sleep(0)
         await monitor._tick()
-        (key, own, margin, assumable, _allowed), = monitor._clearances.asked[-1]
-        assert own == robot_id("r0") and margin == STOP_DISTANCE and assumable == frozenset()
+        (key, own, margin, assumable, _allowed, check_self), = monitor._clearances.asked[-1]
+        assert own == robot_id("r0") and margin == STOP_DISTANCE and assumable == frozenset() and check_self
         monitor._clearances.found = [(key, "came within 10 cm of wall", None)]
         await monitor._tick()
         lost = ctx.spawn("drive r1", drive("r1"))
@@ -453,7 +453,7 @@ def test_a_watch_joins_a_check_every_half_second_and_only_reports(monkeypatch):
 
     async def run():
         await monitor._tick()
-        (key, own, margin, _assumable, _allowed), = monitor._clearances.asked[-1]
+        (key, own, margin, _assumable, _allowed, _check_self), = monitor._clearances.asked[-1]
         assert key[1] is watch and own == robot_id("r0") and margin == ARM_STOP_DISTANCE
         monitor._clearances.found = [(key, "came within 1 cm of the rack", SimpleNamespace())]
         await monitor._tick()

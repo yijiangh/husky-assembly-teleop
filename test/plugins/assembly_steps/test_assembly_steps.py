@@ -12,6 +12,7 @@ import math
 import threading
 from copy import copy
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -30,8 +31,9 @@ from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DONE
                                                                  serial_of)
 from husky_assembly_teleop.shared.assembly_planning.ik import IkResult
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
-from husky_assembly_teleop.shared.assembly_planning.movement import Routine
-from husky_assembly_teleop.shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
+from husky_assembly_teleop.shared.assembly_planning.movement import Routine, classify
+from husky_assembly_teleop.shared.assembly_planning.route_result import (GoalCheck, RouteResult, goal_line,
+                                                                         live_line_goal)
 from husky_assembly_teleop.shared.assembly_planning.route_search import FreeSearch
 from husky_assembly_teleop.shared.execution.servo import flange_poses, tool0_errors
 from husky_assembly_teleop.ui.ghost import RecentUse
@@ -167,14 +169,14 @@ def test_steps_follow_the_run():
     assert "moves left_ur_arm, right_ur_arm; then waits for B20_J_place_bar + B20_J_grasp by hand" in lab.html()
     lab.run.view.current = ("B20_J", 4)
     lab.update()
-    assert lab.plugin.position == (2, 2) and "cindy (a200-0806) inserts rigid (ground bar)" in lab.html()
+    assert lab.plugin.position == (2, 2) and "cindy (0806) inserts rigid (ground bar)" in lab.html()
     lab.run.view.current = ("B20_J", 3)
     lab.update()
     assert lab.plugin.position == (1, 2) and lab.run.selected == []
     lab = Steps(("B20_R", 1))
     assert "with: B20_R_ungrasp" in lab.html()
-    assert ("retreats left_ur_arm, right_ur_arm, compliant first; then opens the gripper screws on left_ur_arm, "
-            "right_ur_arm in the retreat") in lab.html()
+    assert ("retreats left_ur_arm, right_ur_arm, the jaws loosening as it backs out; then opens the gripper screws on "
+            "left_ur_arm, right_ur_arm in the retreat") in lab.html()
 
 
 def test_live_ik_says_which_start_it_solves():
@@ -329,6 +331,37 @@ def test_a_plan_asks_with_the_runs_advanced_planning_settings():
     sliders["Max iterations"].callback(80.0)
     swept.callback(True)
     assert (lab.run.view.settings.plan_max_iterations, lab.run.view.settings.plan_swept_check) == (80.0, True)
+
+
+def test_a_plan_asks_with_the_runs_cdfm_planner_and_roadmap_root():
+    """The CDFM planner and the roadmap root reach the request's search; an empty root is the Drive's benchmark folder.
+
+    The folder's dropdown and text box show the run's values and ask for changes.
+    """
+    lab = Steps(("B20_R", 2))
+    lab.run.request_settings(plan_cdfm_planner="prm", plan_roadmap_root="/roadmaps")
+    lab.update()
+    asyncio.run(lab.plan())
+    request, = lab.planner.plans
+    assert (request.search.cdfm_planner, request.search.roadmap_root) == ("prm", "/roadmaps")
+    dropdown, = lab.ctx.gui.of_kind("dropdown")
+    text, = lab.ctx.gui.of_kind("text")
+    assert (dropdown.label, dropdown.value, text.label, text.value) == ("CDFM planner", "prm", "Roadmap root",
+                                                                        "/roadmaps")
+    lab.run.request_settings(plan_roadmap_root="")
+    lab.ctx.config.drive_root = Path("/drive")
+    assert lab.plugin.free_search(lab.ctx).roadmap_root == "/drive/data_experiment/cdfm_planner_benchmark"
+    lab.ctx.config.drive_root = None
+    assert lab.plugin.free_search(lab.ctx).roadmap_root == ""
+    dropdown.callback("birrt")
+    text.callback("/oth")
+    text.callback("/other")
+    lab.update()
+    assert lab.run.view.settings.plan_roadmap_root == "", "typed text is not a setting until the typing pauses"
+    lab.ctx.t += 1.5
+    lab.update()
+    settings = lab.run.view.settings
+    assert (settings.plan_cdfm_planner, settings.plan_roadmap_root) == ("birrt", "/other")
 
 
 def test_a_plan_request_carries_the_run_and_the_checked_goal():
@@ -535,11 +568,11 @@ def test_exec_asks_for_a_second_press_while_another_robot_is_unknown():
 
 def test_the_exec_line_names_the_servo_after_the_motion():
     """The transfer step ends with its servo onto the insert start, Alice's approach with one onto the approach pose."""
-    assert exec_line("cindy (a200-0806)", Steps(("B20_J", 3)).plugin.parts()).endswith(
+    assert exec_line("cindy (0806)", Steps(("B20_J", 3)).plugin.parts()).endswith(
         "; then waits for B20_J_place_bar + B20_J_grasp by hand; then servos left_ur_arm, "
         "right_ur_arm onto the insert start")
-    assert exec_line("alice (a200-0804)", Steps(("B21_H", 0)).plugin.parts()) == (
-        "Exec: alice (a200-0804) moves ur_arm; then servos ur_arm onto the approach pose")
+    assert exec_line("alice (0804)", Steps(("B21_H", 0)).plugin.parts()) == (
+        "Exec: alice (0804) moves ur_arm; then servos ur_arm onto the approach pose")
 
 
 def test_a_servo_left_alone_runs_again_without_a_plan():
@@ -598,6 +631,26 @@ def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch
     line, = lines
     assert line.startswith("[insert plan] mocap bar correction carried: B20_J_insert left goal ")
     assert line.endswith(" from the authored end")
+
+
+def test_the_retreat_is_planned_along_the_live_tool_axis():
+    """B20_R_retreat: the plan's goals are each live flange backed out along its own -z; off with the setting."""
+    lab = Steps(("B20_R", 1))
+    asyncio.run(lab.plan())
+    goals = lab.planner.plans[-1].goal_poses
+    spec = classify(lab.loaded.process, *[(s.action, s.movement) for s in lab.loaded.steps
+                                          if s.movement.id == "B20_R_retreat"][0])
+    live = flange_poses(lab.ctx.scene.snapshot.robots[robot_id("a200-0806")], [part.flange for part in spec.arms])
+    assert set(goals) == {part.flange for part in spec.arms}
+    for part in spec.arms:
+        expected = live_line_goal(live[part.flange], part.line.distance)
+        assert np.allclose(goals[part.flange].matrix(), expected.matrix(), atol=1e-9)
+    assert [fields["data"]["goal_live"] for event, fields in lab.run.records if event == "plan"] == [True]
+    line, = [line for line in lab.ctx.lines("info") if line.startswith("[retreat live] B20_R_retreat")]
+    assert "goals = the live tool0 poses moved 50 mm back along their own -z (encoders): left along (" in line
+    lab.run.request_settings(retreat_live_axis=False)
+    asyncio.run(lab.plan())
+    assert lab.planner.plans[-1].goal_poses is None
 
 
 # --- --- --- --- --- Check tool0 and the visual diagnosis --- --- --- --- ---
@@ -873,7 +926,7 @@ def test_walking_b21_h_and_b20_j_with_the_real_planner_and_executor():
         walk.planner.teardown(None)
     files = [file for file in walk.run.files() if "part" in file]
     servos = [file for file in walk.run.files() if "servoing_data" in file]
-    assert prompts == 1
+    assert prompts == 2, "the bar placed and clamped, then the servo's 'no usable MoCap fit of B20' (no markers)"
     assert [file["movement"] for file in files] == ["B20_J_transfer", "B20_J_place_bar", "B20_J_transfer"]
     assert [file["outcome"]["status"] for file in files] == ["ARRIVED", "confirmed", "nothing left"]
     assert files[0]["plan"]["planner"] == "tamp.plan_free_dual_arm"

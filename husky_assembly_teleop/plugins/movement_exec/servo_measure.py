@@ -1,20 +1,23 @@
 """
 What the servo part says and records around its loop.
 
-The feedback line, the gate after a ground bar's insert, the panel's one line per reading, the record's IK entry and the
-servo file's name: pure helpers for `servo_part.py` (same thread, same rules).
+The feedback line, the gate after a ground bar's insert, the panel's one line per reading, the old monitor's console
+lines (what a pass aims at, the plan, the load, how the loop ended), the record's IK entry and the servo file's name:
+pure helpers for `servo_part.py` (same thread, same rules).
 """
 
 from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from scaffolding_assembly_core.ids import robot_id
 
+from ...config import short_serial
 from ...shared.execution.servo import (AFTER_INSERT, BAR_TOL, GROUNDED_END_TOL, MAX_PASSES, TOOL0_TOL, force_vectors,
                                        insert_end_gap)
+from ...shared.movement_exec_contract import CANCELLED, DONE, SERVO_TARGET
 from ...shared.runs.runs import reserve_record
 
 if TYPE_CHECKING:
@@ -61,7 +64,7 @@ def insert_end_problem(job: Job, plan: ServoPlan) -> str:
     names, end_row = list(trajectory.joint_names), list(trajectory.positions[-1])
     robot = ctx.scene.snapshot.robots.get(robot_id(request.serial))
     if robot is None:
-        return f"{request.serial} is not in the scene"
+        return f"{short_serial(request.serial)} is not in the scene"
     gap = insert_end_gap(robot, names, end_row, plan.arms)
     if gap > GROUNDED_END_TOL:
         return (f"the flanges stopped {gap * 1e3:.1f} mm from the end of the insert (limit "
@@ -90,6 +93,53 @@ def line(k: int, reading: dict, plan: ServoPlan) -> str:
     if plan.max_force_change is not None and reading.get("force_change_N"):
         text += f" · force change {sides(reading['force_change_N'], '.1f')} N"
     return text
+
+
+def aim_text(plan: ServoPlan, engaged: bool, bar: Mapping | None) -> str:
+    """What the next pass aims at, for the pass banner: the mocap bar once engaged, else tool0 and why."""
+    short, target = plan.bar.rsplit("/", 1)[-1] if plan.bar else "", SERVO_TARGET[plan.kind]
+    if engaged and bar is not None and bar.get("fit") is not None:
+        fit = bar["fit"]
+        return (f"the mocap bar {short} onto {target} (fit {fit['n_matched']}/{fit['n_design']}, rms "
+                f"{(fit['rms_m'] or 0.0) * 1e3:.1f} mm)")
+    if plan.by_bar:
+        why = bar["reason"] if bar is not None else "not measured"
+        return f"tool0 at the authored targets of {target} (the mocap bar {short} is not usable: {why})"
+    return f"tool0 at the authored targets of {target}"
+
+
+def load_line(k: int, reading: Mapping, wrench0: Mapping) -> str:
+    """The old load line: each arm's force and torque, its change since reading 0, the force change."""
+    parts = []
+    for side, wrench in reading["wrench"].items():
+        change = wrench["force_N"] - wrench0[side]["force_N"]
+        parts.append(f"{SIDE.get(side, side)}={wrench['force_N']:.1f} N / {wrench['torque_Nm']:.2f} Nm "
+                     f"({change:+.1f} N vs iter 0)")
+    text = f"[servo {k}] load " + " | ".join(parts)
+    if reading.get("force_change_N"):
+        text += f" | force change since iter 0 {sides(reading['force_change_N'], '.1f')} N"
+    return text
+
+
+def planned_line(k: int, planner: str, move: Mapping, flanges_move: str) -> str:
+    """The old "First move planned" line, and its later-pass form."""
+    head = "[servo] First move planned" if k == 1 else f"[servo {k}] move planned"
+    return (f"{head}: {move['rows']} waypoints, travels {move['excursion_deg']:.1f} deg (ends {move['net_deg']:.1f} "
+            f"deg from where it starts), over {move['traj_time']:.0f} s; flanges move {flanges_move} ({planner})")
+
+
+def end_line(result: str, status: str, reason: str, k: int) -> str:
+    """How the loop ended, in the old monitor's words."""
+    if result == CANCELLED:
+        return "### SERVOING cancelled by user."
+    if status == "not converged":
+        return f"### SERVOING ran all {MAX_PASSES} iterations without converging."
+    if result == DONE and status == "converged":
+        return f"### SERVOING converged at iter {k} {reason.removeprefix('converged ')}"
+    if status == "on target":
+        return f"### SERVOING stopped at iter 1: {reason}"
+    where = f"at iter {k}" if k else "before the first pass"
+    return f"### SERVOING stopped {where}: {reason}"
 
 
 def ik_record(ik: IkResult | None) -> dict | None:

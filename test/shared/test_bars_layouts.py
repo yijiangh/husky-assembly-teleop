@@ -265,6 +265,17 @@ def test_tracked_fit_falls_back_when_the_hint_is_far():
     assert pose_deviation(result.T_world_from_bar, T_now).dpos_mm < 1.5
 
 
+def test_fit_bar_without_the_full_search_says_it_waits():
+    """A hint that misses with the full search withheld: a failed fit naming the wait, not a 20 ms search."""
+    layout = b20_layout()
+    _T_hint, T_now, sample = _moved_since_hint(21)
+    far = np.eye(4)
+    far[:3, 3] = [0.1, 0.0, 0.0]
+    waiting = fit_bar(sample, layout, hint=far @ T_now, full_search=False)
+    assert not waiting.ok and "waits its turn" in waiting.reason and waiting.bar_name == "bars/B20"
+    assert fit_bar(sample, layout, hint=far @ T_now, full_search=True).ok
+
+
 def test_tracked_fit_with_an_occluded_marker():
     """A hidden ball (not measured): never fitted, and the full search runs (7 of 8, not tracked)."""
     layout = b20_layout()

@@ -27,6 +27,7 @@ needed to run the new monitor.
 | [phone_manual.md](lab/phone_manual.md) | The phone page: connecting a phone, what each tab is for, what to do after a stop, troubleshooting. |
 | [mocap_relay.md](lab/mocap_relay.md) | The mocap relay: topics, calibrations, the lab frame and how it follows Motive's frame, rigid bodies in Motive, launch arguments, simulated inputs, what changed from the old monitor's direct NatNet. |
 | [ur_frames.md](lab/ur_frames.md) | The UR arm frames our URDFs must keep, the pendant's TCP at tool0, what the health `tcp` and `URDF` chips mean and how to fix them. |
+| [calibration_manual.md](lab/calibration_manual.md) | Base calibration with the `calibration` plugin: what you need, every step and its checks, resuming a run, the session files, solving again offline. Work in progress. |
 | [floor_calibration_manual.md](lab/floor_calibration_manual.md) | The floor calibration with the mocap probe: when, the steps, what every chip and number means, after a Motive recalibration, troubleshooting. |
 
 ## experiments/: planning, recording and analysing experiments
@@ -52,8 +53,6 @@ The process file format is in the core's `doc/process_format.md` (`external/scaf
 ## Other
 
 - [glossary.md](glossary.md): the project's words and what each means where.
-- [calibration_manual.md](calibration_manual.md): **outdated**, written for the old monitor; it says at the top what
-  is missing or different now.
 - `archive/`: outdated docs, kept for reference: manuals written for the old monitor, Su's notes and to-do list, the
   superseded journal plan, the RobArch 2026 paper, the old code layout diagram.
 - `../tasks/`: specs written while building a feature, dated; they describe the code as it was then.

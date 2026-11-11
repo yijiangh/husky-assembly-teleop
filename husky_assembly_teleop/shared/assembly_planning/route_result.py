@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 import numpy as np
 
@@ -182,6 +182,67 @@ def line_goal(start: Pose, line: LineSpec) -> Pose:
         Pose: The goal, world.
     """
     return Pose.from_arrays(np.add(start.position, np.multiply(line.direction, line.distance)), start.orientation)
+
+
+#: A live tool axis this far from the export's retreat axis is said loudly: the tool sits turned on the bar, or the
+#: export's axis is wrong.
+RETREAT_AXIS_WARN = math.radians(20.0)
+
+
+def live_line_goal(start: Pose, distance: float) -> Pose:
+    """A retreat's goal from the live tool: the start moved `distance` back along its own -z, turned the same.
+
+    The way a tool pulls off its joint is its own axis as the encoders read it now (the old monitor since 2026-10-22),
+    not the export's; the export's distance is kept.
+    """
+    axis = start.matrix()[:3, 2]
+    return Pose.from_arrays(np.subtract(start.position, np.multiply(axis, distance)), start.orientation)
+
+
+def axis_angle(start: Pose, line: LineSpec) -> float:
+    """Radians between a tool's live -z and its line's direction (the export's retreat axis)."""
+    axis = -start.matrix()[:3, 2]
+    cos = float(np.dot(axis, np.asarray(line.direction, dtype=float)))
+    return math.acos(min(1.0, max(-1.0, cos / max(np.linalg.norm(line.direction), 1e-12))))
+
+
+def live_retreat_goals(movement_id: str, spec: MovementSpec, ends: Mapping[str, Pose],
+                       flanges: Mapping[str, Pose]) -> tuple[dict[str, Pose], str, list[str]]:
+    """Every moving flange's goal along its live -z, the log line saying so, and a warning per tool turned far.
+
+    Args:
+        movement_id: The retreat, for the lines.
+        spec: Its classification (the moving arms and their lines).
+        ends: Flange id -> the export's goal pose, for how far the live goal is from it (missing: not said).
+        flanges: Flange id -> the live tool0 pose (FK on the mocap base).
+
+    Returns:
+        tuple: (goals by flange id, the "[retreat live] ..." line, the warnings over RETREAT_AXIS_WARN).
+
+    Raises:
+        KeyError: A moving flange without a live pose.
+        ValueError: A moving flange without a line.
+    """
+    goals, parts, warnings = {}, [], []
+    for part in spec.arms:
+        if part.line is None:
+            raise ValueError(f"{movement_id}: {part.flange} has no retreat line")
+        start = flanges[part.flange]
+        goals[part.flange] = live_line_goal(start, part.line.distance)
+        turn = axis_angle(start, part.line)
+        axis = np.round(-start.matrix()[:3, 2], 2) + 0.0  # + 0.0 turns -0.00 into 0.00
+        text = (f"{part.side} along ({axis[0]:+.2f}, {axis[1]:+.2f}, {axis[2]:+.2f}), {math.degrees(turn):.1f} deg "
+                f"from the Rhino axis")
+        if part.flange in ends:
+            text += f", {pose_error(goals[part.flange], ends[part.flange])[0] * 1e3:.1f} mm from the exported goal"
+        parts.append(text)
+        if turn > RETREAT_AXIS_WARN:
+            warnings.append(f"[retreat live] {movement_id}: the {part.side} tool axis is {math.degrees(turn):.1f} deg "
+                            f"from the Rhino retreat axis; check the tool before Exec.")
+    distance = max((part.line.distance for part in spec.arms), default=0.0)
+    line = (f"[retreat live] {movement_id}: goals = the live tool0 poses moved {distance * 1e3:.0f} mm back along "
+            f"their own -z (encoders): {'; '.join(parts)}.")
+    return goals, line, warnings
 
 
 def aims_at_line(process: Process, movement: Movement, spec: MovementSpec) -> bool:

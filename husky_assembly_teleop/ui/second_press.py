@@ -22,7 +22,7 @@ from .css import group_buttons
 #: Seconds a first press waits for its second.
 SECOND_PRESS_SECONDS = 5.0
 #: A second press sooner than this after the first is a double click: ignored, the first still waits.
-DOUBLE_CLICK_SECONDS = 0.5
+DOUBLE_CLICK_SECONDS = 0.25
 
 
 def again_label(label: str) -> str:

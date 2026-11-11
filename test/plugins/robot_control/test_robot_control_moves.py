@@ -252,17 +252,18 @@ class JogContext(Context):
         self.clearances, self.refuse = [], refuse
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False):
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False,
+                  check_self=True):
         """Keep the clearance, or refuse it; the test checks or trips it."""
         if self.refuse:
             raise ClearanceRefused(self.refuse)
         self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms,
-                                         refuse_first=refuse_first))
+                                         refuse_first=refuse_first, check_self=check_self))
         yield self.clearances[-1]
 
 
-def test_a_jog_waits_for_its_clearance_which_keeps_one_centimetre():
-    """With Clearance ticked, the jog goes out only once a 1 cm clearance found the robot clear; unticking ends it."""
+def test_a_jog_waits_for_its_clearance_which_keeps_half_a_centimetre():
+    """With Clearance ticked, the jog goes out only once a 5 mm clearance found the robot clear; unticking ends it."""
     arm, plugin, _ctx = _jogged_arm()
     plugin._arms[0].jog_clearance = SimpleNamespace(value=True)
     ctx = JogContext(arm)
@@ -278,11 +279,12 @@ def test_a_jog_waits_for_its_clearance_which_keeps_one_centimetre():
         assert len(arm._trajectory.sent) == 1
         clearance, = ctx.clearances
         assert (clearance.serials, clearance.margin, clearance.unknown_arms) == (("0804",), ARM_STOP_DISTANCE, [])
+        assert clearance.check_self, "an arm moves: the robot is checked against itself"
         plugin._arms[0].jog_clearance.value = False
         await plugin._jog_guards[("0804", "ur_arm")]
 
     asyncio.run(scenario())
-    assert ARM_STOP_DISTANCE == 0.01
+    assert ARM_STOP_DISTANCE == 0.005
 
 
 def test_a_jog_that_starts_too_close_is_refused_until_the_next_press_without_a_soft_stop():
@@ -450,10 +452,11 @@ class BaseContext:
         return asyncio.get_running_loop().create_task(work, name=label)
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False):
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False,
+                  check_self=True):
         """Keep the clearance; the test checks or trips it."""
         self.clearances.append(Clearance(tuple(serials), margin, unknown_arms=unknown_arms,
-                                         refuse_first=refuse_first))
+                                         refuse_first=refuse_first, check_self=check_self))
         yield self.clearances[-1]
 
     def log_warn(self, message: str) -> None:
@@ -473,6 +476,7 @@ def test_driving_with_clearance_keeps_one_on_the_base_until_it_is_unticked():
         await asyncio.sleep(0)
         plugin.update(ctx)
         assert not sent and ctx.clearances[0].refuse_first  # * nothing goes out before the first clear check
+        assert not ctx.clearances[0].check_self  # * driving moves no arm: the robot is not checked against itself
         ctx.clearances[0].checked = True
         plugin.update(ctx)
         await asyncio.sleep(0)
@@ -614,7 +618,7 @@ def test_the_jog_buttons_and_their_note_follow_clearance_as_the_dpad_does():
     plugin._color_buttons(buttons, False, key, 0.0)
     assert buttons[0].color == UNGUARDED_COLOR
     ticked, unticked = jog_clearance_note(True, ARM_STOP_DISTANCE), jog_clearance_note(False, ARM_STOP_DISTANCE)
-    assert "Clearance keeps 1 cm" in ticked and "Clearance off" in unticked
+    assert "Clearance keeps 0.5 cm" in ticked and "Clearance off" in unticked
     assert "white-space:nowrap" in ticked and "white-space:nowrap" in unticked, "one line either way: nothing jumps"
 
 
@@ -626,8 +630,7 @@ def test_each_jog_has_its_clearance_box_below_its_buttons_and_the_two_are_one_se
     gui = FakeGui()
     ctx = SimpleNamespace(defer=lambda _label, run, operator_only=False: lambda *_event: run(),
                           defer_value=lambda _label, run, operator_only=False: run)
-    inputs = build_jog_inputs(ctx, gui, "0804 ur_arm", lambda *_args: None, lambda: None, lambda *_args: None,
-                              ARM_STOP_DISTANCE)
+    inputs = build_jog_inputs(ctx, gui, "0804 ur_arm", lambda *_args: None, lambda *_args: None, ARM_STOP_DISTANCE)
     order = [widget.kind for widget in gui.widgets]
     boxes = [index for index, widget in enumerate(gui.widgets) if widget.label == "Clearance"]
     buttons = [index for index, kind in enumerate(order) if kind == "button"]
@@ -635,9 +638,10 @@ def test_each_jog_has_its_clearance_box_below_its_buttons_and_the_two_are_one_se
     assert len(boxes) == 2 and max(joint) < boxes[0] < min(tool) and max(tool) < boxes[1]
     labels = [widget.label for widget in gui.widgets]
     assert max(joint) < labels.index("Joint arrows") < min(tool) and labels[-1] == "Tool0 arrows"
+    joint_box = inputs.clearance.boxes[0]
     inputs.tool.clearance.value = False
     inputs.tool.clearance.callback(False)
-    assert inputs.clearance.value is False
-    inputs.clearance.value = True
-    inputs.clearance.callback(True)
-    assert inputs.tool.clearance.value is True
+    assert inputs.clearance.value is False and joint_box.value is False
+    joint_box.value = True
+    joint_box.callback(True)
+    assert inputs.clearance.value is True and inputs.tool.clearance.value is True

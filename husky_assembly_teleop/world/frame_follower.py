@@ -21,9 +21,9 @@ from scaffolding_assembly_core.geometry import Pose, compose
 
 from ..robot_interface.mocap_definitions import (FRAME_ERROR, FRAME_HELD, FRAME_NONE, FRAME_REFIT_PENDING,
                                                  FRAME_UNCHECKED, FRAME_UNTRUSTED, MocapAnchor, MocapCamera)
-from .mocap_frame import (BACK_SHARE, MIN_POINTS, SCALE_CHANGED, TRUSS_CAMERAS, VOLUME_MOVED, FloorCalibration,
-                          FrameFit, ScaleFit, camera_label, deciding_fit, find_anchors, fit_anchors, fit_cameras,
-                          fit_scale, follow_anchors, frame_metrics, match_anchors, off_limit, truss_names,
+from .mocap_frame import (BACK_SHARE, MIN_POINTS, SCALE_CHANGED, SCALE_SEEN, TRUSS_CAMERAS, VOLUME_MOVED,
+                          FloorCalibration, FrameFit, ScaleFit, camera_label, deciding_fit, find_anchors, fit_anchors,
+                          fit_cameras, fit_scale, follow_anchors, frame_metrics, match_anchors, off_limit, truss_names,
                           volume_moved)
 
 #: An anchor not seen for this long, seconds, is reported missing; one that flickers is not.
@@ -378,7 +378,7 @@ class FrameFollower:
             self._anchors_bumped = bumped
             # * Under a scale change, reported or not yet, the anchors' fit without scale leaves out the farthest: none
             #   moved on its own.
-            scale_off = self.scale_changed or self.scale_fit is not None and abs(self.scale_fit.scale) > SCALE_CHANGED
+            scale_off = self.scale_changed or self.scale_fit is not None and abs(self.scale_fit.scale) > SCALE_SEEN
             if bumped and not scale_off:
                 events.append(FrameEvent("warn", "ANCHORS MOVED against the others since the floor calibration: "
                                                  "bumped, or Motive lost and found them elsewhere",

@@ -6,6 +6,8 @@ Stopping (`hold`, `stop`, `stop_path`, a zero twist, a tool's `stop`) always goe
 
 from __future__ import annotations
 
+from ..config import short_serial
+
 #: The latch's reason for the operator's Stop all (`HuskyMonitor._soft_stop`); a clearance trip gives its problem.
 STOP_ALL_REASON = "Stop all"
 
@@ -43,7 +45,7 @@ class SoftStopLatch:
 
     def problem(self) -> str | None:
         """Why nothing may move this robot now, or None."""
-        return f"robot {self.serial} is soft stopped; press Resume first" if self.stopped else None
+        return f"robot {short_serial(self.serial)} is soft stopped; press Resume first" if self.stopped else None
 
     def check(self, command: str) -> None:
         """Raise RobotStopped if the robot is soft stopped.
@@ -55,4 +57,5 @@ class SoftStopLatch:
             RobotStopped: If the robot is soft stopped; nothing may be sent.
         """
         if self.stopped:
-            raise RobotStopped(f"robot {self.serial} is soft stopped, {command} not sent; press Resume first")
+            raise RobotStopped(f"robot {short_serial(self.serial)} is soft stopped, {command} not sent; press Resume "
+                               f"first")

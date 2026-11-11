@@ -20,11 +20,15 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import numpy as np
 import viser
+from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.robot import RobotObject
 from sensor_msgs.msg import BatteryState
 from ur_dashboard_msgs.msg import RobotMode, SafetyMode
 
-from ..colors import HUE_NAMES
+from ..config import short_serial
+from ..colors import HUE_NAMES, INK, WHITE
 from ..plugin_api.context import PluginContext
 from ..world.base_mocap import applied_calibration, applied_frame, with_relay
 from ..world.mocap import mocap_check
@@ -42,6 +46,7 @@ from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManag
 from ..robot_interface.mocap_relay import AppliedCalibration, FloorCalibrationState
 from ..robot_interface.refusal import Refusal
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
+from ..ui.css import full_row_css, group_buttons, group_tooltips_css
 from ..ui.phone import phone_text
 from ..ui.style import (FAIL, HOVER_MAX, LEVEL_COLORS, NONE, REFUSAL_SHOWN, SECTION_SENSOR, block, check_chip, chip,
                         chip_line, hover, section)
@@ -97,6 +102,17 @@ ROBOT_ACTIONS = {
 #: Refused while another plugin has the robot's lease: Unlock lets its arms move again, and Reconnect drops for a
 #: moment the links that plugin's motion is watched and held through. Resume needs no lease (`robot_lease.py`).
 LEASED_ACTIONS = ("Unlock", "Reconnect")
+#: The button after ROBOT_ACTIONS that marks the robot parked, filled while it is; a click toggles it.
+PARKED = "Parked"
+#: Each button's tip, left to right.
+ROBOT_TIPS = ("As Enable on the pendant, after clearing the cause. Needs its lease free.",
+              "Undo Stop all for this robot.",
+              "Rebuild its ROS links. Needs its lease free.",
+              "Filled while on: standing out of the way, taken as known where it stands. Nothing warns or asks about "
+              "it while it is not measured; it stays an obstacle there. Unparked once seen moving or leased to move.")
+#: A parked robot measured this far from where it was parked is unparked: base metres and degrees, joint degrees.
+PARKED_MOVE = (0.02, 2.0)
+PARKED_JOINT_MOVE = 1.0
 
 
 def robot_action(ctx: PluginContext, serial: str, clicked: str) -> Refusal | None:
@@ -113,7 +129,7 @@ def robot_action(ctx: PluginContext, serial: str, clicked: str) -> Refusal | Non
     robot = ctx.world.robots[serial]
     lease = robot.lease_slot.lease
     if clicked in LEASED_ACTIONS and lease is not None:
-        reason = f"robot {serial} is leased by {lease.holder}; try again once it is given back"
+        reason = f"robot {short_serial(serial)} is leased by {lease.holder}; try again once it is given back"
         ctx.log_warn(f"{serial} {clicked} refused: {reason}")
         return Refusal(f"{clicked} refused", reason, ctx.now())
     getattr(robot, ROBOT_ACTIONS[clicked])()
@@ -135,6 +151,11 @@ class HealthPlugin(HuskyPlugin):
         #: Per robot, the line under its buttons saying why the last one did nothing, and that refusal.
         self._refusal_lines: dict[str, viser.GuiHtmlHandle] = {}
         self._refusals: dict[str, Refusal] = {}
+        #: Per robot, the style filling its Parked button while it is parked.
+        self._park_styles: dict[str, viser.GuiHtmlHandle] = {}
+        #: Per robot, its button group's uuid, and where it stood when parked (`moved_since`).
+        self._park_groups: dict[str, str] = {}
+        self._parked_at: dict[str, RobotObject] = {}
         #: One row for all tracked objects.
         self._objects_row: viser.GuiHtmlHandle | None = None
         #: On the phone: the banner above the tabs, and every row in one html in the Health tab.
@@ -167,10 +188,10 @@ class HealthPlugin(HuskyPlugin):
             for serial in ctx.world.robots:
                 self._robot_rows[serial] = gui.add_html("")
                 # ? A button group: the only way in viser 1.1 to put buttons side by side.
-                actions = gui.add_button_group(
-                    "Robot", list(ROBOT_ACTIONS),
-                    hint="Unlock: as Enable on the pendant, after clearing the cause. Resume: undo Stop all. "
-                         "Reconnect: rebuild its ROS links. Unlock/Reconnect need its lease free.")
+                # * No hint: each button has its own tip (`ROBOT_TIPS`).
+                actions = gui.add_button_group("Robot", [*ROBOT_ACTIONS, PARKED])
+                self._park_groups[serial] = actions._impl.uuid
+                self._park_styles[serial] = gui.add_html(self._park_css(serial, False))
                 # ! Bind this loop's serial as a default argument.
                 actions.on_click(ctx.defer_value(f"robot action {serial}",
                                                  lambda clicked, serial=serial: self._act(ctx, serial, clicked)))
@@ -182,8 +203,35 @@ class HealthPlugin(HuskyPlugin):
         with ctx.view.phone("Health", viser.Icon.HEART_RATE_MONITOR) as phone:
             self._phone_rows = phone.add_html("")
 
+    def _park_css(self, serial: str, parked: bool) -> str:
+        """The robot's buttons on one full-width row; Parked filled while it is parked, as a chosen option."""
+        uuid = self._park_groups[serial]
+        filled = (f"{group_buttons(uuid, len(ROBOT_ACTIONS))} {{ background: {INK} !important; "
+                  f"color: {WHITE} !important; }}") if parked else ""
+        return f"<style>{full_row_css(uuid)}{group_tooltips_css(uuid, ROBOT_TIPS)}{filled}</style>"
+
+    def _set_parked(self, ctx: PluginContext, serial: str, parked: bool, why: str = "") -> None:
+        """Mark robot `serial` parked or not (`stand_ins.parked`), keeping where it stands to see it move; log it."""
+        ctx.world.robots[serial].parked = parked
+        self._park_styles[serial].content = self._park_css(serial, parked)
+        if parked:
+            self._parked_at[serial] = ctx.scene.snapshot.robots[robot_id(serial)]
+            ctx.log_info(f"{serial} parked: taken as known where it stands")
+            return
+        self._parked_at.pop(serial, None)
+        if why:
+            ctx.log_warn(f"{serial} no longer parked: {why}")
+        else:
+            ctx.log_info(f"{serial} no longer parked")
+
     def _act(self, ctx: PluginContext, serial: str, clicked: str) -> None:
-        """Run robot `serial`'s button `clicked` (`robot_action`), keeping a refusal for the line under the buttons."""
+        """Run robot `serial`'s button `clicked` (`robot_action`), keeping a refusal for the line under the buttons.
+
+        Parked toggles the robot's mark (`_set_parked`).
+        """
+        if clicked == PARKED:
+            self._set_parked(ctx, serial, not ctx.world.robots[serial].parked)
+            return
         refusal = robot_action(ctx, serial, clicked)
         if refusal is not None:
             self._refusals[serial] = refusal
@@ -196,6 +244,15 @@ class HealthPlugin(HuskyPlugin):
         """
         now = ctx.now()
         for serial, robot in ctx.world.robots.items():
+            # * Seen moving: no longer out of the way, so it counts as unknown again while not measured. The snapshot
+            # * keeps a value not measured where it was last seen, so only a measurement can show a move.
+            if robot.parked and serial in self._parked_at:
+                if why := moved_since(self._parked_at[serial], ctx.scene.snapshot.robots[robot_id(serial)]):
+                    self._set_parked(ctx, serial, False, why)
+            elif not robot.parked and serial in self._parked_at:
+                # * Unparked elsewhere (leased to move): show it.
+                del self._parked_at[serial]
+                self._park_styles[serial].content = self._park_css(serial, False)
             for name, arm in robot.arms.items():
                 check = tcp_check(arm, tool0_by_kinematics(ctx.kinematics, serial, name), now)
                 if check is not None:
@@ -389,6 +446,24 @@ def robot_checks(robot: HuskyRobotInterface, now: float, tcp_checks: dict[tuple[
 
 #: The label of a simulated part's chip, and of a part's joint_states chip (`stream_check`).
 SIM_LABEL, SIGNAL_LABEL = "sim", "signal"
+
+
+def moved_since(parked: RobotObject, now: RobotObject) -> str:
+    """How the robot was measured moving since it was parked, e.g. "base moved 3.1 cm"; "" while it stands still.
+
+    Only what is measured now counts: a base not tracked or joints not measured cannot be seen to move.
+    """
+    if now.base_tracked:
+        metres = float(np.linalg.norm(np.subtract(now.base.position, parked.base.position)))
+        degrees = float(np.degrees(2 * np.arccos(min(1.0, abs(np.dot(now.base.orientation, parked.base.orientation))))))
+        if metres > PARKED_MOVE[0] or degrees > PARKED_MOVE[1]:
+            return f"base moved {metres * 100:.1f} cm, {degrees:.1f}°"
+    for name in now.model.movable_joints:
+        if name not in now.unmeasured and name in parked.joints:
+            degrees = abs(math.degrees(now.joints.get(name, 0.0) - parked.joints[name]))
+            if degrees > PARKED_JOINT_MOVE:
+                return f"{name} turned {degrees:.1f}°"
+    return ""
 
 
 def simulated_check(simulation: SimulatedPart | None) -> list[Check]:
@@ -697,8 +772,8 @@ def render_banner(robots: dict[str, list[tuple[str, list[Check]]]], objects: lis
     """
     if not robots and not objects:
         return chip_line(chip("NOTHING TO CHECK", NONE, "no robots and no tracked objects"))
-    groups = {serial.split("-")[-1]: [(f"{name} " if name else "", check) for name, checks in lines
-                                      for check in checks]
+    groups = {short_serial(serial): [(f"{name} " if name else "", check) for name, checks in lines
+                                     for check in checks]
               for serial, lines in robots.items()}
     if objects:
         groups["objects"] = [("", check) for check in objects]

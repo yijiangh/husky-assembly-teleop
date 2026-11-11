@@ -109,6 +109,8 @@ class CommitCtx:
                                 soft_stop_latch=SoftStopLatch(SERIAL))
         self.world = SimpleNamespace(robots={SERIAL: robot})
         self.config = SimpleNamespace(drive_root=None)
+        #: The clearances the commits asked for.
+        self.clearances: list[Clearance] = []
 
     lease_robots = staticmethod(lease_test_robots)
     wait_until = staticmethod(wait_ticks_until)
@@ -136,10 +138,13 @@ class CommitCtx:
         yield []
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
-        """Never trip; keep the arms it lets be unknown."""
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False,
+                  check_self=True):
+        """Never trip, checked clear at once; keep it, and the arms it lets be unknown."""
         self.unknown_arms = unknown_arms
-        yield Clearance(tuple(serials), margin)
+        self.clearances.append(Clearance(tuple(serials), margin, refuse_first=refuse_first, check_self=check_self,
+                                         checked=True))
+        yield self.clearances[-1]
 
 
 def test_the_planner_offers_the_planner_api():
@@ -147,7 +152,7 @@ def test_the_planner_offers_the_planner_api():
     assert isinstance(BasePlannerPlugin(), PlannerContract)
 
 
-def commit(base: FakeBase, unknown_robots=(), ctx: CommitCtx | None = None):
+def commit(base: FakeBase, unknown_robots=(), ctx: CommitCtx | None = None, clearance: bool = True):
     """Commit a ready plan for SERIAL on `base` through the planner's API; returns (sent, message) and the planner.
 
     The run follows the path until the test ends, which cancels it.
@@ -160,7 +165,7 @@ def commit(base: FakeBase, unknown_robots=(), ctx: CommitCtx | None = None):
     planner._plan = Plan(1, BasePlanRequest(SERIAL, tuple(path.goal)), "ready", path)
 
     async def main():
-        return await planner.commit(1, unknown_robots)
+        return await planner.commit(1, unknown_robots, clearance)
 
     return asyncio.run(main()), planner
 
@@ -172,6 +177,15 @@ def test_only_commits_second_press_lets_the_robots_own_arms_be_unknown(allowed, 
     ctx = CommitCtx(FakeBase())
     (sent, _message), _planner = commit(ctx.world.robots[SERIAL].base, allowed, ctx)
     assert sent and ctx.unknown_arms == arms
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("ticked", [True, False])
+def test_commit_keeps_a_clearance_only_while_clearance_is_ticked(ticked):
+    """Ticked, the drive keeps a clearance, refusing a start that close; unticked, nothing soft stops it."""
+    ctx = CommitCtx(FakeBase())
+    (sent, _message), _planner = commit(ctx.world.robots[SERIAL].base, ctx=ctx, clearance=ticked)
+    assert sent and [(c.serials, c.refuse_first) for c in ctx.clearances] == ([((SERIAL,), True)] if ticked else [])
 
 
 @pytest.mark.safety
@@ -368,9 +382,11 @@ class FakeClock:
                 event.detach(listener)
 
     @contextmanager
-    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=()):
-        """Keep the clearance asked for; the test trips it by setting its problem and cancelling the run."""
-        self.clearances.append(Clearance(tuple(serials), margin))
+    def clearance(self, serials, margin=STOP_DISTANCE, unknown_arms=(), unknown_robots=(), refuse_first=False,
+                  check_self=True):
+        """Keep the clearance asked for, checked clear at once; a test trips it: its problem set, the run cancelled."""
+        self.clearances.append(Clearance(tuple(serials), margin, refuse_first=refuse_first, check_self=check_self,
+                                         checked=True))
         yield self.clearances[-1]
 
     async def wait_until(self, predicate, timeout_s=None, description=""):
@@ -520,8 +536,10 @@ def test_a_run_that_ends_before_the_follower_stops_the_path(how, chip):
 
     asyncio.run(scenario())
     assert stops == ([] if how == "replaced" else [how])
-    # * The clearance keeps the margin the path was planned with, so a path the planner found never trips it.
-    assert [(clearance.serials, clearance.margin) for clearance in ctx.clearances] == [((SERIAL,), COLLISION_MARGIN)]
+    # * Planned closer than BASE_PLAN_DISTANCE, the clearance is half the plan's margin, so following the path a
+    #   little off does not trip it; not against itself, the arms stand still.
+    assert [(clearance.serials, clearance.margin, clearance.check_self) for clearance in ctx.clearances] == \
+        [((SERIAL,), COLLISION_MARGIN / 2, False)]
     if how == "clearance":
         assert ctx.logs[-1].endswith(f"soft stopped: robot {SERIAL} came within 10 cm of wall")
     if chip is None:  # * replaced: the newer commit's run takes the chip's place

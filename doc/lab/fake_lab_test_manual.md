@@ -14,8 +14,9 @@ whose screws stall a fixed time after a tighten), a fake Motive with Motive's me
 errors, and the mocap relay, as on the lab PC. Everything talks over Zenoh through a router of the fake lab's own.
 Plan about two hours.
 
-Sections 1–6 run as written; with the Cartesian controllers built and the fake wrench on, so do the retreat's
-compliant break-out (4.4) and the compliant insert (5.2) below. The handoff (5.3 step 5) and
+Sections 1–6 run as written; with the Cartesian controllers built and the fake wrench on, so do the compliant insert
+(5.2) and, with the run's **Retreat compliant**, the retreat's compliant break-out; the retreat itself is the old stiff
+screw-out by default (4.4). The handoff (5.3 step 5) and
 Alice's open (5.3 step 3) still wait for `ros-humble-gripper-controllers` (section 0.1): those two say "not run yet"
 and give what the code does; tell me where the page differs.
 
@@ -41,9 +42,14 @@ and give what the code does; tell me where the page differs.
 - **Servo.** After a transfer, a support approach or a ground bar's insert, the executor measures the flanges and moves
   them onto the authored targets, pass by pass, until they are within 0.2 mm. On tool0 here: **Servo by bar** is on
   (the default; it steers only a ground bar, B20 here, and every other bar servos on tool0), but the fake Motive
-  streams no bar markers, so B20's servo warns once that the mocap bar is not usable and aims tool0. The last line of the exec section shows each reading, and after the
-  Exec ends how the servo ended, e.g. `servo done: nothing left to plan (correction L 0.13 mm, R 0.18 mm, under 0.2
-  mm)`, until the next Exec.
+  streams no bar markers, so B20's servo stops before its first pass with a warning prompt (`SERVO by bar: no usable
+  mocap fit of B20 (asset 1020): ... Confirm to servo tool0 ... instead ...; Cancel stops and records.`): Confirm
+  goes on with tool0, said on every pass. The last line of the exec section shows the pass's phase and the last
+  reading (`pass 1/8: moving (3 s) · servo 0/8 · tool0 L 0.13 R 0.18 mm`), and after the Exec ends how the servo
+  ended, e.g. `servo done: nothing left to plan (correction L 0.13 mm, R 0.18 mm, under 0.2 mm)`, until the next
+  Exec; the console prints the old monitor's lines (`### SERVOING iteration k/8: aiming ...`, the reading's tool0,
+  tracking and load lines, `### SERVOING converged at iter k ...` or how else it ended). The **Exec plots** window
+  shows the phase as a chip and, under each plot, the last pass's numbers.
 - **Split.** The last millimetres of an insert, and the first of a retreat, run under the compliance controller
   (**Insert split mm**, 5 by default).
 
@@ -71,8 +77,8 @@ sudo apt install ros-humble-ur-robot-driver ros-humble-robotiq-description ros-h
     ros-humble-gripper-controllers ros-humble-rmw-zenoh-cpp ros-humble-zenoh-cpp-vendor tmux
 ```
 
-**0.2** Build the Cartesian controllers into the workspace. The insert's compliant part, the retreat's break-out and
-the handoff switch the arms to `cartesian_compliance_controller`, which the robots carry onboard and this workspace
+**0.2** Build the Cartesian controllers into the workspace. The insert's compliant part, a compliant retreat's break-out
+(the run's Retreat compliant) and the handoff switch the arms to `cartesian_compliance_controller`, which the robots carry onboard and this workspace
 does not: without it the simulated arms' spawner dies at start (four `process has died` lines) and every compliant
 part fails at the switch (`controller manager rejected the switch`). The source is cloned in
 `src/cartesian_controllers` (fzi `cartesian_controllers`, branch `ros2`; its simulation, tests, handles and
@@ -85,8 +91,8 @@ python3 -m colcon build --symlink-install --packages-select cartesian_controller
 ```
 
 **0.2b** The simulated arms report no force (the fake hardware reads NaN), so `sim.launch.py` also starts
-`sim_wrench`, a near-zero force/torque reading per simulated arm, by default: the F/T plots, the retreat's contact
-check and the servo's load guard then read something. `wrench_bias:=0,0,-5,0,0,0` adds a standing reading,
+`sim_wrench`, a near-zero force/torque reading per simulated arm, by default: the F/T plots, a compliant retreat's
+contact check and the servo's load guard then read something. `wrench_bias:=0,0,-5,0,0,0` adds a standing reading,
 `contact_n:=8` a push along the tool's z while a simulated screw is stalled; keep both small, the compliance
 controller reads the same topic and moves the arm by it.
 
@@ -219,17 +225,17 @@ then fails every command with `!rclpy.ok()`.
 
 ## 4. B20: Cindy joints the ground bar, then retreats
 
-**4.1 Cindy's base.** Open **Plan** › **Base**, pick Robot **a200-0806**, click Load **Step**, then **Plan**.
+**4.1 Cindy's base.** Open **Plan** › **Base**, pick Robot **0806**, click Load **Step**, then **Plan**.
 
 **Expect:** `target +0.527 -3.067 +89.6°`, then after about 2 s `Lattice (hybrid A*) (straight): 5.24 m, 29.0 s`.
 
-Click **Commit**. **Expect:** `sent to a200-0806's follower`; Cindy drives in the 3D view for about 50 s; the monitor
+Click **Commit**. **Expect:** `sent to 0806's follower`; Cindy drives in the 3D view for about 50 s; the monitor
 pane says `base path … on a200-0806: done`. **Control** › `0806` › `Base` then reads about `xyz +0.53 -3.06`,
 `yaw +88°`: the simulated follower stops within about 1 cm and 2°.
 
 **4.2 B20_J, step 1/2: the transfer, the bar, the grasp, the servo.** Back in **Assembly**, the step line reads
 `B20_J_transfer (transfer_free) · then: B20_J_place_bar, B20_J_grasp · skipped: B20_J_load` and the Exec line
-`Exec: cindy (a200-0806) moves left_ur_arm, right_ur_arm; then waits for B20_J_place_bar + B20_J_grasp by hand; then
+`Exec: cindy (0806) moves left_ur_arm, right_ur_arm; then waits for B20_J_place_bar + B20_J_grasp by hand; then
 servos left_ur_arm, right_ur_arm onto the insert start`. As in the old monitor, Exec sends a planned motion at once;
 Confirm is asked only for the bar (placed and clamped, one prompt), a Robotiq step and the servo's first pass.
 
@@ -244,22 +250,29 @@ Confirm is asked only for the bar (placed and clamped, one prompt), a Robotiq st
      its bar's right end, or leave it: it only opens again at the next plan.
 3. Click **Play**: the preview runs as it will move; the slider **Preview time** scrubs it.
 4. Click **Exec**. Both arms move at once, for 17 s.
-   - **Expect:** in the pane, as a warning (over 60°), `cindy (a200-0806): B20_J_transfer — move left_ur_arm,
+   - **Expect:** in the pane, as a warning (over 60°), `cindy (0806): B20_J_transfer — move left_ur_arm,
      right_ur_arm along the planned path (Rhino obstacles not checked), 17 s, largest joint travel 214°`, then
      `B20_J_transfer: arrived, end within 0.00°`, then the one prompt for the bar: `B20_J_place_bar + B20_J_grasp —
      Operator places the bar by hand; clamp it: tighten the gripper screws of left_ur_arm, right_ur_arm with the
      tools' buttons until they stall, then Confirm …`. The monitor sends the tools nothing: in the lab you place the
      bar, press each tool's button and check the bar is held before you Confirm.
 5. Click **Confirm** (here or on the phone's Exec tab: the bar is placed and clamped, in the simulation's mind).
-   - **Expect:** the servo runs by itself, and the **Exec plots** window opens at the bottom with the servo's
-     plots (one point per pass): `[servo] feedback: tool0 (0.2 mm); the MoCap bar bars/B20 is recorded
-     alongside.`, a warning `no
-     marker sample of bars/B20 (asset 1020) within 1 s: is Motive streaming it?` (right: no bar markers here),
-     `[servo 0] tool0 pos L=0.06 R=0.08 mm`, `servo 1/8 B20_J_transfer: servo: nothing left to plan`, `### bar pose
-     at termination (bars/B20): FK-vs-design 0.11 mm/0.007°, mocap-vs-design n/a, mocap-vs-FK n/a`, and `Exec
-     B20_J_transfer: done — every part done`. The flanges are already within 0.2 mm, so no servo pass moves; a pass
-     that would move asks for Confirm first (`SERVO 1/8 onto the insert start (tool0): …`). The exec section's last
-     line keeps `servo done: nothing left to plan (correction L … mm, R … mm, under 0.2 mm)`.
+   - **Expect:** the servo starts by itself, and the **Exec plots** window opens at the bottom with the servo's
+     plots (one point per pass, the phase as a chip, the last pass's numbers under each plot): `[servo] feedback: the
+     mocap bar bars/B20 (converges at 0.5 mm / 0.1 deg).`, a warning `no marker sample of bars/B20 (asset 1020) within
+     1 s: is Motive streaming it?` (right: no bar markers here), `[servo 0] tool0 pos L=0.06 R=0.08 mm, rot ...`, then
+     the warning prompt `B20_J_transfer — SERVO by bar: no usable mocap fit of B20 (asset 1020): the bar could not be
+     measured (no marker sample). Confirm to servo tool0 onto the authored targets of the insert start instead (...);
+     Cancel stops and records.`
+6. Click **Confirm** (tool0 it is, here).
+   - **Expect:** `### SERVOING iteration 1/8: aiming tool0 at the authored targets of the insert start (the mocap bar
+     B20 is not usable: ...)`, `servo 1/8 B20_J_transfer: servo: nothing left to plan`, `### SERVOING stopped at iter
+     1: nothing left to plan (correction L … mm, R … mm, under 0.2 mm)`, `### bar pose at termination (bars/B20):
+     FK-vs-design 0.11 mm/0.007°, mocap-vs-design n/a, mocap-vs-FK n/a`, `Servoing data saved to .../servo/B20_J/
+     B20_J_transfer.1.json (its .png beside it)` and `Exec B20_J_transfer: done — every part done`. The flanges are
+     already within 0.2 mm, so no servo pass moves; a pass that would move asks for Confirm first (`SERVO 1/8 onto the
+     insert start (tool0): …`) and logs `[servo] First move planned: ...`. The exec section's last line keeps `servo
+     done: nothing left to plan (correction L … mm, R … mm, under 0.2 mm)`.
 
 **4.3 B20_J, step 2/2: the insert, and the servo after it.** The step line reads `B20_J_insert (insert)`.
 
@@ -278,20 +291,19 @@ Confirm is asked only for the bar (placed and clamped, one prompt), a Robotiq st
 **4.4 B20_R, step 1/2: the retreat, with the ungrasp during it.** The step line reads `B20_R_retreat
 (retreat_linear) · with: B20_R_ungrasp`.
 
-1. Click **Plan**. **Expect:** `retreat_linear solved by tamp.plan_dual_arm_linear_independent: 12 waypoints`.
-2. Click **Exec**. The retreat runs at once.
-   - **Expect:** in the pane `B20_R_retreat — RETREAT: the gripper screws of left_ur_arm + right_ur_arm OPEN; force
-     sensors zeroed; COMPLIANT break-out 5.0 mm (0.5 s); joint control; the rest replanned from where the tools are
-     and run at once (4.5 s). Watch both tools let go and back off along their lines.`, then
-     `retreat: the gripper screws of left_ur_arm + right_ur_arm OPEN`; `force sensors zeroed`; the
-     switch to `cartesian_compliance_controller` (`left_ur_arm, right_ur_arm: cartesian_compliance_controller running
-     (0.3 s)`) and the 0.5 s stream; `back under scaled_joint_trajectory_controller (0.1 s)`; the tail replanned
-     (`retreat tail B20_R_retreat: … 48 waypoints`); the checks: `PASS start`, `PASS break-out: worst tool0 1.6 mm
-     short of its end (limit 3), travelled 3.5 / 3.4 mm`, `PASS contact: |F| left_ur_arm 0.1 N, right_ur_arm 0.0 N
-     (limit 20 N)` (the fake wrench), one failing: `check FAIL grippers: left_ur_arm LOOSENING, right_ur_arm LOOSENING
-     (want STALLED = fully open)` (the simulated screws loosen until a STOP and never stall), `PASS` for both tool0
-     paths (46 mm, ends 0.1 mm from the goal), the joints and the speed; `running the tail now (48 rows, 4.6 s); 1
-     check(s) FAILED`; after 5 s `retreat: RETREATED: retreated; 1 check(s) FAILED` and `Exec B20_R_retreat: done —
+1. Click **Plan**. **Expect:** `[retreat live] B20_R_retreat: goals = the live tool0 poses moved 50 mm back along
+   their own -z (encoders): left along (…), 0.0 deg from the Rhino axis, 0.x mm from the exported goal; right …`, then
+   `retreat_linear solved by tamp.plan_dual_arm_linear_independent: 12 waypoints`.
+2. Click **Exec**. The retreat runs at once (not run yet with this text: it says what the code does).
+   - **Expect:** in the pane `B20_R_retreat — RETREAT, stiff: the M1 screws of left_ur_arm + right_ur_arm LOOSEN
+     while both tools back straight out 12.0 mm at 2.40 mm/s (5.0 s, joint controller), then 38 mm rigid (3.8 s).
+     Watch both tools let go and back off along their lines.`; the checks `PASS start`, `PASS` for both tool0 paths
+     (50 mm, ends 0.1 mm from the goal), the joints and the speed, logged before anything is sent; then
+     `retreat: LOOSEN the gripper screws of left_ur_arm + right_ur_arm` and the 12 mm lead in the same tick;
+     `screw-out t=0.1s: gripper motors L/R LOOSENING/LOOSENING`; `screw-out done after 5.0 s (gripper motors L/R
+     LOOSENING/LOOSENING, still loosening); now the rest of the way out.`; `rigid chunk: N rows over 3.8 s`; no force
+     zero and no controller switch; after 4 s `retreat: RETREATED: retreated 50 mm; every check passed; the gripper
+     motors stopped (L/R LOOSENING/LOOSENING at the end)` and `Exec B20_R_retreat: done —
      every part done`. The ungrasp counts as done with it. The **Exec plots** window opens with the force and torque
      of the part (its servo plots hidden meanwhile).
 
@@ -309,7 +321,7 @@ refuses because an arm still stands at the bar.
 
 ## 5. B21: Cindy joints the bar, Alice holds it, Cindy retreats
 
-**5.1 Cindy's base.** **Plan** › **Base**, Robot **a200-0806**, Load **Step**, **Plan**, **Commit**.
+**5.1 Cindy's base.** **Plan** › **Base**, Robot **0806**, Load **Step**, **Plan**, **Commit**.
 
 **Expect:** `target +0.947 -3.171 +90.0°`, a path of about `0.77 m, 11 s`, then `done` after about 30 s. The simulated
 follower sometimes never starts a short path (`base path … timed out: still following`): click **Plan** and
@@ -332,13 +344,13 @@ follower sometimes never starts a short path (`base path … timed out: still fo
 
 **5.3 B21_H: Alice holds B21.**
 
-1. **Alice's base.** **Plan** › **Base**, Robot **a200-0804**, Load **Step**, **Plan**, **Commit**. **Expect:**
+1. **Alice's base.** **Plan** › **Base**, Robot **0804**, Load **Step**, **Plan**, **Commit**. **Expect:**
    `target +0.638 -1.561 -29.6°`, a path of about 3 m, `done` after about 50 s; `Control` › `0804` › `Base` at about
    `xyz +0.64 -1.56`, `yaw -31°`.
 2. **Step 1/4, the approach and its servo.** Click **Live IK: linear start** (the first plan for Alice builds her
    planning cell, about 7 s): `check goal B21_H_approach: goal found (ssik, rank 1 of 8), max |goal - authored| 0.08
    rad`. **Plan**: `support_approach solved by arm.plan_arm: 2 waypoints`. **Exec**: the arm moves at once.
-   - **Expect:** in the pane `alice (a200-0804): B21_H_approach — move ur_arm along the planned path …, 16 s, largest
+   - **Expect:** in the pane `alice (0804): B21_H_approach — move ur_arm along the planned path …, 16 s, largest
      joint travel 206°`, `B21_H_approach: arrived, end within 0.00°`, then the servo: `[servo] feedback: tool0 (0.2 mm); no
      MoCap bar recorded (no bar held).`, `[servo 0] tool0 pos arm=0.19 mm`, `nothing left to plan`, `Exec
      B21_H_approach: done — every part done`. The jaws stop short of B21.
@@ -356,8 +368,7 @@ follower sometimes never starts a short path (`base path … timed out: still fo
      compliance controller, the close, `gripper done`, back under joint control; the arm does not move.
 6. Click **B21_H done**: `4/78 done`, the current step `B21_R · B21_R_ungrasp (1/3)`.
 
-**5.4 B21_R.** As 4.4 and 4.5, with Alice holding B21: the retreat's line and checks are the same; the tail is
-replanned (`retreat tail B21_R_retreat: … 52 waypoints`). Then **mv ▶**, the home move, **B21_R done**: `5/78 done`.
+**5.4 B21_R.** As 4.4 and 4.5, with Alice holding B21: the retreat's line and checks are the same. Then **mv ▶**, the home move, **B21_R done**: `5/78 done`.
 
 ---
 
@@ -424,7 +435,7 @@ These are not mistakes on your side.
 | PyBullet's lines in the monitor pane. | `monitor.sh` imports pytest before the monitor: compas_fab closes stdout for a moment around every model it loads, other threads then fail with `OSError(16, 'Device or resource busy')`, and compas_fab skips that only under pytest. A real fix is your decision. |
 | `robots differ` after Load. | The export used the old UR frames; the monitor plans with the configured robots. |
 | An insert's screws stall after 2 s whatever the arms do; its path is held 40 % in. | The simulated tool's `tighten_s`, 2 s by default (3.4 sets it). |
-| A retreat reports `1 check(s) FAILED`: grippers. | The simulated screws loosen until a STOP instead of stalling fully open. The contact check reads the fake wrench (section 0.2b) and passes near zero. |
+| A retreat's gripper motors read `LOOSENING` at the end, never `STALLED`. | The simulated screws loosen until a STOP instead of stalling fully open; the stiff retreat only reports them. A compliant retreat's contact check reads the fake wrench (section 0.2b) and passes near zero. |
 | A base's `xyz` flickers between two poses, the relay pane says `rigid body 18xx: now from …` again and again. | A simulator of an earlier launch is still alive in the same domain (`pgrep -af husky_sim`: two with the same `__ns`); stop the old one. |
 | `no marker sample of bars/B20 (asset 1020)`. | The fake Motive streams no bar markers; the servo runs on tool0 and records that the bar could not be measured. |
 | A short base path `timed out: still following`. | The simulated follower sometimes never starts a path of a few decimetres. Plan and Commit again. |

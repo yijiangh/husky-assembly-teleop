@@ -37,7 +37,8 @@ class TracePlot:
 
     def __init__(self, gui: viser.GuiApi, trace: Trace, signal: Signal | str, seconds: float | None = 30.0,
                  y_range: tuple[float, float] | None = None, aspect: float = 2.0, min_span: float = 1e-6,
-                 x_label: str = "t s", colors: Sequence[str] | None = None):
+                 x_label: str = "t s", colors: Sequence[str] | None = None, points: bool = False,
+                 live_legend: bool = True):
         """Add the plot to `gui`.
 
         Args:
@@ -50,6 +51,8 @@ class TracePlot:
             min_span: Smallest fitted y span, so a flat or zero signal keeps a readable axis.
             x_label: The x axis label; the trace's times are seconds unless its samples were added by hand.
             colors: A line colour per channel, else COLORS in order.
+            points: Mark every sample with a dot, so a lone sample shows (uPlot draws lines only).
+            live_legend: The legend shows the values under the mouse; False shows the labels only.
         """
         self._trace = trace
         name = self._name = signal if isinstance(signal, str) else signal.key
@@ -59,16 +62,17 @@ class TracePlot:
         shared = len(set(signal.units)) == 1
         unit = f" [{signal.units[0]}]" if shared and signal.units[0] else ""
         colors = COLORS if colors is None else tuple(colors)
+        dots = {"points": viser.uplot.Series_Points(show=True, size=6)} if points else {}
         series = (viser.uplot.Series(label=x_label),
                   *(viser.uplot.Series(label=label if shared or not each else f"{label} [{each}]",
-                                       stroke=colors[i % len(colors)], width=1.5)
+                                       stroke=colors[i % len(colors)], width=1.5, **dots)
                     for i, (label, each) in enumerate(zip(signal.channels, signal.units))))
         self._fixed = y_range is not None
         self._min_span = min_span
         self._y_range = tuple(y_range) if y_range else (-1.0, 1.0)
         self.handle: viser.GuiUplotHandle = gui.add_uplot(
             data=(BLANK[0], *(BLANK[1] for _ in series[1:])), series=series, title=f"{name}{unit}",
-            scales=self._scales(), aspect=aspect)
+            scales=self._scales(), aspect=aspect, legend=viser.uplot.Legend(live=live_legend))
         # (count, newest time) last sent, to skip unchanged redraws.
         self._shown: tuple[int, float | None] = (0, None)
 
