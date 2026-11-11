@@ -20,7 +20,7 @@ import numpy as np
 from scaffolding_assembly_core.process import read
 
 from ...shared.bars.layouts import BarLayout
-from ...shared.bars.pose import bar_ends, pose_deviation
+from ...shared.bars.pose import WARN_MM, bar_ends, bar_gap, pose_deviation
 from ...shared.bars.readings import plate_geometry
 from ...shared.runs.as_built import (ACTION_KIND, AS_BUILT_FOLDER, DIR_SUFFIX, FILE_PREFIX, as_built_path,
                                      read_records)
@@ -41,7 +41,7 @@ FIT_RMS_TOL_MM = 1.0
 MIN_RECORDS_FOR_DAY = 3
 #: The measurements the page colours and labels by, in the card's order.
 METRICS = [
-    {"key": "placement", "label": "placement error", "unit": "mm", "high": 5.0,
+    {"key": "placement", "label": "placement error", "unit": "mm", "high": WARN_MM,
      "help": "the worst of the distances at the start, the middle and the end of the bar, between the MoCap bar "
              "and where it should be at that moment (the step target)",
      "formula": "max over start / middle / end of | MoCap - target |"},
@@ -180,13 +180,10 @@ def _mat(value) -> np.ndarray | None:
 
 
 def _three_places(T_a: np.ndarray, T_b: np.ndarray, length: float) -> dict[str, float]:
-    """The distances between two bars at the start, the middle and the end, mm: {start, middle, end, worst, ...}."""
-    a, b = bar_ends(T_a, length), bar_ends(T_b, length)
-    start, end = float(np.linalg.norm(a[0] - b[0])), float(np.linalg.norm(a[1] - b[1]))
-    middle = float(np.linalg.norm(a.mean(axis=0) - b.mean(axis=0)))
-    values = [start, middle, end]
-    return {"start": start * 1e3, "middle": middle * 1e3, "end": end * 1e3, "worst": max(values) * 1e3,
-            "mean": float(np.mean(values)) * 1e3, "spread": (max(values) - min(values)) * 1e3}
+    """The distances between two bars at the start, the middle and the end, mm (`bar_gap`): {start, ..., worst, ...}."""
+    values = bar_gap(T_a, T_b, length).distances_mm
+    return {"start": float(values[0]), "middle": float(values[1]), "end": float(values[2]),
+            "worst": float(values.max()), "mean": float(values.mean()), "spread": float(values.max() - values.min())}
 
 
 def _deviation(T_a: np.ndarray | None, T_b: np.ndarray | None) -> dict | None:

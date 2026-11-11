@@ -208,7 +208,7 @@ def build_record(*, problem: str, run_id: str, robot: str, serial: str, action: 
         action: {index, id, type, kind, bar, bar_id, robot}, or None outside an action.
         step: {index, movement_id, routine, part, step, phase, outcome, status, reason, dry_run}; None on a click
             with nothing loaded (the phase is then "manual").
-        instrumented_bars: Every bar that carries markers: [{bar, bar_id, mocap_id}].
+        instrumented_bars: Every bar that carries markers: [{bar, bar_id}] (older records add mocap_id).
         bars: Bar id -> its measurement entry (the fit, the sample, the reference, the deviations, the milestone).
         robot_state: The recording robot's base, joints, tool0 FK and authored targets.
         tool0: Side -> tool0 error against the part's authored target (`servo.tool0_errors`), {} without targets.

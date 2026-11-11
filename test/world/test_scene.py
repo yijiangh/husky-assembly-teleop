@@ -27,3 +27,11 @@ def test_body_without_collision_meshes_warns_once():
         scene.put(Body("process/ghost", visual_only, Pose()))
     scene.put(Body("process/solid", box_geometry((1.0, 1.0, 1.0)), Pose()))
     assert len(warnings) == 1 and "process/ghost" in warnings[0]
+
+
+def test_a_body_drawn_only_on_purpose_is_not_warned_about():
+    """`drawn_only`: a measurement shown to people has no collision shapes on purpose."""
+    warnings: list[str] = []
+    scene = PluginScene(Scene(), "mocap_bars", warnings.append, Scene)
+    scene.put(Body("mocap_bars/B20", Geometry(box_geometry((1.0, 1.0, 1.0)).visual, ()), Pose()), drawn_only=True)
+    assert warnings == []

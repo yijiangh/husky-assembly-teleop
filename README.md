@@ -316,8 +316,9 @@ Name what you need: `robot_control` to drive, a planner panel to plan, `obstacle
 
 | Plugin | Where | Also loads | In short |
 |---|---|---|---|
-| `mocap_streams` | **Mocap › Streams**; phone **Streams** | `process`, `mocap_bars` | What Motive streams now: a row per robot, bar and other rigid body. Read-only. |
-| `mocap_bars` | **Mocap › Bars** | `process` | Fit a bar's mocap markers to its design pose. Experimental. |
+| `mocap_streams` | **Mocap › Streams**; phone **Streams** | | What Motive streams now: a row per robot, tracked object and other rigid body. Read-only. |
+| `frame_check` | **Mocap › Frame**; phone **Frame** | `process`, `mocap_bars` | How far each measured bar of the built frame is from its design, live: a picture and per-end mm to move. For straightening it by hand. Read-only. Experimental. |
+| `mocap_bars` | **Mocap › Bars** | `process` | Fit every bar to the raw mocap markers near where it should be; drawn in 3D, logged by the observer. Experimental. |
 | `mocap_probe` | **Mocap probe › Points**, in the strip; phone **Mocap** | | Record points with the mocap probe; coverage map, cameras, floor calibration. Needs no robots. |
 
 ## Calibration

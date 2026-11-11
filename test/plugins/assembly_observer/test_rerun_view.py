@@ -382,8 +382,11 @@ def test_the_scene_has_the_lab_the_sent_paths_the_arm_ghost_and_the_trip(sent, t
                    path.startswith("/ghost_"))
 
 
-def test_a_tracked_bar_gets_its_process_shape_and_its_halves(sent, tmp_path, monkeypatch):
-    """The bar of a fitted_bar object comes from the process the log says was loaded; others are noted."""
+def test_a_fitted_bar_gets_its_process_shape_and_its_halves_and_a_motive_asset_none(sent, tmp_path, monkeypatch):
+    """A mocap_bars body's bar comes from the process the log says was loaded; others are noted.
+
+    An older session's "fitted_bar" object (Motive's bar asset, its frame anywhere on the bar) stays axes only.
+    """
     import rerun as rr
     from types import SimpleNamespace
     from scaffolding_assembly_core.geometry import Pose, box_geometry, cylinder_geometry
@@ -396,17 +399,18 @@ def test_a_tracked_bar_gets_its_process_shape_and_its_halves(sent, tmp_path, mon
     saved, notes = tmp_path / "bars.rrd", []
     rr.init("test_bars")
     rr.save(saved)
-    rerun_view._log_scene(rr, found, None, ["fitted_bar_B20", "fitted_bar_B99"], ROS_START + OFFSET,
-                          ROS_START + OFFSET + 5.0, notes)
+    rerun_view._log_scene(rr, found, None, ["mocap_bars_B20", "mocap_bars_B99", "fitted_bar_B21"],
+                          ROS_START + OFFSET, ROS_START + OFFSET + 5.0, notes)
     rr.get_global_data_recording().flush()
     assert folders == [sent / "process"]
-    assert notes == ["not in the process, axes only: fitted_bar_B99"]
-    assert {"/world/objects/fitted_bar_B20/bar/0", "/world/objects/fitted_bar_B20/bar/joints_J20/0"} <= \
-        _entities(saved)
+    assert notes == ["not in the process, axes only: mocap_bars_B99"]
+    entities = _entities(saved)
+    assert {"/world/objects/mocap_bars_B20/bar/0", "/world/objects/mocap_bars_B20/bar/joints_J20/0"} <= entities
+    assert not any(path.startswith("/world/objects/fitted_bar_B21") for path in entities)
     # * Hidden from the range's start until its pose is known: else it stands at the lab's origin.
     from rerun.chunk import RrdReader
     scales = [(chunk.timeline_names, chunk.to_record_batch().column("Transform3D:scale").to_pylist())
-              for chunk in RrdReader(saved).stream() if chunk.entity_path == "/world/objects/fitted_bar_B20/bar"
+              for chunk in RrdReader(saved).stream() if chunk.entity_path == "/world/objects/mocap_bars_B20/bar"
               and "Transform3D:scale" in chunk.to_record_batch().schema.names]
     assert len(scales) == 1 and {TIMELINE, SINCE_START} <= set(scales[0][0])
     assert scales[0][1] == [[[pytest.approx(rerun_view.HIDDEN_SCALE)] * 3]]

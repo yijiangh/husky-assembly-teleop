@@ -390,7 +390,7 @@ def fit_quality(raw: list[Mapping]) -> list[dict]:
 
 def bars_without_markers(raw: list[Mapping]) -> list[str]:
     """The bars the day's actions were about that no record lists as carrying markers."""
-    # * The new records list {bar, bar_id, mocap_id}, the old ones "bar_B20".
+    # * The new records list {bar, bar_id} (some with mocap_id), the old ones "bar_B20".
     with_markers = {each["bar_id"] if isinstance(each, dict) else str(each).replace("bar_", "") for record in raw
                     for each in record.get("instrumented_bars") or []}
     acted = {(record.get("action") or {}).get("bar_id") for record in raw}
