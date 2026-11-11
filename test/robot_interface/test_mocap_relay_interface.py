@@ -3,11 +3,14 @@
 import json
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
+from rclpy.serialization import serialize_message
 from std_msgs.msg import String
 
 from body_definition_fixtures import body
 from robot_fakes import Client, Node
+from husky_assembly_teleop.robot_interface.marker_cloud import CLOUD_TOPIC, cloud_message
 from husky_assembly_teleop.robot_interface.mocap_definitions import MocapCamera, cameras_json, definitions_json
 from husky_assembly_teleop.robot_interface.mocap_relay import (USE_REFIT_SERVICE, CALIBRATIONS_TOPIC, CAMERAS_TOPIC,
                                                                DEFINITIONS_TOPIC, FRAME_TOPIC, MARKERS_TOPIC,
@@ -33,10 +36,10 @@ class RelayNode(Node):
         super().__init__()
         self.callbacks, self.clients = {}, {}
 
-    def create_subscription(self, _kind, topic, callback, _qos):
-        """Keep the callback."""
+    def create_subscription(self, _kind, topic, callback, _qos, raw: bool = False):
+        """Keep the callback; a newest-only one (`raw`) takes the serialized message."""
         self.callbacks[topic] = callback
-        return topic
+        return SimpleNamespace(topic=topic)
 
     def create_client(self, _kind, name):
         """A client whose service is ready and keeps its requests."""
@@ -159,6 +162,24 @@ def test_the_unlabeled_markers_are_kept_and_an_unreadable_announcement_skipped()
     assert relay.state.markers_stamp == 1.0
     node.callbacks[MARKERS_TOPIC](String(data="not json"))
     assert relay.state.unlabeled_markers == ((1.0, 2.0, 0.03),)
+
+
+def test_the_newest_marker_cloud_is_kept_and_one_that_does_not_read_skipped():
+    """The relay's cloud as it built it, stamped with its capture time; a cloud of another layout is skipped."""
+    node = RelayNode()
+    relay = MocapRelayInterface(node, lambda: node.now)
+    positions = np.array([[1.0, 2.0, 0.5], [0.25, -1.0, 0.03]])
+    message = cloud_message(positions, np.array([0.019, 0.0]), np.array([4e-4, 0.0]), np.array([65537, 70000]),
+                            1_700_000_000_500_000_000, "lab")
+    node.callbacks[CLOUD_TOPIC](serialize_message(message))
+    cloud = relay.state.marker_cloud
+    np.testing.assert_allclose(cloud.positions, positions, atol=1e-6)
+    np.testing.assert_allclose(cloud.sizes, [0.019, 0.0], atol=1e-7)
+    assert cloud.ids.tolist() == [65537, 70000] and cloud.arrival_time == node.now
+    assert cloud.capture_time == pytest.approx(1_700_000_000.5)
+    message.fields = message.fields[:3]
+    node.callbacks[CLOUD_TOPIC](serialize_message(message))
+    assert relay.state.marker_cloud is cloud
 
 
 def test_the_markers_noise_from_the_relays_last_look_is_kept():
