@@ -2,7 +2,7 @@
 The demo's parts on the robot, each from the live joints.
 
 The steps of an action, a path from where the arms are, a path timed for the preview, the check that they stand at
-the insert's start, the gripper screws, the compliant hold, and the removal.
+the insert's start, the checks of the way back, the gripper screws, the compliant hold, and the removal.
 
 `run_unscrew_retreat` is the retreat with the bar kept in the tools: the joint screws run in reverse for a set time
 under compliance, then the tools back out along the insert line to where the insert started. Built from the compliant
@@ -15,27 +15,39 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
+from dataclasses import replace
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Collection, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from scaffolding_assembly_core.geometry import Pose, compose
+from scaffolding_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.ids import split_link_id
+from scaffolding_assembly_core.kinematics import link_poses
+from scaffolding_assembly_core.process import validate
+from scaffolding_assembly_core.process.types import Process
+from scaffolding_assembly_core.process.version import writer_info
+# ? The core writes whole processes only; its one-action serialiser is private.
+from scaffolding_assembly_core.process.write import _action, _write_json, _writer
+from scipy.spatial.transform import Rotation
 
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.end_effectors import ScaffoldingV3
 from ...robot_interface.soft_stop import MotionRefused
+from ...robot_interface.tool_step import tool_step_target
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.movement import Routine, routine_or_none
 from ...shared.assembly_planning.route_result import pose_error
 from ...shared.execution.basis import STALE_ARM
 from ...shared.execution.compliant_part import (check_part, enter_compliance, phase_keeper, started_part,
-                                                stop_then_leave)
+                                                stop_then_leave, tool0_by_arm)
 from ...shared.execution.force_sensors import zero_force_sensors
 from ...shared.execution.retime import RetimeError, retime
 from ...shared.execution.stream import (ARRIVAL, FAILED, REFUSED, RETREATED, PartOutcome, Recorder, Segment,
                                         arm_base_in_world, measured_tool0, progress, stream)
-from ...shared.execution.tools import StallGate, stop_all, stop_and_clear
+from ...shared.execution.tools import MOTOR_NAMES, StallGate, stop_all, stop_and_clear
 from ...shared.planner.timed_path import TimedPath
 from ...world.tcp import tool0_in_base_link
 
@@ -45,11 +57,23 @@ if TYPE_CHECKING:
     from ...robot_interface.robot import HuskyRobotInterface
     from ...shared.assembly_planning.process_steps import LoadedProcess
 
-#: Every tool0 this close to the insert's start, metres and radians, stands at it: the insert may run.
-AT_START = (0.005, math.radians(1.0))
+#: Every tool0 this close to the insert's start, metres and radians, stands at it: the insert may run. The angle is
+#: loose because the grasp twists about 1° over a compliant insert and retreat, and the way back steers one arm only.
+AT_START = (0.005, math.radians(3.0))
+#: Along the way back, one tool0 seen from the other may drift this far from where it starts: metres, radians.
+COUPLING = (0.002, math.radians(1.0))
+#: The largest step of a joint between two waypoints of the way back, radians.
+JOINT_STEP = math.radians(5.0)
+#: A start this near the authored one along the insert's line, metres, is the authored one.
+SAME_LENGTH = 5e-5
+#: The largest tool0 step solved at once along the insert's line, metres.
+LINE_STEP = 0.005
 #: Seconds a gripper screw gets to stall after its close or open.
 GRIP_TIMEOUT = 15.0
 JOINT_MOTOR, GRIPPER_MOTOR = ScaffoldingV3.JOINT_MOTOR, ScaffoldingV3.GRIPPER_MOTOR
+#: Each motor's verb and its past tense, tightening then loosening, for the log and the outcome line.
+SCREW_VERBS = {GRIPPER_MOTOR: (("close", "closed"), ("open", "opened")),
+               JOINT_MOTOR: (("tighten", "tightened"), ("loosen", "loosened"))}
 
 
 # --- --- --- --- --- THE PROCESS --- --- --- --- ---
@@ -174,41 +198,192 @@ def off_start(robot: HuskyRobotInterface, joints: Mapping[str, float], arms: Ite
     return ""
 
 
+def line_length(urdf: Path, arm: str, start: Mapping[str, float], end: Mapping[str, float]) -> float:
+    """Metres between an arm's tool0 at the joints `start` and at `end`: the insert's authored length."""
+    return float(np.linalg.norm(np.subtract(tool0_in_base_link(urdf, arm, start).position,
+                                            tool0_in_base_link(urdf, arm, end).position)))
+
+
+def line_start(urdf: Path, arms: Iterable[str], start: Mapping[str, float], end: Mapping[str, float],
+               distance: float) -> dict[str, float] | str:
+    """The joints that put every arm's tool0 `distance` before the insert's end, on the line the authored start is on.
+
+    Solved from the authored start in tool0 steps of LINE_STEP on the URDF, the orientation kept; no collision check.
+
+    Args:
+        urdf: The robot's URDF.
+        arms: The insert's moving arms.
+        start: The insert's authored start joints, by URDF name.
+        end: Its authored end joints.
+        distance: Metres from the end to the wanted start.
+
+    Returns:
+        dict[str, float] | str: `start` with the arms' joints there (the authored ones within SAME_LENGTH of the
+            authored length); or why there are none (an arm too near a singularity on the way).
+    """
+    joints = dict(start)
+    for arm in arms:
+        names = arm_joint_names(arm)
+        at_start, at_end = tool0_in_base_link(urdf, arm, start), tool0_in_base_link(urdf, arm, end)
+        along = np.subtract(at_start.position, at_end.position)
+        length = float(np.linalg.norm(along))
+        if length < 1e-6:
+            return f"{arm}: the insert's authored start and end coincide: no line to move along"
+        more = distance - length
+        if abs(more) <= SAME_LENGTH:
+            continue
+        # * The same shift in tool0's own frame all the way: the orientation never changes.
+        unit = Rotation.from_quat(at_start.orientation).inv().apply(along / length)
+        steps = math.ceil(abs(more) / LINE_STEP)
+        values = np.array([start[name] for name in names], dtype=float)
+        try:
+            for _ in range(steps):
+                values = tool_step_target(urdf, arm, values, Pose(tuple(unit * more / steps), (0.0, 0.0, 0.0, 1.0)))
+        except ValueError as error:
+            return f"{arm}: no joints {distance * 1e3:.0f} mm before the insert's end on its line: {error}"
+        joints.update(zip(names, values.tolist()))
+    return joints
+
+
+def with_insert_start(process: Process, action_id: str, transfer_id: str, insert_id: str,
+                      joints: Mapping[str, float], distance: float) -> Process:
+    """Copy a process with the insert starting at `joints`, `distance` metres before its end; validated.
+
+    The insert's start joints and line distances change, and the transfer's target with them (its joints, and its
+    link poses by the URDF), so each movement still ends where the next starts.
+
+    Raises:
+        ProcessError: If the edited process breaks a format rule.
+    """
+    action = process.actions[action_id]
+    robot, urdf = action.robot, process.robots[action.robot].urdf
+    movements = []
+    for movement in action.movements:
+        if movement.id == insert_id:
+            state = movement.start.robots[robot]
+            start = replace(movement.start, robots={**movement.start.robots, robot: replace(
+                state, joints={**(state.joints or {}), **joints})})
+            movement = replace(movement, start=start, line={
+                flange: replace(line, distance=float(distance)) for flange, line in movement.line.items()})
+        elif movement.id == transfer_id and movement.target is not None:
+            target, state = movement.target, movement.start.robots[robot]
+            base = target.bases.get(robot, state.base)
+            ends = {**(state.joints or {}), **target.joints.get(robot, {}), **joints}
+            links = [link for link in target.link_poses if split_link_id(link)[0] == robot]
+            poses = link_poses(urdf, base, ends, [split_link_id(link)[1] for link in links])
+            movement = replace(movement, target=target.having(
+                joints={**target.joints, robot: {**target.joints.get(robot, {}), **joints}},
+                link_poses={**target.link_poses, **{link: poses[split_link_id(link)[1]] for link in links}}))
+        movements.append(movement)
+    edited = replace(process, actions={**process.actions, action_id: replace(action, movements=tuple(movements))})
+    validate(edited, check_robot_meshes=False)
+    return edited
+
+
+def save_action(process: Process, action_id: str) -> Path:
+    """Write one action of `process` over its file in the process's folder, as the core's writer would; the file.
+
+    ! It overwrites an authored file (on the Drive, for everyone): only on the operator's own confirmed press.
+    Nothing else in the folder is touched; the file is swapped in whole, never left half written.
+    """
+    path = Path(process.folder) / "actions" / f"{action_id}.json"
+    scratch = path.with_name(f".{path.name}.tmp")
+    _write_json(scratch, _action(process.actions[action_id], _writer(writer_info())))
+    if path.is_file() and b"\r\n" in path.read_bytes():
+        # * Keep the file's Windows line ends, so only the changed lines differ.
+        scratch.write_bytes(scratch.read_bytes().replace(b"\n", b"\r\n"))
+    os.replace(scratch, path)
+    return path
+
+
+def return_problem(robot: HuskyRobotInterface, names: Sequence[str], rows: Sequence[Sequence[float]],
+                   arms: Sequence[str]) -> str:
+    """Why a planned way back may not run, or "" if it may.
+
+    The planner keeps the bar's grasp by construction; this checks that its IK did: along `rows` the second arm's
+    tool0 seen from the first stays within COUPLING of where it starts, and no joint steps over JOINT_STEP between
+    two waypoints.
+    """
+    rows = np.asarray(rows, dtype=float)
+    if len(rows) < 2:
+        return "the path has fewer than two waypoints"
+    steps = np.abs(np.diff(rows, axis=0)).max(axis=1)
+    worst = int(np.argmax(steps))
+    if steps[worst] > JOINT_STEP:
+        return (f"a joint jumps {math.degrees(steps[worst]):.1f}° between waypoints {worst} and {worst + 1} "
+                f"(over {math.degrees(JOINT_STEP):.0f}°)")
+    if len(arms) < 2:
+        return ""
+    first, second = arms[0], arms[1]
+    bases = {arm: robot.arms[arm].base_in_husky for arm in (first, second)}
+
+    def relative(row: np.ndarray) -> Pose:
+        """The second arm's tool0 seen from the first's, both through their base_link in the husky frame."""
+        tool0 = tool0_by_arm(robot.config.model.urdf, (first, second), names, row)
+        in_husky = {arm: compose(bases[arm], tool0[arm]) for arm in (first, second)}
+        return compose(invert(in_husky[first]), in_husky[second])
+
+    held = relative(rows[0])
+    for k, row in enumerate(rows[1:], start=1):
+        distance, turn = pose_error(relative(row), held)
+        if distance > COUPLING[0] or turn > COUPLING[1]:
+            return (f"the arms' relative pose drifts {distance * 1e3:.1f} mm, {math.degrees(turn):.1f}° at waypoint "
+                    f"{k} (over {COUPLING[0] * 1e3:.0f} mm, {math.degrees(COUPLING[1]):.0f}°)")
+    return ""
+
+
 # --- --- --- --- --- THE PARTS --- --- --- --- ---
 
 async def run_grip(ctx: PluginContext, tools: Mapping[str, ScaffoldingV3], close: bool, *,
                    timeout_s: float = GRIP_TIMEOUT) -> tuple[bool, str]:
-    """Close (or open) every gripper screw and wait until each stalls; every motor is stopped at the end.
+    """Close (or open) every gripper screw and wait until each stalls; every motor is stopped at the end."""
+    return await run_screws(ctx, tools, GRIPPER_MOTOR, close, timeout_s=timeout_s)
+
+
+async def run_screws(ctx: PluginContext, tools: Mapping[str, ScaffoldingV3], motor: int, tighten: bool, *,
+                     seconds: float | None = None, timeout_s: float = GRIP_TIMEOUT) -> tuple[bool, str]:
+    """Run one screw motor of every tool one way until each stalls, or for `seconds`; every motor is stopped at the end.
 
     Args:
         ctx: The plugin's context.
         tools: Arm name -> its scaffolding tool.
-        close: Tighten the gripper screws (the bar clamped); False loosens them.
-        timeout_s: Seconds for every screw to stall.
+        motor: GRIPPER_MOTOR or JOINT_MOTOR.
+        tighten: Tighten the screws (a gripper screw closes); False loosens them.
+        seconds: Run this long, then stop (a loosening joint screw never stalls); None: until every screw stalls.
+        timeout_s: Seconds for every screw to stall, when `seconds` is None.
 
     Returns:
-        tuple[bool, str]: Whether every screw stalled, and one line saying what happened.
+        tuple[bool, str]: Whether the screws ran as asked, and one line saying what happened.
     """
-    verb = "close" if close else "open"
-    not_cleared = await stop_and_clear(ctx, tools, GRIPPER_MOTOR)
+    name = MOTOR_NAMES[motor]
+    verb, past = SCREW_VERBS[motor][0 if tighten else 1]
+    not_cleared = await stop_and_clear(ctx, tools, motor)
     if not_cleared is not None:
-        return False, f"{not_cleared.reason}; nothing {verb}d"
+        return False, f"{not_cleared.reason}; nothing {past}"
     try:
         for tool in tools.values():
-            (tool.close if close else tool.open)()
+            if motor == GRIPPER_MOTOR:
+                (tool.close if tighten else tool.open)()
+            else:
+                tool.drive_screw(1 if tighten else -1)
     except MotionRefused as refused:
         stop_all(tools)
-        return False, f"{refused}; not every gripper screw {verb}s"
-    gate = StallGate(ctx, tools, GRIPPER_MOTOR)
-    ctx.log_info(f"{gate.text} {verb.upper()}")
+        return False, f"{refused}; not every {name} {verb}s"
+    gate = StallGate(ctx, tools, motor)
+    ctx.log_info(f"{gate.text} {verb.upper()}" + ("" if seconds is None else f" for {seconds:g} s"))
     try:
-        await ctx.wait_until(gate.all_stalled, timeout_s=timeout_s, description="the gripper screws to stall")
+        if seconds is None:
+            await ctx.wait_until(gate.all_stalled, timeout_s=timeout_s, description=f"the {name}s to stall")
+        else:
+            await ctx.sleep(seconds)
     except WaitTimeout:
-        return False, f"not every gripper screw stalled within {timeout_s:.0f} s of its {verb}; motors stopped"
+        return False, f"not every {name} stalled within {timeout_s:.0f} s of its {verb}; motors stopped"
     finally:
         stop_all(tools)
+    if seconds is not None:
+        return True, f"{name}s {past} for {seconds:g} s; motors stopped"
     times = ", ".join(f"{arm} {seconds:.1f} s" for arm, seconds in gate.stall_times.items())
-    return True, f"gripper screws {verb}d: stalled after {times}"
+    return True, f"{name}s {past}: stalled after {times}"
 
 
 async def run_compliant_hold(ctx: PluginContext, arms: Collection[ArmInterface], released: Callable[[], bool], *,
@@ -331,7 +506,7 @@ async def run_unscrew_retreat(ctx: PluginContext, robot: HuskyRobotInterface, to
             return RETREATED, f"backed out, but not to the insert's start within the time: {travelled}"
         if ended != "ended":
             return FAILED, f"the back-out stopped: {ended}"
-        return RETREATED, "the screws loosened and the tools backed out to the insert's start, the bar still held"
+        return RETREATED, "the screws loosened and the tools backed out, the bar still held"
 
     cancelled = False
     try:

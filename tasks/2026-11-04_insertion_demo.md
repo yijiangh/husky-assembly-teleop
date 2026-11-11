@@ -35,6 +35,53 @@ for clients, not between two peers on it, and her nodes listen on her loopback o
 Her router is joined to the lab's over WiFi, so base.sh refuses while anything else publishes her body's pose.
 `husky_fixed_base` no longer raises on Ctrl-C (its `_publishers` shadowed rclpy's own list).
 
+Autonomous cycle (2026-11-10, asked next): a fourth Move button **Return** plans the straight way back to the
+insert's start with the insert's own planner (`Route._insert` on the insert step with `goal_poses` = the tool0
+poses at the authored start joints: `tamp.plan_constrained_dual_arm_linear`, the bar held; it steers the left goal
+only, the right follows the grasp measured at the live start), checked by `parts.return_problem` (the relative tool0
+pose within `COUPLING` = 2 mm / 1° of row 0 along the path, no joint step over `JOINT_STEP` = 5°) and the route's
+`end_error` per flange within `AT_START`. Under a new **autonomous** section, **Settle s** (5) and **Cycle**: one
+click runs insert (must end `STALLED`), the pause, the retreat (must end `RETREATED`), then Return planned, checked
+and run; `self.step` reads `cycle: insert` … `cycle: return`; before the retreat and the return the cycle waits until
+no arm counts as moving (`moving.arm_moving`, at least `REST_AT_LEAST` 1 s: the dry run's return was refused 0.3 s
+after the switch back, "the arm is still moving"); the first phase that does not end well stops the cycle
+(`cycle stopped at …`), the arms left as that part leaves them. A cancelled cycle never resumes: Rigid, Retreat and
+Return by hand, then Cycle. The manual controls are unchanged (`_approach` became `_move`, run for both the approach
+and the return). Tests: `test/plugins/insertion_demo/test_demo_cycle.py` (a coupled test path solved on the URDF
+by the fake arms' least-squares step; the whole cycle on the fake Cindy; its stops; Cancel during the pause).
+2026-11-11, first hardware cycle: the return was refused, "right_ur_arm's tool0 ends 0.6 mm, 1.1° from the
+insert's start": the grasp twisted 1.1° over the compliant insert and retreat, and since the planner steers the left
+arm only, all of that lands on the right arm's end. `AT_START`'s angle went from 1° to 3° (the distance stays 5 mm);
+it gates both the return's end and the next cycle's start. If the angle grows cycle after cycle, the bar creeps in a
+gripper. Same day: **Tighten** / **Loosen** under **Joint** run both joint screws by hand (`parts.run_screws`,
+which `run_grip` now wraps): tightening until the stall (`HOLD_FOR_STALL`), loosening for **Loosen s**; Cancel stops
+them, every motor stopped in the `finally`; **Stop** sends STOP to both tools at once on the main thread, whatever runs
+them, and cancels a Tighten or Loosen under way. **Zero F/T** (Arms group) zeroes both sensors where the arms stand
+(`zero_force_sensors`, leased, meant for no bar in the tools: the retreat zeroes with the bar still in its joint, so
+the compliance later sags under the bar's weight once it is out). **Stow** (Move group) plans the transfer step with
+`goal_joints` = `world.kinematics.stow_joints` (`Route.ik_goal` returns the override; `tamp.plan_free_dual_arm`, the
+held bar hidden) and shows it; Execute runs it as a joint motion.
+
+Lengths, preview and Save (2026-11-11, plan approved the same day):
+- **Settle s** starts at 0.
+- A Return failing its checks is shown, never run: `Planned.refused` (the reason), the chip `return refused`,
+  Execute refuses, the cycle's `planned_move` stops and keeps it on screen.
+- **Insert mm** / **Retreat mm** (5 to 150, starting at the process's own length): `parts.line_start` solves the
+  joints that far before the insert's end on its line, from the authored start in 5 mm tool0 steps
+  (`robot_interface.tool_step.tool_step_target`), no planner, no collision check. `plugin._line(robot, demo, slider)`
+  replaces the authored start everywhere it was read (Insert's and Cycle's "at the start", Return's goal, the
+  retreat's end); Approach passes those joints as `goal_joints`. The insert still plans to the authored end.
+- **Preview cycle** plans approach (if off the start), insert, back-out (two joint rows), return, each from where the
+  one before ends (`_plan(..., start_joints=)` on a copy of the snapshot), and shows them as one `Planned` with
+  `step=PREVIEW`, `refused=PREVIEW_ONLY`, `parts=n` (the preview takes n times Motion time).
+- **Save** (second press): `parts.with_insert_start` edits the insert's start joints and line distances and the
+  transfer's target (joints and link poses, so the chain and the target checks hold), `parts.save_action` writes
+  that one `actions/<action>.json` with the core's own serialiser (private imports `_action`, `_write_json`,
+  `_writer`: the core has no public one-action writer), swapped in by rename, the file's CRLF kept. Then Load.
+  ! It edits the real Drive, only on the operator's two presses. Retreat mm is not saved.
+- Dry run 2026-11-11 (scratch Drive): Preview cycle at 60 / 40, Approach, two Cycles (`rigid 50.0 mm, then COMPLIANT
+  10.0 mm`, back-out 40 mm, return 6 waypoints), Save changed 29 lines of `B6_J.json` only, Load then showed 60 / 60.
+
 ## Context
 
 For the Swiss Robotics Day, Cindy (0806, dual arm, AT3L/AT3R scaffolding tools) shows one diagonal bar (B6 of
@@ -127,7 +174,7 @@ classify`), the transfer = the free coupled movement before it.
    replaced by the live joints (as `movement_exec/sequences.live_path_of`, plugin-private: rewrite the 6 lines with
    the `STALE_ARM` check in `parts.py`) → `motion_command(serial, list(robot.arms), names, rows, seconds)` →
    `send_motion(ctx, robot, command)` (`shared/execution/send.py`).
-3. **Insert**: refuse unless every tool0 is within `AT_START = (5 mm, 1°)` of the insert's authored start (FK of
+3. **Insert**: refuse unless every tool0 is within `AT_START = (5 mm, 3°)` of the insert's authored start (FK of
    `insert_step.movement.start` joints vs the live joints, `world/tcp.tool0_in_base_link`; text: "press Approach
    first"). Then `request_plan` on the insert step (no `goal_poses`: `_insert` plans the coupled line from the live
    joints to the authored targets, keeping the live grasp) → live rows → mating arms and tools from `part_plan(...)`

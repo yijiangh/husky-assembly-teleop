@@ -16,9 +16,10 @@ from test_demo_parts import demo_process
 from test_unscrew_retreat import BASE, INSERTED, NAMES, START, Lab
 
 from husky_assembly_teleop.plugins.insertion_demo import plugin as plugin_module
-from husky_assembly_teleop.plugins.insertion_demo.parts import back_out_rows, timed_preview
+from husky_assembly_teleop.plugins.insertion_demo.parts import back_out_rows, line_start, timed_preview
 from husky_assembly_teleop.plugins.insertion_demo.plugin import SECONDS_DEFAULT, InsertionDemoPlugin
 from husky_assembly_teleop.shared.execution.basis import STALE_ARM
+from husky_assembly_teleop.world.kinematics import stow_joints
 
 pytestmark = pytest.mark.safety
 
@@ -42,18 +43,24 @@ class Ghost:
 
 
 class Planner:
-    """The motion planner: answers every request with `rows` and keeps the requests."""
+    """The motion planner: answers every request with `rows` and keeps the requests.
 
-    def __init__(self, rows: np.ndarray):
+    `rows` is one path, or request label -> its path (or a function making it when asked); `end_error` is the
+    answer's, flange -> (metres, radians), empty by default.
+    """
+
+    def __init__(self, rows, end_error: dict | None = None):
         """Nothing asked yet."""
-        self.rows, self.requests = rows, []
+        self.rows, self.end_error, self.requests = rows, end_error or {}, []
 
     async def request_plan(self, request):
-        """A solved route along `rows`."""
+        """A solved route along the rows for this request."""
         self.requests.append(request)
-        trajectory = SimpleNamespace(joint_names=list(NAMES), positions=self.rows.tolist())
+        rows = self.rows[request.label] if isinstance(self.rows, dict) else self.rows
+        rows = np.asarray(rows() if callable(rows) else rows)
+        trajectory = SimpleNamespace(joint_names=list(NAMES), positions=rows.tolist())
         return SimpleNamespace(ok=True, result=SimpleNamespace(trajectory=trajectory, reason=""),
-                               planner="a planner", waypoints=len(self.rows), warnings=())
+                               planner="a planner", waypoints=len(rows), warnings=(), end_error=self.end_error)
 
     def request_cancel(self) -> None:
         """Nothing to cancel."""
@@ -62,10 +69,10 @@ class Planner:
 class Panel:
     """The demo's tab on the lab's Cindy (inserted, under joint control), the demo's process loaded."""
 
-    def __init__(self, monkeypatch, rows: np.ndarray):
-        """Set the plugin up; the planner answers with `rows`."""
+    def __init__(self, monkeypatch, rows, lab: Lab | None = None, end_error: dict | None = None):
+        """Set the plugin up on `lab` (by default Cindy inserted); the planner answers with `rows` (`Planner`)."""
         monkeypatch.setattr(plugin_module, "RobotGhost", Ghost)
-        self.lab, self.planner = Lab(), Planner(rows)
+        self.lab, self.planner = lab or Lab(), Planner(rows, end_error)
         self.ctx = ctx = self.lab.ctx
         loaded = demo_process()
         ctx.config = SimpleNamespace(robots=(robot_config(CINDY),), drive_root=None)
@@ -152,6 +159,140 @@ def test_approach_only_plans_and_shows_then_execute_runs_it_once(monkeypatch):
         np.testing.assert_allclose(panel.joints(), START, atol=1e-3)
         assert ghost.shown is None and "no plan" in panel.widget("").content
         assert "nothing planned" in await panel.click("Execute")
+
+    asyncio.run(scenario())
+
+
+def test_tighten_loosen_and_stop_run_the_joint_screws_by_hand_and_the_panel_says_so(monkeypatch):
+    """Tighten: both joint screws until they stall; Loosen: in reverse for Loosen s; Stop: both halt; no arm moves."""
+    panel = Panel(monkeypatch, np.linspace(INSERTED, START, 5), lab=Lab(screw_stall_after=1.0))
+
+    async def scenario():
+        text = await panel.click("Joint", "Tighten")
+        assert text.startswith("joint screws tightened: stalled after left_ur_arm 1.")
+        assert panel.lab.steps() == ["STOP", "TIGHTEN M2"]
+        panel.widget("Loosen s").value = 2.0
+        since = panel.ctx.now()
+        assert await panel.click("Joint", "Loosen") == "joint screws loosened for 2 s; motors stopped"
+        assert 2.0 <= panel.ctx.now() - since < 3.0
+        assert panel.lab.steps() == ["STOP", "TIGHTEN M2", "LOOSEN M2"]
+        assert panel.lab.events()[-2:] == ["left_ur_arm: STOP", "right_ur_arm: STOP"]
+        assert not panel.lab.robot._multi_arm.messages and "idle" in panel.widget("").content
+        # * Stop with nothing running: STOP to both tools; during a Loosen: STOP, and the step is cancelled.
+        assert await panel.click("Joint", "Stop") == "both tools' motors stopped"
+        assert panel.lab.events()[-2:] == ["left_ur_arm: STOP", "right_ur_arm: STOP"]
+        panel.widget("Loosen s").value = 20.0
+        panel.widget("Joint").callback("Loosen")
+        for _ in range(3):
+            await panel.ctx.next_tick()
+        assert panel.lab.events()[-1].endswith("LOOSEN M2")
+        task = panel.plugin._task
+        panel.widget("Joint").callback("Stop")
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        panel.draw()
+        assert panel.plugin.outcome == "loosen cancelled"
+        assert panel.lab.events()[-2:] == ["left_ur_arm: STOP", "right_ur_arm: STOP"]
+        assert not panel.plugin.running and panel.ctx.now() - since < 10.0
+
+    asyncio.run(scenario())
+
+
+def test_zero_ft_zeroes_both_force_sensors_and_nothing_moves(monkeypatch):
+    """Zero F/T: one zero per arm, the line says the force after; no trajectory, no switch."""
+    panel = Panel(monkeypatch, np.linspace(INSERTED, START, 5))
+
+    async def scenario():
+        text = await panel.click("Arms", "Zero F/T")
+        assert text.startswith("force sensors zeroed: |F| now left_ur_arm 0.0 N, right_ur_arm 0.0 N")
+        assert panel.lab.steps() == ["zero F/T"] and panel.lab.nothing_sent()
+        assert "idle" in panel.widget("").content
+
+    asyncio.run(scenario())
+
+
+def test_stow_plans_a_free_move_to_the_park_joints_and_execute_runs_it(monkeypatch):
+    """Stow: the transfer step's free planner asked with the park joints as the goal; Execute drives the arms there."""
+    config = robot_config(CINDY)
+    parked = stow_joints(config, NAMES)
+    stow = np.array([parked[name] for name in NAMES])
+    panel = Panel(monkeypatch, {"demo stow": np.linspace(INSERTED, stow, 5)})
+
+    async def scenario():
+        assert (await panel.click("Move", "Stow")).startswith("stow planned (a planner, 5 waypoints)")
+        request, = panel.planner.requests
+        demo = panel.plugin._demo(panel.ctx)
+        assert request.label == "demo stow" and request.step is demo.loaded.steps[demo.transfer]
+        assert request.transfer_as_free and request.goal_joints == parked and request.goal_poses is None
+        assert "stow ready" in panel.widget("").content and panel.lab.nothing_sent()
+        assert (await panel.click("Execute")).startswith("stow ARRIVED")
+        np.testing.assert_allclose(panel.joints(), stow, atol=1e-3)
+
+    asyncio.run(scenario())
+
+
+def moved_to(panel: Panel, slider: str, mm: float) -> dict[str, float]:
+    """Drag a length slider to `mm`; the joints that far before the insert's end on its line, by `line_start`."""
+    panel.widget(slider).value = mm
+    panel.widget(slider).callback(mm)
+    demo = panel.plugin._demo(panel.ctx)
+    step = demo.loaded.steps[demo.insert]
+    arms, start = InsertionDemoPlugin._insert_start(demo)
+    return line_start(panel.lab.urdf, arms, start, step.movement.target.joints[step.action.robot], mm / 1e3)
+
+
+def test_insert_mm_moves_the_start_the_approach_goes_to_and_retreat_mm_the_back_outs_end(monkeypatch):
+    """At the process's 15 mm the planner solves the start itself; at 60 mm it gets the joints 60 mm back."""
+    panel = Panel(monkeypatch, np.linspace(INSERTED, START, 5))
+
+    async def scenario():
+        assert panel.widget("Insert mm").value == panel.widget("Retreat mm").value == 15.0
+        await panel.click("Move", "Approach")
+        assert panel.planner.requests[-1].goal_joints is None
+        longer = moved_to(panel, "Insert mm", 60.0)
+        assert panel.plugin._planned is None, "a new length drops the move planned for the old one"
+        await panel.click("Move", "Approach")
+        assert panel.planner.requests[-1].goal_joints == {name: longer[name] for name in NAMES}
+        assert "60.0 mm" not in await panel.click("Move", "Insert"), "the arms are not there: refused as before"
+        back = moved_to(panel, "Retreat mm", 40.0)
+        assert (await panel.click("Move", "Retreat")).startswith("retreat planned")
+        np.testing.assert_allclose(panel.plugin._planned.rows[-1], [back[name] for name in NAMES])
+        assert "40 mm before the insert's end" in panel.plugin._planned.text and panel.lab.nothing_sent()
+
+    asyncio.run(scenario())
+
+
+def test_save_asks_twice_then_writes_the_insert_start_for_insert_mm(monkeypatch):
+    """At the process's own length there is nothing to save; else the second press writes the edited action."""
+    saved = []
+    monkeypatch.setattr(plugin_module, "save_action",
+                        lambda process, action_id: saved.append((process, action_id)) or process.folder / "actions"
+                        / f"{action_id}.json")
+    panel = Panel(monkeypatch, np.linspace(INSERTED, START, 5))
+    save = panel.widget("Save")
+
+    def press() -> str:
+        """Press Save (whatever its label reads now) and draw; the panel's line after."""
+        save.callback()
+        panel.draw()
+        return panel.plugin.outcome
+
+    async def scenario():
+        assert "nothing to save" in press() and save.label == "Save"
+        longer = moved_to(panel, "Insert mm", 60.0)
+        before = panel.plugin.outcome
+        assert press() == before and not saved and save.label == "Save?", "the first press only asks"
+        await panel.ctx.sleep(1.0)
+        text = press()
+        assert text.startswith("saved: the insert starts 60 mm before its end in process/actions/B6_J.json"), text
+        (process, action_id), = saved
+        demo = panel.plugin._demo(panel.ctx)
+        insert = next(each for each in process.actions[action_id].movements
+                      if each.id == demo.loaded.steps[demo.insert].movement.id)
+        robot = process.actions[action_id].robot
+        assert action_id == "B6_J" and {line.distance for line in insert.line.values()} == {0.06}
+        assert all(insert.start.robots[robot].joints[name] == longer[name] for name in NAMES)
+        assert panel.lab.nothing_sent()
 
     asyncio.run(scenario())
 

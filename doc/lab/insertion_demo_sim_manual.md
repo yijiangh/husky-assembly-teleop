@@ -115,15 +115,15 @@ the configured one: robots/cindy (a200-0806): left_ur_arm_tool0: TCP off by 106.
 **2.3** Open the **Insertion demo** tab.
 
 **Expect:** the status chips `a200-0806` (green), `B6_J` (blue), `tools` (green), `joint` (green), `no plan` and
-`idle` (grey); **Action** `B6_J`; the sliders **Compliant mm** 10 and **Loosen s** 6; the buttons **Grasp**,
-**Release** | **Approach**, **Insert**, **Retreat**; under **preview** the sliders **Preview time** and **Motion
-time** 10, the line `min — s by the arms' limits`, the blue **Execute**, then **Play**, **Cancel** | **Compliant**,
-**Rigid**. Hovering a Move button says what each does. How a step ended, and what a button refused, shows under the
-buttons and in the `monitor` pane. At the bottom of the page, two windows minimized to their bars: **Plan plots** and
-**Exec plots**.
+`idle` (grey); **Action** `B6_J`; the sliders **Compliant mm** 10, **Loosen s** 6, **Insert mm** 15 and **Retreat mm** 15; the buttons **Save**, **Grasp**,
+**Release** | **Tighten**, **Loosen**, **Stop** | **Approach**, **Insert**, **Retreat**, **Return**, **Stow**; under **preview** the sliders
+**Preview time** and **Motion time** 10, the line `min — s by the arms' limits`, the blue **Execute**, then **Play**,
+**Cancel** | **Compliant**, **Rigid**, **Zero F/T**; under **autonomous** the slider **Settle s** 0 and the buttons **Preview cycle** and **Cycle**. Hovering
+a Move button says what each does. How a step ended, and what a button refused, shows under the buttons and in the
+`monitor` pane. At the bottom of the page, two windows minimized to their bars: **Plan plots** and **Exec plots**.
 
-Every move takes two clicks: **Approach**, **Insert** or **Retreat** plans the move and shows it in the preview, and
-nothing moves until **Execute**.
+Every move takes two clicks: **Approach**, **Insert**, **Retreat** or **Return** plans the move and shows it in the
+preview, and nothing moves until **Execute**. **Cycle** alone runs a whole cycle on one click (3.10).
 
 ---
 
@@ -132,7 +132,7 @@ nothing moves until **Execute**.
 **3.1 Insert before Approach is refused.** Click **Insert**.
 
 **Expect:** under the buttons, `insert: left_ur_arm's tool0 is 158.1 mm, 178.8° from the insert's start (limit 5 mm,
-1°): press Approach first`. Nothing moves.
+3°): press Approach first`. Nothing moves.
 
 **3.2 Grasp.** Click **Grasp** (in the hall: after putting the bar into both tools).
 
@@ -232,7 +232,35 @@ Click **Insert** meanwhile. **Expect:** `Insert refused: compliant runs: wait, o
 Click **Rigid**. **Expect:** `compliant: left_ur_arm, right_ur_arm back under scaled_joint_trajectory_controller (0.1
 s)`, `both arms back under joint control`; the chips read `joint` and `idle` again.
 
-**3.9 Again.** **Insert**, **Execute**, **Retreat**, **Execute**, as often as you like: each Insert plans from where
+**3.9 Return.** After a Retreat the tools stand a fraction of a millimetre short of the insert's start. Click
+**Return**.
+
+**Expect:** `[motion_planner] demo return: tamp.plan_constrained_dual_arm_linear …` in the `monitor` pane, then
+`return planned (tamp.plan_constrained_dual_arm_linear, N waypoints): the motion takes 10.0 s; Execute runs it`, the
+chip `return ready`, the **Plan plots** forward with a short path. Click **Execute**: `return ARRIVED: …`, the chip
+back to `no plan`. Return refuses when the planned path bends the grasp or jumps a joint (`return: refused: …`): not
+expected here.
+
+**3.10 Cycle.** With the arms at the insert's start (after 3.9) and the 12 s screws of 3.7, click **Cycle**.
+
+**Expect:** the chip `idle` reads `cycle: insert`, `cycle: settle`, `cycle: retreat`, `cycle: rest` (a second or
+two, until the arms stand still after the switch), `cycle: return` in turn, the `plan …` phases passing quickly. The **Plan plots** come forward with the insert's path, the **Exec plots** with
+`compliant: B6_J insert on a200-0806`; `insert STALLED: …` about 12 s after the start, then `insert STALLED …;
+settling 0 s before the retreat`; at once the retreat as in 3.6 (the **Exec plots** start over with `… retreat …`);
+then `demo return` planned, the **Plan plots** with the way back, `return ARRIVED: …` and the line `cycle done
+(return ARRIVED: …): back at the insert's start; Cycle runs the next`. About 50 s in all. Click **Cycle** again at
+once: the same again. Click **Cycle** with the arms elsewhere (after a **Compliant** / **Rigid**, say): `Cycle
+refused: left_ur_arm's tool0 is … from the insert's start …: press Approach or Return first`.
+
+**3.11 A longer insert, previewed first.** Set **Insert mm** to 60 and **Retreat mm** to 40, then click **Preview
+cycle**. **Expect:** the console `demo preview approach`, `demo preview insert`, `demo preview return`; the line
+`cycle preview shown (approach, insert, back-out, return), not to run: …`; the chip `cycle preview`; **Play** shows
+the arms going 60 mm back from the joint, in, out 40 mm, and back to the 60 mm start. Nothing moved. **Execute**
+is refused. Then **Approach**, **Execute**, and **Cycle**: the same for real, ending `cycle done …`. Click **Save**:
+it turns amber `Save?`; click it again: `saved: the insert starts 60 mm before its end in process/actions/B6_J.json;
+press Load in the Assembly tab to use it`. This is the dry run's own copy of the process; in the hall it is the Drive.
+
+**3.12 Again.** **Insert**, **Execute**, **Retreat**, **Execute**, as often as you like: each Insert plans from where
 the arms stand. In the hall the arms stand wherever a visitor's push left them after Rigid: **Approach** first, then
 **Insert**.
 
@@ -271,10 +299,29 @@ controller active; commands will be refused`); the demo's arm chip reads `mixed`
    and Rigid is needed once more after Resume.
 3. **Approach**, **Insert**, **Retreat**, each with its **Execute**, run again.
 
-**4.3 Release** (the end of the day). Click **Release**.
+**4.3 Cancel during a cycle.** Click **Cycle**, with **Settle s** at 5, and during `cycle: settle` (the 5 s after `insert STALLED`) click
+**Cancel**.
+
+**Expect:** `cycle cancelled`, the arms under joint control, the bar still in. Nothing resumes: click **Retreat**,
+**Execute** (3.6), then **Return**, **Execute** (3.9), then **Cycle** runs again. A Cancel during `cycle: insert` or
+`cycle: retreat` leaves the arms compliant, as 4.1: **Rigid** first.
+
+**4.4 Tighten and Loosen by hand.** With the arms anywhere, click **Tighten**: the chip `tighten` while the simulated
+joint screws run, then `joint screws tightened: stalled after left_ur_arm 12.0 s, right_ur_arm 12.0 s`. Click
+**Loosen**: `loosen`, then after **Loosen s** `joint screws loosened for 6 s; motors stopped`. Click **Loosen** again and
+**Stop** a second later: `loosen cancelled`, both screws stopped. **Stop** with nothing running: `both tools' motors
+stopped`. Nothing else moves.
+
+**4.5 Release** (the end of the day). Click **Release**.
 
 **Expect:** `left_ur_arm + right_ur_arm gripper screws OPEN`, and 15 s later `not every gripper screw stalled within
 15 s of its open; motors stopped`: a simulated screw never stalls on a loosen.
+
+**4.6 Zero F/T and Stow** (the bar out of the tools). Click **Zero F/T**. **Expect:** `zero: force sensors zeroed:
+|F| …` in the console and `force sensors zeroed: |F| now left_ur_arm … N, right_ur_arm … N` under the buttons; nothing
+moves. Click **Stow**. **Expect:** the chip `plan stow`, the console `demo stow` on `tamp.plan_free_dual_arm`, then
+`stow planned (…)`, the chip `stow ready`, the see-through arms folded in their park pose. Click **Execute**.
+**Expect:** `stow ARRIVED` after **Motion time**; both arms stand parked, as the simulator started them.
 
 ---
 

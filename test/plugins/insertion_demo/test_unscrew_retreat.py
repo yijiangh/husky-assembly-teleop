@@ -43,14 +43,14 @@ class Lab:
     with the log lines; `targets` keeps each arm's Cartesian targets, holds left out.
     """
 
-    def __init__(self, lag: float = 0.5, **tool):
-        """Build Cindy and her tools; `tool` options go to both ScaffoldingDrivers (the joint screw never stalls)."""
+    def __init__(self, lag: float = 0.5, at: np.ndarray = INSERTED, **tool):
+        """Build Cindy at joints `at` and her tools; `tool` goes to both ScaffoldingDrivers (the screw never stalls)."""
         self.ctx = FakeContext(step=self.tick)
         node = fake_node(self.ctx.now, self.ctx.logs)
         config = robot_config(CINDY)
         self.urdf = config.model.urdf
         self.tools = {name: fake_scaffolding(node, f"/a200_0806/{name.split('_')[0]}_gripper") for name in ARMS}
-        arms = [fake_arm(node, name, INSERTED[6 * k:6 * k + 6], end_effector=self.tools[name])
+        arms = [fake_arm(node, name, np.asarray(at)[6 * k:6 * k + 6], end_effector=self.tools[name])
                 for k, name in enumerate(ARMS)]
         for arm in arms:
             arm.state.wrench = np.zeros(6)

@@ -1,15 +1,28 @@
 """
 The Swiss Robotics Day demo: one bar into its joint and out again, on demand, the robot standing still, no mocap.
 
-The tab **Insertion demo**: **Grasp** / **Release** close or open both gripper screws; **Approach** plans a free
-dual-arm move from wherever the arms are to the insert's start (the transfer workaround, the bar hidden); **Insert**
+The tab **Insertion demo**: **Grasp** / **Release** close or open both gripper screws; **Tighten** / **Loosen**
+run both joint screws by hand, until they stall or for **Loosen s**, and **Stop** halts both tools' motors at once;
+**Zero F/T** zeroes both force sensors (with no bar in the tools); **Stow** plans a free move to the arms' park pose;
+**Approach** plans a free dual-arm move from wherever the arms are to the insert's start (the transfer workaround, the
+bar hidden); **Insert**
 plans the process's insert from there (rigid, then compliant while the joint screws tighten until they stall);
-**Retreat** loosens the joint screws for **Loosen s** and backs the tools out to the insert's start, the bar still held
-(`parts.run_unscrew_retreat`); **Compliant** puts both arms under the compliance controller until **Rigid**. Every
-motion is planned on `motion_planner` from the live joints.
+**Retreat** loosens the joint screws for **Loosen s** and backs the tools out on the insert's line, the bar still held
+(`parts.run_unscrew_retreat`); **Return** plans the insert's own planner backwards, a straight line with the bar held
+to the insert's start, checked (`parts.return_problem`; a path that fails is shown, never run); **Compliant** puts
+both arms under the compliance controller until **Rigid**. Every motion is planned on `motion_planner` from the live
+joints.
+
+**Insert mm** and **Retreat mm** set how far before its end the insert starts and how far the retreat backs out, on
+the insert's line (`parts.line_start`); they start at the process's own length. **Save** writes the insert's start
+for Insert mm into the process's action file, on its second press (`parts.save_action`).
 
 A Move button only plans and shows its move: a see-through robot on the path at **Preview time**, timed for **Motion
 time**. **Execute** runs the move shown, once.
+
+**Cycle** runs one whole cycle from the insert's start: the insert, **Settle s** after the screws stall, the retreat,
+then Return planned, checked and run. Nothing resumes after Cancel: Rigid, Retreat and Return by hand, then Cycle.
+**Preview cycle** plans the same moves without sending anything and shows them as one path.
 
 The Assembly tab's two plot windows are here too and open by themselves: **Plan plots** with the planned move's
 joints, **Exec plots** with both arms' force and torque while an insert, a retreat or Compliant runs.
@@ -26,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Awaitable
 
@@ -34,6 +48,7 @@ import viser
 
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.process import ProcessError
 from scaffolding_assembly_core.process.solutions import Trajectory
 
 from ...plugin_api.concurrency import WaitTimeout
@@ -42,6 +57,7 @@ from ...plugin_api.plugin import HuskyPlugin, register
 from ...robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER
 from ...robot_interface.end_effectors import ScaffoldingV3
 from ...robot_interface.robot import HuskyRobotInterface
+from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.movement import classify
 from ...shared.assembly_planning.process_steps import LoadedProcess, loaded_process
 from ...shared.assembly_planning.route_result import RouteResult
@@ -50,28 +66,42 @@ from ...shared.assembly_tab.exec_plots import ExecPlots
 from ...shared.assembly_tab.layout import EXEC_ICON, EXEC_PLOTS_X, PLAN_PLOTS_X, plots_window
 from ...shared.assembly_tab.plan_plots import PlanPlots
 from ...shared.execution.controllers import leave_compliance
+from ...shared.execution.force_sensors import zero_force_sensors
 from ...shared.execution.insert import plan_insert, run_insert
-from ...shared.execution.send import motion_command, send_motion
-from ...shared.execution.stream import Recorder
-from ...shared.execution.tools import status_problem
+from ...shared.execution.moving import arm_moving
+from ...shared.execution.send import ARRIVED, motion_command, send_motion
+from ...shared.execution.stream import HOLD_FOR_STALL, RETREATED, STALLED, Recorder
+from ...shared.execution.tools import status_problem, stop_all
 from ...shared.motion_planner_contract import MotionPlanRequest, MotionPlannerContract
 from ...shared.movement_exec_contract import INSERT_PART, part_plan, serial_of
 from ...shared.planner.planner_panel import SLIDER_STEP
 from ...shared.planner.timed_path import TimedPath
 from ...shared.process_contract import ProcessContract
 from ...ui.ghost import RobotGhost
+from ...ui.second_press import SecondPress, show_waiting
 from ...ui.style import BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, chip, chip_line, note, section, values
-from .parts import (back_out_rows, demo_steps, live_rows, off_start, run_compliant_hold, run_grip,
-                    run_unscrew_retreat, timed_preview, tool0_at)
+from ...world.kinematics import stow_joints
+from .parts import (AT_START, back_out_rows, demo_steps, line_length, line_start, live_rows, off_start,
+                    return_problem, run_compliant_hold, run_grip, run_screws, run_unscrew_retreat, save_action,
+                    timed_preview, tool0_at, with_insert_start)
 
-#: The sliders' ranges and starts: the insert's compliant millimetres, the motion time in seconds, the loosen.
-SPLIT_RANGE, SPLIT_DEFAULT = (0.5, 30.0), 10.0
+#: The sliders' ranges and starts: the insert's compliant millimetres, the motion time in seconds, the loosen, the
+#: cycle's pause after the insert; the insert's and the retreat's length in millimetres (they start at the process's).
+SPLIT_RANGE, SPLIT_DEFAULT = (0.5, 150.0), 10.0
+LENGTH_RANGE = (5.0, 150.0)
 SECONDS_RANGE, SECONDS_DEFAULT = (2.0, 60.0), 10.0
 LOOSEN_RANGE, LOOSEN_DEFAULT = (1.0, 20.0), 6.0
+SETTLE_RANGE, SETTLE_DEFAULT = (0.0, 30.0), 0.0
 NO_ACTION = "no process"
 SCAFFOLDING = "scaffolding_v3"
 #: The Move buttons, by the step each plans.
-MOVES = {"Approach": "approach", "Insert": "insert", "Retreat": "retreat"}
+MOVES = {"Approach": "approach", "Insert": "insert", "Retreat": "retreat", "Return": "return", "Stow": "stow"}
+#: Seconds the cycle gives the arms to come to rest after a part, before the next is sent; and the least it waits,
+#: so a twitch right after the switch back to joint control is seen.
+REST_TIMEOUT, REST_AT_LEAST = 10.0, 1.0
+#: The step name of a whole cycle shown only, and why Execute never runs it.
+PREVIEW = "cycle preview"
+PREVIEW_ONLY = "a preview only: Cycle runs the cycle"
 
 
 @dataclass(frozen=True)
@@ -89,7 +119,7 @@ class Planned:
     """A move shown in the preview, waiting for Execute.
 
     Attributes:
-        step: "approach", "insert" or "retreat".
+        step: The Move button's step ("approach", "insert", "retreat", "return", "stow"), or PREVIEW.
         demo: The process steps it was planned for.
         names: The path's joint names.
         rows: The joint path from where the arms stood (N x len(names)), radians.
@@ -97,6 +127,9 @@ class Planned:
         text: What made the path, for the panel and the log.
         limits: Whether it runs as a joint motion timed by the arms' limits; False for the back-out, a straight line
             streamed over the motion time.
+        refused: Why it is only shown and never run (a return that failed its checks, a cycle's preview); "" if it
+            may run.
+        parts: How many moves the path strings together, each given the motion time in the preview.
     """
 
     step: str
@@ -106,6 +139,8 @@ class Planned:
     base: Pose
     text: str
     limits: bool = True
+    refused: str = ""
+    parts: int = 1
 
 
 class NoQuestions:
@@ -130,7 +165,7 @@ class NoQuestions:
 
 @register
 class InsertionDemoPlugin(HuskyPlugin):
-    """The demo's tab: Grasp / Release, Approach / Insert / Retreat with their preview, Execute, Compliant / Rigid."""
+    """The demo's tab: Grasp / Release, Tighten / Loosen, the Move buttons and their preview, Execute, Rigid, Cycle."""
 
     name = "insertion_demo"
     requires = ("process", "motion_planner")
@@ -150,6 +185,14 @@ class InsertionDemoPlugin(HuskyPlugin):
         self._holding = False
         #: The loaded process's steps, rebuilt when the process plugin loads another process.
         self._loaded: LoadedProcess | None = None
+        #: The demo robot's URDF; the process and action the length sliders were last set for, the millimetres they
+        #: were set to (the process's own length), and the starts solved for other lengths, by (action, millimetres).
+        self._urdf: Path | None = None
+        self._lengths_for: tuple[LoadedProcess | None, str] = (None, "")
+        self._authored_mm = math.nan
+        self._lines: dict[tuple[str, float], dict[str, float] | str] = {}
+        #: Save's first press, waiting for its second.
+        self._press = SecondPress()
         #: The move Execute runs, its path timed for the preview, and the shortest time the arms' limits allow (NaN
         #: without a joint motion).
         self._planned: Planned | None = None
@@ -187,6 +230,7 @@ class InsertionDemoPlugin(HuskyPlugin):
             ctx.log_warn("insertion demo: no configured robot carries two scaffolding tools; every button refuses")
         else:
             self._ghost = RobotGhost(ctx, config, "path")
+            self._urdf = config.model.urdf
         with ctx.view.ui() as gui:
             # ! Always one line, so nothing below it moves.
             self._status: viser.GuiHtmlHandle = gui.add_html("")
@@ -199,15 +243,36 @@ class InsertionDemoPlugin(HuskyPlugin):
                                          hint="The insert's last millimetres run under the compliance controller")
             self._loosen = gui.add_slider("Loosen s", min=LOOSEN_RANGE[0], max=LOOSEN_RANGE[1], step=0.5,
                                           initial_value=LOOSEN_DEFAULT,
-                                          hint="Seconds the joint screws run in reverse before the tools back out")
+                                          hint="Seconds the joint screws run in reverse: in a retreat before the "
+                                               "tools back out, and on Loosen")
+            self._insert_mm = gui.add_slider("Insert mm", min=LENGTH_RANGE[0], max=LENGTH_RANGE[1], step=1.0,
+                                             initial_value=LENGTH_RANGE[0],
+                                             hint="How far before its end the insert starts, on its line: the "
+                                                  "insert's start for Approach, Insert, Return and Cycle. Starts "
+                                                  "at the process's own length.")
+            self._retreat_mm = gui.add_slider("Retreat mm", min=LENGTH_RANGE[0], max=LENGTH_RANGE[1], step=1.0,
+                                              initial_value=LENGTH_RANGE[0],
+                                              hint="How far the retreat backs the tools out from the insert's end, "
+                                                   "on the same line; Return then goes to the insert's start")
+            self._save = gui.add_button("Save", icon=viser.Icon.DEVICE_FLOPPY,
+                                        hint="Write the insert's start for Insert mm into the loaded process, "
+                                             "overwriting its action file (on the Drive, for everyone); then press "
+                                             f"Load in the Assembly tab. {self._press.hint}")
             bar = gui.add_button_group("Bar", ["Grasp", "Release"],
                                        hint="Close or open both gripper screws until they stall")
+            joint = gui.add_button_group("Joint", ["Tighten", "Loosen", "Stop"],
+                                         hint="Both joint screws by hand. Tighten: until they stall. Loosen: in "
+                                              "reverse for Loosen s. Stop: both tools' motors halt at once, "
+                                              "whatever runs them.")
             move = gui.add_button_group("Move", list(MOVES),
                                         hint="Plan a move and show it in the preview; nothing moves until Execute. "
                                              "Approach: a free move to the insert's start from wherever the arms are "
                                              "(the bar in the tools, hidden). Insert: the process's insert from "
-                                             "there. Retreat: the joint screws loosen, then the tools back out to "
-                                             "the insert's start, the bar still held.")
+                                             "there. Retreat: the joint screws loosen, then the tools back out "
+                                             "Retreat mm, the bar still held. Return: a straight line "
+                                             "with the bar held back to the insert's start, by the insert's "
+                                             "planner, checked. Stow: a free move to the arms' park pose, the bar "
+                                             "unmounted and put away.")
             gui.add_html(section("preview", SECTION_CTRL))
             self._slider = gui.add_slider("Preview time", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
                                           hint="Scrub through the planned move: seconds from its start")
@@ -222,9 +287,23 @@ class InsertionDemoPlugin(HuskyPlugin):
             path = gui.add_button_group("Path", ["Play", "Cancel"],
                                         hint="Play: run the preview. Cancel: stop the running step and hold; with "
                                              "nothing running, drop the planned move.")
-            arms = gui.add_button_group("Arms", ["Compliant", "Rigid"],
+            arms = gui.add_button_group("Arms", ["Compliant", "Rigid", "Zero F/T"],
                                         hint="Compliant: both arms give way to a push until Rigid. Rigid also "
-                                             "brings back arms a cancelled part left compliant.")
+                                             "brings back arms a cancelled part left compliant. Zero F/T: zero both "
+                                             "force sensors where the arms stand, with no bar in the tools (a bar "
+                                             "zeroed away makes the compliance sag under its weight later).")
+            gui.add_html(section("autonomous", SECTION_CTRL))
+            self._settle = gui.add_slider("Settle s", min=SETTLE_RANGE[0], max=SETTLE_RANGE[1], step=0.5,
+                                          initial_value=SETTLE_DEFAULT,
+                                          hint="The cycle's pause between the insert and the retreat, seconds")
+            preview = gui.add_button("Preview cycle", icon=viser.Icon.EYE,
+                                     hint="Plan the whole cycle for Insert mm and Retreat mm and show it as one "
+                                          "path: the approach if the arms are not at the insert's start, the "
+                                          "insert, the back-out, the return. Nothing moves; Execute refuses it.")
+            cycle = gui.add_button("Cycle", icon=viser.Icon.REPEAT,
+                                   hint="One cycle from the insert's start: Insert, the pause, Retreat, then Return "
+                                        "planned, checked and run. Cancel stops it; then Rigid, Retreat and Return "
+                                        "by hand before the next.")
             # * Refusals and outcomes come and go here, below the buttons.
             self._text: viser.GuiHtmlHandle = gui.add_html("")
         # * The Assembly tab's plot windows, minimized to their bars until a move is planned or a compliant part runs.
@@ -232,9 +311,14 @@ class InsertionDemoPlugin(HuskyPlugin):
             self._plan_plots = PlanPlots(ctx.view.gui)
         with plots_window(ctx.view, "Exec plots", viser.Icon.CHART_DOTS, EXEC_PLOTS_X) as window:
             self._exec_plots = ExecPlots(ctx.view.gui, window)
-        for label, group in (("bar", bar), ("move", move), ("path", path), ("arms", arms)):
+        for label, group in (("bar", bar), ("joint", joint), ("move", move), ("path", path), ("arms", arms)):
             group.on_click(ctx.defer_value(f"{label} button", lambda clicked: self._on_button(ctx, clicked)))
         execute.on_click(ctx.defer("execute", lambda: self._on_button(ctx, "Execute")))
+        cycle.on_click(ctx.defer("cycle", lambda: self._on_button(ctx, "Cycle")))
+        preview.on_click(ctx.defer("preview cycle", lambda: self._on_button(ctx, "Preview cycle")))
+        self._save.on_click(ctx.defer("save", lambda: self._on_save(ctx)))
+        for slider in (self._insert_mm, self._retreat_mm):
+            slider.on_update(ctx.defer_value("length", lambda _value: self._on_length()))
         # ! Operator drags only: draw writes the slider every tick, and viser calls back for that too.
         self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value)), operator_only=True))
         self._seconds.on_update(ctx.defer_value("motion time", lambda value: self._retime(float(value))))
@@ -257,6 +341,9 @@ class InsertionDemoPlugin(HuskyPlugin):
         if clicked == "Play":
             self._play(ctx)
             return
+        if clicked == "Stop":
+            self._stop_tools(ctx)
+            return
         if clicked == "Rigid" and self._holding:
             self._rigid_asked = True
             return
@@ -271,26 +358,60 @@ class InsertionDemoPlugin(HuskyPlugin):
             self._start(ctx, "rigid", self._rigid(ctx, robot))
         elif clicked == "Compliant":
             self._start(ctx, "compliant", self._compliant(ctx, robot))
+        elif clicked == "Zero F/T":
+            self._start(ctx, "zero", self._zero(ctx, robot))
         elif clicked in ("Grasp", "Release"):
             self._start(ctx, clicked.lower(), self._grip(ctx, robot, clicked == "Grasp"))
+        elif clicked in ("Tighten", "Loosen"):
+            self._start(ctx, clicked.lower(), self._screws(ctx, robot, clicked == "Tighten"))
         elif clicked == "Execute":
             planned = self._planned
             if planned is None:
-                self._refuse(ctx, clicked, "nothing planned: press Approach, Insert or Retreat first")
+                self._refuse(ctx, clicked, "nothing planned: press a Move button first")
+                return
+            if planned.refused:
+                # * Shown only: the path stays in the preview.
+                self._refuse(ctx, clicked, f"the {planned.step} shown is not to run: {planned.refused}")
                 return
             # ! Used once: a move never runs twice from one plan.
             self._forget_plan()
-            run = {"approach": self._approach, "insert": self._insert, "retreat": self._retreat}[planned.step]
-            self._start(ctx, planned.step, run(ctx, robot, planned))
+            self._start(ctx, planned.step, self._run(ctx, robot, planned))
         else:
             demo = self._demo(ctx)
             if isinstance(demo, str):
                 self._refuse(ctx, clicked, demo)
                 return
             self._forget_plan()
-            plan = {"approach": self._plan_approach, "insert": self._plan_insert,
-                    "retreat": self._plan_retreat}[MOVES[clicked]]
+            if clicked == "Cycle":
+                self._start(ctx, "cycle", self._cycle(ctx, robot, demo))
+                return
+            if clicked == "Preview cycle":
+                self._start(ctx, "plan cycle preview", self._preview_cycle(ctx, robot, demo))
+                return
+            plan = {"approach": self._plan_approach, "insert": self._plan_insert, "retreat": self._plan_retreat,
+                    "return": self._plan_return, "stow": self._plan_stow}[MOVES[clicked]]
             self._start(ctx, f"plan {MOVES[clicked]}", plan(ctx, robot, demo))
+
+    def _stop_tools(self, ctx: PluginContext) -> None:
+        """STOP both tools' motors now, whatever runs them; a Tighten or Loosen under way is cancelled too."""
+        robot = self._robot(ctx)
+        if isinstance(robot, str):
+            self._refuse(ctx, "Stop", robot)
+            return
+        stop_all(self._tools(robot))
+        if self.step in ("tighten", "loosen"):
+            self._task.cancel()
+        else:
+            self.outcome = "both tools' motors stopped"
+            ctx.log_info(f"insertion demo: {self.outcome}")
+
+    def _run(self, ctx: PluginContext, robot: HuskyRobotInterface, planned: Planned) -> Awaitable[str]:
+        """The coroutine running a planned move: the insert, the retreat, or a joint motion (approach, return)."""
+        if planned.step == "insert":
+            return self._insert(ctx, robot, planned)
+        if planned.step == "retreat":
+            return self._retreat(ctx, robot, planned.demo)
+        return self._move(ctx, robot, planned)
 
     def _start(self, ctx: PluginContext, step: str, work: Awaitable[str]) -> None:
         """Run `work` as the one task, keeping its step's name and its outcome for the panel."""
@@ -316,17 +437,57 @@ class InsertionDemoPlugin(HuskyPlugin):
         self.outcome = f"{clicked} refused: {why}"
         ctx.log_warn(f"insertion demo: {self.outcome}")
 
+    def _on_length(self) -> None:
+        """Insert mm or Retreat mm changed: a move planned for the old length and a waiting Save are dropped."""
+        self._forget_plan()
+        self._press.forget()
+
+    def _on_save(self, ctx: PluginContext) -> None:
+        """Write the insert's start for Insert mm into the loaded process's action file, on the second press."""
+        robot, demo = self._robot(ctx), self._demo(ctx)
+        why = next((each for each in (robot, demo) if isinstance(each, str)), "")
+        if not why and self.running:
+            why = f"{self.step} runs: wait, or Cancel it"
+        start = "" if why else self._line(robot, demo, self._insert_mm)
+        if isinstance(start, str) and start:
+            why = start
+        elif not why and float(self._insert_mm.value) == self._authored_mm:
+            why = f"Insert mm {self._authored_mm:g} is the process's own: nothing to save"
+        if why:
+            self._press.forget()
+            self._refuse(ctx, "Save", why)
+            return
+        if not self._press.press(ctx.now(), "save"):
+            return
+        arms, joints = start
+        mm = float(self._insert_mm.value)
+        steps, process = demo.loaded.steps, demo.loaded.process
+        moved = {name: joints[name] for arm in arms for name in arm_joint_names(arm)}
+        try:
+            edited = with_insert_start(process, demo.action_id, steps[demo.transfer].movement.id,
+                                       steps[demo.insert].movement.id, moved, mm / 1e3)
+            path = save_action(edited, demo.action_id)
+        except (ProcessError, OSError) as error:
+            self.outcome = f"Save failed, nothing written: {error}"
+            ctx.log_error(f"insertion demo: {self.outcome}")
+            return
+        self.outcome = (f"saved: the insert starts {mm:g} mm before its end in {path.parent.parent.name}/actions/"
+                        f"{path.name}; press Load in the Assembly tab to use it")
+        ctx.log_warn(f"insertion demo: {self.outcome} ({path})")
+
     # --- --- --- --- --- THE PREVIEW --- --- --- --- ---
 
     def _show(self, ctx: PluginContext, planned: Planned) -> str:
         """Keep a planned move for Execute and time its preview; the panel's line, or why it can't be shown."""
-        timed = timed_preview(planned.rows, float(self._seconds.value), planned.limits)
+        timed = timed_preview(planned.rows, float(self._seconds.value) * planned.parts, planned.limits)
         if isinstance(timed, str):
             return f"{planned.step}: {timed}"
         self._planned = planned
         self._preview, self.minimum = timed
         # * At the end, where the move arrives, as the Assembly tab's preview opens; Play runs it from the start.
         self._t, self._playing = self._preview.duration, False
+        if planned.refused:
+            return f"{planned.step} shown ({planned.text}), not to run: {planned.refused}"
         return (f"{planned.step} planned ({planned.text}): the motion takes {self._preview.duration:.1f} s; "
                 f"Execute runs it")
 
@@ -340,7 +501,7 @@ class InsertionDemoPlugin(HuskyPlugin):
         """The motion time changed: time the preview again."""
         if self._planned is None:
             return
-        timed = timed_preview(self._planned.rows, seconds, self._planned.limits)
+        timed = timed_preview(self._planned.rows, seconds * self._planned.parts, self._planned.limits)
         if not isinstance(timed, str):
             self._preview, self.minimum = timed
             self._t = min(self._t, self._preview.duration)
@@ -427,11 +588,25 @@ class InsertionDemoPlugin(HuskyPlugin):
         if authored is not None:
             self._process(ctx).request_select(authored)
 
-    async def _plan(self, ctx: PluginContext, demo: Demo, index: int, label: str) -> RouteResult | str:
-        """Plan a step from the live joints on the motion planner; the route, or why there is none."""
-        request = MotionPlanRequest(demo.loaded, demo.loaded.steps[index], ctx.scene.snapshot, ctx.config.robots,
+    async def _plan(self, ctx: PluginContext, demo: Demo, index: int, label: str,
+                    goal_poses: dict[str, Pose] | None = None,
+                    goal_joints: dict[str, float] | None = None,
+                    start_joints: dict[str, float] | None = None) -> RouteResult | str:
+        """Plan a step from the live joints on the motion planner; the route, or why there is none.
+
+        `goal_poses` (process flange id -> world pose) or `goal_joints` (by joint name) replace the step's own goal
+        where the planner takes them. `start_joints` replace the live joints as the start, for a preview of a move
+        the arms are not yet at.
+        """
+        snapshot = ctx.scene.snapshot
+        if start_joints is not None:
+            snapshot = snapshot.copy()
+            acting = snapshot.robots.get(robot_id(self._serial))
+            if acting is not None:
+                acting.joints = {**acting.joints, **start_joints}
+        request = MotionPlanRequest(demo.loaded, demo.loaded.steps[index], snapshot, ctx.config.robots,
                                     transfer_as_free=True, obstacles_collide=self._process(ctx).obstacles_collide,
-                                    label=label)
+                                    goal_joints=goal_joints, goal_poses=goal_poses, label=label)
         try:
             route = await self._planner(ctx).request_plan(request)
         except asyncio.CancelledError:
@@ -459,6 +634,54 @@ class InsertionDemoPlugin(HuskyPlugin):
             return f"{step.movement.id} has no authored start joints"
         return [arm.arm for arm in spec.arms], dict(robot.joints)
 
+    def _line(self, robot: HuskyRobotInterface, demo: Demo,
+              slider: viser.GuiSliderHandle) -> tuple[list[str], dict[str, float]] | str:
+        """The insert's moving arms and the joints `slider` millimetres before its end on its line; or why not.
+
+        Insert mm gives the insert's start, Retreat mm where the retreat ends. A slider at the process's own length
+        gives the authored start joints as they are.
+        """
+        start = self._insert_start(demo)
+        if isinstance(start, str):
+            return start
+        arms, joints = start
+        mm = float(slider.value)
+        step = demo.loaded.steps[demo.insert]
+        end = step.movement.target.joints.get(step.action.robot) if step.movement.target is not None else None
+        if mm == self._authored_mm or not end or self._lengths_for != (demo.loaded, demo.action_id):
+            return arms, joints
+        key = (demo.action_id, mm)
+        if key not in self._lines:
+            self._lines[key] = line_start(robot.config.model.urdf, arms, joints, end, mm / 1e3)
+        solved = self._lines[key]
+        return f"{slider.label} {mm:g}: {solved}" if isinstance(solved, str) else (arms, solved)
+
+    def _set_lengths(self, ctx: PluginContext) -> None:
+        """Set Insert mm and Retreat mm to the process's own insert length when the process or the action changed."""
+        loaded = self._loaded_now(ctx)
+        chosen = (loaded, str(self._action.value))
+        if chosen == self._lengths_for or self._urdf is None:
+            return
+        demo = self._demo(ctx)
+        start = self._insert_start(demo) if not isinstance(demo, str) else demo
+        if isinstance(start, str):
+            return
+        arms, joints = start
+        step = demo.loaded.steps[demo.insert]
+        end = step.movement.target.joints.get(step.action.robot) if step.movement.target is not None else None
+        if not end:
+            return
+        mm = float(np.clip(round(line_length(self._urdf, arms[0], joints, end) * 1e3), *LENGTH_RANGE))
+        self._lengths_for, self._authored_mm, self._lines = chosen, mm, {}
+        self._insert_mm.value = self._retreat_mm.value = mm
+
+    @staticmethod
+    def _flanges(demo: Demo) -> dict[str, str]:
+        """The insert's moving arms, each with its flange id as the process names it (the planner's goal keys)."""
+        step = demo.loaded.steps[demo.insert]
+        spec = classify(demo.loaded.process, step.action, step.movement, transfer_as_free=True)
+        return {part.arm: part.flange for part in spec.arms}
+
     def _record(self, ctx: PluginContext, robot: HuskyRobotInterface, label: str) -> Recorder:
         """Open the Exec plots for a compliant part starting now; its samples go into the recorder returned."""
         self._recorder, self._plotted_t = Recorder(robot, ctx.now()), None
@@ -471,6 +694,14 @@ class InsertionDemoPlugin(HuskyPlugin):
         """Close or open both gripper screws."""
         with ctx.lease_robots([self._serial], "grasp" if close else "release"):
             _ok, text = await run_grip(ctx, self._tools(robot), close)
+        return text
+
+    async def _screws(self, ctx: PluginContext, robot: HuskyRobotInterface, tighten: bool) -> str:
+        """Run both joint screws: tightening until they stall, or loosening for Loosen s."""
+        with ctx.lease_robots([self._serial], "tighten" if tighten else "loosen"):
+            _ok, text = await run_screws(ctx, self._tools(robot), ScaffoldingV3.JOINT_MOTOR, tighten,
+                                         seconds=None if tighten else float(self._loosen.value),
+                                         timeout_s=HOLD_FOR_STALL)
         return text
 
     def _insert_tools(self, ctx: PluginContext, robot: HuskyRobotInterface,
@@ -486,23 +717,50 @@ class InsertionDemoPlugin(HuskyPlugin):
             return f"{self._serial} has no scaffolding tool on {', '.join(missing)}"
         return tuple(part.tools), tools
 
-    def _planned_route(self, ctx: PluginContext, step: str, demo: Demo, route: RouteResult) -> str:
-        """Show a planner's route as the planned `step`."""
+    def _planned_route(self, ctx: PluginContext, step: str, demo: Demo, route: RouteResult,
+                       refused: str = "") -> str:
+        """Show a planner's route as the planned `step`; `refused` says why it is only shown."""
         trajectory = route.result.trajectory
         return self._show(ctx, Planned(step, demo, tuple(trajectory.joint_names),
                                        np.array(trajectory.positions, dtype=float),
                                        ctx.kinematics.base_pose(self._serial),
-                                       f"{route.planner}, {route.waypoints} waypoints"))
+                                       f"{route.planner}, {route.waypoints} waypoints", refused=refused))
 
     async def _plan_approach(self, ctx: PluginContext, robot: HuskyRobotInterface, demo: Demo) -> str:
         """Plan a free dual-arm move from where the arms are to the insert's start, the held bar hidden."""
+        goal = self._approach_goal(robot, demo)
+        if isinstance(goal, str):
+            return f"approach: {goal}"
         self._select(ctx, demo, demo.transfer)
-        route = await self._plan(ctx, demo, demo.transfer, "demo approach")
+        route = await self._plan(ctx, demo, demo.transfer, "demo approach", goal_joints=goal)
         return route if isinstance(route, str) else self._planned_route(ctx, "approach", demo, route)
+
+    def _approach_goal(self, robot: HuskyRobotInterface, demo: Demo) -> dict[str, float] | None | str:
+        """The arm joints the approach goes to for Insert mm; None at the process's own start: the planner solves it."""
+        start = self._line(robot, demo, self._insert_mm)
+        if isinstance(start, str):
+            return start
+        arms, joints = start
+        authored = self._insert_start(demo)[1]
+        return None if joints == authored else {name: joints[name] for arm in arms for name in arm_joint_names(arm)}
+
+    async def _plan_stow(self, ctx: PluginContext, robot: HuskyRobotInterface, demo: Demo) -> str:
+        """Plan a free dual-arm move from where the arms are to their park pose: the approach's planner, that goal.
+
+        The held bar is hidden from the search as for the approach, so plan it only once the bar is put away.
+        """
+        names = [name for arm in robot.arms for name in arm_joint_names(arm)]
+        config = next((each for each in ctx.config.robots if each.serial == self._serial), None)
+        parked = stow_joints(config, names) if config is not None else {}
+        if len(parked) != len(names):
+            return "stow: not every arm has park joints (crl-husky's park.yaml)"
+        self._select(ctx, demo, demo.transfer)
+        route = await self._plan(ctx, demo, demo.transfer, "demo stow", goal_joints=parked)
+        return route if isinstance(route, str) else self._planned_route(ctx, "stow", demo, route)
 
     async def _plan_insert(self, ctx: PluginContext, robot: HuskyRobotInterface, demo: Demo) -> str:
         """Plan the process's insert from the live joints; refused unless the arms stand at its start."""
-        start = self._insert_start(demo)
+        start = self._line(robot, demo, self._insert_mm)
         if isinstance(start, str):
             return start
         arms, joints = start
@@ -517,8 +775,8 @@ class InsertionDemoPlugin(HuskyPlugin):
         return route if isinstance(route, str) else self._planned_route(ctx, "insert", demo, route)
 
     async def _plan_retreat(self, ctx: PluginContext, robot: HuskyRobotInterface, demo: Demo) -> str:
-        """Show the back-out: from where the arms are straight to the insert's start. No planner: a tool0 line."""
-        start = self._insert_start(demo)
+        """Show the back-out: from where the arms are straight to Retreat mm before the end. No planner: a line."""
+        start = self._line(robot, demo, self._retreat_mm)
         if isinstance(start, str):
             return start
         arms, joints = start
@@ -531,21 +789,65 @@ class InsertionDemoPlugin(HuskyPlugin):
         names, rows = path
         return self._show(ctx, Planned("retreat", demo, tuple(names), rows, ctx.kinematics.base_pose(self._serial),
                                        f"the joint screws loosen {float(self._loosen.value):.1f} s, then a straight "
-                                       f"back-out to the insert's start", limits=False))
+                                       f"back-out to {float(self._retreat_mm.value):g} mm before the insert's end",
+                                       limits=False))
 
-    async def _approach(self, ctx: PluginContext, robot: HuskyRobotInterface, planned: Planned) -> str:
-        """Run the planned approach from the live joints."""
-        with ctx.lease_robots([self._serial], "approach"):
+    async def _plan_return(self, ctx: PluginContext, robot: HuskyRobotInterface, demo: Demo) -> str:
+        """Plan the way back to the insert's start: the insert's planner, a straight line with the bar held, checked.
+
+        A path that fails its checks is still shown, marked refused: neither Execute nor the cycle runs it.
+        """
+        self._select(ctx, demo, demo.insert)
+        found = await self._return_route(ctx, robot, demo, "demo return")
+        if isinstance(found, str):
+            return found
+        route, problem = found
+        shown = self._planned_route(ctx, "return", demo, route, refused=problem)
+        return f"return: refused: {problem}" if problem else shown
+
+    async def _return_route(self, ctx: PluginContext, robot: HuskyRobotInterface, demo: Demo, label: str,
+                            start_joints: dict[str, float] | None = None) -> tuple[RouteResult, str] | str:
+        """The way back to the insert's start and why it may not run ("" if it may); or why there is no path.
+
+        Checked: the grasp kept along the way, no joint jump, and the end at the insert's start (the planner steers
+        only one arm's goal; the other follows the grasp). `start_joints` plan it from there instead of the live
+        joints.
+        """
+        start = self._line(robot, demo, self._insert_mm)
+        if isinstance(start, str):
+            return start
+        arms, joints = start
+        ends = tool0_at(robot, joints, arms)
+        if ends is None:
+            return "return: no base pose from mocap"
+        flanges = self._flanges(demo)
+        route = await self._plan(ctx, demo, demo.insert, label, {flanges[arm]: ends[arm] for arm in arms},
+                                 start_joints=start_joints)
+        if isinstance(route, str):
+            return route
+        trajectory = route.result.trajectory
+        problem = return_problem(robot, trajectory.joint_names, trajectory.positions, arms)
+        for arm in arms:
+            distance, turn = route.end_error.get(flanges[arm], (0.0, 0.0))
+            if not problem and (distance > AT_START[0] or turn > AT_START[1]):
+                problem = (f"{arm}'s tool0 ends {distance * 1e3:.1f} mm, {math.degrees(turn):.1f}° from the "
+                           f"insert's start (limit {AT_START[0] * 1e3:.0f} mm, {math.degrees(AT_START[1]):.0f}°)")
+        return route, problem
+
+    async def _move(self, ctx: PluginContext, robot: HuskyRobotInterface, planned: Planned) -> str:
+        """Run a planned joint motion (the approach, the return) from the live joints."""
+        step = planned.step
+        with ctx.lease_robots([self._serial], step):
             path = live_rows(robot, planned.names, planned.rows)
             if isinstance(path, str):
-                return f"approach: {path}"
+                return f"{step}: {path}"
             try:
                 command = motion_command(self._serial, list(robot.arms), *path, float(self._seconds.value))
             except ValueError as error:
-                return f"approach: the plan can't be sent: {error}"
-            ctx.log_info(f"insertion demo: approach along {planned.text}, {command.duration:.1f} s")
+                return f"{step}: the plan can't be sent: {error}"
+            ctx.log_info(f"insertion demo: {step} along {planned.text}, {command.duration:.1f} s")
             sent = await send_motion(ctx, robot, command)
-        return f"approach {sent.status}: {sent.reason}"
+        return f"{step} {sent.status}: {sent.reason}"
 
     async def _insert(self, ctx: PluginContext, robot: HuskyRobotInterface, planned: Planned) -> str:
         """Run the planned insert from the live joints: rigid, then compliant while the joint screws tighten."""
@@ -569,9 +871,9 @@ class InsertionDemoPlugin(HuskyPlugin):
                 self._recorder = None
         return f"insert {outcome.status}: {outcome.reason}"
 
-    async def _retreat(self, ctx: PluginContext, robot: HuskyRobotInterface, planned: Planned) -> str:
-        """Loosen the joint screws, then back the tools out to the insert's start, the bar still held."""
-        start = self._insert_start(planned.demo)
+    async def _retreat(self, ctx: PluginContext, robot: HuskyRobotInterface, demo: Demo) -> str:
+        """Loosen the joint screws, then back the tools out to Retreat mm before the end, the bar still held."""
+        start = self._line(robot, demo, self._retreat_mm)
         if isinstance(start, str):
             return start
         arms, joints = start
@@ -587,10 +889,143 @@ class InsertionDemoPlugin(HuskyPlugin):
                 outcome = await run_unscrew_retreat(
                     ctx, robot, {arm: tools[arm] for arm in arms}, ends, loosen_s=float(self._loosen.value),
                     seconds=float(self._seconds.value),
-                    recorder=self._record(ctx, robot, f"{planned.demo.action_id} retreat"))
+                    recorder=self._record(ctx, robot, f"{demo.action_id} retreat"))
             finally:
                 self._recorder = None
         return f"retreat {outcome.status}: {outcome.reason}"
+
+    @staticmethod
+    async def _rest(ctx: PluginContext, robot: HuskyRobotInterface) -> None:
+        """Wait until no arm counts as moving (`arm_moving`), REST_TIMEOUT at most; then the next part's guard rules."""
+        since = ctx.now()
+        try:
+            await ctx.wait_until(lambda: ctx.now() - since >= REST_AT_LEAST and not any(
+                arm_moving(arm, name, ctx.now()) for name, arm in robot.arms.items()),
+                timeout_s=REST_TIMEOUT, description="the arms to come to rest")
+        except WaitTimeout as timeout:
+            ctx.log_warn(f"insertion demo: {timeout}; going on")
+
+    async def _cycle(self, ctx: PluginContext, robot: HuskyRobotInterface, demo: Demo) -> str:
+        """One cycle from the insert's start: insert, settle, retreat, then the way back planned, checked and run.
+
+        Each move is shown while it runs. The first phase that does not end well stops the cycle, the arms left as
+        that phase leaves them.
+        """
+        start = self._line(robot, demo, self._insert_mm)
+        if isinstance(start, str):
+            return f"cycle refused: {start}"
+        arms, joints = start
+        needs = self._insert_tools(ctx, robot, demo)
+        if isinstance(needs, str):
+            return f"cycle refused: {needs}"
+        off = off_start(robot, joints, arms)
+        if off:
+            return f"cycle refused: {off}: press Approach or Return first"
+
+        async def planned_move(phase: str, shown: str) -> str:
+            """Run the move a plan phase just showed; how it ended, or why it did not run."""
+            planned = self._planned
+            if planned is None or planned.refused:
+                # * A refused path stays in the preview, to look at.
+                return f"cycle stopped at plan {phase}: {shown}"
+            self.step = f"cycle: {phase}"
+            try:
+                return await self._run(ctx, robot, planned)
+            finally:
+                self._forget_plan()
+
+        self.step = "cycle: plan insert"
+        self._select(ctx, demo, demo.insert)
+        route = await self._plan(ctx, demo, demo.insert, "demo cycle insert")
+        if isinstance(route, str):
+            return f"cycle stopped at plan insert: {route}"
+        text = await planned_move("insert", self._planned_route(ctx, "insert", demo, route))
+        if text.startswith("cycle stopped"):
+            return text
+        if not text.startswith(f"insert {STALLED}"):
+            return f"cycle stopped at insert: {text}"
+        self.step = "cycle: settle"
+        settle = float(self._settle.value)
+        ctx.log_info(f"insertion demo: {text}; settling {settle:g} s before the retreat")
+        await ctx.sleep(settle)
+        await self._rest(ctx, robot)
+        self.step = "cycle: retreat"
+        text = await self._retreat(ctx, robot, demo)
+        if not text.startswith(f"retreat {RETREATED}"):
+            return f"cycle stopped at retreat: {text}"
+        # * The arms settle for a moment after the switch back: a trajectory sent to a moving arm is refused.
+        self.step = "cycle: rest"
+        await self._rest(ctx, robot)
+        self.step = "cycle: plan return"
+        text = await planned_move("return", await self._plan_return(ctx, robot, demo))
+        if text.startswith("cycle stopped"):
+            return text
+        if not text.startswith(f"return {ARRIVED}"):
+            return f"cycle stopped at return: {text}"
+        off = off_start(robot, joints, arms)
+        if off:
+            return f"cycle done, but {off}: press Return before the next"
+        return f"cycle done ({text}): back at the insert's start; Cycle runs the next"
+
+    async def _preview_cycle(self, ctx: PluginContext, robot: HuskyRobotInterface, demo: Demo) -> str:
+        """Plan the whole cycle for Insert mm and Retreat mm and show it as one path; nothing is sent.
+
+        The approach (only when the arms are not at the insert's start), the insert from that start, the back-out as
+        a straight joint move, the return from where it ends. A part that can't be planned ends the path there.
+        """
+        start, back = self._line(robot, demo, self._insert_mm), self._line(robot, demo, self._retreat_mm)
+        goal = self._approach_goal(robot, demo)
+        why = next((each for each in (start, back, goal) if isinstance(each, str)), "")
+        if why:
+            return f"{PREVIEW}: {why}"
+        arms, joints = start
+        names = [name for arm in arms for name in arm_joint_names(arm)]
+
+        def rows_of(route: RouteResult) -> np.ndarray:
+            """A route's joint path, its columns in `names` order."""
+            trajectory = route.result.trajectory
+            columns = [list(trajectory.joint_names).index(name) for name in names]
+            return np.array(trajectory.positions, dtype=float)[:, columns]
+
+        parts: list[tuple[str, np.ndarray]] = []
+        problem = ""
+        if off_start(robot, joints, arms):
+            self.step = f"plan {PREVIEW}: approach"
+            self._select(ctx, demo, demo.transfer)
+            route = await self._plan(ctx, demo, demo.transfer, "demo preview approach", goal_joints=goal)
+            if isinstance(route, str):
+                return f"{PREVIEW}: {route}"
+            parts.append(("approach", rows_of(route)))
+        self.step = f"plan {PREVIEW}: insert"
+        self._select(ctx, demo, demo.insert)
+        at_start = {name: joints[name] for name in names}
+        route = await self._plan(ctx, demo, demo.insert, "demo preview insert", start_joints=at_start)
+        if isinstance(route, str):
+            problem = route
+        else:
+            parts.append(("insert", rows_of(route)))
+            backed = {name: back[1][name] for name in names}
+            parts.append(("back-out", np.array([parts[-1][1][-1], [backed[name] for name in names]])))
+            self.step = f"plan {PREVIEW}: return"
+            found = await self._return_route(ctx, robot, demo, "demo preview return", start_joints=backed)
+            if isinstance(found, str):
+                problem = found
+            else:
+                parts.append(("return", rows_of(found[0])))
+                problem = f"return: refused: {found[1]}" if found[1] else ""
+        if not parts:
+            return f"{PREVIEW}: {problem}"
+        # * One path: each part starts where the one before ended; a repeated row would stall the timing.
+        rows = [parts[0][1][0]]
+        for _name, part in parts:
+            for row in part:
+                if not np.allclose(row, rows[-1], atol=1e-9):
+                    rows.append(row)
+        shown = self._show(ctx, Planned(PREVIEW, demo, tuple(names), np.array(rows),
+                                        ctx.kinematics.base_pose(self._serial),
+                                        ", ".join(name for name, _part in parts), refused=PREVIEW_ONLY,
+                                        parts=len(parts)))
+        return f"{shown}; stopped at: {problem}" if problem else shown
 
     async def _compliant(self, ctx: PluginContext, robot: HuskyRobotInterface) -> str:
         """Both arms under the compliance controller until Rigid."""
@@ -603,6 +1038,16 @@ class InsertionDemoPlugin(HuskyPlugin):
         finally:
             self._holding, self._recorder = False, None
         return failed or "both arms back under joint control"
+
+    async def _zero(self, ctx: PluginContext, robot: HuskyRobotInterface) -> str:
+        """Zero both arms' force sensors where they stand; for arms holding no bar."""
+        with ctx.lease_robots([self._serial], "zero"):
+            zeroed = await zero_force_sensors(ctx, list(robot.arms.values()), f"{self._serial}: zero")
+        missed = [name for name, each in zeroed.items() if not each["sent"]]
+        if missed:
+            return f"zero: {', '.join(missed)}: force sensor NOT zeroed (service not available)"
+        return "force sensors zeroed: |F| now " + ", ".join(
+            f"{name} {each['force_after_N']:.1f} N" for name, each in zeroed.items())
 
     async def _rigid(self, ctx: PluginContext, robot: HuskyRobotInterface) -> str:
         """Bring arms left compliant (a cancelled part) back under joint control."""
@@ -620,6 +1065,8 @@ class InsertionDemoPlugin(HuskyPlugin):
         if list(self._action.options) != options:
             self._action.options = options
             self._action.value = options[-1]
+        self._set_lengths(ctx)
+        show_waiting(self._save, bool(self._press.waiting(ctx.now())), "Save", None)
         robot = ctx.world.robots.get(self._serial) if self._serial else None
         self._status.content = chip_line(self._chips(ctx, robot, actions))
         self._text.content = note(self.outcome) if self.outcome else ""
@@ -674,7 +1121,13 @@ class InsertionDemoPlugin(HuskyPlugin):
             chips += chip(text, color, "what both arms' controller managers run; mixed or unknown is red")
         planned = self._planned
         if planned is None:
-            chips += chip("no plan", NONE, "Approach, Insert or Retreat plans a move and shows it; Execute runs it")
+            chips += chip("no plan", NONE, "A Move button plans a move and shows it; Execute runs it")
+        elif planned.step == PREVIEW:
+            chips += chip(PREVIEW, INFO, "the whole cycle, shown only: Cycle runs it")
+        elif planned.refused:
+            chips += chip(f"{planned.step} refused", FAIL, f"shown only: {planned.refused}")
+        elif self.running:
+            chips += chip(f"{planned.step} running", BUSY, "the cycle runs the move shown")
         elif planned.limits and robot is not None and isinstance(live_rows(robot, planned.names, planned.rows), str):
             chips += chip(f"{planned.step} stale", BUSY, "the arms moved since planning: press the move again")
         else:
