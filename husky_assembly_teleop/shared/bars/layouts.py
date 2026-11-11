@@ -28,9 +28,9 @@ if TYPE_CHECKING:
 
     from ...robot_interface.mocap_state import MarkerCloud
 
-#: Raw markers farther than this from every marker of a bar where it should be are not its own, metres: well over the
-#: few millimetres a bar sits off its plan, under the gap to most other bars.
-SEARCH_RADIUS = 0.05
+#: Raw markers farther than this from every marker of a bar where it should be are not its own, metres: a bar up to
+#: 6 cm and a few degrees off is still found, and most other bars' markers stay out.
+SEARCH_RADIUS = 0.08
 #: The full search takes at most this many markers near a bar: its 8, and its neighbours' halves at each joint.
 MAX_NEAR = 32
 

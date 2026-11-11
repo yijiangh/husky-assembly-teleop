@@ -75,7 +75,7 @@ def test_every_bar_with_a_layout_is_a_hidden_scene_body_that_never_collides():
     assert not ctx.world.tracked_objects and not any("collide" in line for line in ctx.lines("warn"))
     assert plugin._bar.options == list(BARS) and plugin._bar_id == BAR
     assert plugin._stats_rows == 3 + 8 + 7
-    assert any("fitting B20, B21, B34, B35 to the raw markers within 50 mm" in line for line in ctx.lines("info"))
+    assert any("fitting B20, B21, B34, B35 to the raw markers within 80 mm" in line for line in ctx.lines("info"))
 
 
 def test_fits_a_streaming_bar_at_most_every_tenth_second_then_around_the_last_fit():
@@ -132,7 +132,7 @@ def test_only_markers_near_where_the_bar_should_be_count():
     stream(ctx, bar_markers(BAR) + np.array([0.0, 0.5, 0.0]))
     plugin.update(ctx)
     assert not state.fit.ok and len(state.sensed.points) == 0 and state.pose is None
-    assert "within 50 mm of where the bar should be" in state.fit.reason
+    assert "within 80 mm of where the bar should be" in state.fit.reason
     assert not ctx.scene.bodies["mocap_bars/B20"].enabled
 
 
@@ -151,6 +151,21 @@ def test_a_held_bar_is_looked_for_where_the_live_scene_has_it():
     assert state.fit.ok and state.fit.tracked and len(state.sensed.points) == 8
     np.testing.assert_allclose(state.pose.matrix(), held, atol=1e-6)
     assert state.deviation.dpos_mm < 1e-3
+
+
+def test_a_bar_5_cm_and_2_degrees_off_where_the_scene_has_it_is_still_found():
+    """The match around the seat misses; the full search over the markers within 80 mm finds the bar."""
+    plugin, ctx = bench()
+    placed(ctx, BAR)
+    layout = bar_layouts(purged_process().process)[BAR]
+    off = seat(BAR) @ bar_slide_roll(0.0, 2.0)
+    off[:3, 3] += [0.03, -0.03, 0.028]
+    stream(ctx, transform_points(off, layout.points))
+    plugin.update(ctx)
+    state = plugin._bars[BAR]
+    assert state.fit.ok and not state.fit.tracked and len(state.sensed.points) == 8
+    np.testing.assert_allclose(state.pose.matrix(), off, atol=1e-6)
+    assert 49.0 < state.deviation.dpos_mm < 51.0
 
 
 def placed(ctx: FakeContext, *bars: str) -> None:

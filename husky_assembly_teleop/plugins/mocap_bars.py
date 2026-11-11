@@ -24,8 +24,8 @@ fit to the Drive (`data_experiment/mocap_bars/`): a run folder per take with exp
 
 - ! Marker layouts come only from the process (`BodySpec.markers` of the halves mounted on a bar); old compas_fab
   exports converted on load have none.
-- ! A bar farther than SEARCH_RADIUS from where it should be is not found: the fit is a check of the plan, not a
-  search of the lab.
+- ! A bar over ~6 cm from where it should be (SEARCH_RADIUS less a few degrees' tilt) is not found: the fit is a
+  check of the plan, not a search of the lab.
 - ! The fits run on the main thread: a full search takes ~20 ms (one per tick at most), the match around a hint ~1 ms
   per bar.
 - * Markers dropped for their size or Motive residual are neither fitted nor drawn; a failed fit's reason counts them.
@@ -327,7 +327,7 @@ class MocapBarsPlugin(HuskyPlugin):
             self._radius_mm = gui.add_slider("Search mm", min=10, max=100, step=5, initial_value=SEARCH_RADIUS * 1e3,
                                              hint="Markers farther than this from every marker of a bar where it "
                                                   "should be are not its own: a bar farther off is not found. Servo "
-                                                  "keeps its own 50 mm.")
+                                                  f"keeps its own {SEARCH_RADIUS * 1e3:.0f} mm.")
             self._fit_period = gui.add_slider("Fit every s", min=0.05, max=1.0, step=0.05, initial_value=FIT_PERIOD,
                                               hint="Each bar is refitted at most this often.")
             self._marker_age = gui.add_slider("Marker age s", min=0.1, max=2.0, step=0.1,
