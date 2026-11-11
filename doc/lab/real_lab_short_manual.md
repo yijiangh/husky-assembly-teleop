@@ -113,7 +113,7 @@ crl_ros_source 80 && ros2 topic list | grep -c a200 && ros2 topic echo --once /m
 **2.4 Monitor.** This is the README's assembly command, plus `doc`, the assembly guide, the base and arm planner panels and the lab obstacles:
 
 ```bash
-crl_ros_source 80 && ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps doc assembly_guide robot_control base_planner_panel arm_planner_panel obstacles stop_recovery" process_directory:=data_design_study/261103_SRD
+crl_ros_source 80 && ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps doc assembly_guide robot_control base_planner_panel arm_planner_panel obstacles" process_directory:=data_design_study/261103_SRD
 ```
 
 To keep a log, append `2>&1 | tee -i ~/monitor_$(date +%F_%H%M).log`. Quit with one `Ctrl-C`, then wait: the plugins

@@ -9,7 +9,7 @@
 
 set -e
 monitor="ros2 launch husky_assembly_teleop monitor.launch.py robots:=\"alice belle cindy\" \
-plugins:=\"assembly_steps doc assembly_guide robot_control base_planner_panel arm_planner_panel obstacles stop_recovery\""
+plugins:=\"assembly_steps doc assembly_guide robot_control base_planner_panel arm_planner_panel obstacles\""
 
 # * Each pane: its name, then the command typed into it; `|now` after it runs it at once (a robot's login: it starts
 #   nothing on her, and her launch waits for her arms). The keepalives survive a short Wi-Fi drop.

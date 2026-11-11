@@ -247,13 +247,13 @@ are always quoted, also for one item, and their items separated by spaces (comma
 | Parameter | Default | Meaning |
 |---|---|---|
 | `robots` | none | Robots to connect to, by serial or name: `0804`, `alice`, `a200-0806`, `Cindy`. Left out, the monitor runs without robots. |
-| `plugins` | none | Plugins to load, see below. `health`, `console` and `assembly_observer` are always added, unless `no_default_plugins:=true`. |
+| `plugins` | none | Plugins to load, see below. `health`, `console`, `assembly_observer` and `stop_recovery` are always added, unless `no_default_plugins:=true`. |
 | `tools` | per robot | Only where the mounted tools differ from the defaults: `<robot>:<tool>[:<tool>...]` per robot, one tool per arm in arm order: `cindy:scaffolding_v3:none`. Tools: `robotiq`, `scaffolding_v1`, `scaffolding_v3`, `none`. Defaults: Alice and Belle `robotiq`, Cindy `scaffolding_v3:scaffolding_v3`. |
 | `process_directory` | none | Process folder (with `process.json`) or old compas_fab export the `process` plugin loads at startup, relative to `drive_root` (e.g. `data_design_study/260814_RobArch_support_ik`) or absolute; without it, pick one in its panel. An export is converted into `<export>_process` next to it. |
 | `data_directory` | `data/` of this repo | Root for meshes, URDFs and processes. |
 | `drive_root` | `$HUSKY_DRIVE_ROOT` | Local copy of the project's Google Drive folder (`2025-03 Husky Assembly`), for experiment data: [doc/setup/experiment_data.md](doc/setup/experiment_data.md). |
 | `recording_format` | `npz` | How runs are saved: `npz` (compact) or `json` (readable text, about twice the size: one row per sample, unknown values as `null`). Both load the same way (`load_recording`). |
-| `no_default_plugins` | `false` | `true` skips the default plugins (`health`, `console`, `assembly_observer`). |
+| `no_default_plugins` | `false` | `true` skips the default plugins (`health`, `console`, `assembly_observer`, `stop_recovery`). |
 | `ghost_timeout` | `20.0` | Seconds a plugin's ghost robots stay after the last input in it; 0 keeps them until another plugin's ghosts show. A layout file's `ghost_timeout` replaces it. |
 | `layout` | `""` | A person's layout file (`ui/layout.py`); empty for `~/.config/husky_monitor/layout.json`. Never in git. See [doc/lab/plugins.md](doc/lab/plugins.md#your-own-layout). |
 | `lab` | `main` | The lab file `obstacles` loads: a name in `data/lab/`, or a path to a .json file. |
@@ -266,7 +266,7 @@ Grouped by what they are for. What each one does in detail: [doc/lab/plugins.md]
 
 What starts, and why:
 
-- **Always:** `health`, `console` and `assembly_observer` (`no_default_plugins:=true` skips them).
+- **Always:** `health`, `console`, `assembly_observer` and `stop_recovery` (`no_default_plugins:=true` skips them).
 - **Named in `plugins:=`:** everything else. Nothing starts because of the robots or `process_directory`.
 - **Needed by a plugin that starts:** it comes along whether you name it or not. **Also loads** lists all it brings.
 - **The lab scripts** name `LAB_MONITOR_PLUGINS` (`scripts/lab_common.sh`), which starts everything below except
@@ -281,11 +281,12 @@ In **Where**, "strip" is the minimized strip at the right edge, for tools not ne
 | `health` | Main panel, under Stop all; phone **Health** | | The status of each robot and tracked object; Unlock, Resume, Reconnect. |
 | `console` | Its own window, bottom right, minimized | | The newest log lines, filtered by source and level. |
 | `assembly_observer` | Its own tab, in the strip | | Records the robots every tick and every event (commands, leases, stops, manual moves, operator clicks, log lines) on this PC for a week; copies a time range to the Drive or opens it in Rerun. |
+| `stop_recovery` | Its own tab, in the strip; a window when a robot runs again after a stop | | Logs each robot's rest poses; after an e-stop or protective stop, moves the robot slowly back to the pose from before, watching its force. |
 
 ## Assembly
 
 Name `assembly_steps`: it brings all of these but `doc` and `assembly_guide`. In the lab add `doc`, `assembly_guide`,
-`robot_control`, `base_planner_panel`, `arm_planner_panel`, `obstacles` and `stop_recovery`.
+`robot_control`, `base_planner_panel`, `arm_planner_panel` and `obstacles`.
 
 | Plugin | Where | Also loads | In short |
 |---|---|---|---|
@@ -310,7 +311,6 @@ Name what you need: `robot_control` to drive, a planner panel to plan, `obstacle
 | `arm_planner` | No tab | | The planner behind that panel; other plugins can use it too. Experimental. |
 | `obstacles` | **Obstacles**, in the strip | | The lab's obstacles for the planners, from `data/lab/<lab>.json`; edit and save them. |
 | `collisions` | **Collisions** | | Lists and draws what collision checks and clearance trips hit. |
-| `stop_recovery` | **Stop recovery** | | Logs each robot's rest poses; after an e-stop or protective stop, moves the robot slowly back to the pose from before, watching its force. |
 
 ## Mocap
 

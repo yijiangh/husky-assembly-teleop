@@ -145,6 +145,7 @@ class StopRecoveryPlugin(HuskyPlugin):
     """Logs every robot's rest poses and moves a robot back to one after a stop."""
 
     name = "stop_recovery"
+    hidden = True
     icon = viser.Icon.ARROW_BACK_UP
 
     def __init__(self):

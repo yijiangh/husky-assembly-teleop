@@ -91,7 +91,7 @@ ros2 launch husky_assembly_teleop mocap.launch.py sim:=true drive_root:=<scratch
 
 ```bash
 crl_ros_source 70 && export ZENOH_CONFIG_OVERRIDE='connect/endpoints=["tcp/127.0.0.1:7470"];scouting/multicast/enabled=false'
-ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps doc assembly_guide robot_control base_planner_panel arm_planner_panel obstacles stop_recovery" process_directory:=data_design_study/261008_2ModulesDemo_purged_process drive_root:=<scratch drive>
+ros2 launch husky_assembly_teleop monitor.launch.py robots:="alice belle cindy" plugins:="assembly_steps doc assembly_guide robot_control base_planner_panel arm_planner_panel obstacles" process_directory:=data_design_study/261008_2ModulesDemo_purged_process drive_root:=<scratch drive>
 ```
 
 Open http://localhost:8080. Every base, arm and tool should show a blue `sim` chip, and the robots should be on their
