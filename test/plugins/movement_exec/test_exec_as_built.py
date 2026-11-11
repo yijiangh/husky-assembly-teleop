@@ -30,6 +30,7 @@ class FakeMocapBars:
         """Fits B20 of `loaded`; `fail` makes `measure_now` raise."""
         self.layout, self.fail, self.hints = bar_layouts(loaded.process)[BAR], fail, []
         self.fits: dict[str, BarMeasurement] = {}
+        self.fit_settings = {"search_radius_mm": 50.0, "max_marker_age_s": 0.5}
 
     def measure_now(self, hints=None):
         """One measurement of B20 around its hint (its seat when none)."""
@@ -96,6 +97,8 @@ def test_a_motion_records_its_start_and_its_end():
     cindy = end["robots"]["robots/a200-0806"]
     assert cindy["name"] == "cindy" and cindy["source"] == "live"
     assert end["options"]["dry_run"] is False and end["options"]["transfer_as_free"]["applies"] is False
+    # * The fit settings the bars were measured with.
+    assert end["options"]["mocap_fit"] == {"search_radius_mm": 50.0, "max_marker_age_s": 0.5}
     assert end["settings"]["servo_by_bar"] is True
     lines = [line for line in lab.ctx.lines("info") if line.startswith("[as-built] B20_R_home")]
     assert lines[0].startswith("[as-built] B20_R_home start: B20 fit ok 8/8, rms 0.0 mm | vs assembled dpos 30.0 mm")

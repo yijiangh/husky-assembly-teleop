@@ -12,8 +12,9 @@ import numpy as np
 from planning_fixtures import purged_process
 from plugin_fakes import FakeContext, FakeScene
 
-from husky_assembly_teleop.plugins.mocap_bars import (ARROW_MODES, FIT_PERIOD, GAP_COLOR, LOG_PERIOD, MAX_MARKER_AGE,
+from husky_assembly_teleop.plugins.mocap_bars import (ARROW_MODES, FIT_PERIOD, LOG_PERIOD, MAX_MARKER_AGE,
                                                       SEARCH_RETRY, TURN_COLOR, MocapBarsPlugin, deviation_arrows)
+from husky_assembly_teleop.colors import FAIL, OK, rgb
 from husky_assembly_teleop.robot_interface.mocap_state import MarkerCloud
 from husky_assembly_teleop.shared.bars.layouts import bar_layouts, fake_sensed_markers
 from husky_assembly_teleop.shared.bars.pose import bar_slide_roll
@@ -350,15 +351,18 @@ def test_deviation_arrows_point_from_planned_to_fitted_magnified_and_label_true_
     arrows = deviation_arrows(planned, fitted, 1.0, magnify=20, name="B20")
     texts = [text for text, _ in arrows.labels]
     assert texts[:3] == ["2.00 mm", "B20 2.00 mm", "2.00 mm"]
-    assert texts[3:] == ["about X: +0.00°", "about Y: +0.00°", "about Z: +1.00°"]
-    gaps = [segment for segment, color in zip(arrows.segments, arrows.colors) if color == GAP_COLOR]
-    # * A shaft and two head strokes per gap; the shaft is 20 times the 2 mm.
-    assert len(gaps) == 9 and np.isclose(np.linalg.norm(gaps[0][1] - gaps[0][0]), 0.04)
+    # * Named (every bar drawn): only the turns of 0.01° or more get a label; unnamed, every axis.
+    assert texts[3:] == ["about Z: +1.00°"]
+    assert [text for text, _ in deviation_arrows(planned, fitted, 1.0).labels][3:] == \
+        ["about X: +0.00°", "about Y: +0.00°", "about Z: +1.00°"]
+    # * First a shaft and two head strokes per gap, green (2 mm is fine); the shaft is 20 times the 2 mm.
+    gaps = arrows.segments[:9]
+    assert arrows.colors[:9] == [rgb(OK)] * 9 and np.isclose(np.linalg.norm(gaps[0][1] - gaps[0][0]), 0.04)
     assert np.allclose((gaps[0][1] - gaps[0][0]) / 0.04, planned[:3, 0])
     turns = [segment for segment, color in zip(arrows.segments, arrows.colors) if color == TURN_COLOR]
     assert len(turns) > 2
-    # * The arc sweeps 20° about the planned z axis, from the planned y axis.
-    centre = planned[:3, 3] + planned[:3, 2] * (-0.5 + 0.15 * 0.8)
+    # * The arc sweeps 20° about the planned z axis, from the planned y axis, at the bar's middle.
+    centre = planned[:3, 3] + planned[:3, 2] * 0.15 * 0.8
     end = turns[-3][1] - centre
     assert np.isclose(np.degrees(np.arctan2(end @ -planned[:3, 0], end @ planned[:3, 1])), 20.0, atol=0.5)
     still = deviation_arrows(planned, planned, 1.0)
@@ -378,11 +382,14 @@ def test_arrows_show_the_chosen_bar_or_every_bar_or_none():
     shown = [label.text for label in plugin._arrow_labels if label.visible]
     # * Slid 30 mm along the bar: every gap reads 30 mm, give or take the noise.
     assert all(text.startswith("30.0") for text in shown[:3]) and len(shown) == 6
+    # * 30 mm is off: red, as the frame check's ends.
+    assert tuple(plugin._arrow_lines.colors[0, 0]) == rgb(FAIL)
     plugin._arrows.value = ARROW_MODES[2]
     plugin.draw(ctx)
     shown = [label.text for label in plugin._arrow_labels if label.visible]
     named = [text.split()[0] for text in shown if text.startswith("B")]
-    assert len(shown) == 6 * len(BARS) and named == ["B20", "B21", "B34", "B35"]
+    # * Three gaps a bar, and only the turns of 0.01° or more (the 2° roll about z; x and y under it).
+    assert named == ["B20", "B21", "B34", "B35"] and 3 * len(BARS) < len(shown) <= 6 * len(BARS)
     plugin._arrows.value = ARROW_MODES[0]
     plugin.draw(ctx)
     assert not plugin._arrow_lines.visible and not any(label.visible for label in plugin._arrow_labels)
@@ -406,3 +413,11 @@ def test_the_fit_settings_change_the_search_radius_and_timings():
     ctx.t += 0.2
     plugin.update(ctx)
     assert not ctx.scene.bodies["mocap_bars/B20"].enabled
+    plugin._fit_period.value, plugin._hint_age.value, plugin._search_retry.value = 0.5, 2.0, 3.0
+    assert plugin.fit_settings == {"search_radius_mm": 50.0, "fit_period_s": 0.5, "max_marker_age_s": 0.1,
+                                   "hint_max_age_s": 2.0, "search_retry_s": 3.0}
+    # * The fit period: a good fit waits 0.5 s for the next.
+    ctx.t += 1.0
+    stream(ctx, bar_markers(BAR))
+    plugin.update(ctx)
+    assert state.fit.ok and np.isclose(state.next_fit_at, ctx.t + 0.5)

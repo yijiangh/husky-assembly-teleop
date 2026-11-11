@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Mapping
 import numpy as np
 import viser
 
-from ..colors import BLUE, FITTED, GRAPE, GREEN, GREY, INK, LIGHT_GREY, MEASURED, RED, WARN, rgb, rgb01
+from ..colors import BLUE, FITTED, GRAPE, GREEN, GREY, LIGHT_GREY, MEASURED, RED, WARN, rgb, rgb01
 from ..drive import drive_folder, environment, folder_name
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
@@ -54,7 +54,7 @@ from ..shared.mocap_bars_contract import MOCAP_TAB, BarMeasurement
 from ..shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH
 from ..shared.recordings.runs import run_folder, save_recording, write_description
 from ..shared.bars.layouts import SEARCH_RADIUS, BarLayout, bar_layouts, drawn_bar, fit_in_cloud
-from ..shared.bars.pose import PoseDeviation, bar_ends, pose_deviation
+from ..shared.bars.pose import PoseDeviation, bar_ends, bar_gap, gap_color, pose_deviation
 from ..shared.bars.readings import (MATCHED, MISSING, MarkerRow, PlateGeometry, bar_report, marker_rows,
                                     plate_geometry)
 from ..ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_SENSOR, block, chip, chip_line, note, section,
@@ -101,14 +101,13 @@ ARROW_MODES = ("off", "chosen bar", "all bars")
 #: The arrows of a gap or a turn are drawn this many times larger by default (the as-built viewer's MAGNIFY): a
 #: millimetre on a 2 m bar cannot be seen. Their labels are the true values.
 MAGNIFY = 20
-#: Length of the axes drawn at a bar's start and radius of the turn arcs around them, metres.
+#: Length of the axes drawn at a bar's middle and radius of the turn arcs around them, metres.
 AXIS_LENGTH = 0.15
 ARC_RADIUS = 0.03
 #: The arrows are redrawn at most this often, seconds.
 ARROW_PERIOD = 0.2
-#: Colours of the arrows: the gaps (the as-built viewer's ink), the turns (its purple), the planned axes (faint), the
-#: fitted x / y / z axes.
-GAP_COLOR = rgb(INK)
+#: Colours of the arrows: the turns (the as-built viewer's purple), the planned axes (faint), the fitted x / y / z
+#: axes; a gap's arrow takes `gap_color` (green, amber, red as the frame check's ends).
 TURN_COLOR = rgb(GRAPE)
 PLANNED_AXIS_COLOR = rgb(LIGHT_GREY)
 AXIS_COLORS = (rgb(RED), rgb(GREEN), rgb(BLUE))
@@ -154,9 +153,10 @@ def deviation_arrows(planned: np.ndarray, fitted: np.ndarray, length: float, mag
                      name: str = "") -> Arrows:
     """The as-built viewer's arrows for one bar: its gaps and turns from planned to fitted, `magnify` times larger.
 
-    An arrow from each of the planned bar's start, middle and end towards the fitted one's (at least 1 cm long), its
-    true distance at the tip; the planned axes at the start (faint) and the fitted ones (x / y / z), each fitted
-    axis's tip labelled with the turn about it, and a curved arrow sweeping `magnify` times that turn about it.
+    An arrow from each of the planned bar's start, middle and end towards the fitted one's (at least 1 cm long;
+    `bar_gap`, coloured by `gap_color`), its true distance at the tip; the planned axes at the middle (faint) and the
+    fitted ones (x / y / z), each fitted axis's tip labelled with the turn about it, and a curved arrow sweeping
+    `magnify` times that turn about it.
 
     Args:
         planned: 4x4 planned bar pose (origin at the middle, z along the bar).
@@ -171,12 +171,12 @@ def deviation_arrows(planned: np.ndarray, fitted: np.ndarray, length: float, mag
         out.segments.append(segment)
         out.colors.append(color)
 
-    half = length / 2.0
-    along = np.array([[0.0, 0.0, -half], [0.0, 0.0, 0.0], [0.0, 0.0, half]])
-    targets, reals = transform_points(planned, along), transform_points(fitted, along)
+    gaps = bar_gap(fitted, planned, length)
+    targets, reals = gaps.design, gaps.measured
     for index, (target, real) in enumerate(zip(targets, reals)):
         gap = real - target
         size = float(np.linalg.norm(gap))
+        color = rgb(gap_color(size * 1e3))
         text = f"{size * 1e3:.2f} mm"
         if index == 1 and name:
             text = f"{name} {text}"
@@ -185,21 +185,23 @@ def deviation_arrows(planned: np.ndarray, fitted: np.ndarray, length: float, mag
             continue
         shown = max(0.01, magnify * size)
         tip = target + gap / size * shown
-        add(np.array([target, tip]), GAP_COLOR)
+        add(np.array([target, tip]), color)
         for stroke in _arrow_head(tip, gap, min(0.015, 0.3 * shown)):
-            add(stroke, GAP_COLOR)
+            add(stroke, color)
         out.labels.append((text, tip))
-    turn = pose_deviation(fitted, planned).rotvec_bar_deg
-    origin, fitted_origin = targets[0], reals[0]
+    turn = gaps.deviation.rotvec_bar_deg
+    # * At the middle (the bar frame's origin), where the as-built viewer draws them.
+    origin, fitted_origin = targets[1], reals[1]
     axes, fitted_axes = planned[:3, :3].T, fitted[:3, :3].T
     # * Which way each arc starts from its axis: about x towards y, about y towards x, about z towards y.
     start_axis = (1, 0, 1)
     for i in range(3):
         add(np.array([origin, origin + axes[i] * AXIS_LENGTH]), PLANNED_AXIS_COLOR)
         add(np.array([fitted_origin, fitted_origin + fitted_axes[i] * AXIS_LENGTH]), AXIS_COLORS[i])
-        # * + 0.0: no "-0.00°".
-        out.labels.append((f"about {'XYZ'[i]}: {round(float(turn[i]), 2) + 0.0:+.2f}°",
-                           fitted_origin + fitted_axes[i] * AXIS_LENGTH))
+        # * + 0.0: no "-0.00°". With a name (every bar drawn) a turn under 0.01° gets no label.
+        if not name or abs(turn[i]) >= 0.01:
+            out.labels.append((f"about {'XYZ'[i]}: {round(float(turn[i]), 2) + 0.0:+.2f}°",
+                               fitted_origin + fitted_axes[i] * AXIS_LENGTH))
         # At most a near full turn, however large the magnified angle; none when too small to see.
         sweep = float(np.clip(magnify * np.radians(turn[i]), -5.8, 5.8))
         if abs(sweep) <= 0.05:
@@ -211,7 +213,7 @@ def deviation_arrows(planned: np.ndarray, fitted: np.ndarray, length: float, mag
         points = centre + ARC_RADIUS * (v * np.cos(angles) + np.cross(k, v) * np.sin(angles))
         for a, b in zip(points[:-1], points[1:]):
             add(np.array([a, b]), TURN_COLOR)
-        for stroke in _arrow_head(points[-1], points[-1] - points[-2], min(0.012, 0.5 * ARC_RADIUS * abs(sweep))):
+        for stroke in _arrow_head(points[-1], points[-1] - points[-2], min(0.014, 0.5 * ARC_RADIUS * abs(sweep))):
             add(stroke, TURN_COLOR)
     return out
 
@@ -322,7 +324,7 @@ class MocapBarsPlugin(HuskyPlugin):
                                            hint="How many times larger the arrows draw the gaps and turns.")
 
             gui.add_html(section("fit settings", SECTION_CTRL))
-            self._radius_mm = gui.add_slider("Search mm", min=10, max=150, step=5, initial_value=SEARCH_RADIUS * 1e3,
+            self._radius_mm = gui.add_slider("Search mm", min=10, max=100, step=5, initial_value=SEARCH_RADIUS * 1e3,
                                              hint="Markers farther than this from every marker of a bar where it "
                                                   "should be are not its own: a bar farther off is not found. Servo "
                                                   "keeps its own 50 mm.")
@@ -371,7 +373,7 @@ class MocapBarsPlugin(HuskyPlugin):
         self._planned_label = scene.add_label(f"{root}/planned_label", "", visible=False)
         self._scene, self._root = scene, root
         # * Every bar's arrows in one node: gaps, axes, arcs and their heads.
-        self._arrow_lines = scene.add_line_segments(f"{root}/arrows", points=np.zeros((1, 2, 3)), colors=GAP_COLOR,
+        self._arrow_lines = scene.add_line_segments(f"{root}/arrows", points=np.zeros((1, 2, 3)), colors=TURN_COLOR,
                                                     thickness=2.5, thickness_units="screen", visible=False)
 
         # ! Callbacks run on a viser thread: hand every action to the main thread.
@@ -558,6 +560,15 @@ class MocapBarsPlugin(HuskyPlugin):
     def max_marker_age(self) -> float:
         """float: Markers older than this are not fitted and their bar hides, seconds."""
         return self._setting(self._marker_age, MAX_MARKER_AGE)
+
+    @property
+    def fit_settings(self) -> dict[str, float]:
+        """dict[str, float]: The fit settings now, as the as-built record keeps them."""
+        return {"search_radius_mm": self.search_radius * 1e3,
+                "fit_period_s": self._setting(self._fit_period, FIT_PERIOD),
+                "max_marker_age_s": self.max_marker_age,
+                "hint_max_age_s": self._setting(self._hint_age, HINT_MAX_AGE),
+                "search_retry_s": self._setting(self._search_retry, SEARCH_RETRY)}
 
     def update(self, ctx: PluginContext) -> None:
         """Follow the loaded process, refit each bar on a new marker cloud at most every FIT_PERIOD, compare.

@@ -154,7 +154,8 @@ def as_built_record(ctx: PluginContext, bars_plugin: MocapBarsContract, loaded: 
                                             "bar_id": action.bar.rsplit("/", 1)[-1], "robot": action.robot},
         step=step, instrumented_bars=[{"bar": bar, "bar_id": bar.rsplit("/", 1)[-1]} for bar in layouts],
         bars=bars, robot_state=robot_state, tool0=tool0, load=load, servo=run.servo if run is not None else None,
-        options=_options(request, run, view, dry_run), robots=robots, settings=asdict(view.settings))
+        options={**_options(request, run, view, dry_run), "mocap_fit": getattr(bars_plugin, "fit_settings", None)},
+        robots=robots, settings=asdict(view.settings))
 
 
 def _process_name(process, serial: str) -> str:

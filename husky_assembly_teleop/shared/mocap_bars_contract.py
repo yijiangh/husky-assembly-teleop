@@ -80,6 +80,17 @@ class MocapBarsContract(Protocol):
     def fits(self) -> Mapping[str, BarMeasurement]:
         """Mapping[str, BarMeasurement]: Bar id -> its latest measurement, every bar that had a sample."""
 
+    @property
+    def fit_settings(self) -> dict[str, float]:
+        """dict[str, float]: The panel's fit settings now; the as-built record keeps them with its fits.
+
+        Keys: search_radius_mm, fit_period_s, max_marker_age_s, hint_max_age_s, search_retry_s.
+        """
+
+    @property
+    def max_marker_age(self) -> float:
+        """float: A fit of markers older than this is stale, seconds (the panel's "Marker age s")."""
+
     def measure_now(self, hints: Mapping[str, Pose] | None = None) -> dict[str, BarMeasurement]:
         """Fit every bar afresh from the newest marker cloud, and keep the result as `fits`.
 
