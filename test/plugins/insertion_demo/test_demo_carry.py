@@ -229,8 +229,15 @@ def test_a_held_cycle_carries_the_bar_in_and_back_to_the_loading_pose(monkeypatc
     holder.append(panel)
 
     async def scenario():
+        # * Each move of the cycle takes its own motion time.
+        for label, seconds in (("Transfer s", 12.0), ("Insert s", 8.0), ("Return s", 14.0), ("Load s", 16.0)):
+            panel.widget(label).value = seconds
         steps = await run_to_the_end(panel, "Cycle")
         assert panel.plugin.outcome.startswith("cycle done: back at the loading pose"), panel.plugin.outcome
+        sent = [message.trajectory1.points[-1].time_from_start for message in panel.lab.robot._multi_arm.messages]
+        seconds = [each.sec + each.nanosec * 1e-9 for each in sent]
+        assert seconds[0] == pytest.approx(12.0, abs=0.9) and seconds[2:] == pytest.approx([14.0, 16.0], abs=0.9)
+        assert seconds[1] < 8.0, "the insert's rigid part, a share of its 8 s"
         names = [name for name, _t in steps if name and name != "cycle: rest" and "plan" not in name]
         assert names == ["cycle: transfer", "cycle: insert", "cycle: settle", "cycle: retreat", "cycle: return",
                          "cycle: load"], names
@@ -265,7 +272,7 @@ def test_a_held_preview_cycle_has_the_carry_at_both_ends(monkeypatch):
         shown = await panel.click("Preview cycle")
         assert shown.startswith(f"{PREVIEW} shown (transfer, insert, back-out, return, transfer back"), shown
         planned = panel.plugin._planned
-        assert planned.parts == 5
+        assert planned.times == ("transfer", "insert", "retreat", "return", "load")
         np.testing.assert_allclose(planned.rows[0], carry[0])
         np.testing.assert_allclose(planned.rows[-1], carry[0])
         assert panel.lab.nothing_sent()

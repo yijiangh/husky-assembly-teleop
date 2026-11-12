@@ -152,12 +152,17 @@ def test_transit_only_plans_and_shows_then_execute_runs_it_once(monkeypatch):
         slider, ghost = panel.widget("Preview time"), panel.plugin._ghost
         assert slider.max == pytest.approx(10.0, abs=0.1) and slider.value == pytest.approx(slider.max)
         np.testing.assert_allclose([ghost.shown[1][name] for name in NAMES], START, atol=1e-9)
-        # * Scrubbing to 0 shows where the arms stand; a longer motion time stretches the preview.
+        # * Scrubbing to 0 shows where the arms stand; the transit's own motion time stretches the preview, another
+        #   move's does not.
         slider.callback(0.0)
         panel.draw()
         np.testing.assert_allclose([ghost.shown[1][name] for name in NAMES], INSERTED, atol=1e-9)
-        panel.widget("Motion time").value = 20.0
-        panel.widget("Motion time").callback(20.0)
+        panel.widget("Insert s").value = 30.0
+        panel.widget("Insert s").callback(30.0)
+        panel.draw()
+        assert slider.max == pytest.approx(10.0, abs=0.1), "the insert's time is not the transit's"
+        panel.widget("Transit s").value = 20.0
+        panel.widget("Transit s").callback(20.0)
         panel.draw()
         assert slider.max == pytest.approx(20.0, abs=0.1) and panel.lab.nothing_sent()
         assert (await panel.click("Execute")).startswith("transit ARRIVED")
@@ -367,8 +372,8 @@ def test_a_planned_move_fills_the_plan_plots_and_opens_their_window_once(monkeyp
         # * A free move: no bar in the preview robot's tools, the grasp plots empty.
         assert panel.plugin._ghost.held == {} and panel.plugin._planned.drift is None
         assert all(math.isnan(plot.data[1][0]) for plot in panel.ctx.gui.of_kind("uplot")[2:4])
-        panel.widget("Motion time").value = 20.0
-        panel.widget("Motion time").callback(20.0)
+        panel.widget("Transit s").value = 20.0
+        panel.widget("Transit s").callback(20.0)
         panel.draw()
         assert values.data[0][-1] == pytest.approx(20.0, abs=0.1) and plan_window.calls.count("expand") == 1
         await panel.click("Execute")

@@ -91,9 +91,12 @@ arms run (`joint` / `compliant`), the planned move, the running step. What a but
 shows below the buttons and in the console.
 
 **Every move takes two clicks.** **Transit**, **Insert**, **Retreat** or **Return** only plans the move and shows
-it: a see-through robot stands on the path at **Preview time** (drag the slider, or **Play**). **Motion time** sets how
-long the move takes (10 s by default; the line below says the shortest the arms' limits allow). **Execute** then
-runs the move shown, once. **Cancel**, with nothing running, drops the planned move.
+it: a see-through robot stands on the path at **Preview time** (drag the slider, or **Play**). Each move has its own
+motion time, under **motion time**: **Transit s** (it reads **Transfer s** with the Transfer button), **Insert s**,
+**Retreat s** (the back-out line, after **Loosen s**), **Return s**, **Load s** and **Stow s**, 10 s each by default;
+the line under **Preview time** says the shortest the arms' limits allow for the move shown. **Cycle** takes each
+move's own time, and **Preview cycle** their sum. **Execute** then runs the move shown, once. **Cancel**, with
+nothing running, drops the planned move.
 
 **The plots open by themselves**, as in the Assembly tab. Two windows sit minimized at the bottom of the page:
 **Plan plots** comes forward when a move is planned (every joint along the preview, and the joint step between the
@@ -151,7 +154,7 @@ reads `cycle preview` and **Execute** refuses it. Use it after changing a length
 
 **3.8 Stow.** With the bar unmounted and put away (**Release**, take it out), **Stow** plans a free dual-arm move from
 wherever the arms are to their park pose (crl-husky's park.yaml, where the simulator starts them), with the transit's
-planner; **Execute** runs it over **Motion time**. The held bar is hidden from the planner, as for Transit: never
+planner; **Execute** runs it over **Stow s**. The held bar is hidden from the planner, as for Transit: never
 with the bar still in the tools.
 
 **Cancel** stops the running step and holds the arms; **Stop all** (Esc) too. A compliant step cancelled leaves the
@@ -207,7 +210,7 @@ the retreat, the return, the transfer back. **Preview cycle** shows that loop as
   so: set it back, or **Save**, **Load** the process again and plan the path again.
 - `the saved carry is stale`: the process or the action changed since it was planned (also by **Save**). Plan it again.
 - ! The bar rack on the base is not in the process: the path over the back is planned blind to it. Run the first
-  transfer slowly (**Motion time** up) and watch.
+  transfer slowly (**Transfer s** up) and watch.
 - ! After an insert and a retreat the grasp is twisted by about 1°; the transfer back pulls the arms onto the planned
   path in its first segment. Watch the first one.
 - With the box ticked (chip `bar free`) the button reads **Transit** and plans the free move of 3.2, and **Load** is

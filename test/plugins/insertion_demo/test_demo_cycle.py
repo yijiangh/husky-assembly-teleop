@@ -216,13 +216,18 @@ def test_preview_cycle_shows_the_whole_cycle_as_one_path_and_sends_nothing(monke
         assert shown.startswith(f"{PREVIEW} shown (insert, back-out, return"), shown
         assert [request.label for request in panel.planner.requests] == ["demo preview insert", "demo preview return"]
         planned = panel.plugin._planned
-        assert planned.step == PREVIEW and planned.parts == 3 and planned.refused
+        assert planned.step == PREVIEW and planned.times == ("insert", "retreat", "return") and planned.refused
         np.testing.assert_allclose(planned.rows[0], START)
         np.testing.assert_allclose(planned.rows[4], INSERTED)
         np.testing.assert_allclose(planned.rows[-1], START)
         assert len(planned.rows) == 6, "the insert's five rows, then the back-out's end"
         assert PREVIEW in panel.widget("").content and panel.plugin._ghost.shown is not None
-        assert panel.widget("Preview time").max == pytest.approx(30.0, abs=0.1), "three parts of Motion time each"
+        assert panel.widget("Preview time").max == pytest.approx(30.0, abs=0.1), "each part's own motion time"
+        # * The preview takes each move's own time: the return's 25 s instead of 10.
+        panel.widget("Return s").value = 25.0
+        panel.widget("Return s").callback(25.0)
+        panel.draw()
+        assert panel.widget("Preview time").max == pytest.approx(45.0, abs=0.5)
         assert (await panel.click("Execute")).startswith(f"Execute refused: the {PREVIEW} shown is not to run")
         assert panel.lab.nothing_sent()
 

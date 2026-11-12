@@ -118,8 +118,8 @@ the configured one: robots/cindy (a200-0806): left_ur_arm_tool0: TCP off by 106.
 `no plan` and
 `idle` (grey); **Action** `B6_J`; the sliders **Compliant mm** 10, **Loosen s** 6, **Insert mm** 15 and **Retreat mm** 15; the buttons **Save**, **Grasp**,
 **Release** | **Tighten**, **Loosen**, **Stop** | the blue **Transit** | **Insert**, **Retreat**, **Return**, **Load**,
-**Stow**; under **preview** the sliders
-**Preview time** and **Motion time** 10, the line `min — s by the arms' limits`, the blue **Execute**, then **Play**,
+**Stow**; under **motion time** the sliders **Transit s**, **Insert s**, **Retreat s**, **Return s**, **Load s** and
+**Stow s**, 10 each; under **preview** the slider **Preview time**, the line `min — s by the arms' limits`, the blue **Execute**, then **Play**,
 **Cancel** | **Compliant**, **Rigid**, **Zero F/T**; under **autonomous** the slider **Settle s** 0 and the buttons **Preview cycle** and **Cycle**. Hovering
 a Move button says what each does. How a step ended, and what a button refused, shows under the buttons and in the
 `monitor` pane. At the bottom of the page, two windows minimized to their bars: **Plan plots** and **Exec plots**.
@@ -152,10 +152,11 @@ the buttons. Nothing moved. The waypoint counts and times differ from run to run
   base and the target in blue show too: the demo selected the step in the process panel.
 - **Preview time:** at its right end, 11.2. Drag it to the left: the see-through arms follow the path back to where
   the real arms stand. **Play** runs it from the start.
-- **Motion time:** 10, and below it `min 11.2 s by the arms' limits`: the move takes the longer of the two. Set it to
-  20: **Preview time** now ends at 20. Set it back to 10.
+- **Transit s:** 10, and under **Preview time** `min 11.2 s by the arms' limits`: the move takes the longer of the
+  two. Set it to 20: **Preview time** now ends at 20. Set **Insert s** to 20 instead: nothing changes, it is the
+  insert's time. Set both back to 10.
 - **Plan plots:** the window opened by itself. `joint values (deg)` has a line per joint over the 11.2 s, `L pan` …
-  `R w3`, the right arm's dashed; `joint step (deg)` the largest step between the plan's rows. With **Motion time**
+  `R w3`, the right arm's dashed; `joint step (deg)` the largest step between the plan's rows. With **Transit s**
   at 20 the lines stretch to 20 s. Close the window with the `–` in its bar if it is in the way: the next plan opens
   it again.
 
@@ -356,7 +357,7 @@ stopped`. Nothing else moves.
 |F| …` in the console and `force sensors zeroed: |F| now left_ur_arm … N, right_ur_arm … N` under the buttons; nothing
 moves. Click **Stow**. **Expect:** the chip `plan stow`, the console `demo stow` on `tamp.plan_free_dual_arm`, then
 `stow planned (…)`, the chip `stow ready`, the see-through arms folded in their park pose. Click **Execute**.
-**Expect:** `stow ARRIVED` after **Motion time**; both arms stand parked, as the simulator started them.
+**Expect:** `stow ARRIVED` after **Stow s**; both arms stand parked, as the simulator started them.
 
 ---
 

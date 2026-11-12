@@ -23,9 +23,10 @@ planned offline, the bar held by both arms) from the loading pose to the insert'
 reversed while the arms stand at the insert's start, and elsewhere a free move to the loading pose, only after a
 **Release** (the tools empty); the cycle starts and ends at the loading pose.
 
-A Move button only plans and shows its move: a see-through robot on the path at **Preview time**, timed for **Motion
-time**, the bar and its joint halves in its tools on every move that holds the bar. **Execute** runs the move shown,
-once.
+A Move button only plans and shows its move: a see-through robot on the path at **Preview time**, timed for its own
+motion time (**Transit s** or **Transfer s**, **Insert s**, **Retreat s**, **Return s**, **Load s**, **Stow s**; the
+cycle takes each move's own), the bar and its joint halves in its tools on every move that holds the bar.
+**Execute** runs the move shown, once.
 
 **Cycle** runs one whole cycle from the insert's start: the insert, **Settle s** after the screws stall, the retreat,
 then Return planned, checked and run. Nothing resumes after Cancel: Rigid, Retreat and Return by hand, then Cycle.
@@ -95,7 +96,7 @@ from .parts import (AT_START, GRIP_TIMEOUT, back_out_rows, demo_steps, grasp_dri
                     run_grip, run_screws, run_unscrew_retreat, save_action, saved_carry, timed_preview, tool0_at,
                     with_insert_start, with_midpoints)
 
-#: The sliders' ranges and starts: the insert's compliant millimetres, the motion time in seconds, the loosen, the
+#: The sliders' ranges and starts: the insert's compliant millimetres, each motion time in seconds, the loosen, the
 #: cycle's pause after the insert; the insert's and the retreat's length in millimetres (they start at the process's).
 SPLIT_RANGE, SPLIT_DEFAULT = (0.5, 150.0), 10.0
 LENGTH_RANGE = (5.0, 150.0)
@@ -106,6 +107,18 @@ NO_ACTION = "no process"
 SCAFFOLDING = "scaffolding_v3"
 #: The Move buttons, by the step each plans.
 MOVES = {"Insert": "insert", "Retreat": "retreat", "Return": "return", "Load": "load", "Stow": "stow"}
+#: The key of the motion time slider the transit and the transfer share, and what each step's motion time sets.
+TRAVEL_TIME = "travel"
+TIME_HINTS = {
+    TRAVEL_TIME: "the way to the insert's start: the transit, or the transfer (as the button reads)",
+    "insert": "the insert, its rigid and its compliant part together",
+    "retreat": "the retreat's back-out line, after the joint screws loosened for Loosen s",
+    "return": "the return to the insert's start",
+    "load": "the way to the loading pose: the free move, or the saved path reversed",
+    "stow": "the move to the arms' park pose",
+}
+#: A cycle preview's parts, by the step whose motion time each takes.
+PART_STEPS = {"back-out": "retreat", "transfer back": "load"}
 #: The button of the way to the insert's start, by whether the bar is held on it: its label; the step is the same
 #: word in small letters. Transit: a free move, the bar hidden. Transfer: the saved path, the bar in both tools.
 TRAVEL = {False: "Transit", True: "Transfer"}
@@ -147,7 +160,8 @@ class Planned:
             streamed over the motion time.
         refused: Why it is only shown and never run (a return that failed its checks, a cycle's preview); "" if it
             may run.
-        parts: How many moves the path strings together, each given the motion time in the preview.
+        times: The steps whose motion times add up to the preview's, for a path that strings moves together; empty:
+            the step's own.
         held: Whether the bar is in both tools all along: the preview robot then carries it.
         drift: How far one tool0 seen from the other moves along the path, for the Plan plots; None: not worked out.
     """
@@ -160,7 +174,7 @@ class Planned:
     text: str
     limits: bool = True
     refused: str = ""
-    parts: int = 1
+    times: tuple[str, ...] = ()
     held: bool = False
     drift: GraspDrift | None = None
 
@@ -312,13 +326,17 @@ class InsertionDemoPlugin(HuskyPlugin):
                                              "insert's start (the bar held), else a free move, only after Release "
                                              "(the tools empty). With Transit: always the free move. Stow: a free "
                                              "move to the arms' park pose, the bar unmounted and put away.")
+            gui.add_html(section("motion time", SECTION_CTRL))
+            # * One per move, also in the cycle. The first is labelled as the button above reads (`draw`).
+            self._times = {step: gui.add_slider(f"{TRAVEL[False] if step == TRAVEL_TIME else step.capitalize()} s",
+                                                min=SECONDS_RANGE[0], max=SECONDS_RANGE[1], step=0.5,
+                                                initial_value=SECONDS_DEFAULT,
+                                                hint=f"Seconds for {what}, by hand and in the cycle; the arms' "
+                                                     f"limits may need longer")
+                           for step, what in TIME_HINTS.items()}
             gui.add_html(section("preview", SECTION_CTRL))
             self._slider = gui.add_slider("Preview time", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
                                           hint="Scrub through the planned move: seconds from its start")
-            self._seconds = gui.add_slider("Motion time", min=SECONDS_RANGE[0], max=SECONDS_RANGE[1], step=0.5,
-                                           initial_value=SECONDS_DEFAULT,
-                                           hint="How long the transit, the insert or the back-out takes, seconds; "
-                                                "the arms' limits may need longer")
             # ! Always one line, so the buttons below never move.
             self._minimum: viser.GuiHtmlHandle = gui.add_html("")
             execute = gui.add_button("Execute", icon=EXEC_ICON,
@@ -363,7 +381,8 @@ class InsertionDemoPlugin(HuskyPlugin):
             slider.on_update(ctx.defer_value("length", lambda _value: self._on_length()))
         # ! Operator drags only: draw writes the slider every tick, and viser calls back for that too.
         self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value)), operator_only=True))
-        self._seconds.on_update(ctx.defer_value("motion time", lambda value: self._retime(float(value))))
+        for slider in self._times.values():
+            slider.on_update(ctx.defer_value("motion time", lambda _value: self._retime()))
 
     # --- --- --- --- --- BUTTONS (intents, on the main thread) --- --- --- --- ---
 
@@ -524,7 +543,7 @@ class InsertionDemoPlugin(HuskyPlugin):
 
     def _show(self, ctx: PluginContext, planned: Planned) -> str:
         """Keep a planned move for Execute and time its preview; the panel's line, or why it can't be shown."""
-        timed = timed_preview(planned.rows, float(self._seconds.value) * planned.parts, planned.limits)
+        timed = timed_preview(planned.rows, self._seconds_of(planned), planned.limits)
         if isinstance(timed, str):
             return f"{planned.step}: {timed}"
         self._planned = planned
@@ -545,11 +564,19 @@ class InsertionDemoPlugin(HuskyPlugin):
         self.minimum = math.nan
         self._t, self._playing = 0.0, False
 
-    def _retime(self, seconds: float) -> None:
-        """The motion time changed: time the preview again."""
+    def _seconds_for(self, step: str) -> float:
+        """The motion time set for a step, seconds; the transit and the transfer share one slider."""
+        return float(self._times[TRAVEL_TIME if step in ("transit", "transfer") else step].value)
+
+    def _seconds_of(self, planned: Planned) -> float:
+        """The motion time of a planned move, seconds: its step's, or the sum of its parts' (a cycle's preview)."""
+        return sum(self._seconds_for(step) for step in planned.times or (planned.step,))
+
+    def _retime(self) -> None:
+        """A motion time changed: time the preview again."""
         if self._planned is None:
             return
-        timed = timed_preview(self._planned.rows, seconds * self._planned.parts, self._planned.limits)
+        timed = timed_preview(self._planned.rows, self._seconds_of(self._planned), self._planned.limits)
         if not isinstance(timed, str):
             self._preview, self.minimum = timed
             self._t = min(self._t, self._preview.duration)
@@ -1012,7 +1039,7 @@ class InsertionDemoPlugin(HuskyPlugin):
             if isinstance(path, str):
                 return f"{step}: {path}"
             try:
-                command = motion_command(self._serial, list(robot.arms), *path, float(self._seconds.value))
+                command = motion_command(self._serial, list(robot.arms), *path, self._seconds_for(step))
             except ValueError as error:
                 return f"{step}: the plan can't be sent: {error}"
             ctx.log_info(f"insertion demo: {step} along {planned.text}, {command.duration:.1f} s")
@@ -1030,7 +1057,7 @@ class InsertionDemoPlugin(HuskyPlugin):
             if isinstance(path, str):
                 return f"insert: {path}"
             plan = plan_insert(robot, *path, mating=mating, grounded=False, split_mm=float(self._split.value),
-                               spiral=None, traj_time=float(self._seconds.value))
+                               spiral=None, traj_time=self._seconds_for("insert"))
             if isinstance(plan, str):
                 return f"insert: {plan}"
             ctx.log_info(f"insertion demo: {plan.text}")
@@ -1058,7 +1085,7 @@ class InsertionDemoPlugin(HuskyPlugin):
             try:
                 outcome = await run_unscrew_retreat(
                     ctx, robot, {arm: tools[arm] for arm in arms}, ends, loosen_s=float(self._loosen.value),
-                    seconds=float(self._seconds.value),
+                    seconds=self._seconds_for("retreat"),
                     recorder=self._record(ctx, robot, f"{demo.action_id} retreat"))
             finally:
                 self._recorder = None
@@ -1232,7 +1259,8 @@ class InsertionDemoPlugin(HuskyPlugin):
         rows = np.array(rows)
         shown = self._show(ctx, Planned(PREVIEW, demo, tuple(names), rows, ctx.kinematics.base_pose(self._serial),
                                         ", ".join(name for name, _part in parts), refused=PREVIEW_ONLY,
-                                        parts=len(parts), held=held,
+                                        times=tuple(PART_STEPS.get(name, name) for name, _part in parts),
+                                        held=held,
                                         drift=grasp_drift(relative_tool0(robot, names, rows, arms))
                                         if held and len(arms) > 1 else None))
         return f"{shown}; stopped at: {problem}" if problem else shown
@@ -1280,6 +1308,7 @@ class InsertionDemoPlugin(HuskyPlugin):
         travel = TRAVEL[self._held(ctx)]
         if self._travel.label != travel:
             self._travel.label = travel
+            self._times[TRAVEL_TIME].label = f"{travel} s"
         robot = ctx.world.robots.get(self._serial) if self._serial else None
         self._status.content = chip_line(self._chips(ctx, robot, actions))
         self._text.content = note(self.outcome) if self.outcome else ""

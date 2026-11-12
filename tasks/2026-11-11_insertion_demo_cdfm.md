@@ -1,7 +1,7 @@
 # Insertion demo: the bar carried from a loading pose (CDFM, roadmap planner)
 
 Status (2026-11-11): implemented on `yh/insertion-demo-cdfm` (off `yh/insertion-demo` a9903848, `yh/cdfm-planners`
-merged in, tamp at ac08ae7, the core at ed9a3a5); nothing pushed. Run end to end on the simulated Cindy. The saved
+merged in, the core at ed9a3a5); pushed 2026-11-11. Run end to end on the simulated Cindy. The saved
 carry is on the real Drive's process since 2026-11-11 15:00. Open: the carry on the real robot (below).
 
 ## What was asked
@@ -65,6 +65,11 @@ The user found the ticking and unticking confusing, and wanted to check a transf
   for the way back was considered and dropped at the user's word.
 - Checked in the dry run (box unticked all along): Load refused, Release, Load (free), Execute, Grasp, Transfer with
   the bar on the preview robot and the plots (0.01 mm, 0.002° on the saved path), one whole Cycle.
+
+- **A motion time per move** (asked after the first cycles: one slider for all was not readable): the section
+  `motion time` has **Transit s** / **Transfer s** (one slider, labelled as the button reads), **Insert s**,
+  **Retreat s**, **Return s**, **Load s**, **Stow s**, box ticked or not. A move by hand and the same move in the
+  cycle take that move's time; a cycle preview takes the sum of its parts'.
 
 ## What the planning showed (2026-11-11, on the dry run's copy of the process, a mock benchmark root)
 
