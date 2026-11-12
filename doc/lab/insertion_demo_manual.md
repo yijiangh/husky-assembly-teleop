@@ -241,7 +241,20 @@ python -u scripts/plan_process_carry.py "$PROC" --bar B6 --cdfm-backend prm --pr
 python -u scripts/prm_check_solved.py "$PROC" --bar B6 --solved-dir "$PLANS" --tags prm direct
 ```
 
+A carry saved before its corners were rounded (any `solutions/B6_J.json` planned before 2026-11-11 evening) is rounded
+without planning it again (10 s), then checked:
+
+```bash
+python -u scripts/round_process_carry.py "$PROC" --bar B6 --solution "$PROC/solutions/B6_J.json" \
+    --save-dir "$PLANS" --save-tag rounded --write-solution
+python -u scripts/prm_check_solved.py "$PROC" --bar B6 --solved-dir "$PLANS" --tags rounded
+```
+
 - The finer steps (`--cdfm-position-res 0.004 --cdfm-rotation-res 0.01`) keep every joint step under the demo's 5°.
+- `plan_process_carry.py` rounds the path's corners in bar pose space (`--round-radius`, 0.3 m; `--round-tolerance`,
+  60 mm; `--round-radius 0` keeps them): the arms stop at every corner of a path, and a roadmap path is a chain of
+  straight pieces. Its line `rounded: …` says what it did; `corners not rounded` keeps the path as planned. On the
+  B6 roadmap carry: 8 stops down to 1, 15.4 s down to 13.6 s at full speed, the bar centre at most 35 mm off its path.
 - Step 1's line with `--write-solution` saves the search's own path instead of the roadmap's: the same loading
   pose, a shorter way (0.68 m of bar travel against 1.04 m on 2026-11-11).
 - From tamp's own back pose (grasp midpoint 0.10 m ahead of the base centre, 1.04 m up) the roadmap found no route
