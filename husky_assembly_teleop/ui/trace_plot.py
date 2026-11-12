@@ -38,7 +38,7 @@ class TracePlot:
     def __init__(self, gui: viser.GuiApi, trace: Trace, signal: Signal | str, seconds: float | None = 30.0,
                  y_range: tuple[float, float] | None = None, aspect: float = 2.0, min_span: float = 1e-6,
                  x_label: str = "t s", colors: Sequence[str] | None = None, points: bool = False,
-                 live_legend: bool = True):
+                 live_legend: bool = True, peaks: bool = False):
         """Add the plot to `gui`.
 
         Args:
@@ -53,10 +53,12 @@ class TracePlot:
             colors: A line colour per channel, else COLORS in order.
             points: Mark every sample with a dot, so a lone sample shows (uPlot draws lines only).
             live_legend: The legend shows the values under the mouse; False shows the labels only.
+            peaks: Thin a long trace keeping each line's highs and lows (`peak_thinned`), not evenly picked rows.
         """
         self._trace = trace
         name = self._name = signal if isinstance(signal, str) else signal.key
         self._seconds = seconds
+        self._thin = peak_thinned if peaks else thinned
         signal = trace.signal(name)
         # * One unit for all channels goes into the title, mixed units onto each line.
         shared = len(set(signal.units)) == 1
@@ -90,7 +92,7 @@ class TracePlot:
         if self._seconds is not None and len(t):
             keep = t >= t[-1] - self._seconds
             t, values = t[keep], values[keep]
-        t, values = thinned(t, values)
+        t, values = self._thin(t, values)
         start = self._trace.start or 0.0
         if not self._fixed:
             y_range = _nice_range(values, self._min_span)
@@ -118,6 +120,33 @@ def thinned(*columns: np.ndarray) -> tuple[np.ndarray, ...]:
         return columns
     pick = np.linspace(0, len(columns[0]) - 1, MAX_POINTS).astype(int)
     return tuple(column[pick] for column in columns)
+
+
+def peak_thinned(t: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The rows cut to at most MAX_POINTS, keeping in each stretch every line's highest and lowest sample.
+
+    Evenly picked rows (`thinned`) can drop a short spike from a long trace; these keep it.
+
+    Args:
+        t: The times, (N,).
+        values: The samples, (N x channels) or (N,).
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: The rows kept, oldest first, the first and the last among them.
+    """
+    if len(t) <= MAX_POINTS:
+        return t, values
+    rows = values.reshape(len(t), -1)
+    stretches = max(1, (MAX_POINTS - 2) // (2 * rows.shape[1] + 1))
+    edges = np.linspace(0, len(t), stretches + 1).astype(int)
+    kept = [np.array([0, len(t) - 1])]
+    for start, end in zip(edges[:-1], edges[1:]):
+        part = rows[start:end]
+        known = np.isfinite(part)
+        kept += [start + np.array([0]), start + np.argmax(np.where(known, part, -np.inf), axis=0),
+                 start + np.argmin(np.where(known, part, np.inf), axis=0)]
+    pick = np.unique(np.concatenate(kept))
+    return t[pick], values[pick]
 
 
 def _nice_range(values: np.ndarray, min_span: float = 1e-6) -> tuple[float, float]:

@@ -122,7 +122,8 @@ the configured one: robots/cindy (a200-0806): left_ur_arm_tool0: TCP off by 106.
 **Stow s** (20, 5, 5, 5, 20, 20); under **preview** the slider **Preview time**, the line `min — s by the arms' limits`, the blue **Execute**, then **Play**,
 **Cancel** | **Compliant**, **Rigid**, **Zero F/T**; under **autonomous** the slider **Settle s** 0 and the buttons **Preview cycle** and **Cycle**. Hovering
 a Move button says what each does. How a step ended, and what a button refused, shows under the buttons and in the
-`monitor` pane. At the bottom of the page, two windows minimized to their bars: **Plan plots** and **Exec plots**.
+`monitor` pane. At the bottom of the page, three windows minimized to their bars: **Plan plots**, **Exec plots**
+and **Force plots**.
 
 Every move takes two clicks: **Transit**, **Insert**, **Retreat** or **Return** plans the move and shows it in the
 preview, and nothing moves until **Execute**. **Cycle** alone runs a whole cycle on one click (3.10).
@@ -254,6 +255,11 @@ then `demo return` planned, the **Plan plots** with the way back, `return ARRIVE
 (return ARRIVED: …): back at the insert's start; Cycle runs the next`. About 50 s in all. Click **Cycle** again at
 once: the same again. Click **Cycle** with the arms elsewhere (after a **Compliant** / **Rigid**, say): `Cycle
 refused: left_ur_arm's tool0 is … from the insert's start …: press Transit or Return first`.
+
+Open **Force plots** from its bar before a Cycle. **Expect:** two plots, `force [N]` and `torque [Nm]`, with lines
+`L x` … `R z` (left red, right green) running on through every move and pause of the cycle, never starting over;
+below them `|F| now N` and `|F| peak N` with a number per arm. **Clear** empties them and the peak, and they run on
+from there.
 
 **3.11 A longer insert, previewed first.** Set **Insert mm** to 60 and **Retreat mm** to 40, then click **Preview
 cycle**. **Expect:** the console `demo preview transit`, `demo preview insert`, `demo preview return`; the line

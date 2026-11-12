@@ -360,7 +360,7 @@ def test_a_planned_move_fills_the_plan_plots_and_opens_their_window_once(monkeyp
     The transit is a joint motion, so the Exec plots stay minimized.
     """
     panel = Panel(monkeypatch, np.linspace(INSERTED, START, 5))
-    plan_window, exec_window = panel.ctx.panels
+    plan_window, exec_window, _force_window = panel.ctx.panels
     values, steps = panel.ctx.gui.of_kind("uplot")[:2]
     assert plan_window.calls == exec_window.calls == ["minimize"]
 
@@ -390,7 +390,7 @@ def test_the_exec_plots_open_and_fill_while_a_compliant_part_runs(monkeypatch):
     monkeypatch.setattr(InsertionDemoPlugin, "_insert_start", staticmethod(
         lambda _demo: (["left_ur_arm", "right_ur_arm"], dict(zip(NAMES, START)))))
     panel = Panel(monkeypatch, np.linspace(INSERTED, START, 5))
-    _plan_window, exec_window = panel.ctx.panels
+    _plan_window, exec_window, _force_window = panel.ctx.panels
 
     def samples() -> int:
         return len(panel.plugin._exec_plots._compliant.times("force"))

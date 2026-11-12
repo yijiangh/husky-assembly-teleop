@@ -35,7 +35,8 @@ then Return planned, checked and run. Nothing resumes after Cancel: Rigid, Retre
 The Assembly tab's two plot windows are here too and open by themselves: **Plan plots** with the planned move's
 joints and, for a move that holds the bar, how far one tool0 seen from the other moves from where it is at the first
 waypoint (position, and the angle of each axis); **Exec plots** with both arms' force and torque while an insert, a
-retreat or Compliant runs.
+retreat or Compliant runs. A third window, **Force plots**, records both arms' force and torque all along, over every
+move and pause, until its **Clear** (`force_plots.py`).
 
 - Needs the process loaded in `process` (Load in the Assembly tab) and the base live: without mocap, `husky_fixed_base`
   publishes it standing at the origin, where the process puts it.
@@ -73,7 +74,7 @@ from ...shared.assembly_planning.process_steps import LoadedProcess, loaded_proc
 from ...shared.assembly_planning.route_result import RouteResult
 from ...shared.assembly_run_contract import is_live
 from ...shared.assembly_tab.exec_plots import ExecPlots
-from ...shared.assembly_tab.layout import EXEC_ICON, EXEC_PLOTS_X, PLAN_PLOTS_X, plots_window
+from ...shared.assembly_tab.layout import EXEC_ICON, EXEC_PLOTS_X, FORCE_PLOTS_X, PLAN_PLOTS_X, plots_window
 from ...shared.assembly_tab.plan_plots import GraspDrift, PlanPlots
 from ...shared.execution.controllers import leave_compliance
 from ...shared.execution.force_sensors import zero_force_sensors
@@ -91,6 +92,7 @@ from ...ui.ghost import RobotGhost
 from ...ui.second_press import SecondPress, show_waiting
 from ...ui.style import BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, chip, chip_line, note, section, values
 from ...world.kinematics import stow_joints
+from .force_plots import ForcePlots
 from .parts import (AT_START, GRIP_TIMEOUT, back_out_rows, demo_steps, grasp_drift, held_bodies, line_length,
                     line_start, live_rows, load_step, off_start, relative_tool0, return_problem, run_compliant_hold,
                     run_grip, run_screws, run_unscrew_retreat, save_action, saved_carry, timed_preview, tool0_at,
@@ -256,6 +258,8 @@ class InsertionDemoPlugin(HuskyPlugin):
         self._plotted_plan: Planned | None = None
         #: The Exec plots window's plots, the running compliant part's samples, and the time of the one last plotted.
         self._exec_plots: ExecPlots | None = None
+        #: The Force plots window: both arms' force and torque all along.
+        self._force_plots: ForcePlots | None = None
         self._recorder: Recorder | None = None
         self._plotted_t: float | None = None
 
@@ -373,6 +377,8 @@ class InsertionDemoPlugin(HuskyPlugin):
             self._plan_plots = PlanPlots(ctx.view.gui, grasp=True)
         with plots_window(ctx.view, "Exec plots", viser.Icon.CHART_DOTS, EXEC_PLOTS_X) as window:
             self._exec_plots = ExecPlots(ctx.view.gui, window)
+        with plots_window(ctx.view, "Force plots", viser.Icon.ACTIVITY, FORCE_PLOTS_X):
+            self._force_plots = ForcePlots(ctx, ctx.view.gui, self._serial)
         for label, group in (("bar", bar), ("joint", joint), ("move", move), ("path", path), ("arms", arms)):
             group.on_click(ctx.defer_value(f"{label} button", lambda clicked: self._on_button(ctx, clicked)))
         self._travel.on_click(ctx.defer("travel", lambda: self._on_button(ctx, TRAVEL[self._held(ctx)])))
@@ -1336,6 +1342,7 @@ class InsertionDemoPlugin(HuskyPlugin):
                 path = dict(zip(planned.names, self._preview.sample(self._t)))
                 self._ghost.show(planned.base, {**ctx.kinematics.joints(self._serial), **path})
         self._draw_plots()
+        self._force_plots.draw(ctx.now())
 
     def _draw_plots(self) -> None:
         """The planned move's joints and grasp into the Plan plots, a compliant part's newest sample into the Exec's."""

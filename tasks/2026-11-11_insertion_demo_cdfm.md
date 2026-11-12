@@ -87,6 +87,11 @@ The user found the ticking and unticking confusing, and wanted to check a transf
 - **The joint step gate is 8°, was 5°** (2026-11-12, the user's word after `Execute refused: the return shown is not
   to run: a joint jumps 6.3° between waypoints 0 and 1 (over 5°)`): `parts.JOINT_STEP`, for the return and for the
   saved carry alike. The grasp gate (2 mm, 1°) is unchanged.
+- **Force plots** (2026-11-12, the user: "a continuous plotting of the force plate … of both arms throughout the
+  entire process"): a third plot window right of Exec plots (`force_plots.py`, `layout.FORCE_PLOTS_X`), both arms'
+  force and torque read every tick from the start, never cleared by a move, the last 36000 ticks kept, drawn twice a
+  second; long records thinned keeping each line's highs and lows (`trace_plot.peak_thinned`), so a short push
+  shows. Under it each arm's |F| now and peak, and **Clear**.
 
 ## What the planning showed (2026-11-11, on the dry run's copy of the process, a mock benchmark root)
 

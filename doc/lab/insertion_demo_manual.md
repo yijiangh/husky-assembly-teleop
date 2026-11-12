@@ -105,6 +105,12 @@ plan's rows), **Exec plots** when an insert, a retreat or **Compliant** starts (
 tools, live). A window stays open, its curves too, until the next move replaces them; close it with the `–` in its
 bar.
 
+**Force plots**, the third window, keeps both arms' force and torque all along, over every move and pause since the
+monitor started (about the last half hour), until its **Clear**. Open it from its bar and leave it open: the left
+arm's lines are red, the right's green; a short push stays visible however long the record. Under the plots,
+`|F| now` and `|F| peak` give each arm's force size now and its largest since the start or **Clear**. The readings
+are the sensors' own: raw, or relative to the last **Zero F/T**.
+
 **3.1 Mount the bar, once.** With the arms wherever they stand (jog them in **Control** if needed), put B6 into both
 tools as the process holds it (the male halves J4-6 in AT3L, J3-6 in AT3R), then **Grasp**: both gripper screws close
 until they stall.

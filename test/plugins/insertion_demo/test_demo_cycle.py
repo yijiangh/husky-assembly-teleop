@@ -146,7 +146,7 @@ def test_a_cycle_inserts_settles_retreats_and_returns_to_the_start(monkeypatch):
     holder: list = []
     panel = at_start(monkeypatch, answers(holder))
     holder.append(panel)
-    plan_window, exec_window = panel.ctx.panels
+    plan_window, exec_window, _force_window = panel.ctx.panels
 
     async def scenario():
         assert SETTLE_DEFAULT == 0.0 and panel.widget("Settle s").value == 0.0
