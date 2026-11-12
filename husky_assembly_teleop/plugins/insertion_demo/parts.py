@@ -67,7 +67,7 @@ AT_START = (0.005, math.radians(3.0))
 #: Along the way back, one tool0 seen from the other may drift this far from where it starts: metres, radians.
 COUPLING = (0.002, math.radians(1.0))
 #: The largest step of a joint between two waypoints of the way back, radians.
-JOINT_STEP = math.radians(5.0)
+JOINT_STEP = math.radians(8.0)
 #: A start this near the authored one along the insert's line, metres, is the authored one.
 SAME_LENGTH = 5e-5
 #: The largest tool0 step solved at once along the insert's line, metres.

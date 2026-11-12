@@ -119,7 +119,7 @@ the configured one: robots/cindy (a200-0806): left_ur_arm_tool0: TCP off by 106.
 `idle` (grey); **Action** `B6_J`; the sliders **Compliant mm** 10, **Loosen s** 6, **Insert mm** 15 and **Retreat mm** 15; the buttons **Save**, **Grasp**,
 **Release** | **Tighten**, **Loosen**, **Stop** | the blue **Transit** | **Insert**, **Retreat**, **Return**, **Load**,
 **Stow**; under **motion time** the sliders **Transit s**, **Insert s**, **Retreat s**, **Return s**, **Load s** and
-**Stow s**, 10 each; under **preview** the slider **Preview time**, the line `min — s by the arms' limits`, the blue **Execute**, then **Play**,
+**Stow s** (20, 5, 5, 5, 20, 20); under **preview** the slider **Preview time**, the line `min — s by the arms' limits`, the blue **Execute**, then **Play**,
 **Cancel** | **Compliant**, **Rigid**, **Zero F/T**; under **autonomous** the slider **Settle s** 0 and the buttons **Preview cycle** and **Cycle**. Hovering
 a Move button says what each does. How a step ended, and what a button refused, shows under the buttons and in the
 `monitor` pane. At the bottom of the page, two windows minimized to their bars: **Plan plots** and **Exec plots**.
@@ -145,19 +145,19 @@ preview, and nothing moves until **Execute**. **Cycle** alone runs a whole cycle
 
 **Expect:** the first plan builds Cindy's planning cell, then `B6_J_transfer: tamp.plan_free_dual_arm try 1/3: path of
 49 waypoints in 2.8 s`, `demo transit: transfer_free solved by tamp.plan_free_dual_arm: 49 waypoints, 1 tries, 4.6 s`,
-and `transit planned (tamp.plan_free_dual_arm, 49 waypoints): the motion takes 11.2 s; Execute runs it`, also under
+and `transit planned (tamp.plan_free_dual_arm, 49 waypoints): the motion takes 20.0 s; Execute runs it`, also under
 the buttons. Nothing moved. The waypoint counts and times differ from run to run.
 - **Chips:** `no plan` turned into a green `transit ready`.
 - **3D view:** a see-through green Cindy with her arms at the move's end, the insert's start. The jig's bars on her
   base and the target in blue show too: the demo selected the step in the process panel.
-- **Preview time:** at its right end, 11.2. Drag it to the left: the see-through arms follow the path back to where
+- **Preview time:** at its right end, 20. Drag it to the left: the see-through arms follow the path back to where
   the real arms stand. **Play** runs it from the start.
-- **Transit s:** 10, and under **Preview time** `min 11.2 s by the arms' limits`: the move takes the longer of the
-  two. Set it to 20: **Preview time** now ends at 20. Set **Insert s** to 20 instead: nothing changes, it is the
-  insert's time. Set both back to 10.
-- **Plan plots:** the window opened by itself. `joint values (deg)` has a line per joint over the 11.2 s, `L pan` …
+- **Transit s:** 20, and under **Preview time** `min 11.2 s by the arms' limits`: the move takes the longer of the
+  two. Set it to 30: **Preview time** now ends at 30. Set **Insert s** to 30 instead: nothing changes, it is the
+  insert's time. Set them back to 20 and 5.
+- **Plan plots:** the window opened by itself. `joint values (deg)` has a line per joint over the 20 s, `L pan` …
   `R w3`, the right arm's dashed; `joint step (deg)` the largest step between the plan's rows. With **Transit s**
-  at 20 the lines stretch to 20 s. Close the window with the `–` in its bar if it is in the way: the next plan opens
+  at 30 the lines stretch to 30 s. Close the window with the `–` in its bar if it is in the way: the next plan opens
   it again.
 
 **Cancel** now would drop the plan (`the planned transit dropped`, the chip `no plan`); **Transit** plans again.
@@ -176,7 +176,7 @@ To see a cancel, click **Cancel** while the arms move. **Expect:** `cancelled: h
 **3.5 Insert.** Click **Insert**.
 
 **Expect:** `demo insert: insert solved by tamp.plan_constrained_dual_arm_linear: 4 waypoints`, `insert planned
-(tamp.plan_constrained_dual_arm_linear, 4 waypoints): the motion takes 10.0 s; Execute runs it`, the chip `insert
+(tamp.plan_constrained_dual_arm_linear, 4 waypoints): the motion takes 5.0 s; Execute runs it`, the chip `insert
 ready`, and the see-through tools 15 mm further along the insert. Click **Execute**.
 
 **Expect:**
@@ -197,7 +197,7 @@ ready`, and the see-through tools 15 mm further along the insert. Click **Execut
 **3.6 Retreat.** Click **Retreat**.
 
 **Expect:** `retreat planned (the joint screws loosen 6.0 s, then a straight back-out to the insert's start): the
-motion takes 10.0 s; Execute runs it`, the chip `retreat ready`, the see-through tools back at the insert's start.
+motion takes 5.0 s; Execute runs it`, the chip `retreat ready`, the see-through tools back at the insert's start.
 No planner runs for this one, and `min — s`: the back-out is a straight line the compliant arms follow in **Motion
 time**. Click **Execute**.
 
@@ -239,7 +239,7 @@ s)`, `both arms back under joint control`; the chips read `joint` and `idle` aga
 **Return**.
 
 **Expect:** `[motion_planner] demo return: tamp.plan_constrained_dual_arm_linear …` in the `monitor` pane, then
-`return planned (tamp.plan_constrained_dual_arm_linear, N waypoints): the motion takes 10.0 s; Execute runs it`, the
+`return planned (tamp.plan_constrained_dual_arm_linear, N waypoints): the motion takes 5.0 s; Execute runs it`, the
 chip `return ready`, the **Plan plots** forward with a short path. Click **Execute**: `return ARRIVED: …`, the chip
 back to `no plan`. Return refuses when the planned path bends the grasp or jumps a joint (`return: refused: …`): not
 expected here.
@@ -275,21 +275,23 @@ action file back.
 1. Assembly tab: untick **Transfer workaround**, and leave it. **Expect:** the console `Transfer workaround off:
    jointing actions as authored`; in the Insertion demo tab the first Move button reads **Transfer** and the chip
    `bar held`.
-2. **Load**. **Expect:** `load: the arms do not stand at the insert's start, … the tools may hold the bar: press
-   Return first. With empty tools: Release, then Load plans a free move to the loading pose`.
+2. **Grasp**, then **Load**. **Expect:** `load: the arms do not stand at the insert's start, … the tools were closed
+   since their last Release, so they may hold the bar: after a Retreat press Return first. With empty tools: Release,
+   then Load plans a free move to the loading pose`.
 3. **Release**. **Expect:** 15 s later `not every gripper screw stalled within 15 s of its open; motors stopped` (a
-   simulated screw never stalls on a loosen). **Load**: the console `demo load: free_to_load solved by
-   tamp.plan_free_dual_arm: …`, the line `load planned (tamp.plan_free_dual_arm, … waypoints): … (a free move: the
-   tools must be empty)`, the preview's arms raised over the back, no bar in its tools. **Execute**: `load ARRIVED`.
+   simulated screw never stalls on a loosen). **Load** (it also plans straight after a monitor start, with no
+   Release): the console `demo load: free_to_load solved by tamp.plan_free_dual_arm: …`, the line `load planned
+   (tamp.plan_free_dual_arm, … waypoints): … (a free move: the tools must be empty)`, the preview's arms raised over
+   the back, no bar in its tools. **Execute**: `load ARRIVED`.
 4. **Grasp**, then **Transfer**. **Expect:** at once, with no planner line in the console, `transfer planned (the
-   saved carry, 308 waypoints; the tools' relative pose moves at most 0.01 mm, 0.00°): the motion takes 15.4 s;
+   saved carry, 311 waypoints; the tools' relative pose moves at most 0.01 mm, 0.00°): the motion takes 20.0 s;
    Execute runs it`, the chip `transfer ready`. The green preview robot carries a green bar with its two joint halves:
    drag **Preview time** and they move with its tools. In **Plan plots**, below the joints: `tools' relative pose vs
    first waypoint: position (mm)` staying under 0.01, and `… axis angles (deg)` with an x, y and z line under 0.002.
 5. **Execute**: `transfer ARRIVED`, the arms at the insert's start.
 6. **Insert**, **Retreat** and **Return**, each with **Execute**, as 3.5, 3.6 and 3.9; the preview robot carries the
    bar in each, and the two plots fill.
-7. **Load**. **Expect:** `load planned (the saved carry reversed, 308 waypoints; …) …`. **Execute**: `load ARRIVED`,
+7. **Load**. **Expect:** `load planned (the saved carry reversed, 311 waypoints; …) …`. **Execute**: `load ARRIVED`,
    the arms over the back again.
 8. **Cycle**. **Expect:** the step chip going through `cycle: transfer`, `cycle: insert`, `cycle: retreat`, `cycle:
    return`, `cycle: load`, and the line `cycle done: back at the loading pose; Cycle runs the next`.

@@ -93,7 +93,8 @@ shows below the buttons and in the console.
 **Every move takes two clicks.** **Transit**, **Insert**, **Retreat** or **Return** only plans the move and shows
 it: a see-through robot stands on the path at **Preview time** (drag the slider, or **Play**). Each move has its own
 motion time, under **motion time**: **Transit s** (it reads **Transfer s** with the Transfer button), **Insert s**,
-**Retreat s** (the back-out line, after **Loosen s**), **Return s**, **Load s** and **Stow s**, 10 s each by default;
+**Retreat s** (the back-out line, after **Loosen s**), **Return s**, **Load s** and **Stow s**. By default the long
+ways (Transit / Transfer, Load, Stow) take 20 s and the short lines (Insert, Retreat, Return) 5 s;
 the line under **Preview time** says the shortest the arms' limits allow for the move shown. **Cycle** takes each
 move's own time, and **Preview cycle** their sum. **Execute** then runs the move shown, once. **Cancel**, with
 nothing running, drops the planned move.
@@ -135,7 +136,7 @@ under joint control. The arms are then wherever the push left them: **Transit** 
 
 **3.6 Return.** The straight way back to the insert's start, planned by the insert's own planner (the bar held, a
 line in the world) from wherever the arms stand, and checked: the arms' relative pose keeps
-within 2 mm and 1° along the path, no joint steps over 5° between two waypoints, and each tool0 ends within 5 mm
+within 2 mm and 1° along the path, no joint steps over 8° between two waypoints, and each tool0 ends within 5 mm
 and 3° of the insert's start (the planner steers only the left arm; the right ends where the grasp, twisted a little
 by the compliant insert and retreat, puts it). A path that fails is still shown in the preview, with the chip
 `return refused` and the reason below the buttons, but **Execute** refuses it and the cycle stops there: look at it,
@@ -203,9 +204,10 @@ the retreat, the return, the transfer back. **Preview cycle** shows that loop as
 - No planner runs for a transfer: the preview shows the saved path. **Transfer** wants the arms at the loading pose
   within 2° at every joint; away from it the path is only shown (chip `transfer refused`).
 - **Load** picks its move by where the arms stand. At the insert's start (within 2°): the saved path backwards, the
-  bar held. Anywhere else: a free move to the loading pose, for empty tools, planned only after a **Release** that
-  ran to its end; a **Grasp**, or a gripper screw closed by a button on the tool, takes that back. Otherwise it
-  refuses: `the tools may hold the bar: press Return first`.
+  bar held. Anywhere else: a free move from where the arms are to the loading pose, the preview robot's tools empty.
+  ! The free move is for empty tools only: the monitor cannot see whether they hold the bar. It refuses
+  (`… they may hold the bar: after a Retreat press Return first`) once a gripper screw closed, by **Grasp** or a
+  button on the tool, until a **Release** ran to its end.
 - The saved path ends at the process's own insert start. With **Insert mm** moved away from it, Transfer and Load say
   so: set it back, or **Save**, **Load** the process again and plan the path again.
 - `the saved carry is stale`: the process or the action changed since it was planned (also by **Save**). Plan it again.
@@ -250,7 +252,7 @@ python -u scripts/round_process_carry.py "$PROC" --bar B6 --solution "$PROC/solu
 python -u scripts/prm_check_solved.py "$PROC" --bar B6 --solved-dir "$PLANS" --tags rounded
 ```
 
-- The finer steps (`--cdfm-position-res 0.004 --cdfm-rotation-res 0.01`) keep every joint step under the demo's 5°.
+- The finer steps (`--cdfm-position-res 0.004 --cdfm-rotation-res 0.01`) keep every joint step well under the demo's 8°.
 - `plan_process_carry.py` rounds the path's corners in bar pose space (`--round-radius`, 0.3 m; `--round-tolerance`,
   60 mm; `--round-radius 0` keeps them): the arms stop at every corner of a path, and a roadmap path is a chain of
   straight pieces. Its line `rounded: …` says what it did; `corners not rounded` keeps the path as planned. On the

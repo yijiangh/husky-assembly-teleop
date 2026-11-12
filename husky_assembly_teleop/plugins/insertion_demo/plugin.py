@@ -20,8 +20,8 @@ for Insert mm into the process's action file, on its second press (`parts.save_a
 With the Assembly tab's **Transfer workaround** box unticked the bar is carried instead, and the box stays unticked
 all along: the Transit button reads **Transfer** and shows the path saved for the action (`parts.saved_carry`:
 planned offline, the bar held by both arms) from the loading pose to the insert's start; **Load** shows the same path
-reversed while the arms stand at the insert's start, and elsewhere a free move to the loading pose, only after a
-**Release** (the tools empty); the cycle starts and ends at the loading pose.
+reversed while the arms stand at the insert's start, and elsewhere a free move to the loading pose (the tools empty),
+refused after a **Grasp** until a **Release**; the cycle starts and ends at the loading pose.
 
 A Move button only plans and shows its move: a see-through robot on the path at **Preview time**, timed for its own
 motion time (**Transit s** or **Transfer s**, **Insert s**, **Retreat s**, **Return s**, **Load s**, **Stow s**; the
@@ -100,7 +100,7 @@ from .parts import (AT_START, GRIP_TIMEOUT, back_out_rows, demo_steps, grasp_dri
 #: cycle's pause after the insert; the insert's and the retreat's length in millimetres (they start at the process's).
 SPLIT_RANGE, SPLIT_DEFAULT = (0.5, 150.0), 10.0
 LENGTH_RANGE = (5.0, 150.0)
-SECONDS_RANGE, SECONDS_DEFAULT = (2.0, 60.0), 10.0
+SECONDS_RANGE = (2.0, 60.0)
 LOOSEN_RANGE, LOOSEN_DEFAULT = (1.0, 20.0), 6.0
 SETTLE_RANGE, SETTLE_DEFAULT = (0.0, 30.0), 0.0
 NO_ACTION = "no process"
@@ -117,6 +117,8 @@ TIME_HINTS = {
     "load": "the way to the loading pose: the free move, or the saved path reversed",
     "stow": "the move to the arms' park pose",
 }
+#: Each move's motion time when the monitor starts, seconds: the long ways slower than the short lines.
+SECONDS_DEFAULT = {TRAVEL_TIME: 20.0, "insert": 5.0, "retreat": 5.0, "return": 5.0, "load": 20.0, "stow": 20.0}
 #: A cycle preview's parts, by the step whose motion time each takes.
 PART_STEPS = {"back-out": "retreat", "transfer back": "load"}
 #: The button of the way to the insert's start, by whether the bar is held on it: its label; the step is the same
@@ -230,8 +232,8 @@ class InsertionDemoPlugin(HuskyPlugin):
         #: The saved carry last checked (its joint names, arms and rows), what `return_problem` said of it, and one
         #: tool0 seen from the other at its rows and between them (`with_midpoints`).
         self._carry_check: tuple[tuple, str, list[Pose]] | None = None
-        #: Whether the tools are known to be empty: a Release ran to its end, and no gripper screw closed since.
-        self._released = False
+        #: Whether the tools may hold the bar: a gripper screw was seen closing, and no Release ran to its end since.
+        self._gripped = False
         #: Save's first press, waiting for its second.
         self._press = SecondPress()
         #: The move Execute runs, its path timed for the preview, and the shortest time the arms' limits allow (NaN
@@ -323,14 +325,15 @@ class InsertionDemoPlugin(HuskyPlugin):
                                              "with the bar held back to the insert's start, by the insert's "
                                              "planner, checked. Load: the way to the loading pose. With the "
                                              "Transfer button: the saved path reversed while the arms stand at the "
-                                             "insert's start (the bar held), else a free move, only after Release "
-                                             "(the tools empty). With Transit: always the free move. Stow: a free "
-                                             "move to the arms' park pose, the bar unmounted and put away.")
+                                             "insert's start (the bar held), else a free move for empty tools, "
+                                             "refused after a Grasp until a Release. With Transit: always the free "
+                                             "move. Stow: a free move to the arms' park pose, the bar unmounted and "
+                                             "put away.")
             gui.add_html(section("motion time", SECTION_CTRL))
             # * One per move, also in the cycle. The first is labelled as the button above reads (`draw`).
             self._times = {step: gui.add_slider(f"{TRAVEL[False] if step == TRAVEL_TIME else step.capitalize()} s",
                                                 min=SECONDS_RANGE[0], max=SECONDS_RANGE[1], step=0.5,
-                                                initial_value=SECONDS_DEFAULT,
+                                                initial_value=SECONDS_DEFAULT[step],
                                                 hint=f"Seconds for {what}, by hand and in the cycle; the arms' "
                                                      f"limits may need longer")
                            for step, what in TIME_HINTS.items()}
@@ -602,8 +605,8 @@ class InsertionDemoPlugin(HuskyPlugin):
         robot = ctx.world.robots.get(self._serial) if self._serial else None
         if robot is not None and any(tool.state.gripper_motor == ScaffoldingV3.TIGHTENING
                                      for tool in self._tools(robot).values()):
-            # * Whoever closes a gripper screw (Grasp, a button on the tool): the tools may hold the bar again.
-            self._released = False
+            # * Whoever closes a gripper screw (Grasp, a button on the tool): the tools may hold the bar.
+            self._gripped = True
         planned = self._planned
         if planned is None:
             return
@@ -778,12 +781,13 @@ class InsertionDemoPlugin(HuskyPlugin):
 
     async def _grip(self, ctx: PluginContext, robot: HuskyRobotInterface, close: bool) -> str:
         """Close or open both gripper screws."""
-        self._released, started = False, ctx.now()
+        self._gripped, started = self._gripped or close, ctx.now()
         with ctx.lease_robots([self._serial], "grasp" if close else "release"):
             ok, text = await run_grip(ctx, self._tools(robot), close)
         # * Empty after a Release that ran to its end: the screws stalled open, or opened for the whole timeout (a
         #   screw may not stall when open). One refused or cancelled leaves the tools as they were.
-        self._released = not close and (ok or ctx.now() - started >= GRIP_TIMEOUT)
+        if not close and (ok or ctx.now() - started >= GRIP_TIMEOUT):
+            self._gripped = False
         return text
 
     async def _screws(self, ctx: PluginContext, robot: HuskyRobotInterface, tighten: bool) -> str:
@@ -903,8 +907,8 @@ class InsertionDemoPlugin(HuskyPlugin):
         if isinstance(live_rows(robot, names, rows), str):
             refused = ("the arms do not stand at the insert's start, where the way back begins: press Return first"
                        if reverse else
-                       "the arms do not stand at the loading pose, where the transfer begins: press Release and "
-                       "Load (a free move, the tools empty), then place and Grasp the bar")
+                       "the arms do not stand at the loading pose, where the transfer begins: with empty tools "
+                       "press Load (a free move), then place and Grasp the bar")
         self._select(ctx, demo, demo.transfer)
         return self._show(ctx, Planned(step, demo, tuple(names), rows, ctx.kinematics.base_pose(self._serial),
                                        f"the saved carry{' reversed' if reverse else ''}, {len(rows)} waypoints",
@@ -914,7 +918,7 @@ class InsertionDemoPlugin(HuskyPlugin):
         """Plan the way to the loading pose, the saved carry's first row.
 
         With the bar carried and the arms at the insert's start: the saved carry reversed, the bar held. Else a free
-        move with empty tools; with the bar carried, only after a Release, as the tools may hold the bar.
+        move from where the arms are, for empty tools; refused while the tools were closed and not released since.
         """
         if demo.held:
             carry = self._carry(robot, demo)
@@ -922,10 +926,11 @@ class InsertionDemoPlugin(HuskyPlugin):
                 return f"load: {carry}"
             if not isinstance(live_rows(robot, carry[0], carry[1][::-1]), str):
                 return self._plan_carry(ctx, robot, demo, "load", reverse=True)
-            if not self._released:
+            if self._gripped:
                 return ("load: the arms do not stand at the insert's start, where the way back with the bar begins, "
-                        "and the tools may hold the bar: press Return first. With empty tools: Release, then Load "
-                        "plans a free move to the loading pose")
+                        "and the tools were closed since their last Release, so they may hold the bar: after a "
+                        "Retreat press Return first. With empty tools: Release, then Load plans a free move to the "
+                        "loading pose")
         saved = saved_carry(demo.loaded.process, demo.action_id, demo.loaded.steps[demo.transfer].movement.id)
         index = load_step(demo.loaded, demo.action_id)
         why = next((each for each in (saved, index) if isinstance(each, str)), "")

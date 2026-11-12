@@ -134,28 +134,27 @@ def test_a_transfer_is_only_shown_when_the_arms_are_not_at_the_loading_pose(monk
     asyncio.run(scenario())
 
 
-def test_held_load_away_from_the_insert_start_is_a_free_move_only_after_release(monkeypatch):
-    """The box unticked, the arms inserted: Load refuses while the tools may hold the bar.
+def test_held_load_away_from_the_insert_start_is_a_free_move_unless_the_tools_were_closed(monkeypatch):
+    """The box unticked, the arms away from the insert's start: Load plans the travel to load as a free move.
 
-    After Release it plans the travel to load as a free move, the preview robot's tools empty; a Grasp makes it
-    refuse again.
+    The preview robot's tools are empty. After a Grasp it refuses, as the tools may hold the bar, until a Release.
     """
     carry = a_carry()
     panel = carried(monkeypatch, {"demo load": np.linspace(INSERTED, carry[0], 5)}, INSERTED, carry)
 
     async def scenario():
-        refused = await panel.click("Move", "Load")
-        assert refused.startswith("load: the arms do not stand at the insert's start") and "Return" in refused
-        assert panel.planner.requests == [] and panel.plugin._planned is None
-        await panel.click("Bar", "Release")
-        assert panel.plugin._released, panel.plugin.outcome
         shown = await panel.click("Move", "Load")
         assert shown.startswith("load planned (a planner, 5 waypoints)") and "tools must be empty" in shown, shown
         request, = panel.planner.requests
         assert request.step.movement.id == "B6_J_load" and request.goal_joints == dict(zip(NAMES, carry[0].tolist()))
         assert panel.plugin._ghost.held == {} and panel.plugin._planned.drift is None
         await panel.click("Bar", "Grasp")
-        assert (await panel.click("Move", "Load")).startswith("load: the arms do not stand at the insert's start")
+        refused = await panel.click("Move", "Load")
+        assert refused.startswith("load: the arms do not stand at the insert's start") and "Return" in refused
+        assert len(panel.planner.requests) == 1
+        await panel.click("Bar", "Release")
+        assert not panel.plugin._gripped, panel.plugin.outcome
+        assert (await panel.click("Move", "Load")).startswith("load planned (a planner, 5 waypoints)")
         assert motions(panel) == 0, "no arm moved"
 
     asyncio.run(scenario())

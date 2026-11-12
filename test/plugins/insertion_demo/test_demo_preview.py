@@ -146,11 +146,11 @@ def test_transit_only_plans_and_shows_then_execute_runs_it_once(monkeypatch):
 
     async def scenario():
         planned = await panel.click("Transit")
-        assert planned.startswith("transit planned (a planner, 5 waypoints): the motion takes 10.0 s")
+        assert planned.startswith("transit planned (a planner, 5 waypoints): the motion takes 20.0 s")
         assert len(panel.planner.requests) == 1 and panel.lab.nothing_sent()
         assert "transit ready" in panel.widget("").content  # the status line is the first unlabelled widget
         slider, ghost = panel.widget("Preview time"), panel.plugin._ghost
-        assert slider.max == pytest.approx(10.0, abs=0.1) and slider.value == pytest.approx(slider.max)
+        assert slider.max == pytest.approx(20.0, abs=0.1) and slider.value == pytest.approx(slider.max)
         np.testing.assert_allclose([ghost.shown[1][name] for name in NAMES], START, atol=1e-9)
         # * Scrubbing to 0 shows where the arms stand; the transit's own motion time stretches the preview, another
         #   move's does not.
@@ -160,11 +160,11 @@ def test_transit_only_plans_and_shows_then_execute_runs_it_once(monkeypatch):
         panel.widget("Insert s").value = 30.0
         panel.widget("Insert s").callback(30.0)
         panel.draw()
-        assert slider.max == pytest.approx(10.0, abs=0.1), "the insert's time is not the transit's"
-        panel.widget("Transit s").value = 20.0
-        panel.widget("Transit s").callback(20.0)
+        assert slider.max == pytest.approx(20.0, abs=0.1), "the insert's time is not the transit's"
+        panel.widget("Transit s").value = 35.0
+        panel.widget("Transit s").callback(35.0)
         panel.draw()
-        assert slider.max == pytest.approx(20.0, abs=0.1) and panel.lab.nothing_sent()
+        assert slider.max == pytest.approx(35.0, abs=0.1) and panel.lab.nothing_sent()
         assert (await panel.click("Execute")).startswith("transit ARRIVED")
         np.testing.assert_allclose(panel.joints(), START, atol=1e-3)
         assert ghost.shown is None and "no plan" in panel.widget("").content
@@ -343,7 +343,8 @@ def test_retreat_shows_the_back_out_before_anything_is_sent(monkeypatch):
     async def scenario():
         assert (await panel.click("Move", "Retreat")).startswith("retreat planned (the joint screws loosen 6.0 s")
         assert not panel.planner.requests and panel.lab.nothing_sent()
-        assert panel.widget("Preview time").max == SECONDS_DEFAULT and "retreat ready" in panel.widget("").content
+        assert panel.widget("Preview time").max == SECONDS_DEFAULT["retreat"]
+        assert "retreat ready" in panel.widget("").content
         panel.widget("Preview time").callback(0.0)
         panel.draw()
         np.testing.assert_allclose([panel.plugin._ghost.shown[1][name] for name in NAMES], INSERTED, atol=1e-9)
@@ -366,16 +367,16 @@ def test_a_planned_move_fills_the_plan_plots_and_opens_their_window_once(monkeyp
     async def scenario():
         await panel.click("Transit")
         assert plan_window.calls == ["minimize", "expand"], "a new plan brings the window forward"
-        assert len(values.data) == 1 + len(NAMES) and values.data[0][-1] == pytest.approx(10.0, abs=0.1)
+        assert len(values.data) == 1 + len(NAMES) and values.data[0][-1] == pytest.approx(20.0, abs=0.1)
         assert [series["label"] for series in values.series[1:3]] == ["L pan", "L lift"]
         assert list(steps.data[0]) == [1.0, 2.0, 3.0, 4.0]
         # * A free move: no bar in the preview robot's tools, the grasp plots empty.
         assert panel.plugin._ghost.held == {} and panel.plugin._planned.drift is None
         assert all(math.isnan(plot.data[1][0]) for plot in panel.ctx.gui.of_kind("uplot")[2:4])
-        panel.widget("Transit s").value = 20.0
-        panel.widget("Transit s").callback(20.0)
+        panel.widget("Transit s").value = 35.0
+        panel.widget("Transit s").callback(35.0)
         panel.draw()
-        assert values.data[0][-1] == pytest.approx(20.0, abs=0.1) and plan_window.calls.count("expand") == 1
+        assert values.data[0][-1] == pytest.approx(35.0, abs=0.1) and plan_window.calls.count("expand") == 1
         await panel.click("Execute")
         assert all(len(column) == 1 and math.isnan(column[0]) for column in values.data[1:] + steps.data[1:])
         assert plan_window.calls.count("expand") == 1 and exec_window.calls == ["minimize"]

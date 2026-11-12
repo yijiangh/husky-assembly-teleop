@@ -70,6 +70,23 @@ The user found the ticking and unticking confusing, and wanted to check a transf
   `motion time` has **Transit s** / **Transfer s** (one slider, labelled as the button reads), **Insert s**,
   **Retreat s**, **Return s**, **Load s**, **Stow s**, box ticked or not. A move by hand and the same move in the
   cycle take that move's time; a cycle preview takes the sum of its parts'.
+  Defaults since 2026-11-12, as the user set them: 20 s for Transit / Transfer, Load and Stow, 5 s for Insert,
+  Retreat and Return (10 s each before).
+- **Load's free move without a Release first** (2026-11-12, the user's dry run: a fresh monitor refused Load until a
+  Release): the rule above is turned around. Away from the insert's start, Load plans the free move from where the
+  arms are; it refuses only once a gripper screw was seen closing (Grasp, a button on the tool) and no Release ran
+  to its end since. A monitor started with the bar already in the tools does not know it: the free move is the
+  operator's to judge, as the preview's empty tools and its line say.
+- **The saved carry rounded** (2026-11-12, after merging Jakob's `jg/carry-rounding`, tamp 014c2b3): the solution
+  was still the one planned before the rounding. `round_process_carry.py` rounded it (5 corners at 300 mm; 311
+  waypoints, was 308; the same first and last row; shortest time 13.6 s, was 15.4 s), `prm_check_solved.py` passes
+  (no collision, the grasp within 0.01 mm between waypoints, joint steps up to 1.8°), and the monitor's own check
+  on its robot model too (0.010 mm, 0.0013°). Written to the dry run's process and copied over the real Drive's
+  `solutions/B6_J.json` at the user's word; the unrounded one is kept as the dry run's
+  `carry_plans/B6_J.solution_unrounded_20261111.json`.
+- **The joint step gate is 8°, was 5°** (2026-11-12, the user's word after `Execute refused: the return shown is not
+  to run: a joint jumps 6.3° between waypoints 0 and 1 (over 5°)`): `parts.JOINT_STEP`, for the return and for the
+  saved carry alike. The grasp gate (2 mm, 1°) is unchanged.
 
 ## What the planning showed (2026-11-11, on the dry run's copy of the process, a mock benchmark root)
 

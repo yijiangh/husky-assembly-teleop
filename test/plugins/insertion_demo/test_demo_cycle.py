@@ -84,7 +84,7 @@ def test_the_way_back_passes_with_the_grasp_kept_and_is_refused_for_a_drift_or_a
     jumping = fine.copy()
     jumping[2:, 3] += 2 * JOINT_STEP
     problem = return_problem(lab.robot, NAMES, jumping, ARMS)
-    assert problem.startswith("a joint jumps 10.") and "between waypoints 1 and 2 (over 5°)" in problem
+    assert problem.startswith("a joint jumps 16.") and "between waypoints 1 and 2 (over 8°)" in problem
     assert return_problem(lab.robot, NAMES, fine[:1], ARMS) == "the path has fewer than two waypoints"
 
 
@@ -222,12 +222,12 @@ def test_preview_cycle_shows_the_whole_cycle_as_one_path_and_sends_nothing(monke
         np.testing.assert_allclose(planned.rows[-1], START)
         assert len(planned.rows) == 6, "the insert's five rows, then the back-out's end"
         assert PREVIEW in panel.widget("").content and panel.plugin._ghost.shown is not None
-        assert panel.widget("Preview time").max == pytest.approx(30.0, abs=0.1), "each part's own motion time"
-        # * The preview takes each move's own time: the return's 25 s instead of 10.
+        assert panel.widget("Preview time").max == pytest.approx(15.0, abs=0.5), "each part's own motion time"
+        # * The preview takes each move's own time: the return's 25 s instead of 5.
         panel.widget("Return s").value = 25.0
         panel.widget("Return s").callback(25.0)
         panel.draw()
-        assert panel.widget("Preview time").max == pytest.approx(45.0, abs=0.5)
+        assert panel.widget("Preview time").max == pytest.approx(35.0, abs=0.5)
         assert (await panel.click("Execute")).startswith(f"Execute refused: the {PREVIEW} shown is not to run")
         assert panel.lab.nothing_sent()
 
