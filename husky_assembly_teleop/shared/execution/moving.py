@@ -5,6 +5,8 @@ It watches what the robots report, so it also sees motion this monitor never sen
 robot). Who may command a robot is the robot lease's job (`robot_interface/robot_lease.py`), not this module's.
 
 - "Moving" fails safe: an arm or base whose states went stale after being live counts as moving (nobody can tell).
+- A robot parked in Health is left out: the operator vouches it stands where it is (Health unparks it once measured
+  moving, a lease to move it unparks it too), so a parked robot switched off blocks nothing.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ def moving_reason(world: WorldState, now: float, besides: str | None = None, unk
     """Why no automatic motion may start or go on now: an arm or a base moves; "" if none does.
 
     Leases are not checked here: the automatic motion leases every robot first, so nothing else here can command one.
+    Robots parked in Health are left out.
 
     Args:
         world: The measured world.
@@ -43,7 +46,7 @@ def moving_reason(world: WorldState, now: float, besides: str | None = None, unk
         unknown: Serials of robots the operator let be unknown (Exec's second press): left out too.
     """
     for serial, robot in world.robots.items():
-        if serial == besides or serial in unknown:
+        if serial == besides or serial in unknown or robot.parked:
             continue
         why = robot_moving(serial, robot, now)
         if why:

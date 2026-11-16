@@ -242,6 +242,9 @@ def test_an_arm_whose_joint_states_went_stale_is_moving():
     asyncio.run(scenario())
     reason = moving_reason(lab.ctx.world, lab.ctx.t)
     assert "can't tell whether 0805 ur_arm is moving" in reason
+    lab.belle.parked = True  # parked in Health: the operator vouches she stands where she is
+    assert moving_reason(lab.ctx.world, lab.ctx.t) == ""
+    lab.belle.parked = False
     arm.state.last_update_time = None  # never measured this session
     assert moving_reason(lab.ctx.world, lab.ctx.t) == ""
 

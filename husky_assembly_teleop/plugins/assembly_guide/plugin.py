@@ -70,7 +70,8 @@ from ...shared.guide.panel import (overview_row, running_chip, set_changed, stat
                                    step_header)
 from ...shared.guide.procedure import Procedure
 from ...shared.motion_planner_contract import MotionPlanRequest
-from ...shared.movement_exec_contract import DEFAULT_TRAJ_TIME, DONE, DRY_RUN, MOTION_KINDS, ExecRequest, serial_of
+from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DONE, DRY_RUN, HAND_KINDS, MOTION_KINDS, ExecRequest,
+                                              serial_of)
 from ...shared.planner.planner_panel import SLIDER_STEP
 from ...shared.runs.runs import DONE as MARKED
 from ...ui.choice_row import ChoiceRow
@@ -1185,11 +1186,13 @@ class AssemblyGuidePlugin(HuskyPlugin):
                               obstacles_collide=lambda: process.obstacles_collide,
                               transfer_as_free=lambda: process.transfer_as_free, unknown_robots=unknown,
                               clearance=self.procedure.clearance.value, dry_run=rehearse)
-        # * The executor refuses while anything moves: an arm still settling from the part before, say.
-        self.procedure.doing = "waiting for every robot to stand still"
-        await ctx.wait_until(lambda: not moving_reason(ctx.world, ctx.now(), unknown={
-            serial for serial in ctx.world.robots if robot_id(serial) in unknown}),
-                             timeout_s=STILL_WAIT, description="every robot to stand still")
+        # * The executor refuses while anything moves: an arm still settling from the part before, say. Not for a
+        #   part by hand: it sends nothing.
+        if any(plan.kind not in HAND_KINDS for plan in part.plans):
+            self.procedure.doing = "waiting for every robot to stand still"
+            await ctx.wait_until(lambda: not moving_reason(ctx.world, ctx.now(), unknown={
+                serial for serial in ctx.world.robots if robot_id(serial) in unknown}),
+                                 timeout_s=STILL_WAIT, description="every robot to stand still")
         self.procedure.doing = f"running {part.label}"
         future = executor.request_execute(request)
         try:

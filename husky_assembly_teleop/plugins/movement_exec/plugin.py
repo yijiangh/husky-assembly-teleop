@@ -32,7 +32,7 @@ from ...shared.execution.basis import STALE_BASE
 from ...shared.execution.moving import moving_reason
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import INTERRUPTED, motion_command
-from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HANDOFF_PART, HOLD_NOT_SENT,
+from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HAND_KINDS, HANDOFF_PART, HOLD_NOT_SENT,
                                               INSERT_PART, MAX_TRAJ_TIME, MOTION_KINDS, MOTION_PART, REFUSED,
                                               REFUSED_PART, RETREAT_PART, SERVO_INDEX, SERVO_PART, WITH_MOTION_PART,
                                               Carried, ExecRequest, ExecResult, serial_of)
@@ -174,14 +174,17 @@ class MovementExecPlugin(HuskyPlugin):
         ctx = self._ctx
         future = asyncio.get_running_loop().create_future()
         refusal = self._refusal(ctx, request)
-        if not refusal and (moving := moving_reason(ctx.world, ctx.now(),
-                                                    unknown=unknown_serials(ctx.world, request))):
+        # * Parts by hand send nothing: other robots need not stand still for them.
+        sends = any(part.kind not in HAND_KINDS for part in request.parts)
+        if not refusal and sends and (moving := moving_reason(ctx.world, ctx.now(),
+                                                              unknown=unknown_serials(ctx.world, request))):
             refusal = f"busy: {moving}"
         if not refusal:
             try:
                 # * Every robot's lease, for the whole request (prompts and parts done by hand included): its sends
                 #   need it, and no other plugin moves any robot meanwhile (one motion at a time).
-                lease = ctx.take_lease(ctx.world.robots, f"exec {request.label}")
+                # * Only the acting robot moves: a robot parked in Health stays parked.
+                lease = ctx.take_lease(ctx.world.robots, f"exec {request.label}", moves=[request.serial])
             except NotLeased as refused:
                 refusal = f"busy: {refused}"
         if refusal:

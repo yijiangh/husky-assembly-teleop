@@ -61,6 +61,8 @@ MOTION_PART, OPEN_PART, BY_HAND_PART, BASE_PART, REFUSED_PART, SERVO_PART = (
 INSERT_PART, RETREAT_PART, HANDOFF_PART, WITH_MOTION_PART = "insert", "retreat", "robotiq_handoff", "with_motion"
 #: The parts that move the arms along the step's plan.
 MOTION_KINDS = frozenset({MOTION_PART, INSERT_PART, RETREAT_PART})
+#: The parts done by hand: the monitor sends nothing, so no other robot needs to stand still for them.
+HAND_KINDS = frozenset({BY_HAND_PART, BASE_PART})
 #: ! The servo part's index: the servo is no movement of its own, so `ExecResult.done` and the step panel's done set
 #:   tell it from the primary movement by this value.
 SERVO_INDEX = -1
