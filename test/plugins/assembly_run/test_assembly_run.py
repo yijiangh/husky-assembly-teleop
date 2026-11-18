@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,12 +53,19 @@ class FakeProcess:
         self.transfer_as_free = True
         self.marks: dict[str, str] = {}
         self.authored, self.placement, self.placements = self.loaded.process, Pose(), []
+        self.grasp_offsets, self.grasp_requests = {}, []
 
     def request_placement(self, placement) -> None:
         """Place the build: a new placed process, the same authored one."""
         self.placements.append(placement)
         self.placement = placement
         self.loaded = loaded_process(placed(self.authored, placement))
+
+    def request_grasp_offsets(self, offsets) -> None:
+        """Note the grasp offsets: a new process, the same authored one."""
+        self.grasp_requests.append(dict(offsets))
+        self.grasp_offsets = dict(offsets)
+        self.loaded = loaded_process(replace(placed(self.authored, self.placement)))
 
     @property
     def selection(self) -> Selection:
@@ -1380,6 +1388,29 @@ def test_the_build_placement_is_kept_by_the_run_and_put_back_when_it_opens(tmp_p
     np.testing.assert_allclose(saved, [*placement.position, *placement.orientation])
     assert again.view.settings.placement_pose == placement
     assert fresh.placements == [placement] and fresh.placement == placement
+
+
+def test_the_grasp_offsets_are_kept_by_the_run_and_put_back_when_it_opens(tmp_path):
+    """Moved in the process panel: saved in run.json, moved back after a restart; out of range: refused."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        process.grasp_offsets = {"B1_H": (20.0, -30.0)}
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        run = plugin._run
+        plugin.request_settings(grasp_offsets=[["B1_H", 200.0, 0.0]])
+        refused = plugin._message
+        again, fresh = await opened(lab)
+        again.update(lab.ctx)
+        return run, again, fresh, refused
+
+    run, again, fresh, refused = asyncio.run(scenario())
+    assert run is not None and refused.startswith("Settings refused") and "slide -150 to 150 mm" in refused
+    assert json.loads((run.folder / "run.json").read_text())["settings"]["grasp_offsets"] == [["B1_H", 20.0, -30.0]]
+    assert again.view.settings.grasp_offset_map == {"B1_H": (20.0, -30.0)}
+    assert fresh.grasp_requests == [{"B1_H": (20.0, -30.0)}]
 
 
 def test_a_placement_that_is_no_pose_is_refused(tmp_path):

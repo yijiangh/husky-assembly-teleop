@@ -22,6 +22,10 @@ stays. `process` is the placed process, `authored` the one read. Apply is refuse
 press once an action is marked done; the run keeps the placement and puts it back when it opens (`request_placement`).
 A new process loads at its authored place.
 
+The "grasp" box moves a hold's support grasp (`grasp_offset.py`): select a movement of a `_H` or `_HR` action, set
+Slide (mm, along the bar) and Roll (°, about it), then Apply; Reset puts it back. The hold's flange targets move from
+its approach to its release's retreat, and `process` serves them; the run keeps the offsets (`request_grasp_offsets`).
+
 The "Rhino obstacles" list (ghost at start) says what becomes of the process's obstacles ("obstacles/<name>"): disable
 hides them, ghost draws them see-through by the overlay, collide counts them in every collision check. Unless they
 collide they are disabled scene bodies.
@@ -57,20 +61,22 @@ from typing import TYPE_CHECKING, Mapping
 from async_timeout import timeout
 import numpy as np
 from ...config import short_serial
-from ...colors import INK, rgb
+from ...colors import INK, MOVED_GRASP, rgb, rgb01
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.assembly_tab.layout import ACTIONS_BAND, ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
 from ...ui.css import group_buttons, group_tooltips_css, one_row_css
 from ...ui.pose_input import PoseInput
-from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, show_waiting
+from ...ui.scene_view import add_shape
+from ...ui.visualization import quaternion_to_wxyz
+from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, show_waiting, waiting_group_css
 from ...ui.style import (BUSY, CURRENT, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line,
                          hover, section, swatch_chip, values)
 from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
-from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.process import Action, Movement, Process, State, assumed_start_all, joints_at
 from scaffolding_assembly_core.process.scenes import process_model
 from ...shared.process_contract import DEFAULT_RHINO_FILE, MARK_ASSUMED, MARK_DONE, RHINO_FOLDER, Carry, Selection
@@ -82,7 +88,9 @@ from ...shared.process_scene.scene_bodies import live_ids, process_obstacles, sc
 from ...shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH
 from .drawing import ProcessDrawing, bar_lines, load_robot_models
 from .loading import load_process, process_folders, rhino_files
+from .grasp_offset import grasp_move, hold_of, offset_grasps
 from .placement import IDENTITY, is_identity, off_floor, placed, placement_text
+from ...shared.runs.runs import GRASP_ROLL_RANGE, GRASP_SLIDE_RANGE
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -177,10 +185,19 @@ class ProcessPlugin(HuskyPlugin):
         #: Where the build stands (`ProcessContract.placement`), and the authored process placed there, or None.
         self.placement: Pose = IDENTITY
         self.process: Process | None = None
+        #: Hold action -> (slide mm, roll degrees) (`ProcessContract.grasp_offsets`), applied after the placement.
+        self.grasp_offsets: dict[str, tuple[float, float]] = {}
+        # Why the last grasp Apply was refused, and when; the hold whose offset the sliders were last set to.
+        self._grasp_refused, self._grasp_refused_at, self._grasp_for = "", 0.0, None
+        #: The authored process placed, before the grasp offsets; the hold's target axes and what they were drawn for.
+        self._placed: Process | None = None
+        self._grasp_axes: dict[str, object] = {}
+        self._grasp_axes_for: tuple | None = None
         # Why the last Apply of the build box was refused, and when (ROS time); "" after a placement it made.
         self._placement_refused, self._placement_refused_at = "", 0.0
         #: Apply once an action is marked done waits for its second press; the Apply button, once built.
         self._apply_press, self._apply = SecondPress(), None
+        self._grasp_press = SecondPress()
         # The authored process the gizmo's preview lines were drawn for.
         self._preview_for: Process | None = None
         self._preview = None
@@ -334,6 +351,22 @@ class ProcessPlugin(HuskyPlugin):
                               "on a second press; refused while a step runs. Replan after.")
             # ! Always one line, so nothing below it moves.
             self._placement_status = gui.add_html("")
+            gui.add_html(section("grasp", SECTION_CTRL))
+            # * Always there, grey unless a hold's action is selected: shown only then, they would move what is below.
+            self._slide = gui.add_slider("Slide mm", min=GRASP_SLIDE_RANGE[0], max=GRASP_SLIDE_RANGE[1], step=1.0,
+                                         initial_value=0.0, disabled=True,
+                                         hint="Slide the support gripper's grasp along its bar, mm (the bar's z), "
+                                              "for the selected hold (_H or _HR). Apply to move it.")
+            self._roll = gui.add_slider("Roll °", min=GRASP_ROLL_RANGE[0], max=GRASP_ROLL_RANGE[1], step=1.0,
+                                        initial_value=0.0, disabled=True,
+                                        hint="Roll the support gripper's grasp about its bar, degrees, for the "
+                                             "selected hold. Apply to move it.")
+            grasp = self._grasp_buttons = gui.add_button_group(
+                "Grasp", ["Apply", "Reset"],
+                hint="Apply: the hold's targets from its approach to its release's retreat move with the grasp, the "
+                     "run keeps it. Reset: as authored. Refused while a step runs. Replan after.")
+            # ! Always one line, so nothing below it moves.
+            self._grasp_status = gui.add_html("")
         # * assembly_run's RUN band sits between the process and its actions (`layout.py`).
         with ctx.view.ui(band=ACTIONS_BAND) as gui:
             self._actions_title = gui.add_html(section("actions", SECTION_CTRL))
@@ -377,6 +410,7 @@ class ProcessPlugin(HuskyPlugin):
         # ! Route every viser callback through defer so it runs on the main thread.
         load.on_click(ctx.defer("load process", lambda: self.load(ctx, Path(self._folder.value.strip()))))
         place.on_click(ctx.defer("place the build", lambda: self.apply_placement(ctx, self._pose.pose)))
+        grasp.on_click(ctx.defer_value("grasp offset", lambda label: self._on_grasp(ctx, str(label))))
         self._ctx = ctx
         # ! Operator clicks only: draw writes the boxes back, and viser calls back for that too, which could undo a
         #   click queued in the same tick.
@@ -442,6 +476,66 @@ class ProcessPlugin(HuskyPlugin):
             self._ctx.log_warn(f"the run's build placement not applied: {refusal}")
             return
         self._place(self._ctx, placement)
+
+    def request_grasp_offsets(self, offsets: Mapping[str, tuple[float, float]]) -> None:
+        """Move the holds' grasps for the run (`ProcessContract.request_grasp_offsets`): refused only while a step runs.
+
+        Args:
+            offsets: Hold action -> (slide mm, roll degrees); those not given are as authored.
+        """
+        refusal = step_running(self._ctx.world.robots)
+        if refusal:
+            self._ctx.log_warn(f"the run's grasp offsets not applied: {refusal}")
+            return
+        self._offset(self._ctx, {hold: offset for hold, offset in offsets.items() if offset != (0.0, 0.0)})
+
+    def apply_grasp_offset(self, ctx: PluginContext, hold: str, slide_mm: float, roll_deg: float) -> None:
+        """Move one hold's grasp, from the panel: refused without a process or while a step runs.
+
+        ! Once the hold's gripper has closed on the bar the targets would no longer match where it really grips, and
+          the retreat would push the open jaws against the bar: only on a second press, warned.
+
+        Args:
+            ctx: This plugin's context.
+            hold: The hold's `bar_holding` action id.
+            slide_mm: Along the bar, mm; with `roll_deg` 0 too: as authored.
+            roll_deg: About the bar, degrees.
+        """
+        refusal = "no process loaded" if self.authored is None else step_running(ctx.world.robots)
+        if refusal:
+            self._grasp_refused, self._grasp_refused_at = refusal, ctx.now()
+            ctx.log_warn(f"grasp of {hold} not moved: {refusal}")
+            return
+        offsets = {each: offset for each, offset in self.grasp_offsets.items() if each != hold}
+        if (slide_mm, roll_deg) != (0.0, 0.0):
+            offsets[hold] = (float(slide_mm), float(roll_deg))
+        closed = offsets != self.grasp_offsets and self._hold_closed(hold)
+        if closed and not self._grasp_press.press(ctx.now(), f"grasp {hold} {slide_mm:g} {roll_deg:g}"):
+            self._grasp_refused = (f"{hold}'s gripper may already hold the bar where it was authored, and the retreat "
+                                   f"would push the open jaws against it. Press again to move it")
+            self._grasp_refused_at = ctx.now()
+            ctx.log_warn(f"grasp of {hold} not moved: {self._grasp_refused}")
+            return
+        if closed:
+            ctx.log_warn(f"grasp of {hold} moved though its gripper already closed on the bar")
+        self._grasp_refused = ""
+        self._offset(ctx, offsets)
+
+    def _hold_closed(self, hold: str) -> bool:
+        """Whether the hold's gripper may have closed on the bar.
+
+        The run marked the hold or anything scheduled after it done, or the close or the release is selected: the guide
+        stops on a finished close until Done marks it.
+        """
+        schedule = self.authored.schedule
+        if any(self._marks.get(action) in (MARK_DONE, MARK_ASSUMED) for action in schedule[schedule.index(hold):]):
+            return True
+        selected = self.selected
+        if selected is None:
+            return False
+        action, movement = selected
+        return ((action.id == hold and movement.id.endswith("_close"))
+                or (action.type == "bar_holding_release" and hold_of(self.authored, action.id) == hold))
 
     def request_marks(self, marks: Mapping[str, str]) -> None:
         """Show each action's mark in its row (`ProcessContract.request_marks`), replacing the marks given before.
@@ -543,16 +637,46 @@ class ProcessPlugin(HuskyPlugin):
             self.placement = placement
             return
         self.placement = placement
-        authored = self._authored_index[self.index] if self._movements else 0
-        self.process = placed(self.authored, placement)
-        self._show()
-        self.index = self._shown_index.get(authored, 0)
-        # * Found at the old place: drawn there no more.
-        self._carry = None
-        self._forget_drawing()
-        self._changed()
+        self._serve()
         lifted = " (off the floor plane: robot bases stay on the floor, the arms reach the targets by live IK)"
         ctx.log_info(f"build placed at {placement_text(placement)}{lifted if off_floor(placement) else ''}; replan")
+
+    def _offset(self, ctx: PluginContext, offsets: dict[str, tuple[float, float]]) -> None:
+        """Serve the process with these grasp offsets, each change logged."""
+        if offsets == self.grasp_offsets or self.authored is None:
+            self.grasp_offsets = offsets
+            return
+        for hold in sorted({*offsets, *self.grasp_offsets}):
+            if offsets.get(hold) != self.grasp_offsets.get(hold):
+                slide, roll = offsets.get(hold, (0.0, 0.0))
+                ctx.log_info(f"grasp of {hold}: slid {slide:g} mm, rolled {roll:g}° from the authored one; replan")
+        self.grasp_offsets = offsets
+        self._serve()
+
+    def _serve(self) -> None:
+        """Serve the authored process placed and with its grasp offsets; the same movement stays selected."""
+        authored = self._authored_index[self.index] if self._movements else 0
+        self._placed = placed(self.authored, self.placement)
+        self.process = offset_grasps(self._placed, self.grasp_offsets)
+        self._show()
+        self.index = self._shown_index.get(authored, 0)
+        # * Found on the old process: drawn there no more.
+        self._carry, self._grasp_for = None, None
+        self._forget_drawing()
+        self._changed()
+
+    def _on_grasp(self, ctx: PluginContext, label: str) -> None:
+        """Apply or Reset of the grasp box, for the selected movement's hold."""
+        selected = self.selected
+        hold = hold_of(self.authored, selected[0].id) if selected is not None and self.authored is not None else None
+        if hold is None:
+            self._grasp_refused, self._grasp_refused_at = "select a movement of a hold (_H or _HR)", ctx.now()
+            return
+        if label == "Reset":
+            self._slide.value = self._roll.value = 0.0
+            self.apply_grasp_offset(ctx, hold, 0.0, 0.0)
+        else:
+            self.apply_grasp_offset(ctx, hold, float(self._slide.value), float(self._roll.value))
 
     @property
     def obstacles_collide(self) -> bool:
@@ -682,7 +806,8 @@ class ProcessPlugin(HuskyPlugin):
         The old process's marks and carried joints go with it; it stands where it was authored until a run or Apply
         places it.
         """
-        self.authored, self.placement = process, IDENTITY
+        self.authored, self.placement, self.grasp_offsets, self._grasp_for = process, IDENTITY, {}, None
+        self._placed = process
         self._set_box(IDENTITY)
         self.process, self.index = process, 0
         self._marks, self._carry = {}, None
@@ -809,6 +934,7 @@ class ProcessPlugin(HuskyPlugin):
         if self._apply is not None:
             show_waiting(self._apply, self._apply_press.waiting(ctx.now()) == "apply", "Apply", None)
         selected = self.selected
+        self._draw_grasp(ctx, selected)
         # * One line, even empty: the full error on hover.
         error = " ".join(self._error.split())
         self._error_text.content = block(values(_one_line(escape(error) or "&nbsp;", error)))
@@ -940,6 +1066,77 @@ class ProcessPlugin(HuskyPlugin):
                 chips += chip("room unchecked", FAIL, "no measured obstacles in the scene: add 'obstacles' to the "
                                                       "plugins, or nothing in the room is checked")
         return chip_line(chips)
+
+    def _draw_grasp(self, ctx: PluginContext, selected) -> None:
+        """The grasp box live for the selected hold, its sliders set once per hold; its line of chips."""
+        hold = hold_of(self.authored, selected[0].id) if selected is not None and self.authored is not None else None
+        # ! Not the Apply/Reset group: viser asserts on disabling a button group; `_on_grasp` refuses without a hold.
+        for widget in (self._slide, self._roll):
+            if widget.disabled != (hold is None):
+                widget.disabled = hold is None
+        if hold != self._grasp_for:
+            # * Only when another hold is selected: every frame would undo a drag not applied yet.
+            self._grasp_for = hold
+            self._slide.value, self._roll.value = self.grasp_offsets.get(hold, (0.0, 0.0))
+        chips = ""
+        if self._grasp_refused and ctx.now() - self._grasp_refused_at < REFUSAL_SHOWN:
+            waiting = self._grasp_press.waiting(ctx.now())
+            chips += chip("press again" if waiting else "not moved", BUSY if waiting else FAIL,
+                          hover(f"Grasp not moved: {self._grasp_refused}"))
+        offset = self.grasp_offsets.get(hold) if hold is not None else None
+        if hold is None:
+            moved = len(self.grasp_offsets)
+            chips += chip(f"{moved} grasp{'s' if moved != 1 else ''} moved" if moved else "grasps as authored",
+                          OK if moved else NONE, ", ".join(sorted(self.grasp_offsets)) or "No hold's grasp is moved.")
+        elif offset is None:
+            chips += chip(f"{hold} as authored", NONE, "This hold's grasp is where the process puts it.")
+        else:
+            chips += chip(f"{hold} slid {offset[0]:g} mm, rolled {offset[1]:g}°", OK,
+                          "This hold's targets move with the grasp, from its approach to its release's retreat.")
+        if hold is not None and (float(self._slide.value), float(self._roll.value)) != (offset or (0.0, 0.0)):
+            chips += chip("not applied", BUSY, "The sliders hold another grasp than the hold's: Apply to move it.")
+        # * A button group's option cannot read "Apply?": amber is how this one says it waits.
+        waiting = self._grasp_press.waiting(ctx.now())
+        button = 1 if waiting.endswith(" 0 0") else 0  # * no offset wanted: it was Reset that asked
+        self._grasp_status.content = chip_line(chips) + (
+            f"<style>{waiting_group_css(self._grasp_buttons, button)}</style>" if waiting else "")
+        self._draw_grasp_axes(ctx, hold)
+
+    def _draw_grasp_axes(self, ctx: PluginContext, hold: str | None) -> None:
+        """The hold's gripper alone in MOVED_GRASP at the bar grasp where the sliders put it, applied or not.
+
+        Shown only while the sliders differ from the authored grasp. The overlay cannot show it: it poses the arm from
+        joints, and none are solved for a moved grasp.
+        """
+        slide, roll = float(self._slide.value), float(self._roll.value)
+        key = (hold, slide, roll, self._placed)
+        if key == self._grasp_axes_for:
+            return
+        self._grasp_axes_for = key
+        moved = hold is not None and self._placed is not None and (slide, roll) != (0.0, 0.0)
+        found = grasp_move(self._placed, hold, slide, roll) if moved else None
+        shown = None
+        if found is not None:
+            flange, move = found
+            robot, _, link = flange.rpartition("/")
+            tool = self._placed.robots[robot].tools.get(link) if robot in self._placed.robots else None
+            # * The bar grasp: the hold's last flange target (its approach ends before it).
+            movements = self._placed.actions[hold].movements
+            grasp = next(movement.target.link_poses[flange] for movement in reversed(movements)
+                         if movement.target is not None and flange in movement.target.link_poses)
+            if tool in self._placed.tools:
+                shown = tool
+                frame = self._grasp_axes.get(tool)
+                if frame is None:
+                    path = f"{ctx.view.scene_root}/grasp_target/{tool.replace('/', '_')}"
+                    frame = self._grasp_axes[tool] = ctx.view.scene.add_frame(path, show_axes=False)
+                    for index, shape in enumerate(self._placed.tools[tool].geometry.visual):
+                        add_shape(ctx.view.scene, f"{path}/{index}", shape, rgb01(MOVED_GRASP, 0.8))
+                pose = compose(move, grasp)
+                frame.position = tuple(float(value) for value in pose.position)
+                frame.wxyz = quaternion_to_wxyz(pose.orientation)
+        for name, frame in self._grasp_axes.items():
+            frame.visible = name == shown
 
     def _placement_html(self, ctx: PluginContext) -> str:
         """One line of chips under the build box: an Apply refused in the last REFUSAL_SHOWN s, and the placement."""

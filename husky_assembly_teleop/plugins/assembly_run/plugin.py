@@ -102,6 +102,8 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._authored: Process | None = None
         #: The build's placement as last seen, so a change in the process panel is told from one the run made.
         self._placement_seen = Pose()
+        #: The holds' grasp offsets as last seen, likewise (`_follow_grasp_offsets`).
+        self._grasp_offsets_seen: dict[str, tuple[float, float]] = {}
         self._ids: IdMap | None = None
         #: How far its runs were read (NO_PROCESS, OPENING, OPEN, NOT_OPENED), and when to read them again.
         self._state, self._retry_at = NO_PROCESS, 0.0
@@ -296,6 +298,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             self._changed()
         if source is not self._source:
             self._source, self._authored, self._placement_seen = source, process.authored, process.placement
+            self._grasp_offsets_seen = dict(process.grasp_offsets)
             self._source = source
             loaded = loaded_process(source) if source is not None else None
             self._reset(loaded)
@@ -335,6 +338,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             self._open_now(ctx)
         if self._state == OPEN:
             self._follow_placement(process)
+            self._follow_grasp_offsets(process)
         view = self.view
         if view.revision != self._marks_revision:
             # * Here, not in draw: draw is skipped while the panels are frozen.
@@ -363,6 +367,23 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         elif self._run is not None and not _same_pose(placed, kept) and not self._step_running(self._ctx):
             self._placement_seen = kept
             process.request_placement(kept)
+
+    def _follow_grasp_offsets(self, process: ProcessContract) -> None:
+        """Keep the holds' grasp offsets in the process panel and the run's the same, as `_follow_placement` does."""
+        shown, kept = dict(process.grasp_offsets), self._settings.grasp_offset_map
+        if shown != self._grasp_offsets_seen:
+            self._grasp_offsets_seen = shown
+            if shown == kept:
+                return
+            wanted = tuple((hold, slide, roll) for hold, (slide, roll) in sorted(shown.items()))
+            if self._run is None and self._offer is not None:
+                self._settings = replace(self._settings, grasp_offsets=wanted)
+                self._changed()
+            else:
+                self.request_settings(grasp_offsets=wanted)
+        elif self._run is not None and shown != kept and not self._step_running(self._ctx):
+            self._grasp_offsets_seen = kept
+            process.request_grasp_offsets(kept)
 
     def draw(self, ctx: PluginContext) -> None:
         """Fill the panel."""

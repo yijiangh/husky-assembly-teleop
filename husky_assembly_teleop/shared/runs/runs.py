@@ -78,6 +78,9 @@ STIFFNESS_RANGE = (200.0, 5000.0)
 #: The Robotiq grasp's controllers: the arm compliant around where it stands, or held stiff by the joint controller.
 GRASP_COMPLIANCE, GRASP_JOINT = "compliance", "joint"
 GRASP_CONTROLLERS = (GRASP_COMPLIANCE, GRASP_JOINT)
+#: A hold's grasp offset: slide along the bar, mm, and roll about it, degrees (`RunSettings.grasp_offsets`).
+GRASP_SLIDE_RANGE = (-150.0, 150.0)
+GRASP_ROLL_RANGE = (-180.0, 180.0)
 #: The free searches' ranges (`route_search.FreeSearch`): seconds and iterations per try, the joint step of the
 #: checks (rad), tries.
 PLAN_TIME_RANGE = (5.0, 600.0)
@@ -119,6 +122,8 @@ class RunSettings:
         plan_joint_resolution: The joint step of its collision checks, radians (PLAN_RESOLUTION_RANGE).
         plan_tries: Tries of a free or one-arm search before giving up (PLAN_TRIES_RANGE).
         plan_swept_check: Check a found path between its waypoints before taking it.
+        grasp_offsets: Each hold's support grasp moved along and about its bar, ((hold action, slide mm, roll
+            degrees), ...), for holds not as authored (`ProcessContract.grasp_offsets`).
         placement: Where the build stands, [x, y, z, qx, qy, qz, qw]: the process's authored world frame in the world
             (`ProcessContract.placement`); the identity: as authored. Fixed once an action is marked done.
     """
@@ -142,10 +147,18 @@ class RunSettings:
     plan_tries: int = 3
     plan_swept_check: bool = True
     placement: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+    grasp_offsets: tuple = ()
 
     def __post_init__(self):
-        """Hold the placement as a tuple of floats, as run.json's list reads."""
+        """Hold the placement and grasp offsets as tuples, as run.json's lists read."""
         object.__setattr__(self, "placement", tuple(float(value) for value in self.placement))
+        object.__setattr__(self, "grasp_offsets", tuple((str(hold), float(slide), float(roll))
+                                                        for hold, slide, roll in self.grasp_offsets))
+
+    @property
+    def grasp_offset_map(self) -> dict[str, tuple[float, float]]:
+        """dict: `grasp_offsets` as hold action -> (slide mm, roll degrees)."""
+        return {hold: (slide, roll) for hold, slide, roll in self.grasp_offsets}
 
     @property
     def placement_pose(self) -> Pose:
