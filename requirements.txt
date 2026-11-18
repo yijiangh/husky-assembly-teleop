@@ -21,6 +21,7 @@ compas_robots>=0.6  # robot models in the core's mirrors and URDF loading
 matplotlib==3.10.3  # base_exp recording plots
 shapely>=2.1  # the cameras' views cut with the floor (world/camera_coverage.py); 2.1 for constrained_delaunay_triangles
 pandas>=2.0  # the analysis scripts (experiments/)
+pillow>=10.1  # the frame check picture (plugins/frame_check); 10.1 for a sized default font, Ubuntu 22.04 ships 9.0
 pytest-xdist==2.5.0  # parallel tests; ! both plugins must work with the system pytest 6.2.5
 pytest-timeout==2.2.0  # hung tests fail instead of stalling; the newest release for pytest 6.2.5
 circle-fitting-3d==1.0.0  # the old calibration scripts (data/calibration_data/), run by tests
