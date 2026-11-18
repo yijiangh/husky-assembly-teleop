@@ -90,6 +90,9 @@ class Process:
         """Keep it."""
         self.carries.append(carry)
 
+    def request_show(self, at_target):
+        """Nothing to draw."""
+
     def request_select(self, index: int) -> None:
         """Select the authored movement `index`, shown as the panel shows it."""
         action, movement = self.movements[index]
