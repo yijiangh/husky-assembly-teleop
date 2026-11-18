@@ -132,6 +132,7 @@ class StallGate:
     Attributes:
         tools: Arm name -> its tool, the ones watched.
         motor: ScaffoldingV3.GRIPPER_MOTOR or JOINT_MOTOR.
+        made: ROS time the gate was made.
         stall_times: Arm name -> seconds from the gate's making to its tool's first counted stall.
     """
 
@@ -139,10 +140,10 @@ class StallGate:
         """Watch `motor` on `tools` from now; `ctx` gives the time and takes the log lines."""
         self._ctx, self.tools, self.motor = ctx, dict(tools), motor
         self.stall_times: dict[str, float] = {}
-        self._made = ctx.now()
+        self.made = ctx.now()
         #: The arms whose motor was seen not STALLED; those whose silence was logged.
         # * Seeded now, so a motor that stalls before the first poll still counts.
-        self._ran = {arm for arm, tool in self.tools.items() if _fresh(tool, self._made)
+        self._ran = {arm for arm, tool in self.tools.items() if _fresh(tool, self.made)
                      and _motor_state(tool, motor) != ScaffoldingV3.STALLED}
         self._silent: set[str] = set()
 
@@ -165,7 +166,7 @@ class StallGate:
                 self._ran.add(arm)
             elif arm in self._ran:
                 stalled += 1
-                self.stall_times.setdefault(arm, now - self._made)
+                self.stall_times.setdefault(arm, now - self.made)
         return bool(self.tools) and stalled == len(self.tools)
 
 

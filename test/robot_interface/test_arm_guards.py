@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
-from robot_fakes import TCP_ORIENTATION, TCP_POSITION, Publisher, fake_arm
+from robot_fakes import TCP_ORIENTATION, TCP_POSITION, Client, Publisher, fake_arm
 from scipy.spatial.transform import Rotation
 
-from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, CARTESIAN_MAX_STEP,
+from husky_assembly_teleop.robot_interface.arm import (ARM_CONTROLLERS, CARTESIAN_COMPLIANCE_CONTROLLER,
+                                                       CARTESIAN_MAX_STEP, ArmInterface,
                                                        CARTESIAN_STEP_WINDOW, FREE_DRIVE_CONTROLLER,
                                                        FREE_DRIVE_REQUEST_TTL, HOLD_DURATION,
                                                        JOINT_STATE_MAX_AGE, SCALED_JOINT_TRAJECTORY_CONTROLLER,
@@ -18,7 +21,8 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        UR_JOINT_LIMITS, JOG_DISTANCE, JOG_LIMIT_MARGIN,
                                                        JOG_MAX_SPEED, joint_jog, joint_move, joint_path_move)
 from husky_assembly_teleop.robot_interface.tool_step import TOOL_JOG_LEAD, TOOL_JOG_MAX_JOINT_SPEED
-from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
+from husky_assembly_teleop.robot_interface.controller_manager import (CONTROLLER_STATE_MAX_AGE,
+                                                                      ControllerManagerInterface)
 from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
@@ -555,3 +559,56 @@ def test_free_drive_stays_on_only_while_requested_under_the_lease():
     arm.request_free_drive()
     arm._keep_free_drive()
     assert len(arm._free_drive.sent) == 1 and "leased by calibration" in arm._node.log.text("error")
+
+
+def _switching_arm(**config):
+    """A fake arm under compliance, with a real controller manager whose switch service is up."""
+    arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER, **config)
+    manager = ControllerManagerInterface.__new__(ControllerManagerInterface)
+    manager._node, manager.namespace, manager.switchable = arm._node, "/a200_0804/ur5e", ARM_CONTROLLERS
+    manager.state, manager._guard = arm.state.controllers, None
+    manager.state.controllers = {CARTESIAN_COMPLIANCE_CONTROLLER: "active"}
+    manager._switch_client = Client(True)
+    arm.controllers = manager
+    arm._zero_force_on_controller_stop()
+    return arm
+
+
+def test_switching_away_from_compliance_zeroes_the_target_force_before_the_request():
+    """Stopped, the controller keeps the last force and would push the arm with it when it next starts."""
+    arm = _switching_arm()
+    arm._target_wrench.publish = lambda message: (sent.append(message), calls.append(
+        len(arm.controllers._switch_client.calls)))
+    sent, calls = [], []
+    assert arm.controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER)
+    force = sent[-1].wrench.force
+    assert (force.x, force.y, force.z) == (0.0, 0.0, 0.0) and calls == [0]
+
+
+def test_a_switch_that_stops_no_compliance_controller_sends_no_force():
+    """Free drive to joints: the compliance controller is not running, nothing to zero."""
+    arm = _switching_arm()
+    arm.state.controllers.active = FREE_DRIVE_CONTROLLER
+    arm.state.controllers.controllers = {FREE_DRIVE_CONTROLLER: "active"}
+    assert arm.controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER)
+    assert arm._target_wrench.sent == []
+
+
+def test_test_mode_sends_no_force_when_the_compliance_controller_stops():
+    """Nothing goes out in `cartesian_test_mode`."""
+    arm = _switching_arm(cartesian_test_mode=True)
+    assert arm.controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER)
+    assert arm._target_wrench.sent == []
+
+
+def test_a_real_arm_zeroes_the_target_force_when_a_switch_stops_compliance():
+    """The constructor connects the hook, which `fake_arm` skips."""
+    config = MagicMock(cartesian_test_mode=False)
+    config.name = "left_ur_arm"
+    arm = ArmInterface(MagicMock(), "/a200_0806", config, MagicMock())
+    arm.state.controllers.active = CARTESIAN_COMPLIANCE_CONTROLLER
+    arm.state.controllers.controllers = {CARTESIAN_COMPLIANCE_CONTROLLER: "active"}
+    arm._target_wrench = Publisher()
+    assert arm.controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER, unguarded=True)
+    force = arm._target_wrench.sent[-1].wrench.force
+    assert (force.x, force.y, force.z) == (0.0, 0.0, 0.0)

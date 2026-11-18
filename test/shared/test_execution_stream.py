@@ -17,6 +17,7 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        SCALED_JOINT_TRAJECTORY_CONTROLLER)
 from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.robot_interface.mocap_state import POSE_TIMEOUT
+from husky_assembly_teleop.shared.execution import stream as stream_module
 from husky_assembly_teleop.shared.execution.stream import (ARRIVAL, FK_TCP_TOL, MAX_SAMPLES, SETTLE_CEILING,
                                                            SETTLE_WINDOW, Recorder, Segment, Settling, fk_tcp_gap,
                                                            line_target, measured_tool0, plan_stream, progress,
@@ -221,6 +222,18 @@ def test_the_stream_holds_the_end_until_its_time_is_up_and_the_tcp_arrives():
     for each in progress(lab.robot, segment).values():
         assert each["travel_mm"] == pytest.approx(5.0) and each["remaining_mm"] < ARRIVAL * 1e3
         assert each["achieved_mm"] == pytest.approx(5.0, abs=ARRIVAL * 1e3)
+
+
+@pytest.mark.parametrize(("tcp", "past", "off"), [((0.0, 0.0, 0.013), 3.0, 0.0), ((0.0, 0.002, 0.008), -2.0, 2.0)])
+def test_progress_says_past_the_end_or_short_with_a_sign(monkeypatch, tcp, past, off):
+    """A 10 mm line along z: a TCP 3 mm beyond its end reads +3 mm past; one 2 mm short and 2 mm aside reads -2, 2."""
+    start = Pose(np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0]))
+    end = Pose(np.array([0.0, 0.0, 0.010]), start.orientation)
+    segment = Segment({"left_ur_arm": start}, {"left_ur_arm": end}, 1.0, 0.0)
+    monkeypatch.setattr(stream_module, "measured_tool0", lambda robot, name: Pose(np.array(tcp), start.orientation))
+    each = progress(None, segment)["left_ur_arm"]
+    assert each["past_end_mm"] == pytest.approx(past) and each["off_line_mm"] == pytest.approx(off, abs=1e-9)
+    assert each["remaining_mm"] == pytest.approx(math.hypot(past, off))
 
 
 def test_no_base_pose_sends_nothing():

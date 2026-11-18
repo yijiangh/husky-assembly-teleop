@@ -5,11 +5,14 @@ Setting the compliance controller's stiffness for one part, and setting the one 
   runs with what its controller has.
 - ! A set is recorded the moment it goes out, before any answer: `send_back` then sets back every arm a set went to,
   however the set ended (taken, late, a cancel while waiting).
+- ! A set back not confirmed stays on the arm (`ArmInterface.stiffness_unrestored`): the next part sets that one back,
+  not the part's stiffness it would read from the controller.
 - ! Main thread, from a plugin task.
 """
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
 from ...robot_interface.arm import parameters_taken, stiffness_values
@@ -38,7 +41,7 @@ async def set_stiffness(ctx: PluginContext, arms: Collection[ArmInterface], stif
     unread, refused, sets = [], [], {}
     for arm in arms:
         name = arm.config.name
-        before = stiffness_values(read[name])
+        before = arm.stiffness_unrestored or stiffness_values(read[name])
         if before is None:
             unread.append(name)
             continue
@@ -46,6 +49,7 @@ async def set_stiffness(ctx: PluginContext, arms: Collection[ArmInterface], stif
         if future is None:
             refused.append(name)
             continue
+        arm.stiffness_unrestored = before
         record[name] = {"before": before, "set": None}
         sets[name] = future
     for name, answer in (await _answers(ctx, sets)).items():
@@ -80,7 +84,18 @@ def send_back(arms: Collection[ArmInterface], record: Mapping[str, dict]) -> dic
                 sent[arm.config.name] = arm.request_stiffness(kept["before"], restore=True)
             except Exception:  # noqa: BLE001 - in a finally: said by `check_back`, never raised
                 sent[arm.config.name] = None
+            if sent[arm.config.name] is not None:
+                sent[arm.config.name].add_done_callback(partial(_note_back, arm))
     return sent
+
+
+def _note_back(arm: ArmInterface, future: Any) -> None:
+    """Forget the stiffness to set back once the controller confirmed it."""
+    try:
+        if parameters_taken(future.result()):
+            arm.stiffness_unrestored = None
+    except Exception:  # noqa: BLE001 - a failed call is no confirmation: the next part sets it back
+        pass
 
 
 async def check_back(ctx: PluginContext, sent: Mapping[str, Any], *, label: str) -> None:

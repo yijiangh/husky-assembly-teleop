@@ -188,3 +188,19 @@ def test_restart_switches_at_once_without_a_configure_service():
     interface = manager()
     interface._configure_client = Client(False)
     assert interface.restart(JOINTS) and len(interface._switch_client.calls) == 1
+
+
+def test_the_controllers_about_to_stop_are_named_before_the_request_goes_out():
+    """The arm zeroes its target force here, while the compliance controller still takes it."""
+    interface, seen = manager(CARTESIAN), []
+    interface.before_stopping = lambda stopping: seen.append((list(stopping), len(interface._switch_client.calls)))
+    assert interface.switch(JOINTS)
+    assert seen == [([CARTESIAN], 0)]
+
+
+def test_a_refused_switch_names_nothing_about_to_stop():
+    """Nothing stops, so the running controller keeps its target force."""
+    interface, seen = manager(CARTESIAN), []
+    interface.before_stopping, interface.state.switch_in_flight = seen.append, FREE
+    assert not interface.switch(JOINTS)
+    assert seen == []
