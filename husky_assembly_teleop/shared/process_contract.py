@@ -119,6 +119,14 @@ class ProcessContract(Protocol):
         """
 
     @property
+    def grasp_offsets(self) -> Mapping[str, tuple[float, float]]:
+        """dict: Hold action -> (slide mm, roll degrees): each support grasp moved along and about its bar.
+
+        The served process has the hold's flange targets moved by it, from its approach to its release's retreat
+        (`plugins/process/grasp_offset.py`). The run keeps them (`RunSettings.grasp_offsets`).
+        """
+
+    @property
     def obstacles_collide(self) -> bool:
         """bool: Whether the process's obstacles (Rhino's "obstacles/<name>") count in collision checks.
 
@@ -145,6 +153,12 @@ class ProcessContract(Protocol):
         """Place the build at `placement`, as a run asks when it opens: the selected movement stays selected.
 
         Never refused for done marks (the panel's own Apply is); refused while a step runs. ! Main thread only.
+        """
+
+    def request_grasp_offsets(self, offsets: Mapping[str, tuple[float, float]]) -> None:
+        """Move the holds' grasps as a run asks when it opens, replacing those before; refused while a step runs.
+
+        ! Main thread only.
         """
 
     def request_marks(self, marks: Mapping[str, str]) -> None:

@@ -20,7 +20,8 @@ from ...shared.assembly_run_contract import exported_end, first_pending, is_live
 from ...shared.assembly_planning.steps import first_step
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
-from ...shared.runs.runs import (DONE, GRASP_CONTROLLERS, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE,
+from ...shared.runs.runs import (DONE, GRASP_CONTROLLERS, GRASP_ROLL_RANGE, GRASP_SLIDE_RANGE,
+                                 PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE,
                                  PLAN_TRIES_RANGE, PUSH_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE,
                                  STIFFNESS_RANGE, Progress, RobotRecord, Run, RunError, RunSettings, mark_done,
                                  new_run, record_event, record_movement, save_info, save_progress, stamp, with_current)
@@ -49,6 +50,20 @@ NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
 SETTING_TYPES = {each.name: type(each.default) for each in fields(RunSettings)}
 #: How far the loaded process's runs were read; only OPEN allows writes.
 NO_PROCESS, OPENING, OPEN, NOT_OPENED = "", "opening", "open", "not opened"
+
+
+def grasp_offsets_problem(value: Any) -> str:
+    """What is wrong with a grasp offsets setting ([[hold action, slide mm, roll degrees], ...]), or ""."""
+    try:
+        offsets = [(str(hold), float(slide), float(roll)) for hold, slide, roll in value]
+    except (TypeError, ValueError):
+        return f"the grasp offsets must be [hold action, slide mm, roll degrees] each, not {value!r}"
+    for hold, slide, roll in offsets:
+        if not GRASP_SLIDE_RANGE[0] <= slide <= GRASP_SLIDE_RANGE[1] or not \
+                GRASP_ROLL_RANGE[0] <= roll <= GRASP_ROLL_RANGE[1]:
+            return (f"{hold}'s grasp offset must slide {GRASP_SLIDE_RANGE[0]:g} to {GRASP_SLIDE_RANGE[1]:g} mm and "
+                    f"roll {GRASP_ROLL_RANGE[0]:g} to {GRASP_ROLL_RANGE[1]:g}°, not {slide:g} mm, {roll:g}°")
+    return ""
 
 
 def placement_problem(value: Any) -> str:
@@ -398,8 +413,8 @@ class RunWrites:
         for name, value in changes.items():
             if name not in SETTING_TYPES:
                 return f"there is no setting {name!r}"
-            if name == "placement":
-                problem = placement_problem(value)
+            if name in ("placement", "grasp_offsets"):
+                problem = (placement_problem if name == "placement" else grasp_offsets_problem)(value)
                 if problem:
                     return problem
             elif name in NUMBER_SETTINGS:

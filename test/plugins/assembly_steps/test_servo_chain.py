@@ -97,6 +97,14 @@ class FakeProcess:
     def request_placement(self, placement: Pose) -> None:
         """Never asked for: the run keeps no placement."""
 
+    @property
+    def grasp_offsets(self) -> dict:
+        """As authored."""
+        return {}
+
+    def request_grasp_offsets(self, offsets) -> None:
+        """Never asked for: the run keeps no grasp offsets."""
+
     def request_select(self, index: int) -> None:
         """Select at once."""
         self.index = index
