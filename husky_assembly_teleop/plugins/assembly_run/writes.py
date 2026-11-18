@@ -21,9 +21,9 @@ from ...shared.assembly_planning.steps import first_step
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
 from ...shared.runs.runs import (DONE, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
-                                 SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, Progress, RobotRecord, Run,
-                                 RunError, RunSettings, mark_done, new_run, record_event, record_movement, save_info,
-                                 save_progress, stamp, with_current)
+                                 PUSH_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, STIFFNESS_RANGE,
+                                 Progress, RobotRecord, Run, RunError, RunSettings, mark_done, new_run, record_event,
+                                 record_movement, save_info, save_progress, stamp, with_current)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -37,6 +37,9 @@ AGAIN_NEW_RUN, AGAIN_MARK = "new run", "mark"
 NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
                    "spiral_seconds": ("the spiral's duration", SPIRAL_SECONDS_RANGE, "s"),
                    "spiral_turns": ("the spiral's turns", SPIRAL_TURNS_RANGE, "whole turns"),
+                   "insert_push_n": ("the insert's push", PUSH_RANGE, "N"),
+                   "insert_stiffness_across": ("the insert's stiffness across the tool", STIFFNESS_RANGE, "N/m"),
+                   "insert_stiffness_along": ("the insert's stiffness along the tool", STIFFNESS_RANGE, "N/m"),
                    "plan_max_time": ("the search's time per try", PLAN_TIME_RANGE, "s"),
                    "plan_max_iterations": ("the search's iterations", PLAN_ITERATIONS_RANGE, "whole iterations"),
                    "plan_joint_resolution": ("the search's joint resolution", PLAN_RESOLUTION_RANGE, "rad"),

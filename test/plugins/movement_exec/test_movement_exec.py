@@ -1444,7 +1444,8 @@ def test_b21s_insert_tightens_the_left_screw_only_and_ends_when_it_stalls():
     record = json.loads(json.dumps(lab.run.files()[-1]))
     assert record["part"]["kind"] == "insert" and record["outcome"]["status"] == "STALLED"
     assert record["outcome"]["settings"] == record["command"]["settings"] == {
-        "split_mm": 5.0, "spiral": False, "spiral_seconds": 20.0, "spiral_turns": 4, "retreat_compliant": False}
+        "split_mm": 5.0, "spiral": False, "spiral_seconds": 20.0, "spiral_turns": 4, "retreat_compliant": False,
+        "cancel_weight": True, "push_n": 4.0, "stiffness": [1000.0, 1000.0, 500.0]}
     assert [phase["name"] for phase in record["outcome"]["phases"]] == ["rigid", "switch", "compliant"]
     assert record["plan"]["planner"] == "fake" and result.end is not None
     line, = lines

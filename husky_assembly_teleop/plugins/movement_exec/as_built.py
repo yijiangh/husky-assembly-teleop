@@ -205,4 +205,6 @@ def _options(request: ExecRequest | None, run: PartRun | None, view: RunView, dr
         "ignore_built": request.ignore_built() if request is not None else None,
         "obstacles_collide": request.obstacles_collide() if request is not None else None,
         "insert_split_mm": settings.insert_split_mm, "spiral_seconds": settings.spiral_seconds,
-        "spiral_turns": settings.spiral_turns}
+        "spiral_turns": settings.spiral_turns, "insert_cancel_weight": settings.insert_cancel_weight,
+        "insert_push_n": settings.insert_push_n, "insert_stiffness_across": settings.insert_stiffness_across,
+        "insert_stiffness_along": settings.insert_stiffness_along}

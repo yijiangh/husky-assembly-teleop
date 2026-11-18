@@ -12,7 +12,8 @@ from html import escape
 from typing import TYPE_CHECKING, NamedTuple
 
 from ...plugin_api.context import PluginContext
-from ...shared.runs.runs import DONE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, RunSettings
+from ...shared.runs.runs import (DONE, PUSH_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, STIFFNESS_RANGE,
+                                 RunSettings)
 from ...shared.assembly_tab.layout import (MARK_BAND, MARK_ICON, REOPEN_ICON, RUN_BAND, RUN_SETTINGS_BAND,
                                            TAB_BUTTONS_CSS)
 from ...ui.css import group_tooltips_css, side_by_side_css
@@ -97,6 +98,21 @@ class RunPanel:
             self._spiral_turns = gui.add_slider("Spiral turns", min=SPIRAL_TURNS_RANGE[0], max=SPIRAL_TURNS_RANGE[1],
                                                 step=1, initial_value=default.spiral_turns,
                                                 hint="Turns the spiral makes on its way out; pitch = 15 mm / turns")
+            self._cancel_weight = gui.add_checkbox("Cancel bar weight", default.insert_cancel_weight,
+                                                   hint="The insert's compliant part takes the bar's weight, measured "
+                                                        "just before, off the arms, so the bar does not sag")
+            self._push = gui.add_slider("Insert push N", min=PUSH_RANGE[0], max=PUSH_RANGE[1], step=0.5,
+                                        initial_value=default.insert_push_n,
+                                        hint="Each mating arm pushes this along its insert line under compliance, "
+                                             "until its screw is tight")
+            self._across = gui.add_slider("Stiffness across", min=STIFFNESS_RANGE[0], max=STIFFNESS_RANGE[1],
+                                          step=100.0, initial_value=default.insert_stiffness_across,
+                                          hint="The insert's compliance across the tool (tool0 x, y), N/m: lower "
+                                               "lets the taper center the bar")
+            self._along = gui.add_slider("Stiffness along", min=STIFFNESS_RANGE[0], max=STIFFNESS_RANGE[1],
+                                         step=100.0, initial_value=default.insert_stiffness_along,
+                                         hint="The insert's compliance along the tool (tool0 z), N/m: lower keeps the "
+                                              "push near its setting where the joint is off its planned depth")
             # * Greyed until the run's current action inserts a ground bar (`draw`): no step yet.
             self._servo = gui.add_checkbox("Servo by bar", default.servo_by_bar, disabled=True,
                                            hint="Servo a ground bar by its mocap fit instead of tool0 (on by "
@@ -131,7 +147,9 @@ class RunPanel:
                     (self._spiral_seconds, "spiral_seconds", float),
                     (self._spiral_turns, "spiral_turns", float), (self._servo, "servo_by_bar", bool),
                     (self._retreat_live, "retreat_live_axis", bool),
-                    (self._retreat_compliant, "retreat_compliant", bool))
+                    (self._retreat_compliant, "retreat_compliant", bool),
+                    (self._cancel_weight, "insert_cancel_weight", bool), (self._push, "insert_push_n", float),
+                    (self._across, "insert_stiffness_across", float), (self._along, "insert_stiffness_along", float))
         # ! `operator_only`: viser also fires `on_update` when the plugin writes `widget.value` (skipped only when it
         #   is unchanged), and the Spiral and Servo by bar boxes are shown unticked while greyed: that write must not
         #   reach `request_settings`, or it would untick the stored setting. The test fake takes every call as the
@@ -202,6 +220,8 @@ class RunPanel:
             self._retreat_live.value, self._retreat_compliant.value = (settings.retreat_live_axis,
                                                                        settings.retreat_compliant)
             self._spiral_seconds.value, self._spiral_turns.value = settings.spiral_seconds, settings.spiral_turns
+            self._cancel_weight.value, self._push.value = settings.insert_cancel_weight, settings.insert_push_n
+            self._across.value, self._along.value = settings.insert_stiffness_across, settings.insert_stiffness_along
 
         message, failed = status.message
         self._details.content = block(values(_one_line(escape(f"current   {_where(view)}")))

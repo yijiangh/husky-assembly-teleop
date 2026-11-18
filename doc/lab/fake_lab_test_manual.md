@@ -361,6 +361,7 @@ click `◀ mv` / `mv ▶`: the step under the buttons follows, except while an E
 ### 3.d The settings  [CHECK — nothing moves]
 
 - [ ] The settings, under Mark done: Ignore built bars off, Insert split mm 5, Spiral off, Spiral s 20, Spiral turns 4,
+      Cancel bar weight on, Insert push N 4, Stiffness across 1000, Stiffness along 500,
       Servo by bar **on** (live only on a ground bar's action, B20_J here; greyed and unticked on any other), Dry run
       off. Leave them so.
   - A run that saved Servo by bar off keeps it off: tick it on B20_J. There is no Rigid insert box: a ground bar always
