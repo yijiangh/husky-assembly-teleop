@@ -1573,6 +1573,39 @@ def test_b21_hs_close_is_the_compliant_handoff():
     assert record["part"]["kind"] == "robotiq_handoff" and record["outcome"]["status"] == "CLOSED"
 
 
+@pytest.mark.safety
+def test_b21_hs_close_takes_the_runs_grasp_controller_joint():
+    """The run's Grasp controller joint: the prompt says STIFF, the command records the controller.
+
+    Confirm closes the Robotiq with Alice's arm left under joint control (no switch, no stiffness set): CLOSED.
+    """
+    lab = Lab(current=("B21_H", 3))
+    lab.run.view.settings = RunSettings(grasp_controller="joint")
+    lab.track("a200-0804")
+    request = lab.request("B21_H_close", serial="a200-0804", route=None)
+    arm = lab.alice.arms["ur_arm"]
+    result, _held = execute(lab, request, True)
+    assert result.status == DONE and result.done == (3,), result.reason
+    assert prompts(lab)[0].startswith("alice (0804): B21_H_close — CLOSE + STIFF grasp on ur_arm")
+    assert [goal.command.position for goal in arm.end_effector._action.goals] == [ROBOTIQ_CLOSE]
+    assert arm.controllers.switches == [] and arm.stiffness_service.sets == []
+    record = json.loads(json.dumps(lab.run.files()[-1]))
+    assert record["outcome"]["status"] == "CLOSED" and record["command"]["controller"] == "joint"
+    assert not record["command"]["compliant"]
+
+
+@pytest.mark.safety
+def test_b21_hs_close_sets_the_runs_grasp_stiffness():
+    """The run's Grasp stiffness reaches the arm for the compliant close, and the one it had goes back."""
+    lab = Lab(current=("B21_H", 3))
+    lab.run.view.settings = RunSettings(grasp_stiffness=2000.0)
+    lab.track("a200-0804")
+    arm = lab.alice.arms["ur_arm"]
+    result, _held = execute(lab, lab.request("B21_H_close", serial="a200-0804", route=None), True)
+    assert result.status == DONE, result.reason
+    assert arm.stiffness_service.sets == [[2000.0] * 3, [500.0] * 3]
+
+
 def test_a_compliant_parts_question_names_the_robot_and_is_recorded():
     """The spiral's warning, asked through the job's prompts, names the robot and the movement first.
 

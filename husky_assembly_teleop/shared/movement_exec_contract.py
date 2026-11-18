@@ -5,7 +5,7 @@ Other plugins ask with an `ExecRequest`; `part_plan` says how a step's movements
 after the step's primary movement where it gets one (`servo_kind`).
 
 A part is a motion along a plan (a plain one, an insert or a retreat: `MOTION_KINDS`), a tool step (Robotiq open, the
-compliant Robotiq handoff), an ungrasp its retreat runs, a step done by hand (placing the bar, the scaffolding grasp),
+Robotiq handoff), an ungrasp its retreat runs, a step done by hand (placing the bar, the scaffolding grasp),
 or the servo (SERVO_PART, index SERVO_INDEX: it is no movement of its own). Routines not supported yet are refused,
 naming what is missing (`LATER`). While movement_exec has a robot's lease for a step, nothing that changes the step may
 change (`step_running`). A transfer's bar servo leaves `Carried` for its insert's plan.
@@ -357,7 +357,7 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
     if kind == "robotiq" and grip == "open":
         return part(routine, OPEN_PART, "Robotiq open", tuple(arms))
     if kind == "robotiq":
-        return part(routine, HANDOFF_PART, "Robotiq close, the arm compliant (handoff)", tuple(arms))
+        return part(routine, HANDOFF_PART, "Robotiq close on the bar (the run's grasp controller)", tuple(arms))
     if kind == "scaffolding_v3" and grip == "closed":
         # * The operator clamps the bar with the tools' own buttons; the monitor sends the tools nothing.
         return part(routine, BY_HAND_PART, f"clamp it: tighten the gripper screws of {', '.join(arms)} with the "

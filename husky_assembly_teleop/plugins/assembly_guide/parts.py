@@ -202,7 +202,7 @@ def _label(movement: str, plan: PartPlan) -> str:
     if kind == MOVE:
         what = MOVE_NAMES.get(plan.routine, plan.routine.value if plan.routine else "move")
     elif kind == GRIPPER:
-        names = {OPEN_PART: "open the gripper", HANDOFF_PART: "close the gripper, arm compliant"}
+        names = {OPEN_PART: "open the gripper", HANDOFF_PART: "close the gripper on the bar"}
         what = names.get(plan.kind, "tool step")
     elif kind == HAND:
         what = "by hand"

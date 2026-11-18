@@ -115,7 +115,8 @@ Details: `doc/lab/plugins.md`, `doc/design/run_record.md`.
   `shared/execution/insert.py`, `shared/execution/stream.py`.
 - **retreat / break-out**: backing the tools out of their joints; the break-out is its first, compliant part.
   `shared/execution/retreat.py`.
-- **handoff**: a support robot's Robotiq close on a bar another robot holds, its arm compliant.
+- **handoff**: a support robot's Robotiq close on a bar another robot holds, its arm compliant or held stiff (the
+  run's Grasp controller).
   `shared/execution/handoff.py`.
 - **servo**: passes that move the flanges onto the authored targets after a transfer, approach or ground insert.
   `shared/execution/servo.py`.

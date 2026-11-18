@@ -35,7 +35,7 @@ from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.movement import Routine
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import STALE_ARM, stale_reason
-from ...shared.execution.handoff import handoff_text, run_handoff
+from ...shared.execution.handoff import COMPLIANCE, JOINT, GraspSettings, handoff_text, run_handoff
 from ...shared.execution.insert import plan_insert, run_insert
 from ...shared.execution.insert_forces import InsertForceSettings
 from ...shared.execution.moving import base_moving, moving_reason
@@ -408,6 +408,14 @@ def _clamped(value: float, bounds: tuple[float, float]) -> float:
     return min(max(float(value), bounds[0]), bounds[1])
 
 
+def grasp_settings(job: Job) -> GraspSettings:
+    """The run's grasp settings, read once as the close starts: joint, or compliant at the clamped stiffness."""
+    settings = job.run.view.settings
+    if settings.grasp_controller == JOINT:
+        return GraspSettings(JOINT)
+    return GraspSettings(COMPLIANCE, _clamped(settings.grasp_stiffness, STIFFNESS_RANGE))
+
+
 def _ask(job: Job, movement: str, text: str, warn: bool, choose: bool = False) -> Prompt:
     """Open a prompt after the robot's name ("DRY RUN — " first in a dry run), log it and record it."""
     prompt = job.prompts.ask(job.who, ("DRY RUN — " if job.dry_run else "") + text, job.ctx.now(), warn,
@@ -703,15 +711,17 @@ async def _replan(job: Job, part: PartPlan) -> RouteResult | None:
 
 
 async def _handoff(job: Job, run: PartRun) -> None:
-    """Close a Robotiq on a bar another robot holds, its arm compliant meanwhile (`run_handoff`), after the prompt."""
+    """Close a Robotiq on a bar another robot holds, under the run's grasp controller, after the prompt."""
     ctx, part = job.ctx, run.part
     gripper = _robotiq_of(job, run)
     if gripper is None:
         return
     arm = part.tools[0]
+    grasp = grasp_settings(job)
     run.command = {"tool": "robotiq", "arm": arm, "position": ROBOTIQ_CLOSE, "effort": ROBOTIQ_EFFORT,
-                   "compliant": True}
-    if not await confirmed(job, run, f"{part.movement} — {handoff_text(arm)}"):
+                   "compliant": grasp.controller == COMPLIANCE, "controller": grasp.controller,
+                   "stiffness": grasp.stiffness}
+    if not await confirmed(job, run, f"{part.movement} — {handoff_text(arm, grasp)}"):
         return
     problem = world_problem(job, motion=False)
     if problem:
@@ -719,7 +729,8 @@ async def _handoff(job: Job, run: PartRun) -> None:
         return
     job.recorder = Recorder(job.robot, ctx.now())
     try:
-        outcome = await run_handoff(ctx, job.robot, arm, gripper, dry_run=job.dry_run, recorder=job.recorder)
+        outcome = await run_handoff(ctx, job.robot, arm, gripper, grasp=grasp, dry_run=job.dry_run,
+                                    recorder=job.recorder)
     finally:
         job.recorder = None
     _part_ended(run, outcome)

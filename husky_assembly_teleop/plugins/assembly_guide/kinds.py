@@ -19,8 +19,9 @@ from typing import TYPE_CHECKING
 import viser
 
 from ...shared.guide.step import Step
-from ...shared.movement_exec_contract import MAX_TRAJ_TIME
-from ...shared.runs.runs import PUSH_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, STIFFNESS_RANGE, RunSettings
+from ...shared.movement_exec_contract import HANDOFF_PART, MAX_TRAJ_TIME
+from ...shared.runs.runs import (GRASP_CONTROLLERS, GRASP_JOINT, PUSH_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE,
+                                 STIFFNESS_RANGE, RunSettings)
 from ...colors import DARK_GREY, INK, LIGHT_GREY
 from ...ui.style import CURRENT, NONE, SECTION_CTRL, block, section, values, wrapped
 from ...world.checks import GOOD, PENDING, Check
@@ -450,25 +451,47 @@ class RetreatKind(Kind):
 
 
 class GripperKind(Kind):
-    """A gripper step: the Robotiq opens, or closes with the arm compliant (the handoff)."""
+    """A gripper step: the Robotiq opens, or closes on a bar with the arm compliant or stiff (the run's grasp)."""
 
     name = GRIPPER
-    goal = "Open the Robotiq, or close it on the bar with the arm compliant."
+    goal = "Open the Robotiq, or close it on the bar with the arm compliant or held stiff (Grasp controller)."
     todo = ("Prepare: the executor asks to run it.",
             "Go: the gripper moves.",
             "Done: next part.",
             "To fix by hand: Control › the robot › the arm's TOOL section › Gripper Open or Close; then Done twice.")
     look_for = ("Before an open at a bar: the gripper stands about 100 mm in front of the bar, centred on it (1-2 cm "
                 "off sideways: stop, the base calibration is off).",
-                "The other robot's tools are not pulled.", E_STOP)
+                "The other robot's tools are not pulled.",
+                "Grasp controller joint: the frame moves as the close pulls the bar; stop if a joint or a post "
+                "bends.", E_STOP)
 
     def build(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
-        """What the step does."""
+        """What the step does; the run's grasp settings, live on a close."""
         self._what = gui.add_html("")
+        self._grasp = gui.add_dropdown("Grasp controller", options=list(GRASP_CONTROLLERS),
+                                       initial_value=GRASP_CONTROLLERS[0],
+                                       hint="The arm's controller during the close (the run's setting): compliance "
+                                            "gives way to the bar; joint holds the arm, so the close pulls the bar "
+                                            "and the frame to the gripper")
+        self._stiffness = gui.add_slider("Grasp stiffness", min=STIFFNESS_RANGE[0], max=STIFFNESS_RANGE[1],
+                                         step=100.0, initial_value=500.0,
+                                         hint="The compliant grasp's stiffness along tool0 x, y, z, N/m")
+        for widget, setting, kind in ((self._grasp, "grasp_controller", str),
+                                      (self._stiffness, "grasp_stiffness", float)):
+            widget.on_update(ctx.defer_value(setting, lambda value, setting=setting, kind=kind:
+                                             self.guide.request_settings(**{setting: kind(value)}),
+                                             operator_only=True))
 
     def show(self, ctx: PluginContext, part: GuidePart) -> None:
-        """What the step does."""
+        """What the step does; the run's grasp settings, greyed for an open."""
         self._what.content = block(wrapped(*(plan.text for plan in part.plans)))
+        settings = self.guide.settings
+        closes = any(plan.kind == HANDOFF_PART for plan in part.plans)
+        for widget, value in ((self._grasp, settings.grasp_controller), (self._stiffness, settings.grasp_stiffness)):
+            if widget.value != value:
+                widget.value = value
+        self._grasp.disabled = not closes
+        self._stiffness.disabled = not closes or settings.grasp_controller == GRASP_JOINT
 
 
 class MarkKind(Kind):

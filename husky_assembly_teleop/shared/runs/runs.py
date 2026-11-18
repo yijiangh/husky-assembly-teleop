@@ -75,6 +75,9 @@ SPIRAL_TURNS_RANGE = (1, 10)
 #: The insert's push, newtons, and its compliance stiffness, N/m (within the arm's `STIFFNESS_LIMITS`).
 PUSH_RANGE = (0.0, 15.0)
 STIFFNESS_RANGE = (200.0, 5000.0)
+#: The Robotiq grasp's controllers: the arm compliant around where it stands, or held stiff by the joint controller.
+GRASP_COMPLIANCE, GRASP_JOINT = "compliance", "joint"
+GRASP_CONTROLLERS = (GRASP_COMPLIANCE, GRASP_JOINT)
 #: The free searches' ranges (`route_search.FreeSearch`): seconds and iterations per try, the joint step of the
 #: checks (rad), tries.
 PLAN_TIME_RANGE = (5.0, 600.0)
@@ -108,6 +111,9 @@ class RunSettings:
         insert_stiffness_across: The insert's compliance stiffness across the tool (tool0 x and y), N/m
             (STIFFNESS_RANGE).
         insert_stiffness_along: Its stiffness along the tool (tool0 z, the insert's direction), N/m.
+        grasp_controller: The arm's controller while a Robotiq closes on a bar another robot holds (GRASP_CONTROLLERS):
+            compliant, it gives way to the bar; joint, it holds where it stands, so the close pulls the bar to it.
+        grasp_stiffness: The compliant grasp's stiffness along tool0 x, y and z, N/m (STIFFNESS_RANGE).
         plan_max_time: Seconds per try of tamp's free search (PLAN_TIME_RANGE); `FreeSearch`'s defaults, the five.
         plan_max_iterations: Iterations per try of it (PLAN_ITERATIONS_RANGE).
         plan_joint_resolution: The joint step of its collision checks, radians (PLAN_RESOLUTION_RANGE).
@@ -128,6 +134,8 @@ class RunSettings:
     insert_push_n: float = 4.0
     insert_stiffness_across: float = 1000.0
     insert_stiffness_along: float = 500.0
+    grasp_controller: str = GRASP_COMPLIANCE
+    grasp_stiffness: float = 500.0
     plan_max_time: float = 120.0
     plan_max_iterations: int = 50
     plan_joint_resolution: float = 0.1

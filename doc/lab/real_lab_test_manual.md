@@ -782,6 +782,7 @@ DONE (the current action's `… done` and `Reopen`) and SETTINGS.
 | `Cancel bar weight` | *on* |
 | `Insert push N` | *4* |
 | `Stiffness across`, `Stiffness along` | *1000*, *500* |
+| `Grasp controller`, `Grasp stiffness` | *compliance*, *500* (joint: the arm holds where it stands and the close pulls the frame; the stiffness greyed) |
 | `Servo by bar` | ticked on a ground bar's action (*B20_J*, *B34_J*, *B46_J*); greyed and unticked on any other, which always servos on tool0 |
 | `Retreat live axis` | ticked |
 | `Retreat compliant`, `Dry run (every check, nothing sent)` | unticked |

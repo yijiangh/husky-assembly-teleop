@@ -241,7 +241,7 @@ def exec_line(robot: str, parts: tuple[PartPlan, ...]) -> str:
         words.append({MOTION_PART: f"moves {tools}", INSERT_PART: insert,
                       RETREAT_PART: f"retreats {tools}, the jaws loosening as it backs out",
                       OPEN_PART: f"opens the Robotiq on {tools}",
-                      HANDOFF_PART: f"closes the Robotiq on {tools}, the arm compliant",
+                      HANDOFF_PART: f"closes the Robotiq on {tools} (the run's grasp controller)",
                       WITH_MOTION_PART: f"opens the gripper screws on {tools} in the retreat",
                       BY_HAND_PART: f"waits for {part.movement} by hand",
                       BASE_PART: f"waits for {part.movement} (base by hand)",
