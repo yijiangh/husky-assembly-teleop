@@ -72,6 +72,9 @@ class RunError(ValueError):
 SPLIT_RANGE = (0.0, 30.0)
 SPIRAL_SECONDS_RANGE = (1.0, 60.0)
 SPIRAL_TURNS_RANGE = (1, 10)
+#: The insert's push, newtons, and its compliance stiffness, N/m (within the arm's `STIFFNESS_LIMITS`).
+PUSH_RANGE = (0.0, 15.0)
+STIFFNESS_RANGE = (200.0, 5000.0)
 #: The free searches' ranges (`route_search.FreeSearch`): seconds and iterations per try, the joint step of the
 #: checks (rad), tries.
 PLAN_TIME_RANGE = (5.0, 600.0)
@@ -98,6 +101,13 @@ class RunSettings:
             export's distance; off: along the export's axis.
         spiral_seconds: How long the spiral takes to reach its full radius, seconds (SPIRAL_SECONDS_RANGE).
         spiral_turns: How many turns it makes on the way (SPIRAL_TURNS_RANGE).
+        insert_cancel_weight: The insert's compliant part takes the held bar's weight, measured at the insert's start
+            before anything moves, off the arms.
+        insert_push_n: The push of each mating arm along its insert line, newtons (PUSH_RANGE); off once its screw is
+            tight.
+        insert_stiffness_across: The insert's compliance stiffness across the tool (tool0 x and y), N/m
+            (STIFFNESS_RANGE).
+        insert_stiffness_along: Its stiffness along the tool (tool0 z, the insert's direction), N/m.
         plan_max_time: Seconds per try of tamp's free search (PLAN_TIME_RANGE); `FreeSearch`'s defaults, the five.
         plan_max_iterations: Iterations per try of it (PLAN_ITERATIONS_RANGE).
         plan_joint_resolution: The joint step of its collision checks, radians (PLAN_RESOLUTION_RANGE).
@@ -114,6 +124,10 @@ class RunSettings:
     retreat_live_axis: bool = True
     spiral_seconds: float = 20.0
     spiral_turns: int = 4
+    insert_cancel_weight: bool = True
+    insert_push_n: float = 4.0
+    insert_stiffness_across: float = 1000.0
+    insert_stiffness_along: float = 500.0
     plan_max_time: float = 120.0
     plan_max_iterations: int = 50
     plan_joint_resolution: float = 0.1

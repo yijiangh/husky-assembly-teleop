@@ -37,6 +37,7 @@ from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import STALE_ARM, stale_reason
 from ...shared.execution.handoff import handoff_text, run_handoff
 from ...shared.execution.insert import plan_insert, run_insert
+from ...shared.execution.insert_forces import InsertForceSettings
 from ...shared.execution.moving import base_moving, moving_reason
 from ...shared.execution.retreat import (START_TOL, TAIL_STEP, RetreatPlan, StiffRetreatPlan, plan_retreat,
                                          plan_stiff_retreat, run_retreat, run_stiff_retreat)
@@ -54,7 +55,7 @@ from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED
                                               OPEN_PART, PLANNED_MARGIN, REFUSED, REFUSED_PART, RETREAT_PART,
                                               WITH_MOTION_PART, current_primary)
 from ...shared.planner.planner_service import PlannerService
-from ...shared.runs.runs import SPLIT_RANGE
+from ...shared.runs.runs import PUSH_RANGE, SPLIT_RANGE, STIFFNESS_RANGE
 from ...world.clearance import ARM_MOVE
 from ...world.freeze import WorldMoved, take_basis
 
@@ -390,12 +391,21 @@ def live_command(job: Job) -> MotionCommand | str:
 
 
 def run_settings(job: Job) -> dict:
-    """The run's settings a compliant part runs with, read once as it starts, the split clamped to SPLIT_RANGE."""
+    """The run's settings a compliant part runs with, read once as it starts, each number clamped to its range."""
     settings = job.run.view.settings
-    return {"split_mm": min(max(float(settings.insert_split_mm), SPLIT_RANGE[0]), SPLIT_RANGE[1]),
+    across = _clamped(settings.insert_stiffness_across, STIFFNESS_RANGE)
+    along = _clamped(settings.insert_stiffness_along, STIFFNESS_RANGE)
+    return {"split_mm": _clamped(settings.insert_split_mm, SPLIT_RANGE),
             "spiral": settings.spiral,
             "spiral_seconds": settings.spiral_seconds, "spiral_turns": settings.spiral_turns,
-            "retreat_compliant": settings.retreat_compliant}
+            "retreat_compliant": settings.retreat_compliant,
+            "cancel_weight": settings.insert_cancel_weight, "push_n": _clamped(settings.insert_push_n, PUSH_RANGE),
+            "stiffness": [across, across, along]}
+
+
+def _clamped(value: float, bounds: tuple[float, float]) -> float:
+    """`value` as a float within `bounds`."""
+    return min(max(float(value), bounds[0]), bounds[1])
 
 
 def _ask(job: Job, movement: str, text: str, warn: bool, choose: bool = False) -> Prompt:
@@ -566,7 +576,9 @@ async def _insert(job: Job, run: PartRun) -> None:
 
     def start(plan: InsertPlan, recorder: Recorder) -> Awaitable[PartOutcome]:
         return run_insert(job.ctx, robot, plan, tools if part.tools else {}, operator=PartOperator(job, part.movement),
-                          dry_run=job.dry_run, watch=lambda: others_moving(job), recorder=recorder)
+                          dry_run=job.dry_run, watch=lambda: others_moving(job), recorder=recorder,
+                          forces=InsertForceSettings(settings["cancel_weight"], settings["push_n"],
+                                                     tuple(settings["stiffness"])))
 
     await _along_plan(job, run, settings, plan_of, start)
 

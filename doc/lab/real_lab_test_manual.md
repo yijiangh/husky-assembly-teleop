@@ -779,6 +779,9 @@ DONE (the current action's `… done` and `Reopen`) and SETTINGS.
 | `Insert split mm` | *5* |
 | `Spiral` | unticked; greyed on a ground bar's action, live on any other bar's |
 | `Spiral s`, `Spiral turns` | *20*, *4* |
+| `Cancel bar weight` | *on* |
+| `Insert push N` | *4* |
+| `Stiffness across`, `Stiffness along` | *1000*, *500* |
 | `Servo by bar` | ticked on a ground bar's action (*B20_J*, *B34_J*, *B46_J*); greyed and unticked on any other, which always servos on tool0 |
 | `Retreat live axis` | ticked |
 | `Retreat compliant`, `Dry run (every check, nothing sent)` | unticked |

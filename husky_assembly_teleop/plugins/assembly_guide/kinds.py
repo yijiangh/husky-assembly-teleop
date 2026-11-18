@@ -20,7 +20,7 @@ import viser
 
 from ...shared.guide.step import Step
 from ...shared.movement_exec_contract import MAX_TRAJ_TIME
-from ...shared.runs.runs import SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE
+from ...shared.runs.runs import PUSH_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, STIFFNESS_RANGE, RunSettings
 from ...colors import DARK_GREY, INK, LIGHT_GREY
 from ...ui.style import CURRENT, NONE, SECTION_CTRL, block, section, values, wrapped
 from ...world.checks import GOOD, PENDING, Check
@@ -380,8 +380,25 @@ class InsertKind(Kind):
                                        initial_value=20.0, hint="Seconds the spiral takes to reach its 15 mm radius")
         self._turns = gui.add_slider("Spiral turns", min=SPIRAL_TURNS_RANGE[0], max=SPIRAL_TURNS_RANGE[1], step=1,
                                      initial_value=4, hint="Turns the spiral makes; pitch = 15 mm / turns")
+        default = RunSettings()
+        self._cancel_weight = gui.add_checkbox("Cancel bar weight", default.insert_cancel_weight,
+                                               hint="Take the bar's weight, measured at the insert's start before "
+                                                    "anything moves, off the arms (the run's setting)")
+        self._push = gui.add_slider("Insert push N", min=PUSH_RANGE[0], max=PUSH_RANGE[1], step=0.5,
+                                    initial_value=default.insert_push_n,
+                                    hint="Each mating arm pushes this along its line until its screw is tight")
+        self._across = gui.add_slider("Stiffness across", min=STIFFNESS_RANGE[0], max=STIFFNESS_RANGE[1], step=100.0,
+                                      initial_value=default.insert_stiffness_across,
+                                      hint="Compliance across the tool (tool0 x, y), N/m")
+        self._along = gui.add_slider("Stiffness along", min=STIFFNESS_RANGE[0], max=STIFFNESS_RANGE[1], step=100.0,
+                                     initial_value=default.insert_stiffness_along,
+                                     hint="Compliance along the tool (tool0 z), N/m")
         for widget, setting, kind in ((self._split, "insert_split_mm", float), (self._spiral, "spiral", bool),
-                                      (self._seconds, "spiral_seconds", float), (self._turns, "spiral_turns", float)):
+                                      (self._seconds, "spiral_seconds", float), (self._turns, "spiral_turns", float),
+                                      (self._cancel_weight, "insert_cancel_weight", bool),
+                                      (self._push, "insert_push_n", float),
+                                      (self._across, "insert_stiffness_across", float),
+                                      (self._along, "insert_stiffness_along", float)):
             widget.on_update(ctx.defer_value(setting, lambda value, setting=setting, kind=kind:
                                              self.guide.request_settings(**{setting: kind(value)}),
                                              operator_only=True))
@@ -393,7 +410,10 @@ class InsertKind(Kind):
         settings = self.guide.settings
         two = len(part.plans[0].tools) == 2 if part.plans else False
         for widget, value in ((self._split, settings.insert_split_mm), (self._seconds, settings.spiral_seconds),
-                              (self._turns, settings.spiral_turns), (self._spiral, settings.spiral and two)):
+                              (self._turns, settings.spiral_turns), (self._spiral, settings.spiral and two),
+                              (self._cancel_weight, settings.insert_cancel_weight),
+                              (self._push, settings.insert_push_n), (self._across, settings.insert_stiffness_across),
+                              (self._along, settings.insert_stiffness_along)):
             if widget.value != value:
                 widget.value = value
         if self._spiral.disabled == two:
