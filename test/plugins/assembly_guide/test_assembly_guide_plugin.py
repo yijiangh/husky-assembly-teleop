@@ -38,6 +38,7 @@ from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 CINDY = "a200-0806"
+CARTESIAN_COMPLIANCE_CONTROLLER = "cartesian_compliance_controller"
 
 
 def answered(value):
@@ -420,6 +421,30 @@ def test_a_part_by_hand_is_done_once_every_box_is_ticked(monkeypatch):
         await lab.ticks(15)
         assert len(lab.executor.requests) == 1 and lab.executor.prompt is None
         assert lab.label == "B20_J_transfer: servo"
+
+    asyncio.run(walk())
+
+
+def test_zero_force_on_placing_the_bar_asks_first_then_zeroes_every_arm(monkeypatch):
+    """Grey on the transfer; live on the bar placed by hand; the first press asks, the second zeroes each arm once."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        hand = lab.guide.kinds[HAND]
+        await lab.ticks()
+        assert hand._zero.disabled, "grey on any other part"
+        await to_the_bar_by_hand(lab)
+        arms = list(lab.ctx.world.robots[CINDY].arms.values())
+        assert not hand._zero.disabled and arms
+        hand._press_zero(lab.ctx)
+        await lab.ticks()
+        assert all(not arm._zero_ft.calls for arm in arms), "the first press only asks"
+        assert lab.guide.refusal(lab.ctx.t).label.endswith("press again") and hand._zero.label.endswith("?")
+        lab.ctx.t += 0.5
+        hand._press_zero(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 1 for arm in arms)
+        assert lab.ctx.world.robots[CINDY].lease_slot.lease is None, "the lease is given back"
 
     asyncio.run(walk())
 
@@ -1558,5 +1583,103 @@ def test_a_park_stopped_by_a_soft_stop_stops_and_is_no_mere_warning(monkeypatch)
         lab.guide.press_go(lab.ctx)
         await lab.ticks(5)
         assert lab.guide._state(lab.ctx, alice).label == "failed" and alice not in lab.guide._flagged
+
+    asyncio.run(walk())
+
+
+def _zero_twice(lab: Guide) -> None:
+    """Press Zero force, and again a moment later."""
+    hand = lab.guide.kinds[HAND]
+    hand._press_zero(lab.ctx)
+    lab.ctx.t += 0.5
+    hand._press_zero(lab.ctx)
+
+
+@pytest.mark.parametrize("stop", ["moving", "compliant"])
+def test_zero_force_is_refused_on_an_arm_moving_or_not_under_the_joint_controller(monkeypatch, stop):
+    """A tare in motion is wrong, and under compliance the arm would move: neither press counts."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        arms = list(lab.ctx.world.robots[CINDY].arms.values())
+        if stop == "moving":
+            arms[0].state.is_executing = True
+        else:
+            arms[0].state.controllers.active = CARTESIAN_COMPLIANCE_CONTROLLER
+        _zero_twice(lab)
+        await lab.ticks(10)
+        assert all(not arm._zero_ft.calls for arm in arms)
+
+    asyncio.run(walk())
+
+
+def test_zero_force_with_the_bar_clamped_asks_louder_and_gives_way_on_the_second_press(monkeypatch):
+    """A ticked box says the bar is in the tools: the question says so, the second press still zeroes, warned."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        arms = list(lab.ctx.world.robots[CINDY].arms.values())
+        hand = lab.guide.kinds[HAND]
+        hand.boxes[0].value = True
+        hand._press_zero(lab.ctx)
+        assert "looks clamped" in lab.guide.refusal(lab.ctx.t).detail
+        lab.ctx.t += 0.5
+        hand._press_zero(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 1 for arm in arms)
+        assert any("looks clamped" in line for line in lab.ctx.lines("warn"))
+
+    asyncio.run(walk())
+
+
+def test_a_box_ticked_after_the_first_zero_press_asks_again(monkeypatch):
+    """The louder question must be seen: a press answering the plain one does not zero a bar now clamped."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        arms = list(lab.ctx.world.robots[CINDY].arms.values())
+        hand = lab.guide.kinds[HAND]
+        hand._press_zero(lab.ctx)
+        hand.boxes[0].value = True
+        lab.ctx.t += 0.5
+        hand._press_zero(lab.ctx)
+        await lab.ticks(10)
+        assert all(not arm._zero_ft.calls for arm in arms)
+        assert "looks clamped" in lab.guide.refusal(lab.ctx.t).detail
+
+    asyncio.run(walk())
+
+
+def test_zero_force_holds_the_lease_while_zeroing_and_says_a_zero_not_sent(monkeypatch):
+    """Every zero goes out under the robot's lease; a service that is down is said on the panel."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        robot = lab.ctx.world.robots[CINDY]
+        arms = list(robot.arms.values())
+        leased = []
+        arms[0]._zero_ft.call_async = lambda request: leased.append(robot.lease_slot.lease is not None)
+        arms[1]._zero_ft.service_is_ready = lambda: False
+        _zero_twice(lab)
+        await lab.ticks(10)
+        assert leased == [True]
+        assert "NOT zeroed" in lab.guide.refusal(lab.ctx.t).detail
+
+    asyncio.run(walk())
+
+
+def test_a_first_zero_press_counts_only_for_the_part_and_robot_it_asked_about(monkeypatch):
+    """The waiting press names this part and its robot, so on another part the press asks again."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        hand = lab.guide.kinds[HAND]
+        hand._press_zero(lab.ctx)
+        assert hand._zero_press.key == f"zero {CINDY} {lab.guide.index} False"
 
     asyncio.run(walk())

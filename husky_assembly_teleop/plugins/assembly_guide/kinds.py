@@ -18,11 +18,17 @@ from typing import TYPE_CHECKING
 
 import viser
 
+from ...config import short_serial
+from ...robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER
+from ...robot_interface.robot_lease import NotLeased
+from ...shared.execution.force_sensors import zero_force_sensors
+from ...shared.execution.moving import robot_moving
 from ...shared.guide.step import Step
 from ...shared.movement_exec_contract import HANDOFF_PART, MAX_TRAJ_TIME
 from ...shared.runs.runs import (GRASP_CONTROLLERS, GRASP_JOINT, PUSH_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE,
                                  STIFFNESS_RANGE, RunSettings)
 from ...colors import DARK_GREY, INK, LIGHT_GREY
+from ...ui.second_press import SecondPress, show_waiting
 from ...ui.style import CURRENT, NONE, SECTION_CTRL, block, section, values, wrapped
 from ...world.checks import GOOD, PENDING, Check
 from .parts import (DRIVE, DRIVE_ARRIVED, DRIVE_YAW_ARRIVED, GRIPPER, HAND, INSERT, MARK, MOVE, PARK, REFUSED,
@@ -46,6 +52,14 @@ HEADING = f"font-size:11px;font-weight:700;color:{DARK_GREY};margin-top:2px"
 LIST = "margin:0 0 2px;padding-left:18px"
 #: What every part that moves a robot checks.
 E_STOP = "E-stop in hand."
+#: The by-hand placing's button that zeroes the robot's force sensors.
+ZERO = "Zero force (no bar in tools)"
+#: What its first press asks.
+ZERO_ASK = ("Only with NO bar in the tools: zeroing tares away whatever they hold, and every later compliant part "
+            "pushes with that weight. Press again to zero every arm of the robot.")
+#: What it asks once the part says the bar is in the tools: the press still counts, the operator knows best.
+ZERO_ASK_HELD = ("The bar looks clamped already (a box is ticked or the part is done): zeroing now tares its weight "
+                 "away. Press again to zero anyway.")
 
 
 def description(kind: Kind, part: GuidePart | None = None) -> str:
@@ -254,7 +268,8 @@ class HandKind(Kind):
             "Done: the executor records it, the next part follows.")
     #: The bar placed in the tools and clamped.
     PLACE_GOAL = "Place the bar in the tools and clamp it, by hand."
-    PLACE_TODO = ("Put the bar into both tools' jaws.",
+    PLACE_TODO = (f"{ZERO}, twice, while the tools are still empty: zeroes the arms' force sensors.",
+                  "Put the bar into both tools' jaws.",
                   "Tighten each gripper screw with the tool's own buttons until it stalls, one button at a time (B1 "
                   "and B2 together put the arm in free drive).",
                   "Tick every box above.",
@@ -275,7 +290,13 @@ class HandKind(Kind):
         return self.PLACE_TODO if self.places_bar(part) else self.todo
 
     def build(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
-        """What the executor asks, and the boxes (a pool, labelled per part)."""
+        """Zero force, what the executor asks, and the boxes (a pool, labelled per part)."""
+        # * Always there, grey but for placing a bar: shown only then, it would move everything below.
+        self._zero_press = SecondPress()
+        self._zero = gui.add_button(ZERO, disabled=True, icon=viser.Icon.SCALE,
+                                    hint=f"Tares every arm's force sensor of the part's robot. ! Only with no bar in "
+                                         f"the tools. {self._zero_press.hint}")
+        self._zero.on_click(ctx.defer("zero force", lambda: self._press_zero(ctx)))
         self._what = gui.add_html("")
         gui.add_html(section("what to check", SECTION_CTRL))
         self.boxes = [gui.add_checkbox(f"box {index + 1}", False, visible=False) for index in range(HAND_BOXES)]
@@ -310,8 +331,56 @@ class HandKind(Kind):
         for box in self.boxes[:len(self._items)]:
             box.value = True
 
+    def _press_zero(self, ctx: PluginContext) -> None:
+        """Zero force's press: the first asks, the second zeroes the robot's arms in a task."""
+        part, serial = self.guide.part, self.guide.serial
+        if part is None or part.kind != HAND or not self.places_bar(part) or serial is None:
+            return
+        robot = ctx.world.robots.get(serial)
+        if robot is None or not robot.arms:
+            self.guide._refuse(ctx, ZERO, f"{short_serial(serial)} has no connected arms")
+            return
+        # ! Hard: a tare taken in motion is wrong, and under compliance the arm moves when its reading jumps.
+        moving = robot_moving(serial, robot, ctx.now())
+        compliant = [name for name, arm in robot.arms.items()
+                     if not arm.controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER)]
+        if moving or compliant:
+            self.guide._refuse(ctx, ZERO, moving or f"{', '.join(compliant)} not under the joint controller")
+            return
+        held = self._looks_held(ctx, part)
+        if not self._zero_press.press(ctx.now(), self._zero_key(serial, held)):
+            self.guide._refuse(ctx, ZERO, ZERO_ASK_HELD if held else ZERO_ASK, ask=True)
+            return
+        if held:
+            ctx.log_warn(f"{short_serial(serial)}: force sensors zeroed though the bar looks clamped in the tools")
+        ctx.spawn("zero force", self._zero_arms(ctx, serial))
+
+    def _looks_held(self, ctx: PluginContext, part: GuidePart) -> bool:
+        """Whether the part says the bar is in the tools already: a box ticked, or the part done."""
+        return self.count[0] > 0 or self.guide.is_done(ctx, part, self.guide.index)
+
+    def _zero_key(self, serial: str | None, held: bool) -> str:
+        """What a first press of Zero force asked about: this part's robot, and whether the bar looked held."""
+        return f"zero {serial} {self.guide.index} {held}"
+
+    async def _zero_arms(self, ctx: PluginContext, serial: str) -> None:
+        """Zero every arm's force sensor of robot `serial` under its lease: refused while another plugin holds it."""
+        try:
+            with ctx.lease_robots([serial], "zero force"):
+                zeroed = await zero_force_sensors(ctx, list(ctx.world.robots[serial].arms.values()),
+                                                  f"guide zero force {short_serial(serial)}")
+            if failed := [name for name, result in zeroed.items() if not result["sent"]]:
+                self.guide._refuse(ctx, ZERO, f"{', '.join(failed)} NOT zeroed: its zero service is not available")
+        except NotLeased as taken:
+            self.guide._refuse(ctx, ZERO, str(taken))
+
     def show(self, ctx: PluginContext, part: GuidePart) -> None:
-        """What the part asks; its boxes."""
+        """Zero force live only while placing a bar; what the part asks; its boxes."""
+        places = self.places_bar(part) and self.guide.serial is not None
+        if self._zero.disabled == places:
+            self._zero.disabled = not places
+        asked = self._zero_key(self.guide.serial, self._looks_held(ctx, part))
+        show_waiting(self._zero, self._zero_press.waiting(ctx.now()) == asked, ZERO, None)
         self._what.content = block(wrapped(*(plan.text for plan in part.plans)))
         if part is self._for:
             return
