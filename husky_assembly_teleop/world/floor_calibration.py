@@ -165,7 +165,10 @@ def floor_from_raw(plane: PlaneFit, origin) -> np.ndarray:
 
 
 def to_raw(lab_from_raw: ScaledPose | None, position) -> np.ndarray:
-    """A position the relay published, taken back to raw (Motive's, Z-up): its `lab_from_raw` undone."""
+    """Positions the relay published, (3,) or (n, 3), taken back to raw (Motive's, Z-up): `lab_from_raw` undone.
+
+    ! Pass many positions in one call: each call inverts `lab_from_raw` afresh, which costs more than the points.
+    """
     if lab_from_raw is None:
         return np.asarray(position, dtype=float)
     return lab_from_raw.inverse().apply(position)

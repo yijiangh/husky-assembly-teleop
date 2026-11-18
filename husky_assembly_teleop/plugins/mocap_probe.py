@@ -973,7 +973,9 @@ class MocapProbePlugin(HuskyPlugin):
         A stored place counts only while the relay applies a floor calibration: it is in the lab frame.
         """
         transform = lab_from_raw(ctx)
-        stored = {name: to_raw(transform, xyz) for name, xyz in self._ideal_anchors.items()} if transform else {}
+        names = list(self._ideal_anchors)
+        stored = (dict(zip(names, to_raw(transform, [self._ideal_anchors[name] for name in names])))
+                  if transform and names else {})
         return {**stored, **pointed_anchors(self.samples)}
 
     def _anchors_now(self, ctx: PluginContext) -> tuple[dict[str, np.ndarray], dict[str, str]]:
@@ -985,7 +987,8 @@ class MocapProbePlugin(HuskyPlugin):
         hints, transform = self._anchor_hints(ctx), lab_from_raw(ctx)
         pointed = pointed_anchors(self.samples)
         markers, stale = self._unlabeled_markers(ctx)
-        markers = [to_raw(transform, marker) for marker in markers]
+        # * All at once: one inverse for every marker the cameras see, not one each (a tick's worth with bars in view).
+        markers = list(to_raw(transform, markers)) if len(markers) else []
         found = find_anchors({name: MocapAnchor(name, tuple(position)) for name, position in hints.items()}, markers,
                              ANCHOR_REACH)
         relay = ctx.world.mocap_relay
