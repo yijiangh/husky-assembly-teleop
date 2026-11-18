@@ -6,8 +6,8 @@ models in a compas_fab world (several seconds).
 
 ! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_motion`), under an
   ARM_MOVE clearance on the robot (`commit_clearance`) when committed with Clearance ticked, so the base
-  pose must be known to send. Paths keep PLAN_DISTANCE; only a pair start or target is closer for keeps what they have
-  (`endpoint_margins`), and the clearance is then half the smallest (`ARM_MOVE`).
+  pose must be known to send. Paths keep ARM_PLAN_MARGINS; a pair start or target is closer for keeps what it has
+  there (`PlanMargins.clamped_at`), and the clearance is then half the smallest (`ARM_MOVE`).
 """
 
 from __future__ import annotations
@@ -39,11 +39,11 @@ from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import hover
 from ...world.checks import BAD, GOOD, WARN, Check
-from ...world.clearance import ARM_MOVE, PLAN_DISTANCE, Clearance, clearance_problem
+from ...world.clearance import ARM_MOVE, Clearance, clearance_problem
 from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
-from .planner import TIME_LIMIT, ArmPath, margin_note, path_hit, plan_arms
+from .planner import TIME_LIMIT, ArmPath, path_hit, plan_arms
 from .problem import problem_of, save_problem
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far; the panel also
@@ -156,10 +156,10 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             how = "straight" if result.direct else "RRT"
             stand_ins = f" ({unmeasured(others)})" if others else ""
             message = (f"{how}: {result.path.duration:.1f} s, {result.path.rests} rests on the way, "
-                       f"{margin_note(result.path.margin, result.path.close)}, "
+                       f"{result.path.margins.note()}, "
                        f"found in {result.seconds:.1f} s{notes}{stand_ins}")
             # * A path keeping less than usual warns: its commit's clearance is smaller too (`close_note`).
-            return message, bool(guessed or others or result.path.margin < PLAN_DISTANCE)
+            return message, bool(guessed or others or result.path.margin < ARM_MOVE.plan)
 
         return Search(label=f"plan {serial} {what}",
                       message=f"planning for {short_serial(serial)} {what}…{notes}"

@@ -18,7 +18,7 @@ from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.process.types import GROUND_PREFIX, HALF_PREFIX
 from scaffolding_assembly_core.scene import Attachment, Scene, world_poses
 
-from ...world.lab import floor_id
+from ...world.lab import is_floor
 from ...world.stand_ins import LIVE, unknown_parts, with_stand_ins
 from ..process_scene.scene_bodies import live_ids, scene_bodies
 from .process_steps import LoadedProcess, Step
@@ -122,7 +122,7 @@ def scene_for(loaded: LoadedProcess, step: Step, snapshot: Scene, robots: tuple[
 
     # * A half mated to the ground stands on the lab's floor (the obstacles plugin's slab), as the core lets it touch
     #   the process's own ground bodies: its foot reaches a little below z = 0 at its design pose.
-    floors = [body for body_id, body in scene.bodies.items() if body_id == floor_id(body_id.partition("/")[0])]
+    floors = [body for body_id, body in scene.bodies.items() if is_floor(body_id)]
     for half in ground_mated_halves(process):
         body = scene.bodies.get(ids(half)) if half in ids else None
         for floor in floors if body is not None else ():

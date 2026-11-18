@@ -3,9 +3,9 @@ Clearances: while a task drives a robot, stop it once it comes too close to anyt
 
 Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, tracked objects) need not know.
 
-- ! A clearance is always below the margin its move was planned with (`MoveKind`): arm plans keep 1 cm and stop at
-  5 mm, base plans keep 10 cm and stop at 5 cm. A plan that keeps less stops at half its closest approach
-  (`MoveKind.stop_for`), with a warning (`close_note`).
+- ! A clearance is always below the margin its move was planned with (`MoveKind`): arm plans keep 1 cm (5 cm from the
+  floor) and stop at 5 mm, base plans keep 10 cm and stop at 5 cm. A plan that keeps less stops at half its closest
+  approach (`MoveKind.stop_for`), with a warning (`close_note`).
 
 - Checked against the whole tick snapshot, other robots included; allowed contacts (`Body.touches`, what a robot
   holds) are skipped.
@@ -48,6 +48,9 @@ ARM_STOP_DISTANCE = 0.005
 #: Distance an arm plan keeps where it can (`plugins/arm_planner/planner.py`), metres: more than ARM_STOP_DISTANCE,
 #: so the arm following its path a little off does not trip it.
 PLAN_DISTANCE = 0.01
+#: Distance an arm plan keeps from the lab floor where it can, metres: more than PLAN_DISTANCE, so transits stay well
+#: above it. Plan only: the clearance stays ARM_STOP_DISTANCE.
+FLOOR_PLAN_DISTANCE = 0.05
 #: How many trips the monitor keeps.
 TRIPS_KEPT = 10
 #: A robot keeps this far from itself (links, tools, what it holds), metres; the SRDF's and tools' allowed pairs aside.

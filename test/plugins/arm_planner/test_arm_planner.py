@@ -12,10 +12,12 @@ from planning_fixtures import CINDY, design_scene, movement, purged_process, rob
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import joint_path_move
-from husky_assembly_teleop.world.lab import floor_body, platform_links
+from husky_assembly_teleop.world.clearance import FLOOR_PLAN_DISTANCE
+from husky_assembly_teleop.world.lab import floor_body, is_floor, platform_links
 from husky_assembly_teleop.shared.planner.rrt_connect import Corners
 from husky_assembly_teleop.plugins.arm_planner import planner as planner_module
 from husky_assembly_teleop.plugins.arm_planner.problem import Problem, load_problem, save_problem
+from husky_assembly_teleop.shared.planner.plan_margins import ARM_PLAN_MARGINS, RESOLUTION
 from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, _extend, joint_limits, path_hit, plan_arm,
                                                                plan_arms)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
@@ -163,12 +165,12 @@ def test_a_path_keeps_1_cm_or_as_much_as_a_closer_target_has(world, config, gap)
     mirror, scene = synced(world, snapshot(config, start, bodies))
     result = plan_arm(mirror, scene, ARM, goal, threading.Event())
     assert result.path is not None, result.reason
-    margin, note = result.path.margin, planner_module.margin_note(result.path.margin)
+    margin, note = result.path.margin, result.path.margins.note()
     if gap is None:
-        assert margin == planner_module.PLAN_DISTANCE and note == "keeps 1 cm"
+        assert margin == ARM_PLAN_MARGINS.default and note == "keeps 1 cm", "no floor in the scene: no floor rule"
     else:
         # * PyBullet measures a gap about 2 mm smaller than it is (each convex shape is padded about 1 mm).
-        assert gap - 0.003 - planner_module.MARGIN_RESOLUTION <= margin <= gap and note.startswith("keeps only")
+        assert gap - 0.003 - RESOLUTION <= margin <= gap and note.startswith("keeps only")
     assert result.path.slowed(2.0).margin == margin
 
 
@@ -180,18 +182,16 @@ def test_only_the_pair_already_close_keeps_less(world, config):
     mid = box_near(world, config, halfway, 0.007)
     mid.id, mid.label = "t/mid", "the halfway box"
     mirror, scene = synced(world, snapshot(config, start, (near, mid)))
-    close = planner_module.endpoint_margins(mirror, NAMES, start, goal)
-    assert {pair[1] for pair in close} == {"t/near"}, "only the box at the target is closer than usual at an end"
-    check = mirror.search_check(NAMES, planner_module.PLAN_DISTANCE,
-                                pair_margins={frozenset(pair): kept for pair, kept in close.items()})
-    hit = check(halfway)
+    margins = ARM_PLAN_MARGINS.clamped_at(mirror, NAMES, start, goal)
+    assert {clamp.second for clamp in margins.clamps} == {"t/near"}, "only the box at the target is closer at an end"
+    hit = margins.search_check(mirror, NAMES)(halfway)
     assert hit is not None and hit[1] == "t/mid", "the halfway box keeps its 1 cm"
     result = plan_arm(mirror, scene, ARM, goal, threading.Event())
     assert result.path is not None, result.reason
-    assert {part[1] for part in result.path.close} == {"t/near"}
-    assert result.path.margin == min(close.values()) == result.path.close[0][2]
-    note = planner_module.margin_note(result.path.margin, result.path.close)
-    assert note.startswith("keeps only") and "t/near" in note and "1 cm from everything else" in note
+    assert {clamp.second for clamp in result.path.margins.clamps} == {"t/near"}
+    assert result.path.margin == margins.smallest == result.path.margins.clamps[0].kept
+    note = result.path.margins.note()
+    assert note.startswith("keeps only") and "t/near" in note and note.endswith("(usual 1 cm); elsewhere 1 cm")
 
 
 def test_the_fine_check_finds_a_pass_between_two_of_the_search_checks():
@@ -398,6 +398,86 @@ def test_the_floor_lets_wheels_rest_on_it_but_not_an_arm_through_it(world, confi
     assert any(hit is not None and floor.id in hit for hit in hits), "no arm pose reached the floor"
 
 
+def floor_scene(config, start):
+    """Alice at `start` on the lab floor, as the obstacles plugin puts it (her platform links may touch it)."""
+    touches = tuple(link_id(robot_id(ALICE), link) for link in platform_links(config.model))
+    floor = floor_body("obstacles", None, touches)
+    scene = snapshot(config, start)
+    scene.bodies[floor.id], scene.world_poses[floor.id] = floor, floor.placement
+    return scene, floor
+
+
+def low_pose(world, config, low: float, high: float):
+    """An arm pose its closest part is between `low` and `high` above the floor at, 1 cm clear of everything else."""
+    start = start_and_goal(config)[0]
+    scene, floor = floor_scene(config, start)
+    mirror = world.sync(scene, ALICE)
+    near, usual = mirror.search_check(NAMES, high), mirror.search_check(NAMES, ARM_PLAN_MARGINS.default)
+    # * Within the joint limits the planner keeps (the shoulder lift never through pointing down).
+    lower, upper = joint_limits(mirror, NAMES)
+    rng = np.random.default_rng(1)
+    for q in rng.uniform(np.maximum(lower, -np.pi), np.minimum(upper, np.pi), size=(4000, 6)):
+        to_floor = [distance for pair, distance in near.distances(q).items() if floor.id in pair]
+        if to_floor and low < min(to_floor) < high and usual(q) is None \
+                and mirror.collisions(dict(zip(NAMES, q))) == []:
+            return tuple(q), min(to_floor)
+    raise AssertionError(f"no arm pose between {low} and {high} m above the floor")
+
+
+def floor_only(mirror, margins):
+    """A check of the floor's pairs only, at their margins in `margins`; every other pair for contact only."""
+    return mirror.search_check(NAMES, 0.0, pair_margins={pair: margin for pair, margin in
+                                                         margins.pair_margins(mirror).items()
+                                                         if any(map(is_floor, pair))})
+
+
+# * Under 1 s (the pose search samples 4000 poses without planning): left in the per-commit suite on purpose.
+def test_the_floor_keeps_its_own_larger_margin(world, config):
+    """A pose 2-4 cm above the floor clears the usual 1 cm but not the floor's 5 cm; only floor pairs get that."""
+    start = start_and_goal(config)[0]
+    q, _ = low_pose(world, config, 0.02, 0.04)
+    scene, floor = floor_scene(config, start)
+    mirror = world.sync(scene, ALICE)
+    special = ARM_PLAN_MARGINS.pair_margins(mirror)
+    assert special and all(floor.id in pair for pair in special)
+    assert set(special.values()) == {FLOOR_PLAN_DISTANCE}
+    assert mirror.search_check(NAMES, ARM_PLAN_MARGINS.default)(q) is None
+    hit = ARM_PLAN_MARGINS.search_check(mirror, NAMES)(q)
+    assert hit is not None and floor.id in hit
+
+
+@pytest.mark.slow
+def test_a_path_to_a_target_well_above_the_floor_keeps_5_cm_from_it(world, config):
+    """A target 6-9 cm above the floor clamps nothing: the whole path keeps the floor's 5 cm."""
+    start = start_and_goal(config)[0]
+    goal, _ = low_pose(world, config, 0.06, 0.09)
+    scene, floor = floor_scene(config, start)
+    mirror = world.sync(scene, ALICE)
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is not None, result.reason
+    assert result.path.margins.clamps == () and result.path.margins.note() == "keeps 1 cm, 5 cm from the floor"
+    assert planner_module.fine_hit(result.path.waypoints, floor_only(mirror, ARM_PLAN_MARGINS)) is None
+
+
+@pytest.mark.slow
+def test_a_target_near_the_floor_keeps_what_it_has_there(world, config):
+    """A target 2-4 cm above the floor clamps only the floor's margin, as for any close pair; the path holds it."""
+    start = start_and_goal(config)[0]
+    goal, height = low_pose(world, config, 0.02, 0.04)
+    scene, floor = floor_scene(config, start)
+    mirror = world.sync(scene, ALICE)
+    margins = ARM_PLAN_MARGINS.clamped_at(mirror, NAMES, start, goal)
+    assert margins.clamps and all(floor.id in (clamp.first, clamp.second) for clamp in margins.clamps)
+    assert ARM_PLAN_MARGINS.default < margins.clamps[0].kept < height
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is not None, result.reason
+    assert result.path.margin == ARM_PLAN_MARGINS.default, "a floor 2-4 cm away leaves the usual 1 cm elsewhere"
+    note = result.path.margins.note()
+    assert note.startswith("keeps only") and "the floor" in note and "(usual 5 cm)" in note
+    assert planner_module.fine_hit(result.path.waypoints, floor_only(mirror, margins)) is None, \
+        "the path comes closer to the floor than the target"
+
+
 @pytest.mark.slow
 def test_both_of_cindys_arms_go_home_in_one_search(world):
     """B20_R's way home, both arms in one search: each ends at its goal, and every step of the path is clear."""
@@ -463,3 +543,21 @@ def test_a_saved_problem_loads_with_its_own_copy_of_each_urdf(world, config, tmp
     finally:
         pool.close()
     assert result.path is not None and result.direct, result.reason
+
+
+#: Two poses 6-14 cm above the floor whose straight joint move dips under its 5 cm.
+DIPPING_START = (2.365, 0.08, 0.297, 0.393, 1.045, -1.106)
+DIPPING_GOAL = (2.071, 0.032, 1.345, 1.614, 0.547, -0.423)
+
+
+@pytest.mark.slow
+def test_a_straight_move_that_dips_towards_the_floor_is_searched_around_it(world, config):
+    """The straight move comes under 5 cm of the floor, so the search goes round and keeps the floor's margin."""
+    scene, _floor = floor_scene(config, np.array(DIPPING_START))
+    mirror = world.sync(scene, ALICE)
+    check = floor_only(mirror, ARM_PLAN_MARGINS)
+    assert planner_module.fine_hit([DIPPING_START, DIPPING_GOAL], check) is not None, "the straight move must dip"
+    result = plan_arm(mirror, scene, ARM, DIPPING_GOAL, threading.Event())
+    assert result.path is not None, result.reason
+    assert not result.direct and result.path.margins.clamps == ()
+    assert planner_module.fine_hit(result.path.waypoints, check) is None

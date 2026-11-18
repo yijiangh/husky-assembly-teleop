@@ -23,6 +23,7 @@ from ...colors import TARGET
 from ...shared.collisions_contract import CollisionsContract
 from ...shared.planner.planner_panel import PLAN_TAB, PlannerPanel, unknown_robots_chip
 from ...shared.planner.plan import Plan
+from ...shared.planner.plan_margins import ARM_PLAN_MARGINS
 from ...shared.planner.planner_search import with_guesses
 from ...ui.choice_row import ChoiceRow
 from ...ui.ghost import RobotGhost
@@ -35,7 +36,7 @@ from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 from ...shared.assembly_planning.joints import arm_joint_names
 from .planner_plugin import STALE_JOINT, ArmPlannerPlugin
 from ...world.arm_reach import out_of_reach
-from ...world.clearance import ARM_STOP_DISTANCE, PLAN_DISTANCE
+from ...world.clearance import ARM_STOP_DISTANCE
 
 #: The Slow down row's choices: the plan at its fastest timing, up to MAX_SLOWDOWN times as long.
 SLOWDOWNS = tuple(f"×{factor}" for factor in range(1, int(MAX_SLOWDOWN) + 1))
@@ -116,8 +117,9 @@ class ArmPlannerPanel(PlannerPanel):
                                     clearance_hint=f"Soft stop a committed path once the robot comes within "
                                                    f"{ARM_STOP_DISTANCE * 100:g} cm of anything, itself included; a "
                                                    f"start that close is refused. Plans keep "
-                                                   f"{PLAN_DISTANCE * 100:g} cm, or as much as the start and target "
-                                                   f"have; then the clearance is half that (an amber chip says so). "
+                                                   f"{ARM_PLAN_MARGINS.describe()}, or as much as the start and target "
+                                                   f"have; under 1 cm the clearance is half that (an amber chip says "
+                                                   f"so). "
                                                    f"Untick to move out of a tight spot.",
                                     before_commit=lambda gui: self._add_slowdown(ctx, gui))
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.

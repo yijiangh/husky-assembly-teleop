@@ -60,7 +60,7 @@ def main() -> None:
                     print(f"  {result.detail}")
             else:
                 print(f"try {attempt + 1}: path in {time.time() - began:.1f} s, {result.path.duration:.1f} s long, "
-                      f"{planner.margin_note(result.path.margin, result.path.close)}")
+                      f"{result.path.margins.note()}")
     finally:
         pool.close()
 

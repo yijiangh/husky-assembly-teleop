@@ -29,7 +29,8 @@ from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 from husky_assembly_teleop.ui.style import FAIL, NONE, OK
 from husky_assembly_teleop.world.checks import BAD, GOOD, PENDING, WARN, Check
-from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE, PLAN_DISTANCE, Clearance, ClearanceRefused
+from husky_assembly_teleop.shared.planner.plan_margins import ARM_PLAN_MARGINS
+from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE, Clearance, ClearanceRefused
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject
@@ -39,7 +40,7 @@ SERIAL, ARM = "0806", "left_ur_arm"
 NAMES = arm_joint_names(ARM)
 START = np.array([0.0, -1.5, 1.5, 0.0, 0.0, 0.0])
 GOAL = START + np.array([0.4, 0.0, 0.0, 0.0, 0.0, 0.0])
-PATH = replace(ArmPath.along(NAMES, np.array([START, GOAL])), margin=PLAN_DISTANCE)
+PATH = replace(ArmPath.along(NAMES, np.array([START, GOAL])), margins=ARM_PLAN_MARGINS)
 REQUEST = ArmPlanRequest(SERIAL, ARM, tuple(GOAL))
 
 

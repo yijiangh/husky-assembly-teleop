@@ -206,6 +206,11 @@ def floor_id(plugin: str) -> str:
     return f"{plugin}/floor"
 
 
+def is_floor(body_id: str) -> bool:
+    """Whether a scene id is a plugin's floor (`floor_id`)."""
+    return body_id == floor_id(body_id.partition("/")[0])
+
+
 def lab_file(data_directory: Path, lab: str) -> Path:
     """The file of lab `lab`: a path to a .json file as given, else `<data>/lab/<lab>.json`."""
     path = Path(lab).expanduser()
