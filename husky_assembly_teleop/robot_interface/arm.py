@@ -427,6 +427,7 @@ class ArmState:
             ! In `cartesian_test_mode` these hold the target that *would* have been sent.
         wrench: Force/torque reading (fx, fy, fz, tx, ty, tz).
         wrench_update_time: ROS time it arrived, seconds.
+        ft_zero_time: ROS time its sensor was last asked to zero, by anyone, seconds.
         digital_in: UR digital inputs by pin.
         is_executing: Whether the arm is moving under a trajectory we sent.
             ? Guessed from motion: True from sending until the joints have been still for STILL_AFTER.
@@ -466,6 +467,7 @@ class ArmState:
     sent_target_time: float | None = None
     wrench: np.ndarray | None = None
     wrench_update_time: float | None = None
+    ft_zero_time: float | None = None
     digital_in: list[bool] | None = None
     is_executing: bool = False
     controllers: ControllerManagerState = field(default_factory=ControllerManagerState)
@@ -1255,7 +1257,7 @@ class ArmInterface:
             self._node.get_logger().error(f"arm {self.config.name}: zero_ftsensor is not available")
             return False
         self._zero_ft.call_async(Trigger.Request())
-        now = self._now()
+        now = self.state.ft_zero_time = self._now()
         self.ft_zeros_sent.fire(SentZero(None if self.state.wrench is None else self.state.wrench.copy(), now, now))
         return True
 

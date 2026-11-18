@@ -122,7 +122,8 @@ def as_built_record(ctx: PluginContext, bars_plugin: MocapBarsContract, loaded: 
     tool0 = tool0_errors(fk, {flange: targets[flange] for flange in fk if flange in targets}) if targets else {}
     wrenches = wrench_magnitudes(robot, arms)
     load = None if wrenches is None else {
-        "arms": {side: {**wrench, "wrench": robot.arms[arm].state.wrench}
+        "arms": {side: {**wrench, "wrench": robot.arms[arm].state.wrench,
+                        "zeroed_at": robot.arms[arm].state.ft_zero_time}
                  for (side, wrench), arm in zip(wrenches.items(), arms)},
         "zero": dict((ft_zero or {}).get(serial) or {}) or None}
     robots = {live_id: {"name": _process_name(process, live_id.rsplit("/", 1)[-1]),

@@ -110,6 +110,20 @@ def test_a_motion_records_its_start_and_its_end():
 
 
 @pytest.mark.safety
+def test_the_load_says_when_each_arm_was_last_zeroed_whoever_zeroed_it():
+    """A zero from outside the executor (the guide's Zero force) shows in the record, per arm; never zeroed: None."""
+    lab, _bars = lab_with_bars()
+    arms = lab.ctx.world.robots["a200-0806"].arms
+    for arm in arms.values():
+        arm.state.wrench = np.zeros(6)
+    assert arms["left_ur_arm"].zero_ft_sensor()
+    zeroed = arms["left_ur_arm"].state.ft_zero_time
+    result, _held = execute(lab, lab.request("B20_R_home"))
+    assert result.status == DONE, result.reason
+    load = as_built(lab)[0][1]["load"]["arms"]
+    assert load["left"]["zeroed_at"] == zeroed and zeroed is not None and load["right"]["zeroed_at"] is None
+
+
 def test_a_failed_measurement_is_said_and_the_step_still_runs():
     """`measure_now` raising: one error line per record, no record, the motion done all the same."""
     lab, _bars = lab_with_bars(fail=True)
