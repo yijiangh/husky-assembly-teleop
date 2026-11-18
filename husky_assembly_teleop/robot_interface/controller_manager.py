@@ -7,7 +7,7 @@ One ros2_control controller manager (of the base or an arm), and which of its co
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Sequence
 
 from controller_manager_msgs.srv import ConfigureController, ListControllers, SwitchController
 from rclpy.node import Node
@@ -57,6 +57,9 @@ class ControllerManagerInterface:
     last_refusal: Refusal | None = None
     #: Whether `state.switch_error` is a failed stop, which a switch answered later must not clear.
     _stop_failed = False
+
+    #: Called with the controllers `switch` is about to stop, just before its request goes out.
+    before_stopping: Callable[[Sequence[str]], None] | None = None
 
     def __init__(self, node: Node, namespace: str, switchable: tuple[str, ...],
                  state: ControllerManagerState, guard: Callable[[str], str | None] | None = None):
@@ -182,6 +185,8 @@ class ControllerManagerInterface:
         request.strictness = SwitchController.Request.STRICT
         request.start_asap = True
 
+        if self.before_stopping is not None:
+            self.before_stopping(request.deactivate_controllers)
         self.state.switch_in_flight = controller
         self.state.requested = controller
         self.state.switch_error, self._stop_failed = None, False

@@ -55,6 +55,8 @@ HOLD_FOR_STALL = 30.0
 FK_TCP_TOL = (0.010, math.radians(2.0))
 #: A leading part shorter than this, millimetres, is left out: one mode the whole way.
 MIN_LEADING_MM = 0.5
+#: A line shorter than this, millimetres, gives `progress` no direction to measure along.
+MIN_LINE_MM = 0.1
 #: The shortest a compliant part or a retreat's rigid tail takes, seconds.
 MIN_PART_SECONDS = 0.5
 #: Samples a `Recorder` keeps, the last ones: about a minute at 20 Hz.
@@ -313,7 +315,9 @@ def progress(robot: HuskyRobotInterface, segment: Segment) -> dict[str, dict[str
 
     Returns:
         dict: Arm name -> {"travel_mm": start to end, "achieved_mm": start to the TCP, "remaining_mm": the TCP to the
-            end}; None for an arm without a measured TCP.
+            end, "past_end_mm": along the line beyond its end, negative when short, "off_line_mm": the TCP from the
+            line, sideways}; None for an arm without a measured TCP. A line under MIN_LINE_MM has no direction:
+            past_end_mm is minus remaining_mm, off_line_mm 0.
     """
     result = {}
     for name in segment.start:
@@ -322,9 +326,18 @@ def progress(robot: HuskyRobotInterface, segment: Segment) -> dict[str, dict[str
             result[name] = None
             continue
         start, end = np.asarray(segment.start[name].position), np.asarray(segment.end[name].position)
-        result[name] = {"travel_mm": float(np.linalg.norm(end - start)) * 1e3,
-                        "achieved_mm": float(np.linalg.norm(np.subtract(here.position, start))) * 1e3,
-                        "remaining_mm": float(np.linalg.norm(end - np.asarray(here.position))) * 1e3}
+        position = np.asarray(here.position, dtype=float)
+        travel, remaining = float(np.linalg.norm(end - start)), float(np.linalg.norm(end - position))
+        if travel * 1e3 < MIN_LINE_MM:
+            past, off = -remaining, 0.0
+        else:
+            unit = (end - start) / travel
+            beyond = position - end
+            past = float(beyond @ unit)
+            off = float(np.linalg.norm(beyond - past * unit))
+        result[name] = {"travel_mm": travel * 1e3,
+                        "achieved_mm": float(np.linalg.norm(position - start)) * 1e3,
+                        "remaining_mm": remaining * 1e3, "past_end_mm": past * 1e3, "off_line_mm": off * 1e3}
     return result
 
 
@@ -428,7 +441,8 @@ class Settling:
 
 async def stream(ctx: PluginContext, robot: HuskyRobotInterface, segment: Segment, *,
                  keep_going: Callable[[float], bool], lateral: Callable[[float], Sequence[float]] | None = None,
-                 recorder: Recorder) -> str:
+                 recorder: Recorder, tight: Callable[[], Collection[str]] | None = None,
+                 held: dict[str, Pose] | None = None) -> str:
     """Send every arm of `segment` its line's target each tick, until something says stop; checked before each send.
 
     Each tick: the clock advances by at most MAX_CLOCK_STEP; then the stop tests; then each arm's target, the line's
@@ -441,12 +455,19 @@ async def stream(ctx: PluginContext, robot: HuskyRobotInterface, segment: Segmen
         keep_going: Elapsed seconds -> whether to go on; asked each tick before sending, e.g. not every screw stalled.
         lateral: Elapsed seconds -> an offset added to every arm's target, metres (the spiral), or None.
         recorder: Gets a sample after each tick's targets.
+        tight: The arms to hold where their last target was (a tight screw), asked each tick after `keep_going`; None:
+            none.
+        held: Arm name -> the target it holds, filled as `tight` names arms; pass the same dict to the next stream
+            so a held arm stays where it was.
 
     Returns:
         str: "ended" (`keep_going` said no), "time" (over seconds + wait + END_WAIT), "base pose lost: …", "base
             moved …", or "refused: <arm>…"; nothing more is sent after any of them.
     """
     start, elapsed, last = None, 0.0, ctx.now()
+    held = {} if held is None else held
+    #: Arm name -> the target sent last in this stream.
+    sent_last: dict[str, Pose] = {}
     while True:
         now = ctx.now()
         elapsed += min(now - last, MAX_CLOCK_STEP)
@@ -464,9 +485,14 @@ async def stream(ctx: PluginContext, robot: HuskyRobotInterface, segment: Segmen
             return (f"base moved {distance * 1e3:.1f} mm, {math.degrees(turn):.2f}° since the stream started "
                     f"(stops beyond {BASE_DRIFT[0] * 1e3:.0f} mm or {math.degrees(BASE_DRIFT[1]):.1f}°)")
         offset = None if lateral is None else lateral(elapsed)
+        for name in tight() if tight is not None else ():
+            if name in segment.start and name not in held:
+                held[name] = sent_last.get(name, segment.start[name])
         for name in segment.start:
             arm = robot.arms[name]
-            goal = line_target(segment.start[name], segment.end[name], segment.seconds, elapsed, offset)
+            goal = held[name] if name in held else line_target(segment.start[name], segment.end[name],
+                                                               segment.seconds, elapsed, offset)
+            sent_last[name] = goal
             try:
                 sent = arm.send_cartesian_target(*arm.from_husky(*robot.from_world(goal.position, goal.orientation)))
             except MotionRefused as refused:

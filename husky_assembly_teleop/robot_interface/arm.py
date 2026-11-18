@@ -586,6 +586,7 @@ class ArmInterface:
         trajectories_sent: Fired with each `SentTrajectory`, holds and multi-arm messages (one per arm) included.
         targets_sent: Fired with each `SentTarget`, holds included; none in test mode, where nothing is sent.
         wrenches_sent: Fired with each `SentWrench`, the zero wrench of a hold included.
+        stiffness_unrestored: The stiffness to set back after a part changed it, until the controller confirms it.
 
     ! Every motion command and controller switch but `hold` needs the robot's lease, else raises NotLeased
       (`robot_lease.py`); while the robot is soft stopped, they raise RobotStopped (`soft_stop.py`), except
@@ -595,6 +596,8 @@ class ArmInterface:
 
     #: The last command refused without raising, or None.
     last_refusal: Refusal | None = None
+
+    stiffness_unrestored: list[float] | None = None
 
     def __init__(self, node: Node, robot_namespace: str, config: ArmConfig, base_in_husky: Pose,
                  urdf_problem: str | None = None, urdf: Path | None = None,
@@ -647,6 +650,7 @@ class ArmInterface:
 
         self.controllers = ControllerManagerInterface(
             node, self._namespace, ARM_CONTROLLERS, self.state.controllers, guard=self._switch_refusal)
+        self._zero_force_on_controller_stop()
         self.end_effector: EndEffector | None = make_end_effector(node, robot_namespace, config, self._latch,
                                                                   self._lease_slot)
         self.state.end_effector = self.end_effector.state if self.end_effector else None
@@ -1163,7 +1167,7 @@ class ArmInterface:
         """Send a target wrench to the compliance controller.
 
         ! In the tool frame (tool0), not the arm's base, so it turns with the tool.
-        ! Stays applied until another wrench is sent or `hold` zeroes it.
+        ! Stays applied until another wrench is sent, or `hold` or a switch away from the controller zeroes it.
 
         Args:
             force: Force in tool0, newtons.
@@ -1216,6 +1220,18 @@ class ArmInterface:
                 self.send_cartesian_target(self.state.tcp_position, self.state.tcp_orientation, hold=True)
         self._publish_wrench(np.zeros(3), np.zeros(3))
         return True
+
+    def _zero_force_on_controller_stop(self) -> None:
+        """Have every controller switch zero the target wrench first when it stops the compliance controller."""
+        self.controllers.before_stopping = self._zero_force_before_stopping
+
+    def _zero_force_before_stopping(self, stopping: Sequence[str]) -> None:
+        """Zero the target wrench while the compliance controller, about to stop, still takes it.
+
+        ! Stopped, it ignores wrenches but keeps the last one, and pushes the arm with it when it next starts.
+        """
+        if CARTESIAN_COMPLIANCE_CONTROLLER in stopping and not self.config.cartesian_test_mode:
+            self._publish_wrench(np.zeros(3), np.zeros(3))
 
     def _publish_wrench(self, force: np.ndarray, torque: np.ndarray) -> None:
         """Publish a target wrench in tool0, unchecked, then fire `wrenches_sent`."""

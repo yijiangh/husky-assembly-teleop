@@ -25,7 +25,8 @@ import numpy as np
 from action_msgs.msg import GoalStatus
 from controller_manager_msgs.srv import SwitchController
 from geometry_msgs.msg import PoseStamped
-from robot_fakes import TEST_LEASE, Client
+from rcl_interfaces.msg import ParameterType, ParameterValue
+from robot_fakes import TEST_LEASE, Client, Future
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import JointState
 
@@ -483,6 +484,56 @@ class FakeControllers(ControllerManagerInterface):
             self._answering = False
 
 
+class StiffnessService:
+    """The compliance controller's stiffness parameters, answered at once: `get` and `set` stand in for its clients.
+
+    Attributes:
+        stiffness: The translational stiffness now, N/m along tool0 x, y, z.
+        sets: Every stiffness set, in order.
+        up: Whether the services answer; False: `service_is_ready` says no.
+        readable: Whether a read answers with values; False: an empty answer.
+        confirms: Whether a set is answered; False: it is taken but never answered (a late answer).
+    """
+
+    def __init__(self, stiffness: Sequence[float] = (500.0, 500.0, 500.0)):
+        """The controller's config values, services up."""
+        self.stiffness, self.sets, self.up = list(stiffness), [], True
+        self.readable = self.confirms = True
+        self.get = SimpleNamespace(service_is_ready=lambda: self.up, call_async=self._get)
+        self.set = SimpleNamespace(service_is_ready=lambda: self.up, call_async=self._set)
+
+    def _get(self, request) -> Answered:
+        """Answer a GetParameters call with the stiffness now."""
+        if not self.readable:
+            return Answered(SimpleNamespace(values=[]))
+        return Answered(SimpleNamespace(values=[ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=value)
+                                                for value in self.stiffness]))
+
+    def _set(self, request) -> Answered:
+        """Take a SetParameters call's values and answer that every one was taken."""
+        self.stiffness = [parameter.value.double_value for parameter in request.parameters]
+        self.sets.append(list(self.stiffness))
+        if not self.confirms:
+            return Future(request)
+        return Answered(SimpleNamespace(results=[SimpleNamespace(successful=True)] * len(request.parameters)))
+
+
+class Answered:
+    """A service call's future answered already, as rclpy's: a callback added runs at once."""
+
+    def __init__(self, response):
+        """Answered with `response`."""
+        self._response = response
+
+    def add_done_callback(self, callback) -> None:
+        """Run `callback(self)` now."""
+        callback(self)
+
+    def result(self):
+        """The answer."""
+        return self._response
+
+
 def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
              active: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, end_effector=None) -> ArmInterface:
     """A real `ArmInterface` without ROS: measured now at `joints`, `active` running, publishers kept.
@@ -517,6 +568,8 @@ def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
     arm.wrench_messages, arm.ft_zeros_sent = Event(f"{name}_ft"), Event(f"{name}_ft_zero")
     arm._zero_ft = SimpleNamespace(service_is_ready=lambda: True, calls=[])
     arm._zero_ft.call_async = arm._zero_ft.calls.append
+    arm.stiffness_service = StiffnessService()
+    arm._get_compliance, arm._set_compliance = arm.stiffness_service.get, arm.stiffness_service.set
     arm.end_effector = end_effector
     arm.state.end_effector = end_effector.state if end_effector is not None else None
     return arm

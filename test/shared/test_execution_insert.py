@@ -23,6 +23,7 @@ from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CO
 from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.execution.insert import InsertPlan, plan_insert, run_insert
+from husky_assembly_teleop.shared.execution.insert_forces import InsertForceSettings
 from husky_assembly_teleop.shared.execution.spiral import Spiral
 from husky_assembly_teleop.shared.execution.stream import (DRY_RUN, END_WAIT, FAILED, HOLD_FOR_STALL, NO_STALL,
                                                            REFUSED, RIGID_DONE, SETTLE_CEILING, SETTLE_TOL,
@@ -33,6 +34,7 @@ from scaffolding_assembly_core.geometry import Pose, compose
 pytestmark = pytest.mark.safety
 
 ARMS = ("left_ur_arm", "right_ur_arm")
+LEFT_ARM, RIGHT_ARM = ARMS
 NAMES = [name for arm in ARMS for name in arm_joint_names(arm)]
 
 
@@ -89,9 +91,11 @@ class Lab:
         assert isinstance(plan, InsertPlan), plan
         return plan
 
-    def work(self, plan: InsertPlan, operator: Operator | None = None, dry_run: bool = False):
+    def work(self, plan: InsertPlan, operator: Operator | None = None, dry_run: bool = False,
+             forces: InsertForceSettings = InsertForceSettings()):
         """The insert's coroutine, on every tool."""
-        return run_insert(self.ctx, self.robot, plan, self.tools, operator=operator or Operator(self), dry_run=dry_run)
+        return run_insert(self.ctx, self.robot, plan, self.tools, operator=operator or Operator(self), dry_run=dry_run,
+                          forces=forces)
 
     def run(self, plan: InsertPlan, **options):
         """Run the insert to its end."""
@@ -215,8 +219,11 @@ def test_a_mating_insert_runs_rigid_then_streams_the_line_until_the_left_screw_s
         last, tcp = lab.sent[arm][-1]
         assert last.hold and np.allclose(last.position, tcp, atol=0.0)
         assert lab.switches(arm) == [COMPLIANCE, JOINT]
-        wrenches = lab.robot.arms[arm]._target_wrench.messages
-        assert wrenches and all(message.wrench.force.x == message.wrench.force.z == 0.0 for message in wrenches)
+        # * The fake arms read no force, so no weight is taken off: only the mating left arm pushes, 4 N, until its
+        #   screw is tight; every arm ends on a zero wrench.
+        forces = [np.linalg.norm([m.wrench.force.x, m.wrench.force.y, m.wrench.force.z])
+                  for m in lab.robot.arms[arm]._target_wrench.messages]
+        assert forces[-1] == 0.0 and [f for f in forces if f > 0.0] == pytest.approx([4.0] if arm == LEFT_ARM else [])
         assert outcome.record["end_error_mm"][arm]["remaining_mm"] < 2.0
     assert lab.running() == [JOINT, JOINT]
     json.dumps(outcome.record, allow_nan=False)

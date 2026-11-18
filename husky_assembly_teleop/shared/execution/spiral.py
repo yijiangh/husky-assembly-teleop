@@ -3,7 +3,8 @@ The insert's spiral search: the bar circles out around its straight line during 
 
 Both arms get the same sideways offset each tick, so the grasp is kept: the bar shifts, it does not turn. The radius
 grows with the line's progress, from 0 at the handover to SPIRAL_RADIUS at the end, where the arms hold until a stall
-or the operator's answer (`run_spiral`).
+or the operator's answer (`run_spiral`). An arm whose screw is tight holds where it was while the other searches on:
+the bar pivots about the tight joint.
 
 - ! A spiral over SPIRAL_MAX_SPEED at full radius is refused before anything moves (`spiral_problem`).
 - ! Main thread, from a plugin task.
@@ -12,7 +13,7 @@ or the operator's answer (`run_spiral`).
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Collection, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Collection, Protocol, Sequence
 
 import numpy as np
 
@@ -153,7 +154,8 @@ def spiral_problem(seconds: float, turns: int) -> str:
 
 
 async def run_spiral(ctx: PluginContext, robot: HuskyRobotInterface, segment: Segment, spiral: Spiral, gate: Gate,
-                     operator: Operator, recorder: Recorder, stall_targets: dict[str, Pose]) -> str:
+                     operator: Operator, recorder: Recorder, stall_targets: dict[str, Pose],
+                     tight: Callable[[], Collection[str]] | None = None) -> str:
     """Spiral out along the line and hold its end (A); on Confirm go back to the line's end and hold for the stall (B).
 
     - A: the line over the spiral's seconds plus its offset, held at the end with no time limit. It ends on a stall;
@@ -172,6 +174,7 @@ async def run_spiral(ctx: PluginContext, robot: HuskyRobotInterface, segment: Se
         recorder: Gets a sample each tick; its phase is set to "spiral", then "spiral return".
         stall_targets: Filled at a stall with each arm's target then; left empty when the stall came before the first
             target, or with the arms already at the line's end.
+        tight: The arms that hold where they were from now on (a tight screw), asked each tick (`stream`); None: none.
 
     Returns:
         str: "stalled", "cancelled" (the operator's Cancel at the spiral's end), "no_stall" (B's time ran out), or
@@ -179,6 +182,7 @@ async def run_spiral(ctx: PluginContext, robot: HuskyRobotInterface, segment: Se
     """
     serial = robot.config.serial
     prompt, answer, last = None, None, 0.0
+    held: dict[str, Pose] = {}
 
     def searching(elapsed: float) -> bool:
         """No stall yet, and no answer to the prompt; opens it once the spiral is complete."""
@@ -198,7 +202,7 @@ async def run_spiral(ctx: PluginContext, robot: HuskyRobotInterface, segment: Se
     recorder.phase = "spiral"
     try:
         ended = await stream(ctx, robot, Segment(segment.start, segment.end, spiral.seconds, math.inf),
-                             keep_going=searching, lateral=spiral.offset, recorder=recorder)
+                             keep_going=searching, lateral=spiral.offset, recorder=recorder, tight=tight, held=held)
     finally:
         if prompt is not None and answer is None:
             operator.close(prompt)
@@ -207,8 +211,9 @@ async def run_spiral(ctx: PluginContext, robot: HuskyRobotInterface, segment: Se
     if answer is None:
         ctx.log_info(f"{serial}: {gate.text} STALLED at {spiral.text(last)}")
         if last > 0.0:
-            stall_targets.update({name: line_target(segment.start[name], segment.end[name], spiral.seconds, last,
-                                                    spiral.offset(last)) for name in segment.start})
+            stall_targets.update({name: held[name] if name in held else line_target(
+                segment.start[name], segment.end[name], spiral.seconds, last, spiral.offset(last))
+                for name in segment.start})
         return "stalled"
     if not answer:
         ctx.log_warn(f"{serial}: Cancel at the spiral's end; the insert ends here")
@@ -226,12 +231,12 @@ async def run_spiral(ctx: PluginContext, robot: HuskyRobotInterface, segment: Se
         last = elapsed
         return not gate.all_stalled()
 
-    ended = await stream(ctx, robot, returning, keep_going=returning_on, recorder=recorder)
+    ended = await stream(ctx, robot, returning, keep_going=returning_on, recorder=recorder, tight=tight, held=held)
     if ended == "ended":
         ctx.log_info(f"{serial}: {gate.text} STALLED after the return to the line's end")
         if last < SPIRAL_RETURN:
-            stall_targets.update({name: line_target(returning.start[name], end, SPIRAL_RETURN, last)
-                                  for name, end in segment.end.items()})
+            stall_targets.update({name: held[name] if name in held else line_target(
+                returning.start[name], end, SPIRAL_RETURN, last) for name, end in segment.end.items()})
         return "stalled"
     if ended == "time":
         ctx.log_warn(f"{serial}: no stall within {HOLD_FOR_STALL:.0f} s of the return to the line's end")
