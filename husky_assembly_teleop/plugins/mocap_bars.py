@@ -5,21 +5,24 @@ Every bar of the loaded process that carries markers is fitted to the relay's ra
 (`shared/bars/layouts.fit_in_cloud`): the markers within SEARCH_RADIUS of its markers at its planned pose, Motive's
 labels and assets never used (Motive mixes up bars that look alike). The planned pose is the process body in the live
 scene (`process/bars/<id>`): a built bar at its assembly pose, a held one on the real robot's flange; a bar the live
-scene lacks is looked for at its assembly pose. Each bar is fitted at most ten times a second: matched around the last
-good fit while it is fresh (a marker may be hidden), else around the planned pose (every marker), else by the full
-search over its nearby markers, of which at most one runs per tick across the bars and only for bars the live scene
-has. Every bar is a body of the live scene, "mocap_bars/<B20>": the process bar and
-its mounted halves, see-through in the old monitor's MoCap cyan, at its fitted pose, shown while its fit is fresh; the
-observer records them every tick. "Show markers" draws the chosen bar's nearby markers
-(green the ones the fit matched, amber the others), its fitted markers (blue: markers, axis, a line per residual) and
-its planned markers and line (grey, pink); "Raw markers" every marker of the cloud. The stats block below the buttons
-reads the chosen bar's fit the old monitor's way: each marker's residuals, each plate's ball pair, the spacing between
-plates, the bow, and the deviation from the planned pose; "Measure + log" and "Log live" print the old `[mocap bar]`
-lines. "Arrows" draws the as-built report's arrows on the chosen bar or every fitted bar, from where it should be to
-its fit: the gap at its start, middle and end, the planned (faint) and fitted axes with the turn about each, both
-"Magnify" times larger (labels true). The fit settings section sets the search radius and the timings below for this
-plugin's fits (the contract's too, so the as-built record's), not servo's. Record writes a take of the chosen bar's
-fit to the Drive (`data_experiment/mocap_bars/`): a run folder per take with experiment.json and recording.npz
+scene lacks is looked for at its assembly pose. ! Every error shown (the deviation, the stats, the arrows, a take) is
+against the bar's target instead: where the design wants it at the selected movement's end (`as_built.reference_of`),
+for a held bar the pose the servo aims at, never the robot's FK. Each bar is fitted at most ten times a second: matched
+around the last good fit while it is fresh (a marker may be hidden), else around the planned pose (every marker), else
+by the full search over its nearby markers, of which at most one runs per tick across the bars and only for bars the
+live scene has. Every bar is a body of the live scene, "mocap_bars/<B20>": the process bar and its mounted halves,
+see-through in the old monitor's MoCap cyan, at its fitted pose, shown while its fit is fresh; the observer records them
+every tick. "Show markers" draws the chosen bar's nearby markers (green the ones the fit matched, amber the others), its
+fitted markers (blue: markers, axis, a line per residual) and its planned markers and line (grey, pink); "Raw markers"
+every marker of the cloud. The stats block below the buttons reads the chosen bar's fit the old monitor's way: each
+marker's residuals, each plate's ball pair, the spacing between plates, the bow, and the deviation from its target;
+"Measure + log" and "Log live" print the old `[mocap bar]` lines; "Check plates" checks once whether the chosen
+bar's plates moved on it (`plate_check`, the bar fitted without each plate in turn: never run per fit). "Arrows" draws
+the as-built report's arrows on the chosen bar or every fitted bar, from where it should be to its fit: the gap at its
+start, middle and end, the planned (faint) and fitted axes with the turn about each, both "Magnify" times larger (labels
+true). The fit settings section sets the search radius and the timings below for this plugin's fits (the contract's too,
+so the as-built record's), not servo's. Record writes a take of the chosen bar's fit to the Drive
+(`data_experiment/mocap_bars/`): a run folder per take with experiment.json and recording.npz
 (`shared/recordings/runs.py`). Other plugins read the fits through `MocapBarsContract`.
 
 - ! Marker layouts come only from the process (`BodySpec.markers` of the halves mounted on a bar); old compas_fab
@@ -37,6 +40,7 @@ Run with:  plugins:="mocap_bars"  (loads `process`)
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -53,10 +57,11 @@ from ..plugin_api.trace import Signal
 from ..shared.mocap_bars_contract import MOCAP_TAB, BarMeasurement
 from ..shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH
 from ..shared.recordings.runs import run_folder, save_recording, write_description
+from ..shared.runs.as_built import reference_of
 from ..shared.bars.layouts import SEARCH_RADIUS, BarLayout, bar_layouts, drawn_bar, fit_in_cloud
 from ..shared.bars.pose import PoseDeviation, bar_ends, bar_gap, gap_color, pose_deviation
-from ..shared.bars.readings import (MATCHED, MISSING, MarkerRow, PlateGeometry, bar_report, marker_rows,
-                                    plate_geometry)
+from ..shared.bars.readings import (MATCHED, MISSING, PLATE_ALONG, PLATE_RADIAL, PLATES_BAD, PLATES_OK, MarkerRow,
+                                    PlateCheck, PlateGeometry, bar_report, marker_rows, plate_check, plate_geometry)
 from ..ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_SENSOR, block, chip, chip_line, note, section,
                         values)
 from ..world.marker_match import BarFit, Sensed, transform_points
@@ -111,6 +116,36 @@ ARROW_PERIOD = 0.2
 TURN_COLOR = rgb(GRAPE)
 PLANNED_AXIS_COLOR = rgb(LIGHT_GREY)
 AXIS_COLORS = (rgb(RED), rgb(GREEN), rgb(BLUE))
+
+
+def mounted_target(action, shown, movement_id: str, held_by: str | None,
+                   grasp: np.ndarray | None) -> np.ndarray | None:
+    """A bar mounted by hand at a step with no flange pose of its own: where the flange stands, by the order run.
+
+    With the transfer run first (`TRANSFER_AS_FREE`) the bar is mounted at that transfer's end. Run after the mounting,
+    the transfer has not happened yet: no target.
+
+    Args:
+        action: The selected action as authored: only it has the flange poses (a transfer run first is a free move).
+        shown: The same action as the panel runs it (`Selection.action`), its movements in that order.
+        movement_id: The selected movement.
+        held_by: The flange holding the bar (`reference_of`), or None.
+        grasp: 4x4 bar in that flange, or None.
+
+    Returns:
+        np.ndarray | None: 4x4 target in the world; None when no movement run before gives the flange a pose.
+    """
+    if held_by is None or grasp is None:
+        return None
+    ids = [movement.id for movement in shown.movements]
+    authored = {movement.id: movement for movement in action.movements}
+    for each in reversed(ids[:ids.index(movement_id)] if movement_id in ids else ()):
+        movement = authored.get(each)
+        own = movement.target.robots.get(action.robot) if movement is not None and movement.target is not None else None
+        pose = own.link_poses.get(held_by) if own is not None else None
+        if pose is not None:
+            return pose.matrix() @ np.asarray(grasp, dtype=float)
+    return None
 
 
 def matched_pairs(fit: BarFit) -> np.ndarray:
@@ -231,8 +266,9 @@ class _Followed:
         fitted_cloud: The marker cloud last fitted (ok or by the full search), so each is fitted once.
         next_fit_at: When the next fit may run.
         last_ok: (time, 4x4 pose) of the last good fit: the hint the next fit starts from while fresh.
-        planned: Where the process places the bar this tick, or None.
-        deviation: The fit against `planned`, or None.
+        planned: Where the live scene places the bar this tick (where its markers are looked for), or None.
+        target: Where the design wants it at the selected movement's end (`reference_of`), or None.
+        deviation: The fit against `target`, or None.
         measured_at: Capture time of the sample last fitted.
         rows: (marker rows, plate geometry) of the last good fit, computed once for the stats block; None otherwise.
     """
@@ -246,6 +282,7 @@ class _Followed:
     next_fit_at: float = 0.0
     last_ok: tuple[float, np.ndarray] | None = None
     planned: Pose | None = None
+    target: Pose | None = None
     deviation: PoseDeviation | None = None
     measured_at: float = 0.0
     rows: tuple[list[MarkerRow], PlateGeometry] | None = None
@@ -265,8 +302,9 @@ class MocapBarsPlugin(HuskyPlugin):
         """Start with nothing tracked or fitted."""
         #: Bar id -> what is followed of it, every bar with a layout, in the process's order.
         self._bars: dict[str, _Followed] = {}
-        #: The process the bars were read from.
+        #: The process the bars were read from; the selection the targets were last worked out for.
         self._layouts_of = None
+        self._targets_of = None
         self._bar_id: str | None = None
         #: Index into the bars of the one whose turn the full search is.
         self._turn = 0
@@ -279,6 +317,8 @@ class MocapBarsPlugin(HuskyPlugin):
         self._cloud_drawn_at = -np.inf
         self._take: asyncio.Task | None = None
         self._message = ""
+        #: The last Check plates: (bar id, its check, ROS time, local time "HH:MM:SS"); None before one.
+        self._plates: tuple[str, PlateCheck, float, str] | None = None
         self._next_log_at = 0.0
         #: The relay the cloud comes from, or None (tests).
         self._relay = None
@@ -316,6 +356,10 @@ class MocapBarsPlugin(HuskyPlugin):
             self._log_live = gui.add_checkbox("Log live", initial_value=False,
                                               hint=f"Print the chosen bar's fit report every {LOG_PERIOD:.0f} s.")
             measure = gui.add_button("Measure + log", hint="Fit the chosen bar afresh and print its report.")
+            check_plates = gui.add_button("Check plates",
+                                          hint="Check once whether the chosen bar's plates still sit where its design "
+                                               "has them: the bar is fitted without each plate in turn. The chip keeps "
+                                               "the result until another bar is chosen; press again for a fresh one.")
             self._arrows = gui.add_dropdown("Arrows", options=list(ARROW_MODES), initial_value=ARROW_MODES[1],
                                             hint="The as-built report's arrows from where the bar should be to its "
                                                  "fit: the gap at its start, middle and end and the turn about each "
@@ -379,6 +423,7 @@ class MocapBarsPlugin(HuskyPlugin):
         # ! Callbacks run on a viser thread: hand every action to the main thread.
         self._bar.on_update(ctx.defer_value("choose bar", self._choose))
         measure.on_click(ctx.defer("measure bar", lambda: self._measure_and_log(ctx)))
+        check_plates.on_click(ctx.defer("check plates", lambda: self._check_plates(ctx)))
         record.on_click(ctx.defer("record take", lambda: self._start_take(ctx)))
 
     # --- --- --- --- --- THE CONTRACT --- --- --- --- ---
@@ -400,24 +445,28 @@ class MocapBarsPlugin(HuskyPlugin):
             hint = hints.get(bar) if hints else None
             self._refit(state, cloud, now, None if hint is None else hint.matrix(),
                         full_search=state.planned is not None)
+            state.deviation = _deviation(state)
         return {bar: self._measurement(bar, state) for bar, state in self._bars.items() if state.fit is not None}
 
     def _measurement(self, bar: str, state: _Followed) -> BarMeasurement:
         """The bar's latest fit as the contract hands it on."""
         return BarMeasurement(bar, state.layout, state.fit, state.pose, state.sensed,
                               state.sensed.source if state.sensed is not None else "", state.measured_at,
-                              state.fit.tracked, state.planned, state.deviation)
+                              state.fit.tracked, state.planned, state.deviation, state.target)
 
     # --- --- --- --- --- ACTIONS (run as intents) --- --- --- --- ---
 
     def _choose(self, bar_id: str) -> None:
         """Show this bar's markers and stats from now on."""
-        self._bar_id = bar_id if bar_id in self._bars else None
+        chosen = bar_id if bar_id in self._bars else None
+        if chosen != self._bar_id:
+            self._plates = None
+        self._bar_id = chosen
         self._drawn = None
 
     def _follow_all(self, ctx: PluginContext, loaded) -> None:
         """Fit every bar of the loaded process that has a marker layout from now on, each a scene body, hidden."""
-        self._bars = {}
+        self._bars, self._plates = {}, None
         ctx.scene.remove_prefix(f"{self.name}/")
         layouts = bar_layouts(loaded) if loaded is not None else {}
         for bar, layout in layouts.items():
@@ -453,7 +502,7 @@ class MocapBarsPlugin(HuskyPlugin):
         """The old monitor's three `[mocap bar]` lines of a bar, a warning when its fit failed."""
         if state.fit is None:
             return
-        planned = state.planned.matrix() if state.planned is not None else None
+        planned = state.target.matrix() if state.target is not None else None
         say = ctx.log_info if state.fit.ok else ctx.log_warn
         for line in bar_report(bar, state.fit, state.sensed, state.layout, planned, state.deviation):
             say(line)
@@ -484,7 +533,7 @@ class MocapBarsPlugin(HuskyPlugin):
                        **environment(relay is not None and relay.state.simulated),
                        "process": str(selection.process.folder) if selection is not None else None,
                        "step": selection.movement.id if selection is not None else None, "seconds": seconds,
-                       "frame": "world (mocap, Z-up), metres; quaternions (x, y, z, w); deviation in the planned "
+                       "frame": "world (mocap, Z-up), metres; quaternions (x, y, z, w); deviation in the target "
                                 "bar's frame, its axis z"}
         extra = {"model_markers": state.layout.points, "model_marker_names": np.array(state.layout.names)}
         file_format = ctx.config.recording_format
@@ -500,7 +549,7 @@ class MocapBarsPlugin(HuskyPlugin):
         ctx.log_info(self._message)
 
     def _signals(self, state: _Followed) -> list[Signal]:
-        """What a take records each tick: the fit, its quality, the planned pose and the deviation."""
+        """What a take records each tick: the fit, its quality, the target and the deviation from it."""
         model = state.layout.points
 
         def fit() -> BarFit | None:
@@ -516,9 +565,8 @@ class MocapBarsPlugin(HuskyPlugin):
             Signal("fit_rms", lambda: fit().rms_m if fit() else None, (), "m"),
             Signal("fit_max", lambda: fit().max_residual_m if fit() else None, (), "m"),
             Signal("fit_count", lambda: fit().n_matched if fit() else None),
-            Signal("planned_position", lambda: state.planned.position if state.planned else None, ("x", "y", "z"),
-                   "m"),
-            Signal("planned_orientation", lambda: state.planned.orientation if state.planned else None,
+            Signal("target_position", lambda: state.target.position if state.target else None, ("x", "y", "z"), "m"),
+            Signal("target_orientation", lambda: state.target.orientation if state.target else None,
                    ("qx", "qy", "qz", "qw")),
             Signal("deviation", lambda: (planned_deviation().across_mm / 1e3, planned_deviation().along_mm / 1e3)
                    if planned_deviation() else None, ("across", "along"), "m"),
@@ -585,6 +633,9 @@ class MocapBarsPlugin(HuskyPlugin):
         self._relay = getattr(ctx.world, "mocap_relay", None)
         cloud = self._cloud
         ids = selection.ids if selection is not None else None
+        if selection is not self._targets_of:
+            self._targets_of = selection
+            self._set_targets(selection)
         snapshot = ctx.scene.snapshot
         now = self._now = ctx.now()
         searches = []
@@ -604,8 +655,7 @@ class MocapBarsPlugin(HuskyPlugin):
                             partial_hint=fresh)
                 if state.fitted_cloud is not cloud:
                     searches.append(bar)
-            state.deviation = (pose_deviation(state.pose.matrix(), state.planned.matrix())
-                               if state.pose is not None and state.planned is not None else None)
+            state.deviation = _deviation(state)
         if searches:
             self._search_one(searches, cloud, now)
         self._place_bodies(ctx, now)
@@ -613,6 +663,22 @@ class MocapBarsPlugin(HuskyPlugin):
         if chosen is not None and self._log_live.value and now >= self._next_log_at and chosen.fit is not None:
             self._next_log_at = now + LOG_PERIOD
             self._log_report(ctx, self._bar_id, chosen)
+
+    def _set_targets(self, selection) -> None:
+        """Each bar's target at the selected movement's end, as the as-built record and the servo take it."""
+        shown, movement = getattr(selection, "action", None), getattr(selection, "movement", None)
+        action = selection.process.actions.get(shown.id) if shown is not None else None
+        index = next((k for k, each in enumerate(action.movements) if each.id == movement.id),
+                     None) if action is not None and movement is not None else None
+        for bar, state in self._bars.items():
+            if selection is None:
+                state.target = None
+                continue
+            T, _kind, held_by, grasp = reference_of(selection.process, action.id if action else None, index, bar,
+                                                    "end")
+            if T is None and action is not None and movement is not None:
+                T = mounted_target(action, shown, movement.id, held_by, grasp)
+            state.target = None if T is None else Pose.from_matrix(np.asarray(T, dtype=float))
 
     def _body_id(self, bar: str) -> str:
         """A bar's scene body: "mocap_bars/B20"."""
@@ -636,8 +702,7 @@ class MocapBarsPlugin(HuskyPlugin):
         state = self._bars[order[index]]
         self._refit(state, cloud, now, None, full_search=True)
         self._turn = (index + 1) % len(order)
-        state.deviation = (pose_deviation(state.pose.matrix(), state.planned.matrix())
-                           if state.pose is not None and state.planned is not None else None)
+        state.deviation = _deviation(state)
 
     def _refit(self, state: _Followed, cloud: MarkerCloud, now: float, hint: np.ndarray | None,
                full_search: bool, partial_hint: bool = False) -> bool:
@@ -682,7 +747,7 @@ class MocapBarsPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        self._status_chip.content = chip_line(self._cloud_chip(ctx.now()))
+        self._status_chip.content = chip_line(self._cloud_chip(ctx.now()) + self._plates_chip())
         self._status.content = block(values(*self._status_lines()))
         running = self._take is not None and not self._take.done()
         recording = chip("recording", BUSY, "A take is being recorded; it is saved to the Drive when its seconds are "
@@ -706,6 +771,49 @@ class MocapBarsPlugin(HuskyPlugin):
         if now - cloud.capture_time > age:
             return chip("markers stale", FAIL, f"the newest marker cloud is over {age:g} s old: is Motive streaming?")
         return chip("markers", OK, "the relay's raw markers arrive")
+
+    def _check_plates(self, ctx: PluginContext) -> None:
+        """Check plates: the chosen bar's current fit, fitted without each plate in turn (`plate_check`), kept."""
+        state = self._bars.get(self._bar_id)
+        if state is None or state.fit is None or not state.fit.ok or state.sensed is None:
+            self._message = "plates not checked: no fit of the chosen bar yet"
+            return
+        check = plate_check(plate_geometry(state.fit, state.sensed, state.layout))
+        self._plates = (self._bar_id, check, ctx.now(), time.strftime("%H:%M:%S"))
+        self._message = ""
+        found = "; ".join(f"{_plain(plate)}: {', '.join(texts)}" for plate, texts in check.problems.items())
+        ctx.log_info(f"plates of {short(self._bar_id)}: {check.level}, {check.checked} checked"
+                     + (f"; {found}" if found else ""))
+
+    def _checked(self) -> PlateCheck | None:
+        """The last Check plates result, while the bar it was for is the chosen one; else None."""
+        return self._plates[1] if self._plates is not None and self._plates[0] == self._bar_id else None
+
+    def _plates_chip(self) -> str:
+        """The chosen bar's last plate check (Check plates): grey before one, green, amber or red naming the plate."""
+        limits = (f"limits {PLATE_ALONG:g} mm along the bar, {PLATE_RADIAL:g} mm off its seat (plates between "
+                  f"others), against the other plates; twists never count")
+        check = self._checked()
+        if check is None:
+            return chip("plates not checked", NONE, f"Check plates checks the chosen bar's current fit; {limits}")
+        when = f"checked at {self._plates[3]}; Check plates again for the current fit; {limits}"
+        if check.level == PLATES_OK:
+            return chip("plates ok", OK, f"{check.checked} plates with both balls seen: none slid, none between others "
+                                         f"off its seat (an outer plate's seat is not judged: a bar's bow reads the "
+                                         f"same), {when}")
+        worst = _plain(check.worst)
+        detail = "; ".join(f"{_plain(plate)}: {', '.join(texts)}" for plate, texts in check.problems.items())
+        return chip(f"plate {worst} moved?", FAIL if check.level == PLATES_BAD else BUSY,
+                    f"{detail}; the fit trusts every plate; {when}")
+
+    def _geometry(self, state: _Followed) -> PlateGeometry | None:
+        """A bar's plate geometry from its last good fit, worked out once per fit; None without one."""
+        if state.fit is None or not state.fit.ok or state.sensed is None:
+            return None
+        if state.rows is None:
+            state.rows = (marker_rows(state.fit, state.sensed, state.layout),
+                          plate_geometry(state.fit, state.sensed, state.layout, left_out=False))
+        return state.rows[1]
 
     def _status_lines(self) -> list[str]:
         """The bars fitted, the chosen bar's markers and fit, its deviation: always 3 lines, "—" when missing."""
@@ -732,8 +840,8 @@ class MocapBarsPlugin(HuskyPlugin):
         lines.append(f"{short(bar_id)}: {len(sensed.points)} markers near; fit {fit.n_matched}/{fit.n_design}  rms "
                      f"{fit.rms_m * 1e3:.2f}  max {fit.max_residual_m * 1e3:.2f} mm")
         deviation = state.deviation
-        lines.append("no planned pose: is the bar in the selected step?" if deviation is None else
-                     f"vs planned  dpos {deviation.dpos_mm:.1f} mm  dang {deviation.dang_deg:.2f}°  "
+        lines.append("no target: the design holds no pose for it at the selected step" if deviation is None else
+                     f"vs design  dpos {deviation.dpos_mm:.1f} mm  dang {deviation.dang_deg:.2f}°  "
                      f"dx {deviation.dpos_bar_mm[0]:+.1f} dy {deviation.dpos_bar_mm[1]:+.1f} "
                      f"dz(along) {deviation.dpos_bar_mm[2]:+.1f} mm")
         return lines
@@ -748,7 +856,7 @@ class MocapBarsPlugin(HuskyPlugin):
         state = self._bars.get(self._bar_id)
         if state is None or state.fit is None or state.sensed is None:
             return ["no fit yet"]
-        fit, sensed, layout = state.fit, state.sensed, state.layout
+        fit, sensed = state.fit, state.sensed
         lines = [f"source {sensed.source}  age {sensed.age * 1e3:.0f} ms  fit {fit.n_matched}/{fit.n_design}  "
                  + (f"rms {fit.rms_m * 1e3:.2f}  max {(fit.max_residual_m or 0.0) * 1e3:.2f} mm  " if fit.rms_m
                     is not None else "")
@@ -756,9 +864,10 @@ class MocapBarsPlugin(HuskyPlugin):
                  f"{sensed.occluded}" + ("" if fit.ok else f"  FAILED: {fit.reason}")]
         if not fit.ok:
             return lines
-        if state.rows is None:
-            state.rows = (marker_rows(fit, sensed, layout), plate_geometry(fit, sensed, layout))
+        self._geometry(state)
         markers, geometry = state.rows
+        checked = self._checked()
+        moved = checked.problems if checked is not None else {}
         strays = 0
         for row in markers:
             if row.state == MATCHED:
@@ -775,13 +884,13 @@ class MocapBarsPlugin(HuskyPlugin):
                 continue
             bow = "" if plate.bend_mm is None else f"  bow {plate.bend_mm:.1f} mm"
             lines.append(f"{_plain(plate.plate):<18} pair {plate.length_mm:.1f} ({plate.length_err_mm:+.1f}) mm  "
-                         f"roll {plate.roll_err_deg:+.1f}°{bow}")
+                         f"roll {plate.roll_err_deg:+.1f}°{bow}" + ("  MOVED?" if plate.plate in moved else ""))
         for spacing in geometry.spacing:
             lines.append(f"{_plain(spacing.from_plate)} → {_plain(spacing.to_plate):<12} {spacing.mm:.1f} "
                          f"({spacing.err_mm:+.1f}) mm")
         deviation = state.deviation
-        lines.append("no planned pose: is the bar in the selected step?" if deviation is None else
-                     f"vs planned  dpos {deviation.dpos_mm:.1f} mm  dang {deviation.dang_deg:.2f}°  "
+        lines.append("no target: the design holds no pose for it at the selected step" if deviation is None else
+                     f"vs design  dpos {deviation.dpos_mm:.1f} mm  dang {deviation.dang_deg:.2f}°  "
                      f"dx {deviation.dpos_bar_mm[0]:+.1f} dy {deviation.dpos_bar_mm[1]:+.1f} "
                      f"dz(along) {deviation.dpos_bar_mm[2]:+.1f} mm")
         return lines
@@ -791,7 +900,7 @@ class MocapBarsPlugin(HuskyPlugin):
         state = self._bars.get(self._bar_id)
         sensed = state.sensed if state is not None and self._show_markers.value else None
         fit = state.fit if sensed is not None and state.fit is not None and state.fit.ok else None
-        planned = state.planned if state is not None else None
+        planned = state.target if state is not None else None
         # ? Identity, not id(): a freed sample's id can be reused by the next one.
         shown = (sensed, fit, planned, self._bar_id)
         if self._drawn is not None and all(a is b for a, b in zip(self._drawn, shown)):
@@ -840,7 +949,7 @@ class MocapBarsPlugin(HuskyPlugin):
             self._cloud_points.points = cloud.positions.astype(np.float32)
 
     def _draw_arrows(self, now: float) -> None:
-        """The chosen bar's (or every bar's) deviation arrows, for bars with a fresh fit and a planned pose.
+        """The chosen bar's (or every bar's) deviation arrows from its target, for bars with a fresh fit and a target.
 
         Redrawn when the mode or magnification changed at once, else at most every ARROW_PERIOD while a pose changed.
         """
@@ -849,9 +958,9 @@ class MocapBarsPlugin(HuskyPlugin):
         shown = []
         for bar in names:
             state = self._bars.get(bar)
-            if (state is not None and state.pose is not None and state.planned is not None
+            if (state is not None and state.pose is not None and state.target is not None
                     and now - state.measured_at <= self.max_marker_age):
-                shown.append((bar, state.pose, state.planned))
+                shown.append((bar, state.pose, state.target))
         key = (mode, magnify, tuple(shown))
         last = self._arrows_drawn
         if last is not None:
@@ -880,6 +989,13 @@ class MocapBarsPlugin(HuskyPlugin):
             label.text, label.position, label.visible = text, where, True
         for label in self._arrow_labels[len(arrows.labels):]:
             label.visible = False
+
+
+def _deviation(state: _Followed) -> PoseDeviation | None:
+    """A bar's fit against its target, or None without both."""
+    if state.pose is None or state.target is None:
+        return None
+    return pose_deviation(state.pose.matrix(), state.target.matrix())
 
 
 def _plain(name: str) -> str:
