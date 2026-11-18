@@ -2,8 +2,8 @@
 RRT-Connect over one arm's joints, or several arms' together, avoiding the robot, the other robots and the scene.
 
 Plans on one robot's mirror from a `MirrorPool`; a collision comes back as a `CollisionHit` (`collision_hit`). A path
-keeps PLAN_DISTANCE from everything, more than a commit's clearance; only a pair its start or target is already closer
-for keeps as much as it has there (`endpoint_margins`).
+keeps ARM_PLAN_MARGINS (`shared/planner/plan_margins.py`), more than a commit's clearance, clamped where its start or
+target is already closer.
 
 ! Worker thread only: sync, search and close on the worker.
 """
@@ -19,11 +19,12 @@ from typing import Callable, Sequence
 
 import numpy as np
 
-from ...world.clearance import PLAN_DISTANCE, SELF_DISTANCE
+from ...world.clearance import SELF_DISTANCE
 from ...world.collision_hit import CollisionHit
 from ...shared.assembly_planning.collision import collision_hit, collisions
 from ...shared.assembly_planning.joints import LIFT_JOINT, arm_joint_names, within_lift_range
 from ...shared.planner.timed_path import TimedPath
+from ...shared.planner.plan_margins import ARM_PLAN_MARGINS, PlanMargins, part_name
 from ...shared.planner.planner_search import PlanResult
 from ...shared.planner.rrt_connect import connect
 from ...robot_interface.arm import UR_JOINT_LIMITS, joint_path_move
@@ -51,8 +52,6 @@ BLEND_TRIES = 4
 #: The most a rounding curve turns between two of its points, radians: its points follow the curve closely enough
 #: for a second timing (Exec's `retime`) to glide along it.
 CURVE_TURN = math.radians(1.0)
-#: How finely `endpoint_margins` rounds down the margin of a pair closer than usual at the start or target, metres.
-MARGIN_RESOLUTION = 0.0005
 #: Said of a shoulder lift past its limits: no path turns it through pointing down (`within_lift_range`).
 LIFT_NOTE = (" (the upper arm would point down into the platform on the way; the same pose is a whole turn the other "
              "way)")
@@ -74,10 +73,8 @@ class ArmPath(TimedPath):
         velocities: Joint speeds at each sample, rad/s, shape (n, 6).
         rests: How often the arm comes to rest on the way, at corners left sharp.
         slowdown: How many times longer than its fastest timing it takes (`slowed`).
-        margin: How far it keeps from everything, metres, as checked when planned: PLAN_DISTANCE, or the smallest
-            margin in `close`; 0 is contact only.
-        close: The pairs it keeps less from, as (part, part, metres), closest first: those its start or target is
-            already that close to (`endpoint_margins`). Every other pair keeps PLAN_DISTANCE.
+        margins: What each pair keeps, as checked when planned (`PlanMargins.clamped_at`); None for a path not
+            planned here, checked for contact only. `margin` is the smallest.
         shape: Where it goes, untimed: the corners with their rounding curves, densely sampled (`round_corners`), in
             `joint_names` order; None for a path made from timed points only. `waypoints` gives it.
     """
@@ -86,9 +83,13 @@ class ArmPath(TimedPath):
     velocities: np.ndarray
     rests: int
     slowdown: float = 1.0
-    margin: float = 0.0
-    close: tuple[tuple[str, str, float], ...] = ()
+    margins: PlanMargins | None = None
     shape: np.ndarray | None = None
+
+    @property
+    def margin(self) -> float:
+        """float: The least it keeps from anything, metres (`PlanMargins.smallest`); 0 is contact only."""
+        return 0.0 if self.margins is None else self.margins.smallest
 
     @property
     def waypoints(self) -> np.ndarray:
@@ -256,8 +257,8 @@ def plan_arms(mirror: CompasFabMirror, scene: Scene, arm_names: Sequence[str], g
 
     One search over all their joints (twelve for Cindy's two arms), so each arm keeps clear of the other on the way.
 
-    The path keeps PLAN_DISTANCE from everything, the robot itself included; only a pair its start or target is
-    already closer for keeps as much as it has there (`endpoint_margins`, `ArmPath.close`).
+    The path keeps ARM_PLAN_MARGINS from everything, the robot itself included; a pair its start or target is
+    already closer for keeps as much as it has there (`PlanMargins.clamped_at`, `ArmPath.margins`).
     A path found is checked again every VERIFY_STEP (`fine_hit`) and searched for again until one holds those
     margins, within TIME_LIMIT. A failed search says what blocked it in `PlanResult.detail` (`search_note`).
 
@@ -289,9 +290,8 @@ def plan_arms(mirror: CompasFabMirror, scene: Scene, arm_names: Sequence[str], g
     hits = collisions(mirror)
     if hits:
         return refused(collision_hit(mirror, scene, "start", first=hits[0]))
-    close = endpoint_margins(mirror, names, start, goal)
-    check = mirror.search_check(names, PLAN_DISTANCE,
-                                pair_margins={frozenset(pair): kept for pair, kept in close.items()})
+    margins = ARM_PLAN_MARGINS.clamped_at(mirror, names, start, goal)
+    check = margins.search_check(mirror, names)
     pair = check(goal)
     if pair is not None:
         return refused(collision_hit(mirror, scene, "target", dict(zip(names, goal)), names, pair))
@@ -312,7 +312,6 @@ def plan_arms(mirror: CompasFabMirror, scene: Scene, arm_names: Sequence[str], g
         seen[None if pair is None else tuple(sorted(pair))] += 1
         return pair is not None
 
-    nearest = tuple(sorted(((*pair, kept) for pair, kept in close.items()), key=lambda item: item[2]))
     # * A path is kept only once checked finely (VERIFY_STEP); else the search runs again in the time left.
     deadline, straight, broken = started + TIME_LIMIT, True, None
     while True:
@@ -325,8 +324,7 @@ def plan_arms(mirror: CompasFabMirror, scene: Scene, arm_names: Sequence[str], g
                 f"{part_name(broken[1])} between the search's checks")
             detail = "" if reason == "cancelled" else search_note(seen, names, start, goal)
             return PlanResult(None, reason, time.time() - started, detail=detail)
-        path = replace(ArmPath.along(names, *round_corners(corners.states, collides)),
-                       margin=min([PLAN_DISTANCE, *close.values()]), close=nearest)
+        path = replace(ArmPath.along(names, *round_corners(corners.states, collides)), margins=margins)
         # * Both ways it is driven: through its waypoints (timed again by Exec) and through its 0.2 s samples (sent
         #   as they are from the panel), which cut across its curves.
         broken = fine_hit(path.waypoints, check) or fine_hit(path.points, check)
@@ -365,52 +363,3 @@ def fine_hit(points: Sequence[Sequence[float]], check: Callable[[tuple[float, ..
                 return pair
         previous = point
     return None
-
-
-def endpoint_margins(mirror: CompasFabMirror, names: Sequence[str], start: Sequence[float],
-                     goal: Sequence[float]) -> dict[tuple[str, str], float]:
-    """The pairs closer than PLAN_DISTANCE at a path's start or target, each with the margin it can keep.
-
-    A closer pair keeps a little less than its distance at the nearer end, rounded down to MARGIN_RESOLUTION; 0 when
-    it touches (contact only). The robot against itself counts as any other pair: the clearance stops at half the
-    smallest margin kept, below every margin planned.
-    """
-    check = mirror.search_check(names, PLAN_DISTANCE)
-    kept: dict[tuple[str, str], float] = {}
-    for values in (start, goal):
-        for pair, distance in check.distances(values).items():
-            # * Strictly below the distance, so that end itself stays clear (the check counts a point at its margin).
-            margin = max(0.0, math.floor((distance - 1e-6) / MARGIN_RESOLUTION) * MARGIN_RESOLUTION)
-            kept[pair] = min(kept.get(pair, margin), margin)
-    return kept
-
-
-def margin_note(margin: float, close: Sequence[tuple[str, str, float]] = ()) -> str:
-    """What a path's margin means for its commit: "keeps 1 cm", or which pair its start or target is closer for.
-
-    Args:
-        margin: `ArmPath.margin`.
-        close: `ArmPath.close`, closest first.
-    """
-    if margin >= PLAN_DISTANCE:
-        return f"keeps {PLAN_DISTANCE * 100:g} cm"
-    if not close:
-        return (f"keeps only {round(margin * 100, 2):g} cm: the start or target is that close" if margin > 0
-                else "only free of contact: the start or target touches")
-    first, second, kept = close[0]
-    more = f" (and {len(close) - 1} more pair{'s' if len(close) > 2 else ''})" if len(close) > 1 else ""
-    if kept > 0:
-        return (f"keeps only {round(kept * 100, 2):g} cm between {part_name(first)} and {part_name(second)}{more}: "
-                f"the start or target is that close; {PLAN_DISTANCE * 100:g} cm from everything else")
-    return (f"only free of contact between {part_name(first)} and {part_name(second)}{more}: the start or target "
-            f"touches; {PLAN_DISTANCE * 100:g} cm from everything else")
-
-
-def part_name(part_id: str) -> str:
-    """A part's id in plain words, e.g. "right_ur_arm_wrist_1_link", "the right_ur_arm tool", "joints/J25-26_mocap"."""
-    kind, _, rest = part_id.partition("/")
-    if kind == "tools":
-        return f"the {rest.split('/', 1)[-1]} tool"
-    if kind == "robots":
-        return rest.split("/", 1)[-1]
-    return rest if kind == "process" else part_id
