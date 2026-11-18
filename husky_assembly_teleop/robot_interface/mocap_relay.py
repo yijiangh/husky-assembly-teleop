@@ -12,18 +12,22 @@ import json
 from dataclasses import dataclass, field
 from typing import Callable
 
+from crl_husky_msgs.srv import GetStreamingMocapIds
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
-from scaffolding_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.geometry import Pose
 
 from .connections import RosConnections
+from .marker_cloud import CLOUD_TOPIC, read_cloud
 # * The FRAME_* states are imported from here by the monitor's side.
 from .mocap_definitions import (FRAME_ERROR, FRAME_HELD, FRAME_NONE, FRAME_REFIT_PENDING,  # noqa: F401
                                 FRAME_UNCHECKED, FRAME_UNTRUSTED, UNKNOWN, BodyDefinition, MocapAnchor, MocapCamera,
-                                read_anchors, read_cameras, read_definitions)
+                                ScaledPose, read_anchors, read_cameras, read_definitions)
+from .mocap_state import MarkerCloud
 
 #: The relay's latched announcement of the base calibrations it applies (JSON in a String), and its service reloading
 #: one robot's rigid body (by id).
@@ -44,6 +48,8 @@ FRAME_TOPIC, USE_REFIT_SERVICE = "/mocap_relay/frame", "/mocap_relay/use_refit"
 RELOAD_FLOOR_SERVICE = "/mocap_relay/reload_floor_calibration"
 #: How Motive's frame moved, every look (JSON in a String, not latched; `FrameFollower.metrics`).
 METRICS_TOPIC = "/mocap_relay/frame_metrics"
+#: The relay's service naming the rigid bodies that stream now; whoever serves it is a running relay.
+STREAMING_IDS_SERVICE = "/mocap/get_streaming_ids"
 
 
 @dataclass(frozen=True)
@@ -57,7 +63,7 @@ class FloorCalibrationState:
         pending: The deciding fit while the frame is not held (a refit pending, or untrusted), for people ("" if
             none): how far poses are off now.
         lab_from_raw: What the relay applies to every raw (Z-up) pose: the floor calibration's floor_from_raw and
-            the refit in use, ((x, y, z), (qx, qy, qz, qw)), or None for nothing.
+            the refit in use, ((x, y, z), (qx, qy, qz, qw)), or None for nothing; with `lab_scale` (`lab_transform`).
         error: Why the relay could not read the floor calibration at its last start or reload, or "".
         anchor_fit: How Motive's frame moved by the anchors since the floor calibration, for people ("" if none).
         camera_fit: The same by the truss cameras.
@@ -68,7 +74,8 @@ class FloorCalibrationState:
         decides: Which fit decides: "anchors", "truss cameras", or "" before one did.
         time: When the relay announced it, on the relay's clock, seconds; None from older relays.
         scale: The change of Motive's scale since the floor calibration while the relay reports one, for people ("" if
-            none): no refit can follow it.
+            none): Motive was recalibrated; a refit follows it.
+        lab_scale: How much longer `lab_from_raw` makes distances: the refit's scale, 1.0 without one.
     """
 
     status: str
@@ -86,12 +93,18 @@ class FloorCalibrationState:
     decides: str = ""
     time: float | None = None
     scale: str = ""
+    lab_scale: float = 1.0
+
+    @property
+    def lab_transform(self) -> ScaledPose | None:
+        """What the relay applies to every raw pose, its scale too; None for nothing."""
+        return ScaledPose(Pose(*self.lab_from_raw), self.lab_scale) if self.lab_from_raw is not None else None
 
     @property
     def poses_off(self) -> bool:
-        """Whether poses may be off the lab frame: unchecked, untrusted, refit pending, none read, newer, or scaled."""
+        """Whether poses may be off the lab frame: unchecked, untrusted, refit pending, none read, or newer."""
         return self.status in (FRAME_UNCHECKED, FRAME_REFIT_PENDING, FRAME_UNTRUSTED, FRAME_ERROR) or \
-            self.newer_moves_poses or bool(self.scale)
+            self.newer_moves_poses
 
 
 def floor_calibration_state(text: str) -> FloorCalibrationState:
@@ -116,7 +129,7 @@ def floor_calibration_state(text: str) -> FloorCalibrationState:
                                      str(entry.get("decides") or ""),
                                      float(entry["time"]) if entry.get("time") is not None else None,
                                      (entry.get("anchor_scale") or {}).get("describe", "")
-                                     if entry.get("scale_changed") else "")
+                                     if entry.get("scale_changed") else "", float(entry.get("lab_scale", 1.0)))
     except (KeyError, TypeError, AttributeError, json.JSONDecodeError) as error:
         raise ValueError(f"not the relay's floor calibration announcement: {error!r}") from None
 
@@ -167,14 +180,18 @@ class MocapRelayState:
             publishes poses in.
         markers_time: ROS time they last arrived, seconds, or None before.
         markers_stamp: When the relay took them, on its clock (as `FloorCalibrationState.time`), seconds, or None.
+        marker_cloud: Every marker the cameras saw in the newest frame the relay sent (`~/markers`), or None before one.
         frame: The floor calibration the relay applies, or None before it announced one.
-        fit_now: The deciding fit's raw_cal_from_raw_now from the relay's last look, ((x, y, z), (qx, qy, qz, qw)),
-            or None while it is not trusted (`lab_from_raw_now`).
+        fit_now: The deciding fit's motion from the relay's last look (`FrameFit.motion`), or None while it is not
+            trusted (`lab_from_raw_now`).
         refit_now: The refit in use in that look, the same way, or None.
         marker_noise: That look's unlabeled markers, raw (Motive's, Z-up), each with its noise: the RMS distance of its
             frames from its mean, mm, or None.
         metrics_time: ROS time that look last arrived, seconds, or None before.
+        drift: How far Motive's frame drifted by that look, or None before one.
         sources: Where each rigid body streams from now, by id: MOTIVE, FAKE_MOTIVE or TRUTH (`source`).
+        streaming_ids: The rigid bodies it last said stream now (`ask_streaming_ids`).
+        streaming_ids_time: ROS time it last said so, seconds, or None before.
     """
 
     calibrations: dict[int, AppliedCalibration] = field(default_factory=dict)
@@ -190,12 +207,16 @@ class MocapRelayState:
     unlabeled_markers: tuple[tuple[float, float, float], ...] = ()
     markers_time: float | None = None
     markers_stamp: float | None = None
+    marker_cloud: MarkerCloud | None = None
     frame: FloorCalibrationState | None = None
-    fit_now: tuple | None = None
-    refit_now: tuple | None = None
+    fit_now: ScaledPose | None = None
+    refit_now: ScaledPose | None = None
     marker_noise: tuple[tuple[tuple[float, float, float], float | None], ...] = ()
     metrics_time: float | None = None
+    drift: FrameDrift | None = None
     sources: dict[int, str] = field(default_factory=dict)
+    streaming_ids: frozenset[int] = frozenset()
+    streaming_ids_time: float | None = None
 
     def source(self, mocap_id: int) -> str:
         """Where a rigid body streams from now: MOTIVE, FAKE_MOTIVE or TRUTH; one not heard of counts as the mode's.
@@ -205,16 +226,15 @@ class MocapRelayState:
         return self.sources.get(mocap_id, FAKE_MOTIVE if self.simulated else MOTIVE)
 
     @property
-    def lab_from_raw_now(self) -> Pose | None:
+    def lab_from_raw_now(self) -> ScaledPose | None:
         """Where the relay's trusted fit puts the lab frame now: the frame it applies, its refit undone, the fit done.
 
         None without a floor calibration applied or a trusted fit.
         """
-        if self.frame is None or self.frame.lab_from_raw is None or self.fit_now is None:
+        if self.frame is None or self.frame.lab_transform is None or self.fit_now is None:
             return None
-        floor_from_raw = compose(Pose(*self.frame.lab_from_raw), invert(Pose(*self.refit_now)) if self.refit_now
-                                 else Pose())
-        return compose(floor_from_raw, Pose(*self.fit_now))
+        floor_from_raw = self.frame.lab_transform.then(self.refit_now.inverse() if self.refit_now else ScaledPose())
+        return floor_from_raw.then(self.fit_now)
 
 
 def applied_calibrations(text: str) -> dict[int, AppliedCalibration]:
@@ -239,6 +259,56 @@ def applied_calibrations(text: str) -> dict[int, AppliedCalibration]:
         raise ValueError(f"not the relay's calibration announcement: {error!r}") from None
 
 
+@dataclass(frozen=True)
+class FrameDrift:
+    """How far Motive's frame drifted, by the relay's last look (`~/frame_metrics`); metres, None while unknown.
+
+    Attributes:
+        status: The frame's state, one of the FRAME_* states.
+        decides: Which fit decides: "anchors", "truss cameras", or None.
+        off: How far the poses published now are off at most in the lab's volume: the deciding fit against the
+            transform in use.
+        off_limit: How far `off` may go before a refit is pending.
+        anchors_moved: How far Motive's frame moved since the floor calibration by the anchors, in the lab's volume.
+        cameras_moved: The same by the truss cameras.
+        apart: How far the two fits disagree, when both are trusted.
+        scale_mm_per_m: How much Motive's scale changed since the floor calibration, mm per metre.
+        scale_changed: Whether the relay reports that change.
+        anchors_used: Anchors in the anchors' fit.
+        anchors_residual: The anchors' fit residual.
+    """
+
+    status: str
+    decides: str | None = None
+    off: float | None = None
+    off_limit: float | None = None
+    anchors_moved: float | None = None
+    cameras_moved: float | None = None
+    apart: float | None = None
+    scale_mm_per_m: float | None = None
+    scale_changed: bool = False
+    anchors_used: int | None = None
+    anchors_residual: float | None = None
+
+
+def _mm_per_m(scale: float | None) -> float | None:
+    """A scale change as a share (-0.0015) in mm per metre (-1.5); from the share, so relays of any age give it."""
+    return None if scale is None else scale * 1e3
+
+
+def frame_drift(sample: dict) -> FrameDrift:
+    """The drift numbers of one `~/frame_metrics` sample (`world/mocap_frame.frame_metrics`)."""
+    anchors, cameras = sample.get("anchors") or {}, sample.get("truss_cameras") or {}
+    scale = sample.get("anchor_scale") or {}
+    return FrameDrift(
+        status=str(sample.get("status") or ""), decides=sample.get("decides"), off=sample.get("off"),
+        off_limit=sample.get("off_limit"), anchors_moved=anchors.get("moves_volume"),
+        cameras_moved=cameras.get("moves_volume"), apart=sample.get("apart"),
+        scale_mm_per_m=_mm_per_m(scale.get("scale")), scale_changed=bool(sample.get("scale_changed")),
+        anchors_used=len(anchors["used"]) if anchors.get("used") is not None else None,
+        anchors_residual=anchors.get("residual"))
+
+
 class MocapRelayInterface:
     """ROS2 interface to the mocap relay: its announcements in `state`, and requests to it."""
 
@@ -251,7 +321,7 @@ class MocapRelayInterface:
         """
         self._ros = RosConnections(node)
         self._now = now
-        self._use_refit_client = self._reload_floor_client = None
+        self._use_refit_client = self._reload_floor_client = self._streaming_ids_client = None
         self._reload_base_clients = {}
         self.state = MocapRelayState()
         self._connect()
@@ -267,6 +337,8 @@ class MocapRelayInterface:
         self._ros.subscription(String, ANCHORS_TOPIC, self._on_anchors, latched)
         self._ros.subscription(String, MARKERS_TOPIC, self._on_markers, latched)
         self._ros.subscription(String, METRICS_TOPIC, self._on_metrics)
+        # * Newest only: a fit needs the newest frame, never the ones a slow tick missed.
+        self._ros.subscription(PointCloud2, CLOUD_TOPIC, self._on_cloud, newest_only=True)
 
     def _on_calibrations(self, message: String) -> None:
         """Keep the relay's latest announcement."""
@@ -302,17 +374,25 @@ class MocapRelayInterface:
         self.state.unlabeled_markers, self.state.markers_stamp = markers, stamp
         self.state.markers_time = self._now()
 
+    def _on_cloud(self, message: PointCloud2) -> None:
+        """Keep the newest marker cloud; one that does not read is skipped."""
+        try:
+            self.state.marker_cloud = read_cloud(message, self._now())
+        except ValueError:
+            return
+
     def _on_metrics(self, message: String) -> None:
         """Keep the deciding fit, if trusted, the refit in use and the markers' noise from the relay's last look.
 
         A look that does not read is skipped.
         """
-        def pose(fit: dict | None) -> tuple | None:
-            """A fit's raw_cal_from_raw_now as ((x, y, z), (qx, qy, qz, qw)), or None for no fit."""
+        def pose(fit: dict | None) -> ScaledPose | None:
+            """A fit's motion (raw_cal_from_raw_now and its scale), or None for no fit."""
             if not fit:
                 return None
             position, orientation = fit["raw_cal_from_raw_now"]
-            return tuple(map(float, position)), tuple(map(float, orientation))
+            return ScaledPose(Pose(tuple(map(float, position)), tuple(map(float, orientation))),
+                              float(fit.get("scale", 1.0)))
 
         try:
             sample = json.loads(message.data)
@@ -324,6 +404,7 @@ class MocapRelayInterface:
             self.state.marker_noise = tuple(
                 (tuple(map(float, raw)), None if noise is None else float(noise))
                 for raw, noise in zip(markers.get("raw") or [], markers.get("noise_mm") or []))
+            self.state.drift = frame_drift(sample)
         except (KeyError, TypeError, ValueError, AttributeError):
             return
         self.state.metrics_time = self._now()
@@ -331,6 +412,30 @@ class MocapRelayInterface:
     def _on_frame(self, message: String) -> None:
         """Keep the relay's latest floor calibration announcement."""
         self.state.frame = floor_calibration_state(message.data)
+
+    def ask_streaming_ids(self) -> bool:
+        """Ask the relay which rigid bodies stream now; its answer lands in `state` a few ticks later.
+
+        Returns:
+            bool: Whether the request went out; False if the relay does not answer.
+        """
+        if self._streaming_ids_client is None:
+            self._streaming_ids_client = self._ros.client(GetStreamingMocapIds, STREAMING_IDS_SERVICE)
+        if not self._streaming_ids_client.service_is_ready():
+            return False
+        self._streaming_ids_client.call_async(GetStreamingMocapIds.Request()).add_done_callback(self._on_streaming_ids)
+        return True
+
+    def _on_streaming_ids(self, future) -> None:
+        """Keep the rigid bodies the relay says stream now; an answer that failed is skipped."""
+        try:
+            response = future.result()
+        except Exception:  # pylint: disable=broad-except
+            return  # the next request asks again
+        if response is None:
+            return
+        self.state.streaming_ids = frozenset(int(mocap_id) for mocap_id in response.ids)
+        self.state.streaming_ids_time = self._now()
 
     def use_refit(self):
         """Ask the relay to use the pending refit of the floor calibration: every pose it publishes moves by it.

@@ -16,6 +16,10 @@ TURN_SLACK = 1e-9
 LIMIT_TOLERANCE = 1e-6
 #: Whole turns tried either side of the nearest equivalent value.
 _TURNS = (0, -1, 1, -2, 2)
+#: The shoulder lift, and the values it reaches without the upper arm pointing down into the platform (+90°, the same
+#: as -270°), radians: an upright arm never turns its lift through either end.
+LIFT_JOINT = "shoulder_lift_joint"
+LIFT_RANGE = (-1.5 * np.pi, 0.5 * np.pi)
 
 
 def arm_joint_names(arm: str) -> list[str]:
@@ -91,6 +95,23 @@ def joint_limits(urdf: Path, names: Sequence[str]) -> tuple[np.ndarray, np.ndarr
         lower.append(-np.inf if free or joint.limit.lower is None else joint.limit.lower)
         upper.append(np.inf if free or joint.limit.upper is None else joint.limit.upper)
     return np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+
+
+def turn_limits(urdf: Path, names: Sequence[str]) -> tuple[np.ndarray, np.ndarray]:
+    """`joint_limits` for `unwrap_to_nearest`, each shoulder lift also within LIFT_RANGE (`within_lift_range`)."""
+    return within_lift_range(names, *joint_limits(urdf, names))
+
+
+def within_lift_range(names: Sequence[str], lower: np.ndarray, upper: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Limits narrowed so each shoulder lift stays within LIFT_RANGE; changed in place and returned.
+
+    The mount splits the lift's turn: no path crosses pointing down, so a lift beyond it is out of reach, though a
+    whole turn of it is the same pose.
+    """
+    for index, name in enumerate(names):
+        if name.endswith(LIFT_JOINT):
+            lower[index], upper[index] = max(lower[index], LIFT_RANGE[0]), min(upper[index], LIFT_RANGE[1])
+    return lower, upper
 
 
 def outside_limits(labelled: Sequence[tuple[str, Sequence[float]]], names: Sequence[str], lower: Sequence[float],

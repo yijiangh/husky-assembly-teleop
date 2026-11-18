@@ -48,7 +48,7 @@ _ROBOT_URDF_FOLDER = tempfile.TemporaryDirectory(prefix="husky_robot_urdf_")
 ROBOT_URDF_DIRECTORY = Path(_ROBOT_URDF_FOLDER.name)
 
 #: Plugins loaded before the requested ones; `no_default_plugins:=true` skips them.
-DEFAULT_PLUGINS: tuple[str, ...] = ("health", "console")
+DEFAULT_PLUGINS: tuple[str, ...] = ("health", "console", "assembly_observer", "stop_recovery")
 
 
 @dataclass(frozen=True)
@@ -521,6 +521,12 @@ def _serial_digits(token: str) -> str | None:
         return serial
     digits = re.search(r"(\d{4})\s*$", name)
     return None if digits is None else digits.group(1)
+
+
+def robot_name(serial: str) -> str:
+    """The robot's name ("Alice"), for people, from a serial written any way `robots` accepts; else the serial."""
+    digits = _serial_digits(serial)
+    return next((name.capitalize() for name, number in _robot_names().items() if number == digits), serial)
 
 
 def short_serial(serial: str) -> str:

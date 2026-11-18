@@ -72,6 +72,15 @@ class RunError(ValueError):
 SPLIT_RANGE = (0.0, 30.0)
 SPIRAL_SECONDS_RANGE = (1.0, 60.0)
 SPIRAL_TURNS_RANGE = (1, 10)
+#: The insert's push, newtons, and its compliance stiffness, N/m (within the arm's `STIFFNESS_LIMITS`).
+PUSH_RANGE = (0.0, 15.0)
+STIFFNESS_RANGE = (200.0, 5000.0)
+#: The Robotiq grasp's controllers: the arm compliant around where it stands, or held stiff by the joint controller.
+GRASP_COMPLIANCE, GRASP_JOINT = "compliance", "joint"
+GRASP_CONTROLLERS = (GRASP_COMPLIANCE, GRASP_JOINT)
+#: A hold's grasp offset: slide along the bar, mm, and roll about it, degrees (`RunSettings.grasp_offsets`).
+GRASP_SLIDE_RANGE = (-150.0, 150.0)
+GRASP_ROLL_RANGE = (-180.0, 180.0)
 #: The free searches' ranges (`route_search.FreeSearch`): seconds and iterations per try, the joint step of the
 #: checks (rad), tries.
 PLAN_TIME_RANGE = (5.0, 600.0)
@@ -100,6 +109,16 @@ class RunSettings:
             export's distance; off: along the export's axis.
         spiral_seconds: How long the spiral takes to reach its full radius, seconds (SPIRAL_SECONDS_RANGE).
         spiral_turns: How many turns it makes on the way (SPIRAL_TURNS_RANGE).
+        insert_cancel_weight: The insert's compliant part takes the held bar's weight, measured at the insert's start
+            before anything moves, off the arms.
+        insert_push_n: The push of each mating arm along its insert line, newtons (PUSH_RANGE); off once its screw is
+            tight.
+        insert_stiffness_across: The insert's compliance stiffness across the tool (tool0 x and y), N/m
+            (STIFFNESS_RANGE).
+        insert_stiffness_along: Its stiffness along the tool (tool0 z, the insert's direction), N/m.
+        grasp_controller: The arm's controller while a Robotiq closes on a bar another robot holds (GRASP_CONTROLLERS):
+            compliant, it gives way to the bar; joint, it holds where it stands, so the close pulls the bar to it.
+        grasp_stiffness: The compliant grasp's stiffness along tool0 x, y and z, N/m (STIFFNESS_RANGE).
         plan_max_time: Seconds per try of tamp's free search (PLAN_TIME_RANGE); `FreeSearch`'s defaults, the five.
         plan_max_iterations: Iterations per try of it (PLAN_ITERATIONS_RANGE).
         plan_joint_resolution: The joint step of its collision checks, radians (PLAN_RESOLUTION_RANGE).
@@ -109,6 +128,10 @@ class RunSettings:
             precomputed for the process and the bar.
         plan_roadmap_root: The folder holding the `prm/<process folder name>__<bar>/` roadmaps for "prm"; empty:
             `<drive_root>/data_experiment/cdfm_planner_benchmark`.
+        grasp_offsets: Each hold's support grasp moved along and about its bar, ((hold action, slide mm, roll
+            degrees), ...), for holds not as authored (`ProcessContract.grasp_offsets`).
+        placement: Where the build stands, [x, y, z, qx, qy, qz, qw]: the process's authored world frame in the world
+            (`ProcessContract.placement`); the identity: as authored. Fixed once an action is marked done.
     """
 
     insert_split_mm: float = 5.0
@@ -118,6 +141,12 @@ class RunSettings:
     retreat_live_axis: bool = True
     spiral_seconds: float = 20.0
     spiral_turns: int = 4
+    insert_cancel_weight: bool = True
+    insert_push_n: float = 4.0
+    insert_stiffness_across: float = 1000.0
+    insert_stiffness_along: float = 500.0
+    grasp_controller: str = GRASP_COMPLIANCE
+    grasp_stiffness: float = 500.0
     plan_max_time: float = 120.0
     plan_max_iterations: int = 50
     plan_joint_resolution: float = 0.1
@@ -125,6 +154,24 @@ class RunSettings:
     plan_swept_check: bool = True
     plan_cdfm_planner: str = "birrt"
     plan_roadmap_root: str = ""
+    placement: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+    grasp_offsets: tuple = ()
+
+    def __post_init__(self):
+        """Hold the placement and grasp offsets as tuples, as run.json's lists read."""
+        object.__setattr__(self, "placement", tuple(float(value) for value in self.placement))
+        object.__setattr__(self, "grasp_offsets", tuple((str(hold), float(slide), float(roll))
+                                                        for hold, slide, roll in self.grasp_offsets))
+
+    @property
+    def grasp_offset_map(self) -> dict[str, tuple[float, float]]:
+        """dict: `grasp_offsets` as hold action -> (slide mm, roll degrees)."""
+        return {hold: (slide, roll) for hold, slide, roll in self.grasp_offsets}
+
+    @property
+    def placement_pose(self) -> Pose:
+        """Pose: `placement` as a pose."""
+        return Pose.from_arrays(self.placement[:3], self.placement[3:])
 
 
 @dataclass(frozen=True)

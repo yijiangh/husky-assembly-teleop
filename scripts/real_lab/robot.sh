@@ -1,6 +1,6 @@
 #!/bin/bash
 # Real lab: log in to a robot and run its arms, tools and base follower there (crl-husky's
-# crl_arms_and_base.launch.py) until Ctrl-C; then this terminal is back on the laptop, and Up, Enter starts it again.
+# crl_arms_and_base.launch.py) until Ctrl-C; then this terminal is back on this PC, and Up, Enter starts it again.
 # A robot that is not on Zenoh in domain 80, not the robot named, or already running a crl_husky launch gets a shell on
 # it instead of the launch.
 #
@@ -54,7 +54,7 @@ echo "real lab: \${launch[*]}"
 exec "\${launch[@]}"
 EOF
 )
-echo "real lab: $name, administrator@$ROBOT_IP (asks for her password unless this laptop's key is on her, manual 1.e)"
+echo "real lab: $name, administrator@$ROBOT_IP (asks for her password unless this PC's key is on her, manual 1.e)"
 # * -t: Ctrl-C here reaches the launch. The keepalives give up only after 5 min of silence, so a short WiFi drop
 #   does not end the session (and with it the launch).
 ssh -t -o ServerAliveInterval=10 -o ServerAliveCountMax=30 "administrator@$ROBOT_IP" "bash -ic $(printf %q "$remote")" \

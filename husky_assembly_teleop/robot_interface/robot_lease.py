@@ -98,18 +98,15 @@ class LeaseSlot:
             return None
         return f"robot {short_serial(self.serial)} is leased by {lease.holder}"
 
-    def check(self, command: str) -> None:
+    def check(self) -> None:
         """Raise NotLeased unless the running code holds this robot's lease.
 
-        Args:
-            command: What would be sent, for the message, e.g. "a joint trajectory to left".
-
         Raises:
-            NotLeased: Nothing may be sent.
+            NotLeased: Nothing may be sent. Its message says only why (`problem`).
         """
         problem = self.problem()
         if problem is not None:
-            raise NotLeased(f"{problem}, {command} not sent")
+            raise NotLeased(problem)
 
 
 def take_lease(guards: Iterable[LeaseSlot], holder: str, owner: str = "") -> Lease:

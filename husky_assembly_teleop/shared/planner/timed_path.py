@@ -20,6 +20,11 @@ class TimedPath:
     points: np.ndarray
 
     @property
+    def waypoints(self) -> np.ndarray:
+        """np.ndarray: Where the path goes, untimed: the rows to time again (`retime`). Here the points themselves."""
+        return self.points
+
+    @property
     def duration(self) -> float:
         """float: Seconds from start to end."""
         return float(self.times[-1])

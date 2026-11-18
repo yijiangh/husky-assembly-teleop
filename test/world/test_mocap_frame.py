@@ -16,7 +16,7 @@ from repo_paths import DATA
 from husky_assembly_teleop.robot_interface.mocap_definitions import MocapAnchor, MocapCamera, cameras_json, read_cameras
 from husky_assembly_teleop.world.calibration_sessions import sessions_folder
 from husky_assembly_teleop.world.lab import DEFAULT_LAB, lab_file, read_lab
-from husky_assembly_teleop.world.mocap_frame import (CAMERA_NAMES, FLOOR_SUFFIX, SCALE_CHANGED, VOLUME,
+from husky_assembly_teleop.world.mocap_frame import (CAMERA_NAMES, FLOOR_SUFFIX, SCALE_CHANGED, SCALE_MAX, VOLUME,
                                                      camera_label, camera_serial, find_anchors, fit_anchors,
                                                      fit_cameras, fit_scale, follow_anchors, frame_and_cameras,
                                                      frame_moved, match_anchors, newest_floor_calibration,
@@ -283,7 +283,7 @@ def test_three_anchors_among_strays_are_not_matched_and_three_found_place_the_ot
 
 
 def test_motives_scale_change_is_the_median_of_the_long_pairs_and_a_moved_anchor_sways_it_little():
-    """Turned 2°, shifted and 1500 ppm shorter, A2 3 mm moved on its own: -1500 ppm within 100 ppm."""
+    """Turned 2°, shifted and 1.5 mm/m shorter, A2 3 mm moved on its own: -1.5 mm/m within 0.1 mm/m."""
     motion = Rotation.from_euler("z", 2.0, degrees=True)
     now = {name: MocapAnchor(name, tuple(0.9985 * motion.apply(anchor.position) + (0.1, 0.0, 0.0)))
            for name, anchor in ANCHORS.items()}
@@ -291,7 +291,7 @@ def test_motives_scale_change_is_the_median_of_the_long_pairs_and_a_moved_anchor
     now["A2"] = MocapAnchor("A2", tuple(np.add(now["A2"].position, (0.003, 0.0, 0.0))))
     fit = fit_scale(ANCHORS, now)
     assert fit.scale == pytest.approx(-0.0015, abs=1e-4) and fit.pairs == 10
-    assert fit.describe().startswith(f"distances {fit.scale * 1e6:+.0f} ppm (7.") and "10 pairs of 5 anchors" in \
+    assert fit.describe().startswith(f"distances {fit.scale * 1e3:+.2f} mm/m (7.") and "10 pairs of 5 anchors" in \
         fit.describe()
     assert fit_scale(ANCHORS, {name: now[name] for name in ("A1", "A3", "A4")}) is None
 
@@ -317,16 +317,45 @@ def test_a_moved_frame_is_recovered_from_the_anchors_and_a_moved_anchor_left_out
     np.testing.assert_allclose(back(fit, now["A5"].position), ANCHORS["A5"].position, atol=1e-6)
 
 
-def test_warping_shows_in_the_largest_residual():
-    """Motive sees the truss 0.1 % bigger: no rigid fit takes that out, so the residual shows it."""
+def test_a_scale_change_is_taken_out_by_the_fits_scale_and_warping_shows_in_the_largest_residual():
+    """The truss 0.1 % bigger: the fit's scale takes it out; one half 0.03 % bigger: the residual shows it."""
     centre = np.mean([camera.position for camera in LAB.values()], axis=0)
     grown = {name: MocapCamera(name, tuple(centre + 1.001 * (np.asarray(camera.position) - centre)),
                                camera.orientation) for name, camera in LAB.items()}
-    assert fit_cameras(LAB, grown).residual > 2e-3 and fit_cameras(LAB, LAB).residual < 1e-9
+    fit = fit_cameras(LAB, grown)
+    assert fit.residual < 1e-9 and fit.scale == pytest.approx(1.0 / 1.001) and fit_cameras(LAB, LAB).residual < 1e-9
+    warped = {name: MocapCamera(name, tuple(centre + (1.0003 if camera.position[0] > centre[0] else 1.0)
+                                            * (np.asarray(camera.position) - centre)), camera.orientation)
+              for name, camera in LAB.items()}
+    assert fit_cameras(LAB, warped).residual > 0.5e-3
+
+
+@pytest.mark.parametrize("change", [-0.62e-3, 1.55e-3])
+def test_a_recalibrations_scale_change_gives_a_trusted_anchor_fit_that_takes_poses_back(change):
+    """10 Nov: Motive 0.62 mm/m shorter (3 Nov: 1.55 longer), turned, shifted: trusted, taken back, Motive's sign.
+
+    All anchors used, the change reported as Motive's, and a far point back where the floor calibration had it.
+    """
+    motion = Rotation.from_euler("z", 0.02, degrees=True)
+    now = {name: MocapAnchor(name, tuple((1.0 + change) * motion.apply(anchor.position) + (0.002, 0.0, 0.0)))
+           for name, anchor in ANCHORS.items()}
+    fit = fit_anchors(ANCHORS, now)
+    assert fit.trusted and not fit.bumped and fit.scale_change == pytest.approx(change, abs=1e-9)
+    assert f"scaled {change * 1e3:+.2f} mm/m" in fit.describe()
+    far = (4.0, -4.0, 1.0)
+    np.testing.assert_allclose(fit.motion.apply((1.0 + change) * motion.apply(far) + (0.002, 0.0, 0.0)), far, atol=1e-9)
+
+
+def test_a_scale_change_beyond_scale_max_is_not_trusted():
+    """Distances 4 mm/m longer, as no recalibration was seen to make: a wrong match or points moved together."""
+    now = {name: MocapAnchor(name, tuple((1.0 + SCALE_MAX + 1e-3) * np.asarray(anchor.position)))
+           for name, anchor in ANCHORS.items()}
+    fit = fit_anchors(ANCHORS, now)
+    assert fit.consistent and not fit.trusted and "over 3 mm/m" in fit.describe()
 
 
 def test_the_labs_anchors_recorded_to_about_a_millimetre_all_stay_in_the_fit():
-    """27 Oct: the six anchors read again were 0.2 to 1.2 mm off their record: all used, held, ± 2 mm at a corner."""
+    """27 Oct: the six anchors read again were 0.2 to 1.2 mm off their record: all used, held, ± 1 mm at a corner."""
     recorded = {"A1": (-0.3413, 2.0523, 1.1459), "A2": (-0.3803, 2.6154, 1.1851), "A3": (2.0987, 2.6008, 1.1644),
                 "A4": (3.4381, -1.6487, 0.012), "A5": (3.5079, -1.9801, 0.0127), "A6": (2.1075, 2.011, 1.1486)}
     off_mm = {"A1": (0.49, 0.27, -0.24), "A2": (0.18, -0.13, -0.01), "A3": (-0.58, -1.01, 0.06),
@@ -336,7 +365,7 @@ def test_the_labs_anchors_recorded_to_about_a_millimetre_all_stay_in_the_fit():
            for name, position in recorded.items()}
     fit = fit_anchors(then, now)
     assert len(fit.used) == 6 and not fit.bumped and not frame_moved(fit)
-    assert volume_moved(fit.raw_cal_from_raw_now) < 0.002 and fit.uncertainty == pytest.approx(0.0012, abs=3e-4)
+    assert volume_moved(fit.motion) < 0.002 and fit.uncertainty == pytest.approx(0.0008, abs=2e-4)
 
 
 #: The lab's six anchors, 27 Oct, lab frame.

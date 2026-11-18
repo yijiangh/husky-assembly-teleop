@@ -15,7 +15,7 @@ source "$here/../lab_common.sh"
 # shellcheck disable=SC2016  # expanded by the clean shell
 lab_exec_clean REAL_LAB_ "$here" '
     if ! real_lab_router_up; then
-        echo "real lab: no Zenoh router on this laptop (127.0.0.1:7447): install it once (manual 1.c)" >&2
+        echo "real lab: no Zenoh router on this PC (127.0.0.1:7447): install it once (manual 1.c)" >&2
         exit 1
     fi
     mkdir -p "$REAL_LAB_HOME" && cd "$REAL_LAB_HOME"  # out of any checkout

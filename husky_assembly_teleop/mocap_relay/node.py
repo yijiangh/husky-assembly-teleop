@@ -26,10 +26,14 @@ its base calibration (`world/calibration_sessions.py`).
   `definitions_period_sec` and published when they change; each change is logged. With `sim` a fake Motive's
   announcements (SIM_DEFINITIONS_TOPIC, SIM_CAMERAS_TOPIC) instead.
 - Layers: every pose, marker and camera of Motive (or a fake Motive) is turned Z-up ("raw"), then put in the lab frame
-  by `lab_from_raw`: the newest floor calibration's floor_from_raw and the refit in use (`world/mocap_frame.py`); a
-  robot's base calibration goes on top.
+  by `lab_from_raw`: the newest floor calibration's floor_from_raw and the refit in use, its scale too
+  (`world/mocap_frame.py`); a robot's base calibration goes on top.
 - `~/unlabeled_markers`, `~/anchors` (latched, every `definitions_period_sec`): Motive's unlabeled markers, each
   averaged since the last look, and among them the floor calibration's anchors, found where it saw them.
+- `~/markers` (`markers_rate_hz`, the newest frame once): every marker the cameras saw in it, of any asset or none, in
+  the lab frame (`robot_interface/marker_cloud.py`); Motive's fill-ins left out. Bars are fitted to it, never to
+  their assets: Motive mixes up bars that look alike. Unlabeled ones need "Unlabeled Markers" on in Motive's
+  streaming settings.
 - Following Motive's frame (`world/frame_follower.py`, which also decides what is logged): every look fits the anchors
   and the truss cameras against the floor calibration's; `~/frame` announces the state, and only `~/use_refit` takes a
   pending refit into lab_from_raw, in memory only. `~/frame_metrics` carries both fits every look, with the look's
@@ -63,21 +67,22 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from scipy.spatial.transform import Rotation
 from std_msgs.msg import String
 from rcl_interfaces.msg import SetParametersResult
+from sensor_msgs.msg import PointCloud2
 from std_srvs.srv import Trigger
 
 from crl_husky import config_resolver
 from crl_husky.sim.husky_sim import TRUTH_PREFIX
 from crl_husky.simulated_parts import fleet_domain_problem
-from scaffolding_assembly_core.geometry import Pose, invert
+from scaffolding_assembly_core.geometry import Pose
 from ..drive import drive_root
+from ..robot_interface.marker_cloud import cloud_message
 from ..robot_interface.mocap_definitions import (MATCHES, OUT_OF_DATE, UNKNOWN, BodyDefinition, MocapAnchor,
                                                  MocapCamera, anchors_json, camera_changes, cameras_json,
                                                  definition_check, definitions_json, match, read_cameras,
                                                  read_definitions)
-from ..robot_interface.mocap_relay import FAKE_MOTIVE, MOTIVE, TRUTH
+from ..robot_interface.mocap_relay import FAKE_MOTIVE, MOTIVE, STREAMING_IDS_SERVICE, TRUTH
 from ..world.calibration_sessions import (DESCRIBE_HEADER, Calibration, default_calibration_or_none, explain,
                                           newest_session_file, resolve, robot_mocap_ids, sessions_folder)
 from ..world.frame_follower import FrameEvent, FrameFollower
@@ -87,8 +92,6 @@ from .body_definitions import DescriptionClient, Reply
 from .frame_log import DEFAULT_FOLDER, FrameLog, frame_log_folder
 from .log_text import box, good, wrap
 
-#: The relay's service; whoever serves it is a running relay.
-STREAMING_IDS_SERVICE = "/mocap/get_streaming_ids"
 #: Seconds to look for another relay on the network before starting.
 #: ? The ROS graph fills in shortly after a node starts, so an immediate look can miss it.
 RELAY_DISCOVERY_SEC = 2.0
@@ -112,9 +115,11 @@ MAX_PLAUSIBLE_LATENCY_SEC = 0.5
 LAB_FRAME, RAW_FRAME = "lab", "mocap_raw"
 #: The relay's announcements: the last one reaches every subscriber, also one that comes later.
 LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-#: NatNet labeled marker flags: hidden from the cameras, position measured by the cameras, and on no asset.
+#: NatNet labeled marker flags: hidden from the cameras, position measured by the cameras, placed by its asset's model,
+#: and on no asset.
 MARKER_OCCLUDED = 0x01
 MARKER_POINT_CLOUD_SOLVED = 0x02
+MARKER_MODEL_SOLVED = 0x04
 MARKER_UNLABELED = 0x10
 
 Vec3 = Tuple[float, float, float]
@@ -245,6 +250,8 @@ class MocapRelay(Node):
         self.declare_parameter("client_ip", "192.168.0.7")
         self.declare_parameter("server_ip", "192.168.0.117")
         self.declare_parameter("publish_rate_hz", 50.0)
+        # * How often the newest frame's marker cloud goes out (`~/markers`); 0 never.
+        self.declare_parameter("markers_rate_hz", 20.0)
         self.declare_parameter("topic_prefix", "/mocap/rigid_body")
         self.declare_parameter("streaming_stale_timeout_sec", 1.0)
         self.declare_parameter("marker_error_valid_threshold", 1.0)
@@ -319,6 +326,11 @@ class MocapRelay(Node):
         # * Its own group: a look can take half a second, longer than a robot may go without a pose.
         self._publish_timer = self.create_timer(1.0 / self.publish_rate_hz, self._publish_cached_poses,
                                                 callback_group=MutuallyExclusiveCallbackGroup())
+        markers_rate = float(self.get_parameter("markers_rate_hz").value)
+        if markers_rate > 0:
+            # * Its own group too: the cloud never holds a pose back.
+            self._cloud_timer = self.create_timer(1.0 / markers_rate, self._publish_cloud,
+                                                  callback_group=MutuallyExclusiveCallbackGroup())
         if self.simulated:
             inputs = ", ".join(f"{prefix}/id_<n>/pose" for prefix in SIM_SOURCES)
             self.get_logger().info(wrap(f"sim:=true: reading only simulated inputs ({inputs}) as they appear, never "
@@ -418,12 +430,22 @@ class MocapRelay(Node):
         # The frame follower: the floor calibration applied, its fits, its state.
         self._frame = FrameFollower(truss_serials, f"Use refit in the mocap probe, or:\n  ros2 service call "
                                                    f"{self.get_fully_qualified_name()}/use_refit std_srvs/srv/Trigger")
-        # ! Read by the NatNet thread: replaced whole. lab_from_raw as (rotation matrix, shift, quaternion), or None.
+        # ! Read by the NatNet thread: replaced whole. lab_from_raw as (rotation matrix times its scale, shift,
+        # ! quaternion), or None.
         self._lab_from_raw: Optional[Tuple[np.ndarray, np.ndarray, QuatXyzw]] = None
         # Motive's unlabeled markers since the last look, summed by Motive's id as [x, y, z, frames, x² + y² + z²]
         # (raw; the NatNet thread adds under its lock).
         self._loose_sums: Dict[int, List[float]] = {}
         self._loose_lock = threading.Lock()
+        # Every visible marker of the frame being received and the frame_id it is in, then of the newest complete
+        # frame with its capture time in ns, replaced whole under `_samples_lock`; and the one last published, so each
+        # goes out once.
+        # ! `_pending_cloud` is written and taken on NatNet's thread only, in frame order, as `_pending_samples`.
+        self._pending_cloud: Optional[Tuple[Tuple[np.ndarray, ...], str]] = None
+        self._cloud: Optional[Tuple[Tuple[Tuple[np.ndarray, ...], str], int]] = None
+        self._published_cloud: Optional[tuple] = None
+        self._logged_cloud = False
+        self._cloud_publisher = self.create_publisher(PointCloud2, "~/markers", 10)
         # Where each look's metrics sample is kept (executor only), or None.
         self._frame_log: Optional[FrameLog] = None
 
@@ -671,17 +693,22 @@ class MocapRelay(Node):
         different calibrations. The ROS graph is per domain, so relays in other domains do not count.
         ? Two relays started within RELAY_DISCOVERY_SEC of each other can miss each other.
 
+        ! Asks for a server: clients of the service (monitors) list its name too.
+
         Raises:
             RuntimeError: If another relay serves STREAMING_IDS_SERVICE.
         """
-        deadline = time.monotonic() + RELAY_DISCOVERY_SEC
-        while time.monotonic() < deadline:
-            names = {name for name, _types in self.get_service_names_and_types()}
-            if STREAMING_IDS_SERVICE in names:
-                raise RuntimeError(
-                    "Another mocap relay is already running in this ROS domain "
-                    f"({STREAMING_IDS_SERVICE} is served). Not starting a second one; use the running relay.")
-            time.sleep(0.1)
+        probe = self.create_client(GetStreamingMocapIds, STREAMING_IDS_SERVICE)
+        try:
+            deadline = time.monotonic() + RELAY_DISCOVERY_SEC
+            while time.monotonic() < deadline:
+                if probe.service_is_ready():
+                    raise RuntimeError(
+                        "Another mocap relay is already running in this ROS domain "
+                        f"({STREAMING_IDS_SERVICE} is served). Not starting a second one; use the running relay.")
+                time.sleep(0.1)
+        finally:
+            self.destroy_client(probe)
 
     def _start_mocap_client(self) -> None:
         """Start the NatNet client and wait briefly for connection."""
@@ -726,10 +753,13 @@ class MocapRelay(Node):
     def _commit_frame(self, capture_time_ns: int, now_mono: float) -> None:
         """Make the held bodies the latest samples, stamped with their frame's capture time."""
         pending, self._pending_samples = self._pending_samples, {}
+        cloud, self._pending_cloud = self._pending_cloud, None
         with self._samples_lock:
             for rb_id, sample in pending.items():
                 self._samples[rb_id] = dataclasses.replace(
                     sample, capture_time_ns=capture_time_ns, received_mono_sec=now_mono)
+            if cloud is not None:
+                self._cloud = (cloud, capture_time_ns)
 
     def _capture_time_ns(self, data_dict) -> int:
         """Mid-exposure time of a frame on this PC's wall clock, in ns.
@@ -868,6 +898,7 @@ class MocapRelay(Node):
         ! Take unlabeled markers by their flag too, keyed by the whole id: once Motive's unlabeled ids pass 65535 they
         spill into the model id half of NatNet's id.
         """
+        self._pending_cloud = self._seen_markers(labeled_marker_from_model_id)
         with self._loose_lock:
             for model_id, markers in labeled_marker_from_model_id.items():
                 for marker_id, marker in markers.items():
@@ -892,6 +923,42 @@ class MocapRelay(Node):
                        and not marker["param"] & MARKER_OCCLUDED)
                 for member_id, marker in sorted(markers.items()) if not marker["param"] & MARKER_UNLABELED)
             self._pending_samples[int(rigid_body_id)] = dataclasses.replace(sample, markers=converted)
+
+    def _seen_markers(self, labeled_marker_from_model_id) -> Tuple[Tuple[np.ndarray, ...], str]:
+        """The frame's markers the cameras saw, in the lab frame: ((positions, sizes, residuals, NatNet ids), frame_id).
+
+        Occluded markers and those only an asset's model placed are left out: they are Motive's guesses.
+        """
+        seen = [(int(model_id) << 16 | int(marker_id), marker)
+                for model_id, markers in labeled_marker_from_model_id.items() for marker_id, marker in markers.items()
+                if not marker["param"] & MARKER_OCCLUDED
+                and (marker["param"] & MARKER_POINT_CLOUD_SOLVED or not marker["param"] & MARKER_MODEL_SOLVED)]
+        positions = np.array([marker["pos"] for _, marker in seen], dtype=float).reshape(-1, 3)
+        # * Y-up to Z-up, (x, y, z) -> (x, -z, y), then the lab frame, all markers at once.
+        positions = np.column_stack([positions[:, 0], -positions[:, 2], positions[:, 1]])
+        lab_from_raw = self._lab_from_raw
+        if lab_from_raw is not None:
+            positions = positions @ lab_from_raw[0].T + lab_from_raw[1]
+        # * NatNet's client hands the size as a 1-tuple (struct.unpack).
+        return ((positions, np.array([float(np.ravel(marker.get("size", 0.0))[0]) for _, marker in seen]),
+                 np.array([float(marker["error"]) for _, marker in seen]),
+                 np.array([marker_id for marker_id, _ in seen], dtype=np.uint32)),
+                LAB_FRAME if lab_from_raw is not None else RAW_FRAME)
+
+    def _publish_cloud(self) -> None:
+        """Publish the newest frame's markers, once per frame."""
+        with self._samples_lock:
+            cloud = self._cloud
+        if cloud is None or cloud is self._published_cloud:
+            return
+        self._published_cloud = cloud
+        ((positions, sizes, residuals, ids), frame_id), capture_time_ns = cloud
+        if not self._logged_cloud:
+            self._logged_cloud = True
+            self.get_logger().info(wrap(
+                f"marker cloud on ~/markers: {len(ids)} markers in the first frame (markers of no asset only with "
+                f"'Unlabeled Markers' on in Motive's streaming settings)"))
+        self._cloud_publisher.publish(cloud_message(positions, sizes, residuals, ids, capture_time_ns, frame_id))
 
     # --- --- --- --- --- BODY DEFINITIONS AND CAMERAS --- --- --- --- ---
 
@@ -968,7 +1035,7 @@ class MocapRelay(Node):
                     metres, turned = fit.moved
                     lines.insert(0, f"the {len(fit.used)} truss cameras moved together {metres * 1e3:.1f} mm, turned "
                                     f"{np.degrees(turned):.2f}°, the lab's volume up to "
-                                    f"{volume_moved(fit.raw_cal_from_raw_now) * 1e3:.1f} mm, since last reported"
+                                    f"{volume_moved(fit.motion) * 1e3:.1f} mm, since last reported"
                                     + ("; each camera below moved against them" if changes else ""))
                 why = "continuous calibration re-solved them, Motive recalibrated, or a camera was bumped"
                 # * The cameras alone cannot tell whether poses moved; while the anchors hold the lab frame, none did.
@@ -980,7 +1047,7 @@ class MocapRelay(Node):
                                  f"(frame {self._frame.status}): poses may have moved with them", "\n".join(lines)))
             # * Once the frame move is warned about, the cameras not warned about are kept as seen from the new frame.
             if moved_frame:
-                back = invert(fit.raw_cal_from_raw_now)
+                back = fit.motion.inverse()
                 self._cameras_logged = {name: moved_camera(back, camera)
                                         for name, camera in self._cameras_logged.items()}
             latest = cameras if moved_frame else seen_before
@@ -1052,8 +1119,9 @@ class MocapRelay(Node):
         lab_from_raw = self._lab_from_raw
         if lab_from_raw is None:
             return pos, quat
-        rotation, shift, turn = lab_from_raw
-        return tuple(float(v) for v in rotation @ np.asarray(pos, dtype=float) + shift), quat_multiply_xyzw(turn, quat)
+        scaled_turn, shift, turn = lab_from_raw
+        return (tuple(float(v) for v in scaled_turn @ np.asarray(pos, dtype=float) + shift),
+                quat_multiply_xyzw(turn, quat))
 
     def _publish_cameras(self) -> None:
         """Publish Motive's cameras on `~/cameras`, in the lab frame like every pose."""
@@ -1065,10 +1133,10 @@ class MocapRelay(Node):
 
     def _use_lab_from_raw(self) -> None:
         """Put every pose in the lab frame by the follower's `lab_from_raw` from now on; raw without one."""
-        pose = self._frame.lab_from_raw()
-        self._lab_from_raw = None if pose is None else (Rotation.from_quat(pose.orientation).as_matrix(),
-                                                        np.asarray(pose.position, dtype=float),
-                                                        tuple(float(v) for v in pose.orientation))
+        motion = self._frame.lab_from_raw()
+        self._lab_from_raw = None if motion is None else (motion.matrix()[:3, :3],
+                                                          np.asarray(motion.pose.position, dtype=float),
+                                                          tuple(float(v) for v in motion.pose.orientation))
         if self._cameras is not None:
             self._publish_cameras()
 

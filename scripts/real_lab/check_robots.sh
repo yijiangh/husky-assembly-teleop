@@ -1,5 +1,5 @@
 #!/bin/bash
-# Real lab: read-only checks of this laptop, ROS domain 80 and the robots (manual Part 3; pane checks). Nothing is
+# Real lab: read-only checks of this PC, ROS domain 80 and the robots (manual Part 3; pane checks). Nothing is
 # sent to a robot: it pings them, reads their settings over ssh and asks ROS what runs. What the monitor's health
 # chips show once it runs (rates, e-stops, batteries, the arms' safety state) is left to them.
 #
@@ -39,28 +39,28 @@ runs_here() {
     return 1
 }
 
-# * ------------------------------------------------------------- this laptop
-check_laptop() {
-    who="this laptop"
+# * ------------------------------------------------------------- this PC
+check_this_pc() {
+    who="this PC"
     echo
-    echo "=== this laptop ==="
+    echo "=== this PC ==="
     local line address port pid
     line=$(ip -4 -o addr show | awk '/ 192\.168\.0\./ {print $2, $4; exit}')
     address=${line#* }
     address=${address%/*}
     if [ -z "$line" ]; then
         fail "not on the lab network (no 192.168.0.x address)" \
-             "plug the USB-ethernet dongle into the lab switch; nmcli connection up \"Wired connection 1\" (manual 1.b)"
+             "cable this PC to the lab switch; nmcli connection up \"Wired connection 1\" (manual 1.b)"
     elif [[ "$address" =~ ^192\.168\.0\.(20[1-9]|210)$ ]]; then
         ok "on the lab network: $address on ${line% *} (a control-PC slot)"
     else
         note "on the lab network as $address (${line% *}), not in a control-PC slot (.201-.210): the robots take" \
-             "no time from this laptop (manual 1.b)"
+             "no time from this PC (manual 1.b)"
     fi
     if real_lab_router_up; then
         ok "Zenoh router listening on 7447 (service crl-zenoh-router: $(systemctl --user is-active crl-zenoh-router))"
     else
-        fail "no Zenoh router on this laptop: nothing here sees a robot" \
+        fail "no Zenoh router on this PC: nothing here sees a robot" \
              "install it once: $REAL_LAB_WS/src/crl-husky/crl_husky/scripts/zenoh_router.sh --install (manual 1.c)"
     fi
     if ! command -v chronyc > /dev/null; then
@@ -110,7 +110,7 @@ ask_ros() {
     echo
     echo "=== ROS domain 80 (Zenoh) ==="
     if ! real_lab_router_up; then
-        note "not asked: no Zenoh router on this laptop (above)"
+        note "not asked: no Zenoh router on this PC (above)"
         return 1
     fi
     asked=yes
@@ -128,17 +128,14 @@ ask_ros() {
     elif [ "$relays" != 1 ]; then
         fail "$relays mocap relays run in domain 80" "stop all but one: two publish interleaved poses"
     elif runs_here husky_mocap_relay; then
-        ok "one mocap relay: this laptop's (pane relay)"
+        ok "one mocap relay: this PC's (pane relay)"
     else
         note "one mocap relay, on another PC: its calibrations are that PC's Drive copy's (fine if it is the lab's)"
     fi
     if [ "$monitors" = 0 ]; then
         ok "no monitor runs yet in domain 80"
-    elif [ "$monitors" = 1 ] && runs_here husky_monitor; then
-        ok "one monitor: this laptop's (pane monitor)"
     else
-        fail "another monitor runs in domain 80 (another PC's)" \
-             "find it and stop it before you start yours: two monitors would both command the robots"
+        ok "$monitors monitor(s) run in domain 80$(runs_here husky_monitor && echo ", this PC's among them")"
     fi
     [ "$relays" = 0 ] && return 0  # no relay: nobody answers for Motive
     bodies=$(timeout -s KILL 15 ros2 service call /mocap/get_streaming_ids crl_husky_msgs/srv/GetStreamingMocapIds \
@@ -149,9 +146,9 @@ ask_ros() {
     done
     if [ -z "$bodies" ]; then
         fail "the relay names no rigid body that Motive streams" \
-             "is Motive streaming to this laptop? The relay's pane says"
+             "is Motive streaming to this PC? The relay's pane says"
     elif [ -n "$missing" ]; then
-        note "Motive streams $bodies; not the bar asset(s) $missing: their servo then aims tool0 only (manual 2.f)"
+        note "Motive streams $bodies; not the bar asset(s) $missing: their servo then aims tool0 only (manual 2.e)"
     else
         ok "Motive streams $bodies (B20, B21 among them)"
     fi
@@ -163,9 +160,9 @@ remote_value() {
     sed -n "s/^$1=//p" <<< "$remote" | head -1 | tr -d "\"'"
 }
 
-# The robot's settings and crl-husky files, over ssh; sets `files` (this laptop's list) and `remote` (what it printed).
+# The robot's settings and crl-husky files, over ssh; sets `files` (this PC's list) and `remote` (what it printed).
 read_robot_pc() {
-    # * Its crl-husky code and messages, compared file by file with this laptop's (upload.sh copies files, no git).
+    # * Its crl-husky code and messages, compared file by file with this PC's (upload.sh copies files, no git).
     files=$(git -C "$REAL_LAB_WS/src/crl-husky" ls-files crl_husky_msgs crl_husky crl_husky_cpp | grep -v '\.md$')
     # shellcheck disable=SC2086,SC2116  # $files: one file per word, on one line
     remote=$(timeout -s KILL 30 ssh -o BatchMode=yes -o ConnectTimeout=5 "administrator@$ROBOT_IP" bash -s 2>&1 <<EOF
@@ -186,7 +183,7 @@ check_robot_pc() {
     read_robot_pc
     if ! grep -q '^end=ok$' <<< "$remote"; then
         if grep -q 'Permission denied' <<< "$remote"; then
-            note "ssh asks for a password, so her settings are not checked: install this laptop's key once (manual 1.e)"
+            note "ssh asks for a password, so her settings are not checked: install this PC's key once (manual 1.e)"
         elif grep -q 'Host key verification failed' <<< "$remote"; then
             note "ssh does not know her host key yet: ssh administrator@$ROBOT_IP once, answer yes (manual 1.e)"
         else
@@ -201,7 +198,7 @@ check_robot_pc() {
         ok "her base services: rmw_zenoh_cpp, domain 80"
     else
         fail "her base services run ${rmw:-?} on domain ${domain:-?}, not Zenoh on 80: the monitor cannot see her" \
-             "robot.sh opens a shell on her (pane $who): there crl-husky-mw-zenoh, not while she holds a bar (2.b)"
+             "robot.sh opens a shell on her (pane $who): there crl-husky-mw-zenoh, never while she holds a bar (2.f a)"
     fi
     zenoh=$(remote_value zenoh)
     router=$(remote_value router)
@@ -211,9 +208,9 @@ check_robot_pc() {
     local ours
     ours=$(dpkg-query -W -f '${Version}' ros-humble-rmw-zenoh-cpp 2>/dev/null)
     if [ "$zenoh" = "$ours" ]; then
-        ok "rmw_zenoh ${zenoh%%-*}, as on this laptop"
+        ok "rmw_zenoh ${zenoh%%-*}, as on this PC"
     else
-        fail "her rmw_zenoh is ${zenoh:-not installed}, this laptop's $ours" \
+        fail "her rmw_zenoh is ${zenoh:-not installed}, this PC's $ours" \
              "every machine needs the same version (crl-husky README, Zenoh): apt upgrade the older one"
     fi
     if [ "$router" = active ]; then
@@ -232,14 +229,14 @@ check_robot_pc() {
         fail "her crl-husky is not in ~/workspace/src/crl-husky: its code cannot be compared" \
              "where does her workspace live? Ask Jakob (manual 1.g)"
     elif [ -z "$diff" ]; then
-        ok "her crl-husky: the same code and messages as this laptop's"
+        ok "her crl-husky: the same code and messages as this PC's"
     elif [ "$msgs" != 0 ]; then
         local which
         which=$(grep '^crl_husky_msgs/' <<< "$diff" | head -3 | paste -sd ' ')
-        fail "her crl_husky_msgs differ from this laptop's ($which): topics between them may not decode" \
+        fail "her crl_husky_msgs differ from this PC's ($which): topics between them may not decode" \
              "bring both to one crl-husky commit before the test (manual 1.g)"
     else
-        note "her crl-husky differs from this laptop's in $others file(s), e.g." \
+        note "her crl-husky differs from this PC's in $others file(s), e.g." \
              "$(head -2 <<< "$diff" | paste -sd ' '); the messages are the same (manual 1.g)"
     fi
     if [ "${launches:-0}" -gt 1 ]; then
@@ -322,7 +319,7 @@ check_robot_ros() {
     if grep -qw "$ROBOT_BODY" <<< "$bodies"; then
         ok "Motive streams her rigid body $ROBOT_BODY"
     elif [ -n "$bodies" ]; then
-        fail "Motive does not stream her rigid body $ROBOT_BODY" "in Motive: her asset on (manual 2.f)"
+        fail "Motive does not stream her rigid body $ROBOT_BODY" "in Motive: her asset on (manual 2.e)"
     fi
 }
 
@@ -337,9 +334,9 @@ check_robot() {
     fi
     ok "her PC answers ping"
     if ss -Htn state established 2>/dev/null | awk -v peer="$ROBOT_IP:7447" '$4 == peer {up = 1} END {exit !up}'; then
-        ok "this laptop's Zenoh router is linked to hers"
+        ok "this PC's Zenoh router is linked to hers"
     else
-        fail "this laptop's Zenoh router is not linked to hers" \
+        fail "this PC's Zenoh router is not linked to hers" \
              "on her: crl-husky-zenoh-restart; or here: systemctl --user restart crl-zenoh-router (manual 8.b)"
     fi
     check_robot_pc
@@ -354,8 +351,8 @@ for name in "$@"; do
     robots+=("$name")
 done
 [ ${#robots[@]} -eq 0 ] && robots=(alice belle cindy)
-echo "[check_robots] checking this laptop, ROS domain 80 and ${robots[*]}; read-only, nothing is sent to a robot"
-check_laptop
+echo "[check_robots] checking this PC, ROS domain 80 and ${robots[*]}; read-only, nothing is sent to a robot"
+check_this_pc
 ask_ros
 for robot in "${robots[@]}"; do
     check_robot "$robot"

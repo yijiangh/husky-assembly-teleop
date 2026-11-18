@@ -17,11 +17,10 @@ import numpy as np
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import split_link_id
 from scaffolding_assembly_core.process import LineSpec, Movement, Process
-from scaffolding_assembly_core.process.solutions import MovementResult
+from scaffolding_assembly_core.process.solutions import MovementResult, Trajectory
 
 from .collision import SweptReport
 from .ik import IkResult
-from .joints import arm_of_joint, arm_side
 from .movement import MovementSpec, Routine
 
 if TYPE_CHECKING:
@@ -132,28 +131,52 @@ class GoalCheck:
                 "sources": dict(self.sources), "warnings": list(self.warnings), "seconds": self.seconds}
 
 
+def arm_path_route(robot: str, routine: Routine | None, joint_names: tuple[str, ...], rows, planner: str,
+                   seconds: float = 0.0, goal_joints: Mapping[str, float] | None = None,
+                   warnings: tuple[str, ...] = ()) -> RouteResult:
+    """Another planner's joint path as a route the executor runs, e.g. the arm planner's for one arm.
+
+    The executor times the rows itself (the motion time); its own checks (the plan's basis, the start where the arms
+    are) apply as to any route.
+
+    Args:
+        robot: The process robot id, e.g. "robots/alice".
+        routine: The movement's routine.
+        joint_names: The joints of each row, e.g. one arm's six in the UR driver's order.
+        rows: The path, radians, its first row where it was planned from.
+        planner: Which planner made it, for the records, e.g. "arm_planner.rrt_connect".
+        seconds: Time taken to plan.
+        goal_joints: The joints planned to, by name.
+        warnings: What the planner warned about.
+    """
+    positions = tuple(tuple(float(value) for value in row) for row in rows)
+    trajectory = Trajectory(robot, tuple(joint_names), positions)
+    goal = dict(goal_joints) if goal_joints is not None else dict(zip(joint_names, positions[-1]))
+    return RouteResult(MovementResult("solved", trajectory=trajectory), routine, planner=planner, attempts=1,
+                       seconds=seconds, waypoints=len(positions), goal_joints=goal, warnings=tuple(warnings))
+
+
 def goal_line(check: GoalCheck) -> str:
-    """A goal check as one log line: the largest gap to the authored goal, IK's goal per arm (radians) and the base.
+    """A goal check as one readable line: the base and the largest gap to the authored goal.
+
+    The joints are in its record (`as_record`).
 
     Args:
         check: The answer of `request_ik`.
 
     Returns:
-        str: E.g. "B20_J_transfer at the live base: max |goal - authored goal| = 0.0004 rad; goal (rad) left [...]
-            right [...]; base 1.234 -0.567 m 90.0 deg".
+        str: E.g. "B20_J_transfer at the live base 1.234 -0.567 m 90.0 deg: goal within 0.0004 rad of the authored
+            one".
     """
     if not check.ok:
         return f"{check.movement}: no goal at the live base: {check.reason}"
-    arms: dict[str, list[float]] = {}
-    for name, value in check.ik.joints.items():
-        arms.setdefault(arm_side(arm_of_joint(name)), []).append(value)
-    goal = " ".join(f"{side} [{', '.join(f'{value:+.4f}' for value in joints)}]" for side, joints in arms.items())
     x, y, _z = check.base.position
     qx, qy, qz, qw = check.base.orientation
     yaw = math.degrees(math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz)))
     gap = check.max_from_authored
-    return (f"{check.movement} at the live base: max |goal - authored goal| = "
-            f"{'-' if gap is None else f'{gap:.4f}'} rad; goal (rad) {goal}; base {x:.3f} {y:.3f} m {yaw:.1f} deg")
+    found = "goal found (no authored goal to compare)" if gap is None else \
+        f"goal within {gap:.4f} rad of the authored one"
+    return f"{check.movement} at the live base {x:.3f} {y:.3f} m {yaw:.1f} deg: {found}"
 
 
 def pose_error(a: Pose, b: Pose) -> tuple[float, float]:

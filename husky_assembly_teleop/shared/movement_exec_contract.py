@@ -5,7 +5,7 @@ Other plugins ask with an `ExecRequest`; `part_plan` says how a step's movements
 after the step's primary movement where it gets one (`servo_kind`).
 
 A part is a motion along a plan (a plain one, an insert or a retreat: `MOTION_KINDS`), a tool step (Robotiq open, the
-compliant Robotiq handoff), an ungrasp its retreat runs, a step done by hand (placing the bar, the scaffolding grasp),
+Robotiq handoff), an ungrasp its retreat runs, a step done by hand (placing the bar, the scaffolding grasp),
 or the servo (SERVO_PART, index SERVO_INDEX: it is no movement of its own). Routines not supported yet are refused,
 naming what is missing (`LATER`). While movement_exec has a robot's lease for a step, nothing that changes the step may
 change (`step_running`). A transfer's bar servo leaves `Carried` for its insert's plan.
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Callable, Collection, Mapping, Protocol
 
 
 from ..config import find_robot_serial, short_serial
@@ -61,6 +61,8 @@ MOTION_PART, OPEN_PART, BY_HAND_PART, BASE_PART, REFUSED_PART, SERVO_PART = (
 INSERT_PART, RETREAT_PART, HANDOFF_PART, WITH_MOTION_PART = "insert", "retreat", "robotiq_handoff", "with_motion"
 #: The parts that move the arms along the step's plan.
 MOTION_KINDS = frozenset({MOTION_PART, INSERT_PART, RETREAT_PART})
+#: The parts done by hand: the monitor sends nothing, so no other robot needs to stand still for them.
+HAND_KINDS = frozenset({BY_HAND_PART, BASE_PART})
 #: ! The servo part's index: the servo is no movement of its own, so `ExecResult.done` and the step panel's done set
 #:   tell it from the primary movement by this value.
 SERVO_INDEX = -1
@@ -109,19 +111,23 @@ class ExecRequest:
         parts: The step's parts still to run, in order.
         serial: The acting robot.
         robot_name: Its process name, e.g. "cindy".
-        route: The plan of the step's motion, or None when no motion part is left.
+        route: The plan of the step's motion, or None when no motion part is left: the motion planner's, or another
+            planner's path made a route (`route_result.arm_path_route`, e.g. the arm planner's for one arm).
         route_movement: The movement index the route was planned for, or None.
         basis: What the route was planned from, or None.
         traj_time: Seconds the motion should take (the arm's limits may need longer).
         label: Names the request, e.g. the primary movement's id.
         ignore_built: Reads the requester's "Ignore built bars" now, so a plan made otherwise is refused as stale;
             by default not ticked.
-        obstacles_collide: Reads the process plugin's "Rhino obstacles collide" now, likewise; by default ticked.
+        obstacles_collide: Reads whether the process's "Rhino obstacles" collide now, likewise; by default ticked.
         transfer_as_free: Reads the process plugin's "Transfer workaround" now, likewise; by default ticked.
         unknown_robots: Ids of the other robots the operator let be unknown (Exec's second press, `CommitConfirm`):
             left out of the freeze and of the check that nothing else moves.
         clearance: Exec's Clearance box: whether a motion along the plan runs under a clearance (`ARM_MOVE`); by
             default ticked.
+        preview: Shows the motion the open Confirm starts as (route, basis, seconds), or none with (None, None, 0.0),
+            so the requester's preview never shows a path that is not next.
+        dry_run: Run every check of this request and send nothing, whatever the executor's own Dry run box says.
     """
 
     loaded: LoadedProcess
@@ -140,6 +146,8 @@ class ExecRequest:
     transfer_as_free: Callable[[], bool] = lambda: True
     unknown_robots: frozenset[str] = frozenset()
     clearance: bool = True
+    preview: Callable[[RouteResult | None, PlanBasis | None, float], None] = lambda *_: None
+    dry_run: bool = False
 
 
 @dataclass(frozen=True)
@@ -170,7 +178,7 @@ class ExecResult:
 
 @dataclass(frozen=True)
 class Carried:
-    """The mocap bar correction a transfer's servo leaves for its insert's plan (`servo.carried_insert_goals`).
+    """The correction a transfer's servo leaves for its insert's plan (`servo.carried_insert_goals`).
 
     Attributes:
         loaded: The loaded process it was measured on, compared by identity.
@@ -207,10 +215,20 @@ class MovementExecContract(Protocol):
 
     @property
     def carried(self) -> Carried | None:
-        """Carried | None: What the last transfer's bar servo left for its insert's plan.
+        """Carried | None: What the last transfer's servo left for its insert's plan.
 
         None once that transfer runs again, another action starts, or the process is loaded again.
         """
+
+    def finished(self, loaded: LoadedProcess, action: str) -> frozenset[tuple[int, int]]:
+        """(step primary, movement index) of `action` finished for real on `loaded`, by any requester.
+
+        The index is SERVO_INDEX for the step's servo. Kept until `request_forget`, another loaded process or another
+        run: a part run from the Assembly tab counts for every other requester too.
+        """
+
+    def request_forget(self, action: str, done: Collection[tuple[int, int]] | None = None) -> None:
+        """Forget that `action`'s movements (only the (primary, index) pairs in `done`, if given) were finished."""
 
     def request_execute(self, request: ExecRequest) -> asyncio.Future[ExecResult]:
         """Run a step's parts with every robot leased until done; the future gives how it ended."""
@@ -223,9 +241,6 @@ class MovementExecContract(Protocol):
 
     def request_as_built(self) -> None:
         """Measure every MoCap bar now and append an as-built record (phase "manual"), outside a request too."""
-
-    def request_build_page(self) -> None:
-        """Build today's as-built page from the records so far (a subprocess on a thread) and serve it."""
 
     def request_dry_run(self, on: bool) -> None:
         """Turn the dry run on or off; refused while a request runs."""
@@ -342,7 +357,7 @@ def part_plan(loaded: LoadedProcess, action_id: str, index: int, robots: tuple[R
     if kind == "robotiq" and grip == "open":
         return part(routine, OPEN_PART, "Robotiq open", tuple(arms))
     if kind == "robotiq":
-        return part(routine, HANDOFF_PART, "Robotiq close, the arm compliant (handoff)", tuple(arms))
+        return part(routine, HANDOFF_PART, "Robotiq close on the bar (the run's grasp controller)", tuple(arms))
     if kind == "scaffolding_v3" and grip == "closed":
         # * The operator clamps the bar with the tools' own buttons; the monitor sends the tools nothing.
         return part(routine, BY_HAND_PART, f"clamp it: tighten the gripper screws of {', '.join(arms)} with the "

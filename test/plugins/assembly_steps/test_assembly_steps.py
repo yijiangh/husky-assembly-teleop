@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, design_scene, purged_process, robot_config, step
-from robot_lab import FakeRun, RobotLab
+from robot_lab import FakeRun, RobotLab, ShowsCurrent
 
 from husky_assembly_teleop.colors import WARN, rgb
 from husky_assembly_teleop.plugins.assembly_steps.diagnosis import tool0_line
@@ -108,9 +108,12 @@ def _answered(value):
     return future
 
 
-def fake_process(transfer_as_free: bool = True) -> SimpleNamespace:
-    """The process plugin as the step panel sees it: its two boxes, and the joints carried forward (`carries`)."""
-    process = SimpleNamespace(obstacles_collide=True, transfer_as_free=transfer_as_free, carries=[])
+def fake_process(run, transfer_as_free: bool = True) -> SimpleNamespace:
+    """The process plugin as the step panel sees it, its live scene showing the run's current movement.
+
+    Its two boxes, and the joints carried forward (`carries`).
+    """
+    process = ShowsCurrent(run, obstacles_collide=True, transfer_as_free=transfer_as_free, carries=[])
     process.request_carry = process.carries.append
     return process
 
@@ -128,7 +131,7 @@ class Steps(RobotLab):
         self.loaded = purged_process()
         self.run = FakeRun(self.loaded, current)
         self.planner, self.executor = FakePlanner(self), FakeExecutor()
-        self.process = fake_process(transfer_as_free)
+        self.process = fake_process(self.run, transfer_as_free)
         self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor,
                             "process": self.process}
         self.ctx.kinematics = SimpleNamespace(base_pose=lambda serial: self.bases[serial],
@@ -273,6 +276,25 @@ def test_the_path_ghost_stays_while_there_is_a_plan_whatever_the_panel_was_last_
     assert calls == ["path hidden"]
 
 
+def test_exec_shows_the_motion_its_confirm_starts_and_then_nothing():
+    """A servo pass replaces the plan in the preview at its own time, at its end; None empties the preview."""
+    lab = Steps(("B20_J", 3))
+    asyncio.run(lab.plan())
+    plugin = lab.plugin
+    route, basis, key = plugin.route, plugin._basis, plugin._key
+    plugin.traj_time = 10.0
+    plugin._preview_motion(key, None, None, 0.0)
+    assert plugin.path is None and plugin.route is None and plugin._basis is None
+    plugin._preview_motion(key, route, basis, 3.0)
+    assert plugin.route is route and plugin._basis is basis and plugin._path_serial == plugin.serial
+    assert plugin._t == plugin.path.duration and not plugin._playing
+    timed_at_three = plugin.path.duration
+    plugin._preview_motion((*key[:2], "another step", key[3]), None, None, 0.0)
+    assert plugin.path is not None, "another step's Exec leaves this step's preview alone"
+    plugin._preview_motion(key, None, None, 0.0)
+    assert plugin.path is None and timed_at_three > 0.0
+
+
 def test_toggling_the_workaround_moves_to_the_steps_primary():
     """B20_J at its travel to load without the workaround; ticked in the process panel, the transfer is current."""
     lab = Steps(("B20_J", 0), transfer_as_free=False)
@@ -305,6 +327,7 @@ def test_plan_on_a_movement_with_nothing_to_plan_moves_on_and_plans_nothing():
     assert lab.planner.plans == [] and lab.run.selected == [("B20_R", 1)]
     assert lab.plugin._message == "B20_R_ungrasp: nothing to plan; moved on to B20_R_retreat: click Plan again"
     lab.update()
+    assert lab.plugin._message == "B20_R_ungrasp: nothing to plan; moved on to B20_R_retreat: click Plan again"
     asyncio.run(lab.plan())
     assert [plan.step.movement.id for plan in lab.planner.plans] == ["B20_R_retreat"]
     for selected, following in ((2, 4), (0, 3)):
@@ -516,6 +539,17 @@ def test_the_last_step_suggests_mark_done():
     assert "every step of B35_H done: Mark done below" in lab.html() and lab.run.marked == []
 
 
+def test_the_panels_line_goes_with_its_step():
+    """A refusal stays while the step does, and a new step starts without it."""
+    lab = Steps(("B20_R", 2))
+    lab.plugin._commit(lab.ctx)
+    lab.update()
+    assert "Plan first" in lab.plugin._message and lab.plugin._message_failed
+    lab.run.request_set_current("B20_R", 0)
+    lab.update()
+    assert lab.plugin._message == "" and not lab.plugin._message_failed
+
+
 @pytest.mark.safety
 def test_exec_needs_a_ready_plan_and_uses_it_once():
     """No plan: nothing to Exec. A plan goes with Exec once; a dry run gives it back, a real run clears it."""
@@ -627,9 +661,12 @@ def test_the_insert_is_planned_from_where_the_servo_left_the_flanges(monkeypatch
         assert np.allclose(goal.matrix(), expected, atol=1e-9)
     assert [(event, fields["data"]["goal_carried"]) for event, fields in lab.run.records] == [
         ("plan", True), ("plan", False), ("plan", False)]
+    first = lab.run.records[0][1]["data"]["goal_poses"]
+    assert set(first) == set(carried) and np.allclose(first["robots/cindy/left_ur_arm_tool0"], [
+        *carried["robots/cindy/left_ur_arm_tool0"].position, *carried["robots/cindy/left_ur_arm_tool0"].orientation])
     lines = [line for line in lab.ctx.lines("info") if line.startswith("[insert plan]")]
     line, = lines
-    assert line.startswith("[insert plan] mocap bar correction carried: B20_J_insert left goal ")
+    assert line.startswith("[insert plan] servo correction carried: B20_J_insert left goal ")
     assert line.endswith(" from the authored end")
 
 
@@ -645,7 +682,10 @@ def test_the_retreat_is_planned_along_the_live_tool_axis():
     for part in spec.arms:
         expected = live_line_goal(live[part.flange], part.line.distance)
         assert np.allclose(goals[part.flange].matrix(), expected.matrix(), atol=1e-9)
-    assert [fields["data"]["goal_live"] for event, fields in lab.run.records if event == "plan"] == [True]
+    (record,) = [fields["data"] for event, fields in lab.run.records if event == "plan"]
+    assert record["goal_live"] and set(record["goal_poses"]) == set(goals)
+    for flange, pose in goals.items():
+        assert np.allclose(record["goal_poses"][flange], [*pose.position, *pose.orientation])
     line, = [line for line in lab.ctx.lines("info") if line.startswith("[retreat live] B20_R_retreat")]
     assert "goals = the live tool0 poses moved 50 mm back along their own -z (encoders): left along (" in line
     lab.run.request_settings(retreat_live_axis=False)
@@ -667,7 +707,8 @@ def test_check_tool0_draws_the_live_flanges_against_the_targets_and_records_the_
     live = flange_poses(lab.ctx.scene.snapshot.robots[robot_id("a200-0806")], targets)
     expected = tool0_line(tool0_errors(live, targets))
     assert lab.plugin._message == expected and expected.startswith("tool0 live minus target: left ")
-    assert any(line == f"[tool0 check] B20_J_transfer: {expected}" for line in lab.ctx.lines("info"))
+    short = tool0_line(tool0_errors(live, targets), axes=False)
+    assert "(" not in short and any(line == f"[tool0 check] B20_J_transfer: {short}" for line in lab.ctx.lines("info"))
     scene = lab.ctx.view.scene
     assert len([node for node in scene.of_kind("frame") if "/diagnosis/tool0/" in node.name
                 and node.name.endswith(("/target", "/live"))]) == 4
@@ -748,12 +789,20 @@ def test_the_record_is_json():
 
 
 def test_the_log_line():
-    """The line names the movement, the gap, each arm's goal and the base; a failure its reason."""
-    line = goal_line(cindy_check())
-    assert line.startswith("B20_J_transfer at the live base: max |goal - authored goal| = 0.0015 rad; goal (rad) left "
-                           "[+0.0000, +0.1000, +0.2000, +0.3000, +0.4000, +0.5000] right [+0.6000, ")
-    assert line.endswith("; base 1.000 -2.500 m 90.0 deg")
+    """The line names the movement, the base and the gap, no joint lists (the record has them); a failure its reason."""
+    assert goal_line(cindy_check()) == ("B20_J_transfer at the live base 1.000 -2.500 m 90.0 deg: goal within 0.0015 "
+                                        "rad of the authored one")
     assert goal_line(cindy_check(ok=False)) == "B20_J_transfer: no goal at the live base: no IK"
+
+
+def test_a_failed_live_ik_is_warned_once():
+    """The goal check's failure is logged by `solve`; the panel line says it again without a second warning."""
+    lab = Steps(("B20_J", 3))
+    lab.planner.check = cindy_check(ok=False)
+    asyncio.run(lab.plugin.checked_goal(lab.ctx))
+    line = goal_line(lab.planner.check)
+    assert lab.plugin._message == line and lab.plugin._message_failed
+    assert [warned for warned in lab.ctx.lines("warn") if warned == line] == [line]
 
 
 def test_check_goal_asks_with_the_run_and_records_the_answer():
@@ -779,7 +828,10 @@ def test_check_goal_asks_with_the_run_and_records_the_answer():
 
 
 def test_a_late_live_ik_answer_carries_nothing_once_the_step_changed():
-    """The run moves to another action while Live IK waits: its answer comes; nothing is carried, its line says so."""
+    """The run moves to another action while Live IK waits: its answer is refused (solved among another step's bars).
+
+    Nothing is carried or recorded; its line says why.
+    """
     lab = Steps(("B20_J", 3))
 
     async def scenario():
@@ -792,9 +844,28 @@ def test_a_late_live_ik_answer_carries_nothing_once_the_step_changed():
         answer.set_result(cindy_check())
         return await task
 
-    check = asyncio.run(scenario())
-    assert check.ok and lab.process.carries[-1] is None and goal_line(check) not in lab.plugin._message
+    assert asyncio.run(scenario()) is None
+    assert all(carry is None for carry in lab.process.carries)
+    assert not [event for event, _fields in lab.run.records if event == "check_goal"]
     assert lab.plugin._message == "Live IK for B20_J_transfer came after the step changed: not used"
+
+
+def test_a_live_ik_answer_is_refused_in_red_when_the_scene_changed_under_the_same_step():
+    """The live scene stops showing B20_J's transfer while Live IK waits, the step unchanged: refused, said in red."""
+    lab = Steps(("B20_J", 3))
+
+    async def scenario():
+        answer = asyncio.get_running_loop().create_future()
+        lab.planner.request_ik = lambda request: answer
+        task = asyncio.ensure_future(lab.plugin.checked_goal(lab.ctx))
+        await asyncio.sleep(0)
+        lab.process.held = ("B21_H", "B21_H_transfer")
+        answer.set_result(cindy_check())
+        return await task
+
+    assert asyncio.run(scenario()) is None
+    assert all(carry is None for carry in lab.process.carries)
+    assert lab.plugin._message.startswith("Live IK: the live scene changed while B20_J_transfer was planned")
 
 
 def test_check_goal_refuses_routines_without_an_ik_goal():
@@ -841,7 +912,7 @@ class Walk(RobotLab):
         self.executor = MovementExecPlugin()
         # * The Rhino obstacles count, as the walk was planned before their box.
         self.ctx.plugins = {"assembly_run": self.run, "motion_planner": self.planner, "movement_exec": self.executor,
-                            "process": fake_process()}
+                            "process": fake_process(self.run)}
         self.executor.setup(self.ctx)
         self.ctx.kinematics = SimpleNamespace(base_pose=lambda serial: self.bases[serial], joints=lambda serial: {})
         self.steps = AssemblyStepsPlugin()

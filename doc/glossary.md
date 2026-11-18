@@ -50,7 +50,7 @@ robotics or UI words are not listed. Paths are relative to `husky_assembly_teleo
 - **freeze**: a task's promise that other robots or objects stand still; if one moves, the task is cancelled
   (`WorldMoved`). Not the panels' Live/Paused button, not a frozen dataclass. `world/freeze.py`.
 - **clearance / trip / watch / path clearance**: a clearance soft stops a robot a task drives once it comes within
-  its margin of anything, always below what its plans keep (arms plan 1 cm, stop at 5 mm; bases plan 10 cm, stop at
+  its margin of anything, always below what its plans keep (arms plan 1 cm, 5 cm from the floor, stop at 5 mm; bases plan 10 cm, stop at
   5 cm; a plan keeping less stops at half of it, `stop_for`); a trip is one firing; a watch is checked the same way
   but only reports. The Clearance box turns it on or off. The base planner's path clearance is instead a recorded
   distance. [plugins.md, Clearance](lab/plugins.md#clearance), `world/clearance.py`.
@@ -115,7 +115,8 @@ Details: `doc/lab/plugins.md`, `doc/design/run_record.md`.
   `shared/execution/insert.py`, `shared/execution/stream.py`.
 - **retreat / break-out**: backing the tools out of their joints; the break-out is its first, compliant part.
   `shared/execution/retreat.py`.
-- **handoff**: a support robot's Robotiq close on a bar another robot holds, its arm compliant.
+- **handoff**: a support robot's Robotiq close on a bar another robot holds, its arm compliant or held stiff (the
+  run's Grasp controller).
   `shared/execution/handoff.py`.
 - **servo**: passes that move the flanges onto the authored targets after a transfer, approach or ground insert.
   `shared/execution/servo.py`.

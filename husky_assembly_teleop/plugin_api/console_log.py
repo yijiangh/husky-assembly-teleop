@@ -38,6 +38,8 @@ class Entry:
         source: Who logged it: a plugin's name, `RUNTIME`, `ROBOTS` or `TICKS`.
         text: The message, without the "[source]" prefix stdout shows.
         count: How many times it came in a row.
+        seq: Goes up with every line added, a repeat included (its entry takes the new number).
+        first_seq: The number of the run's first line: the same for every repeat folded into this entry.
     """
 
     time: float
@@ -45,6 +47,8 @@ class Entry:
     source: str
     text: str
     count: int = 1
+    seq: int = 0
+    first_seq: int = 0
 
 
 class ConsoleLog:
@@ -53,6 +57,9 @@ class ConsoleLog:
     def __init__(self):
         """Nothing logged yet."""
         self._entries: deque[Entry] = deque(maxlen=KEPT)
+        #: How many lines were pushed out past KEPT, and the line number (`Entry.seq`) of the newest one: a reader
+        #: behind it lost lines.
+        self.dropped = self.dropped_seq = 0
         #: (monotonic time, periods it stood for, how many of them late) per tick of the last LATE_WINDOW seconds,
         #: and the sums of both counts.
         self._ticks: deque[tuple[float, int, int]] = deque()
@@ -65,17 +72,24 @@ class ConsoleLog:
         """Add a line; the same line right after itself only raises the last one's count."""
         now = time.time()
         with self._lock:
+            self.version += 1
             last = self._entries[-1] if self._entries else None
             if last is not None and (last.level, last.source, last.text) == (level, source, text):
-                self._entries[-1] = replace(last, time=now, count=last.count + 1)
+                self._entries[-1] = replace(last, time=now, count=last.count + 1, seq=self.version)
             else:
-                self._entries.append(Entry(now, level, source, text))
-            self.version += 1
+                if len(self._entries) == self._entries.maxlen:
+                    self.dropped, self.dropped_seq = self.dropped + 1, self._entries[0].seq
+                self._entries.append(Entry(now, level, source, text, seq=self.version, first_seq=self.version))
 
     def entries(self) -> list[Entry]:
         """The kept lines, oldest first."""
         with self._lock:
             return list(self._entries)
+
+    def since(self, seq: int) -> list[Entry]:
+        """The kept lines added or repeated after line number `seq` (`Entry.seq`), oldest first."""
+        with self._lock:
+            return [entry for entry in self._entries if entry.seq > seq]
 
     def count_tick(self, late: float, period: float) -> None:
         """Count a tick that started `late` seconds late (0 when on time), for `late_share`.

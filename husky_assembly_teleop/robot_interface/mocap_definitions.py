@@ -21,6 +21,8 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.transform import Rotation
 
+from scaffolding_assembly_core.geometry import Pose, compose, invert
+
 #: Offsets this close, metres, count as identical: float32 rounding of a 0.1 m offset is about 1e-8 m.
 IDENTICAL = 1e-7
 #: After the best rigid fit, markers moved less than this, metres, are the same shape ...
@@ -147,6 +149,56 @@ class MocapAnchor:
 
     name: str
     position: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class ScaledPose:
+    """A motion of Motive's frame with a change of its scale: a point p goes to scale * turn(p) + shift.
+
+    The relay's `lab_from_raw` and a refit are ones: a recalibration may change Motive's scale since the floor
+    calibration, and a refit takes poses back to the floor calibration's scale. Orientations only turn.
+
+    Attributes:
+        pose: The turn and the shift.
+        scale: How much longer distances come out, 1.0 for none.
+    """
+
+    pose: Pose = Pose()
+    scale: float = 1.0
+
+    def apply(self, points) -> np.ndarray:
+        """Points, (3,) or (n, 3), moved."""
+        return (self.scale * Rotation.from_quat(self.pose.orientation).apply(np.asarray(points, dtype=float))
+                + np.asarray(self.pose.position, dtype=float))
+
+    def then(self, inner: ScaledPose | Pose) -> ScaledPose:
+        """This motion after `inner`: a point moved by `inner` first."""
+        inner = scaled(inner)
+        moved = compose(self.pose, Pose(tuple(float(v) for v in self.scale * np.asarray(inner.pose.position)),
+                                        inner.pose.orientation))
+        return ScaledPose(moved, self.scale * inner.scale)
+
+    def inverse(self) -> ScaledPose:
+        """The motion back."""
+        back = invert(self.pose)
+        return ScaledPose(Pose(tuple(float(v) / self.scale for v in back.position), back.orientation),
+                          1.0 / self.scale)
+
+    def matrix(self) -> np.ndarray:
+        """As a 4 x 4 matrix, the scale in its upper left block."""
+        matrix = self.pose.matrix()
+        matrix[:3, :3] *= self.scale
+        return matrix
+
+    def turn(self, orientation) -> tuple[float, float, float, float]:
+        """An orientation (x, y, z, w) turned."""
+        return tuple(float(v) for v in (Rotation.from_quat(self.pose.orientation)
+                                        * Rotation.from_quat(orientation)).as_quat())
+
+
+def scaled(motion: ScaledPose | Pose) -> ScaledPose:
+    """A pose as a motion without a change of scale; a ScaledPose as it is."""
+    return motion if isinstance(motion, ScaledPose) else ScaledPose(motion)
 
 
 # --- --- --- --- --- COMPARING --- --- --- --- ---

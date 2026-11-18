@@ -143,7 +143,7 @@ def test_a_soft_stopped_or_unleased_robot_refuses_and_nothing_goes_out():
                    motion_command(serial, ("ur_arm",), arm_joint_names("ur_arm"), rows[:, :6], 1.0))
         for dry_run in (False, True):
             outcome = lab.run(robot, command, dry_run=dry_run)
-            assert outcome.status == REFUSED and why in outcome.reason and "nothing sent" in outcome.reason
+            assert outcome.status == REFUSED and why in outcome.reason and "not sent" not in outcome.reason
         sent = sum(len(arm._trajectory.messages) for arm in robot.arms.values())
         assert sent == 0 and (robot._multi_arm is None or not robot._multi_arm.messages)
 

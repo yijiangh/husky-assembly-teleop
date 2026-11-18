@@ -14,6 +14,8 @@ from scaffolding_assembly_core.legacy.conversion import (OLD_EXPORT_FILE, PROCES
 from scaffolding_assembly_core.legacy.timing import Stopwatch
 from scaffolding_assembly_core.process import Process, read
 
+from ...shared.process_contract import RHINO_FOLDER
+
 
 def process_folders(root: Path | None) -> list[str]:
     """The processes and old exports two levels below the Drive root ("data_design_study/<process>"), newest name first.
@@ -28,6 +30,18 @@ def process_folders(root: Path | None) -> list[str]:
         return []
     folders = {found.parent for name in (PROCESS_FILE, OLD_EXPORT_FILE) for found in root.glob(f"*/*/{name}")}
     return sorted((folder.relative_to(root).as_posix() for folder in folders), reverse=True)
+
+
+def rhino_files(root: Path | None) -> list[str]:
+    """The names of the Rhino files in the Drive's Rhino folder, newest first; empty without a Drive root or the folder.
+
+    Args:
+        root: The Drive root, or None.
+    """
+    folder = root / RHINO_FOLDER if root is not None else None
+    if folder is None or not folder.is_dir():
+        return []
+    return [path.name for path in sorted(folder.glob("*.3dm"), key=lambda path: path.stat().st_mtime, reverse=True)]
 
 
 def load_process(folder: Path, data_directory: Path, report: Callable[[str], None] = lambda _text: None,

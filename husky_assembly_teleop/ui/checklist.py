@@ -69,6 +69,12 @@ class CheckList:
         if box is not None:
             box.remove()
 
+    def set_label(self, key: Hashable, label: str) -> None:
+        """Change an item's text, if it changed; unknown keys are ignored. Call on the main thread."""
+        box = self._boxes.get(key)
+        if box is not None and box.label != label:
+            box.label = label
+
     def deselect(self, key: Hashable) -> None:
         """Untick an item; unknown keys are ignored. Call on the main thread."""
         box = self._boxes.get(key)

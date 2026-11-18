@@ -284,3 +284,33 @@ def test_another_robot_not_measured_refuses_a_clearance_unless_allowed():
     line, = kept
     assert line == "0804: base not measured, checked at its default pose or stowed"
     assert f"clearance on 0805: {line}" in log.text("warning")
+
+
+def test_a_trip_logs_what_came_too_close_with_its_contact():
+    """The error line names the closest pair and how close, readable; every pair stays in the trip's hit."""
+    from husky_assembly_teleop.world.collision_hit import CollisionHit, Contact
+    from scaffolding_assembly_core.scene import Scene
+
+    ctx, world, log = _context()
+    world.robots["0805"].soft_stop = lambda reason="": None
+    pair = ("tools/a200-0805/ur_arm", "obstacles/rack")
+    near = ("tools/a200-0805/ur_arm", "obstacles/wall")
+    hit = CollisionHit(Scene(), "robots/a200-0805", "", (near, pair), (
+        Contact(near, (1.0, 0.5, 0.8), (1.0, 0.5, 0.81), 0.004),
+        Contact(pair, (1.0, 0.5, 0.8), (1.0, 0.5, 0.81), -0.002)), margin=0.05)
+
+    async def drive() -> None:
+        with ctx.clearance(["0805"]):
+            while True:
+                await ctx.next_tick()
+
+    async def scenario() -> None:
+        task = ctx.spawn("drive", drive())
+        await asyncio.sleep(0)
+        clearance, = ctx._clearances
+        ctx._trip_clearance(clearance, "0805", "came within 5 cm of rack", hit)
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert ("came within 5 cm of rack (closest: ur_arm tool with rack, 2.0 mm overlap; 1 more pair)"
+            in log.text("error"))

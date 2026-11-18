@@ -89,16 +89,16 @@ def test_each_anchors_error_and_noise_are_series_with_gaps_and_left_out_marked(s
 
 
 def test_the_scale_panel_shows_the_anchors_scale_and_where_the_relay_warned(script):
-    """Samples with the anchors' scale: its line in ppm, a cross where the relay reported it, the warning limits."""
-    samples = [{**OLD, "time": 100.0 + 2 * k, "anchor_scale": {"ppm": -1500.0}, "scale_changed": k >= 2}
+    """Samples with the anchors' scale: its line in mm/m, a cross where the relay reported it, the warning limits."""
+    samples = [{**OLD, "time": 100.0 + 2 * k, "anchor_scale": {"scale": -0.0015}, "scale_changed": k >= 2}
                for k in range(4)]
     figure = script.plot(samples)
     axis = figure.axes[5]
     lines = [line.get_ydata() for line in axis.lines]
     pyplot.close(figure)
-    assert list(lines[0]) == [-1500.0] * 4 and len(lines[1]) == 2
-    limit = round(SCALE_CHANGED * 1e6)  # * where the relay warns of a scale change, ppm
-    assert sorted(round(float(line[0])) for line in lines[2:]) == [-limit, limit]
+    assert list(lines[0]) == pytest.approx([-1.5] * 4) and len(lines[1]) == 2
+    limit = SCALE_CHANGED * 1e3  # * where the relay warns of a scale change, mm/m
+    assert sorted(float(line[0]) for line in lines[2:]) == pytest.approx([-limit, limit])
 
 
 @pytest.mark.parametrize("which", ["old", "new", "both"])

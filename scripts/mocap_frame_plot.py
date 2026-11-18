@@ -228,13 +228,14 @@ def plot(samples: list[dict], figure=None):
     axes[4].plot(minutes, mm("apart"), color=INK, linewidth=2)
     axes[4].set_title("anchors and truss cameras place the lab apart, both trusted (mm)", loc="left", fontsize=10,
                       color=INK)
-    ppm = np.array([(s.get("anchor_scale") or {}).get("ppm", np.nan) for s in samples], dtype=float)
+    # * From the share, not a unit key: samples of any relay version have it.
+    scale = np.array([(s.get("anchor_scale") or {}).get("scale", np.nan) for s in samples], dtype=float) * 1e3
     warned = np.array([bool(s.get("scale_changed")) for s in samples])
-    axes[5].plot(minutes, ppm, color=INK, linewidth=2)
-    axes[5].plot(minutes[warned], ppm[warned], linestyle="none", marker="x", markersize=8, color=INK)
-    for limit in (-SCALE_CHANGED * 1e6, SCALE_CHANGED * 1e6):
+    axes[5].plot(minutes, scale, color=INK, linewidth=2)
+    axes[5].plot(minutes[warned], scale[warned], linestyle="none", marker="x", markersize=8, color=INK)
+    for limit in (-SCALE_CHANGED * 1e3, SCALE_CHANGED * 1e3):
         axes[5].axhline(limit, color=MUTED, linewidth=1, linestyle="--")
-    axes[5].set_title("Motive's scale since the floor calibration, by the anchors (ppm; dashed: the relay warns "
+    axes[5].set_title("Motive's scale since the floor calibration, by the anchors (mm/m; dashed: the relay warns "
                       "beyond, x: it does)", loc="left", fontsize=10, color=INK)
     axes[0].legend(frameon=False, loc="upper left", fontsize=9, title="band: ± uncertainty · x: not trusted",
                    title_fontsize=8)

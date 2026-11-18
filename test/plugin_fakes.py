@@ -25,7 +25,8 @@ import numpy as np
 from action_msgs.msg import GoalStatus
 from controller_manager_msgs.srv import SwitchController
 from geometry_msgs.msg import PoseStamped
-from robot_fakes import TEST_LEASE, Client
+from rcl_interfaces.msg import ParameterType, ParameterValue
+from robot_fakes import TEST_LEASE, Client, Future
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import JointState
 
@@ -72,6 +73,10 @@ class FakeWidget(SimpleNamespace):
         self.callback = callback
 
     on_update = on_hold = on_click
+
+    def remove(self) -> None:
+        """Note that it is gone."""
+        self._impl.removed = True
 
     def add_tab(self, label: str = "", icon: Any = None) -> FakeWidget:
         """A tab group's tab: a folder, as far as a test cares."""
@@ -122,7 +127,8 @@ class FakeScene:
             raise AttributeError(name)
 
         def add(node_name: str, *args: Any, **options: Any) -> SimpleNamespace:
-            node = SimpleNamespace(kind=name[4:], name=node_name, args=args, remove=lambda: None, **options)
+            node = SimpleNamespace(kind=name[4:], name=node_name, args=args, remove=lambda: None,
+                                   on_update=lambda callback: None, **options)
             self.nodes.append(node)
             return node
         return add
@@ -155,6 +161,7 @@ class FakeGui:
         """A widget of `kind`, kept in `widgets`."""
         widget = FakeWidget(kind=kind, label=label, value=values[0] if values else options.get("initial_value"),
                             content="", color=options.get("color"), disabled=options.get("disabled", False),
+                            visible=options.get("visible", True),
                             options=options, _impl=SimpleNamespace(uuid=f"fake-{len(self.widgets)}", removed=False))
         self.widgets.append(widget)
         return widget
@@ -477,6 +484,56 @@ class FakeControllers(ControllerManagerInterface):
             self._answering = False
 
 
+class StiffnessService:
+    """The compliance controller's stiffness parameters, answered at once: `get` and `set` stand in for its clients.
+
+    Attributes:
+        stiffness: The translational stiffness now, N/m along tool0 x, y, z.
+        sets: Every stiffness set, in order.
+        up: Whether the services answer; False: `service_is_ready` says no.
+        readable: Whether a read answers with values; False: an empty answer.
+        confirms: Whether a set is answered; False: it is taken but never answered (a late answer).
+    """
+
+    def __init__(self, stiffness: Sequence[float] = (500.0, 500.0, 500.0)):
+        """The controller's config values, services up."""
+        self.stiffness, self.sets, self.up = list(stiffness), [], True
+        self.readable = self.confirms = True
+        self.get = SimpleNamespace(service_is_ready=lambda: self.up, call_async=self._get)
+        self.set = SimpleNamespace(service_is_ready=lambda: self.up, call_async=self._set)
+
+    def _get(self, request) -> Answered:
+        """Answer a GetParameters call with the stiffness now."""
+        if not self.readable:
+            return Answered(SimpleNamespace(values=[]))
+        return Answered(SimpleNamespace(values=[ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=value)
+                                                for value in self.stiffness]))
+
+    def _set(self, request) -> Answered:
+        """Take a SetParameters call's values and answer that every one was taken."""
+        self.stiffness = [parameter.value.double_value for parameter in request.parameters]
+        self.sets.append(list(self.stiffness))
+        if not self.confirms:
+            return Future(request)
+        return Answered(SimpleNamespace(results=[SimpleNamespace(successful=True)] * len(request.parameters)))
+
+
+class Answered:
+    """A service call's future answered already, as rclpy's: a callback added runs at once."""
+
+    def __init__(self, response):
+        """Answered with `response`."""
+        self._response = response
+
+    def add_done_callback(self, callback) -> None:
+        """Run `callback(self)` now."""
+        callback(self)
+
+    def result(self):
+        """The answer."""
+        return self._response
+
+
 def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
              active: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, end_effector=None) -> ArmInterface:
     """A real `ArmInterface` without ROS: measured now at `joints`, `active` running, publishers kept.
@@ -508,8 +565,11 @@ def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
     arm._trajectory, arm._target_frame, arm._target_wrench = Published(), Published(), Published()
     arm.trajectories_sent, arm.targets_sent, arm.wrenches_sent = (Event(f"{name}_trajectory"), Event(f"{name}_target"),
                                                                   Event(f"{name}_wrench"))
+    arm.wrench_messages, arm.ft_zeros_sent = Event(f"{name}_ft"), Event(f"{name}_ft_zero")
     arm._zero_ft = SimpleNamespace(service_is_ready=lambda: True, calls=[])
     arm._zero_ft.call_async = arm._zero_ft.calls.append
+    arm.stiffness_service = StiffnessService()
+    arm._get_compliance, arm._set_compliance = arm.stiffness_service.get, arm.stiffness_service.set
     arm.end_effector = end_effector
     arm.state.end_effector = end_effector.state if end_effector is not None else None
     return arm
@@ -521,7 +581,9 @@ def fake_robot(node: SimpleNamespace, serial: str, arms: Sequence[ArmInterface])
     robot._node = node
     robot.config = SimpleNamespace(serial=serial, arms=tuple(arm.config for arm in arms))
     robot.arms = {arm.config.name: arm for arm in arms}
-    robot.base = SimpleNamespace(state=BaseState())  # never measured, as in the simulator
+    # * Never measured, as in the simulator; its command events fire for nothing here.
+    robot.base = SimpleNamespace(state=BaseState(), simulation=None, twists_sent=Event(f"{serial}_twist"),
+                                 paths_sent=Event(f"{serial}_path"))
     robot._multi_arm = Published() if len(arms) == 2 else None
     # * One latch and one lease slot for the whole robot, shared by its arms and tools; the lease starts free.
     robot.soft_stop_latch, robot.lease_slot = SoftStopLatch(serial), LeaseSlot(serial)
@@ -810,6 +872,7 @@ def fake_robotiq(node: SimpleNamespace, namespace: str = "/a200_0804/gripper", p
     gripper.state = RobotiqState(position=position)
     gripper._action = FakeAction()
     gripper._goal, gripper._cancel_on_accept = None, False
+    gripper.commands_sent = Event(f"{namespace}_tool")
     # * Its own latch and lease slot, until `fake_robot` gives it the robot's.
     gripper._latch, gripper._lease_slot = SoftStopLatch(namespace), LeaseSlot(namespace)
     return gripper
@@ -861,6 +924,7 @@ def fake_scaffolding(node: SimpleNamespace, namespace: str = "/a200_0806/left_gr
     tool._node, tool.namespace = node, namespace
     tool.state = ScaffoldingV3State()
     tool._command = Published()
+    tool.commands_sent = Event(f"{namespace}_tool")
     # * Its own latch and lease slot, until `fake_robot` gives it the robot's.
     tool._latch, tool._lease_slot = SoftStopLatch(namespace), LeaseSlot(namespace)
     return tool

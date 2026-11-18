@@ -3,6 +3,7 @@ The old monitor's readings of a bar's fit: what the mocap_bars panel, its consol
 
 - `marker_rows`: each marker's state and residuals.
 - `plate_geometry`: each plate's ball pair, the spacing between plates, the bar's bow.
+- `plate_check`: whether a plate moved on the bar against the others.
 - `bar_report`: the three `[mocap bar]` console lines.
 """
 
@@ -13,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ...world.marker_match import transform_points
+from ...world.marker_match import kabsch, transform_points
 from .pose import PoseDeviation, bar_ends
 
 if TYPE_CHECKING:
@@ -79,6 +80,17 @@ class PlateRow:
         bend_mm: Of the shift, the part across the bar the straight line through the outer plates' shifts does not
             explain: ~0 on a straight bar, the sag on a bowed one; None on the outer plates.
         bow_mm: The same as a direction (x, y) across the bar; None on the outer plates.
+        strays_near: Sensed markers matched to nothing within PLATE_NEAR of a ball of this plate that was not
+            matched, at the fitted pose: a plate moved too far for the fit to take its balls; 0 on an occluded one.
+        alone_shift_mm: Where its balls sit, mm, bar frame, against the bar fitted to the other plates alone: one
+            plate's error, not spread over its neighbours as in `shift_mm`; None without enough other balls.
+        alone_roll_deg: Its twist about the bar against that fit; None unless both balls were seen.
+        alone_along_mm: Of `alone_shift_mm`, how far its balls' middle slid along the bar, mm.
+        alone_radial_mm: How much farther from the bar's axis its balls' middle sits than designed, mm; a twist
+            leaves it, so it says the plate moved off its seat; None unless both balls were seen and other plates lie
+            on both sides of it along the bar.
+        others_rms_mm: How well the other plates fit together without it, mm, twists about the bar left out: lowest for
+            the plate that moved.
     """
 
     plate: str
@@ -90,6 +102,12 @@ class PlateRow:
     roll_err_deg: float | None
     bend_mm: float | None
     bow_mm: tuple[float, float] | None
+    strays_near: int = 0
+    alone_shift_mm: tuple[float, float, float] | None = None
+    alone_roll_deg: float | None = None
+    others_rms_mm: float | None = None
+    alone_along_mm: float | None = None
+    alone_radial_mm: float | None = None
 
 
 @dataclass(frozen=True)
@@ -115,7 +133,10 @@ class PlateGeometry:
         """The geometry as plain lists, dicts and numbers (the old `pair_geometry` keys)."""
         return {"joints": [{"joint": row.plate, "n_seen": row.n_seen, "z_mm": row.z_mm, "length_mm": row.length_mm,
                             "length_err_mm": row.length_err_mm, "shift_mm": row.shift_mm,
-                            "roll_err_deg": row.roll_err_deg, "bend_mm": row.bend_mm, "bow_mm": row.bow_mm}
+                            "roll_err_deg": row.roll_err_deg, "bend_mm": row.bend_mm, "bow_mm": row.bow_mm,
+                            "strays_near": row.strays_near, "alone_shift_mm": row.alone_shift_mm,
+                            "alone_roll_deg": row.alone_roll_deg, "others_rms_mm": row.others_rms_mm,
+                            "alone_along_mm": row.alone_along_mm, "alone_radial_mm": row.alone_radial_mm}
                            for row in self.plates],
                 "spacing": [{"from": row.from_plate, "to": row.to_plate, "mm": row.mm, "err_mm": row.err_mm}
                             for row in self.spacing],
@@ -123,18 +144,23 @@ class PlateGeometry:
 
 
 EMPTY_GEOMETRY = PlateGeometry((), (), None, None)
+#: An unmatched sensed marker this close to a plate's unmatched ball, metres, counts as that plate's (`strays_near`).
+PLATE_NEAR = 0.02
 
 
-def plate_geometry(fit: BarFit, sensed: Sensed, layout: BarLayout) -> PlateGeometry:
+def plate_geometry(fit: BarFit, sensed: Sensed, layout: BarLayout, left_out: bool = True) -> PlateGeometry:
     """Each plate's ball pair, the spacing between plates and the bar's bow, from the matched balls.
 
     A plate is the design markers sharing a name up to the last "/"; its balls are their labels (M1, M2). Empty
-    without a fitted pose.
+    without a fitted pose. `left_out`: also fit the bar without each plate in turn (the `alone_*` fields and
+    `others_rms_mm`, which `plate_check` needs); off, they stay None.
     """
     if fit.T_world_from_bar is None:
         return EMPTY_GEOMETRY
     T_bar_from_world = np.linalg.inv(np.asarray(fit.T_world_from_bar, dtype=float))
     sensed_of = {d: s for s, d in fit.correspondences.items()}
+    strays = (transform_points(T_bar_from_world, np.asarray(sensed.points)[sorted(fit.unmatched_sensed)])
+              if fit.unmatched_sensed else np.zeros((0, 3)))
     # * Group the design balls by plate; read each matched ball in the fitted bar frame.
     plates: dict[str, dict] = {}
     for d, name in enumerate(layout.names):
@@ -150,9 +176,12 @@ def plate_geometry(fit: BarFit, sensed: Sensed, layout: BarLayout) -> PlateGeome
         design_mid = np.mean(list(design_pts.values()), axis=0)
         shift = (np.mean([sensed_pts[label] - design_pts[label] for label in sensed_pts], axis=0) * 1e3
                  if sensed_pts else None)
+        unmatched = [design_pts[label] for label in design_pts if label not in sensed_pts]
+        near = sum(bool(unmatched) and float(np.min(np.linalg.norm(np.asarray(unmatched) - stray, axis=1)))
+                   <= PLATE_NEAR for stray in strays)
         row = {"plate": plate, "n_seen": len(sensed_pts), "z_mm": float(design_mid[2] * 1e3), "length_mm": None,
                "length_err_mm": None, "roll_err_deg": None, "shift_mm": None if shift is None else tuple(shift),
-               "bend_mm": None, "bow_mm": None, "mid": None, "design_mid": design_mid}
+               "bend_mm": None, "bow_mm": None, "mid": None, "design_mid": design_mid, "strays_near": int(near)}
         if len(design_pts) == 2 and len(sensed_pts) == 2:
             a, b = sorted(design_pts)
             length = float(np.linalg.norm(sensed_pts[a] - sensed_pts[b]))
@@ -163,6 +192,8 @@ def plate_geometry(fit: BarFit, sensed: Sensed, layout: BarLayout) -> PlateGeome
             row["roll_err_deg"] = float((turn + 180.0) % 360.0 - 180.0)
             row["mid"] = mid
         rows.append(row)
+    if left_out:
+        _left_out(rows, plates, sensed_of, sensed, layout)
     rows.sort(key=lambda row: row["z_mm"])
     # * Bending: the cross-bar shift of the inner plates off the line through the outer two.
     shifted = [row for row in rows if row["shift_mm"] is not None]
@@ -187,8 +218,121 @@ def plate_geometry(fit: BarFit, sensed: Sensed, layout: BarLayout) -> PlateGeome
     lengths = [abs(row["length_err_mm"]) for row in rows if row["length_err_mm"] is not None]
     return PlateGeometry(tuple(PlateRow(row["plate"], row["n_seen"], row["z_mm"], row["length_mm"],
                                         row["length_err_mm"], row["shift_mm"], row["roll_err_deg"], row["bend_mm"],
-                                        row["bow_mm"]) for row in rows),
+                                        row["bow_mm"], row["strays_near"], row.get("alone_shift_mm"),
+                                        row.get("alone_roll_deg"), row.get("others_rms_mm"), row.get("alone_along_mm"),
+                                        row.get("alone_radial_mm")) for row in rows),
                          tuple(spacing), max(bends) if bends else None, max(lengths) if lengths else None)
+
+
+#: A plate counts as moved on its bar past these against the bar fitted to the other plates: slid along the bar, mm;
+#: off its seat (its balls' middle nearer to or farther from the bar's axis), mm. Twice as much is BAD. A twist about
+#: the bar is expected and never counts.
+PLATE_ALONG, PLATE_RADIAL = 2.0, 2.5
+#: A ball pair whose length is off by more than this, mm, has a ball mislabelled, occluded or knocked loose.
+PLATE_PAIR = 3.0
+#: `plate_check` levels.
+PLATES_OK, PLATES_WARN, PLATES_BAD = "ok", "warn", "bad"
+
+
+@dataclass(frozen=True)
+class PlateCheck:
+    """Whether a bar's plates still sit where its design has them against each other.
+
+    Only a plate moved against the others shows: all of them slid along or turned about the bar together look like
+    the bar itself moved.
+
+    Attributes:
+        level: PLATES_OK, PLATES_WARN or PLATES_BAD.
+        problems: Plate name -> what is off about it, worst first.
+        checked: How many plates had both balls seen. A plate with a ball unmatched but markers near where it should be
+            is BAD: moved too far for the fit to take it.
+    """
+
+    level: str
+    problems: dict[str, list[str]]
+    checked: int
+
+    @property
+    def worst(self) -> str:
+        """str: The first plate with a problem, "" without one."""
+        return next(iter(self.problems), "")
+
+
+def _left_out(rows: list[dict], plates: dict, sensed_of: dict, sensed: Sensed, layout: BarLayout) -> None:
+    """Fill each row's `alone_*` and `others_rms_mm`: the bar fitted to the other plates' matched balls only."""
+    names = list(layout.names)
+    owner = [name.rsplit("/", 1)[0] if "/" in name else name for name in names]
+    matched = [d for d in range(len(names)) if d in sensed_of]
+    design = np.asarray(layout.points, dtype=float)
+    world = np.asarray(sensed.points, dtype=float)
+    for row in rows:
+        rest = [d for d in matched if owner[d] != row["plate"]]
+        own = [d for d in matched if owner[d] == row["plate"]]
+        # * Three balls on at least two other plates fix the bar; its own balls, at least one, are read against it.
+        if not own or len(rest) < 3 or len({owner[d] for d in rest}) < 2:
+            continue
+        T = kabsch(design[rest], world[[sensed_of[d] for d in rest]])
+        errors = (world[[sensed_of[d] for d in rest]] - transform_points(T, design[rest])) @ T[:3, :3]
+        # * Around the bar taken out: a twisted plate must not look like the one the others fit worst with.
+        around = np.column_stack((-design[rest, 1], design[rest, 0], np.zeros(len(rest))))
+        around /= np.maximum(np.linalg.norm(around, axis=1, keepdims=True), 1e-9)
+        errors -= np.sum(errors * around, axis=1, keepdims=True) * around
+        row["others_rms_mm"] = float(np.sqrt(np.mean(np.sum(errors ** 2, axis=1)))) * 1e3
+        inv = np.linalg.inv(T)
+        seen = transform_points(inv, world[[sensed_of[d] for d in own]])
+        row["alone_shift_mm"] = tuple(float(v) for v in np.mean(seen - design[own], axis=0) * 1e3)
+        row["alone_along_mm"] = row["alone_shift_mm"][2]
+        if len(own) == 2:
+            mid, design_mid = seen.mean(axis=0), design[own].mean(axis=0)
+            # ! Only between other plates: past them the others' straight line is extrapolated, and a bar's usual bow
+            #   (2-3 mm) reads as a plate off its seat.
+            if design[rest, 2].min() < design_mid[2] < design[rest, 2].max():
+                row["alone_radial_mm"] = float(np.linalg.norm(mid[:2]) - np.linalg.norm(design_mid[:2])) * 1e3
+            turn = np.degrees(np.arctan2(mid[1], mid[0]) - np.arctan2(design_mid[1], design_mid[0]))
+            row["alone_roll_deg"] = float((turn + 180.0) % 360.0 - 180.0)
+
+
+def plate_check(geometry: PlateGeometry) -> PlateCheck:
+    """Which plate moved on the bar: the one the others fit best without, judged against the bar they fit alone.
+
+    A plate whose balls are unmatched with markers near where they should be is BAD at once (moved or twisted too far
+    for the fit to take them). A ball pair off by over PLATE_PAIR flags its plate (a ball mislabelled, occluded or
+    knocked loose). Twists about the bar never flag.
+    """
+    found: dict[str, list[tuple[float, str]]] = {}
+    level = PLATES_OK
+
+    def flag(plate: str, value: float, limit: float, text: str) -> None:
+        nonlocal level
+        if value <= limit:
+            return
+        found.setdefault(plate, []).append((value / limit, text))
+        level = PLATES_BAD if value > 2 * limit or level == PLATES_BAD else PLATES_WARN
+
+    for row in geometry.plates:
+        if row.strays_near:
+            # * Its balls are there but too far off for the fit to take them.
+            found.setdefault(row.plate, []).append((np.inf, f"{2 - row.n_seen} ball(s) unmatched with "
+                                                            f"{row.strays_near} marker(s) near: twisted or moved too "
+                                                            f"far for the fit"))
+            level = PLATES_BAD
+    # * One plate already caught by its unmatched balls: the others, fewer now, are not searched for a second.
+    judged = [] if found else [row for row in geometry.plates if row.others_rms_mm is not None]
+    for row in geometry.plates:
+        if row.length_err_mm is not None:
+            flag(row.plate, abs(row.length_err_mm), PLATE_PAIR, f"ball pair {row.length_err_mm:+.1f} mm")
+    if judged:
+        # * Twists about the bar are expected and never flag: only a slide along it or a move off its seat does.
+        suspect = min(judged, key=lambda row: row.others_rms_mm)
+        if suspect.alone_along_mm is not None:
+            flag(suspect.plate, abs(suspect.alone_along_mm), PLATE_ALONG,
+                 f"slid {suspect.alone_along_mm:+.1f} mm along the bar")
+        if suspect.alone_radial_mm is not None:
+            flag(suspect.plate, abs(suspect.alone_radial_mm), PLATE_RADIAL,
+                 f"{suspect.alone_radial_mm:+.1f} mm off its seat on the bar")
+    worst_first = sorted(found.items(), key=lambda item: -max(ratio for ratio, _ in item[1]))
+    problems = {plate: [text for _, text in sorted(items, key=lambda each: -each[0])] for plate, items in worst_first}
+    return PlateCheck(level, problems, sum(row.length_mm is not None for row in geometry.plates))
 
 
 def bar_report(bar: str, fit: BarFit, sensed: Sensed | None, layout: BarLayout, planned: np.ndarray | None,

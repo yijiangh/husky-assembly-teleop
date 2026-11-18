@@ -152,7 +152,8 @@ As in the real-lab manual 1.b–1.e and 1.h, with this PC's own address:
 4. **ssh keys:** `for ip in 192.168.0.115 192.168.0.113 192.168.0.114; do ssh-copy-id administrator@$ip; done`, with
    the robots' password (manual 0.3); first `ssh-keygen -t ed25519` if this PC has no key in `~/.ssh/`.
 5. **The Drive:** Insync syncing the shared folder `2025-03 Husky Assembly`, holding
-   `data_design_study/261008_2ModulesDemo_purged_process/process.json`. The scripts find it under
+   `data_design_study/261103_SRD/process.json` (real lab) and
+   `data_design_study/261008_2ModulesDemo_purged_process/process.json` (fake lab). The scripts find it under
    `~/Insync/<account>/Google Drive - Shared with me/` (the laptop) or `~/Insync/` (the RobotX PC); anywhere else,
    `export REAL_LAB_DRIVE=<the folder>` before `scripts/real_lab/tmux.sh`.
 
@@ -217,7 +218,7 @@ after. Both restart her Clearpath services: never while she holds a bar.
 
 ## 8. Only if this PC should also run the fake lab
 
-The simulation needs more (`doc/lab/fake_lab_test_manual.md`, section 0): apt `ros-humble-ur-robot-driver
+The simulation needs more (`doc/lab/fake_lab_test_manual.md`, Part 1): apt `ros-humble-ur-robot-driver
 ros-humble-robotiq-description ros-humble-robotiq-controllers ros-humble-gripper-controllers`, and fzi's Cartesian
 controllers built into the workspace (the robots carry their own):
 
@@ -227,7 +228,7 @@ git clone -b ros2 https://github.com/fzi-forschungszentrum-informatik/cartesian_
 touch cartesian_controllers/cartesian_controller_{handles,simulation,tests,utilities}/COLCON_IGNORE
 ```
 
-Then build them as in the fake-lab manual's 0.2.
+Then build them as in the fake-lab manual's 1.b.
 
 ## 9. Check, and report to the user
 

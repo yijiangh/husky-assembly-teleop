@@ -67,6 +67,30 @@ class CollisionHit:
             return f"{self.where}: {self.name(a)} came within {self.margin * 100:g} cm of {self.name(b)}"
         return f"{self.where} is in collision: {self.name(a)} with {self.name(b)}"
 
+    @property
+    def closest(self) -> str:
+        """str: The pair closest together and how close, e.g. "closest: ur_arm tool with rack, 3.2 mm overlap".
+
+        For a log line; more pairs are counted ("; 2 more pairs"), every pair with its contact is in `as_record`.
+        """
+        known = [(contact.depth, index) for index, contact in enumerate(self.contacts[:len(self.pairs)])
+                 if contact is not None]
+        depth, index = min(known) if known else (None, 0)
+        a, b = self.pairs[index]
+        how = "" if depth is None else (f", {-depth * 1e3:.1f} mm overlap" if depth < 0
+                                        else f", {depth * 1e3:.1f} mm apart")
+        more = len(self.pairs) - 1
+        return f"closest: {self.name(a)} with {self.name(b)}{how}" + (
+            f"; {more} more pair{'s' if more > 1 else ''}" if more else "")
+
+    def as_record(self) -> dict:
+        """The hit as JSON values: robot, where, margin and every pair with its contact (metres, world frame)."""
+        contacts = [None if contact is None else {"point_a": list(contact.point_a), "point_b": list(contact.point_b),
+                                                  "depth": contact.depth} for contact in self.contacts]
+        return {"robot": self.robot, "where": self.where, "margin": self.margin,
+                "pairs": [{"a": a, "b": b, "contact": contacts[index] if index < len(contacts) else None}
+                          for index, (a, b) in enumerate(self.pairs)]}
+
     def name(self, object_id: str) -> str:
         """Short display text for one of the ids: its label, else its last segment, e.g. "ur_arm_wrist_3"."""
         text = self.scene.label(object_id)

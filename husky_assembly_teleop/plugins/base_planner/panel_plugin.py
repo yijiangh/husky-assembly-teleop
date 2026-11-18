@@ -5,7 +5,8 @@ The flow is `shared.planner.planner_panel.PlannerPanel`; this adds the planar ta
 (`algorithms`) with its settings and debug view, the experiment's task and recording inputs, and the floor drawing.
 The last three sit in a collapsed Advanced folder, so the panel shows only target, plan and commit.
 
-- The floor shows the plan as the follower will cut it, the sent path, and the robot's trail until the next Commit.
+- The floor shows the plan as the follower will cut it; the sent path and the robot's trail while the run is the
+  newest of every robot's, until FLOOR_KEEP seconds after it ended.
 - A task of the experiment's standard set (`tasks`) puts its virtual obstacles into the scene, under this panel's
   name; Load sets the target to its start (to drive there) or its target.
 - A plan refused for a start or target in collision shows the hit in the collisions panel until a newer plan.
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict
+from functools import partial
 from html import escape
 
 import viser
@@ -32,11 +34,11 @@ from ...shared.collisions_contract import CollisionsContract
 from ...shared.planner.planner_panel import PLAN_TAB, PlannerPanel, unknown_robots_chip
 from ...shared.planner.plan import Plan
 from ...ui.base_markers import Markers
-from ...ui.choice_row import ChoiceRow
 from ...ui.ghost import RobotGhost
 from ...ui.css import group_buttons
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
+from ...ui.robot_buttons import RobotButtons
 from ...ui.style import (BUSY, FAIL, GAP, NONE, OK, SECTION_CTRL, block, check_chip, chip, chip_line, section,
                          values)
 from ...robot_interface.base import live_report
@@ -48,12 +50,14 @@ from scaffolding_assembly_core.ids import robot_id
 from .algorithms import ALGORITHMS, Algorithm
 from .algorithms.base import add_margin_setting
 from .debug_view import DebugView
-from .planner_plugin import DEFAULT_EXPERIMENT, BasePlannerPlugin, differs, floor_pose
+from .planner_plugin import DEFAULT_EXPERIMENT, BasePlannerPlugin, Run, differs, floor_pose
 from .recording import RECORDING_FOLDER
 from .tasks import BY_NAME, TASKS
 
 #: The Task dropdown's entry for no task.
 NO_TASK = "(none)"
+#: Seconds the sent path and trail stay on the floor after the run ended.
+FLOOR_KEEP = 30.0
 
 
 @register
@@ -102,8 +106,7 @@ class BasePlannerPanel(PlannerPanel):
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             gui.add_html(GAP)
-            self._robot = ChoiceRow(ctx, gui, "Robot", tuple(serials), self.serial, on_choose=self._choose_robot,
-                                    labels=tuple(short_serial(serial) for serial in serials), height=None)
+            self._robot = RobotButtons(gui, serials, self.serial)
 
             gui.add_html(section("target", TARGET))
             self._target = PlanarPoseInput(ctx, gui, f"{root}/target_gizmo", label="Target",
@@ -165,14 +168,20 @@ class BasePlannerPanel(PlannerPanel):
                 gui.add_html(section("debug", NONE))
                 add_pybullet_window_toggle(ctx, gui, self._planner._executor, self._planner._world.set_gui)
                 self._debug_on = gui.add_checkbox("Debug view", initial_value=False,
-                                                  hint="Record how the next search works, and draw it on the floor")
+                                                  hint="Record how the next searches work, also the guide's, "
+                                                       "and draw them on the floor")
                 self._debug_legend = gui.add_html("")
                 self._debug_layers = gui.add_folder("Debug layers")
                 self._debug_notes = gui.add_html("")
 
+        for serial, button in self._robot.buttons.items():
+            button.on_click(ctx.defer("choose robot", partial(self._choose_robot, serial)))
         self._task.on_update(ctx.defer_value("choose task", lambda name: self._choose_task(ctx, str(name))))
         load.on_click(ctx.defer_value("load target", lambda label: self._load_target(ctx, label)))
         self._algorithm.on_update(ctx.defer_value("choose algorithm", lambda label: self._choose_algorithm(str(label))))
+        # * The box is the planner's: searches asked by others (e.g. the guide) record too.
+        self._debug_on.on_update(ctx.defer_value("debug view",
+                                                 lambda on: setattr(self._planner, "debug_view", bool(on))))
 
         self._markers = Markers(ctx)
         self._debug_view = DebugView(ctx, self._debug_legend, self._debug_layers, self._debug_notes)
@@ -278,6 +287,12 @@ class BasePlannerPanel(PlannerPanel):
                                task=None if task == NO_TASK else task, record=bool(self._recording.value),
                                experiment=str(self._experiment.value))
 
+    def take_request(self, ctx: PluginContext, request: BasePlanRequest) -> None:
+        """Choose the request's robot and set the target to its goal, keeping the plan."""
+        self.serial = request.serial
+        self._target.set(*request.goal)
+        self._has_target = True
+
     def target_change(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> str:
         """Whether the target moved away from the plan's goal."""
         return "the target changed since planning" if differs(self._target.pose, plan.request.goal) else ""
@@ -352,7 +367,7 @@ class BasePlannerPanel(PlannerPanel):
             return
         self._status.content = self._status_html(ctx)
         # Loading a target from the step can switch the robot; show that here.
-        self._robot.value = self.serial
+        self._robot.show(self.serial)
         self._details.content = self._details_html()
         self._draw_slider()
         self._draw_floor(ctx)
@@ -361,7 +376,7 @@ class BasePlannerPanel(PlannerPanel):
 
     def _draw_floor(self, ctx: PluginContext) -> None:
         """The plan in blue until committed, the sent path in green, the robot's trail, the follower's points."""
-        run = self._planner._runs.get(self.serial)  # * the chosen robot's last run, as its run chip
+        run = self._floor_run(ctx)
         self._markers.paths(self._preview_of(self._api.plan), None if run is None else run.path)
         if run is None or run.trace is None:
             self._markers.trail(None)
@@ -371,12 +386,22 @@ class BasePlannerPanel(PlannerPanel):
             live_report(ctx.world.robots[self.serial].base.state.follower, ctx.now())
         self._markers.follower(follower if follower is not None and follower.path_id == run.path_id else None)
 
+    def _floor_run(self, ctx: PluginContext) -> Run | None:
+        """The chosen robot's last run while no other base was sent a path since, until FLOOR_KEEP s after its end."""
+        runs = self._planner._runs
+        run = runs.get(self.serial)
+        if run is None or run.path is None:
+            return None
+        if any(other.path is not None and other.sent_at > run.sent_at for other in runs.values()):
+            return None
+        return None if run.ended_at is not None and ctx.now() - run.ended_at > FLOOR_KEEP else run
+
     def _preview_of(self, plan: Plan[BasePlanRequest] | None) -> FollowerPath | None:
         """The plan's path as the follower will cut it, until it is sent; cut once per plan."""
         if plan is None or plan.path is None or plan.state == "sent":
             return None
         if self._preview is None or self._preview[0] != plan.id:
-            self._preview = plan.id, FollowerPath.from_poses(*plan.path.points.T)
+            self._preview = plan.id, FollowerPath.from_poses(*plan.path.points.T, None, plan.path.speed_scale)
         return self._preview[1]
 
     def _status_html(self, ctx: PluginContext) -> str:

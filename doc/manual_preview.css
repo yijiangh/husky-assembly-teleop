@@ -1,0 +1,7 @@
+/*
+ * VS Code's Markdown preview of this repo's docs, when `markdown.styles` names this file (.vscode/settings.json).
+ * Italic text, what the lab manuals use for what you read (terminal lines, page text, values), shows upright in teal,
+ * so it stands apart from the controls (`code`) and the bold labels.
+ */
+em { font-style: normal; color: #0f766e; }
+.vscode-dark em, .vscode-high-contrast em { color: #5eead4; }

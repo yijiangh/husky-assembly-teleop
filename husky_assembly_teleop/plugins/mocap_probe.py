@@ -61,16 +61,16 @@ import shapely
 import viser
 from scipy.spatial.transform import Rotation
 
-from scaffolding_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.geometry import Pose
 
 from ..colors import INK, LAB_BORDER, LIGHT_GREY, MEASURED, OUTLINE, SELECTED, WHITE, rgb
 from ..drive import drive_folder, environment, folder_name, stamped_name, started_at
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
-from ..robot_interface.mocap_definitions import MocapAnchor, MocapCamera, camera_changes, cameras_json
+from ..robot_interface.mocap_definitions import MocapAnchor, MocapCamera, ScaledPose, camera_changes, cameras_json
 from ..robot_interface.mocap_relay import (FRAME_ERROR, FRAME_HELD, FRAME_NONE, FRAME_REFIT_PENDING, FRAME_UNCHECKED,
                                            FRAME_UNTRUSTED, FloorCalibrationState)
-from ..shared.execution.moving import moving_reason
+from ..shared.execution.moving import ask_relay
 from ..shared.guide.panel import set_changed
 from ..ui.checklist import CheckList
 from ..ui.phone import big_buttons, phone_text
@@ -175,10 +175,10 @@ def relay_frame(ctx: PluginContext) -> FloorCalibrationState | None:
     return relay.state.frame if relay is not None else None
 
 
-def lab_from_raw(ctx: PluginContext) -> tuple | None:
-    """What the relay applies to every raw pose now, ((x, y, z), (qx, qy, qz, qw)), or None for nothing."""
+def lab_from_raw(ctx: PluginContext) -> ScaledPose | None:
+    """What the relay applies to every raw pose now, its scale too, or None for nothing."""
     frame = relay_frame(ctx)
-    return frame.lab_from_raw if frame is not None else None
+    return frame.lab_transform if frame is not None else None
 
 
 def frame_chips(frame: FloorCalibrationState | None, anchors_missing: Sequence[str] = ()) -> str:
@@ -211,8 +211,10 @@ def frame_chips(frame: FloorCalibrationState | None, anchors_missing: Sequence[s
     if frame.error and frame.status != FRAME_ERROR:
         html += chip("Drive not read", FAIL, hover(f"the frame in use is kept; {frame.error}"))
     if frame.scale:
-        html += chip("scale changed", BUSY, f"Motive's scale since {frame.floor_calibration}: {frame.scale}.\nNo refit "
-                                            f"can follow it: recalibrate Motive, then a new floor calibration.")
+        # * A refit in use follows the scale: then only a note that Motive was recalibrated.
+        html += chip("scale changed", INFO if frame.refit else BUSY,
+                     f"Motive's scale since {frame.floor_calibration}: {frame.scale}.\nMotive was recalibrated: a "
+                     f"refit follows the scale too (Use refit); a new floor calibration needs none.")
     if frame.newer:
         moves = f" moves points up to {frame.newer_moves * 1e3:.1f} mm" if frame.newer_moves is not None else ""
         html += chip("newer floor calibration", BUSY, f"{frame.newer}{moves}: not applied until Apply floor "
@@ -285,7 +287,7 @@ class MocapProbePlugin(HuskyPlugin):
         # ROS time the probe was last within PROBE_NEAR of each anchor pointed at: its marker is read only after.
         self._probe_near: dict[str, float] = {}
         # The relay's lab_from_raw last seen, and when it announced it (its clock): markers taken before are not used.
-        self._lab_from_raw: tuple | None = None
+        self._lab_from_raw: ScaledPose | None = None
         self._lab_from_raw_since: float | None = None
         # Coverage map, its image on the floor, and how many samples it showed when drawn at what ROS time.
         self.coverage = CoverageMap()
@@ -728,7 +730,7 @@ class MocapProbePlugin(HuskyPlugin):
             return
         data = {**floor_calibration_json(solution, self._lab_frame_path.name), **environment(self._simulated(ctx))}
         # * The cameras raw, like the samples and anchors: the relay's floor calibration taken off.
-        back = invert(Pose(*frame.lab_from_raw)) if frame is not None and frame.lab_from_raw else Pose()
+        back = frame.lab_transform.inverse() if frame is not None and frame.lab_transform else Pose()
         cameras = {name: moved_camera(back, camera) for name, camera in relay.state.cameras.items()}
         data["cameras"] = json.loads(cameras_json(list(cameras.values()), 0.0))["cameras"]
         for name, entry in data["marks"].items():
@@ -819,26 +821,8 @@ class MocapProbePlugin(HuskyPlugin):
                         ctx.world.mocap_relay.reload_floor_calibration)
 
     def _ask_relay(self, ctx: PluginContext, what: str, refused: str, call) -> None:
-        """Call one of the relay's services that move every pose (`call`), unless anything moves; report its answer."""
-        why = moving_reason(ctx.world, ctx.now())
-        future = None if why else call()
-        if why:
-            self._report(ctx, f"{refused}: {why}; every pose changes, so only while nothing moves", floor=True,
-                         warn=True)
-        elif future is None:
-            self._report(ctx, f"{refused}: the mocap relay does not answer", floor=True, warn=True)
-        else:
-            ctx.spawn(what, self._answered(ctx, what, future))
-
-    async def _answered(self, ctx: PluginContext, what: str, future) -> None:
-        """Report the relay's answer to Use refit or Apply floor calibration, or why there is none."""
-        try:
-            response = await ctx.ros(future)
-        except Exception as error:  # * The service call itself failed: say so, else the line keeps its old text.
-            self._report(ctx, f"{what} failed: {error!r}", floor=True, warn=True)
-            return
-        self._show(response.message, OK if response.success else FAIL, floor=True)
-        (ctx.log_info if response.success else ctx.log_warn)(f"{what}: {response.message}")
+        """Call one of the relay's services that move every pose (`ask_relay`); show its answer in the floor section."""
+        ask_relay(ctx, what, refused, call, lambda text, ok: self._show(text, OK if ok else FAIL, floor=True))
 
     def _set_mapping(self, ctx: PluginContext, on: bool) -> None:
         """Start or stop counting probe messages into the coverage map; shows the map on start."""
@@ -989,7 +973,9 @@ class MocapProbePlugin(HuskyPlugin):
         A stored place counts only while the relay applies a floor calibration: it is in the lab frame.
         """
         transform = lab_from_raw(ctx)
-        stored = {name: to_raw(transform, xyz) for name, xyz in self._ideal_anchors.items()} if transform else {}
+        names = list(self._ideal_anchors)
+        stored = (dict(zip(names, to_raw(transform, [self._ideal_anchors[name] for name in names])))
+                  if transform and names else {})
         return {**stored, **pointed_anchors(self.samples)}
 
     def _anchors_now(self, ctx: PluginContext) -> tuple[dict[str, np.ndarray], dict[str, str]]:
@@ -1001,7 +987,8 @@ class MocapProbePlugin(HuskyPlugin):
         hints, transform = self._anchor_hints(ctx), lab_from_raw(ctx)
         pointed = pointed_anchors(self.samples)
         markers, stale = self._unlabeled_markers(ctx)
-        markers = [to_raw(transform, marker) for marker in markers]
+        # * All at once: one inverse for every marker the cameras see, not one each (a tick's worth with bars in view).
+        markers = list(to_raw(transform, markers)) if len(markers) else []
         found = find_anchors({name: MocapAnchor(name, tuple(position)) for name, position in hints.items()}, markers,
                              ANCHOR_REACH)
         relay = ctx.world.mocap_relay
@@ -1027,7 +1014,7 @@ class MocapProbePlugin(HuskyPlugin):
         relay = ctx.world.mocap_relay
         state = relay.state if relay is not None else None
         frame = state.frame if state is not None else None
-        lab_from_raw = frame.lab_from_raw if frame is not None else None
+        lab_from_raw = frame.lab_transform if frame is not None else None
         if lab_from_raw != self._lab_from_raw:
             self._lab_from_raw, self._lab_from_raw_since = lab_from_raw, frame.time if frame is not None else None
         none = np.empty((0, 3))
@@ -1085,8 +1072,8 @@ class MocapProbePlugin(HuskyPlugin):
     def _tape_warning(solution: FloorSolution) -> str:
         """Why the probed marks disagree with the tape: Motive's scale, or a mark hit badly."""
         pair, off = solution.tape_worst
-        return (f"marks {pair} {off * 1e3:+.1f} mm off the tape (Motive's scale {tape_scale(solution.tape) * 1e6:+.0f} "
-                f"ppm against all taped pairs): recalibrate Motive if all are off alike, else probe the marks again")
+        return (f"marks {pair} {off * 1e3:+.1f} mm off the tape (Motive's scale {tape_scale(solution.tape) * 1e3:+.2f} "
+                f"mm/m against all taped pairs): recalibrate Motive if all are off alike, else probe the marks again")
 
     @staticmethod
     def _apart_line(solution: FloorSolution) -> str:
@@ -1104,14 +1091,13 @@ class MocapProbePlugin(HuskyPlugin):
         state = relay.state if relay is not None else None
         fresh = state is not None and state.metrics_time is not None and ctx.now() - state.metrics_time <= MARKERS_FRESH
         estimate = state.lab_from_raw_now if fresh else None
-        applied = Pose(*applied) if applied else None
 
         def mm(metres: float | None) -> str:
             """Metres as mm, or "–"."""
             return "–" if metres is None else f"{metres * 1e3:.1f}"
 
         by_marks = solution.marks_off(applied) if applied else None
-        by_relay = volume_moved(compose(estimate, invert(applied))) if estimate and applied else None
+        by_relay = volume_moved(estimate.then(applied.inverse())) if estimate and applied else None
         apart = solution.marks_off(estimate) if estimate else None
         return [f"poses off mm: marks {mm(by_marks)} · relay {mm(by_relay)}", f"marks vs relay: {mm(apart)} mm apart"]
 
@@ -1323,7 +1309,7 @@ class MocapProbePlugin(HuskyPlugin):
         applied = lab_from_raw(ctx)
         # * The scene is in the lab frame the relay applies now: its lab_from_raw, then the new raw_from_floor.
         if transform is not None:
-            shown = (Pose(*applied).matrix() if applied else np.eye(4)) @ np.linalg.inv(transform)
+            shown = (applied.matrix() if applied else np.eye(4)) @ np.linalg.inv(transform)
             self._floor_axes.position = shown[:3, 3]
             self._floor_axes.wxyz = np.roll(Rotation.from_matrix(shown[:3, :3]).as_quat(), 1)
         else:

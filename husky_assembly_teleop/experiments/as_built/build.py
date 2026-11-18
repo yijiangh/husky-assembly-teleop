@@ -14,6 +14,7 @@ from .collect import (EXTRA_FORMULAS, METRICS, PAGE_CONTROLS, PAGE_CSS, as_built
                       collect_assembly, finite)
 from .page import CAMERA_CONE_HALF_ANGLE_DEG, CAMERA_CONE_M, cameras_3dm, environment_3dm, lab_environment
 from .page import viewer_script, write_page
+from ...shared.process_contract import DEFAULT_RHINO_FILE, RHINO_FOLDER
 from ...shared.runs.as_built import AS_BUILT_FOLDER, DIR_SUFFIX
 
 #: Where a day's page goes, beside its records: `<drive>/.../<day>-asbuilt-result/assembly_<day>.html`.
@@ -23,6 +24,16 @@ RESULT_SUFFIX = "-asbuilt-result"
 def result_folder(drive_root: Path, day: str) -> Path:
     """The folder a day's page is written to, beside the day's records."""
     return drive_root / AS_BUILT_FOLDER / f"{day}{RESULT_SUFFIX}"
+
+
+#: The Rhino file drawn as the room when none is named, under the Drive root.
+DEFAULT_ENV_3DM = Path(RHINO_FOLDER) / DEFAULT_RHINO_FILE
+
+
+def default_env_3dm(drive_root: Path) -> Path | None:
+    """The Rhino file holding the room on this Drive, or None when it is not there."""
+    path = Path(drive_root) / DEFAULT_ENV_3DM
+    return path if path.is_file() else None
 
 
 def build_page(drive_root: Path, day: str | None = None, problem: str | None = None,

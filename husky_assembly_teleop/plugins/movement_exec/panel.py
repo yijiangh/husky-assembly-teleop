@@ -14,12 +14,15 @@ from typing import TYPE_CHECKING
 import numpy as np
 import viser
 
+from ...colors import rgb
 from ...plugin_api.context import PluginContext
 from ...robot_interface.end_effectors import ScaffoldingV3
 from ...shared.assembly_tab.layout import CANCEL_ICON, CONFIRM_ICON, EXEC_SETTINGS_BAND, PROMPT_BAND
 from ...ui.css import side_by_side_css
 from ...ui.phone import big_buttons, phone_text
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, chip_line, section
+from ...ui.popup import Popup
+from ...ui.style import BUSY, FAIL, NONE, SECTION_CTRL, block, chip, chip_line, section
+from .servo_measure import GIVE_UP, TOOL0_SERVO
 
 if TYPE_CHECKING:
     from ...shared.execution.operator import Prompt
@@ -61,15 +64,14 @@ class ExecPanel:
             as_built = gui.add_button("As-built: record now",
                                       hint="Measure every MoCap bar now and append a record to the day's as-built "
                                            "file on the Drive (every part's start and end are recorded by themselves)")
-            page = gui.add_button("Build as-built page",
-                                  hint="Build today's 3D assembly page from the records so far and serve it: the "
-                                       "link appears below (scripts/as_built_page.py)")
-            # ! Below the buttons: the link comes and goes.
-            self._page: viser.GuiHtmlHandle = gui.add_html("")
+        # * Hidden until a prompt asks to choose; its buttons answer as Cancel and Confirm do.
+        self._choice = Popup(ctx.view, "No usable mocap fit", viser.Icon.ALERT_TRIANGLE,
+                             {GIVE_UP: None, TOOL0_SERVO: rgb(BUSY)})
+        self._choice.buttons[GIVE_UP].on_click(ctx.defer("exec give up", plugin.request_cancel))
+        self._choice.buttons[TOOL0_SERVO].on_click(ctx.defer("exec tool0 servo", plugin.request_confirm))
         confirm.on_click(ctx.defer("exec confirm", plugin.request_confirm))
         cancel.on_click(ctx.defer("exec cancel", plugin.request_cancel))
         as_built.on_click(ctx.defer("as-built record", plugin.request_as_built))
-        page.on_click(ctx.defer("as-built page", plugin.request_build_page))
         self._dry.on_update(ctx.defer_value("dry run", lambda value: plugin.request_dry_run(bool(value))))
         with ctx.view.phone("Exec", viser.Icon.PLAYER_PLAY) as phone:
             phone.add_html(f"<style>{big_buttons([CONFIRM_ICON, CANCEL_ICON], 72, 30)}</style>")
@@ -84,7 +86,7 @@ class ExecPanel:
         cancel.on_click(ctx.defer("exec cancel (phone)", plugin.request_cancel))
 
     def draw(self, active: str, prompt: Prompt | None, dry_run: bool, last: tuple[str, bool], refused: int,
-             recorder: Recorder | None = None, servo: str = "", page: tuple[str, str] = ("", "")) -> None:
+             recorder: Recorder | None = None, servo: str = "") -> None:
         """Write the state into the widgets.
 
         Args:
@@ -96,7 +98,6 @@ class ExecPanel:
             recorder: The samples of the compliant part running, or None.
             servo: The running servo's last reading, e.g. "servo 2/8 · tool0 L 0.31 R 0.27 mm", or how the last servo
                 ended (grey once the request is over); "" for none.
-                    page: The last as-built page build: (a URL to open, or a message; "ok", "busy", "failed" or "").
         """
         chips = chip("DRY RUN", BUSY, "every check, nothing sent") if dry_run else ""
         chips += (chip(escape(active), BUSY, "this request runs; Cancel stops it and holds every arm") if active
@@ -106,6 +107,10 @@ class ExecPanel:
                           "the request waits for an answer to the question below: Confirm goes on, Cancel says no")
         line = _one_line(escape(prompt.line) if prompt is not None else "no prompt",
                          (FAIL if prompt.warn else BUSY) if prompt is not None else NONE)
+        if prompt is not None and prompt.choose:
+            self._choice.show(block(escape(prompt.line)))
+        elif self._choice.is_open:
+            self._choice.close()
         self._status.content = chip_line(chips)
         self._prompt.content = block(line)
         self._phone_status.content = phone_text(chip_line(chips))
@@ -126,14 +131,6 @@ class ExecPanel:
         line = _one_line(escape(servo) or "&nbsp;", BUSY if servo and active else NONE)
         self._servo.content = block(line)
         self._phone_servo.content = phone_text(block(line))
-        text, state = page
-        if state == "ok":
-            shown = f'<a href="{escape(text, quote=True)}" target="_blank">{escape(text)}</a>'
-        else:
-            shown = escape(text) or "&nbsp;"
-        color = {"ok": OK, "busy": BUSY, "failed": FAIL}.get(state, NONE)
-        self._page.content = block(f'<div style="color:{color};font-size:12px;white-space:nowrap;overflow:hidden;'
-                                   f'text-overflow:ellipsis">{shown}</div>')
 
 
 def live_line(recorder: Recorder | None) -> str:

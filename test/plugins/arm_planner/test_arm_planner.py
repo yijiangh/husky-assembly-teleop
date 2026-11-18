@@ -8,14 +8,21 @@ import numpy as np
 import pybullet as p
 import pytest
 
+from planning_fixtures import CINDY, design_scene, movement, purged_process, robot_config
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import joint_path_move
-from husky_assembly_teleop.world.lab import floor_body, platform_links
+from husky_assembly_teleop.world.clearance import FLOOR_PLAN_DISTANCE
+from husky_assembly_teleop.world.lab import floor_body, is_floor, platform_links
 from husky_assembly_teleop.shared.planner.rrt_connect import Corners
 from husky_assembly_teleop.plugins.arm_planner import planner as planner_module
-from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath, _extend, joint_limits, path_hit, plan_arm
+from husky_assembly_teleop.plugins.arm_planner.problem import Problem, load_problem, save_problem
+from husky_assembly_teleop.shared.planner.plan_margins import ARM_PLAN_MARGINS, RESOLUTION
+from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, _extend, joint_limits, path_hit, plan_arm,
+                                                               plan_arms)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
+from husky_assembly_teleop.shared.assembly_planning.movement import classify
+from husky_assembly_teleop.world.stand_ins import with_stand_ins
 from husky_assembly_teleop.shared.assembly_planning.mirrors import MirrorPool
 from scaffolding_assembly_core.geometry import box_geometry
 from scaffolding_assembly_core.robot import RobotObject
@@ -158,13 +165,44 @@ def test_a_path_keeps_1_cm_or_as_much_as_a_closer_target_has(world, config, gap)
     mirror, scene = synced(world, snapshot(config, start, bodies))
     result = plan_arm(mirror, scene, ARM, goal, threading.Event())
     assert result.path is not None, result.reason
-    margin, note = result.path.margin, planner_module.margin_note(result.path.margin)
+    margin, note = result.path.margin, result.path.margins.note()
     if gap is None:
-        assert margin == planner_module.PLAN_DISTANCE and note == "keeps 1 cm"
+        assert margin == ARM_PLAN_MARGINS.default and note == "keeps 1 cm", "no floor in the scene: no floor rule"
     else:
         # * PyBullet measures a gap about 2 mm smaller than it is (each convex shape is padded about 1 mm).
-        assert gap - 0.003 - planner_module.MARGIN_RESOLUTION <= margin <= gap and note.startswith("keeps only")
+        assert gap - 0.003 - RESOLUTION <= margin <= gap and note.startswith("keeps only")
     assert result.path.slowed(2.0).margin == margin
+
+
+def test_only_the_pair_already_close_keeps_less(world, config):
+    """A box 5 mm from the target keeps that little; another, 7 mm from the arm halfway, still keeps 1 cm."""
+    start, goal = start_and_goal(config)
+    near = box_near(world, config, goal, 0.005)
+    halfway = tuple(np.add(start, goal) / 2)
+    mid = box_near(world, config, halfway, 0.007)
+    mid.id, mid.label = "t/mid", "the halfway box"
+    mirror, scene = synced(world, snapshot(config, start, (near, mid)))
+    margins = ARM_PLAN_MARGINS.clamped_at(mirror, NAMES, start, goal)
+    assert {clamp.second for clamp in margins.clamps} == {"t/near"}, "only the box at the target is closer at an end"
+    hit = margins.search_check(mirror, NAMES)(halfway)
+    assert hit is not None and hit[1] == "t/mid", "the halfway box keeps its 1 cm"
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is not None, result.reason
+    assert {clamp.second for clamp in result.path.margins.clamps} == {"t/near"}
+    assert result.path.margin == margins.smallest == result.path.margins.clamps[0].kept
+    note = result.path.margins.note()
+    assert note.startswith("keeps only") and "t/near" in note and note.endswith("(usual 1 cm); elsewhere 1 cm")
+
+
+def test_the_fine_check_finds_a_pass_between_two_of_the_search_checks():
+    """Something only between 0.059 and 0.061 rad: the search's 0.05 rad steps never see it, the fine check does."""
+    def check(q):
+        return ("robots/a/link", "t/thin") if 0.059 < q[0] < 0.061 else None
+
+    points = [(0.0,) * 6, (0.1,) + (0.0,) * 5]
+    assert not any(check(q) for q in _extend(*points))
+    assert planner_module.fine_hit(points, check) == ("robots/a/link", "t/thin")
+    assert planner_module.fine_hit([(0.0,) * 6, (0.05,) + (0.0,) * 5], check) is None
 
 
 def test_the_preview_follows_the_cosine_profile_sent():
@@ -290,11 +328,11 @@ def dual_mirror(world, at=None):
 
 
 def test_joint_limits_come_from_the_urdf_within_the_ur_limits(world):
-    """The dual-arm robot's tighter URDF limits apply; joints the URDF allows a full turn keep the UR's."""
+    """The dual-arm robot's tighter URDF limits apply, a full turn keeps the UR's, the lift stops at pointing down."""
     _config, mirror, _scene = dual_mirror(world)
     lower, upper = joint_limits(mirror, arm_joint_names(LEFT))
-    np.testing.assert_allclose(upper, np.radians([360.0, 270.0, 180.0, 240.0, 240.0, 240.0]), atol=1e-6)
-    np.testing.assert_allclose(lower, -upper)
+    np.testing.assert_allclose(upper, np.radians([360.0, 90.0, 180.0, 240.0, 240.0, 240.0]), atol=1e-6)
+    np.testing.assert_allclose(lower, np.radians([-360.0, -270.0, -180.0, -240.0, -240.0, -240.0]), atol=1e-6)
 
 
 def test_a_target_past_a_joint_limit_is_refused(world):
@@ -303,7 +341,8 @@ def test_a_target_past_a_joint_limit_is_refused(world):
     goal = np.array(config.arms[0].stow_joints if config.arms[0].name == LEFT else config.arms[1].stow_joints)
     goal[5] = np.radians(250.0)
     result = plan_arm(mirror, scene, LEFT, goal, threading.Event())
-    assert result.path is None and result.reason.startswith("the target is past the joint limits: wrist_3_joint")
+    assert result.path is None
+    assert result.reason.startswith("the target is past the joint limits: left_ur_arm_wrist_3_joint")
 
 
 def test_a_start_past_a_joint_limit_is_refused(world):
@@ -357,3 +396,168 @@ def test_the_floor_lets_wheels_rest_on_it_but_not_an_arm_through_it(world, confi
     rng = np.random.default_rng(0)
     hits = [check(q) for q in rng.uniform(-np.pi, np.pi, size=(400, 6))]
     assert any(hit is not None and floor.id in hit for hit in hits), "no arm pose reached the floor"
+
+
+def floor_scene(config, start):
+    """Alice at `start` on the lab floor, as the obstacles plugin puts it (her platform links may touch it)."""
+    touches = tuple(link_id(robot_id(ALICE), link) for link in platform_links(config.model))
+    floor = floor_body("obstacles", None, touches)
+    scene = snapshot(config, start)
+    scene.bodies[floor.id], scene.world_poses[floor.id] = floor, floor.placement
+    return scene, floor
+
+
+def low_pose(world, config, low: float, high: float):
+    """An arm pose its closest part is between `low` and `high` above the floor at, 1 cm clear of everything else."""
+    start = start_and_goal(config)[0]
+    scene, floor = floor_scene(config, start)
+    mirror = world.sync(scene, ALICE)
+    near, usual = mirror.search_check(NAMES, high), mirror.search_check(NAMES, ARM_PLAN_MARGINS.default)
+    # * Within the joint limits the planner keeps (the shoulder lift never through pointing down).
+    lower, upper = joint_limits(mirror, NAMES)
+    rng = np.random.default_rng(1)
+    for q in rng.uniform(np.maximum(lower, -np.pi), np.minimum(upper, np.pi), size=(4000, 6)):
+        to_floor = [distance for pair, distance in near.distances(q).items() if floor.id in pair]
+        if to_floor and low < min(to_floor) < high and usual(q) is None \
+                and mirror.collisions(dict(zip(NAMES, q))) == []:
+            return tuple(q), min(to_floor)
+    raise AssertionError(f"no arm pose between {low} and {high} m above the floor")
+
+
+def floor_only(mirror, margins):
+    """A check of the floor's pairs only, at their margins in `margins`; every other pair for contact only."""
+    return mirror.search_check(NAMES, 0.0, pair_margins={pair: margin for pair, margin in
+                                                         margins.pair_margins(mirror).items()
+                                                         if any(map(is_floor, pair))})
+
+
+# * Under 1 s (the pose search samples 4000 poses without planning): left in the per-commit suite on purpose.
+def test_the_floor_keeps_its_own_larger_margin(world, config):
+    """A pose 2-4 cm above the floor clears the usual 1 cm but not the floor's 5 cm; only floor pairs get that."""
+    start = start_and_goal(config)[0]
+    q, _ = low_pose(world, config, 0.02, 0.04)
+    scene, floor = floor_scene(config, start)
+    mirror = world.sync(scene, ALICE)
+    special = ARM_PLAN_MARGINS.pair_margins(mirror)
+    assert special and all(floor.id in pair for pair in special)
+    assert set(special.values()) == {FLOOR_PLAN_DISTANCE}
+    assert mirror.search_check(NAMES, ARM_PLAN_MARGINS.default)(q) is None
+    hit = ARM_PLAN_MARGINS.search_check(mirror, NAMES)(q)
+    assert hit is not None and floor.id in hit
+
+
+@pytest.mark.slow
+def test_a_path_to_a_target_well_above_the_floor_keeps_5_cm_from_it(world, config):
+    """A target 6-9 cm above the floor clamps nothing: the whole path keeps the floor's 5 cm."""
+    start = start_and_goal(config)[0]
+    goal, _ = low_pose(world, config, 0.06, 0.09)
+    scene, floor = floor_scene(config, start)
+    mirror = world.sync(scene, ALICE)
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is not None, result.reason
+    assert result.path.margins.clamps == () and result.path.margins.note() == "keeps 1 cm, 5 cm from the floor"
+    assert planner_module.fine_hit(result.path.waypoints, floor_only(mirror, ARM_PLAN_MARGINS)) is None
+
+
+@pytest.mark.slow
+def test_a_target_near_the_floor_keeps_what_it_has_there(world, config):
+    """A target 2-4 cm above the floor clamps only the floor's margin, as for any close pair; the path holds it."""
+    start = start_and_goal(config)[0]
+    goal, height = low_pose(world, config, 0.02, 0.04)
+    scene, floor = floor_scene(config, start)
+    mirror = world.sync(scene, ALICE)
+    margins = ARM_PLAN_MARGINS.clamped_at(mirror, NAMES, start, goal)
+    assert margins.clamps and all(floor.id in (clamp.first, clamp.second) for clamp in margins.clamps)
+    assert ARM_PLAN_MARGINS.default < margins.clamps[0].kept < height
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is not None, result.reason
+    assert result.path.margin == ARM_PLAN_MARGINS.default, "a floor 2-4 cm away leaves the usual 1 cm elsewhere"
+    note = result.path.margins.note()
+    assert note.startswith("keeps only") and "the floor" in note and "(usual 5 cm)" in note
+    assert planner_module.fine_hit(result.path.waypoints, floor_only(mirror, margins)) is None, \
+        "the path comes closer to the floor than the target"
+
+
+@pytest.mark.slow
+def test_both_of_cindys_arms_go_home_in_one_search(world):
+    """B20_R's way home, both arms in one search: each ends at its goal, and every step of the path is clear."""
+    purged = purged_process()
+    serial = robot_config(CINDY).serial
+    action, home = movement(purged, "B20_R_home")
+    goal = classify(purged.process, action, home).goal_joints
+    arms = ("left_ur_arm", "right_ur_arm")
+    names = [name for arm in arms for name in arm_joint_names(arm)]
+    scene = with_stand_ins(design_scene(purged, "B20_R_home"), {robot_id(serial)}).scene
+    mirror = world.sync(scene, serial)
+    result = plan_arms(mirror, scene, arms, [goal[name] for name in names], threading.Event())
+    assert result.path is not None, result.reason
+    path = result.path
+    assert path.joint_names == tuple(names)
+    np.testing.assert_allclose(path.goal, [goal[name] for name in names], atol=1e-9)
+    steps = [q for q1, q2 in zip(path.points[:-1], path.points[1:]) for q in _extend(q1, q2)]
+    for q in steps[::5]:
+        assert mirror.collisions(dict(zip(names, q))) == [], f"collides at {q}"
+
+
+def test_a_lift_past_pointing_down_is_refused_without_a_search(world, monkeypatch):
+    """B169_J_transfer's goal: the left lift at +174.9 deg (the same pose as -185.1) is past the limit, said why."""
+    config, _mirror, _scene = dual_mirror(world)
+    stow = np.array(next(arm.stow_joints for arm in config.arms if arm.name == LEFT))
+    start, goal = stow.copy(), stow.copy()
+    start[1], goal[1] = np.radians(-5.0), np.radians(174.9)
+    _config, mirror, scene = dual_mirror(world, start)
+    monkeypatch.setattr(planner_module, "connect", lambda *args, **kwargs: pytest.fail("searched"))
+    result = plan_arm(mirror, scene, LEFT, goal, threading.Event())
+    assert result.path is None
+    assert result.reason.startswith("the target is past the joint limits: left_ur_arm_shoulder_lift_joint at 174.9 "
+                                    "deg, outside -270 to 90 deg (the upper arm would point down into the platform")
+
+
+def test_a_failed_search_says_what_blocked_it(world, config, monkeypatch):
+    """No time to search around a box: the detail names the box as the blocker and the joint that turns most."""
+    start, goal = start_and_goal(config)
+    box = Body("t/box", box_geometry((0.15, 0.15, 0.15)), tool_at(world, config, (start + goal) / 2), label="the box")
+    mirror, scene = synced(world, snapshot(config, start, (box,)))
+    monkeypatch.setattr(planner_module, "TIME_LIMIT", 0.0)
+    result = plan_arm(mirror, scene, ARM, goal, threading.Event())
+    assert result.path is None and result.reason == "no path found in 0 s"
+    assert " poses checked were blocked, mostly " in result.detail and "t/box 100 %" in result.detail
+    assert result.detail.endswith("biggest turns: ur_arm_shoulder_pan_joint -180°, ur_arm_shoulder_lift_joint +0°, "
+                                  "ur_arm_elbow_joint +0°")
+
+
+def test_a_saved_problem_loads_with_its_own_copy_of_each_urdf(world, config, tmp_path):
+    """Saved and loaded, the request is the same, the robot reads its URDF copy, and the search runs on it."""
+    start, goal = start_and_goal(config)
+    scene = snapshot(config, start)
+    folder = save_problem(Problem(scene, ALICE, (ARM,), tuple(goal), "no path found in 60 s", "detail"), tmp_path)
+    loaded = load_problem(folder)
+    robot = loaded.scene.robots[robot_id(ALICE)]
+    assert robot.model.urdf == folder / "robots_0804.urdf" and robot.model.urdf.read_text() == \
+        config.model.urdf.read_text()
+    assert loaded.start == pytest.approx(tuple(start)) and loaded.goal == pytest.approx(tuple(goal))
+    assert (loaded.arms, loaded.reason, loaded.detail) == ((ARM,), "no path found in 60 s", "detail")
+    pool = MirrorPool()
+    try:
+        result = plan_arm(pool.sync(loaded.scene, ALICE), loaded.scene, ARM, loaded.goal, threading.Event())
+    finally:
+        pool.close()
+    assert result.path is not None and result.direct, result.reason
+
+
+#: Two poses 6-14 cm above the floor whose straight joint move dips under its 5 cm.
+DIPPING_START = (2.365, 0.08, 0.297, 0.393, 1.045, -1.106)
+DIPPING_GOAL = (2.071, 0.032, 1.345, 1.614, 0.547, -0.423)
+
+
+@pytest.mark.slow
+def test_a_straight_move_that_dips_towards_the_floor_is_searched_around_it(world, config):
+    """The straight move comes under 5 cm of the floor, so the search goes round and keeps the floor's margin."""
+    scene, _floor = floor_scene(config, np.array(DIPPING_START))
+    mirror = world.sync(scene, ALICE)
+    check = floor_only(mirror, ARM_PLAN_MARGINS)
+    assert planner_module.fine_hit([DIPPING_START, DIPPING_GOAL], check) is not None, "the straight move must dip"
+    result = plan_arm(mirror, scene, ARM, DIPPING_GOAL, threading.Event())
+    assert result.path is not None, result.reason
+    assert not result.direct and result.path.margins.clamps == ()
+    assert planner_module.fine_hit(result.path.waypoints, check) is None

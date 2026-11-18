@@ -24,7 +24,7 @@ What stays open from the review of Yijiang's port (merge 65053b61, report "YH Po
 - All planners on the live scene: `scene_for` rebuilds the process at the step's start, keeps only `obstacles/` from
   the snapshot (drops `tracked/*`) and stands unmeasured robots at their design pose. Blockers to remove first: the
   process plugin's drawn state must equal the step's start (the selection can differ), a tracked bar duplicates its
-  process body, and the per-step edits (`hide_held`, `ignore_built`, `end_contacts`, ground halves on the floor) must
+  process body, and the per-step edits (`hide_held`, `ignore_built`, ground halves on the floor) must
   become overlays on the live scene.
 
 - Exec's arm motions under a runtime clearance (1 cm, as the planners' commits) once the live scene carries the

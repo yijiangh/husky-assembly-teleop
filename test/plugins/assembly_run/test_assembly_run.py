@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from planning_fixtures import DATA
 from plugin_fakes import FakeContext
@@ -15,12 +17,11 @@ from process_fixtures import JOINTS, build_process, with_action, write_robot_fil
 from husky_assembly_teleop.plugins.assembly_run.panel import RunPanel
 from husky_assembly_teleop.plugins.assembly_run.plugin import AssemblyRunPlugin
 from husky_assembly_teleop.plugins.process.loading import load_process
+from husky_assembly_teleop.plugins.process.placement import placed
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, take_lease
-from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.assembly_planning.steps import first_step
 from husky_assembly_teleop.shared.execution.basis import basis_of, stale_reason
-from husky_assembly_teleop.shared.movement_exec_contract import INSERT_PART, PartPlan, part_plan
 from husky_assembly_teleop.shared.process_contract import Selection
 from husky_assembly_teleop.shared.runs.runs import (ASSUMED, DONE, LIVE, PENDING, RunSettings, find_runs, read_events,
                                                     read_run)
@@ -51,6 +52,20 @@ class FakeProcess:
         self.loaded, self.index, self.selected = loaded_process(process), 0, []
         self.transfer_as_free = True
         self.marks: dict[str, str] = {}
+        self.authored, self.placement, self.placements = self.loaded.process, Pose(), []
+        self.grasp_offsets, self.grasp_requests = {}, []
+
+    def request_placement(self, placement) -> None:
+        """Place the build: a new placed process, the same authored one."""
+        self.placements.append(placement)
+        self.placement = placement
+        self.loaded = loaded_process(placed(self.authored, placement))
+
+    def request_grasp_offsets(self, offsets) -> None:
+        """Note the grasp offsets: a new process, the same authored one."""
+        self.grasp_requests.append(dict(offsets))
+        self.grasp_offsets = dict(offsets)
+        self.loaded = loaded_process(replace(placed(self.authored, self.placement)))
 
     @property
     def selection(self) -> Selection:
@@ -880,6 +895,26 @@ def test_a_step_started_while_waiting_for_a_live_robot_stops_the_automatic_selec
     assert "Select refused: 0804 is leased by movement_exec" in plugin._message
 
 
+def test_a_refusal_goes_once_the_current_step_changes(tmp_path):
+    """Select refused while the executor leases a robot; given back, the selection that works takes the refusal away."""
+    lab = Lab(tmp_path, alice=True)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        lab.moving(ALICE, False)
+        plugin.request_mark_done()
+        await settle(plugin)
+        lease = lab.lease_to_exec("a200-0804")
+        plugin.request_set_current("B1_J_joint")
+        assert "Select refused" in plugin._message and plugin._failed
+        lease.release()
+        plugin.request_set_current("B1_J_joint")
+        assert plugin._message == "" and not plugin._failed
+        await settle(plugin)
+
+    asyncio.run(scenario())
+
+
 def test_an_arm_moving_before_the_second_click_refuses_the_mark(tmp_path):
     """Cindy not live: the first click asks for a second; her arm starts moving meanwhile, so the second is refused."""
     lab = Lab(tmp_path, live_from=None)
@@ -1021,7 +1056,8 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
         panel = plugin._panel = RunPanel(lab.ctx, plugin)
         labels = [widget.label for widget in lab.ctx.gui.widgets if widget.kind in ("slider", "checkbox")]
         # * No Rigid insert: a ground bar always inserts rigid, every other bar rigid then compliant.
-        assert labels == ["Insert split mm", "Spiral", "Spiral s", "Spiral turns", "Servo by bar",
+        assert labels == ["Insert split mm", "Spiral", "Spiral s", "Spiral turns", "Cancel bar weight", "Insert push N",
+                          "Stiffness across", "Stiffness along", "Grasp stiffness", "Servo by bar",
                           "Retreat live axis", "Retreat compliant"]
         panel._servo.callback(False)
         panel._spiral_seconds.callback(30.0)
@@ -1038,11 +1074,42 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
     assert (shown._servo.value, shown._spiral_seconds.value, shown._spiral_turns.value) == (False, 30.0, 6)
 
 
-@pytest.mark.safety
-def test_the_spiral_box_is_greyed_unless_the_steps_insert_has_two_mating_joints(tmp_path, monkeypatch):
-    """The Spiral box is greyed at start, on a by-hand step and on a one-tool insert, shown unticked, the setting kept.
+def test_the_grasp_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_path):
+    """Grasp controller and stiffness: a controller not offered or a stiffness out of range is refused.
 
-    With the step's part a two-tool insert it is live and shows the setting, and a click on it reaches the plugin.
+    Joint and 2000 N/m set from the panel: saved, read back after a restart, shown by a new panel, the stiffness greyed.
+    """
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        for changes, words in (({"grasp_controller": "stiff"}, "the grasp's controller must be compliance or joint, "
+                                                               "not 'stiff'"),
+                               ({"grasp_stiffness": 100.0}, "the grasp's stiffness must be 200 to 5000 N/m, not 100")):
+            plugin.request_settings(**changes)
+            assert plugin._message.startswith("Settings refused") and words in plugin._message
+            assert plugin.view.settings == RunSettings()
+        panel = plugin._panel = RunPanel(lab.ctx, plugin)
+        assert (panel._grasp.value, panel._grasp_stiffness.value) == ("compliance", 500.0)
+        panel._grasp_stiffness.callback(2000.0)
+        panel._grasp.callback("joint")
+        await settle(plugin)
+        again, _process = await opened(lab)
+        shown = again._panel = RunPanel(lab.ctx, again)
+        again.draw(lab.ctx)
+        return again.view.settings, shown
+
+    settings, shown = asyncio.run(scenario())
+    assert (settings.grasp_controller, settings.grasp_stiffness) == ("joint", 2000.0)
+    assert (shown._grasp.value, shown._grasp_stiffness.value) == ("joint", 2000.0) and shown._grasp_stiffness.disabled
+
+
+@pytest.mark.safety
+def test_the_spiral_box_is_greyed_on_a_ground_bars_action_and_live_on_any_other(tmp_path):
+    """The Spiral box is greyed at start and on a ground bar's action, shown unticked, the setting kept.
+
+    On an action that tightens a joint screw it is live from its first step, shows the setting, and a click on it
+    reaches the plugin.
     """
     lab = Lab(tmp_path)
 
@@ -1053,20 +1120,41 @@ def test_the_spiral_box_is_greyed_unless_the_steps_insert_has_two_mating_joints(
         plugin.request_settings(spiral=True)
         await settle(plugin)
         plugin.draw(lab.ctx)
-        assert plugin.view.current == ("B1_J_joint", 0)  # the mount, by hand
+        assert plugin.view.current == ("B1_J_joint", 0)  # B1 stands on its ground half
         assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (True, False, True)
-        plugin.request_set_current("B1_J_joint", 2)  # the insert, one tool
-        plugin.draw(lab.ctx)
-        assert len(part_plan(plugin.view.process, "B1_J_joint", 2, lab.ctx.config.robots, True).tools) < 2
-        assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (True, False, True)
-        two_tools = PartPlan(2, "B1_M2_insert", Routine.INSERT, INSERT_PART, ("left_ur_arm", "right_ur_arm"), "insert")
-        monkeypatch.setattr("husky_assembly_teleop.plugins.assembly_run.plugin.part_plan", lambda *_args: two_tools)
+        plugin.request_set_current("B2_J_joint", 0)  # B2 mates with B1's joint
         plugin.draw(lab.ctx)
         assert (panel._spiral.disabled, panel._spiral.value) == (False, True)
         panel._spiral.callback(False)
         await settle(plugin)
         plugin.draw(lab.ctx)
         assert (panel._spiral.disabled, panel._spiral.value, plugin.view.settings.spiral) == (False, False, False)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.safety
+def test_the_servo_box_is_live_only_on_a_ground_bars_action(tmp_path):
+    """Servo by bar is greyed at start and on a bar that mates with its joints, shown unticked, the setting kept.
+
+    On the ground bar's action it is live and ticked (its default), and a click on it reaches the plugin.
+    """
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        panel = plugin._panel = RunPanel(lab.ctx, plugin)
+        assert panel._servo.disabled
+        plugin.request_set_current("B2_J_joint", 0)  # B2 mates with B1's joint
+        plugin.draw(lab.ctx)
+        assert (panel._servo.disabled, panel._servo.value, plugin.view.settings.servo_by_bar) == (True, False, True)
+        plugin.request_set_current("B1_J_joint", 0)  # B1 stands on its ground half
+        plugin.draw(lab.ctx)
+        assert (panel._servo.disabled, panel._servo.value) == (False, True)
+        panel._servo.callback(False)
+        await settle(plugin)
+        plugin.draw(lab.ctx)
+        assert (panel._servo.disabled, panel._servo.value, plugin.view.settings.servo_by_bar) == (False, False, False)
 
     asyncio.run(scenario())
 
@@ -1275,3 +1363,70 @@ def test_an_as_built_record_goes_to_the_days_file_on_the_drive(tmp_path):
     assert any(line.startswith("[as-built] B1_M2_insert start NOT recorded: FileNotFoundError(")
                for line in lab.ctx.lines("error"))
     assert len(path.read_text().splitlines()) == 1 and not plugin._save_error
+
+
+def test_the_build_placement_is_kept_by_the_run_and_put_back_when_it_opens(tmp_path):
+    """Placed in the process panel: saved in run.json (starting the run); after a restart the run places the build.
+
+    A re-placed process is the same run going on, not another process: the run is not reset.
+    """
+    lab = Lab(tmp_path)
+    placement = Pose((1.0, -0.5, 0.0), (0.0, 0.0, 0.3826834323650898, 0.9238795325112867))
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        process.request_placement(placement)
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        run = plugin._run
+        plugin.update(lab.ctx)
+        assert plugin._run is run and plugin._loaded.process is process.loaded.process
+        again, fresh = await opened(lab)
+        again.update(lab.ctx)
+        return run, again, fresh
+
+    run, again, fresh = asyncio.run(scenario())
+    assert run is not None
+    saved = json.loads((run.folder / "run.json").read_text())["settings"]["placement"]
+    np.testing.assert_allclose(saved, [*placement.position, *placement.orientation])
+    assert again.view.settings.placement_pose == placement
+    assert fresh.placements == [placement] and fresh.placement == placement
+
+
+def test_the_grasp_offsets_are_kept_by_the_run_and_put_back_when_it_opens(tmp_path):
+    """Moved in the process panel: saved in run.json, moved back after a restart; out of range: refused."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        process.grasp_offsets = {"B1_H": (20.0, -30.0)}
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        run = plugin._run
+        plugin.request_settings(grasp_offsets=[["B1_H", 200.0, 0.0]])
+        refused = plugin._message
+        again, fresh = await opened(lab)
+        again.update(lab.ctx)
+        return run, again, fresh, refused
+
+    run, again, fresh, refused = asyncio.run(scenario())
+    assert run is not None and refused.startswith("Settings refused") and "slide -150 to 150 mm" in refused
+    assert json.loads((run.folder / "run.json").read_text())["settings"]["grasp_offsets"] == [["B1_H", 20.0, -30.0]]
+    assert again.view.settings.grasp_offset_map == {"B1_H": (20.0, -30.0)}
+    assert fresh.grasp_requests == [{"B1_H": (20.0, -30.0)}]
+
+
+def test_a_placement_that_is_no_pose_is_refused(tmp_path):
+    """Not 7 numbers, or not a unit quaternion: refused, nothing saved."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        for value, words in (([0.0] * 6, "7 finite numbers"), ([0.0] * 7, "not a unit one"),
+                             ("north", "7 numbers")):
+            plugin.request_settings(placement=value)
+            assert plugin._message.startswith("Settings refused") and words in plugin._message
+        return plugin
+
+    plugin = asyncio.run(scenario())
+    assert plugin.view.settings == RunSettings() and not runs(lab)

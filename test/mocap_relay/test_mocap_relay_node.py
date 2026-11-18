@@ -20,12 +20,14 @@ from husky_assembly_teleop.mocap_relay.body_definitions import Reply
 from husky_assembly_teleop.mocap_relay.frame_log import FrameLog
 from husky_assembly_teleop.robot_interface.mocap_definitions import (MocapCamera, cameras_json, definitions_json,
                                                                      read_cameras, read_definitions)
+from husky_assembly_teleop.robot_interface.marker_cloud import read_cloud
 from husky_assembly_teleop.robot_interface.mocap_relay import MocapRelayState, floor_calibration_state
 from husky_assembly_teleop.world.calibration_sessions import (SESSIONS_FOLDER, Calibration, default_calibration,
                                                               sessions_folder)
 from husky_assembly_teleop.world.frame_follower import FrameFollower
 from husky_assembly_teleop.world.mocap_frame import FLOOR_SUFFIX, TRUSS_CAMERAS, truss_names
-from husky_assembly_teleop.mocap_relay.node import (FAKE_MOTIVE, MARKER_OCCLUDED, MARKER_POINT_CLOUD_SOLVED,
+from husky_assembly_teleop.mocap_relay.node import (FAKE_MOTIVE, MARKER_MODEL_SOLVED, MARKER_OCCLUDED,
+                                                    MARKER_POINT_CLOUD_SOLVED,
                                                     MARKER_UNLABELED, SIM_MOTIVE_PREFIX, TRUTH, TRUTH_PREFIX,
                                                     MocapRelay, apply_base_calibration, remove_base_calibration,
                                                     simulated_mode, z_up_body)
@@ -267,6 +269,22 @@ def test_in_a_simulation_a_fake_motive_stands_in_for_the_truth_while_it_streams(
     message = published(node, 3)
     assert pose_of(message)[0][0] == 1.0 and message.pose_valid
     assert "rigid body 3: now from the simulator's truth, was the fake Motive" in node.get_logger().text("info")
+
+
+@pytest.mark.parametrize("served", [False, True])
+def test_only_a_served_streaming_ids_service_means_another_relay(monkeypatch, served):
+    """A monitor's client of the streaming-ids service lists its name too; only a server refuses the start."""
+    monkeypatch.setattr("husky_assembly_teleop.mocap_relay.node.RELAY_DISCOVERY_SEC", 0.2)
+    node, destroyed = MocapRelay.__new__(MocapRelay), []
+    probe = SimpleNamespace(service_is_ready=lambda: served)
+    node.create_client = lambda _type, name: probe if name == "/mocap/get_streaming_ids" else None
+    node.destroy_client = destroyed.append
+    if served:
+        with pytest.raises(RuntimeError, match="Another mocap relay is already running"):
+            node._refuse_if_relay_on_network()
+    else:
+        node._refuse_if_relay_on_network()
+    assert destroyed == [probe]
 
 
 @pytest.mark.parametrize("domain, sim", [("80", False), ("70", False), ("70", True)])
@@ -547,6 +565,39 @@ def test_poses_are_put_in_the_lab_frame_as_the_core_composes_them(tmp_path, seed
     assert same_rotation(quaternion, expected.orientation)
 
 
+def cloud_frame(node: MocapRelay, by_model: dict) -> None:
+    """One NatNet frame with no rigid body, only these markers (Y-up), then the frame's end."""
+    node._receive_labeled_markers(by_model)
+    node._receive_mocap_frame({"labeled_marker_count": sum(len(markers) for markers in by_model.values()),
+                               "receive_time_ns": 1_700_000_000_000_000_000})
+
+
+def test_the_cloud_has_every_marker_seen_of_any_asset_or_none_once_per_frame(tmp_path):
+    """Labeled or not, in the lab frame; Motive's fill-ins (occluded, or placed by the asset's model) left out."""
+    floor = Pose((0.1, -0.2, 0.05), tuple(Rotation.from_euler("xz", [1.0, 30.0], degrees=True).as_quat()))
+    node = floor_relay(tmp_path, floor_from_raw=(floor.position, floor.orientation))
+    node._cloud_publisher.sent.clear()
+    raw = np.array([1.0, 2.0, 0.5])
+    point = compose(floor, Pose(tuple(raw))).position
+    y_up = tuple(Y_UP_TO_Z_UP.inv().apply(raw))
+    cloud_frame(node, {1020: {1: {"pos": y_up, "size": (0.019,), "error": 0.0004, "param": MARKER_POINT_CLOUD_SOLVED},
+                              2: {"pos": (9.0, 9.0, 9.0), "size": (0.019,), "error": 0.0, "param": MARKER_OCCLUDED},
+                              3: {"pos": (9.0, 9.0, 9.0), "size": (0.019,), "error": 0.0,
+                                  "param": MARKER_MODEL_SOLVED}},
+                       0: {70000: {"pos": y_up, "size": (0.018,), "error": 0.0, "param": MARKER_UNLABELED}}})
+    node._publish_cloud()
+    node._publish_cloud()
+    assert len(node._cloud_publisher.sent) == 1, "each frame goes out once"
+    message = node._cloud_publisher.sent[0]
+    assert message.header.frame_id == "lab"
+    assert message.header.stamp.sec * 10**9 + message.header.stamp.nanosec == 1_700_000_000_000_000_000
+    cloud = read_cloud(message, 0.0)
+    np.testing.assert_allclose(cloud.positions, [point, point], atol=1e-5)
+    np.testing.assert_allclose(cloud.sizes, [0.019, 0.018], atol=1e-7)
+    np.testing.assert_allclose(cloud.residuals, [0.0004, 0.0], atol=1e-7)
+    assert cloud.ids.tolist() == [1020 << 16 | 1, 70000] and cloud.capture_time == pytest.approx(1.7e9)
+
+
 def test_poses_say_lab_with_a_floor_calibration_and_mocap_raw_without(tmp_path):
     """header.frame_id names the frame the pose is in."""
     node = relay()
@@ -579,6 +630,32 @@ def test_a_recalibration_changes_no_pose_until_the_refit_is_used_and_a_restart_s
     restarted = floor_relay(tmp_path, LAB_ANCHORS)
     recalibrated(restarted)
     assert announced_frame(restarted)["status"] == "refit_pending" and use_refit(restarted).success
+
+
+def test_a_recalibration_that_changed_motives_scale_is_followed_by_the_refit(tmp_path):
+    """10 Nov: Motive 0.62 mm/m shorter, nothing moved: pending by the anchors, then used, positions back.
+
+    Every published position (a body far out, the anchors, the cameras) at the floor calibration's; orientations
+    unchanged.
+    """
+    shrink = 1.0 - 0.62e-3
+    node = floor_relay(tmp_path, LAB_ANCHORS)
+    cameras = {name: replace(camera, position=tuple(shrink * np.asarray(camera.position)))
+               for name, camera in cameras_after([]).items()}
+    node._take_definitions(Reply(2.0, [], [z_up_camera_inverse(camera) for camera in cameras.values()]))
+    see_markers(node, [shrink * np.asarray(point) for point in anchors_after([])])
+    assert announced_frame(node)["status"] == "refit_pending" and announced_frame(node)["decides"] == "anchors"
+    assert use_refit(node).success and announced_frame(node)["lab_scale"] == pytest.approx(1.0 / shrink)
+    point = np.array([3.0, -3.0, 1.0])
+    np.testing.assert_allclose(published_point(node, shrink * point), point, atol=1e-6)
+    turned = tuple(Rotation.from_euler("z", 30.0, degrees=True).as_quat())
+    assert same_rotation(node._in_lab_frame(tuple(shrink * point), turned)[1], turned)
+    see_markers(node, [shrink * np.asarray(point) for point in anchors_after([])])
+    sent = json.loads(node._anchors_publisher.sent[-1].data)["anchors"]
+    np.testing.assert_allclose(sent["A5"], LAB_ANCHORS["A5"], atol=1e-6)
+    published_cameras = read_cameras(node._cameras_publisher.sent[-1].data)
+    for name, camera in LAB_CAMERAS.items():
+        np.testing.assert_allclose(published_cameras[name].position, camera.position, atol=1e-6)
 
 
 def test_nothing_pending_is_refused_by_the_service(tmp_path):

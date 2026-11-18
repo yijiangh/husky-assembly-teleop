@@ -13,9 +13,10 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import viser
 from async_timeout import timeout
 from planning_fixtures import ALICE, BELLE, CINDY, DATA, design_scene, purged_process, robot_config, step
-from plugin_fakes import FakeScene
+from plugin_fakes import FakeContext, FakeScene
 from process_fixtures import build_process
 
 from husky_assembly_teleop.plugins.motion_planner import plugin as motion
@@ -357,3 +358,40 @@ def test_a_free_searchs_trees_are_drawn_every_two_seconds_and_go_when_a_path_is_
     assert plugin._tree_nodes == plugin._check_nodes == [] and len(scene.nodes) == 7, "a found path clears at once"
     plugin._running = ""
     assert plugin.progress == ""
+
+
+def test_each_robot_has_a_tab_with_its_window_and_ticking_one_moves_the_window(monkeypatch):
+    """Tabs as in Control, one per robot with arms; ticking a second robot unticks the first and opens on the second."""
+    calls = []
+    monkeypatch.setattr(motion, "with_guesses", lambda snapshot, _robot: (snapshot, ()))
+    plugin = planner(SimpleNamespace(serials=(), tree=None, log=None, close=lambda: None,
+                                     set_gui=lambda gui, _scene, serial: calls.append((gui, serial))))
+    ctx = FakeContext(robots=(SimpleNamespace(serial=ALICE, arms=("arm",)), SimpleNamespace(serial=BELLE, arms=()),
+                              SimpleNamespace(serial=CINDY, arms=("left", "right"))))
+    tabs = []
+    add_tab_group = ctx.gui.add_tab_group
+
+    def tab_group(*args, **options):
+        group = add_tab_group(*args, **options)
+        add_tab = group.add_tab
+        group.add_tab = lambda label, icon=None: tabs.append((label, icon)) or add_tab(label, icon)
+        return group
+
+    ctx.gui.add_tab_group = tab_group
+
+    async def scenario():
+        plugin.setup(ctx)
+        boxes = plugin._window_boxes
+        assert list(boxes) == [ALICE, CINDY]
+        boxes[ALICE].value = True
+        boxes[ALICE].callback(True)
+        await asyncio.gather(*ctx._tasks)
+        boxes[CINDY].value = True
+        boxes[CINDY].callback(True)
+        await asyncio.gather(*ctx._tasks)
+        return boxes[ALICE].value
+
+    alice_ticked = asyncio.run(scenario())
+    plugin.teardown(None)
+    assert tabs == [(ALICE.split("-")[-1], viser.Icon.ROBOT), (CINDY.split("-")[-1], viser.Icon.ROBOT)]
+    assert calls == [(True, ALICE), (True, CINDY)] and not alice_ticked

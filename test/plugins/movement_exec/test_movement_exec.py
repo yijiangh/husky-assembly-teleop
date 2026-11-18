@@ -17,12 +17,13 @@ from sensor_msgs.msg import JointState
 import pytest
 from planning_fixtures import purged_process, step
 from plugin_fakes import FakeContext, from_outside
-from robot_lab import LEFT, FakeRun, RobotLab
+from robot_lab import LEFT, FakeRun, RobotLab, ShowsCurrent
 
 from husky_assembly_teleop.config import short_serial
 from husky_assembly_teleop.monitor import HuskyMonitor
 from husky_assembly_teleop.plugin_api.context import PluginContext
 from husky_assembly_teleop.plugins.movement_exec import plugin as exec_module
+from husky_assembly_teleop.plugins.movement_exec.servo_measure import GIVE_UP, TOOL0_SERVO
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
 from husky_assembly_teleop.plugins.movement_exec.sequences import PartOperator
 from husky_assembly_teleop.robot_interface.base import BaseState, FollowerState
@@ -30,6 +31,7 @@ from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON
 from husky_assembly_teleop.shared.execution.basis import basis_of
+from husky_assembly_teleop.shared.runs.runs import record_event
 from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
 from husky_assembly_teleop.shared.execution.stream import arm_base_in_world
 from husky_assembly_teleop.shared.execution.tools import ROBOTIQ_CLOSE
@@ -37,8 +39,8 @@ from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DEFA
                                                                  HANDOFF_PART, HOLD_NOT_SENT, INSERT_PART, LATER,
                                                                  REFUSED, REFUSED_PART, RETREAT_PART, SERVO_INDEX,
                                                                  SERVO_PART,
-                                                                 WITH_MOTION_PART, ExecRequest, PartPlan, part_plan,
-                                                                 step_parts)
+                                                                 WITH_MOTION_PART, ExecRequest, ExecResult, PartPlan,
+                                                                 part_plan, step_parts)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import RouteResult
@@ -77,7 +79,7 @@ class Lab(RobotLab):
         super().__init__(**driver)
         self.loaded = purged_process()
         self.run = FakeRun(self.loaded, current)
-        self.ctx.plugins = {"assembly_run": self.run,
+        self.ctx.plugins = {"assembly_run": self.run, "process": ShowsCurrent(self.run),
                             "motion_planner": SimpleNamespace(request_servo_step=nothing_left)}
         self.plugin = MovementExecPlugin()
         self.plugin.setup(self.ctx)
@@ -186,6 +188,45 @@ def test_a_motion_is_sent_on_exec_arrives_and_is_recorded():
     assert len(record["exec"]["base_at_start"]) == 7 and len(record["exec"]["base_at_end"]) == 7
 
 
+def test_a_restart_reads_the_finished_movements_back_from_the_run(tmp_path):
+    """The exec event carries its keys; a new executor on the same run folder finds them finished, once read back."""
+    lab = Lab()
+    result, _held = execute(lab, lab.request())
+    assert result.status == DONE
+    (_event, fields), = [record for record in lab.run.records if record[0] == "exec"]
+    assert fields["data"]["keys"] == [[2, 2]]
+    record_event(tmp_path, "exec", 1.0, action=fields["action"], movement=fields["movement"], data=fields["data"])
+
+    again = Lab()
+    again.run.view.folder = tmp_path
+    loaded = again.run.view.process
+    assert again.plugin.finished(loaded, "B20_R") == frozenset(), "nothing before the log is read"
+
+    async def read_back():
+        again.plugin.update(again.ctx)
+        for _ in range(50):
+            await again.ctx.next_tick()
+            await asyncio.sleep(0.01)
+            if again.plugin.finished(loaded, "B20_R"):
+                return
+
+    run_guarded(read_back())
+    assert again.plugin.finished(loaded, "B20_R") == {(2, 2)}
+    assert any("read back from the run's log" in line for _level, line in again.ctx.logs)
+
+
+def test_a_forget_is_written_into_the_run_only_once_it_exists(tmp_path):
+    """Before the run's first record nothing is written (it would start a run); then each forget, exactly."""
+    lab = Lab()
+    lab.plugin.request_forget("B20_R", {(2, 2)})
+    assert lab.run.records == []
+    lab.run.view.folder = tmp_path
+    lab.plugin.request_forget("B20_R", {(2, 2), (1, 0)})
+    lab.plugin.request_forget("B20_J")
+    assert [(event, fields["action"], fields["data"]) for event, fields in lab.run.records] == [
+        ("forget", "B20_R", {"done": [[1, 0], [2, 2]]}), ("forget", "B20_J", {"done": None})]
+
+
 @pytest.mark.safety
 def test_every_robot_is_back_when_the_result_arrives():
     """The result resolves with every robot given back already, so its caller may start the next step at once."""
@@ -230,7 +271,7 @@ def test_a_refused_lease_is_busy_and_leases_nothing(monkeypatch):
     """The robots' lease refused: busy, naming the lease, nothing leased or sent."""
     lab = Lab()
 
-    def refused(_serials, _label):
+    def refused(_serials, _label, moves=None):
         raise NotLeased("robot 0806 is leased by a plugin: teleop")
 
     monkeypatch.setattr(lab.ctx, "take_lease", refused)
@@ -267,6 +308,42 @@ def test_a_request_for_another_robot_or_movement_is_refused(changes, words):
     result, held = execute(lab, lab.request(**changes))
     assert result.status == REFUSED and words in result.reason
     assert held is None and lab.published() == 0 and lab.run.records == []
+
+
+def test_a_failure_stays_on_its_step_until_the_next_request_starts():
+    """A refusal stays while the step does; the next Exec takes it away as it starts, and its own end is said."""
+    lab = Lab()
+    lab.plugin.update(lab.ctx)
+    result, _held = execute(lab, lab.request(route=None))
+    assert result.status == REFUSED and lab.plugin._last_failed and "no plan for the motion" in lab.plugin._last
+    lab.plugin.update(lab.ctx)
+    assert lab.plugin._last_failed and "no plan for the motion" in lab.plugin._last
+    seen = []
+
+    async def look(lab):
+        seen.append((lab.plugin._last, lab.plugin._last_failed))
+
+    result, _held = execute(lab, lab.request(), during=look)
+    assert result.status == DONE and seen == [("", False)]
+    assert "every part done" in lab.plugin._last and not lab.plugin._last_failed
+
+
+def test_a_failure_goes_with_its_step_and_a_hold_not_sent_does_not():
+    """Moving on drops a failure but keeps a result that did not fail; a hold not sent stays: the arm may still move."""
+    lab = Lab()
+    lab.plugin.update(lab.ctx)
+    lab.plugin._finished(lab.ctx, None, ExecResult(REFUSED, "the arm is not operational"))
+    lab.run.request_set_current("B20_R", 0)
+    lab.plugin.update(lab.ctx)
+    assert lab.plugin._last == "" and not lab.plugin._last_failed
+    lab.plugin._finished(lab.ctx, None, ExecResult(DONE, "every part done"))
+    lab.run.request_set_current("B20_R", 2)
+    lab.plugin.update(lab.ctx)
+    assert "every part done" in lab.plugin._last
+    lab.plugin._finished(lab.ctx, None, ExecResult(HOLD_NOT_SENT, "HOLD NOT SENT on left_ur_arm"))
+    lab.run.request_set_current("B20_R", 0)
+    lab.plugin.update(lab.ctx)
+    assert "HOLD NOT SENT" in lab.plugin._last and lab.plugin._last_failed
 
 
 @pytest.mark.safety
@@ -377,7 +454,7 @@ def test_a_motion_starting_in_contact_is_refused_and_one_that_trips_fails():
 
         result, _held = execute(lab, lab.request(), during=trip)
         if refuse:
-            assert result.status == REFUSED and "nothing sent" in result.reason and problem in result.reason
+            assert result.status == REFUSED and problem in result.reason and "nothing sent" not in result.reason
             assert not lab.cindy._multi_arm.messages
         else:
             assert result.status == FAILED and f"soft stopped: {problem}" in result.reason
@@ -425,7 +502,8 @@ def test_an_error_inside_holds_and_gives_the_robot_back(monkeypatch):
 def test_the_transfer_with_the_workaround_runs_motion_then_the_bar_placed_and_grasped_by_hand():
     """B20_J's transfer step: the motion, the bar placed and clamped as one part (also 2), the servo.
 
-    Cancel at the bar's prompt leaves done = (3,); the part's record is named after its first movement.
+    Cancel at the bar's prompt leaves done = (3,), the force sensors already zeroed on the empty tools and kept for
+    the next request; the part's record is named after its first movement.
     """
     lab = Lab(current=("B20_J", 3))
     request = lab.request("B20_J_transfer")
@@ -433,6 +511,8 @@ def test_the_transfer_with_the_workaround_runs_motion_then_the_bar_placed_and_gr
         (3, "motion", ()), (1, "operator", (2,)), (SERVO_INDEX, "servo", ())]
     result, _held = execute(lab, request, False)
     assert result.status == CANCELLED and result.done == (3,)
+    assert all(len(arm._zero_ft.calls) == 1 for arm in lab.cindy.arms.values())
+    assert lab.plugin._ft_zero[request.serial]["reason"] == "transit to the insert start (tools empty)"
     assert [file["movement"] for file in lab.run.files()] == ["B20_J_transfer", "B20_J_place_bar"]
 
 
@@ -447,7 +527,7 @@ def test_the_whole_transfer_step_ends_with_the_grasp_and_its_servo():
     result, _held = execute(lab, lab.request("B20_J_transfer"), True, True)
     assert result.status == DONE and result.done == (3, 1, 2, SERVO_INDEX), result.reason
     prompts = [fields["data"]["text"] for event, fields in lab.run.records if event == "prompt"]
-    assert any("SERVO by bar: no usable mocap fit of B20 (asset 1020)" in text for text in prompts), prompts
+    assert any("SERVO by bar: no usable mocap fit of B20: " in text for text in prompts), prompts
     files = lab.run.files()
     assert files[1]["outcome"]["status"] == "confirmed"
     assert files[-2]["kind"] == "transfer" and files[-2]["outcome"]["status"] == DONE
@@ -480,6 +560,32 @@ def test_a_dry_run_never_gives_done_and_sends_nothing():
     assert any("DRY RUN a200-0806 left_ur_arm" in line for line in lab.ctx.lines("warn"))
     assert said(lab)[0].startswith("cindy (0806): DRY RUN — B20_J_transfer — move left_ur_arm, right_ur_arm")
     assert lab.run.files()[0]["outcome"]["dry_run"] is True
+
+
+@pytest.mark.safety
+def test_a_requests_own_dry_run_sends_nothing_with_the_dry_run_box_off():
+    """A request's own dry run (a rehearsal) of B20_J's transfer step: every check, nothing sent, nothing finished.
+
+    The executor's Dry run box stays off and the requester's preview is never asked to show the motion.
+    """
+    lab = Lab(current=("B20_J", 3))
+    shown = []
+
+    async def scenario():
+        request = lab.request("B20_J_transfer", dry_run=True, preview=lambda *args: shown.append(args))
+        future = lab.plugin.request_execute(request)
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        assert lab.plugin.prompt.text.startswith("DRY RUN — ")
+        await answer(lab, True)
+        await answer(lab, True)  # the servo's bar prompt: no usable mocap fit of B20 (no fake Motive)
+        return await future
+
+    result = run_guarded(scenario())
+    assert result.status == DRY_RUN and result.done == () and lab.published() == 0
+    assert not lab.plugin.dry_run
+    assert lab.plugin.finished(lab.loaded, "B20_J") == frozenset()
+    assert all(route is None for route, _basis, _seconds in shown), "no motion previewed"
 
 
 @pytest.mark.safety
@@ -846,6 +952,60 @@ def test_a_robot_whose_link_dropped_while_moving_refuses_the_request():
     assert lab.free() and not lab.cindy._multi_arm.messages
 
 
+async def belle_link_drops(lab) -> None:
+    """Belle's joint states stop while she moves: she counts as moving for good ("can't tell")."""
+    belle = lab.belle.arms["ur_arm"]
+    driver = next(driver for driver in lab.drivers if getattr(driver, "arm", None) is belle)
+    with from_outside(lab.belle):
+        belle.send_joint_move(belle.joint_vector() + np.radians([30, 0, 0, 0, 0, 0]))
+    for _ in range(5):
+        await lab.ctx.next_tick()
+    driver.silent_from = lab.ctx.t
+    for _ in range(8):
+        await lab.ctx.next_tick()
+
+
+@pytest.mark.safety
+def test_a_robot_parked_in_health_does_not_refuse_the_request():
+    """Belle's link dropped, but she is parked in Health: Cindy's motion runs, Belle left out of the freeze too."""
+    lab = Lab()
+
+    async def scenario():
+        await belle_link_drops(lab)
+        lab.belle.parked = True
+        future = lab.plugin.request_execute(lab.request())
+        while lab.plugin.prompt is None and not future.done():
+            await asyncio.sleep(0)
+        if not future.done():
+            await answer(lab, True)
+        return await future
+
+    result = run_guarded(scenario())
+    assert result.status == DONE, result.reason
+    assert lab.belle.parked, "every robot leased, only Cindy moved: Belle stays parked"
+
+
+@pytest.mark.safety
+def test_a_part_by_hand_runs_while_another_robot_cannot_be_told_still():
+    """Belle's link dropped, not parked: the bar placed by hand still runs (it sends nothing); a motion is refused."""
+    lab = Lab(current=("B20_J", 3))
+    request = lab.request("B20_J_transfer")
+    mount = request.parts[1]
+
+    async def scenario():
+        await belle_link_drops(lab)
+        refused = await lab.plugin.request_execute(request)
+        future = lab.plugin.request_execute(replace(request, parts=(mount,)))
+        while lab.plugin.prompt is None and not future.done():
+            await asyncio.sleep(0)
+        await answer(lab, True)
+        return refused, await future
+
+    refused, result = run_guarded(scenario())
+    assert refused.status == REFUSED and "can't tell whether 0805 ur_arm is moving" in refused.reason
+    assert result.status == DONE and result.done == (1, 2), result.reason
+
+
 @pytest.mark.safety
 def test_a_robot_let_be_unknown_by_the_second_press_does_not_refuse_the_request():
     """Belle's joint states stop while she moves, but Exec's second press let her be unknown: Cindy's motion runs."""
@@ -1146,9 +1306,9 @@ def test_confirm_and_cancel_are_buttons_of_their_own_in_the_assembly_tab():
     """Confirm and Cancel are two buttons, on the desktop as on the phone; the desktop's reach the plugin."""
     lab = Lab()
     buttons = lab.ctx.gui.of_kind("button")
-    assert [(button.label, button.color) for button in buttons] == [
-        ("Confirm", "green"), ("Cancel", "red"), ("As-built: record now", None), ("Build as-built page", None),
-        ("Confirm", "green"), ("Cancel", "red")]
+    assert [(button.label, button.color) for button in buttons if button.label not in (GIVE_UP, TOOL0_SERVO)] == [
+        ("Confirm", "green"), ("Cancel", "red"), ("As-built: record now", None), ("Confirm", "green"),
+        ("Cancel", "red")]
     assert lab.ctx.gui.of_kind("button_group") == []
     buttons[0].callback()
     assert lab.plugin._last == "nothing to answer"
@@ -1284,7 +1444,8 @@ def test_b21s_insert_tightens_the_left_screw_only_and_ends_when_it_stalls():
     record = json.loads(json.dumps(lab.run.files()[-1]))
     assert record["part"]["kind"] == "insert" and record["outcome"]["status"] == "STALLED"
     assert record["outcome"]["settings"] == record["command"]["settings"] == {
-        "split_mm": 5.0, "spiral": False, "spiral_seconds": 20.0, "spiral_turns": 4, "retreat_compliant": False}
+        "split_mm": 5.0, "spiral": False, "spiral_seconds": 20.0, "spiral_turns": 4, "retreat_compliant": False,
+        "cancel_weight": True, "push_n": 4.0, "stiffness": [1000.0, 1000.0, 500.0]}
     assert [phase["name"] for phase in record["outcome"]["phases"]] == ["rigid", "switch", "compliant"]
     assert record["plan"]["planner"] == "fake" and result.end is not None
     line, = lines
@@ -1326,8 +1487,8 @@ def test_an_inserts_rigid_part_whose_hold_is_refused_is_hold_not_sent():
 def test_the_insert_settings_are_read_once_and_reach_its_plan():
     """The split reaches the plan (its line, in a dry run); a spiral too fast is refused before it, nothing sent.
 
-    The spiral's seconds and turns reach B22's line (two mating joints); a split over 30 mm is taken as 30. B21, one
-    mating joint, drops the spiral asked for: its line says so, the setting is recorded, the plan has none.
+    The spiral's seconds and turns reach B22's line (two mating joints) and B21's (one); a split over 30 mm is taken
+    as 30.
     """
     def dry(current, settings: RunSettings) -> Lab:
         lab = compliant_lab(current, settings)
@@ -1354,9 +1515,9 @@ def test_the_insert_settings_are_read_once_and_reach_its_plan():
 
     lab = dry(("B21_J", 4), RunSettings(spiral=True, spiral_seconds=30.0, spiral_turns=6))
     result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP))
-    assert result.status == DRY_RUN and "straight line: no spiral for a bar with one mating joint" in said(lab)[0]
+    assert result.status == DRY_RUN and "spiral 15 mm, 30 s, 6 turns, pitch 2.5 mm" in said(lab)[0]
     command = lab.run.files()[-1]["command"]
-    assert command["settings"]["spiral"] is True and command["plan"]["spiral"] is None
+    assert command["settings"]["spiral"] is True and command["plan"]["spiral"]["turns"] == 6
 
 
 @pytest.mark.parametrize("solved", [True, False])
@@ -1410,6 +1571,39 @@ def test_b21_hs_close_is_the_compliant_handoff():
     assert [goal.command.position for goal in gripper._action.goals] == [ROBOTIQ_CLOSE]
     record = json.loads(json.dumps(lab.run.files()[-1]))
     assert record["part"]["kind"] == "robotiq_handoff" and record["outcome"]["status"] == "CLOSED"
+
+
+@pytest.mark.safety
+def test_b21_hs_close_takes_the_runs_grasp_controller_joint():
+    """The run's Grasp controller joint: the prompt says STIFF, the command records the controller.
+
+    Confirm closes the Robotiq with Alice's arm left under joint control (no switch, no stiffness set): CLOSED.
+    """
+    lab = Lab(current=("B21_H", 3))
+    lab.run.view.settings = RunSettings(grasp_controller="joint")
+    lab.track("a200-0804")
+    request = lab.request("B21_H_close", serial="a200-0804", route=None)
+    arm = lab.alice.arms["ur_arm"]
+    result, _held = execute(lab, request, True)
+    assert result.status == DONE and result.done == (3,), result.reason
+    assert prompts(lab)[0].startswith("alice (0804): B21_H_close — CLOSE + STIFF grasp on ur_arm")
+    assert [goal.command.position for goal in arm.end_effector._action.goals] == [ROBOTIQ_CLOSE]
+    assert arm.controllers.switches == [] and arm.stiffness_service.sets == []
+    record = json.loads(json.dumps(lab.run.files()[-1]))
+    assert record["outcome"]["status"] == "CLOSED" and record["command"]["controller"] == "joint"
+    assert not record["command"]["compliant"]
+
+
+@pytest.mark.safety
+def test_b21_hs_close_sets_the_runs_grasp_stiffness():
+    """The run's Grasp stiffness reaches the arm for the compliant close, and the one it had goes back."""
+    lab = Lab(current=("B21_H", 3))
+    lab.run.view.settings = RunSettings(grasp_stiffness=2000.0)
+    lab.track("a200-0804")
+    arm = lab.alice.arms["ur_arm"]
+    result, _held = execute(lab, lab.request("B21_H_close", serial="a200-0804", route=None), True)
+    assert result.status == DONE, result.reason
+    assert arm.stiffness_service.sets == [[2000.0] * 3, [500.0] * 3]
 
 
 def test_a_compliant_parts_question_names_the_robot_and_is_recorded():

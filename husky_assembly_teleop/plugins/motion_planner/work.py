@@ -80,7 +80,7 @@ def run_ik(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Event,
 
 
 def run_collisions(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Event, log: Log) -> CollisionReport:
-    """Check what the acting robot collides with in the movement's planning scene (end contacts allowed). Worker thread.
+    """Check what the acting robot collides with in the movement's planning scene. Worker thread.
 
     Args:
         pool: The worker's mirrors.
@@ -95,8 +95,7 @@ def run_collisions(pool: MirrorPool, request: MotionPlanRequest, abort: threadin
     try:
         mirror = pool.mirror(_acting(request, abort))
         planning = scene_for(request.loaded, request.step, request.snapshot, request.robots,
-                             ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide,
-                             end_contacts=True)
+                             ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide)
         mirror.sync(planning.scene)
         joints = dict(request.joints) if request.joints is not None else None
         hit = collision_hit(mirror, planning.scene, "start" if joints is None else "the given joints", joints)

@@ -137,8 +137,9 @@ now**), one JSON line per record, appended to the old monitor's file: `<drive>/d
 
 It needs the `mocap_bars` plugin (loaded with `movement_exec`) and a process whose bars carry markers; without them
 one line says so and nothing is recorded. A Drive not mounted loses the record (`[as-built] ... NOT recorded`), the step
-goes on. `scripts/as_built_page.py <day>` builds the day's 3D page from it, and the Exec panel's **Build as-built page**
-does the same any time, serving it on port 8082.
+goes on. `scripts/as_built_page.py <day>` builds the day's 3D page from it, and the Doc tab's **Build as-built page**
+does the same any time, serving it on port 8082; **Build accuracy report** (`scripts/as_built_report.py`) gives the
+same records' numbers without the 3D view.
 
 ## 3. Who writes, and when
 
@@ -177,7 +178,7 @@ else parked.
    (`MotionPlanRequest(snapshot=...)`). A plan goes stale when the robot moves (2° on an arm, 2 mm / 0.5° on the
    base) or another robot moves (1 cm / 1°), and is used by one Exec only (`shared/execution/basis.py`).
 2. **The goal of a transfer or an approach** is solved by IK at the live base (**Live IK**), and that goal is reused
-   by the plan while the base stays within 2 mm / 0.5° of where it was solved. After a transfer's mocap-bar servo,
+   by the plan while the base stays within 2 mm / 0.5° of where it was solved. After a transfer's servo,
    the insert's goal is the authored move applied from where the servo left the flanges (`carried_insert_goals`).
 3. **The other robots** come from the snapshot when they are measured; a robot that is not measured stands where
    the export has it at that step, else as the runtime's stand-in: where it was last seen, else its default pose with
@@ -201,3 +202,5 @@ stand-ins for the others, and a drawing aid. Nothing is written back into the pr
 - `progress.json`'s `robots` is where the run last recorded each robot, for the report only: nothing places or plans
   a robot from it.
 - Every record is plain JSON; `shared/runs/runs.py` reads them back (`find_runs`, `read_run`).
+- The `doc` plugin lists a process's runs and deletes one (`shared/runs/delete_run.py`): its folder, its as-built rows
+  by `run_id`, and the day's report pages built again.

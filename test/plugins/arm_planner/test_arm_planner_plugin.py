@@ -8,15 +8,18 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 from planning_fixtures import ALICE, BELLE, CINDY, robot_config
 from plugin_fakes import WATCHES, ArmDriver, FakeContext, fake_arm, fake_node, fake_robot, watch_clearance
 from robot_fakes import lease_test_robots, wait_ticks_until
+from robot_lab import RobotLab
 
+from husky_assembly_teleop.colors import CURRENT, rgb
 from husky_assembly_teleop.plugins.arm_planner import planner_plugin as arm_plugin
-from husky_assembly_teleop.plugins.arm_planner.panel_plugin import ArmPlannerPanel
+from husky_assembly_teleop.plugins.arm_planner.panel_plugin import BOTH, STEP_IK, STEP_JOINTS, ArmPlannerPanel
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.plugins.arm_planner.planner_plugin import ArmPlannerPlugin
@@ -24,9 +27,10 @@ from husky_assembly_teleop.shared.arm_planner_contract import MAX_SLOWDOWN, ArmP
 from husky_assembly_teleop.shared.execution.send import ARRIVED_TOLERANCE
 from husky_assembly_teleop.shared.planner.planner_search import PlanResult
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
-from husky_assembly_teleop.ui.style import NONE, OK
+from husky_assembly_teleop.ui.style import FAIL, NONE, OK
 from husky_assembly_teleop.world.checks import BAD, GOOD, PENDING, WARN, Check
-from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE, PLAN_DISTANCE, Clearance, ClearanceRefused
+from husky_assembly_teleop.shared.planner.plan_margins import ARM_PLAN_MARGINS
+from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE, Clearance, ClearanceRefused
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject
@@ -36,7 +40,7 @@ SERIAL, ARM = "0806", "left_ur_arm"
 NAMES = arm_joint_names(ARM)
 START = np.array([0.0, -1.5, 1.5, 0.0, 0.0, 0.0])
 GOAL = START + np.array([0.4, 0.0, 0.0, 0.0, 0.0, 0.0])
-PATH = replace(ArmPath.along(NAMES, np.array([START, GOAL])), margin=PLAN_DISTANCE)
+PATH = replace(ArmPath.along(NAMES, np.array([START, GOAL])), margins=ARM_PLAN_MARGINS)
 REQUEST = ArmPlanRequest(SERIAL, ARM, tuple(GOAL))
 
 
@@ -107,8 +111,8 @@ def make_planner(ctx: FakeCtx) -> ArmPlannerPlugin:
 @pytest.fixture
 def found_path(monkeypatch):
     """Every search finds PATH."""
-    monkeypatch.setattr(arm_plugin, "plan_arm",
-                        lambda world, mirror, arm, goal, abort: PlanResult(PATH, seconds=0.1))
+    monkeypatch.setattr(arm_plugin, "plan_arms",
+                        lambda world, mirror, arms, goal, abort: PlanResult(PATH, seconds=0.1))
 
 
 def run(planner: ArmPlannerPlugin, ctx: FakeCtx, scenario):
@@ -282,7 +286,7 @@ def test_a_start_too_close_is_refused_and_nothing_sent():
 
     ctx.clearance = clearance
     _commit(ctx, answers, cancel_after=2, planner=planner)
-    refusal = "nothing sent: came within 0.5 cm of the rack; untick Clearance to move out"
+    refusal = "came within 0.5 cm of the rack; untick Clearance to move out"
     assert answers == [(False, refusal)] and not arm._trajectory.messages
     assert (_chip(planner).label, _chip(planner).level) == ("refused", BAD)
 
@@ -297,7 +301,7 @@ def test_an_arm_moves_only_with_the_base_and_every_arm_measured(measured, why, c
     """The other arm unknown or the base untracked: nothing is sent, Clearance on or off."""
     (ctx, arm), answers, planner = _driven(**measured), [], ArmPlannerPlugin()
     _commit(ctx, answers, clearance=clearance, planner=planner)
-    assert answers == [(False, f"nothing sent: {SERIAL}: {why}")] and not arm._trajectory.messages
+    assert answers == [(False, f"{SERIAL}: {why}")] and not arm._trajectory.messages
     assert (_chip(planner).label, _chip(planner).level) == ("refused", BAD)
 
 
@@ -380,7 +384,7 @@ def test_a_commit_whose_lease_is_refused_shows_refused():
         return future.result()
 
     sent, message = asyncio.run(scenario())
-    assert not sent and message.startswith("nothing sent") and not arm._trajectory.messages
+    assert not sent and "nothing sent" not in message and not arm._trajectory.messages
     assert (_chip(planner).label, _chip(planner).level) == ("refused", BAD)
 
 
@@ -412,6 +416,7 @@ def make_panel(planner: ArmPlannerPlugin) -> ArmPlannerPanel:
     panel = ArmPlannerPanel()
     panel._api = panel._planner = planner
     panel.serial, panel.arm, panel._has_target, panel._load_now = SERIAL, ARM, True, False
+    panel._arms = {SERIAL: [ARM]}
     panel._sliders = [SimpleNamespace(value=math.degrees(value)) for value in GOAL]
     panel._used = SimpleNamespace(touch=lambda: None, active=True)
     panel._collisions = FakeCollisions()
@@ -544,13 +549,115 @@ def test_loading_a_step_for_another_arm_says_so_past_the_next_tick():
     planner._plan = ready_plan()
     panel.update(FakeCtx())
     given = dict(zip(arm_joint_names("right_ur_arm"), GOAL))
-    movement = SimpleNamespace(id="M3", target=SimpleNamespace(joints={"cindy": given}))
-    selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="cindy"))
+    movement = SimpleNamespace(id="M3", target=SimpleNamespace(joints={"cindy": given}, link_poses={}))
+    selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="cindy", id="A"),
+                                process=SimpleNamespace(actions={"A": SimpleNamespace(movements=(movement,))}))
     panel._process_step = lambda _ctx: (selection, SERIAL, "Cindy")
-    panel._load_target(None, "Step")
+    panel._load_target(None, STEP_JOINTS)
     panel.update(FakeCtx())
     assert planner.plan is None and panel.arm == "right_ur_arm"
-    assert panel._message == "target from the target of M3 (right_ur_arm)"
+    assert panel._message == "target = the process's joints at the target of M3 (right_ur_arm)"
+
+
+def _two_arm_step(panel, poses):
+    """Select a step of Cindy's that gives both arms GOAL, with these tool0 poses by link name."""
+    given = {**dict(zip(arm_joint_names(ARM), GOAL)), **dict(zip(arm_joint_names("right_ur_arm"), GOAL))}
+    movement = SimpleNamespace(id="M3", target=SimpleNamespace(joints={"robots/cindy": given}, link_poses=poses))
+    selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="robots/cindy", id="A"),
+                                process=SimpleNamespace(actions={"A": SimpleNamespace(movements=(movement,))}))
+    panel._process_step = lambda _ctx: (selection, SERIAL, "Cindy")
+
+
+def _solving(planner, asked, solved=0.1):
+    """Make `planner.solve_goals` answer every reference joint + `solved`, noting what it was asked."""
+    def solve_goals(serial, targets, reference=None):
+        asked.append((serial, dict(targets), dict(reference)))
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(({name: value + solved for name, value in reference.items()},
+                           "goal by IK at the live base (ssik, rank 1 of 8)"))
+        return future
+
+    planner.solve_goals = solve_goals
+
+
+def _spawning_ctx():
+    ctx = FakeCtx()
+    ctx.spawn = lambda _label, work: asyncio.get_running_loop().create_task(work)
+    return ctx
+
+
+def test_step_joints_loads_the_process_joints_and_solves_nothing():
+    """Step joints: the target is the step's joints as authored, at once; no IK is asked for."""
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    panel._choose(SERIAL, "right_ur_arm")
+    _two_arm_step(panel, {"robots/cindy/right_ur_arm_tool0": object()})
+    asked = []
+
+    async def scenario():
+        _solving(planner, asked)
+        panel._load_target(_spawning_ctx(), STEP_JOINTS)
+        await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert asked == [] and np.allclose(panel._load, GOAL)
+    assert "process's joints" in panel._message and "it moves left_ur_arm too" in panel._message
+
+
+def test_step_ik_solves_the_chosen_arms_tool0_frame_nearest_the_process_joints():
+    """Step IK, both arms named: the chosen one's tool0 pose is solved at the live base, the step's joints the guess."""
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    panel._choose(SERIAL, "right_ur_arm")
+    pose = object()
+    _two_arm_step(panel, {"robots/cindy/right_ur_arm_tool0": pose})
+    asked = []
+
+    async def scenario():
+        _solving(planner, asked)
+        panel._load_target(_spawning_ctx(), STEP_IK)
+        assert panel.arm == "right_ur_arm" and panel._load is None
+        await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert asked == [(SERIAL, {"right_ur_arm": pose}, dict(zip(arm_joint_names("right_ur_arm"), GOAL)))]
+    assert np.allclose(panel._load, [value + 0.1 for value in GOAL])
+    assert "5.7° from the process's joints" in panel._message and "it moves left_ur_arm too" in panel._message
+
+
+def test_step_ik_refuses_a_step_without_a_tool0_frame():
+    """Step IK on a step that gives the arm no tool0 pose says to use Step joints and sets no target."""
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    panel._choose(SERIAL, "right_ur_arm")
+    _two_arm_step(panel, {})
+    panel._load_target(_spawning_ctx(), STEP_IK)
+    assert panel._message_color == FAIL and "use Step joints" in panel._message and not panel._has_target
+
+
+def test_step_ik_that_finds_no_solution_sets_no_target():
+    """No IK solution: a failure line, and the target stays unset."""
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    panel._choose(SERIAL, "right_ur_arm")
+    _two_arm_step(panel, {"robots/cindy/right_ur_arm_tool0": object()})
+
+    async def scenario():
+        def solve_goals(serial, targets, reference=None):
+            future = asyncio.get_running_loop().create_future()
+            future.set_result((None, "no IK solution clear of collisions"))
+            return future
+
+        planner.solve_goals = solve_goals
+        panel._load_target(_spawning_ctx(), STEP_IK)
+        await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert panel._message_color == FAIL and "no IK solution" in panel._message and not panel._has_target
 
 
 def test_the_status_line_shows_the_chosen_arms_run_chip():
@@ -573,7 +680,7 @@ def test_a_plan_refused_for_a_collision_shows_its_hit_until_the_next_plan(monkey
     """A target in collision lists its hit in the collisions panel, ticked; the next plan found removes it."""
     hit = SimpleNamespace(where="target", message="target is in collision: a with b")
     results = iter([PlanResult(None, hit.message, hit=hit), PlanResult(PATH, seconds=0.1)])
-    monkeypatch.setattr(arm_plugin, "plan_arm", lambda world, mirror, arm, goal, abort: next(results))
+    monkeypatch.setattr(arm_plugin, "plan_arms", lambda world, mirror, arms, goal, abort: next(results))
     ctx = FakeCtx()
     planner = make_planner(ctx)
     panel = make_panel(planner)
@@ -632,3 +739,100 @@ def test_a_plan_with_every_robot_measured_has_no_such_warning(found_path):
 
     plan = run(planner, ctx, scenario)
     assert plan.state == "ready" and not plan.warning and "not measured" not in plan.message
+
+
+def test_the_robot_buttons_choose_the_robot_and_follow_a_switch():
+    """A press plans for that robot; a robot the panel switched to by itself is the one highlighted."""
+    ctx = RobotLab().ctx
+    ctx.view.scene = MagicMock()
+    ctx.plugins.update({"arm_planner": MagicMock(), "collisions": MagicMock(),
+                        "process": SimpleNamespace(selection=None)})
+    panel = ArmPlannerPanel()
+    panel._add_ghosts = lambda *_args: setattr(panel, "_used", MagicMock())
+    panel.setup(ctx)
+    serials = list(panel._robot.buttons)
+    assert panel._robot.buttons[serials[0]].label == serials[0].split("-")[-1] and panel.serial == serials[0]
+    panel._robot.buttons[serials[2]].callback()
+    assert panel.serial == serials[2]
+    panel.serial = serials[1]
+    # * Only the buttons matter here: the rest of the panel's drawing reads a real plan.
+    for part in ("_status_html", "_details_html", "_draw_slider", "_draw_floor", "_draw_duration", "_draw_ghosts",
+                 "_debug_view"):
+        setattr(panel, part, MagicMock())
+    panel.draw(ctx)
+    assert [button.color for button in panel._robot.buttons.values()] == [rgb(NONE), rgb(CURRENT), rgb(NONE)]
+
+
+def test_both_plans_every_arm_in_one_search_its_targets_from_step_ik():
+    """Both on a two-arm robot: Step IK fills both targets, solved together at the base; Plan asks for both."""
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    panel._arm_labels = {SERIAL: ("Left", "Right")}
+    assert panel._arm_options(SERIAL) == ((ARM, "right_ur_arm", BOTH), ("Left", "Right", "Both"))
+    panel._choose(SERIAL, BOTH)
+    assert panel.planned_arms == (ARM, "right_ur_arm")
+    _two_arm_step(panel, {"robots/cindy/left_ur_arm_tool0": object(), "robots/cindy/right_ur_arm_tool0": object()})
+    asked = []
+
+    async def scenario():
+        _solving(planner, asked)
+        panel._load_target(_spawning_ctx(), STEP_IK)
+        await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert [(serial, tuple(targets)) for serial, targets, _ in asked] == [(SERIAL, (ARM, "right_ur_arm"))]
+    request = panel.make_request(None)
+    assert request.arms == (ARM, "right_ur_arm") and np.allclose(request.goals, [value + 0.1 for value in GOAL] * 2)
+    plan = SimpleNamespace(request=request)
+    assert panel.target_change(None, plan) == ""
+    panel._choose(SERIAL, ARM)
+    assert panel.target_change(None, plan) == "the robot or arm changed since planning"
+
+
+def test_another_plugins_plan_sets_the_panels_arms_and_targets():
+    """A plan another plugin asked for is the panel's own: two arms choose Both, one arm that arm, targets its goals."""
+    panel = make_panel(ArmPlannerPlugin())
+    panel._arms = {SERIAL: [ARM, "right_ur_arm"]}
+    other = tuple(float(value) + 0.2 for value in GOAL)
+    both = ArmPlanRequest(SERIAL, ARM, tuple(GOAL), also=(("right_ur_arm", other),))
+    panel.take_request(None, both)
+    assert panel.arm == BOTH and panel.target_change(None, SimpleNamespace(request=both)) == ""
+    single = ArmPlanRequest(SERIAL, "right_ur_arm", other)
+    panel.take_request(None, single)
+    assert panel.arm == "right_ur_arm" and np.allclose(panel._target(), other, atol=0.01)  # sliders round
+    assert panel.target_change(None, SimpleNamespace(request=single)) == ""
+
+
+def failed_plan(monkeypatch, saved) -> tuple[Plan, list[str]]:
+    """Plan REQUEST with a search that fails with a detail, `saved` for `save_problem`: the plan and warnings."""
+    monkeypatch.setattr(arm_plugin, "plan_arms", lambda world, scene, arms, goal, abort: PlanResult(
+        None, "no path found in 60 s", 60.0, detail="9 of 10 poses checked were blocked"))
+    if saved is not None:
+        monkeypatch.setattr(arm_plugin, "save_problem", saved)
+    ctx, warnings = FakeCtx(), []
+    ctx.log_warn = warnings.append
+    planner = make_planner(ctx)
+
+    async def scenario():
+        return await planner.request_plan(REQUEST)
+
+    return run(planner, ctx, scenario), warnings
+
+
+def test_a_failed_search_logs_what_blocked_it_and_where_it_was_saved(monkeypatch, tmp_path):
+    """The plan says only why; the log adds the detail and the folder to replay it from."""
+    problems = []
+    plan, warnings = failed_plan(monkeypatch, lambda problem: problems.append(problem) or tmp_path)
+    assert plan.state == "failed" and plan.message == "no plan: no path found in 60 s"
+    problem, = problems
+    assert (problem.serial, problem.arms, problem.goal) == (SERIAL, (ARM,), tuple(GOAL))
+    assert warnings == [f"no path for {SERIAL} {ARM}: 9 of 10 poses checked were blocked; saved to {tmp_path}; "
+                        f"replay it with scripts/replay_arm_plan.py {tmp_path}"]
+
+
+def test_a_problem_that_cannot_be_saved_still_fails_the_plan_as_usual(monkeypatch):
+    """The fake robot model has no URDF to copy: the log says it was not saved, the plan fails as it would."""
+    plan, warnings = failed_plan(monkeypatch, None)
+    assert plan.state == "failed" and plan.message == "no plan: no path found in 60 s"
+    assert len(warnings) == 1 and "9 of 10 poses checked were blocked; not saved: AttributeError" in warnings[0]

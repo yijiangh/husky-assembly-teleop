@@ -34,7 +34,7 @@ from ...world.kinematics import stow_joints
 from .process_steps import LoadedProcess, Step
 from .collision import collisions, world_frame_fk
 from .ik import solve_ik
-from .joints import arm_joint_names, joint_limits, unwrap_to_nearest
+from .joints import arm_joint_names, turn_limits, unwrap_to_nearest
 from .movement import ArmPart, GoalSource, MovementSpec, Routine, classify
 from .route_result import GoalCheck, RouteResult, aims_at_line, line_goal, pose_error
 from .route_search import ATTEMPTS, FreeSearch, Refused, RouteSearch, pairs_text
@@ -171,8 +171,7 @@ def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot:
     Raises:
         ValueError: If the mirror plans for another robot than the movement's, or `scene_for` refuses the step.
     """
-    options = {"ignore_built": ignore_built, "obstacles_collide": obstacles_collide,
-               "end_contacts": True}
+    options = {"ignore_built": ignore_built, "obstacles_collide": obstacles_collide}
     planning = scene_for(loaded, step, snapshot, robots, **options)
     if mirror.robot_id != planning.acting:
         raise ValueError(f"{step.label}: the mirror plans for {mirror.robot_id}, the movement is {planning.acting}'s")
@@ -469,8 +468,9 @@ class Route(RouteSearch):
         """The arms' joints at their target poses, by IK at the live base with anything held there; or the override.
 
         Args:
-            unwrap: Turn each goal joint by whole turns next to the start, within the URDF limits (`unwrap_to_nearest`),
-                and refuse a goal outside them; the dual-arm routines do, the approach does not.
+            unwrap: Turn each goal joint by whole turns next to the start, within the URDF limits and never with a
+                shoulder lift through pointing down (`unwrap_to_nearest`, `turn_limits`), and refuse a goal outside
+                the limits; the dual-arm routines do, the approach does not.
             targets: Arm -> world pose of its tool0 instead of the process's targets: a servo pass's, solved near the
                 live joints instead of the authored goal.
 
@@ -502,7 +502,7 @@ class Route(RouteSearch):
             goal = self.joints_of(self.ik.joints)
         if unwrap:
             values = unwrap_to_nearest([goal[name] for name in self.names], [self.start[name] for name in self.names],
-                                       *joint_limits(self.robot.model.urdf, self.names))
+                                       *turn_limits(self.robot.model.urdf, self.names))
             goal = dict(zip(self.names, values.tolist()))
             self.check_limits(goal)
         return goal

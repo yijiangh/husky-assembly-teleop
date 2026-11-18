@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from ...world.collision_hit import CollisionHit
 
 #: Give up searching after this long, seconds.
-TIME_LIMIT = 10.0
+TIME_LIMIT = 20.0
 #: Seconds to wait for the worker beyond the search's own time limit.
 WAIT_MARGIN = 5.0
 
@@ -37,6 +37,7 @@ class PlanResult(Generic[P]):
         seconds: How long it took, syncing the world included.
         direct: Whether the straight move was already free.
         hit: What collides, when the start or goal does.
+        detail: More on a failed search for the log, e.g. what blocked it; too long for a chip.
     """
 
     path: P | None
@@ -44,6 +45,7 @@ class PlanResult(Generic[P]):
     seconds: float = 0.0
     direct: bool = False
     hit: CollisionHit | None = None
+    detail: str = ""
 
 
 class PlanningWorld(Protocol):

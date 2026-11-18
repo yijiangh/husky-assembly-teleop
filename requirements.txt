@@ -13,6 +13,7 @@ yourdfpy==0.0.60  # URDF parsing for viser.extras.ViserUrdf (robot meshes in the
 #   package here already pulls them in, so removing that one cannot break us.
 async-timeout>=4.0  # the asyncio.timeout backport for Python 3.10 (process plugin, planner service)
 scipy>=1.8  # rotations in robot_interface and robot_control
+rhino3dm==8.35.0  # the as-built page: the room from a .3dm
 trimesh==4.12.2  # ! design_io must run in Rhino 8 (Python 3.9): 4.12.2 is the newest release for 3.9
 pybullet>=3.2  # raw client calls in shared/base_collision and plugins/base_planner/world.py
 compas>=2.0  # the core's compas mirrors (arm planner); compas_fab above needs it too
@@ -27,3 +28,5 @@ scikit-spatial==9.0.1  # the same
 
 # * Optional: ssik>=4.1,<5 with numpy>=1.26,<2, the planners' and the servo's exact IK (`shared/assembly_planning/ik.py`);
 #   without it they use PyBullet's IK, and the tests that need it skip.
+# * Optional: rerun-sdk==0.39.0, the observer's recordings in the Rerun viewer (`assembly_observer/rerun_view.py`);
+#   pinned because its StateTimelineView is unstable between releases. Without it Open in Rerun says so.

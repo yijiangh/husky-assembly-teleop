@@ -17,6 +17,7 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        SCALED_JOINT_TRAJECTORY_CONTROLLER)
 from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.robot_interface.mocap_state import POSE_TIMEOUT
+from husky_assembly_teleop.shared.execution import stream as stream_module
 from husky_assembly_teleop.shared.execution.stream import (ARRIVAL, FK_TCP_TOL, MAX_SAMPLES, SETTLE_CEILING,
                                                            SETTLE_WINDOW, Recorder, Segment, Settling, fk_tcp_gap,
                                                            line_target, measured_tool0, plan_stream, progress,
@@ -197,9 +198,9 @@ def test_a_refused_target_ends_the_stream_and_nothing_more_is_sent():
     lab = Lab()
     right = lab.robot.arms["right_ur_arm"]
     lab.later.append((10.25, lambda: setattr(right.state.controllers, "active", SCALED_JOINT_TRAJECTORY_CONTROLLER)))
-    assert lab.run(lab.segment()).startswith("refused: right_ur_arm")
+    ended = lab.run(lab.segment())
+    assert ended == f"refused: right_ur_arm: {right.last_refusal.reason}" and "not active" in ended
     assert (lab.count("left_ur_arm"), lab.count("right_ur_arm")) == (4, 3)
-    assert "not active" in right.last_refusal.reason
 
 
 def test_the_stop_test_runs_before_the_ticks_targets():
@@ -221,6 +222,18 @@ def test_the_stream_holds_the_end_until_its_time_is_up_and_the_tcp_arrives():
     for each in progress(lab.robot, segment).values():
         assert each["travel_mm"] == pytest.approx(5.0) and each["remaining_mm"] < ARRIVAL * 1e3
         assert each["achieved_mm"] == pytest.approx(5.0, abs=ARRIVAL * 1e3)
+
+
+@pytest.mark.parametrize(("tcp", "past", "off"), [((0.0, 0.0, 0.013), 3.0, 0.0), ((0.0, 0.002, 0.008), -2.0, 2.0)])
+def test_progress_says_past_the_end_or_short_with_a_sign(monkeypatch, tcp, past, off):
+    """A 10 mm line along z: a TCP 3 mm beyond its end reads +3 mm past; one 2 mm short and 2 mm aside reads -2, 2."""
+    start = Pose(np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0]))
+    end = Pose(np.array([0.0, 0.0, 0.010]), start.orientation)
+    segment = Segment({"left_ur_arm": start}, {"left_ur_arm": end}, 1.0, 0.0)
+    monkeypatch.setattr(stream_module, "measured_tool0", lambda robot, name: Pose(np.array(tcp), start.orientation))
+    each = progress(None, segment)["left_ur_arm"]
+    assert each["past_end_mm"] == pytest.approx(past) and each["off_line_mm"] == pytest.approx(off, abs=1e-9)
+    assert each["remaining_mm"] == pytest.approx(math.hypot(past, off))
 
 
 def test_no_base_pose_sends_nothing():
@@ -410,7 +423,7 @@ def _turned(pose_q, degrees: float) -> np.ndarray:
 
 @pytest.mark.parametrize("case, why", [
     ("at the tcp", ""), ("4.9 cm off", ""), ("6 cm off", "too far from the TCP"),
-    ("turned 6°", "turned 6.0 deg"), ("not unit", "not a unit quaternion"), ("out of reach", "out of reach"),
+    ("turned 6°", "turned 6.0 deg"), ("not unit", "not a unit quaternion"),
     ("9 mm step", ""), ("11 mm step", "jumps 11.0 mm"), ("3.5° step", "jumps 0.0 mm / 3.5 deg"),
 ])
 def test_target_problem_refuses_what_the_arm_refuses(case, why):
@@ -428,8 +441,6 @@ def test_target_problem_refuses_what_the_arm_refuses(case, why):
         orientation = _turned(tcp_q, 6.0)
     elif case == "not unit":
         orientation = tcp_q * 1.01
-    elif case == "out of reach":
-        tcp_p = position = np.array([0.0, 0.9, 0.163])
     elif case.endswith("step"):
         previous = Pose.from_arrays(tcp_p, tcp_q)
         if case == "3.5° step":

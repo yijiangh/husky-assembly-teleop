@@ -26,15 +26,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+import numpy as np
 import viser
+
+from scaffolding_assembly_core.geometry import Pose
 
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...shared.assembly_run_contract import RunView, first_pending, is_live
+from ...shared.assembly_planning.movement import mating_drives
 from ...shared.assembly_planning.process_steps import LoadedProcess, loaded_process
-from ...shared.execution.spiral import spiral_fits
-from ...shared.movement_exec_contract import INSERT_PART, current_step, part_plan
+from ...shared.movement_exec_contract import current_step
 from ...shared.process_contract import MARK_ASSUMED, MARK_DONE, MARK_PENDING
 from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, RunError, RunSettings, continue_run,
                                  file_hashes, find_runs, made_after, record_event, reopen, save_progress, with_current)
@@ -95,6 +98,12 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         #: ! Wrapped once per process: plans and requests compare `_loaded` by identity, so a new wrapper would make
         #:   every plan stale and reset the run.
         self._source: Process | None = None
+        #: The process plugin's authored process behind `_source`: a new placement keeps it, another process doesn't.
+        self._authored: Process | None = None
+        #: The build's placement as last seen, so a change in the process panel is told from one the run made.
+        self._placement_seen = Pose()
+        #: The holds' grasp offsets as last seen, likewise (`_follow_grasp_offsets`).
+        self._grasp_offsets_seen: dict[str, tuple[float, float]] = {}
         self._ids: IdMap | None = None
         #: How far its runs were read (NO_PROCESS, OPENING, OPEN, NOT_OPENED), and when to read them again.
         self._state, self._retry_at = NO_PROCESS, 0.0
@@ -275,12 +284,21 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         """Open the run of a newly loaded process; open it again if that failed; notice a step picked meanwhile.
 
         It also follows a pick in the process panel (not one made while a step runs), writes it once the picking stops,
-        puts the panel back on the run's movement when a step ends, and gives the panel the actions' marks.
+        puts the panel back on the run's movement when a step ends, gives the panel the actions' marks, and keeps the
+        build's placement and the run's the same (`_follow_placement`).
         """
         process: ProcessContract = ctx.require("process")
         selection = process.selection
         source = selection.process if selection is not None else None
+        if (source is not self._source and source is not None and self._source is not None and self._state == OPEN
+                and process.authored is self._authored):
+            # * The same process placed elsewhere: the run goes on, on the placed process; plans made before are
+            #   stale, as they compare `_loaded` by identity.
+            self._source, self._loaded, self._ids = source, loaded_process(source), None
+            self._changed()
         if source is not self._source:
+            self._source, self._authored, self._placement_seen = source, process.authored, process.placement
+            self._grasp_offsets_seen = dict(process.grasp_offsets)
             self._source = source
             loaded = loaded_process(source) if source is not None else None
             self._reset(loaded)
@@ -318,6 +336,9 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
                 self._write(ctx, "save the progress", save_progress, self._run)
         if self._state == NOT_OPENED and ctx.now() >= self._retry_at:
             self._open_now(ctx)
+        if self._state == OPEN:
+            self._follow_placement(process)
+            self._follow_grasp_offsets(process)
         view = self.view
         if view.revision != self._marks_revision:
             # * Here, not in draw: draw is skipped while the panels are frozen.
@@ -326,12 +347,50 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
                                    else MARK_DONE if status == DONE else MARK_PENDING
                                    for action, status in view.statuses.items()})
 
+    def _follow_placement(self, process: ProcessContract) -> None:
+        """Keep the build's placement and the run's the same; whichever changed last wins.
+
+        A placement made in the process panel is saved with the run (one only offered keeps it in memory, for a New
+        run); a run's placement (on Continue, a new run) places the build.
+        """
+        placed, kept = process.placement, self._settings.placement_pose
+        if not _same_pose(placed, self._placement_seen):
+            self._placement_seen = placed
+            if _same_pose(placed, kept):
+                return
+            wanted = (*placed.position, *placed.orientation)
+            if self._run is None and self._offer is not None:
+                self._settings = replace(self._settings, placement=wanted)
+                self._changed()
+            else:
+                self.request_settings(placement=wanted)
+        elif self._run is not None and not _same_pose(placed, kept) and not self._step_running(self._ctx):
+            self._placement_seen = kept
+            process.request_placement(kept)
+
+    def _follow_grasp_offsets(self, process: ProcessContract) -> None:
+        """Keep the holds' grasp offsets in the process panel and the run's the same, as `_follow_placement` does."""
+        shown, kept = dict(process.grasp_offsets), self._settings.grasp_offset_map
+        if shown != self._grasp_offsets_seen:
+            self._grasp_offsets_seen = shown
+            if shown == kept:
+                return
+            wanted = tuple((hold, slide, roll) for hold, (slide, roll) in sorted(shown.items()))
+            if self._run is None and self._offer is not None:
+                self._settings = replace(self._settings, grasp_offsets=wanted)
+                self._changed()
+            else:
+                self.request_settings(grasp_offsets=wanted)
+        elif self._run is not None and shown != kept and not self._step_running(self._ctx):
+            self._grasp_offsets_seen = kept
+            process.request_grasp_offsets(kept)
+
     def draw(self, ctx: PluginContext) -> None:
         """Fill the panel."""
         if self._panel is not None:
             status = PanelStatus(self._run.info.name if self._run is not None else "", self.again,
                                  (self._message, self._failed), self._save_error, tuple(self.robot_lines(ctx)),
-                                 self._settings_refused, self._spiral_fits(ctx))
+                                 self._settings_refused, self._spiral_fits(ctx), self._servo_fits(ctx))
             self._panel.draw(self.view, status)
 
     def teardown(self, ctx: PluginContext) -> None:
@@ -370,14 +429,21 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         return lines
 
     def _spiral_fits(self, ctx: PluginContext) -> bool:
-        """Whether the current step's insert has two mating joints, so the Spiral box is live (`spiral_fits`)."""
-        transfer = ctx.require("process").transfer_as_free
-        found = current_step(self.view, transfer)
+        """Whether the current action tightens a joint screw, so the Spiral box is live: never a ground bar's."""
+        found = current_step(self.view, ctx.require("process").transfer_as_free)
         if found is None:
             return False
-        action, steps, index = found
-        part = part_plan(self.view.process, action, steps[index].primary, ctx.config.robots, transfer)
-        return part.kind == INSERT_PART and spiral_fits(part.tools)
+        process = self.view.process.process
+        return any("tighten" in mating_drives(process, movement).kept.values()
+                   for movement in process.actions[found[0]].movements)
+
+    def _servo_fits(self, ctx: PluginContext) -> bool:
+        """Whether the current action inserts a ground bar, the only bar the Servo by bar box applies to."""
+        found = current_step(self.view, ctx.require("process").transfer_as_free)
+        if found is None:
+            return False
+        process = self.view.process.process
+        return any(mating_drives(process, movement).grounded for movement in process.actions[found[0]].movements)
 
     # --- --- --- --- --- OPENING A PROCESS'S RUN --- --- --- --- ---
 
@@ -494,3 +560,8 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._write(ctx, "record the session", record_event, run.folder, "session", ctx.now())
         self._say(f"continuing run {run.info.name}")
         self._changed()
+
+
+def _same_pose(first: Pose, second: Pose) -> bool:
+    """Whether two poses are the same within 1e-9 (a placement read back from run.json included)."""
+    return np.allclose(first.matrix(), second.matrix(), atol=1e-9)

@@ -261,7 +261,7 @@ class Trace:
         """np.ndarray | None: One signal's newest sample, or None before the first."""
         return self._series[self.signal(key).on].newest(key)
 
-    def save(self, path: str | Path, extra: dict[str, Any] | None = None) -> Path:
+    def save(self, path: str | Path, extra: dict[str, Any] | None = None, compact: bool = False) -> Path:
         """Write every sample to an .npz or a .json file, by its suffix, creating its folder.
 
         - .npz keys: the tick's "t", and per event "<event>.t" and "<event>.stamp" (seconds); per signal its key
@@ -273,6 +273,8 @@ class Trace:
         Args:
             path: The file to write.
             extra: More arrays to store, e.g. the commanded path; keys must not clash with the above.
+            compact: For .npz, compressed, with the signals' values as float32 (about seven digits); times stay
+                float64, as ROS times need it.
 
         Returns:
             Path: The file written.
@@ -289,7 +291,8 @@ class Trace:
             for column in series.head:
                 arrays[group + column] = series.ordered(column)[:, 0]
             for signal in series.signals:
-                arrays[signal.key] = series.ordered(signal.key)
+                values = series.ordered(signal.key)
+                arrays[signal.key] = values.astype(np.float32) if compact else values
                 arrays[f"{signal.key}.labels"] = np.array(signal.channels)
                 arrays[f"{signal.key}.units"] = np.array(signal.units)
         clash = sorted(set(extra or {}) & set(arrays))
@@ -297,7 +300,7 @@ class Trace:
             raise ValueError(f"extra keys {clash} clash with the trace's own")
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.suffix == ".npz":
-            np.savez(path, **arrays, **(extra or {}))
+            (np.savez_compressed if compact else np.savez)(path, **arrays, **(extra or {}))
         else:
             text = json.dumps(self._document(extra or {}), indent=1, allow_nan=False)
             # * One line per row: a list without lists or objects inside goes on one line. Only the indent's line

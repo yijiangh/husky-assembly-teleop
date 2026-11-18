@@ -120,3 +120,24 @@ def test_a_path_that_does_not_move_is_no_path():
     """Planning refuses it before there is anything to send."""
     with pytest.raises(ValueError):
         ArmPath.along(arm_joint_names("left_ur_arm"), WAYPOINTS[[0, 0]])
+
+
+def test_timing_the_waypoints_again_glides_where_timing_the_samples_stops():
+    """Timed again (as Exec does), the waypoints glide through the curves; the 0.2 s samples would stop on them.
+
+    The samples meet at an angle on every curve, where the curve itself never turns that sharply.
+    """
+    from husky_assembly_teleop.shared.execution.retime import retime
+
+    corners = np.array([[0.2 * k, -1.5 + (0.04 if k % 2 else 0.0), 1.5, 0.0, 0.0, 0.0] for k in range(8)])
+
+    def tight(q) -> bool:
+        """Only within 3 cm-like 0.03 rad of the zigzag is clear: every curve is halved to fit, as in a tight spot."""
+        return min(_off_segment(np.asarray(q), a, b) for a, b in zip(corners[:-1], corners[1:])) > 0.03
+
+    shape, sharp = round_corners(corners, tight)
+    path = ArmPath.along([f"j{i}" for i in range(6)], shape, sharp)
+    assert sharp == [] and np.array_equal(path.waypoints, shape) and len(path.points) != len(shape)
+    assert len(retime(path.points).stops) > 2, "the samples, timed again, stop on the curves"
+    assert len(retime(path.waypoints).stops) == 2, "the waypoints, timed again, glide through: no stop between the ends"
+    assert np.array_equal(path.slowed(2.0).waypoints, shape), "slowing it keeps its shape"

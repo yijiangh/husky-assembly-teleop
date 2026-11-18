@@ -44,7 +44,7 @@ class Corners:
 def connect(start: State, goal: State, distance: Callable[[State, State], float], sample: Callable[[], State],
             extend: Callable[[State, State], Sequence[State]], collides: Callable[[State], bool],
             abort: threading.Event, time_limit: float = TIME_LIMIT, attempts: int = 1,
-            improve_time: float = 0.0, draw_fn: Callable | None = None) -> Corners:
+            improve_time: float = 0.0, draw_fn: Callable | None = None, straight: bool = True) -> Corners:
     """Find a collision-free path from `start` to `goal`, trying the straight move first.
 
     Args:
@@ -60,6 +60,7 @@ def connect(start: State, goal: State, distance: Callable[[State, State], float]
         attempts: Searches to keep the shortest path of, by `distance` between corners; more avoid the odd detour.
         improve_time: Seconds after which no further search starts once a path is found.
         draw_fn: birrt's hook for each sample and node (`SearchTree.draw_fn`), or None.
+        straight: Whether to try the straight move first; False when it was refused already.
 
     Returns:
         Corners: The path's corners, or why there is none ("cancelled" when aborted).
@@ -73,7 +74,7 @@ def connect(start: State, goal: State, distance: Callable[[State, State], float]
     started = time.time()
     best, best_cost = None, float("inf")
     try:
-        if not any(collision_fn(q) for q in extend(start, goal)):
+        if straight and not any(collision_fn(q) for q in extend(start, goal)):
             return Corners([start, goal], direct=True)
         for _ in range(attempts):
             elapsed = time.time() - started
@@ -98,7 +99,10 @@ def connect(start: State, goal: State, distance: Callable[[State, State], float]
     if blocked:
         return Corners(None, f"the {' and the '.join(blocked)} is too close to something for the search's checks")
     if best is None:
-        return Corners(None, f"no path found in {time_limit:.0f} s")
+        spent = time.time() - started
+        return Corners(None, f"no path found in {time_limit:.0f} s" if spent >= time_limit else
+                       f"no path found: the search gave up after {MAX_ITERATIONS * (RESTARTS + 1)} tries "
+                       f"({spent:.0f} s)")
     return Corners(best)
 
 

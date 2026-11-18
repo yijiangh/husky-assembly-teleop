@@ -19,7 +19,7 @@ Once per PC, on Ubuntu 22.04 with ROS 2 Humble. All commands run in the workspac
 `venv/` and `install/`.
 
 **1. Clone** this repo with its submodules into `src/`, and next to it
-[crl-husky](https://gitlab.inf.ethz.ch/crl/robot-control/crl-husky) on branch `jg/ros2` at fa404f9 or later (ETH
+[crl-husky](https://gitlab.inf.ethz.ch/crl/robot-control/crl-husky) on branch `jg/ros2` at 1956556 or later (ETH
 GitLab: ask the lab for access). crl-husky provides the robot configs, the onboard launch files with the safety sync,
 and `crl_husky_msgs`. The Cartesian controllers are needed only to simulate the arms; the robots carry their own.
 
@@ -71,6 +71,8 @@ python3 -m pip install "viser==1.1.1" "yourdfpy==0.0.60" "trimesh==4.12.2" "asyn
     "scipy>=1.8" "pybullet>=3.2" "compas>=2.0" "matplotlib==3.10.3" "pandas>=2.0" "shapely>=2.1"
 # Optional: the planners' and the servo's exact IK; without it they use PyBullet's IK
 python3 -m pip install "ssik>=4.1,<5" "numpy>=1.26,<2"
+# Optional: the observer's recordings in the Rerun viewer (pinned: its state timelines change between releases)
+python3 -m pip install "rerun-sdk==0.39.0"
 
 # Check: all five should list a location under src/husky-assembly-teleop/external
 python3 -m pip list | grep -iE "pybullet.planning|compas.fab|rs.data.structure|husky.assembly.tamp|scaffolding.assembly.core"
@@ -246,13 +248,13 @@ are always quoted, also for one item, and their items separated by spaces (comma
 | Parameter | Default | Meaning |
 |---|---|---|
 | `robots` | none | Robots to connect to, by serial or name: `0804`, `alice`, `a200-0806`, `Cindy`. Left out, the monitor runs without robots. |
-| `plugins` | none | Plugins to load, see below. `health` and `console` are always added, unless `no_default_plugins:=true`. |
+| `plugins` | none | Plugins to load, see below. `health`, `console`, `assembly_observer` and `stop_recovery` are always added, unless `no_default_plugins:=true`. |
 | `tools` | per robot | Only where the mounted tools differ from the defaults: `<robot>:<tool>[:<tool>...]` per robot, one tool per arm in arm order: `cindy:scaffolding_v3:none`. Tools: `robotiq`, `scaffolding_v1`, `scaffolding_v3`, `none`. Defaults: Alice and Belle `robotiq`, Cindy `scaffolding_v3:scaffolding_v3`. |
 | `process_directory` | none | Process folder (with `process.json`) or old compas_fab export the `process` plugin loads at startup, relative to `drive_root` (e.g. `data_design_study/260814_RobArch_support_ik`) or absolute; without it, pick one in its panel. An export is converted into `<export>_process` next to it. |
 | `data_directory` | `data/` of this repo | Root for meshes, URDFs and processes. |
 | `drive_root` | `$HUSKY_DRIVE_ROOT` | Local copy of the project's Google Drive folder (`2025-03 Husky Assembly`), for experiment data: [doc/setup/experiment_data.md](doc/setup/experiment_data.md). |
 | `recording_format` | `npz` | How runs are saved: `npz` (compact) or `json` (readable text, about twice the size: one row per sample, unknown values as `null`). Both load the same way (`load_recording`). |
-| `no_default_plugins` | `false` | `true` skips the default plugins (`health`, `console`). |
+| `no_default_plugins` | `false` | `true` skips the default plugins (`health`, `console`, `assembly_observer`, `stop_recovery`). |
 | `ghost_timeout` | `20.0` | Seconds a plugin's ghost robots stay after the last input in it; 0 keeps them until another plugin's ghosts show. A layout file's `ghost_timeout` replaces it. |
 | `layout` | `""` | A person's layout file (`ui/layout.py`); empty for `~/.config/husky_monitor/layout.json`. Never in git. See [doc/lab/plugins.md](doc/lab/plugins.md#your-own-layout). |
 | `lab` | `main` | The lab file `obstacles` loads: a name in `data/lab/`, or a path to a .json file. |
@@ -261,29 +263,87 @@ are always quoted, also for one item, and their items separated by spaces (comma
 
 # Plugins
 
-What each one does in detail, and the panels and tabs it shows: [doc/lab/plugins.md](doc/lab/plugins.md).
+Grouped by what they are for. What each one does in detail: [doc/lab/plugins.md](doc/lab/plugins.md).
 
-| Plugin | In short |
-|---|---|
-| `health` | Default. The status of each robot and tracked object; Unlock, Resume, Reconnect. |
-| `console` | Default. The newest log lines, filtered by source and level. |
-| `robot_control` | The **Control** tab: drive the base, jog arms and tool0, Cartesian targets, free drive, tools. |
-| `obstacles` | The lab's obstacles for the planners, from `data/lab/<lab>.json`; edit and save them. |
-| `debug_gizmo` | Debug only: move any scene body by hand; nothing is saved. |
-| `mocap_probe` | Record points with the mocap probe; coverage map, cameras, floor calibration. |
-| `mocap_bars` | Fit a bar's mocap markers to its design pose. Experimental. |
-| `process` | Load a process and step through its movements; the planners' targets come from it. |
-| `assembly_run` | Remembers how far the assembly got: done actions, where each robot was left. Experimental. |
-| `assembly_steps` | The operator's steps: Live IK, Plan, preview, Exec. Experimental. |
-| `movement_exec` | Runs one step on the real robots, with Confirms, compliant inserts and the servo. Experimental. |
-| `motion_planner` | Plans process movements and checks collisions for other plugins. Experimental. |
-| `base_planner_panel` | Plans a collision-free base path and sends it to the onboard follower. Experimental. |
-| `arm_planner_panel` | Plans a collision-free arm motion to a joint target. Experimental. |
-| `collisions` | Lists and draws what collision checks and clearance trips hit. |
-| `calibration` | Calibrates a robot's base rigid body by sweeping one arm's first two joints, Setup to Apply. Experimental. |
-| `base_exp` | Base controller experiments: test paths, recordings, analysis. Experimental. |
-| `insertion_demo` | One bar in and out on demand, Cindy standing still, no mocap: the demo-hall plugin. Experimental. |
-| `example_*` | Minimal plugins, as templates for new ones. |
+What starts, and why:
+
+- **Always:** `health`, `console`, `assembly_observer` and `stop_recovery` (`no_default_plugins:=true` skips them).
+- **Named in `plugins:=`:** everything else. Nothing starts because of the robots or `process_directory`.
+- **Needed by a plugin that starts:** it comes along whether you name it or not. **Also loads** lists all it brings.
+- **The lab scripts** name `LAB_MONITOR_PLUGINS` (`scripts/lab_common.sh`), which starts everything below except
+  `mocap_probe`, `calibration`, `base_exp`, `debug_gizmo` and the examples.
+
+In **Where**, "strip" is the minimized strip at the right edge, for tools not needed every session.
+
+## Always on
+
+| Plugin | Where | Also loads | In short |
+|---|---|---|---|
+| `health` | Main panel, under Stop all; phone **Health** | | The status of each robot and tracked object; Unlock, Resume, Reconnect. |
+| `console` | Its own window, bottom right, minimized | | The newest log lines, filtered by source and level. |
+| `assembly_observer` | Its own tab, in the strip | | Records the robots every tick and every event (commands, leases, stops, manual moves, operator clicks, log lines) on this PC for a week; copies a time range to the Drive or opens it in Rerun. |
+| `stop_recovery` | Its own tab, in the strip; a window when a robot runs again after a stop | | Logs each robot's rest poses; after an e-stop or protective stop, moves the robot slowly back to the pose from before, watching its force. |
+
+## Assembly
+
+Name `assembly_steps`: it brings all of these but `doc` and `assembly_guide`. In the lab add `doc`, `assembly_guide`,
+`robot_control`, `base_planner_panel`, `arm_planner_panel` and `obstacles`.
+
+| Plugin | Where | Also loads | In short |
+|---|---|---|---|
+| `assembly_steps` | **Assembly**; **Plan plots** window | `process`, `assembly_run`, `movement_exec`, `motion_planner`, `mocap_bars`, `collisions` | The operator's steps: Live IK, Plan, preview, Exec. Experimental. |
+| `assembly_guide` | Its own **Assembly guide** tab | `process`, `assembly_run`, `base_planner`, `arm_planner`, `motion_planner`, `movement_exec`, `mocap_bars`, `collisions` | Walks the process part by part, Prepare → Check → Go, through the base planner and the executor; Auto and a simulation-only God mode. Experimental. |
+| `movement_exec` | **Assembly**; **Exec plots** window; phone **Exec** | `process`, `assembly_run`, `motion_planner`, `mocap_bars`, `collisions` | Runs one step on the real robots, with Confirms, compliant inserts and the servo. Experimental. |
+| `assembly_run` | **Assembly** | `process` | Remembers how far the assembly got: done actions, where each robot was left. Experimental. |
+| `doc` | **Doc** | `assembly_run`, `process` | Builds the day's as-built page and reports; lists the loaded process's assembly runs and deletes them, with their as-built rows, after a warning. Experimental. |
+| `process` | **Assembly**, at the top | | Load a process and step through its movements; the planners' targets come from it. |
+| `motion_planner` | **Plan › Motion** | `collisions` | Plans process movements and checks collisions for other plugins. Experimental. |
+
+## Driving and planning
+
+Name what you need: `robot_control` to drive, a planner panel to plan, `obstacles` to give the planners the room.
+
+| Plugin | Where | Also loads | In short |
+|---|---|---|---|
+| `robot_control` | **Control**, a tab per robot; phone **Control** | | Drive the base, jog arms and tool0, Cartesian targets, free drive, tools. |
+| `base_planner_panel` | **Plan › Base** | `base_planner`, `process`, `collisions` | Plans a collision-free base path and sends it to the onboard follower. Experimental. |
+| `base_planner` | No tab | `process` | The planner behind that panel; other plugins can use it too. Experimental. |
+| `arm_planner_panel` | **Plan › Arm** | `arm_planner`, `process`, `collisions` | Plans a collision-free arm motion to a joint target. Experimental. |
+| `arm_planner` | No tab | | The planner behind that panel; other plugins can use it too. Experimental. |
+| `obstacles` | **Obstacles**, in the strip | | The lab's obstacles for the planners, from `data/lab/<lab>.json`; edit and save them. |
+| `collisions` | **Collisions** | | Lists and draws what collision checks and clearance trips hit. |
+
+## Mocap
+
+| Plugin | Where | Also loads | In short |
+|---|---|---|---|
+| `mocap_streams` | **Mocap › Streams**; phone **Streams** | | What Motive streams now: a row per robot, tracked object and other rigid body. Read-only. |
+| `frame_check` | **Mocap › Frame**; phone **Frame** | `process`, `mocap_bars` | How far each measured bar of the built frame is from its design, live: a picture and per-end mm to move. For straightening it by hand. Read-only. Experimental. |
+| `mocap_bars` | **Mocap › Bars** | `process` | Fit every bar to the raw mocap markers near where it should be; drawn in 3D, logged by the observer. Experimental. |
+| `mocap_probe` | **Mocap probe › Points**, in the strip; phone **Mocap** | | Record points with the mocap probe; coverage map, cameras, floor calibration. Needs no robots. |
+
+## Calibration
+
+A robot's base rigid body: `calibration` ([calibration_manual.md](doc/lab/calibration_manual.md)). The lab frame on the
+floor: **Floor calibration** in `mocap_probe` ([floor_calibration_manual.md](doc/lab/floor_calibration_manual.md)).
+
+| Plugin | Where | Also loads | In short |
+|---|---|---|---|
+| `calibration` | **Calibration**; phone **Calibration** | `arm_planner`, `collisions` | Calibrates a robot's base rigid body by sweeping one arm's first two joints, Setup to Apply. Experimental. |
+
+## Experiments
+
+| Plugin | Where | Also loads | In short |
+|---|---|---|---|
+| `base_exp` | **Base exp** | `obstacles`, `collisions` | Base controller experiments: test paths, recordings, analysis. Experimental. |
+| `insertion_demo` | **Insertion demo**; **Force plots** window | `process`, `motion_planner`, `collisions` | One bar in and out on demand, Cindy standing still, no mocap: the demo-hall plugin. Experimental. |
+
+## Development
+
+| Plugin | Where | Also loads | In short |
+|---|---|---|---|
+| `debug_gizmo` | **Debug gizmo**, in the strip | | Debug only: move any scene body by hand; nothing is saved. |
+| `example_*` | A tab each | | Minimal plugins, as templates for new ones. |
 
 # Documentation
 
@@ -293,7 +353,7 @@ Every doc, by folder: [doc/README.md](doc/README.md). The ones you need first:
 |---|---|
 | [doc/lab/plugins.md](doc/lab/plugins.md) | The UI's panels, the Assembly tab, and every plugin in detail. |
 | [doc/lab/real_lab_test_manual.md](doc/lab/real_lab_test_manual.md) | The real robots, step by step: setup, the robots' launches, checks, tests in the air, the first three bars. |
-| [doc/lab/fake_lab_test_manual.md](doc/lab/fake_lab_test_manual.md) | The same test against three simulated robots on one laptop. |
+| [doc/lab/fake_lab_test_manual.md](doc/lab/fake_lab_test_manual.md) | The same test against three simulated robots on one PC. |
 | [doc/lab/simulation_manual.md](doc/lab/simulation_manual.md) | Simulated robots and mocap, every argument, what is not simulated. |
 | [doc/lab/mocap_relay.md](doc/lab/mocap_relay.md) | The mocap relay: topics, calibrations, the lab frame, rigid bodies in Motive. |
 | [doc/glossary.md](doc/glossary.md) | The project's words and what each means where. |

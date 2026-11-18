@@ -3,11 +3,14 @@
 import json
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
+from rclpy.serialization import serialize_message
 from std_msgs.msg import String
 
 from body_definition_fixtures import body
-from robot_fakes import Node
+from robot_fakes import Client, Node
+from husky_assembly_teleop.robot_interface.marker_cloud import CLOUD_TOPIC, cloud_message
 from husky_assembly_teleop.robot_interface.mocap_definitions import MocapCamera, cameras_json, definitions_json
 from husky_assembly_teleop.robot_interface.mocap_relay import (USE_REFIT_SERVICE, CALIBRATIONS_TOPIC, CAMERAS_TOPIC,
                                                                DEFINITIONS_TOPIC, FRAME_TOPIC, MARKERS_TOPIC,
@@ -33,10 +36,10 @@ class RelayNode(Node):
         super().__init__()
         self.callbacks, self.clients = {}, {}
 
-    def create_subscription(self, _kind, topic, callback, _qos):
-        """Keep the callback."""
+    def create_subscription(self, _kind, topic, callback, _qos, raw: bool = False):
+        """Keep the callback; a newest-only one (`raw`) takes the serialized message."""
         self.callbacks[topic] = callback
-        return topic
+        return SimpleNamespace(topic=topic)
 
     def create_client(self, _kind, name):
         """A client whose service is ready and keeps its requests."""
@@ -69,6 +72,21 @@ def test_reload_asks_the_relays_service_of_that_rigid_body_only():
     assert MocapRelayInterface(node, lambda: node.now).reload_base_calibration(1850) == "future"
     assert len(node.clients[RELOAD_BASE_SERVICE.format(1850)].requests) == 1
     assert RELOAD_BASE_SERVICE.format(1840) not in node.clients
+
+
+def test_streaming_ids_are_asked_without_waiting_and_land_in_the_state():
+    """A request goes out only while the relay serves it; its answer lands when it comes; a failed one is skipped."""
+    node = RelayNode()
+    relay = MocapRelayInterface(node, lambda: node.now)
+    client = relay._streaming_ids_client = Client(ready=False)
+    assert not relay.ask_streaming_ids() and not client.calls
+    client.ready = True
+    assert relay.ask_streaming_ids() and relay.state.streaming_ids_time is None
+    client.calls[0].answer(SimpleNamespace(ids=[1020, 1840]))
+    assert relay.state.streaming_ids == {1020, 1840} and relay.state.streaming_ids_time == node.now
+    assert relay.ask_streaming_ids()
+    client.calls[1].fail(RuntimeError("gone"))
+    assert relay.state.streaming_ids == {1020, 1840}
 
 
 def test_another_format_is_refused():
@@ -127,11 +145,12 @@ def test_the_floor_calibration_is_kept_and_a_refit_adopted_through_the_relays_se
     frame = relay.state.frame
     assert not frame.poses_off and (frame.anchor_fit, frame.camera_fit) == ("frame moved 0.2 mm", "frame moved 0.4 mm")
     assert frame.time == 7.0 and frame.scale == ""
-    scale = {"describe": "distances -1550 ppm"}
-    for changed, expected in ((False, ""), (True, "distances -1550 ppm")):
+    scale = {"describe": "distances -1.55 mm/m"}
+    for changed, expected in ((False, ""), (True, "distances -1.55 mm/m")):
         node.callbacks[FRAME_TOPIC](String(data=json.dumps({"status": "held", "floor_calibration": "f.json",
                                                             "scale_changed": changed, "anchor_scale": scale})))
-        assert relay.state.frame.scale == expected and relay.state.frame.poses_off == changed
+        # * A refit follows Motive's scale: a scale change alone leaves poses where the frame's state says.
+        assert relay.state.frame.scale == expected and not relay.state.frame.poses_off
 
 
 def test_the_unlabeled_markers_are_kept_and_an_unreadable_announcement_skipped():
@@ -145,6 +164,24 @@ def test_the_unlabeled_markers_are_kept_and_an_unreadable_announcement_skipped()
     assert relay.state.unlabeled_markers == ((1.0, 2.0, 0.03),)
 
 
+def test_the_newest_marker_cloud_is_kept_and_one_that_does_not_read_skipped():
+    """The relay's cloud as it built it, stamped with its capture time; a cloud of another layout is skipped."""
+    node = RelayNode()
+    relay = MocapRelayInterface(node, lambda: node.now)
+    positions = np.array([[1.0, 2.0, 0.5], [0.25, -1.0, 0.03]])
+    message = cloud_message(positions, np.array([0.019, 0.0]), np.array([4e-4, 0.0]), np.array([65537, 70000]),
+                            1_700_000_000_500_000_000, "lab")
+    node.callbacks[CLOUD_TOPIC](serialize_message(message))
+    cloud = relay.state.marker_cloud
+    np.testing.assert_allclose(cloud.positions, positions, atol=1e-6)
+    np.testing.assert_allclose(cloud.sizes, [0.019, 0.0], atol=1e-7)
+    assert cloud.ids.tolist() == [65537, 70000] and cloud.arrival_time == node.now
+    assert cloud.capture_time == pytest.approx(1_700_000_000.5)
+    message.fields = message.fields[:3]
+    node.callbacks[CLOUD_TOPIC](serialize_message(message))
+    assert relay.state.marker_cloud is cloud
+
+
 def test_the_markers_noise_from_the_relays_last_look_is_kept():
     """Each marker of the look raw with its noise, mm; a marker without frames has none."""
     node = RelayNode()
@@ -155,17 +192,21 @@ def test_the_markers_noise_from_the_relays_last_look_is_kept():
 
 
 def test_where_the_relays_last_look_puts_the_lab_frame_is_kept():
-    """The frame applied, its refit undone, the trusted deciding fit done; untrusted: none; unreadable: skipped."""
+    """The frame applied, its refit undone, the deciding fit done, scales too; untrusted: none; unreadable: skipped."""
     node = RelayNode()
     relay = MocapRelayInterface(node, lambda: node.now)
-    node.callbacks[FRAME_TOPIC](String(data=json.dumps({"status": "held", "lab_from_raw": [[1, 0, 0], [0, 0, 0, 1]]})))
-    fit = {"raw_cal_from_raw_now": [[0.003, 0, 0], [0, 0, 0, 1]], "trusted": True}
+    node.callbacks[FRAME_TOPIC](String(data=json.dumps({"status": "held", "lab_from_raw": [[1, 0, 0], [0, 0, 0, 1]],
+                                                        "lab_scale": 1.002})))
+    fit = {"raw_cal_from_raw_now": [[0.003, 0, 0], [0, 0, 0, 1]], "scale": 1.0015, "trusted": True}
     sample = {"decides": "truss cameras", "truss_cameras": fit, "anchors": None,
-              "refit": {"raw_cal_from_raw_now": [[0.001, 0, 0], [0, 0, 0, 1]], "trusted": True}}
+              "refit": {"raw_cal_from_raw_now": [[0.001, 0, 0], [0, 0, 0, 1]], "scale": 1.002, "trusted": True}}
     node.callbacks[METRICS_TOPIC](String(data=json.dumps(sample)))
-    assert relay.state.lab_from_raw_now.position == pytest.approx((1.002, 0.0, 0.0))
+    now = relay.state.lab_from_raw_now
+    # * The point at raw (1, 0, 0): fit 1.0015 + 0.003, refit undone, then the frame applied.
+    expected = 1.002 * ((1.0015 + 0.003 - 0.001) / 1.002) + 1.0
+    assert now.apply((1.0, 0.0, 0.0)) == pytest.approx((expected, 0.0, 0.0)) and now.scale == pytest.approx(1.0015)
     assert relay.state.metrics_time == node.now
     node.callbacks[METRICS_TOPIC](String(data="not json"))
-    assert relay.state.lab_from_raw_now.position == pytest.approx((1.002, 0.0, 0.0))
+    assert relay.state.lab_from_raw_now.pose.position == pytest.approx(now.pose.position)
     node.callbacks[METRICS_TOPIC](String(data=json.dumps({**sample, "truss_cameras": {**fit, "trusted": False}})))
     assert relay.state.lab_from_raw_now is None

@@ -28,7 +28,7 @@ from ...shared.assembly_tab.layout import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOA
                                            PLAN_SETTINGS_BAND, SETTINGS_BAND, STEP_BAND, plots_window)
 from ...shared.assembly_tab.plan_plots import PlanPlots
 from ...world.clearance import ARM_MOVE
-from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, chip_line, section, values
+from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, block, chip, chip_line, section, values
 from .step_panel_base import SLIDER_STEP
 from scaffolding_assembly_core.ids import robot_id
 
@@ -92,7 +92,7 @@ class StepsPanel:
             # ! Keep changing text BELOW the buttons.
             self._details = gui.add_html("")
         with ctx.view.ui(band=SETTINGS_BAND) as gui:
-            gui.add_html(section("settings", SECTION_TOOL))
+            gui.add_html(section("settings", SECTION_CTRL))
             self._ignore = gui.add_checkbox("Ignore built bars", False,
                                             hint="Plan as if the built bars were not there: for tests in the air")
             self._diagnosis = gui.add_checkbox("Visual diagnosis", False,
@@ -268,7 +268,7 @@ def exec_line(robot: str, parts: tuple[PartPlan, ...]) -> str:
         words.append({MOTION_PART: f"moves {tools}", INSERT_PART: insert,
                       RETREAT_PART: f"retreats {tools}, the jaws loosening as it backs out",
                       OPEN_PART: f"opens the Robotiq on {tools}",
-                      HANDOFF_PART: f"closes the Robotiq on {tools}, the arm compliant",
+                      HANDOFF_PART: f"closes the Robotiq on {tools} (the run's grasp controller)",
                       WITH_MOTION_PART: f"opens the gripper screws on {tools} in the retreat",
                       BY_HAND_PART: f"waits for {part.movement} by hand",
                       BASE_PART: f"waits for {part.movement} (base by hand)",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import replace
 
@@ -10,9 +11,10 @@ from planning_fixtures import purged_process
 from plugin_fakes import FakeContext
 from process_fixtures import build_process
 
-from husky_assembly_teleop.plugins.process.loading import load_process, process_folders
-from husky_assembly_teleop.plugins.process.plugin import (NO_FOLDER, NO_MOVEMENT, ProcessPlugin, _movement_css,
-                                                          action_window)
+from husky_assembly_teleop.shared.process_contract import RHINO_FOLDER
+from husky_assembly_teleop.plugins.process.loading import load_process, process_folders, rhino_files
+from husky_assembly_teleop.plugins.process.plugin import (ACTION_ROWS, NO_FOLDER, NO_MOVEMENT, ProcessPlugin,
+                                                          _movement_css, action_window)
 from husky_assembly_teleop.shared.assembly_planning.labels import INSERT_TIGHTEN
 from scaffolding_assembly_core.process import write
 
@@ -33,6 +35,43 @@ def test_action_window_centres_the_selection():
     assert action_window(1, 48, rows=7) == 0
     assert action_window(47, 48, rows=7) == 41
     assert action_window(2, 4, rows=7) == 0
+
+
+def test_scroll_moves_the_action_list_a_page_until_the_selection_changes():
+    """▲ ▼ move the list a page, stopping at either end, the selection kept; selecting elsewhere brings it back."""
+    ctx = FakeContext()
+    ctx.config.process_directory = None
+    plugin = ProcessPlugin()
+    plugin.setup(ctx)
+    plugin._take(purged_process().process)
+    plugin.draw(ctx)
+    count, selected = len(plugin.process.schedule), plugin.selected
+    assert plugin._window_start == 0 and count > 3 * ACTION_ROWS
+    plugin._on_scroll("▼")
+    plugin._on_scroll("▼")
+    plugin.draw(ctx)
+    assert plugin._window_start == 2 * ACTION_ROWS and plugin.selected == selected
+    assert plugin._action_rows[0].label.startswith(f"{2 * ACTION_ROWS + 1}. ")
+    for _ in range(count):
+        plugin._on_scroll("▼")
+    plugin._on_scroll("▲")
+    plugin.draw(ctx)
+    assert plugin._window_start == count - 2 * ACTION_ROWS
+    plugin.select(plugin._first_of[3 * ACTION_ROWS])
+    plugin.draw(ctx)
+    assert plugin._window_start == action_window(3 * ACTION_ROWS, count)
+
+
+def test_the_rhino_files_are_the_drives_newest_first(tmp_path):
+    """Only .3dm files of the Rhino folder; none without a Drive root or the folder."""
+    assert rhino_files(None) == [] and rhino_files(tmp_path) == []
+    folder = tmp_path / RHINO_FOLDER
+    folder.mkdir()
+    for age, name in enumerate(("new.3dm", "old.3dm", "backup.3dmbak")):
+        path = folder / name
+        path.write_bytes(b"")
+        os.utime(path, (1000.0 - age, 1000.0 - age))
+    assert rhino_files(tmp_path) == ["new.3dm", "old.3dm"]
 
 
 def test_the_folder_lists_the_processes_and_the_configured_one(tmp_path):

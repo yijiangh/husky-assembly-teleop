@@ -88,7 +88,8 @@ class PlannerService(HuskyPlugin, Generic[R]):
         """Send a ready plan to its robot and watch the motion until it is over; a task holding the robot's lease.
 
         - Call `answer(True, message)` once the robot took the plan, or `answer(False, why)` and return if it did not.
-          Raising MotionRefused before answering answers that nothing was sent.
+          Raising MotionRefused before answering answers its message.
+        - ! `why` says only why, naming the robot at most once; never "nothing sent": the caller says it was not sent.
         - ! Cancelled by Stop all, the plugin stopping, or a newer commit (`replaced`): stop the motion unless replaced.
         - Pass `unknown_allowed(plan)` to a clearance as its `unknown_robots`.
         """
@@ -133,6 +134,8 @@ class PlannerService(HuskyPlugin, Generic[R]):
     def commit(self, plan_id: int, unknown_robots: Collection[str] = (),
                clearance: bool = True) -> asyncio.Future[tuple[bool, str]]:
         """Send plan `plan_id` if it is still the latest and ready; resolves with (sent, message) once sent.
+
+        Not sent, the message says only why, e.g. "the plan was sent already": the caller says that nothing was sent.
 
         The motion is then watched until it is over, holding the robot's lease.
 
@@ -190,7 +193,7 @@ class PlannerService(HuskyPlugin, Generic[R]):
         """Why the commit's clearance refused it at its first check, too close; "" if it did not."""
         if clearance is None or not clearance.refused:
             return ""
-        return f"nothing sent: {clearance.problem}; untick Clearance to move out"
+        return f"{clearance.problem}; untick Clearance to move out"
 
     def cancel_commit(self, serial: str | None = None) -> bool:
         """Stop every motion a commit started that still runs, or only `serial`'s: `execute` stops the robot."""
@@ -305,19 +308,17 @@ class PlannerService(HuskyPlugin, Generic[R]):
             return  # * the caller gave up before this ran: nothing is sent
         plan = self._plan
         if plan is None or plan.id != plan_id:
-            future.set_result((False, "nothing sent: that plan was replaced or cleared"))
+            future.set_result((False, "that plan was replaced or cleared"))
             return
         if plan.state != "ready":
-            future.set_result((False, f"nothing sent: the plan is {plan.state}"
-                                      + (f" ({plan.message})" if plan.message else "")))
+            future.set_result((False, _not_ready(plan)))
             return
         serial = plan.request.serial
         running = self._executions.get(serial)
         if running is not None and running.done():
             running = None
         if running is not None and not self.replaces_running:
-            future.set_result((False, f"nothing sent: an earlier commit still moves {short_serial(serial)}; wait, or "
-                                      f"Hold it"))
+            future.set_result((False, f"an earlier commit still moves {short_serial(serial)}; wait, or Hold it"))
             return
         if running is not None:
             self._replaced.add(running)
@@ -348,9 +349,20 @@ class PlannerService(HuskyPlugin, Generic[R]):
                 ran = True
                 await self.execute(self._ctx, plan, answer)
         except MotionRefused as refused:
-            answer(False, f"nothing sent: {refused}")
+            answer(False, str(refused))
         finally:
             self._replaced.discard(asyncio.current_task())
-            answer(False, "nothing sent: the commit ended before sending")
+            answer(False, "the commit ended before sending")
             if not ran and not future.cancelled():
                 self.commit_refused(plan, future.result()[1])
+
+
+def _not_ready(plan: Plan) -> str:
+    """Why a plan that is not ready cannot be committed, in a few words; the caller says that nothing was sent."""
+    if plan.state == "planning":
+        return "still planning"
+    if plan.state == "sent":
+        return "the plan was sent already"
+    if plan.state == "stale":
+        return f"{plan.message or 'the plan is stale'}; plan again"
+    return plan.message or f"the plan is {plan.state}"

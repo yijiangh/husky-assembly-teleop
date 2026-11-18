@@ -10,7 +10,9 @@ from bar_fixtures import BAR_LENGTH, random_rigid, small_rigid
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.shared.bars.pose import (
-    apply_authored_move, bar_ends, bar_servo_correction, bar_slide_roll, bar_start, pose_deviation)
+    OK_MM, WARN_MM, apply_authored_move, bar_ends, bar_gap, bar_servo_correction, bar_slide_roll, bar_start, gap_color,
+    pose_deviation)
+from husky_assembly_teleop.colors import FAIL, NONE, OK, WARN
 from scaffolding_assembly_core.geometry import Pose
 
 
@@ -125,3 +127,25 @@ def test_one_servo_step_closes_on_the_bar():
     held_before = np.linalg.inv(T_fk_left @ E_left) @ (T_fk_right @ E_right)
     held_after = np.linalg.inv(new_left @ E_left) @ (new_right @ E_right)
     assert held_after == pytest.approx(held_before, abs=1e-9)
+
+
+def test_bar_gap_measures_the_start_middle_and_end_and_the_tilt():
+    """Leaning 1 mrad about the bottom: 0 at the start, half the length mrad in mm at the middle, all at the end."""
+    T_design = random_rigid(3)
+    # * About the bar's x axis through its start (z = -L/2).
+    lean = Rotation.from_rotvec([1e-3, 0.0, 0.0]).as_matrix()
+    move = np.eye(4)
+    move[:3, :3] = lean
+    move[:3, 3] = (np.eye(3) - lean) @ [0.0, 0.0, -BAR_LENGTH / 2]
+    gap = bar_gap(T_design @ move, T_design, BAR_LENGTH)
+    assert gap.distances_mm == pytest.approx([0.0, BAR_LENGTH / 2, BAR_LENGTH], rel=1e-3, abs=1e-9)
+    assert gap.worst_mm == pytest.approx(BAR_LENGTH, rel=1e-3)
+    assert gap.design[[0, 2]] == pytest.approx(bar_ends(T_design, BAR_LENGTH))
+    assert gap.tilt_deg == pytest.approx(np.degrees(1e-3))
+    assert gap.gaps_mm[1] == pytest.approx((gap.measured[1] - gap.design[1]) * 1e3)
+
+
+def test_gap_color_is_green_amber_red_by_the_shared_limits():
+    """Up to OK_MM green, up to WARN_MM amber, beyond red, grey without a gap."""
+    assert [gap_color(v) for v in (0.0, OK_MM, OK_MM + 0.1, WARN_MM, WARN_MM + 0.1, None)] == \
+        [OK, OK, WARN, WARN, FAIL, NONE]

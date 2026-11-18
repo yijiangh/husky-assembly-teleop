@@ -7,7 +7,8 @@ import pytest
 
 from husky_assembly_teleop.shared.bars.layouts import BarLayout, fake_sensed_markers, fit_bar
 from husky_assembly_teleop.shared.bars.pose import bar_slide_roll, pose_deviation
-from husky_assembly_teleop.shared.bars.readings import MATCHED, MISSING, STRAY, bar_report, marker_rows, plate_geometry
+from husky_assembly_teleop.shared.bars.readings import (MATCHED, MISSING, PLATES_BAD, PLATES_OK, PLATES_WARN, STRAY,
+                                                        bar_report, marker_rows, plate_check, plate_geometry)
 from husky_assembly_teleop.world.marker_match import Sensed, transform_points
 
 #: A made-up 2 m bar with four T20 plates, two balls 48.3 mm apart on each, the plates rolled differently.
@@ -64,6 +65,80 @@ def test_plate_geometry_reads_pair_lengths_spacing_and_bow():
     geometry = plate_geometry(fit_bar(sensed, layout), sensed, layout)
     assert geometry.bend_mm == pytest.approx(2.0, abs=0.3) and geometry.plates[1].bend_mm == geometry.bend_mm
     assert geometry.worst_length_err_mm == pytest.approx(0.0, abs=0.05)
+
+
+def turned_plate(layout: BarLayout, plate: int, degrees: float) -> np.ndarray:
+    """The layout's markers with one plate's two balls turned `degrees` about the bar (its z axis)."""
+    points = layout.points.copy()
+    points[2 * plate:2 * plate + 2] = transform_points(bar_slide_roll(0.0, degrees), points[2 * plate:2 * plate + 2])
+    return points
+
+
+@pytest.mark.parametrize("degrees", [1.0, 4.0])
+def test_a_twisted_plate_is_read_but_never_flagged(degrees):
+    """Plate J2 twisted about the bar: expected, so the check stays ok; its twist reads against the other plates."""
+    layout = plated_layout()
+    sensed = fake_sensed_markers(np.eye(4), turned_plate(layout, 1, degrees), noise_m=0.0)
+    geometry = plate_geometry(fit_bar(sensed, layout), sensed, layout)
+    assert plate_check(geometry).level == PLATES_OK
+    assert geometry.plates[1].alone_roll_deg == pytest.approx(degrees, abs=0.05)
+    assert geometry.plates[1].alone_radial_mm == pytest.approx(0.0, abs=0.05)
+
+
+def test_a_plate_twisted_too_far_for_the_fit_is_flagged():
+    """J2 twisted 8°: the fit leaves its balls out, but they sit near where J2 should be: red, never dropped quietly."""
+    layout = plated_layout()
+    sensed = fake_sensed_markers(np.eye(4), turned_plate(layout, 1, 8.0), noise_m=0.0)
+    check = plate_check(plate_geometry(fit_bar(sensed, layout), sensed, layout))
+    assert check.level == PLATES_BAD and check.worst == "joints/J2_mocap"
+    assert "twisted or moved too far" in check.problems["joints/J2_mocap"][0]
+
+
+def test_an_occluded_plate_is_not_a_moved_one():
+    """Both balls of J2 hidden, nothing near where they should be: ok, three plates checked."""
+    layout = plated_layout()
+    sensed = fake_sensed_markers(np.eye(4), np.delete(layout.points, [2, 3], axis=0), noise_m=0.0)
+    check = plate_check(plate_geometry(fit_bar(sensed, layout), sensed, layout))
+    assert check.level == PLATES_OK and check.checked == 3
+
+
+@pytest.mark.parametrize(("mm", "level"), [(1.0, PLATES_OK), (2.5, PLATES_WARN), (5.0, PLATES_BAD)])
+def test_a_plate_slid_along_the_bar_is_named(mm, level):
+    """Plate J3 slid along the bar: 1 mm ok; 2.5 mm amber, named; 5 mm, too far for the fit to take its balls, red."""
+    layout = plated_layout()
+    points = layout.points.copy()
+    points[4:6, 2] += mm / 1e3
+    sensed = fake_sensed_markers(np.eye(4), points, noise_m=0.0)
+    check = plate_check(plate_geometry(fit_bar(sensed, layout), sensed, layout))
+    assert check.level == level
+    assert check.worst == ("" if level == PLATES_OK else "joints/J3_mocap")
+    if level == PLATES_WARN:
+        assert check.problems["joints/J3_mocap"] == ["slid +2.5 mm along the bar"]
+
+
+def test_a_plate_off_its_seat_is_named():
+    """Plate J2's balls 3 mm farther from the bar's axis: off its seat, amber, named; a twist could not do that."""
+    layout = plated_layout()
+    points = layout.points.copy()
+    middle = points[2:4].mean(axis=0)
+    out = np.array([middle[0], middle[1], 0.0]) / np.linalg.norm(middle[:2])
+    points[2:4] += 0.003 * out
+    sensed = fake_sensed_markers(np.eye(4), points, noise_m=0.0)
+    check = plate_check(plate_geometry(fit_bar(sensed, layout), sensed, layout))
+    assert check.level == PLATES_WARN and check.worst == "joints/J2_mocap"
+    assert "off its seat" in check.problems["joints/J2_mocap"][0]
+
+
+def test_an_outer_plate_is_never_called_off_its_seat():
+    """Past the other plates their line is extrapolated, so a bar's bow would read as a plate off its seat."""
+    layout = plated_layout()
+    points = layout.points.copy()
+    middle = points[6:8].mean(axis=0)
+    points[6:8] += 0.003 * np.array([middle[0], middle[1], 0.0]) / np.linalg.norm(middle[:2])
+    sensed = fake_sensed_markers(np.eye(4), points, noise_m=0.0)
+    geometry = plate_geometry(fit_bar(sensed, layout), sensed, layout)
+    assert geometry.plates[3].alone_radial_mm is None and geometry.plates[1].alone_radial_mm is not None
+    assert not any("off its seat" in text for texts in plate_check(geometry).problems.values() for text in texts)
 
 
 def test_bar_report_has_three_lines_in_the_old_words():

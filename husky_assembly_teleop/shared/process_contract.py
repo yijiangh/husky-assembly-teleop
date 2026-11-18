@@ -2,8 +2,9 @@
 What the process plugin offers others: its selected movement (`Selection`), read through `ProcessContract`.
 
 It also says whether the process's obstacles from Rhino count in collision checks (`obstacles_collide`), and whether
-the transfer workaround is on (`transfer_as_free`). Others may show each action's mark in its row (`request_marks`), and
-an action's later movements with joints found live (`request_carry`, a `Carry`).
+the transfer workaround is on (`transfer_as_free`), and where the build stands (`placement`: one rigid move of the
+build, obstacles included; the floor stays, robot bases stay on it). Others may show each action's mark in its row
+(`request_marks`), and an action's later movements with joints found live (`request_carry`, a `Carry`).
 
 Users type `ctx.require("process")` with it: `process: ProcessContract = ctx.require("process")`. The process, its
 actions and movements are the core's types (`scaffolding_assembly_core.process`).
@@ -12,6 +13,7 @@ actions and movements are the core's types (`scaffolding_assembly_core.process`)
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping, Protocol
 
 from scaffolding_assembly_core.geometry import Pose
@@ -56,8 +58,8 @@ class Selection:
     except while movement_exec has a robot's lease for a step.
 
     Attributes:
-        process: The loaded process, as authored; `process.folder` is where it was read from (the converted copy of
-            an old export).
+        process: The loaded process, placed (`ProcessContract.placement`); `process.folder` is where it was read
+            from (the converted copy of an old export).
         index: Position of the selected movement in the authored `process.movements()`, from 0.
         action: The action as the panel shows it: with the transfer workaround, a jointing action's movements in run
             order (`steps.as_run`). Its `robot` is "" for a `bar_placing` action.
@@ -76,6 +78,11 @@ class Selection:
     process_ids: IdMap | None = None
 
 
+#: The Drive folder of the Rhino files, and the one drawn as the room of the as-built page unless another is chosen.
+RHINO_FOLDER = "assembly - demo"
+DEFAULT_RHINO_FILE = "261019_2ModulesDemo.3dm"
+
+
 class ProcessContract(Protocol):
     """What the process plugin offers other plugins: type `ctx.require("process")` as this."""
 
@@ -84,10 +91,46 @@ class ProcessContract(Protocol):
         """Selection | None: The selected movement, or None while no process with movements is loaded."""
 
     @property
+    def rhino_file(self) -> Path | None:
+        """Path | None: The Rhino file chosen as the as-built page's room, or None for no room."""
+
+    @property
+    def scene_shows(self) -> tuple[str, str] | None:
+        """(action id, movement id) whose process bodies this tick's scene snapshot holds; None for none yet.
+
+        The plugin puts the selected movement's bodies (its built bars, held bars, allowed contacts) in the live scene;
+        the snapshot planners read is taken before any plugin runs, so after a new selection this names the old
+        movement, then None for a tick, then the new one. ! Plan a process movement only once this names it.
+        """
+
+    @property
+    def authored(self) -> Process | None:
+        """Process | None: The loaded process as authored, before its placement; the same object until another loads.
+
+        A new placement makes a new `selection.process` but keeps this one: it tells a re-placed process from another.
+        """
+
+    @property
+    def placement(self) -> Pose:
+        """Pose: Where the build stands: its authored world frame in the world (identity: as authored).
+
+        Bars, connector halves, obstacles and arm targets move by it; robot bases too, projected onto the floor
+        plane; the floor ("ground/…") stays. The run keeps it (`RunSettings.placement`).
+        """
+
+    @property
+    def grasp_offsets(self) -> Mapping[str, tuple[float, float]]:
+        """dict: Hold action -> (slide mm, roll degrees): each support grasp moved along and about its bar.
+
+        The served process has the hold's flange targets moved by it, from its approach to its release's retreat
+        (`plugins/process/grasp_offset.py`). The run keeps them (`RunSettings.grasp_offsets`).
+        """
+
+    @property
     def obstacles_collide(self) -> bool:
         """bool: Whether the process's obstacles (Rhino's "obstacles/<name>") count in collision checks.
 
-        False: they are only drawn (the panel's "Rhino obstacles collide" box).
+        False: they are drawn see-through or hidden (the panel's "Rhino obstacles" list).
         """
 
     @property
@@ -106,6 +149,18 @@ class ProcessContract(Protocol):
         ! Main thread only.
         """
 
+    def request_placement(self, placement: Pose) -> None:
+        """Place the build at `placement`, as a run asks when it opens: the selected movement stays selected.
+
+        Never refused for done marks (the panel's own Apply is); refused while a step runs. ! Main thread only.
+        """
+
+    def request_grasp_offsets(self, offsets: Mapping[str, tuple[float, float]]) -> None:
+        """Move the holds' grasps as a run asks when it opens, replacing those before; refused while a step runs.
+
+        ! Main thread only.
+        """
+
     def request_marks(self, marks: Mapping[str, str]) -> None:
         """Show each action's mark in its row of the action list: action id -> MARK_PENDING, MARK_DONE or MARK_ASSUMED.
 
@@ -117,4 +172,10 @@ class ProcessContract(Protocol):
 
         Replaces the carry given before; a new process starts without one. A carry for the selected movement turns
         the panel to its target, so the goal found shows at once. ! Main thread only.
+        """
+
+    def request_show(self, at_target: bool) -> None:
+        """Draw the selected movement, and every one selected later, at its target or at its start.
+
+        The drawing only, as the panel's Show buttons do; the operator can change it again. ! Main thread only.
         """

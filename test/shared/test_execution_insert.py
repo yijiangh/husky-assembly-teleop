@@ -23,6 +23,7 @@ from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CO
 from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.execution.insert import InsertPlan, plan_insert, run_insert
+from husky_assembly_teleop.shared.execution.insert_forces import InsertForceSettings
 from husky_assembly_teleop.shared.execution.spiral import Spiral
 from husky_assembly_teleop.shared.execution.stream import (DRY_RUN, END_WAIT, FAILED, HOLD_FOR_STALL, NO_STALL,
                                                            REFUSED, RIGID_DONE, SETTLE_CEILING, SETTLE_TOL,
@@ -33,6 +34,7 @@ from scaffolding_assembly_core.geometry import Pose, compose
 pytestmark = pytest.mark.safety
 
 ARMS = ("left_ur_arm", "right_ur_arm")
+LEFT_ARM, RIGHT_ARM = ARMS
 NAMES = [name for arm in ARMS for name in arm_joint_names(arm)]
 
 
@@ -89,9 +91,11 @@ class Lab:
         assert isinstance(plan, InsertPlan), plan
         return plan
 
-    def work(self, plan: InsertPlan, operator: Operator | None = None, dry_run: bool = False):
+    def work(self, plan: InsertPlan, operator: Operator | None = None, dry_run: bool = False,
+             forces: InsertForceSettings = InsertForceSettings()):
         """The insert's coroutine, on every tool."""
-        return run_insert(self.ctx, self.robot, plan, self.tools, operator=operator or Operator(self), dry_run=dry_run)
+        return run_insert(self.ctx, self.robot, plan, self.tools, operator=operator or Operator(self), dry_run=dry_run,
+                          forces=forces)
 
     def run(self, plan: InsertPlan, **options):
         """Run the insert to its end."""
@@ -215,8 +219,11 @@ def test_a_mating_insert_runs_rigid_then_streams_the_line_until_the_left_screw_s
         last, tcp = lab.sent[arm][-1]
         assert last.hold and np.allclose(last.position, tcp, atol=0.0)
         assert lab.switches(arm) == [COMPLIANCE, JOINT]
-        wrenches = lab.robot.arms[arm]._target_wrench.messages
-        assert wrenches and all(message.wrench.force.x == message.wrench.force.z == 0.0 for message in wrenches)
+        # * The fake arms read no force, so no weight is taken off: only the mating left arm pushes, 4 N, until its
+        #   screw is tight; every arm ends on a zero wrench.
+        forces = [np.linalg.norm([m.wrench.force.x, m.wrench.force.y, m.wrench.force.z])
+                  for m in lab.robot.arms[arm]._target_wrench.messages]
+        assert forces[-1] == 0.0 and [f for f in forces if f > 0.0] == pytest.approx([4.0] if arm == LEFT_ARM else [])
         assert outcome.record["end_error_mm"][arm]["remaining_mm"] < 2.0
     assert lab.running() == [JOINT, JOINT]
     json.dumps(outcome.record, allow_nan=False)
@@ -360,14 +367,39 @@ def test_the_spiral_settings_reach_the_spiral():
 
 # --- --- --- --- --- one-mate bars --- --- --- --- ---
 
-def test_a_one_mate_bar_ignores_the_spiral_and_the_prompt_says_so():
-    """B21-like, the left screw alone mating: the spiral is dropped, even one too fast; a two-mate bar keeps it."""
+def test_a_one_mate_bar_spirals_when_asked_and_the_prompt_says_so():
+    """B21-like, the left screw alone mating: the spiral is kept, and one too fast refused, as for a two-mate bar."""
     lab = Lab()
     plan = lab.plan(spiral=(30.0, 6))
-    assert plan.spiral is None and plan.as_record()["spiral"] is None
-    assert "COMPLIANT 5.0 mm (straight line: no spiral for a bar with one mating joint)" in plan.text
-    assert lab.plan(spiral=(5.0, 4)).spiral is None
-    assert lab.plan(mating=ARMS, spiral=(30.0, 6)).spiral == (30.0, 6)
+    assert plan.spiral == (30.0, 6) and plan.as_record()["spiral"]["turns"] == 6
+    assert "COMPLIANT 5.0 mm (spiral 15 mm, 30 s, 6 turns, pitch 2.5 mm)" in plan.text
+    assert "spiral too fast" in plan_insert(lab.robot, NAMES, ROWS, mating=("left_ur_arm",), grounded=False,
+                                            split_mm=5.0, spiral=(5.0, 4), traj_time=5.0)
+
+
+def test_a_one_mate_bars_stall_in_the_spiral_sends_the_holding_arm_to_its_lines_end():
+    """The left screw stalls 2 s into a 30 s spiral: left back at once; right from its spiral target to its line's end.
+
+    Both arms circle until the stall. The right arm's next target carries on from its last one, its last is its planned
+    end, off the spiral; it settles there and both end under joint control.
+    """
+    lab = Lab(left={"screw_stall_after": 2.0})
+    outcome = lab.run(lab.plan(spiral=(30.0, 6), split_mm=30.0))
+    assert outcome.status == STALLED and outcome.ok, outcome.reason
+    assert [(phase["name"], phase["end"]) for phase in outcome.record["phases"]][1:] == [
+        ("spiral", "stalled"), ("left_ur_arm back", "back"), ("compliant right_ur_arm", "ended"),
+        ("settle right_ur_arm", "settled")]
+    assert outcome.record["settle"]["settled"]
+    assert lab.switches("left_ur_arm") == lab.switches("right_ur_arm") == [COMPLIANCE, JOINT]
+    assert not any(len(message.points) == 1 for message in lab.robot.arms["left_ur_arm"]._trajectory.messages)
+    streamed = lab.streamed("right_ur_arm")
+    assert_same_pose(world_target(lab, "right_ur_arm", streamed[-1], BASE), world_tool0(lab, "right_ur_arm", ROWS[-1]),
+                     1e-9)
+    steps = np.linalg.norm(np.diff([target.position for target in streamed], axis=0), axis=1)
+    assert np.max(steps) < 1e-3
+    assert lab.running() == [JOINT, JOINT] and outcome.record["switch"]["back_ok"]
+    assert any("STALLED in the spiral; left_ur_arm back under joint control" in line for line in lab.ctx.lines("info"))
+    json.dumps(outcome.record, allow_nan=False)
 
 
 def test_a_one_mate_bars_holding_arm_finishes_its_line_and_settles_after_the_stall():
@@ -534,6 +566,17 @@ def test_every_refusal_sends_nothing(change, why):
     change(lab)
     outcome = lab.run(plan)
     assert outcome.status == REFUSED and why in outcome.reason and lab.nothing_sent()
+
+
+@pytest.mark.parametrize("settings", [{}, {"mating": ARMS, "spiral": (20.0, 4)}])
+def test_a_compliant_target_an_arm_would_refuse_stops_the_insert_before_anything_moves(monkeypatch, settings):
+    """The rigid part would run, but an arm would refuse the compliant line: no screw starts, no arm moves."""
+    monkeypatch.setattr("husky_assembly_teleop.robot_interface.arm.CARTESIAN_MAX_STEP", 1e-6)
+    lab = Lab()
+    outcome = lab.run(lab.plan(**settings))
+    assert outcome.status == REFUSED and lab.nothing_sent()
+    assert "compliant target at" in outcome.reason and "jumps" in outcome.reason
+    assert outcome.reason.endswith("nothing sent")
 
 
 @pytest.mark.parametrize("settings", [{}, {"mating": ARMS, "spiral": (20.0, 4)}, {"mating": (), "grounded": True}])

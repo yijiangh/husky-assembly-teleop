@@ -64,7 +64,8 @@ def save_plan(folder: Path, world: PlanningWorld | None, own: str, setup: dict, 
     plan = {"found": path is not None, "reason": result.reason, "seconds": result.seconds, "direct": result.direct,
             "length": None if path is None else path.length, "duration": None if path is None else path.duration,
             "waypoints": len(poses), "clearance": None, "clearance_at": None, "notes": notes}
-    arrays = {"path_poses": poses, "path_t": np.empty(0) if path is None else np.asarray(path.times)}
+    arrays = {"path_poses": poses, "path_t": np.empty(0) if path is None else np.asarray(path.times),
+              "path_speed_scale": np.empty(0) if path is None or path.speed_scale is None else path.speed_scale}
     if world is not None and world.mirror is not None:
         if path is not None:
             started = time.time()

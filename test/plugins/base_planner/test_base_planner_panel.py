@@ -3,14 +3,16 @@
 import asyncio
 from dataclasses import asdict, replace
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 from plugin_fakes import WATCHES, FakeGui
 from robot_fakes import lease_test_robots
+from robot_lab import RobotLab
 
-from husky_assembly_teleop.plugins.base_planner.panel_plugin import NO_TASK, BasePlannerPanel
+from husky_assembly_teleop.colors import CURRENT, rgb
+from husky_assembly_teleop.plugins.base_planner.panel_plugin import FLOOR_KEEP, NO_TASK, BasePlannerPanel
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin, Run
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.ui.ghost import KIND_COLORS
@@ -166,6 +168,45 @@ def test_the_panel_plans_and_commits_through_the_api():
     assert planner.plan.state == "sent"
 
 
+class FakeTarget:
+    """The target input: its pose, set from code."""
+
+    def __init__(self, pose):
+        """Start at `pose`."""
+        self.pose = pose
+
+    def set(self, x, y, yaw):
+        """Take a new pose."""
+        self.pose = (x, y, yaw)
+
+
+def test_another_plugins_plan_is_the_panels_own():
+    """A plan another plugin asked for (e.g. a drive) sets the panel's robot and target, so Commit sends it."""
+    planner, ctx = Planner(), SimpleNamespace(submit=lambda _label, run: run(), now=lambda: 0.0,
+                                              spawn=lambda _label, work: asyncio.get_running_loop().create_task(work),
+                                              log_info=lambda _text: None, lease_robots=lease_test_robots,
+                                              world=SimpleNamespace(robots={}), config=SimpleNamespace(robots=()),
+                                              scene=SimpleNamespace(snapshot=Scene()), **WATCHES)
+    planner.setup(ctx)
+
+    async def scenario():
+        panel = panel_for(planner)
+        panel.serial, panel._target = "belle", FakeTarget((0.0, 0.0, 0.0))
+        planner.request_plan(BasePlanRequest(SERIAL, GOAL))
+        await asyncio.sleep(0.05)
+        panel.update(ctx)
+        taken = (panel.serial, panel._target.pose, panel._target_moved)
+        panel._commit(ctx)
+        await asyncio.sleep(0.01)
+        return taken, panel._message
+
+    try:
+        taken, committed = asyncio.run(scenario())
+    finally:
+        planner.teardown(ctx)
+    assert taken == (SERIAL, GOAL, "") and committed == "sent" and planner.sent == [planner.plan.id]
+
+
 @pytest.mark.safety
 def test_commits_second_press_lets_the_robots_own_arms_be_unknown():
     """The robot's arms not measured: the first Commit only asks; the second sends, letting the robot be unknown."""
@@ -318,3 +359,45 @@ def test_each_robot_keeps_its_own_run_chip():
     assert "reached the path" in shown[SERIAL] and "no follower" not in shown[SERIAL]
     assert "no follower" in shown["belle"] and "reached the path" not in shown["belle"]
     assert "reached the path" not in shown["cindy"] and "no follower" not in shown["cindy"]
+
+
+def test_the_robot_buttons_choose_the_robot_and_follow_a_switch():
+    """A press plans for that robot; a robot the panel switched to by itself is the one highlighted."""
+    ctx = RobotLab().ctx
+    ctx.view.scene = MagicMock()
+    ctx.plugins.update({"base_planner": MagicMock(), "collisions": MagicMock(),
+                        "process": SimpleNamespace(selection=None)})
+    panel = BasePlannerPanel()
+    panel._add_ghosts = lambda *_args: setattr(panel, "_used", MagicMock())
+    panel.setup(ctx)
+    serials = list(panel._robot.buttons)
+    assert panel._robot.buttons[serials[0]].label == serials[0].split("-")[-1] and panel.serial == serials[0]
+    panel._robot.buttons[serials[2]].callback()
+    assert panel.serial == serials[2]
+    panel.serial = serials[1]
+    # * Only the buttons matter here: the rest of the panel's drawing reads a real plan.
+    for part in ("_status_html", "_details_html", "_draw_slider", "_draw_floor", "_draw_duration", "_draw_ghosts",
+                 "_debug_view"):
+        setattr(panel, part, MagicMock())
+    panel.draw(ctx)
+    assert [button.color for button in panel._robot.buttons.values()] == [rgb(NONE), rgb(CURRENT), rgb(NONE)]
+
+
+def test_the_floor_shows_a_run_until_another_base_drives_or_it_ended_long_ago():
+    """A run's sent path and trail stay while it runs and FLOOR_KEEP s after; another base's newer run takes them."""
+    now = [100.0]
+    ctx = SimpleNamespace(now=lambda: now[0])
+    path = SimpleNamespace()
+    planner = BasePlannerPlugin()
+    alice = Run(path=path, path_id=4, sent_at=10.0)
+    planner._runs = {SERIAL: alice, "belle": Run(ended=Check("refused", BAD, "belle: no follower"), ended_at=50.0)}
+    panel = panel_for(Planner())
+    panel._planner = planner
+    assert panel._floor_run(ctx) is alice, "still running, and a refusal sends no path"
+    alice.ended_at = now[0] - FLOOR_KEEP + 1.0
+    assert panel._floor_run(ctx) is alice, "ended a moment ago"
+    now[0] += 2.0
+    assert panel._floor_run(ctx) is None, "ended long ago"
+    alice.ended_at = None
+    planner._runs["belle"] = Run(path=path, path_id=1, sent_at=20.0)
+    assert panel._floor_run(ctx) is None, "Belle drove since"

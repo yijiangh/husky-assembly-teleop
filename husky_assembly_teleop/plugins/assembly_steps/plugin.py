@@ -10,14 +10,14 @@ action's last step Mark done (assembly_run's) is suggested.
 
 - Live IK: the goal by IK at the live base, logged, recorded and carried into the process panel's drawing; a plan of
   the same step
-  reuses it while the base stays within 2 mm / 0.5° and the process plugin's "Rhino obstacles collide" is unchanged.
+  reuses it while the base stays within 2 mm / 0.5° and the "Rhino obstacles" collide setting is unchanged.
 - After Live IK or a plan, the process panel draws the action's later movements with the joints found, on the live
   base they were found at, and turns to the step's target (`ProcessContract.request_carry`); a new action drops them.
 - Plan on a movement with nothing to plan (an ungrasp, a grasp, an operator step) says so and selects the next robot
   movement instead (`_move_on`): the operator clicks Plan again.
 - A plan is used once: Exec takes it, and it is cleared once the step ran; only a request refused before sending
   anything, or a dry run, gives it back (still checked for staleness).
-- An insert after its transfer's mocap bar servo is planned from where the servo left the flanges (`executor.carried`).
+- An insert after its transfer's servo is planned from where the servo left the flanges (`executor.carried`).
 - ! EXPERIMENTAL, with movement_exec the first plugins that run process movements on the robots.
 """
 
@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+from functools import partial
 from typing import TYPE_CHECKING
 
 import viser
@@ -37,15 +38,15 @@ from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...shared.assembly_planning.joints import arm_of_flange
+from ...shared.process_scene.live_scene import SceneNotShown, showing
 from ...shared.assembly_planning.movement import Routine, UnknownMovement, classify
-from ...shared.assembly_planning.route_result import (GoalCheck, RouteResult, goal_line, live_retreat_goals,
-                                                      pose_error)
+from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
 from ...shared.assembly_planning.route_search import ATTEMPTS, FreeSearch
+from ...shared.assembly_planning.step_plan import live_goal_poses, timed_route
 from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS, PRM_BENCH
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
-from ...shared.execution.retime import RetimeError, retime
-from ...shared.execution.servo import authored_start, carried_insert_goals, flange_poses, flange_side, tool0_errors
+from ...shared.execution.servo import authored_start, flange_poses, tool0_errors
 from ...shared.execution.stream import tool0_world_path
 from ...shared.motion_planner_contract import MotionPlanRequest
 from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_KINDS,
@@ -120,6 +121,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         #: The plan behind `path`, and what it was planned from.
         self._route: RouteResult | None = None
         self._basis: PlanBasis | None = None
+        #: The line Plan just said about the next step, which that step keeps; else "".
+        self._moved_on = ""
         #: The step key an Exec runs for, until its result comes back.
         self._executing: tuple | None = None
         #: Visual diagnosis: the real robots see-through and each insert or retreat plan's tool0 path drawn.
@@ -183,10 +186,13 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self._new_step(ctx, key)
 
     def _new_step(self, ctx: PluginContext, key: tuple | None) -> None:
-        """Start a step clean: no plan, nothing done, no offer, no goal; its routine's default motion time.
+        """Start a step clean: no plan, no line from the last step, nothing done, no offer, no goal; its default time.
 
         Another action also drops the joints carried forward in the process panel.
         """
+        if self._message != self._moved_on:
+            self._say("")
+        self._moved_on = ""
         self._clear()
         if self._diagnosis_nodes is not None:
             self._diagnosis_nodes.clear()
@@ -310,9 +316,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         poses = flange_poses(live, targets)
         errors = tool0_errors(poses, targets)
         self._diagnosis(ctx).show_tool0(poses, targets)
-        line = tool0_line(errors)
-        self._say(line)
-        ctx.log_info(f"[tool0 check] {step.label}: {line}")
+        self._say(tool0_line(errors))
+        ctx.log_info(f"[tool0 check] {step.label}: {tool0_line(errors, axes=False)}")
         self._assembly_run(ctx).request_record("check_tool0", action=action, movement=step.movement.id, data={
             side: {key: error[key] for key in ("pos_err_mm", "pos_norm_mm", "rot_err_deg")}
             for side, error in errors.items()})
@@ -400,26 +405,39 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self._say("no current step", failed=True)
             return None
         view, action, _step, step = current
-        # * The snapshot is taken here, on the main thread; the planner's worker makes the scene from it.
-        request = MotionPlanRequest(view.process, step, ctx.scene.snapshot, ctx.config.robots,
-                                    transfer_as_free=self._transfer_as_free(ctx), ignore_built=self.ignore_built,
-                                    obstacles_collide=self._obstacles_collide(ctx), label=f"check goal {step.label}")
         solving = f"solving the goal of {step.label}…"
         self._say(solving)
         key = self._key_of_goal()
-        check = await self._goal.solve(ctx, key, request)
+        try:
+            async with showing(ctx, self._process(ctx), action, step.movement.id):
+                # * The snapshot is taken after the wait, on the main thread; the planner's worker makes the scene.
+                request = MotionPlanRequest(view.process, step, ctx.scene.snapshot, ctx.config.robots,
+                                            transfer_as_free=self._transfer_as_free(ctx),
+                                            ignore_built=self.ignore_built,
+                                            obstacles_collide=self._obstacles_collide(ctx),
+                                            label=f"check goal {step.label}")
+                check = await self._goal.solve(ctx, key, request)
+        except SceneNotShown as shown:
+            if self._message in (solving, ""):
+                # * Only this solve's own line or the new step's empty one is replaced: it may have said more. A
+                #   failure stays with its step: after a step change the line only says the answer was not used.
+                if same_step(key, self._key_of_goal()):
+                    self._say(f"Live IK: {shown}", failed=True)
+                else:
+                    self._say(f"Live IK for {step.label} came after the step changed: not used")
+            return None
         # ! The step may have changed while the planner worked: say and carry only for the step it was solved for;
         #   `solve` logs the answer either way.
         still = same_step(key, self._key_of_goal())
-        if not still and self._message == solving:
-            # * Only this solve's own line is replaced: the new step may have said something since.
+        if not still and self._message in (solving, ""):
+            # * Only this solve's own line or the new step's empty one is replaced: it may have said something since.
             self._say(f"Live IK for {step.label} came after the step changed: not used")
         if check is None:
             if still:
-                self._say("Live IK: no answer in time", failed=True)
+                self._say("Live IK: no answer in time", failed=True, log=False)  # * `solve` logged it
             return None
         if still:
-            self._say(goal_line(check), failed=not check.ok)
+            self._say(goal_line(check), failed=not check.ok, log=False)  # * `solve` logged it
             self._used.touch()  # * an answer arriving counts as use, as a plan does
         if still and check.ok and check.goal_joints:
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
@@ -438,8 +456,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         """
         moved_on = self._move_on(ctx)
         if moved_on:
-            self._say(moved_on, failed=True)
-            ctx.log_warn(moved_on)
+            self._say(moved_on, failed=True)  # * logged by `_say`
+            self._moved_on = moved_on
             return
         super()._plan(ctx)
 
@@ -479,68 +497,69 @@ class AssemblyStepsPlugin(PlannerPlugin):
         return any(part.index == step.primary and part.kind in (*MOTION_KINDS, REFUSED_PART) for part in parts)
 
     def make_search(self, ctx: PluginContext, abort: threading.Event) -> Search:
-        """A search through the motion planner from the live robot; refused without a motion or a live robot."""
+        """A search through the motion planner from the live robot; refused without a motion or a live robot.
+
+        It waits until the live scene shows the step (`showing`) and takes the snapshot then.
+        """
         current = self.current()
-        refusal = "no current step" if current is None else ""
-        snapshot, now, request, goal_base, goals = ctx.scene.snapshot, ctx.now(), None, None, None
         search = self.free_search(ctx)
-        if current is not None:
+        made: dict = {}
+
+        def build(snapshot, now) -> str:
+            """The request from this snapshot into `made`; or why there is none."""
+            if current is None:
+                return "no current step"
             view, action, op_step, step = current
             live = snapshot.robots.get(robot_id(self.serial)) if self.serial else None
             primary = next((part for part in self.parts() if part.index == op_step.primary), None)
             if primary is not None and primary.kind == REFUSED_PART:
                 # * Say why, e.g. "B20_J_transfer: a tool movement with a drive, or without a grip, is not supported".
-                refusal = f"{step.label}: {primary.text}"
-            elif primary is None or primary.kind not in MOTION_KINDS:
-                refusal = f"{step.label} has no motion to plan"
-            elif live is None or not is_live(live, now):
-                refusal = (f"{self._robot_name} ({short_serial(self.serial)}) is not live: plans start from the live "
-                           f"robot only")
-            else:
-                goal_joints = self._goal.joints_near(self._key_of_goal(), live.base)
-                goal_base = self._goal.of(self._key_of_goal()).base if goal_joints is not None else None
-                carried = ctx.require("movement_exec").carried if primary.routine is Routine.INSERT else None
-                if carried is not None and carried.loaded is view.process and (carried.action, carried.insert) == (
-                        action, step.movement_index):
-                    # * The transfer's bar servo left the flanges off the authored start: the insert goes from there.
-                    goals = carried_insert_goals(view.process, action, carried.insert, live)
-                    flange, ends = next(iter(goals)), step.movement.target.robots[step.action.robot].link_poses
-                    distance, turn = pose_error(goals[flange], ends[flange])
-                    ctx.log_info(f"[insert plan] mocap bar correction carried: {step.label} {flange_side(flange)} "
-                                 f"goal {distance * 1e3:.2f} mm / {math.degrees(turn):.3f}° from the authored end")
-                elif (primary.routine is Routine.RETREAT_LINEAR
-                      and self._assembly_run(ctx).view.settings.retreat_live_axis):
-                    # * The retreat backs each tool out along its own live -z (the old monitor since 2026-10-22).
-                    spec = classify(view.process.process, step.action, step.movement, self._transfer_as_free(ctx))
-                    own = step.movement.target.robots.get(step.action.robot) if step.movement.target else None
-                    goals, line, warnings = live_retreat_goals(
-                        step.movement.id, spec, own.link_poses if own is not None else {},
-                        flange_poses(live, [part.flange for part in spec.arms]))
-                    ctx.log_info(line)
-                    for warning in warnings:
-                        ctx.log_warn(warning)
-                request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots,
-                                            transfer_as_free=self._transfer_as_free(ctx),
-                                            ignore_built=self.ignore_built,
-                                            obstacles_collide=self._obstacles_collide(ctx), goal_joints=goal_joints,
-                                            goal_poses=goals, search=search, label=f"plan {step.label}")
-        found: dict[str, RouteResult] = {}
+                return f"{step.label}: {primary.text}"
+            if primary is None or primary.kind not in MOTION_KINDS:
+                return f"{step.label} has no motion to plan"
+            if live is None or not is_live(live, now):
+                return (f"{self._robot_name} ({short_serial(self.serial)}) is not live: plans start from the live "
+                        f"robot only")
+            goal_joints = self._goal.joints_near(self._key_of_goal(), live.base)
+            goal_base = self._goal.of(self._key_of_goal()).base if goal_joints is not None else None
+            carried = ctx.require("movement_exec").carried if primary.routine is Routine.INSERT else None
+            goals = live_goal_poses(view.process, action, step, primary.routine, live,
+                                    transfer_as_free=self._transfer_as_free(ctx), carried=carried,
+                                    retreat_live_axis=self._assembly_run(ctx).view.settings.retreat_live_axis,
+                                    log_info=ctx.log_info, log_warn=ctx.log_warn)
+            request = MotionPlanRequest(view.process, step, snapshot, ctx.config.robots,
+                                        transfer_as_free=self._transfer_as_free(ctx),
+                                        ignore_built=self.ignore_built,
+                                        obstacles_collide=self._obstacles_collide(ctx), goal_joints=goal_joints,
+                                        goal_poses=goals, search=search, label=f"plan {step.label}")
+            made.update(snapshot=snapshot, now=now, request=request, goal_base=goal_base, goals=goals,
+                        primary=primary)
+            return ""
 
         async def run() -> PlanResult:
-            if request is None:
-                return PlanResult(None, refusal)
+            if current is None:
+                return PlanResult(None, "no current step")
+            _view, action, _op_step, step = current
             planner: MotionPlannerContract = ctx.require("motion_planner")
-            route = await planner.request_plan(request)
+            try:
+                async with showing(ctx, self._process(ctx), action, step.movement.id):
+                    refusal = build(ctx.scene.snapshot, ctx.now())
+                    if refusal:
+                        return PlanResult(None, refusal)
+                    route = await planner.request_plan(made["request"])
+            except SceneNotShown as shown:
+                return PlanResult(None, str(shown))
             if not route.ok:
                 return PlanResult(None, f"{route.result.status}: {route.result.reason}", route.seconds)
             timed = self._timed(route)
             if isinstance(timed, str):
                 return PlanResult(None, timed, route.seconds)
-            found["route"] = route
+            made["route"] = route
             return PlanResult(timed, "", route.seconds)
 
         def accepted(result: PlanResult) -> tuple[str, bool]:
-            route = found["route"]
+            route, snapshot, now, request = made["route"], made["snapshot"], made["now"], made["request"]
+            goal_base, goals, primary = made["goal_base"], made["goals"], made["primary"]
             view, action, op_step, step = current
             trajectory = route.result.trajectory
             self._route = route
@@ -553,7 +572,11 @@ class AssemblyStepsPlugin(PlannerPlugin):
                 "waypoints": route.waypoints, "goal_reused": request.goal_joints is not None,
                 "warnings": list(route.warnings), "obstacles_collide": request.obstacles_collide,
                 "goal_carried": goals is not None and primary.routine is Routine.INSERT,
-                "goal_live": goals is not None and primary.routine is Routine.RETREAT_LINEAR})
+                "goal_live": goals is not None and primary.routine is Routine.RETREAT_LINEAR,
+                # * The flange goals behind the "[insert plan]" or "[retreat live]" line, [x, y, z, qx, qy, qz, qw].
+                "goal_poses": None if goals is None else {flange: [*map(float, pose.position),
+                                                                   *map(float, pose.orientation)]
+                                                          for flange, pose in goals.items()}})
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
                                                    dict(zip(trajectory.joint_names, trajectory.positions[-1])),
                                                    "plan", self._basis.base))
@@ -622,7 +645,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             return
         stale = self.stale_reason(ctx) if motion else ""
         if stale:
-            # * Checked here too: an input in the same tick (e.g. Ignore built bars, Rhino obstacles collide) comes
+            # * Checked here too: an input in the same tick (e.g. Ignore built bars, Rhino obstacles) comes
             #   before the update's check.
             self.plan_state = "stale"
             self._say(f"Exec refused, the plan is stale: {stale}", failed=True)
@@ -635,7 +658,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
                               ignore_built=lambda: self.ignore_built,
                               obstacles_collide=lambda: self._obstacles_collide(ctx),
                               transfer_as_free=lambda: self._transfer_as_free(ctx),
-                              unknown_robots=self._unknown_allowed, clearance=self.clearance.value)
+                              unknown_robots=self._unknown_allowed, clearance=self.clearance.value,
+                              preview=partial(self._preview_motion, self._key))
         if motion:
             self.plan_state = "sent"  # ! used once: never sent again
         executor: MovementExecContract = ctx.require("movement_exec")
@@ -645,6 +669,26 @@ class AssemblyStepsPlugin(PlannerPlugin):
         executor.request_execute(request).add_done_callback(
             lambda future: self._executed(ctx, key, motion, future))
 
+    def _preview_motion(self, key: tuple, route: RouteResult | None, basis: PlanBasis | None, seconds: float) -> None:
+        """Show what the open Confirm starts on the Preview time slider, at its end as a plan is; None shows nothing.
+
+        Args:
+            key: The step the Exec runs; another step in the panel by now is left alone.
+            route: The motion, or None.
+            basis: What it was planned from, or None.
+            seconds: How long it will take.
+        """
+        if not same_step(key, self._key):
+            return
+        timed = None if route is None else self._timed(route, seconds)
+        self.path, self._path_serial, self._playing = None, None, False
+        self._t = 0.0
+        self.forget_plan()
+        if isinstance(timed, TimedPath):
+            self._route, self._basis = route, basis
+            self.path, self._path_serial, self._t = timed, self.serial, timed.duration
+            self._used.touch()
+
     def _executed(self, ctx: PluginContext, key: tuple, carried_plan: bool, future: asyncio.Future) -> None:
         """Take an Exec's result: note the parts done; the step done moves on, the action done offers Mark done."""
         self._executing = None
@@ -652,7 +696,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         if not same_step(key, self._key):
             return  # the step changed meanwhile
         self._done.update(result.done)
-        self._say(f"{result.status}: {result.reason}", failed=not result.ok and result.status != DRY_RUN)
+        # * movement_exec logged the result.
+        self._say(f"{result.status}: {result.reason}", failed=not result.ok and result.status != DRY_RUN, log=False)
         if carried_plan and result.status in (REFUSED, DRY_RUN) and key[2] not in result.done:
             # * Nothing of the motion was sent: the plan comes back, checked for staleness first.
             stale = self.stale_reason(ctx)
@@ -695,7 +740,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
             ctx: This plugin's context.
 
         Returns:
-            bool: The process plugin's "Rhino obstacles collide" box.
+            bool: Whether the process plugin's "Rhino obstacles" collide.
         """
         process: ProcessContract = ctx.require("process")
         return process.obstacles_collide
@@ -713,20 +758,16 @@ class AssemblyStepsPlugin(PlannerPlugin):
         return process.transfer_as_free
 
     def _key_of_goal(self) -> tuple | None:
-        """What a goal check is for: the current (loaded process, action, primary, Rhino obstacles collide).
+        """What a goal check is for: the current (loaded process, action, primary, whether Rhino obstacles collide).
 
         * With the box: a goal checked with the other setting is never shown or reused.
         """
         return None if self._key is None else (*self._key[:3], self._obstacles_collide(self._ctx))
 
-    def _timed(self, route: RouteResult) -> TimedPath | str:
-        """The route timed for the arms at the motion time (`retime`), for the preview; or why it can't be."""
-        try:
-            timed = retime(route.result.trajectory.positions, self.traj_time)
-        except RetimeError as error:
-            rows = route.result.trajectory.positions
-            if rows[0] == rows[-1]:
-                return "the arms are already at the goal: nothing to move (mv ▶ in the process panel goes on)"
-            return f"planned, but it can't be timed for the arms: {error}"
-        self.minimum = timed.minimum
-        return TimedPath(timed.times, timed.positions)
+    def _timed(self, route: RouteResult, seconds: float | None = None) -> TimedPath | str:
+        """The route timed for the arms at `seconds`, else the motion time (`timed_route`), for the preview; or why."""
+        timed = timed_route(route, self.traj_time if seconds is None else seconds)
+        if isinstance(timed, str):
+            return timed + (" (mv ▶ in the process panel goes on)" if "already at the goal" in timed else "")
+        path, self.minimum = timed
+        return path

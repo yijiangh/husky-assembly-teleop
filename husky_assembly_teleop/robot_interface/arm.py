@@ -6,14 +6,17 @@ Each command checks the running controller and its inputs itself before sending.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 from builtin_interfaces.msg import Duration
 from crl_husky_msgs.msg import ArmStatus
 from geometry_msgs.msg import PoseStamped, WrenchStamped
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from scipy.spatial.transform import Rotation
@@ -88,14 +91,15 @@ MOVING_WITHIN = 0.5
 CARTESIAN_MAX_STEP = 0.01
 CARTESIAN_MAX_STEP_ANGLE = np.radians(3.0)
 CARTESIAN_STEP_WINDOW = 0.5
-#: Rough UR5e reach, metres, from the shoulder (this high above base_link). Targets beyond it are refused.
-UR5E_REACH = 0.85
-UR5E_SHOULDER_HEIGHT = 0.163
 #: Frame of a target wrench. The controller always reads it in the tool frame (`hand_frame_control`).
 TARGET_WRENCH_FRAME = "tool0"
 #: Largest target force (N) and torque (N m) `send_target_wrench` sends.
 MAX_TARGET_FORCE = 50.0
 MAX_TARGET_TORQUE = 5.0
+#: The compliance controller's translational stiffness parameters, N/m, along tool0's x, y and z.
+STIFFNESS_PARAMETERS = ("stiffness.trans_x", "stiffness.trans_y", "stiffness.trans_z")
+#: Stiffness `request_stiffness` sends, N/m, at least and at most.
+STIFFNESS_LIMITS = (50.0, 5000.0)
 #: Shortest time `hold` takes to brake to a standstill, seconds; faster joints brake longer, at
 #: TRAJECTORY_MAX_JOINT_ACCELERATION.
 HOLD_DURATION = 0.2
@@ -354,7 +358,7 @@ def cartesian_target_refusal(position: np.ndarray, orientation: np.ndarray,
     """Why a Cartesian target must not go out, by the checks that need no clock and no arm; None if it may.
 
     - Always: 3 finite numbers and a finite unit quaternion.
-    - With `tcp`: within CARTESIAN_START_TOLERANCE per axis and CARTESIAN_START_ANGLE_TOLERANCE of it, and in reach.
+    - With `tcp`: within CARTESIAN_START_TOLERANCE per axis and CARTESIAN_START_ANGLE_TOLERANCE of it.
     - With `previous`: within CARTESIAN_MAX_STEP and CARTESIAN_MAX_STEP_ANGLE of it.
 
     Args:
@@ -376,8 +380,6 @@ def cartesian_target_refusal(position: np.ndarray, orientation: np.ndarray,
     if turn > CARTESIAN_START_ANGLE_TOLERANCE:
         return (f"target is turned {np.degrees(turn):.1f} deg from the TCP, over "
                 f"{np.degrees(CARTESIAN_START_ANGLE_TOLERANCE):.0f} deg")
-    if np.linalg.norm(position - [0.0, 0.0, UR5E_SHOULDER_HEIGHT]) > UR5E_REACH:
-        return f"target is out of reach ({UR5E_REACH} m from the shoulder)"
     if previous is None:
         return None
     step = float(np.linalg.norm(position - previous[0]))
@@ -387,6 +389,22 @@ def cartesian_target_refusal(position: np.ndarray, orientation: np.ndarray,
                 f"just before; at most {CARTESIAN_MAX_STEP * 1e3:.0f} mm / "
                 f"{np.degrees(CARTESIAN_MAX_STEP_ANGLE):.0f} deg per step")
     return None
+
+
+def stiffness_values(answer: Any) -> list[float] | None:
+    """The stiffness values of `ArmInterface.request_stiffness_values`'s answer, or None unless all are numbers."""
+    values = getattr(answer, "values", None)
+    if not values or len(values) != len(STIFFNESS_PARAMETERS):
+        return None
+    numbers = [value.double_value if value.type == ParameterType.PARAMETER_DOUBLE else
+               value.integer_value if value.type == ParameterType.PARAMETER_INTEGER else None for value in values]
+    return None if any(number is None for number in numbers) else [float(number) for number in numbers]
+
+
+def parameters_taken(answer: Any) -> bool:
+    """Whether `ArmInterface.request_stiffness`'s answer says every value was taken; False without one."""
+    results = getattr(answer, "results", None)
+    return bool(results) and all(result.successful for result in results)
 
 
 @dataclass
@@ -408,6 +426,8 @@ class ArmState:
         sent_target_time: ROS time it was sent, seconds.
             ! In `cartesian_test_mode` these hold the target that *would* have been sent.
         wrench: Force/torque reading (fx, fy, fz, tx, ty, tz).
+        wrench_update_time: ROS time it arrived, seconds.
+        ft_zero_time: ROS time its sensor was last asked to zero, by anyone, seconds.
         digital_in: UR digital inputs by pin.
         is_executing: Whether the arm is moving under a trajectory we sent.
             ? Guessed from motion: True from sending until the joints have been still for STILL_AFTER.
@@ -446,6 +466,8 @@ class ArmState:
     sent_target_orientation: np.ndarray | None = None
     sent_target_time: float | None = None
     wrench: np.ndarray | None = None
+    wrench_update_time: float | None = None
+    ft_zero_time: float | None = None
     digital_in: list[bool] | None = None
     is_executing: bool = False
     controllers: ControllerManagerState = field(default_factory=ControllerManagerState)
@@ -477,12 +499,44 @@ class SentTrajectory:
         hold: 1 for the braking trajectory of `hold`, else 0.
         update_time: ROS time it was sent, seconds.
         stamp: The same; the monitor's clock.
+        message: The JointTrajectory exactly as sent, or None.
     """
 
     target: np.ndarray
     duration: float
     waypoints: int
     hold: int
+    update_time: float
+    stamp: float
+    message: Any = None
+
+
+@dataclass(frozen=True)
+class WrenchReading:
+    """One force/torque reading as it arrived: the record of `ArmInterface.wrench_messages`.
+
+    Attributes:
+        wrench: (fx, fy, fz, tx, ty, tz), newtons and newton-metres.
+        update_time: ROS time the monitor handled it, seconds.
+        stamp: Time the driver stamped it, seconds on the robot's clock.
+    """
+
+    wrench: np.ndarray
+    update_time: float
+    stamp: float
+
+
+@dataclass(frozen=True)
+class SentZero:
+    """A request to zero the force/torque sensor: the record of `ArmInterface.ft_zeros_sent`.
+
+    Attributes:
+        wrench: The reading just before, which the zero tares away, or None before any.
+        update_time: ROS time it was sent, seconds.
+        stamp: The same; the monitor's clock.
+    """
+
+    wrench: np.ndarray | None
     update_time: float
     stamp: float
 
@@ -534,6 +588,7 @@ class ArmInterface:
         trajectories_sent: Fired with each `SentTrajectory`, holds and multi-arm messages (one per arm) included.
         targets_sent: Fired with each `SentTarget`, holds included; none in test mode, where nothing is sent.
         wrenches_sent: Fired with each `SentWrench`, the zero wrench of a hold included.
+        stiffness_unrestored: The stiffness to set back after a part changed it, until the controller confirms it.
 
     ! Every motion command and controller switch but `hold` needs the robot's lease, else raises NotLeased
       (`robot_lease.py`); while the robot is soft stopped, they raise RobotStopped (`soft_stop.py`), except
@@ -543,6 +598,8 @@ class ArmInterface:
 
     #: The last command refused without raising, or None.
     last_refusal: Refusal | None = None
+
+    stiffness_unrestored: list[float] | None = None
 
     def __init__(self, node: Node, robot_namespace: str, config: ArmConfig, base_in_husky: Pose,
                  urdf_problem: str | None = None, urdf: Path | None = None,
@@ -589,9 +646,13 @@ class ArmInterface:
         self.trajectories_sent = Event(f"{config.name}_trajectory")
         self.targets_sent = Event(f"{config.name}_target")
         self.wrenches_sent = Event(f"{config.name}_wrench")
+        #: Every force/torque reading while anything listens (else only the newest is decoded), and each zeroing.
+        self.wrench_messages = Event(f"{config.name}_ft")
+        self.ft_zeros_sent = Event(f"{config.name}_ft_zero")
 
         self.controllers = ControllerManagerInterface(
             node, self._namespace, ARM_CONTROLLERS, self.state.controllers, guard=self._switch_refusal)
+        self._zero_force_on_controller_stop()
         self.end_effector: EndEffector | None = make_end_effector(node, robot_namespace, config, self._latch,
                                                                   self._lease_slot)
         self.state.end_effector = self.end_effector.state if self.end_effector else None
@@ -614,7 +675,7 @@ class ArmInterface:
         self._ros.subscription(IOStates, f"{measured}/io_and_status_controller/io_states",
                                self._on_io_states, sensor, newest_only=True)
         self._ros.subscription(WrenchStamped, f"{measured}/ft_sensor_wrench", self._on_wrench, RECORDED_QOS,
-                               newest_only=True)
+                               newest_only=self.wrench_messages)
 
         # --- --- commands --- ---
         self._trajectory = self._ros.publisher(
@@ -622,6 +683,10 @@ class ArmInterface:
         self._target_frame = self._ros.publisher(PoseStamped, f"{namespace}/target_frame")
         self._target_wrench = self._ros.publisher(WrenchStamped, f"{namespace}/target_wrench")
         self._zero_ft = self._ros.client(Trigger, f"{namespace}/io_and_status_controller/zero_ftsensor")
+        self._get_compliance = self._ros.client(GetParameters,
+                                                f"{namespace}/{CARTESIAN_COMPLIANCE_CONTROLLER}/get_parameters")
+        self._set_compliance = self._ros.client(SetParameters,
+                                                f"{namespace}/{CARTESIAN_COMPLIANCE_CONTROLLER}/set_parameters")
         self._free_drive = self._ros.publisher(Bool, f"{namespace}/{FREE_DRIVE_CONTROLLER}/enable_freedrive_mode")
         self._ros.timer(FREE_DRIVE_HEARTBEAT, self._keep_free_drive)
         # Safety and program state arrive via HuskyRobotInterface._on_sync_status.
@@ -758,8 +823,8 @@ class ArmInterface:
             RobotStopped: If the robot is soft stopped.
             NotLeased: If the running code does not have the robot's lease.
         """
-        self._latch.check(f"a {controller} command to arm {self.config.name}")
-        self._lease_slot.check(f"a {controller} command to arm {self.config.name}")
+        self._latch.check()
+        self._lease_slot.check()
         return self.controllers.running_problem(controller) or self.safety_problem()
 
     def _switch_refusal(self, controller: str) -> str | None:
@@ -928,7 +993,8 @@ class ArmInterface:
         """
         now = self._now()
         self.trajectories_sent.fire(SentTrajectory(np.array(trajectory.points[-1].positions, dtype=float),
-                                                   float(duration), len(trajectory.points), int(hold), now, now))
+                                                   float(duration), len(trajectory.points), int(hold), now, now,
+                                                   trajectory))
 
     def send_joint_move(self, target: Sequence[float], max_speed: float = JOINT_MOVE_MAX_SPEED,
                         min_duration: float = JOINT_MOVE_MIN_DURATION) -> float | None:
@@ -1010,7 +1076,7 @@ class ArmInterface:
                                                (self.state.tcp_position, self.state.tcp_orientation),
                                                self._recent_target())
         if refusal is not None:
-            self._refused("target refused", f"not sending a cartesian target: {refusal}")
+            self._refused("target refused", f"target not sent: {refusal}")
             return False
         if self.state.sent_target_time is None or self._now() - self.state.sent_target_time > CARTESIAN_STEP_WINDOW:
             # First target of a move: log how it compares with the driver's TCP.
@@ -1103,7 +1169,7 @@ class ArmInterface:
         """Send a target wrench to the compliance controller.
 
         ! In the tool frame (tool0), not the arm's base, so it turns with the tool.
-        ! Stays applied until another wrench is sent or `hold` zeroes it.
+        ! Stays applied until another wrench is sent, or `hold` or a switch away from the controller zeroes it.
 
         Args:
             force: Force in tool0, newtons.
@@ -1144,7 +1210,7 @@ class ArmInterface:
         Raises:
             NotLeased: If the running code does not have the robot's lease.
         """
-        self._lease_slot.check(f"a zero target wrench to arm {self.config.name}")
+        self._lease_slot.check()
         if self.config.cartesian_test_mode:
             self._log_test_mode("target force", "F [0. 0. 0.] N  T [0. 0. 0.] N m (tool0)")
             return False
@@ -1156,6 +1222,18 @@ class ArmInterface:
                 self.send_cartesian_target(self.state.tcp_position, self.state.tcp_orientation, hold=True)
         self._publish_wrench(np.zeros(3), np.zeros(3))
         return True
+
+    def _zero_force_on_controller_stop(self) -> None:
+        """Have every controller switch zero the target wrench first when it stops the compliance controller."""
+        self.controllers.before_stopping = self._zero_force_before_stopping
+
+    def _zero_force_before_stopping(self, stopping: Sequence[str]) -> None:
+        """Zero the target wrench while the compliance controller, about to stop, still takes it.
+
+        ! Stopped, it ignores wrenches but keeps the last one, and pushes the arm with it when it next starts.
+        """
+        if CARTESIAN_COMPLIANCE_CONTROLLER in stopping and not self.config.cartesian_test_mode:
+            self._publish_wrench(np.zeros(3), np.zeros(3))
 
     def _publish_wrench(self, force: np.ndarray, torque: np.ndarray) -> None:
         """Publish a target wrench in tool0, unchecked, then fire `wrenches_sent`."""
@@ -1179,7 +1257,53 @@ class ArmInterface:
             self._node.get_logger().error(f"arm {self.config.name}: zero_ftsensor is not available")
             return False
         self._zero_ft.call_async(Trigger.Request())
+        now = self.state.ft_zero_time = self._now()
+        self.ft_zeros_sent.fire(SentZero(None if self.state.wrench is None else self.state.wrench.copy(), now, now))
         return True
+
+    def request_stiffness_values(self) -> Any | None:
+        """Ask the compliance controller for its translational stiffness (STIFFNESS_PARAMETERS).
+
+        Returns:
+            The call's future (its answer's `values` in that order), or None when the service is not up.
+        """
+        if not self._get_compliance.service_is_ready():
+            return None
+        return self._get_compliance.call_async(GetParameters.Request(names=list(STIFFNESS_PARAMETERS)))
+
+    def request_stiffness(self, stiffness: Sequence[float], restore: bool = False) -> Any | None:
+        """Set the compliance controller's translational stiffness along tool0's x, y and z, N/m.
+
+        ! It needs the robot's lease. The controller reads it every cycle, also while it runs, and keeps it until set
+          again: set it back after the part that needed it.
+
+        Args:
+            stiffness: The three values.
+            restore: Values read from the controller before, set back: any positive ones, not only STIFFNESS_LIMITS.
+
+        Returns:
+            The call's future (its answer's `results` say which were taken), or None when not sent: the service not
+                up, a value not finite or outside STIFFNESS_LIMITS (logged), or test mode.
+
+        Raises:
+            NotLeased: If the running code does not have the robot's lease.
+        """
+        self._lease_slot.check()
+        values = [float(value) for value in stiffness]
+        low, high = (0.0, math.inf) if restore else STIFFNESS_LIMITS
+        if len(values) != 3 or not all((low < value if restore else low <= value) and value <= high
+                                       for value in values):
+            self._refused("stiffness refused", f"stiffness must be 3 values within {STIFFNESS_LIMITS} N/m, not "
+                                               f"{values}")
+            return None
+        if self.config.cartesian_test_mode:
+            self._log_test_mode("stiffness", f"{values} N/m (tool0 x, y, z)")
+            return None
+        if not self._set_compliance.service_is_ready():
+            return None
+        return self._set_compliance.call_async(SetParameters.Request(parameters=[
+            Parameter(name=name, value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=value))
+            for name, value in zip(STIFFNESS_PARAMETERS, values)]))
 
     def request_free_drive(self) -> None:
         """Keep free drive on for FREE_DRIVE_REQUEST_TTL more, if the free drive controller runs.
@@ -1308,6 +1432,10 @@ class ArmInterface:
         """Store the force/torque reading."""
         f, t = message.wrench.force, message.wrench.torque
         self.state.wrench = np.array([f.x, f.y, f.z, t.x, t.y, t.z])
+        self.state.wrench_update_time = self._now()
+        if self.wrench_messages.listened:
+            stamp = message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec
+            self.wrench_messages.fire(WrenchReading(self.state.wrench, self._now(), stamp))
 
     def _refused(self, label: str, message: str) -> None:
         """Log why a command was not sent, and keep it as `last_refusal`."""

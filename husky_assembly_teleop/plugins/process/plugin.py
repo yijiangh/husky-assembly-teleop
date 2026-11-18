@@ -8,18 +8,32 @@ It serves the selected movement, and the maps between process ids and live scene
 Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "process/<body id>"
 (`scene_bodies.py`): the runtime draws it and planners avoid it. A body the plan holds follows the configured real
 robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.ProcessDrawing`), with the other
-bodies on request. The plugin only reads processes: it never edits one.
+bodies on request. The plugin only reads processes: it never edits one, and a placement only moves the copy it serves.
 
 The "Transfer workaround" box (on at start, this session only) runs the transfer as a free move with empty tools
 to the insert start, where the operator places the bar. While it is on, the panel lists and draws each jointing action
-in that order (`steps.as_run`); `process` stays the authored process, and `Selection.index` an authored index.
+in that order (`steps.as_run`); `process` stays the (placed) authored process, and `Selection.index` an authored
+index.
 
-The "Rhino obstacles collide" box (off at start) decides whether the process's obstacles ("obstacles/<name>")
-count in every collision check; while off they are disabled scene bodies, drawn see-through by the overlay.
+The "build" box places the build: x, y, z and roll, pitch, yaw of the authored world frame in the world
+(`placement.py`), typed or dragged with the gizmo (the bar lines under it show where the build goes), then Apply.
+Bars, connector halves, obstacles and arm targets move; robot bases too, projected onto the floor plane; the floor
+stays. `process` is the placed process, `authored` the one read. Apply is refused while a step runs, and asks a second
+press once an action is marked done; the run keeps the placement and puts it back when it opens (`request_placement`).
+A new process loads at its authored place.
+
+The "grasp" box moves a hold's support grasp (`grasp_offset.py`): select a movement of a `_H` or `_HR` action, set
+Slide (mm, along the bar) and Roll (°, about it), then Apply; Reset puts it back. The hold's flange targets move from
+its approach to its release's retreat, and `process` serves them; the run keeps the offsets (`request_grasp_offsets`).
+
+The "Rhino obstacles" list (ghost at start) says what becomes of the process's obstacles ("obstacles/<name>"): disable
+hides them, ghost draws them see-through by the overlay, collide counts them in every collision check. Unless they
+collide they are disabled scene bodies.
 
 The panel is the top of the side panel's Assembly tab (`shared/assembly_tab/layout.py`), above the steps planned and
 run from it. It lists a window of the schedule's actions around the selected one (`action_window`); click a row to
-jump. The selected action's movements are buttons coloured by kind, the selected one ringed: click one to select it.
+jump, or scroll it a page with ▲ ▼ until the selection changes. The selected action's movements are buttons coloured by
+kind, the selected one ringed: click one to select it.
 Each row shows the mark the run gives its action (`request_marks`: pending, done, done with its end assumed). After a
 Live IK or a plan, the action's later movements are drawn with the joints found, on the live base they were found at,
 and the panel turns to the target of the movement they are for (`request_carry`); the drawing only.
@@ -45,29 +59,38 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
 from async_timeout import timeout
+import numpy as np
 from ...config import short_serial
-from ...colors import INK, rgb
+from ...colors import INK, MOVED_GRASP, rgb, rgb01
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...shared.assembly_tab.layout import ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
+from ...shared.assembly_tab.layout import ACTIONS_BAND, ASSEMBLY_ICON, ASSEMBLY_TAB, PROCESS_BAND
 from ...ui.css import group_buttons, group_tooltips_css, one_row_css
+from ...ui.pose_input import PoseInput
+from ...ui.scene_view import add_shape
+from ...ui.visualization import quaternion_to_wxyz
+from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, show_waiting, waiting_group_css
 from ...ui.style import (BUSY, CURRENT, FAIL, NONE, OK, REFUSAL_SHOWN, RING, SECTION_CTRL, block, chip, chip_line,
                          hover, section, swatch_chip, values)
 from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
-from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.process import Action, Movement, Process, State, assumed_start_all, joints_at
 from scaffolding_assembly_core.process.scenes import process_model
-from ...shared.process_contract import MARK_ASSUMED, MARK_DONE, Carry, Selection
+from ...shared.process_contract import DEFAULT_RHINO_FILE, MARK_ASSUMED, MARK_DONE, RHINO_FOLDER, Carry, Selection
 from ...shared.assembly_planning.labels import Kind, MovementLabel, label_movement
 from ...shared.assembly_planning.movement import mating_drives
 from ...shared.assembly_planning.steps import as_run
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
-from .drawing import ProcessDrawing, load_robot_models
-from .loading import load_process, process_folders
+from ...shared.process_scene.colors import BAR_LINE_COLOR, BAR_LINE_WIDTH
+from .drawing import ProcessDrawing, bar_lines, load_robot_models
+from .loading import load_process, process_folders, rhino_files
+from .grasp_offset import grasp_move, hold_of, offset_grasps
+from .placement import IDENTITY, is_identity, off_floor, placed, placement_text
+from ...shared.runs.runs import GRASP_ROLL_RANGE, GRASP_SLIDE_RANGE
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -90,7 +113,10 @@ TRANSFER_AS_FREE = True
 
 #: Whether the process's obstacles from Rhino count in collision checks when the monitor starts.
 #: ! Off: they were never measured (the cabinet stands 0.38 m off); the `obstacles` plugin's measured ones are the room.
-OBSTACLES_COLLIDE = False
+#: The "Rhino obstacles" list: not shown, shown see-through and left out of collision checks, counted in them.
+OBSTACLES_DISABLE, OBSTACLES_GHOST, OBSTACLES_COLLIDE = "disable", "ghost", "collide"
+#: The Rhino file list's entry for no room on the as-built page.
+NO_RHINO_FILE = "(no room)"
 
 #: Scene ids of the `obstacles` plugin's measured obstacles; not the process's own "process/obstacles/…".
 MEASURED_PREFIX = "obstacles/"
@@ -154,8 +180,29 @@ class ProcessPlugin(HuskyPlugin):
 
     def __init__(self):
         """Start with nothing loaded."""
-        #: The loaded process as authored, or None. Replaced on load, never edited.
+        #: The loaded process as authored, or None (`ProcessContract.authored`). Replaced on load, never edited.
+        self.authored: Process | None = None
+        #: Where the build stands (`ProcessContract.placement`), and the authored process placed there, or None.
+        self.placement: Pose = IDENTITY
         self.process: Process | None = None
+        #: Hold action -> (slide mm, roll degrees) (`ProcessContract.grasp_offsets`), applied after the placement.
+        self.grasp_offsets: dict[str, tuple[float, float]] = {}
+        # Why the last grasp Apply was refused, and when; the hold whose offset the sliders were last set to.
+        self._grasp_refused, self._grasp_refused_at, self._grasp_for = "", 0.0, None
+        #: The authored process placed, before the grasp offsets; the hold's target axes and what they were drawn for.
+        self._placed: Process | None = None
+        self._grasp_axes: dict[str, object] = {}
+        self._grasp_axes_for: tuple | None = None
+        # Why the last Apply of the build box was refused, and when (ROS time); "" after a placement it made.
+        self._placement_refused, self._placement_refused_at = "", 0.0
+        #: Apply once an action is marked done waits for its second press; the Apply button, once built.
+        self._apply_press, self._apply = SecondPress(), None
+        self._grasp_press = SecondPress()
+        # The authored process the gizmo's preview lines were drawn for.
+        self._preview_for: Process | None = None
+        self._preview = None
+        #: The build box (`setup` makes it); None before.
+        self._pose: PoseInput | None = None
         #: Whether the transfer workaround is on (`ProcessContract.transfer_as_free`).
         self.transfer_as_free = TRANSFER_AS_FREE
         #: The process as the panel shows it: with the workaround, jointing actions in run order (`as_run`).
@@ -178,8 +225,10 @@ class ProcessPlugin(HuskyPlugin):
         #: Show the robot at the movement's target instead of its start.
         self.at_target = False
 
-        #: Whether the process's obstacles count in collision checks (`ProcessContract.obstacles_collide`).
-        self.obstacles_collide = OBSTACLES_COLLIDE
+        #: What becomes of the process's obstacles: one of the "Rhino obstacles" list's entries.
+        self.obstacles_mode = OBSTACLES_GHOST
+        #: The Rhino file chosen as the as-built page's room (`ProcessContract.rhino_file`).
+        self.rhino_file: Path | None = None
         # Why the last "Transfer workaround" change was refused, and when (ROS time); "" after a change it made.
         self._transfer_refused, self._transfer_refused_at = "", 0.0
         # The loaded process's obstacles from Rhino, by process id (`process_obstacles`).
@@ -206,19 +255,22 @@ class ProcessPlugin(HuskyPlugin):
         self._models: dict = {}
         #: The process's viser nodes, built after a load; None until built.
         self._drawing: ProcessDrawing | None = None
-        self._visible = True
-        #: Draw the overlay see-through; on at start (View Ghost toggles it), so the real robots show through it.
-        self._ghost = True
-        #: Draw every bar's pink line and name at its assembly pose (View's "Rhino bar lines" box); off at start.
-        self._bar_lines = False
-        # Overlay the bodies that do not stand in the state (absent ones) too.
-        self._everything = False
+        #: The panel's boxes: the overlay drawn ("Process overlay"), its robots see-through ("Ghost robots", so the
+        #: real robots show through), with the bodies that do not stand in the state ("Unbuilt bars"), and every
+        #: bar's pink line and name at its assembly pose ("Rhino bar lines").
+        self._visible, self._ghost, self._everything, self._bar_lines = True, True, False, False
         # True when the drawing is out of date and draw must re-pose it.
         self._stale = True
         # Schedule index of the action list's top row, as last drawn; clicks on a row are read against it.
         self._window_start = 0
+        # The `revision` the operator last scrolled the action list at: until it changes, the list stays where it is.
+        self._scrolled_at = -1
         # The `revision` the scene's obstacles were last put for.
         self._scene_revision = -1
+        #: The (action id, movement id) whose bodies were put last, and those this tick's scene snapshot holds
+        #: (`scene_shows`): the snapshot is taken before any plugin's update, so a put shows from the next tick on.
+        self._put_for: tuple[str, str] | None = None
+        self.scene_shows: tuple[str, str] | None = None
         # What `selection` last returned, kept while nothing in it changes.
         self._selection: Selection | None = None
         #: Each action's mark in its row, by action id (`request_marks`); and the joints carried forward
@@ -269,31 +321,78 @@ class ProcessPlugin(HuskyPlugin):
                                                  "first; an old export is converted into <export>_process next to it")
             load = gui.add_button("Load", hint="Load the folder picked above; an old export is converted first "
                                                "(about 15 s) unless its <export>_process copy is up to date")
+            rhino = rhino_files(ctx.config.drive_root)
+            chosen = DEFAULT_RHINO_FILE if DEFAULT_RHINO_FILE in rhino else NO_RHINO_FILE
+            self._rhino = gui.add_dropdown("Rhino file", [NO_RHINO_FILE, *rhino], initial_value=chosen,
+                                           hint=f"The Rhino file in \"{RHINO_FOLDER}\" this process was built in, as "
+                                                "the monitor started, newest first: its environment layer is the "
+                                                "room on the as-built page. Only the page reads it.")
+            self._choose_rhino(ctx, chosen)
             self._transfer = gui.add_checkbox("Transfer workaround", initial_value=TRANSFER_AS_FREE,
                                               hint="Run the transfer as a free move with empty tools to the insert "
                                                    "start; you place the bar there. Lists and draws each jointing "
                                                    "action in that order. Replan after a change.")
-            self._collide = gui.add_checkbox("Rhino obstacles collide", initial_value=OBSTACLES_COLLIDE,
-                                             hint="Count the process's obstacles from Rhino (e.g. the cabinet) in "
-                                                  "every collision check: base and arm planners, clearances, "
-                                                  "assembly planning. Off: drawn see-through only; the measured "
-                                                  "obstacles (obstacles plugin) still count. Replan after a change.")
+            self._rhino_obstacles = gui.add_dropdown(
+                "Rhino obstacles", [OBSTACLES_DISABLE, OBSTACLES_GHOST, OBSTACLES_COLLIDE],
+                initial_value=OBSTACLES_GHOST,
+                hint="The process's obstacles from Rhino (e.g. the cabinet). disable: not shown, not checked. ghost: "
+                     "drawn see-through, not checked. collide: counted in every collision check: base and arm "
+                     "planners, clearances, assembly planning. The measured obstacles (obstacles plugin) always "
+                     "count. Replan after a change to or from collide.")
             # ! Always one line, so nothing below it moves.
             self._collide_status = gui.add_html("")
+            gui.add_html(section("build", SECTION_CTRL))
+            self._pose = PoseInput(ctx, gui, f"{ctx.view.scene_root}/process_placement", "Build", gizmo_scale=0.8,
+                                   hint="Where the build stands: the authored world frame in the world. Bars, "
+                                        "halves, obstacles and arm targets move; robot bases too, kept on the "
+                                        "floor; the floor stays. Apply to place it.")
+            place = self._apply = gui.add_button(
+                "Apply", hint="Place the build at the pose above: the run keeps it. Once an action is marked done, "
+                              "on a second press; refused while a step runs. Replan after.")
+            # ! Always one line, so nothing below it moves.
+            self._placement_status = gui.add_html("")
+            gui.add_html(section("grasp", SECTION_CTRL))
+            # * Always there, grey unless a hold's action is selected: shown only then, they would move what is below.
+            self._slide = gui.add_slider("Slide mm", min=GRASP_SLIDE_RANGE[0], max=GRASP_SLIDE_RANGE[1], step=1.0,
+                                         initial_value=0.0, disabled=True,
+                                         hint="Slide the support gripper's grasp along its bar, mm (the bar's z), "
+                                              "for the selected hold (_H or _HR). Apply to move it.")
+            self._roll = gui.add_slider("Roll °", min=GRASP_ROLL_RANGE[0], max=GRASP_ROLL_RANGE[1], step=1.0,
+                                        initial_value=0.0, disabled=True,
+                                        hint="Roll the support gripper's grasp about its bar, degrees, for the "
+                                             "selected hold. Apply to move it.")
+            grasp = self._grasp_buttons = gui.add_button_group(
+                "Grasp", ["Apply", "Reset"],
+                hint="Apply: the hold's targets from its approach to its release's retreat move with the grasp, the "
+                     "run keeps it. Reset: as authored. Refused while a step runs. Replan after.")
+            # ! Always one line, so nothing below it moves.
+            self._grasp_status = gui.add_html("")
+        # * assembly_run's RUN band sits between the process and its actions (`layout.py`).
+        with ctx.view.ui(band=ACTIONS_BAND) as gui:
             self._actions_title = gui.add_html(section("actions", SECTION_CTRL))
             # * A window of the schedule that follows the selection: click a row to jump to that action.
             self._action_rows = [gui.add_button("·", color=rgb(NONE)) for _ in range(ACTION_ROWS)]
+            scroll = gui.add_button_group("Scroll", ["▲", "▼"],
+                                          hint="Scroll the list a page up or down; the selection stays, and the list "
+                                               "follows it again once it changes")
             gui.add_html(section("step", SECTION_CTRL))
             self._slider = gui.add_slider("Step", min=0, max=1, step=1, initial_value=0)
             go = gui.add_button_group("Go", ["◀ action", "◀ mv", "mv ▶", "action ▶"],
                                       hint="Previous / next movement, or jump to the previous / next action")
             show = gui.add_button_group("Show", ["Start", "Target"],
                                         hint="The robot at the movement's start state, or at its target configuration")
-            view = gui.add_button_group("View", ["Hide", "Ghost", "All"],
-                                        hint="Hide / show the overlay (robots, tools, held bodies, and the Rhino "
-                                             "obstacles while they don't collide; other standing bodies are scene "
-                                             "bodies, always drawn); ghost (on at start) makes it see-through; all "
-                                             "also overlays absent bodies, see-through")
+            # * What the process draws over the live scene at the selected movement; standing bodies are always drawn.
+            overlay = gui.add_checkbox("Process overlay", initial_value=True,
+                                       hint="Draw the process at this movement over the live scene: the planned "
+                                            "robots in blue with their tools and the bars they hold, and the Rhino "
+                                            "obstacles while they don't collide. Off: the live scene only")
+            ghost = gui.add_checkbox("Ghost robots", initial_value=True,
+                                     hint="The blue planned robots, their tools and the bars they hold: see-through "
+                                          "when ticked, so the real robots show through; solid when not. The Rhino "
+                                          "obstacles and unbuilt bars are always see-through")
+            unbuilt = gui.add_checkbox("Unbuilt bars", initial_value=False,
+                                       hint="Also draw the bars not built yet at this movement, with their joints, "
+                                            "see-through")
             bar_lines = gui.add_checkbox("Rhino bar lines", initial_value=False,
                                          hint="Every bar's centre line and name, pink, where the design puts it "
                                               "once built: a ruler of the Rhino poses.")
@@ -310,14 +409,18 @@ class ProcessPlugin(HuskyPlugin):
 
         # ! Route every viser callback through defer so it runs on the main thread.
         load.on_click(ctx.defer("load process", lambda: self.load(ctx, Path(self._folder.value.strip()))))
+        place.on_click(ctx.defer("place the build", lambda: self.apply_placement(ctx, self._pose.pose)))
+        grasp.on_click(ctx.defer_value("grasp offset", lambda label: self._on_grasp(ctx, str(label))))
+        self._ctx = ctx
         # ! Operator clicks only: draw writes the boxes back, and viser calls back for that too, which could undo a
         #   click queued in the same tick.
         self._transfer.on_update(ctx.defer_value("Transfer workaround",
                                                  lambda value: self.set_transfer_as_free(ctx, bool(value)),
                                                  operator_only=True))
-        self._collide.on_update(ctx.defer_value("Rhino obstacles collide",
-                                                lambda value: self.set_obstacles_collide(ctx, bool(value)),
-                                                operator_only=True))
+        self._rhino.on_update(ctx.defer_value("Rhino file", lambda name: self._choose_rhino(ctx, str(name))))
+        self._rhino_obstacles.on_update(ctx.defer_value("Rhino obstacles",
+                                                        lambda value: self.set_obstacles_mode(ctx, str(value)),
+                                                        operator_only=True))
         # ! Operator drags only: draw writes the slider back, and viser calls back for that too, late, which could
         #   select an older movement after quick clicks on ◀ mv / mv ▶.
         self._slider.on_update(ctx.defer_value("select step", lambda value: self.select(int(value)),
@@ -325,10 +428,12 @@ class ProcessPlugin(HuskyPlugin):
         go.on_click(ctx.defer_value("step button", self._on_go))
         self._moves.on_click(ctx.defer_value("select movement", lambda code: self._on_movement(str(code))))
         show.on_click(ctx.defer_value("show", lambda label: self._set_at_target(label == "Target")))
-        view.on_click(ctx.defer_value("view", self._on_view))
+        for box, name in ((overlay, "_visible"), (ghost, "_ghost"), (unbuilt, "_everything")):
+            box.on_update(ctx.defer_value(box.label, lambda value, name=name: self._set_view(name, bool(value))))
         bar_lines.on_update(ctx.defer_value("Rhino bar lines", lambda value: setattr(self, "_bar_lines", bool(value))))
         for row, button in enumerate(self._action_rows):
             button.on_click(ctx.defer("select action", lambda row=row: self._on_action_row(row)))
+        scroll.on_click(ctx.defer_value("scroll actions", self._on_scroll))
 
     # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
 
@@ -360,6 +465,78 @@ class ProcessPlugin(HuskyPlugin):
         if self._movements:
             self.select(self._shown_index[max(0, min(int(index), len(self._shown_index) - 1))])
 
+    def request_placement(self, placement: Pose) -> None:
+        """Place the build for the run (`ProcessContract.request_placement`): refused only while a step runs.
+
+        Args:
+            placement: The authored world frame in the world.
+        """
+        refusal = step_running(self._ctx.world.robots)
+        if refusal:
+            self._ctx.log_warn(f"the run's build placement not applied: {refusal}")
+            return
+        self._place(self._ctx, placement)
+
+    def request_grasp_offsets(self, offsets: Mapping[str, tuple[float, float]]) -> None:
+        """Move the holds' grasps for the run (`ProcessContract.request_grasp_offsets`): refused only while a step runs.
+
+        Args:
+            offsets: Hold action -> (slide mm, roll degrees); those not given are as authored.
+        """
+        refusal = step_running(self._ctx.world.robots)
+        if refusal:
+            self._ctx.log_warn(f"the run's grasp offsets not applied: {refusal}")
+            return
+        self._offset(self._ctx, {hold: offset for hold, offset in offsets.items() if offset != (0.0, 0.0)})
+
+    def apply_grasp_offset(self, ctx: PluginContext, hold: str, slide_mm: float, roll_deg: float) -> None:
+        """Move one hold's grasp, from the panel: refused without a process or while a step runs.
+
+        ! Once the hold's gripper has closed on the bar the targets would no longer match where it really grips, and
+          the retreat would push the open jaws against the bar: only on a second press, warned.
+
+        Args:
+            ctx: This plugin's context.
+            hold: The hold's `bar_holding` action id.
+            slide_mm: Along the bar, mm; with `roll_deg` 0 too: as authored.
+            roll_deg: About the bar, degrees.
+        """
+        refusal = "no process loaded" if self.authored is None else step_running(ctx.world.robots)
+        if refusal:
+            self._grasp_refused, self._grasp_refused_at = refusal, ctx.now()
+            ctx.log_warn(f"grasp of {hold} not moved: {refusal}")
+            return
+        offsets = {each: offset for each, offset in self.grasp_offsets.items() if each != hold}
+        if (slide_mm, roll_deg) != (0.0, 0.0):
+            offsets[hold] = (float(slide_mm), float(roll_deg))
+        closed = offsets != self.grasp_offsets and self._hold_closed(hold)
+        if closed and not self._grasp_press.press(ctx.now(), f"grasp {hold} {slide_mm:g} {roll_deg:g}"):
+            self._grasp_refused = (f"{hold}'s gripper may already hold the bar where it was authored, and the retreat "
+                                   f"would push the open jaws against it. Press again to move it")
+            self._grasp_refused_at = ctx.now()
+            ctx.log_warn(f"grasp of {hold} not moved: {self._grasp_refused}")
+            return
+        if closed:
+            ctx.log_warn(f"grasp of {hold} moved though its gripper already closed on the bar")
+        self._grasp_refused = ""
+        self._offset(ctx, offsets)
+
+    def _hold_closed(self, hold: str) -> bool:
+        """Whether the hold's gripper may have closed on the bar.
+
+        The run marked the hold or anything scheduled after it done, or the close or the release is selected: the guide
+        stops on a finished close until Done marks it.
+        """
+        schedule = self.authored.schedule
+        if any(self._marks.get(action) in (MARK_DONE, MARK_ASSUMED) for action in schedule[schedule.index(hold):]):
+            return True
+        selected = self.selected
+        if selected is None:
+            return False
+        action, movement = selected
+        return ((action.id == hold and movement.id.endswith("_close"))
+                or (action.type == "bar_holding_release" and hold_of(self.authored, action.id) == hold))
+
     def request_marks(self, marks: Mapping[str, str]) -> None:
         """Show each action's mark in its row (`ProcessContract.request_marks`), replacing the marks given before.
 
@@ -381,6 +558,10 @@ class ProcessPlugin(HuskyPlugin):
         if selected is not None and found_for == (selected[0].id, selected[1].id):
             self.at_target = True
         self._stale = True
+
+    def request_show(self, at_target: bool) -> None:
+        """Draw the selected movement at its target or its start (`ProcessContract.request_show`)."""
+        self._set_at_target(at_target)
 
     def select(self, index: int) -> None:
         """Select a movement by index into `_movements`, clamped; ignored before a process is loaded."""
@@ -421,20 +602,110 @@ class ProcessPlugin(HuskyPlugin):
         ctx.log_info("Transfer workaround on: jointing actions shown and run transit, place, grasp, insert" if on
                      else "Transfer workaround off: jointing actions as authored")
 
-    def set_obstacles_collide(self, ctx: PluginContext, collide: bool) -> None:
-        """Count the process's obstacles in every collision check, or leave them out; the scene bodies are put again.
+    def _choose_rhino(self, ctx: PluginContext, name: str) -> None:
+        """Keep the path of the Rhino file picked; nothing else reads the list."""
+        root = ctx.config.drive_root
+        self.rhino_file = None if name == NO_RHINO_FILE or root is None else Path(root) / RHINO_FOLDER / name
+
+    def apply_placement(self, ctx: PluginContext, placement: Pose) -> None:
+        """The build box's Apply: place the build; refused while a step runs, on a second press once an action is done.
+
+        A refusal shows as a chip under the box for REFUSAL_SHOWN s, and the box goes back to the placement there is.
 
         Args:
             ctx: This plugin's context.
-            collide: Whether they count.
+            placement: The authored world frame in the world.
+        """
+        done = [action_id for action_id, mark in self._marks.items() if mark in (MARK_DONE, MARK_ASSUMED)]
+        refusal = "no process loaded" if self.authored is None else step_running(ctx.world.robots)
+        if not refusal and done:
+            doubt = (f"{len(done)} action{'s' if len(done) > 1 else ''} marked done ({done[0]} first) where the build "
+                     f"stood")
+            if not self._apply_press.press(ctx.now(), "apply"):
+                refusal = f"{doubt}: press Apply again within {SECOND_PRESS_SECONDS:g} s to place it anyway"
+            else:
+                ctx.log_warn(f"build placed anyway: {doubt}; their marks stay")
+        if refusal:
+            self._placement_refused, self._placement_refused_at = refusal, ctx.now()
+            ctx.log_warn(f"build not placed: {refusal}")
+            self._set_box(self.placement)
+            return
+        self._placement_refused = ""
+        self._place(ctx, placement)
+
+    def _place(self, ctx: PluginContext, placement: Pose) -> None:
+        """Place the authored process at `placement`; the same movement stays selected, the overlay is drawn again."""
+        self._set_box(placement)
+        same = (is_identity(placement) and is_identity(self.placement)) or placement == self.placement
+        if same or self.authored is None:
+            self.placement = placement
+            return
+        self.placement = placement
+        self._serve()
+        lifted = " (off the floor plane: robot bases stay on the floor, the arms reach the targets by live IK)"
+        ctx.log_info(f"build placed at {placement_text(placement)}{lifted if off_floor(placement) else ''}; replan")
+
+    def _offset(self, ctx: PluginContext, offsets: dict[str, tuple[float, float]]) -> None:
+        """Serve the process with these grasp offsets, each change logged."""
+        if offsets == self.grasp_offsets or self.authored is None:
+            self.grasp_offsets = offsets
+            return
+        for hold in sorted({*offsets, *self.grasp_offsets}):
+            if offsets.get(hold) != self.grasp_offsets.get(hold):
+                slide, roll = offsets.get(hold, (0.0, 0.0))
+                ctx.log_info(f"grasp of {hold}: slid {slide:g} mm, rolled {roll:g}° from the authored one; replan")
+        self.grasp_offsets = offsets
+        self._serve()
+
+    def _serve(self) -> None:
+        """Serve the authored process placed and with its grasp offsets; the same movement stays selected."""
+        authored = self._authored_index[self.index] if self._movements else 0
+        self._placed = placed(self.authored, self.placement)
+        self.process = offset_grasps(self._placed, self.grasp_offsets)
+        self._show()
+        self.index = self._shown_index.get(authored, 0)
+        # * Found on the old process: drawn there no more.
+        self._carry, self._grasp_for = None, None
+        self._forget_drawing()
+        self._changed()
+
+    def _on_grasp(self, ctx: PluginContext, label: str) -> None:
+        """Apply or Reset of the grasp box, for the selected movement's hold."""
+        selected = self.selected
+        hold = hold_of(self.authored, selected[0].id) if selected is not None and self.authored is not None else None
+        if hold is None:
+            self._grasp_refused, self._grasp_refused_at = "select a movement of a hold (_H or _HR)", ctx.now()
+            return
+        if label == "Reset":
+            self._slide.value = self._roll.value = 0.0
+            self.apply_grasp_offset(ctx, hold, 0.0, 0.0)
+        else:
+            self.apply_grasp_offset(ctx, hold, float(self._slide.value), float(self._roll.value))
+
+    @property
+    def obstacles_collide(self) -> bool:
+        """bool: Whether the process's obstacles count in collision checks (`ProcessContract.obstacles_collide`)."""
+        return self.obstacles_mode == OBSTACLES_COLLIDE
+
+    def set_obstacles_mode(self, ctx: PluginContext, mode: str) -> None:
+        """Hide the process's obstacles, draw them see-through, or count them in every collision check.
+
+        Args:
+            ctx: This plugin's context.
+            mode: One of the "Rhino obstacles" list's entries.
         """
         # A repeated value (e.g. two clicks queued in one tick) changes nothing: the bodies are not put again.
-        if collide == self.obstacles_collide:
+        if mode == self.obstacles_mode:
             return
-        self.obstacles_collide = collide
-        self._changed()
-        ctx.log_info("Rhino obstacles now count in every collision check" if collide
-                     else "Rhino obstacles are drawn only: left out of every collision check; replan")
+        collided = self.obstacles_collide
+        self.obstacles_mode = mode
+        if self.obstacles_collide == collided:
+            self._stale = True  # * Only the drawing changes: the plans stand.
+        else:
+            self._changed()
+        ctx.log_info({OBSTACLES_COLLIDE: "Rhino obstacles now count in every collision check",
+                      OBSTACLES_GHOST: "Rhino obstacles are drawn only: left out of every collision check; replan",
+                      OBSTACLES_DISABLE: "Rhino obstacles are hidden: left out of every collision check; replan"}[mode])
 
     def _set_at_target(self, at_target: bool) -> None:
         """Show the start state, or the target."""
@@ -478,14 +749,16 @@ class ProcessPlugin(HuskyPlugin):
         if first is not None:
             self.select(first)
 
-    def _on_view(self, label: str) -> None:
-        """Toggle hiding or ghosting the overlay, or overlaying every body."""
-        if label == "Hide":
-            self._visible = not self._visible
-        elif label == "All":
-            self._everything = not self._everything
-        else:
-            self._ghost = not self._ghost  # `update` applies it, also to a drawing still being built
+    def _on_scroll(self, label: str) -> None:
+        """Scroll the action list a page up ("▲") or down ("▼"), the selection kept."""
+        count = len(self.process.schedule) if self.process is not None else 0
+        page = ACTION_ROWS if label == "▼" else -ACTION_ROWS
+        self._window_start = max(0, min(self._window_start + page, count - ACTION_ROWS))
+        self._scrolled_at = self.revision
+
+    def _set_view(self, name: str, on: bool) -> None:
+        """Turn a box of the overlay on or off: "_visible", "_ghost" or "_everything"; the next draw applies it."""
+        setattr(self, name, on)
         self._stale = True
 
     def _changed(self) -> None:
@@ -517,11 +790,7 @@ class ProcessPlugin(HuskyPlugin):
             self._progress = ""
 
         # * Swap in on the main thread; `update` builds the new nodes on demand.
-        if self._build_task is not None:
-            self._build_task.cancel()
-        if self._drawing is not None:
-            self._drawing.remove()
-            self._drawing = None
+        self._forget_drawing()
         self._take(process)
         self._models = models
         # The converted copy, for an old export.
@@ -538,12 +807,29 @@ class ProcessPlugin(HuskyPlugin):
     def _take(self, process: Process) -> None:
         """Make `process` the loaded one, with its movement list and assumed starts, and select its first movement.
 
-        The old process's marks and carried joints go with it.
+        The old process's marks and carried joints go with it; it stands where it was authored until a run or Apply
+        places it.
         """
+        self.authored, self.placement, self.grasp_offsets, self._grasp_for = process, IDENTITY, {}, None
+        self._placed = process
+        self._set_box(IDENTITY)
         self.process, self.index = process, 0
         self._marks, self._carry = {}, None
         self._show()
         self._obstacles = process_obstacles(process)
+
+    def _set_box(self, placement: Pose) -> None:
+        """Show a placement in the build box, once `setup` made it."""
+        if self._pose is not None:
+            self._pose.set(placement)
+
+    def _forget_drawing(self) -> None:
+        """Drop the overlay (and stop one being built): `update` draws the process again."""
+        if self._build_task is not None:
+            self._build_task.cancel()
+        if self._drawing is not None:
+            self._drawing.remove()
+            self._drawing = None
 
     def _show(self) -> None:
         """Build the shown process (`as_run`), its movement list, assumed starts and the maps to authored indices."""
@@ -585,9 +871,13 @@ class ProcessPlugin(HuskyPlugin):
 
     def update(self, ctx: PluginContext) -> None:
         """Put the selected movement's obstacles into the scene, and start building the process's viser nodes."""
+        self.scene_shows = self._put_for
+        self._update_preview(ctx)
         if self._scene_revision != self.revision:
             self._scene_revision = self.revision
             self._put_obstacles(ctx)
+            # * This tick's snapshot was taken before the bodies changed: it shows the new ones from the next tick.
+            self.scene_shows = None
         if self._drawing is not None:
             self._drawing.set_ghost(self._ghost)
             self._drawing.set_bar_lines(self._bar_lines)
@@ -597,6 +887,20 @@ class ProcessPlugin(HuskyPlugin):
         if self._build_task is None or self._build_task.done():
             self._build_task = ctx.spawn("draw the process", self._build(ctx), survives_soft_stop=True)
 
+    def _update_preview(self, ctx: PluginContext) -> None:
+        """Under the gizmo, the authored bar lines, so a drag shows where the build would go; drawn once per process."""
+        if self._preview_for is self.authored or self._pose is None:
+            return
+        self._preview_for = self.authored
+        if self._preview is not None:
+            self._preview.remove()
+            self._preview = None
+        segments = bar_lines(self.authored)[0] if self.authored is not None else ()
+        if len(segments):  # viser needs at least one segment
+            self._preview = ctx.view.scene.add_line_segments(
+                f"{self._pose.gizmo_path}/preview", points=segments.astype("float32"), colors=BAR_LINE_COLOR,
+                thickness=BAR_LINE_WIDTH, thickness_units="screen")
+
     def _put_obstacles(self, ctx: PluginContext) -> None:
         """Replace this plugin's scene bodies with the selected movement's process scene; held bodies follow the real robot.
 
@@ -605,6 +909,7 @@ class ProcessPlugin(HuskyPlugin):
         prefix = f"{self.name}/"
         ctx.scene.remove_prefix(prefix)
         self.ids = self.process_ids = None
+        self._put_for = None
         selected = self.selected
         if selected is None:
             return
@@ -621,14 +926,19 @@ class ProcessPlugin(HuskyPlugin):
             bodies = scene_bodies(self.process, movement, robots, prefix, self.obstacles_collide)
         ctx.scene.put_many(bodies)
         self.ids, self.process_ids = live_ids(self.process, robots, prefix)
+        self._put_for = (selected[0].id, movement.id)
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the overlay from the selected state, and fill the panel."""
         self._status.content = self._status_html()
         self._transfer.value = self.transfer_as_free
-        self._collide.value = self.obstacles_collide
+        self._rhino_obstacles.value = self.obstacles_mode
         self._collide_status.content = self._collide_html(ctx)
+        self._placement_status.content = self._placement_html(ctx)
+        if self._apply is not None:
+            show_waiting(self._apply, self._apply_press.waiting(ctx.now()) == "apply", "Apply", None)
         selected = self.selected
+        self._draw_grasp(ctx, selected)
         # * One line, even empty: the full error on hover.
         error = " ".join(self._error.split())
         self._error_text.content = block(values(_one_line(escape(error) or "&nbsp;", error)))
@@ -658,7 +968,8 @@ class ProcessPlugin(HuskyPlugin):
                 joints[carry.robot] = {**joints.get(carry.robot, {}), **carry.joints}
                 state = _with_base(state, carry.robot, carry.base)
             # * Left out of collision checks, the Rhino obstacles are drawn by the overlay, not the runtime.
-            drawing.show(state, joints, self._everything, frozenset() if self.obstacles_collide else self._obstacles)
+            drawing.show(state, joints, self._everything,
+                         self._obstacles if self.obstacles_mode == OBSTACLES_GHOST else frozenset())
         except Exception as failure:
             # ! A state that does not fit its process is a data problem: report it, do not raise.
             self._error = f"cannot draw {movement.id}: {type(failure).__name__}: {failure}"
@@ -675,7 +986,9 @@ class ProcessPlugin(HuskyPlugin):
         """
         count = len(self.process.schedule) if self.process is not None else 0
         current = self._action_of[self.index] if self._movements else 0
-        self._window_start = action_window(current, count)
+        # * Scrolled by the operator: kept until the process or the selection changes.
+        if self._scrolled_at != self.revision:
+            self._window_start = action_window(current, count)
         self._actions_title.content = section("actions", SECTION_CTRL, f"{current + 1}/{count}" if count else "")
         for row, button in enumerate(self._action_rows):
             index = self._window_start + row
@@ -750,10 +1063,101 @@ class ProcessPlugin(HuskyPlugin):
         if self.obstacles_collide:
             chips += chip("Rhino obstacles collide", OK, "counted in every collision check")
         else:
-            chips += chip("Rhino obstacles: drawn only", NONE, "left out of every collision check")
+            chips += (chip("Rhino obstacles: drawn only", NONE, "left out of every collision check")
+                      if self.obstacles_mode == OBSTACLES_GHOST
+                      else chip("Rhino obstacles: hidden", NONE, "not shown, left out of every collision check"))
             if not any(body_id.startswith(MEASURED_PREFIX) for body_id in ctx.scene.snapshot.bodies):
                 chips += chip("room unchecked", FAIL, "no measured obstacles in the scene: add 'obstacles' to the "
                                                       "plugins, or nothing in the room is checked")
+        return chip_line(chips)
+
+    def _draw_grasp(self, ctx: PluginContext, selected) -> None:
+        """The grasp box live for the selected hold, its sliders set once per hold; its line of chips."""
+        hold = hold_of(self.authored, selected[0].id) if selected is not None and self.authored is not None else None
+        # ! Not the Apply/Reset group: viser asserts on disabling a button group; `_on_grasp` refuses without a hold.
+        for widget in (self._slide, self._roll):
+            if widget.disabled != (hold is None):
+                widget.disabled = hold is None
+        if hold != self._grasp_for:
+            # * Only when another hold is selected: every frame would undo a drag not applied yet.
+            self._grasp_for = hold
+            self._slide.value, self._roll.value = self.grasp_offsets.get(hold, (0.0, 0.0))
+        chips = ""
+        if self._grasp_refused and ctx.now() - self._grasp_refused_at < REFUSAL_SHOWN:
+            waiting = self._grasp_press.waiting(ctx.now())
+            chips += chip("press again" if waiting else "not moved", BUSY if waiting else FAIL,
+                          hover(f"Grasp not moved: {self._grasp_refused}"))
+        offset = self.grasp_offsets.get(hold) if hold is not None else None
+        if hold is None:
+            moved = len(self.grasp_offsets)
+            chips += chip(f"{moved} grasp{'s' if moved != 1 else ''} moved" if moved else "grasps as authored",
+                          OK if moved else NONE, ", ".join(sorted(self.grasp_offsets)) or "No hold's grasp is moved.")
+        elif offset is None:
+            chips += chip(f"{hold} as authored", NONE, "This hold's grasp is where the process puts it.")
+        else:
+            chips += chip(f"{hold} slid {offset[0]:g} mm, rolled {offset[1]:g}°", OK,
+                          "This hold's targets move with the grasp, from its approach to its release's retreat.")
+        if hold is not None and (float(self._slide.value), float(self._roll.value)) != (offset or (0.0, 0.0)):
+            chips += chip("not applied", BUSY, "The sliders hold another grasp than the hold's: Apply to move it.")
+        # * A button group's option cannot read "Apply?": amber is how this one says it waits.
+        waiting = self._grasp_press.waiting(ctx.now())
+        button = 1 if waiting.endswith(" 0 0") else 0  # * no offset wanted: it was Reset that asked
+        self._grasp_status.content = chip_line(chips) + (
+            f"<style>{waiting_group_css(self._grasp_buttons, button)}</style>" if waiting else "")
+        self._draw_grasp_axes(ctx, hold)
+
+    def _draw_grasp_axes(self, ctx: PluginContext, hold: str | None) -> None:
+        """The hold's gripper alone in MOVED_GRASP at the bar grasp where the sliders put it, applied or not.
+
+        Shown only while the sliders differ from the authored grasp. The overlay cannot show it: it poses the arm from
+        joints, and none are solved for a moved grasp.
+        """
+        slide, roll = float(self._slide.value), float(self._roll.value)
+        key = (hold, slide, roll, self._placed)
+        if key == self._grasp_axes_for:
+            return
+        self._grasp_axes_for = key
+        moved = hold is not None and self._placed is not None and (slide, roll) != (0.0, 0.0)
+        found = grasp_move(self._placed, hold, slide, roll) if moved else None
+        shown = None
+        if found is not None:
+            flange, move = found
+            robot, _, link = flange.rpartition("/")
+            tool = self._placed.robots[robot].tools.get(link) if robot in self._placed.robots else None
+            # * The bar grasp: the hold's last flange target (its approach ends before it).
+            movements = self._placed.actions[hold].movements
+            grasp = next(movement.target.link_poses[flange] for movement in reversed(movements)
+                         if movement.target is not None and flange in movement.target.link_poses)
+            if tool in self._placed.tools:
+                shown = tool
+                frame = self._grasp_axes.get(tool)
+                if frame is None:
+                    path = f"{ctx.view.scene_root}/grasp_target/{tool.replace('/', '_')}"
+                    frame = self._grasp_axes[tool] = ctx.view.scene.add_frame(path, show_axes=False)
+                    for index, shape in enumerate(self._placed.tools[tool].geometry.visual):
+                        add_shape(ctx.view.scene, f"{path}/{index}", shape, rgb01(MOVED_GRASP, 0.8))
+                pose = compose(move, grasp)
+                frame.position = tuple(float(value) for value in pose.position)
+                frame.wxyz = quaternion_to_wxyz(pose.orientation)
+        for name, frame in self._grasp_axes.items():
+            frame.visible = name == shown
+
+    def _placement_html(self, ctx: PluginContext) -> str:
+        """One line of chips under the build box: an Apply refused in the last REFUSAL_SHOWN s, and the placement."""
+        chips = ""
+        if self._placement_refused and ctx.now() - self._placement_refused_at < REFUSAL_SHOWN:
+            chips += chip("not placed", FAIL, hover(f"Build not placed: {self._placement_refused}"))
+        if is_identity(self.placement):
+            chips += chip("as authored", NONE, "The build stands where the process puts it.")
+        else:
+            chips += chip(f"placed {placement_text(self.placement)}", OK,
+                          "The build is moved by this pose, obstacles included; robot bases stay on the floor, "
+                          "the floor stays.")
+            if off_floor(self.placement):
+                chips += chip("off the floor", BUSY, "A height, roll or pitch: robot bases stay on the floor, so the "
+                                                     "process's joints miss the targets: use Step IK, the live IK.")
+        if not np.allclose(self._pose.pose.matrix(), self.placement.matrix(), atol=1e-6):
+            chips += chip("not applied", BUSY, "The box holds another pose than the build's: Apply to place it.")
         return chip_line(chips)
 
     def _labels(self, action: Action) -> list[MovementLabel]:

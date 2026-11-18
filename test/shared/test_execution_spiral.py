@@ -20,10 +20,10 @@ pytestmark = pytest.mark.safety
 AXIS = (0.0, 0.3, -1.0)
 
 
-def test_a_spiral_fits_only_a_bar_with_two_mating_joints():
-    """One mating joint (or none) would let the spiral skew the bar; both arms mating may spiral."""
-    assert not spiral_fits(("left_ur_arm",)) and not spiral_fits(())
-    assert spiral_fits(ARMS)
+def test_a_spiral_fits_a_bar_with_a_mating_joint():
+    """One or two mating joints may spiral; with none, no screw's stall would end the search."""
+    assert spiral_fits(("left_ur_arm",)) and spiral_fits(ARMS)
+    assert not spiral_fits(())
 
 
 # --- --- --- --- --- geometry --- --- --- --- ---
@@ -146,13 +146,15 @@ def run(lab: Lab, spiral: Spiral, gate: Gate, operator: Operator) -> tuple[str, 
     sent = []
     for name, arm in lab.robot.arms.items():
         arm.targets_sent.attach(lambda target, name=name: sent.append((lab.recorder.phase, name, target)))
-    ended = asyncio.run(run_spiral(lab.ctx, lab.robot, segment, spiral, gate, operator, lab.recorder))
+    lab.stall_targets = {}
+    ended = asyncio.run(run_spiral(lab.ctx, lab.robot, segment, spiral, gate, operator, lab.recorder,
+                                   lab.stall_targets))
     lab.spiral_segment = segment
     return ended, sent
 
 
 def test_a_stall_during_the_spiral_ends_it_and_says_where():
-    """A stall 1 s in: "stalled", the log says where the spiral stood; no prompt."""
+    """A stall 1 s in: "stalled", the log says where the spiral stood, each arm's target then is kept; no prompt."""
     lab = Lab()
     spiral = Spiral(AXIS, 2.0, 1)
     operator = Operator(lab)
@@ -160,6 +162,10 @@ def test_a_stall_during_the_spiral_ends_it_and_says_where():
     assert ended == "stalled" and not operator.opened
     assert len(sent) == 20 and {phase for phase, *_rest in sent} == {"spiral"}
     assert f"left_ur_arm joint screw STALLED at {spiral.text(1.0)}" in lab.ctx.lines("info")[-1]
+    segment = lab.spiral_segment
+    for name in lab.robot.arms:
+        assert_same_pose(lab.stall_targets[name],
+                         line_target(segment.start[name], segment.end[name], 2.0, 1.0, spiral.offset(1.0)), 1e-9)
 
 
 def test_the_spiral_targets_are_the_line_plus_the_offset_on_both_arms():
@@ -219,8 +225,20 @@ def test_confirm_returns_to_the_line_end_from_the_spirals_end_then_holds_until_t
 
 
 def test_a_stall_after_confirm_ends_the_return_stalled():
-    """Confirm, then the screw stalls 3 s into B: "stalled"."""
+    """Confirm, then the screw stalls 3 s into B, past the line's end: "stalled", no target kept: all at the end."""
     lab = Lab()
     ended, sent = run(lab, Spiral(AXIS, 2.0, 1), Gate(lab, at=16.0), Operator(lab, answer=True, after=1.0))
     assert ended == "stalled" and sent[-1][0] == "spiral return"
     assert "STALLED after the return" in lab.ctx.lines("info")[-1]
+    assert not lab.stall_targets
+
+
+def test_a_stall_part_way_back_keeps_each_arms_target_on_the_return():
+    """Confirm, then the screw stalls 1 s into B's 2 s: each arm's target then is half way back to its line's end."""
+    lab = Lab()
+    spiral = Spiral(AXIS, 2.0, 1)
+    ended, _sent = run(lab, spiral, Gate(lab, at=14.0), Operator(lab, answer=True, after=1.0))
+    assert ended == "stalled"
+    back = spiral.offset(spiral.seconds)
+    for name, end in lab.spiral_segment.end.items():
+        np.testing.assert_allclose(lab.stall_targets[name].position, np.add(end.position, back / 2.0), atol=2e-3)

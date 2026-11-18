@@ -30,12 +30,14 @@ from ...config import short_serial
 from ...plugin_api.concurrency import WaitTimeout
 from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV3
 from ...robot_interface.soft_stop import MotionRefused
+from ...shared.process_scene.live_scene import SceneNotShown, showing
 from ...shared.assembly_planning.joints import arm_joint_names
 from ...shared.assembly_planning.movement import Routine
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import STALE_ARM, stale_reason
-from ...shared.execution.handoff import handoff_text, run_handoff
+from ...shared.execution.handoff import COMPLIANCE, JOINT, GraspSettings, handoff_text, run_handoff
 from ...shared.execution.insert import plan_insert, run_insert
+from ...shared.execution.insert_forces import InsertForceSettings
 from ...shared.execution.moving import base_moving, moving_reason
 from ...shared.execution.retreat import (START_TOL, TAIL_STEP, RetreatPlan, StiffRetreatPlan, plan_retreat,
                                          plan_stiff_retreat, run_retreat, run_stiff_retreat)
@@ -48,12 +50,12 @@ from ...shared.execution.tools import (FELL_SHORT, REACHED, ROBOTIQ_CLOSE, ROBOT
                                        robotiq_move)
 from ...shared.execution.tools import DRY_RUN as TOOL_DRY, REFUSED as TOOL_REFUSED
 from ...shared.motion_planner_contract import MotionPlanRequest
-from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, DONE, DRY_RUN, FAILED, HANDOFF_PART,
-                                              HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART, OPEN_PART,
-                                              PLANNED_MARGIN, REFUSED, REFUSED_PART, RETREAT_PART, WITH_MOTION_PART,
-                                              current_primary)
+from ...shared.movement_exec_contract import (BASE_PART, BY_HAND_PART, CANCELLED, DONE, DRY_RUN, FAILED, HAND_KINDS,
+                                              HANDOFF_PART, HOLD_NOT_SENT, INSERT_PART, MOTION_KINDS, MOTION_PART,
+                                              OPEN_PART, PLANNED_MARGIN, REFUSED, REFUSED_PART, RETREAT_PART,
+                                              WITH_MOTION_PART, current_primary)
 from ...shared.planner.planner_service import PlannerService
-from ...shared.runs.runs import SPLIT_RANGE
+from ...shared.runs.runs import PUSH_RANGE, SPLIT_RANGE, STIFFNESS_RANGE
 from ...world.clearance import ARM_MOVE
 from ...world.freeze import WorldMoved, take_basis
 
@@ -101,8 +103,9 @@ class Job:
         recorder: The samples of the compliant part running (insert, retreat, handoff), for the panel; else None.
         measured: Gets each servo reading as it is taken, for the Exec plots window.
         status: Shows the servo's phase in the Exec plots window: (text, chip colour).
-        ft_zero: Serial -> {at, reason} of the force sensors' last zero (the travel to load, a handoff); the plugin's
-            dict, shared, so the as-built record says what the wrenches are relative to.
+        ft_zero: Serial -> {at, reason} of the force sensors' last zero (the travel to load, the transit to the insert
+            start, a handoff); the plugin's dict, shared, so the as-built record says what the wrenches are relative to.
+        inserted: The last insert run to its end, for a servo after it sent in a request of its own; the plugin's.
     """
 
     ctx: PluginContext
@@ -119,11 +122,35 @@ class Job:
     measured: Callable[[Mapping[str, Any]], None] = lambda _reading: None
     status: Callable[[str, str], None] = lambda _text, _color: None
     ft_zero: dict[str, dict] = field(default_factory=dict)
+    inserted: Callable[[], InsertEnd | None] = lambda: None
 
     @property
     def who(self) -> str:
         """str: The robot as prompts name it, e.g. "alice (a200-0804)"."""
         return f"{self.request.robot_name} ({short_serial(self.request.serial)})"
+
+
+@dataclass(frozen=True)
+class InsertEnd:
+    """Where an insert's plan ended, kept so the servo after a ground bar's insert may run in a later request.
+
+    Attributes:
+        loaded: The loaded process it ran in.
+        action: Its action.
+        primary: Its step's primary movement index.
+        index: The insert's own movement index (the key `request_forget` drops it by).
+        serial: The robot.
+        names: The plan's joint names.
+        end_row: The plan's last row, radians, in `names`' order.
+    """
+
+    loaded: object
+    action: str
+    primary: int
+    index: int
+    serial: str
+    names: tuple[str, ...]
+    end_row: tuple[float, ...]
 
 
 @dataclass
@@ -189,7 +216,7 @@ async def run_part(job: Job, run: PartRun) -> None:
     if kind == REFUSED_PART:
         run.ended(REFUSED, "refused", run.part.text)
         return
-    problem = world_problem(job, motion=kind in MOTION_KINDS)
+    problem = world_problem(job, motion=kind in MOTION_KINDS, still=kind not in HAND_KINDS)
     if problem:
         run.ended(REFUSED, "refused", problem)
         return
@@ -209,11 +236,12 @@ def part_started(job: Job, run: PartRun) -> None:
     run.base_at_start = snapshot.base if snapshot is not None else None
 
 
-def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None) -> str:
+def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None, still: bool = True) -> str:
     """Why a part may not run now; "" if it may.
 
     Every part: the process and the current action are still the request's, the robot is not soft stopped (Stop all,
-    or a clearance tripped: its commands are refused until Resume), and nothing else moves (`others_moving`). A motion
+    or a clearance tripped: its commands are refused until Resume), and nothing else moves (`others_moving`; not for
+    a part by hand, `still` False: it sends nothing). A motion
     also: the robot is live, the safety sync vouches for each of its arms (`ArmInterface.safety_problem`:
     else the arm refuses the trajectory anyway), the plan was made after the robot's arms last moved (`Job.moved_at`)
     and is not stale (`stale_reason`).
@@ -221,6 +249,7 @@ def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None) -> str
     Args:
         job: The request being run.
         motion: Whether the part moves the arms.
+        still: Whether every other robot must stand still; False for a part by hand.
         basis: What the motion's plan was made from; None: the request's.
     """
     request, view, ctx = job.request, job.run.view, job.ctx
@@ -230,7 +259,7 @@ def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None) -> str
         return f"the current action is no longer {request.action}"
     if job.robot.soft_stopped:
         return f"{job.who} is soft stopped; press Resume first"
-    moving = others_moving(job)
+    moving = others_moving(job) if still else ""
     if moving or not motion:
         return moving
     snapshot = ctx.scene.snapshot
@@ -275,14 +304,14 @@ def others_basis(job: Job) -> Basis:
 
     Arms that never sent joint states and bases never fixed by mocap this session are left out, as `moving_reason`
     leaves them out (that robot is not running, or not tracked: the plan did not check against it), and so are the
-    robots the operator let be unknown.
+    robots the operator let be unknown and the robots parked in Health.
 
     Raises:
         WorldMoved: If one of them can no longer be measured (stale joints, mocap lost).
     """
     unknown = unknown_serials(job.ctx.world, job.request)
     others = [(serial, robot) for serial, robot in job.ctx.world.robots.items()
-              if serial != job.request.serial and serial not in unknown]
+              if serial != job.request.serial and serial not in unknown and not robot.parked]
     return take_basis(job.ctx.world, job.ctx.now(),
                       arms=[(serial, name) for serial, robot in others for name, arm in robot.arms.items()
                             if arm.state.last_update_time is not None],
@@ -362,17 +391,35 @@ def live_command(job: Job) -> MotionCommand | str:
 
 
 def run_settings(job: Job) -> dict:
-    """The run's settings a compliant part runs with, read once as it starts, the split clamped to SPLIT_RANGE."""
+    """The run's settings a compliant part runs with, read once as it starts, each number clamped to its range."""
     settings = job.run.view.settings
-    return {"split_mm": min(max(float(settings.insert_split_mm), SPLIT_RANGE[0]), SPLIT_RANGE[1]),
+    across = _clamped(settings.insert_stiffness_across, STIFFNESS_RANGE)
+    along = _clamped(settings.insert_stiffness_along, STIFFNESS_RANGE)
+    return {"split_mm": _clamped(settings.insert_split_mm, SPLIT_RANGE),
             "spiral": settings.spiral,
             "spiral_seconds": settings.spiral_seconds, "spiral_turns": settings.spiral_turns,
-            "retreat_compliant": settings.retreat_compliant}
+            "retreat_compliant": settings.retreat_compliant,
+            "cancel_weight": settings.insert_cancel_weight, "push_n": _clamped(settings.insert_push_n, PUSH_RANGE),
+            "stiffness": [across, across, along]}
 
 
-def _ask(job: Job, movement: str, text: str, warn: bool) -> Prompt:
+def _clamped(value: float, bounds: tuple[float, float]) -> float:
+    """`value` as a float within `bounds`."""
+    return min(max(float(value), bounds[0]), bounds[1])
+
+
+def grasp_settings(job: Job) -> GraspSettings:
+    """The run's grasp settings, read once as the close starts: joint, or compliant at the clamped stiffness."""
+    settings = job.run.view.settings
+    if settings.grasp_controller == JOINT:
+        return GraspSettings(JOINT)
+    return GraspSettings(COMPLIANCE, _clamped(settings.grasp_stiffness, STIFFNESS_RANGE))
+
+
+def _ask(job: Job, movement: str, text: str, warn: bool, choose: bool = False) -> Prompt:
     """Open a prompt after the robot's name ("DRY RUN — " first in a dry run), log it and record it."""
-    prompt = job.prompts.ask(job.who, ("DRY RUN — " if job.dry_run else "") + text, job.ctx.now(), warn)
+    prompt = job.prompts.ask(job.who, ("DRY RUN — " if job.dry_run else "") + text, job.ctx.now(), warn,
+                             choose)
     (job.ctx.log_warn if warn else job.ctx.log_info)(f"waiting for Confirm: {prompt.line}")
     job.event("prompt", movement, {"text": prompt.line, "warn": warn})
     return prompt
@@ -413,7 +460,7 @@ class PartOperator:
         self.job.prompts.close(prompt)
 
 
-async def confirmed(job: Job, run: PartRun, text: str, warn: bool = False) -> bool:
+async def confirmed(job: Job, run: PartRun, text: str, warn: bool = False, choose: bool = False) -> bool:
     """Ask the operator and wait (no time limit); a Cancel ends the part as cancelled.
 
     Args:
@@ -421,12 +468,13 @@ async def confirmed(job: Job, run: PartRun, text: str, warn: bool = False) -> bo
         run: The part.
         text: The question, after the robot's name.
         warn: Ask as a warning.
+        choose: Also ask in the warning window.
 
     Returns:
         bool: True on Confirm.
     """
     ctx, movement = job.ctx, run.part.movement
-    prompt = _ask(job, movement, text, warn)
+    prompt = _ask(job, movement, text, warn, choose)
     if await job.prompts.wait(ctx, prompt):
         job.event("confirm", movement, {"text": prompt.line})
         return True
@@ -477,7 +525,7 @@ async def _motion(job: Job, run: PartRun) -> None:
                 outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run,
                                             watch=lambda: others_moving(job), progress=run.progress)
     except (MotionRefused, WaitTimeout) as refused:  # * the clearance cannot check the robot: nothing sent
-        run.ended(REFUSED, "refused", f"nothing sent: {refused}")
+        run.ended(REFUSED, "refused", str(refused))
         return
     run.outcome = outcome.as_record()
     result = {ARRIVED: DONE, SENT_DRY: DRY_RUN, SENT_REFUSED: REFUSED, SENT_NOT_HELD: HOLD_NOT_SENT}.get(
@@ -489,14 +537,16 @@ async def _motion(job: Job, run: PartRun) -> None:
     _note_end(job, run, outcome.end or {})
     if part.routine is Routine.SUPPORT_LEAVE:
         ctx.log_info(f"{job.who}: {part.movement}: done; drive the base away by hand")
-    elif part.routine is Routine.FREE_TO_LOAD:
-        # * Tare the force sensors standing still, on the empty tools.
+    elif part.routine in (Routine.FREE_TO_LOAD, Routine.TRANSFER_FREE):
+        # * Tare the force sensors standing still, on the empty tools: at the load pose, or at the insert start
+        #   before the operator mounts the bar there (transfer workaround).
+        where = "travel to load" if part.routine is Routine.FREE_TO_LOAD else "transit to the insert start"
         await ctx.sleep(FT_ZERO_SETTLE)
         zeroed = [arm.zero_ft_sensor() for arm in job.robot.arms.values()]
         (ctx.log_info if all(zeroed) else ctx.log_warn)(
-            f"{job.who}: travel to load done; force sensors zeroed on {sum(zeroed)} of {len(zeroed)} arms")
+            f"{job.who}: {where} done; force sensors zeroed on {sum(zeroed)} of {len(zeroed)} arms")
         if any(zeroed):
-            job.ft_zero[job.request.serial] = {"at": ctx.now(), "reason": "travel to load (tools empty)"}
+            job.ft_zero[job.request.serial] = {"at": ctx.now(), "reason": f"{where} (tools empty)"}
 
 
 def motion_clearance(job: Job) -> ContextManager[Clearance | None]:
@@ -534,7 +584,9 @@ async def _insert(job: Job, run: PartRun) -> None:
 
     def start(plan: InsertPlan, recorder: Recorder) -> Awaitable[PartOutcome]:
         return run_insert(job.ctx, robot, plan, tools if part.tools else {}, operator=PartOperator(job, part.movement),
-                          dry_run=job.dry_run, watch=lambda: others_moving(job), recorder=recorder)
+                          dry_run=job.dry_run, watch=lambda: others_moving(job), recorder=recorder,
+                          forces=InsertForceSettings(settings["cancel_weight"], settings["push_n"],
+                                                     tuple(settings["stiffness"])))
 
     await _along_plan(job, run, settings, plan_of, start)
 
@@ -634,34 +686,42 @@ async def _replan(job: Job, part: PartPlan) -> RouteResult | None:
     """Plan the retreat's tail again, from the live robot to the plan's goals in TAIL_STEP steps.
 
     Returns:
-        RouteResult | None: The plan, or None without an answer within REPLAN_TIMEOUT.
+        RouteResult | None: The plan, or None without an answer within REPLAN_TIMEOUT or a live scene showing the step.
     """
     ctx, request = job.ctx, job.request
     loaded = request.loaded
-    asked = MotionPlanRequest(loaded, loaded.steps[loaded.index_of(request.action, part.index)], ctx.scene.snapshot,
-                              ctx.config.robots,
-                              transfer_as_free=request.transfer_as_free(), ignore_built=request.ignore_built(),
-                              obstacles_collide=request.obstacles_collide(), goal_poses=request.route.goals,
-                              linear_step=TAIL_STEP, label=f"retreat tail {part.movement}")
     planner: MotionPlannerContract = ctx.require("motion_planner")
+    primary = loaded.steps[loaded.index_of(request.action, request.step.primary)]
     try:
-        async with timeout(REPLAN_TIMEOUT):
-            return await planner.request_plan(asked)
+        # * The snapshot after the wait: the live scene then shows the current step (`showing`).
+        async with showing(ctx, ctx.require("process"), request.action, primary.movement.id):
+            asked = MotionPlanRequest(loaded, loaded.steps[loaded.index_of(request.action, part.index)],
+                                      ctx.scene.snapshot, ctx.config.robots,
+                                      transfer_as_free=request.transfer_as_free(), ignore_built=request.ignore_built(),
+                                      obstacles_collide=request.obstacles_collide(), goal_poses=request.route.goals,
+                                      linear_step=TAIL_STEP, label=f"retreat tail {part.movement}")
+            async with timeout(REPLAN_TIMEOUT):
+                return await planner.request_plan(asked)
+    except SceneNotShown as shown:
+        ctx.log_warn(f"{job.who}: {part.movement}: no tail planned: {shown}")
+        return None
     except asyncio.TimeoutError:
         ctx.log_warn(f"{job.who}: {part.movement}: no tail planned within {REPLAN_TIMEOUT:.0f} s")
         return None
 
 
 async def _handoff(job: Job, run: PartRun) -> None:
-    """Close a Robotiq on a bar another robot holds, its arm compliant meanwhile (`run_handoff`), after the prompt."""
+    """Close a Robotiq on a bar another robot holds, under the run's grasp controller, after the prompt."""
     ctx, part = job.ctx, run.part
     gripper = _robotiq_of(job, run)
     if gripper is None:
         return
     arm = part.tools[0]
+    grasp = grasp_settings(job)
     run.command = {"tool": "robotiq", "arm": arm, "position": ROBOTIQ_CLOSE, "effort": ROBOTIQ_EFFORT,
-                   "compliant": True}
-    if not await confirmed(job, run, f"{part.movement} — {handoff_text(arm)}"):
+                   "compliant": grasp.controller == COMPLIANCE, "controller": grasp.controller,
+                   "stiffness": grasp.stiffness}
+    if not await confirmed(job, run, f"{part.movement} — {handoff_text(arm, grasp)}"):
         return
     problem = world_problem(job, motion=False)
     if problem:
@@ -669,7 +729,8 @@ async def _handoff(job: Job, run: PartRun) -> None:
         return
     job.recorder = Recorder(job.robot, ctx.now())
     try:
-        outcome = await run_handoff(ctx, job.robot, arm, gripper, dry_run=job.dry_run, recorder=job.recorder)
+        outcome = await run_handoff(ctx, job.robot, arm, gripper, grasp=grasp, dry_run=job.dry_run,
+                                    recorder=job.recorder)
     finally:
         job.recorder = None
     _part_ended(run, outcome)

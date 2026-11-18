@@ -21,6 +21,7 @@ from husky_assembly_teleop.plugins.calibration.robot.sampling import Reading, Sa
 from husky_assembly_teleop.plugins.calibration.robot.sweeps import named
 from husky_assembly_teleop.plugins.calibration.storage.session_files import (pose_list, punch_take, read_punch,
                                                                              read_takes)
+from husky_assembly_teleop.robot_interface.mocap_definitions import ScaledPose
 from husky_assembly_teleop.robot_interface.mocap_relay import (FRAME_HELD, FRAME_NONE, FloorCalibrationState,
                                                                MocapRelayState)
 from husky_assembly_teleop.robot_interface.tool_step import tool_step_target
@@ -531,17 +532,20 @@ def test_punch_takes_go_out_of_date_when_the_lab_frame_moves(tmp_path):
     state = MocapRelayState(frame=FloorCalibrationState(FRAME_HELD, "floor.json", lab_from_raw=still))
     run.relay = SimpleNamespace(state=state)
     take = _punch(run, 0.0)
-    take["lab_from_raw"] = pose_list(run.lab_frame())
+    take["lab_from_raw"], take["lab_scale"] = pose_list(run.lab_frame().pose), 1.0
     run.add_punch_take(take, "single")
     run.add_punch_take({key: value for key, value in _punch(run, 1.0).items() if key != "lab_from_raw"}, "single")
     state.frame = replace(state.frame, lab_from_raw=((0.0005, 0.0, 0.0), (0, 0, 0, 1)))
     assert len(run.current_punch_takes()) == 2
-    state.frame = replace(state.frame, lab_from_raw=((0.0, 0.0, 0.0), turned))
+    state.frame = replace(state.frame, lab_scale=1.001)
+    assert run.frame_moved(ScaledPose()) == "lab frame moved 5.5 mm"
+    assert run.current_punch_takes() == [run.punch_takes[1]]
+    state.frame = replace(state.frame, lab_from_raw=((0.0, 0.0, 0.0), turned), lab_scale=1.0)
     assert run.frame_moved(Pose()) == "lab frame moved 7.4 mm" and run.current_punch_takes() == [run.punch_takes[1]]
     state.frame = None
     assert len(run.current_punch_takes()) == 2
     state.frame = FloorCalibrationState(FRAME_NONE)
-    assert run.lab_frame() == Pose() and len(run.current_punch_takes()) == 2
+    assert run.lab_frame() == ScaledPose() and len(run.current_punch_takes()) == 2
     run.save()
     resumed = Run.resume(_robot(), Progress.load(run.progress.file), DATA, tmp_path, run.relay)
     state.frame = FloorCalibrationState(FRAME_HELD, "floor.json", lab_from_raw=((0.0, 0.0, 0.0), turned))

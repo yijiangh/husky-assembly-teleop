@@ -48,7 +48,7 @@ def as_built_record(ctx: PluginContext, bars_plugin: MocapBarsContract, loaded: 
 
     Args:
         ctx: The plugin's context (the clock, the snapshot).
-        bars_plugin: The mocap_bars plugin: its `measure_now` fits every tracked bar from its newest sample.
+        bars_plugin: The mocap_bars plugin: its `measure_now` fits every bar from the newest marker cloud.
         loaded: The loaded process.
         view: The run, for its folder, settings and the other robots' saved ends.
         action_id: The action, or None.
@@ -88,6 +88,8 @@ def as_built_record(ctx: PluginContext, bars_plugin: MocapBarsContract, loaded: 
         fit = found.fit
         ok = fit.ok and fit.T_world_from_bar is not None
         entry = found.to_json()
+        # * For the movement selected in the panel, not this record's step: `T_reference` is this step's.
+        entry.pop("target", None), entry.pop("deviation", None)
         entry.update({
             "bar_id": bar.rsplit("/", 1)[-1], "bar_fit": entry.pop("fit"), "T_world_from_bar": entry.pop("pose"),
             "marker_source": found.source, "marker_age_s": found.sensed.age if found.sensed is not None else None,
@@ -122,7 +124,8 @@ def as_built_record(ctx: PluginContext, bars_plugin: MocapBarsContract, loaded: 
     tool0 = tool0_errors(fk, {flange: targets[flange] for flange in fk if flange in targets}) if targets else {}
     wrenches = wrench_magnitudes(robot, arms)
     load = None if wrenches is None else {
-        "arms": {side: {**wrench, "wrench": robot.arms[arm].state.wrench}
+        "arms": {side: {**wrench, "wrench": robot.arms[arm].state.wrench,
+                        "zeroed_at": robot.arms[arm].state.ft_zero_time}
                  for (side, wrench), arm in zip(wrenches.items(), arms)},
         "zero": dict((ft_zero or {}).get(serial) or {}) or None}
     robots = {live_id: {"name": _process_name(process, live_id.rsplit("/", 1)[-1]),
@@ -152,12 +155,10 @@ def as_built_record(ctx: PluginContext, bars_plugin: MocapBarsContract, loaded: 
                                             "id": action.id, "type": action.type,
                                             "kind": ACTION_KIND.get(action.type), "bar": action.bar,
                                             "bar_id": action.bar.rsplit("/", 1)[-1], "robot": action.robot},
-        step=step, instrumented_bars=[{"bar": bar, "bar_id": bar.rsplit("/", 1)[-1], "mocap_id": found.mocap_id}
-                                      for bar, found in measurements.items()]
-        + [{"bar": bar, "bar_id": bar.rsplit("/", 1)[-1], "mocap_id": None}
-           for bar in layouts if bar not in measurements],
+        step=step, instrumented_bars=[{"bar": bar, "bar_id": bar.rsplit("/", 1)[-1]} for bar in layouts],
         bars=bars, robot_state=robot_state, tool0=tool0, load=load, servo=run.servo if run is not None else None,
-        options=_options(request, run, view, dry_run), robots=robots, settings=asdict(view.settings))
+        options={**_options(request, run, view, dry_run), "mocap_fit": getattr(bars_plugin, "fit_settings", None)},
+        robots=robots, settings=asdict(view.settings))
 
 
 def _process_name(process, serial: str) -> str:
@@ -207,4 +208,7 @@ def _options(request: ExecRequest | None, run: PartRun | None, view: RunView, dr
         "ignore_built": request.ignore_built() if request is not None else None,
         "obstacles_collide": request.obstacles_collide() if request is not None else None,
         "insert_split_mm": settings.insert_split_mm, "spiral_seconds": settings.spiral_seconds,
-        "spiral_turns": settings.spiral_turns}
+        "spiral_turns": settings.spiral_turns, "insert_cancel_weight": settings.insert_cancel_weight,
+        "insert_push_n": settings.insert_push_n, "insert_stiffness_across": settings.insert_stiffness_across,
+        "insert_stiffness_along": settings.insert_stiffness_along, "grasp_controller": settings.grasp_controller,
+        "grasp_stiffness": settings.grasp_stiffness}

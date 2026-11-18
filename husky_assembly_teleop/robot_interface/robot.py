@@ -294,8 +294,8 @@ class HuskyRobotInterface:
             RobotStopped: If the robot is soft stopped.
             NotLeased: If the running code does not have the robot's lease.
         """
-        self.soft_stop_latch.check("a multi-arm trajectory")
-        self.lease_slot.check("a multi-arm trajectory")
+        self.soft_stop_latch.check()
+        self.lease_slot.check()
         if self._multi_arm is None:
             self._node.get_logger().error(f"robot {self.config.serial}: multi-arm trajectory "
                                           f"needs two arms, it has {len(self.arms)}")

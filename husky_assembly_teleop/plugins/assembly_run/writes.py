@@ -7,7 +7,9 @@ It is split off only to keep each file short, and is never used on its own.
 
 from __future__ import annotations
 
+
 import asyncio
+import math
 from dataclasses import fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping
@@ -18,10 +20,11 @@ from ...shared.assembly_run_contract import exported_end, first_pending, is_live
 from ...shared.assembly_planning.steps import first_step
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
-from ...shared.runs.runs import (CDFM_PLANNERS, DONE, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE,
-                                 PLAN_TRIES_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, Progress,
-                                 RobotRecord, Run, RunError, RunSettings, mark_done, new_run, record_event,
-                                 record_movement, save_info, save_progress, stamp, with_current)
+from ...shared.runs.runs import (CDFM_PLANNERS, DONE, GRASP_CONTROLLERS, GRASP_ROLL_RANGE, GRASP_SLIDE_RANGE,
+                                 PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE,
+                                 PLAN_TRIES_RANGE, PUSH_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE,
+                                 STIFFNESS_RANGE, Progress, RobotRecord, Run, RunError, RunSettings, mark_done,
+                                 new_run, record_event, record_movement, save_info, save_progress, stamp, with_current)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -35,6 +38,10 @@ AGAIN_NEW_RUN, AGAIN_MARK = "new run", "mark"
 NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
                    "spiral_seconds": ("the spiral's duration", SPIRAL_SECONDS_RANGE, "s"),
                    "spiral_turns": ("the spiral's turns", SPIRAL_TURNS_RANGE, "whole turns"),
+                   "insert_push_n": ("the insert's push", PUSH_RANGE, "N"),
+                   "insert_stiffness_across": ("the insert's stiffness across the tool", STIFFNESS_RANGE, "N/m"),
+                   "insert_stiffness_along": ("the insert's stiffness along the tool", STIFFNESS_RANGE, "N/m"),
+                   "grasp_stiffness": ("the grasp's stiffness", STIFFNESS_RANGE, "N/m"),
                    "plan_max_time": ("the search's time per try", PLAN_TIME_RANGE, "s"),
                    "plan_max_iterations": ("the search's iterations", PLAN_ITERATIONS_RANGE, "whole iterations"),
                    "plan_joint_resolution": ("the search's joint resolution", PLAN_RESOLUTION_RANGE, "rad"),
@@ -45,6 +52,33 @@ CHOICE_SETTINGS = {"plan_cdfm_planner": ("the CDFM planner", CDFM_PLANNERS)}
 SETTING_TYPES = {each.name: type(each.default) for each in fields(RunSettings)}
 #: How far the loaded process's runs were read; only OPEN allows writes.
 NO_PROCESS, OPENING, OPEN, NOT_OPENED = "", "opening", "open", "not opened"
+
+
+def grasp_offsets_problem(value: Any) -> str:
+    """What is wrong with a grasp offsets setting ([[hold action, slide mm, roll degrees], ...]), or ""."""
+    try:
+        offsets = [(str(hold), float(slide), float(roll)) for hold, slide, roll in value]
+    except (TypeError, ValueError):
+        return f"the grasp offsets must be [hold action, slide mm, roll degrees] each, not {value!r}"
+    for hold, slide, roll in offsets:
+        if not GRASP_SLIDE_RANGE[0] <= slide <= GRASP_SLIDE_RANGE[1] or not \
+                GRASP_ROLL_RANGE[0] <= roll <= GRASP_ROLL_RANGE[1]:
+            return (f"{hold}'s grasp offset must slide {GRASP_SLIDE_RANGE[0]:g} to {GRASP_SLIDE_RANGE[1]:g} mm and "
+                    f"roll {GRASP_ROLL_RANGE[0]:g} to {GRASP_ROLL_RANGE[1]:g}°, not {slide:g} mm, {roll:g}°")
+    return ""
+
+
+def placement_problem(value: Any) -> str:
+    """What is wrong with a placement setting ([x, y, z, qx, qy, qz, qw], a unit quaternion), or ""."""
+    try:
+        numbers = [float(each) for each in value]
+    except (TypeError, ValueError):
+        return f"the placement must be 7 numbers, not {value!r}"
+    if len(numbers) != 7 or not all(math.isfinite(each) for each in numbers):
+        return f"the placement must be 7 finite numbers, not {value!r}"
+    if abs(math.hypot(*numbers[3:]) - 1.0) > 1e-3:
+        return f"the placement's quaternion is not a unit one: {numbers[3:]}"
+    return ""
 
 
 def _record_file(folder: Path, event: str, ros_time: float, action: str, movement: str,
@@ -299,6 +333,8 @@ class RunWrites:
             write: Write progress.json now; False leaves it to the caller (a pick followed in the process panel is
                 written once the picking stops, `FOLLOW_SAVE_AFTER`).
         """
+        if self._failed and current != self._current:
+            self._say("")  # * a failure from the step before is over
         self._current = current
         if self._run is not None:
             self._run = with_current(self._run, current)
@@ -375,18 +411,22 @@ class RunWrites:
         return "" if self._run is not None else self._offered_first() or "no run yet: nothing is done"
 
     def _settings_problem(self, changes: Mapping[str, Any]) -> str:
-        """What is wrong with requested settings, or "".
-
-        A number out of its range or not whole where it must be, a text that is not one, a choice outside its values.
-        """
+        """What is wrong with requested settings, or "": a number out of range or not whole, a bad text or choice."""
         for name, value in changes.items():
             if name not in SETTING_TYPES:
                 return f"there is no setting {name!r}"
-            if name in NUMBER_SETTINGS:
+            if name in ("placement", "grasp_offsets"):
+                problem = (placement_problem if name == "placement" else grasp_offsets_problem)(value)
+                if problem:
+                    return problem
+            elif name in NUMBER_SETTINGS:
                 what, (low, high), unit = NUMBER_SETTINGS[name]
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high \
                         or (SETTING_TYPES[name] is int and value != int(value)):
                     return f"{what} must be {low:g} to {high:g} {unit}, not {value!r}"
+            elif name == "grasp_controller":
+                if value not in GRASP_CONTROLLERS:
+                    return f"the grasp's controller must be {' or '.join(GRASP_CONTROLLERS)}, not {value!r}"
             elif SETTING_TYPES[name] is str:
                 if not isinstance(value, str):
                     return f"{name} must be text, not {value!r}"

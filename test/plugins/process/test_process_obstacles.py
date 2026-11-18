@@ -26,9 +26,11 @@ from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.shared.process_scene.scene_bodies import live_ids, process_obstacles, scene_bodies
 from husky_assembly_teleop.plugins.process.drawing import GHOST_OPACITY, ProcessDrawing, load_robot_models
 from husky_assembly_teleop.plugins.process import plugin as process_plugin
-from husky_assembly_teleop.plugins.process.plugin import BY_HAND_LABEL, ProcessPlugin
+from husky_assembly_teleop.plugins.process.plugin import (BY_HAND_LABEL, OBSTACLES_COLLIDE, OBSTACLES_DISABLE,
+                                                          OBSTACLES_GHOST, ProcessPlugin)
 from husky_assembly_teleop.world.base_collision import BaseCollisionWorld
 from husky_assembly_teleop.world.kinematics import stow_joints
+from husky_assembly_teleop.world.lab import platform_links
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.robot import RobotObject
@@ -124,7 +126,11 @@ def test_held_body_follows_the_configured_robot(process):
     assert bodies["process/bars/B1"].enabled
     assert bodies["process/bars/B1"].placement == Attachment("robots/a200-0806", "left_tool0", grasp)
     assert "tools/a200-0806/left" in bodies["process/joints/G1_ground"].touches
-    assert bodies["process/ground/WG0"].touches == ("process/joints/G1_ground", "robots/a200-0806/wheel_link")
+    # * Then the rest of her platform, as on the lab's floor: the chassis drives on the ground too.
+    platform = {f"robots/a200-0806/{link}" for link in platform_links(_real_cindy(process).model)}
+    touches = bodies["process/ground/WG0"].touches
+    assert touches[:2] == ("process/joints/G1_ground", "robots/a200-0806/wheel_link")
+    assert set(touches[1:]) == platform and len(platform) > 1
 
 
 def test_live_ids_both_ways(process):
@@ -209,6 +215,10 @@ class _ViserContext(FakeContext):
     """A fake context whose value callbacks are the real ones (`PluginContext.defer_value`), handed viser's events."""
 
     defer_value = PluginContext.defer_value
+    _defer = PluginContext._defer
+
+    def _note_operator(self, label, value) -> None:
+        """Nothing: the operator's actions are not logged here."""
 
 
 def _set_up(process: Process, ctx: FakeContext | None = None) -> tuple[ProcessPlugin, FakeContext, Scene]:
@@ -262,41 +272,56 @@ def test_overlay_draws_the_rhino_obstacles_left_out_of_collision_checks(process)
         server.stop()
 
 
-def test_the_box_starts_off_and_a_flip_puts_the_bodies_again(process):
-    """Off at start: the cabinet is a disabled scene body, overlaid see-through; ticking puts it again, enabled.
+def test_the_list_starts_on_ghost_and_collide_puts_the_bodies_again(process):
+    """Ghost at start: the cabinet is a disabled scene body, overlaid see-through; collide puts it again, enabled.
 
-    The same geometry object both ways, so no mirror rebuilds it; ticking again does nothing.
+    The same geometry object both ways, so no mirror rebuilds it; choosing collide again does nothing.
     """
     plugin, ctx, live = _set_up(_with_cabinet(process))
-    assert not plugin.obstacles_collide and plugin._collide.value is False
+    assert not plugin.obstacles_collide and plugin.obstacles_mode == OBSTACLES_GHOST
     plugin.update(ctx)
     plugin.draw(ctx)
     geometry = live.bodies[LIVE_CABINET].geometry
     assert not live.bodies[LIVE_CABINET].enabled and live.bodies["process/ground/WG0"].enabled
     assert plugin._drawing.references[-1] == {CABINET.id}
     revision = plugin.revision
-    plugin._collide.callback(True)
+    plugin._rhino_obstacles.callback(OBSTACLES_COLLIDE)
     assert plugin.revision == revision + 1
     assert ctx.lines("info")[-1] == "Rhino obstacles now count in every collision check"
     plugin.update(ctx)
     plugin.draw(ctx)
     assert live.bodies[LIVE_CABINET].enabled and live.bodies[LIVE_CABINET].geometry is geometry
-    assert plugin._drawing.references[-1] == frozenset() and plugin._collide.value is True
-    plugin._collide.callback(True)
+    assert plugin._drawing.references[-1] == frozenset() and plugin._rhino_obstacles.value == OBSTACLES_COLLIDE
+    plugin._rhino_obstacles.callback(OBSTACLES_COLLIDE)
     assert plugin.revision == revision + 1
 
 
-def test_only_the_operators_click_flips_the_box(process):
+def test_disable_hides_the_obstacles_and_leaves_the_plans_alone(process):
+    """Disable: not drawn by the overlay, still a disabled scene body. Only the drawing changed: plans stand."""
+    plugin, ctx, live = _set_up(_with_cabinet(process))
+    plugin.update(ctx)
+    plugin.draw(ctx)
+    revision = plugin.revision
+    plugin._rhino_obstacles.callback(OBSTACLES_DISABLE)
+    plugin.update(ctx)
+    plugin.draw(ctx)
+    assert plugin.revision == revision and not plugin.obstacles_collide
+    assert not live.bodies[LIVE_CABINET].enabled and plugin._drawing.references[-1] == frozenset()
+    assert "Rhino obstacles: hidden" in plugin._collide_status.content
+    assert ctx.lines("info")[-1] == "Rhino obstacles are hidden: left out of every collision check; replan"
+
+
+def test_only_the_operators_click_changes_the_list(process):
     """The draw's own write-back calls back too, without a client: only a click with a client counts."""
     plugin, _ctx, _live = _set_up(process, _ViserContext())
 
     def event(client) -> SimpleNamespace:
-        """The box's update event, ticked."""
-        return SimpleNamespace(client=client, target=SimpleNamespace(value=True))
+        """The list's update event, on collide."""
+        return SimpleNamespace(client=client, target=SimpleNamespace(value=OBSTACLES_COLLIDE))
 
-    asyncio.run(plugin._collide.callback(event(None)))
+    asyncio.run(plugin._rhino_obstacles.callback(event(None)))
     assert not plugin.obstacles_collide
-    asyncio.run(plugin._collide.callback(event(object())))
+    asyncio.run(plugin._rhino_obstacles.callback(event(object())))
     assert plugin.obstacles_collide
 
 
@@ -325,7 +350,7 @@ def test_the_status_line_says_when_nothing_in_the_room_is_checked(process):
     plugin.draw(ctx)
     assert "drawn only" in plugin._collide_status.content and "room unchecked" not in plugin._collide_status.content
     live.remove("obstacles/boxes/A")
-    plugin.set_obstacles_collide(ctx, True)
+    plugin.set_obstacles_mode(ctx, OBSTACLES_COLLIDE)
     plugin.draw(ctx)
     assert "Rhino obstacles collide" in plugin._collide_status.content
     assert "drawn only" not in plugin._collide_status.content and "room unchecked" not in plugin._collide_status.content
@@ -377,3 +402,19 @@ def test_bar_placed_by_hand(tmp_path):
     panel.select(len(panel._movements) - 1)
     action, movement = panel.selected
     assert BY_HAND_LABEL in panel._details_html(action, movement, panel._labels(action))[0]
+
+
+def test_scene_shows_names_the_movement_the_snapshot_holds(process):
+    """The snapshot is taken before the bodies are put: the tick they change, none shows; then the new one."""
+    plugin, ctx, _live = _set_up(process)
+    first, second = _movement(process, 0), _movement(process, 1)
+    plugin.update(ctx)
+    assert plugin.scene_shows is None, "put this tick: not in this tick's snapshot"
+    plugin.update(ctx)
+    assert plugin.scene_shows == (first[0].id, first[1].id)
+    plugin.select(1)
+    assert plugin.scene_shows == (first[0].id, first[1].id), "until the next update, the old one"
+    plugin.update(ctx)
+    assert plugin.scene_shows is None
+    plugin.update(ctx)
+    assert plugin.scene_shows == (second[0].id, second[1].id)

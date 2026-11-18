@@ -22,6 +22,29 @@ POSE_TIMEOUT = 0.3
 
 
 @dataclass(frozen=True)
+class MarkerCloud:
+    """Every marker the cameras saw in one mocap frame, labeled to an asset or not, in the lab frame.
+
+    Motive's fill-ins (occluded, or placed by an asset's model only) are left out: each point was seen.
+
+    Attributes:
+        positions: Shape (n, 3), metres.
+        sizes: Motive's diameter of each marker, metres, shape (n,).
+        residuals: Motive's residual of each marker, metres, shape (n,).
+        ids: NatNet's id of each marker (asset id << 16 | member number; asset 0 when unlabeled), shape (n,).
+        capture_time: ROS time the cameras captured the frame, seconds.
+        arrival_time: ROS time the monitor got it, seconds.
+    """
+
+    positions: np.ndarray
+    sizes: np.ndarray
+    residuals: np.ndarray
+    ids: np.ndarray
+    capture_time: float
+    arrival_time: float
+
+
+@dataclass(frozen=True)
 class RawMarkers:
     """The raw markers Motive labeled to a rigid body in one sample: lab frame, metres, no robot calibration.
 
