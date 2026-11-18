@@ -2,8 +2,8 @@
 What the mocap_bars plugin offers other plugins: every bar's latest MoCap fit, and a fresh fit on demand.
 
 Type `ctx.require("mocap_bars")` as `MocapBarsContract`. A `BarMeasurement` is one bar as the raw markers near where
-it should be last showed it: the fit (ok or not), the markers it came from and, when the process places the bar this
-tick, the deviation from that planned pose.
+it should be last showed it: the fit (ok or not), the markers it came from and, when the selected movement gives the
+bar a target, the deviation from that target.
 """
 
 from __future__ import annotations
@@ -37,8 +37,11 @@ class BarMeasurement:
         source: Where the markers came from ("cloud", "fake"), "" without a sample.
         measured_at: ROS time the cameras captured the markers.
         tracked: The fit came from the quick match around the last pose, not the full search.
-        planned: Where the process places the bar this tick (its assembly pose, or on the robot's flange), if known.
-        deviation: The fit against `planned`, at the bar's middle; None without both.
+        planned: Where the live scene places the bar this tick (its assembly pose, or on the robot's flange): where
+            its markers are looked for, if known.
+        deviation: The fit against `target`, at the bar's middle; None without both.
+        target: Where the design wants the bar at the selected movement's end (`as_built.reference_of`): for a held
+            bar the authored flange pose and grasp, the pose the servo aims at, never the robot's FK; None if none.
     """
 
     bar: str
@@ -51,6 +54,7 @@ class BarMeasurement:
     tracked: bool
     planned: Pose | None
     deviation: PoseDeviation | None
+    target: Pose | None = None
 
     def to_json(self) -> dict:
         """The measurement as plain lists, dicts and numbers; poses as [x, y, z, qx, qy, qz, qw]."""
@@ -68,6 +72,8 @@ class BarMeasurement:
             "planned": None if self.planned is None else [*map(float, self.planned.position),
                                                           *map(float, self.planned.orientation)],
             "deviation": None if self.deviation is None else self.deviation.to_json(),
+            "target": None if self.target is None else [*map(float, self.target.position),
+                                                        *map(float, self.target.orientation)],
             "layout": {"names": list(self.layout.names), "points": np.asarray(self.layout.points).tolist(),
                        "length": self.layout.length},
         }

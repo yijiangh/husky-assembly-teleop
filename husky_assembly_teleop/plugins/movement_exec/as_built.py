@@ -88,6 +88,8 @@ def as_built_record(ctx: PluginContext, bars_plugin: MocapBarsContract, loaded: 
         fit = found.fit
         ok = fit.ok and fit.T_world_from_bar is not None
         entry = found.to_json()
+        # * For the movement selected in the panel, not this record's step: `T_reference` is this step's.
+        entry.pop("target", None), entry.pop("deviation", None)
         entry.update({
             "bar_id": bar.rsplit("/", 1)[-1], "bar_fit": entry.pop("fit"), "T_world_from_bar": entry.pop("pose"),
             "marker_source": found.source, "marker_age_s": found.sensed.age if found.sensed is not None else None,

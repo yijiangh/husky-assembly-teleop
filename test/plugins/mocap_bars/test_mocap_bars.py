@@ -9,15 +9,19 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from planning_fixtures import purged_process
 from plugin_fakes import FakeContext, FakeScene
 
 from husky_assembly_teleop.plugins.mocap_bars import (ARROW_MODES, FIT_PERIOD, LOG_PERIOD, MAX_MARKER_AGE,
-                                                      SEARCH_RETRY, TURN_COLOR, MocapBarsPlugin, deviation_arrows)
+                                                      SEARCH_RETRY, TURN_COLOR, MocapBarsPlugin, deviation_arrows,
+                                                      mounted_target)
 from husky_assembly_teleop.colors import FAIL, OK, rgb
 from husky_assembly_teleop.robot_interface.mocap_state import MarkerCloud
+from husky_assembly_teleop.shared.assembly_planning.steps import as_run
 from husky_assembly_teleop.shared.bars.layouts import bar_layouts, fake_sensed_markers
 from husky_assembly_teleop.shared.bars.pose import bar_slide_roll
+from husky_assembly_teleop.shared.runs.as_built import reference_of
 from husky_assembly_teleop.world.marker_match import transform_points
 from husky_assembly_teleop.world.scene import PluginScene
 from scaffolding_assembly_core.geometry import Geometry, Pose
@@ -137,7 +141,10 @@ def test_only_markers_near_where_the_bar_should_be_count():
 
 
 def test_a_held_bar_is_looked_for_where_the_live_scene_has_it():
-    """While the process places B20 elsewhere (on a flange), its markers are looked for there, not at its seat."""
+    """While the process places B20 elsewhere (on a flange), its markers are looked for there, not at its seat.
+
+    Its error is still against the design (here its seat: no movement selected), never against the flange.
+    """
     plugin, ctx = bench()
     held = seat(BAR).copy()
     held[:3, 3] += [0.5, 0.0, 0.3]
@@ -150,6 +157,33 @@ def test_a_held_bar_is_looked_for_where_the_live_scene_has_it():
     state = plugin._bars[BAR]
     assert state.fit.ok and state.fit.tracked and len(state.sensed.points) == 8
     np.testing.assert_allclose(state.pose.matrix(), held, atol=1e-6)
+    np.testing.assert_allclose(state.target.matrix(), seat(BAR), atol=1e-9)
+    assert state.deviation.dpos_mm == pytest.approx(np.hypot(500.0, 300.0))
+
+
+def test_a_held_bars_error_is_against_the_pose_the_servo_aims_at():
+    """B20 held at its transfer: the target is the authored flange pose and grasp (`reference_of`), not the FK flange.
+
+    The live scene holds it 8 mm off (the jaws); the mocap bar on the authored pose reads no error.
+    """
+    plugin, ctx = bench()
+    process = purged_process().process
+    action = process.actions["B20_J"]
+    movement = next(each for each in action.movements if each.id == "B20_J_transfer")
+    authored, kind, _held_by, _grasp = reference_of(process, "B20_J", action.movements.index(movement), BAR, "end")
+    assert kind == "held_authored:B20_J_transfer"
+    selection = ctx.plugins["process"].selection
+    ctx.plugins["process"].selection = SimpleNamespace(process=selection.process, ids={BAR: "process/bars/B20"},
+                                                       action=action, movement=movement)
+    flange = np.asarray(authored).copy()
+    flange[:3, 3] += [0.0, 0.0049, 0.0063]
+    ctx.tick_scene.bodies["process/bars/B20"] = Body("process/bars/B20", Geometry((), ()), Pose())
+    ctx.tick_scene.world_poses["process/bars/B20"] = Pose.from_matrix(flange)
+    stream(ctx, transform_points(np.asarray(authored), bar_layouts(process)[BAR].points))
+    plugin.update(ctx)
+    state = plugin._bars[BAR]
+    assert state.fit.ok
+    np.testing.assert_allclose(state.target.matrix(), authored, atol=1e-9)
     assert state.deviation.dpos_mm < 1e-3
 
 
@@ -301,8 +335,43 @@ def test_the_stats_block_has_fixed_rows_and_lists_markers_and_plates():
     assert "source cloud  age 0 ms  fit 8/8  rms " in text and "ambiguous no  dropped 0  occluded 0" in text
     assert text.count("matched") == 8 and "stray sensed 0" in text
     assert text.count("pair 48.") == 4 and text.count(" → ") == 3
-    assert "vs planned  dpos 30." in text and "dz(along) +30." in text
+    assert "vs design  dpos 30." in text and "dz(along) +30." in text
     assert plugin._stats.content.count("—") == 0
+
+
+def test_check_plates_names_a_plate_slid_on_the_bar_and_ignores_a_twist():
+    """Not checked until pressed; then "plates ok", still ok twisted 4°, J20-21 named once slid 3 mm.
+
+    A result stays until the next press.
+    """
+    plugin, ctx = bench()
+    placed(ctx, BAR)
+    layout = bar_layouts(purged_process().process)[BAR]
+    stream(ctx, transform_points(seat(BAR), layout.points))
+    plugin.update(ctx)
+    plugin.draw(ctx)
+    assert "plates not checked" in plugin._status_chip.content
+    plugin._check_plates(ctx)
+    plugin.draw(ctx)
+    assert "plates ok" in plugin._status_chip.content and "MOVED?" not in plugin._stats.content
+
+    def plate(name: str) -> list[int]:
+        return [k for k, each in enumerate(layout.names) if each.startswith(f"joints/{name}_mocap/")]
+
+    points = layout.points.copy()
+    points[plate("J20-22")] = transform_points(bar_slide_roll(0.0, 4.0), points[plate("J20-22")])
+    for points_now, expected in ((points, "plates ok"), (None, "plate J20-21_mocap moved?")):
+        if points_now is None:
+            points[plate("J20-21"), 2] += 0.003
+        ctx.t += FIT_PERIOD
+        stream(ctx, transform_points(seat(BAR), points))
+        plugin.update(ctx)
+        plugin.draw(ctx)
+        assert "plates ok" in plugin._status_chip.content, "the last check stays until the next press"
+        plugin._check_plates(ctx)
+        plugin.draw(ctx)
+        assert expected in plugin._status_chip.content
+    assert [line for line in plugin._stats.content.split("<div>") if "MOVED?" in line][0].startswith("J20-21")
 
 
 def test_measure_and_log_prints_three_mocap_bar_lines_and_log_live_every_five_seconds():
@@ -338,7 +407,7 @@ def test_measure_now_fits_every_bar_afresh_for_the_contract():
     hint = Pose.from_matrix(seat(BAR) @ bar_slide_roll(0.03, 2.0))  # where the fake puts the bar
     found = plugin.measure_now({BAR: hint})
     assert sorted(found) == list(BARS)
-    assert found[BAR].fit.ok and found[BAR].tracked and found[BAR].deviation is None
+    assert found[BAR].fit.ok and found[BAR].tracked and found[BAR].deviation.dpos_mm == pytest.approx(30.0, abs=1.0)
     assert found["bars/B21"].fit.ok and not found["bars/B21"].tracked and found["bars/B21"].source == "cloud"
     assert not found["bars/B34"].fit.ok and found["bars/B34"].pose is None
     record = found[BAR].to_json()
@@ -436,3 +505,33 @@ def test_the_fit_settings_change_the_search_radius_and_timings():
     stream(ctx, bar_markers(BAR))
     plugin.update(ctx)
     assert state.fit.ok and np.isclose(state.next_fit_at, ctx.t + 0.5)
+
+
+def test_a_bar_mounted_by_hand_has_the_target_of_the_transfer_run_before_it():
+    """The transfer run first: the bar is mounted at its end. Run after the mounting, it gives no target yet."""
+    process = purged_process().process
+    action = process.actions["B20_J"]
+    place = next(k for k, movement in enumerate(action.movements) if "place_bar" in movement.id)
+    transfer = next(k for k, movement in enumerate(action.movements) if movement.id.endswith("transfer"))
+    T, kind, held_by, grasp = reference_of(process, "B20_J", place, BAR, "end")
+    assert T is None and kind == "held_no_authored_pose"
+    expected = reference_of(process, "B20_J", transfer, BAR, "end")[0]
+    shown = as_run(process, True).actions["B20_J"]
+    found = mounted_target(action, shown, action.movements[place].id, held_by, grasp)
+    np.testing.assert_allclose(found, expected, atol=1e-9)
+    assert mounted_target(action, action, action.movements[place].id, held_by, grasp) is None, "the authored order"
+
+
+def test_choosing_another_bar_drops_the_plate_check():
+    """Back on the bar the result is gone: it was for a fit that may no longer be."""
+    plugin, ctx = bench()
+    placed(ctx, BAR)
+    layout = bar_layouts(purged_process().process)[BAR]
+    stream(ctx, transform_points(seat(BAR), layout.points))
+    plugin.update(ctx)
+    plugin._check_plates(ctx)
+    assert plugin._checked() is not None
+    others = [bar for bar in plugin._bars if bar != plugin._bar_id]
+    plugin._choose(others[0])
+    plugin._choose(BAR)
+    assert plugin._checked() is None
