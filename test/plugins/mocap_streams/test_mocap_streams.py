@@ -6,11 +6,9 @@ from types import SimpleNamespace
 
 from crl_husky_msgs.msg import MocapRigidBodyPose
 from geometry_msgs.msg import Point
-from planning_fixtures import purged_process
 from plugin_fakes import FakeScene
 from robot_lab import RobotLab
 
-from husky_assembly_teleop.plugins.mocap_bars import MocapBarsPlugin
 from husky_assembly_teleop.plugins.mocap_streams import (ASK_PERIOD, INVALID, MISSING, REFRESH_PERIOD, STALE, STREAMING,
                                                          UNEXPECTED, MocapStreamsPlugin, duration, relay_line,
                                                          state_since, stream_row, stream_state, summary)
@@ -105,14 +103,14 @@ def test_a_dropout_counts_from_its_last_capture_even_when_first_seen_late():
     assert state_since({}, 1020, STALE, NOW + 3.0, NOW) == NOW
 
 
-def test_a_row_reads_stale_for_33_min_with_its_last_markers():
-    """B20 as it was: red, its clock 33 min, no rate and no marker error, its last markers n/N."""
-    body = TrackedObject("fitted_bar/B20", 1020)
+def test_a_row_reads_stale_for_33_min():
+    """A body stopped 33 min ago: red, its clock 33 min, no rate and no marker error."""
+    body = TrackedObject("probe", 1020)
     sample(body, NOW, captured=NOW - DROPOUT, pose_valid=False)
-    row = stream_row(1020, "B20", body, False, {}, NOW, layout_markers=8)
+    row = stream_row(1020, "probe", body, False, {}, NOW)
     assert (row.state, row.level) == (STALE, BAD)
     assert duration(NOW - row.since) == "33 min"
-    assert (row.rate, row.error, row.markers) == (0.0, None, (3, 8))
+    assert (row.rate, row.error) == (0.0, None)
 
 
 def test_a_row_uses_the_mocap_chips_judgement_of_marker_error():
@@ -124,7 +122,7 @@ def test_a_row_uses_the_mocap_chips_judgement_of_marker_error():
     sample(noisy, NOW, marker_error=1.5e-3)
     row = stream_row(1840, "Alice", good, True, {}, NOW)
     assert row.state == STREAMING and row.level == 0 and abs(row.rate - 50.0) <= 1.0
-    assert abs(row.error - 2e-4) < 1e-9 and row.markers is None
+    assert abs(row.error - 2e-4) < 1e-9
     row = stream_row(1850, "Belle", noisy, True, {}, NOW)
     assert row.state == STREAMING and row.level == WARN
 
@@ -180,38 +178,29 @@ class Relay:
         return self.answering
 
 
-def bench(selection=None) -> SimpleNamespace:
-    """The real mocap_bars and mocap_streams on the three fake robots, no process loaded unless given."""
+def bench() -> SimpleNamespace:
+    """mocap_streams on the three fake robots."""
     lab = RobotLab()
     ctx = lab.ctx
     for config in lab.configs:
         lab.robots[config.serial].config.mocap_id = config.mocap_id
-    ctx.plugins["process"] = SimpleNamespace(selection=selection)
     ctx.view.scene = FakeScene()
     relay = ctx.world.mocap_relay = Relay(ctx)
-    bars, streams = MocapBarsPlugin(), MocapStreamsPlugin()
-    bars.setup(ctx)
+    streams = MocapStreamsPlugin()
     streams.setup(ctx)
-    return SimpleNamespace(lab=lab, ctx=ctx, relay=relay, bars=bars, streams=streams)
+    return SimpleNamespace(lab=lab, ctx=ctx, relay=relay, streams=streams)
 
 
 def tick(bench_: SimpleNamespace, seconds: float = REFRESH_PERIOD) -> None:
-    """Let `seconds` pass, then one tick of both plugins, in the monitor's order."""
+    """Let `seconds` pass, then one tick of the plugin."""
     bench_.ctx.t += seconds
     bench_.lab.tick(bench_.ctx.t)
-    bench_.bars.update(bench_.ctx)
     bench_.streams.update(bench_.ctx)
-    bench_.bars.draw(bench_.ctx)
     bench_.streams.draw(bench_.ctx)
 
 
-def loaded() -> SimpleNamespace:
-    """The purged process selected: bars B20, B21, B34, B35 have markers."""
-    return SimpleNamespace(process=purged_process().process, ids=None, movement=None)
-
-
-def test_robots_show_without_a_process_and_the_bars_appear_once_one_is():
-    """The three robots from their config, by name; then the process's bars with their assets and layouts."""
+def test_robots_show_and_a_tracked_object_appears_once_tracked():
+    """The three robots from their config, by name; then a tracked object by its name."""
     run = bench()
     tick(run)
     table = run.streams._table.content
@@ -222,19 +211,19 @@ def test_robots_show_without_a_process_and_the_bars_appear_once_one_is():
     assert "missing: Alice, Belle, Cindy" in run.streams._summary_html
     rows_before = table.count("<tr>")
 
-    run.ctx.plugins["process"].selection = loaded()
+    run.ctx.track_object("probe", 1020)
     tick(run)
     table = run.streams._table.content
-    assert table.count("<tr>") == rows_before + 4
-    assert "B20" in table and "1020" in table and "1035" in table and "—/8" in table
-    assert "0 of 7 expected streaming" in run.streams._summary.content
+    assert table.count("<tr>") == rows_before + 1
+    assert "probe" in table and "1020" in table
+    assert "0 of 4 expected streaming" in run.streams._summary.content
 
 
-def test_a_bar_dropping_out_turns_the_line_red_and_keeps_its_row_and_its_clock():
-    """B20 streams, then stops while the relay republishes: red summary, stale for the time since its last capture."""
-    run = bench(loaded())
+def test_a_body_dropping_out_turns_the_line_red_and_keeps_its_row_and_its_clock():
+    """A tracked probe streams, then stops while the relay republishes: red summary, stale since its last capture."""
+    run = bench()
+    obj = run.ctx.track_object("probe", 1020)
     tick(run)
-    obj = run.ctx.world.tracked_objects["fitted_bar/B20"]
     captured = run.ctx.t + REFRESH_PERIOD
     run.relay.ids = {1020}
     streaming_for(obj, 2.0, captured)
@@ -246,7 +235,7 @@ def test_a_bar_dropping_out_turns_the_line_red_and_keeps_its_row_and_its_clock()
     tick(run, DROPOUT)
     table, line = run.streams._table.content, run.streams._summary.content
     assert table.count("<tr>") == rows
-    assert "stale: B20" in line and f"background:{FAIL}" in line
+    assert "stale: probe" in line and f"background:{FAIL}" in line
     assert ">stale</span>" in table and "33 min" in table
 
 
@@ -267,21 +256,21 @@ def test_an_unexpected_body_gets_its_name_in_motive_below_the_others_and_stays()
 
 
 def test_a_listed_body_that_turns_out_expected_moves_up_to_its_own_row():
-    """An unexpected id a process then expects is one row, the bar's."""
+    """An unexpected id then tracked is one row, the tracked object's."""
     run = bench()
     run.relay.ids = {1020}
     tick(run)
     assert "extra: unknown" in run.streams._summary_html
-    run.ctx.plugins["process"].selection = loaded()
+    run.ctx.track_object("probe", 1020)
     tick(run)
     assert "extra" not in run.streams._summary_html and run.streams._table.content.count(">1020<") == 1
 
 
 def test_it_reads_only_tracks_nothing_of_its_own_and_takes_no_lease():
-    """Every tracked object is mocap_bars'; no lease on any robot, nothing sent, the relay asked at the low rate."""
-    run = bench(loaded())
+    """No tracked object of its own, no lease on any robot, nothing sent, the relay asked at the low rate."""
+    run = bench()
     tick(run)
-    assert sorted(run.ctx.world.tracked_objects) == sorted(f"fitted_bar/{bar}" for bar in ("B20", "B21", "B34", "B35"))
+    assert not run.ctx.world.tracked_objects
     run.relay.asked = 0
     for _ in range(45):
         tick(run, 0.1)
@@ -301,7 +290,7 @@ def test_a_relay_that_does_not_answer_is_said_and_stops_counting_what_it_listed(
     assert "extra:" not in run.streams._summary_html
 
 
-def test_the_summary_is_amber_when_only_bars_are_missing_and_green_when_all_stream():
+def test_the_summary_is_amber_when_only_a_tracked_object_is_missing_and_green_when_all_stream():
     """Missing only needs a look; every expected body live is green; the phone shows the same."""
     run = bench()
     for robot in run.lab.robots.values():
@@ -310,7 +299,7 @@ def test_the_summary_is_amber_when_only_bars_are_missing_and_green_when_all_stre
     assert "3 of 3 expected streaming" in run.streams._summary.content
     assert f"background:{OK}" in run.streams._summary.content
     assert run.streams._summary.content in run.streams._phone.content
-    run.ctx.plugins["process"].selection = loaded()
+    run.ctx.track_object("probe", 1020)
     for robot in run.lab.robots.values():
         streaming_for(robot.base.state, 1.0, run.ctx.t + REFRESH_PERIOD)
     tick(run)
@@ -322,4 +311,4 @@ def test_the_table_has_no_sideways_scroller_and_both_plugins_share_the_mocap_tab
     run = bench()
     tick(run)
     assert "overflow-x" not in run.streams._table.content and "<th>age</th>" not in run.streams._table.content
-    assert MocapBarsPlugin.tab_path == ("Mocap", "Bars") and MocapStreamsPlugin.tab_path == ("Mocap", "Streams")
+    assert MocapStreamsPlugin.tab_path == ("Mocap", "Streams")

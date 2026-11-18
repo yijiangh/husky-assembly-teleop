@@ -27,7 +27,7 @@ from husky_assembly_teleop.plugins.assembly_steps.plugin import AssemblyStepsPlu
 from husky_assembly_teleop.plugins.motion_planner.plugin import MotionPlannerPlugin
 from husky_assembly_teleop.plugins.movement_exec.plugin import MovementExecPlugin
 from husky_assembly_teleop.plugins.process.loading import load_process
-from husky_assembly_teleop.robot_interface.mocap_state import RawMarkers
+from husky_assembly_teleop.robot_interface.mocap_state import MarkerCloud
 from husky_assembly_teleop.shared.assembly_planning.ik import ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
@@ -44,7 +44,7 @@ from scaffolding_assembly_core.ids import robot_id
 #: Wall-clock seconds the chain may take: tamp's transfer search alone may take two minutes.
 WALL_LIMIT = 540.0
 #: The step walked, Cindy, and the name the servo tracks B20's markers under.
-MOVEMENT, SERIAL, TRACKED = "B20_J_transfer", "a200-0806", "servo_B20"
+MOVEMENT, SERIAL = "B20_J_transfer", "a200-0806"
 
 
 def world_error(dy: float, roll_deg: float) -> np.ndarray:
@@ -159,9 +159,8 @@ class Chain(RobotLab):
     def tick(self, t: float) -> None:
         """As the lab's, then the bar's markers into the servo's tracked object."""
         super().tick(t)
-        obj = self.ctx.world.tracked_objects.get(TRACKED)
-        if obj is not None and self.stream is not None:
-            obj.markers, obj.last_update_time = self.stream(t), t
+        if self.stream is not None:
+            self.ctx.world.mocap_relay = SimpleNamespace(state=SimpleNamespace(marker_cloud=self.stream(t)))
 
     def shift(self, delta: tuple) -> None:
         """Measure Cindy's base `delta` metres off."""
@@ -176,12 +175,11 @@ class Chain(RobotLab):
         holder, grasp = plan.holder
         count = len(plan.layout.points)
 
-        def stream(t: float) -> RawMarkers:
+        def stream(t: float) -> MarkerCloud:
             robot = self.ctx.scene.snapshot.robots[robot_id(SERIAL)]
             B_fk = compose(flange_poses(robot, [holder])[holder], grasp).matrix()
-            return RawMarkers(ids=np.arange(1, count + 1), positions=transform_points(E @ B_fk, plan.layout.points),
-                              measured=np.ones(count, dtype=bool), residuals=np.full(count, 5e-4),
-                              sizes=np.full(count, 0.019), capture_time=t)
+            return MarkerCloud(transform_points(E @ B_fk, plan.layout.points), np.full(count, 0.019),
+                               np.full(count, 5e-4), np.arange(1, count + 1), capture_time=t, arrival_time=t)
         self.stream = stream
 
     async def opened(self) -> None:

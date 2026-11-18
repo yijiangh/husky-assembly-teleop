@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Iterable, Mapping
 
 import numpy as np
 
-from ..colors import PLAN, TARGET, rgb01
+from ..colors import BEFORE_STOP, PLAN, TARGET, rgb01
 from .quaternion import quaternion_to_wxyz
 from .visualization import FastViserUrdf, shared_urdf
 
@@ -24,13 +24,16 @@ if TYPE_CHECKING:
     from scaffolding_assembly_core.geometry import Pose
 
 #: Colours (r, g, b, alpha from 0 to 1) shared by the plugins: every target (process movement, arm and base planner)
-#: in the one target blue, where a plan has the robot in the plan green; only the live robots show their true colours.
+#: in the one target blue, where a plan has the robot in the plan green, the pose before a stop in its own colour; only
+#: the live robots show their true colours.
 GOAL_COLOR = rgb01(TARGET, 0.5)         # a goal, e.g. solved at the live base
 TARGET_COLOR = GOAL_COLOR               # where it should go
 BASE_TARGET_COLOR = GOAL_COLOR          # the base planner's target
 PATH_COLOR = rgb01(PLAN, 0.5)           # where the plan has it at the slider time
+BEFORE_STOP_COLOR = rgb01(BEFORE_STOP, 0.5)  # where stop recovery's Go back returns it
 #: Colour per kind; the kind is also the scene subcategory.
-KIND_COLORS = {"target": TARGET_COLOR, "base_target": BASE_TARGET_COLOR, "path": PATH_COLOR, "goal": GOAL_COLOR}
+KIND_COLORS = {"target": TARGET_COLOR, "base_target": BASE_TARGET_COLOR, "path": PATH_COLOR, "goal": GOAL_COLOR,
+               "before_stop": BEFORE_STOP_COLOR}
 
 
 class RecentUse:
@@ -69,7 +72,7 @@ class RobotGhost:
         Args:
             ctx: The owning plugin's context; the ghost lives in its view.
             config: The robot; its model is drawn, tools on their flanges.
-            kind: A key of KIND_COLORS: "target", "base_target", "path" or "goal". Sets the colour.
+            kind: A key of KIND_COLORS: "target", "base_target", "path", "goal" or "before_stop". Sets the colour.
         """
         path = f"{ctx.view.scene_root}/ghosts/{kind}/{config.serial}"
         color = KIND_COLORS[kind]
@@ -120,7 +123,7 @@ def robot_ghosts(ctx: PluginContext, robots: Iterable[RobotConfig], kind: str) -
     Args:
         ctx: The owning plugin's context.
         robots: The robots to build a ghost for.
-        kind: A key of KIND_COLORS: "target", "base_target", "path" or "goal".
+        kind: A key of KIND_COLORS: "target", "base_target", "path", "goal" or "before_stop".
 
     Returns:
         dict[str, RobotGhost]: The ghosts, hidden, by robot serial.

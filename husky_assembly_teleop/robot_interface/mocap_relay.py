@@ -15,16 +15,19 @@ from typing import Callable
 from crl_husky_msgs.srv import GetStreamingMocapIds
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from scaffolding_assembly_core.geometry import Pose
 
 from .connections import RosConnections
+from .marker_cloud import CLOUD_TOPIC, read_cloud
 # * The FRAME_* states are imported from here by the monitor's side.
 from .mocap_definitions import (FRAME_ERROR, FRAME_HELD, FRAME_NONE, FRAME_REFIT_PENDING,  # noqa: F401
                                 FRAME_UNCHECKED, FRAME_UNTRUSTED, UNKNOWN, BodyDefinition, MocapAnchor, MocapCamera,
                                 ScaledPose, read_anchors, read_cameras, read_definitions)
+from .mocap_state import MarkerCloud
 
 #: The relay's latched announcement of the base calibrations it applies (JSON in a String), and its service reloading
 #: one robot's rigid body (by id).
@@ -177,6 +180,7 @@ class MocapRelayState:
             publishes poses in.
         markers_time: ROS time they last arrived, seconds, or None before.
         markers_stamp: When the relay took them, on its clock (as `FloorCalibrationState.time`), seconds, or None.
+        marker_cloud: Every marker the cameras saw in the newest frame the relay sent (`~/markers`), or None before one.
         frame: The floor calibration the relay applies, or None before it announced one.
         fit_now: The deciding fit's motion from the relay's last look (`FrameFit.motion`), or None while it is not
             trusted (`lab_from_raw_now`).
@@ -203,6 +207,7 @@ class MocapRelayState:
     unlabeled_markers: tuple[tuple[float, float, float], ...] = ()
     markers_time: float | None = None
     markers_stamp: float | None = None
+    marker_cloud: MarkerCloud | None = None
     frame: FloorCalibrationState | None = None
     fit_now: ScaledPose | None = None
     refit_now: ScaledPose | None = None
@@ -332,6 +337,8 @@ class MocapRelayInterface:
         self._ros.subscription(String, ANCHORS_TOPIC, self._on_anchors, latched)
         self._ros.subscription(String, MARKERS_TOPIC, self._on_markers, latched)
         self._ros.subscription(String, METRICS_TOPIC, self._on_metrics)
+        # * Newest only: a fit needs the newest frame, never the ones a slow tick missed.
+        self._ros.subscription(PointCloud2, CLOUD_TOPIC, self._on_cloud, newest_only=True)
 
     def _on_calibrations(self, message: String) -> None:
         """Keep the relay's latest announcement."""
@@ -366,6 +373,13 @@ class MocapRelayInterface:
             return
         self.state.unlabeled_markers, self.state.markers_stamp = markers, stamp
         self.state.markers_time = self._now()
+
+    def _on_cloud(self, message: PointCloud2) -> None:
+        """Keep the newest marker cloud; one that does not read is skipped."""
+        try:
+            self.state.marker_cloud = read_cloud(message, self._now())
+        except ValueError:
+            return
 
     def _on_metrics(self, message: String) -> None:
         """Keep the deciding fit, if trusted, the refit in use and the markers' noise from the relay's last look.

@@ -1,24 +1,24 @@
 """
 What Motive streams right now, at a glance: a row per rigid body the monitor expects or the relay lists.
 
-Expected are the robots' bases and every tracked object: `mocap_bars` tracks each bar with markers of the loaded
-process as its Motive asset, so bars appear once a process is. Anything else the relay lists is "extra", added below
-them and kept once seen, so no row ever moves.
+Expected are the robots' bases and every tracked object. Anything else the relay lists is "extra", added below them
+and kept once seen, so no row ever moves: the bars' Motive assets too, as the bars are fitted to the raw markers
+(`mocap_bars`).
 
 - * Read-only: commands nothing, takes no lease, and subscribes to nothing of its own: it reads the bodies the robots
-  and `mocap_bars` keep, so an unexpected row has no numbers.
+  and tracked objects keep, so an unexpected row has no numbers.
 - ! Judge a body by the capture time of its last sample, not by messages arriving: the relay keeps republishing a
   stopped body's last frame, marked invalid, for as long as it runs.
 - Nothing waits on the main thread: the relay's answer lands in its state a few ticks after `ask_streaming_ids`.
 
-Run with:  plugins:="mocap_streams"  (loads `process` and `mocap_bars`)
+Run with:  plugins:="mocap_streams"
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from html import escape
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 import viser
 
@@ -28,16 +28,12 @@ from ..plugin_api.plugin import HuskyPlugin, register
 from ..robot_interface.mocap_definitions import ScaledPose
 from ..robot_interface.mocap_relay import MocapRelayState
 from ..robot_interface.mocap_state import RELAY_SILENT_AFTER, MocapBody
-from ..shared.bars.layouts import bar_layouts
 from ..shared.mocap_bars_contract import MOCAP_TAB
 from ..ui.phone import phone_text
 from ..ui.style import BUSY, LEVEL_COLORS, NONE, block, check_chip, chip, note
 from ..world.checks import BAD, INFO, PENDING, WARN, Check
 from ..world.mocap import mean_marker_error, mocap_check, valid_sample_rate
 from ..world.mocap_frame import volume_moved
-
-if TYPE_CHECKING:
-    from ..shared.process_contract import ProcessContract
 
 #: The rows' states, each a chip's text, short so the table fits the panel.
 STREAMING, STALE, INVALID, MISSING, UNEXPECTED = "live", "stale", "invalid", "missing", "extra"
@@ -48,7 +44,7 @@ ASK_PERIOD = 2.0
 ANSWER_MAX_AGE = 3 * ASK_PERIOD
 #: How old the relay's last look at Motive's frame may be, seconds; it looks every 2 s by default.
 LOOK_MAX_AGE = 3 * ASK_PERIOD
-#: Chip colour of a row not streaming: a bar not yet in the rig is only amber, one that stopped red.
+#: Chip colour of a row not streaming: one that never streamed is only amber, one that stopped red.
 STATE_LEVELS = {STALE: BAD, INVALID: BAD, MISSING: WARN, UNEXPECTED: INFO}
 #: Hover text of a chip whose state says more than `mocap_check` does.
 STATE_DETAILS = {STALE: "no new sample captured: the asset stopped, Motive stopped, or clocks out of sync",
@@ -61,10 +57,10 @@ TABLE_STYLE = ('<style>.streams {border-collapse:collapse; font:11px/1.3 ui-mono
                'white-space:nowrap} .streams th {font-weight:400; color:gray} .streams th, .streams td '
                '{padding:0 5px 0 0; text-align:right} .streams .left {text-align:left} .streams .name '
                '{max-width:5em; overflow:hidden; text-overflow:ellipsis}</style>')
-#: The table's columns: rigid body id, what it is, state, valid samples per second, mean marker error in mm, measured
-#: markers of those in the layout, how long in this state.
+#: The table's columns: rigid body id, what it is, state, valid samples per second, mean marker error in mm, how long
+#: in this state.
 COLUMNS = ('<th class="left">id</th><th class="left">what</th><th class="left">state</th><th>Hz</th>'
-           '<th>mm</th><th>n/N</th><th>for</th>')
+           '<th>mm</th><th>for</th>')
 
 
 @dataclass(frozen=True)
@@ -73,7 +69,7 @@ class StreamRow:
 
     Attributes:
         mocap_id: Its id in Motive.
-        name: What it is, e.g. "Alice", "B20".
+        name: What it is, e.g. "Alice", "probe".
         expected: Whether the monitor expects it.
         state: One of the states above.
         level: Its chip's colour (`world.checks`).
@@ -81,7 +77,6 @@ class StreamRow:
         since: ROS time it entered `state`, seconds.
         rate: Valid samples per second reaching the monitor, Hz; None when nothing here subscribes to it.
         error: Mean marker error over the last second, metres, or None without a valid sample in it.
-        markers: (measured now, in the layout) for a bar, measured None without a sample; None for anything else.
     """
 
     mocap_id: int
@@ -93,7 +88,6 @@ class StreamRow:
     since: float
     rate: float | None = None
     error: float | None = None
-    markers: tuple[int | None, int] | None = None
 
 
 def capture_time(body: MocapBody) -> float | None:
@@ -143,7 +137,7 @@ def state_since(clocks: dict[int, tuple[str, float]], mocap_id: int, state: str,
 
 
 def stream_row(mocap_id: int, name: str, body: MocapBody | None, listed: bool, clocks: dict[int, tuple[str, float]],
-               now: float, layout_markers: int | None = None) -> StreamRow:
+               now: float) -> StreamRow:
     """One row from what is known of a rigid body now, judged as the health panel judges it.
 
     Args:
@@ -153,7 +147,6 @@ def stream_row(mocap_id: int, name: str, body: MocapBody | None, listed: bool, c
         listed: Whether the relay's last answer says it streams.
         clocks: As `state_since`.
         now: Current ROS time, seconds.
-        layout_markers: How many markers its layout has, for a bar.
     """
     state = stream_state(body, listed, now)
     if body is None:
@@ -162,17 +155,15 @@ def stream_row(mocap_id: int, name: str, body: MocapBody | None, listed: bool, c
         return StreamRow(mocap_id, name, False, state, level, detail, state_since(clocks, mocap_id, state, None, now))
     check = mocap_check(name, mocap_id, body, now)
     captured = capture_time(body)
-    measured = int(body.markers.measured.sum()) if body.markers is not None else None
     return StreamRow(mocap_id, name, True, state,
                      check.level if state == STREAMING else STATE_LEVELS[state],
                      STATE_DETAILS.get(state, check.detail),
                      state_since(clocks, mocap_id, state, captured, now),
-                     valid_sample_rate(body, now), mean_marker_error(body, now),
-                     None if layout_markers is None else (measured, layout_markers))
+                     valid_sample_rate(body, now), mean_marker_error(body, now))
 
 
 def summary(rows: list[StreamRow]) -> tuple[int, str, str]:
-    """The table in short: the worst expected level, "9 of 12 expected streaming", and "missing: B25, B34" or ""."""
+    """The table in short: the worst expected level, "2 of 3 expected streaming", and "missing: Belle" or ""."""
     expected = [row for row in rows if row.expected]
     streaming = sum(row.state == STREAMING for row in expected)
     parts = []
@@ -226,13 +217,12 @@ def table(rows: list[StreamRow], now: float) -> str:
 
     lines = []
     for row in rows:
-        marked = "—" if row.markers is None else f"{shown(row.markers[0])}/{row.markers[1]}"
         lines.append(
             f'<tr><td class="left">{row.mocap_id}</td><td class="left name">{escape(row.name)}</td>'
             f'<td class="left">{check_chip(Check(row.state, row.level, row.detail))}</td>'
             f'<td>{shown(row.rate, "{:.0f}".format)}</td>'
             f'<td>{shown(row.error, lambda error: f"{error * 1e3:.2f}")}</td>'
-            f'<td>{marked}</td><td>{duration(now - row.since)}</td></tr>')
+            f'<td>{duration(now - row.since)}</td></tr>')
     return block(f'{TABLE_STYLE}<table class="streams"><tr>{COLUMNS}</tr>{"".join(lines)}</table>')
 
 
@@ -243,21 +233,17 @@ class MocapStreamsPlugin(HuskyPlugin):
     name = "mocap_streams"
     tab_path = (MOCAP_TAB, "Streams")
     icon = viser.Icon.ANTENNA_BARS_5
-    requires = ("process", "mocap_bars")
 
     def __init__(self):
         """Start with no rows; the first tick makes them."""
         self._clocks: dict[int, tuple[str, float]] = {}
         #: The ids the relay listed that nothing expected, ever: their rows stay, so the rows above never move.
         self._seen: set[int] = set()
-        #: Bar name ("B20") -> how many markers its layout has, and the process they were read from.
-        self._layout_markers: dict[str, int] = {}
-        self._layouts_of = None
         self._asked_at = self._refreshed_at = float("-inf")
         self._summary_html = self._relay_html = self._table_html = ""
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build its tab, beside `mocap_bars`'s, and the phone's tab.
+        """Build its tab and the phone's tab.
 
         Args:
             ctx: This plugin's context.
@@ -286,19 +272,12 @@ class MocapStreamsPlugin(HuskyPlugin):
             self._refresh(ctx, relay.state if relay is not None else MocapRelayState(), now)
 
     def _refresh(self, ctx: PluginContext, relay: MocapRelayState, now: float) -> None:
-        """Rebuild the rows and their HTML from the bodies the robots and `mocap_bars` keep, and the relay's answer."""
-        process: ProcessContract = ctx.require("process")
-        selection = process.selection
-        loaded = selection.process if selection is not None else None
-        if loaded is not self._layouts_of:
-            self._layouts_of = loaded
-            layouts = bar_layouts(loaded) if loaded is not None else {}
-            self._layout_markers = {bar.rsplit("/", 1)[-1]: len(layout.points) for bar, layout in layouts.items()}
+        """Rebuild the rows and their HTML from the robots' and tracked objects' bodies, and the relay's answer."""
         listed = relay.streaming_ids if relay_answers(relay, now) else frozenset()
         bodies = self._expected_bodies(ctx)
         self._seen |= listed - bodies.keys()
         self._seen -= bodies.keys()
-        rows = [stream_row(mocap_id, name, body, mocap_id in listed, self._clocks, now, self._layout_markers.get(name))
+        rows = [stream_row(mocap_id, name, body, mocap_id in listed, self._clocks, now)
                 for mocap_id, (name, body) in bodies.items()]
         for mocap_id in sorted(self._seen):
             definition = relay.body_definitions.get(mocap_id)
@@ -318,7 +297,6 @@ class MocapStreamsPlugin(HuskyPlugin):
             if robot.config.mocap_id is not None:
                 bodies.setdefault(robot.config.mocap_id, (robot_name(serial), robot.base.state))
         for name, obj in ctx.world.tracked_objects.items():
-            # * "fitted_bar/B20" -> "B20".
             bodies.setdefault(obj.mocap_id, (name.rsplit("/", 1)[-1], obj))
         return bodies
 

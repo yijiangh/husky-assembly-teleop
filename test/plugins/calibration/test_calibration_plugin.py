@@ -1452,8 +1452,8 @@ def test_each_step_needs_only_the_setup_boxes_it_uses(server, tmp_path, monkeypa
     assert "Cameras calibrated" in punch.need_expired(ctx, setup)  # * its takes are measured with mocap
 
 
-def test_choosing_another_take_or_waypoint_in_sweeps_shows_the_ghost_again(server, tmp_path, monkeypatch):
-    """The ghost hidden by another plugin's: picking a waypoint in Sweeps counts as use and shows it there."""
+def test_picking_another_waypoint_in_sweeps_shows_the_ghost_again(server, tmp_path, monkeypatch):
+    """The ghost hidden by another plugin's: picking a waypoint of the previewed take (take 1) shows it again."""
     plugin, ctx, ghost = make_plugin(server, tmp_path, monkeypatch)
     plugin.panel.show(ctx, 2)
     plugin.draw(ctx)

@@ -12,7 +12,8 @@ start, a folder `~/.ros/assembly_observer/<YYYYMMDD>/<stamp>_session/`:
   announcement), after the start: a session is real until a simulated base, arm or relay is heard, then sim for
   good: its folder gets "_sim" (`<stamp>_session_sim/`) and experiment.json says "environment": "sim".
 - chunk_001.npz, chunk_002.npz, ...: every continuous value each tick (`columns.py`) for CHUNK_SECONDS each, or
-  until the tracked objects change; compressed, values float32; read one with `load_recording` (pass the file).
+  until the tracked objects or the mocap bars change (each fitted bar is mocap_bars' scene body, `names.BAR_BODY`);
+  compressed, values float32; read one with `load_recording` (pass the file).
   Each opens with a "state" event per robot, the relay and the objects: every state then.
 - events.jsonl: one JSON line per event (`watch.py`): every switching state (leases, stops, controllers, modes, motor
   states, tracking), commands sent, motions with their cause, streams lost, clearance trips, force sensor zeroing,
@@ -52,10 +53,10 @@ from ...shared.recordings.runs import load_description, run_folder, write_descri
 from ...shared.runs.runs import commits
 from ...ui.css import side_by_side_css
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_SENSOR, block, chip, chip_line, section, values
-from .columns import monitor_signals, object_signals, relay_signals, robot_signals
+from .columns import body_signals, monitor_signals, object_signals, relay_signals, robot_signals
 from . import export
 from .export import DAY_FORMAT, KEPT_DAYS, NOW, RECORDING_FOLDER, days, prune, size, wall_time
-from .names import FORMAT, LOG, LOG_LINES_LOST, OBSERVER_ERROR, SESSION_END, SESSION_START
+from .names import BAR_BODY, FORMAT, LOG, LOG_LINES_LOST, OBSERVER_ERROR, SESSION_END, SESSION_START
 from .watch import FILE_KEY, Watcher
 
 #: Where the sessions are recorded (tests point it elsewhere).
@@ -105,6 +106,8 @@ class AssemblyObserverPlugin(HuskyPlugin):
         self._look_error = ""
         self._commands = 0
         self._objects: tuple[str, ...] = ()
+        #: The mocap bars' scene bodies the chunk has columns for.
+        self._bar_bodies: tuple[str, ...] = ()
         self._simulated = False
         self._pruned: date | None = None
         #: Log lines from the writer thread, logged at the next tick: (line, whether a warning).
@@ -179,8 +182,9 @@ class AssemblyObserverPlugin(HuskyPlugin):
         if not self._simulated and simulating(ctx.world.robots, getattr(ctx.world, "mocap_relay", None)):
             self._now_simulated(ctx)
         self._queue(ctx, self._look(ctx) + self._log_lines(ctx))
-        # * A new chunk also when the tracked objects change: a chunk's columns are fixed.
-        if ctx.now() - self._chunk_started >= CHUNK_SECONDS or tuple(ctx.world.tracked_objects) != self._objects:
+        # * A new chunk also when the tracked objects or the mocap bars change: a chunk's columns are fixed.
+        if ctx.now() - self._chunk_started >= CHUNK_SECONDS or tuple(ctx.world.tracked_objects) != self._objects \
+                or _bar_bodies(ctx) != self._bar_bodies:
             self._end_chunk(ctx)
             self._start_chunk(ctx)
 
@@ -267,8 +271,9 @@ class AssemblyObserverPlugin(HuskyPlugin):
             self._pruned = date.today()
             self._write(self._prune)
             self._write(self._measure)
-        self._objects = tuple(ctx.world.tracked_objects)
+        self._objects, self._bar_bodies = tuple(ctx.world.tracked_objects), _bar_bodies(ctx)
         objects = object_signals({name: ctx.world.tracked_objects[name] for name in self._objects})
+        objects += body_signals(lambda: ctx.scene.snapshot, self._bar_bodies)
         try:
             self._trace = ctx.trace(*self._signals, *objects, max_samples=self._rows)
         except ValueError as error:
@@ -533,6 +538,11 @@ class AssemblyObserverPlugin(HuskyPlugin):
         error = future.exception()
         if error is not None:
             self._write_error = f"a write failed: {error!r}"
+
+
+def _bar_bodies(ctx: PluginContext) -> tuple[str, ...]:
+    """The mocap_bars plugin's scene bodies (BAR_BODY + "B20"), sorted; none while it is not loaded."""
+    return tuple(sorted(body_id for body_id in ctx.scene.snapshot.bodies if body_id.startswith(BAR_BODY)))
 
 
 def simulating(robots: dict, relay) -> bool:

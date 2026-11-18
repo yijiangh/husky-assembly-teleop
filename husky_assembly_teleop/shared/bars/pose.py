@@ -1,6 +1,9 @@
 """
 A bar's pose as a 4x4 matrix: its deviation from the design, the servo's correction, its start and ends.
 
+`bar_gap` is how far a measured bar sits from where it should be (its start, middle and end, its turn and tilt) and
+`gap_color` how bad a gap is: the one place the as-built report, the Bars arrows and the frame check get both from.
+
 ! The process puts a bar's frame at its MIDDLE; the old monitor put it at the bar START. `bar_start` gives the old
   origin, where the servo's stop test and records are evaluated.
 """
@@ -12,6 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from ...colors import FAIL, NONE, OK, WARN
 from ...world.marker_match import transform_points
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 
@@ -101,6 +105,72 @@ def bar_ends(T: np.ndarray, length: float) -> np.ndarray:
     """
     half = length / 2.0
     return transform_points(T, np.array([[0.0, 0.0, -half], [0.0, 0.0, half]]))
+
+
+# * ================================================================ how far a bar sits from where it should be
+
+#: A gap within OK_MM is fine (green), within WARN_MM close (amber), beyond it off (red), mm; WARN_MM is also the
+#: as-built report's placement scale.
+OK_MM = 2.0
+WARN_MM = 5.0
+#: Where along a bar its gaps are measured: `BarGap`'s rows.
+GAP_PLACES = ("start", "middle", "end")
+
+
+@dataclass(frozen=True)
+class BarGap:
+    """How far a measured bar sits from where it should be: at its start, middle and end, and how it is turned.
+
+    Attributes:
+        design: (3, 3) the start, middle and end of the bar where it should be, world, metres.
+        measured: (3, 3) the same points of the measured bar.
+        deviation: `pose_deviation(measured, design)`: the turn about each designed axis, the tilt.
+    """
+
+    design: np.ndarray
+    measured: np.ndarray
+    deviation: PoseDeviation
+
+    @property
+    def gaps_mm(self) -> np.ndarray:
+        """(3, 3) measured minus design at the start, middle and end, world axes, mm."""
+        return (self.measured - self.design) * 1e3
+
+    @property
+    def distances_mm(self) -> np.ndarray:
+        """(3,) how far apart the start, middle and end are, mm."""
+        return np.linalg.norm(self.gaps_mm, axis=1)
+
+    @property
+    def worst_mm(self) -> float:
+        """The largest of the three, mm: always an end's (the middle's gap is their mean)."""
+        return float(self.distances_mm.max())
+
+    @property
+    def tilt_deg(self) -> float:
+        """Angle between the measured and the designed centre line, degrees."""
+        return self.deviation.tilt_deg
+
+
+def bar_gap(T_meas: np.ndarray, T_design: np.ndarray, length: float) -> BarGap:
+    """How far a measured bar sits from where it should be.
+
+    Args:
+        T_meas: 4x4 measured bar pose (origin at the middle, z along the bar).
+        T_design: 4x4 pose it should have.
+        length: Bar length, metres.
+    """
+    half = length / 2.0
+    places = np.array([[0.0, 0.0, -half], [0.0, 0.0, 0.0], [0.0, 0.0, half]])
+    return BarGap(transform_points(T_design, places), transform_points(T_meas, places),
+                  pose_deviation(T_meas, T_design))
+
+
+def gap_color(gap_mm: float | None) -> str:
+    """The colour of a gap: OK, WARN or FAIL by its size (OK_MM, WARN_MM); NONE without one."""
+    if gap_mm is None:
+        return NONE
+    return OK if gap_mm <= OK_MM else WARN if gap_mm <= WARN_MM else FAIL
 
 
 def bar_slide_roll(slide_m: float, roll_deg: float) -> np.ndarray:

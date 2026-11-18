@@ -48,7 +48,7 @@ def as_built_record(ctx: PluginContext, bars_plugin: MocapBarsContract, loaded: 
 
     Args:
         ctx: The plugin's context (the clock, the snapshot).
-        bars_plugin: The mocap_bars plugin: its `measure_now` fits every tracked bar from its newest sample.
+        bars_plugin: The mocap_bars plugin: its `measure_now` fits every bar from the newest marker cloud.
         loaded: The loaded process.
         view: The run, for its folder, settings and the other robots' saved ends.
         action_id: The action, or None.
@@ -152,12 +152,10 @@ def as_built_record(ctx: PluginContext, bars_plugin: MocapBarsContract, loaded: 
                                             "id": action.id, "type": action.type,
                                             "kind": ACTION_KIND.get(action.type), "bar": action.bar,
                                             "bar_id": action.bar.rsplit("/", 1)[-1], "robot": action.robot},
-        step=step, instrumented_bars=[{"bar": bar, "bar_id": bar.rsplit("/", 1)[-1], "mocap_id": found.mocap_id}
-                                      for bar, found in measurements.items()]
-        + [{"bar": bar, "bar_id": bar.rsplit("/", 1)[-1], "mocap_id": None}
-           for bar in layouts if bar not in measurements],
+        step=step, instrumented_bars=[{"bar": bar, "bar_id": bar.rsplit("/", 1)[-1]} for bar in layouts],
         bars=bars, robot_state=robot_state, tool0=tool0, load=load, servo=run.servo if run is not None else None,
-        options=_options(request, run, view, dry_run), robots=robots, settings=asdict(view.settings))
+        options={**_options(request, run, view, dry_run), "mocap_fit": getattr(bars_plugin, "fit_settings", None)},
+        robots=robots, settings=asdict(view.settings))
 
 
 def _process_name(process, serial: str) -> str:

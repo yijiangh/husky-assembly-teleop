@@ -30,6 +30,7 @@ class FakeMocapBars:
         """Fits B20 of `loaded`; `fail` makes `measure_now` raise."""
         self.layout, self.fail, self.hints = bar_layouts(loaded.process)[BAR], fail, []
         self.fits: dict[str, BarMeasurement] = {}
+        self.fit_settings = {"search_radius_mm": 50.0, "max_marker_age_s": 0.5}
 
     def measure_now(self, hints=None):
         """One measurement of B20 around its hint (its seat when none)."""
@@ -40,7 +41,7 @@ class FakeMocapBars:
         T = hint.matrix() if hint is not None else np.eye(4)
         sensed = fake_sensed_markers(T, self.layout.points, noise_m=0.0)
         fit = fit_bar(sensed, self.layout)
-        found = BarMeasurement(BAR, 1020, self.layout, fit, Pose.from_matrix(fit.T_world_from_bar), sensed, "fake",
+        found = BarMeasurement(BAR, self.layout, fit, Pose.from_matrix(fit.T_world_from_bar), sensed, "fake",
                                10.0, False, None, None)
         self.fits = {BAR: found}
         return dict(self.fits)
@@ -82,7 +83,7 @@ def test_a_motion_records_its_start_and_its_end():
     assert bar["deviation_vs_reference"]["dpos_mm"] == pytest.approx(30.0, abs=0.5)
     assert bar["deviation_vs_reference"]["dang_deg"] == pytest.approx(2.0, abs=0.1)
     assert bar["deviation_vs_assembled"] == bar["deviation_vs_reference"]
-    assert start["instrumented_bars"][0] == {"bar": BAR, "bar_id": "B20", "mocap_id": 1020}
+    assert start["instrumented_bars"][0] == {"bar": BAR, "bar_id": "B20"}
     assert [entry["bar_id"] for entry in start["instrumented_bars"]] == ["B20", "B21", "B34", "B35"]
     # The hint handed to the fit is the seat (the reference), so a fit takes the quick match.
     np.testing.assert_allclose(bars.hints[0][BAR].matrix(), lab.loaded.process.bodies[BAR].assembly_pose.matrix())
@@ -96,6 +97,8 @@ def test_a_motion_records_its_start_and_its_end():
     cindy = end["robots"]["robots/a200-0806"]
     assert cindy["name"] == "cindy" and cindy["source"] == "live"
     assert end["options"]["dry_run"] is False and end["options"]["transfer_as_free"]["applies"] is False
+    # * The fit settings the bars were measured with.
+    assert end["options"]["mocap_fit"] == {"search_radius_mm": 50.0, "max_marker_age_s": 0.5}
     assert end["settings"]["servo_by_bar"] is True
     lines = [line for line in lab.ctx.lines("info") if line.startswith("[as-built] B20_R_home")]
     assert lines[0].startswith("[as-built] B20_R_home start: B20 fit ok 8/8, rms 0.0 mm | vs assembled dpos 30.0 mm")

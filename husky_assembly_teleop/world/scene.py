@@ -132,8 +132,12 @@ class PluginScene:
         """Scene: The copy taken at the start of this tick. Hand this to worker threads."""
         return self._snapshot()
 
-    def put(self, body: Body) -> None:
-        """Add a body, or replace yours with the same id.
+    def put(self, body: Body, drawn_only: bool = False) -> None:
+        """Add a body, or replace yours with the same id; one without collision shapes is warned about once.
+
+        Args:
+            body: The body.
+            drawn_only: It has no collision shapes on purpose (a measurement shown to people): no warning.
 
         Raises:
             ValueError: If the id doesn't start with "<plugin name>/", or is invalid; or the body is attached to
@@ -147,7 +151,7 @@ class PluginScene:
             raise ValueError(f"{body.id!r}: attached to {body.placement.parent!r}, "
                              f"which is neither 'robots/<serial>' nor 'tracked/<name>'")
         self._scene.put(body)
-        if not body.geometry.collision and body.id not in self._warned:
+        if not body.geometry.collision and not drawn_only and body.id not in self._warned:
             self._warned.add(body.id)
             self._log_warn(f"{body.id!r} has no collision meshes: it is drawn but never collides")
 

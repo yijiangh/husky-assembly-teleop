@@ -122,8 +122,10 @@ PROCESS = "process"
 LOADED = re.compile(r"loaded (/.+?) in \d")
 #: The tick loop's warning of a late tick (`plugin_api/concurrency.py`).
 LATE_TICK = re.compile(r"tick \d+ started [\d.]+ ms late")
-#: A tracked object named so is a process bar: "fitted_bar_B20" is "bars/B20" (`plugins/mocap_bars.py`).
-BAR_OBJECT, BAR_PREFIX = "fitted_bar_", "bars/"
+#: The mocap_bars plugin's scene bodies, each a bar where its raw markers put it: "mocap_bars/B20" is "bars/B20"
+#: (`plugins/mocap_bars.py`); recorded as objects named BAR_OBJECT + "B20". ! Older sessions' "fitted_bar_B20" objects
+#: are Motive's bar assets, whose frames sit anywhere on the bar: never drawn as bars.
+BAR_BODY, BAR_OBJECT, BAR_PREFIX = "mocap_bars/", "mocap_bars_", "bars/"
 #: An assembly run's event (`shared/runs/runs.py`) shown next to the observer's as RUN + its event, "run exec".
 RUN = "run "
 RUN_EXEC, RUN_SERVO, RUN_PLAN, RUN_MARK_DONE, RUN_CANCEL, RUN_SOFT_STOP = (

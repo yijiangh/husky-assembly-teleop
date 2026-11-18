@@ -32,7 +32,7 @@ from ...shared.execution.basis import STALE_BASE
 from ...shared.execution.moving import moving_reason
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import INTERRUPTED, motion_command
-from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HANDOFF_PART, HOLD_NOT_SENT,
+from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HAND_KINDS, HANDOFF_PART, HOLD_NOT_SENT,
                                               INSERT_PART, MAX_TRAJ_TIME, MOTION_KINDS, MOTION_PART, REFUSED,
                                               REFUSED_PART, RETREAT_PART, SERVO_INDEX, SERVO_PART, WITH_MOTION_PART,
                                               Carried, ExecRequest, ExecResult, serial_of)
@@ -42,7 +42,7 @@ from ...shared.runs.finished import EXEC_EVENT, FORGET_EVENT, finished_moves
 from .as_built import as_built_record
 from .panel import ExecPanel
 from .plots import ExecPlots
-from .sequences import Job, PartRun, run_part, unknown_serials
+from .sequences import InsertEnd, Job, PartRun, run_part, unknown_serials
 from .servo_part import run_servo
 
 if TYPE_CHECKING:
@@ -102,6 +102,8 @@ class MovementExecPlugin(HuskyPlugin):
         #: last reading, or how the last one ended, until the next request.
         self._carried: Carried | None = None
         self._servo_line = ""
+        #: The last insert run to its end: a ground bar's servo after it may come in a request of its own.
+        self._inserted: InsertEnd | None = None
         #: Action id -> the loaded process and run folder, and the (step primary, movement index) finished for real
         #: there (`finished`): a new run or another process starts with what the run's log holds (`_replay`).
         self._finished_moves: dict[str, tuple[object, object, set[tuple[int, int]]]] = {}
@@ -153,6 +155,9 @@ class MovementExecPlugin(HuskyPlugin):
             # * Only into a run that exists: a record would otherwise start a new one.
             run.request_record(FORGET_EVENT, action=action,
                                data={"done": None if done is None else sorted([int(p), int(i)] for p, i in done)})
+        if self._inserted is not None and self._inserted.action == action and (
+                done is None or (self._inserted.primary, self._inserted.index) in done):
+            self._inserted = None  # * its insert is to do again: no servo after it until it ran again
         kept = self._finished_moves.get(action)
         if kept is None:
             return
@@ -169,14 +174,17 @@ class MovementExecPlugin(HuskyPlugin):
         ctx = self._ctx
         future = asyncio.get_running_loop().create_future()
         refusal = self._refusal(ctx, request)
-        if not refusal and (moving := moving_reason(ctx.world, ctx.now(),
-                                                    unknown=unknown_serials(ctx.world, request))):
+        # * Parts by hand send nothing: other robots need not stand still for them.
+        sends = any(part.kind not in HAND_KINDS for part in request.parts)
+        if not refusal and sends and (moving := moving_reason(ctx.world, ctx.now(),
+                                                              unknown=unknown_serials(ctx.world, request))):
             refusal = f"busy: {moving}"
         if not refusal:
             try:
                 # * Every robot's lease, for the whole request (prompts and parts done by hand included): its sends
                 #   need it, and no other plugin moves any robot meanwhile (one motion at a time).
-                lease = ctx.take_lease(ctx.world.robots, f"exec {request.label}")
+                # * Only the acting robot moves: a robot parked in Health stays parked.
+                lease = ctx.take_lease(ctx.world.robots, f"exec {request.label}", moves=[request.serial])
             except NotLeased as refused:
                 refusal = f"busy: {refused}"
         if refusal:
@@ -191,7 +199,7 @@ class MovementExecPlugin(HuskyPlugin):
                       self._moved_at, lambda line: setattr(self, "_servo_line", line),
                       measured=self._plots.servo_reading if self._plots is not None else (lambda _reading: None),
                       status=self._plots.status if self._plots is not None else (lambda _text, _color: None),
-                      ft_zero=self._ft_zero)
+                      ft_zero=self._ft_zero, inserted=lambda: self._inserted)
             self._job, self._active, self._cancel_reason = job, f"{request.robot_name} · {request.label}", ""
             self._last, self._last_failed, self._hold_lost = "", False, False
             ctx.log_info(f"Exec {request.label} on {job.who}: {', '.join(part.movement for part in request.parts)}"
@@ -370,6 +378,8 @@ class MovementExecPlugin(HuskyPlugin):
                         # * The moment before anything moves; every later start is the end of the part before.
                         self._as_built(job, run, "start")
                         first = False
+                    if part.kind == INSERT_PART:
+                        self._inserted = None  # * however this insert ends, an older one's end no longer holds
                     if part.routine in TRANSFERS and part.kind in (MOTION_PART, SERVO_PART):
                         self._carried = None  # the transfer runs anew: its servo sets the carry again when due
                     if self._plots is not None and part.kind == SERVO_PART:
@@ -394,6 +404,12 @@ class MovementExecPlugin(HuskyPlugin):
                     if run.end is not None:
                         end, base = run.end, run.base
                         self._moved_at[request.serial] = ctx.now()
+                    if part.kind == INSERT_PART and run.result == DONE and request.route is not None \
+                            and request.route_movement == request.step.primary:
+                        trajectory = request.route.result.trajectory
+                        self._inserted = InsertEnd(request.loaded, request.action, request.step.primary, part.index,
+                                                   request.serial, tuple(trajectory.joint_names),
+                                                   tuple(float(value) for value in trajectory.positions[-1]))
                     if run.result == DONE:
                         done.extend((part.index, *part.also))
                         if part.kind in MOTION_KINDS:

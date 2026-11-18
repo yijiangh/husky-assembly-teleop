@@ -7,9 +7,13 @@ Users type `ctx.require("base_planner")` with it: `planner: BasePlannerContract 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .planner.plan import PlannerContract
+
+if TYPE_CHECKING:
+    from ..plugin_api.context import PluginContext
+    from ..world.checks import Check
 
 
 @dataclass(frozen=True)
@@ -37,5 +41,11 @@ class BasePlanRequest:
     experiment: str = "default"
 
 
-#: What `ctx.require("base_planner")` offers.
-BasePlannerContract = PlannerContract[BasePlanRequest]
+class BasePlannerContract(PlannerContract[BasePlanRequest], Protocol):
+    """What `ctx.require("base_planner")` offers: the generic planner, and how a robot's last commit ran."""
+
+    def run_check(self, ctx: PluginContext, serial: str) -> Check | None:
+        """The run chip of `serial`'s last commit: how it ended, else how the follower does; None before a commit.
+
+        An ended run's detail says why it ended (e.g. the follower refused the path), cut to a hover's length.
+        """

@@ -13,8 +13,10 @@ The console gets the old monitor's lines: the pass banner with what it aims at, 
 and load lines, and one `### SERVOING ...` line saying how it ended; the panel line and the Exec plots chip say which
 phase the pass is in.
 
+The bar is fitted to the relay's raw markers near the FK bar (`fit_in_cloud`), never to its Motive asset.
+
 ! Main thread, inside the plugin's task. A cancel during a move leaves every arm held (`send_motion`); `run_servo`'s
-  `finally` still untracks the bar and writes the record, then the cancel goes on.
+  `finally` still writes the record, then the cancel goes on.
 """
 
 from __future__ import annotations
@@ -51,8 +53,7 @@ from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, 
                                               REFUSED, SERVO_TARGET, Carried)
 from ...shared.planner.planner_search import WAIT_MARGIN
 from ...world.freeze import WorldMoved
-from ...shared.bars.layouts import bar_asset_id, bar_layouts, fit_bar
-from ...world.marker_match import sensed_from_raw
+from ...shared.bars.layouts import bar_layouts, fit_in_cloud
 from .sequences import Job, PartRun, confirmed, live_command_of, others_basis, others_moving, world_problem
 from ...ui.style import BUSY, FAIL, OK
 from .servo_measure import (GIVE_UP, SIDE, TOOL0_SERVO, aim_text, end_line, ik_record, insert_end_problem, line,
@@ -62,15 +63,15 @@ if TYPE_CHECKING:
     from scaffolding_assembly_core.robot import RobotObject
 
     from ...shared.assembly_planning.route_result import RouteResult
+    from ...robot_interface.mocap_state import MarkerCloud
     from ...shared.motion_planner_contract import MotionPlannerContract
-    from ...world.measured import TrackedObject
 
 #: Seconds a pass's plan may take before the sampling search: the straight-line try, its IK and the scene.
 #: ? A generous guess, never measured.
 BEFORE_SEARCH = 60.0
 #: Seconds a pass's plan may take: that, tamp's held search once, and the planner queue's margin.
 PLAN_TIME = BEFORE_SEARCH + HELD["max_time"] + WAIT_MARGIN
-#: Seconds to wait for the bar's first marker sample once it is tracked.
+#: Seconds to wait for the relay's first marker cloud.
 FIRST_SAMPLE = 1.0
 NOT_LIVE = "is not live (base tracked and fresh within 1 s, joints within 0.5 s)"
 
@@ -123,7 +124,7 @@ async def run_servo(job: Job, run: PartRun) -> None:
 
 
 class ServoLoop:
-    """One servo's state across its passes: the targets, the readings and the moves, the bar tracked.
+    """One servo's state across its passes: the targets, the readings and the moves.
 
     Attributes:
         targets: Flange id -> the pose the next pass aims at: authored, or bar-corrected once `engaged`.
@@ -144,8 +145,6 @@ class ServoLoop:
         self.passes = 0
         self.force0: dict[str, np.ndarray] | None = None
         self.start_base = None
-        self.tracked: TrackedObject | None = None
-        self.name = f"servo_{plan.bar.rsplit('/', 1)[-1]}" if plan.bar else ""
         #: The wrenches at reading 0 (the load line's reference), the last reading's panel line, the phase shown.
         self.wrench0: dict | None = None
         self.line = ""
@@ -158,11 +157,11 @@ class ServoLoop:
         self.job.show(f"{text} · {self.line}" if self.line else text)
 
     async def run(self) -> None:
-        """Track the bar, read once, then up to MAX_PASSES passes; ends through `run.ended`."""
+        """Wait for the markers, read once, then up to MAX_PASSES passes; ends through `run.ended`."""
         job, run, plan = self.job, self.part, self.plan
         if plan.layout is not None and plan.holder is not None:
             self.phase_is("reading 0: waiting for the bar's markers")
-        await self._track()
+        await self._wait_for_markers()
         robot = self._live()
         if robot is None:
             run.ended(REFUSED, "refused", f"{job.who} {NOT_LIVE}")
@@ -190,10 +189,10 @@ class ServoLoop:
     async def _bar_prompt(self, bar: dict | None) -> bool:
         """Ask in a warning window before aiming tool0 when "Servo by bar" applies but reading 0 has no usable fit."""
         plan = self.plan
-        short, mocap_id = plan.bar.rsplit("/", 1)[-1], bar_asset_id(plan.bar)
-        why = bar["reason"] if bar is not None else "the bar is not tracked"
+        short = plan.bar.rsplit("/", 1)[-1]
+        why = bar["reason"] if bar is not None else "the bar is not measured"
         self.phase_is("waiting for Confirm (servo by bar)", FAIL)
-        text = (f"{plan.target} — SERVO by bar: no usable mocap fit of {short} (asset {mocap_id}): {why}. "
+        text = (f"{plan.target} — SERVO by bar: no usable mocap fit of {short}: {why}. "
                 f"{TOOL0_SERVO} (Confirm): servo tool0 onto the authored targets of {SERVO_TARGET[plan.kind]} instead "
                 f"(the bar is only recorded; the loop steers on it if a fit comes later). {GIVE_UP} (Cancel): stops, "
                 f"recording.")
@@ -393,10 +392,11 @@ class ServoLoop:
         plan, ctx = self.plan, self.ctx
         holder, grasp = plan.holder
         fit = source = None
-        if self.tracked is not None and self.tracked.markers is not None:
-            sensed = sensed_from_raw(self.tracked.markers, ctx.now())
-            # The fit is matched around the FK bar first.
-            fit = fit_bar(sensed, plan.layout, max_age=MARKER_MAX_AGE, hint=compose(flanges[holder], grasp).matrix())
+        cloud = self._cloud()
+        if cloud is not None:
+            # * Looked for, and matched first, around the FK bar.
+            sensed, fit = fit_in_cloud(cloud, plan.layout, compose(flanges[holder], grasp).matrix(), ctx.now(),
+                                       max_age=MARKER_MAX_AGE)
             source = sensed.source
         bar = bar_reading(plan, flanges, fit, source, plan.design_bar)
         ctx.log_info(f"[servo {k}] bar {bar['bar']}: mocap-vs-design {deviation_text(bar['mocap_vs_design'])}, "
@@ -417,29 +417,26 @@ class ServoLoop:
 
     # --- --- --- --- --- THE BAR'S MARKERS, AND THE END --- --- --- --- ---
 
-    async def _track(self) -> None:
-        """Track the bar's own Motive asset and wait up to FIRST_SAMPLE for its first markers."""
+    def _cloud(self) -> MarkerCloud | None:
+        """The relay's newest marker cloud, or None without a relay or before one."""
+        relay = getattr(self.ctx.world, "mocap_relay", None)
+        return relay.state.marker_cloud if relay is not None else None
+
+    async def _wait_for_markers(self) -> None:
+        """Wait up to FIRST_SAMPLE for the relay's first marker cloud, when the bar is measured."""
         plan, ctx = self.plan, self.ctx
         if plan.layout is None or plan.holder is None:
             return
-        mocap_id = bar_asset_id(plan.bar)
-        if mocap_id is None:
-            ctx.log_warn(f"[servo] {plan.bar} has no Motive asset id: the bar is not measured")
-            return
-        ctx.untrack_object(self.name)  # a run that crashed may have left it
-        self.tracked = ctx.track_object(self.name, mocap_id, label=f"servo {plan.bar} markers ({mocap_id})")
         until = ctx.now() + FIRST_SAMPLE
-        while self.tracked.markers is None and ctx.now() < until:
+        while self._cloud() is None and ctx.now() < until:
             await ctx.sleep(0.1)
-        if self.tracked.markers is None:
-            ctx.log_warn(f"[servo] no marker sample of {plan.bar} (asset {mocap_id}) within {FIRST_SAMPLE:.0f} s: is "
-                         f"Motive streaming it?")
+        if self._cloud() is None:
+            ctx.log_warn(f"[servo] no marker cloud from the relay within {FIRST_SAMPLE:.0f} s: {plan.bar} is not "
+                         f"measured (is the relay new enough to send ~/markers?)")
 
     def close(self) -> None:
-        """Untrack the bar, say where it ended, carry the correction, and record the run."""
+        """Say where the bar ended, carry the correction, and record the run."""
         job, run, plan, ctx = self.job, self.part, self.plan, self.ctx
-        if self.tracked is not None:
-            ctx.untrack_object(self.name)
         last = next((reading["bar"] for reading in reversed(self.readings) if reading.get("bar") is not None), None)
         if last is not None:
             ctx.log_info(f"### bar pose at termination ({last['bar']}): FK-vs-design "

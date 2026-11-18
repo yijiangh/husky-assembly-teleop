@@ -3,8 +3,9 @@ What the observer records every tick: continuous values only.
 
 A state that switches (a flag, a mode, a controller, a motor state) is an event instead (`watch.py`).
 
-Signal names start with the robot's short serial ("0806_base_pose", "0806_ur_arm_joints"), a tracked object's with
-"object_" ("object_B20_pose"), so everything fits one trace. Every value is the newest at the tick: one row per tick.
+Signal names start with the robot's short serial ("0806_base_pose", "0806_ur_arm_joints"), a tracked object's or
+a recorded scene body's with "object_" ("object_B20_pose", "object_mocap_bars_B20_pose"): everything fits one trace.
+Every value is the newest at the tick: one row per tick.
 The names and channels the viewer reads are in `names.py`.
 
 ! A tick signal that raises fails the observer's tick: every read here goes through `_safe`.
@@ -26,6 +27,8 @@ from .names import (BASE_MOCAP, BASE_POSE, BASE_STREAMS, BATTERY, FOLLOWER, FOLL
                     TARGET, TCP, TOOL, TWIST_SENT, WRENCH, WRENCH_PEAK, object_key, signal)
 
 if TYPE_CHECKING:
+    from scaffolding_assembly_core.scene import Scene
+
     from ...robot_interface.arm import ArmInterface
     from ...robot_interface.mocap_relay import MocapRelayInterface
     from ...robot_interface.mocap_state import MocapBody
@@ -111,6 +114,27 @@ def object_signals(objects: Mapping[str, MocapBody]) -> list[Signal]:
                            POSE, POSE_UNITS),
                     Signal(signal(key, OBJECT_MOCAP), _safe(lambda body=body: _noise(body)), NOISE, NOISE_UNITS)]
     return signals
+
+
+def body_signals(snapshot: Callable[[], Scene], ids: tuple[str, ...]) -> list[Signal]:
+    """Each scene body's world pose while it is shown (enabled), named "object_<id>_pose"; unknown otherwise.
+
+    * From the tick's snapshot, taken before the plugins run: a body moved this tick is recorded at the next.
+
+    Args:
+        snapshot: The tick's scene copy.
+        ids: The bodies, e.g. the mocap_bars plugin's fitted bars.
+    """
+    def pose(body_id: str) -> tuple | None:
+        scene = snapshot()
+        body = scene.bodies.get(body_id)
+        if body is None or not body.enabled or body_id not in scene.world_poses:
+            return None
+        placed = scene.world_poses[body_id]
+        return (*placed.position, *placed.orientation)
+
+    return [Signal(signal(object_key(body_id), OBJECT_POSE), _safe(lambda body_id=body_id: pose(body_id)), POSE,
+                   POSE_UNITS) for body_id in ids]
 
 
 def relay_signals(relay: MocapRelayInterface | None, now: Callable[[], float]) -> list[Signal]:

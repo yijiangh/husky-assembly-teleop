@@ -6,11 +6,14 @@ A warning window that floats beside the main panel and asks the operator to deci
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Mapping
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Iterator, Mapping
 
 from .visualization import MAIN_PANEL_WIDTH
 
 if TYPE_CHECKING:
+    import viser
+
     from .visualization import PluginView
 
 #: Where it floats: past the main panel, away from the side panel's buttons, so a double click cannot land on it.
@@ -27,23 +30,33 @@ class Popup:
         buttons: The window's buttons by label.
     """
 
-    def __init__(self, view: PluginView, title: str, icon: str, buttons: Mapping[str, tuple[int, int, int] | None]):
+    def __init__(self, view: PluginView, title: str, icon: str,
+                 buttons: Mapping[str, tuple[int, int, int] | None] | None = None):
         """Make the window, hidden.
 
         Args:
             view: The plugin's view.
             title: The window's title.
             icon: Its icon.
-            buttons: Each button's colour (None for the theme's) by label, top to bottom.
+            buttons: Each button's colour (None for the theme's) by label, top to bottom; none for a window whose
+                widgets all come from `body`.
         """
-        self._panel = view.panel()
-        with self._panel.add_tab(title, icon):
+        self._panel, self._gui = view.panel(), view.gui
+        self._tab = self._panel.add_tab(title, icon)
+        buttons = buttons or {}
+        with self._tab:
             self.buttons = {label: view.gui.add_button(label, color=color, disabled=False)
                             for label, color in buttons.items()}
             self._text = view.gui.add_html("")
         self._panel.float(x=POPUP_X, y=POPUP_Y, width=POPUP_WIDTH)
         self._open = False
         self.close()
+
+    @contextmanager
+    def body(self) -> Iterator[viser.GuiApi]:
+        """Add widgets of the plugin's own to the window, below its buttons and text."""
+        with self._tab:
+            yield self._gui
 
     @property
     def is_open(self) -> bool:

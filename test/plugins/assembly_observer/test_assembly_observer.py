@@ -390,6 +390,35 @@ def test_a_new_tracked_object_starts_a_chunk_with_its_columns(tmp_path):
                      ("object mocap tracking", "back")]
 
 
+def test_a_fitted_mocap_bar_is_recorded_from_the_scene_while_shown(tmp_path):
+    """mocap_bars' body "mocap_bars/B20" appearing starts a chunk with its pose; hidden (no fresh fit) is unknown."""
+    from scaffolding_assembly_core.geometry import Geometry
+    from scaffolding_assembly_core.scene import Body, Scene
+    lab, plugin = lab_on_drive(tmp_path), AssemblyObserverPlugin()
+    plugin.setup(lab.ctx)
+    run(lab, plugin, 0.3)
+    fitted = Pose((1.0, 2.0, 0.5), (0.0, 0.0, 0.0, 1.0))
+    bar = Body("mocap_bars/B20", Geometry((), ()), fitted)
+
+    step = lab.ctx.step
+
+    def with_bar(t: float) -> None:
+        """The lab's snapshot of each tick, the bar in it."""
+        step(t)
+        lab.ctx.scene.snapshot = Scene(bodies={bar.id: bar}, world_poses={bar.id: fitted},
+                                       robots=lab.ctx.scene.snapshot.robots)
+    lab.ctx.step = with_bar
+    run(lab, plugin, 0.3)
+    bar.enabled = False
+    run(lab, plugin, 0.2)
+    plugin.teardown(lab.ctx)
+
+    assert "object_mocap_bars_B20_pose" not in load_recording(plugin._folder / "chunk_001.npz")
+    poses = load_recording(plugin._folder / "chunk_002.npz")["object_mocap_bars_B20_pose"]
+    assert poses[0].tolist() == pytest.approx([1.0, 2.0, 0.5, 0.0, 0.0, 0.0, 1.0])
+    assert np.isnan(poses[-1]).all()
+
+
 def test_switching_states_are_events_not_columns(tmp_path):
     """A controller switch and the follower's state are told as events; no column holds a flag or a mode."""
     lab, plugin = lab_on_drive(tmp_path), AssemblyObserverPlugin()

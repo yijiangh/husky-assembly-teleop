@@ -228,6 +228,11 @@ cameras. It passes over a file without cameras. The probe in turn reads from the
 anchors), `~/frame` (the frame in use, shown as chips) and the services behind **Use refit** and **Apply floor
 calibration**.
 
+- **Marker cloud**: every frame's markers the cameras saw, labeled to an asset or not (Motive's fill-ins left out),
+  go out on `/mocap_relay/markers` (`sensor_msgs/PointCloud2`: x, y, z, size, residual, NatNet id; in the lab frame,
+  stamped with the capture time; `markers_rate_hz`, 20 by default, the newest frame once). `mocap_bars` and the servo
+  fit the bars to it, never to Motive's bar assets. Markers of no asset need "Unlabeled Markers" on in Motive's
+  streaming settings; the relay logs the first cloud's size.
 - **Anchors**: Motive streams them as unlabeled markers (model 0, "Unlabeled Markers" on in its streaming settings),
   with no name. Every `definitions_period_sec` (a look) the relay takes each unlabeled marker's mean over the frames
   since (one frame's noise would tilt the fit by up to 1.6 mm in the lab) and publishes them all on

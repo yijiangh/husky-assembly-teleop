@@ -30,6 +30,10 @@ its base calibration (`world/calibration_sessions.py`).
   (`world/mocap_frame.py`); a robot's base calibration goes on top.
 - `~/unlabeled_markers`, `~/anchors` (latched, every `definitions_period_sec`): Motive's unlabeled markers, each
   averaged since the last look, and among them the floor calibration's anchors, found where it saw them.
+- `~/markers` (`markers_rate_hz`, the newest frame once): every marker the cameras saw in it, of any asset or none, in
+  the lab frame (`robot_interface/marker_cloud.py`); Motive's fill-ins left out. Bars are fitted to it, never to
+  their assets: Motive mixes up bars that look alike. Unlabeled ones need "Unlabeled Markers" on in Motive's
+  streaming settings.
 - Following Motive's frame (`world/frame_follower.py`, which also decides what is logged): every look fits the anchors
   and the truss cameras against the floor calibration's; `~/frame` announces the state, and only `~/use_refit` takes a
   pending refit into lab_from_raw, in memory only. `~/frame_metrics` carries both fits every look, with the look's
@@ -65,6 +69,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from rcl_interfaces.msg import SetParametersResult
+from sensor_msgs.msg import PointCloud2
 from std_srvs.srv import Trigger
 
 from crl_husky import config_resolver
@@ -72,6 +77,7 @@ from crl_husky.sim.husky_sim import TRUTH_PREFIX
 from crl_husky.simulated_parts import fleet_domain_problem
 from scaffolding_assembly_core.geometry import Pose
 from ..drive import drive_root
+from ..robot_interface.marker_cloud import cloud_message
 from ..robot_interface.mocap_definitions import (MATCHES, OUT_OF_DATE, UNKNOWN, BodyDefinition, MocapAnchor,
                                                  MocapCamera, anchors_json, camera_changes, cameras_json,
                                                  definition_check, definitions_json, match, read_cameras,
@@ -109,9 +115,11 @@ MAX_PLAUSIBLE_LATENCY_SEC = 0.5
 LAB_FRAME, RAW_FRAME = "lab", "mocap_raw"
 #: The relay's announcements: the last one reaches every subscriber, also one that comes later.
 LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-#: NatNet labeled marker flags: hidden from the cameras, position measured by the cameras, and on no asset.
+#: NatNet labeled marker flags: hidden from the cameras, position measured by the cameras, placed by its asset's model,
+#: and on no asset.
 MARKER_OCCLUDED = 0x01
 MARKER_POINT_CLOUD_SOLVED = 0x02
+MARKER_MODEL_SOLVED = 0x04
 MARKER_UNLABELED = 0x10
 
 Vec3 = Tuple[float, float, float]
@@ -242,6 +250,8 @@ class MocapRelay(Node):
         self.declare_parameter("client_ip", "192.168.0.7")
         self.declare_parameter("server_ip", "192.168.0.117")
         self.declare_parameter("publish_rate_hz", 50.0)
+        # * How often the newest frame's marker cloud goes out (`~/markers`); 0 never.
+        self.declare_parameter("markers_rate_hz", 20.0)
         self.declare_parameter("topic_prefix", "/mocap/rigid_body")
         self.declare_parameter("streaming_stale_timeout_sec", 1.0)
         self.declare_parameter("marker_error_valid_threshold", 1.0)
@@ -316,6 +326,11 @@ class MocapRelay(Node):
         # * Its own group: a look can take half a second, longer than a robot may go without a pose.
         self._publish_timer = self.create_timer(1.0 / self.publish_rate_hz, self._publish_cached_poses,
                                                 callback_group=MutuallyExclusiveCallbackGroup())
+        markers_rate = float(self.get_parameter("markers_rate_hz").value)
+        if markers_rate > 0:
+            # * Its own group too: the cloud never holds a pose back.
+            self._cloud_timer = self.create_timer(1.0 / markers_rate, self._publish_cloud,
+                                                  callback_group=MutuallyExclusiveCallbackGroup())
         if self.simulated:
             inputs = ", ".join(f"{prefix}/id_<n>/pose" for prefix in SIM_SOURCES)
             self.get_logger().info(wrap(f"sim:=true: reading only simulated inputs ({inputs}) as they appear, never "
@@ -422,6 +437,15 @@ class MocapRelay(Node):
         # (raw; the NatNet thread adds under its lock).
         self._loose_sums: Dict[int, List[float]] = {}
         self._loose_lock = threading.Lock()
+        # Every visible marker of the frame being received and the frame_id it is in, then of the newest complete
+        # frame with its capture time in ns, replaced whole under `_samples_lock`; and the one last published, so each
+        # goes out once.
+        # ! `_pending_cloud` is written and taken on NatNet's thread only, in frame order, as `_pending_samples`.
+        self._pending_cloud: Optional[Tuple[Tuple[np.ndarray, ...], str]] = None
+        self._cloud: Optional[Tuple[Tuple[Tuple[np.ndarray, ...], str], int]] = None
+        self._published_cloud: Optional[tuple] = None
+        self._logged_cloud = False
+        self._cloud_publisher = self.create_publisher(PointCloud2, "~/markers", 10)
         # Where each look's metrics sample is kept (executor only), or None.
         self._frame_log: Optional[FrameLog] = None
 
@@ -729,10 +753,13 @@ class MocapRelay(Node):
     def _commit_frame(self, capture_time_ns: int, now_mono: float) -> None:
         """Make the held bodies the latest samples, stamped with their frame's capture time."""
         pending, self._pending_samples = self._pending_samples, {}
+        cloud, self._pending_cloud = self._pending_cloud, None
         with self._samples_lock:
             for rb_id, sample in pending.items():
                 self._samples[rb_id] = dataclasses.replace(
                     sample, capture_time_ns=capture_time_ns, received_mono_sec=now_mono)
+            if cloud is not None:
+                self._cloud = (cloud, capture_time_ns)
 
     def _capture_time_ns(self, data_dict) -> int:
         """Mid-exposure time of a frame on this PC's wall clock, in ns.
@@ -871,6 +898,7 @@ class MocapRelay(Node):
         ! Take unlabeled markers by their flag too, keyed by the whole id: once Motive's unlabeled ids pass 65535 they
         spill into the model id half of NatNet's id.
         """
+        self._pending_cloud = self._seen_markers(labeled_marker_from_model_id)
         with self._loose_lock:
             for model_id, markers in labeled_marker_from_model_id.items():
                 for marker_id, marker in markers.items():
@@ -895,6 +923,42 @@ class MocapRelay(Node):
                        and not marker["param"] & MARKER_OCCLUDED)
                 for member_id, marker in sorted(markers.items()) if not marker["param"] & MARKER_UNLABELED)
             self._pending_samples[int(rigid_body_id)] = dataclasses.replace(sample, markers=converted)
+
+    def _seen_markers(self, labeled_marker_from_model_id) -> Tuple[Tuple[np.ndarray, ...], str]:
+        """The frame's markers the cameras saw, in the lab frame: ((positions, sizes, residuals, NatNet ids), frame_id).
+
+        Occluded markers and those only an asset's model placed are left out: they are Motive's guesses.
+        """
+        seen = [(int(model_id) << 16 | int(marker_id), marker)
+                for model_id, markers in labeled_marker_from_model_id.items() for marker_id, marker in markers.items()
+                if not marker["param"] & MARKER_OCCLUDED
+                and (marker["param"] & MARKER_POINT_CLOUD_SOLVED or not marker["param"] & MARKER_MODEL_SOLVED)]
+        positions = np.array([marker["pos"] for _, marker in seen], dtype=float).reshape(-1, 3)
+        # * Y-up to Z-up, (x, y, z) -> (x, -z, y), then the lab frame, all markers at once.
+        positions = np.column_stack([positions[:, 0], -positions[:, 2], positions[:, 1]])
+        lab_from_raw = self._lab_from_raw
+        if lab_from_raw is not None:
+            positions = positions @ lab_from_raw[0].T + lab_from_raw[1]
+        # * NatNet's client hands the size as a 1-tuple (struct.unpack).
+        return ((positions, np.array([float(np.ravel(marker.get("size", 0.0))[0]) for _, marker in seen]),
+                 np.array([float(marker["error"]) for _, marker in seen]),
+                 np.array([marker_id for marker_id, _ in seen], dtype=np.uint32)),
+                LAB_FRAME if lab_from_raw is not None else RAW_FRAME)
+
+    def _publish_cloud(self) -> None:
+        """Publish the newest frame's markers, once per frame."""
+        with self._samples_lock:
+            cloud = self._cloud
+        if cloud is None or cloud is self._published_cloud:
+            return
+        self._published_cloud = cloud
+        ((positions, sizes, residuals, ids), frame_id), capture_time_ns = cloud
+        if not self._logged_cloud:
+            self._logged_cloud = True
+            self.get_logger().info(wrap(
+                f"marker cloud on ~/markers: {len(ids)} markers in the first frame (markers of no asset only with "
+                f"'Unlabeled Markers' on in Motive's streaming settings)"))
+        self._cloud_publisher.publish(cloud_message(positions, sizes, residuals, ids, capture_time_ns, frame_id))
 
     # --- --- --- --- --- BODY DEFINITIONS AND CAMERAS --- --- --- --- ---
 
