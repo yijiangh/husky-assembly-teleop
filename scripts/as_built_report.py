@@ -21,6 +21,7 @@ from pathlib import Path
 
 from husky_assembly_teleop.drive import drive_root
 from husky_assembly_teleop.experiments.as_built.accuracy_page import build_report
+from husky_assembly_teleop.experiments.as_built.relabel import parse_assets
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,13 +32,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--process", help="the process folder (default: <drive>/data_design_study/<problem>)")
     parser.add_argument("--drive", help="the Drive root (default: HUSKY_DRIVE_ROOT)")
     parser.add_argument("--out", help="output .html (default: <day>-asbuilt-result/accuracy_<day>.html on the drive)")
+    parser.add_argument("--asset", action="append", metavar="BAR=ASSET",
+                        help="read the balls streamed as Motive asset ASSET as bar BAR (a mistyped asset id, "
+                             "e.g. B25=1039); repeatable")
     parser.add_argument("--open", action="store_true", help="open the page in the browser")
     args = parser.parse_args(argv)
     root = drive_root(args.drive)
     if root is None:
         parser.error("no Drive root: set HUSKY_DRIVE_ROOT or pass --drive")
     out = build_report(root, args.day, args.problem, Path(args.process) if args.process else None,
-                       Path(args.out) if args.out else None)
+                       Path(args.out) if args.out else None, parse_assets(args.asset))
     print(f"[assembly] wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
     if args.open:
         webbrowser.open(out.resolve().as_uri())

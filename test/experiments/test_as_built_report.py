@@ -41,14 +41,15 @@ def ends_at(x_mm: float) -> list[list[float]]:
 
 
 def test_step_changes_compare_records_of_one_action_and_number_the_tries():
-    """An insert's start to end, the wait before it, a second try; a run's first and a pair with no number are out."""
+    """An insert's start to end, the wait before it, a second try; a run's first, no number, loading spot are out."""
     action = {"action_id": "B20_J", "bar_id": "B20", "records": [
-        shaped("10:00:00", 0, "end", "transfer_free", [bar("B20", 0.2)], "transfer"),
-        shaped("10:01:00", 60, "start", "insert", [bar("B20", 0.3)], "insert"),
-        shaped("10:01:10", 70, "end", "insert", [bar("B20", 0.8)], "insert"),
-        shaped("10:02:00", 120, "end", "insert", [bar("B20", 0.1)], "insert", part="servo"),
-        shaped("11:00:00", 3600, "start", "insert", [bar("B20", 0.5)], "insert", run="r2"),
-        shaped("11:00:10", 3610, "end", "insert", [bar("B20", 0.7)], "insert", run="r2"),
+        shaped("09:59:00", -60, "start", "transfer_free", [bar("B20", 4000.0, seat=4000.0)], "transfer"),
+        shaped("10:00:00", 0, "end", "transfer_free", [bar("B20", 0.2, seat=30.0)], "transfer"),
+        shaped("10:01:00", 60, "start", "insert", [bar("B20", 0.3, seat=30.0)], "insert"),
+        shaped("10:01:10", 70, "end", "insert", [bar("B20", 0.8, seat=0.8)], "insert"),
+        shaped("10:02:00", 120, "end", "insert", [bar("B20", 0.1, seat=0.1)], "insert", part="servo"),
+        shaped("11:00:00", 3600, "start", "insert", [bar("B20", 0.5, seat=30.0)], "insert", run="r2"),
+        shaped("11:00:10", 3610, "end", "insert", [bar("B20", 0.7, seat=0.7)], "insert", run="r2"),
         shaped("11:00:20", 3620, "manual", None, [bar("B20", None)], "insert", None, run="r2"),
     ]}
     rows = step_changes([action])
