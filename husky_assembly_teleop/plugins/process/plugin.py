@@ -559,6 +559,10 @@ class ProcessPlugin(HuskyPlugin):
             self.at_target = True
         self._stale = True
 
+    def request_show(self, at_target: bool) -> None:
+        """Draw the selected movement at its target or its start (`ProcessContract.request_show`)."""
+        self._set_at_target(at_target)
+
     def select(self, index: int) -> None:
         """Select a movement by index into `_movements`, clamped; ignored before a process is loaded."""
         if not self._movements:

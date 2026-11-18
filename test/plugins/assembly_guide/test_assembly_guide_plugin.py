@@ -57,7 +57,12 @@ class Process:
         """Select `movement`."""
         self.authored, self.shown = loaded.process, as_run(loaded.process, True)
         self.movements = list(self.authored.movements())
+        self.at_target = False
         self.request_select(next(index for index, (_a, m) in enumerate(self.movements) if m.id == movement))
+
+    def request_show(self, at_target: bool) -> None:
+        """Draw at the target or the start."""
+        self.at_target = at_target
 
     def request_select(self, index: int) -> None:
         """Select the authored movement `index`, shown as the panel shows it."""
@@ -445,6 +450,30 @@ def test_zero_force_on_placing_the_bar_asks_first_then_zeroes_every_arm(monkeypa
         await lab.ticks(10)
         assert all(len(arm._zero_ft.calls) == 1 for arm in arms)
         assert lab.ctx.world.robots[CINDY].lease_slot.lease is None, "the lease is given back"
+
+    asyncio.run(walk())
+
+
+def test_the_process_draws_a_part_going_to_a_goal_at_its_target_every_other_at_its_start(monkeypatch):
+    """The drive at its start; the transfer, and the servo after the bar placed by hand, at the target."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await lab.ticks()
+        assert lab.guide.part.kind == DRIVE and not lab.process.at_target
+        await to_the_bar_by_hand(lab)
+        assert not lab.process.at_target, "a part by hand at its start"
+        lab.process.at_target = True  # * the operator's Show › Target stays while the part shows
+        await lab.ticks()
+        assert lab.process.at_target
+        lab.process.at_target = False
+        lab.guide.kinds[HAND].tick_all()
+        lab.guide.done(lab.ctx)
+        await lab.ticks(15)
+        assert lab.label == "B20_J_transfer: servo" and lab.process.at_target, "the guide asked for the target"
+        lab.process.at_target = False  # * the operator's Show › Start: selecting the same part again keeps it
+        lab.guide._select(lab.ctx, lab.guide.part)
+        assert not lab.process.at_target
 
     asyncio.run(walk())
 

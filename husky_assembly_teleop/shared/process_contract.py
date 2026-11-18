@@ -173,3 +173,9 @@ class ProcessContract(Protocol):
         Replaces the carry given before; a new process starts without one. A carry for the selected movement turns
         the panel to its target, so the goal found shows at once. ! Main thread only.
         """
+
+    def request_show(self, at_target: bool) -> None:
+        """Draw the selected movement, and every one selected later, at its target or at its start.
+
+        The drawing only, as the panel's Show buttons do; the operator can change it again. ! Main thread only.
+        """

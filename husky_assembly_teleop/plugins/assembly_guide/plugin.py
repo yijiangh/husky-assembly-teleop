@@ -120,6 +120,8 @@ GOD_PAUSE = 0.3
 #: Back, Next and Redo from here: Back and Next as narrow arrows (`step_buttons_css`).
 REDO = "Redo from here"
 NAV_STYLE = f"<style>{step_buttons_css(44)}</style>"
+#: The parts the process panel draws at their movement's target (where the arms go); every other at its start.
+SHOWN_AT_TARGET = frozenset((MOVE, SERVO, INSERT, RETREAT))
 #: Seconds a stow's end may take to show in the snapshot.
 STOW_SETTLE = 2.0
 #: What Prepare says for each kind that moves a robot.
@@ -191,6 +193,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._built: tuple | None = None
         self._followed: tuple[str, str] | None = None
         self._asked: tuple[str, str, float] | None = None
+        #: The part the process was last asked to draw at its start or target.
+        self._show_asked_for: GuidePart | None = None
         #: The run folder the guide's own judgements belong to, and each action's mark as last seen.
         self._run_folder = None
         self._marks: dict[str, str] = {}
@@ -583,8 +587,14 @@ class AssemblyGuidePlugin(HuskyPlugin):
 
         Once it shows there, the guide follows the selection again.
 
+        Also draws it at its target for a part that moves the arms to a goal (SHOWN_AT_TARGET), else at its start, once
+        per part: the operator's Show stays until the next part.
+
         ! The run's current step is what the executor checks a plan against: set it before planning the part.
         """
+        if part is not self._show_asked_for:
+            self._show_asked_for = part
+            self._process(ctx).request_show(part.kind in SHOWN_AT_TARGET)
         selection, run = self._process(ctx).selection, self._run(ctx)
         current = run.view.current
         if (selection is not None and (selection.action.id, selection.movement.id) == (part.action, part.movement)

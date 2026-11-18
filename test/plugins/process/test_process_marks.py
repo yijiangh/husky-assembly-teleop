@@ -106,3 +106,14 @@ def test_the_carry_is_drawn_on_its_live_base_and_turns_its_movement_to_its_targe
     plugin.at_target, plugin._stale = False, True
     plugin.draw(ctx)
     assert plugin._drawing.states[-1] is authored, "at its start the carry does not show"
+
+
+def test_request_show_draws_the_selected_movement_at_its_target_or_start(tmp_path):
+    """As the Show buttons: the drawing is made again at the target, and back at the start."""
+    plugin, ctx = _set_up(tmp_path)
+    plugin.draw(ctx)
+    plugin.request_show(True)
+    assert plugin.at_target and plugin._stale
+    plugin.draw(ctx)
+    plugin.request_show(False)
+    assert not plugin.at_target and plugin._stale
