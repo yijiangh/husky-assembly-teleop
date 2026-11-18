@@ -22,6 +22,7 @@ needed to run the new monitor.
 | [fake_lab_short_manual.md](lab/fake_lab_short_manual.md) | The fake-lab test, short: the plain commands on a laptop in its own domain, a scratch Drive, what differs from the lab. |
 | [lab_tools_test_manual.md](lab/lab_tools_test_manual.md) | The operator's tools (the tool0 jog, the live plots, the relay's base offset, Check tool0, Rhino bar lines, the Exec plots, the compliant parts and more), tested in simulation and on a robot. |
 | [simulation_manual.md](lab/simulation_manual.md) | Simulated robots and mocap: one robot, several, realistic mocap, base experiments, every argument, what is not simulated. |
+| [bar_check_manual.md](lab/bar_check_manual.md) | Measuring the joints on built bars by hand with `scripts/bar_check.py`: what to measure, the bar list, which joint to nudge, the log in the process folder. |
 | [phone_manual.md](lab/phone_manual.md) | The phone page: connecting a phone, what each tab is for, what to do after a stop, troubleshooting. |
 | [mocap_relay.md](lab/mocap_relay.md) | The mocap relay: topics, calibrations, the lab frame and how it follows Motive's frame, rigid bodies in Motive, launch arguments, simulated inputs, what changed from the old monitor's direct NatNet. |
 | [ur_frames.md](lab/ur_frames.md) | The UR arm frames our URDFs must keep, the pendant's TCP at tool0, what the health `tcp` and `URDF` chips mean and how to fix them. |
