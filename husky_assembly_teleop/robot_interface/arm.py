@@ -6,6 +6,7 @@ Each command checks the running controller and its inputs itself before sending.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -14,6 +15,8 @@ import numpy as np
 from builtin_interfaces.msg import Duration
 from crl_husky_msgs.msg import ArmStatus
 from geometry_msgs.msg import PoseStamped, WrenchStamped
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from scipy.spatial.transform import Rotation
@@ -93,6 +96,10 @@ TARGET_WRENCH_FRAME = "tool0"
 #: Largest target force (N) and torque (N m) `send_target_wrench` sends.
 MAX_TARGET_FORCE = 50.0
 MAX_TARGET_TORQUE = 5.0
+#: The compliance controller's translational stiffness parameters, N/m, along tool0's x, y and z.
+STIFFNESS_PARAMETERS = ("stiffness.trans_x", "stiffness.trans_y", "stiffness.trans_z")
+#: Stiffness `request_stiffness` sends, N/m, at least and at most.
+STIFFNESS_LIMITS = (50.0, 5000.0)
 #: Shortest time `hold` takes to brake to a standstill, seconds; faster joints brake longer, at
 #: TRAJECTORY_MAX_JOINT_ACCELERATION.
 HOLD_DURATION = 0.2
@@ -384,6 +391,22 @@ def cartesian_target_refusal(position: np.ndarray, orientation: np.ndarray,
     return None
 
 
+def stiffness_values(answer: Any) -> list[float] | None:
+    """The stiffness values of `ArmInterface.request_stiffness_values`'s answer, or None unless all are numbers."""
+    values = getattr(answer, "values", None)
+    if not values or len(values) != len(STIFFNESS_PARAMETERS):
+        return None
+    numbers = [value.double_value if value.type == ParameterType.PARAMETER_DOUBLE else
+               value.integer_value if value.type == ParameterType.PARAMETER_INTEGER else None for value in values]
+    return None if any(number is None for number in numbers) else [float(number) for number in numbers]
+
+
+def parameters_taken(answer: Any) -> bool:
+    """Whether `ArmInterface.request_stiffness`'s answer says every value was taken; False without one."""
+    results = getattr(answer, "results", None)
+    return bool(results) and all(result.successful for result in results)
+
+
 @dataclass
 class ArmState:
     """Measured state of one arm.
@@ -403,6 +426,7 @@ class ArmState:
         sent_target_time: ROS time it was sent, seconds.
             ! In `cartesian_test_mode` these hold the target that *would* have been sent.
         wrench: Force/torque reading (fx, fy, fz, tx, ty, tz).
+        wrench_update_time: ROS time it arrived, seconds.
         digital_in: UR digital inputs by pin.
         is_executing: Whether the arm is moving under a trajectory we sent.
             ? Guessed from motion: True from sending until the joints have been still for STILL_AFTER.
@@ -441,6 +465,7 @@ class ArmState:
     sent_target_orientation: np.ndarray | None = None
     sent_target_time: float | None = None
     wrench: np.ndarray | None = None
+    wrench_update_time: float | None = None
     digital_in: list[bool] | None = None
     is_executing: bool = False
     controllers: ControllerManagerState = field(default_factory=ControllerManagerState)
@@ -652,6 +677,10 @@ class ArmInterface:
         self._target_frame = self._ros.publisher(PoseStamped, f"{namespace}/target_frame")
         self._target_wrench = self._ros.publisher(WrenchStamped, f"{namespace}/target_wrench")
         self._zero_ft = self._ros.client(Trigger, f"{namespace}/io_and_status_controller/zero_ftsensor")
+        self._get_compliance = self._ros.client(GetParameters,
+                                                f"{namespace}/{CARTESIAN_COMPLIANCE_CONTROLLER}/get_parameters")
+        self._set_compliance = self._ros.client(SetParameters,
+                                                f"{namespace}/{CARTESIAN_COMPLIANCE_CONTROLLER}/set_parameters")
         self._free_drive = self._ros.publisher(Bool, f"{namespace}/{FREE_DRIVE_CONTROLLER}/enable_freedrive_mode")
         self._ros.timer(FREE_DRIVE_HEARTBEAT, self._keep_free_drive)
         # Safety and program state arrive via HuskyRobotInterface._on_sync_status.
@@ -1214,6 +1243,50 @@ class ArmInterface:
         self.ft_zeros_sent.fire(SentZero(None if self.state.wrench is None else self.state.wrench.copy(), now, now))
         return True
 
+    def request_stiffness_values(self) -> Any | None:
+        """Ask the compliance controller for its translational stiffness (STIFFNESS_PARAMETERS).
+
+        Returns:
+            The call's future (its answer's `values` in that order), or None when the service is not up.
+        """
+        if not self._get_compliance.service_is_ready():
+            return None
+        return self._get_compliance.call_async(GetParameters.Request(names=list(STIFFNESS_PARAMETERS)))
+
+    def request_stiffness(self, stiffness: Sequence[float], restore: bool = False) -> Any | None:
+        """Set the compliance controller's translational stiffness along tool0's x, y and z, N/m.
+
+        ! It needs the robot's lease. The controller reads it every cycle, also while it runs, and keeps it until set
+          again: set it back after the part that needed it.
+
+        Args:
+            stiffness: The three values.
+            restore: Values read from the controller before, set back: any positive ones, not only STIFFNESS_LIMITS.
+
+        Returns:
+            The call's future (its answer's `results` say which were taken), or None when not sent: the service not
+                up, a value not finite or outside STIFFNESS_LIMITS (logged), or test mode.
+
+        Raises:
+            NotLeased: If the running code does not have the robot's lease.
+        """
+        self._lease_slot.check()
+        values = [float(value) for value in stiffness]
+        low, high = (0.0, math.inf) if restore else STIFFNESS_LIMITS
+        if len(values) != 3 or not all((low < value if restore else low <= value) and value <= high
+                                       for value in values):
+            self._refused("stiffness refused", f"stiffness must be 3 values within {STIFFNESS_LIMITS} N/m, not "
+                                               f"{values}")
+            return None
+        if self.config.cartesian_test_mode:
+            self._log_test_mode("stiffness", f"{values} N/m (tool0 x, y, z)")
+            return None
+        if not self._set_compliance.service_is_ready():
+            return None
+        return self._set_compliance.call_async(SetParameters.Request(parameters=[
+            Parameter(name=name, value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=value))
+            for name, value in zip(STIFFNESS_PARAMETERS, values)]))
+
     def request_free_drive(self) -> None:
         """Keep free drive on for FREE_DRIVE_REQUEST_TTL more, if the free drive controller runs.
 
@@ -1341,6 +1414,7 @@ class ArmInterface:
         """Store the force/torque reading."""
         f, t = message.wrench.force, message.wrench.torque
         self.state.wrench = np.array([f.x, f.y, f.z, t.x, t.y, t.z])
+        self.state.wrench_update_time = self._now()
         if self.wrench_messages.listened:
             stamp = message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec
             self.wrench_messages.fire(WrenchReading(self.state.wrench, self._now(), stamp))
