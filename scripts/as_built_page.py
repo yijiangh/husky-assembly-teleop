@@ -26,6 +26,7 @@ from pathlib import Path
 
 from husky_assembly_teleop.drive import drive_root
 from husky_assembly_teleop.experiments.as_built.build import build_page, default_env_3dm
+from husky_assembly_teleop.experiments.as_built.relabel import parse_assets
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,6 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-cameras", action="store_true", help="skip the mocap cameras")
     parser.add_argument("--vendor", choices=("inline", "embed", "sibling"), default="inline",
                         help="how three.js is carried (default inline: works from disk and when served)")
+    parser.add_argument("--asset", action="append", metavar="BAR=ASSET",
+                        help="read the balls streamed as Motive asset ASSET as bar BAR (a mistyped asset id, "
+                             "e.g. B25=1039); repeatable")
     parser.add_argument("--open", action="store_true", help="open the page in the browser")
     args = parser.parse_args(argv)
     root = drive_root(args.drive)
@@ -55,7 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     out = build_page(root, args.day, args.problem, Path(args.process) if args.process else None,
                      Path(args.out) if args.out else None, args.vendor,
                      None if args.no_env else Path(args.env_3dm) if args.env_3dm else default_env_3dm(root),
-                     lab, with_robots=not args.no_robots, with_cameras=not args.no_cameras)
+                     lab, with_robots=not args.no_robots, with_cameras=not args.no_cameras,
+                     assets=parse_assets(args.asset))
     print(f"[assembly] wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
     if args.open:
         webbrowser.open(out.resolve().as_uri())

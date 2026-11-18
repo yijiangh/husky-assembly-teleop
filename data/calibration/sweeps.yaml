@@ -72,10 +72,10 @@
       - {joint: 0, joints: [0, -0.66, -0.93, -2.153, -1.27, 0.2], from: 3.143, to: -3.14, steps: 31}
       - {joint: 0, joints: [0, -2.12, -2.04, 1.06, 0.81, -0.02], from: -3.14, to: 3.143, steps: 31}
       - {joint: 0, joints: [0, -2.88, 1.13, 1.24, 1.89, -0.17], from: 3.143, to: -3.14, steps: 31}
-      - {joint: 1, joints: [0, 0, 0, -1.59, 0, -1], from: -2.8, to: 0.53, steps: 31}
-      - {joint: 1, joints: [0, 0, 0, -3.34, 1.05, -2.12], from: 0.536, to: -2.7, steps: 32}
-      - {joint: 1, joints: [0, 0, 0, -3.34, -1.64, -1.57], from: -2.7, to: 0.536, steps: 31}
-      - {joint: 1, joints: [0, 0, 0, -3.34, -2.3, -2.12], from: 0.536, to: -2.7, steps: 31}
+      - {joint: 1, joints: [0, 0, 0, -1.59, 0, -1], from: -2.8, to: 0.5, steps: 31}  # 2° shorter: 2 cm clear of the right arm's shoulder, the right arm out of the way (not stowed)
+      - {joint: 1, joints: [0, 0, 0, -3.34, 1.05, -2.12], from: 0.5, to: -2.7, steps: 32}  # 2° shorter: 2 cm clear of the right arm's shoulder, the right arm out of the way (not stowed)
+      - {joint: 1, joints: [0, 0, 0, -3.34, -1.64, -1.57], from: -2.7, to: 0.5, steps: 31}  # 2° shorter: 2 cm clear of the right arm's shoulder, the right arm out of the way (not stowed)
+      - {joint: 1, joints: [0, 0, 0, -3.34, -2.3, -2.12], from: 0.5, to: -2.7, steps: 31}  # 2° shorter: 2 cm clear of the right arm's shoulder, the right arm out of the way (not stowed)
     validation:  # six of session 20260622's validation poses, spread over J0
       - [-2.893, -2.479, -0.091, -1.17, -0.985, -0.576]
       - [-2.675, -2.315, 0.045, -0.198, 1.757, 0.638]

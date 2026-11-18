@@ -50,6 +50,12 @@ const SEAT_RADIUS = ROD_RADIUS * 0.72;
 // * The arrows of an error are drawn this many times longer than the error itself: a millimetre on a
 // * 2 m bar cannot be seen. The numbers written beside them are the true values.
 const MAGNIFY = 20;
+// * A bar further than this from its seat, mm, is not in place (on its loading spot): no arrows on it unless
+// * clicked. The same limit as the report's IN_PLACE_MM (accuracy.py).
+const IN_PLACE_MM = 50;
+/** Whether a measured bar is in place: within IN_PLACE_MM of its seat. */
+const inPlace = bar => bar.placement_seat !== null && bar.placement_seat !== undefined
+  && bar.placement_seat < IN_PLACE_MM;
 // The x / y / z axes drawn at a bar's start, metres.
 const AXIS_LENGTH = 0.15;
 
@@ -326,7 +332,8 @@ function buildStep() {
     }
     const hollowSeen = new THREE.MeshBasicMaterial({ color: 0x33425c, wireframe: true, transparent: true, opacity: 0.55 });
     const hollowMissing = new THREE.MeshBasicMaterial({ color: 0xd03030, wireframe: true });
-    for (const ball of bar.markers_authored || []) {
+    // ! A bar not in place has its authored balls at its seat, far from its own: they would float alone there.
+    for (const ball of inPlace(bar) ? bar.markers_authored || [] : []) {
       const ring = new THREE.Mesh(hollowGeometry, ball.seen ? hollowSeen : hollowMissing);
       ring.position.fromArray(ball.pos);
       groups.markers.add(ring);
@@ -820,8 +827,9 @@ const DRAWN_ON_BAR = { placement: bar => drawPlacement(bar, bar.reference, [bar.
 // The measurements of the record's robot, written at its two flanges.
 const DRAWN_AT_FLANGES = ['tool0', 'servo', 'load'];
 
-/** Draw the "data by" measurement in the view, and nothing else: on every measured bar, or, once a bar
- * is clicked, on that bar only (so nothing of another measurement or another bar overlaps it). */
+/** Draw the "data by" measurement in the view, and nothing else: on every bar in place, or, once a bar is
+ * clicked, on that bar only (so nothing of another measurement or another bar overlaps it). A bar more than
+ * IN_PLACE_MM from its seat (on its loading spot) gets none: its arrows would cross the room. */
 function showAnnotations() {
   clearGroup(groups.notes);
   if (DRAWN_AT_FLANGES.includes(dataMetric.key)) {
@@ -832,7 +840,7 @@ function showAnnotations() {
   const draw = DRAWN_ON_BAR[dataMetric.key];
   if (!draw) return;
   for (const bar of measured) {
-    if (!selectedId || bar.bar === selectedId) draw(bar);
+    if (selectedId ? bar.bar === selectedId : inPlace(bar)) draw(bar);
   }
 }
 

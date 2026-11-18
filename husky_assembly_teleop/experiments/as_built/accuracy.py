@@ -21,6 +21,7 @@ from scaffolding_assembly_core.process import read
 from ...shared.runs.as_built import AS_BUILT_FOLDER, as_built_path, read_records
 from .collect import FIT_RMS_TOL_MM, _three_places, assembled_bars, shape_records, timeline
 from .old_records import _shifted, actions_of_records, is_old, old_bar_lengths, seats_of_records, upgrade_record
+from .relabel import relabel_assets
 
 #: The kinds of step in the report's order: their titles, and how each pair of records is compared.
 GROUPS = {
@@ -41,7 +42,8 @@ GROUP_OF_ROUTINE = {"insert": "insert", "retreat_linear": "retreat", "support_ap
 IN_PLACE_MM = 50.0
 
 
-def read_day(drive_root: Path, day: str, problem: str, process_folder: Path | None = None) -> dict:
+def read_day(drive_root: Path, day: str, problem: str, process_folder: Path | None = None,
+             assets: Mapping[str, int] | None = None) -> dict:
     """Read one day's records, of either monitor, with the 3D page's numbers.
 
     Args:
@@ -49,6 +51,7 @@ def read_day(drive_root: Path, day: str, problem: str, process_folder: Path | No
         day: YYYYMMDD.
         problem: The process folder's name.
         process_folder: The process folder; default `<drive>/data_design_study/<problem>`.
+        assets: Bar id -> the Motive asset its balls were streamed as by mistake (`relabel_assets`).
 
     Returns:
         dict: {day, problem, process_folder, source_file, old, raw (the records in the new form), actions (with their
@@ -69,6 +72,8 @@ def read_day(drive_root: Path, day: str, problem: str, process_folder: Path | No
         actions, seats = actions_of_records(raw), seats_of_records(raw, lengths)
     else:
         process = read(process_folder)
+        if assets:
+            relabel_assets(raw, assets, process)
         actions, seats = timeline(process), assembled_bars(process)
         lengths = {bar: seat["length"] for bar, seat in seats.items()}
     shape_records(raw, actions, seats)
@@ -119,6 +124,9 @@ def step_changes(actions: list[Mapping]) -> list[dict]:
         if group is None or before is None or after is None:
             continue
         if before.get("placement") is None or after.get("placement") is None:
+            continue
+        # ! A bar still on its loading spot, metres from its seat, is not being built yet: its pair would set the scale.
+        if max(before.get("placement_seat") or 0.0, after.get("placement_seat") or 0.0) >= IN_PLACE_MM:
             continue
         rows.append({"group": group, "bar": action["bar_id"], "before": before["placement"],
                      "after": after["placement"], "change": after["placement"] - before["placement"],

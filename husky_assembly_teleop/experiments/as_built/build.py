@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Mapping
 
 from ...world.lab import read_lab
 from .collect import (EXTRA_FORMULAS, METRICS, PAGE_CONTROLS, PAGE_CSS, as_built_days, as_built_problems,
@@ -39,7 +40,7 @@ def default_env_3dm(drive_root: Path) -> Path | None:
 def build_page(drive_root: Path, day: str | None = None, problem: str | None = None,
                process_folder: Path | None = None, out: Path | None = None, vendor: str = "inline",
                env_3dm: Path | None = None, lab: Path | None = None, with_robots: bool = True,
-               with_cameras: bool = True) -> Path:
+               with_cameras: bool = True, assets: Mapping[str, int] | None = None) -> Path:
     """Build the page of one lab day and return its path.
 
     Args:
@@ -53,6 +54,7 @@ def build_page(drive_root: Path, day: str | None = None, problem: str | None = N
         lab: The lab file (`data/lab/<lab>.json`) whose obstacles are drawn as the room, or None.
         with_robots: Draw the robots (loads the URDF meshes).
         with_cameras: Draw the Motive cameras (from `env_3dm`).
+        assets: Bar id -> the Motive asset its balls were streamed as by mistake (`relabel_assets`).
 
     Raises:
         SystemExit: No records, or the 3D library files are missing.
@@ -68,7 +70,7 @@ def build_page(drive_root: Path, day: str | None = None, problem: str | None = N
         if not problems:
             raise SystemExit(f"no as-built file in {drive_root / AS_BUILT_FOLDER / (day + DIR_SUFFIX)}")
         problem = problems[0]
-    scene = collect_assembly(day, problem, drive_root, process_folder, with_robots=with_robots)
+    scene = collect_assembly(day, problem, drive_root, process_folder, with_robots=with_robots, assets=assets)
     env = environment_3dm(Path(env_3dm)) if env_3dm else None
     if env is None and lab is not None:
         env = lab_environment(read_lab(Path(lab)))

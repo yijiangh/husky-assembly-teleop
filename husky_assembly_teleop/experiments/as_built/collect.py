@@ -26,6 +26,7 @@ from ...shared.runs.as_built import (ACTION_KIND, AS_BUILT_FOLDER, DIR_SUFFIX, F
                                      read_records)
 from ...world.marker_match import BarFit, Sensed
 from .page import RobotModels, flatten, matrix_from_pose
+from .relabel import relabel_assets
 
 #: Records of one action further apart than this, or from another run, are a redo ("run 2").
 REDO_GAP_S = 600.0
@@ -510,7 +511,7 @@ def record_robots(record: Mapping, models: RobotModels, process) -> list[dict]:
 # * ================================================================ the whole day
 
 def collect_assembly(day: str, problem: str, drive_root: Path, process_folder: Path | None = None,
-                     with_robots: bool = True) -> dict:
+                     with_robots: bool = True, assets: Mapping[str, int] | None = None) -> dict:
     """Read one day's as-built records and shape them for the page.
 
     Args:
@@ -520,6 +521,7 @@ def collect_assembly(day: str, problem: str, drive_root: Path, process_folder: P
         process_folder: The process folder (the seats, the schedule, the robots); default
             `<drive>/data_design_study/<problem>`.
         with_robots: Draw the robots (loads the URDF meshes).
+        assets: Bar id -> the Motive asset its balls were streamed as by mistake (`relabel_assets`).
 
     Returns:
         dict: The page's data without the environment and the page text: {problem, day, source_file, assembled,
@@ -531,6 +533,8 @@ def collect_assembly(day: str, problem: str, drive_root: Path, process_folder: P
         raise SystemExit(f"{path} holds no record.")
     process_folder = Path(process_folder) if process_folder else drive_root / "data_design_study" / problem
     process = read(process_folder)
+    if assets:
+        print(f"[assembly] {relabel_assets(records, assets, process)} bar entries read under their right bar.")
     seats = assembled_bars(process)
     models = RobotModels() if with_robots else None
     actions = timeline(process)
