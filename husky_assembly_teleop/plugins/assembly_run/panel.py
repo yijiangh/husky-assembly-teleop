@@ -12,8 +12,8 @@ from html import escape
 from typing import TYPE_CHECKING, NamedTuple
 
 from ...plugin_api.context import PluginContext
-from ...shared.runs.runs import (DONE, PUSH_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, STIFFNESS_RANGE,
-                                 RunSettings)
+from ...shared.runs.runs import (DONE, GRASP_CONTROLLERS, GRASP_JOINT, PUSH_RANGE, SPIRAL_SECONDS_RANGE,
+                                 SPIRAL_TURNS_RANGE, STIFFNESS_RANGE, RunSettings)
 from ...shared.assembly_tab.layout import (MARK_BAND, MARK_ICON, REOPEN_ICON, RUN_BAND, RUN_SETTINGS_BAND,
                                            TAB_BUTTONS_CSS)
 from ...ui.css import group_tooltips_css, side_by_side_css
@@ -113,6 +113,16 @@ class RunPanel:
                                          step=100.0, initial_value=default.insert_stiffness_along,
                                          hint="The insert's compliance along the tool (tool0 z), N/m: lower keeps the "
                                               "push near its setting where the joint is off its planned depth")
+            self._grasp = gui.add_dropdown("Grasp controller", options=list(GRASP_CONTROLLERS),
+                                           initial_value=default.grasp_controller,
+                                           hint="The arm's controller while its Robotiq closes on a bar another "
+                                                "robot holds: compliance gives way to the bar (up to 10 mm); joint "
+                                                "holds the arm where it stands, so the close pulls the bar, and the "
+                                                "frame, to the gripper")
+            self._grasp_stiffness = gui.add_slider("Grasp stiffness", min=STIFFNESS_RANGE[0], max=STIFFNESS_RANGE[1],
+                                                   step=100.0, initial_value=default.grasp_stiffness,
+                                                   hint="The compliant grasp's stiffness along tool0 x, y, z, N/m: "
+                                                        "higher pulls the bar more; greyed for the joint grasp")
             # * Greyed until the run's current action inserts a ground bar (`draw`): no step yet.
             self._servo = gui.add_checkbox("Servo by bar", default.servo_by_bar, disabled=True,
                                            hint="Servo a ground bar by its mocap fit instead of tool0 (on by "
@@ -149,7 +159,8 @@ class RunPanel:
                     (self._retreat_live, "retreat_live_axis", bool),
                     (self._retreat_compliant, "retreat_compliant", bool),
                     (self._cancel_weight, "insert_cancel_weight", bool), (self._push, "insert_push_n", float),
-                    (self._across, "insert_stiffness_across", float), (self._along, "insert_stiffness_along", float))
+                    (self._across, "insert_stiffness_across", float), (self._along, "insert_stiffness_along", float),
+                    (self._grasp, "grasp_controller", str), (self._grasp_stiffness, "grasp_stiffness", float))
         # ! `operator_only`: viser also fires `on_update` when the plugin writes `widget.value` (skipped only when it
         #   is unchanged), and the Spiral and Servo by bar boxes are shown unticked while greyed: that write must not
         #   reach `request_settings`, or it would untick the stored setting. The test fake takes every call as the
@@ -222,6 +233,8 @@ class RunPanel:
             self._spiral_seconds.value, self._spiral_turns.value = settings.spiral_seconds, settings.spiral_turns
             self._cancel_weight.value, self._push.value = settings.insert_cancel_weight, settings.insert_push_n
             self._across.value, self._along.value = settings.insert_stiffness_across, settings.insert_stiffness_along
+            self._grasp.value, self._grasp_stiffness.value = settings.grasp_controller, settings.grasp_stiffness
+            self._grasp_stiffness.disabled = settings.grasp_controller == GRASP_JOINT
 
         message, failed = status.message
         self._details.content = block(values(_one_line(escape(f"current   {_where(view)}")))

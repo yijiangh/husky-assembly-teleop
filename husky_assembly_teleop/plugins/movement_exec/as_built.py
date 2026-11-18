@@ -207,4 +207,5 @@ def _options(request: ExecRequest | None, run: PartRun | None, view: RunView, dr
         "insert_split_mm": settings.insert_split_mm, "spiral_seconds": settings.spiral_seconds,
         "spiral_turns": settings.spiral_turns, "insert_cancel_weight": settings.insert_cancel_weight,
         "insert_push_n": settings.insert_push_n, "insert_stiffness_across": settings.insert_stiffness_across,
-        "insert_stiffness_along": settings.insert_stiffness_along}
+        "insert_stiffness_along": settings.insert_stiffness_along, "grasp_controller": settings.grasp_controller,
+        "grasp_stiffness": settings.grasp_stiffness}

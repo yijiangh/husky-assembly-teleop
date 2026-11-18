@@ -238,7 +238,7 @@ def test_god_mode_runs_b21_h_through_the_real_planner_and_executor(monkeypatch):
         lab.close()
     assert ran == ["drive to B21_H's start", "B21_H_approach: approach", "B21_H_approach: servo",
                    "B21_H_open: open the gripper", "B21_H_to_grasp: straight line",
-                   "B21_H_close: close the gripper, arm compliant", "mark B21_H done"]
+                   "B21_H_close: close the gripper on the bar", "mark B21_H done"]
     files = [file for file in lab.run.files() if "part" in file]
     assert [file["movement"] for file in files] == ["B21_H_approach", "B21_H_approach", "B21_H_open",
                                                     "B21_H_to_grasp", "B21_H_close"]

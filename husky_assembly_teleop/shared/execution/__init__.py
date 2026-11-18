@@ -17,7 +17,7 @@ Running a planned movement on the real robots: timing, sending, tools, the opera
   force_sensors.py   |F| of a wrench, and zeroing the arms' force sensors
   insert.py       the insert: rigid under joint control, then compliant while the mating screws tighten
   retreat.py      the retreat: the tools let go and back out compliantly, then the rest replanned and run rigid
-  handoff.py      the compliant Robotiq close on a bar another robot holds
+  handoff.py      the Robotiq close on a bar another robot holds, the arm compliant or stiff
 
 ! The functions that command a robot run on the main thread (as every robot command), from a plugin's task.
 """

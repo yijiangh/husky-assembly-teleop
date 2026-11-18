@@ -20,10 +20,10 @@ from ...shared.assembly_run_contract import exported_end, first_pending, is_live
 from ...shared.assembly_planning.steps import first_step
 from ...shared.movement_exec_contract import step_running
 from ...shared.process_scene.scene_bodies import live_ids
-from ...shared.runs.runs import (DONE, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE, PLAN_TRIES_RANGE,
-                                 PUSH_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE, STIFFNESS_RANGE,
-                                 Progress, RobotRecord, Run, RunError, RunSettings, mark_done, new_run, record_event,
-                                 record_movement, save_info, save_progress, stamp, with_current)
+from ...shared.runs.runs import (DONE, GRASP_CONTROLLERS, PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, PLAN_TIME_RANGE,
+                                 PLAN_TRIES_RANGE, PUSH_RANGE, SPIRAL_SECONDS_RANGE, SPIRAL_TURNS_RANGE, SPLIT_RANGE,
+                                 STIFFNESS_RANGE, Progress, RobotRecord, Run, RunError, RunSettings, mark_done,
+                                 new_run, record_event, record_movement, save_info, save_progress, stamp, with_current)
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.ids import IdMap
@@ -40,6 +40,7 @@ NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
                    "insert_push_n": ("the insert's push", PUSH_RANGE, "N"),
                    "insert_stiffness_across": ("the insert's stiffness across the tool", STIFFNESS_RANGE, "N/m"),
                    "insert_stiffness_along": ("the insert's stiffness along the tool", STIFFNESS_RANGE, "N/m"),
+                   "grasp_stiffness": ("the grasp's stiffness", STIFFNESS_RANGE, "N/m"),
                    "plan_max_time": ("the search's time per try", PLAN_TIME_RANGE, "s"),
                    "plan_max_iterations": ("the search's iterations", PLAN_ITERATIONS_RANGE, "whole iterations"),
                    "plan_joint_resolution": ("the search's joint resolution", PLAN_RESOLUTION_RANGE, "rad"),
@@ -393,7 +394,7 @@ class RunWrites:
         return "" if self._run is not None else self._offered_first() or "no run yet: nothing is done"
 
     def _settings_problem(self, changes: Mapping[str, Any]) -> str:
-        """What is wrong with requested settings, or "": a number out of its range or not whole where it must be."""
+        """What is wrong with requested settings, or "": a number out of range or not whole, a choice not offered."""
         for name, value in changes.items():
             if name not in SETTING_TYPES:
                 return f"there is no setting {name!r}"
@@ -406,6 +407,9 @@ class RunWrites:
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high \
                         or (SETTING_TYPES[name] is int and value != int(value)):
                     return f"{what} must be {low:g} to {high:g} {unit}, not {value!r}"
+            elif name == "grasp_controller":
+                if value not in GRASP_CONTROLLERS:
+                    return f"the grasp's controller must be {' or '.join(GRASP_CONTROLLERS)}, not {value!r}"
             elif not isinstance(value, bool):
                 return f"{name} must be True or False, not {value!r}"
         return ""

@@ -1046,8 +1046,8 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
         labels = [widget.label for widget in lab.ctx.gui.widgets if widget.kind in ("slider", "checkbox")]
         # * No Rigid insert: a ground bar always inserts rigid, every other bar rigid then compliant.
         assert labels == ["Insert split mm", "Spiral", "Spiral s", "Spiral turns", "Cancel bar weight", "Insert push N",
-                          "Stiffness across", "Stiffness along", "Servo by bar", "Retreat live axis",
-                          "Retreat compliant"]
+                          "Stiffness across", "Stiffness along", "Grasp stiffness", "Servo by bar",
+                          "Retreat live axis", "Retreat compliant"]
         panel._servo.callback(False)
         panel._spiral_seconds.callback(30.0)
         panel._spiral_turns.callback(6.0)
@@ -1061,6 +1061,36 @@ def test_the_insert_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_p
     assert (settings.servo_by_bar, settings.spiral_seconds, settings.spiral_turns) == (False, 30.0, 6)
     assert type(settings.spiral_turns) is int and type(settings.spiral_seconds) is float
     assert (shown._servo.value, shown._spiral_seconds.value, shown._spiral_turns.value) == (False, 30.0, 6)
+
+
+def test_the_grasp_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_path):
+    """Grasp controller and stiffness: a controller not offered or a stiffness out of range is refused.
+
+    Joint and 2000 N/m set from the panel: saved, read back after a restart, shown by a new panel, the stiffness greyed.
+    """
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        for changes, words in (({"grasp_controller": "stiff"}, "the grasp's controller must be compliance or joint, "
+                                                               "not 'stiff'"),
+                               ({"grasp_stiffness": 100.0}, "the grasp's stiffness must be 200 to 5000 N/m, not 100")):
+            plugin.request_settings(**changes)
+            assert plugin._message.startswith("Settings refused") and words in plugin._message
+            assert plugin.view.settings == RunSettings()
+        panel = plugin._panel = RunPanel(lab.ctx, plugin)
+        assert (panel._grasp.value, panel._grasp_stiffness.value) == ("compliance", 500.0)
+        panel._grasp_stiffness.callback(2000.0)
+        panel._grasp.callback("joint")
+        await settle(plugin)
+        again, _process = await opened(lab)
+        shown = again._panel = RunPanel(lab.ctx, again)
+        again.draw(lab.ctx)
+        return again.view.settings, shown
+
+    settings, shown = asyncio.run(scenario())
+    assert (settings.grasp_controller, settings.grasp_stiffness) == ("joint", 2000.0)
+    assert (shown._grasp.value, shown._grasp_stiffness.value) == ("joint", 2000.0) and shown._grasp_stiffness.disabled
 
 
 @pytest.mark.safety

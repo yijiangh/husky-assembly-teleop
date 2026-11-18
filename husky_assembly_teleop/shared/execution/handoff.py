@@ -1,11 +1,14 @@
 """
-The compliant Robotiq close: a support robot's gripper closes on a bar another robot holds, its arm compliant meanwhile.
+The Robotiq grasp: a support robot's gripper closes on a bar another robot holds, its arm compliant or held stiff.
 
-The arm springs around where it stands (the anchor: its measured TCP) with a zero target wrench, so the closing fingers
-pull it up to MAX_DRIFT instead of pulling on the other robot's tools.
+Compliant (COMPLIANCE, the default): the arm springs around where it stands (the anchor: its measured TCP) with a zero
+target wrench at the run's stiffness, so the closing fingers pull it up to MAX_DRIFT instead of pulling on the other
+robot's tools. Joint (JOINT): the arm stays under the joint controller where it stands, so the close pulls the bar,
+and the frame it is in, to the gripper (e.g. posts splayed by a brace); its force readings are kept.
 
-- An anchor further than ANCHOR_TOL from the URDF's tool0 of the live joints means the frames are wrong: the gripper
-  then closes with the arm stiff (STIFF).
+- An anchor further than ANCHOR_TOL from the URDF's tool0 of the live joints means the frames are wrong: the compliant
+  grasp then closes with the arm stiff (STIFF).
+- The stiffness set for a compliant grasp goes back however it ends (`stiffness`).
 - Once the switch to compliance is asked, every ending stops fingers still closing (a cancel too) and brings the arm
   back under joint control.
 - ! Main thread, from a plugin task that holds the robot's lease.
@@ -15,7 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import math
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
@@ -28,6 +32,7 @@ from .compliant_part import enter_compliance, part_outcome, started_part, stop_t
 from .controllers import switch_arms
 from .force_sensors import zero_force_sensors
 from .precheck import part_problem
+from .stiffness import check_back, send_back, set_stiffness
 from .stream import (CLOSED, DRY_RUN, FAILED, FK_TCP_TOL, REFUSED, STIFF, PartOutcome, Recorder, fk_tcp_gap,
                      gap_record, zero_wrench)
 from .tools import ROBOTIQ_CLOSE, ROBOTIQ_EFFORT, robotiq_move
@@ -44,42 +49,67 @@ MAX_DRIFT = 0.01
 ANCHOR_TOL = FK_TCP_TOL
 #: Seconds the gripper has to answer the close.
 TIMEOUT = 30.0
+#: The grasp's controllers (the run's Grasp controller, `runs.GRASP_CONTROLLERS`).
+COMPLIANCE, JOINT = "compliance", "joint"
 
 
-def handoff_text(arm: str) -> str:
-    """The handoff's Confirm question, after "<robot> (<serial>): <movement> — "."""
-    return (f"CLOSE + compliant handoff on {arm}: the arm goes COMPLIANT before the close (gives way ≤ "
-            f"{MAX_DRIFT * 1e3:.0f} mm); jaws {ROBOTIQ_CLOSE}, effort {ROBOTIQ_EFFORT}, ≤ {TIMEOUT:.0f} s; then joint "
-            f"control. Watch the other robot's tools are not pulled; hand on the e-stop.")
+@dataclass(frozen=True)
+class GraspSettings:
+    """How the arm takes the close.
+
+    Attributes:
+        controller: COMPLIANCE or JOINT.
+        stiffness: The compliant grasp's stiffness along tool0 x, y and z, N/m; None: what the controller has.
+    """
+
+    controller: str = COMPLIANCE
+    stiffness: float | None = None
+
+
+def handoff_text(arm: str, grasp: GraspSettings = GraspSettings()) -> str:
+    """The grasp's Confirm question, after "<robot> (<serial>): <movement> — "."""
+    jaws = f"jaws {ROBOTIQ_CLOSE}, effort {ROBOTIQ_EFFORT}, ≤ {TIMEOUT:.0f} s"
+    if grasp.controller == JOINT:
+        return (f"CLOSE + STIFF grasp on {arm}: the arm stays under JOINT control where it stands, so the close pulls "
+                f"the bar and the frame to the gripper; {jaws}. Watch the other robot's tools and the frame; hand on "
+                f"the e-stop.")
+    stiffness = f" at {grasp.stiffness:g} N/m" if grasp.stiffness is not None else ""
+    return (f"CLOSE + compliant handoff on {arm}: the arm goes COMPLIANT{stiffness} before the close (gives way ≤ "
+            f"{MAX_DRIFT * 1e3:.0f} mm); {jaws}; then joint control. Watch the other robot's tools are not pulled; "
+            f"hand on the e-stop.")
 
 
 async def run_handoff(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, gripper: RobotiqGripper, *,
-                      dry_run: bool = False, recorder: Recorder | None = None) -> PartOutcome:
-    """Close `gripper` on a bar another robot holds, its arm compliant around where it stands until the gripper answers.
+                      grasp: GraspSettings = GraspSettings(), dry_run: bool = False,
+                      recorder: Recorder | None = None) -> PartOutcome:
+    """Close `gripper` on a bar another robot holds, its arm compliant around where it stands, or held stiff.
 
-    Joint control confirmed, F/T sensor zeroed, anchor checked against the URDF, compliance, the anchor and a zero
-    wrench, then the close; each tick the anchor and a zero wrench again until the gripper answers.
+    Joint control confirmed, F/T sensor zeroed. Compliant: the anchor checked against the URDF, the stiffness set,
+    compliance, the anchor and a zero wrench, then the close; each tick the anchor and a zero wrench again until the
+    gripper answers. Joint: the close with the arm held by the joint controller, its forces sampled each tick.
 
     Args:
         ctx: The plugin's context.
         robot: The support robot.
         arm: The name of its arm carrying `gripper`, e.g. "ur_arm".
         gripper: The Robotiq on that arm.
+        grasp: The controller and the compliant grasp's stiffness.
         dry_run: Run the checks and send nothing.
         recorder: Gets the samples (e.g. for a live readout), made at the start; None: its own.
 
     Returns:
-        PartOutcome: CLOSED (the gripper reported success: stalled on the bar or at its goal); STIFF (closed with the
-            arm stiff: the anchor check failed); REFUSED (nothing sent); FAILED (a switch or a target refused: nothing
-            closed; the arm moved over MAX_DRIFT, the gripper reported no success or did not answer within TIMEOUT,
-            or the arm may be left compliant); DRY_RUN. The caller logs the ending.
+        PartOutcome: CLOSED (the gripper reported success: stalled on the bar or at its goal); STIFF (a compliant
+            grasp closed with the arm stiff: the anchor check failed); REFUSED (nothing sent); FAILED (a switch or a
+            target refused: nothing closed; the arm moved over MAX_DRIFT, the gripper reported no success or did not
+            answer within TIMEOUT, or the arm may be left compliant); DRY_RUN. The caller logs the ending.
 
     Raises:
         asyncio.CancelledError: When cancelled; fingers still closing were stopped and the arm brought back first.
     """
     label = f"{robot.config.serial} {arm}: handoff"
     interface = robot.arms[arm]
-    record: dict = {"arm": arm, "gripper": {"target": ROBOTIQ_CLOSE, "effort": ROBOTIQ_EFFORT}}
+    record: dict = {"arm": arm, "gripper": {"target": ROBOTIQ_CLOSE, "effort": ROBOTIQ_EFFORT},
+                    "grasp": {"controller": grasp.controller, "stiffness": grasp.stiffness}}
     started, recorder = started_part(ctx, robot, recorder)
 
     def ended(status: str, reason: str) -> PartOutcome:
@@ -91,7 +121,8 @@ async def run_handoff(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, 
         return ended(REFUSED, problem)
     if dry_run:
         distance, angle = fk_tcp_gap(robot, arm)
-        stiff = "" if _anchor_ok(distance, angle) else "; the anchor check fails: a real run closes with the arm STIFF"
+        stiff = "" if grasp.controller == JOINT or _anchor_ok(distance, angle) else \
+            "; the anchor check fails: a real run closes with the arm STIFF"
         ctx.log_warn(f"DRY RUN {label}: passed every check (anchor {distance * 1e3:.1f} mm, "
                      f"{math.degrees(angle):.2f}° from the URDF's tool0){stiff}, NOT SENT")
         return ended(DRY_RUN, f"every check passed{stiff}; nothing sent (dry run)")
@@ -101,6 +132,8 @@ async def run_handoff(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, 
         return ended(FAILED, f"{joint.reason}; nothing closed")
     # * Zeroed while the fingers are open and touch nothing; never with a bar in them (it would tare its weight).
     record["ft_zero"] = (await zero_force_sensors(ctx, [interface], label))[arm]
+    if grasp.controller == JOINT:
+        return await _joint_grasp(ctx, robot, arm, gripper, recorder, record, label, ended)
 
     # ! The compliant arm pulls straight to the anchor: it must be where the arm really is.
     state = interface.state
@@ -118,17 +151,30 @@ async def run_handoff(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, 
     ctx.log_info(f"{label}: {gap}")
 
     recorder.phase = "close"
+    #: The stiffness set for the grasp, to set back (`set_stiffness`).
+    stiffness: dict[str, dict] = {}
     cancelled = False
     try:
+        if grasp.stiffness is not None:
+            # * Under the joint controller still: the compliance controller reads it once it runs.
+            record["stiffness"] = stiffness
+            await set_stiffness(ctx, [interface], (grasp.stiffness,) * 3, stiffness, label=label)
         status, reason = await _close(ctx, interface, gripper, anchor, recorder, record, label)
     except asyncio.CancelledError:
         cancelled = True
         raise
     finally:
+        # ! First, before anything that may raise or wait: whatever happens next, the stiffness goes back.
+        sent_back = send_back([interface], stiffness)
+        if any(future is None for future in sent_back.values()):
+            ctx.log_warn(f"{label}: the stiffness of {arm} could NOT be sent back; check the compliance controller's "
+                         f"stiffness parameters before the next compliant part")
         # * Fingers still closing stop where they are (nothing happens once they stopped); then the arm stiffens,
         #   unless cancelled: then it only holds.
         restored = await stop_then_leave(ctx, gripper.stop, [interface], label=label, record=record,
                                          cancelled=cancelled)
+        if not cancelled:
+            await check_back(ctx, sent_back, label=label)
     record["gripper"].update(position=gripper.state.position, result_ok=gripper.state.last_result_ok)
     record.update(recorder.as_record())
     if status == CLOSED and not restored:
@@ -181,6 +227,55 @@ async def _close(ctx: PluginContext, arm: ArmInterface, gripper: RobotiqGripper,
             return FAILED, f"the gripper did not report success (at {where}); check the grip"
         if ctx.now() - closing > TIMEOUT:
             return FAILED, f"no answer from the gripper within {TIMEOUT:.0f} s of the close; check the grip"
+
+
+async def _joint_grasp(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, gripper: RobotiqGripper,
+                       recorder: Recorder, record: dict, label: str,
+                       ended: Callable[[str, str], PartOutcome]) -> PartOutcome:
+    """Close the gripper with the arm held where it stands by the joint controller, sampling its forces each tick.
+
+    Returns:
+        PartOutcome: CLOSED, or FAILED (the close not sent, no success reported, no answer within TIMEOUT, or the arm
+            stopped by its safety: the fingers must not go on pulling against it).
+
+    Raises:
+        asyncio.CancelledError: When cancelled; fingers still closing were stopped first.
+    """
+    record["fk_tcp_gap"] = gap_record(fk_tcp_gap(robot, arm))
+    recorder.phase = "close"
+    recorder.tick(ctx.now())
+    try:
+        gripper.move(ROBOTIQ_CLOSE, ROBOTIQ_EFFORT)
+    except MotionRefused as stopped:
+        return ended(FAILED, f"{gripper.namespace}: {stopped}; nothing closed")
+    if not gripper.state.moving:
+        return ended(FAILED, f"{gripper.namespace}: the close goal was not sent (its log says why); nothing closed")
+    closing = ctx.now()
+    ctx.log_info(f"{label}: closing to {ROBOTIQ_CLOSE:.3f} rad, effort {ROBOTIQ_EFFORT:.2f}, the arm STIFF under the "
+                 f"joint controller (≤ {TIMEOUT:.0f} s)")
+    stopped = None
+    try:
+        while gripper.state.moving and ctx.now() - closing <= TIMEOUT and stopped is None:
+            await ctx.next_tick()
+            recorder.tick(ctx.now())
+            stopped = robot.arms[arm].safety_problem()
+    finally:
+        # * Fingers still closing stop where they are, also on a cancel.
+        if gripper.state.moving:
+            gripper.stop()
+    record["gripper"].update(position=gripper.state.position, result_ok=gripper.state.last_result_ok)
+    record.update(recorder.as_record())
+    peak = ", ".join(f"{name} {force:.1f} N" for name, force in recorder.peak_force.items()) or "not measured"
+    where = "unknown" if gripper.state.position is None else f"{gripper.state.position:.3f} rad"
+    if stopped is not None:
+        return ended(FAILED, f"{arm}: {stopped}; fingers stopped at {where}; peak |F| {peak}")
+    if ctx.now() - closing > TIMEOUT:
+        return ended(FAILED, f"no answer from the gripper within {TIMEOUT:.0f} s of the close; fingers stopped; peak "
+                             f"|F| {peak}")
+    if not gripper.state.last_result_ok:
+        return ended(FAILED, f"the gripper did not report success (at {where}); check the grip; peak |F| {peak}")
+    return ended(CLOSED, f"the gripper closed with the arm stiff (stalled on the bar or at its goal) at {where}; peak "
+                         f"|F| {peak}")
 
 
 def _problem(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, gripper: RobotiqGripper) -> str:

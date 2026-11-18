@@ -18,7 +18,8 @@ from test_execution_stream import BASE, MOCAP_ID, moved
 
 from husky_assembly_teleop.robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER as COMPLIANCE
 from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER as JOINT
-from husky_assembly_teleop.shared.execution.handoff import MAX_DRIFT, TIMEOUT, handoff_text, run_handoff
+from husky_assembly_teleop.shared.execution.handoff import (JOINT as JOINT_GRASP, MAX_DRIFT, TIMEOUT, GraspSettings,
+                                                            handoff_text, run_handoff)
 from husky_assembly_teleop.shared.execution.stream import CLOSED, DRY_RUN, FAILED, REFUSED, STIFF
 from husky_assembly_teleop.shared.execution.tools import ROBOTIQ_CLOSE, ROBOTIQ_EFFORT
 
@@ -66,9 +67,9 @@ class Lab:
         if t >= self.push_at - 1e-9:
             self.arm.state.tcp_position = self.arm.state.tcp_position + self.push
 
-    def run(self, dry_run: bool = False):
+    def run(self, dry_run: bool = False, grasp: GraspSettings = GraspSettings()):
         """Run the handoff to its end."""
-        return asyncio.run(run_handoff(self.ctx, self.robot, "ur_arm", self.gripper, dry_run=dry_run))
+        return asyncio.run(run_handoff(self.ctx, self.robot, "ur_arm", self.gripper, grasp=grasp, dry_run=dry_run))
 
     def sent(self, kind: str) -> list:
         """Every event of one kind: "target", "wrench" or "goal"."""
@@ -248,3 +249,103 @@ def test_the_prompt_says_compliant_before_the_close():
     text = handoff_text("ur_arm")
     assert text.startswith("CLOSE + compliant handoff on ur_arm: the arm goes COMPLIANT before the close")
     assert "≤ 10 mm" in text and f"jaws {ROBOTIQ_CLOSE}, effort {ROBOTIQ_EFFORT}, ≤ 30 s" in text
+
+
+def test_the_runs_grasp_stiffness_is_set_for_the_close_and_set_back():
+    """Grasp stiffness 2000 N/m: set on tool0 x, y, z before the close, the 500 it had set back after; in the record."""
+    lab = Lab(reach=lambda target: target - 0.3)
+    outcome = lab.run(grasp=GraspSettings(stiffness=2000.0))
+    assert outcome.status == CLOSED and outcome.ok
+    assert lab.arm.stiffness_service.sets == [[2000.0] * 3, [500.0] * 3]
+    assert outcome.record["stiffness"]["ur_arm"] == {"before": [500.0] * 3, "set": True}
+    assert outcome.record["grasp"] == {"controller": "compliance", "stiffness": 2000.0}
+
+
+def test_a_cancelled_compliant_grasp_sets_its_stiffness_back():
+    """Cancelled mid-close: the stiffness goes back though the arm is left compliant (held)."""
+    lab = Lab(delay=10.0)
+
+    async def scenario():
+        task = asyncio.ensure_future(run_handoff(lab.ctx, lab.robot, "ur_arm", lab.gripper,
+                                                 grasp=GraspSettings(stiffness=2000.0)))
+        while lab.ctx.t < 11.5 and not task.done():
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert lab.arm.stiffness_service.sets == [[2000.0] * 3, [500.0] * 3]
+
+
+def test_the_joint_grasp_closes_with_the_arm_stiff_and_keeps_its_forces():
+    """Grasp controller joint: no compliance, no target, no stiffness; CLOSED, ok.
+
+    The close runs with the arm under joint control, sampled each tick: the 25 N the bar pulls with is the peak force.
+    """
+    lab = Lab(delay=2.0, reach=lambda target: target - 0.3)
+    pull = SimpleNamespace(tick=lambda t: setattr(lab.arm.state, "wrench", np.array(
+        [25.0 if lab.gripper.state.moving else 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])))
+    lab.drivers.append(pull)
+    outcome = lab.run(grasp=GraspSettings(JOINT_GRASP))
+    assert outcome.status == CLOSED and outcome.ok and "arm stiff" in outcome.reason and "25.0 N" in outcome.reason
+    assert lab.arm.controllers.switches == [] and lab.arm.state.controllers.active == JOINT
+    assert lab.sent("target") == [] and lab.sent("wrench") == [] and lab.sent("goal") == [ROBOTIQ_CLOSE]
+    assert lab.arm.stiffness_service.sets == [] and len(lab.arm._zero_ft.calls) == 1
+    record = outcome.record
+    assert record["grasp"]["controller"] == JOINT_GRASP and record["peak_force_N"]["ur_arm"] == pytest.approx(25.0)
+    assert len(record["stream"]) > 3 and {sample["phase"] for sample in record["stream"]} == {"close"}
+    json.dumps(record)
+
+
+def test_a_cancelled_joint_grasp_stops_the_fingers():
+    """Cancelled mid-close: the goal cancelled, the arm still under joint control, then CancelledError."""
+    lab = Lab(delay=10.0)
+
+    async def scenario():
+        task = asyncio.ensure_future(run_handoff(lab.ctx, lab.robot, "ur_arm", lab.gripper,
+                                                 grasp=GraspSettings(JOINT_GRASP)))
+        while lab.ctx.t < 11.5 and not task.done():
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert lab.gripper._action.goals[0].cancelled and lab.arm.state.controllers.active == JOINT
+    assert lab.arm.controllers.switches == []
+
+
+def test_the_joint_grasp_closes_even_with_frames_that_disagree():
+    """An anchor 11 mm off the URDF's tool0 only matters to the compliant grasp: the joint grasp is CLOSED."""
+    lab = Lab()
+    lab.push, lab.push_at = np.array([0.0, 0.0, 0.011]), -math.inf
+    lab.tick(lab.ctx.t)
+    outcome = lab.run(grasp=GraspSettings(JOINT_GRASP))
+    assert outcome.status == CLOSED and outcome.record["fk_tcp_gap"]["mm"] == pytest.approx(11.0, abs=0.1)
+
+
+def test_the_joint_prompt_says_the_arm_stays_stiff():
+    """The joint grasp's question says the arm stays under joint control and the close pulls the frame."""
+    text = handoff_text("ur_arm", GraspSettings(JOINT_GRASP))
+    assert text.startswith("CLOSE + STIFF grasp on ur_arm: the arm stays under JOINT control")
+    assert "pulls the bar and the frame" in text and "≤ 30 s" in text
+    assert "at 2000 N/m before the close" in handoff_text("ur_arm", GraspSettings(stiffness=2000.0))
+
+
+def test_a_joint_grasp_stops_the_fingers_when_the_arm_stops():
+    """A protective stop mid-close: the fingers stop and the part fails, never a good grasp against a stopped arm."""
+    lab = Lab(delay=6.0, reach=lambda target: target - 0.3)
+    began = []
+
+    def stop_after_a_second(t: float) -> None:
+        """The arm leaves operation 1 s into the close."""
+        if lab.gripper.state.moving:
+            began.append(t)
+        if began and t - began[0] > 1.0:
+            lab.arm.state.operational = False
+
+    lab.drivers.append(SimpleNamespace(tick=stop_after_a_second))
+    outcome = lab.run(grasp=GraspSettings(JOINT_GRASP))
+    assert outcome.status == FAILED and not outcome.ok and "fingers stopped" in outcome.reason
+    assert lab.gripper._action.goals[0].cancelled
