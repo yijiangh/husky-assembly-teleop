@@ -18,6 +18,8 @@ action's last step Mark done (assembly_run's) is suggested.
 - A plan is used once: Exec takes it, and it is cleared once the step ran; only a request refused before sending
   anything, or a dry run, gives it back (still checked for staleness).
 - An insert after its transfer's servo is planned from where the servo left the flanges (`executor.carried`).
+- Zero force, live on the step that places the bar: the executor zeroes the robot's force sensors and records it;
+  nothing zeroes them by itself.
 - ! EXPERIMENTAL, with movement_exec the first plugins that run process movements on the robots.
 """
 
@@ -46,12 +48,13 @@ from ...shared.assembly_planning.step_plan import live_goal_poses, timed_route
 from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
+from ...shared.execution.force_sensors import zero_refusal
 from ...shared.execution.servo import authored_start, flange_poses, tool0_errors
 from ...shared.execution.stream import tool0_world_path
 from ...shared.motion_planner_contract import MotionPlanRequest
 from ...shared.movement_exec_contract import (DEFAULT_TRAJ_TIME, DRY_RUN, MAX_TRAJ_TIME, MOTION_KINDS,
                                               PLANNED_MARGIN, REFUSED, REFUSED_PART, ExecRequest, ExecResult, PartPlan,
-                                              current_primary, current_step, serial_of, step_parts)
+                                              current_primary, current_step, places_bar, serial_of, step_parts)
 from ...shared.planner.planner_search import WAIT_MARGIN, PlanResult
 from ...shared.planner.timed_path import TimedPath
 from ...shared.process_contract import Carry
@@ -59,10 +62,16 @@ from ...shared.teleop.clearance_toggle import ClearanceToggle
 from ...world.clearance import ARM_MOVE
 from ...shared.assembly_tab.layout import ASSEMBLY_TAB
 from ...ui.ghost import RobotGhost
+from ...ui.second_press import SecondPress
+from ...ui.style import BUSY, OK
 from .diagnosis import StepDiagnosis, path_line, tool0_line
 from .goal import StepGoal, same_step
 from .panel import StepsPanel
 from .step_panel_base import PlannerPlugin, Search
+
+#: What Zero force's first press asks.
+ZERO_FORCE_ASK = ("Zero force? Press again to zero every arm of {robot} now. With the bar in the tools its weight is "
+                  "zeroed away too; the run records each zero with the readings it took away.")
 
 #: The hover text of Exec's Clearance box.
 EXEC_CLEARANCE_HINT = (f"While ticked, a motion along the plan soft stops once the robot comes within "
@@ -131,6 +140,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         self._diagnosis_nodes: StepDiagnosis | None = None
         #: The shortest motion time the arms' limits allow for the plan, seconds; NaN without a plan.
         self.minimum = math.nan
+        #: Zero force's first press, waiting for its second.
+        self.zero_press = SecondPress()
 
     # --- --- --- --- --- SETUP AND TICK --- --- --- --- ---
 
@@ -663,6 +674,50 @@ class AssemblyStepsPlugin(PlannerPlugin):
                   f"step, the servo's first pass)")
         executor.request_execute(request).add_done_callback(
             lambda future: self._executed(ctx, key, motion, future))
+
+    def zero_force_part(self) -> PartPlan | None:
+        """The current step's part placing the bar, not done yet: Zero force is live while there is one."""
+        return next((part for part in self.parts() if places_bar(part)), None) if self.serial else None
+
+    def zero_force_key(self) -> str:
+        """What a first press of Zero force asks about: this step's robot and its part placing the bar."""
+        part = self.zero_force_part()
+        return f"zero {self.serial} {part.movement}" if part is not None else ""
+
+    def zero_force(self, ctx: PluginContext) -> None:
+        """Zero force: the first press asks, the second has the executor zero every arm of the step's robot.
+
+        Before or after the bar is placed: the operator chooses; the executor records each zero in the run.
+        """
+        self._used.touch()
+        part, current = self.zero_force_part(), self.current()
+        if part is None or current is None:
+            self._say("Zero force: only on the step that places the bar", failed=True)
+            return
+        executor: MovementExecContract = ctx.require("movement_exec")
+        serial, robot = self.serial, ctx.world.robots.get(self.serial)
+        if robot is None:
+            refusal = f"{short_serial(serial)} is not connected"
+        elif executor.active and executor.prompt is None:
+            refusal = f"{executor.active} runs a part: zero at its prompt, or once it is done"
+        else:
+            refusal = zero_refusal(serial, robot, ctx.now())
+        if refusal:
+            self._say(f"Zero force refused: {refusal}", failed=True)
+            return
+        if not self.zero_press.press(ctx.now(), self.zero_force_key()):
+            self._say(ZERO_FORCE_ASK.format(robot=f"{self._robot_name} ({short_serial(serial)})"), color=BUSY)
+            return
+        self._say(f"Zero force: zeroing {short_serial(serial)}'s arms")
+        executor.request_zero_force(serial, "assembly tab", current[1], part.movement).add_done_callback(
+            lambda done: self._zeroed(serial, done.result()))
+
+    def _zeroed(self, serial: str, why: str) -> None:
+        """Say how a Zero force ended: why not, or zeroed and recorded."""
+        if why:
+            self._say(f"Zero force: {why}", failed=True, log=False)
+        else:
+            self._say(f"Zero force: {short_serial(serial)}'s force sensors zeroed, recorded in the run", color=OK)
 
     def _preview_motion(self, key: tuple, route: RouteResult | None, basis: PlanBasis | None, seconds: float) -> None:
         """Show what the open Confirm starts on the Preview time slider, at its end as a plan is; None shows nothing.

@@ -79,8 +79,6 @@ if TYPE_CHECKING:
     from ...world.freeze import Basis, Freeze
     from ...world.measured import WorldState
 
-#: Seconds the arms stand still after the travel to load before the force sensors are zeroed.
-FT_ZERO_SETTLE = 2.0
 #: Seconds the retreat's tail may take to plan; without a plan by then the retreat fails.
 REPLAN_TIMEOUT = 60.0
 
@@ -103,8 +101,8 @@ class Job:
         recorder: The samples of the compliant part running (insert, retreat, handoff), for the panel; else None.
         measured: Gets each servo reading as it is taken, for the Exec plots window.
         status: Shows the servo's phase in the Exec plots window: (text, chip colour).
-        ft_zero: Serial -> {at, reason} of the force sensors' last zero (the travel to load, the transit to the insert
-            start, a handoff); the plugin's dict, shared, so the as-built record says what the wrenches are relative to.
+        ft_zero: Serial -> {at, reason} of the force sensors' last zero by the operator's Zero force; the plugin's
+            dict, shared, so the as-built record says what the wrenches are relative to.
         inserted: The last insert run to its end, for a servo after it sent in a request of its own; the plugin's.
     """
 
@@ -535,18 +533,9 @@ async def _motion(job: Job, run: PartRun) -> None:
     if outcome.status != ARRIVED:
         return
     _note_end(job, run, outcome.end or {})
+    # * No zero here: the operator zeroes the force sensors with Zero force while placing the bar (before or after).
     if part.routine is Routine.SUPPORT_LEAVE:
         ctx.log_info(f"{job.who}: {part.movement}: done; drive the base away by hand")
-    elif part.routine in (Routine.FREE_TO_LOAD, Routine.TRANSFER_FREE):
-        # * Tare the force sensors standing still, on the empty tools: at the load pose, or at the insert start
-        #   before the operator mounts the bar there (transfer workaround).
-        where = "travel to load" if part.routine is Routine.FREE_TO_LOAD else "transit to the insert start"
-        await ctx.sleep(FT_ZERO_SETTLE)
-        zeroed = [arm.zero_ft_sensor() for arm in job.robot.arms.values()]
-        (ctx.log_info if all(zeroed) else ctx.log_warn)(
-            f"{job.who}: {where} done; force sensors zeroed on {sum(zeroed)} of {len(zeroed)} arms")
-        if any(zeroed):
-            job.ft_zero[job.request.serial] = {"at": ctx.now(), "reason": f"{where} (tools empty)"}
 
 
 def motion_clearance(job: Job) -> ContextManager[Clearance | None]:

@@ -27,10 +27,14 @@ from ...shared.runs.runs import (PLAN_ITERATIONS_RANGE, PLAN_RESOLUTION_RANGE, P
 from ...shared.assembly_tab.layout import (CHECK_ICON, EXEC_BAND, EXEC_ICON, GOAL_ICON, PLAN_ICON, PLAN_PLOTS_X,
                                            PLAN_SETTINGS_BAND, SETTINGS_BAND, STEP_BAND, plots_window)
 from ...world.clearance import ARM_MOVE
+from ...ui.second_press import show_waiting
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, block, chip, chip_line, section, values
 from .plan_plots import PlanPlots
 from .step_panel_base import SLIDER_STEP
 from scaffolding_assembly_core.ids import robot_id
+
+#: The button that zeroes the step's robot's force sensors while the bar is placed.
+ZERO_FORCE = "Zero force"
 
 if TYPE_CHECKING:
     from ...shared.assembly_planning.route_result import RouteResult
@@ -84,6 +88,12 @@ class StepsPanel:
                 hint="Run the step's parts on the robot: a motion at once; placing the bar, a Robotiq step and the "
                      f"servo's first pass after Confirm below or on the phone. {CommitConfirm.HINT}")
             plugin.clearance.add(ctx, gui, "exec")
+            # * Always there, grey but on the step that places the bar: shown only then, it would move what is below.
+            self._zero = gui.add_button(
+                ZERO_FORCE, disabled=True, icon=viser.Icon.SCALE,
+                hint=f"Zero every arm's force sensor of the step's robot, before or after the bar is placed (no zero "
+                     f"runs by itself); each zero is recorded in the run. Live on the step that places the bar. "
+                     f"{plugin.zero_press.hint}")
             # ! Keep changing text BELOW the buttons.
             self._details = gui.add_html("")
         with ctx.view.ui(band=SETTINGS_BAND) as gui:
@@ -128,6 +138,7 @@ class StepsPanel:
         plugin._slider.on_update(ctx.defer_value("scrub", lambda value: plugin._scrub(float(value)),
                                                  operator_only=True))
         commit.on_click(ctx.defer("exec", lambda: plugin._commit(ctx)))
+        self._zero.on_click(ctx.defer("zero force", lambda: plugin.zero_force(ctx)))
         self._time.on_update(ctx.defer_value("motion time", lambda value: plugin.set_traj_time(float(value))))
         self._ignore.on_update(ctx.defer_value("ignore built bars", lambda value: plugin.set_ignore_built(bool(value))))
         # ! Operator clicks only: draw writes the box back, and viser calls back for that too, which could undo a
@@ -187,6 +198,11 @@ class StepsPanel:
             who = f"{plugin._robot_name} ({short_serial(plugin.serial)})"
             self._moves.content = block(values(_cut(escape(exec_line(who, plugin.parts())))))
         self._check.label = plugin.goal_label()
+        offered = plugin.zero_force_part() is not None
+        if self._zero.disabled == offered:
+            self._zero.disabled = not offered
+        show_waiting(self._zero, offered and plugin.zero_press.waiting(ctx.now()) == plugin.zero_force_key(),
+                     ZERO_FORCE, None)
         if self._shown_time != plugin.traj_time:
             self._shown_time = self._time.value = plugin.traj_time
         minimum = "—" if math.isnan(plugin.minimum) else f"{plugin.minimum:.1f}"

@@ -31,6 +31,7 @@ from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON
 from husky_assembly_teleop.shared.execution.basis import basis_of
+from husky_assembly_teleop.shared.execution.force_sensors import ZERO_EVENT
 from husky_assembly_teleop.shared.runs.runs import record_event
 from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
 from husky_assembly_teleop.shared.execution.stream import arm_base_in_world
@@ -54,6 +55,8 @@ from scaffolding_assembly_core.process.solutions import MovementResult, Trajecto
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 
+#: Cindy, the assembly robot the requests run on.
+CINDY = "a200-0806"
 #: Wall-clock seconds a scenario may take: a guard missing makes a test wait forever, this makes it fail instead.
 WALL_LIMIT = 30.0
 
@@ -502,8 +505,8 @@ def test_an_error_inside_holds_and_gives_the_robot_back(monkeypatch):
 def test_the_transfer_with_the_workaround_runs_motion_then_the_bar_placed_and_grasped_by_hand():
     """B20_J's transfer step: the motion, the bar placed and clamped as one part (also 2), the servo.
 
-    Cancel at the bar's prompt leaves done = (3,), the force sensors already zeroed on the empty tools and kept for
-    the next request; the part's record is named after its first movement.
+    Cancel at the bar's prompt leaves done = (3,), the force sensors not zeroed (only Zero force zeroes them); the
+    part's record is named after its first movement.
     """
     lab = Lab(current=("B20_J", 3))
     request = lab.request("B20_J_transfer")
@@ -511,9 +514,48 @@ def test_the_transfer_with_the_workaround_runs_motion_then_the_bar_placed_and_gr
         (3, "motion", ()), (1, "operator", (2,)), (SERVO_INDEX, "servo", ())]
     result, _held = execute(lab, request, False)
     assert result.status == CANCELLED and result.done == (3,)
-    assert all(len(arm._zero_ft.calls) == 1 for arm in lab.cindy.arms.values())
-    assert lab.plugin._ft_zero[request.serial]["reason"] == "transit to the insert start (tools empty)"
+    assert all(not arm._zero_ft.calls for arm in lab.cindy.arms.values()) and not lab.plugin._ft_zero
     assert [file["movement"] for file in lab.run.files()] == ["B20_J_transfer", "B20_J_place_bar"]
+
+
+def test_zero_force_with_no_request_zeroes_every_arm_under_its_own_lease_and_records_it():
+    """Each arm zeroed once, the lease given back, the run's event with what each arm's reading was."""
+    lab = Lab(current=("B20_J", 1))
+
+    async def scenario():
+        return await lab.plugin.request_zero_force(CINDY, "assembly tab", "B20_J", "B20_J_place_bar")
+
+    assert run_guarded(scenario()) == ""
+    assert all(len(arm._zero_ft.calls) == 1 for arm in lab.cindy.arms.values()) and lab.free()
+    (_event, fields), = [record for record in lab.run.records if record[0] == ZERO_EVENT]
+    assert (fields["action"], fields["movement"]) == ("B20_J", "B20_J_place_bar")
+    data = fields["data"]
+    assert (data["robot"], data["by"], data["during"]) == (CINDY, "assembly tab", None)
+    assert set(data["arms"]) == set(lab.cindy.arms) and all("wrench_before" in arm for arm in data["arms"].values())
+    assert lab.plugin._ft_zero[CINDY]["reason"] == "Zero force (assembly tab)"
+
+
+def test_zero_force_is_refused_while_a_part_runs_and_zeroes_at_the_prompt_under_the_requests_lease():
+    """The transfer's motion runs: refused, nothing zeroed. At the bar's prompt: zeroed, and the event says during."""
+    lab = Lab(current=("B20_J", 3))
+    request = lab.request("B20_J_transfer")
+
+    async def scenario():
+        future = lab.plugin.request_execute(request)
+        refused = await lab.plugin.request_zero_force(CINDY, "assembly tab")
+        zeroed_early = sum(len(arm._zero_ft.calls) for arm in lab.cindy.arms.values())
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        await settle(lab)
+        why = await lab.plugin.request_zero_force(CINDY, "assembly tab", "B20_J", "B20_J_place_bar")
+        await answer(lab, False)
+        return refused, zeroed_early, why, await future
+
+    refused, zeroed_early, why, result = run_guarded(scenario())
+    assert "runs a part" in refused and zeroed_early == 0
+    assert why == "" and all(len(arm._zero_ft.calls) == 1 for arm in lab.cindy.arms.values())
+    (_event, fields), = [record for record in lab.run.records if record[0] == ZERO_EVENT]
+    assert "B20_J" in fields["data"]["during"] and result.status == CANCELLED and lab.free()
 
 
 def test_the_whole_transfer_step_ends_with_the_grasp_and_its_servo():

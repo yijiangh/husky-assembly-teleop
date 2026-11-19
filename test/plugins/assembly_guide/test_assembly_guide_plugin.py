@@ -23,6 +23,7 @@ from husky_assembly_teleop.plugins.assembly_guide.plugin import AUTO, GOD, OFF, 
     simulation_problem
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.steps import as_run
+from husky_assembly_teleop.shared.execution.force_sensors import zero_force_sensors
 from husky_assembly_teleop.shared.execution.operator import Prompt
 from husky_assembly_teleop.shared.movement_exec_contract import BY_HAND_PART, DONE as EXEC_DONE, ExecResult
 from husky_assembly_teleop.shared.assembly_planning.route_result import GoalCheck
@@ -110,7 +111,7 @@ class Executor:
         """Nothing finished."""
         self.ctx, self.done, self.requests, self.forgot, self.cancelled = ctx, {}, [], [], 0
         self.prompt, self.active, self.carried, self.dry_run = None, "", None, False
-        self._waiting = None
+        self._waiting, self.zeroes = None, []
 
     def finished(self, loaded, action):
         """What was finished for `action`."""
@@ -150,6 +151,20 @@ class Executor:
     def request_dry_run(self, on):
         """Keep it."""
         self.dry_run = on
+
+    def request_zero_force(self, serial, by, action=None, movement=None, bar_looked_clamped=None):
+        """Zero every arm under a lease of its own, as the real one does with no request running."""
+        self.zeroes.append((serial, by, action, movement, bar_looked_clamped))
+        future = asyncio.get_running_loop().create_future()
+
+        async def zero():
+            with self.ctx.lease_robots([serial], "zero force"):
+                zeroed = await zero_force_sensors(self.ctx, list(self.ctx.world.robots[serial].arms.values()), by)
+            failed = [name for name, result in zeroed.items() if not result["sent"]]
+            future.set_result(f"{', '.join(failed)} NOT zeroed: the zero service is not available" if failed else "")
+
+        self.ctx.spawn("zero force", zero())
+        return future
 
     def _finish(self, request, future):
         """Every movement of the request done; nothing in a dry run."""
@@ -450,6 +465,8 @@ def test_zero_force_on_placing_the_bar_asks_first_then_zeroes_every_arm(monkeypa
         await lab.ticks(10)
         assert all(len(arm._zero_ft.calls) == 1 for arm in arms)
         assert lab.ctx.world.robots[CINDY].lease_slot.lease is None, "the lease is given back"
+        (serial, by, action, _movement, clamped), = lab.executor.zeroes
+        assert (serial, by, action, clamped) == (CINDY, "guide", "B20_J", False), "the executor zeroes and records it"
 
     asyncio.run(walk())
 
