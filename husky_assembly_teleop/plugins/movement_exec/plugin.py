@@ -29,6 +29,7 @@ from ...robot_interface.robot_lease import NotLeased
 from ...shared.assembly_planning.movement import Routine
 from ...shared.assembly_planning.route_result import pose_error
 from ...shared.execution.basis import STALE_BASE
+from ...shared.execution.force_sensors import ZERO_EVENT, zero_force_sensors, zero_refusal
 from ...shared.execution.moving import moving_reason
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import INTERRUPTED, motion_command
@@ -244,6 +245,61 @@ class MovementExecPlugin(HuskyPlugin):
             return
         self._dry_run = bool(on)
         self._ctx.log_warn(f"dry run {'ON: every check, nothing sent' if on else 'OFF: Exec moves the robots'}")
+
+    def request_zero_force(self, serial: str, by: str, action: str | None = None, movement: str | None = None,
+                           bar_looked_clamped: bool | None = None) -> asyncio.Future[str]:
+        """Zero every arm's force sensor of robot `serial` and record it in the run (`MovementExecContract`).
+
+        ! Main thread.
+        """
+        ctx = self._ctx
+        future = asyncio.get_running_loop().create_future()
+        robot = ctx.world.robots.get(serial)
+        if robot is None:
+            refusal = f"{short_serial(serial)} is not connected"
+        elif self.active and self.prompt is None:
+            refusal = f"{self._active} runs a part: zero at its prompt, or once it is done"
+        else:
+            refusal = zero_refusal(serial, robot, ctx.now())
+        if refusal:
+            self._zero_ended(ctx, f"Zero force refused: {refusal}", future)
+            return future
+        ctx.spawn(f"zero force {short_serial(serial)}",
+                  self._zero(ctx, serial, by, action, movement, bar_looked_clamped, future))
+        return future
+
+    async def _zero(self, ctx: PluginContext, serial: str, by: str, action: str | None, movement: str | None,
+                    bar_looked_clamped: bool | None, future: asyncio.Future) -> None:
+        """Zero under the running request's lease at its prompt, else under a lease of its own; record it in the run."""
+        label = f"Zero force ({by}) {short_serial(serial)}"
+        arms = list(ctx.world.robots[serial].arms.values())
+        try:
+            if self.active:  # * at its prompt: the request has every robot's lease
+                zeroed = await zero_force_sensors(ctx, arms, label)
+            else:
+                with ctx.lease_robots([serial], label):
+                    zeroed = await zero_force_sensors(ctx, arms, label)
+        except NotLeased as taken:
+            self._zero_ended(ctx, f"Zero force refused: {taken}", future)
+            return
+        at = ctx.now()
+        ctx.require("assembly_run").request_record(
+            ZERO_EVENT, action=action, movement=movement,
+            data={"robot": serial, "by": by, "bar_looked_clamped": bar_looked_clamped, "arms": zeroed,
+                  "during": self._active if self.active else None})
+        failed = [name for name, result in zeroed.items() if not result["sent"]]
+        if len(failed) < len(zeroed):
+            self._ft_zero[serial] = {"at": at, "reason": f"Zero force ({by})"}
+        self._zero_ended(ctx, f"{', '.join(failed)} NOT zeroed: the zero service is not available" if failed else "",
+                         future, f"{label}: force sensors zeroed")
+
+    def _zero_ended(self, ctx: PluginContext, why: str, future: asyncio.Future, done: str = "") -> None:
+        """Show how a Zero force ended on the panel's last line and resolve its future with why not ("" if zeroed)."""
+        self._last, self._last_failed = why or done, bool(why)
+        if why:
+            ctx.log_warn(why)
+        if not future.done():
+            future.set_result(why)
 
     # --- --- --- --- --- HOOKS --- --- --- --- ---
 
