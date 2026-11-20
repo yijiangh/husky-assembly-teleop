@@ -101,6 +101,19 @@ def test_solve_ik_at_the_stowed_pose(mirror):
 
 
 @pytest.mark.slow
+def test_solve_ik_skips_to_the_next_solution(mirror):
+    """skip=1: the second nearest collision-free combination; past the last one, none, saying so."""
+    cindy = _cindy()
+    mirror.sync(Scene(robots={CINDY_ID: cindy}))
+    first = solve_ik(mirror, cindy, _tool0_targets(cindy))
+    second = solve_ik(mirror, cindy, _tool0_targets(cindy), skip=1)
+    assert second.rank > first.rank == 1 and second.max_change >= first.max_change
+    assert second.joints != first.joints
+    past = solve_ik(mirror, cindy, _tool0_targets(cindy), skip=first.combinations)
+    assert past.joints is None and "no more solutions" in past.reason
+
+
+@pytest.mark.slow
 def test_solve_ik_keeps_a_lift_written_a_whole_turn_off_in_range(mirror):
     """A reference lift a whole turn off (358° for -2°), as a process may write it: the goal takes the -2°."""
     cindy = _cindy()

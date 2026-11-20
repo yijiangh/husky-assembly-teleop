@@ -19,13 +19,16 @@ from husky_assembly_teleop.shared.process_scene.live_scene import SceneNotShown
 from husky_assembly_teleop.plugins.assembly_guide import plugin as guide_module
 from husky_assembly_teleop.plugins.assembly_guide.parts import DRIVE, HAND, MARK, MOVE, NOTHING_TO_MOVE, PARK
 from husky_assembly_teleop.world.checks import INFO, WARN
-from husky_assembly_teleop.plugins.assembly_guide.plugin import AUTO, GOD, OFF, PREPARE_ZERO, REDO, \
+from husky_assembly_teleop.plugins.assembly_guide.plugin import AUTO, AUTO_PLAN_TRIES, GOD, OFF, PREPARE_ZERO, REDO, \
     AssemblyGuidePlugin, simulation_problem
+from husky_assembly_teleop.shared.assembly_tab.ik_choice import FALLBACK_SLOWDOWN, NEXT_SOLUTION
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.steps import as_run
 from husky_assembly_teleop.shared.execution.force_sensors import zero_force_sensors
 from husky_assembly_teleop.shared.execution.operator import Prompt
-from husky_assembly_teleop.shared.movement_exec_contract import BY_HAND_PART, DONE as EXEC_DONE, ExecResult
+from husky_assembly_teleop.shared.assembly_planning.movement import Routine
+from husky_assembly_teleop.shared.movement_exec_contract import BY_HAND_PART, DEFAULT_TRAJ_TIME, DONE as EXEC_DONE, \
+    ExecResult
 from husky_assembly_teleop.shared.assembly_planning.route_result import GoalCheck
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath
 from husky_assembly_teleop.shared.planner.plan import Plan
@@ -710,19 +713,28 @@ def test_every_part_of_an_action_the_run_marked_is_done(monkeypatch):
 class ArmPlanner:
     """The arm planner: solves any goal, and finds a two-row path to it, or none."""
 
-    def __init__(self, finds: bool, turned: dict[str, float] | None = None):
-        """Whether its searches find a path; joints its IK answers turned by these radians from the reference."""
+    def __init__(self, finds: bool, turned: dict[str, float] | None = None, refuses: int = 0, ends: str = "failed",
+                 solutions: int = 8):
+        """Whether it finds paths, joints its IK turns (radians), how many first goals end and how, IK solutions."""
         self.finds, self.requests, self.solved, self.turned = finds, [], [], turned or {}
+        self.refuses, self.ends, self.skips, self.solutions = refuses, ends, [], solutions
 
-    def solve_goals(self, serial, targets, reference=None):
-        """The reference itself as the goal of every arm, turned where asked."""
+    def solve_goals(self, serial, targets, reference=None, skip=0):
+        """The reference itself as the goal of every arm, turned where asked, and by 0.1 rad more per skip."""
         self.solved.append((serial, tuple(targets)))
-        goal = {name: value + self.turned.get(name, 0.0) for name, value in (reference or {}).items()}
-        return answered((goal, "goal by IK at the live base (ssik, rank 1 of 8)"))
+        self.skips.append(skip)
+        if skip >= self.solutions:
+            return answered((None, "no goal at the live base: no more solutions: 2 of 8 are clear of collisions, "
+                                   "all passed over"))
+        goal = {name: value + self.turned.get(name, 0.0) + 0.1 * skip for name, value in (reference or {}).items()}
+        return answered((goal, f"goal by IK at the live base (ssik, rank {skip + 1} of 8)"))
 
     def request_plan(self, request):
         """A path from zeros to the goal, or a failed plan."""
         self.requests.append(request)
+        if len(self.requests) <= self.refuses:
+            return answered(Plan(len(self.requests), request, self.ends, None,
+                                 "no plan: the target is past the joint limits: ur_arm_shoulder_lift_joint"))
         if not self.finds:
             return answered(Plan(len(self.requests), request, "failed", None, "no path in 10 s"))
         rows = np.array([(0.0,) * len(request.goals), request.goals])
@@ -754,6 +766,7 @@ def test_a_one_arm_move_is_planned_by_the_arm_planner_and_fails_without_a_path(m
     with pytest.raises(RuntimeError, match="no path \\(arm planner\\)"):
         asyncio.run(plan())
     assert len(lab.ctx.plugins["arm_planner"].requests) == 1, "Off: one search, no motion planner after it"
+    assert lab.guide._choice.is_open, "the pop-up asks what next"
     lab.ctx.plugins["arm_planner"] = ArmPlanner(finds=False)
     lab.guide.mode = AUTO
     with pytest.raises(RuntimeError, match="no path"):
@@ -779,6 +792,48 @@ def _approach(lab):
     return asyncio.run(plan())
 
 
+def test_an_approach_refused_asks_and_next_plans_the_next_ik_solution_slower(monkeypatch):
+    """Alice's approach past the limits at IK solution 1: the pop-up; Next prepares solution 2, slower, warning."""
+    lab = Guide(monkeypatch, "B21_H_approach")
+    planner = lab.ctx.plugins["arm_planner"] = ArmPlanner(finds=True, refuses=1)
+    prepared = []
+    monkeypatch.setattr(lab.guide, "prepare", lambda ctx: prepared.append(lab.guide.part))
+    with pytest.raises(RuntimeError, match="past the joint limits"):
+        _approach(lab)
+    choice = lab.guide._choice
+    assert choice.is_open and "IK solution 1 (the one nearest the process's joints) failed" in \
+        choice._popup._text.content
+    part = lab.guide._ik_failed
+    lab.guide.next_ik_solution(lab.ctx)
+    assert prepared == [part] and not choice.is_open, "Next prepares the part again"
+    route, _basis, path, warned = _approach(lab)
+    assert planner.skips == [0, 1] and route.ok and warned
+    warning, = route.warnings
+    assert "IK solution 2" in warning and "Play the preview" in warning
+    slower = FALLBACK_SLOWDOWN * DEFAULT_TRAJ_TIME[Routine.SUPPORT_APPROACH]
+    assert lab.guide.traj_time == slower and path.duration == pytest.approx(slower)
+    assert "IK solution 2" in lab.guide.goal_text
+
+
+def test_an_approach_without_solutions_left_greys_next_and_a_cancel_asks_nothing(monkeypatch):
+    """IK has no third solution: Next greyed, Move the grasp says where in the notes; a cancelled search: no pop-up."""
+    lab = Guide(monkeypatch, "B21_H_approach")
+    lab.ctx.plugins["arm_planner"] = ArmPlanner(finds=True, solutions=2)
+    asyncio.run(lab.ticks())
+    part = next(each for each in lab.guide.parts if each.label == "B21_H_approach: approach")
+    lab.guide._ik_skip = (lab.guide.parts.index(part), lab.run.view.process, 2)
+    with pytest.raises(RuntimeError, match="no more solutions"):
+        _approach(lab)
+    assert lab.guide._choice.is_open and lab.guide._choice.buttons[NEXT_SOLUTION].disabled
+    lab.guide.move_grasp()
+    assert not lab.guide._choice.is_open and "Slide mm" in lab.guide._notes_html(lab.ctx, lab.ctx.now())
+    lab.guide._ik_skip = (None, None, 0)
+    lab.ctx.plugins["arm_planner"] = ArmPlanner(finds=True, refuses=1, ends="cancelled")
+    with pytest.raises(RuntimeError, match="no path"):
+        _approach(lab)
+    assert not lab.guide._choice.is_open, "a search cancelled asks nothing"
+
+
 def test_motion_time_times_the_plan_waiting_for_go_again(monkeypatch):
     """While Go waits, a new Motion time re-times the preview and the question; the slider greys only while moving."""
     lab = Guide(monkeypatch, "B21_H_approach")
@@ -796,6 +851,26 @@ def test_motion_time_times_the_plan_waiting_for_go_again(monkeypatch):
     lab.guide.moving = part
     kind.show(lab.ctx, part)
     assert kind._time.disabled, "greyed while the move runs"
+
+
+def test_a_transfer_that_finds_no_path_plans_the_same_goal_again_in_auto_only(monkeypatch):
+    """Cindy's transfer without a path: Off one search, Auto three, all to the nearest IK solution."""
+    lab = Guide(monkeypatch, "B21_J_transfer")
+
+    async def plan():
+        await lab.ticks()
+        part = next(each for each in lab.guide.parts if each.movement == "B21_J_transfer" and each.kind != DRIVE)
+        loaded = lab.run.view.process
+        step = loaded.steps[loaded.index_of(part.action, part.step.primary)]
+        return await lab.guide._plan_on_arm_planner(lab.ctx, part, "a200-0806", step)
+
+    for mode, searches in ((OFF, 1), (AUTO, AUTO_PLAN_TRIES)):
+        lab.guide.mode = mode
+        planner = lab.ctx.plugins["arm_planner"] = ArmPlanner(finds=False)
+        with pytest.raises(RuntimeError, match="no path \\(arm planner\\): no path in 10 s"):
+            asyncio.run(plan())
+        assert planner.skips == [0] and len(planner.requests) == searches
+        assert len({request.goals for request in planner.requests}) == 1
 
 
 def test_a_transfer_goal_turns_each_joint_to_the_value_nearest_the_arms_now(monkeypatch):

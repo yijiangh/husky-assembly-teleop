@@ -52,7 +52,7 @@ def run_plan(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Even
                              ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide,
                              goal_joints=request.goal_joints, goal_poses=request.goal_poses,
                              linear_step=request.linear_step, search=request.search, abort=abort, log=log,
-                             tree=tree)
+                             tree=tree, ik_skip=request.ik_skip)
     except Exception as error:
         return RouteResult(MovementResult("failed", _reason(error)), None, seconds=time.monotonic() - started)
 
@@ -74,7 +74,8 @@ def run_ik(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Event,
         serial = _acting(request, abort)
         return check_goal(pool.mirror(serial), request.loaded, request.step, request.snapshot, request.robots,
                           transfer_as_free=request.transfer_as_free,
-                          ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide, log=log)
+                          ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide, log=log,
+                          ik_skip=request.ik_skip)
     except Exception as error:
         return GoalCheck(request.step.movement.id, None, False, _reason(error), seconds=time.monotonic() - started)
 

@@ -621,6 +621,21 @@ def test_check_goal_of_a_support_approach(purged, configs, mirrors):
 
 
 @pytest.mark.slow
+def test_check_goal_takes_the_ik_solution_asked_for(purged, configs, mirrors):
+    """Alice's approach with ik_skip 1: the second nearest solution, another one than the first, reaching the target."""
+    alice = robot_id(f"a200-{ALICE}")
+    mirror = mirrors.setdefault(alice, CompasFabMirror(alice))
+    asked = step(purged, "B21_H_approach"), design_scene(purged, "B21_H_approach")
+    first, second = (check_goal(mirror, purged, *asked, configs, log=lambda _line: None, ik_skip=skip)
+                     for skip in (0, 1))
+    assert first.ok and second.ok and second.ik.rank > first.ik.rank, second.reason
+    assert second.goal_joints != first.goal_joints
+    target, = movement(purged, "B21_H_approach")[1].target.link_poses.values()
+    reached = link_pose(robot_config(ALICE).model.urdf, second.base, second.goal_joints, "ur_arm_tool0")
+    assert pose_error(reached, target)[0] <= POSE_TOL[0] and pose_error(reached, target)[1] <= POSE_TOL[1]
+
+
+@pytest.mark.slow
 def test_a_support_goal_outside_the_urdf_limits_is_refused(purged, configs):
     """Alice's approach to given joints with the pan past its limit: refused before any search, naming the joint."""
     alice = robot_id(f"a200-{ALICE}")

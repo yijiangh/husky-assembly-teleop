@@ -64,6 +64,7 @@ class MotionPlanRequest:
         joints: Acting robot joints to check collisions at (`request_collisions`); None: as in the snapshot.
         servo: The servo pass to plan (`request_servo_step`); None for the other requests.
         label: Names the request in the planner's panel and log; empty: the movement's id.
+        ik_skip: The goal by IK passes over this many nearer collision-free solutions (`solve_ik`); 0: the nearest.
     """
 
     loaded: LoadedProcess
@@ -80,6 +81,7 @@ class MotionPlanRequest:
     joints: Mapping[str, float] | None = None
     servo: ServoAsk | None = None
     label: str = ""
+    ik_skip: int = 0
 
 
 @dataclass(frozen=True)
