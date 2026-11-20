@@ -88,10 +88,16 @@ class FakeExecutor:
 
     active = ""
     carried = None
+    prompt = None
 
     def __init__(self):
         """No request yet."""
-        self.requests, self.futures = [], []
+        self.requests, self.futures, self.zeroes = [], [], []
+
+    def request_zero_force(self, serial, by, action=None, movement=None, bar_looked_clamped=None):
+        """Keep what was asked; zeroed at once."""
+        self.zeroes.append((serial, by, action, movement))
+        return _answered("")
 
     def request_execute(self, request):
         """Keep the request; answer later."""
@@ -179,6 +185,33 @@ def test_steps_follow_the_run():
     assert "with: B20_R_ungrasp" in lab.html()
     assert ("retreats left_ur_arm, right_ur_arm, the jaws loosening as it backs out; then opens the gripper screws on "
             "left_ur_arm, right_ur_arm in the retreat") in lab.html()
+
+
+def test_zero_force_is_live_on_the_step_placing_the_bar_and_asks_first_then_has_the_executor_zero():
+    """B20_J (workaround): the transfer step places the bar, so Zero force is live there and grey on the insert.
+
+    The first press only asks; the second hands the zero to the executor with the step's action and its part placing
+    the bar, and the line says it was recorded.
+    """
+    lab = Steps(("B20_J", 3))
+    zero = lab.plugin._panel._zero
+    assert not zero.disabled
+
+    async def scenario():
+        lab.plugin.zero_force(lab.ctx)
+        lab.update()
+        assert lab.executor.zeroes == [] and zero.label == "Zero force?" and "Press again" in lab.html()
+        lab.ctx.t += 0.5
+        lab.plugin.zero_force(lab.ctx)
+        await asyncio.sleep(0)
+        lab.update()
+
+    asyncio.run(scenario())
+    assert lab.executor.zeroes == [("a200-0806", "assembly tab", "B20_J", "B20_J_place_bar + B20_J_grasp")]
+    assert "zeroed, recorded in the run" in lab.html() and zero.label == "Zero force"
+    lab.run.view.current = ("B20_J", 4)
+    lab.update()
+    assert zero.disabled
 
 
 def test_live_ik_says_which_start_it_solves():

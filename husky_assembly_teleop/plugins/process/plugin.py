@@ -122,7 +122,7 @@ NO_RHINO_FILE = "(no room)"
 MEASURED_PREFIX = "obstacles/"
 
 
-def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[Process, dict, Stopwatch]:
+def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[Process, dict, Stopwatch, list[str]]:
     """Load a process, converting an old export first, and read its robots' URDFs with their meshes.
 
     Runs on the worker thread.
@@ -133,14 +133,14 @@ def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[Pro
         report: Called with a progress string.
 
     Returns:
-        tuple: The process, each robot's yourdfpy model by robot id, and the stopwatch.
+        tuple: The process, each robot's yourdfpy model by robot id, the stopwatch, and the loading's warnings.
     """
-    watch = Stopwatch()
-    process = load_process(folder, data_directory, report, watch)
+    watch, warnings = Stopwatch(), []
+    process = load_process(folder, data_directory, report, watch, warnings.append)
     report("reading the robots' URDFs and meshes")
     models = load_robot_models(process)
     watch.lap("robot URDFs and meshes")
-    return process, models, watch
+    return process, models, watch, warnings
 
 
 #: Hover text of a movement's controller and end chips.
@@ -774,7 +774,7 @@ class ProcessPlugin(HuskyPlugin):
         self._error, self._progress = "", f"loading {folder}"
         try:
             async with timeout(LOAD_TIMEOUT):
-                process, models, watch = await ctx.run_in_thread(
+                process, models, watch, warnings = await ctx.run_in_thread(
                     _load_in_background, folder, ctx.config.data_directory,
                     lambda text: setattr(self, "_progress", text))
                 differences = await ctx.run_in_thread(robot_differences, process, ctx.config.robots)
@@ -800,6 +800,8 @@ class ProcessPlugin(HuskyPlugin):
         self._changed()
         ctx.log_info(f"loaded {source} in {watch.summary()}; "
                      f"{len(process.schedule)} actions, {len(self._movements)} movements")
+        for line in warnings:
+            ctx.log_warn(line)
         self._robot_differences = differences
         for line in differences:
             ctx.log_warn(f"a process robot differs from the configured one: {line}")

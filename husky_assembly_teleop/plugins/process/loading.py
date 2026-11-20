@@ -1,5 +1,5 @@
 """
-Loading a process folder for the process plugin; an old compas_fab export is converted first.
+Loading a process folder for the process plugin: an old export converted, shoulder lifts moved into their window.
 
 ! Runs on a worker thread: nothing here may touch viser, PyBullet or a PluginContext.
 """
@@ -13,6 +13,7 @@ from scaffolding_assembly_core.legacy.conversion import (OLD_EXPORT_FILE, PROCES
                                                          converted_folder, is_old_export, is_up_to_date)
 from scaffolding_assembly_core.legacy.timing import Stopwatch
 from scaffolding_assembly_core.process import Process, read
+from scaffolding_assembly_core.process.joint_range import lifts_in_range
 
 from ...shared.process_contract import RHINO_FOLDER
 
@@ -45,16 +46,19 @@ def rhino_files(root: Path | None) -> list[str]:
 
 
 def load_process(folder: Path, data_directory: Path, report: Callable[[str], None] = lambda _text: None,
-                 watch: Stopwatch | None = None) -> Process:
+                 watch: Stopwatch | None = None, warn: Callable[[str], None] = lambda _text: None) -> Process:
     """Read a process folder; an old compas_fab export is first converted into `<export>_process`.
 
-    The converted copy is reused while it is newer than the export.
+    - The converted copy is reused while it is newer than the export.
+    - Every shoulder lift outside -270° to +90° is moved into it by whole turns (`lifts_in_range`): outside, the same
+      pose is out of reach, and IK seeds and joint goals come from these values.
 
     Args:
         folder: The process folder (holding process.json), or an old export (holding ActionSchedule.json).
         data_directory: The monitor's data directory, for converting an old export's robots.
         report: Told what is being done, for the panel. Called from the loading thread.
         watch: Gets a lap per step, if given.
+        warn: Told each shoulder lift moved, one line each.
 
     Returns:
         Process: The process; its `folder` is the converted copy for an old export.
@@ -71,6 +75,8 @@ def load_process(folder: Path, data_directory: Path, report: Callable[[str], Non
     if not (folder / PROCESS_FILE).is_file():
         raise FileNotFoundError(f"no {PROCESS_FILE} or {OLD_EXPORT_FILE} in {folder}")
     report(f"reading {folder.name}")
-    process = read(folder)
+    process, moved = lifts_in_range(read(folder))
+    for lift in moved:
+        warn(f"shoulder lift written a whole turn off, moved into -270\u00b0 to +90\u00b0 (the same pose): {lift}")
     watch.lap("read process")
     return process

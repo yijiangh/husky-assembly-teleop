@@ -245,6 +245,31 @@ class MovementExecContract(Protocol):
     def request_dry_run(self, on: bool) -> None:
         """Turn the dry run on or off; refused while a request runs."""
 
+    def request_zero_force(self, serial: str, by: str, action: str | None = None, movement: str | None = None,
+                           bar_looked_clamped: bool | None = None) -> asyncio.Future[str]:
+        """Zero every arm's force sensor of robot `serial` now and record it in the run; the future says why not.
+
+        - Refused while a request runs a part (only its open prompt lets a zero in), or the robot moves, an arm is not
+          under the joint controller, or another plugin has the robot (`zero_refusal`).
+        - It zeroes whatever the tools hold: with a bar in them its weight is tared away too. The record keeps each
+          arm's reading tared away.
+
+        Args:
+            serial: The robot.
+            by: Who asked, for the log and the record, e.g. "assembly tab".
+            action: The action it was asked at, for the record; None for none.
+            movement: The movement or part it was asked at, for the record.
+            bar_looked_clamped: Whether the asker saw the bar in the tools (a box ticked), None when it can't tell.
+
+        Returns:
+            asyncio.Future[str]: "" once every arm is zeroed, else why not (refused, or an arm's zero not sent).
+        """
+
+
+def places_bar(part: PartPlan) -> bool:
+    """Whether a part places the bar in the tools or clamps it: the step where Zero force is offered."""
+    return any("places the bar" in asked or asked.startswith("clamp it") for asked in part.text.split("; "))
+
 
 def step_running(robots: Mapping[str, HuskyRobotInterface]) -> str:
     """Why nothing that changes the current step may change now: STEP_RUNNER has a robot's lease; else "".

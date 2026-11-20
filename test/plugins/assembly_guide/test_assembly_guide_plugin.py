@@ -19,10 +19,11 @@ from husky_assembly_teleop.shared.process_scene.live_scene import SceneNotShown
 from husky_assembly_teleop.plugins.assembly_guide import plugin as guide_module
 from husky_assembly_teleop.plugins.assembly_guide.parts import DRIVE, HAND, MARK, MOVE, NOTHING_TO_MOVE, PARK
 from husky_assembly_teleop.world.checks import INFO, WARN
-from husky_assembly_teleop.plugins.assembly_guide.plugin import AUTO, GOD, OFF, REDO, AssemblyGuidePlugin, \
-    simulation_problem
+from husky_assembly_teleop.plugins.assembly_guide.plugin import AUTO, GOD, OFF, PREPARE_ZERO, REDO, \
+    AssemblyGuidePlugin, simulation_problem
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.steps import as_run
+from husky_assembly_teleop.shared.execution.force_sensors import zero_force_sensors
 from husky_assembly_teleop.shared.execution.operator import Prompt
 from husky_assembly_teleop.shared.movement_exec_contract import BY_HAND_PART, DONE as EXEC_DONE, ExecResult
 from husky_assembly_teleop.shared.assembly_planning.route_result import GoalCheck
@@ -110,7 +111,7 @@ class Executor:
         """Nothing finished."""
         self.ctx, self.done, self.requests, self.forgot, self.cancelled = ctx, {}, [], [], 0
         self.prompt, self.active, self.carried, self.dry_run = None, "", None, False
-        self._waiting = None
+        self._waiting, self.zeroes = None, []
 
     def finished(self, loaded, action):
         """What was finished for `action`."""
@@ -150,6 +151,20 @@ class Executor:
     def request_dry_run(self, on):
         """Keep it."""
         self.dry_run = on
+
+    def request_zero_force(self, serial, by, action=None, movement=None, bar_looked_clamped=None):
+        """Zero every arm under a lease of its own, as the real one does with no request running."""
+        self.zeroes.append((serial, by, action, movement, bar_looked_clamped))
+        future = asyncio.get_running_loop().create_future()
+
+        async def zero():
+            with self.ctx.lease_robots([serial], "zero force"):
+                zeroed = await zero_force_sensors(self.ctx, list(self.ctx.world.robots[serial].arms.values()), by)
+            failed = [name for name, result in zeroed.items() if not result["sent"]]
+            future.set_result(f"{', '.join(failed)} NOT zeroed: the zero service is not available" if failed else "")
+
+        self.ctx.spawn("zero force", zero())
+        return future
 
     def _finish(self, request, future):
         """Every movement of the request done; nothing in a dry run."""
@@ -400,14 +415,15 @@ def test_redo_from_a_marked_action_reopens_every_later_one(monkeypatch):
 
 
 def test_a_part_by_hand_is_done_once_every_box_is_ticked(monkeypatch):
-    """Prepare and Go stay grey; one Done is refused until every box is ticked, then records it; the servo is next."""
+    """Go stays grey, Prepare only zeroes; one Done is refused until every box is ticked, then records it; the servo."""
     lab = Guide(monkeypatch)
 
     async def walk():
         await to_the_bar_by_hand(lab)
         guide, boxes = lab.guide, lab.guide.kinds[HAND].boxes
         assert [box.label for box in boxes[:3]] == ["Bar placed", "Screws clamped", "Hands clear"]
-        assert guide._prepare.disabled and guide._go.disabled and not guide._done_button.disabled
+        assert guide._prepare.label == PREPARE_ZERO and not guide._prepare.disabled
+        assert guide._go.disabled and not guide._done_button.disabled
         guide.prepare(lab.ctx)
         guide.done(lab.ctx)
         await lab.ticks()
@@ -450,6 +466,36 @@ def test_zero_force_on_placing_the_bar_asks_first_then_zeroes_every_arm(monkeypa
         await lab.ticks(10)
         assert all(len(arm._zero_ft.calls) == 1 for arm in arms)
         assert lab.ctx.world.robots[CINDY].lease_slot.lease is None, "the lease is given back"
+        (serial, by, action, _movement, clamped), = lab.executor.zeroes
+        assert (serial, by, action, clamped) == (CINDY, "guide", "B20_J", False), "the executor zeroes and records it"
+
+    asyncio.run(walk())
+
+
+def test_prepare_on_placing_the_bar_zeroes_at_once_and_asks_again_once_a_box_is_ticked(monkeypatch):
+    """Tools empty: one Prepare zeroes each arm; with a box ticked the first only asks (Prepare?), the second zeroes."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        guide, hand = lab.guide, lab.guide.kinds[HAND]
+        arms = list(lab.ctx.world.robots[CINDY].arms.values())
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 1 for arm in arms), "one press while no box is ticked"
+        assert [(by, clamped) for _serial, by, _action, _movement, clamped in lab.executor.zeroes] == \
+            [("guide Prepare", False)]
+        assert not lab.executor.requests and guide.owner is None, "nothing else runs"
+        hand.boxes[0].value = True
+        guide.prepare(lab.ctx)
+        await lab.ticks()
+        assert all(len(arm._zero_ft.calls) == 1 for arm in arms), "a box ticked: the first press only asks"
+        assert "looks clamped" in guide.refusal(lab.ctx.t).detail and guide._prepare.label.endswith("?")
+        lab.ctx.t += 0.5
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 2 for arm in arms)
+        assert lab.executor.zeroes[-1][-1] is True, "recorded as zeroed with the bar looking clamped"
 
     asyncio.run(walk())
 
@@ -717,6 +763,39 @@ def test_a_one_arm_move_is_planned_by_the_arm_planner_and_fails_without_a_path(m
     lab.guide.arm_planner_moves = False
     lab.ctx.plugins["arm_planner"] = ArmPlanner(finds=True)
     assert asyncio.run(plan()) is None and lab.ctx.plugins["arm_planner"].requests == [], "the box off"
+
+
+def _approach(lab):
+    """Plan Alice's B21_H approach on the arm planner, shown as the guide's part; (route, basis, path, warned)."""
+    async def plan():
+        await lab.ticks()
+        part = next(each for each in lab.guide.parts if each.label == "B21_H_approach: approach")
+        if lab.guide.part is not part:
+            lab.guide._show(lab.ctx, lab.guide.parts.index(part), select=False)
+        loaded = lab.run.view.process
+        step = loaded.steps[loaded.index_of(part.action, part.step.primary)]
+        return await lab.guide._plan_on_arm_planner(lab.ctx, part, "a200-0804", step)
+
+    return asyncio.run(plan())
+
+
+def test_motion_time_times_the_plan_waiting_for_go_again(monkeypatch):
+    """While Go waits, a new Motion time re-times the preview and the question; the slider greys only while moving."""
+    lab = Guide(monkeypatch, "B21_H_approach")
+    lab.ctx.plugins["arm_planner"] = ArmPlanner(finds=True)
+    route, _basis, path, _warned = _approach(lab)
+    part = lab.guide.part
+    lab.guide._waiting = (part, route, lambda timed: f"Run: {timed.duration:.1f} s")
+    lab.guide.procedure.preview_path = path
+    lab.guide.set_traj_time(40.0)
+    assert lab.guide.procedure.preview_path.duration == pytest.approx(40.0)
+    assert lab.guide.procedure.prompt == "Run: 40.0 s" and lab.guide.traj_time == 40.0
+    kind = lab.guide.kinds[MOVE]
+    kind.show(lab.ctx, part)
+    assert not kind._time.disabled, "changeable while the plan waits for Go"
+    lab.guide.moving = part
+    kind.show(lab.ctx, part)
+    assert kind._time.disabled, "greyed while the move runs"
 
 
 def test_a_transfer_goal_turns_each_joint_to_the_value_nearest_the_arms_now(monkeypatch):

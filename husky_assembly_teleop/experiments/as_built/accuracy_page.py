@@ -345,7 +345,8 @@ def render(day: Mapping, runs: Sequence[Mapping]) -> str:
 
 
 def build_report(drive_root: Path, day: str | None = None, problem: str | None = None,
-                 process_folder: Path | None = None, out: Path | None = None) -> Path:
+                 process_folder: Path | None = None, out: Path | None = None,
+                 assets: Mapping[str, int] | None = None) -> Path:
     """Build the accuracy report of one lab day and return its path.
 
     Args:
@@ -354,6 +355,7 @@ def build_report(drive_root: Path, day: str | None = None, problem: str | None =
         problem: The process folder's name; default the day's newest file's.
         process_folder: The process folder; default `<drive>/data_design_study/<problem>`.
         out: The .html to write; default `<drive>/.../<day>-asbuilt-result/accuracy_<day>.html`.
+        assets: Bar id -> the Motive asset its balls were streamed as by mistake (`relabel_assets`).
 
     Raises:
         SystemExit: No records.
@@ -369,7 +371,7 @@ def build_report(drive_root: Path, day: str | None = None, problem: str | None =
         if not problems:
             raise SystemExit(f"no as-built file in {drive_root / AS_BUILT_FOLDER / (day + DIR_SUFFIX)}")
         problem = problems[0]
-    data = read_day(drive_root, day, problem, process_folder)
+    data = read_day(drive_root, day, problem, process_folder, assets)
     runs = read_servo_runs(data, drive_root)
     print(f"[assembly] {len(data['raw'])} records of {problem} on {day}, {len(runs)} servo runs.")
     return write(render(data, runs), Path(out) if out else result_folder(drive_root, day) / f"accuracy_{day}.html")
