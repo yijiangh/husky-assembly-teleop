@@ -33,7 +33,7 @@ from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 from scaffolding_assembly_core.robot import RobotObject
 
 from .collision import collisions, world_frame_fk
-from .joints import arm_joint_names, joint_limits
+from .joints import arm_joint_names, joint_limits, turn_limits, unwrap_to_nearest
 
 #: The ssik solvers that may solve each arm, tried in order: each was built from one robot's calibrated URDF.
 SSIK_SOLVERS = {"left_ur_arm": ("left",), "right_ur_arm": ("right",), "ur_arm": ("alice", "belle")}
@@ -168,7 +168,10 @@ def solve_ik(mirror: CompasFabMirror, robot: RobotObject, targets: Mapping[str, 
     names = tuple(solvers.values())
     arms = []
     for arm, target in targets.items():
+        # * A process may write a shoulder lift a whole turn off (328° for -32°): the same pose, but out of reach, so
+        #   the nearest branch is taken from its value within LIFT_RANGE (`turn_limits`).
         seed = np.array([reference.get(name, 0.0) for name in arm_joint_names(arm)])
+        seed = unwrap_to_nearest(seed, seed, *turn_limits(urdf, arm_joint_names(arm)))
         found = branches(urdf, robot.base, arm, solvers[arm], target, seed)
         if not found:
             return IkResult(None, solvers=names, reason=f"{arm}: ssik finds no solution, the target is out of reach")

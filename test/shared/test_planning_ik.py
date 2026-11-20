@@ -101,6 +101,16 @@ def test_solve_ik_at_the_stowed_pose(mirror):
 
 
 @pytest.mark.slow
+def test_solve_ik_keeps_a_lift_written_a_whole_turn_off_in_range(mirror):
+    """A reference lift a whole turn off (358° for -2°), as a process may write it: the goal takes the -2°."""
+    cindy = _cindy()
+    mirror.sync(Scene(robots={CINDY_ID: cindy}))
+    lift = "left_ur_arm_shoulder_lift_joint"
+    result = solve_ik(mirror, cindy, _tool0_targets(cindy), {lift: cindy.joints[lift] + 2 * np.pi})
+    assert abs(result.joints[lift] - cindy.joints[lift]) < 1e-6 and result.rank == 1 and result.max_change < 1e-6
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize("link", ["left_ur_arm_wrist_3_link", "left_ur_arm_forearm_link"])
 def test_solve_ik_steps_past_a_box(mirror, link):
     """A box at a stowed left arm link: the nearest combination hits it, so a later one wins, or none does.
