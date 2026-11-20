@@ -736,6 +736,39 @@ def test_a_one_arm_move_is_planned_by_the_arm_planner_and_fails_without_a_path(m
     assert asyncio.run(plan()) is None and lab.ctx.plugins["arm_planner"].requests == [], "the box off"
 
 
+def _approach(lab):
+    """Plan Alice's B21_H approach on the arm planner, shown as the guide's part; (route, basis, path, warned)."""
+    async def plan():
+        await lab.ticks()
+        part = next(each for each in lab.guide.parts if each.label == "B21_H_approach: approach")
+        if lab.guide.part is not part:
+            lab.guide._show(lab.ctx, lab.guide.parts.index(part), select=False)
+        loaded = lab.run.view.process
+        step = loaded.steps[loaded.index_of(part.action, part.step.primary)]
+        return await lab.guide._plan_on_arm_planner(lab.ctx, part, "a200-0804", step)
+
+    return asyncio.run(plan())
+
+
+def test_motion_time_times_the_plan_waiting_for_go_again(monkeypatch):
+    """While Go waits, a new Motion time re-times the preview and the question; the slider greys only while moving."""
+    lab = Guide(monkeypatch, "B21_H_approach")
+    lab.ctx.plugins["arm_planner"] = ArmPlanner(finds=True)
+    route, _basis, path, _warned = _approach(lab)
+    part = lab.guide.part
+    lab.guide._waiting = (part, route, lambda timed: f"Run: {timed.duration:.1f} s")
+    lab.guide.procedure.preview_path = path
+    lab.guide.set_traj_time(40.0)
+    assert lab.guide.procedure.preview_path.duration == pytest.approx(40.0)
+    assert lab.guide.procedure.prompt == "Run: 40.0 s" and lab.guide.traj_time == 40.0
+    kind = lab.guide.kinds[MOVE]
+    kind.show(lab.ctx, part)
+    assert not kind._time.disabled, "changeable while the plan waits for Go"
+    lab.guide.moving = part
+    kind.show(lab.ctx, part)
+    assert kind._time.disabled, "greyed while the move runs"
+
+
 def test_a_transfer_goal_turns_each_joint_to_the_value_nearest_the_arms_now(monkeypatch):
     """Cindy's B21_J transfer, IK a whole turn off on one wrist: the search gets it a turn back, as motion planner."""
     wrist = "left_ur_arm_wrist_3_joint"

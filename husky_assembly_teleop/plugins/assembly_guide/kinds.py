@@ -227,8 +227,9 @@ class MoveKind(Kind):
         """The goal found, the motion time, Rehearse."""
         self._goal = gui.add_html("")
         self._time = gui.add_slider("Motion time", min=1.0, max=MAX_TRAJ_TIME, step=0.5, initial_value=10.0,
-                                    hint="How long the move takes, seconds; the arms' limits may need longer. Set it "
-                                         "before Prepare: it is greyed while the plan waits for Go")
+                                    hint="How long the move takes, seconds; the arms' limits may need longer. "
+                                         "Changeable until Go (a plan waiting for Go is timed again, its preview "
+                                         "too); greyed while the move runs, which keeps the time it was sent with")
         self._time.on_update(ctx.defer_value("motion time", lambda value: self.guide.set_traj_time(float(value)),
                                              operator_only=True))
         self._rehearse(ctx, gui)
@@ -239,10 +240,10 @@ class MoveKind(Kind):
         self._goal.content = block(values(escape(self.guide.goal_text or "goal: solved at Prepare")))
         if abs(self._time.value - self.guide.traj_time) > 1e-6:
             self._time.value = self.guide.traj_time
-        # * The plan waiting for Go is timed already: a change now would run another timing than the preview shows.
-        planned = self.guide.owner is part
-        if self._time.disabled != planned:
-            self._time.disabled = planned
+        # * The move sent has its timing: a change then would not reach it.
+        moving = self.guide.moving is part
+        if self._time.disabled != moving:
+            self._time.disabled = moving
 
     def live(self, ctx: PluginContext, part: GuidePart) -> list[Check]:
         """How far the arms still are from the goal."""

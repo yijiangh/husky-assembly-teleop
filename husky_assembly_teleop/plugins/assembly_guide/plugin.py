@@ -226,6 +226,10 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._planned: tuple[GuidePart, str] | None = None
         self.goal_text = ""
         self.traj_time = 10.0
+        #: The part whose move runs, from Go until the executor ends; Motion time is greyed only then. The plan
+        #: waiting for Go (part, route, its question by path), timed again when Motion time changes.
+        self.moving: GuidePart | None = None
+        self._waiting: tuple | None = None
         self.ignore_built = False
         #: Whether free moves are planned by the arm planner (else the motion planner).
         self.arm_planner_moves = True
@@ -395,8 +399,17 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._run(self._ctx).request_settings(**changes)
 
     def set_traj_time(self, seconds: float) -> None:
-        """The motion time of the next plan, seconds."""
+        """The motion time, seconds; a plan waiting for Go is timed again, its preview and question too, unplanned."""
         self.traj_time = seconds
+        if self._waiting is None or self.procedure.preview_path is None:
+            return
+        _part, route, question = self._waiting
+        timed = timed_route(route, seconds)
+        if isinstance(timed, str):
+            return
+        path, _minimum = timed
+        self.procedure.preview_path, self.procedure.preview = path, 0.0
+        self.procedure.prompt = question(path)
 
     def is_done(self, ctx: PluginContext, part: GuidePart, index: int) -> bool:
         """Whether a part's result is there: the executor finished it, the run marked it, or the guide judged it.
@@ -1182,11 +1195,30 @@ class AssemblyGuidePlugin(HuskyPlugin):
             route, basis, path, warned = await self._plan(ctx, part, serial)
             self._basis = (part, basis)
             self._previewing = ("joints", serial, tuple(route.result.trajectory.joint_names), basis.base)
-            unknown = await self._ask(ctx, path, f"{'Rehearse' if rehearse else 'Run'} {part.label}: "
-                                                 f"{path.duration:.1f} s. Play the preview, check the arms clear "
-                                                 f"everything; e-stop in hand, then Go.",
-                                      "rehearse" if rehearse else "run", [robot_id(serial)],
-                                      waits=rehearse or bool(simulation_problem(ctx)) or warned and self.mode != GOD)
+            warnings = "".join(f"{line} " for line in route.warnings)
+
+            def question(timed: TimedPath) -> str:
+                """What Go answers, with the path's time."""
+                return (f"{'Rehearse' if rehearse else 'Run'} {part.label}: {timed.duration:.1f} s. {warnings}Play "
+                        f"the preview, check the arms clear everything; e-stop in hand, then Go.")
+
+            # * Motion time may change while Go waits: `set_traj_time` times the plan again.
+            self._waiting = (part, route, question)
+            try:
+                unknown = await self._ask(ctx, path, question(path), "rehearse" if rehearse else "run",
+                                          [robot_id(serial)], waits=rehearse or bool(simulation_problem(ctx))
+                                          or warned and self.mode != GOD)
+            finally:
+                self._waiting = None
+        self.moving = part
+        try:
+            await self._send(ctx, part, rehearse, serial, route, basis, unknown)
+        finally:
+            self.moving = None
+
+    async def _send(self, ctx: PluginContext, part: GuidePart, rehearse: bool, serial: str, route, basis,
+                    unknown: frozenset[str]) -> None:
+        """Let the executor run the part, with the motion time as it is at Go, answering its questions."""
         executor, process = self._executor(ctx), self._process(ctx)
         loaded = self._run(ctx).view.process
         request = ExecRequest(loaded, part.action, part.step, part.plans, serial,
