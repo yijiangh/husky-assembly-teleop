@@ -320,9 +320,9 @@ def test_an_insert_out_of_reach_names_its_waypoint(purged, configs, mirrors):
 
 @pytest.mark.slow
 def test_a_retreat_into_a_box_names_the_waypoint_and_the_pair(purged, configs, mirrors):
-    """A 2 cm box 8 cm behind Cindy's left tool: every line from 50 down to 25 mm reaches it; the step is named."""
+    """A 2 cm box 8 cm behind Cindy's left tool: every line from 50 down to 15 mm reaches it; the step is named."""
     row = _retreat_past_box(purged, configs, mirrors, 0.08)
-    found = re.search(r"^no straight retreat of 25-50 mm: .*no_candidate at waypoint (\d+)/11, the nearest step "
+    found = re.search(r"^no straight retreat of 15-50 mm: .*no_candidate at waypoint (\d+)/11, the nearest step "
                       r"collides: (.*)$", row.reason)
     assert row.status == "failed" and found and int(found.group(1)) > 1, row.reason
     assert ("tools/cindy/AT3L", "obstacles/box") in row.route.colliding

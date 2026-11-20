@@ -49,9 +49,10 @@ HELD = {"stage": 3, "position_res": 0.01, "rotation_res": 0.025, "max_time": 120
 SEED_STEP = 9973
 #: A held transfer's right flange may end this far from its target before the grasp counts as mismatched, metres.
 GRASP_MISMATCH = 0.002
-#: A retreat blocked at its full length is tried shorter, in steps of this, down to this, metres.
+#: A retreat blocked at its full length is tried shorter, in steps of this, down to this, metres: the 12 mm screw-out
+#: (`execution.retreat.SCREW_OUT_MM`) and 3 mm rigid after it.
 RETREAT_SHORTEN_STEP = 0.005
-RETREAT_MIN_DISTANCE = 0.025
+RETREAT_MIN_DISTANCE = 0.015
 
 #: Routines no arm moves in, and the linear ones, whose start may touch (warned, not refused).
 _NO_ARM = (Routine.TOOL_ONLY, Routine.OPERATOR, Routine.BASE_ONLY)

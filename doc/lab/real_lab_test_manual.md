@@ -1029,7 +1029,7 @@ Two steps: the retreat (the ungrasp runs with it), then home.
     their own -z (encoders): ...*, then *retreat_linear solved by tamp.plan_dual_arm_linear_independent: N waypoints*.
   - **If not:** a warning that a tool is over 20° from the Rhino axis: check the tool before `Exec`.
   - It plans from where the arms are. If the full 50 mm line is blocked it plans a shorter one (*planned a SHORTER
-    one: 35 mm back*), down to 25 mm.
+    one: 35 mm back*), down to 15 mm (the 12 mm screw-out and 3 mm more).
 - [ ] optional, the first retreat on the robot (B20_R): box `Dry run`: ticked → button `Exec`
   - **Expect:** pane monitor: *DRY RUN ...: retreat: the screw-out passed every check, NOT SENT; ...*
   - Then box `Dry run`: unticked.
