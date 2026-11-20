@@ -9,7 +9,8 @@ The assembly guide: the process part by part, Prepare → Check → Go, each par
 - A part that finds no goal at the live base flags the drive before it "not good": that drive is to do again, and its
   Prepare drives even when the base stands within the arrival tolerance.
 - Prepare and Go are for parts that move a robot. A part by hand is confirmed by ticking its boxes and Done (the
-  executor records it); Mark done is Done too. Prepare and Go stay grey there.
+  executor records it); Mark done is Done too. Prepare and Go stay grey there, but Prepare on placing the bar zeroes
+  the force sensors (an operator's press only: Auto and God never zero).
 - A part is done by its result: the executor's finished movements (`MovementExecContract.finished`, whoever sent
   them), the run's mark, a drive ended at its goal. A part fixed by hand one layer down (Plan › Base, Plan › Arm,
   Control) is at its end: Done goes on with one press; anything else asks twice (Skip).
@@ -81,7 +82,7 @@ from ...ui.style import (BUSY, CURRENT, FAIL, OK, SECTION_CTRL, block, check_chi
                          chip_row, note, section, warning)
 from ...world.arm_reach import out_of_reach
 from ...world.checks import BAD, GOOD, INFO, PENDING, WARN, Check
-from .kinds import KINDS, HandKind, Kind, description
+from .kinds import KINDS, ZERO_ASK_HELD, HandKind, Kind, description
 from .parts import (ARM_ARRIVED, DRIVE, EXECUTED, GRIPPER, HAND, INSERT, MARK, MOVE, NOTHING_TO_MOVE, PARK, REFUSED,
                     RETREAT, SERVO, GuidePart, arm_arrived, base_arrived, floor_pose, schedule_parts)
 
@@ -129,6 +130,8 @@ PREPARE_LABELS = {DRIVE: "Prepare: plan the drive", MOVE: "Prepare: plan the mov
                   PARK: "Prepare: plan the stow, then the drive", SERVO: "Prepare: plan the first pass",
                   INSERT: "Prepare: plan the insert", RETREAT: "Prepare: plan the retreat",
                   GRIPPER: "Prepare: ask to run it"}
+#: What Prepare says on the part by hand placing the bar.
+PREPARE_ZERO = "Prepare: zero force"
 #: Seconds a refusal that no second press overrides stays on the panel (a second press's question stays as long as
 #: its window).
 REFUSAL_KEPT = 8.0
@@ -685,9 +688,13 @@ class AssemblyGuidePlugin(HuskyPlugin):
                 return f"{owner.label} waits for Go: Cancel it first"
             if active := self._executor(ctx).active:
                 return f"the executor runs {active}: Cancel it first"
-        elif button == "Prepare" and self.kinds[part.kind].manual:
+        elif button == "Prepare" and self.kinds[part.kind].manual and not self._zeroes(part):
             return "nothing to prepare: Done confirms this part"
         return ""
+
+    def _zeroes(self, part: GuidePart | None) -> bool:
+        """Whether Prepare zeroes the force sensors on `part`: the part by hand placing the bar."""
+        return part is not None and part.kind == HAND and self._hand.places_bar(part)
 
     def _end_auto(self, ctx: PluginContext, why: str) -> None:
         """Back to Off; the guide line says why until the mode is chosen again or a part starts. Nothing if Off."""
@@ -701,7 +708,11 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._mode.value = OFF
 
     def prepare(self, ctx: PluginContext, rehearse: bool = False) -> None:
-        """Get the part shown ready and ask Go; `rehearse`: its dry run (Mode Off only). Not for a part by Done."""
+        """Get the part shown ready and ask Go; `rehearse`: its dry run (Mode Off only).
+
+        Not for a part by Done, but placing the bar: there Prepare zeroes the force sensors, meant before the bar is in
+        the tools; once a box is ticked or the part is done it asks a second press. Auto and God never press it.
+        """
         button = "Rehearse" if rehearse else "Prepare"
         if why := self._cannot(ctx, "Prepare"):
             self._refuse(ctx, button, why)
@@ -710,6 +721,14 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self._refuse(ctx, button, "Rehearse only with Mode Off")
             return
         part = self.part
+        if self._zeroes(part):
+            if why := self._hand.zero_blocked(ctx):
+                self._refuse(ctx, button, why)
+            elif not self._hand.looks_held(ctx, part) or self._again_press.press(ctx.now(), str(self.index)):
+                self._hand.zero(ctx, "guide Prepare", button)
+            else:
+                self._refuse(ctx, button, ZERO_ASK_HELD, ask=True)
+            return
         if self.is_done(ctx, part, self.index):
             if not self._again_press.press(ctx.now(), str(self.index)):
                 if self._run(ctx).view.statuses.get(part.action) == MARKED:
@@ -1740,8 +1759,9 @@ class AssemblyGuidePlugin(HuskyPlugin):
         finished = part is not None and self.is_done(ctx, part, self.index)
         manual = part is not None and self.kinds[part.kind].manual
         preparing = self._again_press.waiting(now) == str(self.index)
-        set_changed(self._prepare, disabled=part is None or manual,
-                    label=again_label("Prepare") if preparing else
+        zeroes = self._zeroes(part)
+        set_changed(self._prepare, disabled=part is None or manual and not zeroes,
+                    label=again_label("Prepare") if preparing else PREPARE_ZERO if zeroes else
                     PREPARE_LABELS.get(part.kind, "Prepare") if part is not None else "Prepare",
                     color=rgb(BUSY if preparing else TEAL))
         # * Auto's second press on real robots: "Auto?" while it waits, as every second press.

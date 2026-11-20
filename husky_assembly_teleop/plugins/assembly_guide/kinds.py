@@ -266,7 +266,7 @@ class HandKind(Kind):
             "Done: the executor records it, the next part follows.")
     #: The bar placed in the tools and clamped.
     PLACE_GOAL = "Place the bar in the tools and clamp it, by hand."
-    PLACE_TODO = (f"{ZERO}, twice, while the tools are still empty: zeroes the arms' force sensors.",
+    PLACE_TODO = (f"Prepare (or {ZERO}, twice), while the tools are still empty: zeroes the arms' force sensors.",
                   "Put the bar into both tools' jaws.",
                   "Tighten each gripper screw with the tool's own buttons until it stalls, one button at a time (B1 "
                   "and B2 together put the arm in free drive).",
@@ -329,32 +329,46 @@ class HandKind(Kind):
             box.value = True
 
     def _press_zero(self, ctx: PluginContext) -> None:
-        """Zero force's press: the first asks, the second has the executor zero the robot's arms and record it."""
+        """Zero force's press: the first asks, the second has the executor zero the robot's arms (`zero`)."""
         part, serial = self.guide.part, self.guide.serial
         if part is None or part.kind != HAND or not self.places_bar(part) or serial is None:
             return
-        robot = ctx.world.robots.get(serial)
-        refusal = (f"{short_serial(serial)} is not connected" if robot is None
-                   else zero_refusal(serial, robot, ctx.now()))
-        if refusal:
+        if refusal := self.zero_blocked(ctx):
             self.guide._refuse(ctx, ZERO, refusal)
             return
-        held = self._looks_held(ctx, part)
+        held = self.looks_held(ctx, part)
         if not self._zero_press.press(ctx.now(), self._zero_key(serial, held)):
             self.guide._refuse(ctx, ZERO, ZERO_ASK_HELD if held else ZERO_ASK, ask=True)
             return
+        self.zero(ctx, "guide", ZERO)
+
+    def zero_blocked(self, ctx: PluginContext) -> str:
+        """Why the shown part's robot may not be zeroed now (`zero_refusal`), or ""."""
+        serial = self.guide.serial
+        robot = ctx.world.robots.get(serial) if serial is not None else None
+        if robot is None:
+            return f"{short_serial(serial)} is not connected" if serial is not None else "the part has no robot"
+        return zero_refusal(serial, robot, ctx.now())
+
+    def zero(self, ctx: PluginContext, by: str, button: str) -> None:
+        """Have the executor zero every arm of the shown part's robot and record it; `by` names the press there.
+
+        ! Ask first (`zero_blocked`, and a second press once `looks_held`): this zeroes whatever the tools hold.
+        """
+        part, serial = self.guide.part, self.guide.serial
+        held = self.looks_held(ctx, part)
         if held:
             ctx.log_warn(f"{short_serial(serial)}: force sensors zeroed though the bar looks clamped in the tools")
         executor: MovementExecContract = ctx.require("movement_exec")
-        executor.request_zero_force(serial, "guide", part.action, part.movement, held).add_done_callback(
-            lambda done: self._zeroed(ctx, done.result()))
+        executor.request_zero_force(serial, by, part.action, part.movement, held).add_done_callback(
+            lambda done: self._zeroed(ctx, done.result(), button))
 
-    def _zeroed(self, ctx: PluginContext, why: str) -> None:
+    def _zeroed(self, ctx: PluginContext, why: str, button: str) -> None:
         """Say why the executor's zero did not go through; nothing once it did."""
         if why:
-            self.guide._refuse(ctx, ZERO, why)
+            self.guide._refuse(ctx, button, why)
 
-    def _looks_held(self, ctx: PluginContext, part: GuidePart) -> bool:
+    def looks_held(self, ctx: PluginContext, part: GuidePart) -> bool:
         """Whether the part says the bar is in the tools already: a box ticked, or the part done."""
         return self.count[0] > 0 or self.guide.is_done(ctx, part, self.guide.index)
 
@@ -367,7 +381,7 @@ class HandKind(Kind):
         places = self.places_bar(part) and self.guide.serial is not None
         if self._zero.disabled == places:
             self._zero.disabled = not places
-        asked = self._zero_key(self.guide.serial, self._looks_held(ctx, part))
+        asked = self._zero_key(self.guide.serial, self.looks_held(ctx, part))
         show_waiting(self._zero, self._zero_press.waiting(ctx.now()) == asked, ZERO, None)
         self._what.content = block(wrapped(*(plan.text for plan in part.plans)))
         if part is self._for:

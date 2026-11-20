@@ -19,8 +19,8 @@ from husky_assembly_teleop.shared.process_scene.live_scene import SceneNotShown
 from husky_assembly_teleop.plugins.assembly_guide import plugin as guide_module
 from husky_assembly_teleop.plugins.assembly_guide.parts import DRIVE, HAND, MARK, MOVE, NOTHING_TO_MOVE, PARK
 from husky_assembly_teleop.world.checks import INFO, WARN
-from husky_assembly_teleop.plugins.assembly_guide.plugin import AUTO, GOD, OFF, REDO, AssemblyGuidePlugin, \
-    simulation_problem
+from husky_assembly_teleop.plugins.assembly_guide.plugin import AUTO, GOD, OFF, PREPARE_ZERO, REDO, \
+    AssemblyGuidePlugin, simulation_problem
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.steps import as_run
 from husky_assembly_teleop.shared.execution.force_sensors import zero_force_sensors
@@ -415,14 +415,15 @@ def test_redo_from_a_marked_action_reopens_every_later_one(monkeypatch):
 
 
 def test_a_part_by_hand_is_done_once_every_box_is_ticked(monkeypatch):
-    """Prepare and Go stay grey; one Done is refused until every box is ticked, then records it; the servo is next."""
+    """Go stays grey, Prepare only zeroes; one Done is refused until every box is ticked, then records it; the servo."""
     lab = Guide(monkeypatch)
 
     async def walk():
         await to_the_bar_by_hand(lab)
         guide, boxes = lab.guide, lab.guide.kinds[HAND].boxes
         assert [box.label for box in boxes[:3]] == ["Bar placed", "Screws clamped", "Hands clear"]
-        assert guide._prepare.disabled and guide._go.disabled and not guide._done_button.disabled
+        assert guide._prepare.label == PREPARE_ZERO and not guide._prepare.disabled
+        assert guide._go.disabled and not guide._done_button.disabled
         guide.prepare(lab.ctx)
         guide.done(lab.ctx)
         await lab.ticks()
@@ -467,6 +468,34 @@ def test_zero_force_on_placing_the_bar_asks_first_then_zeroes_every_arm(monkeypa
         assert lab.ctx.world.robots[CINDY].lease_slot.lease is None, "the lease is given back"
         (serial, by, action, _movement, clamped), = lab.executor.zeroes
         assert (serial, by, action, clamped) == (CINDY, "guide", "B20_J", False), "the executor zeroes and records it"
+
+    asyncio.run(walk())
+
+
+def test_prepare_on_placing_the_bar_zeroes_at_once_and_asks_again_once_a_box_is_ticked(monkeypatch):
+    """Tools empty: one Prepare zeroes each arm; with a box ticked the first only asks (Prepare?), the second zeroes."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        guide, hand = lab.guide, lab.guide.kinds[HAND]
+        arms = list(lab.ctx.world.robots[CINDY].arms.values())
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 1 for arm in arms), "one press while no box is ticked"
+        assert [(by, clamped) for _serial, by, _action, _movement, clamped in lab.executor.zeroes] == \
+            [("guide Prepare", False)]
+        assert not lab.executor.requests and guide.owner is None, "nothing else runs"
+        hand.boxes[0].value = True
+        guide.prepare(lab.ctx)
+        await lab.ticks()
+        assert all(len(arm._zero_ft.calls) == 1 for arm in arms), "a box ticked: the first press only asks"
+        assert "looks clamped" in guide.refusal(lab.ctx.t).detail and guide._prepare.label.endswith("?")
+        lab.ctx.t += 0.5
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 2 for arm in arms)
+        assert lab.executor.zeroes[-1][-1] is True, "recorded as zeroed with the bar looking clamped"
 
     asyncio.run(walk())
 
