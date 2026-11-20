@@ -447,7 +447,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         perturb = tuple(float(value) for value in options.perturb_base.split(",")) if options.perturb_base else None
         if perturb is not None and len(perturb) != 2:
             raise ValueError("--perturb-base takes metres and degrees, e.g. 0.02,2")
-        loaded = loaded_process(load_process(options.process, options.data))
+        loaded = loaded_process(load_process(options.process, options.data,
+                                             warn=lambda line: print(line, file=sys.stderr)))
         actions = select_actions(loaded, options.actions)
         only = [name.strip() for name in options.only.split(",")] if options.only else None
         known = {movement.id for action_id in actions for movement in loaded.process.actions[action_id].movements}
