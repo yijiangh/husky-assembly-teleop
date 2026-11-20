@@ -4,7 +4,8 @@ Grasp offsets: a support gripper's grasp slid along its bar and rolled about it,
 A hold is a `bar_holding` action and its `bar_holding_release`. Its offset moves every target of the holding flange
 from the hold's approach to its release's retreat by one rigid move about the bar (`grasp_move`), so the approach and
 retreat lines keep their shape around the new grasp; the holder's grasp follows. The holding arm's joints in those
-targets are dropped (the live IK solves the moved poses); the joints in the states between stay the authored guess.
+targets are dropped (the live IK solves the moved poses); the joints in the states between stay the authored guess,
+which the approach's IK stays near (`grasp_joints`).
 
 Pure: any thread.
 """

@@ -1420,7 +1420,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
         arms = [arm.arm for arm in spec.arms]
         names = tuple(name for arm in spec.arms for name in arm.joints)
         planner: ArmPlannerContract = ctx.require("arm_planner")
-        authored = spec.goal_joints or {}
+        # * The design's goal; for an approach, the joints where its hold grasps (`MovementSpec.ik_reference`).
+        authored = spec.ik_reference or {}
         reference = {name: authored[name] for name in names if name in authored}
         goal_base = None
         if part.routine in IK_GOALS:

@@ -127,6 +127,8 @@ class MovementSpec:
         grips: Tool id -> the grip it ends with.
         drives: The drives really sent.
         warnings: Mismatches with the action type, and drive diagnostics.
+        ik_reference: The joints a goal solved by IK stays nearest, if known: `goal_joints`, but for a support
+            approach those where its hold grasps (`grasp_joints`).
     """
 
     action: str
@@ -145,6 +147,7 @@ class MovementSpec:
     grips: dict[str, str]
     drives: MatingDrives
     warnings: tuple[str, ...] = ()
+    ik_reference: dict[str, float] | None = None
 
 
 def classify(process: Process, action: Action, movement: Movement, transfer_as_free: bool = False) -> MovementSpec:
@@ -168,10 +171,11 @@ def classify(process: Process, action: Action, movement: Movement, transfer_as_f
     warnings = list(drives.warnings)
     if routine not in _EXPECTED.get(action.type, set()) | _ANYWHERE:
         warnings.append(f"{movement.id}: a {routine.value} movement in a {action.type} action")
+    reference = grasp_joints(process, action, movement) if routine is Routine.SUPPORT_APPROACH else None
     return MovementSpec(action.id, movement.id, action.type, action.robot, action.bar, routine,
                         tuple(_arm_part(movement, flange) for flange in movement.arms), movement.coupled,
                         movement.controller, movement.ends_on, goal, goal_joints, goal_from,
-                        dict(movement.grip_change), drives, tuple(warnings))
+                        dict(movement.grip_change), drives, tuple(warnings), reference or goal_joints)
 
 
 def classify_action(process: Process, action: Action, transfer_as_free: bool = False) -> tuple[MovementSpec, ...]:
@@ -235,6 +239,26 @@ def next_start(process: Process, action: Action, movement: Movement) -> tuple[di
         if other.arms:
             return None, other.id
     return None, ""
+
+
+def grasp_joints(process: Process, action: Action, movement: Movement) -> dict | None:
+    """The acting robot's joints where a support approach's hold grasps: the end of its action's next arm movement.
+
+    The approach's IK stays near these: Rhino may write the approach on another IK branch than the grasp, and the
+    straight move to the grasp can't change branch. Read from the start after that move (`next_start`), which a grasp
+    offset keeps while it drops the targets' joints.
+
+    Args:
+        process: The process.
+        action: The approach's action.
+        movement: The approach.
+
+    Returns:
+        dict | None: The joints, or None where the process gives none.
+    """
+    ids = [each.id for each in action.movements]
+    line = next((each for each in action.movements[ids.index(movement.id) + 1:] if each.arms), None)
+    return next_start(process, action, line)[0] if line is not None else None
 
 
 def mating_drives(process: Process, movement: Movement) -> MatingDrives:

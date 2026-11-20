@@ -17,9 +17,10 @@ from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.experiments.assembly_plan_check import perturbed, run_check, select_actions, write_solutions
 from husky_assembly_teleop.shared.assembly_planning import route_search, search_tree, tamp_route
-from husky_assembly_teleop.shared.assembly_planning.ik import ssik_unavailable
+from husky_assembly_teleop.shared.assembly_planning.ik import branches, fitting_solver, ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine, classify
+from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.assembly_planning.route_result import aims_at_line, line_goal, pose_error
 from husky_assembly_teleop.shared.assembly_planning.route_search import FreeSearch
 from husky_assembly_teleop.shared.assembly_planning.search_tree import GOAL_TREE, START_TREE, SearchTree
@@ -603,6 +604,29 @@ def test_the_workaround_searches_without_the_bar(purged, configs, mirrors, monke
     verdict = "start, goal and the straight path between them are clear: the search found no way in 3×120 s"
     assert row.reason.endswith(f"(3 tries); {verdict}"), row.reason
     assert lines[-3:] == [f"B20_J_transfer: {line}" for line in ("start clear", "goal clear", verdict)]
+
+
+@pytest.mark.slow
+def test_an_approach_written_on_another_branch_still_ends_next_to_its_grasp(purged, configs, mirrors):
+    """Rhino may write the approach on another IK branch than the grasp: the goal is still the one next to the grasp."""
+    alice = robot_id(f"a200-{ALICE}")
+    mirror = mirrors.setdefault(alice, CompasFabMirror(alice))
+    hold, approach = movement(purged, "B21_H_approach")
+    held = movement(purged, "B21_H_close")[1].start.robots["robots/alice"].joints
+    names, urdf = arm_joint_names("ur_arm"), robot_config(ALICE).model.urdf
+    target, = approach.target.link_poses.values()
+    base = design_scene(purged, "B21_H_approach").robots[alice].base
+    # * The branch farthest from the grasp, as the approach's joints (B21_H in 261117_2ModulesDemo_order_bracing).
+    far = branches(urdf, base, "ur_arm", fitting_solver(urdf, "ur_arm"), target, [held[name] for name in names])[-1]
+    own = approach.target.robots["robots/alice"]
+    written = replace(approach, target=replace(approach.target, robots={
+        **approach.target.robots, "robots/alice": replace(own, joints=dict(zip(names, far.tolist())))}))
+    changed = loaded_process(replace(purged.process, actions={
+        **purged.process.actions, hold.id: replace(hold, movements=(written, *hold.movements[1:]))}))
+    check = check_goal(mirror, changed, step(changed, "B21_H_approach"), design_scene(changed, "B21_H_approach"),
+                       configs, log=lambda _line: None)
+    assert check.ok, check.reason
+    assert max(abs(check.goal_joints[name] - held[name]) for name in names) < math.radians(30)
 
 
 @pytest.mark.slow

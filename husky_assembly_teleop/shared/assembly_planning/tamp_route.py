@@ -479,7 +479,7 @@ class Route(RouteSearch):
             reference, what = None, "the servo target"
             if targets is None:
                 targets = {part.arm: part.target for part in self.spec.arms}
-                reference, what = self.spec.goal_joints, "the goal"
+                reference, what = self.spec.ik_reference, "the goal"
             if None in targets.values():
                 raise Refused("a moving flange has no target pose to solve the goal for")
             # * IK in the scene with the held bar: it must be clear where the goal puts it.
