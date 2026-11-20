@@ -105,6 +105,20 @@ def test_next_start(purged):
     assert next_start(purged.process, *movement(purged, "B21_HR_leave")) == (None, "B35_HR_open")
 
 
+def test_an_approach_solves_near_where_its_hold_grasps(purged):
+    """An approach's IK stays near the joints at the grasp (the close's start); other goals near their own joints."""
+    approach = _spec(purged, "B21_H_approach")
+    held = movement(purged, "B21_H_close")[1].start.robots["robots/alice"].joints
+    assert approach.ik_reference == held and approach.goal_joints not in (None, held)
+    transfer = _spec(purged, "B20_J_transfer")
+    assert transfer.goal_joints and transfer.ik_reference == transfer.goal_joints
+    # * Without a move to the grasp after it, an approach stays near its own joints.
+    hold, first = movement(purged, "B21_H_approach")
+    alone = replace(hold, movements=(first,))
+    changed = replace(purged.process, actions={**purged.process.actions, hold.id: alone})
+    assert classify(changed, alone, first).ik_reference == approach.goal_joints
+
+
 def test_support_leave_goes_to_the_next_start_with_joints(purged):
     """A leave without a target goes where the next start puts the robot, when that start gives its joints."""
     process = purged.process

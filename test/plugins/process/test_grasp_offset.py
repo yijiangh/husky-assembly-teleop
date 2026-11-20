@@ -14,6 +14,7 @@ from husky_assembly_teleop.plugins.process.grasp_offset import hold_of, offset_g
 from husky_assembly_teleop.plugins.process.placement import placed
 from husky_assembly_teleop.plugins.process.plugin import ProcessPlugin
 from husky_assembly_teleop.robot_interface.robot_lease import LeaseSlot, take_lease
+from husky_assembly_teleop.shared.assembly_planning.movement import classify
 from husky_assembly_teleop.shared.process_contract import MARK_ASSUMED, MARK_DONE
 from scaffolding_assembly_core.geometry import Pose, compose
 
@@ -63,6 +64,15 @@ def test_the_hold_s_targets_lines_and_holders_move_from_approach_to_retreat(purg
         next(holder.grasp for holder in authored if holder.to == FLANGE)
     first = purged.schedule.index("B21_H")
     assert all(moved.actions[each] is purged.actions[each] for each in purged.schedule[:first])
+
+
+def test_a_moved_approach_still_solves_near_the_authored_grasp(purged):
+    """Its joints are dropped, but its IK still stays near the authored joints at the grasp, not the arm's own."""
+    moved = offset_grasps(purged, {"B21_H": (5.0, 3.0)})
+    hold = moved.actions["B21_H"]
+    approach = classify(moved, hold, hold.movements[0])
+    assert approach.goal_joints is None
+    assert approach.ik_reference == purged.actions["B21_H"].movements[2].target.joints["robots/alice"]
 
 
 def test_no_offset_is_the_process_itself_and_a_release_names_its_hold(purged):

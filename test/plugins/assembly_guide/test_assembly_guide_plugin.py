@@ -749,6 +749,8 @@ def test_a_one_arm_move_is_planned_by_the_arm_planner_and_fails_without_a_path(m
     assert route.result.trajectory.robot == "robots/alice" and len(route.result.trajectory.joint_names) == 6
     assert (basis.serial, basis.action) == ("a200-0804", "B21_H") and path.duration > 0.0
     assert lab.ctx.plugins["arm_planner"].solved == [("a200-0804", ("ur_arm",))], "the approach's goal: IK at the base"
+    held = lab.run.view.process.process.actions["B21_H"].movements[3].start.robots["robots/alice"].joints
+    assert route.goal_joints == held, "IK near where the hold grasps: the fake answers its reference"
 
     lab.ctx.plugins["arm_planner"] = ArmPlanner(finds=False)
     with pytest.raises(RuntimeError, match="no path \\(arm planner\\)"):

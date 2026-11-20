@@ -34,6 +34,7 @@ from ...ui.style import BUSY, FAIL, GAP, NONE, OK, block, check_chip, chip, chip
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 from ...shared.assembly_planning.joints import arm_joint_names
+from ...shared.assembly_planning.movement import Routine, grasp_joints, routine_or_none
 from .planner_plugin import STALE_JOINT, ArmPlannerPlugin
 from ...world.arm_reach import out_of_reach
 from ...world.clearance import ARM_STOP_DISTANCE
@@ -250,8 +251,9 @@ class ArmPlannerPanel(PlannerPanel):
 
         - Step joints (`solve` False): the joints the process gives the step's target (else its start), as authored.
         - Step IK (`solve` True): the step's tool0 frame solved by IK at the live base, the solution nearest those
-          joints, so a move planned here ends where the step's own move would, not a base error away. Only for a step
-          whose target gives the arm's tool0 a world pose (a transfer, an approach); the target is set once IK finds it.
+          joints (an approach's: where its hold grasps), so a move planned here ends where the step's own move would,
+          not a base error away. Only for a step whose target gives the arm's tool0 a world pose (a transfer, an
+          approach); the target is set once IK finds it.
 
         The arm chosen stays chosen when the step moves it; else the first arm the step names.
         """
@@ -295,6 +297,11 @@ class ArmPlannerPanel(PlannerPanel):
             return
         guess = {name: float(value) for arm, values in joints.items()
                  for name, value in zip(arm_joint_names(arm), values)}
+        action = selection.process.actions[selection.action.id]
+        if routine_or_none(action, authored) is Routine.SUPPORT_APPROACH:
+            # * As the step's own goal: near where its hold grasps (`grasp_joints`).
+            grasp = grasp_joints(selection.process, action, authored) or {}
+            guess = {name: float(grasp.get(name, value)) for name, value in guess.items()}
         ctx.spawn(f"solve {label} {what}", self._solve(serial, poses, guess, label, what, also))
 
     async def _solve(self, serial: str, poses: dict, guess: dict, label: str, what: str, also: str) -> None:

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-from planning_fixtures import ALICE, BELLE, CINDY, robot_config
+from planning_fixtures import ALICE, BELLE, CINDY, purged_process, robot_config
 from plugin_fakes import WATCHES, ArmDriver, FakeContext, fake_arm, fake_node, fake_robot, watch_clearance
 from robot_fakes import lease_test_robots, wait_ticks_until
 from robot_lab import RobotLab
@@ -33,6 +33,7 @@ from husky_assembly_teleop.shared.planner.plan_margins import ARM_PLAN_MARGINS
 from husky_assembly_teleop.world.clearance import ARM_STOP_DISTANCE, Clearance, ClearanceRefused
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.process.types import Action, Movement, RobotTarget, State, Target
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
 
@@ -560,11 +561,13 @@ def test_loading_a_step_for_another_arm_says_so_past_the_next_tick():
 
 
 def _two_arm_step(panel, poses):
-    """Select a step of Cindy's that gives both arms GOAL, with these tool0 poses by link name."""
+    """Select a transfer of Cindy's that gives both arms GOAL, with these tool0 poses by link name."""
     given = {**dict(zip(arm_joint_names(ARM), GOAL)), **dict(zip(arm_joint_names("right_ur_arm"), GOAL))}
-    movement = SimpleNamespace(id="M3", target=SimpleNamespace(joints={"robots/cindy": given}, link_poses=poses))
-    selection = SimpleNamespace(movement=movement, action=SimpleNamespace(robot="robots/cindy", id="A"),
-                                process=SimpleNamespace(actions={"A": SimpleNamespace(movements=(movement,))}))
+    flanges = tuple(f"robots/cindy/{arm}_tool0" for arm in (ARM, "right_ur_arm"))
+    movement = Movement("M3", State(robots={}, present=frozenset()), arms=flanges, path="free", coupled=True,
+                        target=Target(robots={"robots/cindy": RobotTarget(joints=given, link_poses=poses)}))
+    action = Action("A", "bar_jointing", "robots/cindy", "bars/B1", (movement,))
+    selection = SimpleNamespace(movement=movement, action=action, process=SimpleNamespace(actions={"A": action}))
     panel._process_step = lambda _ctx: (selection, SERIAL, "Cindy")
 
 
@@ -625,6 +628,28 @@ def test_step_ik_solves_the_chosen_arms_tool0_frame_nearest_the_process_joints()
     assert asked == [(SERIAL, {"right_ur_arm": pose}, dict(zip(arm_joint_names("right_ur_arm"), GOAL)))]
     assert np.allclose(panel._load, [value + 0.1 for value in GOAL])
     assert "5.7° from the process's joints" in panel._message and "it moves left_ur_arm too" in panel._message
+
+
+def test_step_ik_of_an_approach_solves_near_where_its_hold_grasps():
+    """Step IK on Alice's approach guesses the joints where her hold grasps, as the approach's own goal does."""
+    process = purged_process().process
+    hold = process.actions["B21_H"]
+    approach = hold.movements[0]
+    planner = ArmPlannerPlugin()
+    panel = make_panel(planner)
+    panel._arms = {ALICE: ["ur_arm"]}
+    selection = SimpleNamespace(movement=approach, action=hold, process=process)
+    panel._process_step = lambda _ctx: (selection, ALICE, "Alice")
+    asked = []
+
+    async def scenario():
+        _solving(planner, asked)
+        panel._load_target(_spawning_ctx(), STEP_IK)
+        await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    (_serial, _poses, guess), = asked
+    assert guess == hold.movements[3].start.robots["robots/alice"].joints != approach.target.joints["robots/alice"]
 
 
 def test_step_ik_refuses_a_step_without_a_tool0_frame():
