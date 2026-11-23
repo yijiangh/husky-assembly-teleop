@@ -61,6 +61,8 @@ from ...shared.arm_planner_contract import ArmPlanRequest
 from ...shared.process_scene.live_scene import showing
 from ...shared.assembly_planning.route_result import arm_path_route, goal_line, pose_error
 from ...shared.assembly_planning.step_plan import live_goal_poses, timed_route
+from ...shared.assembly_tab.ik_choice import (GIVE_UP, GRASP_HINT, MOVE_GRASP, NEXT_SOLUTION, IkChoice, fallback_time,
+                                              fallback_warning, offers_choice)
 from ...shared.assembly_planning.tamp_route import IK_GOALS
 from ...shared.assembly_run_contract import is_live, live_problem
 from ...shared.base_planner_contract import BasePlanRequest
@@ -233,6 +235,12 @@ class AssemblyGuidePlugin(HuskyPlugin):
         #: waiting for Go (part, route, its question by path), timed again when Motion time changes.
         self.moving: GuidePart | None = None
         self._waiting: tuple | None = None
+        #: The IK solution a support approach's goal takes: (part index, loaded process, nearer solutions passed
+        #: over), set by the pop-up's Next; another part or process starts at the nearest.
+        self._ik_skip: tuple = (None, None, 0)
+        #: The part the pop-up offers a choice for; the part whose notes say where to move the grasp.
+        self._ik_failed: GuidePart | None = None
+        self._grasp_hint: GuidePart | None = None
         self.ignore_built = False
         #: Whether free moves are planned by the arm planner (else the motion planner).
         self.arm_planner_moves = True
@@ -345,6 +353,10 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._cancel.on_click(ctx.defer("cancel", lambda: self.cancel(ctx)))
         self._preview.on_update(ctx.defer_value("preview", self._scrub, operator_only=True))
         self._play.on_click(ctx.defer("play", self._toggle_play))
+        self._choice = IkChoice(ctx.view)
+        self._choice.buttons[NEXT_SOLUTION].on_click(ctx.defer("next IK solution", lambda: self.next_ik_solution(ctx)))
+        self._choice.buttons[MOVE_GRASP].on_click(ctx.defer("move the grasp", self.move_grasp))
+        self._choice.buttons[GIVE_UP].on_click(ctx.defer("give up the approach", self.close_choice))
 
     def teardown(self, ctx: PluginContext) -> None:
         """Stop what runs; hide the ghosts."""
@@ -413,6 +425,39 @@ class AssemblyGuidePlugin(HuskyPlugin):
         path, _minimum = timed
         self.procedure.preview_path, self.procedure.preview = path, 0.0
         self.procedure.prompt = question(path)
+
+    def ik_skip(self, ctx: PluginContext, part: GuidePart) -> int:
+        """How many nearer IK solutions `part`'s goal passes over (the pop-up's Next); 0 for another part or process."""
+        index, loaded, skip = self._ik_skip
+        return skip if index == self._index_of(part) and loaded is self._run(ctx).view.process else 0
+
+    def next_ik_solution(self, ctx: PluginContext) -> None:
+        """The pop-up's Next: Prepare the failed approach again, to the next IK solution."""
+        part = self._ik_failed
+        self.close_choice()
+        if part is None:
+            return
+        if part is not self.part:
+            self._refuse(ctx, NEXT_SOLUTION, f"it answers {part.label}: Back or Next to it, then Prepare")
+            return
+        self._ik_skip = (self.index, self._run(ctx).view.process, self.ik_skip(ctx, part) + 1)
+        self.prepare(ctx)
+
+    def move_grasp(self) -> None:
+        """The pop-up's Move the grasp: close it; the part's notes say where the grasp box is."""
+        self._grasp_hint = self._ik_failed
+        self.close_choice()
+
+    def close_choice(self) -> None:
+        """Close the pop-up (its Give up)."""
+        self._ik_failed = None
+        self._choice.close()
+
+    def _offer_choice(self, ctx: PluginContext, part: GuidePart, why: str) -> None:
+        """Open the pop-up for a support approach's failed goal or plan (`offers_choice`)."""
+        if offers_choice(part.routine, why):
+            self._ik_failed = part
+            self._choice.offer(part.label, self.ik_skip(ctx, part) + 1, why)
 
     def is_done(self, ctx: PluginContext, part: GuidePart, index: int) -> bool:
         """Whether a part's result is there: the executor finished it, the run marked it, or the guide judged it.
@@ -586,6 +631,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         """Show part `index`; with `select`, select its movement too while nothing runs (`_select`)."""
         if index != self.index:
             self._keep_outcome()
+            self.close_choice()
             self.procedure.outcome = None
             self._done_press.forget()
             self._redo_press.forget()
@@ -766,6 +812,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self._replacing = self._owner
         self._outcomes.pop(self.index, None)
         self._auto_end = None
+        self.close_choice()
+        self._grasp_hint = None
         self._used.touch()
         self._select(ctx, part)
         self._owner = part
@@ -1335,15 +1383,18 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self._planned = (part, ARM_PLANNER_NAME)
             return found
         goal_joints = goal_base = None
+        skip = self.ik_skip(ctx, part)
         if part.routine in IK_GOALS:
-            self.procedure.doing = "solving the goal at the live base"
+            self.procedure.doing = "solving the goal at the live base" + (f" (IK solution {skip + 1})" if skip else "")
             check = await planner.request_ik(MotionPlanRequest(
                 loaded, step, snapshot, ctx.config.robots, transfer_as_free=process.transfer_as_free,
                 ignore_built=self.ignore_built, obstacles_collide=process.obstacles_collide,
-                label=f"check goal {step.label}"))
-            self.goal_text = goal_line(check)
-            run.request_record("check_goal", action=part.action, movement=step.movement.id, data=check.as_record())
+                label=f"check goal {step.label}", ik_skip=skip))
+            self.goal_text = goal_line(check) + (f" (IK solution {skip + 1})" if skip else "")
+            run.request_record("check_goal", action=part.action, movement=step.movement.id,
+                               data={**check.as_record(), "ik_solution": skip + 1})
             if not check.ok:
+                self._offer_choice(ctx, part, check.reason)
                 raise RuntimeError(f"no goal at the live base: {check.reason}"
                                    f"{self._flag_drive_before(part, check.reason)}")
             goal_joints, goal_base = dict(check.goal_joints), check.base
@@ -1358,7 +1409,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         request = MotionPlanRequest(loaded, step, snapshot, ctx.config.robots,
                                     transfer_as_free=process.transfer_as_free, ignore_built=self.ignore_built,
                                     obstacles_collide=process.obstacles_collide, goal_joints=goal_joints,
-                                    goal_poses=goals, label=f"plan {step.label}")
+                                    goal_poses=goals, label=f"plan {step.label}", ik_skip=skip)
         route = await planner.request_plan(request)
         tries = 1
         # * A free search is random: Auto and God plan again before they give up, as the operator would.
@@ -1369,7 +1420,12 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self.procedure.doing = f"planning {part.label} again ({tries}/{AUTO_PLAN_TRIES})"
             route = await planner.request_plan(request)
         if not route.ok:
+            self._offer_choice(ctx, part, route.result.reason)
             raise RuntimeError(f"{route.result.status}: {route.result.reason}")
+        if skip and part.routine is Routine.SUPPORT_APPROACH:
+            # * Another configuration than the process's: the operator checks the preview, and it moves slower.
+            self.traj_time = fallback_time(self.traj_time, DEFAULT_TRAJ_TIME[part.routine])
+            route = replace(route, warnings=(*route.warnings, fallback_warning(skip + 1, self.traj_time)))
         timed = timed_route(route, self.traj_time)
         if isinstance(timed, str):
             raise RuntimeError(timed)
@@ -1398,7 +1454,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
         In the live scene, which shows the part's movement (`_plan` waits for it): the process plugin puts that
         movement's bars and allowed contacts there. None leaves it to the motion planner: not a free move (a held
         transfer, a line), Ignore built bars (the live scene keeps them), the box off, or no target or joint goal in
-        the process. Auto and God search a path again before they give up, as the motion planner's.
+        the process. Auto and God search a path again before they give up, as the motion planner's. A support
+        approach's goal is the IK solution the pop-up's Next asked for (`ik_skip`); one past the first warns.
 
         Returns:
             tuple | None: The route, its basis, the timed path and whether the plan warns; or None.
@@ -1423,15 +1480,18 @@ class AssemblyGuidePlugin(HuskyPlugin):
         # * The design's goal; for an approach, the joints where its hold grasps (`MovementSpec.ik_reference`).
         authored = spec.ik_reference or {}
         reference = {name: authored[name] for name in names if name in authored}
+        skip = self.ik_skip(ctx, part)
+        which = f", IK solution {skip + 1}" if skip else ""
         goal_base = None
         if part.routine in IK_GOALS:
             if any(arm.target is None for arm in spec.arms):
                 return None
-            self.procedure.doing = "solving the goal at the live base (arm planner)"
+            self.procedure.doing = f"solving the goal at the live base (arm planner{which})"
             solved, line = await planner.solve_goals(serial, {arm.arm: arm.target for arm in spec.arms},
-                                                     reference or None)
-            self.goal_text = f"{line} (arm planner)"
+                                                     reference or None, skip=skip)
+            self.goal_text = f"{line} (arm planner{which})"
             if solved is None:
+                self._offer_choice(ctx, part, line)
                 raise RuntimeError(f"no goal at the live base (arm planner): {line}"
                                    f"{self._flag_drive_before(part, line)}")
             goal = [solved[name] for name in names]
@@ -1447,7 +1507,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
             goal = [reference[name] for name in names]
         else:
             return None
-        self.procedure.doing = f"planning {part.label} (arm planner)"
+        self.procedure.doing = f"planning {part.label} (arm planner{which})"
         snapshot = ctx.scene.snapshot
         goals = [tuple(float(value) for value in goal[6 * index:6 * index + 6]) for index in range(len(arms))]
         request = ArmPlanRequest(serial, arms[0], goals[0], also=tuple(zip(arms[1:], goals[1:])))
@@ -1461,11 +1521,18 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self.procedure.doing = f"planning {part.label} again ({tries}/{AUTO_PLAN_TRIES}, arm planner)"
             plan = await planner.request_plan(request)
         if plan.state != "ready":
+            if plan.state != "cancelled":
+                self._offer_choice(ctx, part, plan.message)
             raise RuntimeError(f"no path (arm planner): {plan.message}")
+        warnings = (plan.message,) if plan.warning else ()
+        if skip and part.routine is Routine.SUPPORT_APPROACH:
+            # * Another configuration than the process's: the operator checks the preview, and it moves slower.
+            self.traj_time = fallback_time(self.traj_time, DEFAULT_TRAJ_TIME[part.routine])
+            warnings += (fallback_warning(skip + 1, self.traj_time),)
         # * The path's shape, not its 0.2 s samples: timed again, those would stop the arm at every sample on a curve.
         rows = plan.path.waypoints
         route = arm_path_route(action.robot, part.routine, names, rows, ARM_PLANNER, goal_joints=dict(zip(names, goal)),
-                               warnings=(plan.message,) if plan.warning else ())
+                               warnings=warnings)
         timed = timed_route(route, self.traj_time)
         if isinstance(timed, str):
             raise RuntimeError(timed)
@@ -1474,12 +1541,12 @@ class AssemblyGuidePlugin(HuskyPlugin):
                          run.view.statuses, self.ignore_built, ctx.now(), goal_base,
                          obstacles_collide=process.obstacles_collide)
         self._goal = (part, dict(zip(names, rows[-1])), ctx.kinematics.base_pose(serial))
-        if plan.warning:
-            ctx.log_warn(f"plan {part.movement} (arm planner): {plan.message}")
+        for line in route.warnings:
+            ctx.log_warn(f"plan {part.movement} (arm planner): {line}")
         run.request_record("plan", action=part.action, movement=part.movement, data={
             "planner": ARM_PLANNER, "message": plan.message, "waypoints": len(rows),
             "goal_reused": False, "warnings": list(route.warnings), "by": self.name})
-        return route, basis, path, plan.warning
+        return route, basis, path, bool(route.warnings)
 
     def _acting(self, part: GuidePart) -> str:
         """The part's robot; refused without one."""
@@ -1900,6 +1967,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
         if (outcome is not None and outcome.detail and outcome.level in (BAD, WARN)
                 and not self.is_done(ctx, part, self.index)):
             html += warning(escape(f"{part.label}: {outcome.detail}" if outcome.level == BAD else outcome.detail))
+        if self._grasp_hint is part:
+            html += note(escape(f"{GRASP_HINT}."), CURRENT)
         if self.mode == OFF and self._auto_end is not None and self._auto_end.level == WARN:
             html += warning(escape(f"{self._auto_end.label}: {self._auto_end.detail}"))
         if owner is not None and owner is not part:

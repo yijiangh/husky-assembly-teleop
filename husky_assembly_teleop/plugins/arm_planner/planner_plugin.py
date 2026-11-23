@@ -201,16 +201,17 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
         solved.add_done_callback(done)
         return future
 
-    def solve_goals(self, serial: str, targets, reference=None) -> asyncio.Future:
+    def solve_goals(self, serial: str, targets, reference=None, skip: int = 0) -> asyncio.Future:
         """Joints that put each arm's tool0 at its pose, the arms together, by IK at the live base.
 
         `ArmPlannerContract.solve_goals`.
         """
         future = asyncio.get_running_loop().create_future()
-        self._ctx.submit(f"solve goal {serial}", lambda: self._start_goal(serial, dict(targets), reference, future))
+        self._ctx.submit(f"solve goal {serial}",
+                         lambda: self._start_goal(serial, dict(targets), reference, future, skip))
         return future
 
-    def _start_goal(self, serial: str, targets: dict, reference, future: asyncio.Future) -> None:
+    def _start_goal(self, serial: str, targets: dict, reference, future: asyncio.Future, skip: int = 0) -> None:
         """Snapshot the world and solve the goal on the worker, after any search before it. Main thread."""
         snapshot, _guessed = with_guesses(self._ctx.scene.snapshot, robot_id(serial))
         names = [name for arm in targets for name in arm_joint_names(arm)]
@@ -223,7 +224,8 @@ class ArmPlannerPlugin(PlannerService[ArmPlanRequest]):
             scene = with_stand_ins(snapshot, {robot_id(serial)}).scene
             mirror = self._world.sync(scene, serial)
             self._loaded.add(serial)
-            result = solve_ik(mirror, scene.robots[robot_id(serial)], targets, reference, log=self._ctx.log_info)
+            result = solve_ik(mirror, scene.robots[robot_id(serial)], targets, reference, log=self._ctx.log_info,
+                              skip=skip)
             if result.joints is None:
                 return None, f"no goal at the live base: {result.reason}"
             joints = {name: float(result.joints[name]) for name in names}

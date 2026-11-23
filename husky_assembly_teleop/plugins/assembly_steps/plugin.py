@@ -46,6 +46,8 @@ from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goa
 from ...shared.assembly_planning.route_search import ATTEMPTS, FreeSearch
 from ...shared.assembly_planning.step_plan import live_goal_poses, timed_route
 from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS
+from ...shared.assembly_tab.ik_choice import (GIVE_UP, GRASP_HINT, MOVE_GRASP, NEXT_SOLUTION, IkChoice, fallback_time,
+                                              fallback_warning, offers_choice)
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
 from ...shared.execution.force_sensors import zero_refusal
@@ -127,6 +129,10 @@ class AssemblyStepsPlugin(PlannerPlugin):
         self._offer: str | None = None
         #: The last goal check, and the step it is for.
         self._goal = StepGoal()
+        #: How many nearer IK solutions the step's goal passes over (the pop-up's Next); 0 at each new step, a moved
+        #: grasp included (it makes the process again). What Next runs again ("live IK" or "plan"), and the pop-up.
+        self._ik_skip, self._ik_retry = 0, ""
+        self._choice: IkChoice | None = None
         #: The plan behind `path`, and what it was planned from.
         self._route: RouteResult | None = None
         self._basis: PlanBasis | None = None
@@ -153,6 +159,10 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self._set_up_idle(ctx, "no robots with arms configured: no step to run")
             return
         self._panel = StepsPanel(ctx, self)
+        self._choice = IkChoice(ctx.view)
+        self._choice.buttons[NEXT_SOLUTION].on_click(ctx.defer("next IK solution", lambda: self.next_ik_solution(ctx)))
+        self._choice.buttons[MOVE_GRASP].on_click(ctx.defer("move the grasp", self.move_grasp))
+        self._choice.buttons[GIVE_UP].on_click(ctx.defer("give up the approach", self.close_choice))
         self._add_ghosts(ctx, robots)
 
     def update(self, ctx: PluginContext) -> None:
@@ -210,6 +220,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
         if key is None or self._key is None or key[1] != self._key[1]:
             self._process(ctx).request_carry(None)
         self._key, self._done, self._offer = key, set(), None
+        self._ik_skip, self._ik_retry = 0, ""
+        self.close_choice()
         self.minimum = math.nan
         self.serial, self._robot_name, self._has_target = None, "", key is not None
         if key is None:
@@ -282,6 +294,35 @@ class AssemblyStepsPlugin(PlannerPlugin):
             if isinstance(timed, TimedPath):
                 self.path = timed
                 self._t = min(self._t, timed.duration)
+
+    def next_ik_solution(self, ctx: PluginContext) -> None:
+        """The pop-up's Next: the next IK solution; Live IK or Plan, whichever failed, runs again."""
+        retry = self._ik_retry
+        self.close_choice()
+        if not retry or self.current() is None:
+            return
+        self._ik_skip += 1
+        if retry == "live IK":
+            self.check_goal(ctx)
+        else:
+            self._on_path(ctx, "Plan")
+
+    def move_grasp(self) -> None:
+        """The pop-up's Move the grasp: close it and say where the grasp box is."""
+        self.close_choice()
+        self._say(GRASP_HINT)
+
+    def close_choice(self) -> None:
+        """Close the pop-up (its Give up); Next has nothing to run again."""
+        self._ik_retry = ""
+        if self._choice is not None:
+            self._choice.close()
+
+    def _offer_choice(self, retry: str, label: str, why: str) -> None:
+        """Open the pop-up for a support approach's failed goal or plan (`offers_choice`); `retry` is what Next runs."""
+        if self._choice is not None and offers_choice(self.routine(), why):
+            self._ik_retry = retry
+            self._choice.offer(label, self._ik_skip + 1, why)
 
     def set_visual_diagnosis(self, ctx: PluginContext, on: bool) -> None:
         """Switch the visual diagnosis: fade the real robots, and draw a ready insert or retreat plan's path."""
@@ -423,7 +464,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
                                             transfer_as_free=self._transfer_as_free(ctx),
                                             ignore_built=self.ignore_built,
                                             obstacles_collide=self._obstacles_collide(ctx),
-                                            label=f"check goal {step.label}")
+                                            label=f"check goal {step.label}", ik_skip=key[-1])
                 check = await self._goal.solve(ctx, key, request)
         except SceneNotShown as shown:
             if self._message in (solving, ""):
@@ -445,13 +486,16 @@ class AssemblyStepsPlugin(PlannerPlugin):
                 self._say("Live IK: no answer in time", failed=True, log=False)  # * `solve` logged it
             return None
         if still:
-            self._say(goal_line(check), failed=not check.ok, log=False)  # * `solve` logged it
+            solution = f" (IK solution {key[-1] + 1})" if key[-1] else ""
+            self._say(goal_line(check) + solution, failed=not check.ok, log=False)  # * `solve` logged it
             self._used.touch()  # * an answer arriving counts as use, as a plan does
+            if not check.ok:
+                self._offer_choice("live IK", step.label, check.reason)
         if still and check.ok and check.goal_joints:
             self._process(ctx).request_carry(Carry(action, step.movement.id, step.action.robot,
                                                    dict(check.goal_joints), base=check.base))
         self._assembly_run(ctx).request_record("check_goal", action=action, movement=step.movement.id,
-                                               data={**check.as_record(),
+                                               data={**check.as_record(), "ik_solution": key[-1] + 1,
                                                      "obstacles_collide": request.obstacles_collide})
         return check
 
@@ -539,7 +583,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
                                         transfer_as_free=self._transfer_as_free(ctx),
                                         ignore_built=self.ignore_built,
                                         obstacles_collide=self._obstacles_collide(ctx), goal_joints=goal_joints,
-                                        goal_poses=goals, search=search, label=f"plan {step.label}")
+                                        goal_poses=goals, search=search, label=f"plan {step.label}",
+                                        ik_skip=self._ik_skip)
             made.update(snapshot=snapshot, now=now, request=request, goal_base=goal_base, goals=goals,
                         primary=primary)
             return ""
@@ -558,7 +603,11 @@ class AssemblyStepsPlugin(PlannerPlugin):
             except SceneNotShown as shown:
                 return PlanResult(None, str(shown))
             if not route.ok:
+                self._offer_choice("plan", step.label, route.result.reason)
                 return PlanResult(None, f"{route.result.status}: {route.result.reason}", route.seconds)
+            if made["request"].ik_skip and made["primary"].routine is Routine.SUPPORT_APPROACH:
+                # * Another configuration than the process's: slower, and the plan warns (`accepted`).
+                self.traj_time = fallback_time(self.traj_time, DEFAULT_TRAJ_TIME[Routine.SUPPORT_APPROACH])
             timed = self._timed(route)
             if isinstance(timed, str):
                 return PlanResult(None, timed, route.seconds)
@@ -571,6 +620,10 @@ class AssemblyStepsPlugin(PlannerPlugin):
             view, action, op_step, step = current
             trajectory = route.result.trajectory
             self._route = route
+            self.close_choice()
+            fallback = request.ik_skip and primary.routine is Routine.SUPPORT_APPROACH
+            warnings = [*route.warnings, *([fallback_warning(request.ik_skip + 1, self.traj_time)]
+                                           if fallback else [])]
             self._basis = basis_of(snapshot, view.process, step, self.serial, trajectory.joint_names,
                                    dict(zip(trajectory.joint_names, trajectory.positions[0])),
                                    request.transfer_as_free, view.statuses, self.ignore_built, now, goal_base,
@@ -578,7 +631,8 @@ class AssemblyStepsPlugin(PlannerPlugin):
             self._assembly_run(ctx).request_record("plan", action=action, movement=step.movement.id, data={
                 "planner": route.planner, "attempts": route.attempts, "seconds": route.seconds,
                 "waypoints": route.waypoints, "goal_reused": request.goal_joints is not None,
-                "warnings": list(route.warnings), "obstacles_collide": request.obstacles_collide,
+                "warnings": warnings, "obstacles_collide": request.obstacles_collide,
+                "ik_solution": request.ik_skip + 1,
                 "goal_carried": goals is not None and primary.routine is Routine.INSERT,
                 "goal_live": goals is not None and primary.routine is Routine.RETREAT_LINEAR,
                 # * The flange goals behind the "[insert plan]" or "[retreat live]" line, [x, y, z, qx, qy, qz, qw].
@@ -592,12 +646,13 @@ class AssemblyStepsPlugin(PlannerPlugin):
             message = (f"{route.planner}: {route.waypoints} waypoints in {route.seconds:.1f} s; the motion takes "
                        f"{self.path.duration:.1f} s")
             # * The line says the first warning; the console has them all.
-            for warning in route.warnings:
+            for warning in warnings:
                 ctx.log_warn(f"plan {step.movement.id}: {warning}")
-            if route.warnings:
-                count = len(route.warnings)
-                message += f"; {count} warning{'s' if count > 1 else ''} (console): {route.warnings[0]}"
-            return message, bool(route.warnings)
+            if warnings:
+                count = len(warnings)
+                # * The fallback's warning first: it asks to check the preview.
+                message += f"; {count} warning{'s' if count > 1 else ''} (console): {warnings[-1 if fallback else 0]}"
+            return message, bool(warnings)
 
         label = current[3].label if current is not None else "nothing"
         # * Long enough for every try of the free search at the run's settings.
@@ -808,11 +863,11 @@ class AssemblyStepsPlugin(PlannerPlugin):
         return process.transfer_as_free
 
     def _key_of_goal(self) -> tuple | None:
-        """What a goal check is for: the current (loaded process, action, primary, whether Rhino obstacles collide).
+        """What a goal check is for: the current (process, action, primary, Rhino obstacles collide, IK skip).
 
-        * With the box: a goal checked with the other setting is never shown or reused.
+        * A goal checked with the other box setting, or for another IK solution, is never shown or reused.
         """
-        return None if self._key is None else (*self._key[:3], self._obstacles_collide(self._ctx))
+        return None if self._key is None else (*self._key[:3], self._obstacles_collide(self._ctx), self._ik_skip)
 
     def _timed(self, route: RouteResult, seconds: float | None = None) -> TimedPath | str:
         """The route timed for the arms at `seconds`, else the motion time (`timed_route`), for the preview; or why."""
