@@ -53,6 +53,9 @@ GRASP_MISMATCH = 0.002
 #: (`execution.retreat.SCREW_OUT_MM`) and 3 mm rigid after it.
 RETREAT_SHORTEN_STEP = 0.005
 RETREAT_MIN_DISTANCE = 0.015
+#: A servo pass's goal may turn no joint further than this from the live joints, radians: a correction of a few mm
+#: stays on the arms' branch; another branch is 100° or more away and can't be reached with a bar held.
+SERVO_MAX_MOVE = np.radians(10.0)
 
 #: Routines no arm moves in, and the linear ones, whose start may touch (warned, not refused).
 _NO_ARM = (Routine.TOOL_ONLY, Routine.OPERATOR, Routine.BASE_ONLY)
@@ -469,7 +472,7 @@ class Route(RouteSearch):
                 shoulder lift through pointing down (`unwrap_to_nearest`, `turn_limits`), and refuse a goal outside
                 the limits; the dual-arm routines do, the approach does not.
             targets: Arm -> world pose of its tool0 instead of the process's targets: a servo pass's, solved near the
-                live joints instead of the authored goal.
+                live joints instead of the authored goal, and only on their branch (`SERVO_MAX_MOVE`).
 
         Returns:
             dict[str, float]: Goal values by joint name, one per name in `names`.
@@ -489,8 +492,9 @@ class Route(RouteSearch):
                 raise Refused("a moving flange has no target pose to solve the goal for")
             # * IK in the scene with the held bar: it must be clear where the goal puts it.
             self.mirror.sync(self.planning.scene)
+            servo = what == "the servo target"
             self.ik = solve_ik(self.mirror, self.robot, targets, reference=reference, log=self.log,
-                               skip=self.ik_skip if what == "the goal" else 0)
+                               skip=0 if servo else self.ik_skip, max_move=SERVO_MAX_MOVE if servo else None)
             if self.ik.joints is None and self.ik.colliding_joints is not None:
                 self.mirror.sync(self.planning.scene)  # ? IK may have lent the mirror
                 self.hit("goal by IK", self.ik.colliding_joints, self.planning.scene)

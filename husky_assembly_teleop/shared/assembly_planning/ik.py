@@ -138,7 +138,7 @@ def branches(urdf: Path, base: Pose, arm: str, solver: str, target: Pose,
 
 def solve_ik(mirror: CompasFabMirror, robot: RobotObject, targets: Mapping[str, Pose],
              reference: Mapping[str, float] | None = None, check_collision: bool = True,
-             log: Callable[[str], None] = print, skip: int = 0) -> IkResult:
+             log: Callable[[str], None] = print, skip: int = 0, max_move: float | None = None) -> IkResult:
     """Arm joints that put each arm's tool0 at its world target, nearest the reference and collision-free.
 
     With ssik, the combinations of every arm's branches are tried nearest first (by the largest joint move); the
@@ -154,6 +154,8 @@ def solve_ik(mirror: CompasFabMirror, robot: RobotObject, targets: Mapping[str, 
         log: Gets the fallback line.
         skip: How many collision-free solutions to pass over, nearest first: 1 gives the second nearest, for a goal
             the nearest failed for. PyBullet's IK has only one.
+        max_move: Refuse any solution that turns a joint further than this from the reference, radians: a servo
+            correction stays on the branch the arms are on. None: no limit.
 
     Returns:
         IkResult: The solution, or why there is none; when every combination collides, the nearest one's pair.
@@ -168,7 +170,7 @@ def solve_ik(mirror: CompasFabMirror, robot: RobotObject, targets: Mapping[str, 
                 f"(within 1 mm / 0.01 rad, random restarts)")
         if skip:
             return IkResult(None, backend="pybullet", reason="PyBullet's IK gives one solution only")
-        return _pybullet_ik(mirror, targets, reference, check_collision)
+        return _pybullet_ik(mirror, targets, reference, check_collision, max_move)
 
     names = tuple(solvers.values())
     arms = []
@@ -194,8 +196,14 @@ def solve_ik(mirror: CompasFabMirror, robot: RobotObject, targets: Mapping[str, 
         return max(float(np.max(np.abs(q - seed))) for q, (_names, seed, _found) in zip(combination, arms))
 
     combinations = sorted(product(*(found for _names, _seed, found in arms)), key=largest_move)
+    # * Nearest first, so the ones within `max_move` come first; the rest are never tried.
+    allowed = [combination for combination in combinations if max_move is None or largest_move(combination) <= max_move]
+    if not allowed:
+        return IkResult(None, largest_move(combinations[0]), 0, len(combinations), "ssik", names,
+                        reason=f"the nearest solution turns a joint {np.degrees(largest_move(combinations[0])):.0f}°, "
+                               f"over the {np.degrees(max_move):.0f}° allowed")
     nearest, passed = None, 0
-    for rank, combination in enumerate(combinations, start=1):
+    for rank, combination in enumerate(allowed, start=1):
         joints = {name: float(value) for q, (joint_names, _seed, _found) in zip(combination, arms)
                   for name, value in zip(joint_names, q)}
         hit = collisions(mirror, joints) if check_collision else []
@@ -210,13 +218,20 @@ def solve_ik(mirror: CompasFabMirror, robot: RobotObject, targets: Mapping[str, 
         return IkResult(None, 0.0, 0, len(combinations), "ssik", names, *(nearest or (None, None)),
                         reason=f"no more solutions: {passed} of {len(combinations)} are clear of collisions, all "
                                f"passed over")
+    others = len(combinations) - len(allowed)
+    beyond = f" (the other {others} turn a joint over {np.degrees(max_move):.0f}°)" if others else ""
     return IkResult(None, largest_move(combinations[0]), 0, len(combinations), "ssik", names, *nearest,
-                    reason=f"all {len(combinations)} solutions collide; the nearest: {nearest[0][0]} with "
+                    reason=f"{_all_collide(len(allowed))}{beyond}; the nearest: {nearest[0][0]} with "
                            f"{nearest[0][1]}")
 
 
+def _all_collide(count: int) -> str:
+    """Say that all `count` solutions tried collide: "the only solution collides" or "all 64 solutions collide"."""
+    return "the only solution collides" if count == 1 else f"all {count} solutions collide"
+
+
 def _pybullet_ik(mirror: CompasFabMirror, targets: Mapping[str, Pose], reference: Mapping[str, float],
-                 check_collision: bool) -> IkResult:
+                 check_collision: bool, max_move: float | None = None) -> IkResult:
     """IK by PyBullet through compas_fab, one arm after the other, each from the last; checked once, merged."""
     state = mirror.state_at(reference)
     options = {**PYBULLET_OPTIONS, "return_full_configuration": True, "check_collision": False}
@@ -235,6 +250,10 @@ def _pybullet_ik(mirror: CompasFabMirror, targets: Mapping[str, Pose], reference
     names = [name for arm in targets for name in arm_joint_names(arm)]
     joints = {name: float(state.robot_configuration[name]) for name in names}
     change = max(abs(joints[name] - reference.get(name, 0.0)) for name in names)
+    if max_move is not None and change > max_move:
+        return IkResult(None, change, 0, 1, "pybullet",
+                        reason=f"the solution turns a joint {np.degrees(change):.0f}°, over the "
+                               f"{np.degrees(max_move):.0f}° allowed")
     hit = collisions(mirror, joints) if check_collision else []
     if hit:
         return IkResult(None, change, 0, 1, "pybullet", (), hit[0], joints, reason=f"the solution collides: {hit[0]}")

@@ -142,6 +142,20 @@ def test_solve_ik_steps_past_a_box(mirror, link):
 
 
 @pytest.mark.slow
+def test_solve_ik_within_a_largest_move_stays_on_the_branch(mirror):
+    """With a largest move (a servo's), a box at the forearm refuses the goal instead of taking another branch."""
+    cindy = _cindy()
+    where = link_pose(cindy.model.urdf, BASE, cindy.joints, "left_ur_arm_forearm_link")
+    box = Body("obstacles/box", box_geometry((0.05, 0.05, 0.05)), Pose(where.position))
+    mirror.sync(Scene(bodies={box.id: box}, world_poses={box.id: box.placement}, robots={CINDY_ID: cindy}))
+    result = solve_ik(mirror, cindy, _tool0_targets(cindy), max_move=np.radians(10.0))
+    assert result.joints is None and "obstacles/box" in result.colliding
+    assert result.reason.startswith("the only solution collides (the other"), result.reason
+    mirror.sync(Scene(robots={CINDY_ID: cindy}))
+    assert solve_ik(mirror, cindy, _tool0_targets(cindy), max_move=np.radians(10.0)).rank == 1
+
+
+@pytest.mark.slow
 def test_pybullet_fallback(mirror, monkeypatch):
     """Without ssik, PyBullet's IK solves it and a "!" line says so."""
     monkeypatch.setattr(ik, "ssik_unavailable", lambda: "ssik switched off for the test")
