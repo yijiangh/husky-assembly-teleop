@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Collection, Generic, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Collection, Generic, Protocol, TypeVar, runtime_checkable
 
 from .timed_path import TimedPath
 
@@ -42,7 +42,8 @@ class Plan(Generic[R]):
         path: The path once found, else None.
         message: What happens or happened: progress, what was found, why it failed or went stale.
         warning: Whether `message` is a warning, e.g. planned from a guessed robot pose.
-        hit: What collides, when it failed because the start or goal does.
+        hit: What collides, when it failed because the start or goal does, or what blocked the way.
+        closest: A failed plan's way to where its search got closest (`PlanResult.closest`), to draw; else None.
     """
 
     id: int
@@ -52,6 +53,7 @@ class Plan(Generic[R]):
     message: str = ""
     warning: bool = False
     hit: CollisionHit | None = None
+    closest: Any = None
 
 
 @runtime_checkable

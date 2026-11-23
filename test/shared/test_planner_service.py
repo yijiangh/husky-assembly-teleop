@@ -141,6 +141,17 @@ def test_no_path_or_a_timeout_fails_the_plan(work, time_limit, state, message):
     assert plan.state == state and message in plan.message
 
 
+def test_a_failed_plan_keeps_the_way_the_search_got_closest():
+    """A search that failed with the way it got closest: the failed plan carries it, to draw."""
+    way = ((0.0, 0.0, 0.0), (0.5, 0.0, 0.0))
+
+    async def scenario(planner, ctx):
+        return await planner.request_plan(Request("alice"))
+
+    plan = run(Planner(lambda abort: PlanResult(None, "a post blocks the way", closest=way)), scenario)
+    assert plan.state == "failed" and plan.message == "no plan: a post blocks the way" and plan.closest == way
+
+
 @pytest.mark.parametrize("how", ["cancel", "soft stop"])
 def test_a_cancelled_search_settles_as_cancelled_and_stops_the_worker(how):
     """Cancel and a soft stop (which cancels the task) both resolve the future; the worker sees its abort flag."""

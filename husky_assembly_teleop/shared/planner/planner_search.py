@@ -9,7 +9,7 @@ One planner search: what it is given (`Search`), how long it may take, and what 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Callable, Generic, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Generic, Protocol, TypeVar
 
 if TYPE_CHECKING:
     from scaffolding_assembly_core.scene import Scene
@@ -38,6 +38,8 @@ class PlanResult(Generic[P]):
         direct: Whether the straight move was already free.
         hit: What collides, when the start or goal does.
         detail: More on a failed search for the log, e.g. what blocked it; too long for a chip.
+        closest: A failed search's way from where it began to where it got closest, as poses to draw (a base's
+            (x, y, yaw) rows); None if it has none. A tuple, so plans still compare.
     """
 
     path: P | None
@@ -46,6 +48,7 @@ class PlanResult(Generic[P]):
     direct: bool = False
     hit: CollisionHit | None = None
     detail: str = ""
+    closest: Any = None
 
 
 class PlanningWorld(Protocol):

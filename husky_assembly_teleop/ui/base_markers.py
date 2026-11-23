@@ -3,6 +3,7 @@ A base path on the floor as the onboard follower drives it: lines, heading ticks
 
 - A path slowed in parts (narrow passages) is drawn by speed: its own colour at full speed, shading to SLOW_COLOR
   (amber) at the slowest (`path.MIN_SCALE`); the heading ticks keep its own colour.
+- A failed plan's way to where its search got closest is dashed red, with a dot where it got stuck.
 
 ! Main thread only, like every scene call; build in `setup`, update in `draw`.
 """
@@ -14,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ..colors import PLAN, PREVIEW, TARGET, TRAIL, WARN, rgb
+from ..colors import FAIL, PLAN, PREVIEW, TARGET, TRAIL, WARN, rgb
 
 if TYPE_CHECKING:
     from crl_husky.follower_path import FollowerPath
@@ -28,12 +29,14 @@ SENT_COLOR = rgb(PLAN)             # the path being followed
 TRAIL_COLOR = rgb(TRAIL)           # amber: where the robot went
 LOOKAHEAD_COLOR = rgb(TARGET)       # the point on the path the follower aims at
 SLOW_COLOR = rgb(WARN)             # amber: where a path drives at its slowest
+FAILED_COLOR = rgb(FAIL)           # red: how far a failed plan got
 #: Speed scale drawn fully in SLOW_COLOR (the planner's slowest, `plugins/base_planner/path.MIN_SCALE`).
 SLOWEST = 0.15
 FLOOR = 0.005                      # m, just above the grid
 LINE = 0.012                       # m
 TICK = 0.08                        # m, heading ticks
 TICK_EVERY = 0.15                  # m of path, or every drawn pose on a turn
+DASH = 0.08                        # m, dashes and gaps of a failed plan's line
 #: Most trail points drawn; longer trails are thinned evenly.
 TRAIL_POINTS = 500
 
@@ -55,6 +58,9 @@ class Markers:
                                                        visible=False)
         self._reference = ctx.view.scene.add_icosphere(f"{root}/reference", radius=0.02, color=SENT_COLOR,
                                                        visible=False)
+        #: The failed plan's way last drawn.
+        self._closest = None
+        self._stuck = ctx.view.scene.add_icosphere(f"{root}/stuck", radius=0.04, color=FAILED_COLOR, visible=False)
 
     def paths(self, preview: FollowerPath | None, sent: FollowerPath | None) -> None:
         """Show the preview in blue and the path sent in green; None removes one."""
@@ -63,6 +69,22 @@ class Markers:
         self._paths = (preview, sent)
         self._path("preview", preview, PREVIEW_COLOR)
         self._path("sent", sent, SENT_COLOR)
+
+    def closest(self, poses) -> None:
+        """Show a failed plan's way to where its search got closest, dashed red, a dot at its end; None removes it.
+
+        `poses`: (x, y, yaw) rows from where the search began to where it got stuck (`Plan.closest`).
+        """
+        if poses is self._closest:
+            return
+        self._closest = poses
+        self._remove("closest")
+        self._stuck.visible = poses is not None and len(poses) > 0
+        if not self._stuck.visible:
+            return
+        xy = np.asarray(poses, dtype=float)[:, :2]
+        self._stuck.position = (*xy[-1], FLOOR * 4)
+        self._add("closest", dashed(xy, DASH), FAILED_COLOR, LINE)
 
     def trail(self, xy: np.ndarray | None) -> None:
         """Show where the robot went (n x 2, NaN rows skipped); None removes it."""
@@ -130,6 +152,16 @@ def floor_segments(xy: np.ndarray, height: float = FLOOR, keep: bool = False):
     segments = np.stack([points[:-1], points[1:]], axis=1)
     kept = np.linalg.norm(segments[:, 1] - segments[:, 0], axis=1) > 1e-6
     return (segments[kept], kept) if keep else segments[kept]
+
+
+def dashed(xy: np.ndarray, dash: float, height: float = FLOOR) -> np.ndarray:
+    """A polyline as dashes `dash` metres long with gaps as long, as line segments at `height`."""
+    if len(xy) < 2:
+        return np.empty((0, 2, 3))
+    along = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))])
+    marks = np.arange(0.0, along[-1] + dash, dash)
+    points = np.column_stack([np.interp(marks, along, xy[:, 0]), np.interp(marks, along, xy[:, 1])])
+    return floor_segments(points, height)[::2]
 
 
 def polyline_scales(path: FollowerPath, turn_step: float = math.radians(10.0)) -> np.ndarray:

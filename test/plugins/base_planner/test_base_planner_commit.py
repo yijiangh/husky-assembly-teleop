@@ -16,6 +16,7 @@ from crl_husky.follower_path import FollowerPath
 from robot_fakes import Node, lease_test_robots, wait_ticks_until
 from robot_lab import RobotLab
 
+from husky_assembly_teleop.config import short_serial
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugin_api.trace import Signal, Trace
 from husky_assembly_teleop.robot_interface.base import BaseInterface, FollowerState
@@ -307,6 +308,22 @@ def test_the_search_records_debug_if_asked_or_the_debug_view_is_on(asked, box, o
     request = BasePlanRequest(lab.configs[2].serial, (4.0, 1.0, 0.0), debug=asked)
     planner.make_search(lab.ctx, request, threading.Event()).work()
     assert seen[0].on is on
+
+
+def test_a_failed_search_logs_its_detail_and_keeps_its_reason_short():
+    """The plan's reason stays the one line; the search's whole story goes to the log as a warning of its own."""
+    lab, planner, warnings = RobotLab(), BasePlannerPlugin(), []
+    default = planner._algorithms[0]
+    default.plan = lambda *args: PlanResult(None, "a post blocks the way", 0.0, detail="the whole story")
+    lab.ctx.kinematics = SimpleNamespace(base_pose=lambda _serial: SimpleNamespace(
+        position=np.array([3.0, 1.0, 0.0]), orientation=np.array([0.0, 0.0, 0.0, 1.0])))
+    lab.cindy.base.simulation, lab.ctx.plugins["process"] = None, SimpleNamespace(selection=None)
+    lab.ctx.log_warn = warnings.append
+    search = planner.make_search(lab.ctx, BasePlanRequest(lab.configs[2].serial, (4.0, 1.0, 0.0)), threading.Event())
+    result = search.work()
+    search.finished()
+    assert result.reason == "a post blocks the way"
+    assert f"no path for {short_serial(lab.configs[2].serial)}: the whole story" in warnings
 
 
 #: A recorded request of experiment "trial".

@@ -6,7 +6,7 @@ Hybrid A* over the base's floor pose (x, y, yaw) that drives curves where they f
   a turn on the spot turns about that centre. Checks, drawings and the path sent are in base_footprint poses.
 - Moves: drive straight or along an arc, forwards or backwards, or turn on the spot. Through a narrow place (a portal)
   in one move: lined up exactly before it by a turn-drive-turn, then straight through. The target is reached driving
-  straight, from where the robot has room.
+  straight, forwards or backwards, from where the robot has room: the search ends at whichever drive in it reaches.
 - Each move is checked as the follower drives it (`path.driven`) at both ends of the xICR range, with extra margin for
   how far earlier turns and curves may still have the base off the path (`_Node.slack`).
 - Guided by the cost still to go on a coarse map of where the robot's shape fits at each heading (`_CostMap`). The path
@@ -33,6 +33,7 @@ from scipy.signal import fftconvolve
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
 
+from ....config import robot_name, short_serial
 from ....shared.planner.planner_search import PlanResult, TIME_LIMIT
 from ....world.collision_hit import CollisionHit
 from ..follow import XICR_SPREAD, followed, thinned, xicr_range
@@ -158,7 +159,9 @@ PORTALS = "portals", (12, 166, 120)
 PORTAL_LINES = "portal lines, lead-in to far side", (9, 146, 104)
 SEARCHED = "search's path", (247, 103, 7)
 SHORTENED = "shortened", (47, 158, 68)
-FOLLOWED = "path as followed, per xICR", (21, 170, 191)
+FOLLOWED_LOW = "path as followed, xICR low (-)", (51, 154, 240)
+FOLLOWED = "path as followed, follower's xICR", (21, 170, 191)
+FOLLOWED_HIGH = "path as followed, xICR high (+)", (230, 73, 128)
 CLOSEST = "closest the search got", (132, 94, 247)
 TOUCHES = "where the robot touches", (33, 37, 41)
 FAILED_AT = "where a check failed", (201, 42, 42)
@@ -241,7 +244,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     """
     debug = debug or Debug()
     for layer in (FLOOR, LEARNED, MAP_WAY, MAP_TIGHT, LEAD_IN, PORTALS, PORTAL_LINES, TAKEN, HIT, FINISHES,
-                  CLOSEST, SEARCHED, SHORTENED, FOLLOWED, FAILED_AT, TOUCHES):
+                  CLOSEST, SEARCHED, SHORTENED, FOLLOWED_LOW, FOLLOWED, FOLLOWED_HIGH, FAILED_AT, TOUCHES):
         debug.layer(*layer)
     started = time.time()
     start, goal = tuple(map(float, start)), tuple(map(float, goal))
@@ -253,23 +256,37 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
                               time.time() - started, hit=world.collision_hit(own, narrow, name, pose))
     # * From the tighter end first: a search that starts there is lined up with its narrow place already.
     backwards_first = world.clearance(own, [goal])[0] < world.clearance(own, [start])[0]
-    reasons = []
+    # * Failed both ways: the reason is the headline of the search that got closer (one refused only as followed got
+    # * there), the detail both searches' full reasons; the drawing and the hit are from the closer one.
+    details, closer = [], (math.inf, None)
     for k, backwards in enumerate((backwards_first, not backwards_first)):
-        debug.note(f"search {'back from the target' if backwards else 'from the start'}")
+        side = "back from the target" if backwards else "from the start"
+        debug.note(f"search {side}")
+        stuck: list[_Stuck] = []
         result = _plan_one(world, own, start, goal, abort, settings, debug,
-                           started + TIME_LIMIT * (k + 1) - FINISH_RESERVE, backwards)
+                           started + TIME_LIMIT * (k + 1) - FINISH_RESERVE, backwards, stuck)
         if result.path is not None or abort.is_set():
             return PlanResult(result.path, result.reason, time.time() - started, hit=result.hit, direct=result.direct)
-        reasons.append(f"{'back from the target' if backwards else 'from the start'}: {result.reason}")
-    return PlanResult(None, "; ".join(reasons), time.time() - started)
+        details.append(f"{side}: {result.detail or result.reason}")
+        if stuck and stuck[0].distance < closer[0]:
+            closer = (stuck[0].distance, result)
+    if closer[1] is None:
+        return PlanResult(None, "; ".join(details), time.time() - started)
+    best = closer[1]
+    return PlanResult(None, best.reason, time.time() - started, hit=best.hit, detail="; ".join(details),
+                      closest=best.closest)
 
 
 def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Event, settings: Settings, debug: Debug,
-              deadline: float, backwards: bool) -> PlanResult[BasePath]:
+              deadline: float, backwards: bool, stuck: list | None = None) -> PlanResult[BasePath]:
     """`plan` in one direction, searching until `deadline`.
 
-    `backwards`: the search runs from the start of the drive in back to `start`; the path found is reversed, then
-    driven in onto `goal` as usual.
+    - `backwards`: the search runs from the starts of the drives in back to `start`; the path found is reversed, then
+      driven in onto `goal` as usual.
+    - A search that gets stuck appends where to `stuck` (`_Stuck`) and fails with its `_headline` as the reason, the
+      full story as the detail, the way it got closest, and the robot at a move that hit there.
+    - A path the follower, as simulated, drives into something appends a `_Stuck` 0 m away and fails with what it hit,
+      its trace up to there, and the robot there.
     """
     started = phase = time.time()
     # * The narrow margin is the hard one; the margin only where a move need not come closer.
@@ -350,33 +367,46 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
             done[key] = world.hit_by(own, pose, clearance)
         return done[key]
 
-    # The traces of the last path checked as followed, one per simulated xICR.
+    # The traces of the last path checked as followed: (xICR, trace) per simulated xICR.
     traces: list = []
 
     def follows(poses) -> bool:
-        """Whether the follower, simulated with each xICR in `simulated`, finishes `poses` within the margin."""
+        """Whether the follower, simulated with each xICR in `simulated`, finishes `poses` within the margin.
+
+        Every xICR is simulated, so the drawing shows the whole spread; `failure` is the first that fails.
+        """
         traces.clear()
+        failed_at = None
         for icr in simulated:
             trace, why = followed(poses, icr, model, MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED)
-            traces.append(trace)
+            traces.append((icr, trace))
+            if failed_at is not None:
+                continue
             if why:
-                failure[:] = [tuple(trace[-1]), icr, f"does not finish ({why})", None]
-                return False
+                failed_at = [tuple(trace[-1]), icr, f"does not finish ({why})", None]
+                continue
             for pose in thinned(trace, POSITION_STEP, turn_step):
                 if abort.is_set():
                     return False
                 other = hit_by(tuple(pose), margin)
                 if other is not None:
-                    failure[:] = [tuple(pose), icr, f"hits {other}", margin]
-                    return False
-        return True
+                    failed_at = [tuple(pose), icr, f"hits {other}", margin]
+                    break
+        if failed_at is not None:
+            failure[:] = failed_at
+        return failed_at is None
+
+    def draw_traces() -> None:
+        """Draw the traces of the last path checked as followed, each xICR in its own layer."""
+        for icr, trace in traces:
+            layer = FOLLOWED_LOW if icr < x_model - 1e-9 else FOLLOWED_HIGH if icr > x_model + 1e-9 else FOLLOWED
+            debug.path(layer[0], trace, layer[1])
 
     def tried(text: str) -> None:
         """Note and draw why the path last followed failed."""
         lap(f"{text} {failure[2]} with xICR {failure[1]:+.3f} m at ({failure[0][0]:.2f}, {failure[0][1]:.2f})")
         debug.points(FAILED_AT[0], [failure[0]], FAILED_AT[1])
-        for trace in traces:
-            debug.path(FOLLOWED[0], trace, FOLLOWED[1])
+        draw_traces()
         touched([(failure[0], failure[3])] if failure[3] is not None else [])
 
     def touched(where) -> None:
@@ -393,8 +423,7 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
         return f"touches {near}" if clear <= 0.0 else f"{clear * 100:.0f} cm to {near}"
 
     def found(poses, direct: bool = False) -> PlanResult[BasePath]:
-        for trace in traces:
-            debug.path(FOLLOWED[0], trace, FOLLOWED[1])
+        draw_traces()
         lap(f"found: {len(poses)} waypoints, followed clear with xICR {', '.join(f'{icr:+.3f}' for icr in simulated)}"
             f" m, follower model {settings.follower_model} (xICR {x_model:+.3f} m); {len(done)} poses checked in all")
         return PlanResult(timed_path(poses), seconds=time.time() - started, direct=direct)
@@ -442,13 +471,13 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
             along -= PORTAL_STEP
         return start_of(distance)
 
-    # * Reach the target driving straight, from the side facing the start first. In a narrow place the drive in starts
-    # * `lead` before where the robot has room again, so it lines up there, not in the narrow place; with no such room,
-    # * a drive in of just `lead` that keeps the margin. Either is shortened until its start has room to turn onto it.
-    # * Only then the far side, which needs a way round the target.
-    arrive, refused = goal, []
+    # * Reach the target driving straight, forwards or backwards: the search finishes at either drive in, the side
+    # * facing the start listed first. In a narrow place the drive in starts `lead` before where the robot has room
+    # * again, so it lines up there, not in the narrow place; with no such room, a drive in of just `lead` that keeps
+    # * the margin. Either is shortened until its start has room to turn onto it.
+    arrives, refused = [], []
+    heading = np.array([math.cos(goal[2]), math.sin(goal[2])])
     if settings.lead > 0.0:
-        heading = np.array([math.cos(goal[2]), math.sin(goal[2])])
         behind = 1.0 if np.dot(heading, np.subtract(goal[:2], start[:2])) >= 0.0 else -1.0
         for side in (behind, -behind):
             name, back = "forwards" if side > 0 else "backwards", -side * heading
@@ -463,30 +492,37 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
                     if pose is None:
                         refused.append(f"{name} short: {why}")
             if pose is not None:
-                arrive = pose
-                break
-    tail = [goal] if arrive != goal else []
-    debug.path(LEAD_IN[0], [arrive, goal], LEAD_IN[1])
-    lead_note = (f"straight in {'forwards' if np.dot(np.subtract(goal[:2], arrive[:2]), heading) > 0 else 'backwards'}"
-                 f" over {math.dist(arrive[:2], goal[:2]):.2f} m"
+                arrives.append(pose)
+    tail = [goal] if arrives else []
+    arrives = arrives or [goal]
+    for arrive in arrives:
+        debug.path(LEAD_IN[0], [arrive, goal], LEAD_IN[1])
+
+    def way_in(arrive) -> str:
+        """The drive in from `arrive`, as text."""
+        forwards = np.dot(np.subtract(goal[:2], arrive[:2]), heading) > 0
+        return f"straight in {'forwards' if forwards else 'backwards'} over {math.dist(arrive[:2], goal[:2]):.2f} m"
+
+    lead_note = (" or ".join(way_in(arrive) for arrive in arrives)
                  if tail else f"no straight drive in ({'; '.join(refused) or 'lead 0'})")
     target_room = room(goal)
     passed = f" ({'; '.join(refused)} refused)" if tail and refused else ""
     lap(f"lead: {lead_note}{passed}. Room (margin {margin * 100:.0f} cm): start {room(start)}, target {target_room}"
-        + (f", start of the drive in {room(arrive)}" if tail else ""))
+        + (f", start of the drive in {' or '.join(room(arrive) for arrive in arrives)}" if tail else ""))
 
     # * From here on in turning-centre poses.
-    start_c, arrive_c, tail_c = (_to_centre(start, ahead), _to_centre(arrive, ahead),
-                                 [_to_centre(pose, ahead) for pose in tail])
+    start_c, tail_c = _to_centre(start, ahead), [_to_centre(pose, ahead) for pose in tail]
+    arrives_c = [_to_centre(arrive, ahead) for arrive in arrives]
 
-    # * One move onto the lead's start, if it is clear; a short drive in after a big turn is fragile too.
-    join = _join(start_c, arrive_c)
-    poses = join and [start_c] + join + _continued(tail_c, arrive_c[2], join[-1][2])
-    if poses and not _fragile(poses):
-        if not roomy(poses, icrs, _track(poses, swing)):
-            if follows(_sent(poses, ahead)):
-                return found(_sent(poses, ahead), direct=True)
-            tried("one move: as followed,")
+    # * One move onto a lead's start, if it is clear; a short drive in after a big turn is fragile too.
+    for arrive_c in arrives_c:
+        join = _join(start_c, arrive_c)
+        poses = join and [start_c] + join + _continued(tail_c, arrive_c[2], join[-1][2])
+        if poses and not _fragile(poses):
+            if not roomy(poses, icrs, _track(poses, swing)):
+                if follows(_sent(poses, ahead)):
+                    return found(_sent(poses, ahead), direct=True)
+                tried("one move: as followed,")
     if abort.is_set():
         return failed("cancelled")
     if failure:
@@ -495,16 +531,16 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
     else:
         lap("one move: none that the follower drives reliably")
 
-    low = np.minimum.reduce([start[:2], arrive[:2], goal[:2]]) - PADDING
+    low = np.minimum.reduce([start[:2], *(arrive[:2] for arrive in arrives), goal[:2]]) - PADDING
     shape = tuple(int(math.ceil(size / CELL)) + 1 for size in np.maximum.reduce(
-        [start[:2], arrive[:2], goal[:2]]) + PADDING - low)
-    # * Backwards: the cost map leads to the start, and the search starts at the start of the drive in.
-    cost_map = _CostMap(world, own, low, shape, start if backwards else arrive,
+        [start[:2], *(arrive[:2] for arrive in arrives), goal[:2]]) + PADDING - low)
+    # * Backwards: the cost map leads to the start, and the search starts at the starts of the drives in.
+    cost_map = _CostMap(world, own, low, shape, [start] if backwards else arrives,
                         min(settings.turn_weight, CURVE_WEIGHT) if settings.curves else settings.turn_weight, full,
                         margin)
     debug.points(FLOOR[0], cost_map.nowhere(), FLOOR[1])
     debug.points(PORTALS[0], cost_map.portals, PORTALS[1])
-    way = cost_map.way(arrive if backwards else start)
+    way = cost_map.way(min(arrives, key=lambda arrive: cost_map(*arrive)) if backwards else start)
     for (x0, y0, _), (x1, y1, fits) in zip(way[:-1], way[1:]):
         if fits:
             debug.lines(MAP_WAY[0], [((x0, y0), (x1, y1))], MAP_WAY[1])
@@ -560,18 +596,27 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
         return (float(lead_in[0]), float(lead_in[1]), heading), (float(past[0]), float(past[1]), heading)
 
     narrowing = roomy if full > margin + 1e-9 else None
+    stuck = [] if stuck is None else stuck
     if backwards:
-        corners, reason = _search(arrive_c, start_c, [], ahead, cost_map, centred, hits, failure, touched, ends, swing,
-                                  settings, deadline, abort, debug, aim="the start", roomy=narrowing, flip=True,
-                                  after=tail_c)
         # ? Searched backwards, the drift slack and a big turn's drive after it count in search order, and a finish
         #   is checked for fragile turns in driving order too; the check as followed below decides.
-        corners = corners and corners[::-1] + tail_c
+        corners, reason = _search([(arrive_c, tail_c) for arrive_c in arrives_c], [(start_c, [])], ahead, cost_map,
+                                  centred, hits, failure, touched, ends, swing, settings, deadline, abort, debug,
+                                  aim="the start", roomy=narrowing, flip=True, stuck_at=stuck)
     else:
-        corners, reason = _search(start_c, arrive_c, tail_c, ahead, cost_map, centred, hits, failure, touched, ends,
-                                  swing, settings, deadline, abort, debug, roomy=narrowing)
+        corners, reason = _search([(start_c, [])], [(arrive_c, tail_c) for arrive_c in arrives_c], ahead, cost_map,
+                                  centred, hits, failure, touched, ends, swing, settings, deadline, abort, debug,
+                                  roomy=narrowing, stuck_at=stuck)
     if corners is None:
-        return failed(f"{reason}. Target: {target_room}, {lead_note}{passed}")
+        detail = f"{reason}. Target: {target_room}, {lead_note}{passed}"
+        if not stuck or abort.is_set():
+            return failed(detail)
+        block = stuck[0].block
+        # * At the clearance the search checked: rounded up to CLEARANCE_STEP (`hit_by`).
+        hit = block and world.collision_hit(own, math.ceil(block[1] / CLEARANCE_STEP - 1e-9) * CLEARANCE_STEP,
+                                            f"a move {stuck[0].distance:.1f} m from {stuck[0].where}", block[0])
+        return PlanResult(None, _headline(stuck[0]), time.time() - started, hit=hit, detail=detail,
+                          closest=tuple(tuple(float(v) for v in pose) for pose in stuck[0].poses))
     corners = _merged(corners)
     debug.path(SEARCHED[0], [_to_base(pose, ahead) for pose in corners], SEARCHED[1])
     lap(f"search: {reason}; {len(corners)} waypoints")
@@ -586,27 +631,37 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
         if abort.is_set():
             return failed("cancelled")
         tried("path as followed")
-    return failed(f"the path as followed {failure[2]} with xICR {failure[1]:+.3f} m at ({failure[0][0]:.2f}, "
-                  f"{failure[0][1]:.2f})")
+    # * The search got there, the follower drives off its path: drawn up to where it hits, the robot there.
+    pose, icr, what, clearance = failure
+    detail = f"the path as followed {what} with xICR {icr:+.3f} m at ({pose[0]:.2f}, {pose[1]:.2f})"
+    trace = np.asarray(next(trace for at, trace in traces if at == icr))
+    end = int(np.argmin(np.linalg.norm(trace[:, :2] - np.asarray(pose[:2]), axis=1))) + 1
+    other = what[len("hits "):] if what.startswith("hits ") else None
+    stuck.append(_Stuck(0.0, "the target", [tuple(row[:3]) for row in trace[:end]], Counter(), None))
+    hit = other and world.collision_hit(own, math.ceil(clearance / CLEARANCE_STEP - 1e-9) * CLEARANCE_STEP,
+                                        "the path as followed", pose)
+    headline = f"the path as followed (xICR {icr:+.3f} m) " + (f"hits {_named(other)}" if other else what)
+    return PlanResult(None, headline, time.time() - started, hit=hit, detail=detail,
+                      closest=tuple(tuple(float(v) for v in row) for row in stuck[-1].poses))
 
 
 class _CostMap:
-    """Cost still to go from a pose to the lead's start, on a coarse map of where the robot's shape fits per heading.
+    """Cost still to go from a pose to the nearest of its targets, on a coarse map of where the robot's shape fits.
 
     Turning costs as in the search; at each heading it moves forwards or backwards in the grid directions within
     MAP_SLIP of the heading, never sideways, but may skip a cell (knight moves).
     """
 
-    def __init__(self, world: PlanningWorld, own: str, low, shape: tuple[int, int], target, turn_weight: float,
+    def __init__(self, world: PlanningWorld, own: str, low, shape: tuple[int, int], targets, turn_weight: float,
                  margin: float = 0.0, narrow: float | None = None):
-        """Map where the robot fits, and run Dijkstra over (x, y, heading) from the target.
+        """Map where the robot fits, and run Dijkstra over (x, y, heading) from the targets.
 
         Args:
             world: The planning world, already synced.
             own: The robot to plan for, by id.
             low: (x, y) of the centre of the search grid's cell (0, 0), metres.
             shape: The search grid's cells along x and y (CELL apart).
-            target: (x, y, yaw) to measure to.
+            targets: (x, y, yaw) poses to measure to: the cost to go is to the nearest.
             turn_weight: Metres of driving one radian of turning is worth.
             margin: Grow the robot's shape by this much, metres, to the search-grid cell: as the search checks it.
             narrow: Where only a shape grown by this much fits, driving costs NARROW_WEIGHT times more; None: `margin`.
@@ -682,11 +737,11 @@ class _CostMap:
         join(np.s_[:, :, :], (slice(None), slice(None), np.roll(np.arange(MAP_HEADINGS), -1)), turn)
         # The edges between grid nodes, with their length before weighting.
         self._edges = tuple(np.concatenate(part) for part in (rows, cols, lengths))
-        # A source node joined to the target's cell at every heading, by the turn to the target's yaw.
-        i, j = self._cell(target)
+        # A source node joined to each target's cell at every heading, by the turn to that target's yaw.
         headings = 2.0 * math.pi * np.arange(MAP_HEADINGS) / MAP_HEADINGS
-        self._source = (np.full(MAP_HEADINGS, index.size), index[i, j],
-                        turn_weight * np.abs(np.angle(np.exp(1j * (headings - target[2])))) + 1e-6)
+        sources = [(np.full(MAP_HEADINGS, index.size), index[self._cell(target)],
+                    turn_weight * np.abs(np.angle(np.exp(1j * (headings - target[2])))) + 1e-6) for target in targets]
+        self._source = tuple(np.concatenate(part) for part in zip(*sources))
         # Where the robot does not fit counts BLOCKED times, where it fits with little room more as it has less, and
         # where the search's moves hit, more as they hit.
         self._fits = np.where(fits, BLOCKED, np.where(hit, NARROW_WEIGHT, 1.0) * room[:, :, None])
@@ -735,7 +790,7 @@ class _CostMap:
         return math.inf
 
     def way(self, pose) -> list[tuple[float, float, bool]]:
-        """The way the cost map sees from `pose` to its target: (x, y, whether the robot fits there at that heading)."""
+        """The way the cost map sees from `pose` to a target: (x, y, whether the robot fits there at that heading)."""
         i, j = self._cell(pose)
         k = int(round(pose[2] * MAP_HEADINGS / (2.0 * math.pi))) % MAP_HEADINGS
         nx, ny = self._shape
@@ -835,15 +890,54 @@ class _Node:
         return self.slack0 * max(0.0, 1.0 - self.since / SETTLE_DISTANCE)
 
 
-def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits, failure: list, touched, ends,
+@dataclass
+class _Stuck:
+    """Where a search that found no path got closest, for the plan's one-line reason and its drawing.
+
+    Attributes:
+        distance: How far from `where` it got, metres; 0 when it got there and only the path as followed hit.
+        where: What it aimed at: "the start of the drive in", "the target" or "the start".
+        poses: base_footprint poses from where the search began (the start, or the target when searched back from
+            it) to the closest pose; or the follower's trace from the start to where it hit.
+        near: What the moves near the closest pose hit, and how often.
+        block: (base_footprint pose, clearance) of a move near it that hit the most hit of those; None if none did.
+    """
+
+    distance: float
+    where: str
+    poses: list
+    near: Counter
+    block: tuple | None
+
+
+def _named(label: str) -> str:
+    """An object's label as the operator reads it: a robot by name ("Belle (0805)"), anything else as it is."""
+    return f"{robot_name(label)} ({short_serial(label)})" if label.startswith("robots/") else label
+
+
+def _headline(stuck: _Stuck) -> str:
+    """One line on why there is no path: the two things moves hit most where the search got closest, and how close.
+
+    Both, however rarely the second was hit: a place too narrow to turn in is bounded on two sides, and the side with
+    fewer hits may be the one that can move.
+    """
+    names = [what for what, _ in stuck.near.most_common(2)]
+    if not names:
+        return f"no way found, {stuck.distance:.1f} m from {stuck.where} at best"
+    return (f"{' and '.join(_named(what) for what in names)} block{'s' if len(names) == 1 else ''} the way, "
+            f"{stuck.distance:.1f} m from {stuck.where}")
+
+
+def _search(starts, finishes, ahead: float, cost_map: _CostMap, centred, hits, failure: list, touched, ends,
             swing: float, settings: Settings, deadline: float, abort: threading.Event, debug: Debug,
-            aim: str | None = None, roomy=None, flip: bool = False, after=()):
-    """Hybrid A* over turning-centre poses from start to the lead's start; each move is checked once taken.
+            aim: str | None = None, roomy=None, flip: bool = False, stuck_at: list | None = None):
+    """Hybrid A* over turning-centre poses from any of `starts` to any of `finishes`; each move is checked once taken.
 
     Args:
-        start: (x, y, yaw) to start from, of the turning centre, like all poses here.
-        arrive: (x, y, yaw) to finish at, by `_join`.
-        tail: Poses after `arrive` (the straight drive in), checked with the finish.
+        starts: (pose, after) per pose to start from: (x, y, yaw) of the turning centre, like all poses here; with
+            `flip`, `after` are the poses driven after it (its straight drive in), else empty.
+        finishes: (arrive, tail) per pose to finish at by `_join`, with the poses after it (its straight drive in),
+            checked with the finish.
         ahead: How far the turning centre lies ahead of base_footprint, metres.
         cost_map: Cost still to go, and the portals, both for base_footprint.
         centred: `centred(portal)` from `plan`: a portal's base_footprint lead-in and far-side poses, or None.
@@ -856,15 +950,15 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
         deadline: Give up at this time.
         abort: Set from the main thread to end the search early.
         debug: Where to record the search.
-        aim: What `arrive` is, for the reason; None: the target, or the start of the drive in with a `tail`.
+        aim: What the finishes are, for the reason; None: the target, or the start of the drive in with a `tail`.
         roomy: `hits` at the full margin, if it is more than the narrow one: moves clear only at the narrow margin cost
             NARROW_WEIGHT times as much. None: every clear move costs the same.
-        flip: The search runs back from the target: a move's poses are driven in the other order (`_backwards`).
-        after: With `flip`, the poses driven after `start` (the straight drive in): a finish whose path, driven with
-            them, is `_fragile` is refused.
+        flip: The search runs back from the target: a move's poses are driven in the other order (`_backwards`); a
+            finish whose path, driven with its start's `after`, is `_fragile` is refused.
+        stuck_at: Given a list, a search that ends without a path appends where it got closest (`_Stuck`).
 
     Returns:
-        tuple[list | None, str]: The poses from start to the end of `tail`, or None; and what happened.
+        tuple[list | None, str]: The poses in driving order, drive in included, or None; and what happened.
     """
     def base(pose) -> tuple[float, float, float]:
         return _to_base(pose, ahead)
@@ -912,12 +1006,22 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
         piece, big = _piece(parent.piece, parent.big, parent.backwards, [parent.pose, *via], flip)
         return _Node(via[-1], parent.cost + cost, index, via, backwards, slack0, since, piece, big)
 
+    def root(index: int) -> int:
+        """The index of the start a node comes from."""
+        while nodes[index].parent >= 0:
+            index = nodes[index].parent
+        return index
+
     def poses_to(index: int) -> list:
         chain = []
-        while index > 0:
+        while nodes[index].parent >= 0:
             chain.append(nodes[index])
             index = chain[-1].parent
-        return [start] + [pose for node in reversed(chain) for pose in node.via]
+        return [nodes[index].pose] + [pose for node in reversed(chain) for pose in node.via]
+
+    def short_of(pose) -> float:
+        """How far base_footprint at `pose` is from the nearest finish, metres."""
+        return min(math.dist(base(pose)[:2], base(arrive)[:2]) for arrive, _ in finishes)
 
     def portal_moves(node: _Node, index: int) -> list:
         """Moves through up to PORTAL_TRIES portals: lead-in within reach, far side closer to the target."""
@@ -947,11 +1051,14 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
                 out.append(("portal", k, 0.0))
         return out
 
-    nodes = [_Node(start, 0.0, -1, (start,), False, 0.0, 0.0)]
+    nodes = [_Node(pose, 0.0, -1, (pose,), False, 0.0, 0.0) for pose, _ in starts]
     # Entries: (cost + greed * to go, cost, tie-break, parent index, move); a node is made only once its entry is taken.
+    # A start's entry has parent index -1 - its index.
     ties = itertools.count()
     # The last item: the extra cost a move that fits only at the narrow margin was given, once checked (0: not yet).
-    heap = [(GREED * to_go(start), 0.0, next(ties), -1, None, cost_map.version, 0.0)]
+    heap = [(GREED * to_go(pose), 0.0, next(ties), -1 - k, None, cost_map.version, 0.0)
+            for k, (pose, _) in enumerate(starts)]
+    heapq.heapify(heap)
     relearned, since_relearn = 0, 0
     closed: set = set()
     entries: dict = {}
@@ -973,8 +1080,15 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
         debug.path(CLOSEST[0], [base(pose) for pose in poses_to(closest[1])], CLOSEST[1])
         debug.points(CLOSEST[0], [(x, y)], CLOSEST[1])
         near = Counter(what for pose, what in zip(hit, blocked) if math.dist(pose[:2], (x, y)) < NEAR)
-        where = aim or ("the start of the drive in" if tail else "the target")
-        return (f"{why}; closest {math.dist((x, y), base(arrive)[:2]):.1f} m from {where}, at "
+        where = aim or ("the start of the drive in" if finishes[0][1] else "the target")
+        if stuck_at is not None:
+            # * The refused move nearest the closest pose, of the thing hit most there.
+            top = near.most_common(1)[0][0] if near else None
+            blocks = [(math.dist(hit_at[k][0][:2], (x, y)), k) for k, what in enumerate(blocked) if what == top]
+            way = list(starts[root(closest[1])][1])[::-1] + poses_to(closest[1])
+            stuck_at.append(_Stuck(short_of(node.pose), where, [base(pose) for pose in way], near,
+                                   hit_at[min(blocks)[1]][:2] if blocks else None))
+        return (f"{why}; closest {short_of(node.pose):.1f} m from {where}, at "
                 f"({x:.2f}, {y:.2f}, {math.degrees(yaw) % 360:.0f}°)"
                 + (f", where moves hit {_most(near)}" if near else "")
                 + (f"; in all, moves hit {_most(Counter(blocked))}"
@@ -987,7 +1101,7 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
             if time.time() > deadline:
                 return None, stuck(f"no path found in {budget:.0f} s")
             _, cost, _, parent_index, move, version, dear = heapq.heappop(heap)
-            node = nodes[0] if parent_index < 0 else child(nodes[parent_index], parent_index, move)
+            node = nodes[-1 - parent_index] if parent_index < 0 else child(nodes[parent_index], parent_index, move)
             if dear:
                 node = replace(node, cost=node.cost + dear)
             if version != cost_map.version:
@@ -1024,20 +1138,25 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
                     continue
                 taken.append((base(parent.pose)[:2], base(node.pose)[:2]))
                 nodes.append(node)
-            index = len(nodes) - 1
+            index = len(nodes) - 1 if parent_index >= 0 else -1 - parent_index
             closed.add(key)
             closest = min(closest, (to_go(node.pose), index))
 
-            extra = []
-            if len(closed) % FINISH_EVERY == 1 or math.dist(node.pose[:2], arrive[:2]) < FINISH_NEAR:
+            every = len(closed) % FINISH_EVERY == 1
+            near = [(arrive, tail) for arrive, tail in finishes
+                    if every or math.dist(node.pose[:2], arrive[:2]) < FINISH_NEAR]
+            for arrive, tail in near:
                 join = _join(node.pose, arrive)
                 finish = join and [node.pose] + join + _continued(tail, arrive[2], join[-1][2])
-                driven = (poses_to(index) + finish[1:])[::-1] + list(after) if flip and finish else finish
+                after = list(starts[root(index)][1])
+                driven = (poses_to(index) + finish[1:])[::-1] + after if flip and finish else finish
                 if finish and not _fragile(driven) and not _cuts_short(node, finish, flip):
                     if not hits(finish, ends, max(node.slack, _track(finish, swing))):
-                        return poses_to(index) + finish[1:], f"{len(closed)} nodes taken, {len(hit)} moves hit"
+                        poses = poses_to(index) + finish[1:]
+                        done = f"{len(closed)} nodes taken, {len(hit)} moves hit"
+                        return (poses[::-1] + after if flip else poses), done
                     refused.append(finish)
-                extra = portal_moves(node, index)
+            extra = portal_moves(node, index) if near else []
 
             for move in moves + extra:
                 next_node = child(node, index, move)

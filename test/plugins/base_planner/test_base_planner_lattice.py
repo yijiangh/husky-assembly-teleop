@@ -240,12 +240,13 @@ def test_passes_between_tall_walls_with_the_arm_on_the_roomy_side(world, robots,
 
 @pytest.mark.slow
 def test_debug_records_the_search(world, robots, alice):  # noqa: F811
-    """With debug on, a passage leaves the cost map, portals, the moves, the path as followed, and notes."""
+    """With debug on, a passage leaves the cost map, portals, the moves, the path as followed per xICR, and notes."""
     world.sync(_snapshot(robots, _passage(WHEELS + 2.0 * Settings().margin + 2.0 * 0.04)))
     debug = Debug(on=True)
     result = plan(world, alice, _at(-2.0, 0.3, 0.0), _at(2.0, 0.0), threading.Event(), debug=debug)
     assert result.path is not None, result.reason
-    for name in ("cost map: no heading fits", "cost map's way", "portals", "path as followed, per xICR"):
+    for name in ("cost map: no heading fits", "cost map's way", "portals", "path as followed, xICR low (-)",
+                 "path as followed, follower's xICR", "path as followed, xICR high (+)"):
         assert debug.layers[name].segments or debug.layers[name].points, name
     assert any(text.startswith("search:") for text in debug.notes)
     assert any(f"Room (margin {Settings().margin * 100:.0f} cm)" in text for text in debug.notes)
@@ -253,19 +254,68 @@ def test_debug_records_the_search(world, robots, alice):  # noqa: F811
 
 @pytest.mark.slow
 def test_too_narrow_says_where_it_got_stuck_and_what_it_touches(world, robots, alice, monkeypatch):  # noqa: F811
-    """A passage narrower than the robot: the reason says where the search got stuck, and debug draws it.
+    """A passage narrower than the robot: the reason names what blocks the way, the detail where it got stuck.
 
-    The reason gives how close it got, what blocked it there and the room at the target; debug draws that spot and
-    where the robot touches the blocks. The search runs until it gives up: 10 s lets it reach the blocks even on a
-    busy machine.
+    The reason is one line: the blocks and how close it got. The detail gives where it got closest and the room at the
+    target. The result carries the way it got closest along, ending at a spot debug draws, and the robot at a move that
+    hit a block; debug also draws where the robot touches the blocks. The search runs until it gives up: 10 s lets it
+    reach the blocks even on a busy machine.
     """
     monkeypatch.setattr(lattice, "TIME_LIMIT", 10.0)
     world.sync(_snapshot(robots, _passage(WHEELS - 0.1)))
     debug = Debug(on=True)
     result = plan(world, alice, _at(-2.0, 0.0), _at(2.0, 0.0), threading.Event(), debug=debug)
     assert result.path is None
-    assert "closest" in result.reason and "block" in result.reason and "Target: over 30 cm" in result.reason
-    assert debug.layers["closest the search got"].points and debug.layers["where the robot touches"].points
+    assert "block" in result.reason and "the way" in result.reason and "closest" not in result.reason
+    assert "closest" in result.detail and "Target: over 30 cm" in result.detail
+    assert result.hit is not None and any("block" in other for _, other in result.hit.pairs)
+    way = np.array(result.closest)[:, :2]
+    stuck = np.array(debug.layers["closest the search got"].points)
+    assert len(way) > 1 and np.min(np.linalg.norm(stuck - way[-1], axis=1)) < 1e-6
+    assert debug.layers["where the robot touches"].points
+
+
+@pytest.mark.slow
+def test_drives_in_from_the_side_it_can_reach(world, robots, alice):  # noqa: F811
+    """A target in a dead-end corridor, facing its closed end, the start beyond that end: in forwards from the open end.
+
+    The drive in from the closed end (backwards, on the start's side) fits, but reaching it means driving through the
+    target and back; the search takes the drive in from the open end instead, and never passes the target.
+    """
+    gap = WHEELS + 2.0 * Settings().margin + 2.0 * 0.04
+    blocks = passage(gap, depth=3.0, length=1.5) + (((0.2, gap + 3.0, 0.2), along(-1.6, 0.0)),)
+    walls = Task("dead end", "", "passages", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), blocks).bodies("test/block", ORIGIN)
+    world.sync(_snapshot(robots, walls))
+    goal = _at(0.0, 0.0, ANGLE + math.pi)
+    result = plan(world, alice, _at(-3.0, 3.0, 0.0), goal, threading.Event())
+    assert result.path is not None, result.reason
+    offsets = np.asarray(result.path.points)[:, :2] - np.asarray(goal[:2])
+    inside = (np.abs(offsets @ ALONG) < 1.5) & (np.abs(offsets @ ACROSS) < gap / 2.0)
+    assert inside.any() and np.min(offsets[inside] @ ALONG) > -0.05, "in the corridor, never past the target"
+    _assert_followed_clear(world, alice, result.path)
+
+
+@pytest.mark.slow
+def test_a_path_refused_as_followed_is_the_reason_and_the_drawing(world, robots, alice, monkeypatch):  # noqa: F811
+    """A follower that drives straight through Cindy: the search's way round her is refused, and that is what is said.
+
+    The reason names Cindy and the xICR, the detail has both searches, the way drawn is the follower's trace up to
+    where it hits her, and Collisions gets the robot there.
+    """
+    def straight(poses, icr, model, linear, angular):
+        return np.linspace(poses[0], poses[-1], 400), ""
+
+    monkeypatch.setattr(lattice, "followed", straight)
+    world.sync(_snapshot(robots))
+    result = plan(world, alice, (0.0, 0.0, 0.0), (4.0, 0.0, 0.0), threading.Event())
+    assert result.path is None
+    assert result.reason.startswith("the path as followed (xICR ") and "hits Cindy (0806)" in result.reason
+    assert "back from the target: the path as followed hits" in result.detail
+    assert "from the start: the path as followed hits" in result.detail
+    way = np.array(result.closest)
+    assert len(way) > 1 and np.allclose(way[0], (0.0, 0.0, 0.0)) and 0.5 < way[-1][0] < 2.0
+    assert np.allclose(way[:, 1], 0.0)
+    assert result.hit is not None and any(robots[1].serial in other for _, other in result.hit.pairs)
 
 
 def _box_at_gap(world, robots, alice, label: str, pose, gap: float, toward) -> Body:  # noqa: F811

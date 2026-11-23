@@ -3,10 +3,12 @@ Recorded plan attempts and runs of the base planner: one run folder per attempt 
 
 - Folder: <Drive root>/RECORDING_FOLDER/<experiment>/<date>_<time>_<robot>_<task or free>_<real|sim|offline>/
 - experiment.json: the attempt's setup (experiment, task, robot, environment, conditions, algorithm and settings,
-  start, target), its plan (found or not, why, time, length, clearance, notes) and its run once committed (outcome,
-  controller), or null.
-- plan.npz: the path and the floor around it; recording.npz: the run's samples, per tick and per message (the
-  plugin); simulated.npz: an offline attempt's follower traces, with the exact and deviated models (`save_simulated`).
+  start, target), its plan (found or not, why and its detail, time, length, clearance, notes) and its run once
+  committed (outcome, controller), or null.
+- plan.npz: the path and the floor around it; a failed plan's drawn way (`closest_poses`); with debug on, the
+  search's drawings (`debug_<k>_segments`, `debug_<k>_points`, layer k named in the plan's `debug_layers`).
+- recording.npz: the run's samples, per tick and per message (the plugin); simulated.npz: an offline attempt's
+  follower traces, with the exact and deviated models (`save_simulated`).
 
 ! Record raw, decide later: the analysis recomputes every metric from these files.
 """
@@ -44,7 +46,7 @@ def attempt_folder(recordings: Path, experiment: str, serial: str, task: str | N
 
 
 def save_plan(folder: Path, world: PlanningWorld | None, own: str, setup: dict, result: PlanResult,
-              notes: list[str]) -> None:
+              notes: list[str], layers: dict | None = None) -> None:
     """Measure the path's clearance and the floor around it, and write experiment.json and plan.npz. Worker thread.
 
     Args:
@@ -55,17 +57,24 @@ def save_plan(folder: Path, world: PlanningWorld | None, own: str, setup: dict, 
             start, target ("goal").
         result: The search's result.
         notes: The search's notes (`Debug.notes`).
+        layers: The search's drawings by layer name (`Debug.layers`); None or empty saves none.
 
     Raises:
         OSError: If the files cannot be written.
     """
     path = result.path
     poses = np.empty((0, 3)) if path is None else np.asarray(path.points, dtype=float)
-    plan = {"found": path is not None, "reason": result.reason, "seconds": result.seconds, "direct": result.direct,
+    plan = {"found": path is not None, "reason": result.reason, "detail": result.detail, "seconds": result.seconds,
+            "direct": result.direct,
             "length": None if path is None else path.length, "duration": None if path is None else path.duration,
             "waypoints": len(poses), "clearance": None, "clearance_at": None, "notes": notes}
     arrays = {"path_poses": poses, "path_t": np.empty(0) if path is None else np.asarray(path.times),
-              "path_speed_scale": np.empty(0) if path is None or path.speed_scale is None else path.speed_scale}
+              "path_speed_scale": np.empty(0) if path is None or path.speed_scale is None else path.speed_scale,
+              "closest_poses": np.asarray(result.closest if result.closest else np.empty((0, 3)), dtype=float)}
+    plan["debug_layers"] = list(layers or {})
+    for k, layer in enumerate((layers or {}).values()):
+        arrays[f"debug_{k}_segments"] = np.asarray(layer.segments, dtype=float).reshape(-1, 2, 2)
+        arrays[f"debug_{k}_points"] = np.asarray(layer.points, dtype=float).reshape(-1, 2)
     if world is not None and world.mirror is not None:
         if path is not None:
             started = time.time()

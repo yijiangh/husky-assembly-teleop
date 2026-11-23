@@ -1,11 +1,11 @@
-"""A base path on the floor is drawn by speed: its own colour at full speed, amber where it drives slowest."""
+"""Base paths on the floor: by speed, its own colour at full speed and amber where slowest; a failed plan's dashed."""
 
 import math
 
 import numpy as np
 from crl_husky.follower_path import FollowerPath
 
-from husky_assembly_teleop.ui.base_markers import (PREVIEW_COLOR, SLOW_COLOR, SLOWEST, floor_segments,
+from husky_assembly_teleop.ui.base_markers import (PREVIEW_COLOR, SLOW_COLOR, SLOWEST, dashed, floor_segments,
                                                    polyline_scales, speed_colors)
 
 
@@ -41,3 +41,13 @@ def test_the_kept_mask_matches_the_segments():
     xy = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [2.0, 0.0]])
     segments, kept = floor_segments(xy, keep=True)
     assert len(segments) == 2 and kept.tolist() == [True, False, True]
+
+
+def test_a_failed_way_is_dashed_along_its_corners():
+    """An L 1 m + 1 m in 0.1 m dashes: 10 dashes, each 0.1 m long, all on the L, the first at its start."""
+    segments = dashed(np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]), 0.1)
+    assert len(segments) == 10 and np.allclose(segments[0, 0, :2], (0.0, 0.0))
+    assert np.allclose(np.linalg.norm(segments[:, 1] - segments[:, 0], axis=1), 0.1)
+    xy = segments[:, :, :2].reshape(-1, 2)
+    assert np.all((np.abs(xy[:, 1]) < 1e-9) | (np.abs(xy[:, 0] - 1.0) < 1e-9))
+    assert len(dashed(np.array([[0.0, 0.0]]), 0.1)) == 0
