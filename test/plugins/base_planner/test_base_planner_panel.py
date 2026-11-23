@@ -1,6 +1,8 @@
 """The base planner's panel: its request, Plan and Commit through the planner's API, and the target checks."""
 
 import asyncio
+import json
+import math
 from dataclasses import asdict, replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -276,6 +278,20 @@ def test_park_loads_the_robots_parked_pose(park):
     ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial=SERIAL, park_pose=park)]))
     panel._load_target(ctx, "Park")
     assert targets == ([park] if park else []) and said == [park is None]
+
+
+@pytest.mark.parametrize("stations", [{SERIAL[-4:]: [3.0, 0.5, 270.0]}, {}])
+def test_station_loads_the_robots_loading_station(tmp_path, stations):
+    """Load → Station targets the robot's loading station from the lab file, or says the lab has none for it."""
+    (tmp_path / "lab.json").write_text(json.dumps({"format": "husky_lab", "stations": stations}))
+    panel, targets, said = BasePlannerPanel(), [], []
+    panel.serial, panel._used = SERIAL, SimpleNamespace(touch=lambda: None)
+    panel._target = SimpleNamespace(set=lambda *pose: targets.append(pose))
+    panel._say = lambda message, color=NONE: said.append(color == FAIL)
+    ctx = SimpleNamespace(config=SimpleNamespace(data_directory=tmp_path, lab=str(tmp_path / "lab.json")))
+    panel._load_target(ctx, "Station")
+    assert targets == ([pytest.approx((3.0, 0.5, math.radians(270.0)))] if stations else [])
+    assert said == [not stations]
 
 
 def test_the_preview_slider_follows_only_the_operator():

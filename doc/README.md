@@ -37,6 +37,7 @@ needed to run the new monitor.
 | [experiment_design_guide.md](experiments/experiment_design_guide.md), [experiment_report_guide.md](experiments/experiment_report_guide.md) | JG's Experiment Design Guide: how to plan, build and analyse an experiment, and how its generated reports are written. |
 | [base_exp_manual.md](experiments/base_exp_manual.md) | Base controller experiments: goal and hypotheses, the three experiments (robot model, model over conditions, controllers), how to run them and where the results are. |
 | [base_planner_manual.md](experiments/base_planner_manual.md) | Base planner experiments: goals, tasks, how attempts are recorded, collected and analysed. |
+| [cdfm_planner_sim_manual.md](experiments/cdfm_planner_sim_manual.md) | The CDFM planner in the fake lab with the Transfer workaround off: a bar loaded at the station, driven in and carried (draft: B20 only). |
 
 ## design/: how the code is built
 

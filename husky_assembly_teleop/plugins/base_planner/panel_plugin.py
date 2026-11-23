@@ -44,6 +44,7 @@ from ...ui.style import (BUSY, FAIL, GAP, NONE, OK, SECTION_CTRL, block, check_c
 from ...robot_interface.base import live_report
 from ...world.clearance import ALL_ARMS, BASE_PLAN_DISTANCE, STOP_DISTANCE
 from ...world.kinematics import STOW_TOLERANCE, from_stow
+from ...world.lab import station_of
 from ...world.stand_ins import unknown_parts
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
@@ -111,12 +112,13 @@ class BasePlannerPanel(PlannerPanel):
             gui.add_html(section("target", TARGET))
             self._target = PlanarPoseInput(ctx, gui, f"{root}/target_gizmo", label="Target",
                                            on_change=self._target_changed)
-            load = gui.add_button_group("Load", ["Robot", "Park", "Step", "Task start", "Task target"],
+            load = gui.add_button_group("Load", ["Robot", "Park", "Station", "Step", "Task start", "Task target"],
                                         hint="Set the target to where the robot is now, to its parked pose, to its "
-                                             "base pose in the step selected in the process plugin, or to the task's "
-                                             "start or target")
+                                             "loading station (where a bar is mounted on it), to its base pose in "
+                                             "the step selected in the process plugin, or to the task's start or "
+                                             "target")
             # * Step filled in the target blue: the one pressed at every assembly step, among the outlined ones.
-            gui.add_html(f"<style>{group_buttons(load._impl.uuid, 2)} {{ background: {TARGET} !important; "
+            gui.add_html(f"<style>{group_buttons(load._impl.uuid, 3)} {{ background: {TARGET} !important; "
                          f"color: {WHITE} !important; border-color: {TARGET} !important; }}</style>")
 
             self._add_path_controls(ctx, gui,
@@ -231,7 +233,7 @@ class BasePlannerPanel(PlannerPanel):
 
         Args:
             ctx: This plugin's context.
-            label: "Robot", "Park", "Step", "Task start" or "Task target".
+            label: "Robot", "Park", "Station", "Step", "Task start" or "Task target".
         """
         self._used.touch()
         if label.startswith("Task"):
@@ -257,6 +259,15 @@ class BasePlannerPanel(PlannerPanel):
             self._target.set(*park)
             self._has_target = True
             self._say(f"target set to the parked pose of {short_serial(self.serial)}")
+            return
+        if label == "Station":
+            station = station_of(ctx.config.data_directory, ctx.config.lab, self.serial)
+            if station is None:
+                self._say(f"{short_serial(self.serial)} has no loading station in the lab file", FAIL)
+                return
+            self._target.set(*station)
+            self._has_target = True
+            self._say(f"target set to the loading station of {short_serial(self.serial)}")
             return
 
         found = self._process_step(ctx)

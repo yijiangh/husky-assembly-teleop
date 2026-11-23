@@ -30,6 +30,11 @@ The assembly guide: the process part by part, Prepare → Check → Go, each par
   that answers every question and ticks every box too: only while every robot and the relay are simulated). Auto and
   God end on a failure, a refusal, Cancel, a soft stop of any robot, another plugin's lease, a part picked in the
   process panel, the parts built again (a setting, the process), or a Mark done with doubts; the guide line says why.
+- An action that carries its bar from a loading station shows Loading pose: the class of the bar's saved carry, and
+  Plan carry again, which plans it again for a class the operator picks (`CarryReplan`) while the guide goes on.
+- A previewed arm move also shows in the Guide plots window (its joints over the Preview time, with a line at it),
+  and what the robot holds at the part's start rides on the preview robot: a carried bar, with how well the two tools
+  keep its grasp along the path.
 - ! The guide holds no lease itself: the planner or the executor does while a Go runs.
 
 Run with:  -p plugins:="['assembly_guide', 'base_planner_panel', 'arm_planner_panel', 'robot_control',
@@ -48,6 +53,7 @@ import viser
 
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.process.solutions import Trajectory
 
 from ...colors import ACTION, GREY, TEAL, rgb
 from ...config import find_robot_serial, short_serial
@@ -60,8 +66,14 @@ from ...shared.arm_planner_contract import ArmPlanRequest
 from ...shared.process_scene.live_scene import showing
 from ...shared.assembly_planning.route_result import arm_path_route, goal_line, pose_error
 from ...shared.assembly_planning.step_plan import live_goal_poses, timed_route
-from ...shared.assembly_planning.tamp_route import IK_GOALS
+from ...shared.assembly_planning.carry_plan import (ANY_CLASS, LOADING_CLASSES, CarryReplan, SavedCarry,
+                                                    read_carry)
+from ...shared.assembly_planning.route_search import Refused
+from ...shared.assembly_planning.tamp_route import IK_GOALS, run_search
 from ...shared.assembly_run_contract import is_live, live_problem
+from ...shared.assembly_tab.held_preview import held_bodies, held_drift
+from ...shared.assembly_tab.layout import GUIDE_PLOTS_X, plots_window
+from ...shared.assembly_tab.plan_plots import PlanPlots
 from ...shared.base_planner_contract import BasePlanRequest
 from ...shared.execution.basis import STALE_BASE, basis_of, stale_reason
 from ...shared.execution.moving import moving_reason, robot_moving
@@ -76,11 +88,12 @@ from ...shared.planner.planner_panel import SLIDER_STEP
 from ...shared.runs.runs import DONE as MARKED
 from ...ui.choice_row import ChoiceRow
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
-from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, again_label
+from ...ui.second_press import SECOND_PRESS_SECONDS, SecondPress, again_label, show_waiting
 from ...ui.style import (BUSY, CURRENT, FAIL, OK, SECTION_CTRL, block, check_chip, chip, chip_line,
                          chip_row, note, section, warning)
 from ...world.arm_reach import out_of_reach
 from ...world.checks import BAD, GOOD, INFO, PENDING, WARN, Check
+from ...world.lab import station_of
 from .kinds import KINDS, HandKind, Kind, description
 from .parts import (ARM_ARRIVED, DRIVE, EXECUTED, GRIPPER, HAND, INSERT, MARK, MOVE, NOTHING_TO_MOVE, PARK, REFUSED,
                     RETREAT, SERVO, GuidePart, arm_arrived, base_arrived, floor_pose, schedule_parts)
@@ -134,6 +147,10 @@ PREPARE_LABELS = {DRIVE: "Prepare: plan the drive", MOVE: "Prepare: plan the mov
 REFUSAL_KEPT = 8.0
 #: Why Auto ends once nothing is left to do.
 ALL_DONE = "every part is done"
+#: The Loading pose folder's buttons, and its class options: ANY first, then tamp's classes.
+PLAN_CARRY, STOP_CARRY = "Plan carry again", "Stop planning"
+ANY = "any"
+CLASS_OPTIONS = (ANY, *LOADING_CLASSES)
 
 
 def simulation_problem(ctx: PluginContext) -> str:
@@ -191,6 +208,15 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._flagged: dict[int, Check] = {}
         #: What the parts were built from; the selection last followed; a selection asked for (action, movement, at).
         self._built: tuple | None = None
+        #: Action -> its bar's saved carry, or why there is none (`_saved_carry`).
+        self._loading: dict[str, SavedCarry | str] = {}
+        #: The actions that carry their bar from a loading station; the class Plan carry again asks for; the carry
+        #: being planned again, or the last one; how that one ended, as a chip.
+        self._carrying: frozenset[str] = frozenset()
+        self.loading_class = ANY_CLASS
+        self._replan: CarryReplan | None = None
+        self._replan_end: Check | None = None
+        self._replan_press = SecondPress()
         self._followed: tuple[str, str] | None = None
         self._asked: tuple[str, str, float] | None = None
         #: The part the process was last asked to draw at its start or target.
@@ -239,6 +265,9 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._forced: GuidePart | None = None
         self._assume: GuidePart | None = None
         self._playing, self._played_at, self._preview_path = False, None, None
+        #: The previewed arm path the plots were last filled from; the path and robot whose ghost holds bodies.
+        self._plotted: TimedPath | None = None
+        self._ghost_holds: tuple[TimedPath, str] | None = None
         self._ghosts: dict[str, RobotGhost] = robot_ghosts(ctx, [robot.config for robot in ctx.world.robots.values()],
                                                            "path")
         self._used, self._shown = RecentUse(ctx.config.ghost_timeout), None
@@ -304,6 +333,28 @@ class AssemblyGuidePlugin(HuskyPlugin):
                 with folder:
                     kind.build(ctx, gui)
                 self._folders[name] = folder
+            # * The bar's saved carry and planning it again, for an action that carries its bar from a station.
+            self._carry_folder = gui.add_folder("Loading pose", visible=False)
+            with self._carry_folder:
+                classes = "; ".join(f"{name}: {what}" for name, what in LOADING_CLASSES.items())
+                self._carry_class = gui.add_dropdown(
+                    "Class", CLASS_OPTIONS, initial_value=ANY,
+                    hint=f"How the bar is held where it is mounted, for {PLAN_CARRY}. {classes}; any: the planner "
+                         "chooses. Pick the one the base drives in with most easily")
+                self._carry_class.on_update(ctx.defer_value("loading pose class", lambda value: setattr(
+                    self, "loading_class", ANY_CLASS if value == ANY else str(value)), operator_only=True))
+                self._carry_plan = gui.add_button(
+                    PLAN_CARRY, color=rgb(TEAL), icon=viser.Icon.REFRESH,
+                    hint="Plan the shown action's carry again on the bar's roadmap, from a loading pose of the Class "
+                         "the base can drive in with from the station, and keep it as the bar's saved carry. Takes "
+                         "minutes (15 or more when the roadmap does not connect) on half the cores, so run it "
+                         "while no robot moves; the guide goes on meanwhile. Nothing moves. Then show the travel to "
+                         f"load, {REDO}, and Prepare. " + self._replan_press.hint)
+                self._carry_stop = gui.add_button(STOP_CARRY, color=rgb(FAIL), icon=viser.Icon.PLAYER_STOP,
+                                                  disabled=True,
+                                                  hint="End the planning; the saved carry stays as it was")
+                # ! Text that comes and goes stays below the folder's buttons.
+                self._carry_line = gui.add_html("")
             # ! Text that comes and goes stays below the buttons.
             self._notes = gui.add_html("")
             self._description = gui.add_html("")
@@ -328,6 +379,9 @@ class AssemblyGuidePlugin(HuskyPlugin):
                                              "they were left")
                 park.on_update(ctx.defer_value("park idle robots", lambda value: setattr(
                     self, "park_idle", bool(value)), operator_only=True))
+        # * The previewed arm move's plots in a window of their own at the bottom, minimized until there is one.
+        with plots_window(ctx.view, "Guide plots", viser.Icon.CHART_LINE, GUIDE_PLOTS_X) as self._plots_panel:
+            self._plots = PlanPlots(ctx.view.gui, grasp=True, timed=True)
         self.procedure.confirm.button = self._go
         self._back.on_click(ctx.defer("back", lambda: self.look(ctx, -1)))
         self._next.on_click(ctx.defer("next", lambda: self.look(ctx, 1)))
@@ -338,10 +392,14 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._cancel.on_click(ctx.defer("cancel", lambda: self.cancel(ctx)))
         self._preview.on_update(ctx.defer_value("preview", self._scrub, operator_only=True))
         self._play.on_click(ctx.defer("play", self._toggle_play))
+        self._carry_plan.on_click(ctx.defer("plan carry again", lambda: self.plan_carry(ctx)))
+        self._carry_stop.on_click(ctx.defer("stop planning the carry", lambda: self.stop_carry(ctx)))
 
     def teardown(self, ctx: PluginContext) -> None:
-        """Stop what runs; hide the ghosts."""
+        """Stop what runs, a carry being planned too; hide the ghosts."""
         self.procedure.cancel()
+        if self._replan is not None:
+            self._replan.stop()
         for ghost in self._ghosts.values():
             ghost.hide()
 
@@ -490,8 +548,101 @@ class AssemblyGuidePlugin(HuskyPlugin):
         except UnknownMovement:
             return None
         goal = spec.goal_joints or {}
+        if spec.routine is Routine.FREE_TO_LOAD and not goal:
+            loading = self._loading_goal(ctx, part.action)
+            goal = loading if isinstance(loading, dict) else {}
         names = [name for arm in spec.arms for name in arm.joints]
         return {name: goal[name] for name in names} if names and all(name in goal for name in names) else None
+
+    def _loading_goal(self, ctx: PluginContext, action: str, again: bool = False) -> dict[str, float] | str:
+        """The loading posture of an action's bar, the first row of its saved carry; or why there is none."""
+        carry = self._saved_carry(ctx, action, again)
+        return carry.start if isinstance(carry, SavedCarry) else carry
+
+    def _saved_carry(self, ctx: PluginContext, action: str, again: bool = False) -> SavedCarry | str:
+        """The saved carry of an action's bar, or why there is none.
+
+        Read once per build of the parts, and again with `again` (a plan: the file may have been made meanwhile).
+        """
+        if again or action not in self._loading:
+            run = self._run(ctx)
+            try:
+                self._loading[action] = read_carry(self._roadmap_root(ctx), run.view.process.process, action)
+            except Refused as refused:
+                self._loading[action] = str(refused)
+        return self._loading[action]
+
+    def _roadmap_root(self, ctx: PluginContext) -> str:
+        """The folder holding the roadmaps and saved carries, from the run's Advanced planning settings."""
+        return run_search(self._run(ctx).view.settings, ctx.config.drive_root).roadmap_root
+
+    # --- --- --- --- --- THE SAVED CARRY, PLANNED AGAIN --- --- --- --- ---
+
+    def plan_carry(self, ctx: PluginContext) -> None:
+        """Plan carry again's press: the first asks, the second starts planning the shown action's carry again."""
+        part = self.part
+        if part is None or part.action not in self._carrying:
+            return
+        if self._replan is not None and self._replan.running:
+            self._refuse(ctx, PLAN_CARRY, f"{self._replan.bar}'s carry is still being planned: {STOP_CARRY} first")
+            return
+        serial = self.serial_for(part)
+        station = station_of(ctx.config.data_directory, ctx.config.lab, serial) if serial else None
+        if station is None:
+            self._refuse(ctx, PLAN_CARRY, f"no loading station of {self._who(serial)} in the lab file")
+            return
+        try:
+            replan = CarryReplan(self._roadmap_root(ctx), self._run(ctx).view.process.process, part.action, station,
+                                 self.loading_class)
+            asked = f"{part.action} {self.loading_class}"
+            if not self._replan_press.press(ctx.now(), asked):
+                self._refuse(ctx, PLAN_CARRY, f"plans {replan.bar}'s carry again ({self._class_text()}): minutes, "
+                                              f"on half the cores; a carry found replaces {replan.target}", ask=True)
+                return
+            replan.start()
+        except Refused as refused:
+            self._refuse(ctx, PLAN_CARRY, str(refused))
+            return
+        self._replan, self._replan_end = replan, None
+        ctx.log_info(f"guide: planning {replan.bar}'s carry again ({self._class_text()}); log: {replan.log_file}")
+        self._record(ctx, "carry_replan_started", part, loading_class=self.loading_class, log=str(replan.log_file))
+
+    def stop_carry(self, ctx: PluginContext) -> None:
+        """Stop planning's press: end the carry being planned; `_follow_replan` says so once it ended."""
+        if self._replan is not None:
+            self._replan.stop()
+
+    def _class_text(self, loading_class: str | None = None) -> str:
+        """A loading pose class for the operator, e.g. "class back"; "any class" for ANY_CLASS."""
+        loading_class = self.loading_class if loading_class is None else loading_class
+        return "any class" if loading_class == ANY_CLASS else f"class {loading_class}"
+
+    def _follow_replan(self, ctx: PluginContext) -> None:
+        """Once the carry planned again ended: keep the one it found as the bar's saved carry, or say why not."""
+        replan = self._replan
+        if replan is None or self._replan_end is not None or replan.poll() is None:
+            return
+        took = f"{replan.seconds / 60:.0f} min" if replan.seconds >= 90 else f"{replan.seconds:.0f} s"
+        asked = self._class_text(replan.loading_class)
+        # * The action's drive with the bar, which the run's record files the outcome under.
+        drive = next((part for part in self.parts if part.action == replan.action and part.carrying), None)
+        try:
+            carry = replan.adopt()
+        except Refused as refused:
+            self._replan_end = Check("no new carry", WARN, f"{replan.bar}, {asked}, after {took}: {refused}. The "
+                                                           f"saved carry is as it was")
+            ctx.log_warn(f"guide: no new carry of {replan.bar} ({asked}) after {took}: {refused}")
+            self._record(ctx, "carry_replan_failed", drive, loading_class=replan.loading_class,
+                         seconds=round(replan.seconds, 1), why=str(refused))
+            return
+        # * The parts read the loading posture again: the travel to load ends on the new carry's first row.
+        self._loading.pop(replan.action, None)
+        self._replan_end = Check("new carry", GOOD, f"{replan.bar}: saved after {took}, "
+                                                    f"{self._class_text(carry.loading_class or ANY_CLASS)}. Show "
+                                                    f"the travel to load, {REDO}, then Prepare")
+        ctx.log_info(f"guide: new carry of {replan.bar} after {took}: {carry.file}")
+        self._record(ctx, "carry_replan_saved", drive, loading_class=carry.loading_class,
+                     seconds=round(replan.seconds, 1), file=str(carry.file))
 
     # --- --- --- --- --- FOLLOWING THE PROCESS --- --- --- --- ---
 
@@ -501,10 +652,13 @@ class AssemblyGuidePlugin(HuskyPlugin):
         loaded, selection = self._run(ctx).view.process, process.selection
         if loaded is None or selection is None:
             self.parts, self._built, self._followed, self.index = [], None, None, 0
+            self._carrying = frozenset()
             return
         # ! The loaded process by identity: comparing it would walk the whole process.
-        new = self._built is None or loaded is not self._built[0] or self._built[1:] != (process.transfer_as_free,
-                                                                                         self.park_idle)
+        stations = {robot.serial: station for robot in ctx.config.robots
+                    if (station := station_of(ctx.config.data_directory, ctx.config.lab, robot.serial)) is not None}
+        new = self._built is None or loaded is not self._built[0] or self._built[1:] != (
+            process.transfer_as_free, self.park_idle, stations)
         if new and self._built is not None and self.procedure.running:
             return  # * Built again once what runs ends: its part's index must hold until then.
         picked = (selection.action.id, selection.movement.id)
@@ -519,13 +673,16 @@ class AssemblyGuidePlugin(HuskyPlugin):
             if self._built is not None:
                 self._end_auto(ctx, "the parts were built again (a setting or the process changed): choose Auto "
                                     "again from the part to go on")
-            self._built, self._followed = (loaded, process.transfer_as_free, self.park_idle), picked
+            self._built, self._followed = (loaded, process.transfer_as_free, self.park_idle, stations), picked
             self._names = {serial: robot.name for robot in loaded.process.robots.values()
                            if (serial := find_robot_serial(ctx.config.robots, robot.serial or ""))}
             self._outcomes.clear()
+            self._loading.clear()
             self._goal = self._basis = None
-            self.parts = schedule_parts(loaded, ctx.config.robots, process.transfer_as_free, self.park_idle)
+            self.parts = schedule_parts(loaded, ctx.config.robots, process.transfer_as_free, self.park_idle,
+                                        stations)
             self.serials = {action: serial_of(loaded, action, ctx.config.robots) for action in loaded.process.schedule}
+            self._carrying = frozenset(part.action for part in self.parts if part.carrying)
             self._done.clear()
             self._skipped.clear()
             self._flagged.clear()
@@ -1013,7 +1170,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         # * Go too waits inside: a plan made for a scene that changed before Go is refused, not driven.
         async with showing(ctx, self._process(ctx), part.action, part.movement):
             self.procedure.doing = "planning the drive"
-            plan = await planner.request_plan(BasePlanRequest(serial, part.base))
+            plan = await planner.request_plan(BasePlanRequest(serial, part.base, arms_still=part.carrying))
             if plan.state != "ready":
                 raise RuntimeError(plan.message if plan.message.startswith("no ") else f"no path: {plan.message}")
             self._previewing = ("base", serial)
@@ -1284,11 +1441,13 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self._planned = (part, ARM_PLANNER_NAME)
             return found
         goal_joints = goal_base = None
+        # * The run's Advanced planning settings, as the Assembly tab's Plan uses them (the held transfer's planner).
+        search = run_search(run.view.settings, ctx.config.drive_root)
         if part.routine in IK_GOALS:
             self.procedure.doing = "solving the goal at the live base"
             check = await planner.request_ik(MotionPlanRequest(
                 loaded, step, snapshot, ctx.config.robots, transfer_as_free=process.transfer_as_free,
-                ignore_built=self.ignore_built, obstacles_collide=process.obstacles_collide,
+                ignore_built=self.ignore_built, obstacles_collide=process.obstacles_collide, search=search,
                 label=f"check goal {step.label}"))
             self.goal_text = goal_line(check)
             run.request_record("check_goal", action=part.action, movement=step.movement.id, data=check.as_record())
@@ -1307,7 +1466,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         request = MotionPlanRequest(loaded, step, snapshot, ctx.config.robots,
                                     transfer_as_free=process.transfer_as_free, ignore_built=self.ignore_built,
                                     obstacles_collide=process.obstacles_collide, goal_joints=goal_joints,
-                                    goal_poses=goals, label=f"plan {step.label}")
+                                    goal_poses=goals, search=search, label=f"plan {step.label}")
         route = await planner.request_plan(request)
         tries = 1
         # * A free search is random: Auto and God plan again before they give up, as the operator would.
@@ -1318,6 +1477,11 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self.procedure.doing = f"planning {part.label} again ({tries}/{AUTO_PLAN_TRIES})"
             route = await planner.request_plan(request)
         if not route.ok:
+            # * A plan that found nothing is in the run too: the analysis counts failures from there.
+            run.request_record("plan_failed", action=part.action, movement=step.movement.id, data={
+                "planner": route.planner, "attempts": route.attempts, "seconds": route.seconds, "tries": tries,
+                "status": route.result.status, "reason": route.result.reason, "warnings": list(route.warnings),
+                "by": self.name})
             raise RuntimeError(f"{route.result.status}: {route.result.reason}")
         timed = timed_route(route, self.traj_time)
         if isinstance(timed, str):
@@ -1370,6 +1534,11 @@ class AssemblyGuidePlugin(HuskyPlugin):
         names = tuple(name for arm in spec.arms for name in arm.joints)
         planner: ArmPlannerContract = ctx.require("arm_planner")
         authored = spec.goal_joints or {}
+        if part.routine is Routine.FREE_TO_LOAD and not authored:
+            # * The process leaves the loading posture open: it is the first row of the bar's saved carry.
+            authored = self._loading_goal(ctx, part.action, again=True)
+            if isinstance(authored, str):
+                raise RuntimeError(f"no loading posture: {authored}")
         reference = {name: authored[name] for name in names if name in authored}
         goal_base = None
         if part.routine in IK_GOALS:
@@ -1409,6 +1578,9 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self.procedure.doing = f"planning {part.label} again ({tries}/{AUTO_PLAN_TRIES}, arm planner)"
             plan = await planner.request_plan(request)
         if plan.state != "ready":
+            run.request_record("plan_failed", action=part.action, movement=part.movement, data={
+                "planner": ARM_PLANNER, "tries": tries, "status": plan.state, "reason": plan.message,
+                "by": self.name})
             raise RuntimeError(f"no path (arm planner): {plan.message}")
         # * The path's shape, not its 0.2 s samples: timed again, those would stop the arm at every sample on a curve.
         rows = plan.path.waypoints
@@ -1440,6 +1612,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
 
     def update(self, ctx: PluginContext) -> None:
         """Follow the selection; in Auto and God, work on the next part to do: show it and start it."""
+        self._follow_replan(ctx)
         self.follow(ctx)
         if self.part is None:
             return
@@ -1546,9 +1719,82 @@ class AssemblyGuidePlugin(HuskyPlugin):
         if part is not None:
             self.kinds[part.kind].show(ctx, part)
             set_changed(self._description, content=description(self.kinds[part.kind], part))
+        self._draw_carry(ctx, now)
         self._notes.content = self._notes_html(ctx, now)
         self._list.content = self._list_html(ctx)
         self._draw_ghost(ctx)
+        self._draw_plots(ctx)
+
+    def _draw_plots(self, ctx: PluginContext) -> None:
+        """The previewed arm move in the Guide plots window, a line at the Preview time; empty without one."""
+        path = self.procedure.preview_path
+        if path is None or self._previewing is None or self._previewing[0] != "joints":
+            path = None
+        if path is not self._plotted:
+            self._plotted = path
+            if path is None:
+                self._plots.show(None, None)
+            else:
+                serial, names = self._previewing[1], tuple(self._previewing[2])
+                trajectory = Trajectory("", names, tuple(tuple(float(value) for value in row) for row in path.points))
+                self._plots.show(path, trajectory)
+                self._plots_panel.expand()
+                robot = ctx.world.robots.get(serial)
+                arms = [arm for arm in robot.arms if any(name.startswith(f"{arm}_") for name in names)] \
+                    if robot is not None else []
+                if len(arms) == 2 and self._held(ctx, serial):
+                    # * Off the main thread: a tool0 pose per row and three between each two takes half a second.
+                    ctx.spawn("guide grasp plots", self._plot_grasp(ctx, path, trajectory, robot.config.model.urdf,
+                                                                    arms), survives_soft_stop=True)
+        self._plots.cursor(self.procedure.preview if path is not None else None)
+
+    async def _plot_grasp(self, ctx: PluginContext, path: TimedPath, trajectory: Trajectory, urdf,
+                          arms: list[str]) -> None:
+        """Add how well the two tools keep the held bar's grasp along `path` to the plots, if it is still shown."""
+        drift = await ctx.run_in_thread(held_drift, urdf, trajectory.joint_names, path.times, path.points, arms)
+        if path is self._plotted:
+            self._plots.show(path, trajectory, drift)
+
+    def _held(self, ctx: PluginContext, serial: str) -> dict:
+        """What robot `serial` holds in the previewed part, as its movement's start has it (`held_bodies`).
+
+        Empty for a robot the part's action does not act with (a park), or with no process.
+        """
+        part, loaded = self.owner, self._run(ctx).view.process
+        if part is None or loaded is None or part.kind == PARK or self.serial_for(part) != serial:
+            return {}
+        return held_bodies(loaded, loaded.index_of(part.action, part.movement_index))
+
+    def _draw_carry(self, ctx: PluginContext, now: float) -> None:
+        """The Loading pose folder: shown for an action that carries its bar; its saved carry, and the planning."""
+        part, replan = self.part, self._replan
+        shown = part is not None and part.action in self._carrying
+        if self._carry_folder.visible != shown:
+            self._carry_folder.visible = shown
+        running = replan is not None and replan.running
+        asked = f"{part.action} {self.loading_class}" if part is not None else ""
+        show_waiting(self._carry_plan, shown and self._replan_press.waiting(now) == asked, PLAN_CARRY, rgb(TEAL))
+        set_changed(self._carry_plan, disabled=running)
+        set_changed(self._carry_stop, disabled=not running)
+        if not shown:
+            return
+        carry = self._saved_carry(ctx, part.action)
+        if isinstance(carry, SavedCarry):
+            label = self._class_text(carry.loading_class) if carry.loading_class else "class not recorded"
+            saved = Check(label, INFO, f"The loading pose of the saved carry, {carry.file}")
+        else:
+            saved = Check("no saved carry", WARN, carry)
+        chips, last = check_chip(saved), ""
+        if running:
+            # * The time goes in the line below: a chip whose text keeps changing loses its tooltip.
+            minutes, seconds = divmod(int(replan.seconds), 60)
+            chips += check_chip(Check(f"planning {replan.bar}", PENDING,
+                                      f"{self._class_text(replan.loading_class)}; log: {replan.log_file}"))
+            last = f"{minutes}:{seconds:02d}  {replan.last}"
+        elif self._replan_end is not None:
+            chips += check_chip(self._replan_end)
+            last = self._replan_end.detail
+        set_changed(self._carry_line, content=chip_row("carry", chips) + note(escape(last)))
 
     def _guide_chips(self, ctx: PluginContext) -> str:
         """The guide's own line: a press that did nothing, the mode, what runs and where, the last outcome."""
@@ -1887,6 +2133,17 @@ class AssemblyGuidePlugin(HuskyPlugin):
             if point is not None:
                 self._used.touch()
         serial = self._previewing[1] if self._previewing is not None else None
+        # * What the robot holds at the part's start rides on its ghost: a carried bar and its joint halves.
+        holds, held = (procedure.preview_path, serial) if point is not None and serial in self._ghosts else None, \
+            self._ghost_holds
+        # ! The path by identity, as above.
+        if (holds is None) != (held is None) or (holds is not None and (holds[0] is not held[0]
+                                                                        or holds[1] != held[1])):
+            if held is not None:
+                self._ghosts[held[1]].hold({})
+            if holds is not None and (missing := self._ghosts[serial].hold(self._held(ctx, serial))):
+                ctx.log_warn(f"guide: the preview robot does not show {', '.join(missing)}: its model has no such link")
+            self._ghost_holds = holds
         for each, ghost in self._ghosts.items():
             if point is None or each != serial or not self._used.active:
                 ghost.hide()

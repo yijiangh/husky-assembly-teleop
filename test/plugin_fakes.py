@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterator, Sequence
 
@@ -212,7 +213,9 @@ class FakeContext:
         self.t, self.step = 10.0, step
         #: Whether the plugin was stopped or torn down (`PluginContext.closed`).
         self.closed = False
-        self.config = SimpleNamespace(robots=tuple(robots), drive_root=drive_root)
+        # * No data directory: no lab file, so no robot has a loading station.
+        self.config = SimpleNamespace(robots=tuple(robots), drive_root=drive_root, data_directory=Path("no data"),
+                                      lab="")
         self.plugins = dict(plugins or {})
         self.scene = SimpleNamespace(snapshot=snapshot if snapshot is not None else Scene())
         self.world = SimpleNamespace(robots={}, tracked_objects={})

@@ -12,8 +12,8 @@ FAKE_LAB_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FAKE_LAB_WS="${FAKE_LAB_WS:-$(cd "$FAKE_LAB_REPO/../.." && pwd)}"
 #: Scratch data: the Drive copy (drive/) and the monitor logs (logs/).
 FAKE_LAB_HOME="${FAKE_LAB_HOME:-$HOME/husky_fake_lab}"
-#: The process the test uses, relative to the Drive root.
-FAKE_LAB_PROCESS="data_design_study/261008_2ModulesDemo_purged_process"
+#: The process the test uses, relative to the Drive root; FAKE_LAB_PROCESS set beforehand names another one.
+FAKE_LAB_PROCESS="${FAKE_LAB_PROCESS:-data_design_study/261008_2ModulesDemo_purged_process}"
 export FAKE_LAB_REPO FAKE_LAB_WS FAKE_LAB_HOME FAKE_LAB_PROCESS
 
 # * ROS: rmw_zenoh, as in the lab, in a domain of our own. The lab's nodes meet through Zenoh routers (one per robot,

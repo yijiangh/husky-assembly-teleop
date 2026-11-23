@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -21,7 +22,9 @@ from husky_assembly_teleop.plugins.assembly_guide.parts import DRIVE, HAND, MARK
 from husky_assembly_teleop.world.checks import INFO, WARN
 from husky_assembly_teleop.plugins.assembly_guide.plugin import AUTO, GOD, OFF, REDO, AssemblyGuidePlugin, \
     simulation_problem
+from husky_assembly_teleop.shared.assembly_planning.carry_plan import SavedCarry
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
+from husky_assembly_teleop.shared.assembly_planning.route_search import Refused
 from husky_assembly_teleop.shared.assembly_planning.steps import as_run
 from husky_assembly_teleop.shared.execution.operator import Prompt
 from husky_assembly_teleop.shared.movement_exec_contract import BY_HAND_PART, DONE as EXEC_DONE, ExecResult
@@ -209,6 +212,8 @@ class Guide(RobotLab):
         self.ctx.config.ghost_timeout = 0.0
         self.ctx.world.mocap_relay = None
         self.ctx.kinematics = SimpleNamespace(base_pose=lambda serial: self.bases[serial], joints=lambda serial: {})
+        # * Cindy's own model: the grasp of what she holds is measured on it for the plots.
+        self.cindy.config.model = robot_config("0806").model
         self.guide = AssemblyGuidePlugin()
         self.guide.setup(self.ctx)
         self.guide.park_idle = False  # * parking has its own tests (test_park_*)
@@ -1710,5 +1715,209 @@ def test_a_first_zero_press_counts_only_for_the_part_and_robot_it_asked_about(mo
         hand = lab.guide.kinds[HAND]
         hand._press_zero(lab.ctx)
         assert hand._zero_press.key == f"zero {CINDY} {lab.guide.index} False"
+
+    asyncio.run(walk())
+
+
+class Replan:
+    """A carry planned again, on no process of its own: the test ends it, with a carry or with why there is none."""
+
+    made: list = []
+
+    def __init__(self, _root, _process, action, station, loading_class):
+        """Not started."""
+        self.bar, self.action, self.station, self.loading_class = action.split("_")[0], action, station, loading_class
+        self.target, self.log_file, self.last, self.seconds = Path("carry.json"), Path("replan.log"), "", 120.0
+        self.running, self.code, self.result = False, None, None
+        Replan.made.append(self)
+
+    def start(self):
+        """It runs."""
+        self.running = True
+
+    def poll(self):
+        """Its exit code once the test ended it."""
+        return self.code
+
+    def stop(self):
+        """Ended early."""
+        self.end(-15, Refused("stopped"))
+
+    def end(self, code, result):
+        """End it with the carry it found, or the refusal `adopt` raises."""
+        self.running, self.code, self.result = False, code, result
+
+    def adopt(self):
+        """The carry found, or why there is none."""
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def carried(monkeypatch) -> tuple[Guide, dict]:
+    """The guide on B20_J with the transfer workaround off and a loading station: Cindy carries the bar in.
+
+    Returns:
+        tuple[Guide, dict]: The lab, and `saved`: the class of each action's saved carry as `read_carry` gives it.
+    """
+    saved = {"B20_J": "horizontal"}
+
+    def read(_root, _process, action):
+        if action not in saved:
+            raise Refused(f"no saved carry for {action}")
+        return SavedCarry(Path("carry.json"), ("joint",), ((0.0,),), None, (0.0,) * 7, saved[action])
+
+    monkeypatch.setattr(guide_module, "station_of", lambda *_args: (3.0, 0.5, 0.0))
+    monkeypatch.setattr(guide_module, "read_carry", read)
+    monkeypatch.setattr(guide_module, "CarryReplan", Replan)
+    Replan.made = []
+    lab = Guide(monkeypatch)
+    lab.process.transfer_as_free = False
+    lab.process.shown = as_run(lab.process.authored, False)
+    lab.process.request_select(next(index for index, (_a, movement) in enumerate(lab.process.movements)
+                                    if movement.id == "B20_J_transfer"))
+    return lab, saved
+
+
+def test_loading_pose_shows_only_for_an_action_that_carries_its_bar(monkeypatch):
+    """With the workaround on nothing is carried: the folder is hidden. Carried: shown, with the saved carry's class."""
+    lab = Guide(monkeypatch)
+
+    async def hidden():
+        await lab.ticks()
+        assert not lab.guide._carry_folder.visible
+
+    asyncio.run(hidden())
+    lab, _saved = carried(monkeypatch)
+
+    async def shown():
+        await lab.ticks()
+        assert lab.label == "drive to B20_J's start with the bar" and lab.guide.part.carrying
+        assert lab.guide._carry_folder.visible and "class horizontal" in lab.guide._carry_line.content
+        assert lab.guide._carry_stop.disabled and not lab.guide._carry_plan.disabled
+        assert "Loading pose" in guide_module.description(lab.guide.kinds[DRIVE], lab.guide.part)
+
+    asyncio.run(shown())
+
+
+def test_plan_carry_again_asks_first_then_plans_for_the_class_picked_and_keeps_the_carry_found(monkeypatch):
+    """The second press starts the planning for the class picked; a carry found is read again and said; Stop ends it."""
+    lab, saved = carried(monkeypatch)
+
+    async def walk():
+        await lab.ticks()
+        lab.guide.loading_class = "back"
+        lab.guide.plan_carry(lab.ctx)
+        await lab.ticks()
+        assert not Replan.made[-1].running and lab.guide._replan is None, "the first press only asks"
+        assert lab.guide._carry_plan.label == "Plan carry again?"
+        assert "replaces carry.json" in lab.guide.refusal(lab.ctx.t).detail
+        lab.ctx.t += 0.5
+        lab.guide.plan_carry(lab.ctx)
+        await lab.ticks()
+        job = lab.guide._replan
+        assert job.running and (job.action, job.loading_class, job.station) == ("B20_J", "back", (3.0, 0.5, 0.0))
+        assert lab.guide._carry_plan.disabled and not lab.guide._carry_stop.disabled
+        assert "planning B20" in lab.guide._carry_line.content and "2:00" in lab.guide._carry_line.content
+        # * While it plans, another press is refused.
+        lab.guide.plan_carry(lab.ctx)
+        assert "still being planned" in lab.guide.refusal(lab.ctx.t).detail and len(Replan.made) == 2
+        saved["B20_J"] = "back"
+        job.end(0, SavedCarry(Path("carry.json"), ("joint",), ((0.0,),), None, (0.0,) * 7, "back"))
+        await lab.ticks()
+        assert lab.guide._replan_end.label == "new carry" and "Redo from here" in lab.guide._replan_end.detail
+        assert "class back" in lab.guide._carry_line.content and lab.guide._carry_stop.disabled
+        assert [fields["data"]["event"] for _event, fields in lab.run.records][-2:] == [
+            "carry_replan_started", "carry_replan_saved"]
+
+    asyncio.run(walk())
+
+
+def test_a_carry_planned_again_that_finds_none_or_is_stopped_leaves_the_saved_carry(monkeypatch):
+    """No carry found: a warning with tamp's reason, the saved carry's class as it was; Stop planning: the same."""
+    lab, _saved = carried(monkeypatch)
+
+    async def press_twice():
+        lab.guide.plan_carry(lab.ctx)
+        lab.ctx.t += 0.5
+        lab.guide.plan_carry(lab.ctx)
+        await lab.ticks()
+
+    async def walk():
+        await lab.ticks()
+        lab.guide.loading_class = "vertical"
+        await press_twice()
+        lab.guide._replan.end(2, Refused("no loading pose of this class is reached from the insert start"))
+        await lab.ticks()
+        end = lab.guide._replan_end
+        assert (end.label, end.level) == ("no new carry", WARN) and "class vertical" in end.detail
+        assert "no loading pose of this class" in end.detail and "class horizontal" in lab.guide._carry_line.content
+        lab.ctx.t += 10.0
+        await press_twice()
+        assert lab.guide._replan.running and lab.guide._replan_end is None
+        lab.guide.stop_carry(lab.ctx)
+        await lab.ticks()
+        assert "stopped" in lab.guide._replan_end.detail and not lab.guide._carry_plan.disabled
+
+    asyncio.run(walk())
+
+
+class Ghost:
+    """A preview robot that keeps the joints it shows and what hangs on it."""
+
+    def __init__(self):
+        """Hidden, holding nothing."""
+        self.shown, self.held = None, {}
+
+    def show(self, _base, joints, parts=None):
+        """Keep the joints."""
+        self.shown = dict(joints)
+
+    def hide(self):
+        """Hidden."""
+        self.shown = None
+
+    def hold(self, bodies):
+        """Keep what hangs on it; every link exists."""
+        self.held = dict(bodies)
+        return []
+
+
+def test_a_previewed_carry_shows_the_bar_on_the_preview_robot_and_its_grasp_in_the_plots(monkeypatch):
+    """The bar and its joint halves ride on the preview robot; the plots get the path, the grasp and the time's line."""
+    lab, _saved = carried(monkeypatch)
+    ghost = lab.guide._ghosts[CINDY] = Ghost()
+    names = tuple(arm_joint_names("left_ur_arm") + arm_joint_names("right_ur_arm"))
+    rows = np.zeros((4, 12))
+    rows[:, 0] = (0.0, 0.2, 0.4, 0.6)  # only the left shoulder turns: the two tools drift apart
+    path = TimedPath(np.array([0.0, 1.0, 2.0, 3.0]), rows)
+
+    async def walk():
+        await lab.ticks()
+        values, _steps, position, axes = lab.ctx.gui.of_kind("uplot")[-4:]
+        assert lab.ctx.panels[-1].calls == ["minimize"] and len(values.data[0]) == 1, "empty, minimized"
+        part = next(part for part in lab.guide.parts if part.label == "B20_J_transfer: transfer with the bar")
+        waiting = asyncio.ensure_future(asyncio.sleep(1000.0))
+        lab.guide.procedure._task, lab.guide._owner = waiting, part
+        lab.guide._previewing = ("joints", CINDY, names, lab.bases[CINDY])
+        lab.guide.procedure.preview_path, lab.guide.procedure.preview = path, 1.5
+        await lab.ticks()
+        await asyncio.sleep(0.5)  # the grasp is measured on a worker thread
+        await lab.ticks()
+        assert "bars/B20" in ghost.held and any(body.startswith("joints/") for body in ghost.held)
+        assert all(link.endswith("_tool0") or "tool" in link for link, _pose, _shape in ghost.held.values())
+        assert ghost.shown[names[0]] == pytest.approx(0.3), "halfway between the second and third waypoint"
+        assert lab.ctx.panels[-1].calls[-1] == "expand" and len(values.data) == 13 and len(values.data[0]) == 4
+        at_waypoints, between = position.data[1], position.data[2]
+        assert list(position.data[0]) == [0.0, 1.0, 2.0, 3.0] and at_waypoints[0] == 0.0 and at_waypoints[-1] > 100.0
+        assert np.all(between >= at_waypoints) and between[0] > 0.0, "the first waypoint's neighbours drift already"
+        assert max(axis[-1] for axis in axes.data[1:]) > 10.0, "the tool's axes have turned with the shoulder"
+        for plot in (values, position, axes):
+            assert plot.axes[-1]["splits"] == (1.5,), "the line at the Preview time"
+        # * The preview over: the bar is off the preview robot, the plots are empty and have no line.
+        lab.guide.procedure.preview_path = None
+        await lab.ticks()
+        assert ghost.held == {} and ghost.shown is None and len(values.data[0]) == 1 and len(values.axes) == 2
+        waiting.cancel()
 
     asyncio.run(walk())

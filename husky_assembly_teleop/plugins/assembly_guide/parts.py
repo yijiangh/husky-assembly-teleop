@@ -9,6 +9,8 @@ and the mark, and folds the ungrasp into the retreat it runs with. Pure: any thr
 
 * A robot holding a bar at its action's start gets no drive: it stays at the bar (a release, a hold), as in the old
   procedure; Plan › Base moves it by hand if it must.
+* A robot with a loading station (`world.lab`) that carries its bar (the transfer workaround off) drives twice: to
+  the station, where the arms travel to load and the bar is mounted, then to the action's start with the bar held.
 * Parking is the simple rule for now: before an action of a robot, every other configured robot that holds no bar at
   the action's start stows its arms and drives to its parked pose (park.yaml), so it never stands in the way. A robot
   parked already has nothing to do. Actions by hand park nothing.
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Mapping
 
 from scaffolding_assembly_core.geometry import Pose
 
@@ -67,6 +70,7 @@ class GuidePart:
         robot: The serial of the robot a PARK part moves; "" for every other part (the action's robot acts).
         stow: A PARK part's arms and the six joints each stows at, radians, UR driver order.
         why: Why a REFUSED part is not supported (the classifier's words); "" for every other part.
+        carrying: Whether a DRIVE part drives with a bar on the arms: the arms must then stand still.
     """
 
     action: str
@@ -80,6 +84,7 @@ class GuidePart:
     robot: str = ""
     stow: tuple[tuple[str, tuple[float, ...]], ...] = ()
     why: str = ""
+    carrying: bool = False
 
     @property
     def done_keys(self) -> frozenset[tuple[int, int]]:
@@ -99,10 +104,13 @@ def floor_pose(pose: Pose) -> tuple[float, float, float]:
     return float(pose.position[0]), float(pose.position[1]), yaw_from_xyzw(pose.orientation)
 
 
-def action_parts(loaded, action_id: str, robots, transfer_as_free: bool, park: bool = False) -> list[GuidePart]:
+def action_parts(loaded, action_id: str, robots, transfer_as_free: bool, park: bool = False,
+                 stations: Mapping[str, tuple[float, float, float]] | None = None) -> list[GuidePart]:
     """One action's parts in run order.
 
     Parking the robots it does not use (with `park`), the drive to its start, each step's executor parts, Mark done.
+    An action that carries its bar (a transfer with the bar held) by a robot with a loading station drives twice:
+    to the station before the travel to load, and to its start with the bar held before the transfer.
 
     Args:
         loaded: The loaded process (`LoadedProcess`).
@@ -110,6 +118,8 @@ def action_parts(loaded, action_id: str, robots, transfer_as_free: bool, park: b
         robots: The configured robots.
         transfer_as_free: The process plugin's transfer workaround.
         park: Park the robots the action does not use first (`park_parts`; the guide's "Park idle robots").
+        stations: Robot serial -> its loading station (x, y, yaw) in metres and radians (`world.lab`); None or no
+            entry: the robot loads where the action starts.
     """
     action = loaded.process.actions[action_id]
     movements = action.movements
@@ -125,11 +135,27 @@ def action_parts(loaded, action_id: str, robots, transfer_as_free: bool, park: b
     if park and movements:
         parts += park_parts(loaded, action_id, robots, movements[first].id, first)
     holds = action.robot in holding_robots(loaded.process, action_id)
-    if start is not None and start.base is not None and not holds:
+    drives = start is not None and start.base is not None and not holds
+    planned = [(step, step_parts(loaded, action_id, step, robots, transfer_as_free)) for step in steps]
+    # * The step that carries the bar, when the robot has a station to load it at: the drive to the action's start
+    #   then comes right before it, with the bar held, and the action begins with the drive to the station.
+    serial = find_robot_serial(robots, loaded.process.robots[action.robot].serial or "") if action.robot else None
+    station = (stations or {}).get(serial) if drives else None
+    carry = next((step for step, plans in planned if plans and plans[0].routine is Routine.TRANSFER_HELD), None) \
+        if station is not None else None
+    if carry is not None:
+        parts.append(GuidePart(action_id, DRIVE, f"drive to the loading station for {action_id}", movements[first].id,
+                               first, base=station))
+    elif drives:
         parts.append(GuidePart(action_id, DRIVE, f"drive to {action_id}'s start", movements[first].id, first,
                                base=floor_pose(start.base)))
-    for step in steps:
-        plans = step_parts(loaded, action_id, step, robots, transfer_as_free)
+    for step, plans in planned:
+        if step is carry:
+            # * Shown at the transfer, whose start has the bar on the robot: the base planner then plans with it.
+            held_start = movements[step.primary].start.robots[action.robot].base or start.base
+            parts.append(GuidePart(action_id, DRIVE, f"drive to {action_id}'s start with the bar",
+                                   movements[step.primary].id, step.primary, base=floor_pose(held_start),
+                                   carrying=True))
         # * One part each, but the ungrasp runs during its retreat: it goes with it, in one request. A ground bar's
         #   servo after its insert is a part of its own: the executor keeps the insert's planned end for it.
         retreat = next((plan for plan in plans if plan.kind == RETREAT_PART), None)
@@ -190,10 +216,11 @@ def park_parts(loaded, action_id: str, robots, movement: str, movement_index: in
     return parts
 
 
-def schedule_parts(loaded, robots, transfer_as_free: bool, park: bool = False) -> list[GuidePart]:
-    """Every scheduled action's parts, in schedule order; `park` as for `action_parts`."""
+def schedule_parts(loaded, robots, transfer_as_free: bool, park: bool = False,
+                   stations: Mapping[str, tuple[float, float, float]] | None = None) -> list[GuidePart]:
+    """Every scheduled action's parts, in schedule order; `park` and `stations` as for `action_parts`."""
     return [part for action_id in loaded.process.schedule
-            for part in action_parts(loaded, action_id, robots, transfer_as_free, park)]
+            for part in action_parts(loaded, action_id, robots, transfer_as_free, park, stations)]
 
 
 def _label(movement: str, plan: PartPlan) -> str:

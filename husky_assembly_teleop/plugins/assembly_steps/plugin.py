@@ -43,7 +43,7 @@ from ...shared.assembly_planning.movement import Routine, UnknownMovement, class
 from ...shared.assembly_planning.route_result import GoalCheck, RouteResult, goal_line
 from ...shared.assembly_planning.route_search import ATTEMPTS, FreeSearch
 from ...shared.assembly_planning.step_plan import live_goal_poses, timed_route
-from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS, PRM_BENCH
+from ...shared.assembly_planning.tamp_route import HELD, IK_GOALS, run_search
 from ...shared.assembly_run_contract import is_live
 from ...shared.execution.basis import PlanBasis, basis_of, stale_reason
 from ...shared.execution.servo import authored_start, flange_poses, tool0_errors
@@ -356,12 +356,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
 
     def free_search(self, ctx: PluginContext) -> FreeSearch:
         """The free searches' settings for a plan (`MotionPlanRequest.search`): the run's Advanced planning ones."""
-        settings = self._assembly_run(ctx).view.settings
-        # * The Drive convention is resolved here, on the main thread, so the worker never reads the config.
-        root = settings.plan_roadmap_root or (str(ctx.config.drive_root / PRM_BENCH) if ctx.config.drive_root else "")
-        return FreeSearch(settings.plan_max_time, settings.plan_max_iterations, settings.plan_joint_resolution,
-                          settings.plan_tries, settings.plan_swept_check, cdfm_planner=settings.plan_cdfm_planner,
-                          roadmap_root=root)
+        return run_search(self._assembly_run(ctx).view.settings, ctx.config.drive_root)
 
     def set_ignore_built(self, ignore: bool) -> None:
         """Plan as if the built bars were not there (for tests in the air); a plan made otherwise goes stale."""
@@ -415,7 +410,7 @@ class AssemblyStepsPlugin(PlannerPlugin):
                                             transfer_as_free=self._transfer_as_free(ctx),
                                             ignore_built=self.ignore_built,
                                             obstacles_collide=self._obstacles_collide(ctx),
-                                            label=f"check goal {step.label}")
+                                            search=self.free_search(ctx), label=f"check goal {step.label}")
                 check = await self._goal.solve(ctx, key, request)
         except SceneNotShown as shown:
             if self._message in (solving, ""):
@@ -550,6 +545,11 @@ class AssemblyStepsPlugin(PlannerPlugin):
             except SceneNotShown as shown:
                 return PlanResult(None, str(shown))
             if not route.ok:
+                # * A plan that found nothing is in the run too: the analysis counts failures from there.
+                self._assembly_run(ctx).request_record("plan_failed", action=action, movement=step.movement.id, data={
+                    "planner": route.planner, "attempts": route.attempts, "seconds": route.seconds,
+                    "status": route.result.status, "reason": route.result.reason,
+                    "warnings": list(route.warnings)})
                 return PlanResult(None, f"{route.result.status}: {route.result.reason}", route.seconds)
             timed = self._timed(route)
             if isinstance(timed, str):

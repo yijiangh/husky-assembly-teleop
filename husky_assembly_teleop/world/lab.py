@@ -3,7 +3,8 @@ The lab's obstacles as data: shapes on the floor and the border of the usable ar
 
 A lab file (`data/lab/<name>.json`, in git) holds resolved shapes: type, name, centre, size, yaw and a free `source`
 note, and optionally meshes drawn in place of the shape (`MeshPart`, files in `meshes/` beside the lab file); collisions
-always use the shape. Temporary obstacles live in a local file instead (`TEMPORARY_FILE`), never in the lab file.
+always use the shape. It may also hold a loading station per robot (`Lab.stations`): where the robot stands while
+the operator mounts a bar. Temporary obstacles live in a local file instead (`TEMPORARY_FILE`), never in the lab file.
 The floor is not in the file: a slab under the border (`floor_body`). Pure data, files and scene bodies; no UI.
 """
 
@@ -50,7 +51,8 @@ FLOOR_WITHOUT_BORDER = 20.0
 FORMAT, VERSION = "husky_lab", 1
 UNITS = ("lab frame (as the mocap relay publishes poses), metres; yaw in degrees about Z. size: box sides; cylinder "
          "(diameter, diameter, height); truss column (side, side, height) on a 0.8 m ground plate. meshes: drawn "
-         "only, never collide; at: metres from the shape's bottom centre in its frame, yaw in degrees")
+         "only, never collide; at: metres from the shape's bottom centre in its frame, yaw in degrees. stations: "
+         "robot serial -> [x, y, yaw] of its base at the loading station")
 
 
 def slug(name: str) -> str:
@@ -185,10 +187,44 @@ class Lab:
     Attributes:
         shapes: The obstacles, in file order.
         border: The usable floor, or None for none.
+        stations: Each robot's loading station, (four-digit serial, (x, y, yaw)) in metres and radians, in file
+            order; read with `station_pose`.
     """
 
     shapes: tuple[Shape, ...] = ()
     border: Border | None = None
+    stations: tuple[tuple[str, tuple[float, float, float]], ...] = ()
+
+
+def station_pose(lab: Lab, serial: str) -> tuple[float, float, float] | None:
+    """A robot's loading station on the floor, (x, y, yaw) in metres and radians, or None when the lab has none.
+
+    Args:
+        lab: The lab.
+        serial: The robot's serial, "a200-0806" or "0806".
+    """
+    return next((pose for number, pose in lab.stations if number == serial[-4:]), None)
+
+
+@lru_cache(maxsize=4)
+def _stations_at(path: Path, modified: float) -> Lab:
+    """The lab file as it was at `modified`, read once."""
+    return read_lab(path)
+
+
+def station_of(data_directory: Path, lab: str, serial: str) -> tuple[float, float, float] | None:
+    """A robot's loading station from the lab file (`lab_file`), read again when the file changes; None without one.
+
+    Args:
+        data_directory: The monitor's data directory.
+        lab: The lab's name or file ("" for the default lab).
+        serial: The robot's serial, "a200-0806" or "0806".
+    """
+    path = lab_file(data_directory, lab or DEFAULT_LAB)
+    try:
+        return station_pose(_stations_at(path, path.stat().st_mtime), serial)
+    except (OSError, ValueError):
+        return None
 
 
 def shape_id(plugin: str, shape: Shape) -> str:
@@ -300,7 +336,12 @@ def read_lab(path: Path) -> Lab:
                       if not (mesh_directory_of(path) / f"{part.mesh}.obj").is_file()})
     if missing:
         raise ValueError(f"{path}: no mesh file for {missing} in {mesh_directory_of(path)}")
-    return Lab(shapes, border)
+    try:
+        stations = tuple((str(serial)[-4:], (float(pose[0]), float(pose[1]), math.radians(float(pose[2]))))
+                         for serial, pose in data.get("stations", {}).items())
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise ValueError(f"{path}: bad stations: {error}") from error
+    return Lab(shapes, border, stations)
 
 
 def write_lab(lab: Lab, path: Path) -> None:
@@ -309,8 +350,11 @@ def write_lab(lab: Lab, path: Path) -> None:
     border = "null" if lab.border is None else json.dumps(
         {"x": list(lab.border.x), "y": list(lab.border.y), "width": lab.border.width, "height": lab.border.height,
          **({"source": lab.border.source} if lab.border.source else {})})
+    stations = json.dumps({serial: [round(x, 4), round(y, 4), round(math.degrees(yaw), 2)]
+                           for serial, (x, y, yaw) in lab.stations})
     text = (f'{{\n  "format": "{FORMAT}",\n  "version": {VERSION},\n  "units": {json.dumps(UNITS)},\n'
-            f'  "obstacles": [\n    ' + ",\n    ".join(lines) + f'\n  ],\n  "border": {border}\n}}\n')
+            f'  "obstacles": [\n    ' + ",\n    ".join(lines) + f'\n  ],\n  "border": {border}'
+            + (f',\n  "stations": {stations}' if lab.stations else "") + "\n}\n")
     replace_text(Path(path), text)
 
 

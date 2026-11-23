@@ -90,7 +90,7 @@ def test_an_older_run_json_without_the_insert_settings_reads_their_defaults(proc
 
 
 def test_the_cdfm_planner_settings_read_back_and_an_older_run_json_reads_their_defaults(process, robots):
-    """The CDFM planner and the roadmap root round-trip; a run.json from before them reads birrt and an empty root."""
+    """The CDFM planner and the roadmap root round-trip; a run.json from before them reads prm and an empty root."""
     asked = RunSettings(plan_cdfm_planner="prm", plan_roadmap_root="/x")
     run = new_run(process, robots, asked, now=NOW, transfer_as_free=True)
     assert read_run(run.folder).info.settings == asked
@@ -100,7 +100,7 @@ def test_the_cdfm_planner_settings_read_back_and_an_older_run_json_reads_their_d
              if name not in ("plan_cdfm_planner", "plan_roadmap_root")}
     path.write_text(json.dumps({**info, "settings": older}))
     settings = read_run(run.folder).info.settings
-    assert settings == RunSettings() and (settings.plan_cdfm_planner, settings.plan_roadmap_root) == ("birrt", "")
+    assert settings == RunSettings() and (settings.plan_cdfm_planner, settings.plan_roadmap_root) == ("prm", "")
 
 
 def test_continue_run_picks_the_newest_matching(process, robots):

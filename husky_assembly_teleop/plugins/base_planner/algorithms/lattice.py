@@ -253,7 +253,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
                               time.time() - started, hit=world.collision_hit(own, narrow, name, pose))
     # * From the tighter end first: a search that starts there is lined up with its narrow place already.
     backwards_first = world.clearance(own, [goal])[0] < world.clearance(own, [start])[0]
-    reasons = []
+    reasons, hit = [], None
     for k, backwards in enumerate((backwards_first, not backwards_first)):
         debug.note(f"search {'back from the target' if backwards else 'from the start'}")
         result = _plan_one(world, own, start, goal, abort, settings, debug,
@@ -261,7 +261,8 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
         if result.path is not None or abort.is_set():
             return PlanResult(result.path, result.reason, time.time() - started, hit=result.hit, direct=result.direct)
         reasons.append(f"{'back from the target' if backwards else 'from the start'}: {result.reason}")
-    return PlanResult(None, "; ".join(reasons), time.time() - started)
+        hit = hit or result.hit
+    return PlanResult(None, "; ".join(reasons), time.time() - started, hit=hit)
 
 
 def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Event, settings: Settings, debug: Debug,
@@ -585,8 +586,10 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
         if abort.is_set():
             return failed("cancelled")
         tried("path as followed")
+    # * The robot where the followed path hits, for the Collisions panel; a path that does not finish has no such pose.
+    hit = None if failure[3] is None else world.collision_hit(own, failure[3], "the path as followed", failure[0])
     return failed(f"the path as followed {failure[2]} with xICR {failure[1]:+.3f} m at ({failure[0][0]:.2f}, "
-                  f"{failure[0][1]:.2f})")
+                  f"{failure[0][1]:.2f})", hit)
 
 
 class _CostMap:

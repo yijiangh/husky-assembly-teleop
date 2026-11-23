@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -41,6 +42,7 @@ from ...ui.style import hover
 from ...world.checks import BAD, GOOD, WARN, Check
 from ...world.clearance import ALL_ARMS, BASE_DRIVE, BASE_PLAN_DISTANCE
 from ...world.follower import path_check
+from ...world.freeze import take_basis
 from ...world.kinematics import STOW_TOLERANCE, from_stow
 from ...world.stand_ins import with_stand_ins
 from scaffolding_assembly_core.ids import robot_id
@@ -340,7 +342,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                             signals.base_floor_pose(robot, every_message=True),
                             signals.wheel_odometry(robot, every_message=True)) as rec, \
                     self.commit_clearance(ctx, plan, unknown_arms=ALL_ARMS if robot_id(serial) in allowed else (),
-                                          check_self=False) as clearance:
+                                          check_self=False) as clearance, \
+                    self._arms_still(ctx, request):
                 await self.first_check(ctx, clearance)
                 try:
                     sent_id = send_to_onboard_follower(robot.base, path)
@@ -402,6 +405,17 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 ctx.log_info(f"base path {sent_id} on {serial}: {outcome}")
                 if request.record and self._recordings is not None and rec is not None and len(rec):
                     self._save(ctx, request, path, rec, outcome, started, sent_at, record or {})
+
+    def _arms_still(self, ctx: PluginContext, request: BasePlanRequest):
+        """A freeze on the robot's own arms for a drive that carries something (`arms_still`); else nothing.
+
+        ! An arm that moves cancels the commit, which stops the path: the clearance never checks the robot against
+          itself, and what the arms carry was planned where they stood.
+        """
+        if not request.arms_still:
+            return nullcontext()
+        arms = [(request.serial, name) for name in ctx.world.robots[request.serial].arms]
+        return ctx.freeze(take_basis(ctx.world, ctx.now(), arms=arms))
 
     def _save(self, ctx: PluginContext, request: BasePlanRequest, path: BasePath, rec: Trace, outcome: str,
               started: str, sent_at: float, plan: dict) -> None:

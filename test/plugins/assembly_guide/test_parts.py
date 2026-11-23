@@ -32,6 +32,35 @@ def test_a_ground_bar_drives_moves_waits_for_hands_servos_inserts_and_marks(load
         (INSERT, "B20_J_insert: insert"), (SERVO, "B20_J_insert: servo"), (MARK, "mark B20_J done")]
 
 
+def test_a_carried_bar_is_loaded_at_the_station_and_driven_in(loaded):
+    """A carried bar with a station: the station drive, the load, the bar by hand, the drive in, the transfer.
+
+    The drive to the action's start is shown at the transfer, where the bar is on the robot. Without a station,
+    or with the workaround on, the parts are the ones without it: one drive, to the start.
+    """
+    robots = tuple(robot_config(serial) for serial in (ALICE, BELLE, CINDY))
+    station = (3.0, 0.5, math.radians(270.0))
+    carried = action_parts(loaded, "B20_J", robots, False, stations={f"a200-{CINDY}": station})
+    assert [(part.kind, part.label) for part in carried] == [
+        (DRIVE, "drive to the loading station for B20_J"), (MOVE, "B20_J_load: travel to load"),
+        (HAND, "B20_J_place_bar: by hand"), (HAND, "B20_J_grasp: by hand"),
+        (DRIVE, "drive to B20_J's start with the bar"), (MOVE, "B20_J_transfer: transfer with the bar"),
+        (SERVO, "B20_J_transfer: servo"), (INSERT, "B20_J_insert: insert"), (SERVO, "B20_J_insert: servo"),
+        (MARK, "mark B20_J done")]
+    assert carried[0].base == station and carried[0].movement == "B20_J_load"
+    x, y, yaw = carried[4].base
+    assert (round(x, 3), round(y, 3), round(math.degrees(yaw), 1)) == (0.527, -3.067, 89.6)
+    assert carried[4].movement == "B20_J_transfer" and carried[4].step is None
+    without = action_parts(loaded, "B20_J", robots, False)
+    assert [part.label for part in without if part.kind == DRIVE] == ["drive to B20_J's start"]
+    assert without[0].kind == DRIVE and without[1].label == "B20_J_load: travel to load"
+    assert action_parts(loaded, "B20_J", robots, True, stations={f"a200-{CINDY}": station}) == parts(loaded, "B20_J")
+    # * A release holds its bar and a support robot has no station: neither drives to one.
+    for other in ("B20_R", "B21_H"):
+        assert action_parts(loaded, other, robots, False, stations={f"a200-{CINDY}": station}) == \
+            action_parts(loaded, other, robots, False)
+
+
 def test_a_hold_and_a_release(loaded):
     """B21_H's gripper steps and straight line; B20_R's retreat with its ungrasp, in one request, and no drive.
 

@@ -124,8 +124,8 @@ class RunSettings:
         plan_joint_resolution: The joint step of its collision checks, radians (PLAN_RESOLUTION_RANGE).
         plan_tries: Tries of a free or one-arm search before giving up (PLAN_TRIES_RANGE).
         plan_swept_check: Check a found path between its waypoints before taking it.
-        plan_cdfm_planner: The held transfer's planner (CDFM_PLANNERS): "birrt" searches, "prm" follows a roadmap
-            precomputed for the process and the bar.
+        plan_cdfm_planner: The held transfer's planner (CDFM_PLANNERS): "prm", the default, follows a roadmap
+            precomputed for the process and the bar; "birrt" searches.
         plan_roadmap_root: The folder holding the `prm/<process folder name>__<bar>/` roadmaps for "prm"; empty:
             `<drive_root>/data_experiment/cdfm_planner_benchmark`.
         grasp_offsets: Each hold's support grasp moved along and about its bar, ((hold action, slide mm, roll
@@ -152,7 +152,7 @@ class RunSettings:
     plan_joint_resolution: float = 0.1
     plan_tries: int = 3
     plan_swept_check: bool = True
-    plan_cdfm_planner: str = "birrt"
+    plan_cdfm_planner: str = "prm"
     plan_roadmap_root: str = ""
     placement: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
     grasp_offsets: tuple = ()

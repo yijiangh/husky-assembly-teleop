@@ -84,7 +84,8 @@ One JSON object per line, appended and flushed at once (a line cut by a crash is
 The events: `session` (a monitor opened the run, new or continued), `settings` (a run setting changed, with the
 changes), `mark_done` / `reopen`, and per part
 `prompt`, `confirm`, `cancel`, `soft_stop`, `error`, `exec` (with the record file it wrote), `servo`, and the planning
-events `plan`, `check_goal` and `check_tool0` with their numbers. Reading the lines in order replays the lab session.
+events `plan`, `plan_failed` (a plan that found nothing: the planner, its tries and seconds, the reason),
+`check_goal` and `check_tool0` with their numbers. Reading the lines in order replays the lab session.
 
 ### movements/<action>/<movement>.<n>.json
 

@@ -1,6 +1,9 @@
 # CDFM planner tests: a simulator test and a real-lab test
 
-Status (2026-11-20): design proposed, decisions 1-7 still open; three offline sequence runs done (results below): the roadmap planner with its two fallbacks now plans all 34 bars.
+Status (2026-11-20, evening): experiment A is dropped as a deliverable (its offline runs stay below as background).
+Decisions 2 and 3 are answered by `tasks/2026-11-20_held_carry_sequence.md`: Cindy loads at a station, drives in with
+the bar, and the carry is planned live from a carry planned offline; the guide runs the sequence and passes the run's
+planning settings. Next: that note's steps, then the simulator manual (B) and the real-lab manual (C).
 Follows `doc/experiments/experiment_design_guide.md`, stage 1: the agent proposes, the user decides.
 
 Branch: `yh/cdfm-planner` (was `yh/insertion-demo-cdfm`, with `origin/core-port` 7f37ec10 merged in, 309cbc63).
@@ -244,9 +247,10 @@ Open after this run:
 ## Deliverables, in order
 
 1. This note agreed.
-2. Items 1–5 above, then experiment A on the mock root: its numbers set the two hardest bars and tell whether the
-   pass marks are sane.
-3. `doc/experiments/cdfm_planner_sim_manual.md`: A's commands, then B's operator steps in the fake-lab manual's
-   format, every Expect line taken from a run of mine in my own simulator session.
+2. The held-carry sequence in the monitor (`tasks/2026-11-20_held_carry_sequence.md`, which covers items 1–4 above).
+   Experiment A is dropped (2026-11-20).
+3. `doc/experiments/cdfm_planner_sim_manual.md`: B's operator steps in the fake-lab manual's format (the guide
+   first, the Assembly tab and Plan › Base once), every Expect line taken from a run of mine in my own simulator
+   session.
 4. `doc/experiments/cdfm_planner_lab_manual.md`: C, in the real-lab manual's format, written from B's steps.
 5. An analysis script over A's plans and B's and C's runs, and its report, after the first data.

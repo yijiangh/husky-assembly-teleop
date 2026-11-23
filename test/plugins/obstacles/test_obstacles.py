@@ -18,7 +18,8 @@ from husky_assembly_teleop.world import lab as lab_module
 from husky_assembly_teleop.world.base_collision import BaseCollisionWorld
 from husky_assembly_teleop.world.clearance import STOP_DISTANCE
 from husky_assembly_teleop.world.lab import (FLOOR_WITHOUT_BORDER, MESH_DIRECTORY, Shape, border_bodies, floor_body,
-                                             read_lab, read_temporary, shape_id, write_lab, write_temporary)
+                                             read_lab, read_temporary, shape_id, station_of, station_pose,
+                                             write_lab, write_temporary)
 from husky_assembly_teleop.world.scene import PluginScene
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
@@ -90,6 +91,21 @@ def test_lab_file_round_trip(tmp_path):
     assert read_lab(tmp_path / "lab.json") == lab
     lines = (tmp_path / "lab.json").read_text().splitlines()
     assert sum('"type":' in line for line in lines) == len(lab.shapes)
+
+
+def test_a_lab_file_holds_each_robots_loading_station(tmp_path):
+    """A station is read by serial in metres and radians, kept when the file is written; None for a robot without."""
+    (tmp_path / "lab.json").write_text(json.dumps({"format": "husky_lab", "stations": {"0806": [3.0, 0.5, 270.0]}}))
+    lab = read_lab(tmp_path / "lab.json")
+    assert station_pose(lab, "a200-0806") == pytest.approx((3.0, 0.5, math.radians(270.0)))
+    assert station_pose(lab, "a200-0804") is None
+    write_lab(lab, tmp_path / "again.json")
+    assert read_lab(tmp_path / "again.json") == lab
+    assert station_of(tmp_path, str(tmp_path / "lab.json"), "0806") == station_pose(lab, "0806")
+    assert station_of(tmp_path, str(tmp_path / "none.json"), "0806") is None
+    (tmp_path / "bad.json").write_text(json.dumps({"format": "husky_lab", "stations": {"0806": [3.0]}}))
+    with pytest.raises(ValueError, match="bad stations"):
+        read_lab(tmp_path / "bad.json")
 
 
 def test_broken_lab_file_is_refused(tmp_path):

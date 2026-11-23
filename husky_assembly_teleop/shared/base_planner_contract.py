@@ -29,6 +29,7 @@ class BasePlanRequest:
         task: The experiment task chosen, by name; the attempt counts for it only from its start to its target.
         record: Whether to save the attempt, and the run once committed, to the Drive.
         experiment: The experiment the recordings are saved under.
+        arms_still: Whether the drive ends as soon as one of the robot's arms moves: it carries something on them.
     """
 
     serial: str
@@ -39,6 +40,7 @@ class BasePlanRequest:
     task: str | None = None
     record: bool = False
     experiment: str = "default"
+    arms_still: bool = False
 
 
 class BasePlannerContract(PlannerContract[BasePlanRequest], Protocol):

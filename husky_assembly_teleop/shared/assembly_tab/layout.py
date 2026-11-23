@@ -58,6 +58,8 @@ PLOTS_WIDTH, PLOTS_HEIGHT = 460, 560
 #: The insertion demo's Force plots come third.
 PLAN_PLOTS_X, EXEC_PLOTS_X, PLOTS_Y = 410, 410 + PLOTS_WIDTH + 10, -15
 FORCE_PLOTS_X = EXEC_PLOTS_X + PLOTS_WIDTH + 10
+#: The assembly guide's Guide plots share that third place: the insertion demo runs without the guide.
+GUIDE_PLOTS_X = FORCE_PLOTS_X
 
 # * Button icons, so the CSS and the buttons agree.
 #: Live IK.

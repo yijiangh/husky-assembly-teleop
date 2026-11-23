@@ -403,3 +403,17 @@ def test_a_search_back_from_the_target_costs_moves_as_driven():
     flipped, flipped_back = _cost(poses, 0.6, flip=True)
     assert not ahead_back and flipped_back and flipped > ahead
     assert _cost(poses, 0.6, backwards=True, flip=True) == (pytest.approx(flipped - lattice.STOP), True)
+
+
+@pytest.mark.slow
+def test_a_path_that_hits_as_followed_shows_the_robot_where_it_hits(world, robots, alice, monkeypatch):  # noqa: F811
+    """The follower cuts straight through Cindy: no plan, and the hit has Alice at the pose that touches her."""
+    world.sync(_snapshot(robots))
+    straight = np.column_stack([np.linspace(0.0, 4.0, 81), np.zeros(81), np.zeros(81)])
+    monkeypatch.setattr(lattice, "followed", lambda *args, **kwargs: (straight, ""))
+    result = plan(world, alice, (0.0, 0.0, 0.0), (4.0, 0.0, 0.0), threading.Event())
+    assert result.path is None and "the path as followed hits" in result.reason
+    hit = result.hit
+    assert hit is not None and hit.where == "the path as followed" and hit.robot == alice
+    at = hit.scene.robots[alice].base.position
+    assert 0.0 < at[0] < 4.0 and abs(at[1]) < 1e-6 and any("0806" in other for _, other in hit.pairs)

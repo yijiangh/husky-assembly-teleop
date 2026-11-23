@@ -73,6 +73,7 @@ def run_ik(pool: MirrorPool, request: MotionPlanRequest, abort: threading.Event,
     try:
         serial = _acting(request, abort)
         return check_goal(pool.mirror(serial), request.loaded, request.step, request.snapshot, request.robots,
+                          search=request.search,
                           transfer_as_free=request.transfer_as_free,
                           ignore_built=request.ignore_built, obstacles_collide=request.obstacles_collide, log=log)
     except Exception as error:

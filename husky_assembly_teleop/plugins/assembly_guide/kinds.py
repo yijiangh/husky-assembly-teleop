@@ -155,6 +155,13 @@ class DriveKind(Kind):
             "To fix by hand: Plan › Base › Load: Step › Plan › Commit, or drive in Control › the robot › Base; "
             "then Done.")
     look_for = ("The path on the floor is clear of people and of what the scene does not know.", E_STOP)
+    #: A drive with the bar on the arms, when no path is found: another loading pose.
+    carried_todo = ("No path with the bar (Plan › Collisions shows where it hits): Loading pose › Class › Plan carry "
+                    "again; then show the travel to load › Redo from here › Prepare.",)
+
+    def todo_of(self, part: GuidePart) -> tuple[str, ...]:
+        """With the bar on the arms, also what to do when no path is found."""
+        return (*self.todo, *self.carried_todo) if part.carrying else self.todo
 
     def build(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
         """The target."""

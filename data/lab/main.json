@@ -1,7 +1,7 @@
 {
   "format": "husky_lab",
   "version": 1,
-  "units": "lab frame (as the mocap relay publishes poses), metres; yaw in degrees about Z. size: box sides; cylinder (diameter, diameter, height); truss column (side, side, height) on a 0.8 m ground plate. meshes: drawn only, never collide; at: metres from the shape's bottom centre in its frame, yaw in degrees",
+  "units": "lab frame (as the mocap relay publishes poses), metres; yaw in degrees about Z. size: box sides; cylinder (diameter, diameter, height); truss column (side, side, height) on a 0.8 m ground plate. meshes: drawn only, never collide; at: metres from the shape's bottom centre in its frame, yaw in degrees. stations: robot serial -> [x, y, yaw] of its base at the loading station",
   "obstacles": [
     {"type": "box", "name": "building cabinet", "center": [1.6895, 2.308, 0.5553], "size": [4.207, 0.608, 1.1107], "yaw": 0.0, "source": "probe 2026-09-30"},
     {"type": "box", "name": "main pc table", "center": [-1.927, 1.2829, 0.365], "size": [0.8, 1.6, 0.73], "yaw": 0.0, "source": "probe 2026-09-30, three corners", "meshes": [{"mesh": "table"}, {"mesh": "screen", "at": [0.25, -0.35, 0.769], "yaw": 90.0}, {"mesh": "screen", "at": [0.25, 0.35, 0.769], "yaw": 90.0}]},
@@ -15,5 +15,6 @@
     {"type": "truss", "name": "truss 1", "center": [3.844, -4.974, 1.0], "size": [0.3, 0.3, 2.0], "yaw": 0.0, "source": "by hand 2026-10-06"},
     {"type": "truss", "name": "truss 2", "center": [3.928, 5.744, 1.0], "size": [0.3, 0.3, 2.0], "yaw": 0.0, "source": "by hand 2026-10-06"}
   ],
-  "border": {"x": [-3.7, 3.8], "y": [-4.8, 5.6], "width": 0.2, "height": 2.0, "source": "usable floor area, 2026-10-06"}
+  "border": {"x": [-3.7, 3.8], "y": [-4.8, 5.6], "width": 0.2, "height": 2.0, "source": "usable floor area, 2026-10-06"},
+  "stations": {"0806": [-1.3, -1.9, 180.0]}
 }

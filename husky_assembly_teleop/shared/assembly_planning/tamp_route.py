@@ -13,6 +13,8 @@ solved at the live base, and every searched path checked between its waypoints. 
 
 from __future__ import annotations
 
+import math
+import os
 import threading
 import time
 from dataclasses import replace
@@ -32,6 +34,7 @@ from scaffolding_assembly_core.scene import Scene
 
 from ...world.kinematics import stow_joints
 from .process_steps import LoadedProcess, Step
+from .carry_plan import SavedCarry, read_carry, roadmap_folder
 from .collision import collisions, world_frame_fk
 from .ik import solve_ik
 from .joints import arm_joint_names, turn_limits, unwrap_to_nearest
@@ -53,17 +56,42 @@ PRM_BENCH = Path("data_experiment/cdfm_planner_benchmark")
 #: ! tamp's roadmap options that keep it from writing scenes and queries into the roadmap folder: it is on the shared
 #:   Drive, where nothing may be written.
 PRM_OPTIONS = {"workers": 1, "save_query": False, "verbose": False}
+#: With the bar's saved carry as a seed: worker processes, and the local folder their scene files go to.
+PRM_SEEDED_WORKERS = min(8, max(1, (os.cpu_count() or 2) // 2))
+PRM_SCENE_CACHE = Path.home() / ".cache" / "husky_assembly_teleop" / "prm_scenes"
+#: A robot loading further than this from the station its saved carry's drive in was checked from is warned about, m.
+STATION_NEAR = 0.3
+#: Arms further than this (largest joint) from the saved carry's loading posture are warned about before the carry.
+LOADING_POSTURE_NEAR = math.radians(2.0)
 #: A held transfer's right flange may end this far from its target before the grasp counts as mismatched, metres.
 GRASP_MISMATCH = 0.002
 #: A retreat blocked at its full length is tried shorter, in steps of this, down to this, metres.
 RETREAT_SHORTEN_STEP = 0.005
 RETREAT_MIN_DISTANCE = 0.025
 
+#: A route's saved carry before it was looked for (`Route.saved_carry`).
+_UNREAD = object()
+
 #: Routines no arm moves in, and the linear ones, whose start may touch (warned, not refused).
 _NO_ARM = (Routine.TOOL_ONLY, Routine.OPERATOR, Routine.BASE_ONLY)
 _LINEAR = (Routine.INSERT, Routine.RETREAT_LINEAR, Routine.SUPPORT_LINEAR)
 #: Routines whose goal is solved by IK at the live base (`check_goal`).
 IK_GOALS = (Routine.TRANSFER_FREE, Routine.TRANSFER_HELD, Routine.SUPPORT_APPROACH)
+
+
+def run_search(settings, drive_root: Path | None) -> FreeSearch:
+    """The searches' settings for a plan from a run's Advanced planning ones (`RunSettings`).
+
+    ! Main thread: the Drive convention for the roadmaps is resolved here, so the worker never reads the config.
+
+    Args:
+        settings: The run's settings (`plan_max_time` ... `plan_cdfm_planner`, `plan_roadmap_root`).
+        drive_root: The monitor's Drive root, whose benchmark folder holds the roadmaps when the run names no root.
+    """
+    root = settings.plan_roadmap_root or (str(drive_root / PRM_BENCH) if drive_root else "")
+    return FreeSearch(settings.plan_max_time, settings.plan_max_iterations, settings.plan_joint_resolution,
+                      settings.plan_tries, settings.plan_swept_check, cdfm_planner=settings.plan_cdfm_planner,
+                      roadmap_root=root)
 
 
 def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
@@ -103,18 +131,28 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
     spec = classify(loaded.process, step.action, step.movement, transfer_as_free)
     if spec.routine in _NO_ARM:
         return _not_planned(spec, "no arm moves", started)
+    carry = None
     if spec.routine is Routine.FREE_TO_LOAD and goal_joints is None and spec.goal_joints is None:
-        return _not_planned(spec, "needs the transfer start, after M3", started)
+        # * The process leaves the loading posture open: it is the first row of the bar's saved carry.
+        try:
+            carry = read_carry((search or FreeSearch()).roadmap_root, loaded.process, step.action.id)
+        except Refused as refused:
+            return _not_planned(spec, f"no loading posture: {refused}", started)
+        goal_joints = carry.start
     route = _route(mirror, loaded, step, snapshot, robots, spec, ignore_built=ignore_built,
                    obstacles_collide=obstacles_collide, goal_joints=goal_joints, goal_poses=goal_poses,
                    linear_step=linear_step, search=search, abort=abort or threading.Event(), log=log, tree=tree)
+    if carry is not None:
+        log(f"the loading posture is the first row of {carry.file} (class: {carry.loading_class or 'not recorded'})")
+        route.warnings.extend(_off_station(carry, route.robot.base))
     return replace(route.planned(route.run), seconds=time.monotonic() - started)
 
 
 def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
                robots: tuple[RobotConfig, ...], *, transfer_as_free: bool = False,
                ignore_built: bool = False,
-               obstacles_collide: bool = True, log: Callable[[str], None] = print) -> GoalCheck:
+               obstacles_collide: bool = True, search: FreeSearch | None = None,
+               log: Callable[[str], None] = print) -> GoalCheck:
     """Solve a movement's goal by IK at the live base, as `plan_movement` would before searching, and plan nothing.
 
     Only the transfers and a support robot's approach have a goal solved by IK. Fails closed: any error gives a
@@ -141,7 +179,8 @@ def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snaps
         if spec.routine not in IK_GOALS:
             return GoalCheck(movement, spec.routine, False, "goal not solved by IK", seconds=time.monotonic() - started)
         route = _route(mirror, loaded, step, snapshot, robots, spec, ignore_built=ignore_built,
-                       obstacles_collide=obstacles_collide, goal_joints=None, abort=threading.Event(), log=log)
+                       obstacles_collide=obstacles_collide, goal_joints=None, abort=threading.Event(), log=log,
+                       search=search)
         route.prepare()
         goal, reason = route.ik_goal(unwrap=spec.routine is not Routine.SUPPORT_APPROACH), ""
     except Refused as refused:
@@ -183,6 +222,30 @@ def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot:
                  goal_poses=goal_poses, linear_step=linear_step, search=search, tree=tree)
 
 
+def _off_station(carry: SavedCarry, base: Pose | None) -> list[str]:
+    """A warning when the robot loads away from the station its saved carry's drive in was checked from."""
+    if carry.station is None:
+        return ["the saved carry's loading posture was not checked for the drive in (planned without a station)"]
+    if base is None:
+        return []
+    off = math.hypot(float(base.position[0]) - carry.station[0], float(base.position[1]) - carry.station[1])
+    if off <= STATION_NEAR:
+        return []
+    return [f"the robot stands {off:.2f} m from the station ({carry.station[0]:.2f}, {carry.station[1]:.2f}) the "
+            f"saved carry's drive in was checked from"]
+
+
+def _roadmap_note(info: Mapping) -> str:
+    """What a failed roadmap plan says about its edges, for the reason's text; "" for the search."""
+    prm = info.get("prm") or {}
+    verdicts = prm.get("edge_verdicts")
+    if not verdicts:
+        return ""
+    edges = ", ".join(f"{count} {verdict}" for verdict, count in sorted(verdicts.items()))
+    gap = prm.get("best_gap_left_mm")
+    return f"; route edges: {edges}" + (f"; the best route left breaks the holding by {gap:.0f} mm" if gap else "")
+
+
 def _sync_again(route: Route) -> str:
     """Sync a route's mirror after an error left it anywhere; why it failed, or "" if it synced."""
     try:
@@ -214,6 +277,7 @@ class Route(RouteSearch):
         """
         super().__init__(*args, search=search or FreeSearch(), tree=tree)
         self.goal_poses, self.linear_step = goal_poses, linear_step
+        self._carry: SavedCarry | None | object = _UNREAD
 
     def planned(self, plan: Callable[[], RouteResult]) -> RouteResult:
         """Run `plan`, failing closed: a refusal or any error gives a failed result with its text.
@@ -313,19 +377,22 @@ class Route(RouteSearch):
         """
         prm = self.search.cdfm_planner == "prm"
         self.planner = "tamp.plan_constrained_dual_arm" + ("/prm" if prm else "")
+        carry = self.saved_carry()
         goal, targets = self.ik_goal(), {part: part.target for part in self.spec.arms}
         tries, failures = 1 if prm else ATTEMPTS, []
         for attempt in range(tries):
             self.next_attempt()
             seeded = f"max_time {HELD['max_time']:.0f} s, seed {SEED_STEP * attempt}"
-            self.note("roadmap, no time limit" if prm else seeded, tries)
+            on_roadmap = "roadmap, no time limit" + (f", seeded by {carry.file.name}" if carry is not None else "")
+            self.note(on_roadmap if prm else seeded, tries)
             started = time.monotonic()
-            path, info = self.held_search(goal, SEED_STEP * attempt, targets, backend=self.search.cdfm_planner)
+            path, info = self.held_search(goal, SEED_STEP * attempt, targets, backend=self.search.cdfm_planner,
+                                          carry=carry)
             if path is not None:
                 self.note(f"path of {len(path)} waypoints in {time.monotonic() - started:.1f} s", tries)
                 return self.solved(path, targets)
             failures.append(f"no path in {time.monotonic() - started:.0f} s "
-                            f"(tamp: {info.get('failure_reason', 'no reason')})")
+                            f"(tamp: {info.get('failure_reason', 'no reason')}{_roadmap_note(info)})")
             self.note(failures[-1], tries)
         budget = "1 try on the roadmap" if prm else f"{tries} tries of {HELD['max_time']:.0f} s"
         raise Refused(f"{self.planner}: {'; '.join(failures)} ({budget})")
@@ -464,7 +531,8 @@ class Route(RouteSearch):
 
     # --- --- --- --- --- GOALS --- --- --- --- ---
 
-    def ik_goal(self, unwrap: bool = True, targets: Mapping[str, Pose] | None = None) -> dict[str, float]:
+    def ik_goal(self, unwrap: bool = True, targets: Mapping[str, Pose] | None = None,
+                near: Mapping[str, float] | None = None) -> dict[str, float]:
         """The arms' joints at their target poses, by IK at the live base with anything held there; or the override.
 
         Args:
@@ -473,6 +541,9 @@ class Route(RouteSearch):
                 the limits; the dual-arm routines do, the approach does not.
             targets: Arm -> world pose of its tool0 instead of the process's targets: a servo pass's, solved near the
                 live joints instead of the authored goal.
+            near: Joints to solve the process's targets next to, and to unwrap next to, instead of the authored goal
+                and the start. A held transfer on the roadmap takes its saved carry's end posture by itself, the
+                one its insert was checked from: the seed ends there.
 
         Returns:
             dict[str, float]: Goal values by joint name, one per name in `names`.
@@ -481,13 +552,15 @@ class Route(RouteSearch):
             Refused: If a flange has no target pose, IK finds no collision-free solution, or a joint is outside its
                 limits.
         """
+        if near is None and targets is None and (carry := self.saved_carry()) is not None:
+            near = carry.end
         if self.override is not None:
             goal = self.joints_of(self.override)
         else:
             reference, what = None, "the servo target"
             if targets is None:
                 targets = {part.arm: part.target for part in self.spec.arms}
-                reference, what = self.spec.goal_joints, "the goal"
+                reference, what = near or self.spec.goal_joints, "the goal"
             if None in targets.values():
                 raise Refused("a moving flange has no target pose to solve the goal for")
             # * IK in the scene with the held bar: it must be clear where the goal puts it.
@@ -501,7 +574,8 @@ class Route(RouteSearch):
                 raise Refused(f"no IK for {what} ({self.ik.backend}): {self.ik.reason}")
             goal = self.joints_of(self.ik.joints)
         if unwrap:
-            values = unwrap_to_nearest([goal[name] for name in self.names], [self.start[name] for name in self.names],
+            beside = self.joints_of(near) if near is not None else self.start
+            values = unwrap_to_nearest([goal[name] for name in self.names], [beside[name] for name in self.names],
                                        *turn_limits(self.robot.model.urdf, self.names))
             goal = dict(zip(self.names, values.tolist()))
             self.check_limits(goal)
@@ -515,15 +589,36 @@ class Route(RouteSearch):
         Raises:
             Refused: Without a roadmap root (`search.roadmap_root`), or a process read from no folder.
         """
-        if not self.search.roadmap_root:
-            raise Refused("no roadmap root: set drive_root or Advanced planning's Roadmap root")
-        if self.process.folder is None:
-            raise Refused("the process was read from no folder, so its roadmaps have no name")
-        bar = self.spec.bar.removeprefix("bars/")
-        return Path(self.search.roadmap_root) / "prm" / f"{self.process.folder.name}__{bar}"
+        return roadmap_folder(self.search.roadmap_root, self.process, self.spec.bar)
+
+    def saved_carry(self) -> SavedCarry | None:
+        """The held bar's saved carry, the seed of its roadmap plan; None when it is not a roadmap plan or has none.
+
+        Read once per route, with a line why there is none. Warns when the arms are not at its loading posture: the
+        plan then starts beside the seed, not on it.
+        """
+        if self._carry is not _UNREAD:
+            return self._carry
+        self._carry = None
+        if self.spec.routine is not Routine.TRANSFER_HELD or self.search.cdfm_planner != "prm":
+            return None
+        try:
+            carry = read_carry(self.search.roadmap_root, self.process, self.spec.action)
+        except Refused as refused:
+            self.log(f"the roadmap alone, without a seed: {refused}")
+            return None
+        if tuple(self.names) != carry.joint_names:
+            self.log(f"the roadmap alone, without a seed: {carry.file} is for other joints")
+            return None
+        off = max(abs(self.start[name] - value) for name, value in carry.start.items())
+        if off > LOADING_POSTURE_NEAR:
+            self.warnings.append(f"the arms are {math.degrees(off):.1f}° (largest joint) from the saved carry's "
+                                 f"loading posture")
+        self._carry = carry
+        return carry
 
     def held_search(self, goal: Mapping[str, float], seed: int, targets: Mapping[ArmPart, Pose | None],
-                    backend: str = "birrt") -> tuple[list | None, dict]:
+                    backend: str = "birrt", carry: SavedCarry | None = None) -> tuple[list | None, dict]:
         """One try of tamp's constrained planner with the bar held, to the goal joints; the mirror synced after.
 
         The servo's fallback (servo_route.py) always searches: birrt. A path whose right flange ends over
@@ -534,6 +629,7 @@ class Route(RouteSearch):
             seed: The try's random seed (the roadmap ignores it).
             targets: Each moving flange's target pose, None where it has none.
             backend: "birrt" searches; "prm" follows the bar's roadmap (`roadmap_dir`), without a time limit.
+            carry: With "prm", the bar's saved carry: its path seeds the plan, which then runs on several workers.
 
         Returns:
             tuple[list | None, dict]: The path (None when none was found) and tamp's info.
@@ -550,6 +646,17 @@ class Route(RouteSearch):
                               f"scripts/prm_runs/process_precompute.sh {self.process.folder.name} {name} "
                               f"(HUSKY_BENCH_ROOT and HUSKY_DESIGN_STUDY_DIR set)")
             roadmap = {"backend": "prm", "prm_options": {"roadmap_dir": str(folder), **PRM_OPTIONS}}
+            if carry is not None:
+                # ! The workers' scene files go to a local folder: nothing is written into the roadmap folder.
+                PRM_SCENE_CACHE.mkdir(parents=True, exist_ok=True)
+                # * The carry was planned at the design base: tamp solves it again for where the robot stands.
+                base = self.robot.base
+                roadmap["prm_options"].update(
+                    seed_path=[list(row) for row in carry.rows], seed_base_planned=list(carry.base),
+                    seed_base_live=[float(value) for value in (*base.position, *base.orientation)],
+                    workers=PRM_SEEDED_WORKERS, scene_cache_dir=str(PRM_SCENE_CACHE),
+                    # * Its progress lines reach the monitor's log: the plan takes a minute, and they say where.
+                    verbose=True)
         try:
             with self.mirror.lend() as planner, world_frame_fk(planner):
                 path, info = plan_constrained_dual_arm(planner, self.mirror.state, active_bar_id=bar, goal_conf=goal,

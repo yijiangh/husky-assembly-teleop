@@ -344,7 +344,7 @@ def test_a_plan_asks_with_the_runs_advanced_planning_settings():
     lab.update()
     asyncio.run(lab.plan())
     request, = lab.planner.plans
-    assert request.search == FreeSearch(max_time=10.0, tries=1, swept_check=False)
+    assert request.search == FreeSearch(max_time=10.0, tries=1, swept_check=False, cdfm_planner="prm")
     # * Never under a held transfer's own budget (3 tries of 120 s), whatever the settings say.
     assert lab.plugin.make_search(lab.ctx, threading.Event()).time_limit == 3 * 120.0 + PLAN_TIME_MARGIN
     sliders = {widget.label: widget for widget in lab.ctx.gui.of_kind("slider")}

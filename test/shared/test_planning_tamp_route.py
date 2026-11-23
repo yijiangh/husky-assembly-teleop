@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import random
 import re
@@ -18,6 +19,7 @@ from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.experiments.assembly_plan_check import perturbed, run_check, select_actions, write_solutions
 from husky_assembly_teleop.shared.assembly_planning import route_search, search_tree, tamp_route
+from husky_assembly_teleop.shared.assembly_planning.carry_plan import CARRY_FILE, CARRY_FORMAT
 from husky_assembly_teleop.shared.assembly_planning.ik import ssik_unavailable
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine, classify
@@ -32,7 +34,7 @@ from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 from scaffolding_assembly_core.process import LineSpec, read
-from scaffolding_assembly_core.process.solutions import is_stale, read_solutions
+from scaffolding_assembly_core.process.solutions import is_stale, read_solutions, solved_against
 from scaffolding_assembly_core.scene import Body, Scene
 
 POSE = Pose((0.4, -1.2, 0.9), tuple(Rotation.from_euler("xyz", (0.2, -0.4, 1.1)).as_quat()))
@@ -468,6 +470,67 @@ def test_a_roadmap_that_does_not_fit_fails_with_tamps_reason(purged, configs, mi
                                   ValueError("roadmap built for bars/B21"))
     assert not route.ok and len(calls) == 1
     assert route.result.reason == "tamp.plan_constrained_dual_arm/prm: roadmap built for bars/B21"
+
+
+def _saved_carry(purged, root, rows: list[dict[str, float]]) -> list[list[float]]:
+    """B20's saved carry under `root` with these postures as its path, as tamp writes it; the path's rows."""
+    names = [*arm_joint_names("left_ur_arm"), *arm_joint_names("right_ur_arm")]
+    against = solved_against(purged.process, "B20_J")
+    path = [[float(row[name]) for name in names] for row in rows]
+    folder = root / "prm" / f"{purged.process.folder.name}__B20"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / CARRY_FILE).write_text(json.dumps({
+        "format": CARRY_FORMAT, "action": "B20_J", "joint_names": names, "path": path, "station": [3.0, 0.5, 270.0],
+        "base": [1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        "solved_against": {"process": against.process, "action": against.action}}))
+    return path
+
+
+@pytest.mark.slow
+def test_the_travel_to_load_ends_on_the_saved_carrys_first_row(purged, configs, mirrors, monkeypatch, tmp_path):
+    """The process leaves the loading posture open: it is the saved carry's first row; without a carry, not planned.
+
+    The robot stands at the design base, not at the carry's station: the plan says how far off it is.
+    """
+    monkeypatch.setattr(route_search, "plan_free_dual_arm", lambda _planner, state, goal, **_options: (
+        [[float(state.robot_configuration[name]) for name in goal], [goal[name] for name in goal]], {}))
+    load, snapshot = step(purged, "B20_J_load"), design_scene(purged, "B20_J_load")
+    search = FreeSearch(swept_check=False, roadmap_root=str(tmp_path))
+    route = plan_movement(_cindys(mirrors), purged, load, snapshot, configs, search=search, log=lambda _line: None)
+    assert route.result.status == "not_planned" and route.result.reason.startswith("no loading posture: no saved carry")
+    action, homing = movement(purged, "B20_R_home")
+    home = homing.target.robots[action.robot].joints
+    row, _end = _saved_carry(purged, tmp_path, [home, home])
+    route = plan_movement(_cindys(mirrors), purged, load, snapshot, configs, search=search, log=lambda _line: None)
+    assert route.ok and route.routine is Routine.FREE_TO_LOAD
+    assert [route.goal_joints[name] for name in route.result.trajectory.joint_names] == pytest.approx(row)
+    assert any("m from the station (3.00, 0.50)" in warning for warning in route.warnings)
+
+
+@pytest.mark.slow
+def test_a_saved_carry_seeds_the_prm_plan(purged, configs, mirrors, monkeypatch, tmp_path):
+    """The bar's saved carry is the roadmap plan's seed, on several workers with a local scene folder.
+
+    The goal is solved next to the carry's end, and arms away from its loading posture are warned about.
+    """
+    folder = _roadmap(purged, tmp_path)
+    monkeypatch.setattr(tamp_route, "PRM_SCENE_CACHE", tmp_path / "scenes")
+    start = design_scene(purged, "B20_J_transfer").robots[CINDY_ID].joints
+    action, transfer = movement(purged, "B20_J_transfer")
+    end = transfer.target.robots[action.robot].joints
+    path = _saved_carry(purged, tmp_path, [{name: value + 0.1 for name, value in start.items()}, end])
+    search = FreeSearch(cdfm_planner="prm", roadmap_root=str(tmp_path))
+    route, calls = _held_transfer(purged, configs, mirrors, monkeypatch, search)
+    call, = calls
+    base = design_scene(purged, "B20_J_transfer").robots[CINDY_ID].base
+    assert route.ok and call["prm_options"] == {
+        "roadmap_dir": str(folder), "save_query": False, "verbose": True, "seed_path": path,
+        "seed_base_planned": [1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        "seed_base_live": pytest.approx([*base.position, *base.orientation]),
+        "workers": tamp_route.PRM_SEEDED_WORKERS, "scene_cache_dir": str(tmp_path / "scenes")}
+    assert (tmp_path / "scenes").is_dir() and not list(folder.glob("scenes"))
+    assert [call["goal_conf"][name] for name in call["goal_conf"]] == pytest.approx(path[-1], abs=1e-3)
+    assert any("5.7° (largest joint) from the saved carry's loading posture" in each for each in route.warnings)
 
 
 @pytest.mark.slow
