@@ -479,10 +479,10 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
     start_c, arrive_c, tail_c = (_to_centre(start, ahead), _to_centre(arrive, ahead),
                                  [_to_centre(pose, ahead) for pose in tail])
 
-    # * One move onto the lead's start, if it is clear.
+    # * One move onto the lead's start, if it is clear; a short drive in after a big turn is fragile too.
     join = _join(start_c, arrive_c)
-    if join:
-        poses = [start_c] + join + _continued(tail_c, arrive_c[2], join[-1][2])
+    poses = join and [start_c] + join + _continued(tail_c, arrive_c[2], join[-1][2])
+    if poses and not _fragile(poses):
         if not roomy(poses, icrs, _track(poses, swing)):
             if follows(_sent(poses, ahead)):
                 return found(_sent(poses, ahead), direct=True)
@@ -562,9 +562,10 @@ def _plan_one(world: PlanningWorld, own: str, start, goal, abort: threading.Even
     narrowing = roomy if full > margin + 1e-9 else None
     if backwards:
         corners, reason = _search(arrive_c, start_c, [], ahead, cost_map, centred, hits, failure, touched, ends, swing,
-                                  settings, deadline, abort, debug, aim="the start", roomy=narrowing, flip=True)
-        # ? Searched backwards, the drift slack and a big turn's drive after it count in search order; the check as
-        #   followed below decides in driving order.
+                                  settings, deadline, abort, debug, aim="the start", roomy=narrowing, flip=True,
+                                  after=tail_c)
+        # ? Searched backwards, the drift slack and a big turn's drive after it count in search order, and a finish
+        #   is checked for fragile turns in driving order too; the check as followed below decides.
         corners = corners and corners[::-1] + tail_c
     else:
         corners, reason = _search(start_c, arrive_c, tail_c, ahead, cost_map, centred, hits, failure, touched, ends,
@@ -836,7 +837,7 @@ class _Node:
 
 def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits, failure: list, touched, ends,
             swing: float, settings: Settings, deadline: float, abort: threading.Event, debug: Debug,
-            aim: str | None = None, roomy=None, flip: bool = False):
+            aim: str | None = None, roomy=None, flip: bool = False, after=()):
     """Hybrid A* over turning-centre poses from start to the lead's start; each move is checked once taken.
 
     Args:
@@ -859,6 +860,8 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
         roomy: `hits` at the full margin, if it is more than the narrow one: moves clear only at the narrow margin cost
             NARROW_WEIGHT times as much. None: every clear move costs the same.
         flip: The search runs back from the target: a move's poses are driven in the other order (`_backwards`).
+        after: With `flip`, the poses driven after `start` (the straight drive in): a finish whose path, driven with
+            them, is `_fragile` is refused.
 
     Returns:
         tuple[list | None, str]: The poses from start to the end of `tail`, or None; and what happened.
@@ -1029,7 +1032,8 @@ def _search(start, arrive, tail, ahead: float, cost_map: _CostMap, centred, hits
             if len(closed) % FINISH_EVERY == 1 or math.dist(node.pose[:2], arrive[:2]) < FINISH_NEAR:
                 join = _join(node.pose, arrive)
                 finish = join and [node.pose] + join + _continued(tail, arrive[2], join[-1][2])
-                if finish and not _cuts_short(node, finish, flip):
+                driven = (poses_to(index) + finish[1:])[::-1] + list(after) if flip and finish else finish
+                if finish and not _fragile(driven) and not _cuts_short(node, finish, flip):
                     if not hits(finish, ends, max(node.slack, _track(finish, swing))):
                         return poses_to(index) + finish[1:], f"{len(closed)} nodes taken, {len(hit)} moves hit"
                     refused.append(finish)

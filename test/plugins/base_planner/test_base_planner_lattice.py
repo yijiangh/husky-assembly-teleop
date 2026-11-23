@@ -360,6 +360,25 @@ def test_a_drive_in_without_room_at_its_start_is_shortened(world, robots, alice)
 
 
 @pytest.mark.slow
+def test_a_short_drive_in_is_not_turned_onto_by_a_big_turn(world, robots, alice):  # noqa: F811
+    """A post shortens the drive in below MIN_DRIVE: the base lines up before it, not in a quarter turn onto it.
+
+    A big turn onto a drive that short may leave the follower circling its end for ever (B35_H's drive, 21 Nov).
+    """
+    goal, margin = (0.0, -2.0, 0.0), 0.10
+    post = Body("test/post", box_geometry((0.1, 0.1, 1.0)), Pose((-0.75, -2.5, 0.5)), label="post")
+    world.sync(_snapshot(robots, [post]))
+    debug = Debug(on=True)
+    result = plan(world, alice, (0.0, 0.0, 0.0), goal, threading.Event(), Settings(margin=margin, narrow_margin=margin),
+                  debug)
+    lead = next(note for note in debug.notes if note.startswith("lead:"))
+    assert float(lead.split("straight in forwards over ")[1].split(" m")[0]) < MIN_DRIVE, lead
+    assert result.path is not None, result.reason
+    assert not _fragile([_to_centre(pose, AHEAD) for pose in result.path.points])
+    _assert_followed_clear(world, alice, result.path, Settings(margin=margin, narrow_margin=margin))
+
+
+@pytest.mark.slow
 def test_parks_in_a_passage_only_the_narrow_margin_fits_and_slows_there(world, robots, alice):  # noqa: F811
     """A passage 3 cm wider each side than the narrow margin needs, too narrow for the margin, the target inside it.
 
