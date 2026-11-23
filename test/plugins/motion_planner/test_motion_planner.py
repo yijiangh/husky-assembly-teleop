@@ -119,10 +119,14 @@ class Collisions:
 
 
 def test_the_last_answers_hits_show_in_the_collisions_panel(monkeypatch):
-    """A failed plan's hits show by request and place, the first ticked; a newer answer without hits takes them away."""
+    """A failed plan's hits show by request and place, the first ticked; a solved one shows none, not even its own.
+
+    A solved plan's hits come from tries it gave up on (a shortened retreat).
+    """
     goal, swept = SimpleNamespace(where="goal"), SimpleNamespace(where="segment 3 of 9, try 1")
+    blocked = SimpleNamespace(where="the nearest step at waypoint 10/10")
     answers = iter([RouteResult(MovementResult("failed", "the goal collides"), Routine.FREE_HOME, hits=(goal, swept)),
-                    SOLVED])
+                    RouteResult(MovementResult("solved"), Routine.RETREAT_LINEAR, hits=(blocked,))])
     monkeypatch.setattr(motion, "run_plan", lambda *_args: next(answers))
     panel = Collisions()
     ctx = SimpleNamespace(require=lambda name: panel if name == "collisions" else None)
