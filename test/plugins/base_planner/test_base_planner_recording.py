@@ -26,12 +26,13 @@ def _setup(start, goal) -> dict:
 
 
 def test_found_plan_is_saved_with_its_path_clearance_and_floor(tmp_path, world, robots, alice):  # noqa: F811
-    """A plan found: its time, length, clearance and notes in experiment.json, path and floor in plan.npz."""
+    """A plan found: its time, length, clearance and notes in experiment.json; path, floor and drawings in plan.npz."""
     world.sync(_snapshot(robots))
     start, goal = (0.0, 0.0, 0.0), (0.0, -2.0, 1.0)
-    result = plan(world, alice, start, goal, threading.Event())
+    debug = Debug(on=True)
+    result = plan(world, alice, start, goal, threading.Event(), debug=debug)
     folder = attempt_folder(tmp_path, "trial", "alice", None, "sim")
-    save_plan(folder, world, alice, _setup(start, goal), result, ["one note"])
+    save_plan(folder, world, alice, _setup(start, goal), result, ["one note"], debug.layers)
 
     description, arrays = load_description(folder), load_plan_arrays(folder)
     assert folder.parent.name == "trial" and folder.name.endswith("_alice_free_sim")
@@ -41,6 +42,8 @@ def test_found_plan_is_saved_with_its_path_clearance_and_floor(tmp_path, world, 
     assert 0.0 < found["clearance"] <= 0.30
     assert arrays["path_poses"].shape == result.path.points.shape
     assert arrays["floor_heights"].ndim == 2 and arrays["floor_cell"] == pytest.approx(0.05)
+    k = found["debug_layers"].index("path as followed, follower's xICR")
+    assert arrays[f"debug_{k}_segments"].shape[1:] == (2, 2) and len(arrays[f"debug_{k}_segments"])
 
 
 def test_failed_plan_is_saved_with_why(tmp_path, world, robots, alice):  # noqa: F811

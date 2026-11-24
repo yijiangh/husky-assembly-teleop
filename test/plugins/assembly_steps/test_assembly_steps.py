@@ -34,6 +34,7 @@ from husky_assembly_teleop.shared.assembly_planning.movement import Routine, cla
 from husky_assembly_teleop.shared.assembly_planning.route_result import (GoalCheck, RouteResult, goal_line,
                                                                          live_line_goal)
 from husky_assembly_teleop.shared.assembly_planning.route_search import FreeSearch
+from husky_assembly_teleop.shared.assembly_tab.ik_choice import NEXT_SOLUTION, IkChoice
 from husky_assembly_teleop.shared.execution.servo import flange_poses, tool0_errors
 from husky_assembly_teleop.ui.ghost import RecentUse
 from husky_assembly_teleop.shared.bars.pose import apply_authored_move
@@ -57,15 +58,20 @@ def cindy_check(ok: bool = True) -> GoalCheck:
 
 
 class FakePlanner:
-    """The motion planner: plans move each acting arm's first joint by 0.1 rad; goals are `check`."""
+    """The motion planner: plans move each acting arm's first joint by 0.1 rad; goals are `check`.
+
+    `fails`: the reasons the next plans fail with, one each.
+    """
 
     def __init__(self, lab: RobotLab):
         """No request yet."""
-        self.lab, self.plans, self.goals, self.check = lab, [], [], None
+        self.lab, self.plans, self.goals, self.check, self.fails = lab, [], [], None, []
 
     def request_plan(self, request):
-        """Answer at once from the snapshot's start."""
+        """Answer at once from the snapshot's start, or fail with the next of `fails`."""
         self.plans.append(request)
+        if self.fails:
+            return _answered(RouteResult(MovementResult("failed", self.fails.pop(0)), Routine.SUPPORT_APPROACH))
         serial = serial_of(request.loaded, request.step.action.id, self.lab.configs)
         robot = request.snapshot.robots[robot_id(serial)]
         names = [name for arm in self.lab.robots[serial].arms for name in arm_joint_names(arm)]
@@ -144,6 +150,7 @@ class Steps(RobotLab):
         self.plugin = AssemblyStepsPlugin()
         self.plugin._ctx = self.ctx
         self.plugin._panel = StepsPanel(self.ctx, self.plugin)
+        self.plugin._choice = IkChoice(self.ctx.view)
         self.plugin._used = RecentUse(0.0)
         self.plugin._path_ghosts = {}
         self.update()
@@ -229,7 +236,7 @@ def test_a_plan_fills_the_plots_and_carries_its_end_until_another_action():
     movement of the action keeps the carried joints, another action drops them.
     """
     lab = Steps(("B20_R", 2))
-    window, = lab.ctx.panels
+    window, _popup = lab.ctx.panels
     assert window.calls == ["minimize"] and window.placed["y"] < 0 < window.placed["x"]
     asyncio.run(lab.plan())
     lab.update()
@@ -806,6 +813,51 @@ def test_a_failed_live_ik_is_warned_once():
     assert [warned for warned in lab.ctx.lines("warn") if warned == line] == [line]
 
 
+def test_a_failed_live_ik_of_an_approach_offers_the_next_ik_solution():
+    """Alice's approach without a goal at solution 1: the pop-up; Next solves solution 2, the plan takes it, slower."""
+    lab = Steps(("B21_H", 0))
+    goal = dict(zip(arm_joint_names("ur_arm"), [1.0, -1.0, 1.0, -1.0, 1.0, 0.0]))
+    lab.planner.check = GoalCheck("B21_H_approach", Routine.SUPPORT_APPROACH, False,
+                                  "no IK for the goal (ssik): all 8 solutions collide")
+
+    async def scenario():
+        await lab.plugin.checked_goal(lab.ctx)
+        offered = lab.plugin._choice._popup._text.content
+        lab.planner.check = GoalCheck("B21_H_approach", Routine.SUPPORT_APPROACH, True, base=lab.bases["a200-0804"],
+                                      goal_joints=goal, ik=IkResult(goal, 0.0, 2, 8, "ssik", ("alice",), None))
+        lab.plugin.next_ik_solution(lab.ctx)
+        await lab.plugin._goal.task
+        await lab.plan()
+        return offered
+
+    offered = asyncio.run(scenario())
+    assert "IK solution 1 (the one nearest the process's joints) failed" in offered and "all 8 solutions" in offered
+    assert [request.ik_skip for request in lab.planner.goals] == [0, 1] and not lab.plugin._choice.is_open
+    plan, = lab.planner.plans
+    assert plan.goal_joints == goal and plan.ik_skip == 1, "solution 2's goal, reused by the plan"
+    assert lab.plugin.traj_time == 30.0 and "The goal is IK solution 2" in lab.plugin._message
+    records = dict(lab.run.records)
+    assert records["check_goal"]["data"]["ik_solution"] == 2 and records["plan"]["data"]["ik_solution"] == 2
+
+
+def test_a_failed_plan_of_an_approach_offers_the_choice_until_the_step_changes():
+    """No solution left: Next greyed; Move the grasp says where; a new step closes the pop-up, back at solution 1."""
+    lab = Steps(("B21_H", 0))
+    lab.planner.fails = ["no IK for the goal (ssik): no more solutions: 3 of 8 are clear of collisions, all "
+                         "passed over"]
+    asyncio.run(lab.plan())
+    assert lab.plugin._choice.is_open and lab.plugin._choice.buttons[NEXT_SOLUTION].disabled
+    lab.plugin.move_grasp()
+    assert not lab.plugin._choice.is_open and "Slide mm" in lab.plugin._message
+    lab.planner.fails = ["arm.plan_arm: no path in 30 s (3 tries)"]
+    asyncio.run(lab.plan())
+    assert lab.plugin._choice.is_open and not lab.plugin._choice.buttons[NEXT_SOLUTION].disabled
+    lab.plugin._ik_skip = 2
+    lab.run.view.current = ("B20_J", 3)
+    lab.update()
+    assert not lab.plugin._choice.is_open and lab.plugin._ik_skip == 0
+
+
 def test_check_goal_asks_with_the_run_and_records_the_answer():
     """The request carries the run's workaround and the tick's snapshot; the answer is logged and recorded.
 
@@ -820,7 +872,7 @@ def test_check_goal_asks_with_the_run_and_records_the_answer():
     assert request.transfer_as_free and request.label == "check goal B20_J_transfer"
     (event, fields), = lab.run.records
     assert event == "check_goal" and (fields["action"], fields["movement"]) == ("B20_J", "B20_J_transfer")
-    assert fields["data"] == {**answer.as_record(), "obstacles_collide": True}
+    assert fields["data"] == {**answer.as_record(), "ik_solution": 1, "obstacles_collide": True}
     assert goal_line(answer) in lab.ctx.lines("info")
     carry = lab.process.carries[-1]
     assert (carry.action_id, carry.movement_id, carry.robot, carry.joints) == ("B20_J", "B20_J_transfer",

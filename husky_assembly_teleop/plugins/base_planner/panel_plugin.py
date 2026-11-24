@@ -375,9 +375,11 @@ class BasePlannerPanel(PlannerPanel):
         self._draw_ghosts(ctx)
 
     def _draw_floor(self, ctx: PluginContext) -> None:
-        """The plan in blue until committed, the sent path in green, the robot's trail, the follower's points."""
+        """The plan in blue until committed or dashed red as far as it failed, the sent path green, trail, follower."""
         run = self._floor_run(ctx)
-        self._markers.paths(self._preview_of(self._api.plan), None if run is None else run.path)
+        plan = self._api.plan
+        self._markers.paths(self._preview_of(plan), None if run is None else run.path)
+        self._markers.closest(plan.closest if plan is not None and plan.state == "failed" else None)
         if run is None or run.trace is None:
             self._markers.trail(None)
         else:

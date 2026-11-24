@@ -64,12 +64,13 @@ class ArmPlannerContract(PlannerContract[ArmPlanRequest], Protocol):
         it. The plan is replaced, keeping its id.
         """
 
-    def solve_goals(self, serial: str, targets: Mapping[str, Pose], reference: Mapping[str, float] | None = None
-                    ) -> asyncio.Future[tuple[dict[str, float] | None, str]]:
+    def solve_goals(self, serial: str, targets: Mapping[str, Pose], reference: Mapping[str, float] | None = None,
+                    skip: int = 0) -> asyncio.Future[tuple[dict[str, float] | None, str]]:
         """Joints that put each arm's tool0 at its world pose, by exact IK at the live base, the arms together.
 
         The combination of branches nearest `reference` (the arms' joints now where not given) that collides with
-        nothing in the live scene, the arms with each other included, wins. Runs after any search in progress.
+        nothing in the live scene, the arms with each other included, wins; `skip` passes over that many of them
+        first (1: the second nearest). Runs after any search in progress.
 
         Returns:
             asyncio.Future: (joint name -> value for every arm in `targets`, or None; one line saying how or why not).

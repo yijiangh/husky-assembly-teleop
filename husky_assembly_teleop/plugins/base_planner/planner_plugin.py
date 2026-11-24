@@ -215,6 +215,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         others: list[str] = []
         # How the target moved for room, from the worker (`roomier_goal`); empty if it did not.
         moved: list[str] = []
+        # A failed search's full story, from the worker, for the log; the plan's message keeps only its headline.
+        detail: list[str] = []
 
         def work() -> PlanResult:
             # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
@@ -247,9 +249,10 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                               else PlanResult(None, "cancelled", result.seconds))
                 if result.path is None and others:
                     result = replace(result, reason=f"{result.reason} ({unmeasured(others)})")
+                detail[:] = [result.detail] if result.path is None and result.detail else []
             if folder is not None:
                 try:
-                    save_plan(folder, world, robot_id(serial), setup, result, debug.notes)
+                    save_plan(folder, world, robot_id(serial), setup, result, debug.notes, debug.layers)
                 except OSError as error:
                     not_saved.append(str(error))
             return result
@@ -260,6 +263,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 ctx.log_warn(f"planning for {serial}: {line}")
             if not_saved:
                 ctx.log_error(f"base planner: plan not saved: {not_saved[0]}")
+            if detail:
+                ctx.log_warn(f"no path for {short_serial(serial)}: {detail[0]}")
 
         def accepted(result: PlanResult) -> tuple[str, bool]:
             self._plan_record = {"folder": folder, "setup": setup, "seconds": result.seconds}

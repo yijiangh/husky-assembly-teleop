@@ -101,6 +101,19 @@ def test_solve_ik_at_the_stowed_pose(mirror):
 
 
 @pytest.mark.slow
+def test_solve_ik_skips_to_the_next_solution(mirror):
+    """skip=1: the second nearest collision-free combination; past the last one, none, saying so."""
+    cindy = _cindy()
+    mirror.sync(Scene(robots={CINDY_ID: cindy}))
+    first = solve_ik(mirror, cindy, _tool0_targets(cindy))
+    second = solve_ik(mirror, cindy, _tool0_targets(cindy), skip=1)
+    assert second.rank > first.rank == 1 and second.max_change >= first.max_change
+    assert second.joints != first.joints
+    past = solve_ik(mirror, cindy, _tool0_targets(cindy), skip=first.combinations)
+    assert past.joints is None and "no more solutions" in past.reason
+
+
+@pytest.mark.slow
 def test_solve_ik_keeps_a_lift_written_a_whole_turn_off_in_range(mirror):
     """A reference lift a whole turn off (358° for -2°), as a process may write it: the goal takes the -2°."""
     cindy = _cindy()
@@ -126,6 +139,20 @@ def test_solve_ik_steps_past_a_box(mirror, link):
     assert result.rank > 1 or (result.joints is None and "collide" in result.reason)
     if link == "left_ur_arm_forearm_link":
         assert result.rank > 1 and result.joints is not None
+
+
+@pytest.mark.slow
+def test_solve_ik_within_a_largest_move_stays_on_the_branch(mirror):
+    """With a largest move (a servo's), a box at the forearm refuses the goal instead of taking another branch."""
+    cindy = _cindy()
+    where = link_pose(cindy.model.urdf, BASE, cindy.joints, "left_ur_arm_forearm_link")
+    box = Body("obstacles/box", box_geometry((0.05, 0.05, 0.05)), Pose(where.position))
+    mirror.sync(Scene(bodies={box.id: box}, world_poses={box.id: box.placement}, robots={CINDY_ID: cindy}))
+    result = solve_ik(mirror, cindy, _tool0_targets(cindy), max_move=np.radians(10.0))
+    assert result.joints is None and "obstacles/box" in result.colliding
+    assert result.reason.startswith("the only solution collides (the other"), result.reason
+    mirror.sync(Scene(robots={CINDY_ID: cindy}))
+    assert solve_ik(mirror, cindy, _tool0_targets(cindy), max_move=np.radians(10.0)).rank == 1
 
 
 @pytest.mark.slow

@@ -5,7 +5,7 @@ Other plugins declare `requires = ("motion_planner",)` and type it as `MotionPla
 (`shared/motion_planner_contract.py`). Every request runs on one worker thread (`work.py`), which owns a compas_fab
 mirror per robot (`MirrorPool`, made on its first request: loading the models takes up to a minute). The panel shows
 what runs and the last answer, cancels everything, and opens PyBullet's own window on a robot's planning world; the
-collisions panel shows what the last answer collided with. What the planners print on the worker (tamp's `[ssik]`
+collisions panel shows what the last failed answer collided with. What the planners print on the worker (tamp's `[ssik]`
 lines, PyBullet's) is logged under source "motion_planner/tamp". While a free search runs (tamp's dual-arm one or the
 one-arm one), its two trees are drawn as the arms' tool0 traces, with the gap between their closest nodes and, for
 tamp's, the configurations checked since the iteration began, every TREE_PERIOD s (`SearchTree`); a legend explains.
@@ -294,12 +294,17 @@ class MotionPlannerPlugin(HuskyPlugin):
             self._worlds = self._pool.serials
 
     def _finished(self, label: str, done: asyncio.Future) -> None:
-        """Log how a request ended; keep its line for the panel and its hits for the collisions panel. Main thread."""
+        """Log how a request ended; keep its line for the panel and, if it failed, its hits for the collisions panel.
+
+        A solved plan's hits come from tries it gave up on (a retreat shortened past its own arm): not shown.
+        Main thread.
+        """
         error, hits = done.exception(), {}
         if error is not None:
             line, failed = f"raised {error!r}", True  # ? a bug: the work answers its failures
         else:
-            (line, failed), hits = describe(done.result()), hits_of(label, done.result())
+            line, failed = describe(done.result())
+            hits = hits_of(label, done.result()) if failed else {}
         self._last, self._last_failed, self._hits = f"{label}: {line}", failed, hits
         self._log(self._last)
 

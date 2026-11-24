@@ -53,6 +53,9 @@ GRASP_MISMATCH = 0.002
 #: (`execution.retreat.SCREW_OUT_MM`) and 3 mm rigid after it.
 RETREAT_SHORTEN_STEP = 0.005
 RETREAT_MIN_DISTANCE = 0.015
+#: A servo pass's goal may turn no joint further than this from the live joints, radians: a correction of a few mm
+#: stays on the arms' branch; another branch is 100° or more away and can't be reached with a bar held.
+SERVO_MAX_MOVE = np.radians(10.0)
 
 #: Routines no arm moves in, and the linear ones, whose start may touch (warned, not refused).
 _NO_ARM = (Routine.TOOL_ONLY, Routine.OPERATOR, Routine.BASE_ONLY)
@@ -67,7 +70,7 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
                   obstacles_collide: bool = True, goal_joints: Mapping[str, float] | None = None,
                   goal_poses: Mapping[str, Pose] | None = None, linear_step: float | None = None,
                   search: FreeSearch | None = None, abort: threading.Event | None = None,
-                  log: Callable[[str], None] = print, tree: SearchTree | None = None) -> RouteResult:
+                  log: Callable[[str], None] = print, tree: SearchTree | None = None, ik_skip: int = 0) -> RouteResult:
     """Plan one movement from where the snapshot has its robot, by its routine (`classify`).
 
     Args:
@@ -87,6 +90,7 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
         abort: Set from another thread to stop between tries.
         log: Gets a line per try and check, and the IK and linear fallback lines.
         tree: Records the free search's trees while it runs, for drawing; None records nothing.
+        ik_skip: The goal by IK passes over this many nearer collision-free solutions (`solve_ik`).
 
     Returns:
         RouteResult: Solved, failed with the reason, or not planned (no arm moves, no goal yet).
@@ -102,14 +106,15 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
         return _not_planned(spec, "needs the transfer start, after M3", started)
     route = _route(mirror, loaded, step, snapshot, robots, spec, ignore_built=ignore_built,
                    obstacles_collide=obstacles_collide, goal_joints=goal_joints, goal_poses=goal_poses,
-                   linear_step=linear_step, search=search, abort=abort or threading.Event(), log=log, tree=tree)
+                   linear_step=linear_step, search=search, abort=abort or threading.Event(), log=log, tree=tree,
+                   ik_skip=ik_skip)
     return replace(route.planned(route.run), seconds=time.monotonic() - started)
 
 
 def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
                robots: tuple[RobotConfig, ...], *, transfer_as_free: bool = False,
                ignore_built: bool = False,
-               obstacles_collide: bool = True, log: Callable[[str], None] = print) -> GoalCheck:
+               obstacles_collide: bool = True, log: Callable[[str], None] = print, ik_skip: int = 0) -> GoalCheck:
     """Solve a movement's goal by IK at the live base, as `plan_movement` would before searching, and plan nothing.
 
     Only the transfers and a support robot's approach have a goal solved by IK. Fails closed: any error gives a
@@ -125,6 +130,7 @@ def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snaps
         ignore_built: Solve as if the built bars were not there (`scene_for`).
         obstacles_collide: Whether the process's obstacles from Rhino count (`scene_for`).
         log: Gets the IK fallback line.
+        ik_skip: Pass over this many nearer collision-free IK solutions (`solve_ik`).
 
     Returns:
         GoalCheck: The goal and how it was found, or why there is none.
@@ -136,7 +142,8 @@ def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snaps
         if spec.routine not in IK_GOALS:
             return GoalCheck(movement, spec.routine, False, "goal not solved by IK", seconds=time.monotonic() - started)
         route = _route(mirror, loaded, step, snapshot, robots, spec, ignore_built=ignore_built,
-                       obstacles_collide=obstacles_collide, goal_joints=None, abort=threading.Event(), log=log)
+                       obstacles_collide=obstacles_collide, goal_joints=None, abort=threading.Event(), log=log,
+                       ik_skip=ik_skip)
         route.prepare()
         goal, reason = route.ik_goal(unwrap=spec.routine is not Routine.SUPPORT_APPROACH), ""
     except Refused as refused:
@@ -160,7 +167,7 @@ def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot:
            robots: tuple[RobotConfig, ...], spec: MovementSpec, *, ignore_built: bool, obstacles_collide: bool,
            goal_joints: Mapping[str, float] | None, abort: threading.Event, log: Callable[[str], None],
            goal_poses: Mapping[str, Pose] | None = None, linear_step: float | None = None,
-           search: FreeSearch | None = None, tree: SearchTree | None = None) -> Route:
+           search: FreeSearch | None = None, tree: SearchTree | None = None, ik_skip: int = 0) -> Route:
     """A movement's route: its planning scene, and the scene its searches run in (without the bar for the workaround).
 
     Raises:
@@ -175,7 +182,7 @@ def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot:
         if spec.routine is Routine.TRANSFER_FREE else planning.scene
     config = next(config for config in robots if robot_id(config.serial) == planning.acting)
     return Route(mirror, loaded.process, step, spec, planning, search_scene, config, goal_joints, abort, log,
-                 goal_poses=goal_poses, linear_step=linear_step, search=search, tree=tree)
+                 goal_poses=goal_poses, linear_step=linear_step, search=search, tree=tree, ik_skip=ik_skip)
 
 
 def _sync_again(route: Route) -> str:
@@ -197,7 +204,7 @@ class Route(RouteSearch):
     """One movement planned by its routine, after its start is checked once; the servo's pass builds on it."""
 
     def __init__(self, *args, goal_poses: Mapping[str, Pose] | None = None, linear_step: float | None = None,
-                 search: FreeSearch | None = None, tree: SearchTree | None = None):
+                 search: FreeSearch | None = None, tree: SearchTree | None = None, ik_skip: int = 0):
         """A route as `RouteSearch` makes it, with a retreat's own goals and step, and the free searches' settings.
 
         Args:
@@ -206,9 +213,10 @@ class Route(RouteSearch):
             linear_step: A retreat's largest step between waypoints, metres; None: tamp's default.
             search: The free searches' settings (`MotionPlanRequest.search`); None: the defaults.
             tree: Records the free search's trees, or None.
+            ik_skip: The goal by IK passes over this many nearer collision-free solutions (`solve_ik`).
         """
         super().__init__(*args, search=search or FreeSearch(), tree=tree)
-        self.goal_poses, self.linear_step = goal_poses, linear_step
+        self.goal_poses, self.linear_step, self.ik_skip = goal_poses, linear_step, ik_skip
 
     def planned(self, plan: Callable[[], RouteResult]) -> RouteResult:
         """Run `plan`, failing closed: a refusal or any error gives a failed result with its text.
@@ -464,7 +472,7 @@ class Route(RouteSearch):
                 shoulder lift through pointing down (`unwrap_to_nearest`, `turn_limits`), and refuse a goal outside
                 the limits; the dual-arm routines do, the approach does not.
             targets: Arm -> world pose of its tool0 instead of the process's targets: a servo pass's, solved near the
-                live joints instead of the authored goal.
+                live joints instead of the authored goal, and only on their branch (`SERVO_MAX_MOVE`).
 
         Returns:
             dict[str, float]: Goal values by joint name, one per name in `names`.
@@ -484,7 +492,9 @@ class Route(RouteSearch):
                 raise Refused("a moving flange has no target pose to solve the goal for")
             # * IK in the scene with the held bar: it must be clear where the goal puts it.
             self.mirror.sync(self.planning.scene)
-            self.ik = solve_ik(self.mirror, self.robot, targets, reference=reference, log=self.log)
+            servo = what == "the servo target"
+            self.ik = solve_ik(self.mirror, self.robot, targets, reference=reference, log=self.log,
+                               skip=0 if servo else self.ik_skip, max_move=SERVO_MAX_MOVE if servo else None)
             if self.ik.joints is None and self.ik.colliding_joints is not None:
                 self.mirror.sync(self.planning.scene)  # ? IK may have lent the mirror
                 self.hit("goal by IK", self.ik.colliding_joints, self.planning.scene)
