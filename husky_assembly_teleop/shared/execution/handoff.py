@@ -35,7 +35,8 @@ from .precheck import part_problem
 from .stiffness import check_back, send_back, set_stiffness
 from .stream import (CLOSED, DRY_RUN, FAILED, FK_TCP_TOL, REFUSED, STIFF, PartOutcome, Recorder, fk_tcp_gap,
                      gap_record, zero_wrench)
-from .tools import ROBOTIQ_CLOSE, ROBOTIQ_EFFORT, robotiq_move
+from .tools import (REACHED_TOLERANCE, ROBOTIQ_CLOSE, ROBOTIQ_EFFORT, ROBOTIQ_OPEN, STATUS_MAX_AGE,
+                    robotiq_move)
 
 if TYPE_CHECKING:
     from ...plugin_api.context import PluginContext
@@ -130,7 +131,7 @@ async def run_handoff(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, 
     joint = await switch_arms(ctx, [interface], SCALED_JOINT_TRAJECTORY_CONTROLLER)
     if not joint.ok:
         return ended(FAILED, f"{joint.reason}; nothing closed")
-    # * Zeroed while the fingers are open and touch nothing; never with a bar in them (it would tare its weight).
+    # * Zeroed while the fingers are open and touch nothing (`fingers_not_open`).
     record["ft_zero"] = (await zero_force_sensors(ctx, [interface], label))[arm]
     if grasp.controller == JOINT:
         return await _joint_grasp(ctx, robot, arm, gripper, recorder, record, label, ended)
@@ -278,11 +279,31 @@ async def _joint_grasp(ctx: PluginContext, robot: HuskyRobotInterface, arm: str,
                          f"|F| {peak}")
 
 
+def fingers_not_open(gripper: RobotiqGripper, now: float) -> str:
+    """Why a Robotiq's fingers are not known to be open now; "" if they are.
+
+    ! A grasp starts with a force sensor zero, which would tare the weight of a bar already in the fingers.
+
+    Args:
+        gripper: The gripper.
+        now: ROS time, seconds.
+    """
+    state = gripper.state
+    if state.reactivating:
+        return f"{gripper.namespace}: the gripper reactivates, its fingers move by themselves: wait for it"
+    if state.position is None or state.last_update_time is None or now - state.last_update_time > STATUS_MAX_AGE:
+        return f"{gripper.namespace}: the fingers are not measured now, so a bar may be in them"
+    if state.position > ROBOTIQ_OPEN + REACHED_TOLERANCE:
+        return (f"{gripper.namespace}: the fingers are at {state.position:.3f} rad, not open (a bar may be in them): "
+                f"open them first")
+    return ""
+
+
 def _problem(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, gripper: RobotiqGripper) -> str:
     """Why the handoff may not start; "" if it may.
 
-    Every part's checks but the frames (the anchor is checked after the F/T zero instead), and the gripper ready and
-    idle.
+    Every part's checks but the frames (the anchor is checked after the F/T zero instead), and the gripper ready,
+    idle and open.
     """
     problem = part_problem(ctx, robot, [arm], {}, frames=False)
     if problem:
@@ -291,7 +312,7 @@ def _problem(ctx: PluginContext, robot: HuskyRobotInterface, arm: str, gripper: 
         return f"{gripper.namespace}: the gripper's action server is not available"
     if gripper.state.moving:
         return f"{gripper.namespace}: an earlier gripper command still runs; wait for it, or Stop"
-    return ""
+    return fingers_not_open(gripper, ctx.now())
 
 
 def _anchor_ok(distance: float, angle: float) -> bool:
