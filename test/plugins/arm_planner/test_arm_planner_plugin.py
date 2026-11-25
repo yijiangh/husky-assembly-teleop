@@ -469,15 +469,22 @@ def test_set_duration_re_times_the_ready_plan_within_its_limits_and_keeps_its_id
 
 
 def test_the_slow_down_row_re_times_the_plan_and_new_plans_take_its_slowdown():
-    """A choice stretches the plan and keeps the preview's place along it; the next plans come at the same slowdown."""
+    """A choice stretches the plan and keeps the preview's place along it; the panel's next plans come slowed too.
+
+    Another plugin's plan keeps its own timing, and the row shows it.
+    """
     planner = ArmPlannerPlugin()
     panel = make_panel(planner)
     planner._plan = ready_plan()
     panel._t = 1.0
     panel._set_slowdown(3.0)
     assert panel._slowdown == pytest.approx(3.0) and panel._t == pytest.approx(3.0)
+    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=lambda _text: None, **WATCHES)
     planner._plan = Plan(2, REQUEST, "ready", path=PATH)
-    panel.update(SimpleNamespace(now=lambda: 0.0, log_warn=lambda _text: None, **WATCHES))
+    panel.update(ctx)
+    assert planner.plan.path.duration == pytest.approx(PATH.duration), "e.g. the guide's: its question says this time"
+    panel._own = REQUEST
+    panel.update(ctx)
     assert planner.plan.id == 2 and planner.plan.path.duration == pytest.approx(3 * PATH.duration)
     planner._plan = Plan(3, REQUEST, "planning")
     panel._set_slowdown(1.0)

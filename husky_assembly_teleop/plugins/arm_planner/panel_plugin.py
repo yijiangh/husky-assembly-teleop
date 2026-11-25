@@ -72,6 +72,8 @@ class ArmPlannerPanel(PlannerPanel):
         self._reported: Plan | None = None
         #: How many times its fastest timing a plan takes, as last set on the Duration slider; new plans take it too.
         self._slowdown = 1.0
+        #: The last request this panel's own Plan made.
+        self._own: ArmPlanRequest | None = None
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -195,6 +197,11 @@ class ArmPlannerPanel(PlannerPanel):
         before = plan.path.duration
         self._api.set_duration(plan.id, plan.path.fastest * factor)
         self._t *= self._api.plan.path.duration / before
+
+    def _plan(self, ctx: PluginContext) -> None:
+        """As the base's; the request is this panel's own (`Slow down`)."""
+        super()._plan(ctx)
+        self._own = self._requested
 
     def _choose(self, serial: str, arm: str | None) -> None:
         """Plan for another robot or arm; the old plan no longer applies.
@@ -412,8 +419,10 @@ class ArmPlannerPanel(PlannerPanel):
             self._load = None
         super().update(ctx)
         plan = self._api.plan
-        # * A new plan takes the slowdown last set; the preview starts at 0 anyway.
-        if plan is not None and plan.state == "ready" and abs(plan.path.slowdown - self._slowdown) > 1e-6:
+        # * A new plan of this panel takes the slowdown last set; the preview starts at 0 anyway. Another plugin's keeps
+        #   its own timing: that is what its preview and question say.
+        if plan is not None and plan.state == "ready" and plan.request is self._own \
+                and abs(plan.path.slowdown - self._slowdown) > 1e-6:
             self._api.set_duration(plan.id, plan.path.fastest * self._slowdown)
             plan = self._api.plan
         if plan is not self._reported:
@@ -440,7 +449,9 @@ class ArmPlannerPanel(PlannerPanel):
                 slider.disabled = self.arm == BOTH
         self._details.content = self._details_html()
         self._draw_slider()
-        self._slowdown_row.value = f"×{self._slowdown:g}"
+        plan = self._api.plan
+        foreign = plan is not None and plan.state == "ready" and plan.request is not self._own
+        self._slowdown_row.value = f"×{plan.path.slowdown if foreign else self._slowdown:g}"
         self._draw_ghosts(ctx)
 
     def _status_html(self, ctx: PluginContext) -> str:
