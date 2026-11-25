@@ -1463,7 +1463,7 @@ def test_b21s_insert_tightens_the_left_screw_only_and_ends_when_it_stalls():
 
     The right screw only STOPs. The panel's live line shows the compliant part; the record is JSON.
     """
-    lab = compliant_lab(("B21_J", 4))
+    lab = compliant_lab(("B21_J", 4), RunSettings(insert_split_mm=5.0))
     next(driver for driver in lab.drivers if getattr(driver, "tool", None) is lab.tools["left_ur_arm"]) \
         .screw_stall_after = 4.0
     lines = []
@@ -1503,7 +1503,7 @@ def test_an_inserts_rigid_part_whose_hold_is_refused_is_hold_not_sent():
     The result, the record and the panel say HOLD NOT SENT, as a motion's; the pendant line is logged once, then the
     Exec banner.
     """
-    lab = compliant_lab(("B21_J", 4))
+    lab = compliant_lab(("B21_J", 4), RunSettings(insert_split_mm=5.0))
     next(driver for driver in lab.drivers if getattr(driver, "tool", None) is lab.tools["left_ur_arm"]) \
         .screw_stall_after = 2.0
 
@@ -1536,6 +1536,10 @@ def test_the_insert_settings_are_read_once_and_reach_its_plan():
         lab = compliant_lab(current, settings)
         lab.plugin.request_dry_run(True)
         return lab
+
+    lab = dry(("B21_J", 4), RunSettings())
+    execute(lab, along(lab, "B21_J_insert", INSERT_STEP))
+    assert "then COMPLIANT 12.0 mm" in said(lab)[0]  # * the default: compliant before the joint touches
 
     lab = dry(("B21_J", 4), RunSettings(insert_split_mm=8.0))
     result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP))

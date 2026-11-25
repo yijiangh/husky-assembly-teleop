@@ -1087,7 +1087,7 @@ def test_the_grasp_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_pa
             assert plugin._message.startswith("Settings refused") and words in plugin._message
             assert plugin.view.settings == RunSettings()
         panel = plugin._panel = RunPanel(lab.ctx, plugin)
-        assert (panel._grasp.value, panel._grasp_stiffness.value) == ("compliance", 500.0)
+        assert (panel._grasp.value, panel._grasp_stiffness.value) == ("compliance", 1500.0)
         panel._grasp_stiffness.callback(2000.0)
         panel._grasp.callback("joint")
         await settle(plugin)

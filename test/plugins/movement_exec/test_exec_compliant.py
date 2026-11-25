@@ -58,7 +58,7 @@ def test_b21s_insert_ends_when_the_left_screw_stalls_1_s_into_the_compliant_part
     it. The record holds the split achieved, the stall time (from TIGHTEN to the stall), the left arm's early way back,
     the right arm's rest of the line and its settle, the switch to compliance and back; the left screw alone tightened.
     """
-    lab = compliant_lab(("B21_J", 4))
+    lab = compliant_lab(("B21_J", 4), RunSettings(insert_split_mm=5.0))
     left = screw_driver(lab, "left_ur_arm")
     left.screw_stall_after = None
     seen = {}
@@ -153,7 +153,7 @@ def test_b20s_retreat_breaks_out_compliant_then_runs_the_tail_replanned_to_the_g
     The replan asks for the plan's goals in 1 mm steps; the record has every phase and the tail; the ungrasp folded
     into the step is done; every arm ends under the joint controller at the tail's end.
     """
-    lab = compliant_lab(("B20_R", 1), RunSettings(retreat_compliant=True))
+    lab = compliant_lab(("B20_R", 1), RunSettings(retreat_compliant=True, insert_split_mm=5.0))
     request = along(lab, "B20_R_retreat", RETREAT_STEP, goals=True)
     start = np.array(request.route.result.trajectory.positions[0])
     planner = lab.ctx.plugins["motion_planner"] = TailPlanner(lab, start + RETREAT_STEP)

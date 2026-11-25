@@ -97,7 +97,8 @@ class RunSettings:
 
     Attributes:
         insert_split_mm: The last part of an insert run compliant, millimetres (0 to 30); a retreat's compliant part
-            is as long, from its start.
+            is as long, from its start. Long enough to begin before the joint touches: inserts touched up to 8.6 mm
+            before their end (24 Nov 2026), and a partner bar off its design pose may stand nearer still.
         spiral: The insert's compliant part searches in a spiral.
         servo_by_bar: Servo a ground bar by its mocap fit instead of tool0; on by default. Other bars always
             servo on tool0 (`servo_plan`).
@@ -128,7 +129,7 @@ class RunSettings:
             (`ProcessContract.placement`); the identity: as authored. Fixed once an action is marked done.
     """
 
-    insert_split_mm: float = 5.0
+    insert_split_mm: float = 12.0
     spiral: bool = False
     servo_by_bar: bool = True
     retreat_compliant: bool = False
@@ -140,7 +141,7 @@ class RunSettings:
     insert_stiffness_across: float = 1000.0
     insert_stiffness_along: float = 500.0
     grasp_controller: str = GRASP_COMPLIANCE
-    grasp_stiffness: float = 500.0
+    grasp_stiffness: float = 1500.0
     plan_max_time: float = 120.0
     plan_max_iterations: int = 50
     plan_joint_resolution: float = 0.1

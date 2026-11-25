@@ -145,7 +145,7 @@ Something wrong at any point: Part 10.
 | **run** | the record of one assembly: `runs/<date>_<time>/` in the process folder: marks, where each robot was left, every part executed, the servo readings |
 | **transfer workaround** | Cindy's transfer runs as a free move with empty tools to the insert start, where you place the bar. It stays on in this test: this export carries no joints for the loading pose (the travel to load has nothing to plan to), so the process cannot run its load, place, grasp and held transfer yet. When an export has the loading pose, untick the box and the five movements run in order |
 | **servo** | after a transfer, a support approach or a ground bar's insert, the executor measures the flanges and moves them onto the authored targets, pass by pass, until they are within 0.2 mm. **Servo by bar** (on by default) steers a ground bar (B20 here) on its mocap fit; every other bar servos on tool0. The fake Motive streams no bar markers, so B20's servo asks to go on with tool0 (4.2) |
-| **split** | the last millimetres of an insert run under the compliance controller (**Insert split mm**, 5 by default) |
+| **split** | the last millimetres of an insert run under the compliance controller (**Insert split mm**, 12 by default) |
 | **ground bar / one-mate / two-mate** | B20 stands on ground joints: rigid insert, no tighten. B21 mates on its left joint only, B22 on both |
 | **pane** | one of the four terminal areas of 0.7 |
 
@@ -360,9 +360,9 @@ click `◀ mv` / `mv ▶`: the step under the buttons follows, except while an E
 
 ### 3.d The settings  [CHECK — nothing moves]
 
-- [ ] The settings, under Mark done: Ignore built bars off, Insert split mm 5, Spiral off, Spiral s 20, Spiral turns 4,
+- [ ] The settings, under Mark done: Ignore built bars off, Insert split mm 12, Spiral off, Spiral s 20, Spiral turns 4,
       Cancel bar weight on, Insert push N 4, Stiffness across 1000, Stiffness along 500, Grasp controller compliance,
-      Grasp stiffness 500,
+      Grasp stiffness 1500,
       Servo by bar **on** (live only on a ground bar's action, B20_J here; greyed and unticked on any other), Dry run
       off. Leave them so.
   - A run that saved Servo by bar off keeps it off: tick it on B20_J. There is no Rigid insert box: a ground bar always

@@ -444,7 +444,9 @@ class InsertKind(Kind):
 
     def build(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
         """The run's insert settings, Rehearse."""
-        self._split = gui.add_slider("Insert split mm", min=0.0, max=30.0, step=0.5, initial_value=5.0,
+        default = RunSettings()
+        self._split = gui.add_slider("Insert split mm", min=0.0, max=30.0, step=0.5,
+                                     initial_value=default.insert_split_mm,
                                      hint="The insert's last millimetres run compliant (the run's setting)")
         self._spiral = gui.add_checkbox("Spiral", False, hint="The compliant part searches in a spiral; only for a "
                                                               "bar with two mating joints")
@@ -452,7 +454,6 @@ class InsertKind(Kind):
                                        initial_value=20.0, hint="Seconds the spiral takes to reach its 15 mm radius")
         self._turns = gui.add_slider("Spiral turns", min=SPIRAL_TURNS_RANGE[0], max=SPIRAL_TURNS_RANGE[1], step=1,
                                      initial_value=4, hint="Turns the spiral makes; pitch = 15 mm / turns")
-        default = RunSettings()
         self._cancel_weight = gui.add_checkbox("Cancel bar weight", default.insert_cancel_weight,
                                                hint="Take the bar's weight, measured at the insert's start before "
                                                     "anything moves, off the arms (the run's setting)")
@@ -545,7 +546,7 @@ class GripperKind(Kind):
                                             "gives way to the bar; joint holds the arm, so the close pulls the bar "
                                             "and the frame to the gripper")
         self._stiffness = gui.add_slider("Grasp stiffness", min=STIFFNESS_RANGE[0], max=STIFFNESS_RANGE[1],
-                                         step=100.0, initial_value=500.0,
+                                         step=100.0, initial_value=RunSettings().grasp_stiffness,
                                          hint="The compliant grasp's stiffness along tool0 x, y, z, N/m")
         for widget, setting, kind in ((self._grasp, "grasp_controller", str),
                                       (self._stiffness, "grasp_stiffness", float)):
