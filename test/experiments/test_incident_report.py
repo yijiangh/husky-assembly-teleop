@@ -209,6 +209,86 @@ def test_a_runs_events_join_the_logs_incident_or_stand_alone():
     assert merged[1].kind == "stop_all" and merged[1].source == "run1/events.jsonl"
 
 
+def test_an_estop_after_the_last_one_ended_is_its_own_incident():
+    """Belle's two, 43 s apart: not one burst; each ends at the arm's return to normal; other lines still merge."""
+    sync = "a200_0805.MultiArmSafetySync: ### ur5e: safety mode changed: "
+
+    def pane(text: str, at: float) -> LogLine:
+        return LogLine(STAMP + at, "INFO", text, text, "belle.log")
+
+    lines = [pane(sync + "NORMAL", -3600), pane(sync + "ROBOT_EMERGENCY_STOP", 0), pane(sync + "NORMAL", 39),
+             pane(sync + "ROBOT_EMERGENCY_STOP", 43)]
+    found = merge_bursts(pane_incidents(lines, "Belle"))
+    assert [(item.start - STAMP, item.end - STAMP) for item in found] == [(0, 39), (43, 43)]
+    assert {item.kind for item in found} == {"estop"}
+    chip = "[health/chips] a200-0805 base: ESTOP green -> red: platform emergency stop is engaged"
+    assert classify_monitor(line(chip, "ERROR")) == ("estop", "Belle")
+    chips = monitor_incidents([line(chip, "ERROR", STAMP + 2), line(chip, "ERROR", STAMP + 45)])
+    assert [item.count for item in merge_bursts([*pane_incidents(lines, "Belle"), *chips])] == [2, 2]
+
+
+def test_a_cindy_stop_of_both_arms_is_one_incident():
+    """Both arms stop and return together: one E-stop, not two."""
+    sync = "a200_0806.MultiArmSafetySync: ### {}_ur5e: safety mode changed: "
+
+    def pane(arm: str, mode: str, at: float) -> LogLine:
+        return LogLine(STAMP + at, "INFO", sync.format(arm) + mode, "raw", "cindy.log")
+
+    lines = [pane("right", "ROBOT_EMERGENCY_STOP", 0), pane("left", "SYSTEM_EMERGENCY_STOP", 0),
+             pane("right", "NORMAL", 300), pane("left", "NORMAL", 300)]
+    found = merge_bursts(pane_incidents(lines, "Cindy"))
+    assert len(found) == 1 and found[0].end == STAMP + 300 and found[0].count == 2
+
+
+def test_a_stop_is_over_only_once_every_arm_is_back():
+    """Cindy, 5 Nov 17:59: the right arm back, the left still stopped 7 ms later: one stop; the next press another."""
+    sync = "a200_0806.MultiArmSafetySync: ### {}_ur5e: safety mode changed: "
+
+    def pane(arm: str, mode: str, at: float) -> LogLine:
+        return LogLine(STAMP + at, "INFO", sync.format(arm) + mode, "raw", "cindy.log")
+
+    lines = [pane("right", "ROBOT_EMERGENCY_STOP", 0), pane("left", "SYSTEM_EMERGENCY_STOP", 0),
+             pane("right", "NORMAL", 9), pane("left", "PROTECTIVE_STOP", 9.007), pane("left", "NORMAL", 12),
+             pane("right", "ROBOT_EMERGENCY_STOP", 20)]
+    found = merge_bursts(pane_incidents(lines, "Cindy"))
+    assert [(item.start - STAMP, item.end - STAMP) for item in found] == [(0, 12), (20, 20)]
+
+
+def test_a_launch_started_again_or_a_later_normal_never_stretches_a_stop():
+    """The driver says NORMAL at every start: a stop ends at its own release, or keeps its start if none was seen."""
+    sync = "a200_0804.MultiArmSafetySync: ### ur5e: safety mode changed: "
+
+    def pane(text: str, at: float) -> LogLine:
+        return LogLine(STAMP + at, "INFO", text, text, "alice.log")
+
+    launch = "[INFO] [launch]: All log files can be found below /home/administrator/.ros/log/x"
+    released = [pane(sync + "ROBOT_EMERGENCY_STOP", 0), pane(sync + "NORMAL", 400), pane(sync + "NORMAL", 90000)]
+    powered_off = [pane(sync + "ROBOT_EMERGENCY_STOP", 0), pane(launch, 80000), pane(sync + "NORMAL", 80060)]
+    assert [item.end - STAMP for item in pane_incidents(released, "Alice")] == [400]
+    assert [item.end - STAMP for item in pane_incidents(powered_off, "Alice") if item.kind == "estop"] == [0]
+
+
+def test_a_runs_stops_and_gripper_failures_are_incidents_of_their_own_robot():
+    """What the run recorded joins the log's incident of that robot, never another's nearby."""
+    events = [{"time": "2026-11-04T15:00:00+01:00", "event": "safety_mode", "action": "B35_R", "movement": "B35_R_home",
+               "data": {"serial": "a200-0805", "arm": "ur_arm", "mode": "robot emergency stop", "was": "normal"}},
+              {"time": "2026-11-04T15:00:39+01:00", "event": "safety_mode", "action": "B35_R", "movement": "B35_R_home",
+               "data": {"serial": "a200-0805", "arm": "ur_arm", "mode": "normal", "was": "robot emergency stop"}},
+              {"time": "2026-11-04T15:00:40+01:00", "event": "base_estop", "action": None, "movement": None,
+               "data": {"serial": "a200-0805", "engaged": True}},
+              {"time": "2026-11-04T15:00:41+01:00", "event": "base_estop", "action": None, "movement": None,
+               "data": {"serial": "a200-0805", "engaged": False}},
+              {"time": "2026-11-04T15:00:42+01:00", "event": "gripper_failed", "action": None, "movement": None,
+               "data": {"serial": "a200-0804", "arm": "ur_arm", "failure": "no result"}}]
+    found = events_incidents(events, "run1")
+    assert [(item.kind, item.robot) for item in found] == [("estop", "Belle"), ("estop", "Belle"), ("gripper", "Alice")]
+    assert "B35_R_home" in found[0].what
+    t = found[0].start
+    alice = Incident("estop", "Alice", "Alice's", t, t, raw=["alice"])
+    merged = add_events([alice], found[:1])
+    assert [item.robot for item in merged] == ["Alice", "Belle"] and merged[0].raw == ["alice"]
+
+
 def test_the_matrix_counts_a_burst_once_per_day_and_robot():
     """Day and robot rows, kinds as columns."""
     items = [Incident("step", "Cindy", "a", STAMP, STAMP, count=9), Incident("step", "Cindy", "b", STAMP, STAMP),

@@ -200,9 +200,9 @@ def _stat(title: str, value: int, words: str) -> str:
 def cannot_show(found: Mapping) -> str:
     """Section body: what these sources cannot show."""
     notes = [
-        ("E-stops", "An E-stop shows here only through the health chip of a monitor running at that moment, a step "
-                    "refused for it, or the safety sync in a robot pane being logged. A press with none of these "
-                    "running leaves no line. The UR controller's own log is not read."),
+        ("E-stops", "An E-stop shows here only through the health chip of a monitor running at that moment, a run's "
+                    "events, a step refused for it, or the safety sync in a robot pane being logged. A press with none "
+                    "of these running leaves no line. The UR controller's own log is not read."),
         ("Why", "The logs say what happened, not why, and not who pressed what. Operators' reasons, a robot driven by "
                 "hand, a bar touched: none of it is here unless a line says so."),
         ("Stops by hand", "The monitor's shutdown lines look the same after Ctrl-C and after its terminal closing. A "

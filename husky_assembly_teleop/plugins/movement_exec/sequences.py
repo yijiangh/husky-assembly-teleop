@@ -61,6 +61,7 @@ from ...world.clearance import ARM_MOVE
 from ...world.freeze import WorldMoved, take_basis
 
 if TYPE_CHECKING:
+    from ...shared.runs.runs import RunSettings
     from ...shared.execution.servo import ServoPlan
     from scaffolding_assembly_core.geometry import Pose
 
@@ -419,9 +420,8 @@ def _clamped(value: float, bounds: tuple[float, float]) -> float:
     return min(max(float(value), bounds[0]), bounds[1])
 
 
-def grasp_settings(job: Job) -> GraspSettings:
-    """The run's grasp settings now: joint, or compliant at the clamped stiffness."""
-    settings = job.run.view.settings
+def grasp_settings(settings: RunSettings) -> GraspSettings:
+    """The run's grasp settings: joint, or compliant at the clamped stiffness."""
     if settings.grasp_controller == JOINT:
         return GraspSettings(JOINT)
     return GraspSettings(COMPLIANCE, _clamped(settings.grasp_stiffness, STIFFNESS_RANGE))
@@ -722,7 +722,7 @@ async def _confirmed_grasp(job: Job, run: PartRun, arm: str) -> GraspSettings | 
     """
     ctx, operator = job.ctx, PartOperator(job, run.part.movement)
     while True:
-        asked = latest = grasp_settings(job)
+        asked = latest = grasp_settings(job.run.view.settings)
         run.command = {"tool": "robotiq", "arm": arm, "position": ROBOTIQ_CLOSE, "effort": ROBOTIQ_EFFORT,
                        "compliant": asked.controller == COMPLIANCE, "controller": asked.controller,
                        "stiffness": asked.stiffness}
@@ -734,14 +734,14 @@ async def _confirmed_grasp(job: Job, run: PartRun, arm: str) -> GraspSettings | 
                 if latest != asked and ctx.now() - changed_at >= GRASP_SETTLED_S:
                     break
                 await ctx.next_tick()
-                if (now := grasp_settings(job)) != latest:
+                if (now := grasp_settings(job.run.view.settings)) != latest:
                     latest, changed_at = now, ctx.now()
         finally:
             operator.close(prompt)
         if answer is False:
             run.ended(CANCELLED, "cancelled", "cancelled at the prompt; nothing sent")
             return None
-        if answer and grasp_settings(job) == asked:
+        if answer and grasp_settings(job.run.view.settings) == asked:
             return asked
         _say(job, f"{run.part.movement}: the grasp settings changed: asked again")
 

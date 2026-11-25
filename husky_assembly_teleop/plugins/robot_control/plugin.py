@@ -40,7 +40,8 @@ from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_
                                     MOVING_WITHIN, SCALED_JOINT_TRAJECTORY_CONTROLLER, TARGET_WRENCH_FRAME,
                                     ArmInterface, SentWrench, cartesian_move, joint_jog)
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
-from ...robot_interface.end_effectors import EndEffectorState, RobotiqState, ScaffoldingV3, ScaffoldingV3State
+from ...robot_interface.end_effectors import (EndEffector, EndEffectorState, RobotiqState, ScaffoldingV3,
+                                              ScaffoldingV3State)
 from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
 from ...robot_interface.tool_step import (TOOL_JOG_DEG_PER_S_PER_MM_S, TOOL_JOG_LEAD, robot_axes, tool0_pose,
@@ -49,6 +50,8 @@ from ...ui.phone import big_buttons, phone_text
 from ...ui.style import (BUSY, FAIL, REFUSAL_SHOWN, SECTION_SENSOR, block, chip, hover, note_line, numbers, section,
                          values)
 from ...ui.trace_plot import TracePlot
+from ...shared.assembly_run_contract import CONTROL_GRIP, AssemblyRunContract, record_manual_grip
+from ...shared.movement_exec_contract import REFUSED
 from ...shared.teleop.clearance_toggle import ClearanceToggle
 from ...shared.teleop.dpad import (BLOCKED_COLOR, HOLD_TIMEOUT, PHONE_DPAD_STYLE, UNGUARDED_COLOR, Hold,
                                    build_velocity_inputs, color_dpad)
@@ -158,11 +161,16 @@ class _ToolJog:
     stopped: bool = False
 
 
+#: A gripper command in the run's record that went out; how it ended is not followed here.
+SENT = "sent"
+
+
 @register
 class RobotControlPlugin(HuskyPlugin):
     """Shows each robot's state and gives basic control over it."""
 
     name = "robot_control"
+    uses = ("assembly_run",)
     tab_path = ("Control",)
     icon = viser.Icon.DEVICE_GAMEPAD_2
 
@@ -270,7 +278,7 @@ class RobotControlPlugin(HuskyPlugin):
                             arm_widgets.phone_status = build_phone_arm_inputs(
                                 ctx, phone, f"{widgets.serial} {name}", arm_widgets.arm,
                                 partial(self._on_free_drive_hold, ctx, (widgets.serial, name), True),
-                                partial(self._leased, ctx, (widgets.serial, name)))
+                                partial(self._gripped, ctx, (widgets.serial, name), arm_widgets.arm.end_effector))
         # * Watch every base and arm as its drive or jog clearance would check it, in the monitor's clearance world.
         for widgets in self._bases:
             self._watches[widgets.serial] = ctx.watch_clearance([widgets.serial], STOP_DISTANCE, ALL_ARMS,
@@ -351,8 +359,8 @@ class RobotControlPlugin(HuskyPlugin):
         # ! Under the lease: taring while another plugin's step grips a bar would tare away its weight.
         zero.on_click(ctx.defer(f"zero FT {label}", lambda: self._leased(ctx, key, arm.zero_ft_sensor)))
 
-        tool = None if arm.end_effector is None else build_tool_inputs(ctx, gui, label, arm,
-                                                                       partial(self._leased, ctx, key))
+        tool = None if arm.end_effector is None else build_tool_inputs(
+            ctx, gui, label, arm, partial(self._leased, ctx, key), partial(self._gripped, ctx, key, arm.end_effector))
         # * The F/T watch: the raw force and torque, live, in a folder closed at start; last, so opening it moves
         #   no button.
         signals = (force(arm), torque(arm))
@@ -437,6 +445,29 @@ class RobotControlPlugin(HuskyPlugin):
         except MotionRefused as refused:
             self._refuse(ctx, key, refused.label, str(refused))
             return None
+
+    def _gripped(self, ctx: PluginContext, key: tuple[str, str], tool: EndEffector, grip: str,
+                 command: Callable[[], Any], **details: Any) -> None:
+        """Run a command moving a tool's fingers as `_leased` does; during an assembly, record it, a refusal too.
+
+        Args:
+            ctx: This plugin's context.
+            key: (serial, arm's name).
+            tool: The arm's tool.
+            grip: What the button asks, for the record, e.g. "open".
+            command: Sends it. The record says it was sent, not how it ended.
+            **details: More for the record.
+        """
+        said, before = tool.last_refusal, tool.state.position if isinstance(tool.state, RobotiqState) else None
+        sent = self._leased(ctx, key, lambda: command() or True)
+        try:
+            run: AssemblyRunContract = ctx.require("assembly_run")
+        except KeyError:
+            return
+        refusal = self._refusals[key] if not sent else tool.last_refusal if tool.last_refusal is not said else None
+        record_manual_grip(run, CONTROL_GRIP, key[0], key[1], grip, {
+            "status": REFUSED if refusal is not None else SENT, "reason": refusal.reason if refusal is not None else "",
+            "started": ctx.now(), "before": before, **details})
 
     def _refuse(self, ctx: PluginContext, key: tuple[str, str], label: str, reason: str) -> None:
         """Show on part `key`'s status line that a button did nothing, and why; also log it.

@@ -48,8 +48,9 @@ from .names import (BACK, BAR_OBJECT, BAR_PREFIX, BASE_MOCAP, BASE_POSE, BATTERY
                     JOINTS, LATE_SHARE, LATE_TICK, LEASE, LEASE_RELEASED, LEASE_TAKEN, LOG, LOG_LINES_LOST, LOST,
                     MOVING, NOISE, OBJECT, OBJECT_MOCAP, OBJECT_POSE, OBJECT_TRACKED, OBJECT_UNTRACKED, ODOMETRY,
                     PATH_SENT, PATH_STOP_SENT, POSE, PROBLEM, RELAY_DRIFT, RELAY_STATE, RUN, RUN_AS_BUILT,
-                    RUN_CANCEL, RUN_CHECK_GOAL, RUN_CONFIRM, RUN_CONTINUE, RUN_EXEC, RUN_FORGET, RUN_GUIDE,
-                    RUN_MARK_DONE, RUN_NEW, RUN_PLAN, RUN_PROMPT, RUN_REOPEN, RUN_SERVO, RUN_SESSION, RUN_SOFT_STOP,
+                    RUN_BASE_ESTOP, RUN_CANCEL, RUN_CHECK_GOAL, RUN_CONFIRM, RUN_CONTINUE, RUN_EXEC, RUN_FORGET,
+                    RUN_GRIPPER_FAILED, RUN_GUIDE, RUN_MANUAL_GRIP, RUN_MARK_DONE, RUN_NEW, RUN_PLAN, RUN_PROMPT,
+                    RUN_REOPEN, RUN_SAFETY_MODE, RUN_SERVO, RUN_SESSION, RUN_SOFT_STOP,
                     SESSION_END, SESSION_START, SOFT_STOP, STATE, STATES, STILL, STOP_REASON, STREAM, STREAM_EVENT,
                     STREAMS, SWITCH_ERROR, TARGET, TCP, TOOL, TOOL_COMMAND_SENT, TRACKING, TRAJECTORY_SENT,
                     TWIST_SENT, WRENCH, WRENCH_PEAK, WRENCH_SENT, relay_event, signal, urdf_joint)
@@ -711,8 +712,9 @@ def _state_changes(event: dict) -> dict[str, str]:
 
 def _run_changes(name: str, event: dict) -> dict[str, str]:
     """A run event's state changes: the run, its action and step (movement), the guide's part and mode."""
-    if name in (RUN_FORGET, RUN_REOPEN, RUN_NEW, RUN_CONTINUE):
-        return {}  # * many at once, for actions other than the current one
+    if name in (RUN_FORGET, RUN_REOPEN, RUN_NEW, RUN_CONTINUE, RUN_SAFETY_MODE, RUN_BASE_ESTOP,
+                RUN_GRIPPER_FAILED, RUN_MANUAL_GRIP):
+        return {}  # * many at once for actions other than the current one, or beside the part that runs
     changes = {_state_path("run", "run"): str(event.get("run"))}
     if event.get("action"):
         changes[_state_path("run", "action")] = _state_text(f"{event['action']} done" if name == RUN_MARK_DONE
@@ -870,7 +872,9 @@ def _warns(event: dict) -> bool:
     data = event.get("data") or {}
     if name.startswith(RUN):
         name = name.removeprefix(RUN)
-        return name in (RUN_CANCEL, RUN_SOFT_STOP) or \
+        return name in (RUN_CANCEL, RUN_SOFT_STOP, RUN_GRIPPER_FAILED) or \
+            name == RUN_SAFETY_MODE and data.get("mode") != "normal" or \
+            name == RUN_BASE_ESTOP and bool(data.get("engaged")) or \
             name == RUN_EXEC and data.get("result") in ("failed", "refused") or \
             name == RUN_SERVO and data.get("status") in ("failed", "refused") or \
             name == RUN_CHECK_GOAL and not data.get("ok") or name == RUN_PROMPT and bool(data.get("warn")) or \

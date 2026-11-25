@@ -195,7 +195,7 @@ class HuskyMonitor(Node):
                                   log_warn=lambda message, name=plugin.name: self.log_warn(message, name),
                                   snapshot=lambda: self._snapshot),
                 kinematics=self._kinematics,
-                dependencies=plugin.requires,
+                dependencies=plugin.requires + plugin.uses,
             )
             self._loaded[plugin.name] = _LoadedPlugin(plugin=plugin, ctx=ctx)
 

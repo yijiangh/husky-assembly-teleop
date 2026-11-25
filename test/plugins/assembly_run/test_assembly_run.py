@@ -18,6 +18,7 @@ from husky_assembly_teleop.plugins.assembly_run.panel import RunPanel
 from husky_assembly_teleop.plugins.assembly_run.plugin import AssemblyRunPlugin
 from husky_assembly_teleop.plugins.process.loading import load_process
 from husky_assembly_teleop.plugins.process.placement import placed
+from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, LeaseSlot, take_lease
 from husky_assembly_teleop.shared.assembly_planning.process_steps import loaded_process
 from husky_assembly_teleop.shared.assembly_planning.steps import first_step
@@ -29,6 +30,7 @@ from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.process import write
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
+from ur_dashboard_msgs.msg import SafetyMode
 
 CINDY, ALICE = "robots/a200-0806", "robots/a200-0804"
 
@@ -113,9 +115,10 @@ class Lab:
 
     def moving(self, live: str, executing: bool) -> None:
         """Say whether a robot's arm runs a trajectory, as `world.robots[serial].arms[...].state.is_executing`."""
-        state = SimpleNamespace(is_executing=executing)
+        state = SimpleNamespace(is_executing=executing, safety_mode=None)
         serial = live.split("/", 1)[1]
-        self.ctx.world.robots[serial] = SimpleNamespace(arms={"arm": SimpleNamespace(state=state)},
+        self.ctx.world.robots[serial] = SimpleNamespace(arms={"arm": SimpleNamespace(state=state, end_effector=None)},
+                                                        base=SimpleNamespace(state=BaseState()),
                                                         lease_slot=LeaseSlot(serial))
 
     def lease_to_exec(self, serial: str) -> Lease:
@@ -428,6 +431,37 @@ def test_record_writes_an_event_and_a_movement_file(tmp_path):
     assert events[1]["event"] == "check_goal" and events[1]["data"] == {"ok": True}
     assert events[2]["file"] == "movements/B1_J_joint/B1_M2_insert.1.json"
     assert json.loads((plugin.view.folder / events[2]["file"]).read_text())["waypoints"] == 3
+
+
+def test_an_estop_goes_into_a_begun_run_at_the_current_step_and_begins_none(tmp_path):
+    """Before the first write a stop makes no run folder; the run says the stop it began with, then each change."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        lab.moving(CINDY, False)
+        robot = lab.ctx.world.robots["a200-0806"]
+        robot.arms["arm"].state.safety_mode = SafetyMode.ROBOT_EMERGENCY_STOP
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        assert plugin.view.folder is None and runs(lab) == []
+        plugin.request_record("check_goal", data={"ok": True})
+        await settle(plugin)
+        plugin.update(lab.ctx)
+        robot.arms["arm"].state.safety_mode = SafetyMode.NORMAL
+        plugin.update(lab.ctx)
+        robot.base.state.estopped = True
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        return plugin
+
+    plugin = asyncio.run(scenario())
+    events = read_events(plugin.view.folder)
+    assert [event["event"] for event in events[-3:]] == ["safety_mode", "safety_mode", "base_estop"]
+    assert events[-3]["data"]["mode"] == "robot emergency stop" and events[-3]["data"]["was"] is None
+    assert events[-2]["data"] == {"serial": "a200-0806", "arm": "arm", "mode": "normal", "was": "robot emergency stop"}
+    action, _index = plugin.view.current
+    assert events[-2]["action"] == action and events[-2]["movement"]
 
 
 def test_record_writes_a_servo_file_and_draws_its_figure_beside_it(tmp_path):
