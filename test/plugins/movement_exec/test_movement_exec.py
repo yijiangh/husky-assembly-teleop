@@ -10,6 +10,7 @@ import asyncio
 import json
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -40,8 +41,8 @@ from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DEFA
                                                                  HANDOFF_PART, HOLD_NOT_SENT, INSERT_PART, LATER,
                                                                  REFUSED, REFUSED_PART, RETREAT_PART, SERVO_INDEX,
                                                                  SERVO_PART,
-                                                                 WITH_MOTION_PART, ExecRequest, ExecResult, PartPlan,
-                                                                 part_plan, step_parts)
+                                                                 WITH_MOTION_PART, Carried, ExecRequest, ExecResult,
+                                                                 PartPlan, part_plan, step_parts)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import RouteResult
@@ -1802,3 +1803,27 @@ def test_a_zero_force_is_remembered_for_its_action_over_a_restart_and_dropped_by
     run_guarded(replay())
     lab.run.view.folder = tmp_path / "runs" / "2"
     assert not lab.plugin.zeroed("B20_J")
+
+
+@pytest.mark.safety
+def test_the_carry_goes_with_its_servo_redone_or_another_run():
+    """Reopened, or its servo to do again: dropped; only the insert to do again: kept. Another run: dropped."""
+    lab = Lab(current=("B20_J", 4))
+    at = step(lab.loaded, "B20_J_insert").movement_index
+    carried = Carried(lab.loaded, "B20_J", at, CINDY, 1.0)
+    for done, kept in (({(4, 4)}, True), ({(3, SERVO_INDEX)}, False), (None, False)):
+        lab.plugin._carried = carried
+        lab.plugin.request_forget("B20_J", done)
+        assert (lab.plugin.carried is not None) == kept, done
+    lab.plugin._carried = carried
+    lab.run.view.folder = Path("runs/1")
+    lab.plugin._replayed = (lab.loaded, Path("runs/1"))
+    lab.plugin.update(lab.ctx)
+    assert lab.plugin.carried is carried
+    lab.run.view.folder = Path("runs/2")
+
+    async def another_run():
+        lab.plugin.update(lab.ctx)
+
+    run_guarded(another_run())
+    assert lab.plugin.carried is None

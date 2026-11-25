@@ -186,6 +186,8 @@ class Carried:
         insert: The insert's movement index in the action.
         serial: The acting robot.
         at: ROS time the servo ended, seconds.
+        joints: The robot's joints (name -> value) where an insert already started from: a later plan of it ends where
+            that one would, however far it got. None until an insert ran.
     """
 
     loaded: LoadedProcess
@@ -193,6 +195,7 @@ class Carried:
     insert: int
     serial: str
     at: float
+    joints: Mapping[str, float] | None = None
 
 
 class MovementExecContract(Protocol):
@@ -217,7 +220,8 @@ class MovementExecContract(Protocol):
     def carried(self) -> Carried | None:
         """Carried | None: What the last transfer's servo left for its insert's plan.
 
-        None once that transfer runs again, another action starts, or the process is loaded again.
+        None once that transfer runs again or its servo is to do again, another action or run starts, or the process is
+        loaded again.
         """
 
     def finished(self, loaded: LoadedProcess, action: str) -> frozenset[tuple[int, int]]:

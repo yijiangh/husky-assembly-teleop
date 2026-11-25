@@ -1281,3 +1281,21 @@ def test_a_plan_given_back_is_checked_for_staleness_first():
 
     asyncio.run(scenario())
     assert lab.plugin.plan_state == "stale" and "base moved 3.0 mm" in lab.plugin._message
+
+
+def test_an_insert_retried_ends_where_the_first_try_was_to_end(monkeypatch):
+    """The arms stand part way in: the goal is from where the first insert started, not the whole move on from here."""
+    insert = step(purged_process(), "B20_J_insert")
+    lab = Steps(("B20_J", insert.movement_index))
+    robot = lab.ctx.scene.snapshot.robots[robot_id("a200-0806")]
+    ends = insert.movement.target.robots["robots/cindy"].link_poses
+    start = {**robot.joints, "left_ur_arm_elbow_joint": robot.joints["left_ur_arm_elbow_joint"] + 0.05}
+    lab.executor.carried = Carried(lab.loaded, "B20_J", insert.movement_index, "a200-0806", lab.ctx.t, start)
+    asyncio.run(lab.plan())
+    goals = lab.planner.plans[-1].goal_poses
+    starts = step(lab.loaded, "B20_J_transfer").movement.target.robots["robots/cindy"].link_poses
+    first = flange_poses(replace(robot, joints=start), ends)
+    flange = "robots/cindy/left_ur_arm_tool0"
+    assert not np.allclose(first[flange].matrix(), flange_poses(robot, ends)[flange].matrix(), atol=1e-3)
+    assert np.allclose(goals[flange].matrix(), apply_authored_move(starts[flange].matrix(), ends[flange].matrix(),
+                                                                   first[flange].matrix()), atol=1e-9)

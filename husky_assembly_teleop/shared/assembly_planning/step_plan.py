@@ -11,6 +11,7 @@ axis. `timed_route` times a found route for the arms.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import TYPE_CHECKING, Callable
 
 from scaffolding_assembly_core.robot import RobotObject
@@ -51,7 +52,9 @@ def live_goal_poses(loaded: LoadedProcess, action: str, step: Step, routine: Rou
     if (routine is Routine.INSERT and carried is not None and carried.loaded is loaded
             and (carried.action, carried.insert) == (action, step.movement_index)):
         # * The transfer's servo left the flanges off the authored start: the insert goes from there.
-        goals = carried_insert_goals(loaded, action, carried.insert, live)
+        # * Retried: from where the first try started, not from where it left the bar, which would add it up.
+        start = live if carried.joints is None else replace(live, joints={**live.joints, **carried.joints})
+        goals = carried_insert_goals(loaded, action, carried.insert, start)
         flange, ends = next(iter(goals)), step.movement.target.robots[step.action.robot].link_poses
         distance, turn = pose_error(goals[flange], ends[flange])
         log_info(f"[insert plan] servo correction carried: {step.label} {flange_side(flange)} goal "
