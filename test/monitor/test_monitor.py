@@ -372,7 +372,7 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
     calls, stops = [], []
     tracked = SimpleNamespace(mocap_id=1, state=SimpleNamespace(marker_errors=deque([(100.0, 0.0)]),
                                                                 last_fix_time=100.0))
-    robots = [SimpleNamespace(base=tracked, soft_stop=lambda reason="", serial=serial: stops.append(serial))
+    robots = [SimpleNamespace(arms={}, base=tracked, soft_stop=lambda reason="", serial=serial: stops.append(serial))
               for serial in ("r0", "r1")]
     plugin = Recorder("a", calls)
     monitor = build(monkeypatch, plugin, robots=robots)
@@ -414,7 +414,7 @@ def test_a_clearance_is_checked_every_tick_and_trips_on_what_was_found_or_a_lost
 
 def test_a_check_that_finds_nothing_marks_the_clearances_it_asked_about_checked(monkeypatch):
     """Only a finished check counts: asked and not yet answered stays unchecked."""
-    monitor = build(monkeypatch, Recorder("a", []), robots=[SimpleNamespace(base=SimpleNamespace(
+    monitor = build(monkeypatch, Recorder("a", []), robots=[SimpleNamespace(arms={}, base=SimpleNamespace(
         mocap_id=1, state=SimpleNamespace(marker_errors=deque([(100.0, 0.0)]), last_fix_time=100.0)))])
     known = Scene(robots={robot_id("r0"): RobotObject(robot_id("r0"), SimpleNamespace(movable_joints=()), Pose(), {})})
     monkeypatch.setattr(monitor_module, "take_snapshot", lambda *_args: known)
@@ -443,7 +443,7 @@ def test_a_check_that_finds_nothing_marks_the_clearances_it_asked_about_checked(
 def test_a_watch_joins_a_check_every_half_second_and_only_reports(monkeypatch):
     """Asked every WATCH_EVERY; too close fills `found`, one it cannot check `unchecked`; never a soft stop."""
     stops = []
-    robots = [SimpleNamespace(base=SimpleNamespace(mocap_id=1, state=SimpleNamespace(
+    robots = [SimpleNamespace(arms={}, base=SimpleNamespace(mocap_id=1, state=SimpleNamespace(
         marker_errors=deque([(100.0, 0.0)]), last_fix_time=100.0)), soft_stop=lambda reason="": stops.append(reason))]
     monitor = build(monkeypatch, Recorder("a", []), robots=robots)
     known = Scene(robots={robot_id("r0"): RobotObject(robot_id("r0"), SimpleNamespace(movable_joints=()), Pose(), {})})

@@ -172,7 +172,7 @@ class BaseState:
         markers: Raw mocap markers of the last mocap message, valid or not, or None before one.
         wheel_positions: Wheel joint angles from the platform's joint_states, radians, by joint name.
         wheel_velocities: Wheel joint speeds from the platform's joint_states, rad/s, by joint name.
-        joint_states_update_time: ROS time of the last platform joint_states, seconds.
+        joint_states_update_time: ROS time of the last platform joint_states, less how late it arrived, seconds.
         joint_states_stats: Rate, gaps and delay of the platform's joint_states, to judge the wifi link and the
             robot's clock. Published from boot, also with the velocity controller off.
         mocap_stats: Rate, gaps and delay of the base's mocap samples (stamped when the cameras captured them), to
@@ -550,7 +550,8 @@ class BaseInterface:
         state = self.state
         state.wheel_positions.update(zip(message.name, map(float, message.position)))
         state.wheel_velocities.update(zip(message.name, map(float, message.velocity)))
-        state.joint_states_update_time = self._node.get_clock().now().nanoseconds * 1e-9
+        now, stamp = self._node.get_clock().now().nanoseconds * 1e-9, message.header.stamp
+        state.joint_states_update_time = now - state.joint_states_stats.lateness(now, stamp.sec + 1e-9 * stamp.nanosec)
 
     def _on_joint_states_stamp(self, stamp: float) -> None:
         """Note one joint_states message, decoded or not, for the stream's rate, gaps and delay."""

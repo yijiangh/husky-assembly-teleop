@@ -141,6 +141,10 @@ follows its plan a little off does not trip it:
   other makes the button ask for a second press. A base drive always asks (its Commit and Start): driving changes the
   distance to every robot, however far. The D-pads and jogs never ask; the amber chip naming the robots not measured
   is the warning.
+- **A robot that falls silent while another moves** (a crowded Wi-Fi) does not stop it for 2 s, if it stood still when
+  last seen and mocap still tracks its base: it is checked where last seen. ! A push or a pendant jog of it goes unseen
+  meanwhile. The same 2 s hold for the watch that stops a part once something else moves, and for what must stand still
+  (freezes). Starting needs joints at most 0.5 s old, and a clearance still stops the moving robot itself after 0.5 s.
 - **No clearance**: free drive (the arm is in your hand), Exec with **Ignore built bars** ticked (the plan may pass
   through them; an amber **no clearance** chip says so), and Exec's inserts, retreats, Robotiq handoffs and servo
   passes, which touch the bars by design.

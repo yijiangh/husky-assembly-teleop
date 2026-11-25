@@ -5,7 +5,8 @@ A freeze judges measurements, so it also sees what this monitor did not send: an
 buttons, a pushed base, a shifted bar. Leases (`robot_interface/robot_lease.py`) only keep this monitor's code apart.
 
 - ! A measurement too old to judge counts as moved: a lost mocap pose or a silent arm breaks the freeze too.
-- `take_basis` measures; `basis_problem` compares. `PluginContext.freeze` checks every tick and cancels the task.
+- `take_basis` measures; `basis_problem` compares. `PluginContext.freeze` checks every tick and cancels the task; while
+  it runs an arm may be silent for STANDING_STATE_MAX_AGE, at its start only for JOINT_STATE_MAX_AGE.
 """
 
 from __future__ import annotations
@@ -111,7 +112,8 @@ def take_basis(world: WorldState, now: float, robots: Iterable[str] = (), bases:
     return Basis(now, joints, base_poses, object_poses)
 
 
-def basis_problem(basis: Basis, world: WorldState, now: float, tolerance: Tolerance) -> str | None:
+def basis_problem(basis: Basis, world: WorldState, now: float, tolerance: Tolerance,
+                  max_joint_age: float = JOINT_STATE_MAX_AGE) -> str | None:
     """Why `basis` no longer holds: the first thing that moved past `tolerance` or can no longer be measured; else None.
 
     Args:
@@ -119,11 +121,12 @@ def basis_problem(basis: Basis, world: WorldState, now: float, tolerance: Tolera
         world: The measured world.
         now: Current ROS time, seconds.
         tolerance: How far each thing may drift.
+        max_joint_age: Age past which an arm's joints can't be judged, seconds.
     """
     try:
         for (serial, name), then in basis.joints.items():
             what = f"robot {short_serial(serial)} arm {name}"
-            turned = float(np.max(np.abs(_joints(world.robots[serial].arms[name], what, now) - then)))
+            turned = float(np.max(np.abs(_joints(world.robots[serial].arms[name], what, now, max_joint_age) - then)))
             if turned > tolerance.joint:
                 return f"{what} moved {np.degrees(turned):.1f} deg"
         for serial, then in basis.bases.items():
@@ -144,13 +147,13 @@ def basis_problem(basis: Basis, world: WorldState, now: float, tolerance: Tolera
     return None
 
 
-def _joints(arm: ArmInterface, what: str, now: float) -> np.ndarray:
-    """An arm's joints now; WorldMoved if they are missing or older than JOINT_STATE_MAX_AGE."""
+def _joints(arm: ArmInterface, what: str, now: float, max_age: float = JOINT_STATE_MAX_AGE) -> np.ndarray:
+    """An arm's joints now; WorldMoved if they are missing or older than `max_age`, seconds."""
     joints = arm.joint_vector()
     if joints is None:
         raise WorldMoved(f"{what}: no joint state")
     age = now - arm.state.last_update_time
-    if age > JOINT_STATE_MAX_AGE:
+    if age > max_age:
         raise WorldMoved(f"{what}: joint state is {age:.1f} s old")
     return joints
 

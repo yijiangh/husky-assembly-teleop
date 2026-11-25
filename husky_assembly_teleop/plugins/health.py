@@ -49,6 +49,7 @@ from ..robot_interface.arm import SYNC_STATUS_MAX_AGE, ArmState
 from ..robot_interface.base import JOINT_STATES_RATE as BASE_RATE
 from ..robot_interface.base import BaseState
 from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManagerState
+from ..robot_interface.mocap_state import POSE_TIMEOUT
 from ..robot_interface.mocap_relay import FRAME_REFIT_PENDING, AppliedCalibration, FloorCalibrationState
 from ..robot_interface.refusal import Refusal
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
@@ -69,17 +70,18 @@ BATTERY_BAD = 0.15
 #: Seconds without a battery message before the reading counts as old. Generous: the BMS rate is unknown.
 BATTERY_STALE_AFTER = 10.0
 
+# * The signal chip's limits, chosen on the crowded wifi of 24 Nov 2026: a moderately busy channel stays green.
 #: Share of a stream's nominal rate arriving below which the signal chip turns amber, then red.
-SIGNAL_RATE_WARN = 0.9
-SIGNAL_RATE_BAD = 0.5
+SIGNAL_RATE_WARN = 0.6
+SIGNAL_RATE_BAD = 0.3
 #: Largest gap between joint_states, seconds, above which the signal chip turns amber, then red.
-#: ? At 50 Hz, 100 ms is about four samples lost in a row; at the base's 30 Hz, two.
-SIGNAL_GAP_WARN = 0.1
-SIGNAL_GAP_BAD = 0.2
+SIGNAL_GAP_WARN = 0.5
+SIGNAL_GAP_BAD = 1.0
 #: Delay (`StreamQuality.delay`), seconds: above these the chip turns amber, then red (robot clock behind, or a slow
 #: network); below these negative ones too (robot clock ahead, for certain). ? Synced, it reads 1 to 5 ms.
-SIGNAL_DELAY_WARN = 0.03
-SIGNAL_DELAY_BAD = 0.1
+#: ! Red is the follower's mocap age limit (`POSE_TIMEOUT`): a robot clock that far behind may not drive.
+SIGNAL_DELAY_WARN = 0.1
+SIGNAL_DELAY_BAD = POSE_TIMEOUT
 SIGNAL_AHEAD_WARN = -0.005
 SIGNAL_AHEAD_BAD = -0.02
 

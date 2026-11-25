@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from robot_fakes import fake_arm
 
-from husky_assembly_teleop.robot_interface.arm import JOINT_STATE_MAX_AGE
+from husky_assembly_teleop.robot_interface.arm import JOINT_STATE_MAX_AGE, STANDING_STATE_MAX_AGE
 from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.robot_interface.mocap_state import POSE_TIMEOUT
 from husky_assembly_teleop.world.freeze import Tolerance, WorldMoved, basis_problem, take_basis
@@ -81,6 +81,17 @@ def test_a_measurement_too_old_to_judge_counts_as_moved():
     later = NOW + max(JOINT_STATE_MAX_AGE, POSE_TIMEOUT) + 0.1
     assert "robot 0805 arm ur_arm: joint state is" in basis_problem(arms_only, world, later, TOLERANCE)
     assert basis_problem(base_only, world, later, TOLERANCE).startswith("robot 0805 base: ")
+
+
+def test_while_a_motion_runs_a_silent_arm_is_judged_by_its_last_joints_for_longer():
+    """Silent for under STANDING_STATE_MAX_AGE it still counts as standing, unless seen moved; past it, it does not."""
+    world = _world()
+    basis = take_basis(world, NOW, arms=[("0805", "ur_arm")])
+    within, past = NOW + STANDING_STATE_MAX_AGE - 0.1, NOW + STANDING_STATE_MAX_AGE + 0.1
+    assert basis_problem(basis, world, within, TOLERANCE, STANDING_STATE_MAX_AGE) is None
+    assert "joint state is" in basis_problem(basis, world, past, TOLERANCE, STANDING_STATE_MAX_AGE)
+    _turn_joint(world, 2.0)
+    assert "moved 2.0 deg" in basis_problem(basis, world, within, TOLERANCE, STANDING_STATE_MAX_AGE)
 
 
 def test_what_is_not_measured_cannot_be_frozen():

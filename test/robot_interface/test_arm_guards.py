@@ -6,8 +6,10 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+from rclpy.time import Time
 from robot_fakes import TCP_ORIENTATION, TCP_POSITION, Client, Publisher, fake_arm
 from scipy.spatial.transform import Rotation
+from sensor_msgs.msg import JointState
 
 from husky_assembly_teleop.robot_interface.arm import (ARM_CONTROLLERS, CARTESIAN_COMPLIANCE_CONTROLLER,
                                                        CARTESIAN_MAX_STEP, ArmInterface,
@@ -47,6 +49,31 @@ def refused(arm, positions, duration, velocities=None) -> str:
 
 
 # --- --- --- --- --- trajectories --- --- --- --- ---
+
+def joint_state(arm, stamp: float) -> JointState:
+    """A joint_states message of where the arm stands, stamped `stamp` seconds."""
+    message = JointState(name=list(UR_JOINT_NAMES), position=list(arm.joint_vector()))
+    message.header.stamp = Time(seconds=stamp).to_msg()
+    return message
+
+
+@pytest.mark.parametrize("clock", [0.0, 200000.0])
+def test_joint_states_the_wifi_delivers_late_are_as_old_as_they_are(clock):
+    """A message held up 2 s by the network has just arrived but is too old to send on, whatever the robot's clock says.
+
+    On time (the same stream, its clock `clock` seconds behind) the same trajectory goes out.
+    """
+    arm = fake_arm(now=300000.0)
+    stats = arm.state.joint_states_stats
+    for k in range(100):
+        stats.add(299998.0 + k * 0.02, 299998.0 + k * 0.02 - clock)
+    arm._on_joint_state(joint_state(arm, 300000.0 - clock))
+    assert 300000.0 - arm.state.last_update_time == pytest.approx(0.0, abs=1e-3)
+    arm._on_joint_state(joint_state(arm, 299998.0 - clock))
+    assert 300000.0 - arm.state.last_update_time == pytest.approx(2.0, abs=1e-3)
+    message = refused(arm, *line(arm))
+    assert "joint state is 2.0 s old" in message
+
 
 def test_a_slow_trajectory_from_the_arm_goes_out():
     """Waypoints spread evenly over the duration, the arm counts as executing, and the trajectory is fired as sent."""

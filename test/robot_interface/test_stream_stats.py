@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from husky_assembly_teleop.robot_interface.stream_stats import StreamStats
+from husky_assembly_teleop.robot_interface.stream_stats import PROMPT_WINDOW, StreamStats
 
 
 def _stream(stamps: list[float], late: float = 0.0) -> StreamStats:
@@ -72,3 +72,32 @@ def test_unstamped_stream_has_no_gap():
 def test_silent_stream_reads_zero():
     """Nothing for longer than the window: rate 0."""
     assert _stream(_steady(5.0)).quality(now=110.0).rate == 0.0
+
+
+@pytest.mark.parametrize("clock", [0.0, 233000.0, -5.0])
+def test_lateness_is_against_the_promptest_message_whatever_the_clocks_say(clock):
+    """A sender's clock days behind or ahead changes nothing; a message 2 s later than the rest reads 2 s late."""
+    stats = StreamStats()
+    for stamp in _steady(5.0):
+        stats.add(300000.0 + stamp + 0.003, 300000.0 + stamp - clock)
+    assert stats.lateness(300005.0 + 0.003, 300005.0 - clock) == pytest.approx(0.0, abs=1e-6)
+    assert stats.lateness(300007.0 + 0.003, 300005.0 - clock) == pytest.approx(2.0)
+
+
+def test_lateness_forgets_the_promptest_message():
+    """The sender's clock stepped back 10 s: late at first, the new normal after two PROMPT_WINDOWs."""
+    stats = StreamStats()
+    stats.add(100.0, 100.0)
+    stats.add(101.0, 91.0)
+    assert stats.lateness(101.0, 91.0) == pytest.approx(10.0)
+    for k in range(1, 5):
+        stats.add(101.0 + k * PROMPT_WINDOW, 91.0 + k * PROMPT_WINDOW)
+    assert stats.lateness(101.0 + 4 * PROMPT_WINDOW, 91.0 + 4 * PROMPT_WINDOW) == pytest.approx(0.0)
+
+
+def test_an_unstamped_or_new_stream_is_not_late():
+    """No stamp, or nothing to compare with yet: 0."""
+    stats = StreamStats()
+    assert stats.lateness(100.0, 97.0) == 0.0
+    stats.add(100.0, 99.0)
+    assert stats.lateness(103.0, 0.0) == 0.0

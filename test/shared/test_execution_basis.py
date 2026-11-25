@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from plugin_fakes import FakeContext, fake_arm, fake_node, fake_robot, from_outside
 
+from husky_assembly_teleop.robot_interface.arm import STANDING_STATE_MAX_AGE
 from husky_assembly_teleop.shared.execution.basis import basis_of, stale_reason
 from husky_assembly_teleop.shared.execution.moving import moving_reason
 from husky_assembly_teleop.shared.execution.operator import PROMPT_ARM_S, PromptBox
@@ -265,6 +266,19 @@ def test_a_joint_velocity_or_a_millimetre_counts_as_moving():
     here[3] += 0.002
     arm._on_joint_state(JointState(name=list(UR_JOINT_NAMES), position=here))
     assert "moved" in moving_reason(lab.ctx.world, lab.ctx.t)
+
+
+def test_a_robot_silent_briefly_is_not_moving_while_a_motion_runs():
+    """Silent 1 s: moving for a start; not for the watch of a running motion, until STANDING_STATE_MAX_AGE."""
+    lab, arm, _driver = moving_lab()
+    now = lab.ctx.t
+    for robot in lab.ctx.world.robots.values():
+        for each in robot.arms.values():
+            each.state.last_update_time, each.state.last_slight_motion_time = now, None
+    assert moving_reason(lab.ctx.world, now + 1.0) != ""
+    assert moving_reason(lab.ctx.world, now + 1.0, max_age=STANDING_STATE_MAX_AGE) == ""
+    assert "can't tell" in moving_reason(lab.ctx.world, now + STANDING_STATE_MAX_AGE + 0.1,
+                                         max_age=STANDING_STATE_MAX_AGE)
 
 
 def test_a_driving_base_is_moving():

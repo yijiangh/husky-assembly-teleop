@@ -28,6 +28,7 @@ from scaffolding_assembly_core.ids import robot_id
 
 from ...config import short_serial
 from ...plugin_api.concurrency import WaitTimeout
+from ...robot_interface.arm import JOINT_STATE_MAX_AGE, STANDING_STATE_MAX_AGE
 from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV3
 from ...robot_interface.soft_stop import MotionRefused
 from ...shared.process_scene.live_scene import SceneNotShown, showing
@@ -281,17 +282,27 @@ def world_problem(job: Job, motion: bool, basis: PlanBasis | None = None, still:
                         obstacles_collide=request.obstacles_collide())
 
 
-def others_moving(job: Job) -> str:
+def others_moving(job: Job, max_age: float = JOINT_STATE_MAX_AGE) -> str:
     """Why the part must not move now: another robot moves, or this robot's base moves; else "".
 
     ! One motion at a time across every robot: checked as the part starts, again right before the send (after a
       prompt, when the part has one) and, for a motion, every tick while the arms move (`send_motion`'s watch, next to
       the freeze). The request leases every robot, so only motion this monitor did not send (the pendant, a node on
       the robot) can show up here.
+
+    Args:
+        job: The request being run.
+        max_age: Age past which states count as moving, seconds.
     """
     serial, now = job.request.serial, job.ctx.now()
-    return (moving_reason(job.ctx.world, now, besides=serial, unknown=unknown_serials(job.ctx.world, job.request))
-            or base_moving(job.robot.base.state, f"{serial} base", now))
+    return (moving_reason(job.ctx.world, now, besides=serial, unknown=unknown_serials(job.ctx.world, job.request),
+                          max_age=max_age)
+            or base_moving(job.robot.base.state, f"{serial} base", now, max_age))
+
+
+def others_started(job: Job) -> str:
+    """`others_moving` for the watch while the arms move: a standing robot may be silent STANDING_STATE_MAX_AGE."""
+    return others_moving(job, STANDING_STATE_MAX_AGE)
 
 
 def unknown_serials(world: WorldState, request: ExecRequest) -> set[str]:
@@ -523,7 +534,7 @@ async def _motion(job: Job, run: PartRun) -> None:
             #   push too) or lost to mocap, which cancels this task.
             with ctx.freeze(basis) as run.freeze:
                 outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run,
-                                            watch=lambda: others_moving(job), progress=run.progress)
+                                            watch=lambda: others_started(job), progress=run.progress)
     except (MotionRefused, WaitTimeout) as refused:  # * the clearance cannot check the robot: nothing sent
         run.ended(REFUSED, "refused", str(refused))
         return
@@ -575,7 +586,7 @@ async def _insert(job: Job, run: PartRun) -> None:
 
     def start(plan: InsertPlan, recorder: Recorder) -> Awaitable[PartOutcome]:
         return run_insert(job.ctx, robot, plan, tools if part.tools else {}, operator=PartOperator(job, part.movement),
-                          dry_run=job.dry_run, watch=lambda: others_moving(job), recorder=recorder,
+                          dry_run=job.dry_run, watch=lambda: others_started(job), recorder=recorder,
                           forces=InsertForceSettings(settings["cancel_weight"], settings["push_n"],
                                                      tuple(settings["stiffness"])))
 
@@ -603,7 +614,7 @@ async def _retreat(job: Job, run: PartRun) -> None:
 
         def start(plan: RetreatPlan, recorder: Recorder) -> Awaitable[PartOutcome]:
             return run_retreat(job.ctx, robot, plan, tools, replan=lambda: _replan(job, part), dry_run=job.dry_run,
-                               watch=lambda: others_moving(job), recorder=recorder)
+                               watch=lambda: others_started(job), recorder=recorder)
 
         outcome = await _along_plan(job, run, settings, plan_of, start)
     else:
@@ -612,7 +623,7 @@ async def _retreat(job: Job, run: PartRun) -> None:
 
         def start_stiff(plan: StiffRetreatPlan, recorder: Recorder) -> Awaitable[PartOutcome]:
             return run_stiff_retreat(job.ctx, robot, plan, tools, dry_run=job.dry_run,
-                                     watch=lambda: others_moving(job), recorder=recorder)
+                                     watch=lambda: others_started(job), recorder=recorder)
 
         # * 0.57° from the plan's start at most: a stiff jump holding a bar must not happen.
         outcome = await _along_plan(job, run, settings, plan_stiff, start_stiff, tolerance=START_TOL)

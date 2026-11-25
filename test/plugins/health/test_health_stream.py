@@ -13,20 +13,21 @@ from husky_assembly_teleop.world.checks import BAD, GOOD, PENDING, STALE_AFTER, 
     (StreamQuality(rate=None, max_gap=None), PENDING),
     (StreamQuality(rate=0.0, max_gap=None), BAD),
     (StreamQuality(rate=49.5, max_gap=0.025), GOOD),
-    (StreamQuality(rate=40.0, max_gap=0.025), WARN),
-    (StreamQuality(rate=49.5, max_gap=0.15), WARN),
-    (StreamQuality(rate=15.0, max_gap=0.025), BAD),
-    (StreamQuality(rate=47.5, max_gap=0.5), BAD),
+    (StreamQuality(rate=35.0, max_gap=0.4), GOOD),
+    (StreamQuality(rate=25.0, max_gap=0.025), WARN),
+    (StreamQuality(rate=49.5, max_gap=0.7), WARN),
+    (StreamQuality(rate=12.0, max_gap=0.025), BAD),
+    (StreamQuality(rate=47.5, max_gap=1.1), BAD),
 ])
 def test_stream_check_levels(quality: StreamQuality, level: int):
-    """Thresholds at 50 Hz joint_states: 45 / 25 Hz and 100 / 200 ms."""
+    """Thresholds at 50 Hz joint_states: 30 / 15 Hz and 0.5 / 1 s."""
     assert stream_check("left", quality).level == level
 
 
 @pytest.mark.parametrize("delay, level", [
-    (0.002, GOOD), (-0.003, GOOD), (0.05, WARN), (0.2, BAD), (-0.01, WARN), (-0.05, BAD), (None, GOOD)])
+    (0.002, GOOD), (-0.003, GOOD), (0.05, GOOD), (0.2, WARN), (0.35, BAD), (-0.01, WARN), (-0.05, BAD), (None, GOOD)])
 def test_stream_check_delay_levels(delay: float | None, level: int):
-    """Clock thresholds: 30 / 100 ms late, 5 / 20 ms ahead; unstamped is not judged."""
+    """Clock thresholds: 100 / 300 ms late, 5 / 20 ms ahead; unstamped is not judged."""
     assert stream_check("left", StreamQuality(rate=49.5, max_gap=0.025, delay=delay)).level == level
 
 

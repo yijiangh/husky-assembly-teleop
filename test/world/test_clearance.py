@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import time
+from collections import deque
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from repo_paths import DATA
+from robot_fakes import fake_arm
 
 from husky_assembly_teleop.config import robot_config_from_serial
+from husky_assembly_teleop.robot_interface.arm import STANDING_STATE_MAX_AGE
+from husky_assembly_teleop.robot_interface.base import BaseState
 from husky_assembly_teleop.world.base_collision import BaseCollisionWorld
 from husky_assembly_teleop.world.clearance import (ALL_ARMS, ARM_MOVE, BASE_DRIVE, SELF_DISTANCE, STOP_DISTANCE,
-                                                   ClearanceChecker, assumable_joints)
+                                                   ClearanceChecker, assumable_joints, silent_standing)
+from husky_assembly_teleop.world.measured import WorldState
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.kinematics import link_pose
@@ -126,6 +132,51 @@ def alone(config, joints: dict[str, float], bodies=()) -> Scene:
     bodies = {body.id: body for body in bodies}
     return Scene(bodies=bodies, robots=robots, world_poses=world_poses(
         bodies, robots, lambda robot, link: link_pose(robot.model.urdf, robot.base, robot.joints, link)))
+
+
+def standing_world(age: float, **arm_state) -> WorldState:
+    """Belle (0805) with a live base, her arm's joints last measured `age` seconds before 100, still unless told."""
+    arm = fake_arm(now=100.0 - age)
+    for name, value in arm_state.items():
+        setattr(arm.state, name, value)
+    base = SimpleNamespace(mocap_id=1, state=BaseState())
+    base.state.marker_errors, base.state.last_fix_time = deque([(99.95, 0.0)]), 99.95
+    world = WorldState()
+    world.robots["0805"] = SimpleNamespace(arms={"ur_arm": arm}, base=base)
+    return world
+
+
+@pytest.mark.parametrize("age, arm_state, standing", [
+    (0.8, {}, True), (STANDING_STATE_MAX_AGE + 0.1, {}, False), (0.8, {"is_executing": True}, False),
+    (0.8, {"last_slight_motion_time": 99.15}, False), (0.8, {"last_slight_motion_time": 90.0}, True),
+    (0.8, {"last_update_time": None}, False)])
+def test_only_a_robot_that_stood_when_its_joints_fell_silent_may_stay_silent(age, arm_state, standing):
+    """Silent briefly after standing still: where last seen; after moving, too long, or never measured: not known."""
+    assert (silent_standing(standing_world(age, **arm_state), 100.0) == {robot_id("0805")}) is standing
+
+
+def test_a_silent_robot_without_a_mocap_fix_may_not_stay_silent():
+    """Its base pose is lost too: it must be known."""
+    world = standing_world(0.8)
+    world.robots["0805"].base.state.marker_errors.clear()
+    assert silent_standing(world, 100.0) == frozenset()
+
+
+def test_a_standing_silent_robot_is_checked_where_last_seen_if_allowed():
+    """Belle's joints silent: not allowed, Alice cannot be checked; allowed, nothing is found in the open."""
+    alice, belle = CONFIGS
+    own, other = robot_id(alice.serial), robot_id(belle.serial)
+    scene = Scene(robots={own: RobotObject(own, alice.model, Pose((-3.0, -3.0, 0.0)), {}),
+                          other: RobotObject(other, belle.model, Pose((0.0, -3.0, 0.0)), {}, base_time=99.9,
+                                             unmeasured=frozenset(belle.model.movable_joints), joints_time=99.2)},
+                  world_poses={})
+    checker = ClearanceChecker()
+    try:
+        (_key, why, _hit), = found(checker, scene, own)
+        assert why.startswith(f"cannot be checked: {other.split('/')[1]}")
+        assert found(checker, scene, own, allowed=frozenset({other})) == []
+    finally:
+        checker.close()
 
 
 @pytest.mark.parametrize("serial", ["0804", "0805", "0806"])

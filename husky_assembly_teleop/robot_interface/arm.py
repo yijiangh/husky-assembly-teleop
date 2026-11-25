@@ -21,7 +21,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Header
 from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from ur_msgs.msg import IOStates
@@ -80,6 +80,9 @@ UR_JOINT_LIMITS = np.radians([360.0, 360.0, 180.0, 360.0, 360.0, 360.0])
 TRAJECTORY_MAX_JOINT_SPEED = np.radians(60.0)
 #: Joint state older than this, seconds, is too old to trust.
 JOINT_STATE_MAX_AGE = 0.5
+#: The same for a robot that only has to keep standing still while another one moves: crowded wifi is silent this long.
+#: ! Only while a motion runs, never to start one: until it has passed, a push or a jog of that robot goes unseen.
+STANDING_STATE_MAX_AGE = 2.0
 #: Largest joint acceleration, rad/s^2.
 TRAJECTORY_MAX_JOINT_ACCELERATION = np.radians(120.0)
 #: Upper bounds on one trajectory.
@@ -420,7 +423,7 @@ class ArmState:
         tcp_raw_position: The TCP as the driver reports it, in the UR Base frame, with the pendant's TCP setting
             applied (`ArmConfig.pendant_tcp`, tool0 by default).
         tcp_raw_orientation: Its quaternion (x, y, z, w).
-        tcp_update_time: ROS time of the last valid TCP pose, seconds.
+        tcp_update_time: ROS time of the last valid TCP pose, less how late it arrived, as `last_update_time`.
         sent_target_position: Last Cartesian target sent (commanded, not measured), same frame as `tcp_position`.
         sent_target_orientation: Its quaternion (x, y, z, w).
         sent_target_time: ROS time it was sent, seconds.
@@ -451,7 +454,7 @@ class ArmState:
         last_motion_time: ROS time the joints last moved or a trajectory was sent.
         last_slight_motion_time: ROS time any joint last moved by SLIGHT_MOTION, or reported a speed over
             SLIGHT_SPEED; catches the slow start and end of a move that `last_motion_time` misses.
-        last_update_time: ROS time of the last joint_states.
+        last_update_time: ROS time of the last joint_states, less how late it arrived (`StreamStats.lateness`).
         joint_states_stats: Rate and gaps of joint_states, to judge the wifi link.
     """
 
@@ -1381,7 +1384,7 @@ class ArmInterface:
             self.state.last_motion_time = now
         elif self.state.last_motion_time is None or now - self.state.last_motion_time > STILL_AFTER:
             self.state.is_executing = False
-        self.state.last_update_time = now
+        self.state.last_update_time = now - self._lateness(message.header, now)
 
     def _on_joint_state_stamp(self, stamp: float) -> None:
         """Note one joint_states message, decoded or not, for the stream's rate, gaps and delay."""
@@ -1399,7 +1402,13 @@ class ArmInterface:
         self.state.tcp_raw_position, self.state.tcp_raw_orientation = position, quaternion
         self.state.tcp_position, self.state.tcp_orientation = flange_from_reported(position, quaternion,
                                                                                    self.pendant_tcp)
-        self.state.tcp_update_time = self._now()
+        # * Same clock and link as joint_states: the stamp is the driver's (the robot's rate limiter keeps it).
+        now = self._now()
+        self.state.tcp_update_time = now - self._lateness(message.header, now)
+
+    def _lateness(self, header: Header, now: float) -> float:
+        """How late a message of this arm's driver arrived at `now`, seconds (`StreamStats.lateness`)."""
+        return self.state.joint_states_stats.lateness(now, header.stamp.sec + 1e-9 * header.stamp.nanosec)
 
     def _on_io_states(self, message: IOStates) -> None:
         """Store the digital inputs by pin."""

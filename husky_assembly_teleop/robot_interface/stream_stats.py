@@ -13,11 +13,14 @@ Used to spot an overloaded wifi (lost best-effort samples lower the rate and ope
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 
 #: Seconds of history the rate and the largest gap are taken over.
 WINDOW = 2.0
+#: Seconds over which a stream's promptest message is remembered, at least (at most twice that), to tell late ones by.
+PROMPT_WINDOW = 60.0
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,8 @@ class StreamStats:
         self._samples: deque[tuple[float, float]] = deque()
         #: Arrival time of the first message ever, seconds.
         self._first_arrival: float | None = None
+        #: Smallest arrival minus stamp of this PROMPT_WINDOW and of the one before, and when this one began, seconds.
+        self._prompt, self._prompt_before, self._prompt_since = math.inf, math.inf, -math.inf
 
     def add(self, arrival_time: float, stamp: float) -> None:
         """Note one message and forget the ones older than the window.
@@ -65,6 +70,26 @@ class StreamStats:
         self._samples.append((arrival_time, stamp))
         while self._samples[0][0] < arrival_time - self._window:
             self._samples.popleft()
+        if stamp > 0.0:
+            if arrival_time - self._prompt_since > PROMPT_WINDOW:
+                self._prompt, self._prompt_before, self._prompt_since = math.inf, self._prompt, arrival_time
+            self._prompt = min(self._prompt, arrival_time - stamp)
+
+    def lateness(self, arrival_time: float, stamp: float) -> float:
+        """How much later a message arrived than the stream's promptest one lately, seconds; 0 if unstamped.
+
+        Compared within the stream, so a sender's clock that is off (even by days) but runs steadily changes nothing.
+        ! Judge a measurement's age by this too: an overloaded wifi delivers messages seconds late, and those look
+          fresh by their arrival.
+
+        Args:
+            arrival_time: When its callback ran, ROS time, seconds.
+            stamp: Its `header.stamp`, seconds.
+        """
+        prompt = min(self._prompt, self._prompt_before)
+        if stamp <= 0.0 or math.isinf(prompt):
+            return 0.0
+        return max(0.0, arrival_time - stamp - prompt)
 
     def quality(self, now: float) -> StreamQuality:
         """The rate, largest gap and delay over the window ending at `now`.

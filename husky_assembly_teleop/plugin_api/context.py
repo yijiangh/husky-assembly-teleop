@@ -18,6 +18,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Collection, Coroutine, Iterable, Iterator, Literal, TypeVar
 
 from ..config import short_serial
+from ..robot_interface.arm import STANDING_STATE_MAX_AGE
 from ..robot_interface.robot_lease import Lease, LeaseSlot, leased, take_lease
 from ..robot_interface.soft_stop import MotionRefused
 from ..world.clearance import (STOP_DISTANCE, Clearance, ClearanceRefused, ClearanceTrip, ClearanceWatch,
@@ -693,7 +694,7 @@ class PluginContext:
         """Cancel the task of every freeze whose basis no longer holds, logging why."""
         now = self.now()
         for freeze, task in list(self._freezes.items()):
-            problem = basis_problem(freeze.basis, self.world, now, freeze.tolerance)
+            problem = basis_problem(freeze.basis, self.world, now, freeze.tolerance, STANDING_STATE_MAX_AGE)
             if problem is not None:
                 freeze.problem = problem
                 del self._freezes[freeze]

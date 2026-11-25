@@ -11,6 +11,7 @@ Optional, like freezes. Whoever puts bodies into the scene (obstacles, process, 
   holds) are skipped.
 - ! Other robots must be measured too, except those in `Clearance.unknown_robots` (unknown when it was committed,
   checked as their stand-ins, `stand_ins.py`): any other robot not measured trips it, and refuses it at the start.
+  While it runs, one that stood still when its joints fell silent may stay so for a while (`silent_standing`).
 - ! What cannot be checked counts as too close: a lost base pose, or a robot the mirror cannot place. Only arms named
   in `Clearance.unknown_arms` may be unknown (manual moves): they are checked where last seen, or stowed. A robot
   that cannot be checked when a clearance starts refuses it (`ClearanceRefused`), so nothing is sent.
@@ -31,12 +32,16 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Collection, Hashable, Iterable, Literal
 
+from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Scene
 
+from ..robot_interface.arm import STANDING_STATE_MAX_AGE, STILL_AFTER, ArmState
+from ..robot_interface.mocap_state import pose_lost
 from ..robot_interface.soft_stop import MotionRefused
 from .base_collision import BaseCollisionWorld
 from .collision_hit import CollisionHit
+from .measured import WorldState
 from .stand_ins import unknown_parts, unknown_robots, with_stand_ins
 
 #: Distance, metres, below which a base drive's clearance trips (D-pads, planned paths): the default.
@@ -196,6 +201,26 @@ def others_problem(snapshot: Scene, own: Collection[str], allowed: Collection[st
     """
     return "; ".join(f"{key.split('/', 1)[1]}: {unknown_parts(snapshot.robots[key])} not measured"
                      for key in sorted(unknown_robots(snapshot, own) - set(allowed)))
+
+
+def silent_standing(world: WorldState, now: float) -> frozenset[str]:
+    """Ids of the robots a running clearance may check where last seen: tracked, only their joints silent.
+
+    Every arm was measured within STANDING_STATE_MAX_AGE and stood still then: not under a trajectory of ours, no
+    slight motion for STILL_AFTER. One last seen moving is never among them.
+
+    Args:
+        world: The measured world.
+        now: ROS time, seconds.
+    """
+    def stood(state: ArmState) -> bool:
+        seen, moved = state.last_update_time, state.last_slight_motion_time
+        return (seen is not None and now - seen <= STANDING_STATE_MAX_AGE and not state.is_executing
+                and (moved is None or seen - moved > STILL_AFTER))
+
+    return frozenset(robot_id(serial) for serial, robot in world.robots.items()
+                     if robot.arms and all(stood(arm.state) for arm in robot.arms.values())
+                     and not pose_lost(robot.base.mocap_id, robot.base.state, now))
 
 
 def self_text(snapshot: Scene, pair: tuple[str, str]) -> str:

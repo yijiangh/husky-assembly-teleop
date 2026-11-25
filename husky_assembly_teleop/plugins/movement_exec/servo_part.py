@@ -54,7 +54,7 @@ from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, 
 from ...shared.planner.planner_search import WAIT_MARGIN
 from ...world.freeze import WorldMoved
 from ...shared.bars.layouts import bar_layouts, fit_in_cloud
-from .sequences import Job, PartRun, confirmed, live_command_of, others_basis, others_moving, world_problem
+from .sequences import Job, PartRun, confirmed, live_command_of, others_basis, others_started, world_problem
 from ...ui.style import BUSY, FAIL, OK
 from .servo_measure import (GIVE_UP, SIDE, TOOL0_SERVO, aim_text, end_line, ik_record, insert_end_problem, line,
                             load_line, planned_line, say_feedback, servo_file, sides)
@@ -286,7 +286,7 @@ class ServoLoop:
         self.moves.append(move)
         self.phase_is(f"pass {k}/{MAX_PASSES}: moving ({traj_time:.0f} s)")
         with ctx.freeze(others) as run.freeze:
-            outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run, watch=lambda: others_moving(job),
+            outcome = await send_motion(ctx, job.robot, command, dry_run=job.dry_run, watch=lambda: others_started(job),
                                         progress=run.progress)
         run.outcome = outcome.as_record()
         move.update(duration=outcome.seconds, outcome=outcome.status)

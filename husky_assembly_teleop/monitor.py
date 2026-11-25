@@ -33,7 +33,7 @@ from .config import ConfigError, MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
 from scaffolding_assembly_core.geometry import Geometry
 from .world.clearance import (TRIPS_KEPT, WATCH_EVERY, Clearance, ClearanceChecker, ClearanceTrip, ClearanceWatch,
-                              assumable_joints)
+                              assumable_joints, silent_standing)
 from .world.stand_ins import unknown_robots
 from .world.kinematics import Kinematics
 from .plugin_api.plugin import HuskyPlugin, UnknownPluginError, load_plugins
@@ -521,7 +521,7 @@ class HuskyMonitor(Node):
             for key in self._clearances_asked:
                 if key not in tripped and isinstance(key[1], Clearance):
                     key[1].checked = True
-        asked = []
+        asked, standing = [], silent_standing(self._world, now)
         for loaded in self._loaded.values():
             if loaded.stopped:
                 continue
@@ -535,7 +535,7 @@ class HuskyMonitor(Node):
                     assumable = (assumable_joints(robot.model.movable_joints, clearance.unknown_arms)
                                  if robot is not None else frozenset())
                     asked.append(((loaded.ctx, clearance, serial), robot_id(serial), clearance.margin, assumable,
-                                  clearance.unknown_robots, clearance.check_self))
+                                  clearance.unknown_robots | standing, clearance.check_self))
         watching = now - self._watched_at >= WATCH_EVERY
         for loaded in self._loaded.values() if watching else ():
             if loaded.stopped:
