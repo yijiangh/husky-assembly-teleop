@@ -130,11 +130,14 @@ class PoseLog:
         self.stops: dict[str, list[Stop]] = {}
         self.unwritten: list[str] = []
 
-    def add_pose(self, pose: RobotPose) -> bool:
-        """Log a rest pose unless it is its robot's newest one again (sim or real alike); True if logged."""
+    def add_pose(self, pose: RobotPose, again: bool = False) -> bool:
+        """Log a rest pose unless it is its robot's newest one again (sim or real alike); True if logged.
+
+        `again`: only if it is the newest one again, for its force after a zero.
+        """
         kept = self.poses.setdefault(pose.serial, [])
         newest = next((each for each in reversed(kept) if each.sim == pose.sim), None)
-        if newest is not None and newest.same_joints(pose):
+        if (newest is not None and newest.same_joints(pose)) != again:
             return False
         kept.append(pose)
         del kept[:-KEPT]

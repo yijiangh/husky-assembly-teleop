@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -540,5 +541,72 @@ def test_the_state_and_the_stop_are_two_chips(tmp_path):
         status = plugin._widgets[BELLE]["status"].content
         stop = plugin.log.stops[BELLE][-1]
         assert ">running<" in status and f">stop {stop.clock}<" in status
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.safety
+def test_a_new_stop_picks_the_pose_before_it_again_and_drops_the_last_message(tmp_path):
+    """An older pose picked for one stop is not aimed at after the next; nor does its message show then."""
+    lab, plugin = started(tmp_path)
+
+    async def scenario():
+        arm = lab.belle.arms["ur_arm"]
+        await ticks(lab, plugin, 1.0)
+        sag(arm, 0.4, REST)  # a move: a second pose
+        await ticks(lab, plugin, 2.0)
+        # * Labels of two seconds: in one, they would change with every pose and stop.
+        poses = plugin.log.poses[BELLE]
+        poses[0] = replace(poses[0], wall="2026-11-10T08:00:00")
+        await ticks(lab, plugin, 0.5)
+        older = next(label for label, pose in plugin._widgets[BELLE]["options"].items()
+                     if pose == plugin.log.poses[BELLE][0])
+        plugin._widgets[BELLE]["pick"].value = older
+        await ticks(lab, plugin, 0.5)
+        assert picked(plugin, BELLE) == plugin.log.poses[BELLE][0]
+        plugin._messages[BELLE] = ("Back at 19:39:20", "green")
+        await stop_and_sag(lab, plugin, BELLE)
+        assert picked(plugin, BELLE) == plugin.log.poses[BELLE][-1] and message(plugin, BELLE) == ""
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.safety
+def test_a_go_back_cut_by_a_stop_marks_no_later_pose(tmp_path):
+    """Stopped during Go back, then moved elsewhere by hand: that pose is a place to go back to."""
+    lab, plugin = started(tmp_path)
+
+    async def scenario():
+        await stop_and_sag(lab, plugin, BELLE)
+        plugin._ended_go_back.add(BELLE)  # as a Go back leaves it
+        estop(lab.belle, True)
+        await ticks(lab, plugin, 1.0)
+        estop(lab.belle, False)
+        await ticks(lab, plugin, 1.0)
+        sag(lab.belle.arms["ur_arm"], -0.3, REST)  # a jog
+        await ticks(lab, plugin, 2.0)
+        assert len(plugin.log.poses[BELLE]) == 2 and not plugin.log.poses[BELLE][-1].go_back
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.safety
+def test_a_zero_at_rest_logs_the_pose_again_with_the_force_it_reads_then(tmp_path):
+    """The force to compare with is the one after the zero; a zero after a stop, at the sag, changes nothing."""
+    lab, plugin = started(tmp_path)
+
+    async def scenario():
+        arm = lab.belle.arms["ur_arm"]
+        await ticks(lab, plugin, 1.0)
+        assert len(plugin.log.poses[BELLE]) == 1
+        assert arm.zero_ft_sensor()
+        load(arm, 0.0)
+        await ticks(lab, plugin, 2.0)
+        first, again = plugin.log.poses[BELLE]
+        assert first.same_joints(again) and again.arms["ur_arm"].force == (0.0, 0.0, 0.0)
+        await stop_and_sag(lab, plugin, BELLE, degrees=0.0)  # held by the brakes, pulled at
+        assert arm.zero_ft_sensor()
+        await ticks(lab, plugin, 2.0)
+        assert len(plugin.log.poses[BELLE]) == 2 and picked(plugin, BELLE) == again
 
     asyncio.run(scenario())

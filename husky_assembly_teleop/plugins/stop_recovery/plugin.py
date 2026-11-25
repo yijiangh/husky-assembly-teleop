@@ -36,6 +36,7 @@ from ...robot_interface.refusal import newest_reason
 from ...robot_interface.robot import HuskyRobotInterface
 from ...robot_interface.soft_stop import MotionRefused
 from ...shared.assembly_planning.joints import arm_joint_names
+from ...shared.execution.force_sensors import FT_SETTLE
 from ...shared.guide.panel import set_changed
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.popup import Popup
@@ -198,7 +199,7 @@ class StopRecoveryPlugin(HuskyPlugin):
                 gui.add_html(section(f"{robot_name(serial)} ({short_serial(serial)})", SECTION_CTRL,
                                      ", ".join(robot.arms)))
                 self._widgets[serial] = {**self._controls(ctx, gui, serial, popup=False), "options": {},
-                                         "default": None}
+                                         "default": None, "afresh": False}
                 self._moved_running[serial] = self._was_running[serial] = running(robot)
                 self._running_since[serial] = float("-inf")
         if not robots:
@@ -268,12 +269,18 @@ class StopRecoveryPlugin(HuskyPlugin):
             runs = running(robot)
             if runs and not self._was_running[serial]:
                 self._running_since[serial] = now
+                # * A Go back the stop cut short: where the robot rests next is no longer where that ended.
+                self._ended_go_back.discard(serial)
                 if serial in self._stopped:
                     self._asking.add(serial)
                     self._use(serial)
             if self._was_running[serial] and not runs:
                 self._log_stop(ctx, serial, robot)
                 self._stopped.add(serial)
+                # * A new stop starts afresh: the pose before it picked, no message of the last one.
+                self._widgets[serial]["afresh"] = True
+                if not self._moving_back(serial):
+                    self._messages.pop(serial, None)
                 # ! Motion seen just before the stop was reported may be the sag itself: forget it.
                 self._moved_running[serial] = False
             self._was_running[serial] = runs
@@ -294,11 +301,29 @@ class StopRecoveryPlugin(HuskyPlugin):
                     if serial not in self._ended_go_back:
                         self._asking.discard(serial)
                     self._ended_go_back.discard(serial)
+            elif runs and not moving and serial not in self._asking and not self._moving_back(serial):
+                self._log_after_zero(serial, robot, now)
         # * Here, not in draw: draw is skipped while the panels are paused, and the window must still open.
         self._show_popup()
         if self.log.unwritten and (self._writer is None or self._writer.done()):
             lines, path = self.log.take_unwritten(), self.log.day_file(datetime.now())
             self._writer = ctx.spawn("stop recovery log", self._write(ctx, path, lines), survives_soft_stop=True)
+
+    def _log_after_zero(self, serial: str, robot: HuskyRobotInterface, now: float) -> None:
+        """Log the newest rest pose again once its force sensors were zeroed there: a force before it says nothing now.
+
+        ! Never a new place: only a robot still at that pose, and none back from a stop (a zero then hides its pull).
+        """
+        zeros = [arm.state.ft_zero_time for arm in robot.arms.values() if arm.state.ft_zero_time is not None]
+        zeroed = max(zeros, default=float("-inf"))
+        if zeroed <= self._logged_at.get(serial, float("-inf")) or now - zeroed < FT_SETTLE:
+            return
+        arms = {name: arm_pose(arm) for name, arm in robot.arms.items()}
+        if all(pose is not None for pose in arms.values()):
+            newest = next(iter(self.log.last(serial, 1, simulated(robot))), None)
+            self.log.add_pose(RobotPose(serial, now, datetime.now().isoformat(timespec="seconds"), simulated(robot),
+                                        arms, go_back=newest is not None and newest.go_back), again=True)
+            self._logged_at[serial] = now
 
     def _log_stop(self, ctx: PluginContext, serial: str, robot: HuskyRobotInterface) -> None:
         """Log a robot stopping, with what the sync says and each arm's force."""
@@ -424,8 +449,8 @@ class StopRecoveryPlugin(HuskyPlugin):
                     raise
                 finally:
                     # * The next rest pose is where this Go back ended only if it moved the robot at all.
-                    if any(np.max(np.abs(arm.joint_vector() - starts[name])) > SAME_POSE
-                           for name, arm in arms.items() if arm.joint_vector() is not None):
+                    if running(robot) and any(np.max(np.abs(arm.joint_vector() - starts[name])) > SAME_POSE
+                                              for name, arm in arms.items() if arm.joint_vector() is not None):
                         self._ended_go_back.add(serial)
         except MotionRefused as refused:
             self._refuse(ctx, serial, str(refused))
@@ -564,13 +589,13 @@ class StopRecoveryPlugin(HuskyPlugin):
             if label in options:  # two poses in one second
                 label += f" ({index + 1})"
             options[label] = pose
-        if not options or list(options) == list(widgets["options"]):
+        if not options or (list(options) == list(widgets["options"]) and not widgets["afresh"]):
             return
         default = next((label for label, pose in options.items() if not pose.go_back), next(iter(options)))
         picked = widgets["pick"].value
-        # * Keep the operator's own pick; else the default.
-        keep = picked in options and picked != widgets["default"]
-        widgets["options"], widgets["default"] = options, default
+        # * Keep the operator's own pick until the next stop; else the default.
+        keep = picked in options and picked != widgets["default"] and not widgets["afresh"]
+        widgets["options"], widgets["default"], widgets["afresh"] = options, default, False
         widgets["pick"].options = tuple(options)
         widgets["pick"].value = picked if keep else default
 
